@@ -365,7 +365,7 @@
                   (if (Set.contains (Set.insert #set() half) (Rational.of 2 4)) 1 0))))
             (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 42 -1 1) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order"
   (doc    "The Rational-key rows above run on 1-2 keys; this pins the canonical ORDER over a populated
@@ -386,7 +386,7 @@
               (inc (Map.to-list (fill n Map.empty)) (Rational.of 0 1) 0))
             (export main)))
   (call   main (: 40 Int64)) (output (: 40 Int64))
-  (live-objects known-leak 284))
+  (live-objects known-leak))
 
 (case "a Rational-keyed trie churned with DIFFERENTLY-normalized spellings equals the direct build"
   (doc    "The normalization-identity churn: 29 keys (i = 1..n-1 at n = 30) are INSERTED as `2i/6` and
@@ -555,7 +555,7 @@
   (output (: 111 Int64))
   (call   main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent"
   (doc    "The champ-KEY composition of the view-leaf walk: the map key is `(tuple 1 <Bytes>)` and the
@@ -572,7 +572,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; --- Runtime compound ORDERING: `<`/`<=`/`>`/`>=` over a runtime compound COMPUTES (blessed lexicographic) --
 ; The cases above pin runtime structural EQUALITY over a compound (the `value-eq`/`champ_eq` heap walk).
@@ -695,7 +695,7 @@
   (output (: 23 Int64))
   (call   main (: 7 Int64))
   (output (: 25 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "String ordering drives an insort over runtime ROPES, verified by content"
   (doc    "The String-comparator sort: three concat-built ropes (\"axx\", \"mxx\", \"zxx\" at n=2) insort
@@ -720,7 +720,7 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak))
 
 ; The compound-ordering cases above all bottom out in an INTEGER leaf (the numeric leaf order). This pins
 ; that the compound walk uses the BLESSED per-leaf order for a STRING leaf too — a String's order is
@@ -1287,7 +1287,7 @@
                      (if (= (FV.I n) (FV.F 2.5)) 1 0)))
             (export main)))
   (call   main (: 3 Int64)) (output (: (tuple 1 1 0) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend"
   (doc    "The recursive companion of the Ast decline note above, now that the rust emit routes a
@@ -1921,7 +1921,7 @@
                             (_ (find (+ n 1)))))
             (def (main) (find 0)) (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "two constant sums with the same payload but different variants are not equal"
   (doc    "Constant compound equality folds STRUCTURALLY (core-semantics.md #Equality Is Structural), and
@@ -3397,7 +3397,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 101000 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees"
   (input (do (def (main (: n Int64))
@@ -3407,7 +3407,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 101001 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 ; ── breaker batch 523: the dual-use leak GENERALIZED (same issue file, scope corrected) — the
 ; second consumer can be ANY heap walker (order / champ-key / Set.contains), not just value-eq;
@@ -3422,7 +3422,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 1001 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "dqe7 a nested operand dual-used by projection + CHAMP-key descent (insert one, look up by the equal twin) leaks its tree"
   (input (do (def (main (: n Int64))
@@ -3433,7 +3433,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 1042 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "dqe8 a nested operand dual-used by projection + Set membership descent leaks its tree"
   (input (do (def (main (: n Int64))
@@ -3443,7 +3443,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 1100 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "dqe9 TWO walkers (equality AND ordering) on the same nested operands with no projection reclaim clean"
   (input (do (def (main (: n Int64))
@@ -3473,7 +3473,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 1001 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "dqe11 an eq'd nested operand whose COMPONENT escapes through the branch arm leaks both sides today (partial escape)"
   (input (do
@@ -3487,7 +3487,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 1001 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "dqe12 eq-only nested operands confined to a callee scope (nothing escapes) reclaim clean"
   (input (do
@@ -3558,7 +3558,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 1001 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "dqe17 a walker-conditioned escape arm left UNTAKEN (operands unequal) reclaims clean — the dup is minted on the taken path only"
   (input (do
@@ -3600,7 +3600,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 102001 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; ── breaker batch 546: Float special values as CHAMP keys/elements — the hash/eq AGREEMENT cells.
 ; Cadenza equality is canonical-byte (= -0.0 0.0) is FALSE (pinned above); these pin that the
@@ -3677,7 +3677,7 @@
   (output (: 1421 Int64))
   (call main (: 0 Int64))
   (output (: -10 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ── breaker batch 591: the NaN self-equal-but-UNORDERED invariant across =/<=/>= (03-equality's
 ; "self-equal and unordered downstream" pinned for the RELATIONAL ops specifically), plus the

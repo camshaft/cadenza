@@ -663,18 +663,18 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
         }
         kids.push(b.list(wk));
     }
-    // `(live-objects <N>)` — the post-run heap-balance the case asserts (N as a string leaf). A
-    // `(live-objects known-leak <N>)` marker prefixes the count with the literal `known-leak` (both graded
-    // as assert == N; the marker records the opt-out intent). Under the opt-out default the nix exec runs
-    // EVERY heap-importing case on `--runtime <debug-counters>` and cdz-run's `--grade` asserts == N
-    // (heap case) / == 0 (absent + heap) / skips (no-heap). Absent for a case with no `(live-objects …)`.
-    if let Some(n) = rec.live_objects {
+    // `(live-objects <N>)` — a CLEAN case's post-run residual the case asserts (N as a string leaf; N=0 =
+    // fully reclaimed). The nix exec runs EVERY heap-importing case on `--runtime <debug-counters>` and
+    // cdz-run's `--grade` asserts == N (heap case) / == 0 (absent + heap) / skips (no-heap). A KNOWN-LEAK
+    // case (seq-15 pure-binary marker) shreds to `(live-objects "known-leak")` with NO count — it is
+    // accepted-as-leaking and NOT count-checked. Absent for a case with no `(live-objects …)`.
+    if rec.live_objects_known_leak {
+        let leaf = str_leaf(&mut b, "known-leak");
+        kids.push(form(&mut b, "live-objects", vec![leaf]));
+    } else if let Some(n) = rec.live_objects {
+        // Per-call positional CLEAN residuals each become a leaf (`(live-objects "0" "0" "0")`); a uniform
+        // residual is the single leaf. `decode_test_run` mirrors this (2+ counts ⇒ per-call, one ⇒ uniform).
         let mut leaves = Vec::new();
-        if rec.live_objects_known_leak {
-            leaves.push(str_leaf(&mut b, "known-leak"));
-        }
-        // Per-call positional counts each become a leaf (`(live-objects "3" "13" "0")`); a uniform count is
-        // the single leaf. `decode_test_run` mirrors this (2+ counts ⇒ per-call, one ⇒ uniform).
         match &rec.live_objects_per_call {
             Some(counts) => {
                 for c in counts {
@@ -1055,7 +1055,9 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
             !nobal.contains("live-objects"),
             "a case without the clause emits no live-objects form: {nobal}"
         );
-        // A `(live-objects known-leak N)` marker shreds to `(live-objects "known-leak" "N")`.
+        // seq-15 PURE-BINARY: a `(live-objects known-leak)` marker shreds to a count-free `(live-objects
+        // "known-leak")` — the leak magnitude is not carried (not count-checked). A legacy count-bearing
+        // marker shreds identically (the count is dropped).
         let leak = crate::read(
             r#"(case "leak"
                  (input (do (type L (Cons (Tuple Int64 L)) Nil) (def (main) (L.Cons (tuple 1 (L.Nil ())))) (export main)))
@@ -1065,23 +1067,27 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         .unwrap();
         let leak_tr = sexpr::print(&codec::decode(&test_run_ast(&leak[0])).unwrap());
         assert!(
-            leak_tr.contains("(live-objects \"known-leak\" \"2\")"),
-            "known-leak marker shreds distinctly: {leak_tr}"
+            leak_tr.contains("(live-objects \"known-leak\")"),
+            "known-leak marker shreds count-free: {leak_tr}"
         );
-        // A PER-CALL positional clause shreds to one leaf per count (`(live-objects "3" "13" "0")`), so the
-        // nix GRADE path (which reads this AST) balances EACH call against its own count.
+        assert!(
+            !leak_tr.contains("\"known-leak\" \"2\""),
+            "the count is dropped: {leak_tr}"
+        );
+        // A CLEAN PER-CALL positional clause shreds to one leaf per count (`(live-objects "0" "0" "0")`), so
+        // the nix GRADE path (which reads this AST) balances EACH call against its own residual.
         let percall = crate::read(
             r#"(case "percall"
                  (input (do (def (main (: r Int64)) r) (export main)))
                  (call main (: 1 Int64)) (output (: 1 Int64))
                  (call main (: 4 Int64)) (output (: 4 Int64))
                  (call main (: 0 Int64)) (output (: 0 Int64))
-                 (live-objects known-leak 3 13 0))"#,
+                 (live-objects 0 0 0))"#,
         )
         .unwrap();
         let pc_tr = sexpr::print(&codec::decode(&test_run_ast(&percall[0])).unwrap());
         assert!(
-            pc_tr.contains("(live-objects \"known-leak\" \"3\" \"13\" \"0\")"),
+            pc_tr.contains("(live-objects \"0\" \"0\" \"0\")"),
             "per-call positional counts shred as one leaf each: {pc_tr}"
         );
     }

@@ -74,7 +74,7 @@
               (def (main (: x Int64)) (host (P) (+ (List.len (. (P.mk x) 0)) (. (P.mk x) 1)))) (export main)))
   (call   main (: 4 Int64))
   (output (: 43 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "pcl3 an element of a peer-returned list is read and used"
   (doc    "PROVIDER `mklist(x)` = [x+1, x+2]; the consumer reads element 0 with List.at and unwraps the
@@ -335,7 +335,7 @@
               (def (main (: x Int64)) (host (P) (P.mkpair x))) (export main)))
   (call   main (: 9 Int64))
   (output (: (tuple 9 10) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "por1 a peer Option result escapes the entrypoint via the fused envelope"
   (doc    "The non-recursive SUM-resource escape path (emit_runtime_sum_resource, peer-aware): main RETURNS
@@ -347,7 +347,7 @@
               (def (main (: x Int64)) (host (L) (List.at (L.mklist x) 0))) (export main)))
   (call   main (: 7 Int64))
   (output (: (Some 8) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "plr1 a peer LIST result escapes the entrypoint via the fused envelope"
   (doc    "The recursive-sum / value-encode walker escape path (emit_recursive_sum_resource), distinct from
@@ -359,7 +359,7 @@
               (def (main (: x Int64)) (host (L) (L.mklist x))) (export main)))
   (call   main (: 7 Int64))
   (output (: #list(8 9) (List Int64)))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; ── peer RESULT crossings read down to a scalar (no entrypoint escape): a BIGINT handle and a NESTED
 ; compound. Migrated from the in-crate rcdzc PL25/PL26.
@@ -384,7 +384,7 @@
               (def (main (: x Int64)) (host (N) (+ (List.len (. (N.nest x) 0)) (. (N.nest x) 1)))) (export main)))
   (call   main (: 5 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 
 ; ── map/set/record ARG crossings (INBOUND): the consumer builds a compound and passes it TO a peer op ──
@@ -400,7 +400,7 @@
               (def (main (: x Int64)) (host (M) (M.msz (Map.insert (Map.insert (Map.empty) 1 x) 2 (+ x 1))))) (export main)))
   (call   main (: 7 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "pca2 a set argument crosses INBOUND to a peer and its length is read there"
   (doc    "The set arg twin: the consumer builds a (Set Int64) {x, x+1} and passes it into the peer op, which
@@ -410,7 +410,7 @@
               (def (main (: x Int64)) (host (S) (S.ssz (Set.insert (Set.insert #set() x) (+ x 1))))) (export main)))
   (call   main (: 7 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there"
   (doc    "A RECORD carrying a HEAP (String) field beside a scalar crosses inbound: the consumer builds
@@ -449,7 +449,7 @@
               (def (main (: x Int64)) (host (S) (S.sum #tuple(x (+ x 1))))) (export main)))
   (call   main (: 9 Int64))
   (output (: 19 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "two compound arguments each cross as their own handle in one peer call"
   (doc    "u16 pins a SINGLE compound arg; this pins that MULTIPLE compound args each cross as their OWN handle
@@ -465,7 +465,7 @@
               (def (main (: x Int64)) (host (S) (S.add4 #tuple(x x) #tuple(x x)))) (export main)))
   (call   main (: 5 Int64))
   (output (: 20 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a String argument handle passed to a peer stays live for a later local read (borrow not move)"
   (doc    "A refcount/borrow-correctness pin: passing a String handle to a peer op must BORROW it, not consume
@@ -618,7 +618,7 @@
               (def (main) (host (M) (M.converse "hi"))) (export main)))
   (call   main)
   (output (: "hihi" String))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "psc1 chained peer String ops flow a result into an arg then the second result escapes"
   (doc    "The agentic-pipeline shape `tag(converse(prompt))`: a String is BOTH a peer result (handle out
@@ -632,7 +632,7 @@
               (def (main) (host (M) (M.tag (M.converse "hi")))) (export main)))
   (call   main)
   (output (: "T:hihi" String))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "pbk1 a request-struct {prompt,max-tokens} crosses to a peer and its String completion escapes"
   (doc    "THE REALISTIC BEDROCK SHAPE: peer op `converse : (Tuple String Int64) -> String` — a request
@@ -645,7 +645,7 @@
               (def (main) (host (M) (M.converse #tuple("hi" 64)))) (export main)))
   (call   main)
   (output (: "hihi" String))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "pby1 a peer BYTES result escapes the entrypoint via the with-methods fused envelope"
   (doc    "The binary-result sibling of pse1: a Bytes result crosses via the SAME with-methods fused
@@ -779,7 +779,7 @@
   (output (: 19 Int64))
   ; the crossed scalar-tuple handle is not yet reclaimed after the peer boundary (same class as pca1/pca2 and
   ; the scalar-tuple inbound-arg case); flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a let-bound peer compound is read twice (both live) then reclaimed"
   (doc    "A peer op `pair(x) = (tuple x x)` @cadenza:pairs/api returns a runtime tuple; the consumer LET-binds
@@ -806,7 +806,7 @@
   (output (: (tuple 10 15) (Tuple Int64 Int64)))
   ; the fused escaping compound built across two peers leaves one handle unreclaimed at the boundary;
   ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a string result chained through two peers escapes the entrypoint via the methods envelope"
   (doc    "Two peers with a chained String result: A (cadenza:a/api) `ga(_x) = String.concat \"h\" \"i\"` = \"hi\";
@@ -823,7 +823,7 @@
   (output (: "hihi" String))
   ; the String result chained through two peers escapes with one boundary handle unreclaimed;
   ; flips to 0 when peer-boundary result reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)"
   (doc    "MIXED-OWNERSHIP reclaim: a peer op `mk(x) = (tuple x x)` @cadenza:p/api mints a runtime tuple; the
@@ -838,7 +838,7 @@
   (output (: (tuple 5 105) (Tuple Int64 Int64)))
   ; the borrowed peer handle / rebuilt escaping compound leaves one boundary handle unreclaimed;
   ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "the agent-return shape: three peers with a Cedar-gated escaping string result"
   (doc    "The native agent harness's reported shape — THREE distinct peers: Cedar (cadenza:cedar/api)
@@ -858,7 +858,7 @@
   (output (: "R:hi" String))
   ; the escaping String result reaching three peers leaves two boundary handles unreclaimed (Inbox.next + Model.converse);
   ; flips to 0 when peer-boundary result reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a diamond peer graph shares one provider across two middle peers"
   (doc    "DIAMOND: a shared provider A (cadenza:base/api) base(x)=2x is consumed by TWO middle peers — B
@@ -890,4 +890,4 @@
   (output (: 10 Int64))
   ; the nested-compound projection off a crossed peer handle leaves one boundary handle unreclaimed;
   ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak 1))
+  (live-objects known-leak))

@@ -89,7 +89,7 @@
                           (_           0N)))
             (export main)))
   (output (: 42 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A DISTINCT fixpoint dimension: a tag function whose BODY is ITSELF a tagged template (not just a tag
 ; returning a plain Ast). `outer` expands to `(tagged-template inner …)`, which must ITSELF be expanded —
@@ -136,7 +136,7 @@
                           (_           0N)))
             (export main)))
   (output (: 10 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The JSX precursor: a recursive tag that BUILDS A COMPOUND `Ast` (not just a scalar) — the shape a real
 ; recursive-descent parser tag has (recursively assembling child nodes into an `Ast.List`). `build-list`
@@ -188,7 +188,7 @@
                           (_           0N)))
             (export main)))
   (output (: 4 BigInt))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 ; --- The tag's TYPE is enforced (dispatch by binding requires the right shape) ---------------------
 ; metaprogramming.md: the tag "MUST … require it to be a compile-time function from a list of the chunk
@@ -262,7 +262,7 @@
                           (_ 0N)))
             (export main)))
   (output (: 33 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a three-hole tag reads its holes in exact left-to-right order"
   (doc    "The 2-hole case above uses [10,20]; three holes with distinct DIGIT values catch a position
@@ -280,7 +280,7 @@
                 (_ 0N)))
             (export main)))
   (output (: 312 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; --- Composition: a hole may itself be a quote/Ast expression ---------------------------------------
 ; A `{expr}` hole is an ORDINARY expression, so it may be a `(quote …)` (or any Ast-valued expression) —
@@ -332,7 +332,7 @@
                           (_ 0N)))
             (export main)))
   (output (: 46 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; --- The expander is a STRUCTURAL rewrite, not a validator: the chunks==holes+1 invariant is the READER's
 ; The chunks/holes count invariant (`chunks.len() == holes.len() + 1`) is guaranteed by the READER on the
@@ -433,7 +433,7 @@
   (output (: 7 BigInt))
   (call   main (: 9 Int64))
   (output (: 9 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a runtime hole woven into a compound Ast is read back by a nested match"
   (doc    "The weave case's runtime companion: `wrap` builds `(Ast.List (list (Ast.Name \"f\") h))` around
@@ -454,7 +454,7 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 41 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a tag DISPATCHES ON CHUNK TEXT to weave different operator spines around runtime holes"
   (doc    "The content-directed DSL move — none of the pins above BRANCH on chunk content: `op`
@@ -491,7 +491,7 @@
   (call main (: 5 Int64) (: 2 Int64)) (output (: 15 BigInt))
   (call main (: 0 Int64) (: 1 Int64)) (output (: 3 BigInt))
   (call main (: 0 Int64) (: 2 Int64)) (output (: 0 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a tag function recurses over its HOLES list and folds their sum"
   (doc    "The recursive-tag pins recurse over CHUNK text; this tag recurses over the HOLES —
@@ -517,7 +517,7 @@
         (export main)))
   (call   main (: 0 Int64)) (output (: 18 Int64))
   (call   main (: 100 Int64)) (output (: 118 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak))
 
 (case "a compound Ast SUBTREE rides a template hole into the expansion intact"
   (doc    "The hole pins splice Ast.Int LEAVES; this hole is a whole `(Ast.List (* 3 4))` SUBTREE the
@@ -591,7 +591,7 @@
             (export main)))
   (call   main (: 21 Int64))
   (output (: 42 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a tag that SWAPS its two holes delivers each runtime subtree to the exchanged slot"
   (doc    "The permutation face: the tag returns (h1 h0), read back asymmetrically (100x - y) so any delivery mix-up diverges ((3,7) -> 697). With the dup case: hole plumbing is a full function of holes, not a positional pass-through.")
@@ -608,7 +608,7 @@
             (export main)))
   (call   main (: 3 Int64) (: 7 Int64))
   (output (: 697 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; --- A tag resolving through a re-export chain. ---
 

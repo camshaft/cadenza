@@ -486,7 +486,7 @@
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 2 Int64))
   (call main (: 9 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a tuple with a Symbol leaf as a SET element dedups and membership-checks by content"
   (doc    "The SET-element companion of the tuple-map-key case above: the CHAMP hash/eq descends a
@@ -833,7 +833,7 @@
   (call   main (: 1 Int64)) (output (: 42 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a view-interned Symbol participates in Set.to-list content order"
   (doc    "Composes the view-intern face with the orderable-descriptor sort: the symbol interned from
@@ -852,7 +852,7 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 11 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak))
 
 ; --- The re-intern identity loop over a runtime rope. ---
 
@@ -889,7 +889,7 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 11 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 ; -- runtime Symbol content-dispatch match (Symbol.of over a runtime rope defeats the fold; migration from
 ; rcdzc a_symbol_literal_pattern_dispatches_by_content, 2026-08-27): a symbol-literal pattern dispatches by

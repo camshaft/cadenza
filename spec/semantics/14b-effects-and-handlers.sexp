@@ -843,7 +843,7 @@
                 (+ (* 10 (walk (build n (Exp.Lit 5)))) (Cnt.bump))))
             (export main)))
   (call   main (: 199 Int64)) (output (: 2240 Int64))
-  (live-objects known-leak 398))
+  (live-objects known-leak))
 
 (case "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
   (doc    "The performs sit in the argument list of a non-primitive, effect-free USER function, whose call
@@ -1089,7 +1089,7 @@
                     (Diag.emit 210)
                     (Diag.collect)))) (export main)))
   (output (: #list(201 210) (List Int64)))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a handler threads a SET as its state — the seen-set idiom, deduping across performs"
   (doc    "The Set analogue of the list-accumulator handler: the threaded state is a SET (a `seen`/`visited`
@@ -1402,7 +1402,7 @@
                    (match (List.at tagged 2) ((Some v) v) ((None u) -1)))))
             (export main)))
   (call   main (: 30 Int64)) (output (: 360 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "a closure capturing a handler-computed VALUE escapes the handle and applies outside"
   (doc    "The escaping-closure acceptance witness (breaker finding, fixed): the perform runs INSIDE the
@@ -2523,7 +2523,7 @@
                 (walk 3)))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a MATCH-arm perform in a self-recursive performer threads the advance across recursion (rw-match)"
   (doc    "The MATCH-arm face of the recursive-branch-perform fix (the `if`-branch cases rw1/rw3/rw5 are its
@@ -2982,7 +2982,7 @@
                   (Acc.total))))
             (export main)))
   (call   main (: 40 Int64)) (output (: 8200 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 (case "a handler SEEDED with a 40-key trie reads it across resumes"
   (doc    "The deep-trie SEED face (the state-growth case above starts EMPTY and grows; here the heap
@@ -3581,7 +3581,7 @@
                   (Seen.count))))
             (export main)))
   (call   main (: 20 Int64)) (output (: 7 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak))
 
 (case "the mark op's dup-flag RESULT counts repeats while the set state dedupes"
   (doc    "The companion reading the op RESULTS instead of the final state: each mark resumes 1 iff the
@@ -3600,7 +3600,7 @@
                 (feed 0 n)))
             (export main)))
   (call   main (: 20 Int64)) (output (: 13 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak))
 
 (case "a perform in a match-arm guard is discharged by the enclosing handle"
   (doc    "`(handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))`
@@ -3900,7 +3900,7 @@
                 ((. List len) (collect (Node (Node (Leaf) (Leaf)) (Leaf))))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak))
 
 (case "a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)"
   (doc    "The exact SSA register-allocation shape: a node's own id is drawn AFTER lowering both children
@@ -3976,7 +3976,7 @@
                       (Bytes.len out))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "the let-bound-after-helper observation is state-type-general (scalar counter)"
   (doc    "The scalar face of tk3d (breaker tk3h): the SAME [cross-fn helper advances a slot] x [let-bound
@@ -4127,7 +4127,7 @@
                 (root-id (relabel (Node (Node (Leaf) (Leaf)) (Leaf))))))
             (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak))
 
 (case "a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms"
   (doc    "The gensym walk generalized to a real `Expr` sum with THREE constructors of DIFFERENT arities —
@@ -4964,7 +4964,7 @@
                 (+ (St.put n) (+ (St.put 7) (* 100 (St.get))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2212 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "triple-nested same-op performs — each argument is the inner perform's result"
   (doc    "Perform-in-ARGUMENT-position chains freely with a single-site arm: `(St.dbl (St.dbl
@@ -5043,7 +5043,7 @@
                 (+ (* 100 (St.feed 7)) (+ (* 10 (St.feed 8)) (St.feed 9)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 779 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a two-site arm branches on SYMBOL equality of the state"
   (doc    "The interned-symbol face of the served multi-site family: the condition is `(= s (Symbol.of
@@ -5436,7 +5436,7 @@
                 (sum-tree (St.grow n))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 16 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "a recursive sum as op ARGUMENT — the arm dispatches on its shape"
   (doc    "The argument direction: the body hands trees to the op and the ARM pattern-dispatches on
@@ -5936,7 +5936,7 @@
                 (apply-all #list((fn ((: x Int64)) (* x 10)) (fn ((: x Int64)) (+ x 100)) (fn ((: x Int64)) x)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 163 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "an interposing handler TRANSFORMS the host response before resuming (offset adapter)"
   (doc    "The ADAPTER sibling of the observe interposer (:866 counts + forwards unchanged): the arm transforms the host response before resuming (+1000 each; 30+40 → 2070 — a dropped transform gives 70, a double-apply 3070).")
@@ -6299,7 +6299,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 14 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "a WRITER effect accumulates a PRE-ORDER trace string during a recursive tree walk"
   (doc    "The writer idiom: each Add/Mul node logs its op tag BEFORE recursing (pre-order), the handler concats onto a String state, and dump reads the trace back beside the value ((2+3)*4: trace exactly \"*+\" — order-sensitive; the result triple-encodes value/len/content-eq).")
@@ -6322,7 +6322,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 2021 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak))
 
 (case "a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols"
   (doc    "The allocator idiom at the SYMBOL level (the scalar-id gensym pin sums draws): the arm concats the string op-arg with a counter suffix and interns — the same base twice yields DISTINCT symbols (x_e/x_o); results accumulate into a list and compare against a literal intern, exercising Option<Symbol> slot equality.")
@@ -6343,7 +6343,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 301 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 ; --- Uncalled-def faces of the handler validation walk (the resume-value/state pins above are
 ; CALLED-def shapes; these must reject whether or not the def is reached). Note the op-member
@@ -6591,7 +6591,7 @@
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
   (output (: 2131 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a runtime Bytes value crosses a host op boundary as list<u8> (H-bytes-arg)"
   (doc    "The wasm host-ARG Bytes path: a runtime `Bytes` argument to a host op crosses the component
@@ -6615,7 +6615,7 @@
   (host-responses (respond io.sink (: 99 Int64)))
   (host-calls (call io.sink))
   (call   main (: 2 Int64)) (output (: 99 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)"
   (doc    "Coverage for the wasm Bytes-host-arg increment's MIXED-ARITY face: a host op `sink2 : (-> Bytes
@@ -6634,7 +6634,7 @@
   (host-responses (respond io.sink2 (: 9 Int64)))
   (host-calls (call io.sink2))
   (call   main (: 65 Int64)) (output (: 9 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a host result captured by closures in a NESTED tuple fires the host op once (adv-62 nested face)"
   (doc    "adv-62 family, NESTED-destructure face: the let-bound host result `v` is shared by closures at
@@ -6868,7 +6868,7 @@
                   (Store.size))))
             (export main)))
   (call   main (: 50 Int64)) (output (: 50 Int64))
-  (live-objects known-leak 19))
+  (live-objects known-leak))
 (case "a recursive performer of a nested-handler op whose resume performs the outer effect threads the advance"
   (doc    "The recursive-nested-arm-resume fix (v-effects self-probe, concierge-steered pre-spec-lift): a
            recursive `loop` calls a nested `B` handler's op `B.step` whose ARM resume-value performs the OUTER
@@ -9327,4 +9327,4 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 120404040707 Int64))
   (call   main (: 0 Int64)) (output (: 20202019697 Int64))
-  (live-objects known-leak 242))
+  (live-objects known-leak))

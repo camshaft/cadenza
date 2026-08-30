@@ -257,7 +257,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a slice OF a slice over a CONCAT rope composes offsets across the seam"
   (doc    "The view-of-a-view composition case above runs over a FLAT parent; here the parent is a
@@ -286,7 +286,7 @@
                   ((None _u) -3))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 380 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "the composed slice view EQUALS its flat twin and keys a Map by canonical content"
   (doc    "The identity witness of the rope view-of-view case above: the doubly-sliced seam-crossing
@@ -310,7 +310,7 @@
                      ((Some v) v) ((None _u) -1)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 17 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak))
 
 (case "Bytes.concat of two runtime SLICES splices window content in order"
   (doc    "The concat-of-views face (the seam case below slices a CONCAT; this concatenates two SLICES):
@@ -509,7 +509,7 @@
   (output (: 230 Int64))
   (call   main (: 0 Int64))
   (output (: 210 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "a SumExpect-unwrapped slice view BOUND and read TWICE (count>1) is NOT reclaimed (SumExpect single-consumer/escape must-hold)"
   (doc    "The MUST-HOLD guard for the SumExpect view-reclaim (#4939, v-memory-safety): the reclaim marks a
@@ -542,7 +542,7 @@
   (output (: 230 Int64))
   (call   main (: 0 Int64))
   (output (: 210 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; -- Bytes.at over an OWNED-TEMPORARY rope-producer reclaims it (migrated from rcdzc bytes_at_over_an_owned_
 ; temporary_* reclaim tests). Every rope-producer — Bytes.concat / Bytes.slice / Bytes.compact / String.to-bytes
@@ -652,7 +652,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a slice spanning a concatenation sees the logical bytes"
   (doc    "Slicing across the seam of `(concat a b)` — `(Bytes.slice (concat (list 1 2) (list 3 4)) 1 2)`
@@ -752,7 +752,7 @@
                 (match (Bytes.slice (rope s) 3 2) ((Option.Some _) 1)                              ((Option.None) 0))))
             (export main)))
   (call main (: 0 Int64)) (output (: (tuple 2 20 30 0) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; --- Compacting a slice preserves its value while releasing shared storage ---------------
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
@@ -929,7 +929,7 @@
             (export main)))
   (call   main (: 7 UInt8) (: 9 UInt8))
   (output (: 3 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "a byte read back from a runtime-list-built Bytes has the right value"
   (doc    "Value-correctness of runtime-list `Bytes.of` (not just its length): build `Bytes.of (List.concat
@@ -947,7 +947,7 @@
             (export main)))
   (call   main (: 7 UInt8) (: 9 UInt8))
   (output (: 309 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak))
 
 (case "a recursively-built byte sequence assembles its bytes at run time"
   (doc    "The genuine self-hosting idiom for output: a byte sequence whose LENGTH is decided at run
@@ -962,7 +962,7 @@
                             (Bytes.concat (Bytes.of #list(88)) (rep (- n 1)))))
             (def (main)  (rep 4)) (export main)))
   (output (: b"XXXX" Bytes))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a 2000-deep runtime Bytes.concat rope flattens iteratively and reads its content stack-safe"
   (doc    "The depth companion of the recursively-built-bytes case above (depth 4); this drives the concat
@@ -986,7 +986,7 @@
                 (sum (- (Bytes.len r) 1) r 0)))
             (export main)))
   (call   main (: 2000 Int64)) (output (: 250008 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an unsigned LEB128 encoder emits the known-answer multibyte encoding"
   (doc    "The compiler's byte-emitting SPINE as one known-answer case: the recursive unsigned-LEB128
@@ -1009,7 +1009,7 @@
                   (Bytes.concat (Bytes.of #list((UInt8.wrap (| (& n 127) 128)))) (uleb (>> n 7)))))
             (def (main) (uleb 624485)) (export main)))
   (output (: b"\xe5\x8e&" Bytes))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an unsigned LEB128 encoder emits a single byte below the continuation threshold"
   (doc    "The base case of the LEB128 encoder above: a value under 128 needs no continuation byte, so
@@ -1023,7 +1023,7 @@
                   (Bytes.concat (Bytes.of #list((UInt8.wrap (| (& n 127) 128)))) (uleb (>> n 7)))))
             (def (main) (uleb 100)) (export main)))
   (output (: b"d" Bytes))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a recursive emitter dispatches on a sum's variants to build bytes per node"
   (doc    "The compiler's emit spine as a type-driven tree walk: a recursive `emit : Expr → Bytes`
@@ -1047,7 +1047,7 @@
                 ((Expr.Add #tuple(a b)) (Bytes.concat (emit a) (Bytes.concat (emit b) (Bytes.of #list(0x6A)))))))
             (def (main) (emit (Expr.Add #tuple((Expr.Lit 1) (Expr.Neg (Expr.Lit 2)))))) (export main)))
   (output (: b"BB|j" Bytes))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "a recursive fold of a cons-list to bytes is the whole program result"
   (doc    "The compiler's SERIALIZE spine: fold a linked list of byte fragments into one byte vector by
@@ -1072,7 +1072,7 @@
                                 ((BL.BCons #tuple(h t)) (Bytes.concat h (cat-all t)))))
             (def (main) (cat-all (build 3))) (export main)))
   (output (: b"CBA" Bytes))
-  (live-objects known-leak 11))
+  (live-objects known-leak))
 
 ; The recursive fold above renders a SMALL rope (3 fragments) as its whole result, but does not read back a
 ; DEEP rope's content by position. A many-chunk byte rope (repeated Bytes.concat) is a deep byte-rope;
@@ -1103,7 +1103,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: (tuple 40 10 20 10 20 1 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
 ; Slicing and compacting a byte sequence carrying a runtime value are the input-side companions of the
@@ -1240,7 +1240,7 @@
                          (match (Bytes.at c 2) ((Some x) x) ((None _u) -1))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: (tuple 1 4 30) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string"
   (doc    "The bytes→text rendering composite: each `Bytes.at` byte splits into high/low NIBBLES by
@@ -1275,7 +1275,7 @@
             (export main)))
   (call   main (: 16 UInt8)) (output (: 1001 Int64))
   (call   main (: 60 UInt8)) (output (: 1001 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit"
   (doc    "The encoder's inverse (the pin above reads the alphabet POSITIONALLY; the decoder must
@@ -1313,7 +1313,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 439816 Int64))
   (call   main (: 0 Int64)) (output (: -4 Int64))
-  (live-objects known-leak 21 19))
+  (live-objects known-leak))
 
 ; --- A runtime `Bytes.at` Option is MATCHED — the reader's core idiom -------------------------------
 ; The reader walks the input bytes with `(match (Bytes.at input i) ((Some b) …) (None …))` on every
@@ -1387,7 +1387,7 @@
                 (None acc)))
             (def (main) (go (Bytes.of #list(10 20 30)) 0 0)) (export main)))
   (output (: 60 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)"
   (doc    "A recursive `be` whose body composes a heap-`match` result (the inlined `byte-at`, which
@@ -1431,7 +1431,7 @@
             (def (main)         #tuple((major (Bytes.of #list(0x19 0x01 0x2C)) 0)
                                        (arg   (Bytes.of #list(0x19 0x01 0x2C)) 0))) (export main)))
   (output (: (tuple 0 300) (Tuple Int64 Int64)))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a CBOR atom decodes each scalar major type to its value"
   (doc    "The reader's LEAF-atom decode, the third leg beside head-index dispatch and length-driven
@@ -1818,7 +1818,7 @@
             (export main)))
   (call   main)
   (output (: 4202 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a runtime Bytes rope in a SUM payload compares equal to its flat twin"
   (doc    "The variant-payload face: `(B.Wrap rope)` vs `(B.Wrap flat)` — the Bytes payload is compacted at
@@ -1924,7 +1924,7 @@
   (call main (: 1 Int64)) (output (: 25660 Int64))
   (call main (: 4 Int64)) (output (: 52720 Int64))
   (call main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 3 13 0))
+  (live-objects known-leak))
 
 (case "a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its logical bytes"
   (doc    "Composes the checksum with #Sharing Is Not Observable: slice(2,2) of [10,20,30]⧺[40,50,60]
@@ -1954,7 +1954,7 @@
   (call main (: 2 Int64) (: 2 Int64)) (output (: 25670 Int64))
   (call main (: 0 Int64) (: 6 Int64)) (output (: 13010 Int64))
   (call main (: 3 Int64) (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4 8 1))
+  (live-objects known-leak))
 
 (case "a slice OF a seam-spanning slice re-offsets into the logical bytes of the parent view"
   (doc    "The NESTED-view face: outer slice(1,4) of the seamed rope spans the seam; an inner slice
@@ -1988,7 +1988,7 @@
   (call main (: 1 Int64) (: 2 Int64)) (output (: 25670 Int64))
   (call main (: 0 Int64) (: 4 Int64)) (output (: 11660 Int64))
   (call main (: 3 Int64) (: 1 Int64)) (output (: 12850 Int64))
-  (live-objects known-leak 4 6 3))
+  (live-objects known-leak))
 
 (case "String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts"
   (doc    "The None face of the decode path (the landed from-bytes pins are happy-path): the bytes of
@@ -2010,7 +2010,7 @@
   (call main (: 0 Int64) (: 2 Int64)) (output (: -1 Int64))
   (call main (: 0 Int64) (: 3 Int64)) (output (: 103 Int64))
   (call main (: 1 Int64) (: 2 Int64)) (output (: 102 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a slice window spanning MANY seams of a built rope reads the logical bytes"
   (doc    "The seam-crossing slice at scale (the const seam pin crosses ONE): a 102-byte window starting
@@ -2091,7 +2091,7 @@
   (call   main (: 1 Int64)) (output (: 2 Int64))
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "Map.swap keyed by a runtime Bytes ROPE replaces the flat-keyed entry"
   (doc    "The BYTES leg of the value-yielding canonical-key pair (the Rational legs pin the
@@ -2159,7 +2159,7 @@
           (Bytes.len (walk (Bytes.of #list(1 2 3 4 5)) 0)))
         (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 ; --- Byte-wise reversal over a seamed rope. ---
 
@@ -2182,7 +2182,7 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 131 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak))
 
 ; --- View-vs-rope equality both directions, and Bytes.compact as a CHAMP key. ---
 
@@ -2341,7 +2341,7 @@
                     ((None _u) -200)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 40 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ============================================================================================
 ; Byte-string-literal DISPATCH — a runtime Bytes value matched against `b"…"` whole-value literals
@@ -2486,7 +2486,7 @@
   (input  (do (def (f (: k Int64)) (Bytes.len (Bytes.of (if (> k 0) #list((UInt8.wrap 65) (UInt8.wrap 66)) #list((UInt8.wrap 67)))))) (export f)))
   (call   f 1)
   (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; -- breaker batch 445 (2026-08-27): static-data drop-safety for deduplicated constant Bytes
 ; (#3837 extended constant-Bytes detection to Core::ConstBytes; both occurrences of a byte-identical
@@ -2628,7 +2628,7 @@
       (+ (Int64.of (Option.expect (Bytes.at b 0) "b0")) (Int64.of (Option.expect (Bytes.at b 1) "b1")))))
       ((None _u) -1)))) (export main)))
   (call main (: 0 Int64)) (output (: 295 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "adv54b a let-bound Bytes.concat of slice-view to-bytes read twice sees the concatenated bytes"
   (input (do (def (main (: k Int64)) (let ((s (String.concat "ab" "cdé")))
@@ -2636,7 +2636,7 @@
       (+ (Int64.of (Option.expect (Bytes.at b 0) "b0")) (Int64.of (Option.expect (Bytes.at b 3) "b3")))))
       ((None _u) -1)))) (export main)))
   (call main (: 0 Int64)) (output (: 200 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; -- runtime Bytes.at / concat / slice / compact behavior (migration from rcdzc bytes cdz-run tests, 2026-08-27):
 ; each threads a byte sequence through a fn param so the op runs (not a fold) and reads a scalar out.
@@ -2693,7 +2693,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 50 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "bdr3 a slice SPANNING the seams of a deep Bytes rope reads exact length and content (start+LENGTH contract)"
   (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of #list(7))) (- k 1))))

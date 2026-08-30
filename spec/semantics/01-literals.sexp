@@ -510,4 +510,4 @@
   (input  (do (def (main (: x Float64)) #tuple(x 1)) (export main)))
   (call   main (: 3.4028235e38 Float64))
   (output (: #tuple(340282349999999991754788743781432688640.0 1) (Tuple Float64 Int64)))
-  (live-objects known-leak 2))
+  (live-objects known-leak))

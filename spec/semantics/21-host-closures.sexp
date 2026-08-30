@@ -25,7 +25,7 @@
   (input  (do (def (main) (fn ((: x Int64)) (+ x 1))) (export main)))
   (call   main (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The SAME exported closure invoked with a different argument — the host mints a fresh handle (`make`) and
 ; calls it, showing the resource + its `call` dispatch are reusable, and that the result tracks the input.
@@ -39,7 +39,7 @@
   (input  (do (def (main) (fn ((: x Int64)) (+ x 1))) (export main)))
   (call   main (: 41 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The `call` method takes `borrow<t>`: the host holds the handle and may invoke it REPEATEDLY (the natural
 ; callback shape), versus a consume-per-call `own<t>` where a second call on the same handle would trap
@@ -56,7 +56,7 @@
   (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
   (call   adder (: 100 Int64) (: 5 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The repeatable `borrow<t>` `call` extends to the VALUE-FORM result closures too (byte-rope / compound /
 ; collection — all cross `call` as `list<u8>`): the cell is kept across calls, the transient result handle is
@@ -73,7 +73,7 @@
   (input  (do (def (pair (: k Int64)) (fn ((: x Int64)) #tuple(x (+ x k)))) (export pair)))
   (call   pair (: 100 Int64) (: 5 Int64))
   (output (: (tuple 5 105) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A closure whose body MULTIPLIES rather than adds — a different lifted code selected through the same
 ; call_indirect boundary, proving the resource carries the RIGHT closure code (its funcref-table slot).
@@ -86,7 +86,7 @@
   (input  (do (def (main) (fn ((: x Int64)) (* x 3))) (export main)))
   (call   main (: 4 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; C-HOST-2 — a PARAMETERIZED export returning a CAPTURING closure. `(def (adder (: k Int64)) (fn (x) (+ x
 ; k)))` returns a closure that captures `k`, so the whole export crosses as `adder : (Int64) ->
@@ -104,7 +104,7 @@
   (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
   (call   adder (: 10 Int64) (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The same capturing closure with a different capture AND a different call argument — the result tracks
 ; both, confirming `make`'s input flows into the captured cell and `call`'s input into the dispatch.
@@ -116,7 +116,7 @@
   (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
   (call   adder (: 100 Int64) (: 7 Int64))
   (output (: 107 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; DROP — `call` BORROWS the handle, so a plain make+call HOLDS the closure cell (the known leak of 1 above).
 ; A `(drop)` clause makes the host resource-drop the handle AFTER the call, firing the cell's `t-dtor` to
@@ -150,7 +150,7 @@
   (call   adder (: 10 Int64) (: 5 Int64))
   (then   (: 7 Int64))
   (output (: (tuple 15 17) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; C-HOST-3 — a MULTI-ARGUMENT closure. `(-> Int64 (-> Int64 Int64))` (curried sugar `(fn (a b) …)`)
 ; crosses as a resource whose `call` takes BOTH arguments: `call : (self, a: s64, b: s64) -> s64`. The
@@ -164,7 +164,7 @@
   (input  (do (def (main) (fn ((: a Int64) (: b Int64)) (+ a b))) (export main)))
   (call   main (: 3 Int64) (: 4 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a three-argument closure exported to the host is called with all three"
   (doc    "`(fn (a b c) (+ (+ a b) c))` → `call(handle, 2, 3, 4)` = 9. Pins that the `call` arity is not
@@ -172,7 +172,7 @@
   (input  (do (def (main) (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c))) (export main)))
   (call   main (: 2 Int64) (: 3 Int64) (: 4 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A PARAMETERIZED export returning a MULTI-ARG CAPTURING closure — C-HOST-2 (capture + make-forwarding)
 ; composed with C-HOST-3 (multi-arg call). `make`'s param (k) and the closure's two args (a, b) are all
@@ -185,7 +185,7 @@
   (input  (do (def (adder3 (: k Int64)) (fn ((: a Int64) (: b Int64)) (+ (+ a b) k))) (export adder3)))
   (call   adder3 (: 100 Int64) (: 2 Int64) (: 3 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A closure whose RESULT type is Bool — `(-> Int64 Bool)`. The `call` method returns a boolean; the host
 ; renders it. Pins that the closure's result valtype is not fixed to an integer.
@@ -196,7 +196,7 @@
   (input  (do (def (main) (fn ((: x Int64)) (= x 0))) (export main)))
   (call   main (: 0 Int64))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A closure that PERFORMS AN EFFECT cannot escape to the host — the scope fence for this whole feature. A
 ; closure's effects are discharged by the `handle`/`(host …)` frame that is DYNAMICALLY OPEN where the
@@ -324,7 +324,7 @@
   (input  (do (def (both (: a Int64) (: b Int64)) (fn ((: x Int64)) (+ (+ a b) x))) (export both)))
   (call   both (: 10 Int64) (: 20 Int64) (: 5 Int64))
   (output (: 35 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a capturing closure whose body uses the capture after an inner computation"
   (doc    "`(def (scale (: k Int64)) (fn (x) (* (+ x 1) k)))` — the captured `k` multiplies an inner
@@ -334,7 +334,7 @@
   (input  (do (def (scale (: k Int64)) (fn ((: x Int64)) (* (+ x 1) k))) (export scale)))
   (call   scale (: 4 Int64) (: 3 Int64))
   (output (: 16 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a capturing closure with a let binding in its body"
   (doc    "`(def (f (: k Int64)) (fn (x) (let ((y (* x 2))) (+ y k))))` — the closure body binds a local
@@ -343,7 +343,7 @@
   (input  (do (def (f (: k Int64)) (fn ((: x Int64)) (let ((y (* x 2))) (+ y k)))) (export f)))
   (call   f (: 100 Int64) (: 7 Int64))
   (output (: 114 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure driving control flow off a captured boolean"
   (doc    "`(def (g (: flag Bool)) (fn (x) (if flag (+ x 1) (- x 1))))` — the closure captures a Bool and
@@ -353,7 +353,7 @@
   (input  (do (def (g (: flag Bool)) (fn ((: x Int64)) (if flag (+ x 1) (- x 1)))) (export g)))
   (call   g (: true Bool) (: 10 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure whose body calls a top-level helper function"
   (doc    "`(def (dbl (: n Int64)) (* n 2))` `(def (h (: k Int64)) (fn (x) (+ (dbl x) k)))` — the escaping
@@ -364,7 +364,7 @@
   (input  (do (def (dbl (: n Int64)) (* n 2)) (def (h (: k Int64)) (fn ((: x Int64)) (+ (dbl x) k))) (export h)))
   (call   h (: 5 Int64) (: 3 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure capturing THREE scalars is made and called"
   (doc    "`(def (mk (: a Int64) (: b Int64) (: c Int64)) (fn (x) (+ (+ (+ x a) b) c)))` — three captured
@@ -374,7 +374,7 @@
               (export mk)))
   (call   mk (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 10 Int64))
   (output (: 16 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure capturing values of DIFFERENT types (Float64 + Int64)"
   (doc    "`(def (mk (: base Float64) (: n Int64)) (fn (x) (+ x base)))` — the cell captures a Float64 AND an
@@ -385,7 +385,7 @@
               (export mk)))
   (call   mk (: 1.5 Float64) (: 7 Int64) (: 2.5 Float64))
   (output (: 4.0 Float64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; The DIRECT-CALL host→guest boundary: when the HOST must supply a value to `make`/`call` OVER the boundary,
 ; only aliased-width scalars cross (the same restriction host-call `abi_val_type` has). A COMPOUND the host
@@ -507,7 +507,7 @@
               (export inc) (export triple)))
   (call   inc (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a second same-signature closure export shares the one call method"
   (doc    "The SAME two-export program, now calling `triple`: `make-triple()` then the SHARED `call(5)` =
@@ -518,7 +518,7 @@
               (export inc) (export triple)))
   (call   triple (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The multi-export SHARED `call` is a repeatable `borrow<t>` method too (C-HOST-6): one `make-<name>` handle
 ; serves repeated calls through the one shared `call` (the host keeps it; the `t-dtor` reclaims on drop). The
@@ -534,7 +534,7 @@
               (export inc) (export triple)))
   (call   inc (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a multi-export set of parameterized capturing closures is driven per export"
   (doc    "Three closure exports that each CAPTURE their param: `add` (+ x k), `mul` (* x k), `sub` (- x k),
@@ -548,7 +548,7 @@
               (export add) (export mul) (export sub)))
   (call   mul (: 4 Int64) (: 5 Int64))
   (output (: 20 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; THE ROUND-TRIP (C-HOST-4, Direction 2) — the host produces a closure from one export and hands it BACK
 ; into another. A PRODUCER export's result is a closure (`make-adder : (Int64) -> (-> Int64 Int64)`); a
@@ -685,7 +685,7 @@
   (input  (do (def (main) (fn ((: x Int32)) (+ x 1))) (export main)))
   (call   main (: 5 Int32))
   (output (: 6 Int32))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a 64-bit-unsigned closure crosses the host boundary"
   (doc    "`(fn (x) (* x 2))` at `(-> UInt64 UInt64)` — crosses as the component `u64` primitive. `call(21)`
@@ -693,7 +693,7 @@
   (input  (do (def (main) (fn ((: x UInt64)) (* x 2))) (export main)))
   (call   main (: 21 UInt64))
   (output (: 42 UInt64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an 8-bit-integer closure crosses the host boundary"
   (doc    "`(fn (x) (- x 1))` at `(-> Int8 Int8)` — the narrowest aliased width, crossing as component `s8`
@@ -702,7 +702,7 @@
   (input  (do (def (main) (fn ((: x Int8)) (- x 1))) (export main)))
   (call   main (: 10 Int8))
   (output (: 9 Int8))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a 32-bit-float closure crosses the host boundary"
   (doc    "`(fn (x) (+ x 1.5))` at `(-> Float32 Float32)` — crosses as component `f32` (core f32), narrower
@@ -710,7 +710,7 @@
   (input  (do (def (main) (fn ((: x Float32)) (+ x 1.5))) (export main)))
   (call   main (: 2.5 Float32))
   (output (: 4.0 Float32))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a capturing 32-bit-integer closure crosses and is called"
   (doc    "`(def (adder (: k Int32)) (fn (x) (+ x k)))` — a capturing closure at the narrower Int32 width.
@@ -719,7 +719,7 @@
   (input  (do (def (adder (: k Int32)) (fn ((: x Int32)) (+ x k))) (export adder)))
   (call   adder (: 100 Int32) (: 7 Int32))
   (output (: 107 Int32))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a UInt64 closure round-trips through a consumer export"
   (doc    "The round trip at a widened width: `(def (make-adder (: k UInt64)) (fn (x) (+ x k)))` produces a
@@ -831,7 +831,7 @@
               (export inc) (export isz)))
   (call   inc (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "the second distinct-signature closure export returns its own type"
   (doc    "The SAME two-export program, now calling `isz` (resource t1, a `(-> Int64 Bool)` closure):
@@ -842,7 +842,7 @@
               (export inc) (export isz)))
   (call   isz (: 0 Int64))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; Each distinct-signature group's per-group `call-g<n>` is a repeatable `borrow<t_g>` method too (C-HOST-6,
 ; the last borrow widening): a `make-<name>` handle serves repeated `call-g<n>`s (the host keeps it; the
@@ -860,7 +860,7 @@
               (export inc) (export isz)))
   (call   inc (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "three closures with a SHARED signature cross as two resource types"
   (doc    "`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`, `dbl : (-> Int64 Int64)` — note `inc` and
@@ -873,7 +873,7 @@
               (export inc) (export isz) (export dbl)))
   (call   dbl (: 7 Int64))
   (output (: 14 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; DISTINCT-SIGNATURE composed with MULTI-ARG and CAPTURE — the grouping-by-signature path (each signature
 ; its own resource type) composes with the arity/capture machinery, no new compiler work. `add : (-> Int64
@@ -891,7 +891,7 @@
               (export add) (export isz)))
   (call   add (: 3 Int64) (: 4 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-signature capturing producers"
   (doc    "`(def (adder (: k Int64)) (fn (x) (+ x k)))` → `(-> Int64 Int64)` and `(def (eq (: k Int64)) (fn
@@ -903,7 +903,7 @@
               (export adder) (export eq)))
   (call   eq (: 5 Int64) (: 5 Int64))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ROUND-TRIP composed with MULTI-ARG and a WIDENED width — the producer/consumer path is arity- and
 ; width-agnostic (the consumer's `call_indirect` dispatches the guest lifted body over the ONE table).
@@ -957,7 +957,7 @@
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling"
   (doc    "A flat two-arg arrow with a compound RESULT: `g : (-> Int64 Int64 (Tuple Int64 Int64))` pairs its
@@ -995,7 +995,7 @@
               (export p) (export q) (export r)))
   (call   r (: 5 Int32))
   (output (: 10 Int32))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "four same-signature closure exports share one resource"
   (doc    "`a`,`b`,`cc`,`dd` are all `(-> Int64 Int64)` → ONE resource type with four `make-<name>`s sharing
@@ -1008,7 +1008,7 @@
               (export a) (export b) (export cc) (export dd)))
   (call   cc (: 10 Int64))
   (output (: 13 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a consumer applies the handed-back closure to an internal constant"
   (doc    "`(def (app (: g (-> Int64 Int64))) (g 99))` — the consumer takes ONLY a closure param and applies
@@ -1032,7 +1032,7 @@
   (input  (do (def (main (: k Int64)) (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ (+ a b) c) k))) (export main)))
   (call   main (: 100 Int64) (: 1 Int64) (: 2 Int64) (: 3 Int64))
   (output (: 106 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an escaping closure whose body is a match hits the literal arm"
   (doc    "`(fn (x) (match x (0 100) (_ x)))` — the closure body is a `match`. `call(0)` takes the literal
@@ -1041,7 +1041,7 @@
   (input  (do (def (main) (fn ((: x Int64)) (match x (0 100) (_ x)))) (export main)))
   (call   main (: 0 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an escaping closure whose body is a match hits the wildcard arm"
   (doc    "The same match-bodied closure, `call(5)` → the wildcard arm → 5. Pins both arms of the closure's
@@ -1049,7 +1049,7 @@
   (input  (do (def (main) (fn ((: x Int64)) (match x (0 100) (_ x)))) (export main)))
   (call   main (: 5 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an escaping closure whose body binds a multi-variable let"
   (doc    "`(def (main (: k Int64)) (fn (x) (let ((a (* x 2)) (b (+ x k))) (+ a b))))` — the body binds two
@@ -1058,7 +1058,7 @@
   (input  (do (def (main (: k Int64)) (fn ((: x Int64)) (let ((a (* x 2)) (b (+ x k))) (+ a b)))) (export main)))
   (call   main (: 10 Int64) (: 5 Int64))
   (output (: 25 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; SOUNDNESS: distinct component signatures that COLLAPSE to the same CORE valtype shape. `a : (-> Int64
 ; Int64)` and `b : (-> Int64 UInt64)` are DISTINCT at the component boundary (s64 vs u64 result) — two
@@ -1077,7 +1077,7 @@
               (export a) (export b)))
   (call   a (: 3 Int64))
   (output (: 1003 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "the same-core-shape sibling dispatches ITS body, not the first"
   (doc    "The same program, calling `b(3)` = 21 = `x * 7` (b's OWN body), NOT 1003 (a's). Pins the
@@ -1089,7 +1089,7 @@
               (export a) (export b)))
   (call   b (: 3 Int64))
   (output (: 21 UInt64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ROUND-TRIP CONSUMER BODY RICHNESS — a consumer's body is ordinary Cadenza code, and the handed-back
 ; closure is a first-class value in it that may be applied CONDITIONALLY (an `if`/`match` branch that does
@@ -1218,7 +1218,7 @@
               (export makeAdder) (export makeScaler)))
   (call   makeScaler (: 3 Int64) (: 4 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A CLOSURE EXPORT ALONGSIDE A NON-CLOSURE (PLAIN) EXPORT — a MIXED multi-export. The closure(s) cross via
 ; the resource envelope (`make-<name>` + a shared `call`, under `cadenza:closure/exports`); each plain export
@@ -1249,7 +1249,7 @@
               (export inc) (export two)))
   (call   inc (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a parameterized plain export alongside a closure export applies its argument"
   (doc    "`adder : (Int64) -> (-> Int64 Int64)` (a capturing closure factory) alongside `dbl : (Int64) ->
@@ -1270,7 +1270,7 @@
               (export adder) (export dbl)))
   (call   adder (: 10 Int64) (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "two same-signature closures alongside a plain export all coexist"
   (doc    "TWO same-signature closure exports (`inc`, `triple`) share ONE resource type + `call`, riding
@@ -1282,7 +1282,7 @@
               (export inc) (export triple) (export answer)))
   (call   triple (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "two same-signature closures alongside a plain export — the plain export runs"
   (doc    "The SAME three-export program, calling the plain `answer` → 42. Pins that the plain export is
@@ -1312,7 +1312,7 @@
               (export inc) (export isz) (export two)))
   (call   inc (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-signature closures alongside a plain export — the Int64->Bool closure runs"
   (doc    "The SAME program, calling the OTHER-signature closure `isz` (resource t1): `make-isz()` → a
@@ -1324,7 +1324,7 @@
               (export inc) (export isz) (export two)))
   (call   isz (: 0 Int64))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-signature closures alongside a plain export — the plain export runs"
   (doc    "The SAME program, calling the plain `two` → 2. Pins that the top-level plain export is reachable
@@ -1347,7 +1347,7 @@
               (export adder) (export gte) (export dbl)))
   (call   gte (: 3 Int64) (: 5 Int64))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-signature capturing closures alongside a parameterized plain export — the plain runs"
   (doc    "The SAME four-export program, calling the parameterized plain `dbl(21)` = 42. Pins the
@@ -1457,7 +1457,7 @@
   (input  (do (type UserId (Mk Int64)) (def (main) (fn ((: x Int64)) (Mk x))) (export main)))
   (call   main (: 42 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure taking a nominal-over-scalar argument receives the underlying scalar"
   (doc    "`(fn (u) (+ (unwrap u) 1))` where `u : UserId` — the closure's ARG is a nominal, crossing as
@@ -1469,7 +1469,7 @@
               (export main)))
   (call   main (: 7 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a capturing closure returning a nominal-over-scalar"
   (doc    "`(def (tagger base) (fn (x) (Mk (+ x base))))` captures `base` and returns a `Tag` (nominal over
@@ -1480,7 +1480,7 @@
               (export tagger)))
   (call   tagger (: 100 Int64) (: 5 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a round-trip consumer applies a closure whose result is a nominal-over-scalar"
   (doc    "Producer `mk : () -> (-> Int64 Tag)` mints a closure returning `Tag`; consumer `app` takes it
@@ -1500,7 +1500,7 @@
   (input  (do (type Flag (Mk Bool)) (def (main) (fn ((: x Int64)) (Mk (> x 0)))) (export main)))
   (call   main (: 5 Int64))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A COMPOUND-RESULT closure: the closure's result is a runtime `Bytes`, which crosses the `call` boundary
 ; as `list<u8>` (the raw payload) rather than a scalar. Unlike a scalar `call`, the emitted core carries a
@@ -1520,7 +1520,7 @@
               (export main)))
   (call   main (: 5 Int64))
   (output #list(5 6))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Bytes-returning closure on a different argument"
   (doc    "The same `(fn (n) (bin (u8 n) (u8 n+1)))`, called with 100 → the bytes `[100, 101]`. Confirms the
@@ -1529,7 +1529,7 @@
               (export main)))
   (call   main (: 100 Int64))
   (output #list(100 101))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a capturing closure returning Bytes"
   (doc    "`(def (tag (: hdr Int64)) (fn (n) (bin (u8 hdr) (u8 n))))` captures a header byte and returns a
@@ -1539,7 +1539,7 @@
               (export tag)))
   (call   tag (: 9 Int64) (: 200 Int64))
   (output #list(9 200))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A STRING closure result crosses the same way a `Bytes` one does. A `String` is a UTF-8 byte-rope handle,
 ; representationally IDENTICAL to `Bytes` (the same value-heap `bytes-*` store), so a closure returning a
@@ -1555,7 +1555,7 @@
   (input  (do (def (main) (fn ((: n Int64)) "hi")) (export main)))
   (call   main (: 0 Int64))
   (output #list(104 105))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a runtime String (concat) crosses as its bytes"
   (doc    "`(fn (n) (String.concat \"ab\" \"c\"))` — a RUNTIME String built by `concat` (not a folded
@@ -1564,7 +1564,7 @@
   (input  (do (def (main) (fn ((: n Int64)) ((. String concat) "ab" "c"))) (export main)))
   (call   main (: 0 Int64))
   (output #list(97 98 99))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a capturing closure returning a String"
   (doc    "`(def (mk k) (fn (n) (String.concat \"x\" \"y\")))` — a make-parameterized closure whose result
@@ -1573,7 +1573,7 @@
   (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) ((. String concat) "x" "y"))) (export mk)))
   (call   mk (: 7 Int64) (: 0 Int64))
   (output #list(120 121))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; EMPTY byte-rope closure results — the copy loop must handle n=0 (empty Bytes / empty String). An empty
 ; compound crosses as an empty `list<u8>`, so the `call` writes a `(ptr, len=0)` return area and the host
@@ -1586,7 +1586,7 @@
   (input  (do (def (main) (fn ((: n Int64)) (bin))) (export main)))
   (call   main (: 0 Int64))
   (output #list())
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning an empty String crosses as the empty list"
   (doc    "The String companion: `(fn (n) \"\")` — an empty String (an empty UTF-8 byte-rope) crosses as the
@@ -1594,7 +1594,7 @@
   (input  (do (def (main) (fn ((: n Int64)) "")) (export main)))
   (call   main (: 0 Int64))
   (output #list())
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; MULTI-EXPORT byte-rope-result closures: N same-signature closures each returning a `Bytes`/`String` share
 ; ONE `call` that returns `list<u8>` — the multi-export shape (N `make-<name>` + one shared `call`) extended
@@ -1610,7 +1610,7 @@
               (export a) (export b)))
   (call   a (: 5 Int64))
   (output #list(5))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "two same-signature Bytes-returning closures share one call — second"
   (doc    "The same program, driving `b`: `make-b()` → a handle; `call(handle, 5)` = `[5, 6]`. The SHARED
@@ -1621,7 +1621,7 @@
               (export a) (export b)))
   (call   b (: 5 Int64))
   (output #list(5 6))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "two same-signature String-returning closures share one call"
   (doc    "`greet` and `bye` both `() -> (-> Int64 String)` share one resource type + list-`call`. Driving
@@ -1632,7 +1632,7 @@
               (export greet) (export bye)))
   (call   bye (: 0 Int64))
   (output #list(98 121))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A BYTE-ROPE-result closure ALONGSIDE a PLAIN export — the mixed shape extended to the compound `call`.
 ; The closure's `Bytes`/`String` result crosses as `list<u8>` (the shared list-returning `call` with
@@ -1648,7 +1648,7 @@
               (export mk) (export two)))
   (call   mk (: 5 Int64))
   (output #list(5 6))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Bytes-returning closure alongside a plain export — the plain runs"
   (doc    "The SAME mixed program, calling the plain `two` → 2. Pins that the plain top-level export is
@@ -1668,7 +1668,7 @@
               (export greet) (export dbl)))
   (call   greet (: 0 Int64))
   (output #list(104 105))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a String-returning closure alongside a parameterized plain export — the plain runs"
   (doc    "The SAME program, calling `dbl(21)` = 42. Pins the parameterized plain export reachable beside a
@@ -1695,7 +1695,7 @@
               (export mkb) (export mks)))
   (call   mkb (: 5 Int64))
   (output #list(5 6))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig byte-rope closures — the Bool→Bytes one"
   (doc    "The SAME two-resource program, driving the OTHER signature: `call(mks-handle, true)` → `[1]`.
@@ -1705,7 +1705,7 @@
               (export mkb) (export mks)))
   (call   mks (: true Bool))
   (output #list(1))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one"
   (doc    "`mkb : () -> (-> Int64 Bytes)` and `inc : () -> (-> Int64 Int64)` are distinct signatures → two
@@ -1717,7 +1717,7 @@
               (export mkb) (export inc)))
   (call   mkb (: 9 Int64))
   (output #list(9 10))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one"
   (doc    "The SAME mixed byte-rope/scalar program, driving the SCALAR group: `call(inc-handle, 41)` → 42
@@ -1728,7 +1728,7 @@
               (export mkb) (export inc)))
   (call   inc (: 41 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a String closure + a Bytes closure of different signatures — the String one"
   (doc    "`greet : () -> (-> Int64 String)` returns \"hi\" (UTF-8 `[104,105]`), alongside `mkb : () -> (->
@@ -1739,7 +1739,7 @@
               (export greet) (export mkb)))
   (call   greet (: 0 Int64))
   (output #list(104 105))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig byte-rope closure alongside a plain export — the closure"
   (doc    "Two distinct byte-rope closures (`mkb : Int64→Bytes`, `isz : Bool→Bytes`) AND a plain `two : ()
@@ -1751,7 +1751,7 @@
               (export mkb) (export isz) (export two)))
   (call   mkb (: 3 Int64))
   (output #list(3))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig byte-rope closure alongside a plain export — the plain"
   (doc    "The SAME program, calling the plain `two` → 2. Confirms the plain top-level export is reachable
@@ -1915,7 +1915,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #tuple(n (+ n 1)))) (export mk)))
   (call   mk (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a record crosses as the typed value form"
   (doc    "A record result — `(record (x n) (y n+10))` → `(: (record (x 3) (y 13)) (Record (: x Int64) (: y Int64)))`. Field names + the record type node are baked in the template; only the leaf values are
@@ -1923,7 +1923,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #record((= x n) (= y (+ n 10))))) (export mk)))
   (call   mk (: 3 Int64))
   (output (: (record (= x 3) (= y 13)) (Record (: x Int64) (: y Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a tuple with a Bool leaf"
   (doc    "A mixed-leaf compound — `(tuple n (< n 5))` → `(: (tuple 2 true) (Tuple Int64 Bool))`. The Bool
@@ -1931,7 +1931,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #tuple(n (< n 5)))) (export mk)))
   (call   mk (: 2 Int64))
   (output (: (tuple 2 true) (Tuple Int64 Bool)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a NESTED tuple"
   (doc    "`(tuple n (tuple n+1 n+2))` → `(: (tuple 7 (tuple 8 9)) (Tuple Int64 (Tuple Int64 Int64)))`. The
@@ -1939,7 +1939,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #tuple(n #tuple((+ n 1) (+ n 2))))) (export mk)))
   (call   mk (: 7 Int64))
   (output (: (tuple 7 (tuple 8 9)) (Tuple Int64 (Tuple Int64 Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a CAPTURING closure returning a tuple"
   (doc    "`mk : (Int64) -> (-> Int64 (Tuple Int64 Int64))` — `make(100)` captures `k=100`, then
@@ -1948,7 +1948,7 @@
   (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) #tuple(k n))) (export mk)))
   (call   mk (: 100 Int64) (: 5 Int64))
   (output (: (tuple 100 5) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a tuple with a negative int leaf"
   (doc    "`(tuple n (- 0 n))` → `(: (tuple 5 -5) (Tuple Int64 Int64))`. The negative leaf flips the value
@@ -1956,7 +1956,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #tuple(n (- 0 n)))) (export mk)))
   (call   mk (: 5 Int64))
   (output (: (tuple 5 -5) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; DEEPER direct-call compound RESULT shapes (single-export): the value-form template / value-encode walker
 ; descends arbitrarily — a nested RECORD, a tuple containing a LIST (compound-with-collection), a SUM of a
@@ -1970,7 +1970,7 @@
   (call   mk (: 100 Int64))
   (output (: (record (= a 100) (= b (record (= c 101) (= d 102))))
              (Record (: a Int64) (: b (Record (: c Int64) (: d Int64))))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Tuple ARG composes with a NESTED-tuple RESULT"
   (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 (Tuple Int64 Int64)))` — a fixed-shape tuple ARG (rebuilt
@@ -1981,7 +1981,7 @@
               (export mk)))
   (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 10 (tuple 3 13)) (Tuple Int64 (Tuple Int64 Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a tuple whose element is a LIST (compound-with-collection)"
   (doc    "`mk : (-> Int64 (Tuple Int64 (List Int64)))` — a fixed-shape tuple with a VARIABLE-LENGTH list
@@ -1991,7 +1991,7 @@
               (export mk)))
   (call   mk (: 100 Int64))
   (output (: #tuple(100 #list(100 101)) (Tuple Int64 (List Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a NESTED-tuple ARG composes with a NESTED-tuple RESULT"
   (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) (Tuple Int64 (Tuple Int64 Int64)))` — a nested arg
@@ -2002,7 +2002,7 @@
               (export mk)))
   (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a closure returning a SUM of a tuple (direct-call)"
   (doc    "`mk : (-> Int64 (Option (Tuple Int64 Int64)))` — a sum whose payload is a compound. The value-encode
@@ -2011,7 +2011,7 @@
               (export mk)))
   (call   mk (: 100 Int64))
   (output (: (Some #tuple(100 101)) (Option (Tuple Int64 Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a LIST of tuples (direct-call)"
   (doc    "`mk : (-> Int64 (List (Tuple Int64 Int64)))` — a collection whose element is a compound. `call(handle,
@@ -2020,7 +2020,7 @@
               (export mk)))
   (call   mk (: 100 Int64))
   (output (: #list(#tuple(100 101) #tuple(102 103)) (List (Tuple Int64 Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A COMPOUND (tuple/record) closure RESULT on the MULTI-EXPORT path — N same-signature closures each
 ; returning a tuple/record share ONE `call` that returns the value form as `list<u8>`. The shared `call`
@@ -2039,7 +2039,7 @@
               (export mkpair) (export mkdbl)))
   (call   mkpair (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "multi-export compound result — the second closure's tuple"
   (doc    "The SAME two-closure program, driving the OTHER export: `call(mkdbl-handle, 5)` → `(tuple 5 10)`.
@@ -2050,7 +2050,7 @@
               (export mkpair) (export mkdbl)))
   (call   mkdbl (: 5 Int64))
   (output (: (tuple 5 10) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The multi-export VALUE-FORM shared `call` (byte-rope/compound/collection — all cross as `list<u8>`) is a
 ; repeatable `borrow<t>` method too (C-HOST-6): one `make-<name>` handle serves repeated shared calls, each
@@ -2068,7 +2068,7 @@
               (export mkpair) (export mkdbl)))
   (call   mkpair (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "multi-export record result — canonical field order"
   (doc    "Two closures returning a `(Record (: lo Int64) (: hi Int64))`. `call(mka-handle, 3)` → `(record (lo 3)
@@ -2078,7 +2078,7 @@
               (export mka) (export mkb)))
   (call   mka (: 3 Int64))
   (output (: (record (= hi 103) (= lo 3)) (Record (: hi Int64) (: lo Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "multi-export record result — the second closure, with a negative leaf"
   (doc    "The SAME program's other export: `call(mkb-handle, 3)` → `(record (lo -3) (hi 3))` → canonical
@@ -2088,7 +2088,7 @@
               (export mka) (export mkb)))
   (call   mkb (: 3 Int64))
   (output (: (record (= hi 3) (= lo -3)) (Record (: hi Int64) (: lo Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "multi-export compound result — three capturing closures share one call"
   (doc    "THREE same-signature closures (two capturing `k`, one not) each returning `(Tuple Int64 Int64)`.
@@ -2100,7 +2100,7 @@
               (export a) (export b) (export c)))
   (call   b (: 7 Int64) (: 2 Int64))
   (output (: (tuple 2 7) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A COMPOUND (tuple/record) closure RESULT on the MIXED path — a compound-returning closure exported
 ; ALONGSIDE a plain non-closure export. The closure crosses via the resource envelope (`make-<name>` + a
@@ -2117,7 +2117,7 @@
               (export mk) (export two)))
   (call   mk (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a tuple-returning closure alongside a plain export — the plain"
   (doc    "The SAME mixed program, calling the plain `two` → 2 (a bare scalar, rendered directly — NOT a
@@ -2138,7 +2138,7 @@
               (export mk) (export inc)))
   (call   mk (: 4 Int64))
   (output (: (record (= a 4) (= b 8)) (Record (: a Int64) (: b Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a record-returning closure alongside a parameterized plain export — the plain"
   (doc    "The SAME program, calling `inc(41)` = 42. Pins the parameterized plain export reachable beside a
@@ -2165,7 +2165,7 @@
               (export mki) (export mkb)))
   (call   mki (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig compound result — the Bool→(Tuple Bool Int64) closure"
   (doc    "The SAME program's OTHER group, whose result type differs: `call(mkb-handle, true)` → `(: (tuple
@@ -2175,7 +2175,7 @@
               (export mki) (export mkb)))
   (call   mkb (: true Bool))
   (output (: (tuple true 1) (Tuple Bool Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a compound group + a byte-rope group + a scalar group — the compound"
   (doc    "THREE distinct signatures, THREE result MODES in one component: `mkt` returns a tuple (value
@@ -2188,7 +2188,7 @@
               (export mkt) (export mkb) (export inc)))
   (call   mkt (: 9 Int64))
   (output (: (tuple 9 10) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope"
   (doc    "The SAME 3-mode program, driving the byte-rope group: `call(mkb-handle, false)` → `(8)` (a raw
@@ -2200,7 +2200,7 @@
               (export mkt) (export mkb) (export inc)))
   (call   mkb (: false Bool))
   (output #list(8))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar"
   (doc    "The SAME program's scalar group: `call(inc-handle, 41)` → 42 (returned by value, NOT list<u8>).
@@ -2211,7 +2211,7 @@
               (export mkt) (export mkb) (export inc)))
   (call   inc (: 41 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A COMPOUND (tuple/record) result on the ROUND-TRIP path — a consumer takes a produced closure back,
 ; applies it, and RETURNS a fixed-shape compound. The consumer crosses as `(own<t>, args…) -> list<u8>`
@@ -2375,7 +2375,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #list(n (+ n 1) (+ n 2)))) (export mk)))
   (call   mk (: 10 Int64))
   (output (: #list(10 11 12) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a Set — canonical member order"
   (doc    "`(Set.of (list n n+1 n))` dedups to `{n, n+1}`; `call(handle, 5)` → `(: ((. Set of) (list 5 6))
@@ -2383,7 +2383,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #set(n (+ n 1) n))) (export mk)))
   (call   mk (: 5 Int64))
   (output (: #set(5 6) (Set Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a Map — canonical key order"
   (doc    "`(map (1 n) (2 n+1))` → `call(handle, 100)` → `(: (map (1 100) (2 101)) (Map Int64 Int64))`,
@@ -2391,7 +2391,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #map((= 1 n) (= 2 (+ n 1))))) (export mk)))
   (call   mk (: 100 Int64))
   (output (: #map((= 1 100) (= 2 101)) (Map Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning a NESTED List"
   (doc    "`(list (list n) (list n+1 n+2))` → `(: (list (list 7) (list 8 9)) (List (List Int64)))`. The shape
@@ -2400,7 +2400,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) #list(#list(n) #list((+ n 1) (+ n 2))))) (export mk)))
   (call   mk (: 7 Int64))
   (output (: #list(#list(7) #list(8 9)) (List (List Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a CAPTURING closure returning a List"
   (doc    "`mk : (Int64) -> (-> Int64 (List Int64))` — `make(100)` captures `k=100`, then `call(handle, 5)` →
@@ -2408,7 +2408,7 @@
   (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) #list(k n (+ k n)))) (export mk)))
   (call   mk (: 100 Int64) (: 5 Int64))
   (output (: #list(100 5 105) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure returning an EMPTY List"
   (doc    "`(: (list) (List Int64))` → `call(handle, 0)` → `(: (list) (List Int64))` — the value-encode
@@ -2416,7 +2416,7 @@
   (input  (do (def (mk) (fn ((: n Int64)) (: #list() (List Int64)))) (export mk)))
   (call   mk (: 0 Int64))
   (output (: #list() (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The capture cases above hold SCALARS (a captured k flowing into a heap RESULT); the host-supplied
 ; compound capture is a pinned DECLINE (host→guest decode, above). The unpinned middle: a closure
@@ -2442,7 +2442,7 @@
             (export mk)))
   (call   mk (: 3 Int64) (: 0 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a closure capturing a runtime String ROPE reads its byte length at call time"
   (doc    "The rope twin: `mk(3)` builds \"abxxx\" by String.concat recursion (a genuine rope), captures
@@ -2458,7 +2458,7 @@
             (export mk)))
   (call   mk (: 3 Int64) (: 100 Int64))
   (output (: 105 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a host-called closure capturing a HEAP LIST indexes it at call dispatch"
   (doc    "The parameterized-make twin of the RUNTIME-BUILT-list capture above: `make(10)` builds
@@ -2474,7 +2474,7 @@
             (export make)))
   (call   make (: 10 Int64) (: 2 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch"
   (doc    "The consuming-op-family capture face (the adv-54 op family × the closure env): the factory
@@ -2498,7 +2498,7 @@
             (export mk)))
   (call   mk (: 2 Int64) (: 0 Int64))
   (output (: 99 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "TWO closures capturing one let-bound host call share ONE firing (in the exported def)"
   (doc    "The multi-capture sharing invariant at the host boundary: `(let ((v (io.get unit))) …)` binds
@@ -2558,7 +2558,7 @@
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
   (call   main) (output (: 2131 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a trap raised inside a host-called closure body reaches the host as a trap"
   (doc    "`mk(100)` captures k=100 and returns `(fn (d) (/ k d))`; the host calls it with d = 0 and the
@@ -2587,7 +2587,7 @@
               (export up) (export dn)))
   (call   up (: 5 Int64))
   (output (: #list(5 6) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "multi-export collection result — the second list closure"
   (doc    "The SAME two-closure program, driving the OTHER export: `call(dn-handle, 5)` → `(: (list 5 4)
@@ -2598,7 +2598,7 @@
               (export up) (export dn)))
   (call   dn (: 5 Int64))
   (output (: #list(5 4) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "multi-export Set-result closures — three sharing one call"
   (doc    "THREE same-signature Set-returning closures share ONE value-encode `call`. `b(3)` builds `{3, 6}`;
@@ -2609,7 +2609,7 @@
               (export a) (export b) (export c)))
   (call   b (: 3 Int64))
   (output (: #set(3 6) (Set Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "multi-export Set-result closures — the singleton one"
   (doc    "The SAME three-closure program, driving `c`: `call(c-handle, 9)` → `(: ((. Set of) (list 9)) (Set
@@ -2620,7 +2620,7 @@
               (export a) (export b) (export c)))
   (call   c (: 9 Int64))
   (output (: #set(9) (Set Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT on the MIXED path — a collection-returning
 ; closure exported ALONGSIDE a plain non-closure export. The closure crosses via the resource envelope
@@ -2637,7 +2637,7 @@
               (export mk) (export two)))
   (call   mk (: 5 Int64))
   (output (: #list(5 6) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a List-returning closure alongside a plain export — the plain"
   (doc    "The SAME mixed program, calling the plain `two` → 2 (a bare scalar, NOT a value-form document).
@@ -2658,7 +2658,7 @@
               (export mk) (export inc)))
   (call   mk (: 10 Int64))
   (output (: #map((= 1 10) (= 2 20)) (Map Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Map-returning closure alongside a parameterized plain export — the plain"
   (doc    "The SAME program, calling `inc(41)` = 42. Pins the parameterized plain export reachable beside a
@@ -2684,7 +2684,7 @@
               (export mki) (export mkb)))
   (call   mki (: 5 Int64))
   (output (: #list(5 6) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig collection result — the Bool→List closure"
   (doc    "The SAME two-resource program, driving the OTHER signature: `call(mkb-handle, true)` → `(: (list
@@ -2694,7 +2694,7 @@
               (export mki) (export mkb)))
   (call   mkb (: true Bool))
   (output (: #list(1) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection"
   (doc    "FOUR distinct signatures, FOUR result MODES in one component: `lst` a List (value-encode), `pr` a
@@ -2708,7 +2708,7 @@
               (export lst) (export pr) (export byt) (export inc)))
   (call   lst (: 7 Int64))
   (output (: #list(7 8) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound"
   (doc    "The SAME 4-mode program, driving the COMPOUND group: `call(pr-handle, false)` → `(: (tuple false
@@ -2720,7 +2720,7 @@
               (export lst) (export pr) (export byt) (export inc)))
   (call   pr (: false Bool))
   (output (: (tuple false 0) (Tuple Bool Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope"
   (doc    "The SAME program's byte-rope group: `call(byt-handle, 65)` → `(65)` (a raw byte list, written past
@@ -2732,7 +2732,7 @@
               (export lst) (export pr) (export byt) (export inc)))
   (call   byt (: 65 Int64))
   (output #list(65))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar"
   (doc    "The SAME program's scalar group: `call(inc-handle, 41)` → 42 (by value, NOT list<u8>). Confirms
@@ -2744,7 +2744,7 @@
               (export lst) (export pr) (export byt) (export inc)))
   (call   inc (: 41 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A VARIABLE-LENGTH collection (List/Map/Set) result on the ROUND-TRIP path — a consumer takes a produced
 ; closure back, applies it, and RETURNS a List/Map/Set, value-encoded against its shape descriptor. This
@@ -2900,7 +2900,7 @@
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "round-trip: a consumer applies a closure taking a Record arg built in-guest"
   (doc    "`mk : () -> (-> (Record (: a Int64) (: b Int64)) Int64)` multiplies the two fields; `app` applies it to
@@ -2913,7 +2913,7 @@
               (export mk) (export app)))
   (call   app (: 6 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "round-trip: a consumer applies a closure taking a List arg built in-guest"
   (doc    "`mk : () -> (-> (List Int64) Int64)` takes the list length; `app` applies it to a guest-built
@@ -2924,7 +2924,7 @@
               (export mk) (export app)))
   (call   app (: 9 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "round-trip: a compound-arg closure whose consumer returns a compound"
   (doc    "The compound closure ARGUMENT and a compound consumer RESULT compose: `g : (-> (Tuple Int64 Int64)
@@ -2937,7 +2937,7 @@
               (export mk) (export app)))
   (call   app (: 7 Int64))
   (output (: (tuple 7 8) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The SAME compound-closure-argument relaxation applies to the DISTINCT-SIGNATURE round-trip — closures of
 ; different signatures each cross as their own resource type, and each is applied in-guest by its consumer, so
@@ -2956,7 +2956,7 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one"
   (doc    "The SAME two-resource-type program, driving the OTHER (scalar-arg) closure of the other signature:
@@ -2982,7 +2982,7 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 7 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one"
   (doc    "The SAME program's OTHER closure: `appb : (own<t1>, Int64) -> Int64` applies `h` to a guest-built
@@ -2996,7 +2996,7 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: 6 Int64))
   (output (: 36 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The in-guest-argument relaxation reaches every MACHINE-representable argument, not just fixed-shape
 ; compounds: a SUM (Option/Result), a NESTED compound, a String/Bytes, and — most notably — a closure-TYPED
@@ -3014,7 +3014,7 @@
               (export mk) (export app)))
   (call   app (: 7 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg"
   (doc    "`mk`'s closure reads `(. (. p 0) 0) + (. p 1)`; `app` applies it to a guest-built
@@ -3026,7 +3026,7 @@
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "round-trip: a closure taking a String arg built in-guest"
   (doc    "`mk`'s closure takes the byte length of a String; `app` applies it to a guest-built literal
@@ -3037,7 +3037,7 @@
               (export mk) (export app)))
   (call   app (: 0 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest"
   (doc    "`mk : () -> (-> (-> Int64 Int64) Int64)` applies its function argument to 10; `app` hands it a
@@ -3050,7 +3050,7 @@
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice"
   (doc    "`mk`'s closure applies its function arg to BOTH 10 and 20 and sums; `app` hands in a guest-built
@@ -3061,7 +3061,7 @@
               (export mk) (export app)))
   (call   app (: 3 Int64))
   (output (: 90 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "round-trip: a higher-order closure applied to TWO distinct inner closures"
   (doc    "`mk`'s closure applies its function arg to 100; `app` calls the handed-back `g` on TWO different
@@ -3074,7 +3074,7 @@
               (export mk) (export app)))
   (call   app (: 4 Int64))
   (output (: 504 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one"
   (doc    "`mka : () -> (-> (-> Int64 Int64) Int64)` (applies its function arg to 1 and 2, sums) and
@@ -3088,7 +3088,7 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)"
   (doc    "A single closure export whose closure takes a `(Tuple Int64 Int64)`, called DIRECTLY by the host
@@ -3228,7 +3228,7 @@
               (export mk-sum) (export mk-eq)))
   (call   mk-sum (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair"
   (doc    "The SAME distinct-sig component, driving the Bool group `mk-eq : (-> (Tuple Int64 Int64) Bool)` —
@@ -3239,7 +3239,7 @@
               (export mk-sum) (export mk-eq)))
   (call   mk-eq (: #tuple(5 5) (Tuple Int64 Int64)))
   (output (: true Bool))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The tuple-AMONG-scalars arg shape now works on the DISTINCT-SIGNATURE path too — the LAST direct-call
 ; arg-position gap — for EVERY result shape. `emit_distinct_sig_resource` detects each group's arg via
@@ -3258,7 +3258,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: 113 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple group (Bool field in the rebuild)"
   (doc    "The SAME distinct-sig component, driving `mk-b : (-> Int64 (Tuple Int64 Bool) Int64)` — its arg
@@ -3269,7 +3269,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: 5 Int64) (: #tuple(7 true) (Tuple Int64 Bool)))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs each returning a LIST"
   (doc    "`mk-a : (-> Int64 (Tuple Int64 Int64) (List Int64))` and `mk-b : (-> Int64 (Tuple Int64 Bool) (List
@@ -3281,7 +3281,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)"
   (doc    "The SAME distinct-sig List component, driving `mk-b` — the tuple field FIRST then the suffix scalar
@@ -3292,7 +3292,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: 100 Int64) (: #tuple(7 true) (Tuple Int64 Bool)))
   (output (: #list(7 100) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A fixed-shape compound ARGUMENT now composes with a BYTE-ROPE (`Bytes`/`String`) result: the bytes-result
 ; core serializer + its envelope thread the `TupleArgRebuild`, so the `call` rebuilds the flattened tuple cell
@@ -3309,7 +3309,7 @@
               (export mk)))
   (call   mk (: #tuple(5 6) (Tuple Int64 Int64)))
   (output #list(5 6))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A fixed-shape compound ARGUMENT now composes with a fixed-shape COMPOUND result too (the value-form result
 ; core + the shared list<u8> envelope thread the `TupleArgRebuild`): the `call` rebuilds the flattened tuple
@@ -3329,7 +3329,7 @@
               (export mk)))
   (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 13 7) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary"
   (doc    "Like the tuple-result case but the closure returns a RECORD `(Record (: sum Int64) (: diff Int64))` —
@@ -3341,7 +3341,7 @@
               (export mk)))
   (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (record (= diff 7) (= sum 13)) (Record (: diff Int64) (: sum Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A fixed-shape compound ARGUMENT now composes with a VARIABLE-LENGTH COLLECTION result (List/Map/Set) too —
 ; the value-encode result core + the shared list<u8> envelope thread the `TupleArgRebuild`. So a single-export
@@ -3360,7 +3360,7 @@
               (export mk)))
   (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(10 3) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary"
   (doc    "A tuple arg + a `(Map Int64 Int64)` result — a variable-length collection rendered via
@@ -3372,7 +3372,7 @@
               (export mk)))
   (call   mk (: #tuple(1 2) (Tuple Int64 Int64)))
   (output (: #map((= 1 100) (= 2 200)) (Map Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary"
   (doc    "A tuple arg + a `String` result — the byte-rope-result core copies the UTF-8 bytes out as
@@ -3383,7 +3383,7 @@
               (export mk)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)))
   (output #list(101 113))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary"
   (doc    "A tuple arg + an `(Option Int64)` result — a SUM crosses as `list<u8>` rendered by the runtime
@@ -3394,7 +3394,7 @@
               (export mk)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)))
   (output (: (: (Some 5) (Option Int64)) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The tuple-arg × list-result composition extends to the MULTI-EXPORT shape: N same-signature closures sharing
 ; ONE list-returning `call` each rebuild the flattened tuple arg cell (the multi bytes/value-form/value-encode
@@ -3410,7 +3410,7 @@
               (export mk-fwd) (export mk-rev)))
   (call   mk-rev (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(3 10) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`"
   (doc    "The same multi-export shape with a fixed-shape COMPOUND (value-form) result: `(-> (Tuple Int64
@@ -3423,7 +3423,7 @@
               (export mk-sum) (export mk-prod)))
   (call   mk-sum (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 13 7) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The tuple-arg × list-result composition extends to the MIXED shape: a List-returning tuple-arg closure
 ; ALONGSIDE a plain (non-closure) export. The shared multi list-result core + the shared multi list<u8> tuple
@@ -3439,7 +3439,7 @@
               (export mk) (export twice)))
   (call   mk (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(10 3) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure"
   (doc    "The SAME mixed component, driving the plain `twice` — proving it coexists with the tuple-arg
@@ -3483,7 +3483,7 @@
               (export mk) (export two)))
   (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export"
   (doc    "`mk : (-> Int64 (Tuple Int64 Int64) (Tuple Int64 Int64 Int64))` — a scalar then a tuple, returning a
@@ -3495,7 +3495,7 @@
               (export mk) (export two)))
   (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; The tuple-arg × list-result composition extends to the DISTINCT-SIGNATURE shape — the LAST list-result gap:
 ; closures of DIFFERENT signatures each taking a fixed-shape scalar tuple arg AND returning a list<u8>-crossing
@@ -3513,7 +3513,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(10 3) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair"
   (doc    "The SAME distinct-sig component, driving `mk-b : (-> (Tuple Int64 Bool) (List Int64))` — its arg
@@ -3525,7 +3525,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: #tuple(7 true) (Tuple Int64 Bool)))
   (output (: #list(7) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A fixed-shape scalar tuple ARGUMENT can now sit AMONG scalar args (single-export, scalar result): the tuple
 ; crosses flattened as a native `tuple<…>` at its own arg position, and the `call` pushes the closure's args in
@@ -3576,7 +3576,7 @@
               (export mk)))
   (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary"
   (doc    "`(fn (n) (p)) : (-> Int64 (Tuple Int64 Int64) Bytes)` — a prefix scalar then a tuple, returning a
@@ -3586,7 +3586,7 @@
               (export mk)))
   (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output #list(100 10 3))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary"
   (doc    "`(fn (n) (p)) : (-> Int64 (Tuple Int64 Int64) (Tuple Int64 Int64 Int64))` — a prefix scalar then a
@@ -3597,7 +3597,7 @@
               (export mk)))
   (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary"
   (doc    "`(fn (p) (n)) : (-> (Tuple Int64 Int64) Int64 (List Int64))` — the tuple FIRST (base_param=1) then a
@@ -3608,7 +3608,7 @@
               (export mk)))
   (call   mk (: #tuple(10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: #list(10 3 100) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; A RECORD closure argument crosses the direct-call boundary just like a tuple: it erases to a component
 ; `tuple<…>` whose fields are laid in canonical SORTED-NAME order (`tuple_field_abi` / `Core::Record` use a
@@ -3659,7 +3659,7 @@
               (export mk)))
   (call   mk (: 100 Int64) (: #record((= x 10) (= y 3)) (Record (: x Int64) (: y Int64))))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a RECORD closure ARG on the MULTI-EXPORT path"
   (doc    "Two same-sig record-arg closures `(-> (Record (: x Int64) (: y Int64)) Int64)` share ONE `call` that
@@ -3687,7 +3687,7 @@
               (export mk)))
   (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a NESTED Record ARG (a record containing a record) crosses the direct-call boundary"
   (doc    "`mk : (-> (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64)))) Int64)` — a record with a record
@@ -3699,7 +3699,7 @@
   (call   mk (: #record((= n 100) (= inner #record((= x 10) (= y 3))))
                 (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
   (output (: 113 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary"
   (doc    "`mk : (-> (Tuple Int64 (Record (: x Int64) (: y Int64))) Int64)` — a tuple whose second field is a
@@ -3710,7 +3710,7 @@
               (export mk)))
   (call   mk (: #tuple(100 #record((= x 10) (= y 3))) (Tuple Int64 (Record (: x Int64) (: y Int64)))))
   (output (: 113 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary"
   (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 (Tuple Int64 Int64))) Int64)` — three tuple levels. The
@@ -3722,7 +3722,7 @@
   (call   mk (: #tuple(1000 #tuple(100 #tuple(10 3)))
                 (Tuple Int64 (Tuple Int64 (Tuple Int64 Int64)))))
   (output (: 1113 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary"
   (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Bool)) Int64)` — the inner tuple has a Bool leaf (boxed via
@@ -3733,7 +3733,7 @@
               (export mk)))
   (call   mk (: #tuple(100 #tuple(10 true)) (Tuple Int64 (Tuple Int64 Bool))))
   (output (: 110 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a RECORD with a nested TUPLE field crosses the direct-call boundary"
   (doc    "`mk : (-> (Record (: n Int64) (: pair (Tuple Int64 Int64))) Int64)` — a record whose `pair` field is a
@@ -3745,7 +3745,7 @@
   (call   mk (: #record((= n 100) (= pair #tuple(10 3)))
                 (Record (: n Int64) (: pair (Tuple Int64 Int64)))))
   (output (: 113 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a TRIPLY-nested Record ARG crosses the direct-call boundary"
   (doc    "`mk : (-> (Record (: a Int64) (: b (Record (: c Int64) (: d (Record (: e Int64) (: f Int64)))))) Int64)` — three
@@ -3757,7 +3757,7 @@
   (call   mk (: #record((= a 1000) (= b #record((= c 100) (= d #record((= e 10) (= f 3))))))
                 (Record (: a Int64) (: b (Record (: c Int64) (: d (Record (: e Int64) (: f Int64))))))))
   (output (: 1113 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; A NESTED compound ARG can also sit AMONG scalar args (single-export): the recursive rebuild interleaves the
 ; prefix scalars, the reassembled nested cell, and the suffix scalars (the `base_param` shifts past the prefix,
@@ -3772,7 +3772,7 @@
               (export mk)))
   (call   mk (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 1113 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a NESTED Tuple ARG between two scalar args (prefix + suffix)"
   (doc    "`mk : (-> Int64 (Tuple Int64 (Tuple Int64 Int64)) Int64 Int64)` — a prefix scalar `a`, the nested
@@ -3783,7 +3783,7 @@
               (export mk)))
   (call   mk (: 1 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))) (: 1000 Int64))
   (output (: 1114 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a NESTED Tuple ARG among scalars with a LIST result"
   (doc    "`mk : (-> Int64 (Tuple Int64 (Tuple Int64 Int64)) (List Int64))` — a prefix scalar then a nested
@@ -3795,7 +3795,7 @@
               (export mk)))
   (call   mk (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(1000 100 10 3) (List Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; A NESTED compound ARG composes with EVERY result shape (single-export): the list-result cores rebuild the
 ; nested cell recursively (`emit_cell_rebuild`), and the list<u8> envelope mints the inner `tuple<…>` types by
@@ -3811,7 +3811,7 @@
               (export mk)))
   (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary"
   (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) Bytes)` — a nested tuple arg + a byte rope. The bytes
@@ -3822,7 +3822,7 @@
               (export mk)))
   (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output #list(100 10 3))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary"
   (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) (Tuple Int64 Int64 Int64))` — a nested tuple arg + a
@@ -3833,7 +3833,7 @@
               (export mk)))
   (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a NESTED Record ARG with a LIST result crosses the direct-call boundary"
   (doc    "`mk : (-> (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64)))) (List Int64))` — a nested RECORD
@@ -3845,7 +3845,7 @@
   (call   mk (: #record((= n 100) (= inner #record((= x 10) (= y 3))))
                 (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; The NESTED compound ARG extends to the MULTI-EXPORT path: N same-sig nested-tuple-arg closures share ONE
 ; `call` that rebuilds the nested cell recursively, and the shared envelope mints the inner `tuple<…>` types by
@@ -3863,7 +3863,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: driving the second nested-Tuple-arg closure (subtract)"
   (doc    "The SAME multi-export component, driving `mk-b` (subtract): `call(handle, (100, (10, 3)))` → `p.0 -
@@ -3876,7 +3876,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 87 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result"
   (doc    "`mk-a`/`mk-b : (-> (Tuple Int64 (Tuple Int64 Int64)) (List Int64))` — a nested tuple arg + a
@@ -3889,7 +3889,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; The NESTED compound ARG extends to the MIXED shape too: a nested-tuple-arg closure exported ALONGSIDE a
 ; plain (non-closure) export. The shared `call` rebuilds the nested cell recursively + mints the inner
@@ -3906,7 +3906,7 @@
               (export mk) (export two)))
   (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure"
   (doc    "The SAME mixed component, driving the plain `two` — it coexists with the nested-tuple-arg closure
@@ -3928,7 +3928,7 @@
               (export mk) (export two)))
   (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; The NESTED-arg-AMONG-scalars shape extends to the MULTI-EXPORT + MIXED paths too (via the shared
 ; `nested_sole_or_among_scalars` classifier + the interleaved envelope functype): a nested tuple at its own
@@ -3947,7 +3947,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 1113 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)"
   (doc    "The SAME multi-export component, driving `mk-b` (subtract): `call(handle, 1000, (100, (10, 3)))` →
@@ -3959,7 +3959,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 887 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a plain export"
   (doc    "`mk : (-> Int64 (Tuple Int64 (Tuple Int64 Int64)) (List Int64))` beside a plain `two`. The shared
@@ -3971,7 +3971,7 @@
               (export mk) (export two)))
   (call   mk (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(1000 100 10 3) (List Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; The NESTED compound ARG completes the export-shape matrix on the DISTINCT-SIGNATURE path: closures of
 ; DIFFERENT signatures each taking a sole nested tuple/record arg cross as G distinct resource types, each
@@ -3990,7 +3990,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 113 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: driving the Int64/Bool-inner nested-Tuple-arg closure (Bool leaf at depth)"
   (doc    "The SAME distinct-sig component, driving `mk-b : (-> (Tuple Int64 (Tuple Int64 Bool)) Int64)` — its
@@ -4004,7 +4004,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: #tuple(100 #tuple(10 true)) (Tuple Int64 (Tuple Int64 Bool))))
   (output (: 110 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result"
   (doc    "`mk-a : (-> (Tuple Int64 (Tuple Int64 Int64)) (List Int64))` + `mk-b : (-> (Tuple Int64 (Tuple Int64
@@ -4017,7 +4017,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; The NESTED-arg-AMONG-scalars shape completes on the DISTINCT-SIG path too — the LAST nested-arg gap. Each
 ; group's per-`call-g<n>` detection takes the shared `nested_sole_or_among_scalars` classifier, so a nested
@@ -4037,7 +4037,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: 1113 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: driving the Int64/Bool-inner scalar-then-NESTED closure (Bool leaf at depth)"
   (doc    "The SAME distinct-sig component, driving `mk-b` — its inner tuple has a Bool leaf. `call(handle,
@@ -4050,7 +4050,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: 1000 Int64) (: #tuple(100 #tuple(10 true)) (Tuple Int64 (Tuple Int64 Bool))))
   (output (: 1100 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result"
   (doc    "`mk-a`/`mk-b` of DIFFERENT nested sigs, each `(-> Int64 (Tuple Int64 (Tuple Int64 …)) (List Int64))`.
@@ -4062,7 +4062,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: 1000 Int64) (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: #list(1000 100 10 3) (List Int64)))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; A WIDER fixed-shape tuple (3+ fields) and DEEPER scalar interleaving (2 prefix + 1 suffix) also cross — the
 ; flatten/rebuild + interleave machinery is field-count- and position-agnostic.
@@ -4161,7 +4161,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(100 10 3) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)"
   (doc    "The SAME multi-export List component, driving `mk-b` — the tuple fields FIRST then the suffix scalar
@@ -4172,7 +4172,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: #list(10 3 100) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result"
   (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Bytes)` sharing one bytes-returning `call`. The shared
@@ -4183,7 +4183,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output #list(100 10 3))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result"
   (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) (Tuple Int64 Int64 Int64))` sharing one value-form
@@ -4195,7 +4195,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; N-COMPOUND-ARGS: a closure taking TWO OR MORE fixed-shape tuple/record arguments crosses the direct-call
 ; boundary. Each tuple crosses as its OWN native component `tuple<…>` (the canonical ABI flattens them all
@@ -4289,7 +4289,7 @@
               (export mk)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "TWO Tuple args with a fixed-shape COMPOUND result"
   (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) (Tuple Int64 Int64))` re-pairs `p.0` and `q.1`.
@@ -4299,7 +4299,7 @@
               (export mk)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: (tuple 5 10) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "TWO Tuple args with a BYTE-ROPE result"
   (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Bytes)` builds the bytes `(p.0, q.1)`. The bytes
@@ -4310,7 +4310,7 @@
               (export mk)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output #list(5 10))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "THREE Tuple args with a LIST result"
   (doc    "N=3 tuple args reaching the collection-result core: `mk : (-> (Tuple Int64 Int64) (Tuple Int64
@@ -4323,7 +4323,7 @@
   (call   mk (: #tuple(1 2) (Tuple Int64 Int64)) (: #tuple(3 4) (Tuple Int64 Int64))
              (: #tuple(100 200) (Tuple Int64 Int64)))
   (output (: #list(1 4 100) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a scalar BETWEEN two Tuple args with a LIST result"
   (doc    "The interleaved-scalar `ArgSlot` model reaches the list-result core: `mk : (-> (Tuple Int64 Int64)
@@ -4335,7 +4335,7 @@
               (export mk)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: 10 Int64) (: #tuple(1 20) (Tuple Int64 Int64)))
   (output (: #list(5 10 20) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a CAPTURING closure taking TWO Tuple args with a LIST result"
   (doc    "N-compound-args + capture + collection result compose: `(def (mk (: k Int64)) …)` returns a closure
@@ -4347,7 +4347,7 @@
               (export mk)))
   (call   mk (: 100 Int64) (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10 100) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; N-COMPOUND-ARGS × MULTI-EXPORT + MIXED: the ≥2-fixed-shape-compound-arg path (SCALAR result) now composes
 ; with the MULTI-EXPORT shape (N same-sig closures share ONE `call`) and the MIXED shape (a compound-arg closure
@@ -4469,7 +4469,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: driving the SECOND two-Tuple-arg LIST closure"
   (doc    "The SAME multi-export List component, driving `mk-b` (reversed): `call(handle, (5,5), (5,10))` →
@@ -4480,7 +4480,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(10 5) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result"
   (doc    "`mk-a`/`mk-b : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) (Tuple Int64 Int64))` sharing one
@@ -4491,7 +4491,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: (tuple 5 10) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result"
   (doc    "`mk-a`/`mk-b : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Bytes)` sharing one bytes `call`. Both arg
@@ -4503,7 +4503,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output #list(5 10))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`"
   (doc    "N=3 tuple args reaching the multi-export collection-result core: `mk-a`/`mk-b : (-> (Tuple Int64
@@ -4518,7 +4518,7 @@
   (call   mk-a (: #tuple(1 2) (Tuple Int64 Int64)) (: #tuple(3 4) (Tuple Int64 Int64))
              (: #tuple(100 200) (Tuple Int64 Int64)))
   (output (: #list(1 4 100) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MIXED: a two-Tuple-arg closure with a LIST result ALONGSIDE a plain export"
   (doc    "The MIXED shape reaches the collection-result core: a two-tuple-arg closure `mk : (-> (Tuple Int64
@@ -4530,7 +4530,7 @@
               (export mk) (export twice)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure"
   (doc    "The SAME mixed List component, driving the PLAIN export `twice` — proving it coexists with the
@@ -4560,7 +4560,7 @@
               (export mk-i) (export mk-b)))
   (call   mk-i (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: driving the Int32 two-Tuple-arg group"
   (doc    "The SAME distinct-sig component, driving `mk-b` (the Int32 group, subtract): `call-g1(handle,
@@ -4571,7 +4571,7 @@
               (export mk-i) (export mk-b)))
   (call   mk-b (: #tuple(10 3) (Tuple Int32 Int32)) (: #tuple(1 2) (Tuple Int32 Int32)))
   (output (: 8 Int32))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: one group takes TWO tuples, the other ONE tuple"
   (doc    "Distinct groups may take a DIFFERENT NUMBER of tuple args: `mk-i : (-> (Tuple Int64 Int64) (Tuple
@@ -4583,7 +4583,7 @@
               (export mk-i) (export mk-b)))
   (call   mk-i (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: a two-Tuple-arg group with a LIST result"
   (doc    "The distinct-sig ≥2-compound-arg path composes with a LIST result: `mk-i : (-> (Tuple Int64 Int64)
@@ -4595,7 +4595,7 @@
               (export mk-i) (export mk-b)))
   (call   mk-i (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: #list(5 10) (List Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures"
   (doc    "Distinct-sig ≥2-compound-args composes with capture: `mk-i (: k Int64)` and `mk-b (: k Int32)` each
@@ -4609,7 +4609,7 @@
               (export mk-i) (export mk-b)))
   (call   mk-i (: 100 Int64) (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 115 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export"
   (doc    "The distinct-sig ≥2-compound-arg path coexists with a PLAIN (non-closure) export: two closures of
@@ -4812,7 +4812,7 @@
               (export mk-o) (export mk-r)))
   (call   mk-o (: (Some 42) (Option Int64)))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: driving the Result-arg group (Err)"
   (doc    "The SAME distinct-sig component, driving `mk-r` with `Err(3)`: `call-g1(handle, Err(3))` → `(- 0 e)`
@@ -4823,7 +4823,7 @@
               (export mk-o) (export mk-r)))
   (call   mk-r (: (Err 3) (Result Int64 Int64)))
   (output (: -3 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: two Option-arg closures of DIFFERENT payload widths"
   (doc    "Distinct groups may take different-width sum payloads: `mk-a : (-> (Option Int64) Int64)` mints
@@ -4834,7 +4834,7 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: (Some 7) (Option Int32)))
   (output (: 7 Int32))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: an Option-arg group BESIDE a Tuple-arg group"
   (doc    "A sum-arg group coexists with a tuple-arg group in one distinct-sig component: `mk-o : (-> (Option
@@ -4846,7 +4846,7 @@
               (export mk-o) (export mk-t)))
   (call   mk-t (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: two capturing sum-arg closures of different signatures"
   (doc    "Distinct-sig sum args compose with capture: `mk-o (: k Int64)` and `mk-r (: k Int32)` each close
@@ -4857,7 +4857,7 @@
               (export mk-o) (export mk-r)))
   (call   mk-o (: 100 Int64) (: (Some 5) (Option Int64)))
   (output (: 105 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "DISTINCT-SIG: sum-arg closures ALONGSIDE a plain export"
   (doc    "Distinct-sig sum groups coexist with a PLAIN (non-closure) export: an Option-arg + a Result-arg
@@ -4929,7 +4929,7 @@
               (export mk-p) (export mk-q)))
   (call   mk-q (: (Ok -3) (Result Int32 Int64)))
   (output (: false Bool))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; COMPOUND SUM PAYLOAD: an `(Option compound)` closure arg whose payload is itself a fixed-shape TUPLE/record
 ; (not a bare scalar) now crosses. It crosses as a native `option<tuple<…>>` — BOTH the `option` and `tuple`
@@ -5010,7 +5010,7 @@
               (export mk-o) (export mk-s)))
   (call   mk-o (: (Some #tuple(8 9)) (Option (Tuple Int64 Int64))))
   (output (: 17 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; COMPOUND RESULT PAYLOAD: a `(Result ok err)` closure arg where AT LEAST ONE side's payload is a fixed-shape
 ; TUPLE/record (not a bare scalar) now crosses — the Result counterpart to the compound Option payload. It
@@ -5079,7 +5079,7 @@
               (export mk-r) (export mk-s)))
   (call   mk-r (: (Ok #tuple(8 9)) (Result (Tuple Int64 Int64) Int64)))
   (output (: 17 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; SUM ARG + LIST RESULT — a clean DECLINE (a `todo`), NOT a miscompile. A closure that takes a sum
 ; (Option/Result) argument AND returns a variable-length List/Map/Set (or byte-rope / fixed compound) crosses
@@ -5121,7 +5121,7 @@
               (export mk) (export app)))
   (call   app (: 10 Int64))
   (output (: 17 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "round-trip: an UNANNOTATED inner closure with a List param via the context arrow"
   (doc    "The same context recovery for a variable-length collection param: `mk`'s closure applies its
@@ -5134,7 +5134,7 @@
               (export mk) (export app)))
   (call   app (: 100 Int64))
   (output (: 103 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure"
   (doc    "A single higher-order closure export called DIRECTLY by the host: the host would have to supply the
@@ -5160,7 +5160,7 @@
               (export mk)))
   (call   mk (: 5 Int64))
   (output (: (Some 6) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure whose CALL returns a user sum crosses as the value form"
   (doc    "A monomorphic user sum: `(type Dir (N) (S))`; `mk`'s closure returns `(N)` when `n>0` else `(S)`.
@@ -5171,7 +5171,7 @@
               (export mk)))
   (call   mk (: 5 Int64))
   (output (: (N unit) Dir))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a closure whose CALL returns a tuple CONTAINING a list"
   (doc    "A fixed-shape compound whose element is VARIABLE-length has no static template, so it escapes via
@@ -5182,7 +5182,7 @@
               (export mk)))
   (call   mk (: 5 Int64))
   (output (: #tuple(#list(5 6) 5) (Tuple (List Int64) Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "round-trip: a consumer returns an Option built from the closure result"
   (doc    "`mk` adds 1; `app : (own<t>, Int64) -> (Option Int64)` returns `(Some (g x))`. `app(handle, 5)` →
@@ -5272,7 +5272,7 @@
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: (Some 15) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one"
   (doc    "Two distinct signatures, two result MODES: `appa : (own<t0>, Int64) -> (Option Int64)` returns
@@ -5316,7 +5316,7 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "round-trip: a consumer returns a Set built from REPEATED closure application"
   (doc    "`mk` multiplies by 10; `app : (own<t>, Int64) -> (Set Int64)` = `(Set.of (list (g x) (g x) x))` —
@@ -5491,7 +5491,7 @@
         (export main)))
   (call   main (: 0 Int64)) (output (: 12 Int64))
   (call   main (: 7 Int64)) (output (: 789 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "closures stored as MAP VALUES dispatch by key with distinct captures"
   (doc    "The dispatch-table shape — closures as CHAMP map VALUES (the collection pins cover
@@ -5550,7 +5550,7 @@
   (call   main (: 10 Int64) (: 1 Int64))  (output (: 300 Int64))
   (call   main (: 10 Int64) (: 10 Int64)) (output (: -99 Int64))
   (call   main (: 10 Int64) (: 5 Int64))  (output (: -100 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "a performing closure stored in a TUPLE and applied IN-GUEST fires normally"
   (doc    "The legal-side contrast of the CDZ0406 escape family (whose reject witnesses cover the bare,
@@ -5587,7 +5587,7 @@
   (call   pair (: 100 Int64) (: 5 Int64))
   (then   (: 5 Int64))
   (output (: (tuple (tuple 5 105) (tuple 5 105)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a same-signature multi-export shared call is repeatable on one make-<name> handle"
   (doc    "Two same-signature closure exports `inc`/`triple` share one `call`. make-inc() once, then the
@@ -5597,7 +5597,7 @@
   (call   inc (: 5 Int64))
   (then   (: 40 Int64))
   (output (: (tuple 6 41) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle"
   (doc    "Two same-signature tuple-returning exports `lo`/`hi` share one value-form list-call. make-lo()
@@ -5607,7 +5607,7 @@
   (call   lo (: 5 Int64))
   (then   (: 5 Int64))
   (output (: (tuple (tuple 5 6) (tuple 5 6)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a distinct-signature per-group call-g is repeatable on one make-<name> handle"
   (doc    "Two distinct-signature closures `inc : Int64->Int64` and `isz : Int64->Bool` cross as two resource
@@ -5617,7 +5617,7 @@
   (call   inc (: 5 Int64))
   (then   (: 40 Int64))
   (output (: (tuple 6 41) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; VALUE-RESOURCE METHOD (VM-1) — a RUNTIME VALUE crossing as a resource exposes compiler-EMITTED members
 ; besides `encode`: a `Bytes` value's `len : borrow<t> -> u32` (and `is-empty`/`to-bytes`). The host makes
@@ -5639,7 +5639,7 @@
   (call-method len)
   (then)
   (output (: (tuple 3 3) (Tuple UInt32 UInt32)))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "a runtime Bytes value exposes a repeatable is-empty member (call-method)"
   (doc    "The 3-byte runtime Bytes `(uleb 624485)` = E5 8E 26 reached via its emitted `is-empty` member
@@ -5651,7 +5651,7 @@
               (def (main) (uleb 624485)) (export main)))
   (call-method is-empty)
   (output (: false Bool))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "a runtime Bytes value exposes a to-bytes member returning the raw payload (call-method)"
   (doc    "`to-bytes` returns the RAW payload (no value-form framing) of the 3-byte runtime Bytes
@@ -5663,7 +5663,7 @@
               (def (main) (uleb 624485)) (export main)))
   (call-method to-bytes)
   (output #list(229 142 38))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a runtime Bytes value's encode member still renders after other member calls (call-method)"
   (doc    "`encode` returns the Value.encode value-form of the 3-byte runtime Bytes `(uleb 624485)`
@@ -5675,7 +5675,7 @@
               (def (main) (uleb 624485)) (export main)))
   (call-method encode)
   (output (: b"\xe5\x8e&" Bytes))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; VM-2 — the value-resource's OTHER emitted members: `is-empty : borrow<t> -> bool` and
 ; `to-bytes : borrow<t> -> list<u8>` (besides `len`/`encode`, backend/wasm/mod.rs). Same `(call-method
@@ -5692,7 +5692,7 @@
               (def (main) (uleb 624485)) (export main)))
   (call-method is-empty)
   (output (: false Bool))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "a runtime Bytes value's to-bytes member crosses (call-method, raw bytes result)"
   (doc    "`(uleb 624485)` = the 3-byte Bytes `E5 8E 26`; `(call-method to-bytes)` reaches its emitted
@@ -5705,7 +5705,7 @@
               (def (main) (uleb 624485)) (export main)))
   (call-method to-bytes)
   (output #list(229 142 38))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ── breaker batch 566: the host-closure × immortal-era campaign opens. hcp1-3 = the green capture
 ; cells with truthful census (whole-tuple return; immortal-trie + scalar captures; runtime-list
@@ -5725,32 +5725,32 @@
   (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) a))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: (tuple 1 7) (Tuple Int64 Int64)))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "hcp2 a closure capturing an IMMORTAL 33-trie plus a runtime scalar crosses and reads through the immortal"
   (input (do (def (reader (: n Int64)) (let ((c #list(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (fn ((: i Int64)) (+ n (match (List.at c i) ((Option.Some v) v) ((Option.None) -1)))))) (export reader)))
   (call reader (: 100 Int64) (: 5 Int64))
   (output (: 106 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "hcp3 a closure capturing a runtime-BUILT list crosses and reads it (mortal capture retained by the host-held handle)"
   (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
              (def (holder (: n Int64)) (let ((xs (bld n))) (fn ((: i Int64)) (+ (List.len xs) (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))))) (export holder)))
   (call holder (: 4 Int64) (: 1 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "hcx1 tuple-index projection of a captured tuple in a host-called closure body FOLDS — the projection reads the captured tuple env cell, not the inlined element (was the chr1 ICE's effects-free face: no-local-slot)"
   (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) (+ q (. a 0))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "hcx2 a NESTED tuple-index projection of a captured tuple in a host-called closure body FOLDS — the projection chain stays runtime over the captured env cell (the nested face of the hcx1 no-local-slot ICE)"
   (input (do (def (f (: n Int64)) (let ((a #tuple(#tuple(n 1) 7))) (fn ((: q Int64)) (+ q (. (. a 0) 0))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; ── breaker batch 567: drop-cascade fences + the capture-escape double-release (see
 ; issues/BUG-closure-drop-after-capture-escape-double-release-silent-abort). hcd1/hcd2 pin the
@@ -5885,14 +5885,14 @@
   (input (do (def (f (: k Int64)) (let ((g (fn ((: x Int64)) (+ x k)))) (fn ((: y Int64)) (g (* y 2))))) (export f)))
   (call f (: 100 Int64) (: 5 Int64))
   (output (: 110 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "hcn2 a closure capturing a runtime-built MAP looks up by the call argument"
   (input (do (def (bld (: i Int64) (: m (Map Int64 Int64))) (if (= i 0) m (bld (- i 1) (Map.insert m i (* i 10)))))
              (def (f (: n Int64)) (let ((m (bld n (Map.empty)))) (fn ((: k Int64)) (match (Map.lookup m k) ((Option.Some v) v) ((Option.None) -1))))) (export f)))
   (call f (: 5 Int64) (: 3 Int64))
   (output (: 30 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "hcn3 dropping a closure with a CHAMP capture cascades the reclaim to zero"
   (input (do (def (bld (: i Int64) (: m (Map Int64 Int64))) (if (= i 0) m (bld (- i 1) (Map.insert m i (* i 10)))))
@@ -5913,7 +5913,7 @@
   (input (do (def (f (: n Int64)) (let ((a #tuple(n #tuple(n 9)))) (fn ((: q Int64)) (+ q (. (. a 1) 1))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (output (: 14 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)"
   (input (do (def (f (: n Int64)) (let ((a #tuple(n n))) (fn ((: q Int64)) (+ q (if (= a a) 100 0))))) (export f)))

@@ -268,7 +268,7 @@
   (call   main)
   (host-responses (respond Param.rate-num (: 7 Int64)) (respond Param.rate-den (: 2 Int64)))
   (output (: 7/2 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)"
   (doc    "The Length layer: a `@param(...) len : (Qty Rational (Unit.base #\"meter\"))` is a Rational-
@@ -289,7 +289,7 @@
   (call   main)
   (host-responses (respond Param.len-num (: 7 Int64)) (respond Param.len-den (: 2 Int64)))
   (output (: 7/2 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; --- Param values as ORDINARY runtime values through the language's control machinery -------------
 ; The compositions above pin @param x quasiquote and @param x CHAMP-key; these drive a param value

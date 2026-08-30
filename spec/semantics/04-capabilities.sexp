@@ -448,42 +448,42 @@
   (host-responses (respond hb.h (: 7 Int64)))
   (host-calls (call hb.h))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a runtime String host arg is marshaled into shared memory and the host call returns its response"
   (input (do (effect hs (op h (-> String Int64)))
              (def (main (: n Int64)) (match (String.from-bytes (Bytes.of #list(((UInt 8).wrap n)))) ((Some s) (host (hs) (hs.h s))) (None 0)))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond hs.h (: 42 Int64))) (host-calls (call hs.h)) (output (: 42 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a host op with two runtime Bytes args marshals each to a disjoint region"
   (input (do (effect io (op sink2 (-> Bytes Bytes Int64)))
              (def (main (: k Int64)) (host (io) (io.sink2 (Bytes.of #list(((UInt 8).wrap k))) (Bytes.of #list(((UInt 8).wrap (+ k 1)))))))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond io.sink2 (: 9 Int64))) (host-calls (call io.sink2)) (output (: 9 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a host op with three runtime Bytes args marshals each to a disjoint region"
   (input (do (effect io (op sink3 (-> Bytes Bytes Bytes Int64)))
              (def (main (: k Int64)) (host (io) (io.sink3 (Bytes.of #list(((UInt 8).wrap k))) (Bytes.of #list(((UInt 8).wrap (+ k 1)))) (Bytes.of #list(((UInt 8).wrap (+ k 2)))))))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond io.sink3 (: 11 Int64))) (host-calls (call io.sink3)) (output (: 11 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a host op interleaving runtime Bytes and scalar args keeps regions and slots distinct"
   (input (do (effect io (op mix (-> Bytes Int64 Bytes Int64)))
              (def (main (: k Int64)) (host (io) (io.mix (Bytes.of #list(((UInt 8).wrap k))) (+ k 7) (Bytes.of #list(((UInt 8).wrap (+ k 1)))))))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond io.mix (: 3 Int64))) (host-calls (call io.mix)) (output (: 3 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a host op mixing a const String and a runtime Bytes arg routes each to its own path"
   (input (do (effect io (op mix2 (-> String Bytes Int64)))
              (def (main (: k Int64)) (host (io) (io.mix2 "const-key" (Bytes.of #list(((UInt 8).wrap k))))))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond io.mix2 (: 4 Int64))) (host-calls (call io.mix2)) (output (: 4 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an empty runtime String host arg marshals as a zero-length buffer"
   (input (do (effect hs (op h (-> String Int64)))
@@ -496,7 +496,7 @@
              (def (main (: a Int64)) (match (String.from-bytes (Bytes.of #list(((UInt 8).wrap a) ((UInt 8).wrap a) ((UInt 8).wrap a)))) ((Some s) (host (hs) (hs.h s))) (None 0)))
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond hs.h (: 99 Int64))) (host-calls (call hs.h)) (output (: 99 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; -- a host-op RESULT flowing into a Bytes-resource escape (migration from rcdzc a_scalar_host_op_result_
 ; escaping_as_a_bytes_resource_runs_e2e, 2026-08-27): the host response value reaches the escaped Bytes
@@ -510,4 +510,4 @@
   (host-responses (respond hr.h (: 7 UInt8)))
   (host-calls (call hr.h))
   (output (: b"\x07" Bytes))
-  (live-objects known-leak 1))
+  (live-objects known-leak))

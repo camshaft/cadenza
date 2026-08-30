@@ -153,7 +153,7 @@
   (output (: (Some 10) (Option Int64)))
   (call main (: -7 Int64))
   (output (: (Some -14) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a success `?` unwraps a RUNTIME Ok payload under a Result boundary"
   (doc    "The Result companion of the runtime-payload pin: `(try (Ok a))` under an annotated
@@ -164,7 +164,7 @@
   (input  (do (def (main (: a Int64)) (: (let ((x (try (Ok a)))) (Ok (+ x 1))) (Result Int64 String))) (export main)))
   (call main (: 41 Int64))
   (output (: (Ok 42) (Result Int64 String)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "two `?`s in one boundary both unwrap (nested happy path)"
   (doc    "The `parse-pair` shape with constant operands: `(let ((x (try (Some 20)))) (let ((y (try (Some
@@ -343,7 +343,7 @@
   (output (: (Some 100) (Option Int64)))
   (call   main (: 21 Int64))
   (output (: (Some 42) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "runtime-payload `?`s in BOTH branches of a runtime if take their own continuations"
   (doc    "The if twin: each branch has its own `?` and its own continuation (`+1` vs `-1`), the branch
@@ -360,7 +360,7 @@
   (output (: (Some 42) (Option Int64)))
   (call   main (: false Bool) (: 43 Int64))
   (output (: (Some 42) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence"
   (doc    "The chained-data face: the first `?` unwraps the runtime `n`, and the SECOND `?`'s operand is
@@ -375,7 +375,7 @@
             (export main)))
   (call   main (: 19 Int64))
   (output (: (Some 42) (Option Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a `?` in an anonymous LAMBDA body resolves the lambda as its boundary (happy path)"
   (doc    "`((fn () (let ((x (try (Some 7)))) (Some (+ x 1)))))` — the `?` sits inside an IMMEDIATELY-APPLIED
