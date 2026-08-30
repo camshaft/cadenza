@@ -300,6 +300,28 @@
   (input  (do (type Color (Red) (Green)) (type W (Wrap Color)) (def (main) 0) (export main)))
   (call   main) (output (: 0 Int64)))
 
+; APPLYING a type name in EXPRESSION position (where a function was expected) — the value-position twin of the
+; type-position "needs a type argument" family above. The head reduces to a type-value, so the generic
+; typeval discriminator recognizes it (no hard-coded name list). The message DIVERGES by whether the type is
+; GENERIC: a NON-generic prelude type (`Int64`, no declared params) reads as a type misplaced where a function
+; belongs and points at the annotation form `(: value Int64)`; a GENERIC type ctor (`Option`, ≥1 param) whose
+; type-ARGUMENT position wants a type names that a value appears where a type belongs. (Migrated from rcdzc
+; applying_a_type_name_names_it_a_type_and_points_at_annotation_position.)
+(case "applying a non-generic prelude type to a value names it a type, not a function"
+  (doc    "`(Int64 5)` applies the type `Int64` as if it were a function. `Int64` is a prelude type with no
+           declared params, so the message names the category — `Int64` is a type, not a function — and points
+           at the annotation form `(: value Int64)` where a type legitimately appears, rather than the opaque
+           'cannot apply a value of type Int64'.")
+  (input  (do (def (main) (Int64 5)) (export main)))
+  (error  CDZ0203 (message "is a type, not a function")))
+
+(case "applying a generic type constructor to a value names the type-argument position"
+  (doc    "`(Option 5)` applies the GENERIC type constructor `Option` to a value. Its type-argument position
+           wants a TYPE, so the message names that — `Option` is a type constructor, its type argument must be
+           a type, but a value appears here — the sum twin of List/Set's 'the element type must be a type'.")
+  (input  (do (def (main) (Option 5)) (export main)))
+  (error  CDZ0203 (message "its type argument must be a type")))
+
 ; ── OVER/WRONG-arity generic type application (migrated from rcdzc
 ; a_wrong_arity_generic_type_application_in_an_annotation_is_cdz0203_for_user_and_builtin) ──
 ; A generic type applied with the WRONG NUMBER of type arguments — over-supplied, under-supplied, or bare —

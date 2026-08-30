@@ -3271,6 +3271,33 @@
   (input  (3.5 1))
   (error  CDZ0201))
 
+; APPLYING A NULLARY FUNCTION to arguments — a nullary def `(def (g) …)` resolves its name straight to its
+; body value, so `(g 5)` is genuinely applying a non-function; but the author WROTE `g` with a `()` signature
+; and CALLED it, so the terse "cannot apply a value of type Int64" hides both the name and the cause. The
+; message names `g`, says it takes no arguments, and spells the fix `(g)` — the nullary companion of the
+; over-application naming. A plain VALUE def `(def v 5)` (no callable signature) keeps the type-named message.
+; (Migrated from rcdzc applying_a_nullary_function_says_it_takes_no_arguments.)
+(case "applying a nullary function names it and says it takes no arguments"
+  (doc    "`(g 5)` where `g` is a nullary FUNCTION `(def (g) 5)`: rejected CDZ0201 with a message naming `g`
+           and stating it takes no arguments (spelling the call-as-`(g)` fix), rather than the opaque
+           value-type message a bare value def would get.")
+  (input  (do (def (g) 5) (def (main) (g 5)) (export main)))
+  (error  CDZ0201 (message "takes no arguments")))
+
+(case "applying a nullary function with two surplus arguments pluralizes the count"
+  (doc    "`(g 5 6)` on the same nullary `g`: the surplus-argument count is pluralized — 'but 2 were applied'
+           — so the message counts the actual arguments, not a fixed singular.")
+  (input  (do (def (g) 5) (def (main) (g 5 6)) (export main)))
+  (error  CDZ0201 (message "but 2 were applied")))
+
+(case "applying a plain value def keeps the type-named message, not the nullary-function wording"
+  (doc    "The contrast: `(v 5)` where `v` is a plain VALUE def `(def v 5)` — its name resolves to the same
+           value, but it was NOT written as a callable, so the useful fact is its VALUE type: the message is
+           'cannot apply a value of type Int64', NOT the nullary-function 'takes no arguments' wording (which
+           is reserved for a name written with a `()` signature).")
+  (input  (do (def v 5) (def (main) (v 5)) (export main)))
+  (error  CDZ0201 (message "cannot apply a value of type Int64")))
+
 ; --- Over-applying a single-arity constructor is applying a non-function -----------------
 ; core-semantics.md #A Sum Type Constructor Is A Single-Arity Function (applied to EXACTLY ONE
 ; argument) together with #Functions Are Single-Arity (`(f a b)` desugars to `((f a) b)`): a

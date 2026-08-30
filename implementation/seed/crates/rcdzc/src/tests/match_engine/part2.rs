@@ -639,71 +639,18 @@ fn applying_an_effect_name_names_the_category_not_the_leaked_record_type() {
     );
 }
 
-#[test]
-fn applying_a_nullary_function_says_it_takes_no_arguments() {
-    // `(g 5)` where `g` is a NULLARY function `(def (g) …)`. A nullary def resolves its name straight to
-    // its body VALUE, so `g` IS that value and applying it is genuinely applying a non-function — but
-    // the author wrote `g` with a `()` signature and CALLED it, so "cannot apply a value of type Int64"
-    // hides both the name and the cause. It now names `g` + says it takes no arguments + spells the fix
-    // (call it as `(g)`), the nullary companion of the over-application naming. Distinguished from a
-    // plain value def by the signature shape (a nullary FUNCTION's `sig_occ` is a list `(g)`).
-    let d = reject_full("(module m (def (g) 5) (def (main) (g 5)) (export main))")
-        .expect("applying a nullary function is rejected");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message
-            .contains("`g` takes no arguments, but 1 was applied — call it as `(g)`"),
-        "names the nullary function + the fix: {}",
-        d.message
-    );
-    // Plural for more than one surplus argument.
-    let two = reject_full("(module m (def (g) 5) (def (main) (g 5 6)) (export main))")
-        .expect("applying a nullary function with two args rejects");
-    assert!(
-        two.message.contains("but 2 were applied"),
-        "plural for two arguments: {}",
-        two.message
-    );
-    // A plain VALUE def `(def v 5)` — its name resolves to the same value, but it was NOT written as a
-    // callable, so it keeps the type-named message (its value is the useful fact, not a "takes no args").
-    let val = reject_full("(module m (def v 5) (def (main) (v 5)) (export main))")
-        .expect("applying a value def rejects");
-    assert!(
-        val.message.contains("cannot apply a value of type Int64")
-            && !val.message.contains("takes no arguments"),
-        "a value def keeps the type-named message: {}",
-        val.message
-    );
-}
+// (applying_a_nullary_function_says_it_takes_no_arguments migrated to corpus 09-functions, the
+// applying-a-non-function family: "applying a nullary function names it and says it takes no arguments"
+// (`(def (g) 5) (g 5)` → CDZ0201 message "takes no arguments"), "…with two surplus arguments pluralizes the
+// count" (`(g 5 6)` → message "but 2 were applied"), and "applying a plain value def keeps the type-named
+// message, not the nullary-function wording" (`(def v 5) (v 5)` → message "cannot apply a value of type
+// Int64"). All three graded PASS on wasm.)
 
-#[test]
-fn applying_a_type_name_names_it_a_type_and_points_at_annotation_position() {
-    // `(Option 5)` / `(Int64 5)` apply a TYPE name where a function was expected. The head reduces to
-    // a type-value, so the generic `typeval_of(head)` discriminator recognizes it (no hard-coded name
-    // list — the no-keys-outside-the-prelude rule). The message DIVERGES by whether the type is GENERIC:
-    //  • `Int64` — a prelude type with NO sum/nominal decl (no declared params) — takes the generic
-    //    "`Int64` is a type, not a function — a type appears in an annotation `(: value Int64)`" message.
-    //  • `Option` — a GENERIC type (≥1 declared param) whose type-ARGUMENT position wants a type — takes
-    //    the more precise "`Option` is a type constructor — its type argument must be a type, but a value
-    //    appears here" (the sum twin of List/Set's "the element type must be a type"; `(Option 5)` writes
-    //    a value `5` where a type belongs).
-    let int_msg = reject_full("(module m (def (main) (Int64 5)) (export main))")
-        .expect("applying Int64 is rejected")
-        .message;
-    assert!(
-        int_msg.contains("`Int64` is a type, not a function")
-            && int_msg.contains("appears in an annotation"),
-        "a non-generic prelude type keeps the category message: {int_msg}"
-    );
-    let opt_msg = reject_full("(module m (def (main) (Option 5)) (export main))")
-        .expect("applying Option is rejected")
-        .message;
-    assert!(
-        opt_msg.contains("`Option` is a type constructor")
-            && opt_msg.contains("its type argument must be a type"),
-        "a generic type applied to a value names the type-argument position: {opt_msg}"
-    );
-}
+// (applying_a_type_name_names_it_a_type_and_points_at_annotation_position migrated to corpus 07-type-system,
+// the applying-a-type-in-expression-position pair: "applying a non-generic prelude type to a value names it a
+// type, not a function" (`(Int64 5)` → CDZ0203 message "is a type, not a function") and "applying a generic
+// type constructor to a value names the type-argument position" (`(Option 5)` → CDZ0203 message "its type
+// argument must be a type"). Both graded PASS on wasm.)
 
 #[test]
 fn a_value_juxtaposed_with_a_type_names_the_missing_colon_annotation() {
