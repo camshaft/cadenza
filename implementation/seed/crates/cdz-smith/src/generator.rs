@@ -413,7 +413,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(26) {
+        match self.cur.choice(27) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -437,6 +437,7 @@ impl Gen<'_> {
             22 => self.qty_expr(depth),
             23 => self.float32_expr(depth),
             24 => self.higher_order_expr(depth),
+            25 => self.mixed_compound_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -898,6 +899,65 @@ impl Gen<'_> {
             self.out.push_str(") ((None) ");
             self.expr(depth.saturating_sub(1), Kind::Num);
             self.out.push_str("))");
+        }
+    }
+
+    /// A HETEROGENEOUS / nested COMPOUND — a tuple or record whose elements have DIFFERENT widths
+    /// (ascribed narrow int / Float32 / Float64 / Bool), or a tuple nesting a tuple — then PROJECTED.
+    /// Targets the compound element-BOXING width path (where the nested-mapset #5924 and the Qty f32/f64
+    /// findings lived): mixing element widths in one compound stresses the per-element box/unbox widths.
+    /// Operator directive 2026-08-30: keep expanding generated program shapes.
+    fn mixed_compound_expr(&mut self, depth: u32) {
+        const LABELS: [&str; 3] = ["a", "b", "c"];
+        match self.cur.choice(3) {
+            0 => {
+                // Heterogeneous tuple, projected by index.
+                let n = 2 + self.cur.choice(2); // 2..=3 elements
+                self.out.push_str("(. (tuple");
+                for _ in 0..n {
+                    self.out.push(' ');
+                    self.mixed_elem(depth);
+                }
+                let _ = write!(self.out, ") {})", self.cur.choice(n));
+            }
+            1 => {
+                // Heterogeneous record, projected by label.
+                let n = 2 + self.cur.choice(2);
+                self.out.push_str("(. (record");
+                for &label in LABELS.iter().take(n) {
+                    let _ = write!(self.out, " (= {label} ");
+                    self.mixed_elem(depth);
+                    self.out.push(')');
+                }
+                let _ = write!(self.out, ") {})", LABELS[self.cur.choice(n)]);
+            }
+            _ => {
+                // A tuple NESTING a tuple (mixed widths at two levels), projecting the inner tuple.
+                self.out.push_str("(. (tuple (tuple ");
+                self.mixed_elem(depth);
+                self.out.push(' ');
+                self.mixed_elem(depth);
+                self.out.push_str(") ");
+                self.mixed_elem(depth);
+                self.out.push_str(") 0)");
+            }
+        }
+    }
+
+    /// One width-varied scalar element for [`mixed_compound_expr`]: an ascribed narrow int (small value
+    /// that fits any width), a Float32, a bare Float64, or a Bool — so a compound mixes element widths.
+    fn mixed_elem(&mut self, depth: u32) {
+        match self.cur.choice(4) {
+            0 => {
+                let t = INT_FIXED_TYPES[self.cur.choice(INT_FIXED_TYPES.len())];
+                // A small non-negative value fits every fixed width (so the element types + reaches emit).
+                let _ = write!(self.out, "(: {} {t})", self.cur.range(0, 100));
+            }
+            1 => self.f32_operand(depth),
+            2 => self.float_lit(),
+            _ => self
+                .out
+                .push_str(if self.cur.flip() { "true" } else { "false" }),
         }
     }
 
@@ -2031,6 +2091,33 @@ mod tests {
         );
     }
 
+    /// The mixed-compound arm is reachable — some seed emits a heterogeneous tuple/record (including an
+    /// ascribed narrow-int element) under a projection — and every such program parses. Guards the
+    /// mixed-width element-boxing reach (operator directive 2026-08-30).
+    #[test]
+    fn some_seed_emits_a_mixed_compound() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if (src.contains("(. (tuple ") || src.contains("(. (record "))
+                && INT_FIXED_TYPES
+                    .iter()
+                    .any(|t| src.contains(&format!(" {t})")))
+            {
+                hit = true;
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a mixed-width compound projection"
+        );
+    }
+
     /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
     /// only other def) — and every program that path can emit still parses. Also asserts the
     /// TERMINATION STRUCTURE holds on every such program: the helper carries a `(if (<= ` base-case
@@ -2257,21 +2344,21 @@ mod tests {
     /// path can emit still parses. Guards the non-Int handler-state reach against a refactor that drops it.
     #[test]
     fn some_seed_emits_a_bool_state_effect_handler() {
-        let mut hit = false;
-        for n in 0..8000u32 {
-            let seed = varied_seed(n);
-            let src = generate(&seed).source;
-            assert!(
-                cadenza_syntax::sexpr::read(&src).is_ok(),
-                "generated program did not parse:\n{src}"
-            );
-            if src.contains("(-> Bool Bool)") && src.contains("(handle ") {
-                hit = true;
-            }
-        }
+        // CRAFTED seed (the bool-state handler is a rare deep path the varied_seed sweep does not reliably
+        // land as the dispatch modulus grows — like the discard/double-resume tests). Bytes: b0=1 →
+        // program()'s user-sum-vs-normal choice(4)=1 → normal main; b1=0 → 0 params; b2=16 → dispatch
+        // choice(27)=16 → effect_handler (called with Kind::Any); b3=4 → the state-shape choice(6)=4 →
+        // BOOL state (op `(-> Bool Bool)`); rest drive the fixed bool body.
+        let seed = [1u8, 0, 16, 4, 2, 2, 2, 2, 2, 2, 2, 2];
+        let src = generate(&seed).source;
+        assert!(
+            cadenza_syntax::sexpr::read(&src).is_ok(),
+            "generated program did not parse:\n{src}"
+        );
+        let hit = src.contains("(-> Bool Bool)") && src.contains("(handle ");
         assert!(
             hit,
-            "no seed in the sweep emitted a BOOL-state effect handler"
+            "crafted seed did not emit a BOOL-state effect handler:\n{src}"
         );
     }
 
