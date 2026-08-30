@@ -91,3 +91,8 @@ mod roundtrip_tests;
 // crates may not depend on). In-crate per the no-integration-tests house style.
 #[cfg(test)]
 mod surface_tests;
+// The `spec/syntax/` parser/printer golden-corpus self-consistency check (DESIGN-parser-test-corpus.md
+// Increment 2) — relocated from `tests/syntax_corpus.rs` per the no-integration-tests directive (same
+// coverage, compiled with the lib; skips cleanly when the `spec/` tree is absent from the sandbox).
+#[cfg(test)]
+mod syntax_corpus_tests;
