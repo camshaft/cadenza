@@ -1083,9 +1083,16 @@ impl<'a> Printer<'a> {
         if let Some(text) = in_trailing {
             self.doc.word(format!(" //{}", self.doc_line_text(text)));
         }
-        // The body starts a new line at the `let`'s own column (offset 0), so a `let … in` chain
-        // reads as a flat sequence — the ML idiom for a pervasive `let … in`.
-        self.doc.hardbreak();
+        // Body layout (operator seq68): a `let … in` CHAIN (body is itself a `let`) stays FLAT — the
+        // nested `let` drops to the SAME column (offset 0), the ML idiom for a pervasive `let … in` (and
+        // it avoids the per-rung DEEPENING the operator flagged for if-else). But the FINAL (non-`let`)
+        // body INDENTS one level, so inside a `match` arm the in-body is visually DISTINCT from the `|`
+        // arm markers (it was landing at the SAME indent as the arms, reading like a sibling arm — seq68).
+        if self.is_let_shape_form(args[1]) {
+            self.doc.hardbreak();
+        } else {
+            self.doc.hardbreak_with(INDENT);
+        }
         self.expr(args[1], 0);
         if paren {
             self.doc.word(")");
@@ -5966,7 +5973,7 @@ mod tests {
             "if a then b else c"
         );
         // `let … in` always breaks the body to its own line at the let column (ML idiom).
-        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
+        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\n  x");
         assert_eq!(
             assert_roundtrip("fn(x, y) => x + y", 80),
             "fn(x, y) => x + y"
@@ -7367,7 +7374,7 @@ mod tests {
         // A non-brace body (let) is not hugged: it drops to an indented continuation line and lays
         // out flat at that indent.
         let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
-        assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
+        assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n    y * y");
     }
 
     #[test]
@@ -7980,10 +7987,10 @@ mod tests {
             "the let-binding comment round-trips"
         );
         // Clean lets (incl. multi-binding + pattern binder) keep their layout.
-        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
+        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\n  x");
         assert_eq!(
             assert_roundtrip("let x = 1, y = 2 in x + y", 80),
-            "let x = 1, y = 2 in\nx + y"
+            "let x = 1, y = 2 in\n  x + y"
         );
     }
 
@@ -8075,15 +8082,15 @@ mod tests {
         // `let` binder patterns — tuple, list-rest, and a mix with a plain name.
         assert_eq!(
             assert_roundtrip("let (a, b) = p in a + b", 80),
-            "let (a, b) = p in\na + b"
+            "let (a, b) = p in\n  a + b"
         );
         assert_eq!(
             assert_roundtrip("let [x, .. rest] = ys in x", 80),
-            "let [x, .. rest] = ys in\nx"
+            "let [x, .. rest] = ys in\n  x"
         );
         assert_eq!(
             assert_roundtrip("let x = 1, (a, b) = p in x + a", 80),
-            "let x = 1, (a, b) = p in\nx + a"
+            "let x = 1, (a, b) = p in\n  x + a"
         );
         // A multi-binding `let` that does NOT fit breaks CONSISTENTLY: every binding drops to its own
         // line, indented under `let` — not a greedy fill that packs two bindings per line. At width 20
@@ -8091,18 +8098,18 @@ mod tests {
         // line and the rest hang at INDENT under it.
         assert_eq!(
             assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 20),
-            "let aa = 1,\n  bb = 2,\n  cc = 3 in\naa + bb + cc"
+            "let aa = 1,\n  bb = 2,\n  cc = 3 in\n  aa + bb + cc"
         );
         // The same bindings that DO fit stay on one line (consistent box prints flat when it fits) —
         // so this is a no-op for a `let` that fits, changing only the overflow layout.
         assert_eq!(
             assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 80),
-            "let aa = 1, bb = 2, cc = 3 in\naa + bb + cc"
+            "let aa = 1, bb = 2, cc = 3 in\n  aa + bb + cc"
         );
         // The oracle: a string-headed `(tuple …)` binder pattern from the s-expr surface sugars too.
         assert_eq!(
             print(&sexpr::read("(let (((tuple a b) p)) (+ a b))").unwrap(), 80),
-            "let (a, b) = p in\na + b"
+            "let (a, b) = p in\n  a + b"
         );
         // A CONSTRUCTOR-application pattern binder now sugars to the proper `let Ctor(p…) = v in …`
         // surface (both a bare `Ctor` and a qualified `Mod.Ctor`), the parser having gained the
@@ -8111,18 +8118,18 @@ mod tests {
         // backtick-`let` fallback. (v-guide-editor issue 2026-07-18.)
         assert_eq!(
             print(&sexpr::read("(let ((((. Id Mk) n) v)) n)").unwrap(), 80),
-            "let Id.Mk(n) = v in\nn"
+            "let Id.Mk(n) = v in\n  n"
         );
         assert_eq!(
             print(&sexpr::read("(let (((C c) x)) c)").unwrap(), 80),
-            "let C(c) = x in\nc"
+            "let C(c) = x in\n  c"
         );
         assert_eq!(
             print(
                 &sexpr::read("(let (((P.Mk a b) (P.Mk 5 6))) (+ a b))").unwrap(),
                 80
             ),
-            "let P.Mk(a, b) = P.Mk(5, 6) in\na + b"
+            "let P.Mk(a, b) = P.Mk(5, 6) in\n  a + b"
         );
         // …and the whole thing round-trips through the ML reader (no backtick fallback).
         for sx in [
@@ -8155,7 +8162,7 @@ mod tests {
         );
         assert_eq!(
             assert_roundtrip("let { x = a, y = b } = r in a + b", 80),
-            "let { x = a, y = b } = r in\na + b"
+            "let { x = a, y = b } = r in\n  a + b"
         );
         assert_eq!(
             assert_roundtrip("match r with | { x = a } => a", 80),
@@ -8168,7 +8175,7 @@ mod tests {
                 &sexpr::read("(def (main) (let (((record (= x a) (= y b)) r)) (+ a b)))").unwrap(),
                 80
             ),
-            "def main() =\n  let { x = a, y = b } = r in\n  a + b"
+            "def main() =\n  let { x = a, y = b } = r in\n    a + b"
         );
         // Both a record PATTERN binder AND a record VALUE are the canonical `(= name value)` triple
         // (path B — full symmetry; operator ruling): patterns and literals spell the identical form.
@@ -8198,7 +8205,7 @@ mod tests {
                 &sexpr::read("(def (main) (let (((record) v)) v))").unwrap(),
                 80
             ),
-            "def main() =\n  let {} = v in\n  v"
+            "def main() =\n  let {} = v in\n    v"
         );
         // NESTED compositions of the binding patterns (tuple/list/map/record/ctor) — the interaction of
         // the record + ctor pattern surfaces with each other and the pre-existing tuple/list/map ones is
@@ -8252,7 +8259,7 @@ mod tests {
         // a lone `=` is only the binding separator, never equality.
         assert_eq!(
             assert_roundtrip("let x = 1 in x == 1", 80),
-            "let x = 1 in\nx == 1"
+            "let x = 1 in\n  x == 1"
         );
     }
 
@@ -8436,8 +8443,8 @@ mod tests {
         );
         // `from` is contextual — still usable as an ordinary name elsewhere.
         assert_eq!(
-            assert_roundtrip("let from = 5 in\nfrom", 80),
-            "let from = 5 in\nfrom"
+            assert_roundtrip("let from = 5 in\n  from", 80),
+            "let from = 5 in\n  from"
         );
     }
 
@@ -8447,15 +8454,15 @@ mod tests {
         // application — rendered as a call, NOT sugared. This is the head-position shadow the
         // resolver honours; the printer must not misrepresent it as a literal.
         assert_eq!(
-            assert_roundtrip("let list = fn(a, b) => a + b in\nlist(3, 4)", 80),
-            "let list = fn(a, b) => a + b in\nlist(3, 4)"
+            assert_roundtrip("let list = fn(a, b) => a + b in\n  list(3, 4)", 80),
+            "let list = fn(a, b) => a + b in\n  list(3, 4)"
         );
         // shadowed via a def parameter: the `tuple` argument, not a tuple literal.
         let a = sexpr::read("(def (f tuple) (tuple 3 4))").unwrap();
         assert_eq!(print(&a, 80), "def f(tuple) = tuple(3, 4)");
         // an unshadowed sibling in the SAME tree still sugars (shadow is per-name, not all-ctors).
         let a = sexpr::read("(let ((list (fn (a) a))) (tuple (list 1) 2))").unwrap();
-        assert_eq!(print(&a, 80), "let list = fn(a) => a in\n(list(1), 2)");
+        assert_eq!(print(&a, 80), "let list = fn(a) => a in\n  (list(1), 2)");
     }
 
     #[test]
@@ -8909,12 +8916,12 @@ mod tests {
             arm.contains("// note"),
             "match-arm-body leading comment preserved: {arm}"
         );
-        let val = assert_roundtrip("def f(x) = let y =\n// vnote\nx + 1 in\ny", 100);
+        let val = assert_roundtrip("def f(x) = let y =\n// vnote\nx + 1 in\n  y", 100);
         assert!(
             val.contains("// vnote"),
             "let-value leading comment preserved: {val}"
         );
-        let body = assert_roundtrip("def f(x) = let y = x in\n// bnote\ny + 1", 100);
+        let body = assert_roundtrip("def f(x) = let y = x in\n  // bnote\ny + 1", 100);
         assert!(
             body.contains("// bnote"),
             "let-body leading comment preserved: {body}"
