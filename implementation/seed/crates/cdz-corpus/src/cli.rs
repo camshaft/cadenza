@@ -479,11 +479,11 @@ fn oracle_trials_ast(rec: &Record) -> Vec<u8> {
                 let r = str_leaf(&mut b, reason);
                 form(&mut b, "expect-trap", vec![r])
             }
-            Expect::Error(code, _) => {
+            Expect::Error(code, ..) => {
                 let cl = str_leaf(&mut b, code);
                 form(&mut b, "expect-error", vec![cl])
             }
-            Expect::Warning(code, _) => {
+            Expect::Warning(code, ..) => {
                 let cl = str_leaf(&mut b, code);
                 form(&mut b, "expect-warning", vec![cl])
             }
@@ -702,19 +702,30 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
             let leaf = str_leaf(b, v);
             form(b, "expect-output", vec![leaf])
         }
-        Expect::Error(code, msg) => {
+        Expect::Error(code, msg, not_msg) => {
             let cl = str_leaf(b, code);
             let mut leaves = vec![cl];
             for m in msg {
                 leaves.push(str_leaf(b, m));
             }
+            // seq-29 message-ABSENCE pins ride as `(not "phrase")` sub-forms — distinguishable from the bare
+            // string message-substring leaves so the decoder can partition them (the grade fails if the
+            // diagnostic CONTAINS any of them).
+            for n in not_msg {
+                let nl = str_leaf(b, n);
+                leaves.push(form(b, "not", vec![nl]));
+            }
             form(b, "expect-error", leaves)
         }
-        Expect::Warning(code, msg) => {
+        Expect::Warning(code, msg, not_msg) => {
             let cl = str_leaf(b, code);
             let mut leaves = vec![cl];
             for m in msg {
                 leaves.push(str_leaf(b, m));
+            }
+            for n in not_msg {
+                let nl = str_leaf(b, n);
+                leaves.push(form(b, "not", vec![nl]));
             }
             form(b, "expect-warning", leaves)
         }
@@ -722,14 +733,20 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
             let leaf = str_leaf(b, reason);
             form(b, "expect-trap", vec![leaf])
         }
-        Expect::Declines(code, msg) => {
-            // Shred to `(expect-declines [CODE] msg…)` — the optional CDZ code leads (the grader reads leaf[0]
-            // as the pinned decline-code when it is `CDZxxxx`-shaped, else all leaves are message substrings).
+        Expect::Declines(code, msg, not_msg) => {
+            // Shred to `(expect-declines [CODE] msg… (not "phrase")*)` — the optional CDZ code leads (the
+            // grader reads leaf[0] as the pinned decline-code when it is `CDZxxxx`-shaped, else the bare
+            // string leaves are message substrings), and each seq-29 message-ABSENCE pin rides as a
+            // `(not "phrase")` sub-form (grade fails if the diagnostic CONTAINS any).
             let mut leaves: Vec<_> = Vec::new();
             if let Some(c) = code {
                 leaves.push(str_leaf(b, c));
             }
             leaves.extend(msg.iter().map(|m| str_leaf(b, m)));
+            for n in not_msg {
+                let nl = str_leaf(b, n);
+                leaves.push(form(b, "not", vec![nl]));
+            }
             form(b, "expect-declines", leaves)
         }
     }
@@ -963,6 +980,28 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         );
         let run_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[2])).unwrap());
         assert!(run_tr.contains("main"), "call export in test-run: {run_tr}");
+    }
+
+    /// seq-29: a `(not "phrase")` message-ABSENCE pin reaches the shredded `test-run.ast` as a `(not …)`
+    /// sub-form INSIDE the `expect-error` / `expect-declines` form — distinguishable from the bare-string
+    /// positive `(message …)` substring leaves, exactly the wire `cdz_corpus_grade` decodes.
+    #[test]
+    fn not_message_reaches_shredded_test_run() {
+        let recs = crate::read(
+            r#"(case "err" (input 1_) (error CDZ0201 (message "malformed") (not "internal error")))
+               (case "dec" (input 1_) (declines CDZ0900 (not "panic")))"#,
+        )
+        .unwrap();
+        let err_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
+        assert!(
+            err_tr.contains(r#"(not "internal error")"#) && err_tr.contains(r#""malformed""#),
+            "expect-error carries both the message and the (not …) absence pin: {err_tr}"
+        );
+        let dec_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[1])).unwrap());
+        assert!(
+            dec_tr.contains(r#"(not "panic")"#) && dec_tr.contains("CDZ0900"),
+            "expect-declines carries the code + the (not …) absence pin: {dec_tr}"
+        );
     }
 
     /// The DIAGNOSTIC-QUALITY facets + the `(warning …)` result kind reach the shredded `test-run.ast` as
