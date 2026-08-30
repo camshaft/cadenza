@@ -8904,15 +8904,15 @@
 ; int literal so the collection unifies at Float64), while a cross-KIND clash (Int64 vs String) is not
 ; coercible → no fix. (Migrated from rcdzc a_map_or_set_heterogeneity_names_the_types_and_offers_the_retype_fix.)
 (case "a map with heterogeneous VALUES names both types and offers no fix for a cross-kind clash"
-  (input  (do (def x (map (1 1) (2 "b"))) (export x)))
+  (input  (do (def x #map((= 1 1) (= 2 "b"))) (export x)))
   (error  CDZ0201 (message "Int64") (message "String") (no-fix)))
 
 (case "a map int-vs-float VALUE clash offers the float-literal retype fix on the first value"
-  (input  (do (def x (map (1 1) (2 2.0))) (export x)))
+  (input  (do (def x #map((= 1 1) (= 2 2.0))) (export x)))
   (error  CDZ0201 (fix (kind replace) (replacement "1.0") (unverified))))
 
 (case "a map int-vs-float KEY clash offers the float-literal retype fix on the first key"
-  (input  (do (def x (map (1 10) (2.0 20))) (export x)))
+  (input  (do (def x #map((= 1 10) (= 2.0 20))) (export x)))
   (error  CDZ0201 (fix (kind replace) (replacement "1.0") (unverified))))
 
 (case "a set int-vs-float element clash offers the float-literal retype fix"
