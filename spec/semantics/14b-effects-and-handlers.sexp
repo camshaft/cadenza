@@ -9396,3 +9396,47 @@
                   (do (Log.emit (Amb.flip)) 7))))
             (export main)))
   (declines (message "not reducible by the tail-resumptive fold")))
+
+; ── self-call gated behind a nested conditional in a cond/scrutinee — the multi-value hoist safe-reject
+;    (migrated from rcdzc tests/mod.rs a_selfcall_gated_in_an_if_condition_declines_not_hoisted, delanguaging
+;    handoff from v-rcdzc-test-shrink 2026-08-30). `thread_returning_tuple` threads the condition and lifts a
+;    condition-level self-call pending temp AROUND the whole `if` — sound ONLY for a self-call on the cond's
+;    UNCONDITIONAL strict spine. A self-call under a NESTED `if`/`and`/`or` in the cond/scrutinee runs on only
+;    some paths, so hoisting its temp would make it run UNCONDITIONALLY (an eval-order MISCOMPILE). The mode
+;    gate `multivalue_leaves_threadable` rejects it → a clean CDZ0900 decline, never a miscompile or a leaked
+;    internal `#eff`/bodyless-spec name (the message-pin witnesses the clean text). The DIRECT-in-condition
+;    shape `(< (walk …) 100)` (no nested gate) still folds — so this is a precise decline, not a blanket one.
+
+(case "a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted"
+  (doc    "`walk` self-calls inside a nested `(if (> n 5) (walk (- n 1)) 0)` sitting in the OUTER `if`'s
+           CONDITION. The self-call runs on only the `> n 5` path; hoisting its multi-value pending temp
+           around the whole `if` would run it unconditionally + thread state as if always taken. Declines
+           cleanly rather than miscompile.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (> n 5) (walk (- n 1)) 0) (Ctr.tick))))
+            (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (declines (message "not reducible by the tail-resumptive fold")))
+
+(case "a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted"
+  (doc    "The match-scrutinee position of the nested-conditional self-call: the self-call sits under
+           `(match (if (> n 5) (walk (- n 1)) 0) (_ 0))` in the scrutinee. Same eval-order hazard as the
+           if-condition face, a distinct fold path — declines cleanly.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (+ (match (if (> n 5) (walk (- n 1)) 0) (_ 0)) (Ctr.tick))))
+            (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (declines (message "not reducible by the tail-resumptive fold")))
+
+(case "a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted"
+  (doc    "The `and` short-circuit face: the self-call sits under `(and (> n 5) (< (walk (- n 1)) 100))` in
+           the condition, so it runs only when the left conjunct holds. Hoisting its temp would run it
+           unconditionally — declines cleanly rather than miscompile the short-circuit.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (and (> n 5) (< (walk (- n 1)) 100)) 1 0) (Ctr.tick))))
+            (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (declines (message "not reducible by the tail-resumptive fold")))

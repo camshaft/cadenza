@@ -5229,43 +5229,9 @@ fn a_selfcall_hidden_in_a_nested_fold_closure_declines_not_a_stack_overflow() {
     );
 }
 
-/// A self-call GATED behind a NESTED conditional INSIDE an `if` condition (or a `match` scrutinee) must
-/// DECLINE the multi-value path — never hoist. `thread_returning_tuple` threads the condition and
-/// `drain_and_wrap` lifts any condition-level self-call pending temp AROUND the whole `if`. That is sound
-/// only for a self-call on the condition's UNCONDITIONAL strict spine; a self-call under a nested `if`/
-/// `and`/`or` in the condition runs only on some paths, so hoisting its temp makes it run UNCONDITIONALLY
-/// and thread state as if always taken — an eval-order MISCOMPILE (PR #456, Copilot). The mode gate
-/// `multivalue_leaves_threadable` now rejects a self-call under a conditional in the cond/scrutinee, so
-/// these decline cleanly (a "not yet reducible" todo) rather than miscompile or leak an internal `#eff`
-/// name. The DIRECT-in-condition shape (`(< (walk …) 100)`, no nested gate) still folds — see the test
-/// above — so this is a precise decline, not a blanket one.
-#[test]
-fn a_selfcall_gated_in_an_if_condition_declines_not_hoisted() {
-    use crate::testkit::parse;
-    for src in [
-        // gated behind a nested `if` in the outer `if`'s CONDITION
-        "(do (effect Ctr (op tick (-> Unit Int64))) \
-         (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (> n 5) (walk (- n 1)) 0) (Ctr.tick)))) \
-         (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))",
-        // gated behind a nested `if` in a `match` SCRUTINEE
-        "(do (effect Ctr (op tick (-> Unit Int64))) \
-         (def (walk (: n Int64)) (if (= n 0) 0 (+ (match (if (> n 5) (walk (- n 1)) 0) (_ 0)) (Ctr.tick)))) \
-         (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))",
-        // gated behind an `and` SHORT-CIRCUIT in the condition
-        "(do (effect Ctr (op tick (-> Unit Int64))) \
-         (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (and (> n 5) (< (walk (- n 1)) 100)) 1 0) (Ctr.tick)))) \
-         (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))",
-    ] {
-        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a self-call gated behind a nested conditional in a cond/scrutinee must decline",
-        );
-        assert!(
-            !err.message.contains("#eff") && !err.message.contains("has no body"),
-            "the decline must be clean (no leaked internal name, no orphan bodyless spec), got: {}",
-            err.message
-        );
-    }
-}
+// (a_selfcall_gated_in_an_if_condition_declines_not_hoisted — the 3 nested-conditional self-call safe-rejects
+//  (nested-if-in-cond, nested-if-in-match-scrutinee, and-short-circuit) — migrated to corpus 14b-effects-and-handlers
+//  as (declines (message "not reducible by the tail-resumptive fold")) cases, 2026-08-30 delanguaging handoff.)
 
 /// The genuine-mismatch GUARD for the handler state-binder-typing fix (the inline-Qty-resume fold, whose
 /// value is pinned in the corpus): the fix must NOT weaken the real CDZ0201 next-state/seed check. An `Int64`-seeded
