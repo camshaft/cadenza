@@ -1151,6 +1151,17 @@ pub const DIFFERENT_TYPES_COMPARISON_MARKER: &str = "are different types";
 pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not reducible by the tail-resumptive fold: it \
      requires a cross-function or non-tail resume, which the effect specializer does not lower";
 
+/// The CDZ0900 message the emit path attaches to a `Resolved::Resume` node lowered STANDALONE (out of its
+/// handler-fold context) — `lower/compute.rs`'s `Resolved::Resume` fallthrough. DISTINCT from
+/// [`HANDLER_NOT_REDUCIBLE_DECLINE`] (that says "this handler…"; this says "this `resume`…") so the two are
+/// separable. Shared as a const so `compile::collect_reached_poisons_at` can recognize + SKIP it: the
+/// reached-poison walk must never independently fault a resume node — its real diagnostic is always
+/// reported elsewhere (the enclosing handle's fold outcome, or the upstream `STRAY_RESUME` CDZ0201), so a
+/// bare/nested resume poison surfacing in the walk is spurious (it would wrongly block a program whose
+/// handle folds + emits — the mutual-group `…_folds` case).
+pub const RESUME_NOT_REDUCIBLE_DECLINE: &str = "this `resume` is not reducible by the tail-resumptive fold: it \
+     is a cross-function or non-tail continuation the effect specializer does not reify";
+
 /// The three UNCODED declines the emit path (`lower::lower_lambda_value`) returns when a closure that must
 /// cross the component boundary has a non-representable part — an `Any` (never-fixed) parameter or result,
 /// or a captured value with no machine type. When such a closure is an EXPORT'S result, `compile::
