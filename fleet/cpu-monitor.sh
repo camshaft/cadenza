@@ -26,6 +26,10 @@ TOP_N="${CDZ_CPU_MONITOR_TOP_N:-25}"               # per sample: log the N heavi
 MIN_PCPU="${CDZ_CPU_MONITOR_MIN_PCPU:-10}"         # ignore processes below this %CPU (noise floor)
 CMD_CAP="${CDZ_CPU_MONITOR_CMD_CAP:-500}"          # cap each logged cmdline to N chars (bound line size)
 
+HEAVY_CONCURRENCY_LOG="$LOG_DIR/heavy-concurrency.tsv" # per-tick concurrent-local-gate count + summed CPU + load
+HEAVY_CONCURRENCY_WARN="${CDZ_HEAVY_CONCURRENCY_WARN:-3}"   # >= this many concurrent local-gates AND low CPU → DEADLOCK-SUSPECT
+HEAVY_CONCURRENCY_LOG_MAX="${CDZ_HEAVY_CONCURRENCY_MAX:-5000}"
+
 REAP_MIN="${CDZ_ORPHAN_CDZ_REAP_MIN:-30}"          # reap ORPHANED (PPID 1) `cdz` procs older than this (min)
 REAP_LOG="$LOG_DIR/reap.log"                        # bounded audit of reaped orphans (mtime = last-fired proof)
 REAP_LOG_MAX="${CDZ_REAP_LOG_MAX:-2000}"
@@ -259,6 +263,30 @@ case "${1:-sample}" in
     lines="$(wc -l < "$LOG" 2>/dev/null || echo 0)"
     if [ "${lines:-0}" -gt "$MAX_LINES" ]; then
       tail -n "$MAX_LINES" "$LOG" > "$LOG.rot" 2>/dev/null && mv "$LOG.rot" "$LOG" 2>/dev/null || true
+    fi
+
+    # HEAVY-BUILD CONCURRENCY visibility (v-fleet-tooling 2026-08-30): the per-proc snapshot above is FLOORED
+    # at MIN_PCPU, so it CANNOT SEE a gate-lock DEADLOCK — deadlocked local-gates sit at ~0% CPU (starved on
+    # the nix lock), below the floor (this nearly hid a live 8-concurrent deadlock during a measurement). So
+    # SEPARATELY count CONCURRENT local-gate procs (ANY CPU%, ALL uids — a deadlock is fleet-wide) + their
+    # SUMMED CPU each tick, into a bounded log, so "was there a gate-lock deadlock at time T?" is answerable.
+    # DEADLOCK SIGNATURE = a HIGH count with LOW summed CPU (many builds, none progressing: a progressing
+    # build is ~100%+, a starved one ~0%). FAIL-OPEN (a monitor tick must never error).
+    read -r lg_count lg_cpu < <(ps -eo pcpu=,args= 2>/dev/null \
+      | awk '/nix build \.#checks/ && /local-gate/ && !/awk/ { c++; s += $1 } END { printf "%d %d", c, s+0 }')
+    lg_count="${lg_count:-0}"; lg_cpu="${lg_cpu:-0}"
+    load1="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)"
+    printf '%s\t%s\t%s\t%s\n' "$ts" "$lg_count" "$lg_cpu" "$load1" >> "$HEAVY_CONCURRENCY_LOG" 2>/dev/null || true
+    # Flag a deadlock-suspect: >= WARN concurrent local-gates averaging < 20% CPU each (starved, not building).
+    if [ "$lg_count" -ge "$HEAVY_CONCURRENCY_WARN" ] && [ "$lg_cpu" -lt "$((lg_count * 20))" ] 2>/dev/null; then
+      printf '%s DEADLOCK-SUSPECT: %s concurrent local-gate procs at %s%% summed CPU, load %s (starved on the nix lock?)\n' \
+        "$(date -Is 2>/dev/null || echo now)" "$lg_count" "$lg_cpu" "$load1" >> "$HEAVY_CONCURRENCY_LOG" 2>/dev/null || true
+    fi
+    # Rotate the concurrency log (bounded — never a disk hog).
+    clines="$(wc -l < "$HEAVY_CONCURRENCY_LOG" 2>/dev/null || echo 0)"
+    if [ "${clines:-0}" -gt "$HEAVY_CONCURRENCY_LOG_MAX" ]; then
+      tail -n "$HEAVY_CONCURRENCY_LOG_MAX" "$HEAVY_CONCURRENCY_LOG" > "$HEAVY_CONCURRENCY_LOG.rot" 2>/dev/null \
+        && mv "$HEAVY_CONCURRENCY_LOG.rot" "$HEAVY_CONCURRENCY_LOG" 2>/dev/null || true
     fi
     exit 0
     ;;
