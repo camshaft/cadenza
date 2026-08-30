@@ -892,86 +892,10 @@ fn many_typod_field_accesses_of_one_wide_record_suggest_in_bounded_time() {
     );
 }
 
-#[test]
-fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
-    // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
-    // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
-    // `n : Int8` — is CDZ0203, repaired by wrapping the INIT in `(Int64.of n)`. Shares `int_coercion_wrap`
-    // with the other two sites (the D33 lesson: the same repair fires wherever the same mismatch surfaces).
-    let d = first_error("(module m (def (f (: n Int8)) (let (((: x Int64) n)) x)) (export f))");
-    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-    let fix = d.fix.expect("a let-binder coercion fix is carried");
-    assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-    assert_eq!(
-        fix.replacement,
-        format!("(Int64.of {})", crate::abi::WRAP_HOLE),
-        "wraps the INIT value in the annotation type's `.of`"
-    );
-    assert!(!fix.verified, "`.of` is checked → heuristic");
-    // NO over-reach: a Bool init annotated Int64 has no coercion.
-    let d = first_error("(module m (def (f) (let (((: x Int64) true)) x)) (export f))");
-    assert!(
-        d.fix.is_none(),
-        "no coercion fix Bool→Int64 let-binder: {:?}",
-        d.fix
-    );
-
-    // The let-binder now offers the SAME coercions the value annotation `(: value T)` does — not just
-    // the int-width `.of` above. Each covering fix must resolve in ONE shot (helper `fix_text`).
-    fn fix_text(src: &str) -> Option<String> {
-        let d = first_error(src);
-        d.fix.map(|f| f.replacement)
-    }
-    // int LITERAL annotated Float → retype `3` → `3.0` (the clean literal form, not an `of-int` wrap).
-    assert_eq!(
-        fix_text("(module m (def (f) (let (((: x Float64) 3)) x)) (export f))").as_deref(),
-        Some("3.0"),
-        "int-literal→Float let-binder retypes to a float literal"
-    );
-    // A NON-literal int init annotated Float → wrap in `(Float64.of-int …)` (no float literal spelling).
-    assert_eq!(
-        fix_text("(module m (def (f (: n Int64)) (let (((: x Float64) n)) x)) (export f))"),
-        Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE)),
-        "non-literal int→Float let-binder wraps in of-int"
-    );
-    // integer-valued float LITERAL annotated Int → drop the `.0`.
-    assert_eq!(
-        fix_text("(module m (def (f) (let (((: x Int64) 3.0)) x)) (export f))").as_deref(),
-        Some("3"),
-        "float-literal→Int let-binder drops the fractional form"
-    );
-    // String init annotated Bytes → wrap in `(String.to-bytes …)` (total prelude conversion).
-    assert_eq!(
-        fix_text("(module m (def (f (: s String)) (let (((: x Bytes) s)) x)) (export f))"),
-        Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE)),
-        "String→Bytes let-binder wraps in to-bytes"
-    );
-    // A payload-type value annotated its SUM → wrap in the matching variant constructor `(Some …)`.
-    assert_eq!(
-        fix_text("(module m (def (f) (let (((: x (Option Int64)) 5)) x)) (export f))"),
-        Some(format!("(Some {})", crate::abi::WRAP_HOLE)),
-        "Int→(Option Int64) let-binder wraps in Some"
-    );
-}
-
-#[test]
-fn a_known_type_let_binder_mismatch_keeps_its_coercion_fix() {
-    // WHITE-BOX pin (corpus-inexpressible — asserts a STRUCTURED `.fix`, which the corpus `(error …)`
-    // form has no field for): a let-binder annotation whose KNOWN type mismatches the value keeps its
-    // M63 coercion fix, NOT a spurious unknown-type reject. `(let (((: x Float64) 3)) x)` → CDZ0203
-    // "bound to a value" WITH a fix. The backend-agnostic halves of the let-binder annotation
-    // VALIDATION — unknown-type → CDZ0101 (incl. nested `(List Nonesuch)`), non-type → CDZ0203,
-    // known-type → compiles + runs — migrated to corpus `spec/semantics/07-type-system.sexp`
-    // ("…let-binder annotation…" cases). Only this fix-quality assertion is inexpressible there.
-    let m63 = first_error("(module m (def (main) (let (((: x Float64) 3)) x)) (export main))");
-    assert_eq!(m63.code.as_deref(), Some("CDZ0203"), "got: {}", m63.message);
-    assert!(
-        m63.message.contains("bound to a value") && m63.fix.is_some(),
-        "a KNOWN-type mismatch keeps its coercion fix, not the unknown-type reject: {}",
-        m63.message
-    );
-}
-
+// (an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix + a_known_type_let_binder_mismatch_keeps_its_coercion_fix
+//  migrated to corpus 07-type-system: let-binder annotation MISMATCH -> CDZ0203 "a binder annotated T is bound to a value
+//  of type U" + the same coercion fixes as a value annotation — Int64.of wrap, "3.0"/"3" literal retype (replace),
+//  Float64.of-int wrap, String.to-bytes wrap, (Some …) sum-wrap, and Bool->Int64 no-fix.)
 #[test]
 fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
     // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
