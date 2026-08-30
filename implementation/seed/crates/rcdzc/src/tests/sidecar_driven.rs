@@ -2776,7 +2776,11 @@ fn a_resolve_of_query_for_a_non_reference_is_empty() {
     assert_eq!(cadenza_compile_abi::decode_resolve(bytes), None);
 }
 
-/// Parse `src`, resolve `offset` to a node, run `ScopeAt`, and return the `(name, type)` bindings.
+/// Parse `src`, resolve `offset` to a node, run `ScopeAt`, and return each binding's `(name, ty-head)` —
+/// the KIND_SCOPE wire is now binary AST (`cadenza_compile_abi::decode_scope`), each binding carrying the
+/// FULL structured type payload; rcdzc has no consumer-side type-name renderer, so a test asserts the
+/// payload's STRUCTURE (its head name, e.g. `Int` for an `(Int 64)` = Int64 binding) rather than a rendered
+/// string (rendering is the cdz consumer's job via `render_ty_scheme`).
 fn scope_bindings(src: &str, offset: usize) -> Vec<(String, String)> {
     let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
     let node = spans.node_at_offset(offset).expect("a node at the offset");
@@ -2797,12 +2801,12 @@ fn scope_bindings(src: &str, offset: usize) -> Vec<(String, String)> {
         "a query does not fail: {:?}",
         out.diagnostics
     );
-    artifact_text(&out, KIND_SCOPE)
-        .expect("a scope artifact")
-        .lines()
-        .map(|l| {
-            let mut c = l.split('\t');
-            (c.next().unwrap().to_string(), c.next().unwrap().to_string())
+    let bytes = artifact_bytes(&out, KIND_SCOPE).expect("a scope artifact");
+    cadenza_compile_abi::decode_scope(bytes)
+        .into_iter()
+        .map(|b| {
+            let head = b.ty.head_name(b.ty.root).unwrap_or("?").to_string();
+            (b.name, head)
         })
         .collect()
 }
@@ -2814,13 +2818,13 @@ fn a_scope_at_query_lists_let_bindings_and_params_with_types() {
     // Offset at the `(+ p q)` body.
     let off = src.find("(+ p q)").expect("the body");
     let scope = scope_bindings(src, off);
-    // `p` and `q` are both in scope, both Int64.
+    // `p` and `q` are both in scope, both Int64 — the payload head is `Int` (an `(Int 64)` = Int64 type).
     assert!(
-        scope.iter().any(|(n, t)| n == "p" && t == "Int64"),
+        scope.iter().any(|(n, t)| n == "p" && t == "Int"),
         "param p:Int64 in scope: {scope:?}"
     );
     assert!(
-        scope.iter().any(|(n, t)| n == "q" && t == "Int64"),
+        scope.iter().any(|(n, t)| n == "q" && t == "Int"),
         "let-binding q:Int64 in scope: {scope:?}"
     );
 }

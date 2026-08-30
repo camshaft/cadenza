@@ -6389,37 +6389,25 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    if text.trim().is_empty() {
+    let bindings = cadenza_compile_abi::decode_scope(bytes);
+    if bindings.is_empty() {
         eprintln!(
             "{PROG}: no bindings in scope at byte offset {}",
             args.offset
         );
         return ExitCode::SUCCESS;
     }
-    // Each line is `name<TAB>type<TAB>binder-node-id`; map the binder node to its source location.
-    // One line-start index (binary-searched line:col) so many bindings stay linear, not O(bindings×len).
-    // Both output shapes — the human `file:line:col: name : type` and the `--json` object — are computed
-    // from the SAME resolved `(name, type, line, col)` so they can't drift (mirrors `cdz exports`).
+    // The binary-AST scope value (`cadenza_compile_abi::decode_scope`); map each binder node to its source
+    // location. One line-start index (binary-searched line:col) so many bindings stay linear. Both output
+    // shapes — the human `file:line:col: name : type` and the `--json` object — are computed from the SAME
+    // resolved `(name, type, line, col)` so they can't drift (mirrors `cdz exports`). The type NAME is
+    // rendered from the decoded FULL structured Ty payload via the shared cadenza-syntax renderer
+    // (`render_ty_scheme`), so no render_name string crosses the wire.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    let mut malformed = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut cols = line.splitn(3, '\t');
-        let (name, ty, binder) = match (cols.next(), cols.next(), cols.next()) {
-            (Some(n), Some(t), Some(b)) => (n, t, b),
-            _ => {
-                report_malformed_query_row("scope", line);
-                malformed = true;
-                continue;
-            }
-        };
-        let line_col = binder
-            .parse::<u32>()
-            .ok()
-            .and_then(|b| spans.get(cadenza_syntax::StructId(b)))
+    for b in bindings {
+        let ty = cadenza_syntax::render_ty::render_ty_scheme(&b.ty, b.ty.root);
+        let line_col = spans
+            .get(cadenza_syntax::StructId(b.node))
             .map(|span| index.line_col(&source, span.start));
         if args.json {
             use cadenza_syntax::query::json;
@@ -6429,22 +6417,18 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
                 obj.raw("line", &l.to_string());
                 obj.raw("col", &c.to_string());
             }
-            obj.string("name", name);
-            obj.string("type", ty);
+            obj.string("name", &b.name);
+            obj.string("type", &ty);
             println!("{}", obj.finish());
         } else {
             let loc = match line_col {
                 Some((l, c)) => format!("{}:{l}:{c}", args.file),
                 None => args.file.clone(),
             };
-            println!("{loc}: {name} : {ty}");
+            println!("{loc}: {} : {ty}", b.name);
         }
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 /// `cdz exports FILE` — the module's exported interface. Drives `Query::Exports` (each exported name +
@@ -6933,21 +6917,6 @@ fn dispatch_query_over_inputs(
         let _ = result_kind; // the in-process output already carries every artifact by kind
         rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
     }
-}
-
-/// Report a sidecar QUERY RESULT ROW that did not parse into its expected shape — the shared loud-failure
-/// path for the `cdz` query readers that call it: `uses`, `scope`, `exports`, `symbols`, `highlight`, and
-/// `instantiations`. (`param-manifest` has its OWN equivalent error path — the original fix from PR #525 —
-/// and does not route through here.) Each reader splits a query's TAB-separated output into a fixed set of
-/// fields; a row that does not match is NOT silently dropped (which would mask a sidecar output-format
-/// regression behind a success exit + a silently-short result — the class Copilot flagged, PR #525/#530).
-/// Instead the reader calls this to name the query + the offending line, then FAILS at the end. `query` is
-/// the query name for the message; returns nothing — the caller sets its own `malformed` flag.
-fn report_malformed_query_row(query: &str, line: &str) {
-    eprintln!(
-        "{PROG}: internal: could not parse a `{query}` result row — the sidecar query output format may \
-         have changed (expected TAB-separated fields): {line:?}"
-    );
 }
 
 /// Report a compile output's error diagnostics to stderr (used when a query produced no artifact —
