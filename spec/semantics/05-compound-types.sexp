@@ -8898,6 +8898,31 @@
   (input     #list(-1 2.0))
   (error     CDZ0201 (fix (kind replace) (replacement "-1.0") (unverified))))
 
+; The MAP/SET twins of the list-homogeneity message+fix: a map's keys must share one type and its values
+; must share one type; a set's elements must share one type. A clash is CDZ0201 and NAMES the two differing
+; types; an int-literal-vs-float clash additionally carries the same `n.0` retype fix (retyping the first
+; int literal so the collection unifies at Float64), while a cross-KIND clash (Int64 vs String) is not
+; coercible → no fix. (Migrated from rcdzc a_map_or_set_heterogeneity_names_the_types_and_offers_the_retype_fix.)
+(case "a map with heterogeneous VALUES names both types and offers no fix for a cross-kind clash"
+  (input  (do (def x (map (1 1) (2 "b"))) (export x)))
+  (error  CDZ0201 (message "Int64") (message "String") (no-fix)))
+
+(case "a map int-vs-float VALUE clash offers the float-literal retype fix on the first value"
+  (input  (do (def x (map (1 1) (2 2.0))) (export x)))
+  (error  CDZ0201 (fix (kind replace) (replacement "1.0") (unverified))))
+
+(case "a map int-vs-float KEY clash offers the float-literal retype fix on the first key"
+  (input  (do (def x (map (1 10) (2.0 20))) (export x)))
+  (error  CDZ0201 (fix (kind replace) (replacement "1.0") (unverified))))
+
+(case "a set int-vs-float element clash offers the float-literal retype fix"
+  (input  (do (def x #set(1 2.0)) (export x)))
+  (error  CDZ0201 (fix (kind replace) (replacement "1.0") (unverified))))
+
+(case "a set cross-kind element clash names both types and offers no fix"
+  (input  (do (def x #set(1 "a")) (export x)))
+  (error  CDZ0201 (message "Int64") (message "String") (no-fix)))
+
 ; Homogeneity is a property of the LIST VALUE, so it must hold under `List.push` too, not only for a
 ; list LITERAL. collections-and-text.md #A List Is Grown By Functional Construction: `List.push`
 ; "MUST produce a NEW LIST VALUE" — and a list value's elements share one type (#A List Is An Ordered

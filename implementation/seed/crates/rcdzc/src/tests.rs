@@ -14053,61 +14053,14 @@ mod match_engine {
     }
 
     #[test]
-    fn a_map_or_set_heterogeneity_names_the_types_and_offers_the_retype_fix() {
-        // The map/set twins of the list-homogeneity message+fix: a map's key/value or a set's element
-        // clash now NAMES the two differing types (was a generic "do not share a type") and, for an
-        // int-literal-vs-float clash, carries the SAME `n.0` retype fix the list/if/match sites give.
-        // A map VALUE clash: Int64 vs String — names both types, no fix (cross-kind).
-        let kv = reject_full("(module m (def x (map (1 1) (2 \"b\"))) (export x))")
-            .expect("a map value-heterogeneity violation must reject");
-        assert_eq!(kv.code.as_deref(), Some("CDZ0201"), "got: {}", kv.message);
-        assert!(
-            kv.message.contains("Int64") && kv.message.contains("String"),
-            "names the two differing value types: {}",
-            kv.message
-        );
-        assert!(
-            kv.fix.is_none(),
-            "int-vs-String is not coercible: {:?}",
-            kv.fix
-        );
-        // A map VALUE int-vs-float clash → the retype fix (on the FIRST value, like the list check's
-        // first-operand preference — retyping `1`→`1.0` unifies the values at Float64 in one shot).
-        let mv = reject_full("(module m (def x (map (1 1) (2 2.0))) (export x))").expect("reject");
-        assert_eq!(
-            mv.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("1.0"),
-            "map int-vs-float value offers the float-literal retype: {}",
-            mv.message
-        );
-        // A map KEY int-vs-float clash → the retype fix on the first key.
-        let mk =
-            reject_full("(module m (def x (map (1 10) (2.0 20))) (export x))").expect("reject");
-        assert_eq!(
-            mk.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("1.0"),
-            "map int-vs-float key offers the retype: {}",
-            mk.message
-        );
-        // A SET element int-vs-float clash → the retype fix; a cross-kind set clash names types, no fix.
-        let sf =
-            reject_full("(module m (def x (Set.of (list 1 2.0))) (export x))").expect("reject");
-        assert_eq!(
-            sf.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("1.0"),
-            "set int-vs-float element offers the retype: {}",
-            sf.message
-        );
-        let ss =
-            reject_full("(module m (def x (Set.of (list 1 \"a\"))) (export x))").expect("reject");
-        assert!(
-            ss.message.contains("Int64") && ss.message.contains("String") && ss.fix.is_none(),
-            "set cross-kind names both types, no fix: {}",
-            ss.message
-        );
-        // STRUCTURAL-DELTA HINT (the peer-join hint the list/if/match sites carry, now at set/map too):
-        // when the two clashing types are SAME-KIND compounds, name the SPECIFIC differing sub-part instead
-        // of leaving two full renders. A set of records differing in one field's TYPE.
+    fn a_map_or_set_heterogeneity_structural_delta_hint_names_the_differing_subpart() {
+        // STRUCTURAL-DELTA HINT (the peer-join hint the list/if/match sites carry, at set/map too): when
+        // the two clashing element types are SAME-KIND compounds, the diagnostic names the SPECIFIC
+        // differing sub-part instead of leaving two full renders. (The scalar names-types + int/float
+        // retype-fix half of this family is now the corpus 05 "map/set twins of the list-homogeneity
+        // message+fix" cases; this rust pin keeps the WHITE-BOX residual: the structural-delta wording and
+        // the NEGATIVE that a scalar clash gets NO delta tail — a message-ABSENCE the corpus cannot assert.)
+        // A set of records differing in one field TYPE.
         let sr = reject_full(
             "(module m (def x (Set.of (list (record (x 1)) (record (x true))))) (export x))",
         )
@@ -14137,8 +14090,10 @@ mod match_engine {
             "map value names the differing sum payload axis: {}",
             mvd.message
         );
-        // NO regression: a plain SCALAR clash gets NO structural-delta tail (only the type names), while
-        // still carrying its retype fix — the delta only fires for same-kind compounds that differ inside.
+        // NO regression: a plain SCALAR clash gets NO structural-delta tail (only the type names) — a
+        // message-ABSENCE the corpus cannot express, so it stays here.
+        let sf =
+            reject_full("(module m (def x (Set.of (list 1 2.0))) (export x))").expect("reject");
         assert!(
             !sf.message.contains("should be") && !sf.message.contains("field"),
             "a scalar set clash gets no structural-delta tail: {}",
