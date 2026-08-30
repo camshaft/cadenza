@@ -444,8 +444,8 @@ fn emit_def(
             })?;
             let pname_node = b.name(pname);
             let ty_node = crate::lower::type_ast(b, ty, &ncx).ok_or_else(|| {
-                Reject::decline(format!(
-                    "the Cadenza backend does not yet lower a parameter of type `{}` (`{name}`) — no \
+                Reject::unsupported(format!(
+                    "the Cadenza backend does not support lowering a parameter of type `{}` (`{name}`) — no \
                      value-form type surface (a function / unsolved type)",
                     ty.render_name(&ncx)
                 ))
@@ -494,8 +494,8 @@ fn emit_def(
         // arm silently drops its wrapper — the #5341 miscompile in an arm position). Decline it (a uniform-arm
         // reconstruction is a later slice); the direct-wasm path is what the corpus grades against.
         Some(Ty::Qty { .. }) if qty_leaf(db, body) == LeafKind::Mixed => {
-            return Err(Reject::decline(
-                "the Cadenza backend does not yet re-emit a quantity return whose control-flow arms MIX a \
+            return Err(Reject::unsupported(
+                "the Cadenza backend does not support re-emitting a quantity return whose control-flow arms MIX a \
                  bare-magnitude (e.g. checked-narrow) arm with a constructing arm"
                     .to_string(),
             ));
@@ -626,8 +626,8 @@ fn emit_export(
 ) -> Result<StructId, Reject> {
     let source_name = db.defs[def].name.clone();
     if e.name != source_name {
-        return Err(Reject::decline(format!(
-            "the Cadenza backend does not yet lower a RENAMED export (`{source_name}` exported as \
+        return Err(Reject::unsupported(format!(
+            "the Cadenza backend does not support lowering a RENAMED export (`{source_name}` exported as \
              `{}`) — B0 emits unrenamed exports only",
             e.name
         )));
@@ -690,8 +690,8 @@ fn emit_expr_viewed(
     // always proceed. (breaker-reported; decline-don't-miscompile.)
     match &eff_ty {
         Ty::Sum { decl, .. } if db.is_user_node(*decl) && !emitted.contains(decl) => {
-            return Err(Reject::decline(
-                "the Cadenza backend does not yet re-emit this user sum value (generic / open sum — \
+            return Err(Reject::unsupported(
+                "the Cadenza backend does not support re-emitting this user sum value (generic / open sum — \
                  its `(type …)` declaration is not emitted) — a later slice"
                     .to_string(),
             ));
@@ -710,8 +710,8 @@ fn emit_expr_viewed(
             let decl = *decl;
             let inner = (**inner).clone();
             if !emitted.contains(&decl) {
-                return Err(Reject::decline(
-                    "the Cadenza backend does not yet re-emit this user nominal (newtype) value (its \
+                return Err(Reject::unsupported(
+                    "the Cadenza backend does not support re-emitting this user nominal (newtype) value (its \
                      `(type …)` declaration is not emitted — a generic / open newtype)"
                         .to_string(),
                 ));
@@ -741,8 +741,8 @@ fn emit_expr_viewed(
                         let elems = match core_of(db, id) {
                             Core::Tuple { elems } if elems.len() == arity => elems,
                             _ => {
-                                return Err(Reject::decline(
-                                    "the Cadenza backend does not yet re-emit a multi-payload \
+                                return Err(Reject::unsupported(
+                                    "the Cadenza backend does not support re-emitting a multi-payload \
                                      newtype value whose erased payload is not a statically-visible \
                                      tuple literal of the declared arity"
                                         .to_string(),
@@ -768,8 +768,8 @@ fn emit_expr_viewed(
                 // sub-values carry the nominal and re-insert the constructor at the true leaves).
                 NominalDisp::PassThrough => {}
                 NominalDisp::Decline => {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet re-emit a newtype value from this \
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support re-emitting a newtype value from this \
                          construction site (an ambiguous inner-vs-nominal position)"
                             .to_string(),
                     ));
@@ -796,8 +796,8 @@ fn emit_expr_viewed(
                 }
                 NominalDisp::PassThrough => {}
                 NominalDisp::Decline => {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet re-emit a quantity value from this \
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support re-emitting a quantity value from this \
                          construction site (an ambiguous magnitude-vs-quantity position)"
                             .to_string(),
                     ));
@@ -957,8 +957,8 @@ fn emit_expr_viewed(
                 return Ok(b.list(vec![head, l, r]));
             }
             let sym = prim_operator(op).ok_or_else(|| {
-                Reject::decline(format!(
-                    "the Cadenza backend does not yet lower the operator prim {op:?}"
+                Reject::unsupported(format!(
+                    "the Cadenza backend does not support lowering the operator prim {op:?}"
                 ))
             })?;
             let head = b.name(sym);
@@ -1032,8 +1032,8 @@ fn emit_expr_viewed(
                     member_access(b, &module, member)
                 }
                 _ => {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet lower a non-numeric Convert (e.g. a boolean \
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support lowering a non-numeric Convert (e.g. a boolean \
                          coercion) — a later slice"
                             .to_string(),
                     ));
@@ -1094,8 +1094,8 @@ fn emit_expr_viewed(
         }
         Core::BigIntCmp { op, lhs, rhs } | Core::RationalCmp { op, lhs, rhs } => {
             let sym = prim_operator(op).ok_or_else(|| {
-                Reject::decline(format!(
-                    "the Cadenza backend does not yet lower the numeric-tower compare prim {op:?}"
+                Reject::unsupported(format!(
+                    "the Cadenza backend does not support lowering the numeric-tower compare prim {op:?}"
                 ))
             })?;
             let head = b.name(sym);
@@ -1191,8 +1191,8 @@ fn emit_expr_viewed(
                         | crate::core::Probe::Char(_)
                         | crate::core::Probe::Wild
                 ) {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet lower a non-scalar match probe \
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support lowering a non-scalar match probe \
                          (Str/Bytes/list/map)"
                             .to_string(),
                     ));
@@ -1361,8 +1361,8 @@ fn emit_expr_viewed(
             let variant = b.list(variant_children);
             let ncx = db.name_ctx();
             let ty_node = crate::lower::type_ast(b, &ty, &ncx).ok_or_else(|| {
-                Reject::decline(
-                    "the Cadenza backend does not yet lower a variant of an under-determined sum type"
+                Reject::unsupported(
+                    "the Cadenza backend does not support lowering a variant of an under-determined sum type"
                         .to_string(),
                 )
             })?;
@@ -1405,8 +1405,8 @@ fn emit_expr_viewed(
             let mut node = emit_expr(db, b, scrutinee, None, env, emitted)?;
             for step in path.iter() {
                 let crate::core::PathStep::Elem(i) = *step else {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet lower a nested match sub-pattern with a \
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support lowering a nested match sub-pattern with a \
                          non-tuple/record (sum / list-rest) step"
                             .to_string(),
                     ));
@@ -1525,7 +1525,7 @@ fn emit_expr_viewed(
                         } else {
                             return Err(Reject::decline(
                                 "the Cadenza backend reached a payload projection over a single-variant sum \
-                                 whose erased payload layout it does not yet index"
+                                 whose erased payload layout it does not support indexing"
                                     .to_string(),
                             ));
                         }
@@ -1777,8 +1777,8 @@ fn emit_expr_viewed(
             let ty = crate::infer::type_of(db, id);
             let ncx = db.name_ctx();
             let ty_node = crate::lower::type_ast(b, &ty, &ncx).ok_or_else(|| {
-                Reject::decline(
-                    "the Cadenza backend does not yet lower a `Value.decode` whose result type is \
+                Reject::unsupported(
+                    "the Cadenza backend does not support lowering a `Value.decode` whose result type is \
                      under-determined (an unsolved decode target)"
                         .to_string(),
                 )
@@ -1832,8 +1832,8 @@ fn emit_expr_viewed(
                     })?;
                     let pname_node = b.name(pname);
                     let ty_node = crate::lower::type_ast(b, ty, &ncx).ok_or_else(|| {
-                        Reject::decline(
-                            "the Cadenza backend does not yet lower a closure parameter type (no \
+                        Reject::unsupported(
+                            "the Cadenza backend does not support lowering a closure parameter type (no \
                              value-form surface)"
                                 .to_string(),
                         )
@@ -2081,8 +2081,8 @@ fn emit_expr_viewed(
                 member_access(b, "Ordering", "of")
             } else {
                 let sym = prim_operator(op).ok_or_else(|| {
-                    Reject::decline(format!(
-                        "the Cadenza backend does not yet lower the value-compare prim {op:?}"
+                    Reject::unsupported(format!(
+                        "the Cadenza backend does not support lowering the value-compare prim {op:?}"
                     ))
                 })?;
                 b.name(sym)
@@ -2101,8 +2101,8 @@ fn emit_expr_viewed(
             let msg = b.atom_leaf(Leaf::Str("".into()));
             Ok(b.list(vec![head, msg]))
         }
-        other => Err(Reject::decline(format!(
-            "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
+        other => Err(Reject::unsupported(format!(
+            "the Cadenza backend does not support lowering this Core node back to Cadenza: {}",
             core_node_kind(&other)
         ))),
     }
@@ -2323,8 +2323,8 @@ fn emit_switch_tree(
             }
             Ok(())
         }
-        _ => Err(Reject::decline(
-            "the Cadenza backend does not yet lower a guarded / literal-test node in a deep sum-match tree"
+        _ => Err(Reject::unsupported(
+            "the Cadenza backend does not support lowering a guarded / literal-test node in a deep sum-match tree"
                 .to_string(),
         )),
     }
@@ -2355,8 +2355,8 @@ fn emit_match_sum(
     let arms = match root {
         SumCont::Switch { path, arms } if path.is_empty() => arms,
         _ => {
-            return Err(Reject::decline(
-                "the Cadenza backend does not yet lower this sum match (a disc-folded / nested / \
+            return Err(Reject::unsupported(
+                "the Cadenza backend does not support lowering this sum match (a disc-folded / nested / \
                  guarded root — only a switch on the scrutinee's own discriminant)"
                     .to_string(),
             ));
@@ -2373,8 +2373,8 @@ fn emit_match_sum(
         }
     };
     if db.is_user_node(decl) && !emitted.contains(&decl) {
-        return Err(Reject::decline(
-            "the Cadenza backend does not yet re-emit a match over this user sum (its `(type …)` \
+        return Err(Reject::unsupported(
+            "the Cadenza backend does not support re-emitting a match over this user sum (its `(type …)` \
              declaration is not emitted — a generic / open / single-variant sum)"
                 .to_string(),
         ));
@@ -2388,8 +2388,8 @@ fn emit_match_sum(
             // through its own name. Only a bare `Leaf` default is emitted (a guarded default declines).
             None => {
                 let SumCont::Leaf(body) = &arm.cont else {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet lower a guarded / literal-test default \
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support lowering a guarded / literal-test default \
                          sum-match arm"
                             .to_string(),
                     ));
@@ -2497,8 +2497,8 @@ fn emit_match_sum(
                                     *i
                                 }
                                 _ => {
-                                    return Err(Reject::decline(
-                                        "the Cadenza backend does not yet lower a literal-payload test at \
+                                    return Err(Reject::unsupported(
+                                        "the Cadenza backend does not support lowering a literal-payload test at \
                                          a deep / non-payload path"
                                             .to_string(),
                                     ));
@@ -2507,8 +2507,8 @@ fn emit_match_sum(
                             // The matched continuation `then_` must be a plain body (`Leaf`); a nested
                             // continuation after the literal test (another guard / test) is a later slice.
                             let SumCont::Leaf(then_body) = then_.as_ref() else {
-                                return Err(Reject::decline(
-                                    "the Cadenza backend does not yet lower a literal-payload test with \
+                                return Err(Reject::unsupported(
+                                    "the Cadenza backend does not support lowering a literal-payload test with \
                                      a nested `then` continuation"
                                         .to_string(),
                                 ));
@@ -2674,8 +2674,8 @@ fn emit_nested_switch_chain(
             // explicit variant arms (inner-arm order preserved), so the surface matcher takes an explicit arm
             // first and this catches the rest — exhaustiveness holds. A GUARDED/nested default cont declines.
             let SumCont::Leaf(default_body) = &inner.cont else {
-                return Err(Reject::decline(
-                    "the Cadenza backend does not yet lower a guarded / nested nested-switch default arm"
+                return Err(Reject::unsupported(
+                    "the Cadenza backend does not support lowering a guarded / nested nested-switch default arm"
                         .to_string(),
                 ));
             };
@@ -2755,8 +2755,8 @@ fn emit_nested_switch_chain(
                 let mut want: Vec<PathStep> = path.to_vec();
                 want.push(PathStep::Payload);
                 if np.as_ref() != want.as_slice() {
-                    return Err(Reject::decline(
-                        "the Cadenza backend does not yet lower a nested switch at a non-immediate-payload \
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support lowering a nested switch at a non-immediate-payload \
                          path"
                             .to_string(),
                     ));
@@ -2785,8 +2785,8 @@ fn emit_nested_switch_chain(
                 )?;
             }
             _ => {
-                return Err(Reject::decline(
-                    "the Cadenza backend does not yet lower a guarded/literal/multi-payload/deeper \
+                return Err(Reject::unsupported(
+                    "the Cadenza backend does not support lowering a guarded/literal/multi-payload/deeper \
                      nested-switch inner arm"
                         .to_string(),
                 ));
@@ -2834,8 +2834,8 @@ fn emit_match_list(
             matches!(core_of(db, e), Core::MapNew { .. }) && !crate::lower::is_const_value(db, e)
         })
     {
-        return Err(Reject::decline(
-            "the Cadenza backend does not yet re-emit a list match whose scrutinee carries a \
+        return Err(Reject::unsupported(
+            "the Cadenza backend does not support re-emitting a list match whose scrutinee carries a \
              runtime-valued map element (a nested map-key sub-pattern over a runtime map does not \
              round-trip — the #5472 fence)"
                 .to_string(),
@@ -2974,8 +2974,8 @@ fn emit_match_chain(
         crate::core::Probe::Wild => None,
         // The caller pre-scanned the arms to only Int/Bool/Char/Wild.
         _ => {
-            return Err(Reject::decline(
-                "the Cadenza backend does not yet lower this match probe".to_string(),
+            return Err(Reject::unsupported(
+                "the Cadenza backend does not support lowering this match probe".to_string(),
             ));
         }
     };
@@ -3218,7 +3218,7 @@ fn emit_nominal_elem_peel(
     } else {
         Err(Reject::decline(
             "the Cadenza backend reached a payload projection over a single-variant sum whose erased \
-             payload layout it does not yet index"
+             payload layout it does not support indexing"
                 .to_string(),
         ))
     }
