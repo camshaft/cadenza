@@ -750,3 +750,26 @@ live dual-read (native ctor-leaf `structurally_eq` its name alias) and lands cle
   inside a record/map (2-element list → wrongly `(= .. v)`), corrupting it — fixed to skip `..`-headed entries
   (regression-tested). Relevant now that #5826/#5890 made construction-spreads live inside record/set/all four
   collections; the codemod must preserve them.
+
+### 13.7 Drift-guard: LANDED + ENFORCED via gate-local, with a per-form exempt marker (2026-08-30)
+The corpus-input native-form invariant is now STRUCTURALLY ENFORCED, replacing the per-tick by-hand drift
+catch (which caught 6 escapes: #5882/#5889/#5981/#6012/#6019/#6034). Final shape:
+- **The lint:** `cdz corpus nativize-check FILE…` (v-corpus-harness #5974) asserts
+  `nativize_compound_source_skip_outputs(file) == file` per `spec/semantics/*.sexp` — inputs must already be
+  native `#ctor` form. Shares the codemod's `nativize_compound_impl` walk, so ONE source of truth.
+- **Per-form EXEMPT marker (#6060, MINE):** a line-comment `; cdz-nativize-exempt: <reason>` IMMEDIATELY above
+  a form marks it (+ subtree) as deliberately non-native — `nat_form_is_exempt` (scans the raw source line
+  above the form's span) makes `nat_walk` skip it. Because the lint shares the walk, the codemod AND the lint
+  honor it with no lint-side allowlist. Used for TRANSITIONAL NAME-HEAD PARITY cases: corpus-05 #6047 (guards
+  the #6042 name-head ML/paren-surface hang fix — distinct lowering path from the `#tuple` ctor-leaf, so
+  nativizing it would destroy the coverage). Concierge-ruled EXEMPT (tick-151).
+- **Enforcement teeth (#6066, v-fleet-tooling):** `corpusNativizeCheck` (+ `corpusVanishedCheck`) folded into
+  the **local-gate FAIL-SET** (flake.nix, the `inherit …` merge-gate block). A classic-form input now makes
+  `cargo xtask fleet gate-local` print HOLD — the real teeth under `gh pr merge --admin` (which BYPASSES a
+  GitHub required-status context, so a required GHA check alone would NOT have stopped the #6025-class
+  self-merge-past). Verified holding across 3 post-fold corpus-touch ticks (authors respect the HOLD; 0 drift).
+- **⚠ Reader-flip CLEANUP (must do at the atomic window):** the name-head path these parity cases guard is
+  DELETED at the flip, so every `; cdz-nativize-exempt:` case (currently just corpus-05 #6047) must be
+  DROPPED or CONVERTED to the `#ctor` form in-window, and the marker recognition in `nat_form_is_exempt` can be
+  removed with the rest of `cdz-nativize`/`nativize_compound_source` (deleted at M3 Phase-2 completion). Grep
+  `cdz-nativize-exempt` across `spec/semantics/*.sexp` at flip time to enumerate the cases to retire.
