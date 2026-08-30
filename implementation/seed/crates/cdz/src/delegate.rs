@@ -550,6 +550,20 @@ fn empty_output() -> cadenza_compile_abi::CompileOutput {
     }
 }
 
+/// The decline shape for a BATCH sidecar query (`--where` over N bindings) in the thin `!standalone`
+/// dispatcher. The delegate protocol is single-result today — a batch needs positional result naming, a
+/// later slice — and this build does not link `rcdzc` to run the batch in-process. So emit a clear stderr
+/// line and return the empty shape (the caller's `out.artifacts` is then empty → it reports no matches,
+/// having warned). The nix seedCompiler never runs an interactive batch `--where`; a batch query needs
+/// `cdz --features standalone`.
+pub(crate) fn sidecar_batch_unsupported(prog: &str) -> cadenza_compile_abi::CompileOutput {
+    eprintln!(
+        "{prog}: a batch sidecar query (`--where` over multiple bindings) is not supported by the thin \
+         dispatcher — rebuild with `--features standalone` for in-process batch queries"
+    );
+    empty_output()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
