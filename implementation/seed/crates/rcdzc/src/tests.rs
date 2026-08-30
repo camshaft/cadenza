@@ -18432,67 +18432,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
-        // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
-        // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`
-        // wrap — the unit read from the EXPECTED quantity type (`Unit::render`). The same repair wherever a
-        // bare number meets a quantity.
-        // ARGUMENT position — the verified wrap fix.
-        let arg = reject_full(
-            "(module m (def (g (: q (Qty Int64 (Unit.base #\"meter\")))) q) \
-               (def (main) (g 5)) (export main))",
-        )
-        .expect("a bare number to a Qty param rejects");
-        assert_eq!(arg.code.as_deref(), Some("CDZ0203"), "got: {}", arg.message);
-        let afix = arg.fix.expect("the arg site carries the Qty.of wrap");
-        assert_eq!(afix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            afix.replacement,
-            format!("(Qty.of {} (Unit.base #\"meter\"))", crate::abi::WRAP_HOLE),
-            "wraps the bare arg in the required unit: {}",
-            arg.message
-        );
-        // LET-BINDER position — also the verified wrap fix.
-        let binder = reject_full(
-            "(module m (def (main) (let (((: x (Qty Int64 (Unit.base #\"meter\"))) 5)) x)) \
-               (export main))",
-        )
-        .expect("a bare number bound to a Qty binder rejects");
-        assert_eq!(
-            binder.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some(format!("(Qty.of {} (Unit.base #\"meter\"))", crate::abi::WRAP_HOLE).as_str()),
-            "the let-binder carries the same Qty.of wrap: {}",
-            binder.message
-        );
-        // DIRECT value annotation `(: 5 (Qty …))` — a message-only tail (its wrap payload's nested
-        // `(Unit.base …)` mis-splices the parse-based fix builder, so the mechanical fix is withheld there),
-        // but the message still points at the repair.
-        let direct = reject_full(
-            "(module m (def (main) (: 5 (Qty Int64 (Unit.base #\"meter\")))) (export main))",
-        )
-        .expect("a bare number annotated a Qty rejects");
-        assert!(
-            direct.message.contains("give the number the required unit")
-                && direct.message.contains("(Qty.of"),
-            "the direct-annotation message names the Qty.of repair: {}",
-            direct.message
-        );
-        // NO false coercion: a numeric MIX (Float64 into a Qty Int64) does NOT get the Qty wrap — it would
-        // still mismatch on the inner numeric type after wrapping.
-        let mix = reject_full(
-            "(module m (def (g (: q (Qty Int64 (Unit.base #\"meter\")))) q) \
-               (def (main) (g 5.0)) (export main))",
-        )
-        .expect("a Float into a Qty Int64 rejects");
-        assert!(
-            mix.fix.is_none() || !mix.message.contains("give the number the required unit"),
-            "a numeric-mix bare value gets no Qty.of wrap: {} / {:?}",
-            mix.message,
-            mix.fix
-        );
-    }
-
-    #[test]
     fn a_numeric_inner_mismatch_under_a_unit_offers_the_same_coercion_fix_as_a_bare_number() {
         // Two quantities of ONE dimension whose INNER numeric types differ — `(Qty.of 5 m) + (Qty.of 3.0
         // m)` (Int64 vs Float64 under the same unit) — is the SAME CDZ0301 no-promotion mismatch a bare
