@@ -344,6 +344,12 @@ pub struct ConvertArgs {
     #[arg(short, long, default_value_t = Options::default().width)]
     width: usize,
 
+    /// Render `--to sexpr` STRUCTURALLY: comment nodes as ordinary `(comment "text" form)` lists rather
+    /// than `;` line-comments (the `render_sexpr` parse-tree form the `spec/syntax/` golden corpus uses).
+    /// No effect on a non-`sexpr` target.
+    #[arg(long)]
+    structural: bool,
+
     /// Input file; omit or use `-` to read stdin.
     file: Option<String>,
 }
@@ -530,6 +536,7 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
     let input = read_input(args.file.as_deref())?;
     let opts = Options {
         width: args.width,
+        structural: args.structural,
         ..Options::default()
     };
     let output = convert::convert_with(&input, from, to, opts).map_err(|e| e.to_string())?;

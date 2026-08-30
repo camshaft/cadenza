@@ -245,6 +245,13 @@ pub struct Options {
     /// "typed-result-to-text" display conversion (self-hosting-surface.md). `false` (the default) is
     /// the canonical, re-readable printer that `cdz convert` and the round-trip gate rely on.
     pub display: bool,
+    /// Render the s-expression output STRUCTURALLY (Sexpr target only): comment nodes print as ordinary
+    /// `(comment "text" form)` / `(comment-after "text" form)` lists rather than being collapsed back to
+    /// `;` line-comments. This is the `render_sexpr` form (DESIGN-parser-test-corpus.md §2) — the parse-
+    /// tree golden the `spec/syntax/` corpus compares against, where a comment is part of the tree, not
+    /// droppable `;` trivia. `false` (the default) keeps the fmt-idempotent `;` rendering. No effect on a
+    /// non-Sexpr target.
+    pub structural: bool,
 }
 
 impl Default for Options {
@@ -252,6 +259,7 @@ impl Default for Options {
         Options {
             width: crate::printer::DEFAULT_WIDTH,
             display: false,
+            structural: false,
         }
     }
 }
@@ -265,6 +273,12 @@ pub fn write(arenas: &Arenas, to: Format) -> Result<Vec<u8>, ConvertError> {
 pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>, ConvertError> {
     match to {
         Format::Binary => Ok(codec::encode(arenas)),
+        // The STRUCTURAL s-expr render (`--structural`): comment nodes as ordinary `(comment …)` lists,
+        // the `spec/syntax/` parse-tree golden form (DESIGN-parser-test-corpus.md §2). Same layout as the
+        // default pretty print — only comment handling differs.
+        Format::Sexpr if opts.structural => {
+            Ok(sexpr::render_sexpr_width(arenas, opts.width).into_bytes())
+        }
         // The s-expr surface pretty-prints across lines (breaking a form only when it overflows
         // `width`), the same width knob the ML printer uses — a single-line dump is unreadable for
         // anything but the smallest forms.
@@ -759,6 +773,46 @@ mod tests {
         )
         .unwrap();
         assert!(String::from_utf8(narrow).unwrap().contains('\n'));
+    }
+
+    #[test]
+    fn structural_sexpr_option_expands_comment_nodes() {
+        // The `structural` Options flag (the `cdz convert --to sexpr --structural` surface) renders comment
+        // wrappers as ordinary `(comment …)` lists — the parse-tree golden form the `spec/syntax/` corpus
+        // uses (DESIGN-parser-test-corpus.md §2) — while the DEFAULT keeps the fmt-idempotent `;` rendering.
+        let src = b"; a header\n(def (f) 1)";
+        let structural = |input: &[u8]| {
+            String::from_utf8(
+                convert_with(
+                    input,
+                    Format::Sexpr,
+                    Format::Sexpr,
+                    Options {
+                        structural: true,
+                        ..Options::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let out = structural(src);
+        // Structural: an explicit `(comment …)` list, NO `;` trivia.
+        assert!(
+            out.contains("(comment"),
+            "structural emits a comment list: {out:?}"
+        );
+        assert!(!out.contains(';'), "structural drops `;` trivia: {out:?}");
+        // The default (non-structural) still collapses to `;`.
+        let default =
+            String::from_utf8(convert(src, Format::Sexpr, Format::Sexpr).unwrap()).unwrap();
+        assert!(default.contains(';'), "default keeps `;`: {default:?}");
+        // Both re-read to the SAME arena (structural output is round-trippable).
+        let a = read(src, Format::Sexpr).unwrap();
+        assert!(
+            a.structurally_eq(&read(out.as_bytes(), Format::Sexpr).unwrap()),
+            "structural render re-reads to the identical arena"
+        );
     }
 
     #[test]
