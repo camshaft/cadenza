@@ -115,8 +115,9 @@ def drive(
     drive(step, s2, g(acc, x), g)
 
 /// `fold(it, acc, g)` — left-fold the iterator through `g`, seeded by `acc`. The fusing consumer.
-def fold(it, acc, g: Int64 -> Int64 -> Int64) = match it with
-  | Iter.Mk(s, step) => drive(step, s, acc, g)
+def fold(it, acc, g: Int64 -> Int64 -> Int64) =
+  let Iter.Mk(s, step) = it in
+  drive(step, s, acc, g)
 
 /// `count-drive`/`count` — number of elements (a closure-free consumer atop the same driving pattern).
 def count-drive(
@@ -129,8 +130,9 @@ def count-drive(
     let (_x, s2) = p in
     count-drive(step, s2, n + 1)
 
-def count(it) = match it with
-  | Iter.Mk(s, step) => count-drive(step, s, 0)
+def count(it) =
+  let Iter.Mk(s, step) = it in
+  count-drive(step, s, 0)
 
 /// `any(it, p)` — does SOME element satisfy `p`? Short-circuits at the first match (stops driving). A
 /// closure-storing scalar consumer over the same driving pattern.
@@ -144,8 +146,9 @@ def any-drive(
     let (x, s2) = pr in
     if p(x) then true else any-drive(step, s2, p)
 
-def any(it, p: Int64 -> Bool) = match it with
-  | Iter.Mk(s, step) => any-drive(step, s, p)
+def any(it, p: Int64 -> Bool) =
+  let Iter.Mk(s, step) = it in
+  any-drive(step, s, p)
 
 /// `all(it, p)` — do ALL elements satisfy `p`? (vacuously true for empty). Short-circuits at the first
 /// failure. The `any` dual.
@@ -159,8 +162,9 @@ def all-drive(
     let (x, s2) = pr in
     if p(x) then all-drive(step, s2, p) else false
 
-def all(it, p: Int64 -> Bool) = match it with
-  | Iter.Mk(s, step) => all-drive(step, s, p)
+def all(it, p: Int64 -> Bool) =
+  let Iter.Mk(s, step) = it in
+  all-drive(step, s, p)
 
 /// `find(it, p)` — the first element satisfying `p`, or `None`. Short-circuits. Returns `Option(Int64)`.
 def find-drive(
@@ -173,8 +177,9 @@ def find-drive(
     let (x, s2) = pr in
     if p(x) then Option.Some(x) else find-drive(step, s2, p)
 
-def find(it, p: Int64 -> Bool) = match it with
-  | Iter.Mk(s, step) => find-drive(step, s, p)
+def find(it, p: Int64 -> Bool) =
+  let Iter.Mk(s, step) = it in
+  find-drive(step, s, p)
 
 /// `position(it, p)` — the 0-based INDEX of the first element satisfying `p`, or `None` (Rust's
 /// `Iterator::position`; the index dual of `find`, which returns the element). Short-circuits at the first
@@ -191,8 +196,9 @@ def position-drive(
     let (x, s2) = pr in
     if p(x) then Option.Some(i) else position-drive(step, s2, i + 1, p)
 
-def position(it, p: Int64 -> Bool) = match it with
-  | Iter.Mk(s, step) => position-drive(step, s, 0, p)
+def position(it, p: Int64 -> Bool) =
+  let Iter.Mk(s, step) = it in
+  position-drive(step, s, 0, p)
 
 /// `sum(it)` — total of the elements (fold with +, seeded 0). The canonical fused-pipeline consumer.
 /// Routes through `fold` (the idiomatic one-liner). This USED to require driving `drive` directly to keep
@@ -226,8 +232,8 @@ def nth(it, n) =
   if n < 0 then
     Option.None(unit)
   else
-    match it with
-      | Iter.Mk(s, step) => nth-drive(step, s, n)
+    let Iter.Mk(s, step) = it in
+    nth-drive(step, s, n)
 
 /// `contains(it, target)` — does the iterator yield `target`? Short-circuits at the first match (so it
 /// terminates on an infinite source that contains the target).
@@ -241,8 +247,9 @@ def contains-drive(
     let (x, s2) = p in
     if x == target then true else contains-drive(step, s2, target)
 
-def contains(it, target) = match it with
-  | Iter.Mk(s, step) => contains-drive(step, s, target)
+def contains(it, target) =
+  let Iter.Mk(s, step) = it in
+  contains-drive(step, s, target)
 
 /// `last(it)` — the final element, or `None` for an empty iterator. Drains, tracking the most-recent
 /// element via a `have` flag (so an empty source is `None`, not a bogus 0).
@@ -257,8 +264,9 @@ def last-drive(
     let (x, s2) = p in
     last-drive(step, s2, x, true)
 
-def last(it) = match it with
-  | Iter.Mk(s, step) => last-drive(step, s, 0, false)
+def last(it) =
+  let Iter.Mk(s, step) = it in
+  last-drive(step, s, 0, false)
 
 /// TESTS ----------------------------------------------------------------------------------------------
 @test
