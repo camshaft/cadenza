@@ -978,26 +978,12 @@ fn many_references_to_one_missing_name_all_suggest_it() {
 }
 
 #[test]
-fn a_member_accessible_module_sharing_a_variant_name_is_still_suggested() {
-    // A prelude name can be BOTH a member-accessible MODULE and some sum's variant — `List` is the
-    // collection-operations module AND the `Ast.List` node kind. The member-operand candidate pool
-    // drops prelude VARIANT CONSTRUCTORS (no members → a fix wouldn't resolve), but that filter must
-    // key on the prelude BINDING's own shape (its `(meta variant)` channel), NOT a name-set collision:
-    // the earlier name-collision filter wrongly dropped the `List` MODULE, so `(. Lst len)` suggested
-    // the equidistant `Ast` (`Lst`→`Ast` and `Lst`→`List` are both 1 edit) instead of the intended
-    // `List`. The module is a real member target, so it must stay in the pool.
-    let src = "(do (def (main) (Lst.len (list 1 2))) (export main))";
-    let d = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a member operand typo rejects");
-    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("List"),
-        "the `List` MODULE (a member target) is suggested over the equidistant `Ast`: {}",
-        d.message
-    );
-    // The tie-break itself: on equal edit distance, a shared FIRST CHARACTER wins (a typo rarely
-    // changes the leading letter). `Lst` shares `L` with `List`, not `Ast`.
+fn nearest_breaks_an_edit_distance_tie_by_shared_first_character() {
+    // The internal `suggest::nearest` tie-break unit (the end-to-end diagnostic — `(. Lst len)` suggesting
+    // the member-accessible `List` MODULE over the equidistant `Ast` variant — moved to corpus
+    // 11-modules "a member-operand typo suggests a member-accessible module sharing a variant name"). This
+    // white-box residual pins the tie-break the corpus cannot reach: on equal edit distance, a shared FIRST
+    // CHARACTER wins (a typo rarely changes the leading letter). `Lst` shares `L` with `List`, not `Ast`.
     assert_eq!(
         crate::diag::suggest::nearest("Lst", ["Ast", "List"]),
         Some("List".into()),
