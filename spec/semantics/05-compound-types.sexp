@@ -24407,3 +24407,20 @@
             (export main)))
   (output (: 19 Int64))
   (live-objects 0))
+
+(case "a DEEP recursive tuple destructure-let TERMINATES within deadline — the #6000 init-re-eval hang regression guard"
+  (doc    "TERMINATION lock-in for the destructure-let materialize-once fix (#6000). Pre-fix, a tuple
+           destructure-`let` re-evaluated its init at EVERY element projection; a recursive init — `slow`
+           returns a 2-tuple, destructured into `(a b)` with BOTH fields used — then re-ran the recursive
+           call per field → 3^n EXPONENTIAL → non-termination (the 128-min compiler-ml core peg). Lowering a
+           destructure-let as a single irrefutable-arm `match` materializes the recursive call ONCE →
+           LINEAR. At depth 33 the fixed form is instant; a RE-REGRESSION (per-element re-eval) is ~3^33
+           and TRAPS the gate wall-clock deadline (`wasm trap: interrupt`), so this case CATCHES a
+           re-introduction of the re-eval. `slow 33` is a Fibonacci-style fold: x+y = 9227465.")
+  (input  (do
+            (def (slow (: n Int64))
+              (if (<= n 1) (tuple n n)
+                  (let ((#tuple(a b) (slow (- n 1)))) (tuple (+ a b) a))))
+            (def (main) (let ((#tuple(x y) (slow 33))) (+ x y)))
+            (export main)))
+  (output (: 9227465 Int64)))
