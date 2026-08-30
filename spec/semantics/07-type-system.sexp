@@ -616,6 +616,30 @@
   (input  (do (def (main) (: 5 Bool)) (export main)))
   (error  CDZ0203))
 
+; A value used where a SUM is expected, whose type matches a variant's PAYLOAD, is CDZ0203 with a
+; wrap-in-variant fix — "wrap the value in `Some`" + a WRAP replace `(Some …)` (the `…` marks where the
+; original goes). This applies at an ANNOTATION `(: n Option)` and at a CALL SITE (a mistyped argument to a
+; sum parameter). The wrap is offered only when the variant is FORCED: `(Result Int64 Int64)` given an
+; Int64 could be `Ok` OR `Err` (ambiguous) → NO fix; `(Result Int64 String)` given an Int64 → only `Ok`
+; fits → `(Ok …)`. (Migrated from rcdzc an_annotation_mismatch_to_a_sum_offers_a_wrap_in_variant_fix +
+; a_mistyped_argument_to_a_sum_parameter_offers_a_wrap_in_variant_fix.)
+(case "an annotation mismatch to a sum offers a wrap-in-variant fix"
+  (input  (do (type Option (Some Int64) None) (def (f (: n Int64)) (: n Option)) (export f)))
+  (error  CDZ0203 (message "wrap the value in `Some`")
+                  (fix (kind wrap) (replacement "(Some …)") (unverified))))
+
+(case "a mistyped argument to a sum parameter offers a wrap-in-variant fix at the call site"
+  (input  (do (def (f (: o (Option Int64))) o) (def (main) (f 5)) (export main)))
+  (error  CDZ0203 (fix (kind wrap) (replacement "(Some …)") (unverified))))
+
+(case "an ambiguous wrap (both Result arms fit the payload) offers no fix"
+  (input  (do (def (f (: r (Result Int64 Int64))) r) (def (main) (f 5)) (export main)))
+  (error  CDZ0203 (no-fix)))
+
+(case "a forced-choice wrap into the only fitting Result arm offers that arm"
+  (input  (do (def (f (: r (Result Int64 String))) r) (def (main) (f 5)) (export main)))
+  (error  CDZ0203 (fix (kind wrap) (replacement "(Ok …)") (unverified))))
+
 (case "an arrow parameter annotation compiles and applies (a positive control)"
   (doc    "A positive control proving the type-operand validation does not over-reject a WELL-FORMED arrow
            type: an arrow-typed parameter `(: g (-> Int64 Int64))` applied to a lambda compiles and runs.

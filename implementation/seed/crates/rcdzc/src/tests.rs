@@ -9919,32 +9919,6 @@ mod match_engine {
     }
 
     #[test]
-    fn an_annotation_mismatch_to_a_sum_offers_a_wrap_in_variant_fix() {
-        // "try wrapping the expression in `Some`" (`spec/capabilities/diagnostics.md` §A Diagnostic
-        // Carries A Route To A Fix): `(: n Option)` where `n : Int64` and `Option`'s `Some` carries an
-        // Int64 → name + a WRAP fix. The `…` (WRAP_HOLE) marks where the original `n` goes.
-        let d = reject_full(
-            "(module m (type Option (Some Int64) None) \
-               (def (f (: n Int64)) (: n Option)) (export f))",
-        )
-        .expect("annotation mismatch must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message.contains("wrap the value in `Some`"),
-            "names the variant: {}",
-            d.message
-        );
-        let fix = d.fix.expect("a wrap fix is carried");
-        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            fix.replacement,
-            format!("(Some {})", crate::abi::WRAP_HOLE),
-            "wraps the original in the Some ctor"
-        );
-        assert!(!fix.verified, "a wrap is a heuristic (intent guess)");
-    }
-
-    #[test]
     fn an_operator_arg_wrap_in_variant_uses_the_readable_lead_not_the_raw_unify_message() {
         // In an OPERATOR argument position — `(= o 5)` for `o : (Option Int64)` — the `=` scheme grounds
         // its first operand, so the second (`5 : Int64`) is checked against `(Option Int64)`. The value is
@@ -10044,49 +10018,6 @@ mod match_engine {
             d.message
         );
         assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
-    }
-
-    #[test]
-    fn a_mistyped_argument_to_a_sum_parameter_offers_a_wrap_in_variant_fix() {
-        // The wrap-in-variant repair at the CALL SITE (not only the `(: n T)` annotation): passing `5 :
-        // Int64` to a `(: o (Option Int64))` parameter offers "wrap in `Some`" → `(Some 5)`. This closes
-        // the argument-position gap (the annotation path already had it); both now route through the shared
-        // `wrap_variant_for`.
-        let d = reject_full(
-            "(module m (def (f (: o (Option Int64))) o) (def (main) (f 5)) (export main))",
-        )
-        .expect("the mistyped argument must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        let fix = d.fix.expect("a wrap fix is carried at the call site");
-        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            fix.replacement,
-            format!("(Some {})", crate::abi::WRAP_HOLE),
-            "wraps the argument in `Some`"
-        );
-        assert!(!fix.verified, "a wrap is a heuristic (intent guess)");
-        // FORCED-CHOICE ONLY: `(Result Int64 Int64)` given an `Int64` — BOTH `Ok` and `Err` could wrap it
-        // → ambiguous → NO fix (we never guess which construction the author meant).
-        let ambiguous = reject_full(
-            "(module m (def (f (: r (Result Int64 Int64))) r) (def (main) (f 5)) (export main))",
-        )
-        .expect("the mistyped argument must reject");
-        assert!(
-            ambiguous.fix.is_none(),
-            "an ambiguous wrap (Ok vs Err both fit) offers no fix: {:?}",
-            ambiguous.fix
-        );
-        // The OTHER-arm case is unambiguous: `(Result Int64 String)` given `Int64` → only `Ok` fits.
-        let ok_only = reject_full(
-            "(module m (def (f (: r (Result Int64 String))) r) (def (main) (f 5)) (export main))",
-        )
-        .expect("reject");
-        assert_eq!(
-            ok_only.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some(format!("(Ok {})", crate::abi::WRAP_HOLE)).as_deref(),
-            "only Ok's payload matches Int64: {}",
-            ok_only.message
-        );
     }
 
     #[test]
