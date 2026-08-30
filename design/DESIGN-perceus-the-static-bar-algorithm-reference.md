@@ -256,10 +256,23 @@ The static `(live-objects N)` census counts OBJECTS, not REFERENCES, so it hides
   among leak-count mismatches. Grep every FAIL that is NOT a `live-objects mismatch`.
 - **Flap detection.** Run the corpus TWICE; a live-objects count that DIFFERS run-to-run is a
   census-hidden rc UNSOUNDNESS (order/allocation-dependent imbalance) even when the value is correct.
-- **Release-trap ≠ debug-leak.** The debug `--report-live-objects` runtime does NOT trap the
-  rc-underflow / over-free class — it shows it as a LEAK. That class only OOBs on the RELEASE runtime
-  (CAD / wasmtime). So for an over-free/UAF hunt, trust the CAD/release trap, not the debug leak count
-  (see `debug-runtime-does-not-trap-on-rc-underflow-over-free-class-*` memory).
+- **🔑 A TRAP is a reliable UAF signal; a COUNT is not.** This is the most important reliability rule, and
+  it resolves an apparent contradiction. There are TWO over-free sub-classes:
+  - **read-through-freed** (a dangling READ of a freed cell) — the expanded #4635 `assert_node_live`
+    getter-guard TRAPS this DETERMINISTICALLY on the debug runtime (this is what catches `hczm2`/`bme2`).
+  - **rc-underflow without a later read** (an over-decrement whose cell is never read again) — the debug
+    runtime MASKS this as a LEAK; it only OOBs on the RELEASE runtime (CAD / wasmtime). This is the
+    snowflake (`lower`) case: leak-91 on debug, OOB on release.
+  So the reliable UAF signal is a **TRAP** — either the debug #4635 getter-trap OR a release/CAD OOB —
+  and a trap is DETERMINISTIC (reproduces run-to-run, unaffected by fleet load). By contrast a
+  **live-objects COUNT is flaky under heavy parallel nix contention / on a stale debug store** (confirmed
+  fleet-wide; nearly reverted the sound PR #5851). ⟹ **For a UAF verdict, trust the TRAP** (deterministic,
+  reliable even under load). **For a LEAK/reclaim verdict, the COUNT is authoritative ONLY on a
+  fresh-isolated store measured off-contention** — a count-mismatch seen under fleet load is SUSPECT, not
+  a confirmed regression; reconfirm before acting/re-pinning. (This is why `bme2` — which TRAPPED — is a
+  solid UAF, while the earlier "SHAPE 61 → 0" — a COUNT under load — was a stale-store false-reclaim.)
+  See `debug-runtime-does-not-trap-on-rc-underflow-over-free-class-*` +
+  `gate-local-on-stale-base-shows-post-base-baseline-repins-as-false-regressions`.
 - **Witnesses live in the CORPUS** as `(live-objects N)` cases, not rcdzc rust `#[test]`s — rcdzc has no
   wasmtime dep and does not execute wasm. Behavioral reclaim verification is corpus-by-design.
 
