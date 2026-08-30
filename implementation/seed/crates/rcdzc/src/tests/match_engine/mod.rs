@@ -2797,93 +2797,19 @@ fn a_nested_compound_mismatch_drills_to_the_exact_leaf_path() {
     );
 }
 
-#[test]
-fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
-    // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
-    // named the operation + its expected argument type instead of the generic unify mismatch ("Int64
-    // and Bool must be the same type here") that reads like an internal clash. The prelude-op analogue
-    // of the effect-op perform message + the variant-ctor payload message.
-    let push =
-        reject_full("(module m (def (g (: xs (List Int64))) ((. List push) xs true)) (export g))")
-            .expect("a wrong-element-type List.push rejects");
-    // A list op's element-type disagreement is a MALFORMED COLLECTION (CDZ0201), the UNIFORM
-    // collection-homogeneity code (collections-and-text.md §A Collection's Homogeneity Violation Is A
-    // Malformed Collection) — but it STILL names the operation + its expected/actual types the way a
-    // generic wrong-arg member-op mismatch (CDZ0203) does, so the phrasing is unchanged, only the code.
-    assert_eq!(
-        push.code.as_deref(),
-        Some("CDZ0201"),
-        "got: {}",
-        push.message
-    );
-    assert!(
-        push.message
-            .contains("`List.push` expects an argument of type Int64")
-            && push.message.contains("Bool"),
-        "names the operation + expected/actual types: {}",
-        push.message
-    );
-    // A conversion op takes the same treatment: `Int64.of` on a String.
-    let of = reject_full("(module m (def (g (: s String)) ((. Int64 of) s)) (export g))")
-        .expect("Int64.of on a String rejects");
-    assert!(
-        of.message
-            .contains("`Int64.of` expects an argument of type Int64"),
-        "names the conversion op: {}",
-        of.message
-    );
-    // NO regression: a bare operator (`+`) is NOT a `(. Module member)` head, so it keeps the generic
-    // symmetric message (it reads fine — both operands named), not a `.`-member phrasing.
-    let bare =
-        reject_full("(module m (def (g) (+ 1 true)) (export g))").expect("(+ 1 true) rejects");
-    assert!(
-        !bare.message.contains("expects an argument of type"),
-        "a bare operator keeps the generic mismatch message: {}",
-        bare.message
-    );
-    // M180/M181 structural-delta audit: when the argument and the expected element are SAME-KIND
-    // compounds that differ structurally, the member-op message appends the minimal-conflict delta the
-    // effect-op / operator-arg / annotation sites carry — a record field-set diff into `List.push`
-    // names the field rather than leaving the reader to diff two rendered record types.
-    let delta = reject_full(
-        "(module m (def (g (: xs (List (Record (x Int64))))) \
-             ((. List push) xs (record (y 2)))) (export g))",
-    )
-    .expect("a structurally-mismatched List.push element rejects");
-    assert!(
-        delta
-            .message
-            .contains("`List.push` expects an argument of type")
-            && delta.message.contains("field `x`")
-            && delta.message.contains('y'),
-        "names the operation + the field-level delta: {}",
-        delta.message
-    );
-}
+// (a_wrong_type_argument_to_a_prelude_member_op_names_the_operation migrated to corpus 07-type-system: a
+// wrong-element-type `List.push` (CDZ0201) / conversion `Int64.of` (CDZ0203) names "`Op` expects an argument
+// of type T" + the actual type; a bare operator keeps the generic message (not "expects an argument of type");
+// a structurally-mismatched List.push element appends the field-level delta. All 4 PASS wasm.)
 
 #[test]
-fn over_applying_a_prelude_member_op_names_the_operation_and_arity() {
-    // The over-application companion of the wrong-type-arg member-op message: `(List.push xs 1 2)`
-    // (push takes 2) named the operation + its arity ("`List.push` takes 2 arguments, but 3 were
-    // given") instead of the anonymous "applied 3 arguments to a function of arity 2". Carries the
-    // delete-surplus fix, and reports ONCE (the emit-path wrong-arity decline is deduped away).
-    let d =
-        reject_full("(module m (def (g (: xs (List Int64))) ((. List push) xs 1 2)) (export g))")
-            .expect("over-applying List.push rejects");
-    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-    assert!(
-        d.message
-            .contains("`List.push` takes 2 arguments, but 3 were given"),
-        "names the op + arity: {}",
-        d.message
-    );
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Delete),
-        "carries the delete-surplus fix: {:?}",
-        d.fix
-    );
-    // Arity-1 op → SINGULAR "argument"; and the emit-path decline is deduped (ONE error).
+fn over_applying_a_prelude_member_op_dedupes_the_emit_path_decline() {
+    // RESIDUAL of over_applying_a_prelude_member_op_names_the_operation_and_arity — its op+arity message
+    // faces (`List.push` takes 2 / `Map.len` takes 1 argument, but N given + delete fix) migrated to corpus
+    // 07-type-system. This keeps the two corpus-inexpressible controls: (a) the emit-path wrong-arity decline
+    // is DEDUPED so an over-applied member op reports exactly ONE error (a diagnostic COUNT), and (b) a bare
+    // operator over-application keeps its own message, not a `.`-member phrasing (its CDZ0201 message has no
+    // positive substring the corpus grades cleanly).
     let out = crate::compile::compile(
         &[crate::abi::Artifact::new(
             crate::abi::Artifact::KIND_AST,
@@ -2904,13 +2830,6 @@ fn over_applying_a_prelude_member_op_names_the_operation_and_arity() {
         1,
         "one error, decline deduped: {:?}",
         out.diagnostics
-    );
-    assert!(
-        errs[0]
-            .message
-            .contains("`Map.len` takes 1 argument, but 2 were given"),
-        "singular 'argument' for an arity-1 op: {}",
-        errs[0].message
     );
     // NO regression: a bare operator over-application keeps its own message (not a `.`-member phrasing).
     let bare = reject_full("(module m (def (g) (+ 1 2 3)) (export g))").expect("(+ 1 2 3) rejects");
