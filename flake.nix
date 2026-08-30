@@ -2180,7 +2180,7 @@
         # is not in their snapshot → those bins CACHE-HIT → so does an exec keyed on them. A shared
         # whole-workspace snapshot (the old `platformItestSrc`) would rotate every bin on any edit and defeat
         # the exec/build decoupling (the emitted-wasm-unchanged ⇒ exec-cache-hit win).
-        mkPhaseBin = { pname, crate, bin ? pname, closure, injectRuntimeHash ? false }:
+        mkPhaseBin = { pname, crate, bin ? pname, closure, injectRuntimeHash ? false, extraArgs ? "" }:
           craneLib.buildPackage {
             inherit pname;
             version = "0.0.0";
@@ -2225,7 +2225,7 @@
             '';
             # crane injects --locked + --release; scope to just this phase bin (its equivalent of the raw
             # `cargo build -p <crate> --bin <bin>`). Build only — no tests (the gate/CI run those).
-            cargoExtraArgs = "-p ${crate} --bin ${bin}";
+            cargoExtraArgs = "-p ${crate} --bin ${bin} ${extraArgs}";
             doCheck = false;
           };
         # shred (parser closure — excludes rcdzc), build (compiler closure = rcdzc), exec (runtime closure —
@@ -2233,6 +2233,9 @@
         cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
         cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; injectRuntimeHash = true; };
         cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
+        # cdzRunExec — CRANELIFT-FREE corpus executor (seq-250/271 AOT split, #5893/#5910/#5922). Drops the
+        # default `cranelift` feature → deserialize-only (Component::deserialize of precompiled .cwasm), no JIT.
+        cdzRunExec = mkPhaseBin { pname = "cdz-run-exec"; crate = "cdz-run"; bin = "cdz-run"; closure = crateClosure "cdz-run"; extraArgs = "--no-default-features"; };
         # cdzHandWrapper / cdzRunHandWrapper — the SELF-CONTAINED front-end wrappers (hoisted out of apps.cdz /
         # apps.cdz-run so `apps.build` can materialize the SAME wrapper into a worktree's target/release/ — no
         # drift). Each exports the phase-bin overrides (CDZ_COMPILE_BIN / CDZ_STORE / CDZ_RUN_BIN / CDZ_CALC_BIN,
@@ -4444,6 +4447,11 @@
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
         # so `nix build .#cdz-calc` builds it directly; apps.cdz injects it as CDZ_CALC_BIN for interactive use.
         packages.cdz-calc = cdzCalc;
+        # TEMP (seq-250 AOT acceptance re-verify w/ #5922 NFC-deserialize): removed after mkCorpusExec rewire.
+        packages.cdz-run-exec = cdzRunExec;
+        packages.cdz-run-tool = cdzRun;
+        packages.runtime-debug-wasm = runtimeDebug;
+        packages.component-store-tmp = componentStore;
         packages.cargo-artifacts-release = cargoArtifactsRelease;
         packages.cargo-artifacts-release-codegen = cargoArtifactsReleaseCodegen;
         packages.rcdzc-wasm = rcdzcWasm;
