@@ -177,6 +177,29 @@
   (input  (do (def (main) (Qty.value (Qty.of 5.0 (Unit.base #"gram")))) (export main)))
   (call   main) (output (: 5.0 Float64)))
 
+; A BARE number where a `(Qty …)` is expected gets a `(Qty.of <n> <unit>)` WRAP fix — the unit read from
+; the EXPECTED quantity type — wherever the bare number meets a quantity: an ARGUMENT position and a
+; LET-BINDER both carry the verified-shape wrap. A DIRECT value annotation `(: 5 (Qty …))` is message-only
+; (its wrap payload's nested `(Unit.base …)` mis-splices the parse-based fix builder), but the message still
+; names the `Qty.of` repair. A numeric MIX (a Float into a `Qty Int64`) is NOT the wrap shape — it still
+; mismatches on the inner numeric type after wrapping, so it names the ordinary arg-type mismatch instead.
+; (Migrated from rcdzc a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap.)
+(case "a bare number to a Qty parameter offers the Qty.of wrap fix"
+  (input  (do (def (g (: q (Qty Int64 (Unit.base #"meter")))) q) (def (main) (g 5)) (export main)))
+  (error  CDZ0203 (fix (kind wrap) (replacement "(Qty.of … (Unit.base #\"meter\"))"))))
+
+(case "a bare number bound to a Qty let-binder offers the Qty.of wrap fix"
+  (input  (do (def (main) (let (((: x (Qty Int64 (Unit.base #"meter"))) 5)) x)) (export main)))
+  (error  CDZ0203 (fix (kind wrap) (replacement "(Qty.of … (Unit.base #\"meter\"))"))))
+
+(case "a bare number directly annotated a Qty names the Qty.of repair (message-only)"
+  (input  (do (def (main) (: 5 (Qty Int64 (Unit.base #"meter")))) (export main)))
+  (error  CDZ0203 (message "give the number the required unit") (message "(Qty.of") (no-fix)))
+
+(case "a numeric-mix bare value into a Qty Int64 names the arg-type mismatch, not the Qty.of wrap"
+  (input  (do (def (g (: q (Qty Int64 (Unit.base #"meter")))) q) (def (main) (g 5.0)) (export main)))
+  (error  CDZ0203 (message "this argument is a Float64, but a value of type (Qty Int64")))
+
 ; A quantity in a NON-REFERENCE unit DISPLAYS at its dimension's reference unit with the magnitude
 ; SCALED to that reference — the same normalize-to-reference the mixed-unit combine runs, so a single
 ; quantity and a homogeneous combine render identically. This is the fix for the calc relabel bug
