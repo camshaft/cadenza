@@ -6853,26 +6853,28 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    if text.trim().is_empty() {
-        // Empty ONLY for an UNKNOWN name — a known def always emits a `disp` line. (A near-typo gets no
-        // suggestion here; `cdz type NAME` is the name-oriented query that offers "did you mean?".) An
-        // unresolvable name is a FAILURE (rc≠0) — consistent with `cdz type`/`cdz doc`, so a script can
-        // tell a typo from a real result rather than reading a success exit on a "no such definition".
+    // The instantiations artifact is canonical binary AST (operator P0 seq-284); decode via the shared
+    // codec and render from the STRUCTURED report — no TAB/`+`/`;` parsing.
+    let Some(report) = cadenza_compile_abi::instantiations_wire::decode(bytes) else {
+        eprintln!("{PROG}: instantiations artifact did not decode as binary AST");
+        return ExitCode::FAILURE;
+    };
+    if !report.known {
+        // An UNKNOWN name — a known def always carries a disposition. (A near-typo gets no suggestion
+        // here; `cdz type NAME` is the name-oriented query that offers "did you mean?".) An unresolvable
+        // name is a FAILURE (rc≠0) — consistent with `cdz type`/`cdz doc`, so a script can tell a typo from
+        // a real result rather than reading a success exit on a "no such definition".
         eprintln!(
             "{PROG}: no such definition `{}` in {}",
             args.name, args.file
         );
         return ExitCode::FAILURE;
     }
-    // Two line kinds, each TAB-tagged:
-    //   `disp<TAB>node<TAB>disposition`               — the def's fate (specialized/inlined/emitted/…)
-    //   `inst<TAB>spec<TAB>node<TAB>arg;arg;…`         — one per specialization (only when specialized)
-    // Map the def's name node to a location; render each instance's `;`-joined args as `NAME[a, b, …]`.
+    // Map the def's name node to a location once (both the disposition line and every instance line share
+    // it); render each instance's args as `NAME[a, b, …]`.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    let loc_of = |node: &str| match node
-        .parse::<u32>()
-        .ok()
+    let loc = match report
+        .name_node
         .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
     {
         Some(span) => {
@@ -6881,68 +6883,32 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
         }
         None => args.file.clone(),
     };
-    let mut malformed = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
+    // Present the disposition set readably (joined by `+`, as on the wire) and gloss what it MEANS (why
+    // there is / isn't a function to point at). A `transformed→copy` tag or a `+`-joined combination
+    // carries its own words, so those get no extra gloss.
+    let disp = report.dispositions.join("+");
+    let gloss = match disp.as_str() {
+        "inlined" => " (β-reduced into each call site; no standalone function emitted)",
+        "specialized" => " (monomorphized — one function per instantiation, listed below)",
+        "emitted" => " (emitted as a standalone function and called)",
+        "unreferenced" => " (never called, inlined, specialized, or exported)",
+        d if d.starts_with("transformed→") => {
+            " (its recursion was rewritten into the named accumulator loop)"
         }
-        let mut cols = line.split('\t');
-        match cols.next() {
-            Some("disp") => {
-                let (node, disp) = match (cols.next(), cols.next()) {
-                    (Some(n), Some(d)) => (n, d),
-                    _ => {
-                        report_malformed_query_row("instantiations", line);
-                        malformed = true;
-                        continue;
-                    }
-                };
-                // Present the disposition set readably, and gloss what it MEANS (why there is / isn't a
-                // function to point at) so the status is self-explanatory. A `transformed→copy` tag or a
-                // `+`-joined combination carries its own words, so those get no extra gloss.
-                let gloss = match disp {
-                    "inlined" => " (β-reduced into each call site; no standalone function emitted)",
-                    "specialized" => {
-                        " (monomorphized — one function per instantiation, listed below)"
-                    }
-                    "emitted" => " (emitted as a standalone function and called)",
-                    "unreferenced" => " (never called, inlined, specialized, or exported)",
-                    d if d.starts_with("transformed→") => {
-                        " (its recursion was rewritten into the named accumulator loop)"
-                    }
-                    _ => "", // a `+`-joined combination — the words already say it
-                };
-                println!("{}: {} — {disp}{gloss}", loc_of(node), args.name);
-            }
-            Some("inst") => {
-                let (spec, node, arglist) = match (cols.next(), cols.next(), cols.next()) {
-                    (Some(s), Some(n), Some(a)) => (s, n, a),
-                    _ => {
-                        report_malformed_query_row("instantiations", line);
-                        malformed = true;
-                        continue;
-                    }
-                };
-                let pretty = arglist
-                    .split(';')
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                println!("{}:   {}[{pretty}] → {spec}", loc_of(node), args.name);
-            }
-            // A row whose leading tag is neither `disp` nor `inst` is a format skew — fail loudly rather
-            // than silently drop it (the silent-skip class; the other query readers already do this).
-            _ => {
-                report_malformed_query_row("instantiations", line);
-                malformed = true;
-            }
-        }
+        _ => "", // a `+`-joined combination — the words already say it
+    };
+    println!("{loc}: {} — {disp}{gloss}", args.name);
+    for inst in &report.instances {
+        let pretty = inst
+            .args
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("{loc}:   {}[{pretty}] → {}", args.name, inst.spec_name);
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 /// `cdz func-layout FILE` — the emitted-function LAYOUT of FILE's whole (linked import-closure) program.
@@ -7004,39 +6970,20 @@ fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    // Validate each row's shape loudly rather than silently passing a format-skewed line through (the
-    // silent-skip class other query readers guard against). The marker is `defs-begin<TAB>N<TAB>-`; every
-    // other row is `<idx>\t<hash>\t<name>`. A layout decline is the empty string — a valid (rc 0) result.
-    let mut malformed = false;
-    for (n, line) in text.lines().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
-        let cols: Vec<&str> = line.split('\t').collect();
-        let ok = if n == 0 {
-            cols.len() == 3 && cols[0] == "defs-begin" && cols[1].parse::<u32>().is_ok()
-        } else {
-            // idx is a func-index number or `-` (an emitted def with no assigned slot is reported `-`);
-            // hash is 16 hex digits; name is non-empty.
-            cols.len() == 3
-                && (cols[0] == "-" || cols[0].parse::<u32>().is_ok())
-                && cols[1].len() == 16
-                && cols[1].chars().all(|c| c.is_ascii_hexdigit())
-                && !cols[2].is_empty()
-        };
-        if !ok {
-            report_malformed_query_row("func-layout", line);
-            malformed = true;
-            continue;
-        }
-        println!("{line}");
-    }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    // The func-layout artifact is canonical binary AST (operator P0 seq-284); decode via the shared codec
+    // (zero string parsing) then RENDER the historical TAB rows verbatim — a `defs-begin<TAB>N<TAB>-` marker
+    // then one `<idx-or-"-">\t<hash16>\t<name>` row per def, byte-stable stdout the compile-reuse witness
+    // diffs. A malformed / wrong-shape artifact fails loudly (the silent-skip class other readers guard
+    // against); a layout DECLINE renders the empty string — a valid (rc 0) result.
+    let Some(fl) = cadenza_compile_abi::func_layout_wire::decode(bytes) else {
+        eprintln!("{PROG}: func-layout artifact did not decode as binary AST");
+        return ExitCode::FAILURE;
+    };
+    print!(
+        "{}",
+        cadenza_compile_abi::func_layout_wire::render_text(&fl)
+    );
+    ExitCode::SUCCESS
 }
 
 /// `cdz highlight FILE` — semantic syntax highlighting: every classified token as `file:line:col: kind`.

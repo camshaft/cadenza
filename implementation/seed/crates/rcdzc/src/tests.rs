@@ -36210,6 +36210,21 @@ mod sidecar_driven {
             .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
     }
 
+    // The func-layout artifact is now canonical binary AST (operator P0 seq-284) rather than TAB text, so
+    // decode it via the shared codec and render the historical TAB rows — the SAME `render_text` the `cdz
+    // func-layout` CLI prints, so these assertions still pin the byte-stable text form.
+    fn func_layout_text(out: &crate::abi::CompileOutput) -> Option<String> {
+        out.artifacts
+            .iter()
+            .find(|a| a.kind == KIND_FUNC_LAYOUT)
+            .map(|a| {
+                cadenza_compile_abi::func_layout_wire::render_text(
+                    &cadenza_compile_abi::func_layout_wire::decode(&a.bytes)
+                        .expect("func-layout artifact decodes as binary AST"),
+                )
+            })
+    }
+
     #[test]
     fn a_type_of_query_reads_the_type_column() {
         // A `TypeOf` request for a nullary def answers with its rendered type — the same canonical text
@@ -36696,7 +36711,13 @@ mod sidecar_driven {
             1,
             "one closure-hash sidecar on the composed (miss) path"
         );
-        let hstr = String::from_utf8(hashes[0].bytes.clone()).unwrap();
+        // The closure-hash wire is canonical binary AST (a root `Ast.Int` u64) — decode via the shared codec
+        // and render the `{:016x}` key form (operator P0 seq-284: binary AST everywhere, no bespoke hex text).
+        let hstr = format!(
+            "{:016x}",
+            cadenza_compile_abi::decode_closure_hash(&hashes[0].bytes)
+                .expect("closure-hash decodes to a u64")
+        );
         assert!(
             hstr.len() == 16 && hstr.chars().all(|c| c.is_ascii_hexdigit()),
             "closure-hash is a 16-hex-digit u64: {hstr:?}"
@@ -37180,7 +37201,12 @@ mod sidecar_driven {
                 .filter(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
                 .collect();
             assert_eq!(hashes.len(), 1, "exactly one closure-hash sidecar");
-            String::from_utf8(hashes[0].bytes.clone()).unwrap()
+            // Canonical binary-AST wire (root `Ast.Int` u64) → the `{:016x}` cache-key form.
+            format!(
+                "{:016x}",
+                cadenza_compile_abi::decode_closure_hash(&hashes[0].bytes)
+                    .expect("closure-hash decodes to a u64")
+            )
         };
 
         let consumer = drive(Request::EmitTestsConsumerOnly);
@@ -37255,7 +37281,13 @@ mod sidecar_driven {
             .artifacts
             .iter()
             .find(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .map(|a| {
+                format!(
+                    "{:016x}",
+                    cadenza_compile_abi::decode_closure_hash(&a.bytes)
+                        .expect("closure-hash decodes to a u64")
+                )
+            })
             .expect("Query::ClosureHash returns a closure-hash artifact");
         assert!(
             q_hash.len() == 16 && q_hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -37267,7 +37299,13 @@ mod sidecar_driven {
             .artifacts
             .iter()
             .find(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .map(|a| {
+                format!(
+                    "{:016x}",
+                    cadenza_compile_abi::decode_closure_hash(&a.bytes)
+                        .expect("closure-hash decodes to a u64")
+                )
+            })
             .expect("EmitTestsComposed emits a closure-hash sidecar");
         // The DRIFT-GUARD: the decision-key hash == the persist-key hash (one canonical definition).
         assert_eq!(
@@ -39209,7 +39247,7 @@ mod sidecar_driven {
             "a query does not fail: {:?}",
             out.diagnostics
         );
-        let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("a func-layout artifact");
+        let text = func_layout_text(&out).expect("a func-layout artifact");
         let mut lines = text.lines();
         assert_eq!(
             lines.next(),
@@ -39245,7 +39283,7 @@ mod sidecar_driven {
         let hash_of = |src: &str, name: &str| -> String {
             let out = compile(&inputs(src, &[Request::Query(Query::FuncLayout)]), &[]);
             assert!(!out.has_error(), "{:?}", out.diagnostics);
-            let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("func-layout");
+            let text = func_layout_text(&out).expect("func-layout");
             text.lines()
                 .find(|l| l.split('\t').nth(2).is_some_and(|n| n.starts_with(name)))
                 .and_then(|l| l.split('\t').nth(1))
@@ -39284,7 +39322,7 @@ mod sidecar_driven {
             "a query does not fail: {:?}",
             out.diagnostics
         );
-        let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("a func-layout artifact");
+        let text = func_layout_text(&out).expect("a func-layout artifact");
         assert!(
             text.starts_with("defs-begin\t"),
             "a pure-@test program still lays out (rooted on @tests), not an empty decline:\n{text:?}"
@@ -39913,7 +39951,29 @@ mod sidecar_driven {
             "an instantiations query does not fail: {:?}",
             out.diagnostics
         );
-        artifact_text(&out, KIND_INSTANTIATIONS).unwrap_or_default()
+        // The instantiations artifact is now canonical binary AST (operator P0 seq-284); decode it and
+        // reconstruct the historical `disp`/`inst` TAB text so the existing parsing helpers/assertions
+        // still pin the report shape. An unknown name (known=false) → empty, as the old empty artifact was.
+        let Some(a) = out.artifacts.iter().find(|a| a.kind == KIND_INSTANTIATIONS) else {
+            return String::new();
+        };
+        let report = cadenza_compile_abi::instantiations_wire::decode(&a.bytes)
+            .expect("instantiations artifact decodes as binary AST");
+        if !report.known {
+            return String::new();
+        }
+        let node = report
+            .name_node
+            .map_or_else(|| "-".to_string(), |n| n.to_string());
+        let mut text = format!("disp\t{node}\t{}\n", report.dispositions.join("+"));
+        for inst in &report.instances {
+            text.push_str(&format!(
+                "inst\t{}\t{node}\t{}\n",
+                inst.spec_name,
+                inst.args.join(";")
+            ));
+        }
+        text
     }
 
     /// The DISPOSITION of `name` — the `disp` line's third column (e.g. `specialized` / `inlined` /

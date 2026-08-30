@@ -12,7 +12,10 @@
 //! stay in `rcdzc`.
 
 pub mod abi;
+pub mod closure_hash_wire;
 pub mod diagnostics_wire;
+pub mod func_layout_wire;
+pub mod instantiations_wire;
 pub mod link_map;
 pub mod opt;
 pub mod overflow;
@@ -25,6 +28,7 @@ pub use abi::{
     Artifact, CompileOutput, Diagnostic, DiagnosticFix, FixKind, KIND_COMPONENT_NAME, KIND_ENTRY,
     Severity, WRAP_HOLE, component_name_artifact, entry_artifact, wrap_prefix_suffix,
 };
+pub use closure_hash_wire::{decode_closure_hash, encode_closure_hash};
 pub use diagnostics_wire::{decode_diagnostics, encode_diagnostics};
 pub use link_map::{FileSpan, KIND_LINK_MAP, decode_link_map, encode_link_map};
 pub use opt::OptLevel;

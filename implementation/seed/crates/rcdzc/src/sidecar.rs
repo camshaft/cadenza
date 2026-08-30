@@ -465,11 +465,11 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // run would otherwise lower. Then filter the record to the instances whose SOURCE definition is
             // the named one (mapping each record's `orig_body` back to its def via `def_index_by_body`).
             crate::layout::force_monomorphize(db);
-            let text = instantiations_text(db, name);
+            let report = instantiations_value(db, name);
             QueryResult {
                 kind: KIND_INSTANTIATIONS,
                 name: name.clone(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::instantiations_wire::encode(&report),
             }
         }
         Query::Symbols => {
@@ -495,19 +495,19 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
         Query::FuncLayout => {
-            let text = func_layout_text(db);
+            let fl = func_layout_value(db);
             QueryResult {
                 kind: KIND_FUNC_LAYOUT,
                 name: "func-layout".to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::func_layout_wire::encode(&fl),
             }
         }
         Query::ClosureHash => {
-            let hash = closure_hash_text(db);
+            let hash = closure_hash_value(db);
             QueryResult {
                 kind: KIND_CLOSURE_HASH,
                 name: "closure-hash".to_string(),
-                bytes: hash.into_bytes(),
+                bytes: cadenza_compile_abi::encode_closure_hash(hash),
             }
         }
     }
@@ -592,36 +592,47 @@ pub(crate) fn extract_subtree(src: &crate::ast::Arenas, root: StructId) -> crate
 /// with NO export falls back to the `@test`-rooted layout (`compute_tests`) so a pure-`@test` file — the
 /// witness's target — lays out the same func-index set `cdz test` emits. TOTAL: only when BOTH decline (no
 /// export AND no `@test`) is the result empty; an empty program yields just the marker.
-fn func_layout_text(db: &mut Db) -> String {
+fn func_layout_value(db: &mut Db) -> cadenza_compile_abi::func_layout_wire::FuncLayout {
+    use cadenza_compile_abi::func_layout_wire::{FuncLayout, FuncLayoutRow};
     // Force monomorphization so the reachable set is complete + stable regardless of what a query-only run
     // would otherwise lower (mirrors `Instantiations`); then lay out the boundary to get the func-index
-    // order. Both layouts declining (no export AND no `@test`, see the fallback below) yields the empty
-    // result — the query is total.
+    // order. Both layouts declining (no export AND no `@test`, see the fallback below) yields a DECLINE
+    // (`laid_out: false`) — the query is total.
     crate::layout::force_monomorphize(db);
     // Root on `(export …)` when the program has any (a normal library/export build); otherwise fall back to
     // the `@test`-rooted layout (`compute_tests`), which lays out the SAME func-index set `cdz test` emits.
     // A pure-`@test` file (no export) is exactly the compile-reuse witness's target (sread-eval-fns / -ho),
-    // so without this fallback the query would decline (empty) on the files it most needs to observe. Both
-    // declining (no export AND no `@test`) yields the empty result — the query stays total.
+    // so without this fallback the query would decline on the files it most needs to observe. Both
+    // declining (no export AND no `@test`) yields a DECLINE — the query stays total.
     let layout = match crate::layout::compute(db) {
         Ok(l) => l,
         Err(_) => match crate::layout::compute_tests(db) {
             Ok(l) => l,
-            Err(_) => return String::new(),
+            Err(_) => {
+                return FuncLayout {
+                    import_base: 0,
+                    laid_out: false,
+                    rows: Vec::new(),
+                };
+            }
         },
     };
-    let mut text = format!("defs-begin\t{}\t-\n", layout.import_base);
     // `layout.order` is the defined-function emission sequence; def at position `k` is wasm func
     // `import_base + k` (== `layout.abs(def)`). Emit in that order so the rows are func-index-ascending.
-    for &def in &layout.order {
-        let idx = layout
-            .abs(def)
-            .map_or_else(|| "-".to_string(), |i| i.to_string());
-        let name = db.defs[def].name.clone();
-        let hash = def_content_hash(db, def);
-        text.push_str(&format!("{idx}\t{hash:016x}\t{name}\n"));
+    let rows: Vec<FuncLayoutRow> = layout
+        .order
+        .iter()
+        .map(|&def| FuncLayoutRow {
+            name: db.defs[def].name.clone(),
+            hash: def_content_hash(db, def),
+            idx: layout.abs(def),
+        })
+        .collect();
+    FuncLayout {
+        import_base: layout.import_base,
+        laid_out: true,
+        rows,
     }
-    text
 }
 
 /// The Option-C shared-closure CONTENT-HASH for the program's `@test` dir (the [`Query::ClosureHash`] read) —
@@ -631,8 +642,9 @@ fn func_layout_text(db: &mut Db) -> String {
 /// ([`closure_content_hash`]) — the SAME canonical value the `EmitTestsComposed` miss-path `closure-hash`
 /// sidecar emits, so a provider-cache's decision key, persist key, and validation all agree. A build with no
 /// `@test` layout, or no cross-edge (single-file / nothing shared), folds the EMPTY set → a defined stable
-/// "no closure" hash. TOTAL: never errors (an un-layoutable program yields the empty-set hash).
-fn closure_hash_text(db: &mut Db) -> String {
+/// "no closure" hash. TOTAL: never errors (an un-layoutable program yields the empty-set hash). Returns the
+/// raw `u64` fold; the caller encodes it as the canonical binary-AST `KIND_CLOSURE_HASH` wire.
+fn closure_hash_value(db: &mut Db) -> u64 {
     use std::collections::BTreeMap;
     crate::layout::force_monomorphize(db);
     let layout = match crate::layout::compute_tests(db) {
@@ -693,8 +705,11 @@ pub(crate) fn def_content_hash(db: &Db, def: usize) -> u64 {
 /// (`Request::EmitTestsConsumerOnly`). The `EmitTestsComposed` driver emits it as a `closure-hash` sidecar on
 /// the MISS path (recompute-free persist); a runner's own hash (folding the SAME `def_content_hash` — the
 /// FuncLayout col-2 value — over its cross-edge set) must match, so the two sides key identically (a drift-
-/// guard). SORTED so the fold is order-independent; hex-rendered for a stable sidecar byte form.
-pub(crate) fn closure_content_hash(db: &Db, edges: &[usize]) -> String {
+/// guard). SORTED so the fold is order-independent. Returns the raw `u64` fold; the emit paths encode it as
+/// the canonical binary-AST `KIND_CLOSURE_HASH` wire (operator P0 seq-284: binary AST everywhere — no bespoke
+/// hex-string byte form), and a consumer that wants the historical `{:016x}` cache-key filename formats the
+/// decoded `u64` itself.
+pub(crate) fn closure_content_hash(db: &Db, edges: &[usize]) -> u64 {
     use std::hash::Hasher;
     let mut per_def: Vec<u64> = edges.iter().map(|&d| def_content_hash(db, d)).collect();
     per_def.sort_unstable();
@@ -702,7 +717,7 @@ pub(crate) fn closure_content_hash(db: &Db, edges: &[usize]) -> String {
     for hv in per_def {
         h.write_u64(hv);
     }
-    format!("{:016x}", h.finish())
+    h.finish()
 }
 
 /// Feed the AST subtree rooted at `id` into `h` — the node's structural KIND then, recursively, its
@@ -937,12 +952,21 @@ fn decl_name_node(db: &Db, occ: StructId, head: &str) -> StructId {
 /// (`Core::Call` callees) and `db.exports`, all forced complete by the caller (`force_monomorphize`).
 /// Deterministic: instances are in synthesis order (a function of the source). Total: an UNKNOWN name has
 /// no def → the empty string (no `disp` line); a known def always gets exactly one `disp` line.
-fn instantiations_text(db: &mut Db, name: &str) -> String {
-    // Resolve the name to its source def. An unknown name → empty (total). A def name that ALSO has
-    // specializations resolves to the ORIGINAL (a specialization's synthetic `#mono` name never equals a
-    // user name), so `def_by_name` is the right lookup.
+fn instantiations_value(
+    db: &mut Db,
+    name: &str,
+) -> cadenza_compile_abi::instantiations_wire::Instantiations {
+    use cadenza_compile_abi::instantiations_wire::{Instance, Instantiations};
+    // Resolve the name to its source def. An unknown name → `known: false` (total). A def name that ALSO
+    // has specializations resolves to the ORIGINAL (a specialization's synthetic `#mono` name never equals
+    // a user name), so `def_by_name` is the right lookup.
     let Some(def_idx) = db.def_by_name(name) else {
-        return String::new();
+        return Instantiations {
+            known: false,
+            name_node: None,
+            dispositions: Vec::new(),
+            instances: Vec::new(),
+        };
     };
 
     // The disposition set: which fate(s) this def met over the whole program. Each is a read of a column
@@ -994,18 +1018,15 @@ fn instantiations_text(db: &mut Db, name: &str) -> String {
     }
 
     // The source def's NAME occurrence (its signature's first child), so a consumer can jump to the
-    // definition; `-` if the signature is malformed. Same name-occurrence convention as `Exports`.
+    // definition; `None` (the old `-`) if the signature is malformed. Same name-occurrence convention as
+    // `Exports`.
     let sig = db.defs[def_idx].sig_occ;
     let name_node = match db.ast.get(sig) {
-        Struct::List(kids) => kids
-            .first()
-            .map_or_else(|| "-".to_string(), |n| n.0.to_string()),
-        _ => "-".to_string(),
+        Struct::List(kids) => kids.first().map(|n| n.0),
+        _ => None,
     };
 
-    let mut text = format!("disp\t{name_node}\t{}\n", dispositions.join("+"));
-
-    // The instantiation payload lines — one per DISTINCT specialization of this def, in synthesis order.
+    // The instantiation payload — one entry per DISTINCT specialization of this def, in synthesis order.
     // Snapshot first (the immutable `db.instantiations` borrow cannot coexist with the `def_index_by_body`
     // reads), then keep those whose `orig_body` maps back to this def.
     let records: Vec<(StructId, usize, Vec<String>)> = db
@@ -1013,20 +1034,22 @@ fn instantiations_text(db: &mut Db, name: &str) -> String {
         .iter()
         .map(|inst| (inst.orig_body, inst.spec_index, inst.args.clone()))
         .collect();
+    let mut instances: Vec<Instance> = Vec::new();
     for (orig_body, spec_index, args) in records {
         if db.def_index_by_body(orig_body) != Some(def_idx) {
             continue;
         }
-        let spec_name = db.defs[spec_index].name.clone();
-        text.push_str("inst\t");
-        text.push_str(&spec_name);
-        text.push('\t');
-        text.push_str(&name_node);
-        text.push('\t');
-        text.push_str(&args.join(";"));
-        text.push('\n');
+        instances.push(Instance {
+            spec_name: db.defs[spec_index].name.clone(),
+            args,
+        });
     }
-    text
+    Instantiations {
+        known: true,
+        name_node,
+        dispositions,
+        instances,
+    }
 }
 
 /// The documentation of a NAME — the `DocOf` read, an ordered fallback returning the FIRST source that

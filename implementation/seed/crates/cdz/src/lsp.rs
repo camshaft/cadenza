@@ -2840,18 +2840,19 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
 
     let mut out = Vec::new();
     for (name, node) in &names {
-        // The `Instantiations` answer for THIS name (matched by the artifact's `name` field).
-        let Some(answer) = compiled
+        // The `Instantiations` answer for THIS name (matched by the artifact's `name` field), decoded from
+        // the canonical binary-AST wire (operator P0 seq-284) — no string parsing.
+        let Some(report) = compiled
             .artifacts
             .iter()
             .find(|a| {
                 a.kind == cadenza_compile_abi::sidecar::KIND_INSTANTIATIONS && &a.name == name
             })
-            .map(|a| String::from_utf8_lossy(&a.bytes).into_owned())
+            .and_then(|a| cadenza_compile_abi::instantiations_wire::decode(&a.bytes))
         else {
             continue;
         };
-        let Some(title) = instantiations_lens_title(&answer) else {
+        let Some(title) = instantiations_lens_title(&report) else {
             continue; // not specialized → no lens
         };
         let Some(range) = spans
@@ -2882,33 +2883,21 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
 /// (no lens then). The answer is TSV: a `disp\t<node>\t<dispositions>` line then one
 /// `inst\t<spec_name>\t<node>\t<arg;arg;…>` line per monomorphization. Only a `specialized` disposition
 /// with ≥1 instance yields a title like `2 instances: [n: Int64, x: Int64] · [n: Int64, x: String]`.
-fn instantiations_lens_title(answer: &str) -> Option<String> {
-    let mut specialized = false;
-    let mut instances: Vec<String> = Vec::new();
-    for line in answer.lines() {
-        let mut cols = line.split('\t');
-        match cols.next() {
-            Some("disp") => {
-                // `disp\t<node>\t<dispositions>` — dispositions joined by `+`; look for `specialized`.
-                let _node = cols.next();
-                if let Some(disp) = cols.next() {
-                    specialized = disp.split('+').any(|d| d == "specialized");
-                }
-            }
-            Some("inst") => {
-                // `inst\t<spec_name>\t<node>\t<arg;arg;…>` — render the args as `[a, b]`.
-                let (_spec, _node, args) = (cols.next(), cols.next(), cols.next());
-                if let Some(args) = args {
-                    let pretty = args.split(';').collect::<Vec<_>>().join(", ");
-                    instances.push(format!("[{pretty}]"));
-                }
-            }
-            _ => {}
-        }
-    }
-    if !specialized || instances.is_empty() {
+fn instantiations_lens_title(
+    report: &cadenza_compile_abi::instantiations_wire::Instantiations,
+) -> Option<String> {
+    // Only SPECIALIZED defs (a `specialized` disposition + ≥1 instance) get a lens — its title lists the
+    // monomorphizations. Reads the STRUCTURED report (operator P0 seq-284: binary AST everywhere) directly;
+    // each instance's args render as `[a, b]`.
+    let specialized = report.dispositions.iter().any(|d| d == "specialized");
+    if !specialized || report.instances.is_empty() {
         return None;
     }
+    let instances: Vec<String> = report
+        .instances
+        .iter()
+        .map(|inst| format!("[{}]", inst.args.join(", ")))
+        .collect();
     let n = instances.len();
     let noun = if n == 1 { "instance" } else { "instances" };
     Some(format!("{n} {noun}: {}", instances.join(" · ")))
@@ -6961,18 +6950,45 @@ mod tests {
 
     #[test]
     fn instantiations_lens_title_only_titles_specialized_defs() {
+        use cadenza_compile_abi::instantiations_wire::{Instance, Instantiations};
+        let report = |dispositions: &[&str], instances: Vec<Instance>| Instantiations {
+            known: true,
+            name_node: Some(2),
+            dispositions: dispositions.iter().map(|s| (*s).to_string()).collect(),
+            instances,
+        };
         // Not specialized (emitted/inlined) → no title.
-        assert_eq!(instantiations_lens_title("disp\t2\temitted\n"), None);
-        assert_eq!(instantiations_lens_title("disp\t2\tinlined\n"), None);
-        // Specialized with instances → a counted, bracketed title.
-        let answer =
-            "disp\t2\tspecialized\ninst\tf#mono2\t2\tx: Int64\ninst\tf#mono3\t2\tx: String\n";
         assert_eq!(
-            instantiations_lens_title(answer).as_deref(),
+            instantiations_lens_title(&report(&["emitted"], vec![])),
+            None
+        );
+        assert_eq!(
+            instantiations_lens_title(&report(&["inlined"], vec![])),
+            None
+        );
+        // Specialized with instances → a counted, bracketed title.
+        let specialized = report(
+            &["specialized"],
+            vec![
+                Instance {
+                    spec_name: "f#mono2".into(),
+                    args: vec!["x: Int64".into()],
+                },
+                Instance {
+                    spec_name: "f#mono3".into(),
+                    args: vec!["x: String".into()],
+                },
+            ],
+        );
+        assert_eq!(
+            instantiations_lens_title(&specialized).as_deref(),
             Some("2 instances: [x: Int64] · [x: String]")
         );
-        // `specialized` disposition but no `inst` lines (defensive) → no title.
-        assert_eq!(instantiations_lens_title("disp\t2\tspecialized\n"), None);
+        // `specialized` disposition but no instances (defensive) → no title.
+        assert_eq!(
+            instantiations_lens_title(&report(&["specialized"], vec![])),
+            None
+        );
     }
 
     /// The single code action's (title, edits), or panic.
