@@ -1,8 +1,9 @@
 // Shared example EXTRACTION — the pure text-scan that pulls every `<Runnable>`/`<Exercise>` out of a
 // chapter TSX (source/solution/expected/expect/files/mode/authoredIn), with backtick-template cooking.
-// Imported by BOTH scripts/check-examples.mjs (the inline gate) AND scripts/shred-examples.mjs (the
-// per-example dir dumper for the nix-cached matrix) so the two can NEVER drift in how they extract — the
-// same anti-drift invariant that keeps wrapModule/lowerToCompile imported from the guide source. Pure
+// Imported by scripts/check-examples.mjs (the inline gate) — the same anti-drift invariant that keeps
+// wrapModule/lowerToCompile imported from the guide source. (The per-example nix-matrix shred that also
+// used this — scripts/shred-examples.mjs — was retired when guideShred flipped to the Rust
+// xtask-codegen-guide --shred over binary AST, #5988/seq-248.) Pure
 // (no wasm, no fs) — cookTemplate ⊂ extractFilesProp ⊂ extractExamples; unit-pinned by check-examples'
 // cookTemplate + multi-file self-checks.
 
