@@ -35,12 +35,12 @@ export default function Data() {
       <Runnable
         source={`(= #record((= x 1) (= y 2)) #record((= y 2) (= x 1)))`}
       />
-      <H2>Taking one apart in a match</H2>
-      <P>Beyond reaching a single field, you can bind <em>all</em> of a tuple's parts at once by matching its shape, the same <C>match</C> you use for any value. Here a two-tuple binds <C>a</C> and <C>b</C> in one step, then adds them:</P>
+      <H2>Taking one apart with a let</H2>
+      <P>Beyond reaching a single field, you can bind <em>all</em> of a tuple's parts at once by destructuring it in a <C>let</C>. The pattern on the left of the binding names each part; here a two-tuple binds <C>a</C> and <C>b</C> in one step, then adds them:</P>
       <Runnable
-        source={`(match #tuple(3 4) (#tuple(a b) (+ a b)))`}
+        source={`(let ((#tuple(a b) #tuple(3 4))) (+ a b))`}
       />
-      <P>One arm is enough: a two-tuple always has exactly this shape, so <C>#tuple(a b)</C> is an <em>irrefutable</em> pattern that can't fail to match, and no catch-all is needed. Destructuring like this is the subject of <strong>Pattern matching</strong>; the point here is that a tuple or record is an ordinary value a pattern can name and take apart.</P>
+      <P>A two-tuple always has exactly this shape, so the pattern can't fail to match: it's <em>irrefutable</em>, and that's exactly when a <C>let</C> binding is the right tool rather than a one-armed <C>match</C>. Destructuring is the subject of <strong>Pattern matching</strong> and <strong>Irrefutable patterns</strong>; the point here is that a tuple or record is an ordinary value a pattern can name and take apart.</P>
       <H2>They compose</H2>
       <P>A tuple can hold a record, a record field can hold a tuple, and so on, so the shapes nest freely, and the accessor chains to reach inside. Here a record has one field, <C>pair</C>, holding a tuple; we reach the field, then index into the tuple to pull out its second element:</P>
       <Runnable
