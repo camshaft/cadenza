@@ -22,3 +22,6 @@ pass	sexp/13-match
 pass	sexp/14-doc-node
 pass	sexp/15-multi-comment
 pass	sexp/16-comment-in-list
+todo	ml/08-incomplete-binding
+todo	sexp/17-unterminated-list
+todo	sexp/18-trailing-input
