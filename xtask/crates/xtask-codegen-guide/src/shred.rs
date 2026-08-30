@@ -186,17 +186,19 @@ fn slugify(stem: &str) -> String {
 }
 
 /// Derive one runnable/exercise case from its node. `cdz` renders the ml surface. mode="test" runnables are
-/// marked deferred (no program) — they need the @test-export driver.
+/// marked deferred (no program) — they need the @test-export driver. `stem` is the dir-slug source; `file`
+/// is the `meta.file` path (a chapter's `src/content/chapters/<Stem>.tsx`, or HomePage's component path).
 fn derive_case(
     a: &Arenas,
     node: StructId,
     kind: &'static str,
     stem: &str,
+    file: &str,
     idx: usize,
     cdz: &str,
 ) -> Result<Case, String> {
     let dir = format!("{idx:04}-{}", slugify(stem));
-    let file = format!("src/content/chapters/{stem}.tsx");
+    let file = file.to_string();
 
     // mode="test" runnables: deferred (they run via the @test-export driver, a v2 shred kind).
     if super::named_attr(a, node, "mode") == Some("test") {
@@ -385,8 +387,30 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
                     _ => continue,
                 };
                 idx += 1;
-                let case = derive_case(&a, f, kind, &stem, idx, cdz)
+                let file = format!("src/content/chapters/{stem}.tsx");
+                let case = derive_case(&a, f, kind, &stem, &file, idx, cdz)
                     .unwrap_or_else(|e| die(&format!("shred {path} #{idx}: {e}")));
+                write_case(out_dir, &case);
+                cases.push(case);
+            }
+        } else if let Some(homepage) = super::locate_homepage(&a) {
+            // HomePage landing page: its `(runnable …)` are chapter-style runnables (bare expr, both
+            // surfaces), attributed to the component file. (fork1b — the last of the 60-case gap.)
+            for &f in super::children(&a, homepage) {
+                if a.head_name(f) != Some("runnable") {
+                    continue;
+                }
+                idx += 1;
+                let case = derive_case(
+                    &a,
+                    f,
+                    "runnable",
+                    "HomePage",
+                    "src/components/HomePage.tsx",
+                    idx,
+                    cdz,
+                )
+                .unwrap_or_else(|e| die(&format!("shred {path} #{idx}: {e}")));
                 write_case(out_dir, &case);
                 cases.push(case);
             }
@@ -631,7 +655,16 @@ mod tests {
             .find(|&f| a.head_name(f) == Some("runnable"))
             .unwrap();
         // cdz is not invoked for multi-file (sexpr-only, no ml render), so a dummy path is fine.
-        let case = derive_case(&a, runnable, "runnable", "PlatformExecution", 7, "cdz").unwrap();
+        let case = derive_case(
+            &a,
+            runnable,
+            "runnable",
+            "PlatformExecution",
+            "src/content/chapters/PlatformExecution.tsx",
+            7,
+            "cdz",
+        )
+        .unwrap();
         assert_eq!(case.kind, "multi-file");
         assert!(case.multi_file && !case.deferred);
         assert_eq!(case.surfaces, vec!["sexpr"]);

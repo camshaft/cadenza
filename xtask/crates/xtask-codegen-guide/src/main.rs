@@ -14,6 +14,7 @@ use cadenza_syntax_core::spans::SpanTable;
 
 // Guide shred (operator: shred in Rust from the binary AST). `wrap` = the wrapModule port; `shred` = the
 // `--shred` mode (decode binary AST → walk (source) subtrees → wrap + render + emit the corpus cases).
+mod homepage;
 mod playground;
 mod shred;
 mod wrap;
@@ -25,6 +26,7 @@ fn main() {
     let registry = args.iter().any(|a| a == "--registry");
     let playground_registry = args.iter().any(|a| a == "--playground-registry");
     let playground_bootstrap = args.iter().any(|a| a == "--playground-bootstrap");
+    let homepage = args.iter().any(|a| a == "--homepage");
 
     // --shred <out-dir> <cdz-bin> <ordered .cdzb list>: the guide shred (binary-AST-in). Positional args:
     // out-dir, the cdz binary (for the sexpr→ml render), then the chapter binary-AST files in case order.
@@ -74,6 +76,13 @@ fn main() {
     // examples.ts (in Rust; the operator's directive is no JS tooling). Positional arg is examples.ts.
     if playground_bootstrap {
         playground::run_playground_bootstrap(&path);
+        return;
+    }
+
+    // --homepage: regenerate (or --check) HomePageExamples.ts from the sibling HomePage.sexp (fork1b). The
+    // positional arg is HomePage.sexp.
+    if homepage {
+        homepage::run_homepage_registry(&path, check);
         return;
     }
 
@@ -149,6 +158,20 @@ fn locate_chapter(a: &Arenas) -> Option<StructId> {
             .iter()
             .copied()
             .find(|&c| a.head_name(c) == Some("chapter"));
+    }
+    None
+}
+
+/// Find the `(homepage …)` root form (the HomePage landing-page examples doc; mirrors `locate_chapter`).
+fn locate_homepage(a: &Arenas) -> Option<StructId> {
+    if a.head_name(a.root) == Some("homepage") {
+        return Some(a.root);
+    }
+    if let Struct::List(items) = a.get(a.root) {
+        return items
+            .iter()
+            .copied()
+            .find(|&c| a.head_name(c) == Some("homepage"));
     }
     None
 }

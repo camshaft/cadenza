@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { Runnable } from "./Runnable.tsx";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { CHAPTERS } from "../content/chapters.ts";
+import { HOMEPAGE_RUNNABLES } from "../content/HomePageExamples.ts";
 
 export default function HomePage() {
   const firstChapter = CHAPTERS[0].slug;
@@ -52,7 +53,7 @@ export default function HomePage() {
 
         {/* Live example */}
         <section className="pb-4">
-          <Runnable title="Try it: edit and Run" source={`(+ 2 3)`} />
+          <Runnable title={HOMEPAGE_RUNNABLES[0].title} source={HOMEPAGE_RUNNABLES[0].source} />
         </section>
 
         {/* CTAs */}
