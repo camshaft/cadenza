@@ -160,6 +160,190 @@ pub fn emit_examples_array(examples: &[PlaygroundExample]) -> String {
     s
 }
 
+// ---- fork1a one-time bootstrap: examples.ts → examples.sexp (Rust; operator directive: no JS tooling) ----
+
+/// Parse a `key: "value",` TS field on a trimmed line, returning the UNESCAPED value (handling `\"`/`\\`).
+/// `None` if the line doesn't lead with `key`. Reads to the first UNescaped `"` (so an `expected` value like
+/// `"(: \"hi\" String)"` is captured whole).
+fn ts_field_str(trimmed: &str, key: &str) -> Option<String> {
+    let rest = trimmed.strip_prefix(key)?.trim_start().strip_prefix('"')?;
+    let mut out = String::new();
+    let mut escaped = false;
+    for c in rest.chars() {
+        if escaped {
+            out.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return Some(out);
+        } else {
+            out.push(c);
+        }
+    }
+    None // unterminated
+}
+
+/// The byte index of the first UNESCAPED backtick in `s` — the template-literal close. A `` \` `` (an escaped
+/// backtick, used for a literal backtick inside the `source: `…`` template — e.g. a `` `List.prepend` `` mention
+/// in a comment) is NOT the delimiter, so skip the escaped char. `None` if there is no closing backtick.
+fn unescaped_backtick(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            b'`' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Unescape the template-literal escapes a source fragment can carry — only `` \` `` occurs in the guide's
+/// examples (a literal backtick inside the template), so this is the sole unescape (matches what the node
+/// bootstrap got for free by letting JS evaluate the template literal).
+fn unescape_source(s: &str) -> String {
+    s.replace("\\`", "`")
+}
+
+/// One entry accumulated while scanning examples.ts.
+#[derive(Default)]
+struct BootEntry {
+    id: String,
+    name: String,
+    theme: String,
+    surface: String,
+    source: String,
+    expected: Option<String>,
+    expect_error: bool,
+}
+
+/// Extract the hand-authored `EXAMPLES[]` entries from examples.ts and emit the `(playground …)` doc — the
+/// one-time fork1a migration input, IN RUST (operator: no JS tooling; the xtask owns codegen). A lightweight
+/// LINE scan (the xtask has no regex crate) over the file's regular entry format: one-per-line `key: "value",`
+/// fields, plus `source`, a backtick template that may span lines (closed by the next UNESCAPED backtick —
+/// Cadenza sources mention backticks only inside `\``-escaped comments). Only scans inside the
+/// `export const EXAMPLES … = [` array (skips the interface).
+pub fn bootstrap_from_examples_ts(ts: &str) -> Result<String, String> {
+    let mut entries: Vec<BootEntry> = Vec::new();
+    let mut cur: Option<BootEntry> = None;
+    let mut in_array = false;
+    let mut in_source = false;
+    let mut source = String::new();
+    for line in ts.lines() {
+        let t = line.trim();
+        if !in_array {
+            if t.starts_with("export const EXAMPLES") && t.contains('[') {
+                in_array = true;
+            }
+            continue;
+        }
+        if in_source {
+            // accumulate source lines until the UNESCAPED closing backtick (an escaped `\`` inside a comment
+            // is part of the source, not the delimiter); unescape at the close.
+            if let Some(bt) = unescaped_backtick(line) {
+                source.push_str(&line[..bt]);
+                if let Some(c) = cur.as_mut() {
+                    c.source = unescape_source(&source);
+                }
+                source.clear();
+                in_source = false;
+            } else {
+                source.push_str(line);
+                source.push('\n');
+            }
+            continue;
+        }
+        match t {
+            "{" => cur = Some(BootEntry::default()),
+            "}," | "}" => {
+                if let Some(e) = cur.take() {
+                    entries.push(e);
+                }
+            }
+            "];" => break,
+            _ => {
+                let Some(c) = cur.as_mut() else { continue };
+                if let Some(v) = ts_field_str(t, "id:") {
+                    c.id = v;
+                } else if let Some(v) = ts_field_str(t, "name:") {
+                    c.name = v;
+                } else if let Some(v) = ts_field_str(t, "theme:") {
+                    c.theme = v;
+                } else if let Some(v) = ts_field_str(t, "surface:") {
+                    c.surface = v;
+                } else if let Some(v) = ts_field_str(t, "expected:") {
+                    c.expected = Some(v);
+                } else if t.starts_with("expectError:") && t.contains("true") {
+                    c.expect_error = true;
+                } else if let Some(after) = t.strip_prefix("source:") {
+                    let after = after
+                        .trim_start()
+                        .strip_prefix('`')
+                        .unwrap_or(after.trim_start());
+                    if let Some(bt) = unescaped_backtick(after) {
+                        c.source = unescape_source(&after[..bt]); // single-line source
+                    } else {
+                        source = format!("{after}\n");
+                        in_source = true;
+                    }
+                }
+            }
+        }
+    }
+    if entries.is_empty() {
+        return Err(
+            "no EXAMPLES entries found in examples.ts (did the array/format change?)".into(),
+        );
+    }
+    let mut doc = String::from("(playground\n");
+    for e in &entries {
+        if e.surface != "sexpr" {
+            return Err(format!(
+                "example {:?}: surface {:?} — the bootstrap embeds sexpr sources verbatim only",
+                e.id, e.surface
+            ));
+        }
+        let mut form = format!(
+            "  (example\n    (id {})\n    (name {})\n    (theme {})\n    (surface {})\n    (source {})",
+            super::json_string(&e.id),
+            super::json_string(&e.name),
+            super::json_string(&e.theme),
+            super::json_string(&e.surface),
+            e.source.trim(),
+        );
+        if let Some(exp) = &e.expected {
+            form.push_str(&format!("\n    (expected {})", super::json_string(exp)));
+        }
+        if e.expect_error {
+            form.push_str("\n    (expect-error \"true\")");
+        }
+        form.push(')');
+        doc.push_str(&form);
+        doc.push('\n');
+    }
+    doc.push_str(")\n");
+    Ok(doc)
+}
+
+/// `--playground-bootstrap <examples.ts>`: emit the `(playground …)` doc (to the sibling examples.sexp) from
+/// the hand-authored examples.ts — the one-time fork1a migration input. After the flip, examples.sexp is
+/// authored directly + examples.ts is @generated (`--playground-registry`), so this is used once.
+pub fn run_playground_bootstrap(examples_ts: &str) {
+    let ts = std::fs::read_to_string(examples_ts)
+        .unwrap_or_else(|e| die(&format!("read {examples_ts}: {e}")));
+    let doc =
+        bootstrap_from_examples_ts(&ts).unwrap_or_else(|e| die(&format!("{examples_ts}: {e}")));
+    let out = std::path::Path::new(examples_ts).with_file_name("examples.sexp");
+    std::fs::write(&out, &doc).unwrap_or_else(|e| die(&format!("write {}: {e}", out.display())));
+    let n = doc.matches("  (example\n").count();
+    println!(
+        "✓ --playground-bootstrap: wrote {n} examples → {}",
+        out.display()
+    );
+}
+
 /// The generated-region markers inside the `EXAMPLES: Example[] = [ … ]` array of examples.ts (2-space
 /// indented to match the array interior) — everything between them is regenerated; the array brackets, the
 /// `Example` interface, and the header stay hand-written. Mirrors the chapters.ts `// <generated:chapters>`.
@@ -333,6 +517,55 @@ mod tests {
         assert_eq!(regenerate_examples_region(&next, body).unwrap(), next);
         // missing markers → error, not a silent whole-file clobber
         assert!(regenerate_examples_region("no markers here", body).is_err());
+    }
+
+    #[test]
+    fn bootstrap_extracts_entries_from_examples_ts() {
+        // a stand-in examples.ts: an interface (must be skipped) + the EXAMPLES array with single- and
+        // multi-line sources, an escaped-quote expected, an escaped-backtick comment, and an expectError entry.
+        let ts = "import type { Surface } from \"../compiler/client.ts\";\n\
+                  export interface Example { id: string; surface: Surface }\n\
+                  export const EXAMPLES: Example[] = [\n\
+                  \x20 {\n\
+                  \x20   id: \"one\",\n\
+                  \x20   name: \"One\",\n\
+                  \x20   theme: \"basics\",\n\
+                  \x20   surface: \"sexpr\",\n\
+                  \x20   source: `(do (def (main) 1) (export main))`,\n\
+                  \x20   expected: \"(: \\\"hi\\\" String)\",\n\
+                  \x20 },\n\
+                  \x20 {\n\
+                  \x20   id: \"two\",\n\
+                  \x20   name: \"Two\",\n\
+                  \x20   theme: \"numbers\",\n\
+                  \x20   surface: \"sexpr\",\n\
+                  \x20   source: `(do\n\
+                  \x20 ; mentions \\`List.prepend\\` in a comment (escaped backtick, not the delimiter)\n\
+                  \x20 (def (main) (+ 1 2))\n\
+                  \x20 (export main))`,\n\
+                  \x20   expectError: true,\n\
+                  \x20 },\n\
+                  ];\n";
+        let doc = bootstrap_from_examples_ts(ts).unwrap();
+        // the emitted doc round-trips through the reader → the entries we authored
+        let a = cadenza_syntax_sexpr::read_all(&doc).unwrap();
+        let exs = read_playground(&a).unwrap();
+        assert_eq!(exs.len(), 2);
+        assert_eq!(exs[0].id, "one");
+        assert_eq!(exs[0].theme, "basics");
+        // the escaped-quote expected survives extraction + re-emission (unescaped then sexpr-escaped)
+        assert_eq!(exs[0].expected.as_deref(), Some("(: \"hi\" String)"));
+        assert!(!exs[0].expect_error);
+        assert_eq!(exs[1].id, "two");
+        assert!(exs[1].expect_error);
+        assert_eq!(exs[1].expected, None);
+        // multi-line source captured, and the escaped `\`` inside the comment did NOT close the template early
+        assert!(
+            exs[1].source.contains("(def (main) (+ 1 2))")
+                && exs[1].source.contains("(export main)")
+        );
+        // the interface's `id: string` / `surface: Surface` were NOT scanned as entries
+        assert!(exs.iter().all(|e| e.id == "one" || e.id == "two"));
     }
 
     #[test]
