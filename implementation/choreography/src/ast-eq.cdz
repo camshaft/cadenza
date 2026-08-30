@@ -3,39 +3,39 @@ import { Ast } from "ast"
 def ast-eq(a: Ast, b: Ast) = match a with
   | Ast.Int(x) => (
     match b with
-      | Ast.Int(y) => x == y
-      | _ => false
+    | Ast.Int(y) => x == y
+    | _ => false
   )
   | Ast.Str(x) => (
     match b with
-      | Ast.Str(y) => x == y
-      | _ => false
+    | Ast.Str(y) => x == y
+    | _ => false
   )
   | Ast.Bool(x) => (
     match b with
-      | Ast.Bool(y) => x == y
-      | _ => false
+    | Ast.Bool(y) => x == y
+    | _ => false
   )
   | Ast.Name(x) => (
     match b with
-      | Ast.Name(y) => x == y
-      | _ => false
+    | Ast.Name(y) => x == y
+    | _ => false
   )
   | Ast.List(xs) =>
     match b with
-      | Ast.List(ys) => list-eq(xs, ys)
-      | _ => false
+    | Ast.List(ys) => list-eq(xs, ys)
+    | _ => false
 
 def list-eq(xs: List(Ast), ys: List(Ast)) = match xs with
   | [] => (
     match ys with
-      | [] => true
-      | _ => false
+    | [] => true
+    | _ => false
   )
   | [x, .. xr] =>
     match ys with
-      | [] => false
-      | [y, .. yr] => if ast-eq(x, y) then list-eq(xr, yr) else false
+    | [] => false
+    | [y, .. yr] => if ast-eq(x, y) then list-eq(xr, yr) else false
 
 @test
 def eq-int-same() = if ast-eq(Ast.Int(5), Ast.Int(5)) then unit else trap("5=5")

@@ -43,8 +43,8 @@ def take(it, n) =
     GIter.Nil(unit)
   else
     match it with
-      | GIter.Nil(_) => GIter.Nil(unit)
-      | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
 
 /// `collect(it)` — reify the iterator back to a `List(a)` so a test can assert the exact emitted sequence.
 def collect(it) = match it with
@@ -55,13 +55,13 @@ def collect(it) = match it with
 def int-list-eq(xs, ys) = match xs with
   | [] => (
     match ys with
-      | [] => true
-      | _ => false
+    | [] => true
+    | _ => false
   )
   | [x, .. xr] =>
     match ys with
-      | [] => false
-      | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
+    | [] => false
+    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
 
 /// TESTS ----------------------------------------------------------------------------------------------
 /// empty edges: empty-left returns the right operand whole (the `Nil => b` arm at the top); empty-right

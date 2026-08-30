@@ -77,17 +77,17 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
     //   - an NVar binder (a PARAMETER, slice-3c: the arg-flow NApp arm seeds set-ty(paramId, argTy) at the
     //     param's own NVar node) → read the seeded fact at the binder id directly via get-ty (no re-demand).
     match DbState.get-resolved(id) with
-      | Option.Some(Resolved.RBound(binder)) => (
-        match DbState.node-of(binder) with
-          | Option.Some(Node.NLet(_, valId, _)) => type-of(valId)
-          | Option.Some(Node.NVar(_)) => (
-            match DbState.get-ty(binder) with
-              | Option.Some(t) => t
-              | Option.None(_) => Ty.TyErr
-          )
-          | _ => Ty.TyErr
+    | Option.Some(Resolved.RBound(binder)) => (
+      match DbState.node-of(binder) with
+      | Option.Some(Node.NLet(_, valId, _)) => type-of(valId)
+      | Option.Some(Node.NVar(_)) => (
+        match DbState.get-ty(binder) with
+        | Option.Some(t) => t
+        | Option.None(_) => Ty.TyErr
       )
       | _ => Ty.TyErr
+    )
+    | _ => Ty.TyErr
   )
   | Option.Some(Node.NBin(op, l, r)) => // FAITHFUL: demand both operands (memoizing them into the column), then call the REAL infer-db bin-type
     // over the current column (get-tcol) + the read-only ast (get-tree, for its literal-operand range-check).
@@ -133,21 +133,21 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
         mk-int(true, 64)
       else
         match DbState.def-body-node(calleeName) with
-          | Option.Some(bodyId) => type-of(bodyId)
-          | Option.None(_) => Ty.TyErr
+        | Option.Some(bodyId) => type-of(bodyId)
+        | Option.None(_) => Ty.TyErr
     else if DbState.call-recursive(calleeName) then
       mk-int(true, 64)
     else
       match DbState.param-node(calleeName) with
-        | Option.Some(paramId) => (
-          let at = type-of(argId) in
-          match DbState.set-ty((paramId, at)) with
-            | _ =>
-              match DbState.def-body-node(calleeName) with
-                | Option.Some(bodyId) => type-of(bodyId)
-                | Option.None(_) => Ty.TyErr
-        )
-        | Option.None(_) => Ty.TyErr
+      | Option.Some(paramId) => (
+        let at = type-of(argId) in
+        match DbState.set-ty((paramId, at)) with
+        | _ =>
+          match DbState.def-body-node(calleeName) with
+          | Option.Some(bodyId) => type-of(bodyId)
+          | Option.None(_) => Ty.TyErr
+      )
+      | Option.None(_) => Ty.TyErr
   )
   | Option.Some(_) => Ty.TyErr
   | Option.None(_) => Ty.TyErr
@@ -242,8 +242,8 @@ def pfq-if-faithful-mismatched-width-declines() =
   let (root, tree) = add-node(t3, Node.NIf(condId, thenId, elseId)) in
   let db = resolve-into-db(db-of(tree), root) in
   match run-type-of(db, root) with
-    | Ty.TyErr => unit
-    | _ => trap("if with mismatched-width branches Int8 Int16 must decline TyErr")
+  | Ty.TyErr => unit
+  | _ => trap("if with mismatched-width branches Int8 Int16 must decline TyErr")
 
 @test
 def pfq-bin-faithful-same-width-runs() =
@@ -268,8 +268,8 @@ def pfq-napp-arg-flows-to-param() =
   let tree = record-def(t4, 900, paramId) in
   let db = resolve-into-db(db-of(tree), callId) in
   match run-type-of(db, callId) with
-    | Ty.TyInt(_) => unit
-    | _ => trap("f p = p applied to an int arg must type int (arg flows to param)")
+  | Ty.TyInt(_) => unit
+  | _ => trap("f p = p applied to an int arg must type int (arg flows to param)")
 
 @test
 def pfq-let-var-body-is-int() =

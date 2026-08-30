@@ -275,12 +275,9 @@ def a-single-atom-fills-the-whole-cycle() =
   // note-pat(60) over a 4000-tick cycle → one note at tick 0 lasting the whole 4000.
   let ns = render-pattern(note-pat(60), 0, 100, 0, 4000) in
   match ns with
-    | [n] =>
-      if note-start(n) == 0 then
-        if note-dur(n) == 4000 then unit else trap("dur")
-      else
-        trap("start")
-    | _ => trap("expected exactly one note")
+  | [n] =>
+    if note-start(n) == 0 then if note-dur(n) == 4000 then unit else trap("dur") else trap("start")
+  | _ => trap("expected exactly one note")
 
 @test
 def silence-renders-no-notes-but-holds-its-slot() =
@@ -288,8 +285,8 @@ def silence-renders-no-notes-but-holds-its-slot() =
   if list-len-notes(render-pattern(silence, 0, 100, 0, 4000)) == 0 then
     let ns = render-pattern(seq([note-pat(60), silence]), 0, 100, 0, 4000) in
     match ns with
-      | [n] => if note-dur(n) == 2000 then unit else trap("first half is 2000")
-      | _ => trap("one note (the silence adds none)")
+    | [n] => if note-dur(n) == 2000 then unit else trap("first half is 2000")
+    | _ => trap("one note (the silence adds none)")
   else
     trap("silence is empty")
 
@@ -298,18 +295,18 @@ def seq-tiles-the-cycle-into-equal-spans() =
   // seq([60,64,67]) over 3000 ticks → three notes at 0/1000/2000, each 1000 long, back to back.
   let ns = render-pattern(seq([note-pat(60), note-pat(64), note-pat(67)]), 0, 100, 0, 3000) in
   match ns with
-    | [a, b, c] =>
-      if note-start(a) == 0 then
-        if note-start(b) == 1000 then
-          if note-start(c) == 2000 then
-            if note-dur(c) == 1000 then unit else trap("dur")
-          else
-            trap("c start")
+  | [a, b, c] =>
+    if note-start(a) == 0 then
+      if note-start(b) == 1000 then
+        if note-start(c) == 2000 then
+          if note-dur(c) == 1000 then unit else trap("dur")
         else
-          trap("b start")
+          trap("c start")
       else
-        trap("a start")
-    | _ => trap("expected three notes")
+        trap("b start")
+    else
+      trap("a start")
+  | _ => trap("expected three notes")
 
 @test
 def seq-tiles-exactly-with-no-gap-when-it-does-not-divide() =
@@ -317,33 +314,33 @@ def seq-tiles-exactly-with-no-gap-when-it-does-not-divide() =
   // and the last child's end is EXACTLY the cycle end (no rounding drift).
   let ns = render-pattern(seq([note-pat(60), note-pat(62), note-pat(64)]), 0, 100, 0, 1000) in
   match ns with
-    | [a, b, c] => // each note's end == the next note's start; last end == 1000.
-      if note-start(a) + note-dur(a) == note-start(b) then
-        if note-start(b) + note-dur(b) == note-start(c) then
-          if note-start(c) + note-dur(c) == 1000 then unit else trap("last ends at cycle end")
-        else
-          trap("b tiles c")
+  | [a, b, c] => // each note's end == the next note's start; last end == 1000.
+    if note-start(a) + note-dur(a) == note-start(b) then
+      if note-start(b) + note-dur(b) == note-start(c) then
+        if note-start(c) + note-dur(c) == 1000 then unit else trap("last ends at cycle end")
       else
-        trap("a tiles b")
-    | _ => trap("three notes")
+        trap("b tiles c")
+    else
+      trap("a tiles b")
+  | _ => trap("three notes")
 
 @test
 def stack-layers-children-simultaneously() =
   // stack([60,64,67]) over 2000 ticks → a C-major triad: three notes ALL starting at 0, ALL 2000 long.
   let ns = render-pattern(stack([note-pat(60), note-pat(64), note-pat(67)]), 0, 100, 0, 2000) in
   match ns with
-    | [a, b, c] =>
-      if note-start(a) == 0 then
-        if note-start(b) == 0 then
-          if note-start(c) == 0 then
-            if note-dur(a) == 2000 then unit else trap("full span")
-          else
-            trap("c at 0")
+  | [a, b, c] =>
+    if note-start(a) == 0 then
+      if note-start(b) == 0 then
+        if note-start(c) == 0 then
+          if note-dur(a) == 2000 then unit else trap("full span")
         else
-          trap("b at 0")
+          trap("c at 0")
       else
-        trap("a at 0")
-    | _ => trap("three notes")
+        trap("b at 0")
+    else
+      trap("a at 0")
+  | _ => trap("three notes")
 
 @test
 def fast-crams-repeats-into-the-span() =
@@ -351,15 +348,15 @@ def fast-crams-repeats-into-the-span() =
   let ns = render-pattern(fast(4, note-pat(60)), 0, 100, 0, 4000) in
   if list-len-notes(ns) == 4 then
     match ns with
-      | [a, b, _, _] =>
-        if note-start(a) == 0 then
-          if note-start(b) == 1000 then
-            if note-dur(b) == 1000 then unit else trap("dur")
-          else
-            trap("b start")
+    | [a, b, _, _] =>
+      if note-start(a) == 0 then
+        if note-start(b) == 1000 then
+          if note-dur(b) == 1000 then unit else trap("dur")
         else
-          trap("a start")
-      | _ => trap("four notes")
+          trap("b start")
+      else
+        trap("a start")
+    | _ => trap("four notes")
   else
     trap("fast 4 makes four notes")
 
@@ -369,18 +366,18 @@ def nested-seq-subdivides-recursively() =
   // (2000..3000, 3000..4000). Three notes total, proving Seq nests.
   let ns = render-pattern(seq([note-pat(60), seq([note-pat(64), note-pat(67)])]), 0, 100, 0, 4000) in
   match ns with
-    | [a, b, c] =>
-      if note-dur(a) == 2000 then
-        if note-start(b) == 2000 then
-          if note-start(c) == 3000 then
-            if note-dur(c) == 1000 then unit else trap("c dur")
-          else
-            trap("c start")
+  | [a, b, c] =>
+    if note-dur(a) == 2000 then
+      if note-start(b) == 2000 then
+        if note-start(c) == 3000 then
+          if note-dur(c) == 1000 then unit else trap("c dur")
         else
-          trap("b start")
+          trap("c start")
       else
-        trap("a dur")
-    | _ => trap("three notes")
+        trap("b start")
+    else
+      trap("a dur")
+  | _ => trap("three notes")
 
 @test
 def render-cycles-loops-the-pattern-at-successive-offsets() =
@@ -388,12 +385,12 @@ def render-cycles-loops-the-pattern-at-successive-offsets() =
   let ns = render-cycles(seq([note-pat(60), note-pat(64)]), 0, 100, 0, 2000, 2) in
   if list-len-notes(ns) == 4 then
     match ns with
-      | [_, _, c, d] =>
-        if note-start(c) == 2000 then
-          if note-start(d) == 3000 then unit else trap("d start")
-        else
-          trap("c start")
-      | _ => trap("four notes")
+    | [_, _, c, d] =>
+      if note-start(c) == 2000 then
+        if note-start(d) == 3000 then unit else trap("d start")
+      else
+        trap("c start")
+    | _ => trap("four notes")
   else
     trap("two cycles of two = four notes")
 
@@ -431,18 +428,18 @@ def euclid-renders-onsets-only-and-tiles-the-cycle() =
   let ns = render-pattern(euclid(3, 8, 60), 0, 100, 0, 3840) in
   if list-len-notes(ns) == 3 then
     match ns with
-      | [a, b, c] =>
-        if note-start(a) == 0 then
-          if note-start(b) == 1440 then
-            if note-start(c) == 2880 then
-              if note-dur(a) == 480 then unit else trap("step is 480 ticks")
-            else
-              trap("c at 2880")
+    | [a, b, c] =>
+      if note-start(a) == 0 then
+        if note-start(b) == 1440 then
+          if note-start(c) == 2880 then
+            if note-dur(a) == 480 then unit else trap("step is 480 ticks")
           else
-            trap("b at 1440")
+            trap("c at 2880")
         else
-          trap("a at 0")
-      | _ => trap("three onsets")
+          trap("b at 1440")
+      else
+        trap("a at 0")
+    | _ => trap("three onsets")
   else
     trap("E(3,8) has exactly three onsets")
 
@@ -473,18 +470,18 @@ def rev-plays-a-sequence-backwards() =
   // 60 at 2000 (the pitches flip; the timing grid does not).
   let ns = render-pattern(rev(seq([note-pat(60), note-pat(64), note-pat(67)])), 0, 100, 0, 3000) in
   match ns with
-    | [a, b, c] =>
-      if note-num-of(a) == 67 then
-        if note-num-of(b) == 64 then
-          if note-num-of(c) == 60 then
-            if note-start(a) == 0 then unit else trap("first at tick 0")
-          else
-            trap("c is 60")
+  | [a, b, c] =>
+    if note-num-of(a) == 67 then
+      if note-num-of(b) == 64 then
+        if note-num-of(c) == 60 then
+          if note-start(a) == 0 then unit else trap("first at tick 0")
         else
-          trap("b is 64")
+          trap("c is 60")
       else
-        trap("a is 67")
-    | _ => trap("three notes")
+        trap("b is 64")
+    else
+      trap("a is 67")
+  | _ => trap("three notes")
 
 @test
 def rev-is-its-own-inverse() =
@@ -493,13 +490,13 @@ def rev-is-its-own-inverse() =
   let once = render-pattern(p, 0, 100, 0, 4000) in
   let twice = render-pattern(rev(rev(p)), 0, 100, 0, 4000) in
   match once with
-    | [a0, _, _, _] => (
-      match twice with
-        | [b0, _, _, _] =>
-          if note-num-of(a0) == note-num-of(b0) then unit else trap("double-rev restores order")
-        | _ => trap("twice has four notes")
-    )
-    | _ => trap("once has four notes")
+  | [a0, _, _, _] => (
+    match twice with
+    | [b0, _, _, _] =>
+      if note-num-of(a0) == note-num-of(b0) then unit else trap("double-rev restores order")
+    | _ => trap("twice has four notes")
+  )
+  | _ => trap("once has four notes")
 
 @test
 def rev-flips-a-nested-seq-inside-a-stack() =
@@ -510,8 +507,8 @@ def rev-flips-a-nested-seq-inside-a-stack() =
   let ns = render-pattern(rev(p), 0, 100, 0, 2000) in
   // The stack renders layer 1 (the seq) first: two notes, then the sustained 72. First note is 64 (flipped).
   match ns with
-    | [a, _, _] => if note-num-of(a) == 64 then unit else trap("nested seq inside stack must flip")
-    | _ => trap("expected three notes (two from the seq layer + one sustained)")
+  | [a, _, _] => if note-num-of(a) == 64 then unit else trap("nested seq inside stack must flip")
+  | _ => trap("expected three notes (two from the seq layer + one sustained)")
 
 @test
 def render-every-transforms-only-the-nth-cycle() =
@@ -520,17 +517,17 @@ def render-every-transforms-only-the-nth-cycle() =
   let ns = render-every(2, rev, seq([note-pat(60), note-pat(64)]), 0, 100, 0, 2000, 3) in
   if list-len-notes(ns) == 6 then
     match ns with
-      | [c0, _, c1, _, c2, _] =>
-        if note-num-of(c0) == 64 then
-          // cycle 0: reversed → 64 first
-          if note-num-of(c1) == 60 then
-            // cycle 1: forward → 60 first
-            if note-num-of(c2) == 64 then unit else trap("cycle 2 reversed")
-          else
-            trap("cycle 1 forward")
+    | [c0, _, c1, _, c2, _] =>
+      if note-num-of(c0) == 64 then
+        // cycle 0: reversed → 64 first
+        if note-num-of(c1) == 60 then
+          // cycle 1: forward → 60 first
+          if note-num-of(c2) == 64 then unit else trap("cycle 2 reversed")
         else
-          trap("cycle 0 reversed")
-      | _ => trap("six notes")
+          trap("cycle 1 forward")
+      else
+        trap("cycle 0 reversed")
+    | _ => trap("six notes")
   else
     trap("three cycles of two = six notes")
 

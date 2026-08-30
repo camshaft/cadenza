@@ -117,13 +117,13 @@ def de-comparison-runs() =
 def paths-agree(ts: List(Tok)) = match run-tokens-db(ts) with
   | Option.Some(dv) => (
     match run(ts) with
-      | Option.Some(wv) => dv == wv
-      | Option.None(_) => false
+    | Option.Some(wv) => dv == wv
+    | Option.None(_) => false
   )
   | Option.None(_) =>
     match run(ts) with
-      | Option.None(_) => true
-      | Option.Some(_) => false
+    | Option.None(_) => true
+    | Option.Some(_) => false
 
 @test
 def de-db-and-whim-agree() =

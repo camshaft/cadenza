@@ -184,12 +184,12 @@ def play-events-returns-the-played-stream-in-tick-order() =
   if List.len(stream) == 2 then
     if balanced(stream) then
       match stream with
-        | [first, second] =>
-          if ev-tick(first) == 0 then
-            if ev-tick(second) == 960 then unit else trap("off at 960")
-          else
-            trap("on at 0")
-        | _ => trap("two events")
+      | [first, second] =>
+        if ev-tick(first) == 0 then
+          if ev-tick(second) == 960 then unit else trap("off at 960")
+        else
+          trap("on at 0")
+      | _ => trap("two events")
     else
       trap("stream is balanced")
   else

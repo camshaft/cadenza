@@ -32,8 +32,8 @@ def id-mem(x: Int64, ids: List(Int64), i: Int64) =
     false
   else
     match List.at(ids, i) with
-      | Option.Some(y) => if x == y then true else id-mem(x, ids, i + 1)
-      | Option.None(_) => false
+    | Option.Some(y) => if x == y then true else id-mem(x, ids, i + 1)
+    | Option.None(_) => false
 
 /// Push `x` onto `acc` only if not already present (dedup).
 def id-push-uniq(acc: List(Int64), x: Int64) = if id-mem(x, acc, 0) then acc else List.push(acc, x)
@@ -44,8 +44,8 @@ def free-sign-ids(t: Ty, acc: List(Int64)) = match t with
   | Ty.TyInt(it) => (
     let IntType.IntType(s, _) = it in
     match s with
-      | Sign.SVar(id) => id-push-uniq(acc, id)
-      | _ => acc
+    | Sign.SVar(id) => id-push-uniq(acc, id)
+    | _ => acc
   )
   | Ty.TyFn(ps, r) => free-sign-ids(r, free-sign-list(ps, 0, acc))
   | _ => acc
@@ -55,16 +55,16 @@ def free-sign-list(ps: List(Ty), i: Int64, acc: List(Int64)) =
     acc
   else
     match List.at(ps, i) with
-      | Option.Some(p) => free-sign-list(ps, i + 1, free-sign-ids(p, acc))
-      | Option.None(_) => acc
+    | Option.Some(p) => free-sign-list(ps, i + 1, free-sign-ids(p, acc))
+    | Option.None(_) => acc
 
 /// Collect the free WIDTH-var-ids of a Ty (the orthogonal twin).
 def free-width-ids(t: Ty, acc: List(Int64)) = match t with
   | Ty.TyInt(it) => (
     let IntType.IntType(_, w) = it in
     match w with
-      | Width.WVar(id) => id-push-uniq(acc, id)
-      | _ => acc
+    | Width.WVar(id) => id-push-uniq(acc, id)
+    | _ => acc
   )
   | Ty.TyFn(ps, r) => free-width-ids(r, free-width-list(ps, 0, acc))
   | _ => acc
@@ -74,8 +74,8 @@ def free-width-list(ps: List(Ty), i: Int64, acc: List(Int64)) =
     acc
   else
     match List.at(ps, i) with
-      | Option.Some(p) => free-width-list(ps, i + 1, free-width-ids(p, acc))
-      | Option.None(_) => acc
+    | Option.Some(p) => free-width-list(ps, i + 1, free-width-ids(p, acc))
+    | Option.None(_) => acc
 
 // ---- INSTANTIATE (rcdzc `instantiate` — freshen the bound vars per use) ------------------------------
 /// Build the renaming for the quantified SIGN ids: for each, allocate a fresh SVar and bind qid -> fresh in the
@@ -85,10 +85,10 @@ def inst-sign-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
     (su, n)
   else
     match List.at(ids, i) with
-      | Option.Some(qid) =>
-        let (fv, n1) = fresh-sign(n) in
-        inst-sign-ren(subst-bind-sign(su, qid, fv), ids, i + 1, n1)
-      | Option.None(_) => (su, n)
+    | Option.Some(qid) =>
+      let (fv, n1) = fresh-sign(n) in
+      inst-sign-ren(subst-bind-sign(su, qid, fv), ids, i + 1, n1)
+    | Option.None(_) => (su, n)
 
 /// The width twin.
 def inst-width-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
@@ -96,10 +96,10 @@ def inst-width-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
     (su, n)
   else
     match List.at(ids, i) with
-      | Option.Some(qid) =>
-        let (fv, n1) = fresh-width(n) in
-        inst-width-ren(subst-bind-width(su, qid, fv), ids, i + 1, n1)
-      | Option.None(_) => (su, n)
+    | Option.Some(qid) =>
+      let (fv, n1) = fresh-width(n) in
+      inst-width-ren(subst-bind-width(su, qid, fv), ids, i + 1, n1)
+    | Option.None(_) => (su, n)
 
 /// INSTANTIATE a scheme at a use site: freshen every quantified var, apply the renaming to the body, return
 /// (fresh Ty, next-counter). Two instantiations of the SAME scheme get DISJOINT vars (threading the counter) —
@@ -118,9 +118,9 @@ def ids-minus(xs: List(Int64), env: List(Int64), i: Int64, acc: List(Int64)) =
     acc
   else
     match List.at(xs, i) with
-      | Option.Some(x) =>
-        ids-minus(xs, env, i + 1, if id-mem(x, env, 0) then acc else List.push(acc, x))
-      | Option.None(_) => acc
+    | Option.Some(x) =>
+      ids-minus(xs, env, i + 1, if id-mem(x, env, 0) then acc else List.push(acc, x))
+    | Option.None(_) => acc
 
 /// GENERALIZE a type over an environment: quantify the body's free (sign+width) vars EXCEPT those free in the
 /// env. `envSign`/`envWidth` = the env's free var-ids per axis. Returns the Scheme. (mono when nothing to
@@ -150,12 +150,12 @@ def hs-generalize-then-instantiate-is-fresh() =
   let body = Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(32))) in
   let sch = generalize(body, [] : List(Int64), [] : List(Int64)) in
   match instantiate(sch, 5) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(fid), Width.WFixed(w))), n) =>
-      if fid == 5 and w == 32 and n == 6 then
-        unit
-      else
-        trap("quantified sign var freshens to SVar(5), counter 6")
-    | _ => trap("generalized-then-instantiated body has a FRESH sign var")
+  | (Ty.TyInt(IntType.IntType(Sign.SVar(fid), Width.WFixed(w))), n) =>
+    if fid == 5 and w == 32 and n == 6 then
+      unit
+    else
+      trap("quantified sign var freshens to SVar(5), counter 6")
+  | _ => trap("generalized-then-instantiated body has a FRESH sign var")
 
 @test
 def hs-two-instantiations-are-disjoint() =
@@ -168,12 +168,12 @@ def hs-two-instantiations-are-disjoint() =
     ) in
   let (_t1, n1) = instantiate(sch, 0) in
   match instantiate(sch, n1) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(s2), Width.WVar(w2))), n2) =>
-      if s2 == 2 and w2 == 3 and n2 == 4 then
-        unit
-      else
-        trap("second instantiation is SVar(2)/WVar(3)")
-    | _ => trap("second instantiation has fresh vars")
+  | (Ty.TyInt(IntType.IntType(Sign.SVar(s2), Width.WVar(w2))), n2) =>
+    if s2 == 2 and w2 == 3 and n2 == 4 then
+      unit
+    else
+      trap("second instantiation is SVar(2)/WVar(3)")
+  | _ => trap("second instantiation has fresh vars")
 
 @test
 def hs-env-var-is-not-generalized() =
@@ -183,9 +183,9 @@ def hs-env-var-is-not-generalized() =
   let body = Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(8))) in
   let sch = generalize(body, List.push([], 0), [] : List(Int64)) in
   match instantiate(sch, 9) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(id), Width.WFixed(_))), n) =>
-      if id == 0 and n == 9 then unit else trap("env-pinned var 0 stays 0, counter untouched")
-    | _ => trap("an env-free var is not generalized → instantiate keeps it")
+  | (Ty.TyInt(IntType.IntType(Sign.SVar(id), Width.WFixed(_))), n) =>
+    if id == 0 and n == 9 then unit else trap("env-pinned var 0 stays 0, counter untouched")
+  | _ => trap("an env-free var is not generalized → instantiate keeps it")
 
 @test
 def hs-free-vars-collects-both-axes-deduped() =

@@ -82,6 +82,6 @@ def the-standing-arm-part-rises-above-the-base() =
   match bounding-box(standing-arm(30 / 1, 25 / 1, 4 / 1, 3 / 1)) with
     | Aabb.Box(_, hi) =>
       match hi with
-        | Vec3.V3(_, _, hz) => if hz > 4 / 1 then unit else trap("the arm rises above the base top")
+      | Vec3.V3(_, _, hz) => if hz > 4 / 1 then unit else trap("the arm rises above the base top")
 
 export { base-plate, arm-flat, standing-arm, bracket, main }

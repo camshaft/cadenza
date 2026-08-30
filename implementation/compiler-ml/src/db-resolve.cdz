@@ -64,14 +64,14 @@ def dr-bound-var-is-rbound() =
   // the body var (a NAME node) resolves to RBound(binder). Find it via resolved-of-db; expect Some(RBound).
   let (root, d0) = let-db() in
   match node-var-id(db-tree(d0), root) with
-    | Option.Some(varId) => (
-      match resolved-of-db(d0, root, varId) with
-        | (_, Option.Some(Resolved.RBound(_))) => unit
-        | (_, Option.Some(Resolved.RPoison)) => trap("bound var should be RBound, not RPoison")
-        | (_, Option.Some(Resolved.RDef(_))) => trap("bound var should be RBound, not RDef")
-        | (_, Option.None(_)) => trap("bound var has a resolved fact")
-    )
-    | Option.None(_) => trap("the let body is a var")
+  | Option.Some(varId) => (
+    match resolved-of-db(d0, root, varId) with
+    | (_, Option.Some(Resolved.RBound(_))) => unit
+    | (_, Option.Some(Resolved.RPoison)) => trap("bound var should be RBound, not RPoison")
+    | (_, Option.Some(Resolved.RDef(_))) => trap("bound var should be RBound, not RDef")
+    | (_, Option.None(_)) => trap("bound var has a resolved fact")
+  )
+  | Option.None(_) => trap("the let body is a var")
 
 @test
 def dr-second-resolve-is-memo-hit() =
@@ -88,8 +88,8 @@ def dr-unbound-is-poison() =
   // a bare unbound var `y` resolves to a FILLED RPoison (a decline is a determined fact, not Absent).
   let (root, tree) = parse-tokens([Tok.TName(9)]) in
   match resolved-of-db(db-of(tree), root, root) with
-    | (_, Option.Some(Resolved.RPoison)) => unit
-    | _ => trap("unbound var is a filled RPoison")
+  | (_, Option.Some(Resolved.RPoison)) => unit
+  | _ => trap("unbound var is a filled RPoison")
 
 /// Find the NodeId of the let-BODY var (the last NAME node) — a tiny tree helper for the test. Walks the
 /// arena for a NVar node id > 0 (the body var, not the binder name which is stored in the NLet).

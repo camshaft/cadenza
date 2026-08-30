@@ -117,8 +117,8 @@ def concat-bytes-go(bs: List(Bytes), i: Int64, acc: Bytes) =
     acc
   else
     match List.at(bs, i) with
-      | Option.Some(b) => concat-bytes-go(bs, i + 1, Bytes.concat(acc, b))
-      | Option.None(_) => acc
+    | Option.Some(b) => concat-bytes-go(bs, i + 1, Bytes.concat(acc, b))
+    | Option.None(_) => acc
 
 /// Function section: one function declared to use type index 0. `01`=one func, `00`=type index 0.
 def func-section() = section(3, Bytes.of([UInt8.wrap(1), UInt8.wrap(0)]))
@@ -138,8 +138,8 @@ def uleb-each-go(xs: List(Int64), i: Int64, acc: Bytes) =
     acc
   else
     match List.at(xs, i) with
-      | Option.Some(x) => uleb-each-go(xs, i + 1, Bytes.concat(acc, uleb(x)))
-      | Option.None(_) => acc
+    | Option.Some(x) => uleb-each-go(xs, i + 1, Bytes.concat(acc, uleb(x)))
+    | Option.None(_) => acc
 
 /// slice-B'(Bp4a): a CODE SECTION over a list of already-`body-of`-wrapped function bodies (in func-index
 /// order): `<uleb count>` then a `<uleb bodylen> <body>` per function, wrapped as section 10. Parallels the
@@ -155,9 +155,9 @@ def code-entries-go(bodies: List(Bytes), i: Int64, acc: Bytes) =
     acc
   else
     match List.at(bodies, i) with
-      | Option.Some(b) =>
-        code-entries-go(bodies, i + 1, Bytes.concat(acc, Bytes.concat(uleb(Bytes.len(b)), b)))
-      | Option.None(_) => acc
+    | Option.Some(b) =>
+      code-entries-go(bodies, i + 1, Bytes.concat(acc, Bytes.concat(uleb(Bytes.len(b)), b)))
+    | Option.None(_) => acc
 
 /// Export section: export the single function as `main`. `01`=one export, `04`=name length,
 /// `6d 61 69 6e`="main", `00`=export kind func, `00`=func index 0.
@@ -229,8 +229,8 @@ def has-fnref-list(args: List(Core), i: Int64) =
     false
   else
     match List.at(args, i) with
-      | Option.Some(a) => if has-fnref(a) then true else has-fnref-list(args, i + 1)
-      | Option.None(_) => false
+    | Option.Some(a) => if has-fnref(a) then true else has-fnref-list(args, i + 1)
+    | Option.None(_) => false
 
 def imax(a: Int64, b: Int64) = if a > b then a else b
 
@@ -263,8 +263,8 @@ def scratch-need-list(args: List(Core), depth: Int64, i: Int64) =
     0
   else
     match List.at(args, i) with
-      | Option.Some(a) => imax(scratch-need(a, depth), scratch-need-list(args, depth, i + 1))
-      | Option.None(_) => scratch-need-list(args, depth, i + 1)
+    | Option.Some(a) => imax(scratch-need(a, depth), scratch-need-list(args, depth, i + 1))
+    | Option.None(_) => scratch-need-list(args, depth, i + 1)
 
 /// W-compound: are a CCtor's payload args each EMITTABLE and FLAT (no nested CCtor)? A single i32 scratch
 /// local holds the alloc base, so SEQUENTIAL ctors reuse it safely (base is dead once the handle is pushed),
@@ -276,10 +276,10 @@ def ctor-args-emittable(args: List(Core), i: Int64) =
     true
   else
     match List.at(args, i) with
-      // NESTED compounds now emit: depth-distinct scratch (scratch-need + the `depth` thread in emit-instrs-d)
-      // gives each nesting level its own alloc-base local, so a CCtor arg no longer clobbers the outer base.
-      | Option.Some(a) => if can-emit(a) then ctor-args-emittable(args, i + 1) else false
-      | Option.None(_) => false
+    // NESTED compounds now emit: depth-distinct scratch (scratch-need + the `depth` thread in emit-instrs-d)
+    // gives each nesting level its own alloc-base local, so a CCtor arg no longer clobbers the outer base.
+    | Option.Some(a) => if can-emit(a) then ctor-args-emittable(args, i + 1) else false
+    | Option.None(_) => false
 
 /// slice-B'(Bp4b-ii): export section exporting "main" as the function at INDEX `funcidx` — the recursive-module
 /// generalization of `export-section()` (which hard-codes index 0). `01`=one export, `04 6d 61 69 6e`="main",
@@ -418,12 +418,12 @@ def real-binders(bs: List(Int64), i: Int64, acc: List(Int64)) =
     acc
   else
     match List.at(bs, i) with
-      | Option.Some(b) =>
-        if b == -1 then
-          real-binders(bs, i + 1, acc)
-        else
-          real-binders(bs, i + 1, List.concat(acc, List.push([], b)))
-      | Option.None(_) => acc
+    | Option.Some(b) =>
+      if b == -1 then
+        real-binders(bs, i + 1, acc)
+      else
+        real-binders(bs, i + 1, List.concat(acc, List.push([], b)))
+    | Option.None(_) => acc
 
 /// W-compound: collect CLet binders across a CCtor's payload arg list (index recursion, concatenated).
 def collect-binders-args(args: List(Core), i: Int64, acc: List(Int64)) =
@@ -431,8 +431,8 @@ def collect-binders-args(args: List(Core), i: Int64, acc: List(Int64)) =
     acc
   else
     match List.at(args, i) with
-      | Option.Some(a) => collect-binders-args(args, i + 1, List.concat(acc, collect-binders(a)))
-      | Option.None(_) => acc
+    | Option.Some(a) => collect-binders-args(args, i + 1, List.concat(acc, collect-binders(a)))
+    | Option.None(_) => acc
 
 /// Emit the INSTRUCTION bytes for a Core term onto the i64 operand stack — TOTAL (`Bytes`, never `Option`).
 /// `binders` is the `collect-binders` CLet-binder list (index = local slot). `CNum` → i64.const; `CBin` → postfix
@@ -661,21 +661,21 @@ def emit-ctor-stores(
     Bytes.of([])
   else
     match List.at(args, i) with
-      | Option.Some(a) =>
+    | Option.Some(a) =>
+      Bytes.concat(
         Bytes.concat(
+          b1(32),
           Bytes.concat(
-            b1(32),
+            uleb(scratch),
             Bytes.concat(
-              uleb(scratch),
-              Bytes.concat(
-                emit-instrs-d(a, binders, defidx, depth),
-                Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(8 * (i + 1))))
-              )
+              emit-instrs-d(a, binders, defidx, depth),
+              Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(8 * (i + 1))))
             )
-          ),
-          emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth)
-        )
-      | Option.None(_) => emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth)
+          )
+        ),
+        emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth)
+      )
+    | Option.None(_) => emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth)
 
 /// W-compound: bind a CMatchSum's payload elements into their locals — for each binder bs[i] that is not the
 /// -1 wildcard: `local.get scratch ; i64.load align=3 offset=8*(i+1) ; local.set (index-of binders bs[i])`
@@ -693,31 +693,28 @@ def emit-payload-binds(
     Bytes.of([])
   else
     match List.at(bs, i) with
-      | Option.Some(b) =>
-        if b == -1 then
-          emit-payload-binds(bs, i + 1, scratch, binders, defidx) // wildcard: no bind, advance field
-        else
+    | Option.Some(b) =>
+      if b == -1 then
+        emit-payload-binds(bs, i + 1, scratch, binders, defidx) // wildcard: no bind, advance field
+      else
+        Bytes.concat(
           Bytes.concat(
+            b1(32),
             Bytes.concat(
-              b1(32),
+              uleb(scratch),
               Bytes.concat(
-                uleb(scratch),
+                b1(41),
                 Bytes.concat(
-                  b1(41),
-                  Bytes.concat(
-                    b1(3),
-                    Bytes.concat(
-                      uleb(8 * (i + 1)),
-                      Bytes.concat(b1(33), uleb(index-of(binders, b)))
-                    )
-                  )
+                  b1(3),
+                  Bytes.concat(uleb(8 * (i + 1)), Bytes.concat(b1(33), uleb(index-of(binders, b))))
                 )
               )
-            ),
-            // local.get scratch ; i64.load off ; local.set slot
-            emit-payload-binds(bs, i + 1, scratch, binders, defidx)
-          )
-      | Option.None(_) => emit-payload-binds(bs, i + 1, scratch, binders, defidx)
+            )
+          ),
+          // local.get scratch ; i64.load off ; local.set slot
+          emit-payload-binds(bs, i + 1, scratch, binders, defidx)
+        )
+    | Option.None(_) => emit-payload-binds(bs, i + 1, scratch, binders, defidx)
 
 /// slice-B'(Bp3): emit a CCall's arg terms left-to-right (index recursion, the emit idiom), each onto the i64
 /// stack, concatenated — the wasm call convention (args pushed in order before `call`).
@@ -732,12 +729,12 @@ def emit-call-args(
     Bytes.of([])
   else
     match List.at(args, i) with
-      | Option.Some(a) =>
-        Bytes.concat(
-          emit-instrs-d(a, binders, defidx, depth),
-          emit-call-args(args, i + 1, binders, defidx, depth)
-        )
-      | Option.None(_) => emit-call-args(args, i + 1, binders, defidx, depth)
+    | Option.Some(a) =>
+      Bytes.concat(
+        emit-instrs-d(a, binders, defidx, depth),
+        emit-call-args(args, i + 1, binders, defidx, depth)
+      )
+    | Option.None(_) => emit-call-args(args, i + 1, binders, defidx, depth)
 
 /// slice-B'(Bp3): a def-name's wasm function index from the def-index map; TRAPS on a missing name (a
 /// checked-get, not a `-1`). A MISS cannot legitimately happen — `can-emit` gates a `CCall` program on the callee
@@ -789,10 +786,10 @@ def defenv-funcidx-map-go(
     acc
   else
     match List.at(entries, i) with
-      | Option.Some(e) =>
-        let (name, _) = e in
-        defenv-funcidx-map-go(entries, i + 1, Map.insert(acc, name, i))
-      | Option.None(_) => acc
+    | Option.Some(e) =>
+      let (name, _) = e in
+      defenv-funcidx-map-go(entries, i + 1, Map.insert(acc, name, i))
+    | Option.None(_) => acc
 
 /// slice-B'(Bp2): emit ONE recursive def's FUNCTION BODY. A def with param binder-ids `params` and lowered
 /// body `bodyCore` (from lower-def-env's lower-one-def) emits as a wasm function body where the params are the
@@ -1082,8 +1079,8 @@ def emit-text(s: String) = emit-src-for(Target.Text, s)
 def emit-src-for(target: Target, s: String) =
   let (root, tree) = read-source(s) in
   match lower-tree(tree, root) with
-    | Option.Some(core) => target-emit(target, core)
-    | Option.None(_) => Option.None(unit)
+  | Option.Some(core) => target-emit(target, core)
+  | Option.None(_) => Option.None(unit)
 
 /// Back-compat alias: `emit-module` = the Wasm arm via the seam. Existing callers/tests keep working while
 /// routing through `target-emit` (so the seam is exercised, not bypassed).
@@ -1100,8 +1097,8 @@ def bytes-to-list-go(b: Bytes, i: Int64, n: Int64, acc: List(UInt8)) =
     acc
   else
     match Bytes.at(b, i) with
-      | Option.Some(x) => bytes-to-list-go(b, i + 1, n, List.push(acc, UInt8.wrap(x))) // append in order
-      | Option.None(_) => acc
+    | Option.Some(x) => bytes-to-list-go(b, i + 1, n, List.push(acc, UInt8.wrap(x))) // append in order
+    | Option.None(_) => acc
 
 /// `emit-src-bytes(s)` — the DRIVER-FACING W4 entry: `emit-src` but returning the module as a
 /// `List(UInt8)` instead of `Bytes`, so `cdz run-emitted`'s `main` hands the host a RAW `list<u8>` (crosses
@@ -1140,8 +1137,8 @@ def em-cnum-emits-a-module() =
   match emit-module(cnum64(42)) with
     | Option.Some(_) => (
       match emit-module(Core.CBin(0, true, 64, cnum64(1), cnum64(2))) with
-        | Option.None(_) => unit
-        | _ => trap("unknown-op CBin out of subset")
+      | Option.None(_) => unit
+      | _ => trap("unknown-op CBin out of subset")
     )
     | Option.None(_) => trap("CNum emits a module")
 
@@ -1182,17 +1179,16 @@ def em-compound-construct-project-emits-a-module() =
       // nesting level its own alloc-base local, and bumping the global BEFORE storing elems keeps the inner
       // alloc from landing on the outer base. So a ctor-in-ctor assembles a module (was a decline pre-fix).
       match emit-module(
-          Core.CCtor(
-            0,
-            List.concat(
-              List.push([], Core.CCtor(0, List.push([], cnum64(1)))),
-              List.push([], cnum64(3))
-            )
+        Core.CCtor(
+          0,
+          List.concat(
+            List.push([], Core.CCtor(0, List.push([], cnum64(1)))),
+            List.push([], cnum64(3))
           )
-        ) with
-        | Option.Some(_) => unit
-        | Option.None(_) =>
-          trap("a nested compound ctor must now EMIT (depth-scratch + bump-early)")
+        )
+      ) with
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("a nested compound ctor must now EMIT (depth-scratch + bump-early)")
     )
     | Option.None(_) => trap("a flat tuple construct+project emits a module")
 
@@ -1617,12 +1613,12 @@ def em-seam-target-wasm-emits() =
   match target-emit(Target.Wasm, cnum64(7)) with
     | Option.Some(m) => (
       match emit-wasm-module(cnum64(7)) with
-        | Option.Some(m2) =>
-          if Bytes.len(m) == Bytes.len(m2) then
-            if byte-of(m, 0) == 0 then unit else trap("wasm magic via seam")
-          else
-            trap("seam == direct wasm arm")
-        | Option.None(_) => trap("wasm arm emits")
+      | Option.Some(m2) =>
+        if Bytes.len(m) == Bytes.len(m2) then
+          if byte-of(m, 0) == 0 then unit else trap("wasm magic via seam")
+        else
+          trap("seam == direct wasm arm")
+      | Option.None(_) => trap("wasm arm emits")
     )
     | Option.None(_) => trap("seam Target.Wasm emits")
 
@@ -1632,9 +1628,9 @@ def em-seam-src-for-wasm-matches-emit-src() =
   match emit-src-for(Target.Wasm, "(+ 1 2)") with
     | Option.Some(m) => (
       match emit-src("(+ 1 2)") with
-        | Option.Some(m2) =>
-          if Bytes.len(m) == Bytes.len(m2) then unit else trap("emit-src-for Wasm == emit-src")
-        | Option.None(_) => trap("emit-src emits")
+      | Option.Some(m2) =>
+        if Bytes.len(m) == Bytes.len(m2) then unit else trap("emit-src-for Wasm == emit-src")
+      | Option.None(_) => trap("emit-src emits")
     )
     | Option.None(_) => trap("emit-src-for Wasm emits")
 
@@ -1734,8 +1730,8 @@ def em-src-let-and-if-emit() =
   match emit-src("(let ((x 2)) (* x 3))") with
     | Option.Some(_) => (
       match emit-src("(if (< 1 2) 10 20)") with
-        | Option.Some(_) => unit
-        | Option.None(_) => trap("if source emits")
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("if source emits")
     )
     | Option.None(_) => trap("let source emits")
 
@@ -1748,8 +1744,8 @@ def em-src-multi-binding-let-emits() =
   match emit-src("(let ((x 5) (y 10)) (+ x y))") with
     | Option.Some(_) => (
       match emit-src("(let ((a 1) (b 2) (c 3)) (+ a (+ b c)))") with
-        | Option.Some(_) => unit
-        | Option.None(_) => trap("3-binding let source emits")
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("3-binding let source emits")
     )
     | Option.None(_) => trap("2-binding let source emits")
 
@@ -1777,8 +1773,8 @@ def em-src-corpus-module-with-let-and-if() =
   match emit-src("(do (def (main) (let ((x 2)) (* x 3))) (export main))") with
     | Option.Some(_) => (
       match emit-src("(do (def (main) (if (< 1 2) 10 20)) (export main))") with
-        | Option.Some(_) => unit
-        | Option.None(_) => trap("module-wrapped if emits")
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("module-wrapped if emits")
     )
     | Option.None(_) => trap("module-wrapped let emits")
 
@@ -1791,8 +1787,8 @@ def em-src-user-function-module-emits() =
   match emit-src("(do (def (g) 7) (def (main) (+ (g) 5)) (export main))") with
     | Option.Some(_) => (
       match emit-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
-        | Option.Some(_) => unit
-        | Option.None(_) => trap("single-param helper module emits")
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("single-param helper module emits")
     )
     | Option.None(_) => trap("nullary helper module emits")
 
@@ -1820,9 +1816,9 @@ def em-src-bytes-matches-emit-src-len() =
   match emit-src("42") with
     | Option.Some(b) => (
       match emit-src-bytes("42") with
-        | Option.Some(lst) =>
-          if List.len(lst) == Bytes.len(b) then unit else trap("list len == bytes len")
-        | Option.None(_) => trap("emit-src-bytes Some when emit-src Some")
+      | Option.Some(lst) =>
+        if List.len(lst) == Bytes.len(b) then unit else trap("list len == bytes len")
+      | Option.None(_) => trap("emit-src-bytes Some when emit-src Some")
     )
     | Option.None(_) => trap("42 emits")
 
@@ -1835,9 +1831,9 @@ def em-src-bytes-len-matches-arith-module() =
   match emit-src("(+ 1 2)") with
     | Option.Some(b) => (
       match emit-src-bytes("(+ 1 2)") with
-        | Option.Some(lst) =>
-          if List.len(lst) == Bytes.len(b) then unit else trap("arith list len == bytes len")
-        | Option.None(_) => trap("emit-src-bytes Some")
+      | Option.Some(lst) =>
+        if List.len(lst) == Bytes.len(b) then unit else trap("arith list len == bytes len")
+      | Option.None(_) => trap("emit-src-bytes Some")
     )
     | Option.None(_) => trap("arith emits")
 
@@ -2144,13 +2140,12 @@ def em-defenv-funcidx-map-assigns-positions() =
     ) in
   let m = defenv-funcidx-map(Map.to-list(de)) in
   match Map.lookup(m, 900) with
-    | Option.Some(i0) => (
-      match Map.lookup(m, 901) with
-        | Option.Some(i1) =>
-          if i0 + i1 == 1 then unit else trap("two defs get funcidx 0 and 1 (sum 1)")
-        | Option.None(_) => trap("901 in map")
-    )
-    | Option.None(_) => trap("900 in map")
+  | Option.Some(i0) => (
+    match Map.lookup(m, 901) with
+    | Option.Some(i1) => if i0 + i1 == 1 then unit else trap("two defs get funcidx 0 and 1 (sum 1)")
+    | Option.None(_) => trap("901 in map")
+  )
+  | Option.None(_) => trap("900 in map")
 
 @test
 def em-lookup-idx-resolves-present-funcidx() =

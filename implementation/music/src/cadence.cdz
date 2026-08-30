@@ -78,8 +78,8 @@ def half-ends-on-the-dominant() =
   match cadence-of(1, 4) with
     | Cadence.Half => (
       match cadence-of(0, 4) with
-        | Cadence.Half => unit
-        | _ => trap("I->V is half")
+      | Cadence.Half => unit
+      | _ => trap("I->V is half")
     )
     | _ => trap("ii->V is half")
 
@@ -90,8 +90,8 @@ def five-to-one-is-authentic-not-half() =
   match cadence-of(4, 0) with
     | Cadence.Authentic => (
       match cadence-of(0, 3) with
-        | Cadence.NoCadence => unit
-        | _ => trap("I->IV is not a cadence")
+      | Cadence.NoCadence => unit
+      | _ => trap("I->IV is not a cadence")
     )
     | _ => trap("V->I authentic")
 

@@ -132,12 +132,12 @@ def the-same-seed-builds-the-same-snowflake() =
   let a = snowflake(7 : Int64, 20 / 1, 1 : Int64) in
   let b = snowflake(7 : Int64, 20 / 1, 1 : Int64) in
   match a with
-    | Solid.Union(_, _) => (
-      match b with
-        | Solid.Union(_, _) => unit
-        | _ => trap("b shape")
-    )
-    | _ => trap("a shape")
+  | Solid.Union(_, _) => (
+    match b with
+    | Solid.Union(_, _) => unit
+    | _ => trap("b shape")
+  )
+  | _ => trap("a shape")
 
 @test
 def different-seeds-differ-in-child-count() =

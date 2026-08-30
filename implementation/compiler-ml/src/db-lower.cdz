@@ -48,12 +48,12 @@ def dl-lowers-to-clet() =
   // `let x = 2 in x` lowers to a CLet (via the Db's memoized columns) — Some(Core).
   let (root, d0) = let-db() in
   match lower-of-db(d0, root) with
-    | (_, Option.Some(Core.CLet(_, cv, cb))) =>
-      if is-cnum(cv, 2) then
-        if is-cvar(cb, root) then unit else trap("body CVar(root)")
-      else
-        trap("value CNum 2")
-    | (_, _) => trap("let lowers to CLet via Db")
+  | (_, Option.Some(Core.CLet(_, cv, cb))) =>
+    if is-cnum(cv, 2) then
+      if is-cvar(cb, root) then unit else trap("body CVar(root)")
+    else
+      trap("value CNum 2")
+  | (_, _) => trap("let lowers to CLet via Db")
 
 @test
 def dl-fills-resolve-and-types-columns() =
@@ -71,27 +71,27 @@ def dl-ill-typed-has-no-core() =
   // an unbound `y` is TErr → NO core form → None (absence≠value, carried through the Db chain).
   let (root, tree) = parse-tokens([Tok.TName(9)]) in
   match lower-of-db(db-of(tree), root) with
-    | (_, Option.None(_)) => unit
-    | (_, Option.Some(_)) => trap("ill-typed has no core form")
+  | (_, Option.None(_)) => unit
+  | (_, Option.Some(_)) => trap("ill-typed has no core form")
 
 @test
 def dl-literal-lowers-to-cnum() =
   // a bare literal `5` lowers to CNum 5 via the Db.
   let (root, tree) = parse-tokens([Tok.TNum(5)]) in
   match lower-of-db(db-of(tree), root) with
-    | (_, Option.Some(c)) => if is-cnum(c, 5) then unit else trap("CNum 5")
-    | (_, Option.None(_)) => trap("a literal lowers")
+  | (_, Option.Some(c)) => if is-cnum(c, 5) then unit else trap("CNum 5")
+  | (_, Option.None(_)) => trap("a literal lowers")
 
 @test
 def dl-add-lowers-to-cbin() =
   // `1 + 2` lowers to a CBin (op 43) via the Db's memoized columns.
   let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) in
   match lower-of-db(db-of(tree), root) with
-    | (_, Option.Some(Core.CBin(op, _, _, l, r))) =>
-      if op == 43 then
-        if is-cnum(l, 1) then if is-cnum(r, 2) then unit else trap("r CNum 2") else trap("l CNum 1")
-      else
-        trap("+ op")
-    | (_, _) => trap("1 + 2 lowers to CBin")
+  | (_, Option.Some(Core.CBin(op, _, _, l, r))) =>
+    if op == 43 then
+      if is-cnum(l, 1) then if is-cnum(r, 2) then unit else trap("r CNum 2") else trap("l CNum 1")
+    else
+      trap("+ op")
+  | (_, _) => trap("1 + 2 lowers to CBin")
 
 export { lower-of-db, db-tree-of }

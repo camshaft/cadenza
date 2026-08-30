@@ -142,10 +142,10 @@ def nearest-degree-go(ds: List(RInterval), target: Rational, best: Rational, bes
 def collapse-to-rscale(s: RScale, i: RInterval) =
   let target = octaves(i) - octaves(rscale-tonic(s)) in
   match rscale-degrees(s) with
-    | [] => i
-    | [h0, .. rest] =>
-      let nearest-frac = nearest-degree-go(rest, target, octaves(h0), r-dist(octaves(h0), target)) in
-      rinterval(octaves(rscale-tonic(s)) + nearest-frac)
+  | [] => i
+  | [h0, .. rest] =>
+    let nearest-frac = nearest-degree-go(rest, target, octaves(h0), r-dist(octaves(h0), target)) in
+    rinterval(octaves(rscale-tonic(s)) + nearest-frac)
 
 /// ============================ @test suite (rational scales / modes) ============================
 @test
@@ -250,12 +250,12 @@ def chromatic-scale-projects-to-the-twelve-tet-semitones() =
   // The chromatic scale on tonic 0 over base 60 projects EXACTLY to [60,61,62,…,71] (k/12 → k semitones).
   let cs = chromatic-scale(rinterval(Rational.of(0, 1))) in
   match rscale-to-midi(cs, 60) with
-    | [a, b, c, .. _] =>
-      if a == 60 then
-        if b == 61 then if c == 62 then unit else trap("D=62") else trap("C#=61")
-      else
-        trap("C=60")
-    | _ => trap("chromatic has twelve degrees")
+  | [a, b, c, .. _] =>
+    if a == 60 then
+      if b == 61 then if c == 62 then unit else trap("D=62") else trap("C#=61")
+    else
+      trap("C=60")
+  | _ => trap("chromatic has twelve degrees")
 
 @test
 def heptatonic-skeleton-snaps-off-grid-degrees-to-nearest-semitone() =
@@ -264,18 +264,18 @@ def heptatonic-skeleton-snaps-off-grid-degrees-to-nearest-semitone() =
   // Over base 60 → [60,62,63,65,67,69,70]. Pins the honest microtonal→MIDI quantization (7-EDO ≠ 12-TET).
   let hs = heptatonic-scale(rinterval(Rational.of(0, 1))) in
   match rscale-to-midi(hs, 60) with
-    | [d0, d1, _d2, d3, d4, _d5, d6] =>
-      if d0 == 60 then
-        if d1 == 62 then
-          if d3 == 65 then
-            if d4 == 67 then if d6 == 70 then unit else trap("6/7 → 70") else trap("4/7 → 67")
-          else
-            trap("3/7 → 65")
+  | [d0, d1, _d2, d3, d4, _d5, d6] =>
+    if d0 == 60 then
+      if d1 == 62 then
+        if d3 == 65 then
+          if d4 == 67 then if d6 == 70 then unit else trap("6/7 → 70") else trap("4/7 → 67")
         else
-          trap("1/7 → 62")
+          trap("3/7 → 65")
       else
-        trap("0/7 → 60")
-    | _ => trap("heptatonic has seven degrees")
+        trap("1/7 → 62")
+    else
+      trap("0/7 → 60")
+  | _ => trap("heptatonic has seven degrees")
 
 export {
   RScale.*,

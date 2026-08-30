@@ -117,17 +117,17 @@ def the-whole-twelve-tet-grid-round-trips() =
 def chord-agree(rstack: List(RInterval), ints: List(Int64)) = match rstack with
   | [] => (
     match ints with
-      | [] => unit
-      | [_, .. _] => trap("rational chord has fewer intervals")
+    | [] => unit
+    | [_, .. _] => trap("rational chord has fewer intervals")
   )
   | [rh, .. rt] =>
     match ints with
-      | [] => trap("rational chord has more intervals")
-      | [ih, .. it] =>
-        match to-semitones-exact(rh) with
-          | Option.Some(s) =>
-            if s == ih then chord-agree(rt, it) else trap("chord stack semitone mismatch")
-          | Option.None(_) => trap("rational chord interval off the 12-TET grid")
+    | [] => trap("rational chord has more intervals")
+    | [ih, .. it] =>
+      match to-semitones-exact(rh) with
+      | Option.Some(s) =>
+        if s == ih then chord-agree(rt, it) else trap("chord stack semitone mismatch")
+      | Option.None(_) => trap("rational chord interval off the 12-TET grid")
 
 @test
 def rational-and-int64-chords-agree-on-twelve-tet() =

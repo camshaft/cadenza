@@ -121,12 +121,12 @@ def net-direction-is-the-sign-of-first-to-last() =
   match net-direction([60, 59, 64]) with
     | Direction.Rising => (
       match net-direction([67, 68, 60]) with
-        | Direction.Falling => (
-          match net-direction([60, 64, 60]) with
-            | Direction.Level => unit
-            | _ => trap("level")
-        )
-        | _ => trap("falling")
+      | Direction.Falling => (
+        match net-direction([60, 64, 60]) with
+        | Direction.Level => unit
+        | _ => trap("level")
+      )
+      | _ => trap("falling")
     )
     | _ => trap("rising")
 
@@ -138,8 +138,8 @@ def a-melody-too-short-to-move-is-level() =
   match net-direction([]) with
     | Direction.Level => (
       match net-direction([60]) with
-        | Direction.Level => unit
-        | _ => trap("a single note is level")
+      | Direction.Level => unit
+      | _ => trap("a single note is level")
     )
     | _ => trap("an empty melody is level")
 

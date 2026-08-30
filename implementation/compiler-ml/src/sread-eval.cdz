@@ -55,8 +55,8 @@ def run-src-typed(s: String) =
       // to match (else the differential disagrees). A tuple used internally (projected to a scalar) is fine.
       and (if is-tuple-at(tree, root, root) then false else true) then
     match run-of-db(db-of(tree), root) with
-      | (_, Option.Some(v)) => Option.Some((v, if is-bool-at(tree, root, root) then 1 else 0))
-      | (_, Option.None(_)) => Option.None(unit) : Option(Tuple(Int64, Int64))
+    | (_, Option.Some(v)) => Option.Some((v, if is-bool-at(tree, root, root) then 1 else 0))
+    | (_, Option.None(_)) => Option.None(unit) : Option(Tuple(Int64, Int64))
   else
     Option.None(unit) : Option(Tuple(Int64, Int64))
 
@@ -87,8 +87,8 @@ def se-negative-literal-in-let-and-cmp() =
     | Option.Some(v) =>
       if v == 0 - 5 then
         match run-src("(< -5 0)") with
-          | Option.Some(w) => if w == 1 then unit else trap("(< -5 0) = 1")
-          | Option.None(_) => trap("negative in comparison runs")
+        | Option.Some(w) => if w == 1 then unit else trap("(< -5 0) = 1")
+        | Option.None(_) => trap("negative in comparison runs")
       else
         trap("let x=-5 → -5")
     | Option.None(_) => trap("negative literal in let runs")
@@ -102,8 +102,8 @@ def se-tuple-projection-runs-to-element() =
     | Option.Some(v) =>
       if v == 20 then
         match run-src("(. (tuple 10 20 30) 0)") with
-          | Option.Some(w) => if w == 10 then unit else trap("(. (tuple 10 20 30) 0) = 10")
-          | Option.None(_) => trap("element-0 projection runs")
+        | Option.Some(w) => if w == 10 then unit else trap("(. (tuple 10 20 30) 0) = 10")
+        | Option.None(_) => trap("element-0 projection runs")
       else
         trap("(. p 1) of (tuple 10 20) = 20")
     | Option.None(_) => trap("tuple projection runs to a scalar")
@@ -117,8 +117,8 @@ def se-tuple-projection-rejects-decline() =
     | Option.Some(_) => trap("out-of-bounds projection must decline, not run")
     | Option.None(_) =>
       match run-src("(. 5 0)") with
-        | Option.Some(_) => trap("projection of a non-tuple operand must decline")
-        | Option.None(_) => unit
+      | Option.Some(_) => trap("projection of a non-tuple operand must decline")
+      | Option.None(_) => unit
 
 @test
 def se-string-literal-reads-and-declines() =
@@ -140,8 +140,8 @@ def se-string-byte-len-runs-to-length() =
     | Option.Some(v) =>
       if v == 2 then
         match run-src("(String.byte-len \"hello\")") with
-          | Option.Some(w) => if w == 5 then unit else trap("byte-len hello = 5")
-          | Option.None(_) => trap("byte-len hello runs")
+        | Option.Some(w) => if w == 5 then unit else trap("byte-len hello = 5")
+        | Option.None(_) => trap("byte-len hello runs")
       else
         trap("byte-len hi = 2")
     | Option.None(_) => trap("(String.byte-len hi) runs to 2")
@@ -164,8 +164,8 @@ def se-record-field-access-runs-to-value() =
     | Option.Some(v) =>
       if v == 20 then
         match run-src("(let ((r (record (a 10) (b 20)))) (. r a))") with
-          | Option.Some(w) => if w == 10 then unit else trap("(. r a) = 10")
-          | Option.None(_) => trap("field a access runs")
+        | Option.Some(w) => if w == 10 then unit else trap("(. r a) = 10")
+        | Option.None(_) => trap("field a access runs")
       else
         trap("(. r b) of (record (a 10) (b 20)) = 20")
     | Option.None(_) => trap("record field access runs to a scalar")
@@ -189,15 +189,15 @@ def se-nested-compound-projection() =
     | Option.Some(v) =>
       if v == 20 then
         match run-src("(let ((t (tuple (record (x 5) (y 6)) 9))) (. (. t 0) x))") with
-          | Option.Some(w) =>
-            if w == 5 then
-              match run-src("(let ((r (record (inner (record (v 7))) (n 1)))) (. (. r inner) v))") with
-                | Option.Some(u) =>
-                  if u == 7 then unit else trap("nested record-in-record (. (. r inner) v) = 7")
-                | Option.None(_) => trap("nested record-in-record runs")
-            else
-              trap("record-valued tuple element (. (. t 0) x) = 5")
-          | Option.None(_) => trap("record-in-tuple projection runs")
+        | Option.Some(w) =>
+          if w == 5 then
+            match run-src("(let ((r (record (inner (record (v 7))) (n 1)))) (. (. r inner) v))") with
+            | Option.Some(u) =>
+              if u == 7 then unit else trap("nested record-in-record (. (. r inner) v) = 7")
+            | Option.None(_) => trap("nested record-in-record runs")
+          else
+            trap("record-valued tuple element (. (. t 0) x) = 5")
+        | Option.None(_) => trap("record-in-tuple projection runs")
       else
         trap("tuple-valued record field (. (. r a) 1) = 20")
     | Option.None(_) => trap("nested compound projection runs to a scalar")
@@ -527,8 +527,8 @@ def se-let-multi-binding() =
     | Option.Some(v) =>
       if v == 15 then
         match run-src("(let ((x 1) (y 2) (z 3)) (+ x (+ y z)))") with
-          | Option.Some(w) => if w == 6 then unit else trap("3-binding let → 6")
-          | Option.None(_) => trap("3-binding let runs")
+        | Option.Some(w) => if w == 6 then unit else trap("3-binding let → 6")
+        | Option.None(_) => trap("3-binding let runs")
       else
         trap("2-binding let → 15")
     | Option.None(_) => trap("2-binding let runs")

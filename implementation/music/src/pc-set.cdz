@@ -71,8 +71,8 @@ def insert-sorted-drops-a-duplicate-and-orders() =
         if b == 4 then
           if c == 7 then
             match insert-sorted([0, 4, 7], 7) with
-              | [_, _, _] => unit
-              | _ => trap("dup dropped, still three")
+            | [_, _, _] => unit
+            | _ => trap("dup dropped, still three")
           else
             trap("7 last")
         else

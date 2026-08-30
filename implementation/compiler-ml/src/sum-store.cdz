@@ -37,10 +37,10 @@ def store-alloc(store: SumStore, tag: Int64, payloads: List(Int64)) =
 def store-tag(store: SumStore, hnd: Int64) =
   let SumStore.SumStore(_, cells) = store in
   match Map.lookup(cells, hnd) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(cell) =>
-      let (tag, _) = cell in
-      Option.Some(tag)
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(cell) =>
+    let (tag, _) = cell in
+    Option.Some(tag)
 
 /// Read the i-th PAYLOAD element of the sum value at `hnd` — `Some value` if the hnd is allocated AND has
 /// an i-th element, else `None`. A payload-binding ctor pattern (`(Some x) → …`) reads element 0 to bind `x`;
@@ -48,40 +48,40 @@ def store-tag(store: SumStore, hnd: Int64) =
 def store-payload(store: SumStore, hnd: Int64, i: Int64) =
   let SumStore.SumStore(_, cells) = store in
   match Map.lookup(cells, hnd) with
-    | Option.None(_) => Option.None(unit)
-    | Option.Some(cell) =>
-      let (_, payloads) = cell in
-      List.at(payloads, i)
+  | Option.None(_) => Option.None(unit)
+  | Option.Some(cell) =>
+    let (_, payloads) = cell in
+    List.at(payloads, i)
 
 @test
 def sst-alloc-then-read-tag() =
   // allocate a `Some 5` (tag 1, payload [5]); the hnd reads back tag 1.
   let (h, st) = store-alloc(empty-store(), 1, List.push([], 5)) in
   match store-tag(st, h) with
-    | Option.Some(t) => if t == 1 then unit else trap("alloc tag 1 reads back 1")
-    | Option.None(_) => trap("an allocated hnd has a tag")
+  | Option.Some(t) => if t == 1 then unit else trap("alloc tag 1 reads back 1")
+  | Option.None(_) => trap("an allocated hnd has a tag")
 
 @test
 def sst-alloc-then-read-payload() =
   // the `Some 5` hnd reads back payload element 0 = 5.
   let (h, st) = store-alloc(empty-store(), 1, List.push([], 5)) in
   match store-payload(st, h, 0) with
-    | Option.Some(v) => if v == 5 then unit else trap("Some 5 payload[0] = 5")
-    | Option.None(_) => trap("an allocated hnd has payload element 0")
+  | Option.Some(v) => if v == 5 then unit else trap("Some 5 payload[0] = 5")
+  | Option.None(_) => trap("an allocated hnd has payload element 0")
 
 @test
 def sst-nullary-payload-empty() =
   // a NULLARY-shaped alloc (tag 3, no payloads) reads its tag but has NO element 0.
   let (h, st) = store-alloc(empty-store(), 3, [] : List(Int64)) in
   match store-tag(st, h) with
-    | Option.Some(t) =>
-      if t == 3 then
-        match store-payload(st, h, 0) with
-          | Option.None(_) => unit
-          | Option.Some(_) => trap("a no-payload cell has no element 0")
-      else
-        trap("tag 3")
-    | Option.None(_) => trap("tag readable")
+  | Option.Some(t) =>
+    if t == 3 then
+      match store-payload(st, h, 0) with
+      | Option.None(_) => unit
+      | Option.Some(_) => trap("a no-payload cell has no element 0")
+    else
+      trap("tag 3")
+  | Option.None(_) => trap("tag readable")
 
 @test
 def sst-unique-handles() =
@@ -92,25 +92,24 @@ def sst-unique-handles() =
     trap("distinct allocs must get distinct handles")
   else
     match store-tag(st2, h1) with
-      | Option.Some(t1) => (
-        match store-tag(st2, h2) with
-          | Option.Some(t2) =>
-            if t1 == 1 and t2 == 2 then unit else trap("each hnd keeps its own tag")
-          | Option.None(_) => trap("h2 tag readable")
-      )
-      | Option.None(_) => trap("h1 still readable after a later alloc")
+    | Option.Some(t1) => (
+      match store-tag(st2, h2) with
+      | Option.Some(t2) => if t1 == 1 and t2 == 2 then unit else trap("each hnd keeps its own tag")
+      | Option.None(_) => trap("h2 tag readable")
+    )
+    | Option.None(_) => trap("h1 still readable after a later alloc")
 
 @test
 def sst-two-field-payload() =
   // a two-field ctor `Pair 3 4` (tag 0, payloads [3,4]): element 0 = 3, element 1 = 4.
   let (h, st) = store-alloc(empty-store(), 0, List.concat(List.push([], 3), List.push([], 4))) in
   match store-payload(st, h, 0) with
-    | Option.Some(a) => (
-      match store-payload(st, h, 1) with
-        | Option.Some(b) => if a == 3 and b == 4 then unit else trap("Pair 3 4 → [3,4]")
-        | Option.None(_) => trap("element 1 present")
-    )
-    | Option.None(_) => trap("element 0 present")
+  | Option.Some(a) => (
+    match store-payload(st, h, 1) with
+    | Option.Some(b) => if a == 3 and b == 4 then unit else trap("Pair 3 4 → [3,4]")
+    | Option.None(_) => trap("element 1 present")
+  )
+  | Option.None(_) => trap("element 0 present")
 
 @test
 def sst-nested-sum-hnd-as-payload() =
@@ -120,18 +119,18 @@ def sst-nested-sum-hnd-as-payload() =
   let (h1, st1) = store-alloc(empty-store(), 1, List.push([], 5)) in
   let (h2, st2) = store-alloc(st1, 1, List.push([], h1)) in
   match store-payload(st2, h2, 0) with
-    | Option.Some(inner) => (
-      match store-tag(st2, inner) with
-        | Option.Some(it) =>
-          if it == 1 then
-            match store-payload(st2, inner, 0) with
-              | Option.Some(iv) => if iv == 5 then unit else trap("inner Some payload = 5")
-              | Option.None(_) => trap("inner has payload")
-          else
-            trap("inner tag 1")
-        | Option.None(_) => trap("inner hnd readable")
-    )
-    | Option.None(_) => trap("outer payload[0] is the inner hnd")
+  | Option.Some(inner) => (
+    match store-tag(st2, inner) with
+    | Option.Some(it) =>
+      if it == 1 then
+        match store-payload(st2, inner, 0) with
+        | Option.Some(iv) => if iv == 5 then unit else trap("inner Some payload = 5")
+        | Option.None(_) => trap("inner has payload")
+      else
+        trap("inner tag 1")
+    | Option.None(_) => trap("inner hnd readable")
+  )
+  | Option.None(_) => trap("outer payload[0] is the inner hnd")
 
 @test
 def sst-unknown-hnd-declines() =
@@ -139,8 +138,8 @@ def sst-unknown-hnd-declines() =
   match store-tag(empty-store(), 99) with
     | Option.None(_) => (
       match store-payload(empty-store(), 99, 0) with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("unknown hnd has no payload")
+      | Option.None(_) => unit
+      | Option.Some(_) => trap("unknown hnd has no payload")
     )
     | Option.Some(_) => trap("an unknown hnd has no tag")
 

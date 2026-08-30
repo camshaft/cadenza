@@ -84,15 +84,15 @@ def int-parts-of(t: Ty) = match ground-default(t) with
   | Ty.TyInt(it) => (
     let IntType.IntType(s, w) = it in
     match s with
-      | Sign.Unsigned => (
-        match w with
-          | Width.WFixed(n) => (false, n)
-          | _ => (false, 64)
-      )
-      | _ =>
-        match w with
-          | Width.WFixed(n) => (true, n)
-          | _ => (true, 64)
+    | Sign.Unsigned => (
+      match w with
+      | Width.WFixed(n) => (false, n)
+      | _ => (false, 64)
+    )
+    | _ =>
+      match w with
+      | Width.WFixed(n) => (true, n)
+      | _ => (true, 64)
   )
   | _ => (true, 64)
 
@@ -113,9 +113,9 @@ def is-deferred-int(t: Ty) = match t with
   | Ty.TyInt(it) => (
     let IntType.IntType(_, w) = it in
     match w with
-      | Width.WidthDef => true
-      | Width.WVar(_) => true
-      | Width.WFixed(_) => false
+    | Width.WidthDef => true
+    | Width.WVar(_) => true
+    | Width.WFixed(_) => false
   )
   | _ => false
 
@@ -135,9 +135,9 @@ def infer-tuple-elems(
     tcol
   else
     match List.at(ids, i) with
-      | Option.Some(eid) =>
-        infer-tuple-elems(tree, ids, rcol, infer-node(tree, eid, rcol, tcol), i + 1)
-      | Option.None(_) => tcol
+    | Option.Some(eid) =>
+      infer-tuple-elems(tree, ids, rcol, infer-node(tree, eid, rcol, tcol), i + 1)
+    | Option.None(_) => tcol
 
 /// Read each tuple element's inferred type from `tcol` (filled by `infer-tuple-elems`), in order, into a
 /// positional `List(Ty)` — the `TyTuple` payload. A missing type fact (should not occur post-infer) is TyErr.
@@ -146,12 +146,12 @@ def tuple-elem-types(ids: List(Int64), tcol: Map(Int64, Ty), i: Int64, acc: List
     acc
   else
     match List.at(ids, i) with
-      | Option.Some(eid) =>
-        let ty = match Map.lookup(tcol, eid) with
-            | Option.Some(t) => t
-            | Option.None(_) => Ty.TyErr in
-        tuple-elem-types(ids, tcol, i + 1, List.push(acc, ty))
-      | Option.None(_) => acc
+    | Option.Some(eid) =>
+      let ty = match Map.lookup(tcol, eid) with
+          | Option.Some(t) => t
+          | Option.None(_) => Ty.TyErr in
+      tuple-elem-types(ids, tcol, i + 1, List.push(acc, ty))
+    | Option.None(_) => acc
 
 /// Find `target`'s position in a field-NAME-id list (index recursion) — `Some(i)` if present, `None` if not.
 /// Record field access `(. r fieldname)` looks up the field name's slot in the record's (source-order) field
@@ -161,9 +161,8 @@ def index-of-name(names: List(Int64), target: Int64, i: Int64) =
     Option.None(unit)
   else
     match List.at(names, i) with
-      | Option.Some(n) =>
-        if n == target then Option.Some(i) else index-of-name(names, target, i + 1)
-      | Option.None(_) => Option.None(unit)
+    | Option.Some(n) => if n == target then Option.Some(i) else index-of-name(names, target, i + 1)
+    | Option.None(_) => Option.None(unit)
 
 def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) = match node-at(
     tree,
@@ -200,34 +199,34 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     let t1 = infer-node(tree, operandId, rcol, tcol) in
     let t2 = infer-node(tree, indexId, rcol, t1) in
     match node-at(tree, indexId) with
-      // TUPLE projection `(. t <int>)`: a LITERAL index into a TyTuple → the i-th element type (in bounds).
-      | Option.Some(Node.NLit(i)) => (
-        match Map.lookup(t2, operandId) with
-          | Option.Some(Ty.TyTuple(elems)) => (
-            match List.at(elems, i) with
-              | Option.Some(ety) => Map.insert(t2, id, ety)
-              | Option.None(_) => Map.insert(t2, id, Ty.TyErr)
-          )
-          | _ => Map.insert(t2, id, Ty.TyErr)
-      )
-      // RECORD field access `(. r fieldname)`: a NAME index into a TyRecord → the named field's type. The
-      // index node is an NVar carrying the field NAME-id (NOT a variable reference — resolve leaves it
-      // unresolved); find that name in the record's field-name list → its type. Field not present, or
-      // operand not a record → decline (coverage-not-yet; the oracle rejects a missing/ill-typed field).
-      | Option.Some(Node.NVar(fieldNameId)) => (
-        match Map.lookup(t2, operandId) with
-          | Option.Some(Ty.TyRecord(nameIds, types)) => (
-            match index-of-name(nameIds, fieldNameId, 0) with
-              | Option.Some(idx) => (
-                match List.at(types, idx) with
-                  | Option.Some(fty) => Map.insert(t2, id, fty)
-                  | Option.None(_) => Map.insert(t2, id, Ty.TyErr)
-              )
-              | Option.None(_) => Map.insert(t2, id, Ty.TyErr)
-          )
-          | _ => Map.insert(t2, id, Ty.TyErr)
+    // TUPLE projection `(. t <int>)`: a LITERAL index into a TyTuple → the i-th element type (in bounds).
+    | Option.Some(Node.NLit(i)) => (
+      match Map.lookup(t2, operandId) with
+      | Option.Some(Ty.TyTuple(elems)) => (
+        match List.at(elems, i) with
+        | Option.Some(ety) => Map.insert(t2, id, ety)
+        | Option.None(_) => Map.insert(t2, id, Ty.TyErr)
       )
       | _ => Map.insert(t2, id, Ty.TyErr)
+    )
+    // RECORD field access `(. r fieldname)`: a NAME index into a TyRecord → the named field's type. The
+    // index node is an NVar carrying the field NAME-id (NOT a variable reference — resolve leaves it
+    // unresolved); find that name in the record's field-name list → its type. Field not present, or
+    // operand not a record → decline (coverage-not-yet; the oracle rejects a missing/ill-typed field).
+    | Option.Some(Node.NVar(fieldNameId)) => (
+      match Map.lookup(t2, operandId) with
+      | Option.Some(Ty.TyRecord(nameIds, types)) => (
+        match index-of-name(nameIds, fieldNameId, 0) with
+        | Option.Some(idx) => (
+          match List.at(types, idx) with
+          | Option.Some(fty) => Map.insert(t2, id, fty)
+          | Option.None(_) => Map.insert(t2, id, Ty.TyErr)
+        )
+        | Option.None(_) => Map.insert(t2, id, Ty.TyErr)
+      )
+      | _ => Map.insert(t2, id, Ty.TyErr)
+    )
+    | _ => Map.insert(t2, id, Ty.TyErr)
   )
   | Option.Some(Node.NAnnLit(_, sflag, w)) => // a width-annotated literal `(: v IntN)` has the ANNOTATED type TIntW(signed, width) — the narrow
     // type flows from here (sread already fits-width-checked the value). signed rides as 1|0.
@@ -237,12 +236,12 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     // Bool is Bool. resolve gives the binder NLet's node-id; its value was typed before the body (the
     // walk does value then body), so tcol already holds it. An unbound var (RPoison) is TErr.
     match Map.lookup(rcol, id) with
-      | Option.Some(Resolved.RBound(binder)) => Map.insert(tcol, id, var-type(tree, binder, tcol))
-      // HIGHER-ORDER (HO-2b-ii-A): a bare def-name used as a VALUE resolves to RDef(defName) → its type is
-      // the def's ARROW (Ty.TyFn of its param types → body result). Types `inc` in `(apply inc 41)`.
-      | Option.Some(Resolved.RDef(defName)) =>
-        Map.insert(tcol, id, def-arrow-type(tree, defName, rcol, tcol))
-      | _ => Map.insert(tcol, id, Ty.TyErr)
+    | Option.Some(Resolved.RBound(binder)) => Map.insert(tcol, id, var-type(tree, binder, tcol))
+    // HIGHER-ORDER (HO-2b-ii-A): a bare def-name used as a VALUE resolves to RDef(defName) → its type is
+    // the def's ARROW (Ty.TyFn of its param types → body result). Types `inc` in `(apply inc 41)`.
+    | Option.Some(Resolved.RDef(defName)) =>
+      Map.insert(tcol, id, def-arrow-type(tree, defName, rcol, tcol))
+    | _ => Map.insert(tcol, id, Ty.TyErr)
   )
   | Option.Some(Node.NBin(op, l, r)) => // infer both operands; the result type is op-dependent. Arithmetic (43/45/42) needs Int operands and
     // is Int; comparison (60/61) needs Int operands and is Bool. A non-Int operand → TErr (propagates up).
@@ -293,18 +292,18 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     // A TErr SCRUTINEE taints the whole match (an ill-typed subtree being matched must not be masked by
     // well-typed arms) — the "Any TErr propagates" discipline the integer NMatch/if follow. Checked FIRST.
     match Map.lookup(m3, scrutId) with
-      | Option.Some(Ty.TyErr) => Map.insert(m3, id, Ty.TyErr)
-      | _ =>
-        if ctor-pattern-cross-type(tree, m3, scrutId, patCtorName) then
-          Map.insert(m3, id, Ty.TyErr) // cross-type pattern → reject
-        else
-          match Map.lookup(m3, bodyId) with
-            | Option.Some(bt) => (
-              match Map.lookup(m3, restId) with
-                | Option.Some(rt) => Map.insert(m3, id, join-branch-types(bt, rt)) // arms must join (else TErr)
-                | Option.None(_) => Map.insert(m3, id, Ty.TyErr)
-            )
-            | Option.None(_) => Map.insert(m3, id, Ty.TyErr)
+    | Option.Some(Ty.TyErr) => Map.insert(m3, id, Ty.TyErr)
+    | _ =>
+      if ctor-pattern-cross-type(tree, m3, scrutId, patCtorName) then
+        Map.insert(m3, id, Ty.TyErr) // cross-type pattern → reject
+      else
+        match Map.lookup(m3, bodyId) with
+        | Option.Some(bt) => (
+          match Map.lookup(m3, restId) with
+          | Option.Some(rt) => Map.insert(m3, id, join-branch-types(bt, rt)) // arms must join (else TErr)
+          | Option.None(_) => Map.insert(m3, id, Ty.TyErr)
+        )
+        | Option.None(_) => Map.insert(m3, id, Ty.TyErr)
   )
   | Option.Some(Node.NApp(calleeId, argId)) => (
     // slice-2 NULLARY call semantics: a nullary call `(mk)` is NApp(calleeBodyId, -1) — its type is the
@@ -333,70 +332,70 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     // NULLARY: MUST still infer the def-body node (its NLit tag) — else that node has no type fact and lower's
     // lower-node(calleeBody) declines (the non-ctor nullary path infers it too). PAYLOAD: infer the arg.
     match ctor-decl-of(tree, calleeId) with
-      | Option.Some(declName) => (
-        if argId == -1 then
-          match def-body-of(tree, calleeId) with
-            // NULLARY ctor use `(Red)` → TSum(declName)
-            | Option.Some(calleeBody) =>
-              let tb = infer-node(tree, calleeBody, rcol, tcol) in
-              Map.insert(tb, id, Ty.TySum(declName))
-            | Option.None(_) => Map.insert(tcol, id, Ty.TySum(declName))
-        else
-          let ta = infer-node(tree, argId, rcol, tcol) in // PAYLOAD ctor use `(Some 5)` → TSum(declName)
-          // MULTI-FIELD: type each higher payload arg too (arg2/3/4) — a 2-field ctor `(P 3 4)` has
-          // arg2 that MUST get a type fact, else lower-node(arg2) declines (no core) → the whole
-          // CCtor construction declines → run returns None. Mirrors lower-rec-args' arg2/3/4 gather.
-          let ta2 = infer-rec-arg-opt(tree, arg2-of(tree, id), rcol, ta) in
-          let ta3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, ta2) in
-          let ta4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, ta3) in
-          match Map.lookup(ta4, argId) with
-            | Option.Some(_) => Map.insert(ta4, id, Ty.TySum(declName))
-            | Option.None(_) => Map.insert(ta4, id, Ty.TyErr)
-      )
-      | Option.None(_) =>
-        if call-is-recursive(tree, calleeId) then
-          infer-recursive-call(tree, id, argId, rcol, tcol)
-        else
-          match def-body-of(tree, calleeId) with
-            // HIGHER-ORDER (HO-2b-ii-B): def-body-of MISS means the callee is NOT a global def — it may be a
-            // fn-typed PARAM (`(f x)` with f a parameter). resolve-db (option (i)) stored a callee-resolution fact
-            // keyed by THIS NApp node-id `id`: if it's RBound(paramBinder) whose var-type is a TFn arrow, type the
-            // call as the arrow's RESULT (the args' fit against the arrow's param types is checked in the fn-param
-            // helper). Any other callee-fact (or none) → TErr, exactly as before.
-            | Option.None(_) => infer-fn-param-call(tree, id, argId, rcol, tcol)
-            | Option.Some(calleeBody) =>
-              if argId == -1 then
-                let t1 = infer-node(tree, calleeBody, rcol, tcol) in
-                match Map.lookup(t1, calleeBody) with
-                  | Option.Some(bodyTy) => Map.insert(t1, id, bodyTy)
-                  | Option.None(_) => Map.insert(t1, id, Ty.TyErr)
-              else
-                // slice-3c SINGLE-PARAM call `(f arg)`: type the ARG, bind the param node's type to the arg's type
-                // (so the body's param uses type via var-type's NVar arm), type the body, then the call's type IS
-                // the body's type. The param is found by the callee NAME. A call WITH an arg but NO param → TErr.
-                match param-of(tree, calleeId) with
-                  | Option.Some(paramId) => (
-                    let ta = infer-node(tree, argId, rcol, tcol) in
-                    match Map.lookup(ta, argId) with
-                      // NARROW-INT ENFORCEMENT (CDZ0302): a param with a declared narrow type rejects a
-                      // CONSTANT arg out of its range — `(def (f (: a Int8)) a) (f 200)` → TErr → decline.
-                      | Option.Some(_) =>
-                        if (if param-fit-ok(tree, paramId, argId) then false else true) then
-                          Map.insert(ta, id, Ty.TyErr)
-                        else
-                          infer-app-with-arg-ty(
-                            tree,
-                            id,
-                            calleeId,
-                            calleeBody,
-                            paramId,
-                            rcol,
-                            ta,
-                            Map.lookup(ta, argId)
-                          )
-                      | Option.None(_) => Map.insert(ta, id, Ty.TyErr)
+    | Option.Some(declName) => (
+      if argId == -1 then
+        match def-body-of(tree, calleeId) with
+        // NULLARY ctor use `(Red)` → TSum(declName)
+        | Option.Some(calleeBody) =>
+          let tb = infer-node(tree, calleeBody, rcol, tcol) in
+          Map.insert(tb, id, Ty.TySum(declName))
+        | Option.None(_) => Map.insert(tcol, id, Ty.TySum(declName))
+      else
+        let ta = infer-node(tree, argId, rcol, tcol) in // PAYLOAD ctor use `(Some 5)` → TSum(declName)
+        // MULTI-FIELD: type each higher payload arg too (arg2/3/4) — a 2-field ctor `(P 3 4)` has
+        // arg2 that MUST get a type fact, else lower-node(arg2) declines (no core) → the whole
+        // CCtor construction declines → run returns None. Mirrors lower-rec-args' arg2/3/4 gather.
+        let ta2 = infer-rec-arg-opt(tree, arg2-of(tree, id), rcol, ta) in
+        let ta3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, ta2) in
+        let ta4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, ta3) in
+        match Map.lookup(ta4, argId) with
+        | Option.Some(_) => Map.insert(ta4, id, Ty.TySum(declName))
+        | Option.None(_) => Map.insert(ta4, id, Ty.TyErr)
+    )
+    | Option.None(_) =>
+      if call-is-recursive(tree, calleeId) then
+        infer-recursive-call(tree, id, argId, rcol, tcol)
+      else
+        match def-body-of(tree, calleeId) with
+        // HIGHER-ORDER (HO-2b-ii-B): def-body-of MISS means the callee is NOT a global def — it may be a
+        // fn-typed PARAM (`(f x)` with f a parameter). resolve-db (option (i)) stored a callee-resolution fact
+        // keyed by THIS NApp node-id `id`: if it's RBound(paramBinder) whose var-type is a TFn arrow, type the
+        // call as the arrow's RESULT (the args' fit against the arrow's param types is checked in the fn-param
+        // helper). Any other callee-fact (or none) → TErr, exactly as before.
+        | Option.None(_) => infer-fn-param-call(tree, id, argId, rcol, tcol)
+        | Option.Some(calleeBody) =>
+          if argId == -1 then
+            let t1 = infer-node(tree, calleeBody, rcol, tcol) in
+            match Map.lookup(t1, calleeBody) with
+            | Option.Some(bodyTy) => Map.insert(t1, id, bodyTy)
+            | Option.None(_) => Map.insert(t1, id, Ty.TyErr)
+          else
+            // slice-3c SINGLE-PARAM call `(f arg)`: type the ARG, bind the param node's type to the arg's type
+            // (so the body's param uses type via var-type's NVar arm), type the body, then the call's type IS
+            // the body's type. The param is found by the callee NAME. A call WITH an arg but NO param → TErr.
+            match param-of(tree, calleeId) with
+            | Option.Some(paramId) => (
+              let ta = infer-node(tree, argId, rcol, tcol) in
+              match Map.lookup(ta, argId) with
+              // NARROW-INT ENFORCEMENT (CDZ0302): a param with a declared narrow type rejects a
+              // CONSTANT arg out of its range — `(def (f (: a Int8)) a) (f 200)` → TErr → decline.
+              | Option.Some(_) =>
+                if (if param-fit-ok(tree, paramId, argId) then false else true) then
+                  Map.insert(ta, id, Ty.TyErr)
+                else
+                  infer-app-with-arg-ty(
+                    tree,
+                    id,
+                    calleeId,
+                    calleeBody,
+                    paramId,
+                    rcol,
+                    ta,
+                    Map.lookup(ta, argId)
                   )
-                  | Option.None(_) => Map.insert(tcol, id, Ty.TyErr)
+              | Option.None(_) => Map.insert(ta, id, Ty.TyErr)
+            )
+            | Option.None(_) => Map.insert(tcol, id, Ty.TyErr)
   )
   | Option.None(_) => tcol
 
@@ -443,19 +442,19 @@ def infer-fn-param-call(
   let ta3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, ta2) in
   let ta4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, ta3) in
   match Map.lookup(rcol, id) with
-    | Option.Some(Resolved.RBound(binder)) => (
-      match var-type(tree, binder, ta4) with
-        // HO-2c: the callee is a fn-typed param. Its type is TFn(ptys, rty). Check the ARGS fit the params
-        // (arity + pairwise type-unify) BEFORE returning the result — a mismatched/wrong-arity application is
-        // ill-typed (TErr/CDZ0203), not silently the result type. All fit → rty.
-        | Ty.TyFn(ptys, rty) =>
-          if args-fit-params(tree, id, argId, ptys, ta4) then
-            Map.insert(ta4, id, rty)
-          else
-            Map.insert(ta4, id, Ty.TyErr) // arity/type mismatch → ill-typed application
-        | _ => Map.insert(ta4, id, Ty.TyErr)
-    ) // param callee is not a fn → ill-typed application
+  | Option.Some(Resolved.RBound(binder)) => (
+    match var-type(tree, binder, ta4) with
+    // HO-2c: the callee is a fn-typed param. Its type is TFn(ptys, rty). Check the ARGS fit the params
+    // (arity + pairwise type-unify) BEFORE returning the result — a mismatched/wrong-arity application is
+    // ill-typed (TErr/CDZ0203), not silently the result type. All fit → rty.
+    | Ty.TyFn(ptys, rty) =>
+      if args-fit-params(tree, id, argId, ptys, ta4) then
+        Map.insert(ta4, id, rty)
+      else
+        Map.insert(ta4, id, Ty.TyErr) // arity/type mismatch → ill-typed application
     | _ => Map.insert(ta4, id, Ty.TyErr)
+  ) // param callee is not a fn → ill-typed application
+  | _ => Map.insert(ta4, id, Ty.TyErr)
 
 // no callee-fact (plain unknown) → TErr, as before
 /// HO-2c: do the call `id`'s ARGS (argId + arg2/3/4-of, types already in `tcol`) fit the callee-arrow's param
@@ -480,8 +479,8 @@ def collect-arg-ids(tree: Tree, id: Int64, argId: Int64) =
         | Option.Some(a) => List.push(a2, a)
         | Option.None(_) => a2 in
     match arg4-of(tree, id) with
-      | Option.Some(a) => List.push(a3, a)
-      | Option.None(_) => a3
+    | Option.Some(a) => List.push(a3, a)
+    | Option.None(_) => a3
 
 /// Pairwise: does each arg (by node-id, type from tcol) unify with the corresponding param Typed? Index recursion.
 def args-fit-go(argIds: List(Int64), ptys: List(Ty), i: Int64, tcol: Map(Int64, Ty)) =
@@ -489,23 +488,23 @@ def args-fit-go(argIds: List(Int64), ptys: List(Ty), i: Int64, tcol: Map(Int64, 
     true
   else
     match List.at(argIds, i) with
+    | Option.None(_) => false
+    | Option.Some(aid) =>
+      match List.at(ptys, i) with
       | Option.None(_) => false
-      | Option.Some(aid) =>
-        match List.at(ptys, i) with
-          | Option.None(_) => false
-          | Option.Some(pty) =>
-            match Map.lookup(tcol, aid) with
-              | Option.None(_) => false
-              // use typed-to-ty-DEFER: a bare-literal arg types as the deferred-int sentinel (TIntW(_,0)); the
-              // plain typed-to-ty would map width 0 to a bogus fixed-width-0 Ty that unifies with nothing. The
-              // defer form maps the sentinel → a deferred Ty that GROUNDS to the param's width via unify-ty.
-              | Option.Some(aty) =>
-                match typed-to-ty-defer(aty) with
-                  | Option.None(_) => false // arg not an int/bool operand (e.g. a fn) — no fit here
-                  | Option.Some(tya) =>
-                    match unify-ty(tya, pty) with
-                      | Option.Some(_) => args-fit-go(argIds, ptys, i + 1, tcol)
-                      | Option.None(_) => false
+      | Option.Some(pty) =>
+        match Map.lookup(tcol, aid) with
+        | Option.None(_) => false
+        // use typed-to-ty-DEFER: a bare-literal arg types as the deferred-int sentinel (TIntW(_,0)); the
+        // plain typed-to-ty would map width 0 to a bogus fixed-width-0 Ty that unifies with nothing. The
+        // defer form maps the sentinel → a deferred Ty that GROUNDS to the param's width via unify-ty.
+        | Option.Some(aty) =>
+          match typed-to-ty-defer(aty) with
+          | Option.None(_) => false // arg not an int/bool operand (e.g. a fn) — no fit here
+          | Option.Some(tya) =>
+            match unify-ty(tya, pty) with
+            | Option.Some(_) => args-fit-go(argIds, ptys, i + 1, tcol)
+            | Option.None(_) => false
 
 /// Type an OPTIONAL higher-arg slot of a recursive call (arg2/3/4): present → type its subtree; absent → the
 /// column passes through unchanged. Additive — mirrors the non-recursive infer-param2/3/4 arg walk.
@@ -555,8 +554,8 @@ def def-arrow-type(tree: Tree, defName: Int64, _rcol: Map(Int64, Resolved), tcol
     let tcol1 = bind-param-types(params, ptys, 0, tcol) in
     let tb = infer-node(tree, bodyId, brcol, tcol1) in
     match Map.lookup(tb, bodyId) with
-      | Option.Some(rty) => Ty.TyFn(ptys, rty)
-      | Option.None(_) => Ty.TyErr
+    | Option.Some(rty) => Ty.TyFn(ptys, rty)
+    | Option.None(_) => Ty.TyErr
 
 /// Build the def's param SCOPE (nameId→binder for each param) for resolving the body standalone — the arrow
 /// counterpart of lower-db's def-param-scope (param-scope on each param binder-id).
@@ -565,9 +564,8 @@ def def-param-scope-arrow(tree: Tree, params: List(Int64), i: Int64, scope: Map(
     scope
   else
     match List.at(params, i) with
-      | Option.None(_) => scope
-      | Option.Some(pid) =>
-        def-param-scope-arrow(tree, params, i + 1, param-scope(tree, pid, scope))
+    | Option.None(_) => scope
+    | Option.Some(pid) => def-param-scope-arrow(tree, params, i + 1, param-scope(tree, pid, scope))
 
 /// The param binder-ids of def `defName`, in order (param-of/2/3/4-of; stops at the first missing). ≤4 params
 /// (the current call-arity surface); a 0-param def → empty list.
@@ -575,14 +573,14 @@ def def-param-ids(tree: Tree, defName: Int64) = match param-of(tree, defName) wi
   | Option.None(_) => [] : List(Int64)
   | Option.Some(p1) =>
     match param2-of(tree, defName) with
-      | Option.None(_) => List.push([], p1)
-      | Option.Some(p2) =>
-        match param3-of(tree, defName) with
-          | Option.None(_) => List.push(List.push([], p1), p2)
-          | Option.Some(p3) =>
-            match param4-of(tree, defName) with
-              | Option.None(_) => List.push(List.push(List.push([], p1), p2), p3)
-              | Option.Some(p4) => List.push(List.push(List.push(List.push([], p1), p2), p3), p4)
+    | Option.None(_) => List.push([], p1)
+    | Option.Some(p2) =>
+      match param3-of(tree, defName) with
+      | Option.None(_) => List.push(List.push([], p1), p2)
+      | Option.Some(p3) =>
+        match param4-of(tree, defName) with
+        | Option.None(_) => List.push(List.push(List.push([], p1), p2), p3)
+        | Option.Some(p4) => List.push(List.push(List.push(List.push([], p1), p2), p3), p4)
 
 /// The declared type of each param (param-type-of narrow, else Int64 default), positionally.
 def def-param-types(tree: Tree, params: List(Int64)) =
@@ -593,12 +591,12 @@ def def-param-types-go(tree: Tree, params: List(Int64), i: Int64, acc: List(Ty))
     acc
   else
     match List.at(params, i) with
-      | Option.None(_) => acc
-      | Option.Some(pid) =>
-        let pty = match param-type-of(tree, pid) with
-            | Option.Some(enc) => mk-int(pt-signed(enc), pt-width(enc))
-            | Option.None(_) => t-int64() in
-        def-param-types-go(tree, params, i + 1, List.concat(acc, List.push([], pty)))
+    | Option.None(_) => acc
+    | Option.Some(pid) =>
+      let pty = match param-type-of(tree, pid) with
+          | Option.Some(enc) => mk-int(pt-signed(enc), pt-width(enc))
+          | Option.None(_) => t-int64() in
+      def-param-types-go(tree, params, i + 1, List.concat(acc, List.push([], pty)))
 
 /// Bind each param binder-id to its type in tcol (for def-arrow-type's body inference). Index recursion.
 def bind-param-types(params: List(Int64), ptys: List(Ty), i: Int64, tcol: Map(Int64, Ty)) =
@@ -606,11 +604,11 @@ def bind-param-types(params: List(Int64), ptys: List(Ty), i: Int64, tcol: Map(In
     tcol
   else
     match List.at(params, i) with
+    | Option.None(_) => tcol
+    | Option.Some(pid) =>
+      match List.at(ptys, i) with
       | Option.None(_) => tcol
-      | Option.Some(pid) =>
-        match List.at(ptys, i) with
-          | Option.None(_) => tcol
-          | Option.Some(pty) => bind-param-types(params, ptys, i + 1, Map.insert(tcol, pid, pty))
+      | Option.Some(pty) => bind-param-types(params, ptys, i + 1, Map.insert(tcol, pid, pty))
 
 def infer-app-with-arg-ty(
   tree: Tree,
@@ -629,25 +627,25 @@ def infer-app-with-arg-ty(
     // (arg2-of None) skips straight to the body.
     let tp2 = infer-param2(tree, id, calleeId, rcol, tp) in
     match tp2 with
-      | Option.Some(tb0) => (
-        // slice-3e: after param2, bind param3 (a 3-ARG call) the same way — its declared narrow type or
-        // the arg's type, fit-checking arg3. A 2-arg call (arg3-of None) passes tb0 through unchanged.
-        match infer-param3(tree, id, calleeId, rcol, tb0) with
-          | Option.Some(tb1) => (
-            // slice-3f: after param3, bind param4 (a 4-ARG call) the same way. A ≤3-arg call
-            // (arg4-of None) passes tb1 through unchanged.
-            match infer-param4(tree, id, calleeId, rcol, tb1) with
-              | Option.Some(tb2) => (
-                let tb = infer-node(tree, calleeBody, rcol, tb2) in
-                match Map.lookup(tb, calleeBody) with
-                  | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
-                  | Option.None(_) => Map.insert(tb, id, Ty.TyErr)
-              )
-              | Option.None(_) => Map.insert(tb1, id, Ty.TyErr)
-          ) // 4th arg but no param4 → TErr
-          | Option.None(_) => Map.insert(tb0, id, Ty.TyErr)
-      ) // 3rd arg but no param3 → TErr
-      | Option.None(_) => Map.insert(tp, id, Ty.TyErr)
+    | Option.Some(tb0) => (
+      // slice-3e: after param2, bind param3 (a 3-ARG call) the same way — its declared narrow type or
+      // the arg's type, fit-checking arg3. A 2-arg call (arg3-of None) passes tb0 through unchanged.
+      match infer-param3(tree, id, calleeId, rcol, tb0) with
+      | Option.Some(tb1) => (
+        // slice-3f: after param3, bind param4 (a 4-ARG call) the same way. A ≤3-arg call
+        // (arg4-of None) passes tb1 through unchanged.
+        match infer-param4(tree, id, calleeId, rcol, tb1) with
+        | Option.Some(tb2) => (
+          let tb = infer-node(tree, calleeBody, rcol, tb2) in
+          match Map.lookup(tb, calleeBody) with
+          | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
+          | Option.None(_) => Map.insert(tb, id, Ty.TyErr)
+        )
+        | Option.None(_) => Map.insert(tb1, id, Ty.TyErr)
+      ) // 4th arg but no param4 → TErr
+      | Option.None(_) => Map.insert(tb0, id, Ty.TyErr)
+    ) // 3rd arg but no param3 → TErr
+    | Option.None(_) => Map.insert(tp, id, Ty.TyErr)
   ) // 2nd arg present but no param2 → TErr
   | Option.None(_) => Map.insert(ta, id, Ty.TyErr)
 
@@ -657,15 +655,15 @@ def infer-app-with-arg-ty(
 def var-type(tree: Tree, binder: Int64, tcol: Map(Int64, Ty)) = match node-at(tree, binder) with
   | Option.Some(Node.NLet(_, valId, _)) => (
     match Map.lookup(tcol, valId) with
-      | Option.Some(t) => t
-      | Option.None(_) => Ty.TyErr
+    | Option.Some(t) => t
+    | Option.None(_) => Ty.TyErr
   )
   // slice-3c: a PARAMETER binder is the param's own NVar node (not an NLet). Its type is whatever the NApp
   // param arm stored at the param node-id (the ARGUMENT's type) — read it directly by the binder's node-id.
   | Option.Some(Node.NVar(_)) => (
     match Map.lookup(tcol, binder) with
-      | Option.Some(t) => t
-      | Option.None(_) => Ty.TyErr
+    | Option.Some(t) => t
+    | Option.None(_) => Ty.TyErr
   )
   | _ => Ty.TyErr
 
@@ -683,21 +681,21 @@ def infer-param2(
   | Option.None(_) => Option.Some(tcol) // 1-arg call — nothing to add
   | Option.Some(arg2Id) =>
     match param2-of(tree, calleeId) with
-      | Option.None(_) => Option.None(unit) // arg2 but no param2 → over-applied
-      | Option.Some(param2Id) =>
-        let ta2 = infer-node(tree, arg2Id, rcol, tcol) in
-        match Map.lookup(ta2, arg2Id) with
-          // param2 takes its DECLARED narrow type (param-bind-type) if it has one — mirroring param1's
-          // bind in infer-app-with-arg-ty — so a typed 2nd param `(: b Int8)` makes the body use `b` at
-          // Int8 (not the arg's default Int64). Without this, `(def (f (: a Int8) (: b Int8)) (+ a b))`
-          // typed `b` as Int64 → `(+ a b)` was mixed-width Int8+Int64 → spurious TErr/decline. An
-          // out-of-range constant arg2 to a narrow param2 is also rejected (CDZ0302), matching param1.
-          | Option.Some(arg2Ty) =>
-            if (if param-fit-ok(tree, param2Id, arg2Id) then false else true) then
-              Option.None(unit) // arg2 out of param2's range → decline
-            else
-              Option.Some(Map.insert(ta2, param2Id, param-bind-type(tree, param2Id, arg2Ty)))
-          | Option.None(_) => Option.None(unit)
+    | Option.None(_) => Option.None(unit) // arg2 but no param2 → over-applied
+    | Option.Some(param2Id) =>
+      let ta2 = infer-node(tree, arg2Id, rcol, tcol) in
+      match Map.lookup(ta2, arg2Id) with
+      // param2 takes its DECLARED narrow type (param-bind-type) if it has one — mirroring param1's
+      // bind in infer-app-with-arg-ty — so a typed 2nd param `(: b Int8)` makes the body use `b` at
+      // Int8 (not the arg's default Int64). Without this, `(def (f (: a Int8) (: b Int8)) (+ a b))`
+      // typed `b` as Int64 → `(+ a b)` was mixed-width Int8+Int64 → spurious TErr/decline. An
+      // out-of-range constant arg2 to a narrow param2 is also rejected (CDZ0302), matching param1.
+      | Option.Some(arg2Ty) =>
+        if (if param-fit-ok(tree, param2Id, arg2Id) then false else true) then
+          Option.None(unit) // arg2 out of param2's range → decline
+        else
+          Option.Some(Map.insert(ta2, param2Id, param-bind-type(tree, param2Id, arg2Ty)))
+      | Option.None(_) => Option.None(unit)
 
 /// slice-3e: bind param3's type for a 3-ARG call (the mirror of infer-param2). arg3-of None → a ≤2-arg call,
 /// pass tcol through. Else bind param3 to its declared narrow type (param-bind-type) or the arg3's type, and
@@ -712,16 +710,16 @@ def infer-param3(
   | Option.None(_) => Option.Some(tcol) // ≤2-arg call — nothing to add
   | Option.Some(arg3Id) =>
     match param3-of(tree, calleeId) with
-      | Option.None(_) => Option.None(unit) // arg3 but no param3 → over-applied
-      | Option.Some(param3Id) =>
-        let ta3 = infer-node(tree, arg3Id, rcol, tcol) in
-        match Map.lookup(ta3, arg3Id) with
-          | Option.Some(arg3Ty) =>
-            if (if param-fit-ok(tree, param3Id, arg3Id) then false else true) then
-              Option.None(unit) // arg3 out of param3's range → decline
-            else
-              Option.Some(Map.insert(ta3, param3Id, param-bind-type(tree, param3Id, arg3Ty)))
-          | Option.None(_) => Option.None(unit)
+    | Option.None(_) => Option.None(unit) // arg3 but no param3 → over-applied
+    | Option.Some(param3Id) =>
+      let ta3 = infer-node(tree, arg3Id, rcol, tcol) in
+      match Map.lookup(ta3, arg3Id) with
+      | Option.Some(arg3Ty) =>
+        if (if param-fit-ok(tree, param3Id, arg3Id) then false else true) then
+          Option.None(unit) // arg3 out of param3's range → decline
+        else
+          Option.Some(Map.insert(ta3, param3Id, param-bind-type(tree, param3Id, arg3Ty)))
+      | Option.None(_) => Option.None(unit)
 
 /// slice-3f: bind param4's type for a 4-ARG call (the mirror of infer-param3). arg4-of None → a ≤3-arg call,
 /// pass tcol through. Else bind param4 to its declared narrow type (param-bind-type) or the arg4's type, and
@@ -736,16 +734,16 @@ def infer-param4(
   | Option.None(_) => Option.Some(tcol) // ≤3-arg call — nothing to add
   | Option.Some(arg4Id) =>
     match param4-of(tree, calleeId) with
-      | Option.None(_) => Option.None(unit) // arg4 but no param4 → over-applied
-      | Option.Some(param4Id) =>
-        let ta4 = infer-node(tree, arg4Id, rcol, tcol) in
-        match Map.lookup(ta4, arg4Id) with
-          | Option.Some(arg4Ty) =>
-            if (if param-fit-ok(tree, param4Id, arg4Id) then false else true) then
-              Option.None(unit) // arg4 out of param4's range → decline
-            else
-              Option.Some(Map.insert(ta4, param4Id, param-bind-type(tree, param4Id, arg4Ty)))
-          | Option.None(_) => Option.None(unit)
+    | Option.None(_) => Option.None(unit) // arg4 but no param4 → over-applied
+    | Option.Some(param4Id) =>
+      let ta4 = infer-node(tree, arg4Id, rcol, tcol) in
+      match Map.lookup(ta4, arg4Id) with
+      | Option.Some(arg4Ty) =>
+        if (if param-fit-ok(tree, param4Id, arg4Id) then false else true) then
+          Option.None(unit) // arg4 out of param4's range → decline
+        else
+          Option.Some(Map.insert(ta4, param4Id, param-bind-type(tree, param4Id, arg4Ty)))
+      | Option.None(_) => Option.None(unit)
 
 /// Does the CONSTANT argument at node `argId` FIT the declared narrow type of the param `paramId`? — the
 /// narrow-int-enforcement CHECK (corpus 07/09 CDZ0302: `(def (f (: a Int8)) a) (f 200)` rejects because 200 is
@@ -762,14 +760,14 @@ def param-fit-ok(tree: Tree, paramId: Int64, argId: Int64) = match param-type-of
   | Option.None(_) => true // untyped param — no narrow constraint
   | Option.Some(enc) =>
     match node-at(tree, argId) with
-      | Option.Some(Node.NLit(v)) =>
-        let width = pt-width(enc) in
-        let signed = pt-signed(enc) in
-        if width == 64 then
-          if signed then true else v >= 0 // native identity (fits-width can't do 64)
-        else
-          fits-width(v, signed, width)
-      | _ => true
+    | Option.Some(Node.NLit(v)) =>
+      let width = pt-width(enc) in
+      let signed = pt-signed(enc) in
+      if width == 64 then
+        if signed then true else v >= 0 // native identity (fits-width can't do 64)
+      else
+        fits-width(v, signed, width)
+    | _ => true
 
 // non-literal arg — keeps its own type
 /// The result type of a binary node with op `op` and operands at `a`,`b`. ARITHMETIC (43 `+`, 45 `-`, 42
@@ -794,8 +792,8 @@ def bin-type(tree: Tree, op: Int64, tcol: Map(Int64, Ty), a: Int64, b: Int64) =
       // true`, `(= true false)`, all defined; Bool encodes 0/1 so eval's 0/1 comparison already matches).
       // A mixed Int~Bool (or mixed int width/sign) → TErr (CDZ0301). Bool-Bool was declining before.
       match arith-result-type(tree, tcol, a, b) with
-        | Option.Some(_) => Ty.TyBool
-        | Option.None(_) => if both-bool(tcol, a, b) then Ty.TyBool else Ty.TyErr
+      | Option.Some(_) => Ty.TyBool
+      | Option.None(_) => if both-bool(tcol, a, b) then Ty.TyBool else Ty.TyErr
     else
       Ty.TyErr
   else
@@ -805,16 +803,16 @@ def bin-type(tree: Tree, op: Int64, tcol: Map(Int64, Ty), a: Int64, b: Int64) =
     // on the op-code (idiomatic dispatch, not an `if op == N` ladder): the five arith ops (43 + / 45 - / 42 *
     // / 47 / / 37 %) all take arith-result-type's type; any other op here is TErr.
     match arith-result-type(tree, tcol, a, b) with
-      | Option.Some(rty) => (
-        match op with
-          | 43 => rty
-          | 45 => rty
-          | 42 => rty
-          | 47 => rty
-          | 37 => rty
-          | _ => Ty.TyErr
-      )
-      | Option.None(_) => Ty.TyErr
+    | Option.Some(rty) => (
+      match op with
+      | 43 => rty
+      | 45 => rty
+      | 42 => rty
+      | 47 => rty
+      | 37 => rty
+      | _ => Ty.TyErr
+    )
+    | Option.None(_) => Ty.TyErr
 
 /// GROUND a `Ty` int to its concrete form (ARC-A2: was a Ty→Typed converter; now the module is Ty, so it just
 /// grounds — deferred sign→Signed, width→64 via ground-default). A non-int is out of the int-combining path
@@ -836,9 +834,9 @@ def ty-to-typed-defer(t: Ty) = match t with
     // ARC-A1: an un-bound WVar width is NOT-yet-fixed, exactly like WidthDef — keep it as the deferred sentinel
     // so an enclosing op can still ground the whole component (a var resolves via unify like deferred until B3).
     match w with
-      | Width.WidthDef => t-int-deferred()
-      | Width.WVar(_) => t-int-deferred()
-      | Width.WFixed(_) => ty-to-typed-int(t)
+    | Width.WidthDef => t-int-deferred()
+    | Width.WVar(_) => t-int-deferred()
+    | Width.WFixed(_) => ty-to-typed-int(t)
   )
   | _ => ty-to-typed-int(t)
 
@@ -852,51 +850,51 @@ def arith-result-type(tree: Tree, tcol: Map(Int64, Ty), a: Int64, b: Int64) = ma
   ) with
   | Option.Some(ta) => (
     match Map.lookup(tcol, b) with
-      | Option.Some(tb) => (
-        // item-3 HM: map each operand to a `Ty` — a DEFERRED operand (t-int-deferred sentinel, width 0)
-        // becomes `ty-deferred-int()` (SignDef+WidthDef) so the EXISTING unify grounds it to a fixed
-        // narrow sibling (or, deferred~deferred, stays deferred → grounds to Int64 at the root via
-        // ty-to-typed-int/ground-default). A fixed operand keeps its concrete (sign,width). This makes
-        // `(: 100 Int8) + (+ 10 10)` (a COMPUTED deferred operand) ground the whole thing to Int8 and RUN
-        // (120 fits; a narrow-overflowing result traps at eval — CDZ0304), and a mixed typed/untyped param
-        // body `(def (f a (: b Int8)) (+ a b))` ground `a` to Int8. Non-int operands → None.
-        match typed-to-ty-defer(ta) with
-          | Option.Some(tya) => (
-            match typed-to-ty-defer(tb) with
-              | Option.Some(tyb) => (
-                match unify-ty(tya, tyb) with
-                  // unified — BUT if the result grounds to a NARROW fixed width and either operand is a
-                  // BARE literal, its VALUE must fit that width (operand range-check, CDZ0201/CDZ0302):
-                  // `(: -100 Int8) + 200` unifies to Int8 but 200 is out of Int8 range → DECLINE, even
-                  // though the result -100+200=100 fits (the reference range-checks the OPERAND, not
-                  // just the result; a COMPUTED operand isn't literal-range-checkable — its overflow
-                  // rides the eval result-trap). Guarded by lit-operand-fits: only a bare NLit operand
-                  // grounding to a narrow width is checked; a fixed/computed operand passes through.
-                  | Option.Some(rty) =>
-                    if lit-operands-fit-result(tree, a, b, ty-to-typed-defer(rty)) then
-                      Option.Some(ty-to-typed-defer(rty))
-                    else
-                      Option.None(unit)
-                  // didn't unify (mixed FIXED width/sign like `(: 5 Int8) + (: 5 Int16)` → CDZ0301) —
-                  // BUT a BARE literal is also VALUE-polymorphic: it grounds to the sibling's narrow
-                  // type IF its value FITS (range-checked as an operand — CDZ0201/CDZ0302). This is the
-                  // NLit-specific compile fits-check (a computed operand can't be operand-range-checked;
-                  // it already unified above via deferral). Only reached when BOTH are fixed + conflict,
-                  // OR a deferred sentinel carried the wrong default sign — arith-lit-adapt gates on the
-                  // node BEING an NLit that fits, so a real mixed-width op still declines.
-                  | Option.None(_) =>
-                    if is-int-ty(ta) and is-int-ty(tb) then
-                      let (sa, wa) = int-parts-of(ta) in
-                      let (sb, wb) = int-parts-of(tb) in
-                      arith-lit-adapt(tree, a, sa, wa, b, sb, wb)
-                    else
-                      Option.None(unit)
-              )
-              | Option.None(_) => Option.None(unit)
-          )
-          | Option.None(_) => Option.None(unit)
+    | Option.Some(tb) => (
+      // item-3 HM: map each operand to a `Ty` — a DEFERRED operand (t-int-deferred sentinel, width 0)
+      // becomes `ty-deferred-int()` (SignDef+WidthDef) so the EXISTING unify grounds it to a fixed
+      // narrow sibling (or, deferred~deferred, stays deferred → grounds to Int64 at the root via
+      // ty-to-typed-int/ground-default). A fixed operand keeps its concrete (sign,width). This makes
+      // `(: 100 Int8) + (+ 10 10)` (a COMPUTED deferred operand) ground the whole thing to Int8 and RUN
+      // (120 fits; a narrow-overflowing result traps at eval — CDZ0304), and a mixed typed/untyped param
+      // body `(def (f a (: b Int8)) (+ a b))` ground `a` to Int8. Non-int operands → None.
+      match typed-to-ty-defer(ta) with
+      | Option.Some(tya) => (
+        match typed-to-ty-defer(tb) with
+        | Option.Some(tyb) => (
+          match unify-ty(tya, tyb) with
+          // unified — BUT if the result grounds to a NARROW fixed width and either operand is a
+          // BARE literal, its VALUE must fit that width (operand range-check, CDZ0201/CDZ0302):
+          // `(: -100 Int8) + 200` unifies to Int8 but 200 is out of Int8 range → DECLINE, even
+          // though the result -100+200=100 fits (the reference range-checks the OPERAND, not
+          // just the result; a COMPUTED operand isn't literal-range-checkable — its overflow
+          // rides the eval result-trap). Guarded by lit-operand-fits: only a bare NLit operand
+          // grounding to a narrow width is checked; a fixed/computed operand passes through.
+          | Option.Some(rty) =>
+            if lit-operands-fit-result(tree, a, b, ty-to-typed-defer(rty)) then
+              Option.Some(ty-to-typed-defer(rty))
+            else
+              Option.None(unit)
+          // didn't unify (mixed FIXED width/sign like `(: 5 Int8) + (: 5 Int16)` → CDZ0301) —
+          // BUT a BARE literal is also VALUE-polymorphic: it grounds to the sibling's narrow
+          // type IF its value FITS (range-checked as an operand — CDZ0201/CDZ0302). This is the
+          // NLit-specific compile fits-check (a computed operand can't be operand-range-checked;
+          // it already unified above via deferral). Only reached when BOTH are fixed + conflict,
+          // OR a deferred sentinel carried the wrong default sign — arith-lit-adapt gates on the
+          // node BEING an NLit that fits, so a real mixed-width op still declines.
+          | Option.None(_) =>
+            if is-int-ty(ta) and is-int-ty(tb) then
+              let (sa, wa) = int-parts-of(ta) in
+              let (sb, wb) = int-parts-of(tb) in
+              arith-lit-adapt(tree, a, sa, wa, b, sb, wb)
+            else
+              Option.None(unit)
+        )
+        | Option.None(_) => Option.None(unit)
       )
-      | _ => Option.None(unit)
+      | Option.None(_) => Option.None(unit)
+    )
+    | _ => Option.None(unit)
   )
   | _ => Option.None(unit)
 
@@ -973,8 +971,8 @@ def lit-fits-narrow(tree: Tree, x: Int64, sx: Bool, wx: Int64, ts: Bool, tw: Int
   if sx and wx == 64 then
     if tw < 64 then
       match node-at(tree, x) with
-        | Option.Some(Node.NLit(v)) => fits-width(v, ts, tw)
-        | _ => false
+      | Option.Some(Node.NLit(v)) => fits-width(v, ts, tw)
+      | _ => false
     else
       false
   else
@@ -988,8 +986,8 @@ def lit-fits-narrow(tree: Tree, x: Int64, sx: Bool, wx: Int64, ts: Bool, tw: Int
 def both-bool(tcol: Map(Int64, Ty), a: Int64, b: Int64) = match Map.lookup(tcol, a) with
   | Option.Some(Ty.TyBool) => (
     match Map.lookup(tcol, b) with
-      | Option.Some(Ty.TyBool) => true
-      | _ => false
+    | Option.Some(Ty.TyBool) => true
+    | _ => false
   )
   | _ => false
 
@@ -1000,8 +998,8 @@ def let-type(tcol: Map(Int64, Ty), valId: Int64, bodyId: Int64) = match Map.look
   | Option.None(_) => Ty.TyErr
   | _ =>
     match Map.lookup(tcol, bodyId) with
-      | Option.Some(bt) => bt
-      | Option.None(_) => Ty.TyErr
+    | Option.Some(bt) => bt
+    | Option.None(_) => Ty.TyErr
 
 // `typed-to-ty` / `typed-list-to-ty` now live in ty-bridge.cdz (imported above) — no longer a local
 // duplicate: extracting `Typed` to the leaf `typed.cdz` broke the old infer-db↔ty-bridge cycle, so the
@@ -1092,19 +1090,19 @@ def seed-ctor-binders-go(
     tcol
   else
     match List.at(binderIds, i) with
-      | Option.None(_) => tcol
-      | Option.Some(bid) => // WILDCARD `_`: a binderId WILDCARD sentinel (bid == -1, distinct from the argType-encoding -1 that
-        // decodes to TErr above — this -1 is a `binderIds` element, not an `argTypes` field) types NOTHING (no
-        // NVar node to seed) — skip the insert but STILL advance i (the slot index tracks the FIELD position, so
-        // a `_` in field 0 must not shift field 1's argType read). Mirrors resolve's node-at(-1)=None skip + eval's
-        // consume-slot-skip-insert.
-        if bid == -1 then
-          seed-ctor-binders-go(tcol, argTypes, binderIds, i + 1)
-        else
-          let ty = match List.at(argTypes, i) with
-              | Option.Some(enc) => decode-argtype-enc(enc)
-              | Option.None(_) => t-int64() in
-          seed-ctor-binders-go(Map.insert(tcol, bid, ty), argTypes, binderIds, i + 1)
+    | Option.None(_) => tcol
+    | Option.Some(bid) => // WILDCARD `_`: a binderId WILDCARD sentinel (bid == -1, distinct from the argType-encoding -1 that
+      // decodes to TErr above — this -1 is a `binderIds` element, not an `argTypes` field) types NOTHING (no
+      // NVar node to seed) — skip the insert but STILL advance i (the slot index tracks the FIELD position, so
+      // a `_` in field 0 must not shift field 1's argType read). Mirrors resolve's node-at(-1)=None skip + eval's
+      // consume-slot-skip-insert.
+      if bid == -1 then
+        seed-ctor-binders-go(tcol, argTypes, binderIds, i + 1)
+      else
+        let ty = match List.at(argTypes, i) with
+            | Option.Some(enc) => decode-argtype-enc(enc)
+            | Option.None(_) => t-int64() in
+        seed-ctor-binders-go(Map.insert(tcol, bid, ty), argTypes, binderIds, i + 1)
 
 def seed-ctor-binders(tcol: Map(Int64, Ty), tree: Tree, patCtorName: Int64, binderIds: List(Int64)) = match ctor-argtypes-of(
     tree,
@@ -1119,8 +1117,8 @@ def ctor-pattern-cross-type(tree: Tree, tcol: Map(Int64, Ty), scrutId: Int64, pa
   ) with
   | Option.Some(Ty.TySum(scrutDecl)) => (
     match ctor-decl-of(tree, patCtorName) with
-      | Option.Some(patDecl) => if scrutDecl == patDecl then false else true
-      | Option.None(_) => false
+    | Option.Some(patDecl) => if scrutDecl == patDecl then false else true
+    | Option.None(_) => false
   )
   | _ => false
 
@@ -1140,12 +1138,12 @@ def if-type(tcol: Map(Int64, Ty), condId: Int64, thenId: Int64, elseId: Int64) =
   ) with
   | Option.Some(Ty.TyBool) => (
     match Map.lookup(tcol, thenId) with
-      | Option.Some(tt) => (
-        match Map.lookup(tcol, elseId) with
-          | Option.Some(et) => join-branch-types(tt, et)
-          | Option.None(_) => Ty.TyErr
-      )
+    | Option.Some(tt) => (
+      match Map.lookup(tcol, elseId) with
+      | Option.Some(et) => join-branch-types(tt, et)
       | Option.None(_) => Ty.TyErr
+    )
+    | Option.None(_) => Ty.TyErr
   )
   | _ => Ty.TyErr
 
@@ -1159,20 +1157,20 @@ def match-type(tcol: Map(Int64, Ty), scrutId: Int64, litId: Int64, thenId: Int64
   ) with
   | Option.Some(st) => (
     match Map.lookup(tcol, litId) with
-      | Option.Some(lt) => (
-        match join-branch-types(st, lt) with
-          // scrutinee and pattern must share a type
-          | Ty.TyErr => Ty.TyErr
-          | _ =>
-            match Map.lookup(tcol, thenId) with
-              | Option.Some(tt) => (
-                match Map.lookup(tcol, elseId) with
-                  | Option.Some(et) => join-branch-types(tt, et) // arms join → the match's type
-                  | Option.None(_) => Ty.TyErr
-              )
-              | Option.None(_) => Ty.TyErr
-      )
-      | Option.None(_) => Ty.TyErr
+    | Option.Some(lt) => (
+      match join-branch-types(st, lt) with
+      // scrutinee and pattern must share a type
+      | Ty.TyErr => Ty.TyErr
+      | _ =>
+        match Map.lookup(tcol, thenId) with
+        | Option.Some(tt) => (
+          match Map.lookup(tcol, elseId) with
+          | Option.Some(et) => join-branch-types(tt, et) // arms join → the match's type
+          | Option.None(_) => Ty.TyErr
+        )
+        | Option.None(_) => Ty.TyErr
+    )
+    | Option.None(_) => Ty.TyErr
   )
   | Option.None(_) => Ty.TyErr
 
@@ -1201,8 +1199,8 @@ def well-typed(tree: Tree, root: Int64) = match type-at(tree, root, root) with
       true
     else
       match t with
-        | Ty.TyBool => true
-        | _ => false
+      | Ty.TyBool => true
+      | _ => false
   )
   | Option.None(_) => false
 
@@ -1224,14 +1222,14 @@ def all-defs-well-scoped-go(tree: Tree, entries: List(Tuple(Int64, Int64)), i: I
     true
   else
     match List.at(entries, i) with
-      | Option.Some((nameId, bodyId)) => // A def is well-scoped iff its body has no unbound name AND its PARAM LIST is LINEAR (no two params
-        // share a name — `(def (f (: x …) (: x …)) …)` is non-linear, rcdzc CDZ0102; ML silently shadowed the
-        // first `x`, computing a DIFFERENT value than the oracle allows). Both are per-def, codegen-light.
-        if def-body-has-unbound(tree, nameId, bodyId) or def-params-nonlinear(tree, nameId) then
-          false
-        else
-          all-defs-well-scoped-go(tree, entries, i + 1)
-      | Option.None(_) => all-defs-well-scoped-go(tree, entries, i + 1)
+    | Option.Some((nameId, bodyId)) => // A def is well-scoped iff its body has no unbound name AND its PARAM LIST is LINEAR (no two params
+      // share a name — `(def (f (: x …) (: x …)) …)` is non-linear, rcdzc CDZ0102; ML silently shadowed the
+      // first `x`, computing a DIFFERENT value than the oracle allows). Both are per-def, codegen-light.
+      if def-body-has-unbound(tree, nameId, bodyId) or def-params-nonlinear(tree, nameId) then
+        false
+      else
+        all-defs-well-scoped-go(tree, entries, i + 1)
+    | Option.None(_) => all-defs-well-scoped-go(tree, entries, i + 1)
 
 /// The source NAME-id of a param NODE (a `Node.NVar(nm)` — see sread's param binders), or `None` if the node
 /// isn't an NVar (a malformed/unsupported param that has no comparable name). Typed absence, not an in-band
@@ -1252,14 +1250,14 @@ def map-param-names(tree: Tree, ids: List(Int64), i: Int64) =
     [] : List(Int64)
   else
     match List.at(ids, i) with
-      | Option.Some(pid) => (
-        match param-name-of(tree, pid) with
-          // Collect only NAMED params (Some) — a name-less param (None) can't collide, so it's omitted
-          // at the source rather than carried as a sentinel the dup-check must special-case.
-          | Option.Some(nm) => List.concat(List.push([], nm), map-param-names(tree, ids, i + 1))
-          | Option.None(_) => map-param-names(tree, ids, i + 1)
-      )
+    | Option.Some(pid) => (
+      match param-name-of(tree, pid) with
+      // Collect only NAMED params (Some) — a name-less param (None) can't collide, so it's omitted
+      // at the source rather than carried as a sentinel the dup-check must special-case.
+      | Option.Some(nm) => List.concat(List.push([], nm), map-param-names(tree, ids, i + 1))
       | Option.None(_) => map-param-names(tree, ids, i + 1)
+    )
+    | Option.None(_) => map-param-names(tree, ids, i + 1)
 
 /// Does `names` contain a duplicate at/after index `i`? O(n²) over ≤4 elements (fixed, cheap). Every element
 /// is a real param name (map-param-names collects only NAMED params), so no sentinel-skip is needed.
@@ -1268,17 +1266,17 @@ def names-have-dup(names: List(Int64), i: Int64) =
     false
   else
     match List.at(names, i) with
-      | Option.Some(nm) =>
-        if name-appears-after(names, nm, i + 1) then true else names-have-dup(names, i + 1)
-      | Option.None(_) => names-have-dup(names, i + 1)
+    | Option.Some(nm) =>
+      if name-appears-after(names, nm, i + 1) then true else names-have-dup(names, i + 1)
+    | Option.None(_) => names-have-dup(names, i + 1)
 
 def name-appears-after(names: List(Int64), nm: Int64, i: Int64) =
   if i >= List.len(names) then
     false
   else
     match List.at(names, i) with
-      | Option.Some(other) => if other == nm then true else name-appears-after(names, nm, i + 1)
-      | Option.None(_) => name-appears-after(names, nm, i + 1)
+    | Option.Some(other) => if other == nm then true else name-appears-after(names, nm, i + 1)
+    | Option.None(_) => name-appears-after(names, nm, i + 1)
 
 /// Does the def `nameId`'s body (at `bodyId`) contain an UNBOUND name (an `RPoison`) when resolved STANDALONE
 /// in the def's own param scope? Mirrors `def-arrow-type`'s standalone resolve (param scope so a param use is
@@ -1295,8 +1293,8 @@ def col-has-poison(entries: List(Tuple(Int64, Resolved)), i: Int64) =
     false
   else
     match List.at(entries, i) with
-      | Option.Some((_id, Resolved.RPoison)) => true
-      | _ => col-has-poison(entries, i + 1)
+    | Option.Some((_id, Resolved.RPoison)) => true
+    | _ => col-has-poison(entries, i + 1)
 
 /// Probe: is the node at `id` typed `TBool`?
 def is-bool-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id) with
@@ -1367,15 +1365,15 @@ def id-param-name-of-is-option() =
   let (varId, t1) = add-node(empty-tree(), Node.NVar(99)) in
   let (litId, t2) = add-node(t1, Node.NLit(5)) in
   match param-name-of(t2, varId) with
-    | Option.Some(nm) =>
-      if nm == 99 then
-        match param-name-of(t2, litId) with
-          // a literal node is not a param NVar
-          | Option.None(_) => unit
-          | Option.Some(_) => trap("a non-NVar node has no param-name (None)")
-      else
-        trap("param-name-of an NVar(99) = Some(99)")
-    | Option.None(_) => trap("param-name-of an NVar node is Some(nameId)")
+  | Option.Some(nm) =>
+    if nm == 99 then
+      match param-name-of(t2, litId) with
+      // a literal node is not a param NVar
+      | Option.None(_) => unit
+      | Option.Some(_) => trap("a non-NVar node has no param-name (None)")
+    else
+      trap("param-name-of an NVar(99) = Some(99)")
+  | Option.None(_) => trap("param-name-of an NVar node is Some(nameId)")
 
 @test
 def id-literal-is-int() =
@@ -1437,13 +1435,13 @@ def id-match-type-all-int-joins-to-int() =
       mk-int(true, 64)
     ) in
   match match-type(tc, 1, 2, 3, 4) with
-    | Ty.TyErr => trap("all-Int64 match should type Int64, not TErr")
-    | t =>
-      if is-int-ty(t) then
-        let (_, w) = int-parts-of(t) in
-        if w == 64 then unit else trap("match types Int64 width 64")
-      else
-        trap("match types an int")
+  | Ty.TyErr => trap("all-Int64 match should type Int64, not TErr")
+  | t =>
+    if is-int-ty(t) then
+      let (_, w) = int-parts-of(t) in
+      if w == 64 then unit else trap("match types Int64 width 64")
+    else
+      trap("match types an int")
 
 @test
 def id-match-type-scrut-lit-type-mismatch-declines() =
@@ -1459,8 +1457,8 @@ def id-match-type-scrut-lit-type-mismatch-declines() =
       mk-int(true, 64)
     ) in
   match match-type(tc, 1, 2, 3, 4) with
-    | Ty.TyErr => unit
-    | _ => trap("Int scrutinee against a Bool pattern must decline TErr")
+  | Ty.TyErr => unit
+  | _ => trap("Int scrutinee against a Bool pattern must decline TErr")
 
 @test
 def id-match-type-arms-dont-join-declines() =
@@ -1475,8 +1473,8 @@ def id-match-type-arms-dont-join-declines() =
       Ty.TyBool
     ) in
   match match-type(tc, 1, 2, 3, 4) with
-    | Ty.TyErr => unit
-    | _ => trap("then Int / else Bool arms must not join (TErr)")
+  | Ty.TyErr => unit
+  | _ => trap("then Int / else Bool arms must not join (TErr)")
 
 @test
 def id-match-type-deferred-scrut-vs-bool-lit-declines() =
@@ -1496,8 +1494,8 @@ def id-match-type-deferred-scrut-vs-bool-lit-declines() =
       mk-int(true, 64)
     ) in
   match match-type(tc, 1, 2, 3, 4) with
-    | Ty.TyErr => unit
-    | _ => trap("deferred-int scrut vs Bool pattern must decline TErr")
+  | Ty.TyErr => unit
+  | _ => trap("deferred-int scrut vs Bool pattern must decline TErr")
 
 @test
 def id-milestone-is-int() =
@@ -1547,12 +1545,12 @@ def id-comparison-of-arith-is-bool() =
   // "1 + 2 < 4" → the + node is TInt, the < node (root) is TBool. Mixed-type tree, both facts filled.
   let (root, tree) = parse-of([n(1), plus(), n(2), lt(), n(4)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(_, l, _)) =>
-      if is-bool-at(tree, root, root) then
-        if is-int-at(tree, root, l) then unit else trap("+ child is TInt")
-      else
-        trap("root < is TBool")
-    | _ => trap("root is a Bin")
+  | Option.Some(Node.NBin(_, l, _)) =>
+    if is-bool-at(tree, root, root) then
+      if is-int-at(tree, root, l) then unit else trap("+ child is TInt")
+    else
+      trap("root < is TBool")
+  | _ => trap("root is a Bin")
 
 @test
 def id-let-can-bind-bool() =
@@ -1674,13 +1672,13 @@ def id-literal-is-int64() =
   // "5" → the canonical width-carrying fact is TIntW(true, 64) = Int64. Match the width explicitly.
   let (root, tree) = parse-of([n(5)]) in
   match type-at(tree, root, root) with
-    | Option.Some(_ti) =>
-      if is-int-ty(_ti) then
-        let (s, w) = int-parts-of(_ti) in
-        if s then if w == 64 then unit else trap("width 64") else trap("signed")
-      else
-        trap("Int64 back to an int")
-    | _ => trap("a literal is TIntW(true, 64)")
+  | Option.Some(_ti) =>
+    if is-int-ty(_ti) then
+      let (s, w) = int-parts-of(_ti) in
+      if s then if w == 64 then unit else trap("width 64") else trap("signed")
+    else
+      trap("Int64 back to an int")
+  | _ => trap("a literal is TIntW(true, 64)")
 
 @test
 def id-type-eq-same-width() =
@@ -1753,13 +1751,13 @@ def id-same-narrow-arith-preserves-width() =
   let (rId, t2) = add-node(t1, Node.NAnnLit(20, 1, 8)) in
   let (root, tree) = add-node(t2, Node.NBin(43, lId, rId)) in
   match type-at(tree, root, root) with
-    | Option.Some(_ti) =>
-      if is-int-ty(_ti) then
-        let (_, w) = int-parts-of(_ti) in
-        if w == 8 then unit else trap("Int8 + Int8 preserves width 8, not widened")
-      else
-        trap("Int8 + Int8 is a narrow int")
-    | _ => trap("Int8 + Int8 is a narrow TIntW")
+  | Option.Some(_ti) =>
+    if is-int-ty(_ti) then
+      let (_, w) = int-parts-of(_ti) in
+      if w == 8 then unit else trap("Int8 + Int8 preserves width 8, not widened")
+    else
+      trap("Int8 + Int8 is a narrow int")
+  | _ => trap("Int8 + Int8 is a narrow TIntW")
 
 @test
 def id-narrow-plus-plain-literal-adapts() =
@@ -1772,13 +1770,13 @@ def id-narrow-plus-plain-literal-adapts() =
   let (rId, t2) = add-node(t1, Node.NLit(10)) in // a PLAIN literal (defaults Int64)
   let (root, tree) = add-node(t2, Node.NBin(43, lId, rId)) in
   match type-at(tree, root, root) with
-    | Option.Some(_ti) =>
-      if is-int-ty(_ti) then
-        let (_, w) = int-parts-of(_ti) in
-        if w == 8 then unit else trap("Int8 + plain-literal adapts to Int8, not mixed-width TErr")
-      else
-        trap("Int8 + fitting plain literal is a narrow int, not TErr")
-    | _ => trap("Int8 + fitting plain literal is a narrow TIntW, not TErr")
+  | Option.Some(_ti) =>
+    if is-int-ty(_ti) then
+      let (_, w) = int-parts-of(_ti) in
+      if w == 8 then unit else trap("Int8 + plain-literal adapts to Int8, not mixed-width TErr")
+    else
+      trap("Int8 + fitting plain literal is a narrow int, not TErr")
+  | _ => trap("Int8 + fitting plain literal is a narrow TIntW, not TErr")
 
 @test
 def id-narrow-plus-non-fitting-literal-still-err() =
@@ -1908,16 +1906,16 @@ def id-param-bind-type-declared-narrow-drives-body() =
   let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
   let t2 = record-param-type(t1, paramId, encode-param-type(true, 8)) in
   match param-bind-type(t2, paramId, mk-int(true, 64)) with
-    // arg is Int64, but the DECLARED type wins
-    | _tp =>
-      if is-int-ty(_tp) then
-        let (s, w) = int-parts-of(_tp) in
-        if s and w == 8 then
-          unit
-        else
-          trap("declared Int8 drives the param type, not the arg's Int64")
+  // arg is Int64, but the DECLARED type wins
+  | _tp =>
+    if is-int-ty(_tp) then
+      let (s, w) = int-parts-of(_tp) in
+      if s and w == 8 then
+        unit
       else
-        trap("param type is an int")
+        trap("declared Int8 drives the param type, not the arg's Int64")
+    else
+      trap("param type is an int")
 
 @test
 def id-param-bind-type-untyped-takes-arg-type() =
@@ -1925,16 +1923,16 @@ def id-param-bind-type-untyped-takes-arg-type() =
   // param-bind-type returns the arg type verbatim when param-type-of is None.
   let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
   match param-bind-type(t1, paramId, mk-int(false, 16)) with
-    // no declared type → arg's UInt16 flows
-    | _tp =>
-      if is-int-ty(_tp) then
-        let (s, w) = int-parts-of(_tp) in
-        if (if s then false else true) and w == 16 then
-          unit
-        else
-          trap("untyped param takes the arg's type")
+  // no declared type → arg's UInt16 flows
+  | _tp =>
+    if is-int-ty(_tp) then
+      let (s, w) = int-parts-of(_tp) in
+      if (if s then false else true) and w == 16 then
+        unit
       else
-        trap("param type is an int")
+        trap("untyped param takes the arg's type")
+    else
+      trap("param type is an int")
 
 @test
 def id-recursive-nullary-call-types-int-slice-b2() =
@@ -1945,16 +1943,16 @@ def id-recursive-nullary-call-types-int-slice-b2() =
   let (callId, t1) = add-node(empty-tree(), Node.NApp(900, -1)) in
   let tree = record-def(t1, 900, callId) in
   match Map.lookup(
-      infer-node(tree, callId, resolve-tree(tree, callId), Map.empty : Map(Int64, Ty)),
-      callId
-    ) with
-    | Option.Some(_ti) =>
-      if is-int-ty(_ti) then
-        let (_, w) = int-parts-of(_ti) in
-        if w == 64 then unit else trap("recursive nullary call → Int64 (width 64)")
-      else
-        trap("recursive nullary call is an int")
-    | _ => trap("recursive nullary call should type Int64 (was TErr / node not typed)")
+    infer-node(tree, callId, resolve-tree(tree, callId), Map.empty : Map(Int64, Ty)),
+    callId
+  ) with
+  | Option.Some(_ti) =>
+    if is-int-ty(_ti) then
+      let (_, w) = int-parts-of(_ti) in
+      if w == 64 then unit else trap("recursive nullary call → Int64 (width 64)")
+    else
+      trap("recursive nullary call is an int")
+  | _ => trap("recursive nullary call should type Int64 (was TErr / node not typed)")
 
 @test
 def id-recursive-call-with-arith-arg-types-int-slice-b2() =
@@ -1969,23 +1967,23 @@ def id-recursive-call-with-arith-arg-types-int-slice-b2() =
   let tree = record-def(t4, 900, callId) in
   let tc = infer-node(tree, callId, resolve-tree(tree, callId), Map.empty : Map(Int64, Ty)) in
   match Map.lookup(tc, callId) with
-    | Option.Some(_tc) =>
-      if is-int-ty(_tc) then
-        let (_, wc) = int-parts-of(_tc) in
-        if wc == 64 then
-          match Map.lookup(tc, subId) with
-            // the arg's `-` node must also be typed (Int)
-            | Option.Some(_ta) =>
-              if is-int-ty(_ta) then
-                unit
-              else
-                trap("recursive call's arith arg subtree should be typed Int")
-            | _ => trap("recursive call's arith arg subtree should be typed Int")
-        else
-          trap("recursive call with arg → Int64")
+  | Option.Some(_tc) =>
+    if is-int-ty(_tc) then
+      let (_, wc) = int-parts-of(_tc) in
+      if wc == 64 then
+        match Map.lookup(tc, subId) with
+        // the arg's `-` node must also be typed (Int)
+        | Option.Some(_ta) =>
+          if is-int-ty(_ta) then
+            unit
+          else
+            trap("recursive call's arith arg subtree should be typed Int")
+        | _ => trap("recursive call's arith arg subtree should be typed Int")
       else
-        trap("recursive call with an arith arg should type Int64")
-    | _ => trap("recursive call with an arith arg should type Int64")
+        trap("recursive call with arg → Int64")
+    else
+      trap("recursive call with an arith arg should type Int64")
+  | _ => trap("recursive call with an arith arg should type Int64")
 
 @test
 def id-if-mixed-deferred-concrete-branches-ground-slice-b1b() =
@@ -2056,17 +2054,17 @@ def id-def-arrow-type-builds-tfn() =
   // HO-2b-ii-A: def-arrow-type on `inc` (name 900, one Int64 param, body (+ n 1)) → TFn([Int64], Int64).
   let (_, tree) = ho-inc-ref-tree() in
   match def-arrow-type(tree, 900, Map.empty : Map(Int64, Resolved), Map.empty : Map(Int64, Ty)) with
-    | Ty.TyFn(ps, r) =>
-      if is-int-ty(r) then
-        let (_, rw) = int-parts-of(r) in
-        if rw == 64 then
-          if List.len(ps) == 1 then unit else trap("inc arrow has 1 param")
-        else
-          trap("inc arrow result is Int64")
+  | Ty.TyFn(ps, r) =>
+    if is-int-ty(r) then
+      let (_, rw) = int-parts-of(r) in
+      if rw == 64 then
+        if List.len(ps) == 1 then unit else trap("inc arrow has 1 param")
       else
         trap("inc arrow result is Int64")
-    | Ty.TyErr => trap("def-arrow-type = TErr (body infer failed)")
-    | _ => trap("def-arrow-type is a TFn")
+    else
+      trap("inc arrow result is Int64")
+  | Ty.TyErr => trap("def-arrow-type = TErr (body infer failed)")
+  | _ => trap("def-arrow-type is a TFn")
 
 @test
 def id-def-name-as-value-types-as-arrow() =
@@ -2080,9 +2078,9 @@ def id-def-name-as-value-types-as-arrow() =
     ) in
   let tcol = infer-node(tree, refId, rcol, Map.empty : Map(Int64, Ty)) in
   match Map.lookup(tcol, refId) with
-    | Option.Some(Ty.TyFn(_, _)) => unit
-    | Option.Some(Ty.TyErr) => trap("def-name-as-value should be a TFn arrow, not TErr")
-    | _ => trap("inc-as-value types as TFn")
+  | Option.Some(Ty.TyFn(_, _)) => unit
+  | Option.Some(Ty.TyErr) => trap("def-name-as-value should be a TFn arrow, not TErr")
+  | _ => trap("inc-as-value types as TFn")
 
 @test
 def id-fn-param-call-types-as-arrow-result() =
@@ -2101,14 +2099,14 @@ def id-fn-param-call-types-as-arrow-result() =
     ) in // f : (Int64)->Int64
   let tc = infer-node(tree, callId, rcol, tcol) in
   match Map.lookup(tc, callId) with
-    | Option.Some(Ty.TyErr) => trap("fn-param call should type as arrow result, not TErr")
-    | Option.Some(_tc) =>
-      if is-int-ty(_tc) then
-        let (_, w) = int-parts-of(_tc) in
-        if w == 64 then unit else trap("fn-param call types as arrow result Int64")
-      else
-        trap("fn-param call types as arrow result Int64")
-    | _ => trap("fn-param call types as arrow result Int64")
+  | Option.Some(Ty.TyErr) => trap("fn-param call should type as arrow result, not TErr")
+  | Option.Some(_tc) =>
+    if is-int-ty(_tc) then
+      let (_, w) = int-parts-of(_tc) in
+      if w == 64 then unit else trap("fn-param call types as arrow result Int64")
+    else
+      trap("fn-param call types as arrow result Int64")
+  | _ => trap("fn-param call types as arrow result Int64")
 
 @test
 def id-fn-param-call-non-fn-callee-is-terr() =
@@ -2121,8 +2119,8 @@ def id-fn-param-call-non-fn-callee-is-terr() =
   let tcol = Map.insert(Map.empty : Map(Int64, Ty), fBinder, t-int64()) in // f : Int64 (NOT a fn)
   let tc = infer-node(tree, callId, rcol, tcol) in
   match Map.lookup(tc, callId) with
-    | Option.Some(Ty.TyErr) => unit
-    | _ => trap("applying a non-function callee is TErr")
+  | Option.Some(Ty.TyErr) => unit
+  | _ => trap("applying a non-function callee is TErr")
 
 @test
 def id-fn-param-call-arg-type-mismatch-is-terr() =
@@ -2140,8 +2138,8 @@ def id-fn-param-call-arg-type-mismatch-is-terr() =
     ) in // f : (Bool)->Int64
   let tc = infer-node(tree, callId, rcol, tcol) in
   match Map.lookup(tc, callId) with
-    | Option.Some(Ty.TyErr) => unit // Int64 arg vs Bool param → mismatch → TErr
-    | _ => trap("arg type not fitting the param type is TErr")
+  | Option.Some(Ty.TyErr) => unit // Int64 arg vs Bool param → mismatch → TErr
+  | _ => trap("arg type not fitting the param type is TErr")
 
 @test
 def id-fn-param-call-arity-mismatch-is-terr() =
@@ -2158,8 +2156,8 @@ def id-fn-param-call-arity-mismatch-is-terr() =
     ) in // f : (Int64,Int64)->Int64
   let tc = infer-node(tree, callId, rcol, tcol) in
   match Map.lookup(tc, callId) with
-    | Option.Some(Ty.TyErr) => unit // 1 arg vs 2 params → arity mismatch → TErr
-    | _ => trap("arity mismatch is TErr")
+  | Option.Some(Ty.TyErr) => unit // 1 arg vs 2 params → arity mismatch → TErr
+  | _ => trap("arity mismatch is TErr")
 
 @test
 def id-payload-binder-type-bool-sentinel-decodes-tbool() =
@@ -2171,8 +2169,8 @@ def id-payload-binder-type-bool-sentinel-decodes-tbool() =
   // silently treated as an int. Pins enc==1 → TBool.
   let tree = record-ctor-tag-typed(empty-tree(), 840, 800, 0, encode-bool-type()) in
   match ctor-payload-binder-type(tree, 840) with
-    | Ty.TyBool => unit
-    | _ => trap("a Bool-sentinel (1) ct-argType decodes to TBool (Bool payload value path wired)")
+  | Ty.TyBool => unit
+  | _ => trap("a Bool-sentinel (1) ct-argType decodes to TBool (Bool payload value path wired)")
 
 @test
 def id-payload-binder-type-unsupported-sentinel-decodes-terr() =
@@ -2181,8 +2179,8 @@ def id-payload-binder-type-unsupported-sentinel-decodes-terr() =
   // v-inference's non-int-payload soundness fix — without the distinct -1 the binder defaulted to Int64.
   let tree = record-ctor-tag-typed(empty-tree(), 841, 800, 1, -1) in
   match ctor-payload-binder-type(tree, 841) with
-    | Ty.TyErr => unit
-    | _ => trap("an unsupported (-1) ct-argType decodes to TErr (declines)")
+  | Ty.TyErr => unit
+  | _ => trap("an unsupported (-1) ct-argType decodes to TErr (declines)")
 
 @test
 def id-payload-binder-type-int-width-decodes-tintw() =
@@ -2275,11 +2273,11 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
     ) in
   let tc = infer-node(tree, root, Map.empty : Map(Int64, Resolved), Map.empty : Map(Int64, Ty)) in // no rcol → scrut unbound → TErr
   match Map.lookup(tc, root) with
-    | Option.Some(Ty.TyErr) => unit // TErr scrutinee taints the match
-    | _ =>
-      trap(
-        "a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)"
-      )
+  | Option.Some(Ty.TyErr) => unit // TErr scrutinee taints the match
+  | _ =>
+    trap(
+      "a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)"
+    )
 
 export {
   infer-node,

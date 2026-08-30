@@ -106,9 +106,9 @@ def q-informed-in-all(p: String, q: String, brs: List(Chor)) = match brs with
     // `informed-first` is false, correctly fails — dropping the old participates-gated skip that let an
     // active-in-one/silent-in-another role through).
     match b with
-      | Chor.Branch(_l, cont) =>
-        if informed-first(p, q, cont) then q-informed-in-all(p, q, rest) else false
-      | _ => q-informed-in-all(p, q, rest) // wf guarantees all branches; be total anyway
+    | Chor.Branch(_l, cont) =>
+      if informed-first(p, q, cont) then q-informed-in-all(p, q, rest) else false
+    | _ => q-informed-in-all(p, q, rest) // wf guarantees all branches; be total anyway
 
 /// The first role among `roles` (other than `p`) that participates in some branch but is NOT informed in
 /// all of them — None if the choice is fully projectable.
@@ -131,14 +131,14 @@ def unprojectable-role(roles: List(String), g: Chor) = match g with
   | Chor.Comm(_f, _t, _l) => Option.None(unit)
   | Chor.Seq(a, b) => (
     match unprojectable-role(roles, a) with
-      | Option.Some(q) => Option.Some(q)
-      | Option.None(_) => unprojectable-role(roles, b)
+    | Option.Some(q) => Option.Some(q)
+    | Option.None(_) => unprojectable-role(roles, b)
   )
   | Chor.Choice(p, brs) => (
     // First check THIS choice's knowledge-of-choice, then recurse into each branch.
     match choice-bad-role(roles, p, brs) with
-      | Option.Some(q) => Option.Some(q)
-      | Option.None(_) => unprojectable-role-list(roles, brs)
+    | Option.Some(q) => Option.Some(q)
+    | Option.None(_) => unprojectable-role-list(roles, brs)
   )
   | Chor.Branch(_l, k) => unprojectable-role(roles, k)
   | Chor.Rec(_v, body) => unprojectable-role(roles, body)
@@ -148,8 +148,8 @@ def unprojectable-role-list(roles: List(String), brs: List(Chor)) = match brs wi
   | [] => Option.None(unit)
   | [b, .. rest] =>
     match unprojectable-role(roles, b) with
-      | Option.Some(q) => Option.Some(q)
-      | Option.None(_) => unprojectable-role-list(roles, rest)
+    | Option.Some(q) => Option.Some(q)
+    | Option.None(_) => unprojectable-role-list(roles, rest)
 
 /// The whole protocol is projectable iff no role lacks knowledge of a choice.
 def projectable(roles: List(String), g: Chor) = match unprojectable-role(roles, g) with

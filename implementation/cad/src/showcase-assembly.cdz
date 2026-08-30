@@ -99,8 +99,8 @@ def the-standing-arm-rises-above-the-base() =
   match bounding-box(standing-arm()) with
     | Aabb.Box(_, hi) =>
       match hi with
-        | Vec3.V3(_, _, hz) =>
-          if hz > thick() then unit else trap("the standing arm rises above the base's top face")
+      | Vec3.V3(_, _, hz) =>
+        if hz > thick() then unit else trap("the standing arm rises above the base's top face")
 
 @test
 def the-base-plate-hole-does-not-grow-the-base() =

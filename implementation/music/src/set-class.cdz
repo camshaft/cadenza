@@ -31,13 +31,13 @@ def transpose-pc-set(notes: List(Int64), t: Int64) = transpose-set-go(pc-set(not
 def list-eq(a: List(Int64), b: List(Int64)) = match a with
   | [] => (
     match b with
-      | [] => true
-      | [_, .. _] => false
+    | [] => true
+    | [_, .. _] => false
   )
   | [ha, .. ta] =>
     match b with
-      | [] => false
-      | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false
+    | [] => false
+    | [hb, .. tb] => if ha == hb then list-eq(ta, tb) else false
 
 // ---- transpositional equivalence ---------------------------------------------------------------------
 /// Search transpositions of set `a` for one equal to set `b`, starting at amount `t` and stepping `t` up
@@ -75,8 +75,8 @@ def two-major-triads-are-the-same-transposition-class() =
   let g = [67, 71, 74] in
   if same-transposition-class(c, g) then
     match transposition-between(c, g) with
-      | Option.Some(t) => if t == 7 then unit else trap("C major maps to G major by t=7")
-      | Option.None(_) => trap("they are T-equivalent")
+    | Option.Some(t) => if t == 7 then unit else trap("C major maps to G major by t=7")
+    | Option.None(_) => trap("they are T-equivalent")
   else
     trap("two major triads share a set-class")
 
@@ -90,8 +90,8 @@ def a-major-and-a-minor-triad-are-different-set-classes() =
     trap("major and minor are different set-classes")
   else
     match transposition-between(maj, min) with
-      | Option.None(_) => unit
-      | Option.Some(_) => trap("no transposition maps major onto minor")
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("no transposition maps major onto minor")
 
 @test
 def transposition-class-is-octave-order-and-doubling-invariant() =
@@ -110,8 +110,8 @@ def every-set-is-t-equivalent-to-itself-at-t-zero() =
   // one). A C-major triad against itself → Some(0).
   let c = [60, 64, 67] in
   match transposition-between(c, c) with
-    | Option.Some(t) => if t == 0 then unit else trap("a set maps to itself at t=0")
-    | Option.None(_) => trap("a set is T-equivalent to itself")
+  | Option.Some(t) => if t == 0 then unit else trap("a set maps to itself at t=0")
+  | Option.None(_) => trap("a set is T-equivalent to itself")
 
 @test
 def transpose-pc-set-round-trips-back-by-the-complement() =
@@ -147,16 +147,16 @@ def the-relation-is-symmetric-by-the-complementary-transposition() =
   let c = [60, 64, 67] in
   let g = [67, 71, 74] in
   match transposition-between(c, g) with
-    | Option.Some(tcg) => (
-      match transposition-between(g, c) with
-        | Option.Some(tgc) =>
-          if tcg == 7 then
-            if tgc == 5 then unit else trap("G major maps back to C major by t=5")
-          else
-            trap("C major maps to G major by t=7")
-        | Option.None(_) => trap("the relation is symmetric — G~C too")
-    )
-    | Option.None(_) => trap("C~G")
+  | Option.Some(tcg) => (
+    match transposition-between(g, c) with
+    | Option.Some(tgc) =>
+      if tcg == 7 then
+        if tgc == 5 then unit else trap("G major maps back to C major by t=5")
+      else
+        trap("C major maps to G major by t=7")
+    | Option.None(_) => trap("the relation is symmetric — G~C too")
+  )
+  | Option.None(_) => trap("C~G")
 
 @test
 def different-cardinalities-are-never-t-equivalent() =

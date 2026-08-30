@@ -63,9 +63,9 @@ def project-branches(brs: List(Chor), r: String, k: Local) -> List(Local) = matc
   | [] => []
   | [b, .. rest] =>
     match b with
-      | Chor.Branch(l, cont) =>
-        List.concat([Local.LBranch(l, project-k(cont, r, k))], project-branches(rest, r, k))
-      | _ => project-branches(rest, r, k)
+    | Chor.Branch(l, cont) =>
+      List.concat([Local.LBranch(l, project-k(cont, r, k))], project-branches(rest, r, k))
+    | _ => project-branches(rest, r, k)
 
 /// Does role `r` participate in ANY branch (as sender/receiver/chooser)? — the test that decides an
 /// external choice (r is involved, so it is told) vs the merge-to-`k` case (r does nothing).
@@ -82,56 +82,56 @@ def project(g: Chor, r: String) -> Local = project-k(g, r, Local.LEnd)
 def local-eq(a: Local, b: Local) -> Bool = match a with
   | Local.LEnd => (
     match b with
-      | Local.LEnd => true
-      | _ => false
+    | Local.LEnd => true
+    | _ => false
   )
   | Local.LSend(t, l, k) => (
     match b with
-      | Local.LSend(t2, l2, k2) =>
-        if t == t2 then if l == l2 then local-eq(k, k2) else false else false
-      | _ => false
+    | Local.LSend(t2, l2, k2) =>
+      if t == t2 then if l == l2 then local-eq(k, k2) else false else false
+    | _ => false
   )
   | Local.LRecv(f, l, k) => (
     match b with
-      | Local.LRecv(f2, l2, k2) =>
-        if f == f2 then if l == l2 then local-eq(k, k2) else false else false
-      | _ => false
+    | Local.LRecv(f2, l2, k2) =>
+      if f == f2 then if l == l2 then local-eq(k, k2) else false else false
+    | _ => false
   )
   | Local.LIntC(brs) => (
     match b with
-      | Local.LIntC(brs2) => local-list-eq(brs, brs2)
-      | _ => false
+    | Local.LIntC(brs2) => local-list-eq(brs, brs2)
+    | _ => false
   )
   | Local.LExtC(f, brs) => (
     match b with
-      | Local.LExtC(f2, brs2) => if f == f2 then local-list-eq(brs, brs2) else false
-      | _ => false
+    | Local.LExtC(f2, brs2) => if f == f2 then local-list-eq(brs, brs2) else false
+    | _ => false
   )
   | Local.LBranch(l, k) => (
     match b with
-      | Local.LBranch(l2, k2) => if l == l2 then local-eq(k, k2) else false
-      | _ => false
+    | Local.LBranch(l2, k2) => if l == l2 then local-eq(k, k2) else false
+    | _ => false
   )
   | Local.LRecT(v, body) => (
     match b with
-      | Local.LRecT(v2, body2) => if v == v2 then local-eq(body, body2) else false
-      | _ => false
+    | Local.LRecT(v2, body2) => if v == v2 then local-eq(body, body2) else false
+    | _ => false
   )
   | Local.LVarT(v) =>
     match b with
-      | Local.LVarT(v2) => v == v2
-      | _ => false
+    | Local.LVarT(v2) => v == v2
+    | _ => false
 
 def local-list-eq(xs: List(Local), ys: List(Local)) -> Bool = match xs with
   | [] => (
     match ys with
-      | [] => true
-      | _ => false
+    | [] => true
+    | _ => false
   )
   | [x, .. xr] =>
     match ys with
-      | [] => false
-      | [y, .. yr] => if local-eq(x, y) then local-list-eq(xr, yr) else false
+    | [] => false
+    | [y, .. yr] => if local-eq(x, y) then local-list-eq(xr, yr) else false
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Fixtures + tests — the Inc-2 gate: golden projections of each role.

@@ -31,9 +31,9 @@ def diff-arith-agrees-int() =
   let db = resolve-into-db(db-of(tree), root) in
   let s = is-int-ty(run-type-of(db, root)) in
   match type-at(tree, root, root) with
-    | Option.Some(t) =>
-      if s and is-int-ty(t) then unit else trap("spine and walk disagree on arith int-ness")
-    | Option.None(_) => trap("eager walk gave no type at the arith root")
+  | Option.Some(t) =>
+    if s and is-int-ty(t) then unit else trap("spine and walk disagree on arith int-ness")
+  | Option.None(_) => trap("eager walk gave no type at the arith root")
 
 @test
 def diff-nested-arith-agrees-int() =
@@ -42,9 +42,9 @@ def diff-nested-arith-agrees-int() =
   let db = resolve-into-db(db-of(tree), root) in
   let s = is-int-ty(run-type-of(db, root)) in
   match type-at(tree, root, root) with
-    | Option.Some(t) =>
-      if s and is-int-ty(t) then unit else trap("spine and walk disagree on nested-arith int-ness")
-    | Option.None(_) => trap("eager walk gave no type at the nested-arith root")
+  | Option.Some(t) =>
+    if s and is-int-ty(t) then unit else trap("spine and walk disagree on nested-arith int-ness")
+  | Option.None(_) => trap("eager walk gave no type at the nested-arith root")
 
 @test
 def diff-single-literal-agrees-int() =
@@ -53,9 +53,9 @@ def diff-single-literal-agrees-int() =
   let db = resolve-into-db(db-of(tree), root) in
   let s = is-int-ty(run-type-of(db, root)) in
   match type-at(tree, root, root) with
-    | Option.Some(t) =>
-      if s and is-int-ty(t) then unit else trap("spine and walk disagree on literal int-ness")
-    | Option.None(_) => trap("eager walk gave no type at the literal root")
+  | Option.Some(t) =>
+    if s and is-int-ty(t) then unit else trap("spine and walk disagree on literal int-ness")
+  | Option.None(_) => trap("eager walk gave no type at the literal root")
 
 @test
 def diff-comparison-agrees-bool() =
@@ -68,9 +68,9 @@ def diff-comparison-agrees-bool() =
       | Ty.TyBool => true
       | _ => false in
   match type-at(tree, root, root) with
-    | Option.Some(Ty.TyBool) =>
-      if sBool then unit else trap("eager walk says Bool but the spine does not")
-    | _ => trap("eager walk says the comparison root is not Bool")
+  | Option.Some(Ty.TyBool) =>
+    if sBool then unit else trap("eager walk says Bool but the spine does not")
+  | _ => trap("eager walk says the comparison root is not Bool")
 
 @test
 def diff-let-agrees-int() =
@@ -82,9 +82,9 @@ def diff-let-agrees-int() =
   let db = resolve-into-db(db-of(tree), root) in
   let s = is-int-ty(run-type-of(db, root)) in
   match type-at(tree, root, root) with
-    | Option.Some(t) =>
-      if s and is-int-ty(t) then unit else trap("spine and walk disagree on let int-ness")
-    | Option.None(_) => trap("eager walk gave no type at the let root")
+  | Option.Some(t) =>
+    if s and is-int-ty(t) then unit else trap("spine and walk disagree on let int-ness")
+  | Option.None(_) => trap("eager walk gave no type at the let root")
 
 @test
 def diff-if-agrees-int() =
@@ -105,6 +105,6 @@ def diff-if-agrees-int() =
   let db = resolve-into-db(db-of(tree), root) in
   let s = is-int-ty(run-type-of(db, root)) in
   match type-at(tree, root, root) with
-    | Option.Some(t) =>
-      if s and is-int-ty(t) then unit else trap("spine and walk disagree on if int-ness")
-    | Option.None(_) => trap("eager walk gave no type at the if root")
+  | Option.Some(t) =>
+    if s and is-int-ty(t) then unit else trap("spine and walk disagree on if int-ness")
+  | Option.None(_) => trap("eager walk gave no type at the if root")
