@@ -114,31 +114,46 @@ fn cap_subject(first_line: &str) -> String {
 /// the full ask still lives in the concierge inbox and tmux.
 const SLACK_TEXT_CAP: usize = 3500;
 
+/// Escape the three Slack `text` CONTROL characters (`&`, `<`, `>`) as HTML entities. Slack opens
+/// link/entity parsing on these, so an unescaped one (e.g. a body with `<512KiB` or a generic `Rc<[T]>`,
+/// both common in fleet notes) mis-parses or makes `chat.postMessage` return `internal_error` — this
+/// deterministically failed the rich post of a real concierge note in production. Escape only message
+/// CONTENT (from/kind/subject/ref/body), never the mrkdwn markers we add. `&` MUST go first, else we would
+/// re-escape the `&` in the `&lt;`/`&gt;` we just produced.
+fn escape_slack_entities(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// Render a fleet message (drained from the bridge's inbox, i.e. an agent → operator message) as a
 /// Slack-mrkdwn string: who it's from, the kind, the subject, and the body/ref when present. The result is
 /// length-capped (see [`SLACK_TEXT_CAP`]) so a large body can't make the Slack post fail.
 pub fn render_fleet_message(msg: &crate::inbox::Message) -> String {
-    let from = if msg.from.is_empty() {
+    let from = escape_slack_entities(if msg.from.is_empty() {
         "unknown"
     } else {
         &msg.from
-    };
-    let kind = if msg.kind.is_empty() {
+    });
+    let kind = escape_slack_entities(if msg.kind.is_empty() {
         "note"
     } else {
         &msg.kind
-    };
+    });
     let mut lines = Vec::new();
     if msg.subject.is_empty() {
         lines.push(format!("*{from}* · _{kind}_"));
     } else {
-        lines.push(format!("*{from}* · _{kind}_: {}", msg.subject));
+        lines.push(format!(
+            "*{from}* · _{kind}_: {}",
+            escape_slack_entities(&msg.subject)
+        ));
     }
     if !msg.r#ref.is_empty() {
-        lines.push(format!("`{}`", msg.r#ref));
+        lines.push(format!("`{}`", escape_slack_entities(&msg.r#ref)));
     }
     if !msg.body.trim().is_empty() {
-        lines.push(msg.body.trim().to_string());
+        lines.push(escape_slack_entities(msg.body.trim()));
     }
     cap_for_slack(lines.join("\n"))
 }
@@ -504,6 +519,46 @@ mod tests {
         ];
         want.sort_unstable();
         assert_eq!(got, want, "KNOWN_KINDS drifted from the fleet protocol set");
+    }
+
+    #[test]
+    fn render_escapes_slack_control_entities_in_content() {
+        // `&`, `<`, `>` are Slack `text` control chars; unescaped they mis-parse / `internal_error` (a real
+        // concierge note with `<512KiB`/`>512KiB` failed the rich post in production). Pin that the CONTENT
+        // is HTML-escaped so a full-fidelity post survives — while the mrkdwn markers we add stay literal.
+        let m = Message::new("v-x", "slack-bridge", "note", "shrink <512KiB & >0")
+            .with_body("split file <512KiB, keep Rc<[T]> & Vec<T>");
+        let s = render_fleet_message(&m);
+        assert!(s.contains("&lt;512KiB"), "< escaped: {s}");
+        assert!(
+            s.contains("&gt;0") && s.contains("Vec&lt;T&gt;"),
+            "> and generics escaped: {s}"
+        );
+        assert!(s.contains("&amp;"), "& escaped: {s}");
+        // No RAW control chars survive in the rendered text (would be Slack's, not ours) …
+        assert!(
+            !s.contains('<') && !s.contains('>'),
+            "no raw angle brackets: {s}"
+        );
+        // … and `&` only ever appears as the head of an entity (never a bare `&`).
+        assert!(
+            s.match_indices('&')
+                .all(|(i, _)| s[i..].starts_with("&amp;")
+                    || s[i..].starts_with("&lt;")
+                    || s[i..].starts_with("&gt;")),
+            "every & is an entity head: {s}"
+        );
+        // The mrkdwn structure we add is untouched.
+        assert!(s.contains("*v-x*") && s.contains("_note_"));
+    }
+
+    #[test]
+    fn render_does_not_double_escape_ampersand() {
+        // `&` must be escaped FIRST so we never turn a produced `&lt;` into `&amp;lt;`.
+        let m = Message::new("v-x", "slack-bridge", "note", "a").with_body("A && B < C");
+        let s = render_fleet_message(&m);
+        assert!(s.contains("A &amp;&amp; B &lt; C"), "single-escaped: {s}");
+        assert!(!s.contains("&amp;lt;"), "no double-escape: {s}");
     }
 
     // ── OUTBOUND-RELAY RESILIENCE: plan escalation + degraded plain render ──────────────────────────

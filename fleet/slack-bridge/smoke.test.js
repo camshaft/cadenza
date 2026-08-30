@@ -335,6 +335,21 @@ test("markFailed dead-letters a message and it no longer drains (preserved, not 
   assert.strictEqual(JSON.parse(fs.readFileSync(dead, "utf8")).subject, "poison");
 });
 
+test("renderFleetMessage escapes Slack control entities (&, <, >) in content, not markers", () => {
+  // Slack treats &, <, > as text control chars; unescaped they mis-parse / internal_error (a real note
+  // with <512KiB/>512KiB failed the rich post in production). Content must be HTML-escaped; markers stay.
+  const m = { from: "v-x", kind: "note", subject: "shrink <512KiB & >0", body: "keep Rc<[T]> & Vec<T>" };
+  const s = renderFleetMessage(m);
+  assert.ok(s.includes("&lt;512KiB"), `< escaped: ${s}`);
+  assert.ok(s.includes("&gt;0") && s.includes("Vec&lt;T&gt;"), `> and generics escaped: ${s}`);
+  assert.ok(s.includes("&amp;"), `& escaped: ${s}`);
+  assert.ok(!s.includes("<") && !s.includes(">"), `no raw angle brackets: ${s}`);
+  assert.ok(s.includes("*v-x*") && s.includes("_note_"), "mrkdwn markers untouched");
+  // Escape & FIRST so a produced &lt; is never re-escaped into &amp;lt;.
+  const dbl = renderFleetMessage({ from: "a", kind: "note", subject: "s", body: "A && B < C" });
+  assert.ok(dbl.includes("A &amp;&amp; B &lt; C") && !dbl.includes("&amp;lt;"), `no double-escape: ${dbl}`);
+});
+
 test("relayPlan escalates normal → degraded → quarantine at the (drift-proof) thresholds", () => {
   // Escalation must be finite so a poison message is dead-lettered after a bounded number of polls and can
   // NEVER block the queue forever. Assert against the exported constants (not literals) so a future retune
