@@ -372,33 +372,33 @@ def zip-with(a, b, f) = match a with
 /// GENERIC producer/consumer composition, not a generic comparison (a generic recursive equality is its own
 /// tie question, out of scope for this slice).
 def int-list-eq(xs, ys) = match xs with
-  | [] =>
-    (match ys with
+  | [] => (
+    match ys with
       | [] => true
       | _ => false
-    )
+  )
   | [x, .. xr] =>
     match ys with
       | [] => false
       | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
 
 def str-list-eq(xs, ys) = match xs with
-  | [] =>
-    (match ys with
+  | [] => (
+    match ys with
       | [] => true
       | _ => false
-    )
+  )
   | [x, .. xr] =>
     match ys with
       | [] => false
       | [y, .. yr] => if x == y then str-list-eq(xr, yr) else false
 
 def bool-list-eq(xs, ys) = match xs with
-  | [] =>
-    (match ys with
+  | [] => (
+    match ys with
       | [] => true
       | _ => false
-    )
+  )
   | [x, .. xr] =>
     match ys with
       | [] => false

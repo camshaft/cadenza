@@ -140,11 +140,11 @@ def a-cube-authored-in-meters-lowers-to-exact-rational() =
   // 4, 2, 6 (the meter magnitudes) — units carried in the model, unwrapped at the render edge.
   let model = cube-m(meters(4 / 1), meters(2 / 1), meters(6 / 1)) in
   match lower(model) with
-    | Solid.Cube(v) =>
-      (match v with
+    | Solid.Cube(v) => (
+      match v with
         | Vec3.V3(x, y, z) =>
           if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
-      )
+    )
     | _ => trap("expected a Cube")
 
 @test
@@ -155,11 +155,11 @@ def a-difference-of-units-solids-lowers-recursively() =
       sphere-m(meters(2 / 1))
     ) in
   match lower(model) with
-    | Solid.Difference(a, b) =>
-      (match b with
+    | Solid.Difference(a, b) => (
+      match b with
         | Solid.Sphere(r) => if r == 2 / 1 then unit else trap("r")
         | _ => trap("b")
-      )
+    )
     | _ => trap("diff")
 
 @test
@@ -169,10 +169,10 @@ def a-component-authored-in-inches-lowers-to-exact-meters() =
   let inch-x = Qty.of(Qty.of(1 / 1, Unit.of(#inch)) as meter, Unit.of(#meter)) in
   let model = cube-m(inch-x, meters(1 / 1), meters(1 / 1)) in
   match lower(model) with
-    | Solid.Cube(v) =>
-      (match v with
+    | Solid.Cube(v) => (
+      match v with
         | Vec3.V3(x, _, _) => if x == 127 / 5000 then unit else trap("1 inch = 127/5000 m")
-      )
+    )
     | _ => trap("expected a Cube")
 
 @test
@@ -186,8 +186,8 @@ def a-translated-units-cylinder-lowers-its-offset-and-dims-to-exact-meters() =
       cylinder-m(meters(6 / 1), meters(2 / 1))
     ) in
   match lower(model) with
-    | Solid.Translate(by, of) =>
-      (match by with
+    | Solid.Translate(by, of) => (
+      match by with
         | Vec3.V3(bx, by2, bz) =>
           if bx == 3 / 1 and by2 == 0 / 1 and bz == 0 / 1 then
             match of with
@@ -199,7 +199,7 @@ def a-translated-units-cylinder-lowers-its-offset-and-dims-to-exact-meters() =
               | _ => trap("expected a Cylinder under the Translate")
           else
             trap("translate offset unwraps to (3,0,0) m")
-      )
+    )
     | _ => trap("expected a Translate")
 
 @test
@@ -210,18 +210,18 @@ def an-extruded-units-rect-profile-lowers-profile-and-height-to-exact-meters() =
   let prof = Profile.Rect(Vec2.V2(meters(4 / 1), meters(2 / 1))) in
   let model = Solid.ExtrudeLinear(prof, meters(3 / 1)) in
   match lower(model) with
-    | Solid.ExtrudeLinear(p, h) =>
-      (match p with
-        | Profile.Rect(sz) =>
-          (match sz with
+    | Solid.ExtrudeLinear(p, h) => (
+      match p with
+        | Profile.Rect(sz) => (
+          match sz with
             | Vec2.V2(w, d) =>
               if w == 4 / 1 and d == 2 / 1 and h == 3 / 1 then
                 unit
               else
                 trap("extruded Rect profile lowers to 4m x 2m x height 3m")
-          )
+        )
         | _ => trap("expected a Rect profile")
-      )
+    )
     | _ => trap("expected an ExtrudeLinear")
 
 @test
@@ -247,23 +247,23 @@ def a-units-path-profile-lowers-every-segment-coordinate-to-exact-meters() =
     ) in
   let model = Solid.ExtrudeLinear(Profile.PathProfile(pth), meters(4 / 1)) in
   match lower(model) with
-    | Solid.ExtrudeLinear(p, h) =>
-      (match p with
-        | Profile.PathProfile(lp) =>
-          (match lp with
+    | Solid.ExtrudeLinear(p, h) => (
+      match p with
+        | Profile.PathProfile(lp) => (
+          match lp with
             | Path.Segs(xs) => // segment 1 is LineToAbs(6,2); segment 2 is CubicToAbs end(8,3) c0(7,5) c1(9,1).
               match List.at(xs, 1 : Int64) with
-                | Option.Some(s1) =>
-                  (match s1 with
-                    | PathSeg.LineToAbs(lp1) =>
-                      (match lp1 with
+                | Option.Some(s1) => (
+                  match s1 with
+                    | PathSeg.LineToAbs(lp1) => (
+                      match lp1 with
                         | Vec2.V2(lx, ly) =>
                           if lx == 6 / 1 and ly == 2 / 1 then
                             match List.at(xs, 2 : Int64) with
-                              | Option.Some(s2) =>
-                                (match s2 with
-                                  | PathSeg.CubicToAbs(e, c0, c1) =>
-                                    (match e with
+                              | Option.Some(s2) => (
+                                match s2 with
+                                  | PathSeg.CubicToAbs(e, c0, c1) => (
+                                    match e with
                                       | Vec2.V2(ex, ey) =>
                                         match c0 with
                                           | Vec2.V2(c0x, c0y) =>
@@ -277,19 +277,19 @@ def a-units-path-profile-lowers-every-segment-coordinate-to-exact-meters() =
                                                   trap(
                                                     "units cubic seg lowers to end(8,3) c0(7,5) c1(9,1), height 4"
                                                   )
-                                    )
+                                  )
                                   | _ => trap("segment 2 is a CubicToAbs")
-                                )
+                              )
                               | Option.None => trap("segment 2 exists")
                           else
                             trap("units line seg lowers to (6,2) axis-preserving")
-                      )
+                    )
                     | _ => trap("segment 1 is a LineToAbs")
-                  )
+                )
                 | Option.None => trap("segment 1 exists")
-          )
+        )
         | _ => trap("expected a PathProfile")
-      )
+    )
     | _ => trap("expected an ExtrudeLinear")
 
 export {

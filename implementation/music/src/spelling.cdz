@@ -245,11 +245,11 @@ def sharp-and-flat-differ-in-name-for-a-black-key() =
   let sh = sharp-name-of-pc(1) in
   let fl = flat-name-of-pc(1) in
   match name-letter(sh) with
-    | Letter.C =>
-      (match name-letter(fl) with
+    | Letter.C => (
+      match name-letter(fl) with
         | Letter.D => unit
         | _ => trap("flat spelling of pc 1 should be D-flat")
-      )
+    )
     | _ => trap("sharp spelling of pc 1 should be C-sharp")
 
 export {

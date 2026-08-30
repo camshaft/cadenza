@@ -71,37 +71,37 @@ def gen-role(g: Chor, r: String) -> Ast = codegen(project(g, r))
 // Structural Ast equality (for golden tests). `ast-eq.cdz` exists but keep this file self-contained.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def a-eq(a: Ast, b: Ast) -> Bool = match a with
-  | Ast.Int(x) =>
-    (match b with
+  | Ast.Int(x) => (
+    match b with
       | Ast.Int(y) => x == y
       | _ => false
-    )
-  | Ast.Str(x) =>
-    (match b with
+  )
+  | Ast.Str(x) => (
+    match b with
       | Ast.Str(y) => x == y
       | _ => false
-    )
-  | Ast.Bool(x) =>
-    (match b with
+  )
+  | Ast.Bool(x) => (
+    match b with
       | Ast.Bool(y) => if x then y else if y then false else true
       | _ => false
-    )
-  | Ast.Name(x) =>
-    (match b with
+  )
+  | Ast.Name(x) => (
+    match b with
       | Ast.Name(y) => x == y
       | _ => false
-    )
+  )
   | Ast.List(xs) =>
     match b with
       | Ast.List(ys) => a-list-eq(xs, ys)
       | _ => false
 
 def a-list-eq(xs: List(Ast), ys: List(Ast)) -> Bool = match xs with
-  | [] =>
-    (match ys with
+  | [] => (
+    match ys with
       | [] => true
       | _ => false
-    )
+  )
   | [x, .. xr] =>
     match ys with
       | [] => false

@@ -205,11 +205,11 @@ def render-actor-section(g: Chor, r: String) -> String =
 /// Chor; the wf/projectable verdict via render-all otherwise). Keeps the CLI's generated driver trivial (one
 /// call) instead of an error-prone inline nested match.
 def shred-sexp(src: String) -> String = match read(src) with
-  | Option.Some(a) =>
-    (match from-ast(a) with
+  | Option.Some(a) => (
+    match from-ast(a) with
       | Option.Some(g) => render-all(roles-of(g), g)
       | Option.None(_) => "not-a-protocol"
-    )
+  )
   | Option.None(_) => "not-a-protocol"
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -384,11 +384,11 @@ def prefix-eq(s: String, prefix: String, i: Int64) -> Bool =
     false
   else
     match String.at(s, i) with
-      | Option.Some(cs) =>
-        (match String.at(prefix, i) with
+      | Option.Some(cs) => (
+        match String.at(prefix, i) with
           | Option.Some(cp) => if cs == cp then prefix-eq(s, prefix, i + 1) else false
           | Option.None(_) => true
-        )
+      )
       | Option.None(_) => false
 
 @test
@@ -616,11 +616,11 @@ def prefix-eq-at(hay: String, needle: String, start: Int64, j: Int64) -> Bool =
     true
   else
     match String.at(hay, start + j) with
-      | Option.Some(ch) =>
-        (match String.at(needle, j) with
+      | Option.Some(ch) => (
+        match String.at(needle, j) with
           | Option.Some(cn) => if ch == cn then prefix-eq-at(hay, needle, start, j + 1) else false
           | Option.None(_) => true
-        )
+      )
       | Option.None(_) => false
 
 export { render, shred, drive, verdict, report, render-compilable, render-all, shred-sexp }

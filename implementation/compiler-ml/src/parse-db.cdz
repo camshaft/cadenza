@@ -236,8 +236,8 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
     (true, 0) // out of fuel → conservatively treat as recursive (decline, never hang)
   else
     match node-at(tree, id) with
-      | Option.Some(Node.NApp(calleeName, argId)) =>
-        (if calleeName == target then
+      | Option.Some(Node.NApp(calleeName, argId)) => (
+        if calleeName == target then
           (true, fuel - 1) // a direct call to target → recursive
         else
           // else recurse into: this call's ARG(s) + the CALLED def's body (transitive/mutual). arg2/3/4 keyed
@@ -254,27 +254,29 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
                     | (false, f3) =>
                       match subtree-calls-name-opt(tree, arg4-of(tree, id), target, f3) with
                         | (true, f4) => (true, f4)
-                        | (false, f4) => subtree-calls-callee(tree, calleeName, target, f4))
-      | Option.Some(Node.NBin(_, l, r)) =>
-        (match subtree-calls-name(tree, l, target, fuel - 1) with
+                        | (false, f4) => subtree-calls-callee(tree, calleeName, target, f4)
+      )
+      | Option.Some(Node.NBin(_, l, r)) => (
+        match subtree-calls-name(tree, l, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) => subtree-calls-name(tree, r, target, fl)
-        )
-      | Option.Some(Node.NLet(_, v, b)) =>
-        (match subtree-calls-name(tree, v, target, fuel - 1) with
+      )
+      | Option.Some(Node.NLet(_, v, b)) => (
+        match subtree-calls-name(tree, v, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) => subtree-calls-name(tree, b, target, fl)
-        )
-      | Option.Some(Node.NIf(c, t, e)) =>
-        (match subtree-calls-name(tree, c, target, fuel - 1) with
+      )
+      | Option.Some(Node.NIf(c, t, e)) => (
+        match subtree-calls-name(tree, c, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) =>
             match subtree-calls-name(tree, t, target, fl) with
               | (true, f2) => (true, f2)
               | (false, f2) => subtree-calls-name(tree, e, target, f2)
-        )
-      | Option.Some(Node.NMatch(sc, li, th, el)) => // M1-a: scan all 4 match children for a transitive call
-        (match subtree-calls-name(tree, sc, target, fuel - 1) with
+      )
+      | Option.Some(Node.NMatch(sc, li, th, el)) => (
+        // M1-a: scan all 4 match children for a transitive call
+        match subtree-calls-name(tree, sc, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) =>
             match subtree-calls-name(tree, li, target, fl) with
@@ -283,15 +285,16 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
                 match subtree-calls-name(tree, th, target, f2) with
                   | (true, f3) => (true, f3)
                   | (false, f3) => subtree-calls-name(tree, el, target, f3)
-        )
-      | Option.Some(Node.NMatchCtor(sc, _pcn, _bn, bd, rst)) => // M2-b-2b-ii-c: scan scrut/body/rest (patName+binder = no call)
-        (match subtree-calls-name(tree, sc, target, fuel - 1) with
+      )
+      | Option.Some(Node.NMatchCtor(sc, _pcn, _bn, bd, rst)) => (
+        // M2-b-2b-ii-c: scan scrut/body/rest (patName+binder = no call)
+        match subtree-calls-name(tree, sc, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) =>
             match subtree-calls-name(tree, bd, target, fl) with
               | (true, f2) => (true, f2)
               | (false, f2) => subtree-calls-name(tree, rst, target, f2)
-        )
+      )
       | _ => (false, fuel - 1)
 
 // NLit/NBoolLit/NVar/NAnnLit — no call
@@ -336,8 +339,8 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
     (false, 0) // out of fuel → NOT self-recursive (conservative for INCLUSION: leave it out)
   else
     match node-at(tree, id) with
-      | Option.Some(Node.NApp(calleeName, argId)) =>
-        (if calleeName == target then
+      | Option.Some(Node.NApp(calleeName, argId)) => (
+        if calleeName == target then
           (true, fuel - 1) // a DIRECT call to target → self-recursive
         else
           // else scan ALL the ARG subtrees (a nested self-call can hide in any arg) — NEVER descend the callee
@@ -352,27 +355,29 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
                 | (false, f2) =>
                   match subtree-calls-self-opt(tree, arg3-of(tree, id), target, f2) with
                     | (true, f3) => (true, f3)
-                    | (false, f3) => subtree-calls-self-opt(tree, arg4-of(tree, id), target, f3))
-      | Option.Some(Node.NBin(_, l, r)) =>
-        (match subtree-calls-self(tree, l, target, fuel - 1) with
+                    | (false, f3) => subtree-calls-self-opt(tree, arg4-of(tree, id), target, f3)
+      )
+      | Option.Some(Node.NBin(_, l, r)) => (
+        match subtree-calls-self(tree, l, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) => subtree-calls-self(tree, r, target, fl)
-        )
-      | Option.Some(Node.NLet(_, v, b)) =>
-        (match subtree-calls-self(tree, v, target, fuel - 1) with
+      )
+      | Option.Some(Node.NLet(_, v, b)) => (
+        match subtree-calls-self(tree, v, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) => subtree-calls-self(tree, b, target, fl)
-        )
-      | Option.Some(Node.NIf(c, t, e)) =>
-        (match subtree-calls-self(tree, c, target, fuel - 1) with
+      )
+      | Option.Some(Node.NIf(c, t, e)) => (
+        match subtree-calls-self(tree, c, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) =>
             match subtree-calls-self(tree, t, target, fl) with
               | (true, f2) => (true, f2)
               | (false, f2) => subtree-calls-self(tree, e, target, f2)
-        )
-      | Option.Some(Node.NMatch(sc, li, th, el)) => // M1-a: scan all 4 match children for a DIRECT self-call
-        (match subtree-calls-self(tree, sc, target, fuel - 1) with
+      )
+      | Option.Some(Node.NMatch(sc, li, th, el)) => (
+        // M1-a: scan all 4 match children for a DIRECT self-call
+        match subtree-calls-self(tree, sc, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) =>
             match subtree-calls-self(tree, li, target, fl) with
@@ -381,15 +386,16 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
                 match subtree-calls-self(tree, th, target, f2) with
                   | (true, f3) => (true, f3)
                   | (false, f3) => subtree-calls-self(tree, el, target, f3)
-        )
-      | Option.Some(Node.NMatchCtor(sc, _pcn, _bn, bd, rst)) => // M2-b-2b-ii-c: scan scrut/body/rest for a self-call
-        (match subtree-calls-self(tree, sc, target, fuel - 1) with
+      )
+      | Option.Some(Node.NMatchCtor(sc, _pcn, _bn, bd, rst)) => (
+        // M2-b-2b-ii-c: scan scrut/body/rest for a self-call
+        match subtree-calls-self(tree, sc, target, fuel - 1) with
           | (true, fl) => (true, fl)
           | (false, fl) =>
             match subtree-calls-self(tree, bd, target, fl) with
               | (true, f2) => (true, f2)
               | (false, f2) => subtree-calls-self(tree, rst, target, f2)
-        )
+      )
       | _ => (false, fuel - 1)
 
 /// Helper: an NApp arg is -1 (nullary) or a node-id to scan for a DIRECT self-call.
@@ -768,12 +774,13 @@ def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
   | Tok.TName(nm) =>
     let (id, t1) = add-node(tree, Node.NVar(nm)) in
     (id, i + 1, t1)
-  | Tok.TLParen =>
-    (let (inner, j, t1) = parse-any(ts, i + 1, tree) in
+  | Tok.TLParen => (
+    let (inner, j, t1) = parse-any(ts, i + 1, tree) in
     // consume the matching ')' if present (j points at it); tolerate a missing one.
     match tok-at(ts, j) with
       | Tok.TRParen => (inner, j + 1, t1)
-      | _ => (inner, j, t1))
+      | _ => (inner, j, t1)
+  )
   | _ =>
     let (id, t1) = add-node(tree, Node.NLit(0)) in
     (id, i + 1, t1) // error recovery: 0
@@ -1050,19 +1057,19 @@ def pd-node-ids-stable-and-dense() =
   // node ids are dense 0..n-1: "1 + 2" has 3 nodes at ids 0,1,2 — every id in range resolves to a node.
   let (_, tree) = parse-tokens([n(1), plus(), n(2)]) in
   match node-at(tree, 0) with
-    | Option.Some(_) =>
-      (match node-at(tree, 1) with
-        | Option.Some(_) =>
-          (match node-at(tree, 2) with
-            | Option.Some(_) =>
-              (match node-at(tree, 3) with
+    | Option.Some(_) => (
+      match node-at(tree, 1) with
+        | Option.Some(_) => (
+          match node-at(tree, 2) with
+            | Option.Some(_) => (
+              match node-at(tree, 3) with
                 | Option.None(_) => unit
                 | Option.Some(_) => trap("no node at 3")
-              )
+            )
             | Option.None(_) => trap("node at 2")
-          )
+        )
         | Option.None(_) => trap("node at 1")
-      )
+    )
     | Option.None(_) => trap("node at 0")
 
 @test
@@ -1329,12 +1336,12 @@ def pd-op-code-is-option() =
       if c == 43 then
         match op-code(n(7)) with
           // a number token is not an operator
-          | Option.None(_) =>
-            (match op-code(var(99)) with
+          | Option.None(_) => (
+            match op-code(var(99)) with
               // nor is a name token
               | Option.None(_) => unit
               | Option.Some(_) => trap("a TName token has no op-code (None)")
-            )
+          )
           | Option.Some(_) => trap("a TNum token has no op-code (None)")
       else
         trap("op-code(TOp 43) = Some(43)")
@@ -1428,13 +1435,13 @@ def pd-record-param-then-lookup() =
       if p == paramId then
         match param-of(t4, 1) with
           // name 1 is nullary → NO param entry
-          | Option.None(_) =>
-            (match def-body-of(t4, 2) with
+          | Option.None(_) => (
+            match def-body-of(t4, 2) with
               // name 2 recorded a param, NOT a def-body
               | Option.None(_) => unit
               | Option.Some(_) =>
                 trap("param-table is orthogonal to def-table (name 2 has no def-body)")
-            )
+          )
           | Option.Some(_) => trap("a nullary def has NO param entry (param-of → None)")
       else
         trap("param-of returns the recorded param node")
@@ -1504,12 +1511,12 @@ def pd-record-param3-and-arg3-then-lookup() =
             if y == arg3Id then
               match param3-of(t4, 99) with
                 // an unrecorded name → None
-                | Option.None(_) =>
-                  (match arg3-of(t4, 999) with
+                | Option.None(_) => (
+                  match arg3-of(t4, 999) with
                     // an unrecorded call node → None
                     | Option.None(_) => unit
                     | Option.Some(_) => trap("unrecorded call node has no arg3")
-                  )
+                )
                 | Option.Some(_) => trap("unrecorded name has no param3")
             else
               trap("arg3-of returns the recorded 3rd arg")
@@ -1523,11 +1530,11 @@ def pd-param3-arg3-none-when-unrecorded() =
   // a fresh tree (no defs/calls) has NO param3/arg3 for any key → both None (the ≤2-param/arg default, so a
   // 1-/2-param def or call reads None here exactly as before this foundation).
   match param3-of(empty-tree(), 1) with
-    | Option.None(_) =>
-      (match arg3-of(empty-tree(), 1) with
+    | Option.None(_) => (
+      match arg3-of(empty-tree(), 1) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("empty tree has no arg3")
-      )
+    )
     | Option.Some(_) => trap("empty tree has no param3")
 
 @test
@@ -1548,12 +1555,12 @@ def pd-record-param4-and-arg4-then-lookup() =
             if y == arg4Id then
               match param4-of(t4, 99) with
                 // an unrecorded name → None
-                | Option.None(_) =>
-                  (match arg4-of(t4, 999) with
+                | Option.None(_) => (
+                  match arg4-of(t4, 999) with
                     // an unrecorded call node → None
                     | Option.None(_) => unit
                     | Option.Some(_) => trap("unrecorded call node has no arg4")
-                  )
+                )
                 | Option.Some(_) => trap("unrecorded name has no param4")
             else
               trap("arg4-of returns the recorded 4th arg")
@@ -1566,11 +1573,11 @@ def pd-record-param4-and-arg4-then-lookup() =
 def pd-param4-arg4-none-when-unrecorded() =
   // a fresh tree has NO param4/arg4 → both None (the ≤3-param/arg default).
   match param4-of(empty-tree(), 1) with
-    | Option.None(_) =>
-      (match arg4-of(empty-tree(), 1) with
+    | Option.None(_) => (
+      match arg4-of(empty-tree(), 1) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("empty tree has no arg4")
-      )
+    )
     | Option.Some(_) => trap("empty tree has no param4")
 
 @test
@@ -1622,15 +1629,15 @@ def pd-multi-field-ctor-argtypes-list() =
     | Option.Some(lst) =>
       if List.len(lst) == 2 then
         match List.at(lst, 0) with
-          | Option.Some(f0) =>
-            (match List.at(lst, 1) with
+          | Option.Some(f0) => (
+            match List.at(lst, 1) with
               | Option.Some(f1) =>
                 if f0 == encode-param-type(true, 64) and f1 == encode-bool-type() then
                   unit
                 else
                   trap("argTypes = [Int64-enc, Bool-enc]")
               | Option.None(_) => trap("field 1 present")
-            )
+          )
           | Option.None(_) => trap("field 0 present")
       else
         trap("a 2-field ctor records a 2-element argTypes list")

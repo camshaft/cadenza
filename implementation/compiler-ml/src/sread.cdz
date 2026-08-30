@@ -1245,8 +1245,8 @@ def finalize-exhaustive-match(tree: Tree, armsId: Int64) =
     tree // not a ctor-match chain (int match / single wildcard)
   else
     match node-at(tree, terminalId) with
-      | Option.Some(Node.NVar(nm)) =>
-        (if (if nm == 0 then false else true) then
+      | Option.Some(Node.NVar(nm)) => (
+        if (if nm == 0 then false else true) then
           tree // a real-name wildcard else terminal → leave
         else
           match List.at(ctorNames, 0) with
@@ -1259,7 +1259,8 @@ def finalize-exhaustive-match(tree: Tree, armsId: Int64) =
                   if distinct-count(ctorNames) == decl-ctor-count(tree, declName) then
                     rewrite-last-arm-unconditional(tree, lastArmId) // EXHAUSTIVE → unconditional last arm
                   else
-                    tree) // non-exhaustive → keep poison (declines)
+                    tree
+      ) // non-exhaustive → keep poison (declines)
       | _ => tree
 
 // any other terminal = wildcard else body → leave
@@ -1681,15 +1682,15 @@ def sr-tuple-reads-positional-elements() =
   // tuple declines — this test pins the READER shape (the node + element count), not an end-to-end value.
   let (root, tree) = read-source("(tuple 1 2 3)") in
   match node-at(tree, root) with
-    | Option.Some(Node.NTuple(elems)) =>
-      (match List.at(elems, 0) with
+    | Option.Some(Node.NTuple(elems)) => (
+      match List.at(elems, 0) with
         | Option.Some(e0) =>
           if List.len(elems) == 3 and is-lit(tree, e0, 1) then
             unit
           else
             trap("3 elements, first NLit 1")
         | Option.None(_) => trap("tuple has a first element")
-      )
+    )
     | _ => trap("root reads as an NTuple")
 
 @test
@@ -1698,15 +1699,15 @@ def sr-tuple-nests-element-forms() =
   // arithmetic op and a variable read are valid tuple elements (2 elements).
   let (root, tree) = read-source("(tuple (+ 1 2) x)") in
   match node-at(tree, root) with
-    | Option.Some(Node.NTuple(elems)) =>
-      (match List.at(elems, 0) with
+    | Option.Some(Node.NTuple(elems)) => (
+      match List.at(elems, 0) with
         | Option.Some(e0) =>
           if List.len(elems) == 2 and is-bin-op(tree, e0, 43) then
             unit
           else
             trap("2 elements, first a + Bin")
         | Option.None(_) => trap("tuple has a first element")
-      )
+    )
     | _ => trap("root reads as an NTuple")
 
 @test
@@ -1716,15 +1717,15 @@ def sr-proj-reads-operand-and-index() =
   // run-src on a projection declines — this pins the READER shape (the node + that index is NLit 1), not a value.
   let (root, tree) = read-source("(. (tuple 10 20) 1)") in
   match node-at(tree, root) with
-    | Option.Some(Node.NProj(operandId, indexId)) =>
-      (match node-at(tree, operandId) with
+    | Option.Some(Node.NProj(operandId, indexId)) => (
+      match node-at(tree, operandId) with
         | Option.Some(Node.NTuple(elems)) =>
           if List.len(elems) == 2 and is-lit(tree, indexId, 1) then
             unit
           else
             trap("operand NTuple of 2, index NLit 1")
         | _ => trap("operand reads as an NTuple")
-      )
+    )
     | _ => trap("root reads as an NProj")
 
 @test
@@ -1735,15 +1736,15 @@ def sr-record-reads-named-fields() =
   // value NLit 1, and the two lists are equal length), not an end-to-end value.
   let (root, tree) = read-source("(record (a 1) (b 2))") in
   match node-at(tree, root) with
-    | Option.Some(Node.NRecord(nameIds, valIds)) =>
-      (match List.at(valIds, 0) with
+    | Option.Some(Node.NRecord(nameIds, valIds)) => (
+      match List.at(valIds, 0) with
         | Option.Some(v0) =>
           if List.len(nameIds) == 2 and (List.len(valIds) == 2 and is-lit(tree, v0, 1)) then
             unit
           else
             trap("2 fields, first value NLit 1")
         | Option.None(_) => trap("record has a first field value")
-      )
+    )
     | _ => trap("root reads as an NRecord")
 
 @test
@@ -2016,11 +2017,11 @@ def sr-let-binder-use-share-id() =
   // the binder id and the use id are the SAME (so resolve-db will bind them) — the whole point of name-id.
   let (root, tree) = read-source("(let ((y 5)) y)") in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(nm, _, bodyId)) =>
-      (match node-at(tree, bodyId) with
+    | Option.Some(Node.NLet(nm, _, bodyId)) => (
+      match node-at(tree, bodyId) with
         | Option.Some(Node.NVar(useId)) => if useId == nm then unit else trap("binder id == use id")
         | _ => trap("body is a var")
-      )
+    )
     | _ => trap("root is an NLet")
 
 @test
@@ -2096,15 +2097,17 @@ def sr-module-single-param-def-reads-and-records-param() =
   if is-lit(tree, root, 5) then
     // main's body is the root = NLit 5
     match param-of(tree, name-id("f")) with
-      | Option.Some(_) => // f's param IS recorded
-        (match def-body-of(tree, name-id("f")) with
-          | Option.Some(_) => // f's body IS recorded
-            (match param-of(tree, name-id("main")) with
+      | Option.Some(_) => (
+        // f's param IS recorded
+        match def-body-of(tree, name-id("f")) with
+          | Option.Some(_) => (
+            // f's body IS recorded
+            match param-of(tree, name-id("main")) with
               | Option.None(_) => unit // nullary main has NO param
               | Option.Some(_) => trap("nullary main records no param")
-            )
+          )
           | Option.None(_) => trap("f's body is recorded")
-        )
+      )
       | Option.None(_) => trap("f's single param is recorded in the param-table")
   else
     trap("main's body (NLit 5) is the module root — the param def sequence read cleanly")
@@ -2119,15 +2122,17 @@ def sr-module-two-param-def-reads-and-records-both() =
   let (root, tree) = read-source("(do (def (add a b) (+ a b)) (def (main) 5) (export main))") in
   if is-lit(tree, root, 5) then
     match param-of(tree, name-id("add")) with
-      | Option.Some(_) => // add's 1st param recorded
-        (match param2-of(tree, name-id("add")) with
-          | Option.Some(_) => // add's 2nd param recorded
-            (match param2-of(tree, name-id("main")) with
+      | Option.Some(_) => (
+        // add's 1st param recorded
+        match param2-of(tree, name-id("add")) with
+          | Option.Some(_) => (
+            // add's 2nd param recorded
+            match param2-of(tree, name-id("main")) with
               | Option.None(_) => unit // nullary main has NO param2
               | Option.Some(_) => trap("nullary main records no param2")
-            )
+          )
           | Option.None(_) => trap("add's SECOND param is recorded (param2-of)")
-        )
+      )
       | Option.None(_) => trap("add's first param is recorded")
   else
     trap("main's body (NLit 5) is the module root — the 2-param def read cleanly")
@@ -2141,11 +2146,11 @@ def sr-module-typed-first-mixed-param-def-records-both() =
   let (root, tree) = read-source("(do (def (f (: a Int8) b) (+ a b)) (def (main) 5) (export main))") in
   if is-lit(tree, root, 5) then
     match param-of(tree, name-id("f")) with
-      | Option.Some(_) =>
-        (match param2-of(tree, name-id("f")) with
+      | Option.Some(_) => (
+        match param2-of(tree, name-id("f")) with
           | Option.Some(_) => unit
           | Option.None(_) => trap("typed-first mixed def records param2")
-        )
+      )
       | Option.None(_) => trap("typed-first mixed def records param1")
   else
     trap("main body is the root — the typed-first 2-param def read cleanly")
@@ -2197,11 +2202,11 @@ def sr-module-four-param-def-records-all-four() =
   // its four param nodes are looked up by name-id. (The decline boundary moved to >4 params with slice-3f.)
   let (_root, tree) = read-source("(do (def (f a b c d) (+ a b)) (def (main) 5) (export main))") in
   match def-body-of(tree, name-id("f")) with
-    | Option.Some(_) =>
-      (match param4-of(tree, name-id("f")) with
+    | Option.Some(_) => (
+      match param4-of(tree, name-id("f")) with
         | Option.Some(_) => unit // f recorded + its 4th param bound by name-id (correct)
         | Option.None(_) => trap("a 4-param def records param4 by name-id")
-      )
+    )
     | Option.None(_) => trap("a 4-param def `(def (f a b c d) …)` is recorded (slice-3f-wire)")
 
 @test
@@ -2454,15 +2459,15 @@ def sr-typed-param-records-declared-type() =
   // next-slice fit-check. (param-of gives f's FIRST param node-id; param-type-of reads its recorded type.)
   let (_root, tree) = read-source("(do (def (f (: a Int8)) a) (def (main) 5) (export main))") in
   match param-of(tree, name-id("f")) with
-    | Option.Some(paramId) =>
-      (match param-type-of(tree, paramId) with
+    | Option.Some(paramId) => (
+      match param-type-of(tree, paramId) with
         | Option.Some(e) =>
           if pt-width(e) == 8 and pt-signed(e) then
             unit
           else
             trap("Int8 param records signed width 8")
         | Option.None(_) => trap("a typed param records its declared type")
-      )
+    )
     | Option.None(_) => trap("f has a first param node")
 
 @test
@@ -2472,11 +2477,11 @@ def sr-untyped-param-records-no-type() =
   // a recorded type, so an untyped param is untouched.
   let (_root, tree) = read-source("(do (def (f n) (+ n 1)) (def (main) 5) (export main))") in
   match param-of(tree, name-id("f")) with
-    | Option.Some(paramId) =>
-      (match param-type-of(tree, paramId) with
+    | Option.Some(paramId) => (
+      match param-type-of(tree, paramId) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("an untyped param records no declared type")
-      )
+    )
     | Option.None(_) => trap("f has a first param node")
 
 // ---- PR#835: read-ctor-pattern-arm decline discipline (unknown-ctor mis-positioning + no-binder rule) ----
@@ -2489,14 +2494,14 @@ def sr-ctor-pattern-payload-arm-reads-to-nmatchctor() =
       "(do (type Box (BB Int64)) (def (main c) (match c ((BB x) x) (_ 9))) (export main))"
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NMatchCtor(_, _, _, _, restId)) =>
-      (match node-at(tree, restId) with
+    | Option.Some(Node.NMatchCtor(_, _, _, _, restId)) => (
+      match node-at(tree, restId) with
         | Option.Some(Node.NLit(9)) => unit // the wildcard body (9) — later arm NOT corrupted
         | _ =>
           trap(
             "the ctor arm's REST reaches the wildcard body NLit 9 (reader positioned past the whole arm)"
           )
-      )
+    )
     | _ => trap("a known payload ctor-pattern arm reads to NMatchCtor")
 
 @test
@@ -2511,14 +2516,14 @@ def sr-ctor-pattern-unknown-ctor-declines-cleanly-pr835() =
       "(do (type Color (Red) (Green)) (def (main c) (match c ((Unknown x) 7) (_ 9))) (def (helper) 42) (export main))"
     ) in
   match def-body-of(tree, name-id("helper")) with
-    | Option.Some(b) =>
-      (match node-at(tree, b) with
+    | Option.Some(b) => (
+      match node-at(tree, b) with
         | Option.Some(Node.NLit(42)) => unit // following def intact → reader positioned correctly
         | _ =>
           trap(
             "the def FOLLOWING an unknown-ctor match must parse intact (helper = NLit 42) — PR#835 mis-position"
           )
-      )
+    )
     | Option.None(_) =>
       trap(
         "the following `helper` def must be recorded (reader not corrupted by the unknown-ctor arm)"
@@ -2628,11 +2633,11 @@ def sr-ctor-pattern-wildcard-binder-reads-sentinel() =
           | Option.Some(b0) =>
             if b0 == 0 - 1 then
               match List.at(binderIds, 1) with
-                | Option.Some(b1) =>
-                  (match node-at(tree, b1) with
+                | Option.Some(b1) => (
+                  match node-at(tree, b1) with
                     | Option.Some(Node.NVar(_)) => unit // field-1 `y` is a real NVar binder
                     | _ => trap("`((Pair _ y) …)` field-1 must be a real NVar binder for y")
-                  )
+                )
                 | Option.None(_) => trap("binderIds must have a field-1 entry")
             else
               trap("`((Pair _ y) …)` field-0 must be the -1 wildcard sentinel, not a real binder")
@@ -2649,14 +2654,14 @@ def sr-ctor-pattern-multibinder-following-def-intact() =
       "(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair x y) (+ x y)) (_ 9))) (def (helper) 42) (export main))"
     ) in
   match def-body-of(tree, name-id("helper")) with
-    | Option.Some(b) =>
-      (match node-at(tree, b) with
+    | Option.Some(b) => (
+      match node-at(tree, b) with
         | Option.Some(Node.NLit(42)) => unit // following def intact → reader positioned correctly past the arm
         | _ =>
           trap(
             "the def FOLLOWING a multi-binder-pattern match must parse intact (helper = NLit 42)"
           )
-      )
+    )
     | Option.None(_) =>
       trap(
         "the following `helper` def must be recorded (reader not corrupted by the multi-binder arm)"
@@ -2670,11 +2675,11 @@ def sr-ctor-pattern-single-binder-still-reads-nmatchctor() =
       "(do (type Box (BB Int64)) (def (main c) (match c ((BB x) x) (_ 9))) (export main))"
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NMatchCtor(_, _, _, _, restId)) =>
-      (match node-at(tree, restId) with
+    | Option.Some(Node.NMatchCtor(_, _, _, _, restId)) => (
+      match node-at(tree, restId) with
         | Option.Some(Node.NLit(9)) => unit
         | _ => trap("single-binder arm's REST reaches the wildcard body NLit 9")
-      )
+    )
     | _ =>
       trap(
         "a single-binder payload ctor-pattern arm still reads to NMatchCtor (arity check didn't over-decline)"
@@ -2690,14 +2695,14 @@ def sr-ctor-pattern-arity-mismatch-declines() =
       "(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair x) x) (_ 9))) (def (helper) 42) (export main))"
     ) in
   match def-body-of(tree, name-id("helper")) with
-    | Option.Some(b) =>
-      (match node-at(tree, b) with
+    | Option.Some(b) => (
+      match node-at(tree, b) with
         | Option.Some(Node.NLit(42)) => unit // following def intact → arity-mismatch declined cleanly
         | _ =>
           trap(
             "the def FOLLOWING an arity-mismatch ctor pattern must parse intact (helper = NLit 42)"
           )
-      )
+    )
     | Option.None(_) =>
       trap(
         "the following `helper` def must be recorded (reader declined the arity-mismatch arm cleanly)"

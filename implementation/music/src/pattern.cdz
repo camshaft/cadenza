@@ -493,12 +493,12 @@ def rev-is-its-own-inverse() =
   let once = render-pattern(p, 0, 100, 0, 4000) in
   let twice = render-pattern(rev(rev(p)), 0, 100, 0, 4000) in
   match once with
-    | [a0, _, _, _] =>
-      (match twice with
+    | [a0, _, _, _] => (
+      match twice with
         | [b0, _, _, _] =>
           if note-num-of(a0) == note-num-of(b0) then unit else trap("double-rev restores order")
         | _ => trap("twice has four notes")
-      )
+    )
     | _ => trap("once has four notes")
 
 @test

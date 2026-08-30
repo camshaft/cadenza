@@ -55,7 +55,7 @@ effect Sim =
 // exported boundary parameter needs a concrete type — this keeps `run-sim` generic AND exportable.
 def run-sim(t: Type, task: Unit -> t) =
   handle Sim(Instant.Instant(0)) with
-    | now(u, s) => resume(s, s)
+    | now(u, s) => (resume(s, s))
     | sleep(wake, s) => resume(unit, wake)
   in
   task(unit)

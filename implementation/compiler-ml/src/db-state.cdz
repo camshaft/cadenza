@@ -59,7 +59,7 @@ def sample-tree() =
 def ds-get-returns-fresh-db() =
   // inside the handler, get() yields the seeded fresh Db (typed column empty → 0 filled).
   if (handle DbState(db-of(sample-tree())) with
-        | get(state) => resume(state, state)
+        | get(state) => (resume(state, state))
         | put(nd, state) => resume(unit, nd)
       in
       typed-filled(DbState.get())) == 0 then
@@ -72,7 +72,7 @@ def ds-demand-caches-via-put() =
   // demand@0 MISSES → computes + caches via put → the column now has 1 fact (put threaded the new Db through
   // the effect state, no manual db passing). This is the nested-eff-let shape the fix enables.
   if (handle DbState(db-of(sample-tree())) with
-        | get(state) => resume(state, state)
+        | get(state) => (resume(state, state))
         | put(nd, state) => resume(unit, nd)
       in
       let _t = demand-typed-eff(0, ty-i64()) in
@@ -86,7 +86,7 @@ def ds-demand-memoizes-second-hit() =
   // demand@0 twice: the 2nd is a memo HIT (no 2nd put) → still exactly 1 fact. THE caching essential over
   // the effect carrier — the state carries the memo across performs.
   if (handle DbState(db-of(sample-tree())) with
-        | get(state) => resume(state, state)
+        | get(state) => (resume(state, state))
         | put(nd, state) => resume(unit, nd)
       in
       let _a = demand-typed-eff(0, ty-i64()) in
@@ -100,7 +100,7 @@ def ds-demand-memoizes-second-hit() =
 def ds-demand-returns-fact() =
   // the demanded fact flows back out through the effect.
   match handle DbState(db-of(sample-tree())) with
-      | get(state) => resume(state, state)
+      | get(state) => (resume(state, state))
       | put(nd, state) => resume(unit, nd)
     in
     demand-typed-eff(0, Ty.TyBool) with
@@ -115,7 +115,7 @@ def ds-demand-hit-does-not-recompute-poison() =
   // Mirrors db-demand's dd-hit-does-not-recompute-poison, but through get/put instead of explicit threading —
   // pins that the state-effect memo respects a filled poison the same way (the poison-as-filled invariant).
   match handle DbState(fill-ty(db-of(sample-tree()), 0, Ty.TyErr)) with
-      | get(state) => resume(state, state)
+      | get(state) => (resume(state, state))
       | put(nd, state) => resume(unit, nd)
     in
     demand-typed-eff(0, ty-i64()) with
@@ -129,7 +129,7 @@ def ds-demand-hit-does-not-recompute-poison() =
 /// resolve→infer→lower→eval demand once the pipeline moves onto the effect carrier.
 def demand-typed-under-state(tree: Tree, id: Int64, deflt: Ty) =
   handle DbState(db-of(tree)) with
-    | get(state) => resume(state, state)
+    | get(state) => (resume(state, state))
     | put(nd, state) => resume(unit, nd)
   in
   demand-typed-eff(id, deflt)

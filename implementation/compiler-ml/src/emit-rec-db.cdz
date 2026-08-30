@@ -57,11 +57,11 @@ def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
   | Core.CLet(_, v, body) => can-emit-d(v, defidx) and can-emit-d(body, defidx)
   | Core.CIf(cond, thn, els) =>
     can-emit-d(cond, defidx) and can-emit-d(thn, defidx) and can-emit-d(els, defidx)
-  | Core.CCall(name, args) =>
-    (match Map.lookup(defidx, name) with
+  | Core.CCall(name, args) => (
+    match Map.lookup(defidx, name) with
       | Option.Some(_) => can-call-args(args, 0, defidx)
       | Option.None(_) => false
-    )
+  )
   // W-enum: an ENUM-DISC bare-tag match emits (emit-db's emit-instrs-d handles CMatchEnum as a tag-equality
   // if/else). Emittable iff scrutinee + both branches are (nested N-arm enum match = nested CMatchEnum in els).
   | Core.CMatchEnum(scrut, _, thn, els) =>
@@ -80,11 +80,11 @@ def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
   // apply emits `<args> ; local.get fBinder ; i32.wrap_i64 ; call_indirect <typeidx> 0` — emittable iff the args
   // are (fBinder is a local holding a funcidx, always fine). emit-recursive-module adds the table+elem sections
   // + the HO-arity functypes when any body carries a CFnRef/CFnRefVar.
-  | Core.CFnRef(name) =>
-    (match Map.lookup(defidx, name) with
+  | Core.CFnRef(name) => (
+    match Map.lookup(defidx, name) with
       | Option.Some(_) => true
       | Option.None(_) => false
-    )
+  )
   | Core.CFnRefVar(_, args) => can-call-args(args, 0, defidx)
 
 /// W-compound (recursive path): are a CCtor's payload args each EMITTABLE (can-emit-d) and FLAT (no nested
@@ -359,14 +359,15 @@ def emit-rec-src(s: String) =
 def emit-any-src-bytes(s: String) =
   let (root, tree) = read-source(s) in
   match lower-tree(tree, root) with
-    | Option.Some(core) =>
-      (if is-def-env-empty(lower-def-env(tree)) then
+    | Option.Some(core) => (
+      if is-def-env-empty(lower-def-env(tree)) then
         emit-src-bytes(s) // no recursive defs → emit-db single-main (imported), byte-identical
       else
         match emit-recursive-module(core, tree) with
           // recursive → the multi-fn assembler
           | Option.Some(b) => Option.Some(bytes-to-list(b))
-          | Option.None(_) => Option.None(unit))
+          | Option.None(_) => Option.None(unit)
+    )
     | Option.None(_) => Option.None(unit)
 
 // ill-typed → declined

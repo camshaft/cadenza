@@ -129,16 +129,17 @@ def choice-bad-role(roles: List(String), p: String, brs: List(Chor)) = match rol
 def unprojectable-role(roles: List(String), g: Chor) = match g with
   | Chor.Done => Option.None(unit)
   | Chor.Comm(_f, _t, _l) => Option.None(unit)
-  | Chor.Seq(a, b) =>
-    (match unprojectable-role(roles, a) with
+  | Chor.Seq(a, b) => (
+    match unprojectable-role(roles, a) with
       | Option.Some(q) => Option.Some(q)
       | Option.None(_) => unprojectable-role(roles, b)
-    )
-  | Chor.Choice(p, brs) => // First check THIS choice's knowledge-of-choice, then recurse into each branch.
-    (match choice-bad-role(roles, p, brs) with
+  )
+  | Chor.Choice(p, brs) => (
+    // First check THIS choice's knowledge-of-choice, then recurse into each branch.
+    match choice-bad-role(roles, p, brs) with
       | Option.Some(q) => Option.Some(q)
       | Option.None(_) => unprojectable-role-list(roles, brs)
-    )
+  )
   | Chor.Branch(_l, k) => unprojectable-role(roles, k)
   | Chor.Rec(_v, body) => unprojectable-role(roles, body)
   | Chor.Var(_v) => Option.None(unit)

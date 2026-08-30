@@ -99,16 +99,17 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
           // The index is a POSITION LITERAL (tuple) or a FIELD LABEL (record) — NOT a variable reference, so it
           // must NOT be resolved (resolving a record field label as a var would poison it → misread as unbound).
           resolve-node(tree, operandId, env, col)
-        | Option.Some(Node.NVar(nm)) => // scope-first (params+lets → RBound), THEN the def table (a bare def-name used as a VALUE → RDef),
+        | Option.Some(Node.NVar(nm)) => (
+          // scope-first (params+lets → RBound), THEN the def table (a bare def-name used as a VALUE → RDef),
           // else unbound → RPoison. Mirrors rcdzc resolve_name's scope-then-def-table order (HO-2a). RDef is
           // inert downstream until HO-2b/HO-3 give a def-value its arrow type + CFnRef lowering.
-          (match Map.lookup(env, nm) with
+          match Map.lookup(env, nm) with
             | Option.Some(binder) => Map.insert(col, id, Resolved.RBound(binder))
             | Option.None(_) =>
               match def-body-of(tree, nm) with
                 | Option.Some(_) => Map.insert(col, id, Resolved.RDef(nm)) // names a def → def-ref value
                 | Option.None(_) => Map.insert(col, id, Resolved.RPoison)
-          ) // truly unbound
+        ) // truly unbound
         | Option.Some(Node.NBin(_, l, r)) =>
           resolve-node(tree, r, env, resolve-node(tree, l, env, col))
         | Option.Some(Node.NLet(nm, valId, bodyId)) => // let is NON-recursive: the value is resolved in the OUTER env; the body sees nm bound to THIS let's
@@ -135,7 +136,8 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
           let bodyEnv = bind-ctor-binders(tree, env, binderIds) in
           let r2 = resolve-node(tree, bodyId, bodyEnv, r1) in
           resolve-node(tree, restId, env, r2)
-        | Option.Some(Node.NApp(calleeId, argId)) => // A call resolves TWO subtrees, in DIFFERENT scopes (matching rcdzc's beta-reduction discipline):
+        | Option.Some(Node.NApp(calleeId, argId)) => (
+          // A call resolves TWO subtrees, in DIFFERENT scopes (matching rcdzc's beta-reduction discipline):
           //  (1) the ARGUMENT resolves in the CALLER's scope (the CURRENT env) — the arg is written where the call
           //      is, so its free names (an enclosing param, an outer let) bind there. A nullary call (argId -1)
           //      has no arg to resolve. This is the fix for a call whose arg is a compound (another call `(f (g
@@ -148,7 +150,7 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
           //      keyed) → the body's `n` resolves RBound(paramNode) → lower CVar(paramNode), matching CLet.
           //  slice-3d: a 2-ARG call `(add a b)` resolves BOTH args in the caller scope, and the body sees BOTH
           //  params bound `{p1→param1, p2→param2}` (found by bodyId). arg2 is keyed by this NApp node-id (id).
-          (let colA1 = if argId == -1 then col else resolve-node(tree, argId, env, col) in
+          let colA1 = if argId == -1 then col else resolve-node(tree, argId, env, col) in
           let colA2 = match arg2-of(tree, id) with
               | Option.Some(a2) => resolve-node(tree, a2, env, colA1) // resolve arg2 in caller scope too
               | Option.None(_) => colA1 in
@@ -205,7 +207,8 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
                         | Option.None(_) => scope3 in
                     resolve-node(tree, calleeBody, bodyScope, colC)
                   | Option.None(_) =>
-                    resolve-node(tree, calleeBody, Map.empty : Map(Int64, Int64), colC))
+                    resolve-node(tree, calleeBody, Map.empty : Map(Int64, Int64), colC)
+        )
         | Option.None(_) => col
 
 // an id not in the arena (a malformed tree) resolves to nothing
@@ -269,15 +272,15 @@ def rd-bound-simple() =
   // "let x = 2 in x" → the body's NVar x is BOUND to the enclosing let. The binder is a let binding name x.
   let (root, tree) = parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(_, _, bodyId)) =>
-      (match resolved-at(tree, root, bodyId) with
+    | Option.Some(Node.NLet(_, _, bodyId)) => (
+      match resolved-at(tree, root, bodyId) with
         | Option.Some(Resolved.RBound(b)) =>
           if is-let(tree, b, 1) then
             if b == root then unit else trap("binder is the enclosing let")
           else
             trap("binder binds x")
         | _ => trap("body var is RBound")
-      )
+    )
     | _ => trap("root is a let")
 
 @test
@@ -320,19 +323,19 @@ def rd-shadowing-inner-wins() =
       [letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(_, _, innerLetId)) =>
-      (match node-at(tree, innerLetId) with
-        | Option.Some(Node.NLet(_, _, xId)) =>
-          (match resolved-at(tree, root, xId) with
+    | Option.Some(Node.NLet(_, _, innerLetId)) => (
+      match node-at(tree, innerLetId) with
+        | Option.Some(Node.NLet(_, _, xId)) => (
+          match resolved-at(tree, root, xId) with
             | Option.Some(Resolved.RBound(b)) =>
               if is-let(tree, b, 1) then
                 if b == innerLetId then unit else trap("bound to the INNER let (shadow)")
               else
                 trap("binder binds x")
             | _ => trap("inner x is RBound")
-          )
+        )
         | _ => trap("body is the inner let")
-      )
+    )
     | _ => trap("root is a let")
 
 @test
@@ -356,10 +359,10 @@ def rd-nested-distinct-bindings() =
       ]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(_, _, innerLetId)) =>
-      (match node-at(tree, innerLetId) with
-        | Option.Some(Node.NLet(_, _, sumId)) =>
-          (match node-at(tree, sumId) with
+    | Option.Some(Node.NLet(_, _, innerLetId)) => (
+      match node-at(tree, innerLetId) with
+        | Option.Some(Node.NLet(_, _, sumId)) => (
+          match node-at(tree, sumId) with
             | Option.Some(Node.NBin(_, aId, bId)) =>
               if resolved-to(tree, root, aId, root) then
                 if resolved-to(tree, root, bId, innerLetId) then
@@ -369,9 +372,9 @@ def rd-nested-distinct-bindings() =
               else
                 trap("a binds to the outer (root) let")
             | _ => trap("body is a + Bin")
-          )
+        )
         | _ => trap("body is the inner let")
-      )
+    )
     | _ => trap("root is a let")
 
 @test
@@ -386,15 +389,15 @@ def rd-outer-var-in-inner-let-value() =
       [letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), var(1), inkw(), var(2)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(_, _, innerLetId)) =>
-      (match node-at(tree, innerLetId) with
+    | Option.Some(Node.NLet(_, _, innerLetId)) => (
+      match node-at(tree, innerLetId) with
         | Option.Some(Node.NLet(_, valId, _)) =>
           if resolved-to(tree, root, valId, root) then
             unit
           else
             trap("inner let's value `a` binds to the OUTER let")
         | _ => trap("body is the inner let")
-      )
+    )
     | _ => trap("root is a let")
 
 @test
@@ -405,10 +408,10 @@ def rd-milestone-body-var-bound() =
       [letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(_, _, bodyId)) =>
-      (match node-at(tree, bodyId) with
-        | Option.Some(Node.NBin(_, mulId, _)) =>
-          (match node-at(tree, mulId) with
+    | Option.Some(Node.NLet(_, _, bodyId)) => (
+      match node-at(tree, bodyId) with
+        | Option.Some(Node.NBin(_, mulId, _)) => (
+          match node-at(tree, mulId) with
             | Option.Some(Node.NBin(_, xId, _)) =>
               if resolved-to(tree, root, xId, root) then
                 if resolved-count(tree, root) == 1 then
@@ -418,9 +421,9 @@ def rd-milestone-body-var-bound() =
               else
                 trap("body x binds to the let")
             | _ => trap("mul's left is the var x")
-          )
+        )
         | _ => trap("body is + ")
-      )
+    )
     | _ => trap("root is a let")
 
 @test
@@ -432,8 +435,8 @@ def rd-if-branches-share-enclosing-scope() =
       [letkw(), var(1), eq(), n(1), inkw(), ifkw(), var(1), thenkw(), var(1), elsekw(), var(1)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(_, _, ifId)) =>
-      (match node-at(tree, ifId) with
+    | Option.Some(Node.NLet(_, _, ifId)) => (
+      match node-at(tree, ifId) with
         | Option.Some(Node.NIf(condId, thenId, elseId)) =>
           if resolved-to(tree, root, condId, root) then
             if resolved-to(tree, root, thenId, root) then
@@ -449,7 +452,7 @@ def rd-if-branches-share-enclosing-scope() =
           else
             trap("cond x binds to the enclosing let")
         | _ => trap("body is an if")
-      )
+    )
     | _ => trap("root is a let")
 
 @test

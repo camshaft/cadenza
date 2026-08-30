@@ -60,11 +60,11 @@ def concat-lists(xs, ys) = match xs with
 
 /// `int-list-eq(xs, ys)` — structural equality on `List(Int64)` for the sequence assertions.
 def int-list-eq(xs, ys) = match xs with
-  | [] =>
-    (match ys with
+  | [] => (
+    match ys with
       | [] => true
       | _ => false
-    )
+  )
   | [x, .. xr] =>
     match ys with
       | [] => false

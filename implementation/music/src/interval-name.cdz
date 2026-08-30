@@ -78,30 +78,30 @@ def is-perfect(n: IntervalName) = match n with
 def names-the-common-intervals-by-size() =
   // 0=unison, 4=major third, 7=perfect fifth, 12=octave.
   match name-of-semitones(0) with
-    | IntervalName.PerfectUnison =>
-      (match name-of-semitones(4) with
-        | IntervalName.MajorThird =>
-          (match name-of-semitones(7) with
-            | IntervalName.PerfectFifth =>
-              (match name-of-semitones(12) with
+    | IntervalName.PerfectUnison => (
+      match name-of-semitones(4) with
+        | IntervalName.MajorThird => (
+          match name-of-semitones(7) with
+            | IntervalName.PerfectFifth => (
+              match name-of-semitones(12) with
                 | IntervalName.PerfectOctave => unit
                 | _ => trap("12 is an octave")
-              )
+            )
             | _ => trap("7 is a perfect fifth")
-          )
+        )
         | _ => trap("4 is a major third")
-      )
+    )
     | _ => trap("0 is a unison")
 
 @test
 def naming-is-direction-independent() =
   // A descending perfect fifth (-7) names the same as an ascending one (+7).
   match name-of-semitones(0 - 7) with
-    | IntervalName.PerfectFifth =>
-      (match name-of-semitones(7) with
+    | IntervalName.PerfectFifth => (
+      match name-of-semitones(7) with
         | IntervalName.PerfectFifth => unit
         | _ => trap("ascending fifth")
-      )
+    )
     | _ => trap("a descending fifth is still a perfect fifth")
 
 @test
@@ -128,11 +128,11 @@ def a-double-octave-is-named-an-octave() =
 def interval-name-between-two-pitches() =
   // C4 (60) to G4 (67) is a perfect fifth; C4 to E4 (64) is a major third.
   match interval-name-between(Pitch.Pitch(60), Pitch.Pitch(67)) with
-    | IntervalName.PerfectFifth =>
-      (match interval-name-between(Pitch.Pitch(60), Pitch.Pitch(64)) with
+    | IntervalName.PerfectFifth => (
+      match interval-name-between(Pitch.Pitch(60), Pitch.Pitch(64)) with
         | IntervalName.MajorThird => unit
         | _ => trap("C to E is a major third")
-      )
+    )
     | _ => trap("C to G is a perfect fifth")
 
 @test

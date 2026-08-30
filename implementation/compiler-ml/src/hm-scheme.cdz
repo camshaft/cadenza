@@ -41,11 +41,12 @@ def id-push-uniq(acc: List(Int64), x: Int64) = if id-mem(x, acc, 0) then acc els
 /// Collect the free SIGN-var-ids of a Ty into `acc` (deduped). Ints contribute their sign var (if SVar); TyFn
 /// recurses into params + result; Bool/Err/Sum contribute none.
 def free-sign-ids(t: Ty, acc: List(Int64)) = match t with
-  | Ty.TyInt(it) =>
-    (let IntType.IntType(s, _) = it in
+  | Ty.TyInt(it) => (
+    let IntType.IntType(s, _) = it in
     match s with
       | Sign.SVar(id) => id-push-uniq(acc, id)
-      | _ => acc)
+      | _ => acc
+  )
   | Ty.TyFn(ps, r) => free-sign-ids(r, free-sign-list(ps, 0, acc))
   | _ => acc
 
@@ -59,11 +60,12 @@ def free-sign-list(ps: List(Ty), i: Int64, acc: List(Int64)) =
 
 /// Collect the free WIDTH-var-ids of a Ty (the orthogonal twin).
 def free-width-ids(t: Ty, acc: List(Int64)) = match t with
-  | Ty.TyInt(it) =>
-    (let IntType.IntType(_, w) = it in
+  | Ty.TyInt(it) => (
+    let IntType.IntType(_, w) = it in
     match w with
       | Width.WVar(id) => id-push-uniq(acc, id)
-      | _ => acc)
+      | _ => acc
+  )
   | Ty.TyFn(ps, r) => free-width-ids(r, free-width-list(ps, 0, acc))
   | _ => acc
 

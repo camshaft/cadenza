@@ -171,11 +171,11 @@ def the-pipeline-is-empty-on-an-empty-piece() =
 // ---- test helpers -----------------------------------------------------------------------------------
 /// Do two pieces carry the same note numbers in the same order? Recursive, annotated.
 def same-numbers(xs: List(Note), ys: List(Note)) = match xs with
-  | [] =>
-    (match ys with
+  | [] => (
+    match ys with
       | [] => true
       | _ => false
-    )
+  )
   | [x, .. xt] =>
     match ys with
       | [] => false
