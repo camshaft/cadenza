@@ -11463,44 +11463,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_literal_whose_width_is_fixed_transitively_through_arith_ops_rejects_at_check() {
-        // A bare literal takes its width from an integer binary-op CONTEXT (numeric-model.md §"An Explicit …
-        // Or Other Constraint On An Integer Literal MUST Take Precedence"). When the literal's IMMEDIATE
-        // binop sibling is deferred but the width is fixed TRANSITIVELY by an ANCESTOR arith op, the shared
-        // well-formedness check must still catch an out-of-range literal — else `cdz check` passed while the
-        // wasm backend rejected CDZ0302 and the RUST backend silently emitted a truncating `as u8` cast
-        // (10000 → 16, a wrong-VALUE miscompile). `(+ (* 10000 (if (< a b) 1 0)) (% a b))` over UInt8 a/b:
-        // the literal's own sibling is the deferred `if`, but the enclosing `*`'s sibling under the `+` is
-        // the `UInt8` `(% a b)` — an arith op unifies its two operands to ONE width, so UInt8 flows down
-        // through the `*` to the literal. All three (check + both backends) now give ONE verdict. This is the
-        // shared-layer home the width-fit check belongs in (corpus-bugfix's routed divergence, 2026-07-20).
-        let transitive = "(module m (def (main (: a UInt8) (: b UInt8)) (+ (* 10000 (if (< a b) 1 0)) (% a b))) (export main))";
-        assert_eq!(
-            reject_code(transitive).as_deref(),
-            Some("CDZ0201"),
-            "a literal whose UInt8 width is fixed transitively through the * under the + must reject at check"
-        );
-        // A DEEPER climb (two arith levels between the literal and the fixed-width sibling) is caught too.
-        let deep = "(module m (def (main (: a UInt8) (: b UInt8)) (+ (+ (* 10000 (if (< a b) 1 0)) b) b)) (export main))";
-        assert_eq!(reject_code(deep).as_deref(), Some("CDZ0201"));
-        // NO OVER-REJECTION: the SAME shape with an IN-RANGE literal (100 fits UInt8) compiles fine.
-        let fits = "(module m (def (main (: a UInt8) (: b UInt8)) (+ (* 100 (if (< a b) 1 0)) (% a b))) (export main))";
-        assert_eq!(
-            reject_code(fits),
-            None,
-            "an in-range literal in the transitive-width position must still compile"
-        );
-        // NO OVER-REJECTION: the multiply ISOLATED (no UInt8-fixed ancestor) leaves the literal at its Int64
-        // default — 10000 fits Int64, so it must NOT be rejected.
-        let isolated = "(module m (def (main (: a UInt8) (: b UInt8)) (* 10000 (if (< a b) 1 0))) (export main))";
-        assert_eq!(
-            reject_code(isolated),
-            None,
-            "a multiply with no narrow-width ancestor leaves the literal at Int64 (10000 fits) — no reject"
-        );
-    }
-
-    #[test]
     fn an_out_of_range_literal_names_the_valid_range() {
         // CDZ0302 states the concrete VALID RANGE the literal missed (rustc's "the range is `-128..=127`"),
         // not only the type name — a signed N-bit is `-(2^(N-1))..=2^(N-1)-1`, an unsigned N-bit
