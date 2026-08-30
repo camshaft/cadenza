@@ -1387,6 +1387,58 @@
   (input  (= #record((= x 1)) #record((= x 1) (= y 2))))
   (error  CDZ0203))
 
+; --- A COMPOUND / SUM / NOMINAL operand against a SCALAR names the KIND BOUNDARY ----------------
+; The cross-kind cases above are scalar-vs-scalar (Int64 vs String). A COMPOUND value (record/tuple/list)
+; or a USER SUM / NOMINAL held against a SCALAR or TEXT operand — `(= r 5)`, `(< t 5)`, `(+ c 1)` — is the
+; same cross-kind clash: no shared value space, no shared arithmetic/order across the boundary. The message
+; names the KIND BOUNDARY (CDZ0201) instead of the generic "type mismatch: (Record …) and Int64 must be the
+; same type here" that reads like an internal unify clash, and it must NOT leak a phantom Int64 the author
+; never wrote. Two DIFFERENT user sums, by contrast, share the sum "kind" tag, so they keep the generic
+; same-kind mismatch (CDZ0203), and a same-sum comparison is valid. (Migrated from rcdzc
+; a_compound_operand_against_a_scalar_names_the_kind_boundary.)
+(case "comparing a record against an integer names the kind boundary"
+  (input  (do (def (g (: r (Record (: a Int64)))) (= r 5)) (export g)))
+  (error  CDZ0201 (message "different types") (message "kind boundary")))
+
+(case "ordering a tuple against an integer names the kind boundary"
+  (input  (do (def (g (: t (Tuple Int64 Int64))) (< t 5)) (export g)))
+  (error  CDZ0201 (message "different types") (message "kind boundary")))
+
+(case "comparing a list against an integer names the kind boundary"
+  (input  (do (def (g (: xs (List Int64))) (= xs 5)) (export g)))
+  (error  CDZ0201 (message "different types") (message "kind boundary")))
+
+(case "adding an integer to a user sum names the kind boundary, not a phantom Int64 clash"
+  (input  (do (type Color (Red)) (def (g (: c Color)) (+ c 1)) (export g)))
+  (error  CDZ0201 (message "kind boundary") (not "Int64 and Color")))
+
+(case "comparing a user sum against a string names the kind boundary"
+  (input  (do (type Color (Red)) (def (g (: c Color) (: s String)) (= c s)) (export g)))
+  (error  CDZ0201 (message "kind boundary")))
+
+(case "adding an integer to a nominal newtype names the kind boundary"
+  (input  (do (type UserId (Mk Int64)) (def (g (: u UserId)) (+ u 1)) (export g)))
+  (error  CDZ0201 (message "kind boundary")))
+
+(case "comparing a user sum against a record (different compound kinds) names the kind boundary"
+  (input  (do (type Color (Red)) (def (g (: c Color) (: r (Record (: x Int64)))) (= c r)) (export g)))
+  (error  CDZ0201 (message "kind boundary")))
+
+(case "two DIFFERENT user sums keep the generic same-kind mismatch, not the kind boundary"
+  (doc    "`Color` vs `Shape` share the sum KIND tag, so the cross-kind guard does NOT fire — they keep the
+           generic same-kind type mismatch (CDZ0203), distinct from the compound/sum-vs-scalar kind-boundary
+           CDZ0201 above. Pins that `different_compound_kinds` fires on a KIND difference, not merely on two
+           distinct user types.")
+  (input  (do (type Color (Red)) (type Shape (Sq)) (def (g (: c Color) (: s Shape)) (= c s)) (export g)))
+  (error  CDZ0203))
+
+(case "a same-sum comparison is valid (no false kind-boundary reject)"
+  (doc    "The positive control: `(= Red Blue)` compares two values of the SAME sum `Color` — a well-typed
+           comparison that runs and yields false, so the kind-boundary/mismatch checks never over-reject a
+           legitimate same-type comparison.")
+  (input  (do (type Color (Red) (Blue)) (def (main) (= Red Blue)) (export main)))
+  (output (: false Bool)))
+
 ; --- The comparison operators type-check their operands exactly as = and + do -------------
 ; An ordering comparison (`<` `>` `<=` `>=`) offers a total order over ONE type's values
 ; (core-semantics.md #Ordering Where Offered Is Total; type-system.md #Structural Values Are

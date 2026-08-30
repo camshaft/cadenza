@@ -143,104 +143,13 @@ fn a_mixed_int_float_arithmetic_operand_is_cdz0301_with_a_conform_to_first_coerc
 // a phantom Int64 clash" — CDZ0201 + (not "must be the same type here"), the message-absence now expressible
 // via #6146's (not …) sub-form (the test pre-dated it, so it had stayed white-box). All 3 PASS wasm.)
 
-#[test]
-fn a_compound_operand_against_a_scalar_names_the_kind_boundary() {
-    // A COMPOUND value (record/tuple/list/map/set) held against a SCALAR or TEXT operand is the same
-    // cross-kind clash the text-vs-scalar case is — `(= r 5)` compares a record to an integer. It now
-    // names the kind boundary (CDZ0201) instead of the generic "type mismatch: (Record …) and Int64
-    // must be the same type here" that reads like an internal unify clash. The compound analogue of
-    // the text-vs-scalar message.
-    for (src, what) in [
-        (
-            "(module m (def (g (: r (Record (a Int64)))) (= r 5)) (export g))",
-            "record vs int",
-        ),
-        (
-            "(module m (def (g (: t (Tuple Int64 Int64))) (< t 5)) (export g))",
-            "tuple vs int",
-        ),
-        (
-            "(module m (def (g (: xs (List Int64))) (= xs 5)) (export g))",
-            "list vs int",
-        ),
-    ] {
-        let d = reject_full(src).unwrap_or_else(|| panic!("{what} must reject"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{what}: {}", d.message);
-        assert!(
-            d.message.contains("different types") && d.message.contains("kind boundary"),
-            "{what} names the kind boundary: {}",
-            d.message
-        );
-    }
-    // A USER SUM / NOMINAL held against a SCALAR or TEXT is the same cross-kind clash — `(+ Color 1)`,
-    // `(= Color "x")`, `(+ UserId 1)` — no shared arithmetic/order across the boundary. It named the
-    // phantom "type mismatch: Int64 and Color"; now it names the kind boundary (CDZ0201), no phantom.
-    for (src, what) in [
-        (
-            "(module m (type Color (Red)) (def (g (: c Color)) (+ c 1)) (export g))",
-            "sum + int",
-        ),
-        (
-            "(module m (type Color (Red)) (def (g (: c Color) (: s String)) (= c s)) (export g))",
-            "sum = string",
-        ),
-        (
-            "(module m (type UserId (Mk Int64)) (def (g (: u UserId)) (+ u 1)) (export g))",
-            "nominal + int",
-        ),
-    ] {
-        let d = reject_full(src).unwrap_or_else(|| panic!("{what} must reject"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{what}: {}", d.message);
-        assert!(
-            d.message.contains("kind boundary") && !d.message.contains("Int64 and Color"),
-            "{what} names the kind boundary, no phantom Int64: {}",
-            d.message
-        );
-    }
-    // A sum vs a RECORD (different compound kinds) → kind boundary too.
-    let sum_rec = reject_full(
-            "(module m (type Color (Red)) (def (g (: c Color) (: r (Record (x Int64)))) (= c r)) (export g))",
-        )
-        .expect("sum vs record rejects");
-    assert!(
-        sum_rec.message.contains("kind boundary"),
-        "a sum vs a record names the kind boundary: {}",
-        sum_rec.message
-    );
-
-    // NO false positive: a valid SAME-KIND comparison (record = record, tuple = tuple) still compiles;
-    // a compound-vs-DIFFERENT-compound keeps the generic structural mismatch (its own delta hints fire).
-    assert!(
-        reject_code("(module m (def (g (: r (Record (a Int64)))) (= r r)) (export g))").is_none(),
-        "record = record of the same shape is a valid comparison"
-    );
-    assert_eq!(
-            reject_code(
-                "(module m (def (g (: r (Record (a Int64))) (: s (Record (b Int64)))) (= r s)) (export g))"
-            )
-            .as_deref(),
-            Some("CDZ0203"),
-            "two different record shapes keep the generic structural mismatch"
-        );
-    // NO false positive: two DIFFERENT user sums compared (`Color` vs `Shape`) share the sum "kind" tag,
-    // so `different_compound_kinds` does NOT fire — they keep the generic same-kind mismatch, and a
-    // same-sum comparison stays valid.
-    assert_eq!(
-            reject_code(
-                "(module m (type Color (Red)) (type Shape (Sq)) (def (g (: c Color) (: s Shape)) (= c s)) (export g))"
-            )
-            .as_deref(),
-            Some("CDZ0203"),
-            "two different user sums keep the generic mismatch, not the kind boundary"
-        );
-    assert!(
-            reject_code(
-                "(module m (type Color (Red) (Blue)) (def (g (: a Color) (: b Color)) (= a b)) (export g))"
-            )
-            .is_none(),
-            "a same-sum comparison stays valid"
-        );
-}
+// (a_compound_operand_against_a_scalar_names_the_kind_boundary migrated to corpus 07-type-system, the
+// "COMPOUND/SUM/NOMINAL operand against a SCALAR names the KIND BOUNDARY" block: record/tuple/list vs int
+// (compare/order → CDZ0201 "different types"+"kind boundary"), user-sum+int / sum=string / nominal+int /
+// sum-vs-record (→ CDZ0201 "kind boundary", + (not "Int64 and Color") no-phantom on the sum+int face), plus
+// controls "two DIFFERENT user sums keep the generic same-kind mismatch" (CDZ0203) and "a same-sum comparison
+// is valid" (runs → false). The record=record-ok + different-record-shapes→CDZ0203 controls are covered by
+// 07's existing equality field-set cases. All 9 PASS wasm.)
 
 #[test]
 fn arithmetic_or_comparison_with_a_type_value_operand_names_it_not_a_phantom_int64() {
