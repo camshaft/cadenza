@@ -215,9 +215,15 @@ def normalize : SymExpr → SymExpr
     | c' =>
       let t' := normalize t
       let e' := normalize e
+      -- BOOLEAN MATERIALIZATION: `if c then true else false → c`, `if c then false else true → not c`.
+      -- OPERAND-PRESERVING (c' is evaluated once with the SAME trap on both sides — the ite forces c
+      -- first), so NO `!mayTrap` guard; sound for a well-typed bool `c'` (an ill-typed c never compiles).
+      -- A common backend idiom; folding it here shrinks normalized-but-different (a bool-returning `if`).
+      if t' == .const (.bool true) && e' == .const (.bool false) then c'
+      else if t' == .const (.bool false) && e' == .const (.bool true) then .app "not" #[c']
       -- collapse identical branches ONLY when the condition can't trap (dropping a trapping condition
       -- would unsoundly claim `(if <trapping-c> a a)` — which traps — equal to `a`).
-      if t' == e' && !mayTrap c' then t' else .ite c' t' e'
+      else if t' == e' && !mayTrap c' then t' else .ite c' t' e'
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
@@ -769,6 +775,16 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 -- a false "proven" — the original traps, `a` does not). The condition survives in the normal form.
 #guard normalize (.ite (.app "/" #[.var 1, .const (.int 0)]) (.var 0) (.var 0))
        == SymExpr.ite (.app "/" #[.var 1, .const (.int 0)]) (.var 0) (.var 0)
+-- BOOLEAN MATERIALIZATION: `if c then true else false → c`; `if c then false else true → not c`.
+-- A non-const symbolic condition is preserved (operand-preserving; no guard). Even a TRAPPING condition
+-- is fine to keep here (it is not dropped — c survives as the result / under the `not`).
+#guard normalize (.ite (.var 2) (.const (.bool true)) (.const (.bool false))) == SymExpr.var 2
+#guard normalize (.ite (.var 2) (.const (.bool false)) (.const (.bool true))) == SymExpr.app "not" #[.var 2]
+#guard normalize (.ite (.app "/" #[.var 1, .const (.int 0)]) (.const (.bool true)) (.const (.bool false)))
+       == SymExpr.app "/" #[.var 1, .const (.int 0)]
+-- NOT materialized when a branch is not the matching bool literal (stays an ite).
+#guard normalize (.ite (.var 2) (.const (.bool true)) (.var 3))
+       == SymExpr.ite (.var 2) (.const (.bool true)) (.var 3)
 -- T2.0c SOUND constant folding of comparison/boolean ops:
 #guard normalize (.app "<" #[.const (.int 2), .const (.int 5)]) == SymExpr.const (.bool true)
 #guard normalize (.app ">=" #[.const (.int 2), .const (.int 5)]) == SymExpr.const (.bool false)
