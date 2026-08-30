@@ -524,4 +524,21 @@ theorem denote_ite_materialize_false (ρ : Nat → Value) (w : IntTy) (c : SymEx
   simp only [denote, h, Value.asF64?]
   cases b <;> rfl
 
+/-- INVERSION for the `.ite` case: an `ite` denotes to a VALUE only via the branch its condition selects
+— the condition denotes to a boolean, and the taken branch denotes to that same value. (`denote`'s `.ite`
+arm returns a `.value` only in the `bool true`/`bool false` condition sub-cases; a non-bool value gives
+`.unsupported`, a trap/divergence propagates.) This is the case-analysis foundation of the eventual
+capstone `.ite` induction step: it turns a value-producing `ite` into a fact about the selected branch,
+which the branch IH then transports across `normalize`. -/
+theorem denote_ite_value_inv (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr) (v : Value)
+    (h : denote ρ w (.ite c t e) = .value v) :
+    (denote ρ w c = .value (.bool true) ∧ denote ρ w t = .value v)
+      ∨ (denote ρ w c = .value (.bool false) ∧ denote ρ w e = .value v) := by
+  simp only [denote] at h
+  split at h <;>
+    first
+    | exact Or.inl ⟨‹_›, h⟩
+    | exact Or.inr ⟨‹_›, h⟩
+    | simp_all
+
 end Oracle
