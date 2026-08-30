@@ -474,8 +474,8 @@ pub(super) fn lower_lambda_value(
     let mut capture_refs: Vec<(StructId, usize)> = Vec::new();
     let ok = collect_captures(db, body, &param_occs, id, &mut captures, &mut capture_refs);
     if !ok {
-        return Core::Poison(Reject::decline(
-            "a closure captures a value with no runtime representation (not yet built)",
+        return Core::Poison(Reject::unsupported(
+            "a closure captures a value with no runtime representation",
         ));
     }
     // The lambda's EXPECTED arrow from its CONTEXT (a variant-payload position `(T.Susp (fn …))`, a

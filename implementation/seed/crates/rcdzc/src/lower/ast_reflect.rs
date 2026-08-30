@@ -515,8 +515,8 @@ pub(super) fn lower_read(db: &mut Db, str_val: StructId) -> Core {
         return Core::Poison(r);
     }
     let Core::ConstStr(text) = core_of(db, str_val) else {
-        return Core::Poison(Reject::decline(
-            "read of a runtime string is not yet computed (constant strings only)",
+        return Core::Poison(Reject::unsupported(
+            "read of a runtime string is not supported (constant strings only)",
         ));
     };
     let Some(disc) = ast_variant_discs(db) else {
@@ -1174,8 +1174,8 @@ pub(super) fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Co
     // `Ast.encode` fold now produces) OR a `Core::BytesOf` of constant elements (a `b"…"` literal /
     // `Bytes.of`); a runtime Bytes declines.
     let Some(raw) = const_byte_slice(db, bytes) else {
-        return Core::Poison(Reject::decline(
-            "Ast.decode of a runtime byte sequence is not yet computed (constant Bytes only)",
+        return Core::Poison(Reject::unsupported(
+            "Ast.decode of a runtime byte sequence is not supported (constant Bytes only)",
         ));
     };
     // `codec::decode` parses the WHOLE byte sequence into a cadenza-ast `Arenas` — the canonical `cdzast`
