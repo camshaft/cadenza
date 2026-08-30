@@ -2926,84 +2926,11 @@ fn over_applying_a_prelude_member_op_names_the_operation_and_arity() {
 // "`P.Mk` takes 2 arguments, but 3 were given"; an ordinary over-applied fn keeps the anonymous "function of
 // arity 1" message (not "were given"). All 3 PASS wasm.)
 
-#[test]
-fn an_unapplied_function_value_names_the_forgotten_call() {
-    // A partial application `(h 1)` (h takes 2) or a bare fn name used where a NON-function value is
-    // expected has type `(-> …)`; the generic "type mismatch: Int64 and (-> Int64 Int64)" / "annotation
-    // Int64 does not match value (-> Int64 Int64)" never says the value is simply an UNAPPLIED function.
-    // Both producer sites (annotation-mismatch + generic arg-unify) now append the "forgot to call it —
-    // apply N more argument(s)" hint (`fn_not_applied_hint`), rustc's "you might have forgotten to call
-    // this function". No mechanical fix (which argument values were meant is unknown) — a tail only.
-    let h = "(def (h (: a Int64) (: b Int64)) (+ a b))";
-    // Annotation-mismatch site: a partial passed to a user fn wanting Int64.
-    let d = reject_full(&format!(
-        "(module m {h} (def (g (: x Int64)) x) (def (main) (g (h 1))) (export main))"
-    ))
-    .expect("passing a partial where Int64 is wanted rejects");
-    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-    assert!(
-        d.message
-            .contains("hasn't been fully applied; apply it to 1 more argument to get an Int64"),
-        "names the forgotten call: {}",
-        d.message
-    );
-    assert!(d.fix.is_none(), "no mechanical fix: {:?}", d.fix);
-    // Generic arg-unify site: a partial as a bare-operator argument.
-    let op = reject_full(&format!("(module m {h} (def (g) (+ (h 1) 2)) (export g))"))
-        .expect("(+ (h 1) 2) rejects");
-    assert!(
-        op.message
-            .contains("hasn't been fully applied; apply it to 1 more argument"),
-        "the arg-unify site also names it: {}",
-        op.message
-    );
-    // The operator-arg LEAD is the polished "function value" phrasing, NOT the raw internal-clash unify
-    // wording ("type mismatch: Int64 and (-> …) must be the same type here, but differ"). A bare
-    // arithmetic/comparison operator with a function-valued operand is caught up front by the
-    // function-operand kind-boundary check (a function has no arithmetic/order), which names it a
-    // function and appends the same "apply N more" hint — it reads as a real cause, not an internal clash.
-    assert!(
-        op.message
-            .contains("this operation is not defined on a function value")
-            && !op.message.contains("must be the same type here"),
-        "the operator-arg lead is polished, not the raw unify clash: {}",
-        op.message
-    );
-    // Plural: a 3-ary fn applied to 1 needs 2 more arguments to reach the annotated scalar.
-    let h3 = "(def (h (: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c)))";
-    let two = reject_full(&format!(
-        "(module m {h3} (def (g) (: (h 1) Int64)) (export g))"
-    ))
-    .expect("(: (h 1) Int64) rejects");
-    assert!(
-        two.message.contains("apply it to 2 more arguments"),
-        "plural 'arguments' when two remain: {}",
-        two.message
-    );
-    // NO false positive when applying the remaining args would NOT yield the expected type — `(h 1)`
-    // fully applies to Int64, so annotating it `Bool` has no "just call it" story: keep the plain render.
-    let bad = reject_full(&format!(
-        "(module m {h} (def (g) (: (h 1) Bool)) (export g))"
-    ))
-    .expect("(: (h 1) Bool) rejects");
-    assert!(
-        !bad.message.contains("hasn't been fully applied"),
-        "no fn hint when the applied result would still differ: {}",
-        bad.message
-    );
-    // NO false positive on a fn-vs-fn mismatch: a higher-order param that IS a function keeps the plain
-    // mismatch (the value is a function, but so is the expected type — not a forgotten call).
-    let hof = reject_full(&format!(
-        "(module m (def (apply1 (: f (-> Int64 Int64)) (: x Int64)) (f x)) {h} \
-             (def (g) (apply1 h 5)) (export g))"
-    ))
-    .expect("passing a 2-ary fn where (-> Int64 Int64) is wanted rejects");
-    assert!(
-        !hof.message.contains("hasn't been fully applied"),
-        "no fn hint when the expected type is itself a function: {}",
-        hof.message
-    );
-}
+// (an_unapplied_function_value_names_the_forgotten_call migrated to corpus 07-type-system: a partial
+// application where a scalar is expected / as an operator operand names "hasn't been fully applied; apply it
+// to N more argument(s)" (+ polished "function value" operator lead + (not "must be the same type here")),
+// pluralized for 2+; and the two no-hint controls — an applied result that still differs (positive "Bool") +
+// a fn-vs-fn mismatch (positive fn-arity message), each with (not "hasn't been fully applied"). All PASS wasm.)
 
 #[test]
 fn a_function_valued_operator_operand_names_the_function_not_the_raw_unify() {
