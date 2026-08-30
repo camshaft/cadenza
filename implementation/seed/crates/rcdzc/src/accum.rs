@@ -545,10 +545,11 @@ fn list_pattern_is_empty(ast: &Arenas, pat: StructId) -> bool {
 /// threaded as the accumulator's scrutinee argument). Mirrors resolve's `list_pattern_rest_binds`.
 fn cons_pattern_rest_binder(ast: &Arenas, pat: StructId) -> Option<String> {
     let elems = list_pattern_elems(ast, pat)?;
-    let dd = elems.iter().position(|&e| ast.as_name(e) == Some(".."))?;
-    let rest_occ = *elems.get(dd + 1)?;
+    let (_, rest_occ, _) = ast.rest_marker(elems)?;
     let name = ast.as_name(rest_occ)?;
-    if name == "_" {
+    // `_` and `..` are not threadable rest binders (`..` is the helper's marker-atom fallback for a
+    // malformed flat rest with no operand sibling — byte-identical to the old `elems.get(dd + 1)?` skip).
+    if name == "_" || name == ".." {
         return None;
     }
     Some(name.to_string())

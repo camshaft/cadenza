@@ -5365,11 +5365,11 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
         .compound_form_of(pat, CompoundCtor::List)
         .map(<[_]>::to_vec)
     {
-        let dd = es.iter().position(|&e| db.ast.as_name(e) == Some(".."));
-        let lead = dd.unwrap_or(es.len());
+        let marker = db.ast.rest_marker(&es);
+        let lead = marker.map(|(i, _, _)| i).unwrap_or(es.len());
         // A malformed rest (a `..` not second-to-last, or >1 binder after it) is not decidably a cover.
-        if let Some(i) = dd
-            && i + 2 != es.len()
+        if let Some((_, _, trailing_start)) = marker
+            && trailing_start != es.len()
         {
             return None;
         }
@@ -5377,7 +5377,7 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
         for &e in &es[..lead] {
             db.ast.as_name(e)?;
         }
-        return Some(if dd.is_some() {
+        return Some(if marker.is_some() {
             ArmCover::ListFrom(lead) // `(list p… .. rest)` covers every length ≥ lead
         } else {
             ArmCover::ListExact(lead) // `(list p…)` covers exactly length lead

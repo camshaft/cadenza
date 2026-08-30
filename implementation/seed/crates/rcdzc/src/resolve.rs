@@ -3224,9 +3224,10 @@ fn find_leading_binder_in_list_pattern(
     // nested-element list arm declines at lowering anyway): the exact element-by-element descent.
     let elems = db.ast.compound_form_of(list_pat, CompoundCtor::List)?;
     // The LEADING positions are those before a `..` marker (all of them for a fixed-arity pattern).
-    let lead = elems
-        .iter()
-        .position(|&e| db.ast.as_name(e) == Some(".."))
+    let lead = db
+        .ast
+        .rest_marker(elems)
+        .map(|(i, _, _)| i)
         .unwrap_or(elems.len());
     for (i, &elem) in elems[..lead].iter().enumerate() {
         #[cfg(test)]
@@ -3290,8 +3291,8 @@ fn build_simple_list_binders(
     list_pat: StructId,
 ) -> Option<std::rc::Rc<crate::db::SimpleListBinders>> {
     let elems = db.ast.compound_form_of(list_pat, CompoundCtor::List)?;
-    let dd = elems.iter().position(|&e| db.ast.as_name(e) == Some(".."));
-    let lead = dd.unwrap_or(elems.len());
+    let marker = db.ast.rest_marker(elems);
+    let lead = marker.map(|(i, _, _)| i).unwrap_or(elems.len());
     let mut by_name: crate::fxhash::FxHashMap<String, Vec<crate::core::PathStep>> =
         crate::fxhash::FxHashMap::default();
     for (i, &elem) in elems[..lead].iter().enumerate() {
@@ -3317,10 +3318,13 @@ fn build_simple_list_binders(
     // A trailing `.. rest` binds the tail sublist from `lead` onward (`_` after `..` binds nothing). A
     // LEADING binder of the same name takes precedence (the callers try leading before rest), so only
     // record the rest binder if no leading position already claimed the name (`or_insert`).
-    if let Some(dd) = dd
-        && let Some(&rest_occ) = elems.get(dd + 1)
+    if let Some((_, rest_occ, _)) = marker
         && let Some(rest_name) = db.ast.as_name(rest_occ)
         && rest_name != "_"
+        // `!= ".."` guards the helper's malformed-flat fallback (a bare `..` with no operand sibling
+        // returns the marker atom itself; `..` is never a real rest-binder name) — byte-identical to the
+        // old `elems.get(dd + 1)` None-skip, and harmless for a well-formed operand (a real name).
+        && rest_name != ".."
     {
         by_name
             .entry(rest_name.to_string())
@@ -3350,10 +3354,7 @@ fn find_rest_binder_in_list_pattern(db: &Db, list_pat: StructId, name: &str) -> 
     }
     // SLOW PATH (a nested-element pattern): the exact `..`-position scan.
     let elems = db.ast.compound_form_of(list_pat, CompoundCtor::List)?;
-    let dd = elems
-        .iter()
-        .position(|&e| db.ast.as_name(e) == Some(".."))?;
-    let rest_occ = *elems.get(dd + 1)?;
+    let (dd, rest_occ, _) = db.ast.rest_marker(elems)?;
     if db.ast.as_name(rest_occ) != Some(name) || name == "_" {
         return None;
     }
@@ -3449,10 +3450,14 @@ fn list_form_has_nested_rest(db: &Db, pat: StructId) -> bool {
     let Some(elems) = db.ast.compound_form_of(pat, CompoundCtor::List) else {
         return false;
     };
-    match elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-        // Exactly one element after `..`, and it is NOT a bare name / `_` (a compound sub-pattern OR a
-        // literal) — the invalid non-name rest shape (`as_name` is `None` for both).
-        Some(i) if i + 2 == elems.len() => db.ast.as_name(elems[i + 1]).is_none(),
+    match db.ast.rest_marker(elems) {
+        // The rest is the LAST element (nothing trailing after it) and its operand is NOT a bare name /
+        // `_` (a compound sub-pattern OR a literal) — the invalid non-name rest shape. `trailing_start ==
+        // len` covers both marker shapes (flat `.. x` at the end → `i + 2 == len`; wrapped `(.. x)` at the
+        // end → `i + 1 == len`); the operand comes from the helper regardless of shape.
+        Some((_, operand, trailing_start)) if trailing_start == elems.len() => {
+            db.ast.as_name(operand).is_none()
+        }
         _ => false,
     }
 }
@@ -3469,10 +3474,7 @@ fn nested_rest_slot_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
     let Some(elems) = db.ast.compound_form_of(pat, CompoundCtor::List) else {
         return false;
     };
-    let Some(i) = elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) else {
-        return false;
-    };
-    let Some(&rest_pat) = elems.get(i + 1) else {
+    let Some((_, rest_pat, _)) = db.ast.rest_marker(elems) else {
         return false;
     };
     let (mut path, mut heads) = (Vec::new(), Vec::new());
@@ -3737,12 +3739,12 @@ pub(crate) fn map_pattern_of(db: &Db, pat: StructId) -> Option<MapPattern> {
     // ending in `.. rest`. Accept both spellings (like the list matcher's `as_ctor_form.or_else(as_form)`).
     let tail = db.ast.compound_form_of(pat, CompoundCtor::Map)?;
     // Split at a `..` marker: the entries before it, then exactly one rest binder after.
-    let (entries_tail, rest) = match tail.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-        Some(i) => {
-            if i + 2 != tail.len() {
+    let (entries_tail, rest) = match db.ast.rest_marker(tail) {
+        Some((i, operand, trailing_start)) => {
+            if trailing_start != tail.len() {
                 return None; // `..` must be followed by exactly one rest binder
             }
-            (&tail[..i], Some(tail[i + 1]))
+            (&tail[..i], Some(operand))
         }
         None => (tail, None),
     };
@@ -3782,9 +3784,9 @@ pub(crate) fn map_form_is_malformed_rest(db: &Db, pat: StructId) -> bool {
     let Some(tail) = db.ast.compound_form_of(pat, CompoundCtor::Map) else {
         return false;
     };
-    match tail.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+    match db.ast.rest_marker(tail) {
         // A `..` present but not followed by EXACTLY one trailing binder — the malformed rest shape.
-        Some(i) => i + 2 != tail.len(),
+        Some((_, _, trailing_start)) => trailing_start != tail.len(),
         None => false,
     }
 }
@@ -3803,11 +3805,21 @@ fn map_form_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
     let Some(tail) = db.ast.compound_form_of(pat, CompoundCtor::Map) else {
         return false;
     };
-    let dotdot = tail.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+    let marker = db.ast.rest_marker(tail);
+    let dotdot = marker.map(|(d, _, _)| d);
     for (i, &item) in tail.iter().enumerate() {
         match dotdot {
-            // The `..` marker itself binds nothing.
-            Some(d) if i == d => {}
+            // The `..` marker itself binds nothing — EXCEPT the wrapped `(.. rest)` node CARRIES its rest
+            // binder as the operand inside it (the flat form puts it at `d + 1`, handled by the `i > d`
+            // arm), so check that operand here.
+            Some(d) if i == d => {
+                if let Some((_, operand, _)) = marker
+                    && db.ast.as_form(item, "..").is_some()
+                    && db.ast.as_name(operand) == Some(name)
+                {
+                    return true;
+                }
+            }
             // Item(s) AFTER a `..` in a MALFORMED pattern. In a well-formed pattern this is exactly one
             // bare rest binder, but a malformed one may put another `(k v)` ENTRY here (`(map (1 v) ..
             // rest (2 w))`) — treat BOTH shapes as binding: a bare name is a rest-position binder, and a
@@ -3853,9 +3865,11 @@ fn list_form_is_malformed_rest(db: &Db, pat: StructId) -> bool {
     let Some(elems) = db.ast.compound_form_of(pat, CompoundCtor::List) else {
         return false;
     };
-    match elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-        // A `..` present but not followed by EXACTLY one trailing binder — the malformed rest shape.
-        Some(i) => i + 2 != elems.len(),
+    match db.ast.rest_marker(elems) {
+        // A rest present but with elements AFTER it (flat: not exactly one operand sibling; wrapped: extra
+        // elements past the `(.. x)` node) — the malformed rest shape. `trailing_start != len` unifies both
+        // shapes (flat well-formed rest has `i + 2 == len`, wrapped has `i + 1 == len`).
+        Some((_, _, trailing_start)) => trailing_start != elems.len(),
         None => false,
     }
 }
@@ -3873,13 +3887,14 @@ fn list_form_binds_post_rest_name(db: &Db, pat: StructId, name: &str) -> bool {
     let Some(elems) = db.ast.compound_form_of(pat, CompoundCtor::List) else {
         return false;
     };
-    let Some(dd) = elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) else {
+    let Some((_, _, trailing_start)) = db.ast.rest_marker(elems) else {
         return false;
     };
-    // The surplus positions are `dd + 2 ..`; `dd + 1` is the legitimate rest binder (handled elsewhere).
+    // The surplus positions are those AFTER the rest (`trailing_start ..`); the rest binder itself (the
+    // operand — flat `dd + 1`, wrapped inside the `(.. x)` node) is the legitimate one, handled elsewhere.
     elems
         .iter()
-        .skip(dd + 2)
+        .skip(trailing_start)
         .any(|&e| db.ast.as_name(e) == Some(name))
 }
 
@@ -4147,11 +4162,12 @@ fn find_binder_in_list(
     // TAIL SUBLIST from index `lead` onward, via a `RestFrom(lead)` step (`const_at_path`'s `RestFrom`/
     // `ListNew` fold; the payload analogue of the top-level `list_rest_binder` path). `lead` = the leading
     // fixed element patterns.
-    let (leads, rest): (&[StructId], Option<StructId>) =
-        match raw.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-            Some(k) if k + 2 == raw.len() => (&raw[..k], Some(raw[k + 1])),
-            _ => (&raw[..], None),
-        };
+    let (leads, rest): (&[StructId], Option<StructId>) = match db.ast.rest_marker(&raw) {
+        Some((k, operand, trailing_start)) if trailing_start == raw.len() => {
+            (&raw[..k], Some(operand))
+        }
+        _ => (&raw[..], None),
+    };
     if let Some(rest) = rest
         && db.ast.as_name(rest) == Some(name)
         && name != "_"
@@ -4378,12 +4394,10 @@ fn find_map_binder_in_pattern(
         // nested map (a runtime sublist read — out of scope, as `find_binder_in_list`'s rest is).
         db.ast
             .compound_form_of(pattern, CompoundCtor::List)
-            .map(
-                |t| match t.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-                    Some(k) => t[..k].to_vec(),
-                    None => t.to_vec(),
-                },
-            )
+            .map(|t| match db.ast.rest_marker(t).map(|(i, _, _)| i) {
+                Some(k) => t[..k].to_vec(),
+                None => t.to_vec(),
+            })
     } else {
         None
     };
@@ -4531,12 +4545,10 @@ fn find_record_binder_in_pattern(
         // `find_map_binder_in_pattern`).
         db.ast
             .compound_form_of(pattern, CompoundCtor::List)
-            .map(
-                |t| match t.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-                    Some(k) => t[..k].to_vec(),
-                    None => t.to_vec(),
-                },
-            )
+            .map(|t| match db.ast.rest_marker(t).map(|(i, _, _)| i) {
+                Some(k) => t[..k].to_vec(),
+                None => t.to_vec(),
+            })
     } else {
         None
     };

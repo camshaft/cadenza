@@ -6023,14 +6023,18 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
     let mut items: Vec<StructId> = tail.iter().skip(1).copied().collect();
     let open_tail = {
         let n = items.len();
-        if n >= 2
-            && ast.as_name(items[n - 2]) == Some("..")
+        // An open row ends in a rest naming a lowercase ROW VARIABLE — the flat `.. rowvar` (two trailing
+        // items) or the wrapped `(.. rowvar)` node (one). `rest_marker` recognizes both; `trailing_start ==
+        // n` requires it to be the FINAL element (a row var binds the open tail), and `truncate(k)` drops
+        // from the marker index (flat: `..`+rowvar = 2; wrapped: the `(.. rowvar)` node = 1).
+        if let Some((k, rowvar_occ, trailing_start)) = ast.rest_marker(&items)
+            && trailing_start == n
             && ast
-                .as_name(items[n - 1])
+                .as_name(rowvar_occ)
                 .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_lowercase()))
         {
-            let rowvar = ast.as_name(items[n - 1]).unwrap().to_string();
-            items.truncate(n - 2);
+            let rowvar = ast.as_name(rowvar_occ).unwrap().to_string();
+            items.truncate(k);
             Some(rowvar)
         } else {
             None

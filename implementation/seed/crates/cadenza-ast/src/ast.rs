@@ -1854,6 +1854,32 @@ impl Arenas {
         }
     }
 
+    /// Find the collection REST/SPREAD marker `..` in `elems`, recognizing BOTH shapes during the
+    /// operator's repo-wide `(.. v)` migration: the legacy FLAT form — a bare `Name("..")` element whose
+    /// operand is the NEXT sibling (`(list a .. rest)`) — AND the WRAPPED form — a self-contained
+    /// `(.. operand)` node, a list headed by `..` (`(list a (.. rest))`, `#list(1 (.. xs) 2)`). Returns
+    /// `(marker_index, operand, trailing_start)`: the elements BEFORE the marker are `elems[..marker_index]`,
+    /// the operand is `operand`, and the elements AFTER are `elems[trailing_start..]`. The two shapes differ
+    /// only in how many slots the marker occupies: the flat form spans TWO (`..` + its operand sibling →
+    /// `trailing_start = marker_index + 2`); the wrapped form spans ONE (the `(.. operand)` node itself →
+    /// `trailing_start = marker_index + 1`). Every rest-marker scan reads through this so both shapes are
+    /// accepted uniformly (Phase 1 of the `(.. v)` migration). `None` when there is no rest marker. A flat
+    /// `..` with no following operand (malformed) yields the marker node itself as `operand` — the caller's
+    /// existing shape validation handles it exactly as before.
+    pub fn rest_marker(&self, elems: &[StructId]) -> Option<(usize, StructId, usize)> {
+        for (i, &e) in elems.iter().enumerate() {
+            // WRAPPED `(.. operand)` — a list headed by `..`, the operand its sole argument.
+            if let Some(args) = self.as_form(e, "..") {
+                return Some((i, args.first().copied().unwrap_or(e), i + 1));
+            }
+            // FLAT `..` marker — the operand is the next sibling.
+            if self.as_name(e) == Some("..") {
+                return Some((i, elems.get(i + 1).copied().unwrap_or(e), i + 2));
+            }
+        }
+        None
+    }
+
     /// If `id` is an `Atom` of an integer literal, its value. (Used to read an integer member key as a
     /// tuple position — `(. t 0)` — where a name key would be a record field instead.)
     pub fn as_int(&self, id: StructId) -> Option<&IntValue> {

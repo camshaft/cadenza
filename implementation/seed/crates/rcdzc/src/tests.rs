@@ -94,6 +94,70 @@ fn prog_unsupported() -> Vec<u8> {
     crate::codec::encode(&b.finish(root))
 }
 
+/// Phase 1 of the operator's repo-wide `(.. v)` migration: `Arenas::rest_marker` dual-recognizes the
+/// WRAPPED `(.. operand)` rest node ALONGSIDE the flat `Name("..")`+sibling marker, so a wrapped rest
+/// pattern binds its rest identically to the flat one. The sexpr reader already reads `(.. v)` as a
+/// `..`-headed list, so this is exercisable BEFORE v-syntax's Phase 2 surface flip. Asserts PARITY — the
+/// wrapped and flat forms produce IDENTICAL diagnostics (additive: recognition only, no behavior change).
+/// If they ever diverge, a rest-marker scan site was missed.
+#[test]
+fn a_wrapped_dotdot_rest_pattern_binds_identically_to_the_flat_marker() {
+    let compile = |src: &str| {
+        crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    crate::codec::encode(&crate::testkit::parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            )
+        })
+    };
+    // LIST rest: `(list a (.. rest))` (WRAPPED) vs `(list a .. rest)` (FLAT) — `rest` is bound + measured.
+    let flat_list = compile(
+        "(module m (def (f (: xs (List Int64))) (match xs ((list a .. rest) (List.len rest)) (_ 0))) (export f))",
+    );
+    let wrap_list = compile(
+        "(module m (def (f (: xs (List Int64))) (match xs ((list a (.. rest)) (List.len rest)) (_ 0))) (export f))",
+    );
+    assert_eq!(
+        wrap_list
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>(),
+        flat_list
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>(),
+        "wrapped `(list a (.. rest))` must behave identically to flat `(list a .. rest)` (Phase 1 \
+         dual-recognize) — a divergence means a rest-marker scan site was missed",
+    );
+    // MAP rest: `(map (= 1 v) (.. rest))` (WRAPPED) vs flat — same parity invariant.
+    let flat_map = compile(
+        "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (= 1 v) .. rest) v) (_ 0))) (export f))",
+    );
+    let wrap_map = compile(
+        "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (= 1 v) (.. rest)) v) (_ 0))) (export f))",
+    );
+    assert_eq!(
+        wrap_map
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>(),
+        flat_map
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>(),
+        "wrapped `(map … (.. rest))` must behave identically to flat `(map … .. rest)` (Phase 1 \
+         dual-recognize)",
+    );
+}
+
 // ── the byte oracle ──────────────────────────────────────────────────────────────────────────
 
 /// Build, with the authoritative `wasm-encoder`, the component we expect for a set of nullary

@@ -318,8 +318,16 @@ fn collect_pattern_binders(ast: &Arenas, pat: StructId, out: &mut Vec<StructId>)
             // by the arm above; a legacy `(record (f p))` pair recurses here (head `f` skipped, `p` walked).
             let items = items.clone();
             for &sub in items.iter().skip(1) {
-                // Skip the `..` rest marker itself (a bare `..` name); its binder neighbor recurses normally.
+                // Skip the flat `..` rest marker itself (a bare `..` name); its binder neighbor recurses
+                // normally. For the wrapped `(.. operand)` node, the rest binder is the operand INSIDE it —
+                // recurse the operand then skip the node.
                 if ast.as_name(sub) == Some("..") {
+                    continue;
+                }
+                if let Some(args) = ast.as_form(sub, "..") {
+                    for &a in args {
+                        collect_pattern_binders(ast, a, out);
+                    }
                     continue;
                 }
                 collect_pattern_binders(ast, sub, out);
