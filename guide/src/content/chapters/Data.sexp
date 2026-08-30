@@ -27,12 +27,12 @@
   (p "A record matches by " (em "field name") ", not field order, so the same fields written in a different order are still the same record. That's the by-name nature showing through: a record is its set of named fields, however you list them.")
   (runnable
     (source (= #record((= x 1) (= y 2)) #record((= y 2) (= x 1)))))
-  (h2 "Taking one apart in a match")
-  (p "Beyond reaching a single field, you can bind " (em "all") " of a tuple's parts at once by matching its shape, the same " (c "match") " you use for any value. Here a two-tuple binds " (c "a") " and " (c "b") " in one step, then adds them:")
+  (h2 "Taking one apart with a let")
+  (p "Beyond reaching a single field, you can bind " (em "all") " of a tuple's parts at once by destructuring it in a " (c "let") ". The pattern on the left of the binding names each part; here a two-tuple binds " (c "a") " and " (c "b") " in one step, then adds them:")
   (runnable
-    (source (match #tuple(3 4)
-  (#tuple(a b) (+ a b)))))
-  (p "One arm is enough: a two-tuple always has exactly this shape, so " (c "#tuple(a b)") " is an " (em "irrefutable") " pattern that can't fail to match, and no catch-all is needed. Destructuring like this is the subject of " (strong "Pattern matching") "; the point here is that a tuple or record is an ordinary value a pattern can name and take apart.")
+    (source (let ((#tuple(a b) #tuple(3 4)))
+  (+ a b))))
+  (p "A two-tuple always has exactly this shape, so the pattern can't fail to match: it's " (em "irrefutable") ", and that's exactly when a " (c "let") " binding is the right tool rather than a one-armed " (c "match") ". Destructuring is the subject of " (strong "Pattern matching") " and " (strong "Irrefutable patterns") "; the point here is that a tuple or record is an ordinary value a pattern can name and take apart.")
   (h2 "They compose")
   (p "A tuple can hold a record, a record field can hold a tuple, and so on, so the shapes nest freely, and the accessor chains to reach inside. Here a record has one field, " (c "pair") ", holding a tuple; we reach the field, then index into the tuple to pull out its second element:")
   (runnable
