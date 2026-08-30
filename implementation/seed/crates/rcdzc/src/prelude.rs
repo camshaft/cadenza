@@ -35,7 +35,7 @@
 //! `checked-*`/`wrapping-*`. The binary arithmetic and comparison operators (`+ - * / …`, `< = …`)
 //! are realized as top-level prelude operators, not module fields.
 
-use crate::ast::{Arenas, IntValue, Leaf, LeafId, Radix, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, IntValue, Leaf, LeafId, Radix, Struct, StructId};
 use std::collections::BTreeMap;
 
 /// Install the prelude into `ast`, appending its built-in bindings as ordinary AST nodes and
@@ -447,7 +447,7 @@ pub(crate) fn meta_field(ast: &mut Arenas, key: &str, value: StructId) -> Struct
 /// A ground-type record `(record ((meta t) (intrinsic PRIM)))` — `Bool`/`Unit`. Its `(meta t)` holds
 /// the ground type-value; it carries no `(meta apply)`, so it is not applyable.
 fn ground_type_record(ast: &mut Arenas, prim: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let ty_val = intrinsic_node(ast, prim);
     let t_field = meta_field(ast, "t", ty_val);
     push_list(ast, vec![head, t_field])
@@ -456,7 +456,7 @@ fn ground_type_record(ast: &mut Arenas, prim: &str) -> StructId {
 /// A type-constructor record `(record ((meta apply) (intrinsic PRIM)))` — `Int`/`UInt`/`->`. Applying
 /// it (`(Int a)`) projects `(meta apply)` and applies the native builder.
 fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let builder = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", builder);
     push_list(ast, vec![head, apply_field])
@@ -473,7 +473,7 @@ fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
 /// case the label operand, bypassing the scheme. The `(meta t)` is thus a PERMISSIVE placeholder
 /// (`∀a. a → a`) present only so `project` resolves as an applyable op; it is never unified.
 fn record_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta apply)` = the `Record` TYPE constructor (`(Record (a Int64) …)` builds the record type-value).
     let builder = intrinsic_node(ast, "Record");
     let apply_field = meta_field(ast, "apply", builder);
@@ -510,7 +510,7 @@ fn record_module(ast: &mut Arenas) -> StructId {
 /// `check_application` skips the scheme-unify. The `(meta t)` is the same permissive `∀a. a → a`
 /// placeholder (never unified), present only so member access resolves the op as applyable.
 fn tuple_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta apply)` = the `Tuple` TYPE constructor (`(Tuple Int64 Bool)` builds the tuple type-value).
     let builder = intrinsic_node(ast, "Tuple");
     let apply_field = meta_field(ast, "apply", builder);
@@ -563,7 +563,7 @@ fn row_op_placeholder_type(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
 //# An operation that reads an element of a sequence by position — indexing a list, a string (by scalar or byte offset), or a `Bytes` value, or taking a sub-sequence slice — MUST be total, yielding an optional value that is present when the position is in bounds and absent when it is out of bounds, rather than trapping or producing an unspecified value.
 fn list_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta apply)` = the `List` TYPE constructor (`(List Int64)` reduces to `Ty::List(Int64)`).
     let builder = intrinsic_node(ast, "List");
     let apply_field = meta_field(ast, "apply", builder);
@@ -629,7 +629,7 @@ fn list_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
 //# Looking a key up in a map MUST likewise be total, yielding an optional value that is present when the map contains the key and absent when it does not.
 fn map_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta apply)` = the `Map` TYPE constructor (`(Map Int64 Int64)` reduces to `Ty::Map(Int64, Int64)`).
     let builder = intrinsic_node(ast, "Map");
     let apply_field = meta_field(ast, "apply", builder);
@@ -678,7 +678,7 @@ fn map_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#set-membership-is-total
 //# A set MUST NOT offer access to an element by position, because a set is unordered and has no positional element to address.
 fn set_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta apply)` = the `Set` TYPE constructor (`(Set Int64)` reduces to `Ty::Set(Int64)`).
     let builder = intrinsic_node(ast, "Set");
     let apply_field = meta_field(ast, "apply", builder);
@@ -921,7 +921,7 @@ fn map_take_type_lambda(ast: &mut Arenas) -> StructId {
 /// at/slice/compact arrive in later increments (a projected-but-unrealized field DECLINES, the closed-
 /// module rule every prelude module follows).
 fn bytes_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta t)` = the ground type-value `Bytes` (`(intrinsic bytes-ty)` → `Ty::Bytes`), so bare `Bytes`
     // resolves as a TYPE and `(. Bytes of)` projects the constructor operation.
     let ty_val = intrinsic_node(ast, "bytes-ty");
@@ -968,7 +968,7 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
 //# The byte length MUST be obtainable without materializing the UTF-8 encoding as a separate value, so that a size query an author expects to be cheap is not defined only in terms of an intermediate byte sequence.
 fn string_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta t)` = the ground type-value `String` (`(intrinsic "String")` → `Ty::String`), so bare
     // `String` in type position IS the type — `(: x String)` reduces it, and a variant payload `(Named
     // String)` reads it as the payload type — exactly as `Bytes` carries `(meta t) = bytes-ty`. Member
@@ -1073,7 +1073,7 @@ fn string_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#a-char-converts-to-and-from-an-integer-totally
 //# Converting an integer to a char MUST yield an optional char that is absent when the integer is not a Unicode scalar value — outside `U+0000..=U+10FFFF` or within the surrogate range — so that an out-of-range integer is handled as data rather than producing a char that is not a valid scalar.
 fn char_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let ty_val = intrinsic_node(ast, "Char");
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
@@ -1107,7 +1107,7 @@ fn char_module(ast: &mut Arenas) -> StructId {
 /// the operator-ruled binary-AST encoder (R2); `Value.encode`(Ast) equals the internal `ast-encode` bytes,
 /// so it is THE single public canonical encoder (concierge ruling — no parallel `ast-encode` surface).
 fn value_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let mut children = vec![head];
     // `encode : ∀a. a → Bytes` — total.
     let encode_ty = value_encode_type_lambda(ast);
@@ -1156,7 +1156,7 @@ fn value_decode_type_lambda(ast: &mut Arenas) -> StructId {
 /// a string into a symbol; `to-string : Symbol → String` recovers its content. Both FOLD on a constant
 /// operand (a constant symbol shares the underlying `Core::ConstStr` rep at type `Ty::Symbol`).
 fn symbol_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let ty_val = intrinsic_node(ast, "Symbol");
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
@@ -1196,7 +1196,7 @@ fn symbol_of_type(ast: &mut Arenas) -> StructId {
 /// (`∀a. (Int a) → BigInt`, the widening from any fixed-width integer); arithmetic + the reverse
 /// checked narrowing arrive later.
 fn bigint_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let ty_val = intrinsic_node(ast, "BigInt");
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
@@ -1222,7 +1222,7 @@ fn bigint_module(ast: &mut Arenas) -> StructId {
 /// denominator. Arithmetic + comparison over rationals ride the ordinary `+`/`-`/`*`/`/`/`<`/`=` operators
 /// (dispatched on a `Ty::Rational` operand in `lower`/`infer`), not module fields.
 fn rational_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let ty_val = intrinsic_node(ast, "Rational");
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
@@ -1432,7 +1432,7 @@ fn symbol_to_string_type(ast: &mut Arenas) -> StructId {
 /// prim; a unit is a compile-time value reduced by `eval`. `Unit.*`/`Unit./`/`Unit.^` are registered as
 /// TOP-LEVEL names, not fields (the reader keeps them bare — `^`/`*`/`/` aren't alphabetic).
 fn unit_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta t) = Unit` — the ground type-value, so `Unit` in type position stays `Ty::Unit` (the
     // effect-op `(-> Unit Int64)` and every other `Unit`-as-type use keep resolving). This is what makes
     // the module a superset of the plain ground-type record it replaces (it ADDS fields, keeps the type).
@@ -1501,7 +1501,7 @@ fn unit_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/units-of-measure.md#a-scaled-unit-is-a-unit-scaled-by-an-exact-factor
 //# A scale factor MUST be an exact value, so that a prefixed unit converts to its base without approximation.
 fn prefix_record(ast: &mut Arenas, num: i64, den: i64) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let n = push_atom(
         ast,
         Leaf::Int {
@@ -1771,7 +1771,7 @@ fn unit_op_ctor(ast: &mut Arenas, prim: &str) -> StructId {
 //= spec/capabilities/units-of-measure.md#dimensional-analysis-does-not-alter-the-numeric-core
 //# Attaching a unit to a numeric value, or combining values that already share a unit, MUST NOT change the value's runtime behavior.
 fn qty_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta apply) = Qty` — the quantity-TYPE constructor, so `(Qty Float64 u)` in TYPE position builds
     // `Ty::Qty` via the ordinary `typeval_of` path (an annotation `(: e (Qty T u))`), exactly as `(List
     // T)` reduces via `List`'s `(meta apply)`. The value constructor is `Qty.of` (a field); this channel
@@ -1841,7 +1841,7 @@ fn blake3_of_type(ast: &mut Arenas) -> StructId {
 /// tag/prefix — all domain separation is userspace, D7). Same monomorphic-op shape as the `Bytes`/`String`
 /// operations (`list_op_record` with a `(fn () (-> …))` scheme + `(meta apply) = (intrinsic blake3-of)`).
 fn blake3_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let of_type = blake3_of_type(ast);
     let of_op = list_op_record(ast, "blake3-of", of_type);
     let of_field = push_atom(ast, Leaf::Name("of".into()));
@@ -1853,7 +1853,7 @@ fn blake3_module(ast: &mut Arenas) -> StructId {
 }
 
 fn type_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let of_field = push_atom(ast, Leaf::Name("of".into()));
     let of_op = ctor_record(ast, "type-of");
     let of = {
@@ -2119,7 +2119,7 @@ fn string_slice_type(ast: &mut Arenas) -> StructId {
 /// (intrinsic PRIM)))` — the same shape as `operator_record`, but the type-lambda is supplied (a list
 /// operation's signature varies per op, unlike the shared arithmetic/comparison shapes).
 fn list_op_record(ast: &mut Arenas, prim: &str, type_lambda: StructId) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let t_field = meta_field(ast, "t", type_lambda);
     let apply = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", apply);
@@ -2375,7 +2375,7 @@ enum OpShape {
 //= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
 //# A built-in operation value used other than by application — bound to a name, stored in a data structure, compared, or partially applied — has no outcome fixed by this document beyond that it MUST NOT produce a wrong result: a compiler that does not realize such a use MUST decline to compile the program rather than emit code that computes an incorrect value. This preserves *reject-don't-miscompile* while leaving the first-class treatment of a built-in operation value (storage, partial application) to be specified as it is realized.
 fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let lambda = match shape {
         OpShape::IntBinary => binop_type_lambda(ast),
         OpShape::Comparison => comparison_type_lambda(ast),
@@ -2476,7 +2476,7 @@ fn compare_type_lambda(ast: &mut Arenas) -> StructId {
 /// `of-int` (integer→float, the float analogue of `T.of`) and the width conversions are `unrealized`
 /// fields until F5 — declining cleanly when projected, the closed-module rule every prelude module follows.
 fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta t)` = `(Float width)`, reduced to the concrete float type-value by `typeval_of`.
     let ty_expr = {
         let ctor = push_atom(ast, Leaf::Name("Float".into()));
@@ -2642,7 +2642,7 @@ fn float_of_int_type(ast: &mut Arenas, width: u32) -> StructId {
 }
 
 fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta t)` = the type expression `(Int width)` / `(UInt width)`, reduced to the concrete
     // type-value by `typeval_of`. This is what makes the name usable as a TYPE.
     let ty_expr = {
@@ -2786,7 +2786,7 @@ fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let params = push_list(ast, vec![a_param]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic wrap)))`.
-    let rec_head = push_atom(ast, Leaf::Str("record".into()));
+    let rec_head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, "wrap");
     let apply_field = meta_field(ast, "apply", prim);
@@ -2830,7 +2830,7 @@ fn of_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let params = push_list(ast, vec![a_param]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic checked-of)))`.
-    let rec_head = push_atom(ast, Leaf::Str("record".into()));
+    let rec_head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, "checked-of");
     let apply_field = meta_field(ast, "apply", prim);
@@ -2879,7 +2879,7 @@ fn checked_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: 
     let params = push_list(ast, vec![]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic prim)))`.
-    let rec_head = push_atom(ast, Leaf::Str("record".into()));
+    let rec_head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let t_field = meta_field(ast, "t", lambda);
     let prim_node = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", prim_node);
@@ -2921,7 +2921,7 @@ fn wrapping_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width:
     let params = push_list(ast, vec![]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic prim)))`.
-    let rec_head = push_atom(ast, Leaf::Str("record".into()));
+    let rec_head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let t_field = meta_field(ast, "t", lambda);
     let prim_node = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", prim_node);
