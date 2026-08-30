@@ -1835,6 +1835,32 @@
         (export main)))
   (call   main (: 5 Int64)) (error CDZ0202))
 
+(case "a Set.union over abstract-element Set params is rejected (set-algebra compares stored elements)"
+  (doc    "The set-ALGEBRA arm of the read-side opacity: `Set.union` over two `(Set Temp)` params compares
+           their stored abstract elements by the built-in structural comparison to dedup the union, observing
+           `Temp`'s private representation — so it rejects CDZ0202 like the `Set.contains` membership probe
+           above (the read-side case's doc lists `Set.union` among the routes; this pins it directly). No
+           local construction — the sets arrive as params.")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (u (: a (Set Temp)) (: b (Set Temp))) (Set.len (Set.union a b)))
+        (def (main) (u #set() #set()))
+        (export main)))
+  (call   main) (error CDZ0202))
+
+(case "a Set.contains over a concrete Int64-keyed Set param stays legal (the read-side gate does not over-reject a concrete element)"
+  (doc    "The negative control of the read-side opacity: a `(Set Int64)` reached through a param, then
+           `Set.contains`, stays legal — the element type is concrete, so membership comparison observes no
+           private representation. Guards the CDZ0202 read-side gate from over-rejecting a concrete-keyed
+           collection. `Set.contains` over an empty set is false → 0.")
+  (input  (do
+        (def (has (: s (Set Int64)) (: x Int64)) (Set.contains s x))
+        (def (main (: k Int64)) (if (has #set() k) 1 0))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))
+
 (case "a Map keyed by a DEEPLY-nested compound containing an abstract type is rejected (opacity recurses to any depth)"
   (doc    "The depth guard for the compound-key reject: the recursion `key_ty_contains_abstract_at`
            (v-inference f23646b30) walks a compound key to ANY depth, not just one structural level — a

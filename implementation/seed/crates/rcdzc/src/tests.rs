@@ -26913,69 +26913,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_lookup_or_membership_over_an_abstract_keyed_collection_is_rejected_cdz0202() {
-        // SOUNDNESS — the LOOKUP/MEMBERSHIP sibling of the abstract-key CONSTRUCTION gate. The
-        // construction prims (SetOf/SetInsert/MapNew/MapInsert) reject building an abstract-keyed
-        // collection, but the collection can ARRIVE as a function PARAMETER (or an import / a returned
-        // value) with NO local construction prim — `(def (has (: s (Set Temp)) (: x Temp)) (Set.contains
-        // s x))` where `Temp` is abstract-here compiled CLEAN, yet `Set.contains` compares the query key
-        // against the stored keys by `champ_eq`, observing `Temp`'s private rep (the same type-system.md
-        // boundary violation the construction gate closes, via the read side). Reproduced with a probe
-        // first: the param form returned `[]` (not rejected). FIX (infer::check_application): the gate
-        // covers the lookup/membership/set-algebra prims too, reading the key type off the collection
-        // ARGUMENT's `Ty::Set(k)`/`Ty::Map(k,_)` (not just the result), via `key_ty_contains_abstract_at`.
-        use crate::abi::Artifact;
-        let lib = crate::codec::encode(&parse(
-            "(do (type Temp (T Int64)) (def (mk (: c Int64)) (Temp.T c)) (export Temp) (export mk))",
-        ));
-        let codes_for_def = |def: &str, entry_body: &str| -> Vec<String> {
-            let entry = crate::codec::encode(&parse(&format!(
-                "(do (import \"lib\" (Temp mk)) {def} \
-                 (def (main (: k Int64)) {entry_body}) (export main))"
-            )));
-            let out = crate::compile::compile(
-                &[
-                    Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
-                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
-                ],
-                &[crate::backend::Target::Wasm],
-            );
-            out.diagnostics
-                .iter()
-                .filter_map(|d| d.code.clone())
-                .collect()
-        };
-        // Set.contains over a `(Set Temp)` PARAM (no local construction) → CDZ0202 (was: compiled clean).
-        assert!(
-            codes_for_def(
-                "(def (has (: s (Set Temp)) (: x Temp)) (Set.contains s x))",
-                "(if (has (Set.of (list)) (mk k)) 1 0)"
-            )
-            .contains(&"CDZ0202".to_string()),
-            "Set.contains over an abstract-keyed Set param must reject CDZ0202"
-        );
-        // Set.union over two `(Set Temp)` PARAMS → CDZ0202 (set-algebra compares stored keys).
-        assert!(
-            codes_for_def(
-                "(def (u (: a (Set Temp)) (: b (Set Temp))) (Set.len (Set.union a b)))",
-                "(u (Set.of (list)) (Set.of (list)))"
-            )
-            .contains(&"CDZ0202".to_string()),
-            "Set.union over abstract-keyed Set params must reject CDZ0202"
-        );
-        // CONTROL: a `(Set Int64)` param stays legal — the lookup gate must not over-reject a concrete key.
-        assert!(
-            !codes_for_def(
-                "(def (has (: s (Set Int64)) (: x Int64)) (Set.contains s x))",
-                "(if (has (Set.of (list)) k) 1 0)"
-            )
-            .contains(&"CDZ0202".to_string()),
-            "Set.contains over a concrete Int64-keyed Set stays legal (no CDZ0202)"
-        );
-    }
-
-    #[test]
     fn a_literal_parameter_position_is_rejected() {
         // A parameter is a BINDER: a bare name, a wildcard `_`, an annotated `(: name T)`, or a
         // destructuring pattern. A bare LITERAL — `(def (f 5) …)`, `(def (f true) …)` — is NONE of these:
