@@ -2897,8 +2897,9 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // (the perform arm resolves the enclosing `host` via `perform_host_target`). The manifest
         // contribution (the escaping effect row) is handled at serialization.
         Resolved::Host { body, .. } => core_of(db, body),
-        Resolved::Resume { .. } => Core::Poison(Reject::decline(
-            "resume outside a lowered handler arm is not yet realized",
+        Resolved::Resume { .. } => Core::Poison(Reject::unsupported(
+            "this `resume` is not reducible by the tail-resumptive fold: it is a cross-function or \
+             non-tail continuation the effect specializer does not reify",
         )),
     }
 }
