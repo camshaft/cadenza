@@ -390,6 +390,54 @@
   (input  (do (type (Box a) (Mk a)) (type (Pair a) (P (Box a))) (def (main) 0) (export main)))
   (call   main) (output (: 0 Int64)))
 
+; ── PRELUDE type-constructor wrong-arity (migrated from rcdzc
+; a_prelude_type_constructor_with_the_wrong_arity_names_its_expected_argument_count) ──
+; A PRELUDE type constructor applied to the wrong number of type arguments reduces to NO type-value, so it
+; used to read as the generic "a parameter's annotation requires a type, but found a non-type" — misleading,
+; since List/Map/Set/Int/UInt/Qty/-> ARE type constructors, just misapplied. Each now names the constructor +
+; its expected-vs-supplied arity (correct singular/plural) and spells the fix (rustc's "this type takes N
+; generic arguments but M were supplied"). The correct arities raise no fault (covered by the working
+; List/Int/Qty/arrow cases across the corpus); a genuine non-type keeps the generic "requires a type" message.
+(case "a prelude List over-applied with two type arguments names its arity"
+  (input  (do (def (g (: xs (List Int64 Int64))) xs) (export g)))
+  (error  CDZ0203 (message "`List` takes 1 type argument") (message "but 2 were supplied")))
+
+(case "a prelude Map under-applied with one type argument names its two-argument arity"
+  (input  (do (def (g (: mp (Map Int64))) mp) (export g)))
+  (error  CDZ0203 (message "`Map` takes 2 type arguments") (message "but 1 was supplied")))
+
+(case "a prelude Set over-applied with two type arguments names its one-argument arity"
+  (input  (do (def (g (: s (Set Int64 Bool))) s) (export g)))
+  (error  CDZ0203 (message "`Set` takes 1 type argument") (message "but 2 were supplied")))
+
+(case "a wrong-arity prelude ctor in a VALUE annotation routes through the same arity helper"
+  (input  (do (def (g) (: 5 (List Int64 Int64))) (export g)))
+  (error  CDZ0203 (message "`List` takes 1 type argument") (message "but 2 were supplied")))
+
+(case "the WIDTH-indexed Int constructor with zero width arguments names the width arity"
+  (input  (do (def (main) (: 5 (Int))) (export main)))
+  (error  CDZ0203 (message "`Int` is a WIDTH-indexed type constructor") (message "but 0 arguments were supplied")))
+
+(case "the WIDTH-indexed UInt constructor with zero width arguments names the width arity"
+  (input  (do (def (main) (: 5 (UInt))) (export main)))
+  (error  CDZ0203 (message "`UInt` is a WIDTH-indexed type constructor") (message "but 0 arguments were supplied")))
+
+(case "the WIDTH-indexed Int constructor with two width arguments names the width arity"
+  (input  (do (def (main) (: 5 (Int 32 64))) (export main)))
+  (error  CDZ0203 (message "`Int` is a WIDTH-indexed type constructor") (message "but 2 arguments were supplied")))
+
+(case "a prelude Qty under-applied with one type argument names its two-argument arity"
+  (input  (do (def (g (: q (Qty Int64))) q) (export g)))
+  (error  CDZ0203 (message "`Qty` takes 2 type arguments") (message "but 1 was supplied")))
+
+(case "a prelude Qty with zero type arguments names its two-argument arity"
+  (input  (do (def (g (: q (Qty))) q) (export g)))
+  (error  CDZ0203 (message "`Qty` takes 2 type arguments") (message "but 0 were supplied")))
+
+(case "the arrow type constructor with zero arguments names the arrow shape and its minimum"
+  (input  (do (def (g (: h (->))) 0) (export g)))
+  (error  CDZ0203 (message "an arrow type is") (message "it needs at least a result type")))
+
 ; The single-param applied case above covers the flat one-argument face; the resolve path also handles
 ; MULTI-parameter generics and NESTED type-arguments (a user generic inside a built-in generic, or inside
 ; another user generic). Each was equally CDZ0101-unresolvable under the parenthesized-head `""`-name bug
