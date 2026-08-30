@@ -1708,13 +1708,14 @@ fn definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Option<Lo
     let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
     let byte = position_to_byte(text, pos);
     let node = spans.node_at_offset(byte)?;
-    let answer = run_query_text(
+    let bytes = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::ResolveOf { node: node.0 },
         cadenza_compile_abi::sidecar::KIND_RESOLVE,
     )?;
-    // The `ResolveOf` answer is the defining occurrence's node id (empty = not a navigable reference).
-    let target: u32 = answer.trim().parse().ok()?;
+    // The `ResolveOf` answer is the defining occurrence's node id (none = not a navigable reference),
+    // decoded from the binary-AST wire — ZERO string parsing.
+    let target = cadenza_compile_abi::decode_resolve(&bytes)?;
     node_location(text, &spans, uri, target)
 }
 
@@ -1857,7 +1858,8 @@ fn package_definition_at(
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
     let bytes = compiled.artifact(cadenza_compile_abi::sidecar::KIND_RESOLVE)?;
-    let target: u32 = String::from_utf8_lossy(bytes).trim().parse().ok()?;
+    // The defining occurrence's global node id, decoded from the binary-AST wire — ZERO string parsing.
+    let target = cadenza_compile_abi::decode_resolve(bytes)?;
 
     // Demux the global target to its owning file, then a Location in that file (its URI + local span).
     let link_map = compiled
@@ -2030,12 +2032,12 @@ fn references_at(
     // top-level symbol: either it IS that symbol's declaration name occurrence, or it RESOLVES
     // (`ResolveOf`) to it. Otherwise return empty (a node-keyed local-uses query is a later increment).
     let top_node = top_level_symbol_node(&arenas, &name);
-    let resolves_to = run_query_text(
+    let resolves_to = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::ResolveOf { node: node.0 },
         cadenza_compile_abi::sidecar::KIND_RESOLVE,
     )
-    .and_then(|a| a.trim().parse::<u32>().ok());
+    .and_then(|b| cadenza_compile_abi::decode_resolve(&b));
     let cursor_is_top_level =
         top_node == Some(node.0) || (top_node.is_some() && resolves_to == top_node);
     if !cursor_is_top_level {
@@ -2451,6 +2453,9 @@ fn package_references_at(
             .artifact(kind)
             .map(|b| String::from_utf8_lossy(b).into_owned())
     };
+    // The binary-AST sibling of `artifact_text`, for the query answers whose wire is canonical binary
+    // AST (`KIND_RESOLVE`, …) — the caller decodes via the shared codec rather than splitting text.
+    let artifact_bytes = |kind: &str| -> Option<&[u8]> { compiled.artifact(kind) };
 
     // SHADOWING GUARD (package flavor). `UsesOf` is NAME-keyed, so a LOCAL binder shadowing a top-level
     // name would leak the top-level's refs. Proceed only when the cursor genuinely belongs to a
@@ -2476,8 +2481,8 @@ fn package_references_at(
                 .and_then(|c| c.trim().parse::<u32>().ok())
         })
         .collect();
-    let resolves_to = artifact_text(cadenza_compile_abi::sidecar::KIND_RESOLVE)
-        .and_then(|a| a.trim().parse::<u32>().ok());
+    let resolves_to = artifact_bytes(cadenza_compile_abi::sidecar::KIND_RESOLVE)
+        .and_then(cadenza_compile_abi::decode_resolve);
     // The cursor belongs to a top-level symbol iff it IS a `Symbols` name-node (a declaration occurrence,
     // entry-local == global at base 0) or RESOLVES to one (a use of a top-level/imported name).
     let cursor_is_symbol = symbol_nodes.contains(&cursor.0);

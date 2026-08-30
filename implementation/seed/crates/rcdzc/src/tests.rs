@@ -38537,11 +38537,10 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let target: u32 = artifact_text(&out, KIND_RESOLVE)
-            .expect("a resolve artifact")
-            .trim()
-            .parse()
-            .expect("a node id");
+        let target: u32 = cadenza_compile_abi::decode_resolve(
+            artifact_bytes(&out, KIND_RESOLVE).expect("a resolve artifact"),
+        )
+        .expect("a node id");
         // The target is helper's def NAME occurrence (the sig's first child) — the go-to-definition
         // anchor. Spot-check via a fresh resolve: the sig's first child, NOT the body.
         let db = crate::db::Db::load(parse(src));
@@ -38578,7 +38577,8 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        assert_eq!(artifact_text(&out, KIND_RESOLVE).as_deref(), Some(""));
+        let bytes = artifact_bytes(&out, KIND_RESOLVE).expect("a resolve artifact");
+        assert_eq!(cadenza_compile_abi::decode_resolve(bytes), None);
     }
 
     /// Parse `src`, resolve `offset` to a node, run `ScopeAt`, and return the `(name, type)` bindings.

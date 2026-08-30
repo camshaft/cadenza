@@ -224,7 +224,7 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                     })
                     .unwrap_or(target)
             };
-            let mut text = String::new();
+            let mut resolved: Option<u32> = None;
             if db.is_user_node(id) {
                 let target = match crate::resolve::resolved_of(db, id) {
                     Resolved::Ref { value } => Some(value),
@@ -232,13 +232,16 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                     _ => None,
                 };
                 if let Some(target) = target {
-                    text = format!("{}\n", name_occ_of_def_body(db, target).0);
+                    resolved = Some(name_occ_of_def_body(db, target).0);
                 }
             }
+            // The defining occurrence's node id, or none — canonical BINARY AST (`resolve_wire`,
+            // operator P0 seq-284/307-308: no bespoke text), a root list of zero/one `Ast.Int` the `cdz`
+            // consumers decode via the shared codec, never a string parse.
             QueryResult {
                 kind: KIND_RESOLVE,
                 name: node.to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_resolve(resolved),
             }
         }
         Query::ScopeAt { node } => {

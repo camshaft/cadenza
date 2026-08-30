@@ -6409,9 +6409,9 @@ fn run_def(args: &DefArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    // The result is the defining occurrence's node id (empty = not a navigable reference).
-    let Some(target) = text.trim().parse::<u32>().ok() else {
+    // The defining occurrence's node id, decoded from the binary-AST wire (`resolve_wire`) — none = not
+    // a navigable reference; the consumer does ZERO string parsing.
+    let Some(target) = cadenza_compile_abi::decode_resolve(bytes) else {
         eprintln!(
             "{PROG}: no definition for the token at byte offset {} in {}",
             args.offset, args.file
