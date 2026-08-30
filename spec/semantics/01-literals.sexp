@@ -347,6 +347,20 @@
   (input  true)
   (output (: true Bool)))
 
+; The cross-language habit `True`/`False` reads as an unbound NAME — the lexer only classifies lowercase
+; `true`/`false` as `Leaf::Bool`. The lowercase literal is edit-distance 1 (within the typo cutoff), so
+; CDZ0101 carries a REPLACE fix to the lowercase literal (which re-lexes as the boolean). An all-caps
+; `TRUE` is too far (distance 4) → no baseless suggestion. (migrated from rcdzc
+; a_miscased_boolean_literal_suggests_the_lowercase_literal.)
+
+(case "a miscased boolean True suggests the lowercase true literal with a replace fix"
+  (input  True)
+  (error  CDZ0101 (fix (kind replace) (replacement "true"))))
+
+(case "a miscased boolean False suggests the lowercase false literal with a replace fix"
+  (input  (if False true false))
+  (error  CDZ0101 (fix (kind replace) (replacement "false"))))
+
 (case "the unit value"
   (doc    "Witnesses core-semantics.md #An Effect-Only Expression Yields The Unit Value: `unit` denotes
            the unit value, the normal-termination value of a program that produces nothing else
