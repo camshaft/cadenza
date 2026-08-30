@@ -2479,7 +2479,7 @@ fn drain_and_wrap(db: &mut Db, ctx: &HandlerCtx, mark: usize, inner: StructId) -
 /// multi-value return shape `f#ctx` yields so a caller's self-call can project the value (`.0`) and thread
 /// each slot's advanced out-state (`.{slot+1}`) forward.
 fn build_value_state_tuple(db: &mut Db, value: StructId, out_states: &[StructId]) -> StructId {
-    let head = db.push_str("tuple");
+    let head = db.push_atom(Leaf::Ctor(CompoundCtor::Tuple));
     let mut children = vec![head, value];
     children.extend_from_slice(out_states);
     db.push_list(children)

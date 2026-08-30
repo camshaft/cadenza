@@ -3,7 +3,7 @@
 //! the effects module to keep each file under the source-size lint; behavior unchanged.
 
 use super::*;
-use crate::ast::{Struct, StructId};
+use crate::ast::{CompoundCtor, Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::fxhash::FxHashMap as HashMap;
 use crate::resolve::resolved_of;
@@ -1419,9 +1419,9 @@ pub(crate) fn thread_bounded(
         // reaches HERE). The ctor string is re-pushed as a `Leaf::Str` head so the resolver re-recognizes it.
         Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             let ctor = match resolved_of(db, node) {
-                Resolved::List { .. } => "list",
-                Resolved::Set { .. } => "set",
-                _ => "tuple",
+                Resolved::List { .. } => CompoundCtor::List,
+                Resolved::Set { .. } => CompoundCtor::Set,
+                _ => CompoundCtor::Tuple,
             };
             let elems: Vec<StructId> = elems.iter().copied().collect();
             let mut cur = states;
@@ -1431,7 +1431,7 @@ pub(crate) fn thread_bounded(
                 relems.push(re);
                 cur = next;
             }
-            let head = db.push_str(ctor);
+            let head = db.push_atom(Leaf::Ctor(ctor));
             let mut children = vec![head];
             children.extend(relems);
             Some((db.push_list(children), cur))
@@ -1487,7 +1487,7 @@ pub(crate) fn thread_bounded(
                 };
                 rfields.push(rebuilt);
             }
-            let head = db.push_str("record");
+            let head = db.push_atom(Leaf::Ctor(CompoundCtor::Record));
             let mut children = vec![head];
             children.extend(rfields);
             Some((db.push_list(children), cur))
@@ -1525,7 +1525,7 @@ pub(crate) fn thread_bounded(
                 cur = next_v;
                 rentries.push(db.push_list(vec![rkey, rvalue]));
             }
-            let head = db.push_str("map");
+            let head = db.push_atom(Leaf::Ctor(CompoundCtor::Map));
             let mut children = vec![head];
             children.extend(rentries);
             Some((db.push_list(children), cur))
