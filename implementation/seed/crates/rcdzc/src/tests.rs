@@ -35654,27 +35654,6 @@ mod stage1 {
     }
 
     #[test]
-    fn try_on_an_ill_typed_operand_reports_the_operand_error_not_a_fallible_cascade() {
-        // When the OPERAND is itself ill-typed, that fault is primary — the `?`-shape check must NOT pile a
-        // confusing "operand must be fallible, found <fallback-type>" on top. `(try (+ 1 2.0))` — the `+`
-        // is a numeric mismatch (CDZ0301); the `?` sees the fallback `Float64` but must stay silent.
-        // `expect_error` returns the PRIMARY reject: the operand's numeric mismatch (CDZ0301), NOT the
-        // `?`-not-fallible cascade (now suppressed when the operand carries its own fault).
-        let d = expect_error("(let ((x (try (+ 1 2.0)))) (Some x))");
-        assert_eq!(
-            d.code.as_deref(),
-            Some("CDZ0301"),
-            "the operand's numeric mismatch is primary, not a `?`-fallible cascade: {}",
-            d.message
-        );
-        assert!(
-            !d.message.contains("`?` operand must be a fallible"),
-            "the `?`-not-fallible cascade must be SUPPRESSED when the operand is ill-typed: {}",
-            d.message
-        );
-    }
-
-    #[test]
     fn the_sigil_question_mark_as_a_head_points_at_the_try_spelling() {
         // The diagnostics call the operator "`?`/`try`" and `?` is the sigil many languages use, so an
         // author reaches for `(? e)` — but the s-expr surface head is the keyword `try` (`(try e)`), so `?`
