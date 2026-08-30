@@ -13,7 +13,6 @@
     "build": "npm run codegen && tsc -b && vite build",
     "preview": "vite preview",
     "wasm": "cd ../implementation/seed/crates/cdz-wasm && wasm-pack build --target web --release && node ../../../../guide/scripts/stage-wasm.mjs",
-    "check:examples": "node --expose-gc scripts/check-examples.mjs",
     "check:diagnostics": "node scripts/check-diagnostics.mjs",
     "check:worker-stack": "node scripts/check-worker-stack.mjs",
     "check:tuple-collection": "node scripts/check-tuple-collection.mjs",
