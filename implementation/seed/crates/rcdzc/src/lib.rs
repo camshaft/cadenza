@@ -155,9 +155,11 @@ pub mod spans;
 pub mod host;
 pub mod wit_world;
 
-// The `rcdzc` compile command surface (arg parsing + filesystem + the trace sink), factored into the
-// library so both the standalone `rcdzc` bin and the unified `cdz` bin drive ONE implementation. Also
-// a host-boundary module — NOT ported to the self-host.
+// The `rcdzc` compile DRIVER (the clap-FREE filesystem + reporting half of the host boundary), so both
+// the standalone `cdz-compile` bin (via the `rcdzc-cli` crate) and the unified `cdz` bin drive ONE
+// implementation. ARG PARSING (`clap` `CompileArgs` + the trace sink) lives in the SEPARATE `rcdzc-cli`
+// crate — keeping this compiler LIBRARY free of `clap` (operator directive 2026-08-30: "the compiler
+// should be a pure library"). A host-boundary module — NOT ported to the self-host.
 pub mod cli;
 
 pub use abi::{

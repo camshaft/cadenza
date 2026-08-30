@@ -1966,11 +1966,18 @@ dependencies = [
  "cadenza-syntax",
  "cdz-num",
  "cdz-rt",
- "clap",
  "tracing",
- "tracing-subscriber",
  "wasm-encoder 0.239.0",
  "wasmparser 0.239.0",
+]
+
+[[package]]
+name = "rcdzc-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "rcdzc",
+ "tracing-subscriber",
 ]
 
 [[package]]
