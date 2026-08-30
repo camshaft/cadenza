@@ -42,16 +42,14 @@ def from-list(xs) =
 def map(it, f: Int64 -> Int64) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => match step(s) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(p) => match p with
-      | (x, s2) => Option.Some((f(x), s2)))
+    | Option.Some(p) => let (x, s2) = p in Option.Some((f(x), s2)))
 
 /// `filter(it, p)` — keep only elements satisfying `p`. The new step drives the upstream step forward,
 /// skipping non-matching elements, via the recursive `filter-step` worker (annotated, since it recurses).
 def filter-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pair) => match pair with
-    | (x, s2) => if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p)
+  | Option.Some(pair) => let (x, s2) = pair in if p(x) then Option.Some((x, s2)) else filter-step(step, s2, p)
 
 def filter(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-step(step, s, p))
@@ -64,8 +62,7 @@ def filter(it, p: Int64 -> Bool) = match it with
 def take-while(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => match step(s) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(pair) => match pair with
-      | (x, s2) => if p(x) then Option.Some((x, s2)) else Option.None(unit))
+    | Option.Some(pair) => let (x, s2) = pair in if p(x) then Option.Some((x, s2)) else Option.None(unit))
 
 /// `filter-map(it, f)` — the fused map-then-filter: apply `f : Int64 -> Option(Int64)` to each element,
 /// keep the `Some` results, drop the `None`s (transform + select in one pass). Same-state (`List(Int64)`),
@@ -79,8 +76,7 @@ def take-while(it, p: Int64 -> Bool) = match it with
 def filter-map-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const f: Int64
   -> Option(Int64)) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pair) => match pair with
-    | (x, s2) => match f(x) with
+  | Option.Some(pair) => let (x, s2) = pair in match f(x) with
       | Option.None(_) => filter-map-step(step, s2, f)
       | Option.Some(y) => Option.Some((y, s2))
 
@@ -94,8 +90,7 @@ def filter-map(it, f: Int64 -> Option(Int64)) = match it with
 def drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), acc: Int64, const g: Int64
   -> Int64 -> Int64) = match step(s) with
   | Option.None(_) => acc
-  | Option.Some(p) => match p with
-    | (x, s2) => drive(step, s2, g(acc, x), g)
+  | Option.Some(p) => let (x, s2) = p in drive(step, s2, g(acc, x), g)
 
 /// `fold(it, acc, g)` — left-fold the iterator through `g`, seeded by `acc`. The fusing consumer.
 def fold(it, acc, g: Int64 -> Int64 -> Int64) = match it with
@@ -106,8 +101,7 @@ def count-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s:
     s
   ) with
   | Option.None(_) => n
-  | Option.Some(p) => match p with
-    | (_x, s2) => count-drive(step, s2, n + 1)
+  | Option.Some(p) => let (_x, s2) = p in count-drive(step, s2, n + 1)
 
 def count(it) = match it with
   | Iter.Mk(s, step) => count-drive(step, s, 0)
@@ -117,8 +111,7 @@ def count(it) = match it with
 def any-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => false
-  | Option.Some(pr) => match pr with
-    | (x, s2) => if p(x) then true else any-drive(step, s2, p)
+  | Option.Some(pr) => let (x, s2) = pr in if p(x) then true else any-drive(step, s2, p)
 
 def any(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => any-drive(step, s, p)
@@ -128,8 +121,7 @@ def any(it, p: Int64 -> Bool) = match it with
 def all-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => true
-  | Option.Some(pr) => match pr with
-    | (x, s2) => if p(x) then all-drive(step, s2, p) else false
+  | Option.Some(pr) => let (x, s2) = pr in if p(x) then all-drive(step, s2, p) else false
 
 def all(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => all-drive(step, s, p)
@@ -138,8 +130,7 @@ def all(it, p: Int64 -> Bool) = match it with
 def find-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pr) => match pr with
-    | (x, s2) => if p(x) then Option.Some(x) else find-drive(step, s2, p)
+  | Option.Some(pr) => let (x, s2) = pr in if p(x) then Option.Some(x) else find-drive(step, s2, p)
 
 def find(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => find-drive(step, s, p)
@@ -151,8 +142,7 @@ def find(it, p: Int64 -> Bool) = match it with
 def position-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: List(Int64), i: Int64, const p: Int64
   -> Bool) = match step(s) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(pr) => match pr with
-    | (x, s2) => if p(x) then Option.Some(i) else position-drive(step, s2, i + 1, p)
+  | Option.Some(pr) => let (x, s2) = pr in if p(x) then Option.Some(i) else position-drive(step, s2, i + 1, p)
 
 def position(it, p: Int64 -> Bool) = match it with
   | Iter.Mk(s, step) => position-drive(step, s, 0, p)
@@ -179,8 +169,7 @@ def nth-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: L
     s
   ) with
   | Option.None(_) => Option.None(unit)
-  | Option.Some(p) => match p with
-    | (x, s2) => if n <= 0 then Option.Some(x) else nth-drive(step, s2, n - 1)
+  | Option.Some(p) => let (x, s2) = p in if n <= 0 then Option.Some(x) else nth-drive(step, s2, n - 1)
 
 def nth(it, n) =
   if n < 0 then
@@ -195,8 +184,7 @@ def contains-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))),
     s
   ) with
   | Option.None(_) => false
-  | Option.Some(p) => match p with
-    | (x, s2) => if x == target then true else contains-drive(step, s2, target)
+  | Option.Some(p) => let (x, s2) = p in if x == target then true else contains-drive(step, s2, target)
 
 def contains(it, target) = match it with
   | Iter.Mk(s, step) => contains-drive(step, s, target)
@@ -207,8 +195,7 @@ def last-drive(const step: List(Int64) -> Option(Tuple(Int64, List(Int64))), s: 
     s
   ) with
   | Option.None(_) => (if have then Option.Some(seen) else Option.None(unit))
-  | Option.Some(p) => match p with
-    | (x, s2) => last-drive(step, s2, x, true)
+  | Option.Some(p) => let (x, s2) = p in last-drive(step, s2, x, true)
 
 def last(it) = match it with
   | Iter.Mk(s, step) => last-drive(step, s, 0, false)

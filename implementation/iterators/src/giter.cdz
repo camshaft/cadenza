@@ -441,8 +441,7 @@ def empty-int-source-collects-empty() =
 @test
 def next-yields-head-then-rest() = match next(from-list([42, 43])) with
   | Option.None(_) => trap("next of non-empty must be Some")
-  | Option.Some(p) => match p with
-    | (h, rest) => if h == 42 then
+  | Option.Some(p) => let (h, rest) = p in if h == 42 then
       if count(rest) == 1 then unit else trap("rest length")
     else
       trap("head value")
@@ -544,9 +543,7 @@ def zip-mixed-element-types() =
 @test
 def zip-pairs-carry-both-elements() = match next(zip(from-list([7, 8]), from-list(["x", "y"]))) with
   | Option.None(_) => trap("zip of non-empty must yield")
-  | Option.Some(p) => match p with
-    | (pair, _rest) => match pair with
-      | (l, r) => if l == 7 then
+  | Option.Some(p) => let (pair, _rest) = p in let (l, r) = pair in if l == 7 then
         if r == "x" then unit else trap("zip right elem")
       else
         trap("zip left elem")
@@ -736,9 +733,7 @@ def scan-string-accumulator() =
 @test
 def enumerate-ints-indices-climb() = match next(enumerate(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("enumerate of non-empty must yield")
-  | Option.Some(p) => match p with
-    | (pair, _rest) => match pair with
-      | (i, v) => if i == 0 then
+  | Option.Some(p) => let (pair, _rest) = p in let (i, v) = pair in if i == 0 then
         if v == 10 then unit else trap("enumerate first elem")
       else
         trap("enumerate first index")
@@ -937,9 +932,7 @@ def zip3-three-different-element-types() = match next(
     zip3(from-list(["a", "b"]), from-list([1, 2]), from-list([true, false]))
   ) with
   | Option.None(_) => trap("zip3 mixed must yield")
-  | Option.Some(p) => match p with
-    | (triple, _rest) => match triple with
-      | (s, n, b) => if s == "a" then
+  | Option.Some(p) => let (triple, _rest) = p in let (s, n, b) = triple in if s == "a" then
         if n == 1 then if b then unit else trap("zip3 bool") else trap("zip3 int")
       else
         trap("zip3 str")
@@ -953,9 +946,7 @@ def windows2-adjacent-pairs-ints() =
 @test
 def windows2-carries-both-neighbors() = match next(windows2(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("windows2 must yield")
-  | Option.Some(p) => match p with
-    | (pair, _rest) => match pair with
-      | (l, r) => if l == 10 then
+  | Option.Some(p) => let (pair, _rest) = p in let (l, r) = pair in if l == 10 then
         if r == 20 then unit else trap("windows2 right")
       else
         trap("windows2 left")
