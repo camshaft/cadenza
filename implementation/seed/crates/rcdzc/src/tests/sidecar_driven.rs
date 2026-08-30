@@ -2855,31 +2855,49 @@ fn a_scope_at_query_respects_sequential_let_scope() {
 
 #[test]
 fn an_exports_query_lists_each_export_with_its_type() {
-    // The module interface: every `(export …)` clause paired with the named def's signature.
+    // The module interface: every `(export …)` clause paired with the named def's FULL structured type
+    // payload (KIND_EXPORTS is now binary AST — `cadenza_compile_abi::decode_exports`; the type NAME
+    // rendering "(-> Int64 Int64)"/"Int64" is the CONSUMER's job, so here we assert the producer emits
+    // the right STRUCTURED payload: a function's arrow head, a value's scalar head, in export order).
     let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (v) (: 5 Int64)) \
                    (export inc) (export v))";
     let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
     assert!(!out.has_error(), "{:?}", out.diagnostics);
-    let text = artifact_text(&out, KIND_EXPORTS).expect("an exports artifact");
-    let rows: Vec<(&str, &str)> = text
-        .lines()
-        .map(|l| {
-            let mut c = l.split('\t');
-            (c.next().unwrap(), c.next().unwrap())
-        })
-        .collect();
-    // Both exports appear with their types (a function's arrow, a value's type), in export order.
-    assert_eq!(rows[0], ("inc", "(-> Int64 Int64)"), "rows: {rows:?}");
-    assert_eq!(rows[1], ("v", "Int64"), "rows: {rows:?}");
+    let bytes = artifact_bytes(&out, KIND_EXPORTS).expect("an exports artifact");
+    let exports = cadenza_compile_abi::decode_exports(bytes);
+    assert_eq!(exports.len(), 2, "both exports, in order: {exports:?}");
+    assert_eq!(exports[0].name, "inc");
+    let inc_ty = exports[0].ty.as_ref().expect("inc's type resolved");
+    assert_eq!(
+        inc_ty.head_name(inc_ty.root),
+        Some("->"),
+        "inc is a function arrow: {inc_ty:?}"
+    );
+    assert_eq!(exports[1].name, "v");
+    let v_ty = exports[1].ty.as_ref().expect("v's type resolved");
+    assert_eq!(
+        v_ty.head_name(v_ty.root),
+        Some("Int"),
+        "v is an Int scalar: {v_ty:?}"
+    );
+    assert!(
+        exports[0].node.is_some() && exports[1].node.is_some(),
+        "each export carries a name-occurrence node for go-to"
+    );
 }
 
 #[test]
 fn an_exports_query_with_no_exports_is_empty() {
-    // A module with no `(export …)` yields the empty interface (total, not an error).
+    // A module with no `(export …)` yields the empty interface (total, not an error). The binary-AST
+    // value decodes to zero entries (the wire is `(exports)` — a non-empty byte string, but an empty list).
     let src = "(module m (def (main) 42))";
     let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
     assert!(!out.has_error());
-    assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
+    let bytes = artifact_bytes(&out, KIND_EXPORTS).expect("an exports artifact");
+    assert!(
+        cadenza_compile_abi::decode_exports(bytes).is_empty(),
+        "no exports → empty interface"
+    );
 }
 
 /// The `Symbols` outline as `(name, kind)` rows, in the artifact's emit order — decoded from the

@@ -17,6 +17,7 @@ pub mod diagnostics_wire;
 pub mod doc_wire;
 pub mod effect_bind_wire;
 pub mod export_types_wire;
+pub mod exports_wire;
 pub mod func_layout_wire;
 pub mod highlight_wire;
 pub mod instantiations_wire;
@@ -31,10 +32,13 @@ pub mod result_types_wire;
 // (`REQUIRED_RUNTIME_HASH` / `DEBUG_RUNTIME_HASH` / `REQUIRED_NFC_HASH`), read by the thin `!standalone`
 // `cdz` (doctor) without linking `rcdzc`; `rcdzc::backend::wasm::runtime_abi` re-exports them.
 pub mod runtime_hash;
+pub mod scope_wire;
 pub mod sidecar;
 pub mod spans;
 pub mod symbols_wire;
 pub mod target;
+pub mod type_at_wire;
+pub mod type_info_wire;
 pub mod uses_wire;
 
 pub use abi::{
@@ -45,6 +49,7 @@ pub use closure_hash_wire::{decode_closure_hash, encode_closure_hash};
 pub use diagnostics_wire::{decode_diagnostics, encode_diagnostics};
 pub use doc_wire::{DocAnswer, decode_doc, encode_doc};
 pub use export_types_wire::{decode_export_types, encode_export_types};
+pub use exports_wire::{ExportEntry, decode_exports, encode_exports};
 pub use highlight_wire::{decode_highlight, encode_highlight};
 pub use link_map::{FileSpan, KIND_LINK_MAP, decode_link_map, encode_link_map};
 pub use name_wire::{decode_name, encode_name};
@@ -52,7 +57,10 @@ pub use opt::OptLevel;
 pub use overflow::{OverflowMode, OverflowSpec};
 pub use resolve_wire::{decode_resolve, encode_resolve};
 pub use result_types_wire::{decode_result_types, encode_result_types};
+pub use scope_wire::{ScopeBinding, decode_scope, encode_scope};
 pub use sidecar::{Query, Request, decode, encode};
 pub use symbols_wire::{decode_symbols, encode_symbols};
 pub use target::Target;
+pub use type_at_wire::{TypeAt, decode_type_at, encode_type_at};
+pub use type_info_wire::{TypeInfo, decode_type_info, encode_type_info};
 pub use uses_wire::{decode_uses, encode_uses};

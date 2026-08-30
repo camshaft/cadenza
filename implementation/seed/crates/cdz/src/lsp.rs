@@ -2653,13 +2653,10 @@ fn package_completions_at(
         let Some(lib) = files.iter().find(|f| f.name == lib_name) else {
             continue;
         };
-        // The library's exported types (name → type) and symbol kinds (name → kind), each a single-file
+        // The library's exported types (name → rendered type-name, from the binary-AST KIND_EXPORTS
+        // value) and symbol kinds (name → kind, still the TAB-text Symbols query), each a single-file
         // query over the library's OWN arenas — no linking needed for these per-file facts.
-        let types = query_columns(
-            &lib.arenas,
-            cadenza_compile_abi::sidecar::Query::Exports,
-            cadenza_compile_abi::sidecar::KIND_EXPORTS,
-        );
+        let types = export_type_details(&lib.arenas);
         let kinds: std::collections::HashMap<String, String> = query_symbols(&lib.arenas)
             .into_iter()
             .map(|(n, k, _)| (n, k))
@@ -2726,20 +2723,27 @@ fn imported_names(arenas: &cadenza_syntax::Arenas) -> Vec<(String, Vec<String>)>
     out
 }
 
-/// Run a `name<TAB>value<TAB>…` query over `arenas` and collect the first two columns into a `name →
-/// value` map (later lines win on a duplicate key, matching insertion). Used to read a library's
-/// `Exports` (name → type) and `Symbols` (name → kind) as lookup tables. Empty on a query with no answer.
-fn query_columns(
+/// The library's exported `name → rendered type-name` map, from the binary-AST `KIND_EXPORTS` value.
+/// Decodes the structured exports value
+/// (`cadenza_compile_abi::decode_exports`) and renders each RESOLVED type via the shared cadenza-syntax
+/// renderer (`render_ty_scheme` — an export signature may be polymorphic, so it gets stable Var-lettering).
+/// An export whose type did not resolve carries no payload and is OMITTED (no completion detail for it) —
+/// the same graceful degrade the TAB reader gave a missing "unknown" column. Empty on no answer.
+fn export_type_details(
     arenas: &cadenza_syntax::Arenas,
-    query: cadenza_compile_abi::sidecar::Query,
-    kind: &str,
 ) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
-    if let Some(answer) = run_query_text(arenas, query, kind) {
-        for line in answer.lines() {
-            let mut cols = line.splitn(3, '\t');
-            if let (Some(name), Some(value)) = (cols.next(), cols.next()) {
-                map.insert(name.to_string(), value.to_string());
+    let compiled = crate::run_sidecar(
+        arenas,
+        cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Exports),
+    );
+    if let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_EXPORTS) {
+        for e in cadenza_compile_abi::decode_exports(bytes) {
+            if let Some(a) = &e.ty {
+                map.insert(
+                    e.name,
+                    cadenza_syntax::render_ty::render_ty_scheme(a, a.root),
+                );
             }
         }
     }

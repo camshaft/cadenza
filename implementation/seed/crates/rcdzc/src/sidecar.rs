@@ -265,42 +265,46 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
         Query::Exports => {
-            // The module's interface: each `(export NAME)` clause paired with the named def's type
-            // (its signature, via `def_scheme`), one per line `name<TAB>type<TAB>def-name-node-id`.
-            // The node id is the exported def's NAME occurrence (sig's first child) so a consumer can
-            // jump to it; `-` when the export names no definition. Deterministic (export order).
-            let exports: Vec<(String, Option<usize>, StructId)> = db
-                .exports
-                .iter()
-                .map(|e| (e.name.clone(), e.def, e.occ))
-                .collect();
-            let mut text = String::new();
-            for (name, def, occ) in exports {
-                let (ty, name_node) = match def {
+            // The module's interface: each `(export NAME)` clause paired with the named def's FULL
+            // structured type payload (its generalized signature, via `def_scheme` → `encode_ty_payload`)
+            // and the def's NAME occurrence (sig's first child, for go-to). Carried as ONE canonical
+            // binary-AST value `(exports (export <name> <ty-opt> <node-opt>)…)` via the shared
+            // `cadenza_compile_abi::exports_wire` codec — NO `render_name` string on the wire (operator
+            // 307: full type AST; the consumer renders a display name from the decoded structure). An
+            // export naming no def carries both optionals absent; an unsolved scheme carries `ty` absent.
+            // Deterministic (export order).
+            let exports: Vec<(String, Option<usize>)> =
+                db.exports.iter().map(|e| (e.name.clone(), e.def)).collect();
+            let mut entries: Vec<cadenza_compile_abi::ExportEntry> =
+                Vec::with_capacity(exports.len());
+            for (name, def) in exports {
+                let (ty, node) = match def {
                     Some(d) => {
-                        let ty = match crate::infer::def_scheme(db, d) {
-                            Some(scheme) => scheme.ty.render_name(&db.name_ctx()),
-                            None => "unknown".to_string(),
-                        };
+                        // The generalized scheme type → structured payload sub-AST, extracted into a
+                        // standalone arena; `None` when the def's type could not be solved.
+                        let ty = crate::infer::def_scheme(db, d).map(|scheme| {
+                            let root = crate::eval::encode_ty_payload(db, &scheme.ty);
+                            extract_subtree(&db.ast, root)
+                        });
                         // The def's NAME occurrence (the sig's first child), for go-to; fall back to the
-                        // export clause occurrence if the sig is malformed.
+                        // sig occurrence itself if the signature is malformed.
                         let sig = db.defs[d].sig_occ;
                         let name_node = match db.ast.get(sig) {
                             Struct::List(kids) => kids.first().copied().unwrap_or(sig),
                             _ => sig,
                         };
-                        (ty, name_node.0.to_string())
+                        (ty, Some(name_node.0))
                     }
-                    // An export naming no definition — a diagnostic elsewhere; here, report it as unknown.
-                    None => ("unknown".to_string(), "-".to_string()),
+                    // An export naming no definition — both optionals absent (reported as "unknown" by
+                    // the consumer, which is where any diagnostic surfaces).
+                    None => (None, None),
                 };
-                let _ = occ;
-                text.push_str(&format!("{name}\t{ty}\t{name_node}\n"));
+                entries.push(cadenza_compile_abi::ExportEntry { name, ty, node });
             }
             QueryResult {
                 kind: KIND_EXPORTS,
                 name: "exports".to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_exports(&entries),
             }
         }
         Query::ExportedTypes => {
