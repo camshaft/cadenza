@@ -362,7 +362,7 @@ fn oracle_trials_ast(rec: &Record) -> Vec<u8> {
                 let cl = str_leaf(&mut b, code);
                 form(&mut b, "expect-warning", vec![cl])
             }
-            Expect::Declines(_) => form(&mut b, "expect-declines", vec![]),
+            Expect::Declines(..) => form(&mut b, "expect-declines", vec![]),
         };
         tk.push(e);
         trials.push(b.list(tk));
@@ -445,7 +445,7 @@ fn expect_kind(rec: &Record) -> &'static str {
         // outcome graded from the diagnostic (grade_compile_warning), distinct from `error` (compile must
         // REFUSE). The exec router handles `warning` as compile-must-succeed + grade-from-diag (no run).
         Some(Expect::Warning(..)) => "warning",
-        Some(Expect::Declines(_)) => "declines",
+        Some(Expect::Declines(..)) => "declines",
         None => "output", // a case always has ≥1 trial; default is harmless
     }
 }
@@ -597,8 +597,14 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
             let leaf = str_leaf(b, reason);
             form(b, "expect-trap", vec![leaf])
         }
-        Expect::Declines(msg) => {
-            let leaves: Vec<_> = msg.iter().map(|m| str_leaf(b, m)).collect();
+        Expect::Declines(code, msg) => {
+            // Shred to `(expect-declines [CODE] msg…)` — the optional CDZ code leads (the grader reads leaf[0]
+            // as the pinned decline-code when it is `CDZxxxx`-shaped, else all leaves are message substrings).
+            let mut leaves: Vec<_> = Vec::new();
+            if let Some(c) = code {
+                leaves.push(str_leaf(b, c));
+            }
+            leaves.extend(msg.iter().map(|m| str_leaf(b, m)));
             form(b, "expect-declines", leaves)
         }
     }

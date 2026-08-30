@@ -263,10 +263,12 @@ pub enum Expect {
     /// shape — e.g. a type with no boundary representation, per `component-abi.md` §A Type That Has No
     /// Defined Boundary Representation Must Not Appear In An Exported Or Imported Signature). Grades Pass
     /// when the compiler declines, Fail when it emits (the "declines rather than miscompiles" property).
-    /// The optional field is a load-bearing SUBSTRING of the decline's diagnostic MESSAGE the corpus pins
-    /// (`(declines (message "phrase"))`, repeatable — ALL required) — the gate additionally requires the
-    /// decline diagnostic to CONTAIN every phrase (operator seq353). Empty = any decline passes (historical).
-    Declines(Vec<String>),
+    /// The optional first field PINS the decline's error-CODE (a `CDZxxxx` leaf, e.g. the seq-286 coded-decline
+    /// umbrella `CDZ0900` for a not-yet-built construct): `(declines CDZ0900 …)`. `None` = the classic form
+    /// (any code / codeless). The `Vec` holds load-bearing SUBSTRINGS of the decline's diagnostic MESSAGE the
+    /// corpus pins (`(declines … (message "phrase"))`, repeatable — ALL required; the gate requires the
+    /// decline diagnostic to CONTAIN every phrase, operator seq353). Empty vec = any message passes.
+    Declines(Option<String>, Vec<String>),
 }
 
 /// A platform-conformance case (`(platform-case "title" …)`) — the runtime/platform analog of a
@@ -381,6 +383,12 @@ pub struct ExpectMessage {
 /// EVERY diagnostic-message substring pin (operator seq353) shared by `(error …)`/`(warning …)`/
 /// `(declines …)` — one per `(message STR)` child, in order, REPEATABLE (all AND-required at grade). Empty
 /// when no well-formed `(message STR)` child is present (code-only).
+/// A `CDZxxxx` error-code token (four digits) — the discriminator for `(declines …)`'s OPTIONAL leading
+/// code (a bare message/prose leaf never matches this).
+fn is_cdz_code(s: &str) -> bool {
+    s.len() == 7 && s.starts_with("CDZ") && s[3..].bytes().all(|b| b.is_ascii_digit())
+}
+
 fn message_clauses(a: &Arenas, tail: &[StructId]) -> Vec<String> {
     tail.iter()
         .filter_map(|&child| {
@@ -600,10 +608,15 @@ pub fn render(records: &[Record]) -> String {
                     out.push_str("trap ");
                     out.push_str(reason);
                 }
-                // `declines`, plus ` (message "phrase")` when the case pins the decline's diagnostic prose;
-                // bare `declines` (byte-identical to before) when it does not.
-                Expect::Declines(message) => {
+                // `declines`, plus ` CDZxxxx` when the case pins the decline's error-code (seq-286), plus
+                // ` (message "phrase")` when it pins the diagnostic prose; bare `declines` (byte-identical to
+                // before) when it pins neither.
+                Expect::Declines(code, message) => {
                     out.push_str("declines");
+                    if let Some(c) = code {
+                        out.push(' ');
+                        out.push_str(c);
+                    }
                     for m in message {
                         out.push_str(" (message \"");
                         out.push_str(m);
@@ -1049,16 +1062,21 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                 }
             }
             Some("declines") => {
-                // `(declines)` or `(declines (message "phrase"))` — closes a trial that must produce NO
-                // artifact: the compiler declines (codelessly). The optional message pins a substring of
-                // the decline's diagnostic prose (so it must NAME the actionable reason, not just refuse).
-                let message = a
-                    .as_form(clause, "declines")
-                    .map(|tail| message_clauses(a, tail))
-                    .unwrap_or_default();
+                // `(declines)`, `(declines CDZ0900)`, `(declines CDZ0900 (message "phrase"))`, or the classic
+                // `(declines (message "phrase"))` — closes a trial that must produce NO artifact (the compiler
+                // declines). An optional leading `CDZxxxx` NAME leaf PINS the decline's error-code (seq-286
+                // coded-decline umbrella); `(message …)` clauses pin diagnostic-prose substrings (all required).
+                let tail = a.as_form(clause, "declines");
+                let code = tail
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| a.as_name(id))
+                    .filter(|c| is_cdz_code(c))
+                    .map(str::to_string);
+                // `message_clauses` scans for `(message …)` forms, so it ignores a leading bare code name.
+                let message = tail.map(|t| message_clauses(a, t)).unwrap_or_default();
                 trials.push(Trial {
                     call: pending_call.take(),
-                    expect: Expect::Declines(message),
+                    expect: Expect::Declines(code, message),
                     diag: None,
                 });
             }
@@ -2148,7 +2166,7 @@ mod tests {
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].trials.len(), 1);
         assert!(recs[0].trials[0].call.is_none());
-        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(_)));
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(..)));
     }
 
     /// A `(declines)` renders to a bare `expect\tdeclines` line (no payload after the keyword).
@@ -2179,7 +2197,7 @@ mod tests {
         .unwrap();
         assert_eq!(recs[0].trials.len(), 1);
         assert_eq!(recs[0].trials[0].call.as_ref().unwrap().export, "mk");
-        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(_)));
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(..)));
     }
 
     /// A `(then <arg>…)` after a `(call …)` records a SECOND call on the same handle (borrow<t>
