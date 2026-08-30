@@ -713,50 +713,18 @@ fn an_unbound_name_close_to_a_def_suggests_it_with_a_heuristic_fix() {
 
 #[test]
 fn a_misspelled_form_keyword_head_suggests_the_grammar_keyword() {
-    // A misspelled GRAMMAR keyword in HEAD position (`(mtch …)` for `match`, `(le …)` for `let`) is an
-    // unbound name — but a correctly-spelled keyword is dispatched structurally, so the pool never
-    // offered the keywords and the typo got no suggestion (and often cascaded). In head position the
-    // GRAMMAR keywords now join the candidate set, so the CDZ0101 names the keyword AND carries a
-    // replace fix that clears the fault (verified by re-check).
-    for (src, want) in [
-        (
-            "(module m (def (f (: n Int64)) (mtch n (0 1) (_ 2))) (export f))",
-            "match",
-        ),
-        (
-            "(module m (def (f (: b Bool)) (iff b 1 2)) (export f))",
-            "if",
-        ),
-        ("(module m (def (f) (le ((x 5)) x)) (export f))", "let"),
-        (
-            "(module m (def (f (: b Bool)) (annd b b)) (export f))",
-            "and",
-        ),
-    ] {
-        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-        assert!(
-            d.message.contains(&format!("did you mean `{want}`?")),
-            "the head typo should suggest `{want}`: {}",
-            d.message
-        );
-    }
-    // NOT in head position: a keyword-shaped typo in ARGUMENT position gets NO grammar suggestion (it
-    // could not have been a keyword there). `(g mtch)` — `mtch` is an operand, not a form head.
+    // The POSITIVE faces migrated to corpus 02-binding-and-control: the four head-position keyword typos
+    // (`mtch`→`match`, `iff`→`if`, `le`→`let`, `annd`→`and`) each get a "did you mean `<kw>`?" suggestion,
+    // and a head typo NEARER to a real def wins (`matchee`→`matcher`). What STAYS here is the
+    // ARGUMENT-POSITION NON-suggestion face — a suggestion-ABSENCE the corpus grades only `todo`: the
+    // grammar keywords join the candidate pool ONLY in head position, so `(g mtch)` (mtch as an operand)
+    // gets NO grammar suggestion.
     let arg = "(module m (def (g x) x) (def (f) (g mtch)) (export f))";
     let d = compile_component(&crate::codec::encode(&parse(arg))).expect_err("must reject");
+    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
     assert!(
         !d.message.contains("did you mean `match`?"),
         "an argument-position typo must not suggest a grammar keyword: {}",
-        d.message
-    );
-    // NO OVERREACH: a real DEF the head typo is NEARER to still wins over a keyword — `matchee` is
-    // distance 1 from the def `matcher`, distance 3 from `match`, so the def is suggested.
-    let def = "(module m (def (matcher x) x) (def (f) (matchee 5)) (export f))";
-    let d = compile_component(&crate::codec::encode(&parse(def))).expect_err("must reject");
-    assert!(
-        d.message.contains("did you mean `matcher`?"),
-        "a nearer def wins over a grammar keyword: {}",
         d.message
     );
 }

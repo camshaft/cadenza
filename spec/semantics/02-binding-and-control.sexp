@@ -6134,6 +6134,33 @@
   (input  (do (def (compute x) x) (def (main) (computee 1)) (export main)))
   (error  CDZ0101 (message "did you mean `compute`?") (fix (kind replace) (replacement "compute"))))
 
+; A misspelled GRAMMAR keyword in HEAD position is an unbound name — but a correctly-spelled keyword is
+; dispatched structurally, so the keywords only join the candidate pool in HEAD position. A head typo
+; therefore names the keyword (`mtch`→`match`, `iff`→`if`, `le`→`let`, `annd`→`and`); a real DEF the typo
+; is NEARER to still wins (`matchee` is distance 1 from `matcher`, distance 3 from `match`). (migrated from
+; rcdzc a_misspelled_form_keyword_head_suggests_the_grammar_keyword — the argument-position NON-suggestion
+; face stays a rust residue, a suggestion-ABSENCE the corpus grades only todo.)
+
+(case "a misspelled match keyword in head position suggests match"
+  (input  (do (def (f (: n Int64)) (mtch n (0 1) (_ 2))) (export f)))
+  (error  CDZ0101 (message "did you mean `match`?")))
+
+(case "a misspelled if keyword in head position suggests if"
+  (input  (do (def (f (: b Bool)) (iff b 1 2)) (export f)))
+  (error  CDZ0101 (message "did you mean `if`?")))
+
+(case "a misspelled let keyword in head position suggests let"
+  (input  (do (def (f) (le ((x 5)) x)) (export f)))
+  (error  CDZ0101 (message "did you mean `let`?")))
+
+(case "a misspelled and keyword in head position suggests and"
+  (input  (do (def (f (: b Bool)) (annd b b)) (export f)))
+  (error  CDZ0101 (message "did you mean `and`?")))
+
+(case "a head typo nearer to a real def suggests the def over a grammar keyword"
+  (input  (do (def (matcher x) x) (def (f) (matchee 5)) (export f)))
+  (error  CDZ0101 (message "did you mean `matcher`?")))
+
 ; The DIVIDE-BY-ZERO face of the same elision: the trap-observation rule is about WHETHER the value is
 ; observed, not WHICH trap it would raise. An unused binding whose init is a divide-by-zero (`(/ 100 d)`
 ; at d = 0) is elided exactly as the overflow one above — the ÷0 trap does not occur and the body's value
