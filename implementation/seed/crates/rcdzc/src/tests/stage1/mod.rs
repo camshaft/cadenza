@@ -1232,11 +1232,15 @@ fn two_distinct_names_bound_to_the_same_value_are_a_runtime_overwrite_not_a_dupl
 
 #[test]
 fn a_scalar_member_access_reports_one_coded_error_not_a_bare_plus_rich_duplicate() {
-    // A direct member access on a non-record scalar `(. 5 x)` used to report TWICE: `infer`'s RICH
-    // "member access requires a record, found Int64" (names the type) AND the emit path's BARE
-    // "member access requires a record" (no type) — at DIFFERENT nodes (the projection vs the enclosing
-    // apply), so the node-keyed dedup missed the pair. `dedup_faults` now drops the bare form when the
-    // rich "…, found <T>" is present. ONE coded error, and it is the type-naming one.
+    // The DEDUP residual (the surviving type/arity-naming MESSAGES moved to corpus
+    // 05-compound-types "a called scalar member access surfaces the type-naming message" +
+    // "a called tuple index out of range surfaces the arity-naming message"). What stays here is the
+    // one-error guarantee the corpus CANNOT express: `(count N)`/`(no-other-errors)` reason over CODED
+    // faults only, and the deduped duplicate is the emit path's UNCODED bare decline. A direct member
+    // access on a non-record scalar `(. 5 x)` used to report TWICE — `infer`'s rich "…, found Int64"
+    // (coded) AND the emit path's bare "member access requires a record" (uncoded) — at DIFFERENT nodes,
+    // so the node-keyed dedup missed the pair. `dedup_faults` now drops the bare form when the rich
+    // "…, found <T>" is present. Exactly ONE error survives.
     let errs: Vec<crate::abi::Diagnostic> = crate::compile::compile(
         &[crate::abi::Artifact::new(
             crate::abi::Artifact::KIND_AST,
@@ -1252,16 +1256,11 @@ fn a_scalar_member_access_reports_one_coded_error_not_a_bare_plus_rich_duplicate
     assert_eq!(
         errs.len(),
         1,
-        "a scalar member access = ONE error, got: {:?}",
+        "a scalar member access = ONE error (no bare+rich duplicate), got: {:?}",
         errs.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-    assert!(
-        errs[0].message.contains("found Int64"),
-        "the surviving error is the type-naming one: {}",
-        errs[0].message
-    );
-    // The TUPLE-INDEX twin: `(. (tuple 1 2) 5)` similarly reported the bare "tuple index 5 is out of
-    // range" AND the rich "… for a 2-element tuple"; now ONE, the arity-naming one.
+    // The TUPLE-INDEX twin: `(. (tuple 1 2) 5)` similarly reported the bare (uncoded) "tuple index 5 is
+    // out of range" AND the rich "… for a 2-element tuple"; now ONE.
     let terrs: Vec<crate::abi::Diagnostic> = crate::compile::compile(
         &[crate::abi::Artifact::new(
             crate::abi::Artifact::KIND_AST,
@@ -1279,13 +1278,8 @@ fn a_scalar_member_access_reports_one_coded_error_not_a_bare_plus_rich_duplicate
     assert_eq!(
         terrs.len(),
         1,
-        "a tuple index OOB = ONE error, got: {:?}",
+        "a tuple index OOB = ONE error (no bare+rich duplicate), got: {:?}",
         terrs.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    assert!(
-        terrs[0].message.contains("for a 2-element tuple"),
-        "the surviving error names the arity: {}",
-        terrs[0].message
     );
 }
 
