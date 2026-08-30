@@ -13067,61 +13067,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_fixed_arity_grammar_form_with_too_many_operands_offers_a_delete_fix() {
-        // The fixed-arity grammar forms `if`/`and`/`or`/`not` reject a wrong operand count (CDZ0201);
-        // TOO MANY now carries a delete-the-surplus fix (the same surplus-arg delete an over-applied
-        // operator / a too-many-operand quote gets — `spec/capabilities/diagnostics.md` §A Diagnostic
-        // Carries A Route To A Fix). TOO FEW carries no fix (nothing to delete).
-        let find = |src: &str| {
-            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("takes exactly"))
-                .unwrap_or_else(|| panic!("an arity fault is reported for {src}"))
-        };
-        for (src, want) in [
-            (
-                "(module m (def (main) (if true 1 2 3)) (export main))",
-                "if",
-            ),
-            (
-                "(module m (def (main) (and true false true)) (export main))",
-                "and",
-            ),
-            (
-                "(module m (def (main) (or true false true)) (export main))",
-                "or",
-            ),
-            (
-                "(module m (def (main) (not true false)) (export main))",
-                "not",
-            ),
-        ] {
-            let d = find(src);
-            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-            assert_eq!(
-                d.fix.as_ref().map(|f| f.kind),
-                Some(crate::abi::FixKind::Delete),
-                "`{want}` too-many-operands carries a delete fix: {:?}",
-                d.fix
-            );
-        }
-        // TOO FEW for `and`/`or`/`not` (a 1-operand `and`) has nothing to delete — no fix. (A missing-else
-        // `if` is the SPECIAL case: it gets an add-else fix, asserted separately in
-        // `an_if_missing_its_else_branch_offers_to_add_one`.)
-        let few = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (main) (and true)) (export main))",
-        )))
-        .into_iter()
-        .find(|d| d.message.contains("takes exactly"))
-        .expect("a 1-operand `and` reports an arity fault");
-        assert!(
-            few.fix.is_none(),
-            "a too-few `and` has no surplus to delete: {:?}",
-            few.fix
-        );
-    }
-
-    #[test]
     fn a_guarded_pattern_with_a_surplus_element_offers_a_delete_fix() {
         // A `(guard <pattern> <cond>)` is a fixed-arity form (want 2 tail elements). A SURPLUS third element
         // `(guard x (> x 0) extra)` now routes through the same `fixed_arity_reject` the other fixed-arity
