@@ -98,7 +98,7 @@ def cbin-of(op: Int64, t: Ty, l: Core, r: Core) = (if is-int-ty(t)
   // width; a deferred width would be invalid). A concrete narrow/64 width passes through. This is the
   // deferred→ground boundary for a top-level all-literal arith; a deferred operand that MET a narrow sibling
   // already grounded in infer.
-  then (match int-parts-of(t) with | (s, w) => Core.CBin(op, s, w, l, r))
+  then (let (s, w) = int-parts-of(t) in Core.CBin(op, s, w, l, r))
   else Core.CBin(op, true, 64, l, r))
 
 /// Lower the subtree at `id`, reading the pre-built resolve column `rcol` (for var canonicalization) and
@@ -562,8 +562,8 @@ def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(Int64
   (match entries with
     | [] => acc
     | [e, .. rest] =>
-        (match e with
-          | (nameId, bodyId) =>
+        (
+          let (nameId, bodyId) = e in
               // Include EVERY def in the def-env: self-recursive (fac, for CCall dispatch), MUTUALLY-recursive
               // (ev/od — see below), AND non-recursive (HO-3: a def used as a fn-VALUE like `inc` in
               // `(apply inc 41)` is reached via CFnRefVar/CFnRef name dispatch). Normal calls are UNAFFECTED —
@@ -629,13 +629,13 @@ def parse-of(ts: List(Tok)) = parse-tokens(ts)
 @test
 def lw-literal() =
   // "5" → Some(CNum 5).
-  (match parse-of([n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(5)]) in
     (match lower-tree(tree, root) with | Option.Some(c) => (if is-cnum(c, 5) then unit else trap("CNum 5")) | Option.None(_) => trap("a literal lowers")))
 
 @test
 def lw-add() =
   // "1 + 2" → Some(CBin(+, CNum 1, CNum 2)).
-  (match parse-of([n(1), plus(), n(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(1), plus(), n(2)]) in
     (match lower-tree(tree, root) with
       | Option.Some(Core.CBin(op, _, _, l, r)) =>
         (if op == 43 then (if is-cnum(l, 1) then (if is-cnum(r, 2) then unit else trap("right CNum 2")) else trap("left CNum 1")) else trap("+ op"))
@@ -644,7 +644,7 @@ def lw-add() =
 @test
 def lw-var-canonicalizes-to-binder() =
   // "let x = 2 in x" → CLet(binderId, CNum 2, CVar binderId): the body var's CVar carries the LET's node-id.
-  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
     (match lower-tree(tree, root) with
       | Option.Some(Core.CLet(binderId, cv, cb)) =>
         (if binderId == root then
@@ -655,20 +655,20 @@ def lw-var-canonicalizes-to-binder() =
 @test
 def lw-ill-typed-has-no-core() =
   // an unbound "x" is TErr → NO core form (None). absence≠value: the ill-typed program has no lowering.
-  (match parse-of([var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([var(1)]) in
     (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("ill-typed program has no core form")))
 
 @test
 def lw-err-in-subtree-blocks-lowering() =
   // "x + 1" (x unbound) → the whole thing is TErr → None (the error blocks lowering of the parent too).
-  (match parse-of([var(1), plus(), n(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([var(1), plus(), n(1)]) in
     (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("a + with an unbound operand does not lower")))
 
 @test
 def lw-shadowing-canonical-names-distinct() =
   // "let x = 1 in let x = 2 in x" → the inner x's CVar binds to the INNER let's node-id, not the outer's.
   // Proves canonicalization disambiguates shadowed names by binder identity.
-  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, _, innerLetId)) =>
         (match lower-tree(tree, root) with
@@ -686,7 +686,7 @@ def lw-shadowing-canonical-names-distinct() =
 def lw-milestone-lowers() =
   // THE MILESTONE `let x = 2 in x * 3 + 1` lowers to CLet(root, CNum 2, CBin(+, CBin(*, CVar root, CNum 3),
   // CNum 1)) — the exact Core the Inc-5 evaluator will run to 7 (env{root->2}: 2*3+1 = 7).
-  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) in
     (match lower-tree(tree, root) with
       | Option.Some(Core.CLet(binderId, cv, body)) =>
         (if binderId == root then
@@ -712,7 +712,7 @@ def lw-annlit-lowers-to-narrow-cnum() =
   // its (signed, width) — every other Core node is pinned, this one was not. `NAnnLit` has no producing Tok
   // (it comes from the sread annotation path), so build the arena DIRECTLY: a single-node tree holding
   // `NAnnLit(200, 0, 8)` = UInt8 200 must lower to `CNum(200, unsigned, 8)` — NOT the canonical (true,64).
-  (match add-node(empty-tree(), Node.NAnnLit(200, 0, 8)) with | (root, tree) =>
+  (let (root, tree) = add-node(empty-tree(), Node.NAnnLit(200, 0, 8)) in
     (match lower-tree(tree, root) with
       | Option.Some(c) => (if is-cnum-w(c, 200, false, 8) then unit else trap("UInt8 200 lowers to CNum(200, unsigned, 8)"))
       | Option.None(_) => trap("an annotated literal lowers")))
@@ -721,7 +721,7 @@ def lw-annlit-lowers-to-narrow-cnum() =
 def lw-annlit-signed-narrow() =
   // the signed twin: `NAnnLit(-5, 1, 8)` = Int8 -5 lowers to `CNum(-5, signed, 8)` (signed flag rides across,
   // width 8 preserved — the flow emit reads to pick i32-vs-i64 codegen).
-  (match add-node(empty-tree(), Node.NAnnLit(0 - 5, 1, 8)) with | (root, tree) =>
+  (let (root, tree) = add-node(empty-tree(), Node.NAnnLit(0 - 5, 1, 8)) in
     (match lower-tree(tree, root) with
       | Option.Some(c) => (if is-cnum-w(c, 0 - 5, true, 8) then unit else trap("Int8 -5 lowers to CNum(-5, signed, 8)"))
       | Option.None(_) => trap("a signed annotated literal lowers")))
@@ -733,9 +733,9 @@ def lw-narrow-arith-cbin-preserves-width() =
   // + the literal-level lw-annlit-lowers-to-narrow-cnum: the width flows literal→infer→lower so eval's CBin
   // overflow-check fires at width 8 (Int8 100+20=120 fits; 100+100=200 traps — pinned in eval-db). Completes
   // the narrow-width flow across all three columns (infer TIntW → lower CBin width → eval overflow-check).
-  (match add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) with | (lId, t1) =>
-    (match add-node(t1, Node.NAnnLit(20, 1, 8)) with | (rId, t2) =>
-      (match add-node(t2, Node.NBin(43, lId, rId)) with | (root, tree) =>
+  (let (lId, t1) = add-node(empty-tree(), Node.NAnnLit(100, 1, 8)) in
+    (let (rId, t2) = add-node(t1, Node.NAnnLit(20, 1, 8)) in
+      (let (root, tree) = add-node(t2, Node.NBin(43, lId, rId)) in
         (match lower-tree(tree, root) with
           | Option.Some(Core.CBin(_, _, w, _, _)) => (if w == 8 then unit else trap("Int8 + Int8 lowers to a CBin of width 8, not widened to 64"))
           | _ => trap("Int8 + Int8 lowers to a CBin")))))
@@ -745,9 +745,9 @@ def lw-napp-nullary-inlines-body-slice2() =
   // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeName, -1) lowers by INLINING the callee body's
   // Core (β-reduction over zero args — no new Core node). Body = NLit(42), registered under name 900 via
   // record-def; the call NApp(900, -1) resolves name→body via def-body-of and lowers to CNum 42.
-  (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(42)) in
     (let t1d = record-def(t1, 900, bodyId) in
-     (match add-node(t1d, Node.NApp(900, -1)) with | (root, tree) =>
+     (let (root, tree) = add-node(t1d, Node.NApp(900, -1)) in
       (match lower-tree(tree, root) with
         | Option.Some(c) => (if is-cnum(c, 42) then unit else trap("nullary NApp inlines the body → CNum 42"))
         | Option.None(_) => trap("a nullary NApp lowers to its inlined body Core")))))
@@ -755,9 +755,9 @@ def lw-napp-nullary-inlines-body-slice2() =
 @test
 def lw-napp-with-arg-still-no-core() =
   // a call WITH an arg (argId != -1) is the param slice (not yet) → no core form. Pins the nullary/param boundary.
-  (match add-node(empty-tree(), Node.NLit(7)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
-      (match add-node(t2, Node.NApp(bodyId, argId)) with | (root, tree) =>
+  (let (bodyId, t1) = add-node(empty-tree(), Node.NLit(7)) in
+    (let (argId, t2) = add-node(t1, Node.NLit(5)) in
+      (let (root, tree) = add-node(t2, Node.NApp(bodyId, argId)) in
         (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("a call WITH an arg has no core until the param slice")))))
 
 @test
@@ -768,7 +768,7 @@ def lw-recursive-nullary-call-lowers-to-ccall-slice-b1a() =
   // back to 900 → recursive. Real infer marks a recursive NApp TErr (until B2), so lower-tree would filter it
   // at the tcol gate; we call `lower-node` DIRECTLY with a synthetic tcol typing the call node TIntW(true,64)
   // — the only way to reach (and thus pin) the new CCall lowering path in B1a.
-  (match add-node(empty-tree(), Node.NApp(900, -1)) with | (callId, t1) =>
+  (let (callId, t1) = add-node(empty-tree(), Node.NApp(900, -1)) in
     (let tree = record-def(t1, 900, callId) in
      (let tcol = Map.insert((Map.empty : Map(Int64, Ty)), callId, mk-int(true, 64)) in
       (match lower-node(tree, callId, (Map.empty : Map(Int64, Resolved)), tcol) with
@@ -787,9 +787,9 @@ def lw-recursive-call-splices-arg-into-ccall-slice-b1a() =
   // rec-arg-count 1 == callee-param-count 1). The parser ALWAYS records a def's params, so a real `f(n)=…`
   // tree carries this; the fixture records it too, else the arity gate reads 0 params and declines a
   // correctly-applied call.
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t0) =>
-    (match add-node(t0, Node.NLit(42)) with | (litId, t1) =>
-      (match add-node(t1, Node.NApp(900, litId)) with | (callId, t2) =>
+  (let (paramId, t0) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (litId, t1) = add-node(t0, Node.NLit(42)) in
+      (let (callId, t2) = add-node(t1, Node.NApp(900, litId)) in
         (let treeD = record-def(t2, 900, callId) in
          (let tree = record-param(treeD, 900, paramId) in
           (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), callId, mk-int(true, 64)), litId, mk-int(true, 64)) in
@@ -805,18 +805,18 @@ def lw-recursive-call-splices-arg-into-ccall-slice-b1a() =
 /// SEPARATE def (not inlined in the @test) so neither function grows large enough to hit the self-host codegen
 /// size-trap (the class v-inference owns). Returns the tree.
 def b1b-fac-tree() =
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NVar(1)) with | (nCond, t2) =>
-      (match add-node(t2, Node.NLit(1)) with | (oneCond, t3) =>
-        (match add-node(t3, Node.NBin(60, nCond, oneCond)) with | (condId, t4) =>
-          (match add-node(t4, Node.NLit(1)) with | (thenId, t5) =>
-            (match add-node(t5, Node.NVar(1)) with | (nMul, t6) =>
-              (match add-node(t6, Node.NVar(1)) with | (nArg, t7) =>
-                (match add-node(t7, Node.NLit(1)) with | (oneArg, t8) =>
-                  (match add-node(t8, Node.NBin(45, nArg, oneArg)) with | (subId, t9) =>
-                    (match add-node(t9, Node.NApp(900, subId)) with | (callId, t10) =>
-                      (match add-node(t10, Node.NBin(42, nMul, callId)) with | (elseId, t11) =>
-                        (match add-node(t11, Node.NIf(condId, thenId, elseId)) with | (bodyId, t12) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (nCond, t2) = add-node(t1, Node.NVar(1)) in
+      (let (oneCond, t3) = add-node(t2, Node.NLit(1)) in
+        (let (condId, t4) = add-node(t3, Node.NBin(60, nCond, oneCond)) in
+          (let (thenId, t5) = add-node(t4, Node.NLit(1)) in
+            (let (nMul, t6) = add-node(t5, Node.NVar(1)) in
+              (let (nArg, t7) = add-node(t6, Node.NVar(1)) in
+                (let (oneArg, t8) = add-node(t7, Node.NLit(1)) in
+                  (let (subId, t9) = add-node(t8, Node.NBin(45, nArg, oneArg)) in
+                    (let (callId, t10) = add-node(t9, Node.NApp(900, subId)) in
+                      (let (elseId, t11) = add-node(t10, Node.NBin(42, nMul, callId)) in
+                        (let (bodyId, t12) = add-node(t11, Node.NIf(condId, thenId, elseId)) in
                           (let treeD = record-def(t12, 900, bodyId) in
                            record-param(treeD, 900, paramId))))))))))))))
 
@@ -829,8 +829,8 @@ def lw-def-env-lowers-recursive-fac-body-slice-b1b() =
   (match Map.lookup(lower-def-env(b1b-fac-tree()), 900) with
     | Option.None(_) => trap("def-env should contain fac (name 900)")
     | Option.Some(entry) =>
-        (match entry with
-          | (params, bodyCore) =>
+        (
+          let (params, bodyCore) = entry in
               (if List.len(params) == 1 then
                  (match bodyCore with | Core.CIf(_, _, _) => unit | _ => trap("fac body should lower to a CIf"))
                else trap("fac has ONE param binder"))))
@@ -839,8 +839,8 @@ def lw-def-env-lowers-recursive-fac-body-slice-b1b() =
 /// 810 tag 0, Green = name 811 tag 1). Each nullary ctor records a def-body (its NLit tag, so def-body-of hits
 /// → decl-enum-disc-go counts it nullary) AND a ct entry (declName+tag). ≥2 ctors, all nullary → enum-disc.
 def color-enum-tree() =
-  (match add-node(empty-tree(), Node.NLit(0)) with | (redBody, t1) =>
-    (match add-node(t1, Node.NLit(1)) with | (greenBody, t2) =>
+  (let (redBody, t1) = add-node(empty-tree(), Node.NLit(0)) in
+    (let (greenBody, t2) = add-node(t1, Node.NLit(1)) in
       (let t3 = record-def(record-def(t2, 810, redBody), 811, greenBody) in
        record-ctor-tag(record-ctor-tag(t3, 810, 800, 0), 811, 800, 1))))
 
@@ -848,7 +848,7 @@ def color-enum-tree() =
 /// 0 NULLARY with a def-body; Some = name 831 tag 1 PAYLOAD, a ct entry with NO def-body). A payload ctor →
 /// decl-is-enum-disc false → the boxed store rep (CMatchSum / CCtor-with-handle).
 def opt-mixed-tree() =
-  (match add-node(empty-tree(), Node.NLit(0)) with | (noneBody, t1) =>
+  (let (noneBody, t1) = add-node(empty-tree(), Node.NLit(0)) in
     (let t2 = record-def(t1, 830, noneBody) in
      record-ctor-tag(record-ctor-tag(t2, 830, 820, 0), 831, 820, 1)))
 
@@ -859,10 +859,10 @@ def lw-enum-disc-nullary-pattern-lowers-to-cmatchenum() =
   // return None on a bare tag → always-else). binderId = -1 (no payload) AND lower-ctor-decl-enum-disc true →
   // CMatchEnum. Today only the slow sread-eval-sum e2e file pins this; this is the fast-gate witness.
   (let t0 = color-enum-tree() in
-   (match add-node(t0, Node.NLit(0)) with | (scrutId, t1) =>
-    (match add-node(t1, Node.NLit(7)) with | (bodyId, t2) =>
-     (match add-node(t2, Node.NLit(9)) with | (restId, t3) =>
-      (match add-node(t3, Node.NMatchCtor(scrutId, 810, ([] : List(Int64)), bodyId, restId)) with | (root, tree) =>
+   (let (scrutId, t1) = add-node(t0, Node.NLit(0)) in
+    (let (bodyId, t2) = add-node(t1, Node.NLit(7)) in
+     (let (restId, t3) = add-node(t2, Node.NLit(9)) in
+      (let (root, tree) = add-node(t3, Node.NMatchCtor(scrutId, 810, ([] : List(Int64)), bodyId, restId)) in
        (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), scrutId, Ty.TySum(800)), bodyId, mk-int(true, 64)), restId, mk-int(true, 64)), root, mk-int(true, 64)) in
         (match lower-node(tree, root, (Map.empty : Map(Int64, Resolved)), tcol) with
           | Option.Some(c) => (if is-cmatchenum-tag(c, 0) then unit else trap("Red pattern over enum-disc Color lowers to CMatchEnum tag 0"))
@@ -875,10 +875,10 @@ def lw-mixed-decl-nullary-pattern-lowers-to-cmatchsum() =
   // list(-1) = [] (no payload to bind). Pins that a mixed-decl nullary pattern stays boxed (rep-shares its payload
   // siblings) so it matches the store handle the ctor USE builds — the divergence CMatchEnum-over-boxed would cause.
   (let t0 = opt-mixed-tree() in
-   (match add-node(t0, Node.NLit(0)) with | (scrutId, t1) =>
-    (match add-node(t1, Node.NLit(7)) with | (bodyId, t2) =>
-     (match add-node(t2, Node.NLit(9)) with | (restId, t3) =>
-      (match add-node(t3, Node.NMatchCtor(scrutId, 830, ([] : List(Int64)), bodyId, restId)) with | (root, tree) =>
+   (let (scrutId, t1) = add-node(t0, Node.NLit(0)) in
+    (let (bodyId, t2) = add-node(t1, Node.NLit(7)) in
+     (let (restId, t3) = add-node(t2, Node.NLit(9)) in
+      (let (root, tree) = add-node(t3, Node.NMatchCtor(scrutId, 830, ([] : List(Int64)), bodyId, restId)) in
        (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), scrutId, Ty.TySum(820)), bodyId, mk-int(true, 64)), restId, mk-int(true, 64)), root, mk-int(true, 64)) in
         (match lower-node(tree, root, (Map.empty : Map(Int64, Resolved)), tcol) with
           | Option.Some(c) => (if is-cmatchsum-tag-nbinders(c, 0, 0) then unit else trap("None pattern over mixed Opt lowers to CMatchSum tag 0, 0 binders"))
@@ -893,7 +893,7 @@ def lw-enum-disc-nullary-use-lowers-to-bare-cnum() =
    (match def-body-of(tree, 810) with
      | Option.None(_) => trap("Red records a nullary def-body")
      | Option.Some(redBody) =>
-    (match add-node(tree, Node.NApp(810, -1)) with | (root, t1) =>
+    (let (root, t1) = add-node(tree, Node.NApp(810, -1)) in
      (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), root, Ty.TySum(800)), redBody, mk-int(true, 64)) in
       (match lower-node(t1, root, (Map.empty : Map(Int64, Resolved)), tcol) with
         | Option.Some(c) => (if is-cnum(c, 0) then unit else trap("(Red) over enum-disc Color lowers to the bare tag CNum 0"))
@@ -905,7 +905,7 @@ def lw-mixed-decl-nullary-use-lowers-to-boxed-cctor() =
   // store handle sharing the payload siblings' rep — NOT the bare tag. This is the value side that must AGREE with
   // the CMatchSum pattern side (both read/build a store handle). Pins the mixed branch of the nullary-use rep.
   (let tree = opt-mixed-tree() in
-   (match add-node(tree, Node.NApp(830, -1)) with | (root, t1) =>
+   (let (root, t1) = add-node(tree, Node.NApp(830, -1)) in
     (let tcol = Map.insert((Map.empty : Map(Int64, Ty)), root, Ty.TySum(820)) in
      (match lower-node(t1, root, (Map.empty : Map(Int64, Resolved)), tcol) with
        | Option.Some(c) => (if is-cctor-tag-nargs(c, 0, 0) then unit else trap("(None) over mixed Opt lowers to boxed CCtor tag 0, no args"))
