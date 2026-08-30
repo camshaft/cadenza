@@ -9020,9 +9020,28 @@
            core-wasm register cannot hold. It is rejected at compile time (CDZ0302); a fixed-size integer
            wider than 64 bits is reserved to the opt-in big-integer layer, not the width-indexed
            constructor (options/numeric-model/ #Widths above 64 are reserved). Pins the upper boundary of
-           the width constraint.")
+           the width constraint. The message names the ORIGINAL written width (`UInt65`), not the clamped
+           sentinel `UInt0` the literal-fit path once reported — a name that hid what the author wrote.")
   (input  (: 5 (UInt 65)))
-  (error  CDZ0302))
+  (error  CDZ0302 (message "UInt65") (message "not a valid integer type")))
+
+(case "a further over-ceiling UNSIGNED width well past 64 is rejected naming the written width"
+  (doc    "The width check is not hard-coded to one value: `(UInt 128)` (63 past the ceiling) rejects
+           CDZ0302 naming `UInt128`, exactly as `(UInt 65)` does.")
+  (input  (: 5 (UInt 128)))
+  (error  CDZ0302 (message "UInt128") (message "not a valid integer type")))
+
+(case "an over-ceiling SIGNED width one past the ceiling is rejected naming the written width"
+  (doc    "The signed one-past-ceiling face: `(Int 65)` rejects CDZ0302 naming `Int65` — the same boundary
+           the unsigned `(UInt 65)` hits, for the signed constructor.")
+  (input  (: 5 (Int 65)))
+  (error  CDZ0302 (message "Int65") (message "not a valid integer type")))
+
+(case "an over-ceiling SIGNED width far past the ceiling is rejected naming the written width"
+  (doc    "A signed width FAR past 64: `(Int 200)` rejects CDZ0302 naming `Int200`, pinning the check is a
+           range test (width outside 1..=64), not a per-value table.")
+  (input  (: 5 (Int 200)))
+  (error  CDZ0302 (message "Int200") (message "not a valid integer type")))
 
 (case "an over-ceiling integer width in an unused parameter is rejected, like a used one"
   (doc    "`(UInt 65)` as the type of a PARAMETER of a private def that is never called with a literal —

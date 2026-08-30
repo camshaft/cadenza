@@ -3233,37 +3233,6 @@ fn an_unbound_name_in_a_width_position_names_it_as_a_width_not_silently_accepted
 // ── integer widths (I3, fold): named widths, per-width bounds, annotations, odd widths ────────
 
 #[test]
-fn an_integer_width_above_the_64_bit_ceiling_is_rejected_cdz0302() {
-    // 06-numeric-model "an integer width above the 64-bit ceiling is rejected" / "a wide fixed-size
-    // integer width is reserved": `(UInt 65)`/`(UInt 128)` name widths one (or more) past the 1..=64
-    // register-width ceiling — a fixed-size integer wider than 64 bits is RESERVED to the opt-in
-    // big-integer layer, not the width-indexed constructor (options/numeric-model/ #Widths above 64
-    // are reserved). The `IntCtor`/`UIntCtor` reduction now clamps a resolved width outside 1..=64 to
-    // the sentinel width 0 (the integer analogue of the `FloatCtor` admitted-SET gate), so the
-    // annotation is REJECTED at compile time (CDZ0302) rather than building `Ty::Int(Fixed(65))` and
-    // carrying a "no machine representation" decline to emit. Pins the upper boundary of the width
-    // constraint — a compile-time reject, not a parse error and not a run.
-    // The message names the ORIGINAL written width ("`UInt65` is not a valid integer type"), not the
-    // clamped sentinel "UInt0" the literal-fit path used to report — a misleading name that hid what
-    // was written.
-    for (body, name) in [
-        ("(: 5 (UInt 65))", "UInt65"),
-        ("(: 5 (UInt 128))", "UInt128"),
-        ("(: 5 (Int 65))", "Int65"),
-        ("(: 5 (Int 200))", "Int200"),
-    ] {
-        let msg = expect_decline(body);
-        assert!(
-            msg.contains(name) && msg.contains("not a valid integer type"),
-            "an over-ceiling width must be rejected CDZ0302 naming `{name}`: {body} -> {msg}"
-        );
-    }
-    // The boundary itself (64) is still valid — `(UInt 64)` builds and 5 fits (crosses as u64). Its RUN
-    // is corpus-covered by 06-numeric-model "a bare constant width UInt8 literal crosses to the host as
-    // its value" (the width-ascription-crosses witness); this test keeps only the over-ceiling reject.
-}
-
-#[test]
 fn arbitrary_odd_widths_compute_their_bounds() {
     // The bounds are computed FROM THE WIDTH PARAMETER, not a per-named-type table — so an ODD,
     // non-machine width works: `(UInt 7)` max = 2^7-1 = 127, `(UInt 24)` max = 2^24-1 = 16777215,
