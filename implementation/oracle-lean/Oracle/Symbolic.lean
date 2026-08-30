@@ -159,12 +159,16 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
     else if isB a false then b
     else if isB b false then a
     else if isB b true && !mayTrap a then SymExpr.const (Value.bool true)
+    -- IDEMPOTENCE `x or x → x` (bool companion of `x|x→x`): PRESERVES the operand (both sides evaluate x,
+    -- with the same trap), so no `!mayTrap` guard — sound like `x&x→x`/`x|x→x`.
+    else if a == b then a
     else .app op args'
   | "and", #[a, b] =>
     if isB a false then SymExpr.const (Value.bool false)
     else if isB a true then b
     else if isB b true then a
     else if isB b false && !mayTrap a then SymExpr.const (Value.bool false)
+    else if a == b then a  -- `x and x → x` idempotence (operand-preserving, like `x or x → x`)
     else .app op args'
   -- SOUND BITWISE identities — WIDTH-INDEPENDENT (0 is all-zero bits, `<<`/`>>` by 0 is identity at any
   -- width), the bit-op companions of the integer ones above. `x&0`/`0&x`→0 DROPS the operand → `!mayTrap`
@@ -177,6 +181,12 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
   | "^", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
   | "<<", #[a, b] => if isI b 0 then a else .app op args'
   | ">>", #[a, b] => if isI b 0 then a else .app op args'
+  -- DOUBLE-NEGATION `not (not x) → x`: the two `not`s evaluate `x` once and cancel (bool involution),
+  -- with the same trap behavior as `x` — operand-preserving, no guard (matches the identity discipline
+  -- above: sound for well-typed bool `x`; an ill-typed `x` never compiles into the differential).
+  | "not", #[a] => match a with
+                   | .app "not" #[inner] => inner
+                   | _ => .app op args'
   | _, _ => .app op args'
 
 /-- Canonicalize a symbolic expression by SOUND rewrites; `normalizeAppIdentities` carries the
@@ -810,6 +820,13 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.app "or" #[.var 0, .const (.bool true)]) == SymExpr.const (.bool true)
 #guard normalize (.app "or" #[.app "/" #[.var 0, .const (.int 0)], .const (.bool true)])
        == SymExpr.app "or" #[.app "/" #[.var 0, .const (.int 0)], .const (.bool true)]
+-- BOOLEAN IDEMPOTENCE (x and x → x, x or x → x — bool companions of x&x→x/x|x→x) and DOUBLE-NEGATION
+-- (not (not x) → x, bool involution). Operand-preserving (no !mayTrap guard); a single `not` is untouched.
+#guard normalize (.app "and" #[.var 0, .var 0]) == SymExpr.var 0
+#guard normalize (.app "or" #[.var 5, .var 5]) == SymExpr.var 5
+#guard normalize (.app "not" #[.app "not" #[.var 0]]) == SymExpr.var 0
+#guard normalize (.app "not" #[.var 0]) == SymExpr.app "not" #[.var 0]
+#guard normalize (.app "not" #[.app "not" #[.app "not" #[.var 0]]]) == SymExpr.app "not" #[.var 0]
 -- FLOAT arithmetic IS folded (IEEE total, no trap → sound): mirrors v-cdz-smith's fp-1/fp-2 false-positives.
 #guard normalize (.app "+" #[.const (.f64 475.0), .const (.f64 514.0)]) == SymExpr.const (.f64 989.0)
 #guard normalize (.app "*" #[.const (.f64 6.0), .const (.f64 7.0)]) == SymExpr.const (.f64 42.0)
