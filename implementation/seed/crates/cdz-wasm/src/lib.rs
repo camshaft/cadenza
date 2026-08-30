@@ -260,21 +260,18 @@ fn ml_parse_error_span(text: &str, from: Format) -> Option<(u32, u32)> {
         .map(|e| (e.span.start as u32, e.span.end as u32))
 }
 
-/// Decode `ast_bytes` into a `Db` and run one sidecar `Query`, returning its result artifact's bytes
-/// as UTF-8 text. This is the ONE path every IDE fact read goes through — the browser IDE speaks the
-/// same sidecar query vocabulary as the `cdz` CLI (`cdz type-at`/`def`/`check`/`uses`), so a fact the
-/// editor shows equals what the CLI would answer, by construction. (The span table stays a front-end
-/// concern: the consumer maps a query's node ids to source ranges, per the query-engine contract.)
-fn run_query_text(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<String, JsError> {
-    let bytes = run_query_bytes(ast_bytes, query)?;
-    String::from_utf8(bytes).map_err(|_| JsError::new("query result was not valid UTF-8"))
-}
-
-/// The raw-bytes twin of [`run_query_text`], for a query whose result artifact is canonical BINARY AST
-/// rather than UTF-8 text (e.g. `Query::Diagnostics` → `KIND_DIAGNOSTICS` via `rcdzc::decode_diagnostics`,
-/// `Query::Highlight` → `KIND_HIGHLIGHT` via `rcdzc::sidecar::decode_highlight`). Interpreting a binary-AST
-/// artifact as text and splitting it on tabs would yield garbage, so a structured consumer takes the bytes
-/// here and decodes them.
+/// Decode `ast_bytes` into a `Db`, run one sidecar `Query`, and return its result artifact's raw BYTES.
+/// This is the ONE path every IDE fact read goes through — the browser IDE speaks the same sidecar query
+/// vocabulary as the `cdz` CLI (`cdz type-at`/`def`/`check`/`uses`), so a fact the editor shows equals
+/// what the CLI would answer, by construction. (The span table stays a front-end concern: the consumer
+/// maps a query's node ids to source ranges, per the query-engine contract.)
+///
+/// EVERY sidecar result artifact is now canonical BINARY AST (seq-254 "binary AST is THE data exchange
+/// format"), so callers DECODE the bytes with the artifact's `*_wire` codec (`decode_diagnostics`,
+/// `decode_type_at`, `decode_resolve`, `decode_exports`, `decode_highlight`, `decode_instantiations`, …)
+/// rather than interpreting them as UTF-8 text — a `String::from_utf8` here would throw on a non-UTF-8
+/// payload (Class A) or silently mis-parse a valid-by-luck one (Class B). (The former `run_query_text`
+/// helper did exactly that and was removed once every consumer moved to a structured decode.)
 fn run_query_bytes(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<Vec<u8>, JsError> {
     let arenas = rcdzc::codec::decode(ast_bytes)
         .ok_or_else(|| JsError::new("internal: re-encoded AST failed to decode"))?;
@@ -1394,13 +1391,40 @@ pub fn type_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<TypeAt
         .expect("node_at_offset returned a spanned node");
     // Ride the `TypeAt` sidecar query (the same one `cdz type-at` runs) — the node id crosses the
     // copy-don't-depend boundary as its raw index (the byte-identical codec keeps the index space
-    // aligned). The result is the rendered type text (or "unknown" for a non-user/unsolved node).
-    let name = run_query_text(&ast_bytes, &rcdzc::Query::TypeAt { node: node.0 })?;
+    // aligned). The result is a BINARY-AST hover verdict (`type_at_wire`, seq-254 "binary AST is THE
+    // data exchange format"), NOT text — so take the BYTES and DECODE them. (Interpreting the binary as
+    // UTF-8 via `run_query_text` was a bug: it either threw "not valid UTF-8" or rendered garbage — the
+    // same class as the `export_types`/`KIND_EXPORTS` regression, #6324.) Render the decoded verdict to
+    // the display type text the guide editor's hover shows, mirroring `cdz`'s `render_type_at`.
+    let bytes = run_query_bytes(&ast_bytes, &rcdzc::Query::TypeAt { node: node.0 })?;
+    let type_name = render_type_at_verdict(&rcdzc::sidecar::decode_type_at(&bytes));
     Ok(Some(TypeAt {
-        type_name: name,
+        type_name,
         from: span.start as u32,
         to: span.end as u32,
     }))
+}
+
+/// Render a decoded [`rcdzc::sidecar::TypeAt`] hover verdict to its display type text — the SAME mapping
+/// `cdz`'s `render_type_at` uses (kept in sync; the shared renderer is `cadenza_syntax::render_ty`). A
+/// definition renders `name : <scheme>`, a keyword `keyword <kw>`, a bare typed node its rendered type,
+/// and an untypeable/non-user node `unknown`. `render_ty_scheme` (not `render_ty`) because an export /
+/// definition signature may be polymorphic and gets stable Var-lettering.
+fn render_type_at_verdict(v: &rcdzc::sidecar::TypeAt) -> String {
+    // Alias so the verdict enum doesn't collide with this crate's wasm-bindgen `TypeAt` return struct.
+    use rcdzc::sidecar::TypeAt as Verdict;
+    match v {
+        Verdict::Def { name, ty } => {
+            let t = match ty {
+                Some(a) => cadenza_syntax::render_ty::render_ty_scheme(a, a.root),
+                None => "unknown".to_string(),
+            };
+            format!("{name} : {t}")
+        }
+        Verdict::Keyword(kw) => format!("keyword {kw}"),
+        Verdict::Ty(a) => cadenza_syntax::render_ty::render_ty_scheme(a, a.root),
+        Verdict::Unknown => "unknown".to_string(),
+    }
 }
 
 /// The definition a name at a source byte offset refers to — for go-to-definition. Resolves the
@@ -1436,14 +1460,12 @@ pub fn define_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<Defi
         .get(node)
         .expect("node_at_offset returned a spanned node");
     // Ride the `ResolveOf` sidecar query (the same one `cdz def` runs): it resolves the reference at
-    // this node to its defining occurrence's node id (following `Ref`/`Lambda`), or an empty result for
-    // a non-navigable token or a span-less binding. One node id, or empty.
-    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::ResolveOf { node: node.0 })?;
-    let Some(target_id) = text_out
-        .lines()
-        .next()
-        .and_then(|l| l.trim().parse::<u32>().ok())
-    else {
+    // this node to its defining occurrence's node id (following `Ref`/`Lambda`), or none for a
+    // non-navigable token or a span-less binding. The result is a BINARY-AST value (`resolve_wire`,
+    // #6152), NOT text — so DECODE the node id (`String::from_utf8` + `parse` on the binary was the same
+    // from_utf8-on-binary bug class as `type_at`/`export_types` #6324).
+    let bytes = run_query_bytes(&ast_bytes, &rcdzc::Query::ResolveOf { node: node.0 })?;
+    let Some(target_id) = rcdzc::sidecar::decode_resolve(&bytes) else {
         return Ok(None); // not a navigable reference
     };
     let target = cadenza_syntax::ast::StructId(target_id);
@@ -1975,57 +1997,36 @@ pub fn disposition(
     {
         return Ok(None);
     }
-    // Ride the `Instantiations` query — TAB-tagged lines: one `disp<TAB>name-node<TAB>DISPOSITION`, then
-    // (for a specialized def) `inst<TAB>spec-name<TAB>name-node<TAB>arg;arg;…` per instance. An UNKNOWN
-    // name (the hovered token names no definition) yields the empty string → no tooltip.
-    let text_out = run_query_text(
+    // Ride the `Instantiations` query — a BINARY-AST report (`instantiations_wire`), NOT text. DECODE it
+    // (the old `run_query_text` + TAB-split was the same from_utf8-on-binary bug class as type_at /
+    // export_types #6324). `known == false` = the hovered token names no definition → no tooltip.
+    let bytes = run_query_bytes(
         &ast_bytes,
         &rcdzc::Query::Instantiations {
             name: name.to_string(),
         },
     )?;
-    let mut disposition = String::new();
-    let mut def_span = span;
-    let mut instances: Vec<String> = Vec::new();
-    for line in text_out.lines() {
-        let mut cols = line.split('\t');
-        match cols.next() {
-            Some("disp") => {
-                let (Some(node_str), Some(disp)) = (cols.next(), cols.next()) else {
-                    continue;
-                };
-                disposition = disp.to_string();
-                // Anchor the tooltip to the DEFINITION's name occurrence (which may differ from the
-                // hovered use), so the range is stable whether the reader hovers the def or a call site.
-                if let Some(s) = node_str
-                    .parse::<u32>()
-                    .ok()
-                    .and_then(|n| spans.get(cadenza_syntax::ast::StructId(n)))
-                {
-                    def_span = s;
-                }
-            }
-            Some("inst") => {
-                // `inst<TAB>spec-name<TAB>name-node<TAB>arg;arg;…` — render the `;`-joined args as a
-                // readable `a, b, c`, dropping the unstable synthesized spec name + the node id.
-                let (_spec, _node, arglist) = match (cols.next(), cols.next(), cols.next()) {
-                    (Some(s), Some(n), Some(a)) => (s, n, a),
-                    _ => continue,
-                };
-                let pretty = arglist
-                    .split(';')
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                instances.push(pretty);
-            }
-            _ => continue,
-        }
+    let Some(report) = rcdzc::sidecar::decode_instantiations(&bytes) else {
+        return Ok(None); // artifact absent / malformed → no tooltip
+    };
+    if !report.known {
+        return Ok(None); // an unknown name has no disposition
     }
-    // No `disp` line ⇒ the hovered token names no definition (an unknown name) ⇒ no tooltip.
+    // Present the disposition set readably (joined by `+`, as `cdz instantiations` renders it — a def may
+    // carry a combination like `transformed→copy`). A known def always carries at least one.
+    let disposition = report.dispositions.join("+");
     if disposition.is_empty() {
         return Ok(None);
     }
+    // Anchor the tooltip to the DEFINITION's name occurrence (which may differ from the hovered use), so
+    // the range is stable whether the reader hovers the def or a call site; fall back to the hovered span.
+    let def_span = report
+        .name_node
+        .and_then(|n| spans.get(cadenza_syntax::ast::StructId(n)))
+        .unwrap_or(span);
+    // Each instance's per-argument descriptors rendered `a, b, c` (dropping the unstable synthesized spec
+    // name + node id the report also carries) — the same readable form the old `;`-joined row produced.
+    let instances: Vec<String> = report.instances.iter().map(|i| i.args.join(", ")).collect();
     Ok(Some(Disposition {
         name: name.to_string(),
         disposition,
@@ -2110,6 +2111,66 @@ mod tests {
         assert!(
             out2.lines().all(|l| l.is_empty() || l.contains('\t')),
             "each row is `name<TAB>type` text: {out2:?}"
+        );
+    }
+
+    #[test]
+    fn type_at_renders_the_hover_type_not_raw_binary() {
+        // Regression guard (same bug class as export_types #6324): `Query::TypeAt` emits the KIND_TYPE_AT
+        // BINARY hover verdict (`type_at_wire`), so `type_at` must DECODE it + render (mirroring `cdz`'s
+        // `render_type_at`), NOT `String::from_utf8` the binary. The bug: Class A threw "not valid UTF-8"
+        // on the browser editor hover; Class B rendered garbage. `type_at` is LIVE-wired in the guide
+        // editor (client.ts -> worker.ts), so this was a real user-facing hover bug, not just a gate.
+        let src = "(do (def (main) 3000.0) (export main))";
+        // A bare typed node (the whole-`Float64` literal) → the `Ty` verdict → rendered type name.
+        let lit_off = src.find("3000.0").expect("float literal present") as u32;
+        let hit = type_at(src, "sexpr", lit_off)
+            .expect("type_at returns a verdict, not a UTF-8 error (Class A regression)")
+            .expect("a user node at the float literal offset");
+        assert!(
+            hit.type_name.contains("Float"),
+            "the whole-float literal's hover type renders as a Float name (not raw binary / not empty): {:?}",
+            hit.type_name
+        );
+        // A definition name → the `Def` verdict → `name : <scheme>` (exercises the Def arm's render).
+        let name_off = (src.find("(main)").expect("main def present") + 1) as u32;
+        let def_hit = type_at(src, "sexpr", name_off)
+            .expect("type_at on a def name returns a verdict, not a UTF-8 error")
+            .expect("a user node at the def name");
+        assert!(
+            def_hit.type_name.contains("main"),
+            "a def hover renders `name : type`: {:?}",
+            def_hit.type_name
+        );
+    }
+
+    #[test]
+    fn define_at_resolves_a_reference_not_raw_binary() {
+        // Regression guard (same bug class as type_at / export_types #6324): `Query::ResolveOf` emits the
+        // KIND_RESOLVE target node id as BINARY AST (`resolve_wire`, #6152), so `define_at` must
+        // `decode_resolve` it, NOT `String::from_utf8` + `parse::<u32>()` (which threw / mis-parsed on the
+        // binary). `define_at` backs the guide editor's go-to-definition.
+        let src = "(do (def (foo) 1) (def (main) foo) (export main))";
+        // The `foo` REFERENCE (in `main`'s body) resolves to the `foo` DEFINITION (a distinct earlier span).
+        let ref_off = src.rfind("foo").expect("the `foo` reference") as u32;
+        let hit = define_at(src, "sexpr", ref_off)
+            .expect("define_at returns a resolution, not a UTF-8 error (Class A regression)")
+            .expect("the `foo` reference resolves to its definition");
+        assert!(
+            (hit.from, hit.to) != (hit.ref_from, hit.ref_to),
+            "the resolved def span is distinct from the reference span (decode_resolve gave a real target): \
+             def [{},{}) ref [{},{})",
+            hit.from,
+            hit.to,
+            hit.ref_from,
+            hit.ref_to
+        );
+        // The reference span covers the cursor offset (sanity: we hovered the ref token).
+        assert!(
+            hit.ref_from <= ref_off && ref_off < hit.ref_to,
+            "the reference span [{},{}) covers the hovered offset {ref_off}",
+            hit.ref_from,
+            hit.ref_to
         );
     }
 
