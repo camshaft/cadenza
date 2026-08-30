@@ -2788,8 +2788,8 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
     }
 
     // Batch an `Instantiations` query for EVERY top-level name into one compile (monomorphization is
-    // whole-program, so it runs once); each answer is a distinct `KIND_INSTANTIATIONS` artifact keyed by
-    // its `name`.
+    // whole-program, so it runs once); each answer rides a distinct `KIND_INSTANTIATIONS` artifact keyed by
+    // its POSITIONAL request index (`"0"`, `"1"`, …), so we recover the i-th answer by index below.
     let ast_bytes = cadenza_syntax::codec::encode(&arenas);
     let requests: Vec<cadenza_compile_abi::Request> = names
         .iter()
@@ -2814,15 +2814,18 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
 
     let mut out = Vec::new();
-    for (name, node) in &names {
-        // The `Instantiations` answer for THIS name (matched by the artifact's `name` field), decoded from
-        // the canonical binary-AST wire (operator P0 seq-284) — no string parsing.
+    for (i, (_name, node)) in names.iter().enumerate() {
+        // The `Instantiations` answer for THIS request, matched by REQUEST INDEX. `rcdzc::compile` names each
+        // query answer's artifact by its POSITIONAL request index (`"0"`, `"1"`, … — see compile.rs "artifact
+        // NAME is its REQUEST INDEX"), NOT the query's semantic def name; we built one request per `names`
+        // entry in order, so request `i` answers `names[i]`. (Matching by `a.name == def_name` — the old
+        // semantic-name contract — silently found nothing here, so the whole batched lens path returned 0.)
+        // Decoded from the canonical binary-AST wire (operator P0 seq-284) — no string parsing.
+        let idx = i.to_string();
         let Some(report) = compiled
             .artifacts
             .iter()
-            .find(|a| {
-                a.kind == cadenza_compile_abi::sidecar::KIND_INSTANTIATIONS && &a.name == name
-            })
+            .find(|a| a.kind == cadenza_compile_abi::sidecar::KIND_INSTANTIATIONS && a.name == idx)
             .and_then(|a| cadenza_compile_abi::instantiations_wire::decode(&a.bytes))
         else {
             continue;
@@ -6908,19 +6911,13 @@ mod tests {
         );
     }
 
-    // FIXME(cdz/lsp — guide-editor lane): the LSP `code_lenses_for` BATCHED path (this file, ~L2749) returns
-    // ZERO lenses for a program whose generic IS specialized. The failure is NOT inference / monomorphization
-    // and NOT a recursive-generic tie: `loopn` here compiles AND RUNS at both Int64 and String (`cdz test`
-    // PASS, `cdz check` clean), and the rcdzc sidecar queries are CORRECT on this exact program —
-    // `cdz instantiations loopn` reports 2 specializations ([n:Int64,x:Int64], [n:Int64,x:String]) and
-    // `cdz symbols` lists loopn+main. The bug is isolated to code_lenses_for batching a per-name
-    // `Instantiations` query for every top-level name into ONE `rcdzc::compile` with a multi-request
-    // sidecar-drive artifact: that batched compile yields 0 matching answers, while the SINGLE-query CLI path
-    // returns 2. Fix the batched-query glue (or the multi-request sidecar-drive compile), then un-ignore.
-    // Ignored (not deleted) to un-red gate-local + clippy-shard-b fleet-wide (operator greenlit 2026-08-28);
-    // reversible. Diagnosed by v-inference (rcdzc-sidecar owner); the batched LSP glue is the cdz/lsp lane's.
+    // FIXED (cdz/lsp, 2026-08-30): the batched `code_lenses_for` path returned ZERO lenses for a specialized
+    // generic because it matched each `Instantiations` answer artifact by the def NAME (`a.name == name`),
+    // but `rcdzc::compile` names a batched query answer by its POSITIONAL request index (`"0"`, `"1"`, …),
+    // not the semantic name — so the match never hit. (v-inference confirmed the sidecar queries + compile
+    // were correct; the stale name-based lookup was the whole bug.) Fixed by recovering the i-th answer by
+    // index. This test (previously `#[ignore]`d to un-red the fleet gate) now passes and guards the fix.
     #[test]
-    #[ignore = "FIXME cdz/lsp: code_lenses_for batched Instantiations path returns 0 lenses for a specialized generic (sidecar queries + compile are correct); un-red the fleet gate — see FIXME above"]
     fn code_lens_reports_a_specialized_generics_monomorphizations() {
         // `loopn` is a recursive generic specialized at `x: Int64` and `x: String` — a lens above it lists
         // both concrete instances (the `Instantiations` query surfaced in the editor).
