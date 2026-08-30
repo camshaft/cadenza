@@ -7,28 +7,42 @@
 //! dependency, so it cannot call `rcdzc::ty::Ty::render_name`; this module is the canonical renderer over
 //! the decoded `cadenza_ast` subtree, living in the printer's home crate.
 //!
-//! PARITY: [`render_ty_name`] renders byte-IDENTICALLY to `rcdzc` `Ty::render_name` (ty.rs) for a
-//! monomorphic type, and [`render_ty_scheme`] to `Scheme::render_scheme` (its `render_named_vars` +
-//! first-encounter `a`,`b`,`c`… var lettering) for a polymorphic one. Those functions are the source of
-//! truth for the exact spelling (`Int64` not `(Int 64)`, `(-> A B)` curried, `Option a`, …).
+//! ARCHITECTURE (operator seq-41, option C — "not a formatter"): a Ty name is NOT produced by a bespoke
+//! per-arm String formatter, and NOT by raw-structural sexpr-print of the wire payload (which would leak
+//! the internal decl-occurrence ids). Instead the rendering is a TWO-STEP: [`transform`] TRANSLATES the
+//! decoded wire payload into a SURFACE type-syntax AST (fresh `cadenza_ast` nodes — the shape a reader
+//! would build for `Int64` / `(-> Int64 Int64)` / `(Option a)`), and then the CANONICAL s-expression
+//! printer ([`crate::sexpr::print_from`]) renders those nodes to text. One shared printer, no per-crate
+//! format code, no decl-id leak. `print_from` (single-line) — NOT the pretty printer — so a wide type
+//! stays one line, byte-identical to the historical output the sidecar consumers pin.
 //!
-//! The payload grammar (head-name keyed; `encode_ty`):
-//! - bare `Name` leaf: `Bool`/`Unit`/`String`/`Char`/`Symbol`/`BigInt`/`Rational`/`Bytes`/`Type`/`Any`.
-//! - `(Int W)` / `(UInt W)` / `(Float W)` — `W` a width `Int` leaf.
-//! - `(-> P R)` — a function (curried: nested `->` for multi-arg).
-//! - `(Tuple E…)`, `(Record (: name T)…)` (fields pre-sorted), `(List E)`, `(Set E)`, `(Map K V)`.
+//! PARITY: [`render_ty`] renders byte-IDENTICALLY to `rcdzc` `Ty::render_name` (ty.rs) for a monomorphic
+//! type, and [`render_ty_scheme`] to `Scheme::render_scheme` (its `render_named_vars` + first-encounter
+//! `a`,`b`,`c`… var lettering) for a polymorphic one. Those functions are the source of truth for the
+//! exact spelling (`Int64` not `(Int 64)`, `(-> A B)` curried, `Option a`, …).
+//!
+//! The payload grammar (head-name keyed; `encode_ty`) and its surface translation:
+//! - bare `Name` leaf: `Bool`/`Unit`/`String`/`Char`/`Symbol`/`BigInt`/`Rational`/`Bytes`/`Type`/`Any`
+//!   → the same `Name` atom.
+//! - `(Int W)` / `(UInt W)` / `(Float W)` — `W` a width `Int` leaf → a single `Name` atom `IntW`/`UIntW`/
+//!   `FloatW` (the width is FOLDED into the name, matching `Ty::render_name`'s `Int64` spelling).
+//! - `(-> P R)` → `(-> P' R')` (curried: nested `->` for multi-arg), `(Cont R A)` → `(Cont R' A')`.
+//! - `(Tuple E…)` → `(Tuple E'…)`, `(Record (: name T)…)` (fields pre-sorted) → `(Record (: name T')…)`,
+//!   `(List E)` → `(List E')`, `(Set E)` → `(Set E')`, `(Map K V)` → `(Map K' V')`.
 //! - `(Sum NAME <decl> arg…)` — the `<decl>` child (index 2) is an INTERNAL arena occurrence id and is
-//!   HIDDEN; render the nominal name, applied to args when generic.
+//!   HIDDEN → `NAME` (monomorphic) or `(NAME arg'…)` (generic).
 //! - `(Nominal NAME <decl> (args…) INNER)` — identity is the NAME; the `<decl>`, `(args…)`, and `INNER`
-//!   are hidden (`render_name` renders only the declared name).
-//! - `(Qty INNER (unit (base NAME EXP)… [(scale N D)]))`, `(Cont RESUME ANSWER)`.
-//! - `(Var N)` — a type-variable number: `_` in [`render_ty_name`], a stable letter in [`render_ty_scheme`].
+//!   are hidden → the declared `NAME` only.
+//! - `(Var N)` — a type-variable number → `_` in [`render_ty`], a stable letter in [`render_ty_scheme`].
+//! - `(Qty INNER (unit (base NAME EXP)… [(scale N D)]))` — increment-1 renders via the total generic
+//!   translation (structure-preserving surface node); `Unit::render` parity (`(Qty <inner> (Unit.base …))`)
+//!   is a deferred increment-2 (units are rare in export signatures).
 //!
-//! TOTAL: an unknown head or a malformed/short subtree renders to a defined fallback (its raw shape, else
-//! `?`), NEVER a panic — these feed editor hover on possibly-incomplete programs. A DEPTH GUARD (mirroring
-//! `render_name`'s `MAX_RENDER_DEPTH`) truncates an explosively-deep type with `…`.
+//! TOTAL: an unknown head or a malformed/short subtree translates to a defined fallback surface node (its
+//! raw shape recursed, else `?`), NEVER a panic — these feed editor hover on possibly-incomplete programs.
+//! A DEPTH GUARD (mirroring `render_name`'s `MAX_RENDER_DEPTH`) truncates an explosively-deep type with `…`.
 
-use crate::ast::{Arenas, Struct, StructId};
+use crate::ast::{Arenas, Builder, Leaf, Struct, StructId};
 use std::collections::BTreeMap;
 
 /// The recursion cap — mirrors `rcdzc` `Ty::render_name`'s `MAX_RENDER_DEPTH` (24): a diagnostic never
@@ -36,19 +50,24 @@ use std::collections::BTreeMap;
 const MAX_RENDER_DEPTH: u32 = 24;
 
 /// Render a monomorphic Ty payload rooted at `root` to its type name. A `(Var N)` renders as `_` (parity
-/// with `Ty::render_name`, which collapses every unsolved var to the `_` placeholder).
-pub fn render_ty_name(a: &Arenas, root: StructId) -> String {
-    render(a, root, 0, None)
+/// with `Ty::render_name`, which collapses every unsolved var to the `_` placeholder). The rendering is
+/// the transform-then-print path (see the module docs): translate the wire payload to a surface type
+/// AST, then print it with the canonical single-line s-expr printer.
+pub fn render_ty(a: &Arenas, root: StructId) -> String {
+    let mut b = Builder::new();
+    let node = transform(a, root, 0, None, &mut b);
+    let surface = b.finish(node);
+    crate::sexpr::print_from(&surface, surface.root)
 }
 
 /// Render a Ty payload rooted at `root` as a SCHEME: each DISTINCT `(Var N)` gets a stable letter
 /// (`a`, `b`, `c`, …, then `a1`, `b1`, … past 26) in FIRST-ENCOUNTER order, so a reader sees which vars
 /// are the same quantified variable and which differ (parity with `Scheme::render_scheme`). Non-`Var`
-/// nodes render exactly as [`render_ty_name`].
+/// nodes render exactly as [`render_ty`]. Same transform-then-print path, with the var letter map threaded.
 pub fn render_ty_scheme(a: &Arenas, root: StructId) -> String {
-    // First-encounter order of DISTINCT var numbers, walking the same structure `render` visits — this
+    // First-encounter order of DISTINCT var numbers, walking the same structure `transform` visits — this
     // mirrors `Ty::collect_free_vars` (which visits `Sum`/`Nominal` ARGS but not a `Nominal`'s inner, and
-    // a `Qty`'s inner but not its unit), so the letters line up with what `render` emits.
+    // a `Qty`'s inner but not its unit), so the letters line up with what `transform` emits.
     let mut order: Vec<String> = Vec::new();
     collect_vars(a, root, 0, &mut order);
     let mut names = BTreeMap::new();
@@ -62,7 +81,10 @@ pub fn render_ty_scheme(a: &Arenas, root: StructId) -> String {
         };
         names.insert(v.clone(), name);
     }
-    render(a, root, 0, Some(&names))
+    let mut b = Builder::new();
+    let node = transform(a, root, 0, Some(&names), &mut b);
+    let surface = b.finish(node);
+    crate::sexpr::print_from(&surface, surface.root)
 }
 
 /// The width of an `(Int W)`/`(UInt W)`/`(Float W)` head — the decimal string of its width `Int` leaf,
@@ -78,130 +100,155 @@ fn var_num(a: &Arenas, kids: &[StructId]) -> Option<String> {
         .map(|v| v.to_decimal_string())
 }
 
-/// Recurse the payload, emitting the type name. `vars = Some(map)` renders a `(Var N)` as its letter
-/// (scheme mode); `None` renders it as `_` (monomorphic mode).
-fn render(a: &Arenas, id: StructId, depth: u32, vars: Option<&BTreeMap<String, String>>) -> String {
+/// Build a fresh surface `Name` atom in `b`.
+fn name(b: &mut Builder, s: &str) -> StructId {
+    b.atom_leaf(Leaf::Name(s.into()))
+}
+
+/// Translate the wire payload node `id` (in the DECODED arena `a`) into a fresh SURFACE type-syntax node
+/// in the builder `b`, returning its id. `vars = Some(map)` translates a `(Var N)` to its letter (scheme
+/// mode); `None` translates it to `_` (monomorphic mode). Never panics; every unrecognized/malformed shape
+/// falls to the total [`generic`] translation.
+fn transform(
+    a: &Arenas,
+    id: StructId,
+    depth: u32,
+    vars: Option<&BTreeMap<String, String>>,
+    b: &mut Builder,
+) -> StructId {
     if depth >= MAX_RENDER_DEPTH {
-        return "…".to_string();
+        return name(b, "…");
     }
     let kids = match a.get(id) {
-        // A bare atom is a monomorphic type name (`Bool`, `String`, …). An unnamed atom is malformed → `?`.
-        Struct::Atom(_) => return a.as_name(id).unwrap_or("?").to_string(),
+        // A bare atom: a type name (`Bool`, `String`, …) — or, in a generic/deferred position, any other
+        // leaf (a width `Int`, a unit exponent). Copy the leaf VERBATIM so a name prints bare and a value
+        // prints its literal; this stays total (no unnamed-atom `?` placeholder is needed — every leaf has
+        // a print form).
+        Struct::Atom(l) => return b.atom_leaf(a.leaf(*l).clone()),
         Struct::List(kids) => kids.clone(),
     };
     let Some(head) = kids.first().and_then(|&h| a.as_name(h)) else {
         // A list whose head is not a name (or an empty list) is not a well-formed type payload.
-        return generic(a, &kids, depth, vars);
+        return generic(a, &kids, depth, vars, b);
     };
     let d = depth + 1;
     match head {
+        // The width is FOLDED into a single name atom (`Int64`, `UInt32`, `Float64`) — the `Ty::render_name`
+        // spelling. A missing/non-integer width falls to the generic structure.
         "Int" | "UInt" | "Float" => match kids.get(1).and_then(|&w| width_str(a, w)) {
-            Some(w) => format!("{head}{w}"),
-            None => generic(a, &kids, depth, vars),
+            Some(w) => name(b, &format!("{head}{w}")),
+            None => generic(a, &kids, depth, vars, b),
         },
-        "->" if kids.len() == 3 => format!(
-            "(-> {} {})",
-            render(a, kids[1], d, vars),
-            render(a, kids[2], d, vars)
-        ),
-        "Cont" if kids.len() == 3 => format!(
-            "(Cont {} {})",
-            render(a, kids[1], d, vars),
-            render(a, kids[2], d, vars)
-        ),
+        "->" if kids.len() == 3 => {
+            let h = name(b, "->");
+            let p = transform(a, kids[1], d, vars, b);
+            let r = transform(a, kids[2], d, vars, b);
+            b.list(vec![h, p, r])
+        }
+        "Cont" if kids.len() == 3 => {
+            let h = name(b, "Cont");
+            let resume = transform(a, kids[1], d, vars, b);
+            let answer = transform(a, kids[2], d, vars, b);
+            b.list(vec![h, resume, answer])
+        }
         "Tuple" => {
-            let mut s = String::from("(Tuple");
+            let mut items = vec![name(b, "Tuple")];
             for &e in &kids[1..] {
-                s.push(' ');
-                s.push_str(&render(a, e, d, vars));
+                items.push(transform(a, e, d, vars, b));
             }
-            s.push(')');
-            s
+            b.list(items)
         }
         "Record" => {
-            let mut s = String::from("(Record");
+            let mut items = vec![name(b, "Record")];
             for &field in &kids[1..] {
-                // Each field is a `(: name T)` ascription node; render it back to that surface. A
-                // malformed field falls through to the generic rendering of the whole record.
+                // Each field is a `(: name T)` ascription node; translate it back to that surface node. A
+                // malformed field falls through to the generic translation of the whole record.
                 match a.get(field) {
                     Struct::List(f) if f.len() == 3 => {
-                        let name = a.as_name(f[1]).unwrap_or("?");
-                        s.push_str(&format!(" (: {} {})", name, render(a, f[2], d, vars)));
+                        let fname = a.as_name(f[1]).unwrap_or("?").to_string();
+                        let colon = name(b, ":");
+                        let fn_atom = name(b, &fname);
+                        let fty = transform(a, f[2], d, vars, b);
+                        items.push(b.list(vec![colon, fn_atom, fty]));
                     }
-                    _ => return generic(a, &kids, depth, vars),
+                    _ => return generic(a, &kids, depth, vars, b),
                 }
             }
-            s.push(')');
-            s
+            b.list(items)
         }
         "List" | "Set" if kids.len() == 2 => {
-            format!("({head} {})", render(a, kids[1], d, vars))
+            let h = name(b, head);
+            let e = transform(a, kids[1], d, vars, b);
+            b.list(vec![h, e])
         }
-        "Map" if kids.len() == 3 => format!(
-            "(Map {} {})",
-            render(a, kids[1], d, vars),
-            render(a, kids[2], d, vars)
-        ),
+        "Map" if kids.len() == 3 => {
+            let h = name(b, "Map");
+            let k = transform(a, kids[1], d, vars, b);
+            let v = transform(a, kids[2], d, vars, b);
+            b.list(vec![h, k, v])
+        }
         // A sum: the nominal NAME, applied to its type ARGS when generic. Child index 2 (`<decl>`) is an
         // internal arena occurrence id and is HIDDEN. `args = kids[3..]`.
         "Sum" if kids.len() >= 3 => {
-            let name = a.as_name(kids[1]).unwrap_or("<sum>");
+            let sum_name = a.as_name(kids[1]).unwrap_or("<sum>").to_string();
             if kids.len() == 3 {
-                name.to_string()
+                name(b, &sum_name)
             } else {
-                let mut s = format!("({name}");
+                let mut items = vec![name(b, &sum_name)];
                 for &arg in &kids[3..] {
-                    s.push(' ');
-                    s.push_str(&render(a, arg, d, vars));
+                    items.push(transform(a, arg, d, vars, b));
                 }
-                s.push(')');
-                s
+                b.list(items)
             }
         }
         // A nominal renders as its declared NAME only (its identity is the name; `<decl>`/`(args…)`/`INNER`
         // are hidden, matching `render_name`).
-        "Nominal" if kids.len() >= 2 => a.as_name(kids[1]).unwrap_or("<nominal>").to_string(),
+        "Nominal" if kids.len() >= 2 => {
+            let n = a.as_name(kids[1]).unwrap_or("<nominal>").to_string();
+            name(b, &n)
+        }
         // A type variable: its letter (scheme) or `_` (monomorphic).
         "Var" => match (vars, var_num(a, &kids)) {
-            (Some(map), Some(n)) => map.get(&n).cloned().unwrap_or_else(|| "_".to_string()),
-            _ => "_".to_string(),
+            (Some(map), Some(n)) => {
+                let letter = map.get(&n).cloned().unwrap_or_else(|| "_".to_string());
+                name(b, &letter)
+            }
+            _ => name(b, "_"),
         },
-        // `Qty` and any unrecognized head fall back to a total, structure-preserving rendering. NOTE:
-        // `Qty`'s byte-parity with `render_name` (which renders the unit via `Unit::render`) is a
-        // follow-up increment; the generic form here stays total + honors the var map for any inner type.
-        _ => generic(a, &kids, depth, vars),
+        // `Qty` (increment-1: the total generic translation; `Unit::render` parity is increment-2) and any
+        // unrecognized head fall back to a total, structure-preserving surface node (honoring the var map
+        // for any inner type).
+        _ => generic(a, &kids, depth, vars, b),
     }
 }
 
 /// A total, structure-preserving fallback for an unrecognized/deferred head or a malformed subtree:
-/// `(head child…)`, recursing children through [`render`] so an inner type still renders (and honors the
-/// var map). Never panics; an empty list is `?`.
+/// translate to `(child'…)`, recursing children through [`transform`] so an inner type still translates
+/// (and honors the var map). Never panics; an empty list becomes the `?` name.
 fn generic(
     a: &Arenas,
     kids: &[StructId],
     depth: u32,
     vars: Option<&BTreeMap<String, String>>,
-) -> String {
+    b: &mut Builder,
+) -> StructId {
     if kids.is_empty() {
-        return "?".to_string();
+        return name(b, "?");
     }
-    let mut s = String::from("(");
-    for (i, &c) in kids.iter().enumerate() {
-        if i > 0 {
-            s.push(' ');
-        }
-        // The head prints as its bare name; children recurse (a child that is itself a name atom prints
-        // bare via `render`'s atom arm).
-        s.push_str(&render(a, c, depth + 1, vars));
+    let mut items = Vec::with_capacity(kids.len());
+    for &c in kids {
+        // The head recurses too: a name-atom head translates to its bare name node (prints bare); a child
+        // that is itself a compound recurses.
+        items.push(transform(a, c, depth + 1, vars, b));
     }
-    s.push(')');
-    s
+    b.list(items)
 }
 
-/// Collect DISTINCT `(Var N)` numbers in first-encounter order, visiting the SAME children `render`
+/// Collect DISTINCT `(Var N)` numbers in first-encounter order, visiting the SAME children `transform`
 /// counts toward the scheme — mirrors `rcdzc` `Ty::collect_free_vars` so the letter assignment matches
-/// what `render` emits. In particular: `Sum`/`Nominal` visit their type ARGS (never a `Nominal`'s inner),
-/// `Qty` visits its inner (never its unit), and the `Int`/`UInt`/`Float` width children carry no vars.
+/// what `transform` emits. In particular: `Sum`/`Nominal` visit their type ARGS (never a `Nominal`'s
+/// inner), `Qty` visits its inner (never its unit), and the `Int`/`UInt`/`Float` width children carry no
+/// vars.
 fn collect_vars(a: &Arenas, id: StructId, depth: u32, order: &mut Vec<String>) {
     if depth >= MAX_RENDER_DEPTH {
         return;
@@ -297,7 +344,7 @@ mod tests {
         }
         fn name_of(self, root: StructId) -> String {
             let a = self.0.finish(root);
-            render_ty_name(&a, a.root)
+            render_ty(&a, a.root)
         }
         fn scheme_of(self, root: StructId) -> String {
             let a = self.0.finish(root);
@@ -494,5 +541,33 @@ mod tests {
         let inner = b.width_ty("Int", 64);
         let r = b.l(vec![inner]);
         assert_eq!(b.name_of(r), "(Int64)");
+    }
+
+    #[test]
+    fn qty_increment_1_generic_surface_is_total() {
+        // Increment-1: a Qty payload renders via the total generic translation — no bespoke Unit
+        // formatting yet (increment-2). It must NOT panic and must preserve the structure + inner type.
+        // (Qty Float64 (unit (base meter 1))).
+        let mut b = B::new();
+        let inner = b.width_ty("Float", 64);
+        let bhead = b.n("base");
+        let bname = b.n("meter");
+        let bexp = b.i(1);
+        let base = b.l(vec![bhead, bname, bexp]);
+        let uhead = b.n("unit");
+        let unit = b.l(vec![uhead, base]);
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, inner, unit]);
+        // The generic surface node: head + inner (Float64) + the recursed unit node (the width `1` prints
+        // as its literal, not a placeholder). This is the deferred form, pinned so increment-2 can flip it.
+        assert_eq!(b.name_of(r), "(Qty Float64 (unit (base meter 1)))");
+    }
+
+    #[test]
+    fn empty_and_malformed_stay_total() {
+        // An empty list payload -> the `?` fallback (total, never a panic or a bare `()`).
+        let mut b = B::new();
+        let r = b.l(vec![]);
+        assert_eq!(b.name_of(r), "?");
     }
 }

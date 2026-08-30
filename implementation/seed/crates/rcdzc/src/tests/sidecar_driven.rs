@@ -3130,7 +3130,7 @@ fn a_param_manifest_query_renders_each_param_site_to_a_row() {
         .expect("width site");
     assert_eq!(width.widget.as_deref(), Some("slider"), "width widget");
     // Int64 rides as the STRUCTURED `(Int 64)` payload (encode_ty_payload), NOT a "Int64" render string —
-    // the full-Ty-AST point. (A consumer renders it back to "Int64" via render_ty_name.)
+    // the full-Ty-AST point. (A consumer renders it back to "Int64" via render_ty.)
     assert_eq!(
         width
             .ty
