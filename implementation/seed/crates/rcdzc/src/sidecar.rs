@@ -306,11 +306,12 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // the value-def first (the `e.def` slot); when that is absent — a type/effect export carries
             // `def: None` — fall back to the type-decl then effect-decl lookup BY NAME. An export whose type
             // does not resolve in ANY kind is OMITTED (graceful-degrade: the doc-item's `(ty …)` is optional).
-            // Deterministic (export order). Blob framing (see `KIND_EXPORT_TYPES`): `u32_le count` then per
-            // record `u32_le name_len | name | u32_le ty_len | ty_bytes`.
+            // Deterministic (export order). Wire: ONE canonical binary-AST value
+            // `(export-types (export-type <name> <ty-payload>)…)` (see `cadenza_compile_abi::export_types_wire`),
+            // the resolved type sub-AST grafted directly — no bespoke outer framing.
             let exports: Vec<(String, Option<usize>)> =
                 db.exports.iter().map(|e| (e.name.clone(), e.def)).collect();
-            let mut records: Vec<(String, Vec<u8>)> = Vec::new();
+            let mut records: Vec<(String, crate::ast::Arenas)> = Vec::new();
             for (name, def) in exports {
                 // Resolve the export to a cdzast type sub-AST ROOT (in `db.ast`), trying each kind:
                 //   • value DEF  → the generalized `def_scheme.ty` (polymorphic `(Var N)`) via
@@ -330,27 +331,20 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                     .map(|ty| crate::eval::encode_ty_payload(db, &ty))
                     .or_else(|| effect_op_types_node(db, &name));
                 let Some(ty_root) = ty_root else { continue };
-                // EXTRACT the sub-AST into a standalone arena (rcdzc cannot hand a `db.ast` subtree StructId
-                // across the tool boundary; `codec::encode` wants a whole arena rooted at the type). The
-                // extracted arena's bytes are a full cdzast artifact the consumer's byte-identical codec
-                // decodes directly into the `(ty …)` payload — a `(-> …)`/`(Sum …)`/`(effect …)` root alike.
+                // EXTRACT the sub-AST into a standalone arena rooted at the type (a `db.ast` subtree
+                // StructId cannot travel alone); the wire encoder grafts each such arena's root subtree
+                // into the ONE shared `(export-types …)` value — a `(-> …)`/`(Sum …)`/`(effect …)` root alike.
                 let ty_arena = extract_subtree(&db.ast, ty_root);
-                let ty_bytes = crate::codec::encode(&ty_arena);
-                records.push((name, ty_bytes));
+                records.push((name, ty_arena));
             }
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(&(records.len() as u32).to_le_bytes());
-            for (name, ty_bytes) in records {
-                let nb = name.as_bytes();
-                bytes.extend_from_slice(&(nb.len() as u32).to_le_bytes());
-                bytes.extend_from_slice(nb);
-                bytes.extend_from_slice(&(ty_bytes.len() as u32).to_le_bytes());
-                bytes.extend_from_slice(&ty_bytes);
-            }
+            // ONE canonical binary-AST value: `(export-types (export-type <name> <ty-payload>)…)` — the
+            // bespoke `u32_le count | per-record name_len/name/ty_len/ty_bytes` OUTER framing is retired
+            // (operator 307: full type AST, no bespoke envelope). The consumer decodes once with the
+            // shared `cadenza-compile-abi` codec; no byte-length reader, no nested artifacts.
             QueryResult {
                 kind: KIND_EXPORT_TYPES,
                 name: "export-types".to_string(),
-                bytes,
+                bytes: cadenza_compile_abi::encode_export_types(&records),
             }
         }
         Query::TestList => {
@@ -2354,23 +2348,11 @@ mod tests {
         }
     }
 
-    /// Parse the KIND_EXPORT_TYPES blob into `name → decoded-ty-arena` (the consumer's parse).
+    /// Parse the KIND_EXPORT_TYPES value into `name → decoded-ty-arena` (the consumer's parse) — the wire
+    /// is now ONE canonical binary-AST value `(export-types (export-type <name> <ty-payload>)…)`, decoded
+    /// via the shared `cadenza_compile_abi` codec (the bespoke u32_le framing is retired).
     fn parse_export_types(bytes: &[u8]) -> Vec<(String, crate::ast::Arenas)> {
-        let mut out = Vec::new();
-        let count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
-        let mut off = 4;
-        for _ in 0..count {
-            let nl = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
-            off += 4;
-            let name = String::from_utf8(bytes[off..off + nl].to_vec()).unwrap();
-            off += nl;
-            let tl = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
-            off += 4;
-            let arena = crate::codec::decode(&bytes[off..off + tl]).expect("decode ty artifact");
-            off += tl;
-            out.push((name, arena));
-        }
-        out
+        cadenza_compile_abi::decode_export_types(bytes)
     }
 
     #[test]

@@ -14,6 +14,7 @@
 pub mod abi;
 pub mod closure_hash_wire;
 pub mod diagnostics_wire;
+pub mod export_types_wire;
 pub mod func_layout_wire;
 pub mod instantiations_wire;
 pub mod link_map;
@@ -34,6 +35,7 @@ pub use abi::{
 };
 pub use closure_hash_wire::{decode_closure_hash, encode_closure_hash};
 pub use diagnostics_wire::{decode_diagnostics, encode_diagnostics};
+pub use export_types_wire::{decode_export_types, encode_export_types};
 pub use link_map::{FileSpan, KIND_LINK_MAP, decode_link_map, encode_link_map};
 pub use opt::OptLevel;
 pub use overflow::{OverflowMode, OverflowSpec};

@@ -12,16 +12,14 @@
 //! the sidecar QUERY symbol (the caller drives `run_sidecar` and hands the blob here) so it is testable
 //! standalone against a synthetic blob.
 //!
-//! ## The `export-types` wire (locked with v-inference)
-//! ```text
-//! bytes = u32_le count
-//!         then `count` records, each:
-//!           u32_le name_len | name (UTF-8) | u32_le ty_len | ty_bytes
-//! ```
-//! `ty_bytes` is a FULL `cdzast\x00\x01` artifact (`codec::encode` of a standalone arena rooted at the
-//! resolved type's `encode_ty_payload`), so `codec::decode(ty_bytes)` yields an arena whose ROOT is the
-//! `(ty …)` payload subtree. An export whose type does not resolve is OMITTED from the blob (so a
+//! ## The `export-types` wire (canonical binary AST — `cadenza_compile_abi::export_types_wire`)
+//! ONE `cadenza_ast::codec` value: a root `(export-types (export-type <Str name> <ty-payload>)…)` list,
+//! each form's `<ty-payload>` the resolved type sub-AST (`encode_ty_payload`) grafted directly. The
+//! shared [`cadenza_compile_abi::decode_export_types`] decoder yields, per export, a standalone arena
+//! whose ROOT is that `(ty …)` payload subtree. An export whose type does not resolve is OMITTED (so a
 //! `doc-item` whose name is absent from the map simply gets no `(ty …)` — the graceful-degrade rule).
+//! The bespoke `u32_le count | name_len/name/ty_len/ty_bytes` OUTER framing this wire once used is
+//! retired (operator 307: full type AST, no bespoke envelope, no post-decode byte-length parsing).
 
 // The `cdz doc-module` handler (`run_doc_module` in main.rs) drives `run_sidecar(Query::ExportedTypes)`
 // → `parse_export_types` → `doc_item::project` → `merge_types` — so these are live.
@@ -29,29 +27,15 @@
 use cadenza_syntax::ast::{Arenas, Builder, Struct, StructId};
 use std::collections::BTreeMap;
 
-/// Parse the sidecar `export-types` blob into a map of export name → the decoded type arena (whose root
-/// is the `(ty …)` payload). A malformed/truncated blob yields an empty map rather than an error — a
-/// missing type map just means no `doc-item` gets a `(ty …)` (honest degrade, never a crash on a doc
-/// build). `None` entries (a type that didn't decode) are skipped.
+/// Parse the sidecar `export-types` binary-AST value into a map of export name → the decoded type arena
+/// (whose root is the `(ty …)` payload). Decoded via the shared `cadenza_compile_abi` codec — the ONE
+/// wire both sides speak, no bespoke byte-length parsing here. A malformed value yields an empty map
+/// rather than an error — a missing type map just means no `doc-item` gets a `(ty …)` (honest degrade,
+/// never a crash on a doc build).
 pub fn parse_export_types(blob: &[u8]) -> BTreeMap<String, Arenas> {
-    let mut out = BTreeMap::new();
-    let mut r = Reader::new(blob);
-    let Some(count) = r.u32_le() else {
-        return out;
-    };
-    for _ in 0..count {
-        let Some(name) = r.len_prefixed().and_then(|b| std::str::from_utf8(b).ok()) else {
-            break; // truncated — stop, keep what parsed
-        };
-        let name = name.to_string();
-        let Some(ty_bytes) = r.len_prefixed() else {
-            break;
-        };
-        if let Some(arena) = cadenza_syntax::codec::decode(ty_bytes) {
-            out.insert(name, arena);
-        }
-    }
-    out
+    cadenza_compile_abi::decode_export_types(blob)
+        .into_iter()
+        .collect()
 }
 
 /// Merge resolved types into the structural doc-module: for each `doc-item`, if its `(name …)` is in
@@ -166,63 +150,29 @@ fn copy_from(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
     results.pop().expect("copy_from leaves a root")
 }
 
-/// A little-endian, length-prefixed byte reader for the `export-types` blob. Total: every read returns
-/// `None` on insufficient bytes rather than panicking (a truncated blob degrades to a partial map).
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader { bytes, pos: 0 }
-    }
-
-    fn u32_le(&mut self) -> Option<u32> {
-        let end = self.pos.checked_add(4)?;
-        let slice = self.bytes.get(self.pos..end)?;
-        self.pos = end;
-        Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-    }
-
-    /// A `u32_le` length followed by that many bytes.
-    fn len_prefixed(&mut self) -> Option<&'a [u8]> {
-        let len = self.u32_le()? as usize;
-        let end = self.pos.checked_add(len)?;
-        let slice = self.bytes.get(self.pos..end)?;
-        self.pos = end;
-        Some(slice)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use cadenza_syntax::ast::{Builder, Leaf};
     use cadenza_syntax::codec;
 
-    /// Build a `(ty <payload>)`-less type arena — a standalone `(-> a b)` — and its `\x00\x01` bytes,
-    /// as the sidecar would emit for one export's resolved type.
-    fn arrow_ty_bytes() -> Vec<u8> {
+    /// A standalone `(-> a b)` type arena, as the sidecar extracts for one export's resolved type.
+    fn arrow_ty() -> Arenas {
         let mut b = Builder::new();
         let head = b.name("->");
         let a = b.name("a");
         let bb = b.name("b");
         let root = b.list(vec![head, a, bb]);
-        codec::encode(&b.finish(root))
+        b.finish(root)
     }
 
-    /// Frame an export-types blob from (name, ty_bytes) records, per the locked wire.
-    fn frame(records: &[(&str, Vec<u8>)]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&(records.len() as u32).to_le_bytes());
-        for (name, ty) in records {
-            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
-            out.extend_from_slice(name.as_bytes());
-            out.extend_from_slice(&(ty.len() as u32).to_le_bytes());
-            out.extend_from_slice(ty);
-        }
-        out
+    /// Frame an export-types response via the SHARED codec — the exact wire the `rcdzc` producer emits.
+    fn frame(records: &[(&str, Arenas)]) -> Vec<u8> {
+        let entries: Vec<(String, Arenas)> = records
+            .iter()
+            .map(|(n, a)| ((*n).to_string(), a.clone()))
+            .collect();
+        cadenza_compile_abi::encode_export_types(&entries)
     }
 
     /// A minimal structural doc-module `(doc-module "m" (doc-item (name "f") (sig (f x)) (kind def)))`.
@@ -249,8 +199,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_export_types_reads_the_locked_wire() {
-        let blob = frame(&[("f", arrow_ty_bytes()), ("g", arrow_ty_bytes())]);
+    fn parse_export_types_reads_the_shared_wire() {
+        let blob = frame(&[("f", arrow_ty()), ("g", arrow_ty())]);
         let map = parse_export_types(&blob);
         assert_eq!(map.len(), 2);
         assert!(map.contains_key("f") && map.contains_key("g"));
@@ -260,18 +210,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_export_types_is_total_on_a_truncated_blob() {
-        // A count of 3 but only one full record + a truncated second → keep the one that parsed, no panic.
-        let mut blob = frame(&[("f", arrow_ty_bytes())]);
-        blob[0..4].copy_from_slice(&3u32.to_le_bytes()); // claim 3, supply 1
-        blob.extend_from_slice(&5u32.to_le_bytes()); // a dangling name_len with no bytes
-        let map = parse_export_types(&blob);
-        assert_eq!(
-            map.len(),
-            1,
-            "keeps the fully-parsed record, drops the truncated"
-        );
-        assert!(map.contains_key("f"));
+    fn parse_export_types_is_total_on_garbage() {
+        // A non-AST / garbage payload decodes to an empty map (total, graceful-degrade — never panics).
+        assert!(parse_export_types(b"not a binary-ast tree").is_empty());
+        assert!(parse_export_types(&[]).is_empty());
     }
 
     #[test]
@@ -279,7 +221,7 @@ mod tests {
         let structural = structural_one_item();
         // types has "f" → the item gets (ty (-> a b)); an absent name gets nothing.
         let mut types = BTreeMap::new();
-        types.insert("f".to_string(), codec::decode(&arrow_ty_bytes()).unwrap());
+        types.insert("f".to_string(), arrow_ty());
         let merged = merge_types(&structural, &types);
 
         // Find the single doc-item + assert it now has a (ty …) whose payload is (-> a b).
@@ -338,7 +280,7 @@ mod tests {
         // The type-enriched doc-module is ordinary cdzast — encodes → \x00\x01 → decodes identically.
         let structural = structural_one_item();
         let mut types = BTreeMap::new();
-        types.insert("f".to_string(), codec::decode(&arrow_ty_bytes()).unwrap());
+        types.insert("f".to_string(), arrow_ty());
         let merged = merge_types(&structural, &types);
         let bytes = codec::encode(&merged);
         assert_eq!(&bytes[..8], b"cdzast\x00\x01");
