@@ -560,6 +560,35 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
                 {
                     return Core::Poison(reject);
                 }
+                // A `#set(…)` match pattern is a VALID pattern head (the matcher for it is not yet built —
+                // there is no `lower_match_set` route above, the SET analogue of `lower_match_list` /
+                // `lower_match_map`), so it falls through to the scalar path. Left as the generic UNCODED
+                // decline below it was SILENT in `cdz check` (`match_pattern_fault` surfaces only CODED
+                // poison, and a `decline` is never a check diagnostic) while `compile` faulted it — the
+                // check≡compile hole the LIST (Inc 39), MAP, and scalar-fallthrough fixes already closed,
+                // but SET was never covered (v-rcdzc-ts-1 edge-hunt, queue/48). Emit the CODED `CDZ0201`
+                // (`Code::Malformed`) anchored at the pattern — the SAME code the list/map rest-shape
+                // rejects use and the nested-record match decline uses (a coded reject, NOT `CDZ0900`
+                // `unsupported`: a decline is filtered from `diagnostics`, so it would stay silent in check
+                // exactly like the uncoded one). Now `match_pattern_fault` surfaces it in `check` on EVERY
+                // body and `check`≡`compile`. The message names the workaround (a set is matched by a
+                // whole-value binder / `_`, or queried with `Set.contains` / `Set.size`). When a real set
+                // matcher is built, route it above (like List/Map) and this arm stops firing.
+                if db
+                    .ast
+                    .compound_form_of(inner_pat, crate::ast::CompoundCtor::Set)
+                    .is_some()
+                {
+                    return Core::Poison(
+                        Reject::coded(
+                            Code::Malformed,
+                            "a set match pattern is not supported (a set has no positional structure to \
+                             destructure — bind the whole set with a name or `_`, and query it with \
+                             `Set.contains` / `Set.size`)",
+                        )
+                        .at(inner_pat),
+                    );
+                }
                 return Core::Poison(Reject::decline(
                     "a match pattern that is not a scalar literal or `_` is not supported",
                 ));

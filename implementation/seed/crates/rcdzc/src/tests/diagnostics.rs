@@ -1706,6 +1706,42 @@ fn a_bogus_map_or_scalar_path_arm_head_over_a_recursive_body_is_a_coded_fault_in
     );
 }
 
+/// A `#set(…)` MATCH pattern is not yet lowered (there is no `lower_match_set` route, the SET analogue
+/// of `lower_match_list` / `lower_match_map`), so it falls through to the scalar path. Left as the
+/// generic UNCODED "not a scalar literal or `_`" decline it was SILENT in `cdz check` (which surfaces
+/// only CODED pattern faults via `match_pattern_fault`, and never a decline) while `compile` faulted it
+/// — the SET-shaped hole the list (Inc 39), map, and scalar-fallthrough fixes already closed but SET was
+/// never covered (v-rcdzc-ts-1 edge-hunt, queue/48, which asserts `(error CDZ0201)`). Now the set-pattern
+/// fall-through emits the CODED `CDZ0201` (`Code::Malformed`) anchored at the pattern — the same code the
+/// list/map rest-shape rejects and the nested-record match decline use — so `check`≡`compile`.
+#[test]
+fn a_set_match_pattern_is_a_coded_check_surfaced_rejection_not_silent() {
+    // Parameterized body (non-nullary) so this exercises the check≡compile path via `match_pattern_fault`,
+    // not only the nullary-exported emit walk. Rest-form `#set(1 .. r)` (the queue/48 repro), bare
+    // `#set(1)`, and the two-`..` `#set(1 .. r1 .. r2)` all reach the same fall-through → all now CDZ0201.
+    for pat in ["#set(1 .. r)", "#set(1)", "#set(1 .. r1 .. r2)"] {
+        let src =
+            format!("(module m (def (f (: s (Set Int64))) (match s ({pat} 0) (_ 9))) (export f))");
+        let all = diags_of(&src);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("set match pattern is not supported")),
+            "a `{pat}` set match pattern surfaces the coded CDZ0201 rejection in check \
+             (was a silent uncoded decline): {all:?}"
+        );
+    }
+    // NO false alarm: a scalar-only match over a Set scrutinee (a whole-value binder + wildcard, NO
+    // `#set(…)` pattern) routes to the scalar path with a valid binder probe — it must stay clean.
+    let ok = "(module m (def (f (: s (Set Int64))) (match s (whole 0) (_ 9))) (export f))";
+    let ok_diags = diags_of(ok);
+    assert!(
+        ok_diags
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a scalar-only match over a set still checks clean (no set pattern → no CDZ0201): {ok_diags:?}"
+    );
+}
+
 /// A RECORD match pattern is now IMPLEMENTED (record match landed — the match twin of the record
 /// binding pattern). A field-binder reference in the body must CHECK CLEAN (resolve to a scrutinee
 /// projection, Case 6rec), NOT leak the old misleading "unbound name" CDZ0101 nor the superseded "not
