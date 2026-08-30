@@ -7,19 +7,22 @@ facts the normalizer's trap-guarded rewrites rest on:
   • `isConcreteSym` decides EXACTLY the value-shaped constructors (const/ctor/tuple/record) — so a
     match on a symbolic (non-value) scrutinee becomes a symbolic `case`, never a wrongly-decided
     concrete match. Fully characterized below over all nine `SymExpr` constructors.
+  • `symToValue?` (the constant-extraction the folder gates on) yields a value on a `const` leaf and
+    REFUSES every symbolic leaf (`var`/`app`/`ite`/`proj`/`case` → `none`) — so the folder never treats
+    a symbolic operand as constant, a precondition of every constant fold being sound.
   • the trap classification (`arithOps` ∪ `bitwiseOps`) covers EXACTLY the arithmetic/bitwise ops and
     NONE of the comparisons/booleans — so `mayTrap` flags `(/ x 0)` (blocking `if c a a → a`) but not
     `(< x y)` (allowing the collapse). This is what makes dropping a trap-free operand sound
     (`x*0 → 0`, `if c a a → a`, `or a true → true` drop an operand only when it cannot trap).
 
-Scope note — why the `mayTrap` / `symToValue?` / `normalize` LEAF facts are NOT here yet: those three
-are `partial def`s (Array-closure recursion Lean can't see as structural), and a `partial def` is
-OPAQUE in the kernel — it generates no equation lemmas and does not reduce, so `rfl`/`simp`/`unfold`
-cannot prove even `symToValue? (.const v) = some v`. Proving them needs converting those defs to
-structural recursion (a `termination_by`/`WellFounded` refactor of the normalizer), which is the next
-increment — see the vertical log. Likewise the full goal `denote (normalize e) = denote e` needs the
-`denote` semantics (with an ambient integer width, since a symbolic arithmetic `app` is width-erased)
-and equation lemmas for `normalize`. This file establishes the facts the kernel CAN reduce today.
+Scope note — `symToValue?` is now TOTAL (a structural `termination_by sizeOf` def, converted from
+`partial` alongside this file), so its equation lemmas exist and `simp [symToValue?]` proves its leaf
+facts (below). Still deferred: `mayTrap` / `normalize` remain `partial def`s (Array-closure recursion),
+hence OPAQUE in the kernel — no equation lemmas, so `rfl`/`simp`/`unfold` cannot prove even
+`mayTrap (.var n) = false`. The same `attach`+`termination_by sizeOf`+`decreasing_by` treatment used
+for `symToValue?` unlocks them next (see the vertical log). Likewise the full goal
+`denote (normalize e) = denote e` needs the `denote` semantics (with an ambient integer width, since a
+symbolic arithmetic `app` is width-erased) and equation lemmas for `normalize`.
 -/
 import Oracle.Symbolic
 
@@ -48,6 +51,25 @@ theorem isConcreteSym_ite (c t e : SymExpr) : isConcreteSym (.ite c t e) = false
 theorem isConcreteSym_proj (b : SymExpr) (sel : ByteArray) : isConcreteSym (.proj b sel) = false := rfl
 theorem isConcreteSym_case (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
     isConcreteSym (.case s arms) = false := rfl
+
+/-! ## `symToValue?` extracts a value from a `const` leaf and refuses every symbolic leaf.
+`symToValue?` is a total (`termination_by sizeOf`) def, so its equation lemmas discharge these via
+`simp`. A `const` leaf extracts its value; a `var` (symbolic input) and every non-value leaf yield
+`none` — the folder therefore never mistakes a symbolic operand for a constant (`foldConst?` returns
+`none` the moment any operand is symbolic), the precondition that keeps constant folding sound. -/
+
+theorem symToValue?_const (v : Value) : symToValue? (.const v) = some v := by
+  simp [symToValue?]
+theorem symToValue?_var (n : Nat) : symToValue? (.var n) = none := by
+  simp [symToValue?]
+theorem symToValue?_app (op : String) (args : Array SymExpr) :
+    symToValue? (.app op args) = none := by simp [symToValue?]
+theorem symToValue?_ite (c t e : SymExpr) : symToValue? (.ite c t e) = none := by
+  simp [symToValue?]
+theorem symToValue?_proj (b : SymExpr) (sel : ByteArray) : symToValue? (.proj b sel) = none := by
+  simp [symToValue?]
+theorem symToValue?_case (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
+    symToValue? (.case s arms) = none := by simp [symToValue?]
 
 /-! ## Trap classification: `arithOps` ∪ `bitwiseOps` = exactly the trapping ops.
 `arithOps`/`bitwiseOps` are plain `List String` data, so membership is decidable — these `decide`

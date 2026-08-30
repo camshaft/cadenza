@@ -188,8 +188,21 @@
         # <2m incremental → each slot frees ~8x faster → more candidates/hr through the fixed pool. Same scoping as
         # craneCrateCommon (seedCompilerSrc fileset + stubNonClosure + seedCargoVendor), just multi-crate
         # (cdz+cdz-run) via cargoExtraArgs. Output contract UNCHANGED: $out/bin/{cdz,cdz-run}.
-        seedCompiler = craneLib.buildPackage {
-          pname = "cdz-seed-compiler";
+        # The seed cdz/cdz-run build, PARAMETERIZED by feature set. Two variants share ALL machinery (src, deps
+        # layer, hash-injection preBuild, non-closure stubs) and differ ONLY in cargoExtraArgs:
+        #  - seedCompiler (COMPILE/DELEGATE) — `--no-default-features` → `standalone` OFF, so `cdz compile`/`cdz
+        #    build` DELEGATE to the external `cdz-compile` (v-cdz-delegate's caching win: a compiler change need
+        #    not rebuild `cdz`). Also sheds corpus/lsp/watch/completions from the closure.
+        #  - seedCompilerTestRunner (TEST/DISCOVERY) — `--features cdz/standalone` → `standalone` ON, so `cdz
+        #    test` / `cdz test --list` / `cdz test --emit-shred` run the compiler + property-gen IN-PROCESS via
+        #    rcdzc (`run_test` is `#[cfg(feature="standalone")]`-only, main.rs:5426). This is the cdz the cad-test
+        #    + test-shred-discovery derivations MUST use — the `!standalone` seedCompiler's `cdz test` REFUSES
+        #    ("no in-process test runner"). corpus/lsp/watch/completions stay OFF (cdz test is corpus-independent).
+        #    rcdzc is already in seedCompilerClosure (non-optional today); WHEN v-cdz-crate-split flips
+        #    `standalone=["dep:rcdzc"]` + `rcdzc={optional=true}`, THIS variant's closure must gain
+        #    includeOptional for rcdzc (seam coordinated with v-cdz-crate-split — the compile variant stays as-is).
+        mkSeedCompiler = { pname, cargoExtraArgs }: craneLib.buildPackage {
+          inherit pname cargoExtraArgs;
           version = "0.0.0";
           src = seedCompilerSrc;
           inherit cargoArtifacts;
@@ -221,19 +234,30 @@
             [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
           '';
           # Build only the seed-compiler binaries, not the whole workspace (xtask etc.). crane injects --locked
-          # + --release; cargoExtraArgs adds the -p scoping (crane's equivalent of buildRustPackage cargoBuildFlags).
-          # --no-default-features drops cdz's default-on `corpus` feature (v-nix+v-cml 2026-08-10): the test-runner
-          # cdz doesn't need the corpus subcommand (cdz test is corpus-independent, v-cml confirmed), and dropping
-          # it removes cdz-corpus from this build's closure — paired with seedCompilerClosure's includeOptional=false
-          # (which drops cdz-corpus SRC from the fileset), a corpus-only MR no longer rotates seedCompiler → the
-          # cad-test-compiler-ml spine no longer over-triggers on corpus MRs (pr-sync throughput flag). cdz-run has
-          # no default features to drop, so --no-default-features is a no-op for it. The hard-gate STILL fires on
-          # rcdzc/Core/compiler-ml edits (those ARE in the closure) — only the corpus false-trigger is removed.
-          cargoExtraArgs = "-p cdz -p cdz-run --no-default-features";
+          # + --release; the per-variant cargoExtraArgs adds the -p scoping + feature set (see mkSeedCompiler note).
           # Build only — tests run in the existing gate/CI (S1: reproducible toolchain build). Do NOT re-export
           # the deps layer (we consume the shared cargoArtifacts, not produce a new one).
           doCheck = false;
           doInstallCargoArtifacts = false;
+        };
+        # COMPILE/DELEGATE variant (standalone OFF). `--no-default-features` drops cdz's default-on `corpus`
+        # (v-nix+v-cml 2026-08-10) — paired with seedCompilerClosure's includeOptional=false (drops cdz-corpus
+        # SRC), a corpus-only MR no longer rotates seedCompiler; and it sheds lsp/watch/completions. cdz-run has
+        # no default features, so --no-default-features is a no-op for it. This cdz DELEGATES `cdz compile`/`build`
+        # to cdz-compile (v-cdz-delegate). NOTE: it CANNOT run `cdz test` (standalone-gated → the honest refusal
+        # stub) — the cad-test / test-shred-discovery derivations use seedCompilerTestRunner instead.
+        seedCompiler = mkSeedCompiler {
+          pname = "cdz-seed-compiler";
+          cargoExtraArgs = "-p cdz -p cdz-run --no-default-features";
+        };
+        # TEST/DISCOVERY variant (standalone ON) — the in-process rcdzc test runner for `cdz test` / `cdz test
+        # --list` / `cdz test --emit-shred`. Kept SEPARATE from seedCompiler so the compile-delegation caching win
+        # is preserved. `--features cdz/standalone` flips ON the standalone cfg-gates while keeping
+        # corpus/lsp/watch/completions OFF (standalone=[] today, so it pulls no extra deps beyond the already-in-
+        # closure rcdzc). Consumed by mkCadProjectTest, testCadenzaProject, testDiscovery, mkTestShred.
+        seedCompilerTestRunner = mkSeedCompiler {
+          pname = "cdz-seed-compiler-testrunner";
+          cargoExtraArgs = "-p cdz -p cdz-run --no-default-features --features cdz/standalone";
         };
 
         # xtaskBin — the `xtask` dev-tool binary AS a relocatable nix package (v-xtask-decompose, operator
@@ -1188,13 +1212,11 @@
           pkgs.stdenvNoCC.mkDerivation {
             inherit pname src;
             version = "0.0.0";
-            nativeBuildInputs = [ seedCompiler ];
-            # After v-cdz-delegate's #3397, a `--no-default-features` cdz (which `seedCompiler` is)
-            # DELEGATES compilation to the external `cdz-compile` CLI instead of linking rcdzc — so this
-            # cdz needs `cdz-compile` reachable. Point at the SEPARATE content-addressed `cdzCompile`
-            # derivation (kept independent of cdz — the whole caching point; per the agreed seam). The
-            # delegate resolves `CDZ_COMPILE_BIN` first. Harmless BEFORE #3397 (cdz is still in-process, so
-            # this var sits unused) — landing it here keeps the harness/project builds green when #3397 flips.
+            # `cdz test` runs the compiler + property-gen IN-PROCESS (standalone), so this uses the
+            # seedCompilerTestRunner variant — the --no-default-features seedCompiler's `cdz test` REFUSES
+            # ("no in-process test runner"). No delegation here (in-process); CDZ_COMPILE_BIN is set only as a
+            # harmless no-op for shape-parity with the buildCadenzaProject (compile/delegate) path.
+            nativeBuildInputs = [ seedCompilerTestRunner ];
             CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
             buildPhase = ''
               runHook preBuild
@@ -1250,8 +1272,9 @@
             root = ./.;
             fileset = dir;
           };
-          nativeBuildInputs = [ seedCompiler ];
-          # cdz-compile reachable for post-#3397 delegation (see buildCadenzaProject); harmless before it.
+          # `cdz test` is standalone-gated (in-process rcdzc runner) → use seedCompilerTestRunner; the
+          # --no-default-features seedCompiler's `cdz test` refuses. CDZ_COMPILE_BIN kept as a harmless no-op.
+          nativeBuildInputs = [ seedCompilerTestRunner ];
           CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
           buildPhase = ''
             runHook preBuild
@@ -1314,7 +1337,7 @@
         # tests-shred-index.txt. Keyed by (file-STEM, name): a @test name can repeat across a suite's files, so
         # the stem (baseNameOf file, ext stripped) disambiguates + matches the manifest's `file` field.
         testDiscovery = { proj, dir }:
-          pkgs.runCommand "test-discovery-${proj}" { nativeBuildInputs = [ seedCompiler ]; } ''
+          pkgs.runCommand "test-discovery-${proj}" { nativeBuildInputs = [ seedCompilerTestRunner ]; } ''
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             cdz test --list --format nix ${pkgs.lib.fileset.toSource { root = ./.; fileset = dir; }}/implementation/${proj} > "$out"
           '';
@@ -1330,7 +1353,10 @@
             {
               # cdzRun (cranelift-ON) for the standalone AOT precompile below (seq-271). two-stage doesn't
               # precompile (its per-test wasm isn't self-contained — needs the compile-time splice).
-              nativeBuildInputs = [ seedCompiler ] ++ pkgs.lib.optional (mode == "standalone") cdzRun;
+              # `cdz test --emit-shred` is standalone-gated (in-process rcdzc) → seedCompilerTestRunner, NOT the
+              # --no-default-features seedCompiler (whose `cdz test` refuses). cdzRun (cranelift-ON) is added for
+              # the standalone AOT precompile below (seq-271); two-stage doesn't precompile.
+              nativeBuildInputs = [ seedCompilerTestRunner ] ++ pkgs.lib.optional (mode == "standalone") cdzRun;
               __contentAddressed = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
