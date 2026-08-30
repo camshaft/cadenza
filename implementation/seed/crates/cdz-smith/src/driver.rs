@@ -722,9 +722,24 @@ pub fn once(seed: u64) -> Verdict {
 
 /// Regenerate the program source for a seed (for `verify`/repro tooling and the watchdog).
 pub fn program_for_seed(seed: u64) -> String {
-    // Widen the 8-byte seed into a longer generator byte string so the generator has material to
-    // make interesting choices from; the repeat is deterministic in the seed.
-    generate(&seed.to_le_bytes().repeat(8)).source
+    generate(&seed_entropy(seed)).source
+}
+
+/// Expand a `u64` seed into a DIVERSE generator byte stream via splitmix64. The generator makes one
+/// choice per byte as it descends, so it needs a long stream of INDEPENDENT bytes to explore the shape
+/// space; the previous `seed.to_le_bytes().repeat(8)` fed only 8 DISTINCT bytes cycled, which correlated
+/// every choice and collapsed the whole sweep to ~136 distinct programs over thousands of seeds (the
+/// "bottomed-out / tiny language subset" the operator flagged). splitmix64 gives 256 well-distributed
+/// bytes — matching the diverse expansion the cadenza-differential / cadenza-equiv paths already use —
+/// so a single-seed change now yields a genuinely different program. Deterministic in the seed. When the
+/// generator wants more than 256 bytes its cursor bottoms out at 0 (bounded tail), same as before.
+fn seed_entropy(seed: u64) -> Vec<u8> {
+    let mut ent = Vec::with_capacity(256);
+    let mut r = SplitMix64::new(seed);
+    for _ in 0..32 {
+        ent.extend_from_slice(&r.next().to_le_bytes());
+    }
+    ent
 }
 
 // ── PRNG + environment helpers ────────────────────────────────────────────────────────────────
