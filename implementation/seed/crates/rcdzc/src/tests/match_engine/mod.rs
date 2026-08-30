@@ -2570,55 +2570,12 @@ fn an_unsolved_type_variable_renders_as_underscore_not_an_internal_number() {
 }
 
 #[test]
-fn a_join_site_names_the_structural_delta_not_two_full_renders() {
-    // The per-member structural-delta hints (record field, tuple position, collection axis) now also
-    // fire at the JOIN sites — a list literal, an `if`'s branches, a `match`'s arms — where two
-    // same-kind compounds that differ inside were dumped as two whole renders. `structural_delta_hint`
-    // bundles the three per-member helpers so all three sites point at the SPECIFIC difference.
-    // A LIST LITERAL of records differing in one field's TYPE.
-    let list =
-        reject_full("(module m (def (g) (list (record (x 1)) (record (x true)))) (export g))")
-            .expect("a list of records with a differing field rejects");
-    assert!(
-        list.message
-            .contains("field `x` should be Int64, but this one is Bool"),
-        "list literal names the differing field: {}",
-        list.message
-    );
-    // An `if` whose branches are records differing in one field's TYPE.
-    let iff = reject_full(
-        "(module m (def (f (: b Bool)) (if b (record (x 1)) (record (x true)))) (export f))",
-    )
-    .expect("if branches with a differing record field reject");
-    assert!(
-        iff.message
-            .contains("field `x` should be Int64, but this one is Bool"),
-        "if-branch names the differing field: {}",
-        iff.message
-    );
-    // A `match` whose arms are tuples differing in one position's TYPE.
-    let m = reject_full(
-        "(module m (def (f (: n Int64)) (match n (0 (tuple 1 2)) (_ (tuple 1 true)))) (export f))",
-    )
-    .expect("match arms with a differing tuple position reject");
-    assert!(
-        m.message
-            .contains("element 1 should be Int64, but this one is Bool"),
-        "match-arm names the differing position: {}",
-        m.message
-    );
-    // A LIST LITERAL of tuples of DIFFERENT ARITY names the arity delta (not per-position).
-    let arity = reject_full("(module m (def (g) (list (tuple 1 2) (tuple 1 2 3))) (export g))")
-        .expect("a list of tuples of different arity rejects");
-    assert!(
-        arity
-            .message
-            .contains("expected a tuple with 2 elements, but this one has 3"),
-        "list literal names the tuple arity delta: {}",
-        arity.message
-    );
-    // NO regression: a SCALAR clash keeps its clean message (no structural delta) AND its float-retype
-    // fix — the delta only fires for same-kind compounds that differ inside.
+fn a_join_site_scalar_clash_keeps_its_retype_fix_and_no_structural_delta() {
+    // RESIDUAL of a_join_site_names_the_structural_delta_not_two_full_renders — its per-member delta faces
+    // (list-literal / if-branch / match-arm record-field / tuple-position / tuple-arity) migrated to corpus
+    // 07-type-system. This keeps the scalar-clash NO-delta control the corpus grades only as a todo (its
+    // fix-only quality assertion): a SCALAR clash at a join gets NO structural-delta tail (the delta fires
+    // only for same-kind compounds that differ inside) AND still carries the int-literal->float retype fix.
     let scalar =
         reject_full("(module m (def (g) (list 1 2.0)) (export g))").expect("(list 1 2.0) rejects");
     assert!(
@@ -2628,7 +2585,7 @@ fn a_join_site_names_the_structural_delta_not_two_full_renders() {
     );
     assert!(
         scalar.fix.is_some(),
-        "the int-literal→float retype fix still rides along: {:?}",
+        "the int-literal->float retype fix still rides along: {:?}",
         scalar.fix
     );
 }
@@ -2964,48 +2921,10 @@ fn over_applying_a_prelude_member_op_names_the_operation_and_arity() {
     );
 }
 
-#[test]
-fn over_applying_a_bare_variant_constructor_names_it() {
-    // The variant-constructor companion of the member-op over-application message: a BARE ctor `(Mk 1
-    // 2 3)` (Mk takes 2) named the constructor + its arity ("`Mk` takes 2 arguments, but 3 were
-    // given") instead of the anonymous "applied 3 arguments to a function of arity 2" — reading as well
-    // as the member-access spelling `(. P Mk)` already did. Carries the delete-surplus fix.
-    let d = reject_full("(module m (type P (Mk Int64 Int64) (Z)) (def (g) (Mk 1 2 3)) (export g))")
-        .expect("over-applying a bare ctor Mk rejects");
-    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-    assert!(
-        d.message
-            .contains("`Mk` takes 2 arguments, but 3 were given"),
-        "names the bare constructor + arity: {}",
-        d.message
-    );
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Delete),
-        "carries the delete-surplus fix: {:?}",
-        d.fix
-    );
-    // The member-access spelling of the SAME ctor names it dotted (`P.Mk`) — the shared phrasing.
-    let member = reject_full(
-        "(module m (type P (Mk Int64 Int64) (Z)) (def (g) ((. P Mk) 1 2 3)) (export g))",
-    )
-    .expect("over-applying (. P Mk) rejects");
-    assert!(
-        member
-            .message
-            .contains("`P.Mk` takes 2 arguments, but 3 were given"),
-        "the member spelling names it dotted: {}",
-        member.message
-    );
-    // NO regression: an ordinary over-applied function keeps the anonymous arity message (not a ctor).
-    let fun = reject_full("(module m (def (h (: a Int64)) a) (def (g) (h 1 2)) (export g))")
-        .expect("over-applying a user fn rejects");
-    assert!(
-        fun.message.contains("function of arity 1") && !fun.message.contains("were given"),
-        "an ordinary function keeps the anonymous over-application message: {}",
-        fun.message
-    );
-}
+// (over_applying_a_bare_variant_constructor_names_it migrated to corpus 07-type-system: a bare ctor `(Mk 1 2 3)`
+// → "`Mk` takes 2 arguments, but 3 were given" + delete-surplus fix; the member spelling `((. P Mk) 1 2 3)` →
+// "`P.Mk` takes 2 arguments, but 3 were given"; an ordinary over-applied fn keeps the anonymous "function of
+// arity 1" message (not "were given"). All 3 PASS wasm.)
 
 #[test]
 fn an_unapplied_function_value_names_the_forgotten_call() {
