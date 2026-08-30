@@ -32,7 +32,7 @@ pub(super) fn is_heap_type_for_retain(ty: &Ty) -> bool {
 /// ([`capture_escapes_via_body`]): a capture that escapes via the closure body's return needs a `dup` at
 /// its `Core::Captured` read so the returned value owns an independent ref (else the monolithic cell-drop
 /// double-frees it — the hcz1/hcz2 UAF). `Copy` so the 96 recursive forwards move nothing.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum EscapeTarget {
     /// A `let`/param binding, matched by its binder `StructId` (the existing binding-escape query).
     Binder(StructId),
@@ -100,6 +100,38 @@ pub(super) fn binding_escapes_dup_aware(
     tail_borrowed: bool,
     dup_sites: Option<&HashSet<StructId>>,
 ) -> bool {
+    // FRONT-3 MEMO (v-memory-safety sign-off): the escape verdict is a pure function of
+    // (id, binder, tail_borrowed) + the build-once-immutable Core graph — so memoize it, keyed by that FULL
+    // context (tail_borrowed is the position-dependence, so it MUST be in the key; the full EscapeTarget too,
+    // as Node/Binder/Capture are distinct verdicts). GATED on `dup_sites.is_none()` (the sumpayload/cont-
+    // escape blowup path; the `Some` drop-site path neither reads nor writes the memo — no cross-
+    // contamination). Linearizes the DAG-as-tree escape re-walk (db-query-diff / db-query-perfield front-3).
+    // NO in_progress/tainted-withhold: the memo writes only AFTER the recursive call returns and the walk is
+    // acyclic by spec (recursive defs refer to themselves via a static code ref, not a heap-value cycle; the
+    // `Core::Call` arm recurses only into args, not the callee body), so no cycle-artifact can ever be cached
+    // (see `Db::escape_verdict_memo`). The worker's recursion calls THIS wrapper, so nested queries memoize.
+    if dup_sites.is_none()
+        && let Some(&v) = db.escape_verdict_memo.get(&(id, binder, tail_borrowed))
+    {
+        return v;
+    }
+    let v = binding_escapes_dup_aware_inner(db, id, binder, tail_borrowed, dup_sites);
+    if dup_sites.is_none() {
+        db.escape_verdict_memo
+            .insert((id, binder, tail_borrowed), v);
+    }
+    v
+}
+
+/// The unmemoized worker of [`binding_escapes_dup_aware`]. Its recursive `binding_escapes_dup_aware(...)`
+/// calls resolve to the MEMOIZED wrapper above, so a shared subtree reached via many paths is computed once.
+fn binding_escapes_dup_aware_inner(
+    db: &mut Db,
+    id: StructId,
+    binder: EscapeTarget,
+    tail_borrowed: bool,
+    dup_sites: Option<&HashSet<StructId>>,
+) -> bool {
     // NODE target: THIS extraction node's value escapes iff the walk reached it in a CONSUMING position
     // (`!tail_borrowed` — a parent `Proj`/borrow-op relaxes to `tail_borrowed`, a ctor-child/result/call-arg
     // keeps it consuming). Checked BEFORE the node-kind match so a `SumPayload`/`Proj` target is classified
@@ -108,6 +140,19 @@ pub(super) fn binding_escapes_dup_aware(
         && id == t
     {
         return !tail_borrowed && !dup_sites.is_some_and(|s| s.contains(&id));
+    }
+    // O(1) OCCURRENCE-ORACLE EARLY-PRUNE (same lever as `mark_binder_dups_inner`): a binder that PROVABLY
+    // does not OCCUR in subtree `id` cannot ESCAPE from it (escape needs an occurrence), so short-circuit the
+    // whole `core_of`-cloning descent. Sound + conservative — `binder_absent_in_subtree` returns true ONLY on
+    // a DEFINITE all-zero occurrence bit (oracle live + node memoized); no-oracle / untracked / tainted-cyclic
+    // → false → the normal walk runs (unchanged behaviour). This is the fix for the reclaim super-linear
+    // blowup where `binding_escapes_dup_aware` re-descended binder-free subtrees per binder (db-query-diff
+    // `cdz test` hang; profile: 27% self here after the `binder_occurs_rec` pre-pass fix). Binder-target only
+    // (the oracle is per-binder; a `Capture`/`Node` target keeps the full walk).
+    if let EscapeTarget::Binder(b) = binder
+        && binder_absent_in_subtree(b, id)
+    {
+        return false;
     }
     match core_of(db, id) {
         // A reference to the binding: it escapes UNLESS this occurrence is a borrow (the operand of a
@@ -1680,6 +1725,24 @@ pub(super) fn binder_absent_in_subtree(binder: StructId, id: StructId) -> bool {
     })
 }
 
+/// The EXACT occurrence bit for `binder` at subtree `id` from the active oracle — `Some(true/false)` when the
+/// node is MEMOIZED in the bitset (identical to [`binder_occurs`] by construction; see the `build_occurrence_
+/// bitsets` cross-check test), `None` when there is no oracle / the binder is untracked / the node is a
+/// tainted-cyclic MISS (fall back to the walking `binder_occurs`). Lets the `seq` pre-pass read a child's
+/// occurrence in O(1) off the ONCE-built oracle instead of a fresh per-`seq` `binder_occurs` re-scan — the fix
+/// for the super-linear reclaim blowup where nested `seq`s re-walked overlapping subtrees (db-query-diff
+/// `cdz test` hang). Exactness-preserving: the oracle bit EQUALS `binder_occurs` for memoized nodes, and a
+/// MISS falls back to the exact walk, so the Perceus site-set is byte-identical to the pre-fix behaviour.
+fn binder_occurs_via_oracle(binder: StructId, id: StructId) -> Option<bool> {
+    DUP_OCCURRENCE_ORACLE.with(|o| {
+        let o = o.borrow();
+        let (index, bitsets) = o.as_ref()?;
+        let &i = index.get(&binder)?;
+        let bits = bitsets.get(&id)?; // MISS (tainted/cyclic, un-memoized) → None → caller walks
+        Some((bits[i / 64] >> (i % 64)) & 1 == 1)
+    })
+}
+
 /// Collect every HEAP-typed binder whose multi-use inside `id` could need a retain: each `Core::Let`
 /// BINDER declared in the subtree, and each PARAMETER referenced by a `Core::Param` occurrence (a scalar
 /// binding owns no heap cell, so its multi-use needs no dup — a scalar is re-read from its slot freely).
@@ -2297,7 +2360,14 @@ pub(super) fn mark_binder_dups_inner(
         let mut occ_cache: HashMap<StructId, bool> = HashMap::new();
         let mut occurs: Vec<bool> = Vec::with_capacity(children.len());
         for &(c, _) in children.iter() {
-            occurs.push(binder_occurs(db, c, binder, &mut occ_cache));
+            // Read the child's occurrence off the ONCE-built oracle (O(1)) when live+memoized — identical to
+            // `binder_occurs` by construction — falling back to the walking scan ONLY on an oracle MISS
+            // (no oracle / untracked binder / tainted-cyclic node). This is the fix for the super-linear
+            // reclaim blowup: the fresh-per-`seq` `occ_cache` re-scanned overlapping subtrees at every nested
+            // `seq` (db-query-diff `cdz test` hang); the oracle makes each child O(1). Exactness-preserving.
+            let o = binder_occurs_via_oracle(binder, c)
+                .unwrap_or_else(|| binder_occurs(db, c, binder, &mut occ_cache));
+            occurs.push(o);
         }
         let any = occurs.iter().any(|&o| o);
         // Main pass, right-to-left so a later sibling's use still flows into an earlier one's `live_after`;

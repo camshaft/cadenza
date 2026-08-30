@@ -1553,6 +1553,22 @@ pub struct Db {
     /// compile time (`subtree_reaches_host_call` + its per-node `core_of`). The memo makes each node's
     /// verdict O(1) after first computation. `None` until computed.
     pub(crate) reaches_host_call: crate::fxhash::FxHashMap<StructId, bool>,
+    /// Memo of `select::reclaim::binding_escapes_dup_aware` (the emit-side Perceus escape query), keyed by
+    /// the FULL context the verdict depends on — `(node, EscapeTarget, tail_borrowed)` — and used ONLY when
+    /// `dup_sites` is `None` (the sumpayload/cont-escape path; the `Some` drop-site path neither reads nor
+    /// writes it, so no cross-contamination). The escape verdict is a pure function of that key + the
+    /// build-once-immutable Core graph (v-memory-safety sign-off), so a compile-lifetime memo is sound and
+    /// needs no clearing. This LINEARIZES the DAG-as-tree escape re-walk that made the DbState-handler-heavy
+    /// modules (db-query-diff / db-query-perfield) `cdz test` compile super-linearly (front-3). NO
+    /// in_progress/tainted guard — the walk is acyclic by spec (a recursive def refers to itself via a static
+    /// code ref, never a heap-value cycle; the `Core::Call` arm recurses only into args, not the callee body)
+    /// and the memo writes only AFTER a call returns, so a (spec-impossible) cycle node never returns → never
+    /// caches an artifact (v-mem: adding an in_progress that returns for a back-edge is what WOULD create the
+    /// cycle-artifact risk, so it is deliberately omitted).
+    pub(crate) escape_verdict_memo: crate::fxhash::FxHashMap<
+        (StructId, crate::backend::wasm::select::EscapeTarget, bool),
+        bool,
+    >,
 
     /// Memo of "does this compound type have a free var?" keyed by the payload's shared `Rc` address — for
     /// the `infer::type_of` memoization guard (`!t.has_free_var()`), which runs on EVERY node's solved type.
@@ -3028,6 +3044,7 @@ impl Db {
             build_cache: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
             reaches_host_call: crate::fxhash::FxHashMap::default(),
+            escape_verdict_memo: crate::fxhash::FxHashMap::default(),
             ty_has_free_var: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
