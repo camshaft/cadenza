@@ -4866,6 +4866,36 @@ fn lower_let(
     // fires). GATED by a `Resolved::Try` PRE-FILTER so a non-try init is never lowered early — calling
     // `core_of(init)` before the keep-analysis populates `db.kept_bindings` would perturb a closure/multi-use
     // binding's lowering decision (a memoization-order hazard). Only a `Resolved::Try` init is probed.
+    // DESTRUCTURE-LET → single-arm MATCH (v-memory-safety ruling A): a `let` whose binder is a
+    // tuple/record/sum DESTRUCTURE pattern (not a bare name) lowers AS a single irrefutable-arm `match`
+    // over the init — reusing match's materialize-ONCE scrutinee AND its already-correct heap reclaim. The
+    // ordinary let path re-lowered the init at EVERY element `Core::SumPayload` projection (the post-fold
+    // live filter `count_localref_reads` counts only `LocalRef`, so a `SumPayload`-of-init kept binding was
+    // wrongly DROPPED → re-inlined) → EXPONENTIAL on a non-foldable recursive init (the match→let
+    // deep-nesting hang), and a naive keep-fix left a kept HEAP init's drop UNPLACED → OOB. A match
+    // materializes the scrutinee once (kills the re-eval) AND places the heap-scrutinee drop correctly —
+    // exactly why `(match X ((tuple a b)) …)` is safe+fast for both scalar and heap while the let form
+    // OOB'd. The element binders resolve to the SAME `SumPayload{scrutinee: init}` either way, now reading
+    // the match's single materialized scrutinee slot. Single destructure binding → one arm (the binder
+    // pattern IS the arm pattern, the let body IS the arm body); a multi-binding or bare-name let keeps the
+    // ordinary path below (a bare-name binding is A-normalized/kept exactly as before — unaffected).
+    // Gated PRECISELY to a TUPLE/RECORD destructure binder (`#tuple(a b)` / `(record …)`) — the irrefutable
+    // compound destructures whose element binders are `SumPayload`/`Proj` reads of the init. An ANNOTATED
+    // binder `(: x T)`, a bare name, a `bin`/list/map binder, or a sum-ctor pattern are NOT caught (they keep
+    // the ordinary path — annotated-binder diagnostics, bin-binding reclaim, etc. are unchanged). Checks both
+    // the native ctor-leaf head (what the reader emits) and the legacy string-prim head.
+    if bindings.len() == 1
+        && matches!(
+            db.ast
+                .compound_ctor_prim(bindings[0].0)
+                .or_else(|| db.ast.compound_ctor_leaf(bindings[0].0)),
+            Some(CompoundCtor::Tuple | CompoundCtor::Record)
+        )
+    {
+        let (pat, init) = bindings[0];
+        trace!(target: "rcdzc::lower", node = node.0, "destructure-let → single-arm match (materialize-once scrutinee + match reclaim)");
+        return lower_match(db, init, &[(pat, body)]);
+    }
     for (i, &(_name_occ, init)) in bindings.iter().enumerate() {
         if matches!(resolved_of(db, init), Resolved::Try { .. })
             && let Core::Break { value } = core_of(db, init)
