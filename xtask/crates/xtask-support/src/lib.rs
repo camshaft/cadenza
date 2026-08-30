@@ -648,24 +648,10 @@ fn extract_path_literal(attr_line: &str) -> Option<String> {
 /// that is no longer a cross-crate include (removed / file gone) is STALE and FAILS the lint, so this list
 /// can only shrink. The cdz-runtime -> cadenza-ast three are owned by v-runtime under seq-273; the cdz-num
 /// -> cdz-runtime one is tracked with v-runtime. REMOVE an entry once its include is converted to a dep.
-pub const PATH_INCLUDE_ALLOWLIST: &[(&str, &str)] = &[
-    (
-        "implementation/seed/crates/cdz-num/src/lib.rs",
-        "../../cdz-runtime/src/bigint.rs",
-    ),
-    (
-        "implementation/seed/crates/cdz-runtime/src/lib.rs",
-        "../../cadenza-ast/src/ast.rs",
-    ),
-    (
-        "implementation/seed/crates/cdz-runtime/src/lib.rs",
-        "../../cadenza-ast/src/codec.rs",
-    ),
-    (
-        "implementation/seed/crates/cdz-runtime/src/lib.rs",
-        "../../cadenza-ast/src/leb128.rs",
-    ),
-];
+pub const PATH_INCLUDE_ALLOWLIST: &[(&str, &str)] = &[(
+    "implementation/seed/crates/cdz-num/src/lib.rs",
+    "../../cdz-runtime/src/bigint.rs",
+)];
 
 /// CROSS-CRATE `#[path]` SOURCE-INCLUDE lint (operator directive seq-275): FAIL on any `#[path = "…"]`
 /// attribute whose target resolves OUTSIDE the including crate's own `src/` (i.e. into a SIBLING crate) —
