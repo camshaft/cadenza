@@ -207,11 +207,14 @@ pub(crate) fn check_application(
             .unwrap_or_else(|| "a built-in operation".to_string());
         trace!(target: "rcdzc::infer", app = app.0, head = head.0, "fault: built-in operation partially applied as an unconsumed value (surfaced in check)");
         out.push(
-            Reject::decline(format!(
-                "{named} is applied at the wrong arity — a built-in operation must be applied to \
-                 exactly its arguments (a partial application, which would need a runtime closure, is \
-                 not yet built)"
-            ))
+            Reject::declined(
+                crate::diag::DeclineId::PrimAsValueNeedsClosure,
+                format!(
+                    "{named} is applied at the wrong arity — a built-in operation must be applied to \
+                     exactly its arguments; a partial application, which would require a synthesized \
+                     runtime closure, is not supported"
+                ),
+            )
             .at(app),
         );
         for &arg in args {
