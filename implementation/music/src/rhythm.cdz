@@ -21,8 +21,8 @@ def ppq = 960
 def ticks(n: Int64) = Duration.Duration(n)
 
 /// The raw tick count of a duration.
-def tick-count(d: Duration) = match d with
-  | Duration.Duration(t) => t
+def tick-count(d: Duration) =
+  let Duration.Duration(t) = d in t
 
 // ---- the note-value durations (whole/half/quarter/…) ------------------------------------------------
 /// A quarter note = one beat = `ppq` ticks.
@@ -62,11 +62,11 @@ def dur-times(d: Duration, n: Int64) = Duration.Duration(tick-count(d) * n)
 /// Build a meter (time signature).
 def meter(num: Int64, den: Int64) = Meter.Meter(num, den)
 
-def meter-num(m: Meter) = match m with
-  | Meter.Meter(n, _) => n
+def meter-num(m: Meter) =
+  let Meter.Meter(n, _) = m in n
 
-def meter-den(m: Meter) = match m with
-  | Meter.Meter(_, d) => d
+def meter-den(m: Meter) =
+  let Meter.Meter(_, d) = m in d
 
 /// The tick length of ONE beat in a meter: a `den`-note value. `ppq` is a quarter (den 4), so a beat is
 /// `ppq * 4 / den` ticks (den 8 → half a quarter → eighth-note beat).

@@ -65,12 +65,12 @@ def acc-offset(a: Accidental) = match a with
 def note-name(l: Letter, a: Accidental) = NoteName.NoteName(l, a)
 
 /// The letter of a spelled note name.
-def name-letter(nn: NoteName) = match nn with
-  | NoteName.NoteName(l, _) => l
+def name-letter(nn: NoteName) =
+  let NoteName.NoteName(l, _) = nn in l
 
 /// The accidental of a spelled note name.
-def name-accidental(nn: NoteName) = match nn with
-  | NoteName.NoteName(_, a) => a
+def name-accidental(nn: NoteName) =
+  let NoteName.NoteName(_, a) = nn in a
 
 /// The RAW chromatic offset of a spelled note: letter natural + accidental, BEFORE folding into an octave.
 /// This can sit outside `0..11` on purpose — B-sharp is 12 and C-flat is -1, and that overflow is exactly

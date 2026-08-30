@@ -34,8 +34,8 @@ def interval-class(a: Int64, b: Int64) =
 /// Add 1 to the count of `v` selected by interval class `ic` (1..6); ic 0 (same pitch class) is a no-op.
 /// The interval class chooses which of the six positional counts to increment (rebuilding the Icv), never
 /// a list index.
-def bump(v: Icv, ic: Int64) = match v with
-  | Icv.Icv(c1, c2, c3, c4, c5, c6) =>
+def bump(v: Icv, ic: Int64) =
+  let Icv.Icv(c1, c2, c3, c4, c5, c6) = v in
     if ic == 1 then Icv.Icv(c1 + 1, c2, c3, c4, c5, c6)
     else if ic == 2 then Icv.Icv(c1, c2 + 1, c3, c4, c5, c6)
     else if ic == 3 then Icv.Icv(c1, c2, c3 + 1, c4, c5, c6)
@@ -65,8 +65,8 @@ def interval-class-vector(notes: List(Int64)) = icv-go(pc-set(notes), Icv.Icv(0,
 /// The count of interval class `k` (1..6) in a vector — the accessor a caller uses instead of destructuring
 /// the Icv or reaching into a raw list. A `k` of 0 (the unison — not an interval class) or otherwise out of
 /// `1..6` traps: a caller should ask only for `k` in `1..6`, since there is no interval class outside it.
-def icv-count(v: Icv, k: Int64) = match v with
-  | Icv.Icv(c1, c2, c3, c4, c5, c6) =>
+def icv-count(v: Icv, k: Int64) =
+  let Icv.Icv(c1, c2, c3, c4, c5, c6) = v in
     if k == 1 then c1
     else if k == 2 then c2
     else if k == 3 then c3
@@ -79,8 +79,8 @@ def icv-count(v: Icv, k: Int64) = match v with
 def ic-tritone(v: Icv) = icv-count(v, 6)
 
 /// The total number of interval classes counted = the number of unordered pairs in the set = n*(n-1)/2.
-def icv-total(v: Icv) = match v with
-  | Icv.Icv(c1, c2, c3, c4, c5, c6) => c1 + c2 + c3 + c4 + c5 + c6
+def icv-total(v: Icv) =
+  let Icv.Icv(c1, c2, c3, c4, c5, c6) = v in c1 + c2 + c3 + c4 + c5 + c6
 
 /// ============================ @test suite (interval-class vector) ============================
 

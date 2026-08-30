@@ -23,8 +23,8 @@
 def rinterval(octaves: Rational) = RInterval.RInterval(octaves)
 
 /// The octave-fraction of a rational interval (a `Rational`).
-def octaves(i: RInterval) = match i with
-  | RInterval.RInterval(r) => r
+def octaves(i: RInterval) =
+  let RInterval.RInterval(r) = i in r
 
 // ---- constructing intervals as fractions of the octave ----------------------------------------------
 /// The `n`-th step of an `m`-EDO (equal division of the octave) system, as a fraction of the octave:

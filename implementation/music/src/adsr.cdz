@@ -26,20 +26,20 @@ def adsr(attack: Int64, decay: Int64, sustain: Int64, release: Int64, peak: Int6
 def adsr-unity(attack: Int64, decay: Int64, sustain: Int64, release: Int64) =
   Adsr.Adsr(attack, decay, sustain, release, 1000)
 
-def env-attack(e: Adsr) = match e with
-  | Adsr.Adsr(a, _, _, _, _) => a
+def env-attack(e: Adsr) =
+  let Adsr.Adsr(a, _, _, _, _) = e in a
 
-def env-decay(e: Adsr) = match e with
-  | Adsr.Adsr(_, d, _, _, _) => d
+def env-decay(e: Adsr) =
+  let Adsr.Adsr(_, d, _, _, _) = e in d
 
-def env-sustain(e: Adsr) = match e with
-  | Adsr.Adsr(_, _, s, _, _) => s
+def env-sustain(e: Adsr) =
+  let Adsr.Adsr(_, _, s, _, _) = e in s
 
-def env-release(e: Adsr) = match e with
-  | Adsr.Adsr(_, _, _, r, _) => r
+def env-release(e: Adsr) =
+  let Adsr.Adsr(_, _, _, r, _) = e in r
 
-def env-peak(e: Adsr) = match e with
-  | Adsr.Adsr(_, _, _, _, p) => p
+def env-peak(e: Adsr) =
+  let Adsr.Adsr(_, _, _, _, p) = e in p
 
 // ---- linear interpolation helper ---------------------------------------------------------------------
 /// Linear interpolation from `a` to `b` over `span` ticks, at offset `t` (0..span). Exact integer lerp:
