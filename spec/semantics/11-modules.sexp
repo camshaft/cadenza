@@ -435,6 +435,22 @@
   (input  (do (def (main) 42) (export main) (export main)))
   (error  CDZ0201))
 
+(case "a duplicate name WITHIN one multi-name export clause is rejected with a delete fix"
+  (doc    "The within-CLAUSE form of the duplicate export (the cross-clause form is above): `(export main
+           main)` names `main` twice in ONE clause. Same CDZ0201 'exported more than once' + a DELETE fix on
+           the redundant occurrence (the first `main` survives — the whole clause is not deleted). Pins that
+           the multi-name export scanner checks EACH name for duplicates, not only across clauses.")
+  (input  (do (def (main) 1) (export main main)))
+  (error  CDZ0201 (message "exported more than once") (fix (kind delete))))
+
+(case "an undefined name in the 2nd+ position of a multi-name export clause is caught with a did-you-mean"
+  (doc    "A diagnostic on the 2nd (or later) name of a multi-name export anchors to THAT name, not the
+           clause's first: `(export main helpr)` — `helpr` names no definition → CDZ0101 with a did-you-mean
+           over the defined names (`helper`). Pins that the multi-name export scanner resolves EVERY name (a
+           bug once read only `tail.first()`, silently dropping the rest).")
+  (input  (do (def (main) 1) (def (helper) 2) (export main helpr)))
+  (error  CDZ0101 (message "helpr") (message "did you mean `helper`?")))
+
 (case "a duplicate type declaration is rejected with a delete fix"
   (doc    "A module's TYPE names are a fixed set exactly as its def / export / variant / operation names
            (the sixth closed name-set). `(type T (A)) (type T (B))` declares `T` twice — the same fixed-
