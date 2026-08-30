@@ -1710,6 +1710,37 @@
           '';
         };
 
+        # cdz-wasm NATIVE test + clippy + fmt (v-cdz-crate-split 2026-08-30) — the browser compiler's own
+        # test suite, run on the HOST (not wasm32). cdz-wasm is a STANDALONE workspace (its own Cargo.lock,
+        # excluded from the root), so it is NOT covered by rootWorkspaceCrates' per-crate test-crane/clippy
+        # shards — its consumers went UNGATED, which is exactly how the binary-AST wire flips silently broke
+        # its `type_at`/`define_at`/`disposition`/`export_types` `from_utf8`-on-binary consumers (#6324 +
+        # #6342): the cdz LSP decoders were gate-covered but the cdz-wasm BROWSER consumers were not. This
+        # check closes that hole (concierge follow-up). Mirrors `rcdzcWasmNativeCheck`, reusing cdz-wasm's OWN
+        # vendor + closure src. It runs the NATIVE tests (host target), so it does NOT hit the wasm-execution
+        # binaryen OOB that keeps `guideExamplesCheck` advisory — so unlike that check it is MERGE-GATED
+        # (localGate below). The wasm32 build half is `cdzWasmPkg`; together they cover the crate.
+        cdzWasmNativeCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-wasm-native";
+          version = "0.0.0";
+          src = guideCompilerWasmSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = cdzWasmVendor; }}
+            cd implementation/seed/crates/cdz-wasm
+            cargo test --locked
+            cargo clippy --all-targets --locked -- -D warnings
+            cargo fmt --check
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: cdz-wasm native (test + clippy + fmt)" > "$out"
+            runHook postInstall
+          '';
+        };
+
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
         #
         # `xtask build` produces TWO runtime components (build_component + canonicalize_runtime in
@@ -5196,6 +5227,9 @@
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
                   mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
                   wasmtimeSingleHolderAssert compilerPureLibraryAssert
+                  # cdz-wasm NATIVE tests (host, OOB-free) — GATES the browser compiler's sidecar consumers
+                  # so a future binary-AST wire flip can't silently re-break them (the #6324/#6342 hole).
+                  cdzWasmNativeCheck
                   # corpus-hygiene lints FOLDED IN (v-fleet-tooling 2026-08-30, v-corpus-harness green +
                   # concierge exempt-first-then-fold): corpusNativizeCheck (M3 input #ctor form; #6025 escaped
                   # the ADVISORY checks.yml job because --admin bypasses required GHA) + corpusVanishedCheck
@@ -5351,6 +5385,7 @@
             # Full-CI-in-nix increment 3: the native half of the GHA rcdzc-wasm job (the wasm build half
             # is the rcdzcWasm derivation / rcdzc-wasm-hash, already covered).
             rcdzc-wasm-native = rcdzcWasmNativeCheck;
+            cdz-wasm-native = cdzWasmNativeCheck;
             # Full-CI-in-nix increment 6b: the GHA codegen job (cargo xtask codegen --check, ABI staleness).
             codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
