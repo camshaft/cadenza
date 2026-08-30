@@ -9381,6 +9381,43 @@ fn check_application(
         collect(db, args[0], out);
         return;
     }
+    // A `Qty.of` whose UNIT is VALID but whose MAGNITUDE is NON-NUMERIC — `(Qty.of (tuple true) (Unit.base
+    // #"gram"))`. `Qty.of`'s scheme `∀a. a → Unit → (Qty a u)` does NOT constrain the magnitude numeric, and
+    // the result-type synth wraps whatever `a` is, so a compound/bool/string magnitude slips past `check`
+    // to emit — where `Qty.pow`/scale assume a scalar magnitude and mis-width the boxed compound (an i32/i64
+    // mismatch → INVALID WASM, v-rb reroute). A quantity's magnitude must be a numeric scalar; reject it here
+    // (reject-don't-miscompile), the numeric analogue of the not-a-unit reject above. Only when the magnitude
+    // is CONCRETELY non-numeric (an unsolved `Var`/`Any` is skipped — `agrees_with`/`ty_has_free_var` gate)
+    // and otherwise fault-free (its own error, if any, is the primary one).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyOf)
+        && args.len() == 2
+        && crate::eval::unit_of(db, args[1]).is_some()
+    {
+        let before = out.len();
+        collect(db, args[0], out); // the magnitude's own faults first
+        if out.len() == before {
+            let mt = type_of(db, args[0]);
+            if !matches!(
+                mt,
+                Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Any
+            ) && !ty_has_free_var(db, &mt)
+            {
+                trace!(target: "rcdzc::infer", head = head.0, ty = %mt.render_name(&db.name_ctx()), "fault: a Qty magnitude is not numeric (CDZ0201)");
+                out.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "a quantity's magnitude must be a numeric value (Int, Float, Rational, or \
+                             BigInt) — `Qty.of` here is applied to a `{}`",
+                            mt.render_name(&db.name_ctx())
+                        ),
+                    )
+                    .at(args[0]),
+                );
+            }
+        }
+        return;
+    }
     // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>` desugar). Negation is
     // closed over EVERY numeric type (`Int N`/`Float N`/`Rational`/`BigInt`/`Qty`); `lower` rewrites it
     // to `0 - e` at the operand's type. The operator's fixed-width `∀a. (Int a) → (Int a) → (Int a)`
