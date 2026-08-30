@@ -27,8 +27,8 @@ def empty-store() = SumStore.SumStore(0, Map.empty : Map(Int64, (Int64, List(Int
 /// Allocate a sum value: record `(tag, payloads)` at the current `next` hnd, return `(hnd, store')` with
 /// `next` bumped. The hnd is the Int64 eval VALUE for the constructed sum (what a CCtor arm returns). Pure —
 /// returns a NEW store (no mutation), threaded onward like `defs`.
-def store-alloc(store: SumStore, tag: Int64, payloads: List(Int64)) = match store with
-  | SumStore.SumStore(next, cells) => (
+def store-alloc(store: SumStore, tag: Int64, payloads: List(Int64)) =
+  let SumStore.SumStore(next, cells) = store in (
     next,
     SumStore.SumStore(next + 1, Map.insert(cells, next, (tag, payloads)))
   )
@@ -36,16 +36,16 @@ def store-alloc(store: SumStore, tag: Int64, payloads: List(Int64)) = match stor
 /// Read the TAG of the sum value at `hnd` — `Some tag` if allocated, `None` if the hnd is unknown (a
 /// malformed hnd — impossible for a hnd that came from store-alloc, but total). A CMatch arm reads this
 /// to pick the branch (compare against each ctor pattern's tag).
-def store-tag(store: SumStore, hnd: Int64) = match store with
-  | SumStore.SumStore(_, cells) => match Map.lookup(cells, hnd) with
+def store-tag(store: SumStore, hnd: Int64) =
+  let SumStore.SumStore(_, cells) = store in match Map.lookup(cells, hnd) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(cell) => let (tag, _) = cell in Option.Some(tag)
 
 /// Read the i-th PAYLOAD element of the sum value at `hnd` — `Some value` if the hnd is allocated AND has
 /// an i-th element, else `None`. A payload-binding ctor pattern (`(Some x) → …`) reads element 0 to bind `x`;
 /// a multi-field ctor (`Pair a b`) reads 0 and 1. Index recursion via List.at (the compiler-ml idiom).
-def store-payload(store: SumStore, hnd: Int64, i: Int64) = match store with
-  | SumStore.SumStore(_, cells) => match Map.lookup(cells, hnd) with
+def store-payload(store: SumStore, hnd: Int64, i: Int64) =
+  let SumStore.SumStore(_, cells) = store in match Map.lookup(cells, hnd) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(cell) => let (_, payloads) = cell in List.at(payloads, i)
 

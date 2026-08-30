@@ -135,7 +135,7 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
   | Option.None(_) => Ty.TyErr
 
 /// Project the types column out of the Db (for get-tcol — the pure tcol-only combiners read child facts here).
-def types-col(db: Db) = match db with | Db.Db(_, _, tc, _) => tc
+def types-col(db: Db) = let Db.Db(_, _, tc, _) = db in tc
 
 /// Driver: install ONE handler for the DbState family carrying the whole Db as shared state. Each per-field op
 /// reads/writes ONLY its column slice via the existing db.cdz accessors, then resumes threading the (updated)
