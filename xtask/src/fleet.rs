@@ -371,6 +371,7 @@ impl Fleet {
             "refresh-tools.sh",
             "cargo-nix-shim.sh",
             "nix-shim.sh",
+            "git-stash-safety-shim.sh",
             "cpu-monitor.sh",
         ] {
             let src = self.src.join(f);

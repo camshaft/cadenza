@@ -57,4 +57,20 @@ NIX_SHIM_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/nix-shim.sh"
 if [ -f "$NIX_SHIM_SRC" ]; then
   cp "$NIX_SHIM_SRC" "$BIN/nix" 2>/dev/null && chmod +x "$BIN/nix" 2>/dev/null || true
 fi
+
+# git stash-safety shim (v-fleet-tooling 2026-08-30, concierge-nod): install fleet/git-stash-safety-shim as
+# ~/.local/bin/git so a bare `git stash` / `git stash pop` on the SHARED (cross-worktree) stash stack is
+# refused (steer to a WIP commit or push -m TAG + apply-by-sha). FAIL-OPEN (default = real git, only an unsafe
+# stash is refused) + CDZ_NO_GIT_SHIM=1 kill-switch. BECAUSE this shadows `git` fleet-wide, a broken shim would
+# wedge every git-using path (sync/commit/hooks) — so GUARD the install with a SELF-TEST: only keep the shim
+# if it still execs real git for a benign command (`git --version` → "git version …"). If the self-test fails
+# for ANY reason, REMOVE the shim so the fleet transparently falls back to the real git on PATH. Idempotent.
+GIT_SHIM_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/git-stash-safety-shim.sh"
+if [ -f "$GIT_SHIM_SRC" ]; then
+  if cp "$GIT_SHIM_SRC" "$BIN/git" 2>/dev/null && chmod +x "$BIN/git" 2>/dev/null; then
+    if ! PATH="$BIN:$PATH" "$BIN/git" --version 2>/dev/null | grep -q '^git version'; then
+      rm -f "$BIN/git" 2>/dev/null || true   # self-test failed → never leave a broken git shadowing real git
+    fi
+  fi
+fi
 exit 0
