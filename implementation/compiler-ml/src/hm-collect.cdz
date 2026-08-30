@@ -88,7 +88,7 @@ def collect(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), id: Int
     if op <= 65 then
       // relational: operands share a type (left ~ right); node is Bool (no nodeTy constraint here)
       let a1 = push-cs(acc, [(node-ty(env, l), node-ty(env, r))]) in
-        collect-children(tree, rcol, env, [l, r], a1)
+      collect-children(tree, rcol, env, [l, r], a1)
     else
       acc // unknown op ≥ 66 → no constraint
   else
@@ -96,24 +96,28 @@ def collect(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), id: Int
     let nt = node-ty(env, id) in
     let cs = [(nt, node-ty(env, l)), (nt, node-ty(env, r))] in
     let a1 = push-cs(acc, cs) in
-      collect-children(tree, rcol, env, [l, r], a1)
+    collect-children(tree, rcol, env, [l, r], a1)
   | Option.Some(Node.NIf(c, t, e)) => // cond is Bool (cond ~ Bool); branches join (then ~ else); the if IS that type (node ~ then); recurse all three
-  let nt = node-ty(env, id) in
-  let cs = [(node-ty(env, c), ty-bool()), (node-ty(env, t), node-ty(env, e)), (nt, node-ty(env, t))] in
-  let a1 = push-cs(acc, cs) in
+    let nt = node-ty(env, id) in
+    let cs = [
+        (node-ty(env, c), ty-bool()),
+        (node-ty(env, t), node-ty(env, e)),
+        (nt, node-ty(env, t))
+      ] in
+    let a1 = push-cs(acc, cs) in
     collect-children(tree, rcol, env, [c, t, e], a1)
   | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) => // S1a integer match: scrutinee ~ literal-pattern (they are compared), arms join (then ~ else), the match
-  // IS that type (node ~ then). Recurse into all four children.
-  let nt = node-ty(env, id) in
-  let cs = [
-      (node-ty(env, scrutId), node-ty(env, litId)),
-      (node-ty(env, thenId), node-ty(env, elseId)),
-      (nt, node-ty(env, thenId))
-    ] in
-  let a1 = push-cs(acc, cs) in
+    // IS that type (node ~ then). Recurse into all four children.
+    let nt = node-ty(env, id) in
+    let cs = [
+        (node-ty(env, scrutId), node-ty(env, litId)),
+        (node-ty(env, thenId), node-ty(env, elseId)),
+        (nt, node-ty(env, thenId))
+      ] in
+    let a1 = push-cs(acc, cs) in
     collect-children(tree, rcol, env, [scrutId, litId, thenId, elseId], a1)
   | Option.Some(Node.NLet(_, valId, bodyId)) => // the let's type is the body's; recurse value + body
-  let a1 = push-cs(acc, [(node-ty(env, id), node-ty(env, bodyId))]) in
+    let a1 = push-cs(acc, [(node-ty(env, id), node-ty(env, bodyId))]) in
     collect-children(tree, rcol, env, [valId, bodyId], a1)
   | Option.Some(Node.NVar(_)) => // S1b: a var USE shares its binder's value type. Look up the binder via the resolve column; emit
   // useTy ~ binderValueTy. Unbound (RPoison) / RDef / no-fact → no constraint (leaf). A leaf: no recursion.
@@ -165,7 +169,7 @@ def hc-arith-emits-two-constraints() =
       binId,
       vn
     ) in
-    if List.len(collect-all(tree, re(), env, binId)) == 2 then
+  if List.len(collect-all(tree, re(), env, binId)) == 2 then
     unit
   else
     trap("arith (+ a b) emits 2 constraints (node~a, node~b)")
@@ -180,13 +184,13 @@ def hc-arith-propagates-fixed-width-to-both-operands() =
   let (binId, tree) = add-node(t2, Node.NBin(43, aId, bId)) in
   let (va, n1) = fv(0) in
   let (vn, _n2) = fv(n1) in
-    // env: a -> fresh var (the "param"), b -> fixed Int8, node -> fresh result var
+  // env: a -> fresh var (the "param"), b -> fixed Int8, node -> fresh result var
   let env = Map.insert(
       Map.insert(Map.insert(Map.empty : Map(Int64, Ty), aId, va), bId, ty-fixed-int(true, 8)),
       binId,
       vn
     ) in
-    match solve(collect-all(tree, re(), env, binId)) with
+  match solve(collect-all(tree, re(), env, binId)) with
     | Option.Some(su) => (match apply(su, va) with
       | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
         unit
@@ -214,7 +218,7 @@ def hc-mixed-width-arith-conflicts() =
       binId,
       vn
     ) in
-    match solve(collect-all(tree, re(), env, binId)) with
+  match solve(collect-all(tree, re(), env, binId)) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("Int8 + Int16 must CONFLICT via the shared-type constraint")
 
@@ -232,7 +236,7 @@ def hc-relational-shares-operand-type-node-is-bool() =
       Ty.TyBool
     ) in
   let cs = collect-all(tree, re(), env, cmpId) in
-    if List.len(cs) == 1 then
+  if List.len(cs) == 1 then
     match solve-apply(cs, va) with
       | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
         unit
@@ -269,7 +273,7 @@ def hc-nested-arith-propagates-through-chain() =
       outerId,
       vouter
     ) in
-    match solve-apply(collect-all(tree, re(), env, outerId), va) with
+  match solve-apply(collect-all(tree, re(), env, outerId), va) with
     | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
       unit
     else
@@ -297,7 +301,7 @@ def hc-if-branches-join-and-node-is-branch-type() =
       ifId,
       vn
     ) in
-    match solve-apply(collect-all(tree, re(), env, ifId), vn) with
+  match solve-apply(collect-all(tree, re(), env, ifId), vn) with
     | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
       unit
     else
@@ -324,7 +328,7 @@ def hc-if-non-bool-cond-conflicts() =
       ifId,
       vn
     ) in
-    match solve(collect-all(tree, re(), env, ifId)) with
+  match solve(collect-all(tree, re(), env, ifId)) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("a non-Bool if-cond must conflict (cond ~ Bool)")
 
@@ -353,7 +357,7 @@ def hc-match-scrut-shares-lit-and-arms-join() =
       mId,
       vn
     ) in
-    match solve(collect-all(tree, re(), env, mId)) with
+  match solve(collect-all(tree, re(), env, mId)) with
     | Option.Some(su) => (match apply(su, vs) with
       | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
         unit
@@ -387,7 +391,7 @@ def hc-match-mismatched-arms-conflict() =
       mId,
       vn
     ) in
-    match solve(collect-all(tree, re(), env, mId)) with
+  match solve(collect-all(tree, re(), env, mId)) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("Int8-then vs Int16-else must conflict (arm join)")
 
@@ -408,7 +412,7 @@ def hc-var-use-shares-let-value-type() =
       vlet
     ) in
   let rcol = Map.insert(Map.empty : Map(Int64, Resolved), useId, Resolved.RBound(letId)) in
-    match solve(collect-all(tree, rcol, env, letId)) with
+  match solve(collect-all(tree, rcol, env, letId)) with
     | Option.Some(su) => (match apply(su, vuse) with
       | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
         unit
@@ -441,7 +445,7 @@ def hc-param-use-shares-param-var() =
       vbin
     ) in
   let rcol = Map.insert(Map.empty : Map(Int64, Resolved), useId, Resolved.RBound(paramId)) in
-    match solve(collect-all(tree, rcol, env, binId)) with
+  match solve(collect-all(tree, rcol, env, binId)) with
     | Option.Some(su) => (match apply(su, vparam) with
       | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
         unit
@@ -467,7 +471,7 @@ def hc-unbound-var-emits-no-constraint() =
       binId,
       vb
     ) in
-    // rcol has NO fact for xId (unbound) → the NVar arm emits nothing; only the 2 arith constraints remain.
+  // rcol has NO fact for xId (unbound) → the NVar arm emits nothing; only the 2 arith constraints remain.
   if List.len(collect-all(tree, re(), env, binId)) == 2 then
     unit
   else

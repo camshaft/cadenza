@@ -41,7 +41,7 @@ def r(n: Int64) = Rational.of(n, 1 : Int64)
 // BALL at its tip. Width scales with length so deeper twigs are finer.
 def segment(len: Rational) =
   let w = len / (8 / 1) in
-    fuse(
+  fuse(
     move-x(len / (2 / 1), box(len, w, w)),
     // the bar
     move-x(len, ball(w))
@@ -56,7 +56,7 @@ def branch(state: Int64, len: Rational, depth: Int64) =
     (segment(len), lcg-next(state))
   else
     let n = roll(state, 1 : Int64, 3 : Int64) in // 1..3 children
-      add-children(lcg-next(state), len, depth, n, 0 : Int64, segment(len))
+    add-children(lcg-next(state), len, depth, n, 0 : Int64, segment(len))
 
 def add-children(state: Int64, len: Rational, depth: Int64, n: Int64, i: Int64, acc: Solid(Rational)) =
   if i == n then
@@ -68,7 +68,7 @@ def add-children(state: Int64, len: Rational, depth: Int64, n: Int64, i: Int64, 
     let s2 = lcg-next(s1) in
     let (child, s3) = branch(s2, len * (3 / 5), depth - (1 : Int64)) in // each generation 3/5 shorter
     let placed = move-x(offset, rotate-z(ang, child)) in
-      add-children(
+    add-children(
       s3,
       len,
       depth,
@@ -88,7 +88,7 @@ def six-fold(arm: Solid(Rational), i: Int64, acc: Solid(Rational)) =
 // THE SNOWFLAKE: build one seeded arm (from primitives above), then 6-fold it.
 def snowflake(seed0: Int64, len: Rational, depth: Int64) =
   let (arm, _) = branch(seed-state(seed0), len, depth) in
-    six-fold(arm, 0 : Int64, Solid.Empty)
+  six-fold(arm, 0 : Int64, Solid.Empty)
 
 // ── the @param entry: read the seed + config sliders → lower for the mesh driver ──────────────────────
 def main() =
@@ -97,7 +97,7 @@ def main() =
   let s = Param.seed() in
   let len = Param.arm-length() in
   let d = Param.depth() in
-    lower(snowflake(s, len, d))
+  lower(snowflake(s, len, d))
 
 // ── @tests: deterministic + non-empty ──────────────────────────────────────────────────────────────────
 @test
@@ -123,7 +123,7 @@ def the-same-seed-builds-the-same-snowflake() =
   // Determinism: the same seed replays the identical LCG draws → the identical solid (same top structure).
   let a = snowflake(7 : Int64, 20 / 1, 1 : Int64) in
   let b = snowflake(7 : Int64, 20 / 1, 1 : Int64) in
-    match a with
+  match a with
     | Solid.Union(_, _) => (match b with
       | Solid.Union(_, _) => unit
       | _ => trap("b shape")
@@ -135,7 +135,7 @@ def different-seeds-differ-in-child-count() =
   // Seeds 1 vs 2 take different random branch structures (the "unique per seed" property, at the model level).
   let s1 = roll(seed-state(1 : Int64), 1 : Int64, 1000 : Int64) in
   let s2 = roll(seed-state(2 : Int64), 1 : Int64, 1000 : Int64) in
-    if s1 == s2 then trap("seeds 1 and 2 should differ") else unit
+  if s1 == s2 then trap("seeds 1 and 2 should differ") else unit
 
 @test
 def the-inline-lcg-is-the-minstd-known-answer() =

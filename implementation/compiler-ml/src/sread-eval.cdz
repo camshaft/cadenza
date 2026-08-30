@@ -22,7 +22,7 @@ import { run-of-db } from "db-eval"
 /// forced eval-tree here is gone (se-milestone-from-source passes over the Db now).
 def run-src(s: String) =
   let (root, tree) = read-source(s) in
-    // WHOLE-PROGRAM SCOPE check FIRST: an unbound name in an UNCALLED sibling def is still a hard reject (rcdzc
+  // WHOLE-PROGRAM SCOPE check FIRST: an unbound name in an UNCALLED sibling def is still a hard reject (rcdzc
   // CDZ0101), but the demand-driven run only resolves main's reachable set — so require EVERY def body to be
   // WELL-SCOPED (no unbound name) before running, else DECLINE (matches the oracle's whole-program reject).
   // Plus the two reader-time type-decl markers: an invalid int/float payload width (has-illwidth-marker,
@@ -34,7 +34,7 @@ def run-src(s: String) =
       // to match (else the differential disagrees). A tuple used internally (projected to a scalar) is fine.
       and (if is-tuple-at(tree, root, root) then false else true) then
     let (_, v) = run-of-db(db-of(tree), root) in
-      v
+    v
   else
     Option.None(unit)
 
@@ -45,7 +45,7 @@ def run-src(s: String) =
 /// export (a single tuple-in-Option heap value) → one compile, so the driver stays a single invocation.
 def run-src-typed(s: String) =
   let (root, tree) = read-source(s) in
-    // Same whole-program scope check as run-src (this is the entry `cdz run-ml` calls, so the differential's
+  // Same whole-program scope check as run-src (this is the entry `cdz run-ml` calls, so the differential's
   // gap1 fix lives HERE): an unbound name in an uncalled sibling def declines, matching the oracle. Plus the
   // two reader-time type-decl markers (invalid payload width CDZ0302, unbound payload TYPE gap-B-C CDZ0101).
   if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true)

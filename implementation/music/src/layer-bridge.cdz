@@ -111,7 +111,7 @@ def the-whole-twelve-tet-grid-round-trips() =
   let _u9 = agree(r-major-sixth, major-sixth) in
   let _u10 = agree(r-minor-seventh, minor-seventh) in
   let _u11 = agree(r-major-seventh, major-seventh) in
-    agree(r-octave, octave-interval)
+  agree(r-octave, octave-interval)
 
 /// Assert a rational chord's STACK (list of RInterval offsets) projects, entry-by-entry, to the Int64
 /// semitone stack `ints` — the chord-level twin of `agree`. Traps on any mismatch or off-grid entry.
@@ -135,6 +135,6 @@ def rational-and-int64-chords-agree-on-twelve-tet() =
   // CHORDS): the rational chord stacks project to the SAME semitone stacks as the Int64 chord.cdz stacks.
   // major-triad-r → [0,4,7] = major-triad-stack; dominant-seventh-r → [0,4,7,10] = dominant-seventh-stack.
   let _t = chord-agree(rchord-stack(major-triad-r(r-unison)), major-triad-stack) in
-    chord-agree(rchord-stack(dominant-seventh-r(r-unison)), dominant-seventh-stack)
+  chord-agree(rchord-stack(dominant-seventh-r(r-unison)), dominant-seventh-stack)
 
 export { agree, chord-agree }

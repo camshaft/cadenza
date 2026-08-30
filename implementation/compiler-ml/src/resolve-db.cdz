@@ -71,8 +71,8 @@ def bind-ctor-binders-go(tree: Tree, env: Map(Int64, Int64), binderIds: List(Int
     match List.at(binderIds, i) with
       | Option.None(_) => env
       | Option.Some(bid) => let env2 = match node-at(tree, bid) with
-          | Option.Some(Node.NVar(bnm)) => Map.insert(env, bnm, bid)
-          | _ => env in
+            | Option.Some(Node.NVar(bnm)) => Map.insert(env, bnm, bid)
+            | _ => env in
         bind-ctor-binders-go(tree, env2, binderIds, i + 1)
 
 def bind-ctor-binders(tree: Tree, env: Map(Int64, Int64), binderIds: List(Int64)) =
@@ -113,99 +113,104 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
         resolve-node(tree, l, env, col)
       )
       | Option.Some(Node.NLet(nm, valId, bodyId)) => // let is NON-recursive: the value is resolved in the OUTER env; the body sees nm bound to THIS let's
-      // node id. `Map.insert` overwrites, so an inner let of the same name shadows the outer.
-      let col1 = resolve-node(tree, valId, env, col) in
-      let env2 = Map.insert(env, nm, id) in
+        // node id. `Map.insert` overwrites, so an inner let of the same name shadows the outer.
+        let col1 = resolve-node(tree, valId, env, col) in
+        let env2 = Map.insert(env, nm, id) in
         resolve-node(tree, bodyId, env2, col1)
       | Option.Some(Node.NIf(condId, thenId, elseId)) => // an `if` introduces no binder: all three children resolve in the SAME env (cond, then, else).
-      let c1 = resolve-node(tree, condId, env, col) in
-      let c2 = resolve-node(tree, thenId, env, c1) in
+        let c1 = resolve-node(tree, condId, env, col) in
+        let c2 = resolve-node(tree, thenId, env, c1) in
         resolve-node(tree, elseId, env, c2)
       | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) => // M1-a integer match: no binder introduced (literal/wildcard patterns bind nothing) — resolve all four
-      // children in the SAME env (scrutinee, literal pattern, then-body, else-body).
-      let m1 = resolve-node(tree, scrutId, env, col) in
-      let m2 = resolve-node(tree, litId, env, m1) in
-      let m3 = resolve-node(tree, thenId, env, m2) in
+        // children in the SAME env (scrutinee, literal pattern, then-body, else-body).
+        let m1 = resolve-node(tree, scrutId, env, col) in
+        let m2 = resolve-node(tree, litId, env, m1) in
+        let m3 = resolve-node(tree, thenId, env, m2) in
         resolve-node(tree, elseId, env, m3)
       | Option.Some(Node.NMatchCtor(scrutId, _patCtorName, binderIds, bodyId, restId)) => // M2-b-2b-ii-c payload ctor-pattern arm `((Ctor x y…) body)`: each binder (NVar at binderIds[i]) is bound
-      // in the BODY scope ONLY (like a let binds its body) — so `body`'s uses resolve RBound(binderIds[i]) → lower
-      // CVar, which CMatchSum's bind-payload keys positionally. The scrutinee + the REST (next arm) resolve in the
-      // OUTER env (the binders are not in scope there). Bind each binder's NAME → its id in the body env (a single-
-      // binder list [id] = the pre-list behavior; [] = no binding; a compound list binds each positionally).
-      let r1 = resolve-node(tree, scrutId, env, col) in
-      let bodyEnv = bind-ctor-binders(tree, env, binderIds) in
-      let r2 = resolve-node(tree, bodyId, bodyEnv, r1) in
+        // in the BODY scope ONLY (like a let binds its body) — so `body`'s uses resolve RBound(binderIds[i]) → lower
+        // CVar, which CMatchSum's bind-payload keys positionally. The scrutinee + the REST (next arm) resolve in the
+        // OUTER env (the binders are not in scope there). Bind each binder's NAME → its id in the body env (a single-
+        // binder list [id] = the pre-list behavior; [] = no binding; a compound list binds each positionally).
+        let r1 = resolve-node(tree, scrutId, env, col) in
+        let bodyEnv = bind-ctor-binders(tree, env, binderIds) in
+        let r2 = resolve-node(tree, bodyId, bodyEnv, r1) in
         resolve-node(tree, restId, env, r2)
       | Option.Some(Node.NApp(calleeId, argId)) => // A call resolves TWO subtrees, in DIFFERENT scopes (matching rcdzc's beta-reduction discipline):
-      //  (1) the ARGUMENT resolves in the CALLER's scope (the CURRENT env) — the arg is written where the call
-      //      is, so its free names (an enclosing param, an outer let) bind there. A nullary call (argId -1)
-      //      has no arg to resolve. This is the fix for a call whose arg is a compound (another call `(f (g
-      //      x))`, or the enclosing param `(def (f n) (g n))`): without resolving the arg, its vars were left
-      //      unresolved → infer TErr → decline.
-      //  (2) the callee BODY resolves LEXICALLY against its OWN scope (rcdzc walks parents from each name's
-      //      own occurrence, core-semantics.md#binding-is-lexical), NOT the caller's env — so a helper body's
-      //      free name can NEVER capture a caller binding (dynamic scope). A nullary body sees an EMPTY scope;
-      //      a single-param body sees JUST its PARAMETER `{paramName → paramNode}` (found by bodyId, sread-
-      //      keyed) → the body's `n` resolves RBound(paramNode) → lower CVar(paramNode), matching CLet.
-      //  slice-3d: a 2-ARG call `(add a b)` resolves BOTH args in the caller scope, and the body sees BOTH
-      //  params bound `{p1→param1, p2→param2}` (found by bodyId). arg2 is keyed by this NApp node-id (id).
-      (let colA1 = if argId == -1 then col else resolve-node(tree, argId, env, col) in
-      let colA2 = match arg2-of(tree, id) with
-          | Option.Some(a2) => resolve-node(tree, a2, env, colA1) // resolve arg2 in caller scope too
-          | Option.None(_) => colA1 in
-      let colA3 = match arg3-of(tree, id) with
-          | Option.Some(a3) => resolve-node(tree, a3, env, colA2) // + arg3 (slice-3e)
-          | Option.None(_) => colA2 in
-      let colArg = match arg4-of(tree, id) with
-          | Option.Some(a4) => resolve-node(tree, a4, env, colA3) // + arg4 (slice-3f)
-          | Option.None(_) => colA3 in
+        //  (1) the ARGUMENT resolves in the CALLER's scope (the CURRENT env) — the arg is written where the call
+        //      is, so its free names (an enclosing param, an outer let) bind there. A nullary call (argId -1)
+        //      has no arg to resolve. This is the fix for a call whose arg is a compound (another call `(f (g
+        //      x))`, or the enclosing param `(def (f n) (g n))`): without resolving the arg, its vars were left
+        //      unresolved → infer TErr → decline.
+        //  (2) the callee BODY resolves LEXICALLY against its OWN scope (rcdzc walks parents from each name's
+        //      own occurrence, core-semantics.md#binding-is-lexical), NOT the caller's env — so a helper body's
+        //      free name can NEVER capture a caller binding (dynamic scope). A nullary body sees an EMPTY scope;
+        //      a single-param body sees JUST its PARAMETER `{paramName → paramNode}` (found by bodyId, sread-
+        //      keyed) → the body's `n` resolves RBound(paramNode) → lower CVar(paramNode), matching CLet.
+        //  slice-3d: a 2-ARG call `(add a b)` resolves BOTH args in the caller scope, and the body sees BOTH
+        //  params bound `{p1→param1, p2→param2}` (found by bodyId). arg2 is keyed by this NApp node-id (id).
+        (let colA1 = if argId == -1 then col else resolve-node(tree, argId, env, col) in
+        let colA2 = match arg2-of(tree, id) with
+            | Option.Some(a2) => resolve-node(tree, a2, env, colA1) // resolve arg2 in caller scope too
+            | Option.None(_) => colA1 in
+        let colA3 = match arg3-of(tree, id) with
+            | Option.Some(a3) => resolve-node(tree, a3, env, colA2) // + arg3 (slice-3e)
+            | Option.None(_) => colA2 in
+        let colArg = match arg4-of(tree, id) with
+            | Option.Some(a4) => resolve-node(tree, a4, env, colA3) // + arg4 (slice-3f)
+            | Option.None(_) => colA3 in
         // HIGHER-ORDER (HO-2b-ii-B, option (i)): resolve the CALLEE-NAME against the CALLER env FIRST and
-      // store the fact KEYED BY THE NApp NODE-ID `id` (the call site's own resolve slot, otherwise unused —
-      // the NApp carries no var of its own). This lets infer/lower see what the callee resolved to: a
-      // fn-typed PARAM callee → RBound(paramBinder) (so `(f x)` with f a param types as f's arrow result),
-      // else a def-name → the def-body path below (unchanged). Mirrors rcdzc treating an App head as a
-      // resolvable node. `colC` threads this callee-fact into the column before the body/args resolution.
-      let colC = match Map.lookup(env, calleeId) with
-          | Option.Some(cb) => Map.insert(colArg, id, Resolved.RBound(cb)) // callee is a bound PARAM/let
-          | Option.None(_) => match def-body-of(tree, calleeId) with
-            | Option.Some(_) => Map.insert(colArg, id, Resolved.RDef(calleeId)) // callee is a global def
-            // A callee head that is neither a param (RBound) nor a def (RDef) is EITHER a sum
-            // CONSTRUCTOR `(Some 5)` (recognized via the ctor-tag table, lowered to CCtor — leave
-            // the fact ABSENT as before, so it constructs) OR a genuinely UNBOUND name `(foo 1)`
-            // (a use of an unbound name → RPoison, rcdzc CDZ0101, keyed at the NApp node-id). The
-            // RPoison is what lets the whole-program scope scan catch an unbound callee in an
-            // uncalled sibling (PR#997 — it used to be left absent, one position uncovered). So:
-            // known ctor → absent; else → RPoison.
-            | Option.None(_) => match ctor-tag-of(tree, calleeId) with
-              | Option.Some(_) => colArg // sum ctor head → CCtor path
-              | Option.None(_) => Map.insert(colArg, id, Resolved.RPoison) in // unbound name → poison
+        // store the fact KEYED BY THE NApp NODE-ID `id` (the call site's own resolve slot, otherwise unused —
+        // the NApp carries no var of its own). This lets infer/lower see what the callee resolved to: a
+        // fn-typed PARAM callee → RBound(paramBinder) (so `(f x)` with f a param types as f's arrow result),
+        // else a def-name → the def-body path below (unchanged). Mirrors rcdzc treating an App head as a
+        // resolvable node. `colC` threads this callee-fact into the column before the body/args resolution.
+        let colC = match Map.lookup(env, calleeId) with
+            | Option.Some(cb) => Map.insert(colArg, id, Resolved.RBound(cb)) // callee is a bound PARAM/let
+            | Option.None(_) => match def-body-of(tree, calleeId) with
+              | Option.Some(_) => Map.insert(colArg, id, Resolved.RDef(calleeId)) // callee is a global def
+              // A callee head that is neither a param (RBound) nor a def (RDef) is EITHER a sum
+              // CONSTRUCTOR `(Some 5)` (recognized via the ctor-tag table, lowered to CCtor — leave
+              // the fact ABSENT as before, so it constructs) OR a genuinely UNBOUND name `(foo 1)`
+              // (a use of an unbound name → RPoison, rcdzc CDZ0101, keyed at the NApp node-id). The
+              // RPoison is what lets the whole-program scope scan catch an unbound callee in an
+              // uncalled sibling (PR#997 — it used to be left absent, one position uncovered). So:
+              // known ctor → absent; else → RPoison.
+              | Option.None(_) => match ctor-tag-of(tree, calleeId) with
+                | Option.Some(_) => colArg // sum ctor head → CCtor path
+                | Option.None(_) => Map.insert(colArg, id, Resolved.RPoison) in // unbound name → poison
         // forward-ref: calleeId is now the callee NAME-id → map to its def-body node via def-body-of.
-      // A RECURSIVE call (body transitively calls back) would inline-loop, so DECLINE it (don't resolve
-      // the body — the call gets no fact → downstream declines, matching pre-forward-ref behavior). An
-      // unknown name (def-body-of None) also declines. param-* lookups use the NAME directly (params are
-      // keyed by both name and bodyId in read-do-def). The body resolves LEXICALLY in its own param scope.
-      if call-is-recursive(tree, calleeId) then
-        colC // recursive → decline body-resolution (keep callee-fact)
-      else
-        match def-body-of(tree, calleeId) with
-          | Option.None(_) => colC // unknown callee (or param callee) → callee-fact only
-          | Option.Some(calleeBody) => match param-of(tree, calleeId) with
-            | Option.Some(paramId) => let scope1 = param-scope(
+        // A RECURSIVE call (body transitively calls back) would inline-loop, so DECLINE it (don't resolve
+        // the body — the call gets no fact → downstream declines, matching pre-forward-ref behavior). An
+        // unknown name (def-body-of None) also declines. param-* lookups use the NAME directly (params are
+        // keyed by both name and bodyId in read-do-def). The body resolves LEXICALLY in its own param scope.
+        if call-is-recursive(tree, calleeId) then
+          colC // recursive → decline body-resolution (keep callee-fact)
+        else
+          match def-body-of(tree, calleeId) with
+            | Option.None(_) => colC // unknown callee (or param callee) → callee-fact only
+            | Option.Some(calleeBody) => match param-of(tree, calleeId) with
+              | Option.Some(paramId) => let scope1 = param-scope(
+                    tree,
+                    paramId,
+                    Map.empty : Map(Int64, Int64)
+                  ) in
+                let scope2 = match param2-of(tree, calleeId) with
+                    | Option.Some(param2Id) => param-scope(tree, param2Id, scope1) // + 2nd param
+                    | Option.None(_) => scope1 in
+                let scope3 = match param3-of(tree, calleeId) with
+                    | Option.Some(param3Id) => param-scope(tree, param3Id, scope2) // + 3rd param (slice-3e)
+                    | Option.None(_) => scope2 in
+                let bodyScope = match param4-of(tree, calleeId) with
+                    | Option.Some(param4Id) => param-scope(tree, param4Id, scope3) // + 4th param (slice-3f)
+                    | Option.None(_) => scope3 in
+                resolve-node(tree, calleeBody, bodyScope, colC)
+              | Option.None(_) => resolve-node(
                 tree,
-                paramId,
-                Map.empty : Map(Int64, Int64)
-              ) in
-            let scope2 = match param2-of(tree, calleeId) with
-                | Option.Some(param2Id) => param-scope(tree, param2Id, scope1) // + 2nd param
-                | Option.None(_) => scope1 in
-            let scope3 = match param3-of(tree, calleeId) with
-                | Option.Some(param3Id) => param-scope(tree, param3Id, scope2) // + 3rd param (slice-3e)
-                | Option.None(_) => scope2 in
-            let bodyScope = match param4-of(tree, calleeId) with
-                | Option.Some(param4Id) => param-scope(tree, param4Id, scope3) // + 4th param (slice-3f)
-                | Option.None(_) => scope3 in
-              resolve-node(tree, calleeBody, bodyScope, colC)
-            | Option.None(_) => resolve-node(tree, calleeBody, Map.empty : Map(Int64, Int64), colC))
+                calleeBody,
+                Map.empty : Map(Int64, Int64),
+                colC
+              ))
       | Option.None(_) => col
 
 // an id not in the arena (a malformed tree) resolves to nothing
@@ -268,7 +273,7 @@ def parse-of(ts: List(Tok)) = parse-tokens(ts)
 def rd-bound-simple() =
   // "let x = 2 in x" → the body's NVar x is BOUND to the enclosing let. The binder is a let binding name x.
   let (root, tree) = parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, _, bodyId)) => (match resolved-at(tree, root, bodyId) with
       | Option.Some(Resolved.RBound(b)) => if is-let(tree, b, 1) then
         if b == root then unit else trap("binder is the enclosing let")
@@ -282,7 +287,7 @@ def rd-bound-simple() =
 def rd-unbound-is-poison() =
   // a bare "x" (no enclosing let) → the NVar resolves to RPoison (a FILLED negative decision, not absence).
   let (root, tree) = parse-of([var(1)]) in
-    if resolved-poison(tree, root, root) then
+  if resolved-poison(tree, root, root) then
     if resolved-count(tree, root) == 1 then unit else trap("one resolved fact")
   else
     trap("unbound x is Poison")
@@ -292,7 +297,7 @@ def rd-poison-is-filled-not-absent() =
   // absence ≠ value: an unbound var has Some(RPoison) in the column; a LITERAL-only program has NO entry
   // for its literal node (it needs no resolution) → None. Filled-negative vs not-determined are distinct.
   let (root, tree) = parse-of([n(5)]) in
-    match resolved-at(tree, root, root) with
+  match resolved-at(tree, root, root) with
     | Option.None(_) => if resolved-count(tree, root) == 0 then
       unit
     else
@@ -304,7 +309,7 @@ def rd-value-not-in-own-scope() =
   // let is NON-recursive: in "let x = x in 5", the RHS `x` refers to the OUTER scope (none) → RPoison. The
   // binding does not scope over its own value.
   let (root, tree) = parse-of([letkw(), var(1), eq(), var(1), inkw(), n(5)]) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, valId, _)) => if resolved-poison(tree, root, valId) then
       unit
     else
@@ -318,7 +323,7 @@ def rd-shadowing-inner-wins() =
   let (root, tree) = parse-of(
       [letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, _, innerLetId)) => (match node-at(tree, innerLetId) with
       | Option.Some(Node.NLet(_, _, xId)) => (match resolved-at(tree, root, xId) with
         | Option.Some(Resolved.RBound(b)) => if is-let(tree, b, 1) then
@@ -351,7 +356,7 @@ def rd-nested-distinct-bindings() =
         var(2)
       ]
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, _, innerLetId)) => (match node-at(tree, innerLetId) with
       | Option.Some(Node.NLet(_, _, sumId)) => (match node-at(tree, sumId) with
         | Option.Some(Node.NBin(_, aId, bId)) => if resolved-to(tree, root, aId, root) then
@@ -378,7 +383,7 @@ def rd-outer-var-in-inner-let-value() =
   let (root, tree) = parse-of(
       [letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), var(1), inkw(), var(2)]
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, _, innerLetId)) => (match node-at(tree, innerLetId) with
       | Option.Some(Node.NLet(_, valId, _)) => if resolved-to(tree, root, valId, root) then
         unit
@@ -395,7 +400,7 @@ def rd-milestone-body-var-bound() =
   let (root, tree) = parse-of(
       [letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, _, bodyId)) => (match node-at(tree, bodyId) with
       | Option.Some(Node.NBin(_, mulId, _)) => (match node-at(tree, mulId) with
         | Option.Some(Node.NBin(_, xId, _)) => if resolved-to(tree, root, xId, root) then
@@ -419,7 +424,7 @@ def rd-if-branches-share-enclosing-scope() =
   let (root, tree) = parse-of(
       [letkw(), var(1), eq(), n(1), inkw(), ifkw(), var(1), thenkw(), var(1), elsekw(), var(1)]
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, _, ifId)) => (match node-at(tree, ifId) with
       | Option.Some(Node.NIf(condId, thenId, elseId)) => if resolved-to(tree, root, condId, root) then
         if resolved-to(tree, root, thenId, root) then
@@ -451,7 +456,7 @@ def rd-nullary-call-body-is-lexical-no-caller-capture() =
   let t2d = record-def(t2, 900, mkBodyId) in // register mk (name 900) → its body
   let (callId, t3) = add-node(t2d, Node.NApp(900, -1)) in // `(mk)` — a nullary call to name 900
   let (root, tree) = add-node(t3, Node.NLet(1, valId, callId)) in // `let x(=1) = 0 in (mk)`
-    // the callee body's var (mkBodyId) must be POISON — a fresh-scope resolve, no caller-let capture.
+  // the callee body's var (mkBodyId) must be POISON — a fresh-scope resolve, no caller-let capture.
   if resolved-poison(tree, root, mkBodyId) then
     unit
   else
@@ -481,7 +486,7 @@ def rd-standalone-body-resolve-contract-b1b() =
   let tree = record-def(t12, 900, bodyId) in
   let scope = param-scope(tree, paramId, Map.empty : Map(Int64, Int64)) in
   let col = resolve-node(tree, bodyId, scope, Map.empty : Map(Int64, Resolved)) in
-    match Map.lookup(col, nMul) with
+  match Map.lookup(col, nMul) with
     | Option.Some(Resolved.RBound(b)) => if b == paramId then
       unit
     else
@@ -502,7 +507,7 @@ def rd-bare-def-name-as-value-is-rdef() =
       Map.empty : Map(Int64, Int64),
       Map.empty : Map(Int64, Resolved)
     ) in
-    match Map.lookup(col, refId) with
+  match Map.lookup(col, refId) with
     | Option.Some(Resolved.RDef(nm)) => if nm == 900 then
       unit
     else

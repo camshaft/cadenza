@@ -98,7 +98,7 @@ def verdict(roles: List(String), g: Chor) -> String =
 /// The full sidecar report: the verdict line, then (only when ok) the shredded per-actor programs beneath.
 def report(roles: List(String), g: Chor) -> String =
   let v = verdict(roles, g) in
-    if is-ok(v) then String.concat(v, String.concat("\n", shred(roles, g))) else v
+  if is-ok(v) then String.concat(v, String.concat("\n", shred(roles, g))) else v
 
 /// A verdict is "ok" iff it starts with "ok" — reuse the prefix check.
 def is-ok(v: String) -> Bool = starts-with(v, "ok")
@@ -226,7 +226,7 @@ def yes-no() =
 def render-a-send() =
   // Buyer's generated program for a single send renders as the s-expr the codegen emits.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if render(gen-role(g, "Buyer")) == "(seq (perform (send Seller Title)) (done))" then
+  if render(gen-role(g, "Buyer")) == "(seq (perform (send Seller Title)) (done))" then
     unit
   else
     trap("a send renders to its perform-send s-expr")
@@ -234,7 +234,7 @@ def render-a-send() =
 @test
 def render-a-recv() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if render(gen-role(g, "Seller")) == "(let Title (perform (recv Buyer)) (done))" then
+  if render(gen-role(g, "Seller")) == "(let Title (perform (recv Buyer)) (done))" then
     unit
   else
     trap("a recv renders to its let-bound perform-recv s-expr")
@@ -242,7 +242,7 @@ def render-a-recv() =
 @test
 def render-bystander-is-done() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if render(gen-role(g, "Shipper")) == "(done)" then
+  if render(gen-role(g, "Shipper")) == "(done)" then
     unit
   else
     trap("an uninvolved role renders to (done)")
@@ -253,7 +253,7 @@ def render-rec-loop() =
   // guarded loops). Behavior is correct (render is generic over List/Name), but pin it so a future change
   // can't silently break rec-rendering. Buyer's rec projection of rec Loop . (Buyer->Seller:Ping ; Loop).
   let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
-    if render(gen-role(g, "Buyer")) == "(rec Loop (seq (perform (send Seller Ping)) (var Loop)))" then
+  if render(gen-role(g, "Buyer")) == "(rec Loop (seq (perform (send Seller Ping)) (var Loop)))" then
     unit
   else
     trap("a recursive protocol renders its rec/var loop program")
@@ -266,7 +266,7 @@ def shred-renders-every-role() =
       "Buyer: (seq (perform (send Seller Title)) (done))\n",
       String.concat("Seller: (let Title (perform (recv Buyer)) (done))\n", "Shipper: (done)")
     ) in
-    if shred(["Buyer", "Seller", "Shipper"], g) == expect then
+  if shred(["Buyer", "Seller", "Shipper"], g) == expect then
     unit
   else
     trap("shred renders one labelled program block per declared role")
@@ -284,7 +284,7 @@ def drive-rejects-unprojectable-naming-role() =
         Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))
       ]
     ) in
-    if drive(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then
+  if drive(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then
     unit
   else
     trap("the driver rejects an un-projectable protocol, naming the offending role")
@@ -293,7 +293,7 @@ def drive-rejects-unprojectable-naming-role() =
 def drive-shreds-a-projectable-choice() =
   // A projectable choice drives to a shred containing each role's ichoice/ematch program.
   let out = drive(["Buyer", "Seller"], yes-no()) in
-    // Buyer is the chooser → its block starts with "Buyer: (ichoice".
+  // Buyer is the chooser → its block starts with "Buyer: (ichoice".
   if starts-with(out, "Buyer: (ichoice") then
     unit
   else
@@ -303,7 +303,7 @@ def drive-shreds-a-projectable-choice() =
 def drive-rejects-ill-formed() =
   // A self-comm is not well-formed → the driver says so (before projectability).
   let g = Chor.Comm("Buyer", "Buyer", "X") in
-    if drive(["Buyer"], g) == "not-well-formed" then
+  if drive(["Buyer"], g) == "not-well-formed" then
     unit
   else
     trap("the driver rejects an ill-formed protocol")
@@ -312,7 +312,7 @@ def drive-rejects-ill-formed() =
 def verdict-ok-on-sound-protocol() =
   // The linear two-role exchange is well-formed, projectable, and deadlock-free.
   let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
-    if verdict(["Buyer", "Seller"], g) == "ok: well-formed, projectable, deadlock-free" then
+  if verdict(["Buyer", "Seller"], g) == "ok: well-formed, projectable, deadlock-free" then
     unit
   else
     trap("a sound protocol gets the ok verdict")
@@ -329,7 +329,7 @@ def verdict-names-unprojectable-role() =
         Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))
       ]
     ) in
-    if verdict(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then
+  if verdict(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then
     unit
   else
     trap("the verdict names the un-projectable role")
@@ -346,7 +346,7 @@ def report-ok-carries-the-shred() =
   // A sound protocol's report = the ok verdict line THEN the shredded per-actor programs.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   let out = report(["Buyer", "Seller"], g) in
-    // First line is the ok verdict; the shred (Buyer:/Seller: blocks) follows.
+  // First line is the ok verdict; the shred (Buyer:/Seller: blocks) follows.
   if starts-with(out, "ok: well-formed, projectable, deadlock-free\nBuyer: ") then
     unit
   else
@@ -365,7 +365,7 @@ def report-unsound-is-just-the-verdict() =
         Chor.Branch("B", Chor.Comm("Buyer", "Seller", "Sb"))
       ]
     ) in
-    if report(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then
+  if report(["Buyer", "Seller", "Shipper"], g) == "not-projectable: Shipper" then
     unit
   else
     trap("an unsound report is just the verdict, no shred")
@@ -393,7 +393,7 @@ def compilable-emits-effect-and-main() =
   // The compilable module for a sender starts with the Comm effect + main, ends with the export.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   let m = render-compilable(g, "Buyer") in
-    if starts-with(m, "effect Comm =\n  | send : String -> Unit") then
+  if starts-with(m, "effect Comm =\n  | send : String -> Unit") then
     if contains-main(m) then unit else trap("emits a def main")
   else
     trap("the compilable module opens with the Comm effect declaration")
@@ -403,7 +403,7 @@ def compilable-sender-performs-send() =
   // Buyer's compilable body performs Comm.send with its label.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   let m = render-compilable(g, "Buyer") in
-    if contains-sub-str(m, "Comm.send(\"Title\")") then
+  if contains-sub-str(m, "Comm.send(\"Title\")") then
     unit
   else
     trap("the sender's compilable body performs Comm.send(\"Title\")")
@@ -412,7 +412,7 @@ def compilable-sender-performs-send() =
 def compilable-receiver-performs-recv() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   let m = render-compilable(g, "Seller") in
-    if contains-sub-str(m, "Comm.recv(\"Buyer\")") then
+  if contains-sub-str(m, "Comm.recv(\"Buyer\")") then
     unit
   else
     trap("the receiver's compilable body performs Comm.recv(\"Buyer\")")
@@ -427,7 +427,7 @@ def compilable-rec-degrades-to-a-clear-marker() =
   // silently drop the marker or turn the documented limitation into a trap.
   let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
   let m = render-compilable(g, "Buyer") in
-    if contains-sub-str(m, "def main") then
+  if contains-sub-str(m, "def main") then
     if contains-sub-str(m, "rec: unsupported") then
       unit
     else
@@ -445,7 +445,7 @@ def purchase-linear() =
 def render-all-emits-every-actor-section() =
   // The 3-party Purchase renders one ==== <Role> ==== section per actor, each a full compilable module.
   let out = render-all(["Buyer", "Seller", "Shipper"], purchase-linear()) in
-    if contains-sub-str(out, "==== Buyer ====") then
+  if contains-sub-str(out, "==== Buyer ====") then
     if contains-sub-str(out, "==== Seller ====") then
       if contains-sub-str(out, "==== Shipper ====") then unit else trap("Shipper section")
     else
@@ -457,7 +457,7 @@ def render-all-emits-every-actor-section() =
 def render-all-sections-are-compilable-modules() =
   // Each section carries a complete module (effect Comm + main). Spot-check Seller performs its 2 sends.
   let out = render-all(["Buyer", "Seller", "Shipper"], purchase-linear()) in
-    if contains-sub-str(out, "Comm.send(\"Quote\")") then
+  if contains-sub-str(out, "Comm.send(\"Quote\")") then
     if contains-sub-str(out, "Comm.send(\"Ship\")") then unit else trap("Seller sends Ship")
   else
     trap("Seller's section performs its projected sends")
@@ -466,7 +466,7 @@ def render-all-sections-are-compilable-modules() =
 def shred-sexp-shreds-a-protocol() =
   // The .sexp surface end-to-end: a bare protocol s-expr → the per-actor bundle (self-describing roles).
   let out = shred-sexp("(seq (comm Buyer Seller Title) (comm Seller Buyer Quote))") in
-    if contains-sub-str(out, "==== Buyer ====") then
+  if contains-sub-str(out, "==== Buyer ====") then
     if contains-sub-str(out, "==== Seller ====") then unit else trap("Seller section")
   else
     trap("shred-sexp shreds a valid protocol s-expr into actor sections")
@@ -502,7 +502,7 @@ def render-all-rejects-unprojectable() =
       ]
     ) in
   let out = render-all(["Buyer", "Seller", "Shipper"], g) in
-    if out == "not-projectable: Shipper" then
+  if out == "not-projectable: Shipper" then
     unit
   else
     trap("render-all rejects an un-projectable protocol with the verdict, not actor sections")
@@ -520,7 +520,7 @@ def render-all-projectable-still-emits-sections() =
   // The guard must NOT over-reject: a projectable protocol still emits its ==== <Role> ==== sections.
   // (purchase-linear involves Buyer/Seller/Shipper — all three must be declared for wf.)
   let out = render-all(["Buyer", "Seller", "Shipper"], purchase-linear()) in
-    if contains-sub-str(out, "==== Buyer ====") then
+  if contains-sub-str(out, "==== Buyer ====") then
     unit
   else
     trap("a projectable protocol still shreds into actor sections")
@@ -533,7 +533,7 @@ def render-all-empty-choice-is-benign() =
   // no garbage. Pins that a future codegen change can't turn this degenerate shape into a crash or malformed
   // output. (The chooser's empty ichoice body is correct: nothing to choose = a no-op.)
   let out = render-all(["Buyer"], Chor.Choice("Buyer", [])) in
-    if contains-sub-str(out, "==== Buyer ====") then
+  if contains-sub-str(out, "==== Buyer ====") then
     if contains-sub-str(out, "def main") then
       unit
     else
@@ -554,7 +554,7 @@ def compilable-sender-is-exact-golden() =
         String.concat("let _ = Comm.send(\"Title\") in\n  unit", "\n\nexport { main }\n")
       )
     ) in
-    if render-compilable(g, "Buyer") == expect then
+  if render-compilable(g, "Buyer") == expect then
     unit
   else
     trap("the emitted compilable module matches the compile-verified golden")
@@ -571,7 +571,7 @@ def compilable-chooser-is-compilable-golden() =
         String.concat("let _ = Comm.send(\"Yes\") in\n  unit", "\n\nexport { main }\n")
       )
     ) in
-    if render-compilable(yes-no(), "Buyer") == expect then
+  if render-compilable(yes-no(), "Buyer") == expect then
     unit
   else
     trap("the chooser's emitted choice module matches the compile-verified golden")
@@ -590,7 +590,7 @@ def compilable-told-role-is-compilable-golden() =
         )
       )
     ) in
-    if render-compilable(yes-no(), "Seller") == expect then
+  if render-compilable(yes-no(), "Seller") == expect then
     unit
   else
     trap("the told role's emitted choice module matches the compile-verified golden")

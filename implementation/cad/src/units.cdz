@@ -83,7 +83,7 @@ def mixing-units-is-exact() =
   // THE showcase: a 50 mm width and a 1/4 inch radius coexist EXACTLY in one model, no rounding.
   // 50 mm + 1/4 inch = 50 + 127/20 = 1127/20 mm.
   let total = mm(ri(50)) + inch(1 / 4) in
-    if total == 1127 / 20 then unit else trap("50mm + 0.25in = 1127/20 mm exactly")
+  if total == 1127 / 20 then unit else trap("50mm + 0.25in = 1127/20 mm exactly")
 
 @test
 def a_length_round_trips_mm_to_inch() =
@@ -92,7 +92,7 @@ def a_length_round_trips_mm_to_inch() =
   // Rational, so it's compared directly — no redundant Qty.value (v-quantity's CDZ0501 tightening).
   let one-inch-in-mm = inch(ri(1)) in // 127/5 mm, stored bare
   let shown = display-in(one-inch-in-mm, Unit.of(#inch)) in
-    if (shown : Rational) == ri(1) then unit else trap("127/5 mm displays as exactly 1 inch")
+  if (shown : Rational) == ri(1) then unit else trap("127/5 mm displays as exactly 1 inch")
 
 @test
 def as-mm-wraps-a-bare-mm-coordinate() =
@@ -101,7 +101,7 @@ def as-mm-wraps-a-bare-mm-coordinate() =
   // re-reading it in mm returns the coordinate (identity round-trip on the model unit). Exact.
   let coord = 127 / 20 in // 6.35 mm (a 1/4-inch hole radius), exact
   let q = as-mm(coord) in
-    if Qty.value(q) == coord then
+  if Qty.value(q) == coord then
     if (q as millimeter : Rational) == coord then unit else trap("re-read in mm")
   else
     trap("as-mm value")
@@ -109,7 +109,7 @@ def as-mm-wraps-a-bare-mm-coordinate() =
 @test
 def v3-mm-builds-a-millimetre-vector() =
   let v = v3-mm(ri(10), ri(20), ri(30)) in
-    // component-wise scalar checks (a whole-Vec3 `==` now walks over Rational since the ty_heap_walkable fix,
+  // component-wise scalar checks (a whole-Vec3 `==` now walks over Rational since the ty_heap_walkable fix,
   // but this file doesn't import v3-eq; a per-component scalar compare is equally exact and self-contained).
   match v with
     | Vec3.V3(x, y, z) => if x == ri(10) then
@@ -124,7 +124,7 @@ def display-in-cm-and-foot-is-exact() =
   // 30 mm displays as exactly 3 cm; 1524/5 mm (= 1 foot) displays as exactly 1 foot. Dual of cm/foot-converts.
   let thirty-mm = cm(ri(3)) in // 30 mm, stored bare
   let a-foot-in-mm = foot(ri(1)) in // 1524/5 mm, stored bare
-    if (display-in(thirty-mm, Unit.of(#centimeter)) : Rational) == ri(3) then
+  if (display-in(thirty-mm, Unit.of(#centimeter)) : Rational) == ri(3) then
     if (display-in(a-foot-in-mm, Unit.of(#foot)) : Rational) == ri(1) then
       unit
     else

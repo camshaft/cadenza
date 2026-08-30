@@ -127,7 +127,7 @@ def round-trips-scale-cdz-mode-steps() =
   let ok6 = match name-mode-steps(mode-steps(6)) with
       | Mode.Locrian => true
       | _ => false in
-    if ok0 then
+  if ok0 then
     if ok2 then if ok6 then unit else trap("Locrian round-trip") else trap("Phrygian round-trip")
   else
     trap("Ionian round-trip")

@@ -56,11 +56,11 @@ def the-first-and-fourth-and-fifth-are-major-triads() =
   match harmonized-triads(major-c) with
     | [i, _, _, _, _, _, _] => (let Chord.Chord(_, stack) = i in
       match stack with
-      | [a, b, c] => if a == 0 then
-        if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
-      else
-        trap("root")
-      | _ => trap("triad has three intervals"))
+        | [a, b, c] => if a == 0 then
+          if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
+        else
+          trap("root")
+        | _ => trap("triad has three intervals"))
     | _ => trap("seven triads")
 
 @test
@@ -69,8 +69,11 @@ def the-second-is-a-minor-triad() =
   match harmonized-triads(major-c) with
     | [_, ii, _, _, _, _, _] => (let Chord.Chord(_, stack) = ii in
       match stack with
-      | [_, b, c] => if b == 3 then if c == 7 then unit else trap("fifth") else trap("ii is minor")
-      | _ => trap("three intervals"))
+        | [_, b, c] => if b == 3 then
+          if c == 7 then unit else trap("fifth")
+        else
+          trap("ii is minor")
+        | _ => trap("three intervals"))
     | _ => trap("seven triads")
 
 @test
@@ -79,11 +82,11 @@ def the-leading-tone-chord-is-diminished() =
   match harmonized-triads(major-c) with
     | [_, _, _, _, _, _, vii] => (let Chord.Chord(_, stack) = vii in
       match stack with
-      | [_, b, c] => if b == 3 then
-        if c == 6 then unit else trap("dim fifth")
-      else
-        trap("minor third")
-      | _ => trap("three intervals"))
+        | [_, b, c] => if b == 3 then
+          if c == 6 then unit else trap("dim fifth")
+        else
+          trap("minor third")
+        | _ => trap("three intervals"))
     | _ => trap("seven triads")
 
 @test
@@ -92,11 +95,11 @@ def the-dominant-seventh-of-the-harmonized-scale-is-a-dom7() =
   match harmonized-sevenths(major-c) with
     | [_, _, _, _, v7, _, _] => (let Chord.Chord(_, stack) = v7 in
       match stack with
-      | [_, b, c, d] => if b == 4 then
-        if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
-      else
-        trap("major third")
-      | _ => trap("four intervals"))
+        | [_, b, c, d] => if b == 4 then
+          if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
+        else
+          trap("major third")
+        | _ => trap("four intervals"))
     | _ => trap("seven sevenths")
 
 @test
@@ -107,15 +110,12 @@ def harmony-degree-agrees-with-progression() =
   let b = diatonic-triad(major-c, 0) in
   let Chord.Chord(ra, _) = a in
   let Chord.Chord(rb, _) = b in
-    if pitch-note(ra) == pitch-note(rb) then
-    unit
-  else
-    trap("aggregation matches the single builder")
+  if pitch-note(ra) == pitch-note(rb) then unit else trap("aggregation matches the single builder")
 
 /// Local helper: note number of a pitch (test-only).
 def pitch-note(p: Pitch) =
   let Pitch.Pitch(x) = p in
-    x
+  x
 
 /// C major, the fixture (root pitch class 0).
 def major-c = major(0)

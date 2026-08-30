@@ -74,7 +74,7 @@ def consistent-role(g: Chor, r: String) -> Bool =
   let recvs = recv-labels(l) in
   let sends = send-labels(l) in
   let t = run(gen-role(g, r), recvs) in // feed exactly the role's projected recv labels as its inbox
-    // inbox fully drained ⇒ codegen emitted one recv per LRecv and run consumed one label per recv.
+  // inbox fully drained ⇒ codegen emitted one recv per LRecv and run consumed one label per recv.
   if len-strs(inbox-of(t)) == 0 then
     // sent-message count equals send-obligation count ⇒ codegen emitted one send per LSend.
     len-msgs(sends-of(t)) == len-strs(sends)
@@ -130,7 +130,7 @@ def all-roles-consistent-on-purchase() =
 def recv-labels-match-projection() =
   // Concrete: Seller's projected recv labels are exactly [Title].
   let seller-recvs = recv-labels(project(purchase-linear(), "Seller")) in
-    if len-strs(seller-recvs) == 1 then
+  if len-strs(seller-recvs) == 1 then
     unit
   else
     trap("Seller has exactly one recv obligation (Title)")
@@ -139,7 +139,7 @@ def recv-labels-match-projection() =
 def send-labels-match-projection() =
   // Seller's projected send labels are exactly [Quote, Ship] → length 2.
   let seller-sends = send-labels(project(purchase-linear(), "Seller")) in
-    if len-strs(seller-sends) == 2 then
+  if len-strs(seller-sends) == 2 then
     unit
   else
     trap("Seller has exactly two send obligations (Quote, Ship)")
@@ -147,7 +147,7 @@ def send-labels-match-projection() =
 @test
 def choice-free-single-comm-consistent() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if consistent-role(g, "Buyer") then
+  if consistent-role(g, "Buyer") then
     if consistent-role(g, "Seller") then unit else trap("Seller")
   else
     trap("Buyer")

@@ -92,7 +92,7 @@ def diagnose-err-on-unprojectable() =
 def diagnose-err-names-the-role() =
   // The message must EQUAL the actionable message built for Shipper — names the role + carries the fix.
   let d = diagnose(roles3(), shipper-silent-in-one()) in
-    match d with
+  match d with
     | Diag.Err(m) => if m == unprojectable-message("Shipper") then
       unit
     else
@@ -105,7 +105,7 @@ def unprojectable-message-differs-per-role() =
   // is empty. This pins that the diagnostic carries the actionable role name without hardcoding wording.
   let a = unprojectable-message("Shipper") in
   let b = unprojectable-message("Concierge") in
-    if a == b then
+  if a == b then
     trap("the message must be specialized to the named role")
   else if a == "" then
     trap("the message is non-empty")

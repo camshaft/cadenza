@@ -71,7 +71,7 @@ def two-major-triads-are-the-same-transposition-class() =
   // C major {0,4,7} and G major {7,11,2} are both major triads → T-equivalent, mapped by t=7.
   let c = [60, 64, 67] in
   let g = [67, 71, 74] in
-    if same-transposition-class(c, g) then
+  if same-transposition-class(c, g) then
     match transposition-between(c, g) with
       | Option.Some(t) => if t == 7 then unit else trap("C major maps to G major by t=7")
       | Option.None(_) => trap("they are T-equivalent")
@@ -84,7 +84,7 @@ def a-major-and-a-minor-triad-are-different-set-classes() =
   // {0,3,7}) → None, non-vacuous negative.
   let maj = [60, 64, 67] in
   let min = [60, 63, 67] in
-    if same-transposition-class(maj, min) then
+  if same-transposition-class(maj, min) then
     trap("major and minor are different set-classes")
   else
     match transposition-between(maj, min) with
@@ -97,7 +97,7 @@ def transposition-class-is-octave-order-and-doubling-invariant() =
   // that it is T-equivalent to G major.
   let c-spread-doubled = [67, 60, 76, 72] in // G, C, E', C' — reordered, spread, C doubled → set {0,4,7}
   let g = [74, 67, 71] in // reordered G major → set {2,7,11}
-    if same-transposition-class(c-spread-doubled, g) then
+  if same-transposition-class(c-spread-doubled, g) then
     unit
   else
     trap("the set-class survives voicing/order/doubling")
@@ -107,7 +107,7 @@ def every-set-is-t-equivalent-to-itself-at-t-zero() =
   // Reflexivity: a set maps onto itself, and the SMALLEST such t is 0 (for a non-symmetric set the only
   // one). A C-major triad against itself → Some(0).
   let c = [60, 64, 67] in
-    match transposition-between(c, c) with
+  match transposition-between(c, c) with
     | Option.Some(t) => if t == 0 then unit else trap("a set maps to itself at t=0")
     | Option.None(_) => trap("a set is T-equivalent to itself")
 
@@ -117,7 +117,7 @@ def transpose-pc-set-round-trips-back-by-the-complement() =
   // up 5 then up 7 = up 12 = identity.
   let c = pc-set([60, 64, 67]) in
   let up5 = transpose-pc-set([60, 64, 67], 5) in
-    if list-eq(transpose-set-go(up5, 7, []), c) then
+  if list-eq(transpose-set-go(up5, 7, []), c) then
     unit
   else
     trap("t then 12-t is the identity transposition")
@@ -129,7 +129,7 @@ def the-diminished-seventh-is-transpositionally-symmetric() =
   // own +3 transposition are equal SETS (the symmetry). Pins the wrap + symmetric-set handling.
   let dim7 = [60, 63, 66, 69] in // {0,3,6,9}
   let dim7-up3 = transpose-pc-set(dim7, 3) in // still {0,3,6,9}
-    if list-eq(dim7-up3, pc-set(dim7)) then
+  if list-eq(dim7-up3, pc-set(dim7)) then
     if same-transposition-class(dim7, [61, 64, 67, 70]) then
       unit // {1,4,7,10} = dim7 at t=1
     else
@@ -144,7 +144,7 @@ def the-relation-is-symmetric-by-the-complementary-transposition() =
   // mapping interval is consistent, not just that the sets are related.
   let c = [60, 64, 67] in
   let g = [67, 71, 74] in
-    match transposition-between(c, g) with
+  match transposition-between(c, g) with
     | Option.Some(tcg) => (match transposition-between(g, c) with
       | Option.Some(tgc) => if tcg == 7 then
         if tgc == 5 then unit else trap("G major maps back to C major by t=5")
@@ -159,7 +159,7 @@ def different-cardinalities-are-never-t-equivalent() =
   // A triad (3 members) and a seventh (4 members) can never be transpositions of each other → None.
   let triad = [60, 64, 67] in
   let seventh = [60, 64, 67, 70] in
-    if same-transposition-class(triad, seventh) then
+  if same-transposition-class(triad, seventh) then
     trap("a triad and a seventh differ in size")
   else
     unit

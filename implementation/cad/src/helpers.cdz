@@ -165,7 +165,7 @@ def scale-xyz-multiplies-each-axis-independently() =
 def hole-through-does-not-grow-the-box() =
   // drilling a hole (a Difference) never grows the base's extent — the plate's box is unchanged.
   let plate = box(50 / 1, 30 / 1, 5 / 1) in
-    if v3-eq(
+  if v3-eq(
       aabbr-size(bounding-box(hole-through(plate, 3 / 1, 5 / 1))),
       aabbr-size(bounding-box(plate))
     ) then
@@ -178,7 +178,7 @@ def cut-fuse-common-are-the-boolean-wrappers() =
   // cut/fuse/common wrap Difference/Union/Intersection — a fused pair encloses both, a cut never grows the base.
   let a = cube(2 / 1) in
   let b = move-x(10 / 1, cube(2 / 1)) in
-    // fuse of two disjoint size-2 cubes (10 apart) → box spans x ∈ [-1, 11] → width 12.
+  // fuse of two disjoint size-2 cubes (10 apart) → box spans x ∈ [-1, 11] → width 12.
   match bounding-box(fuse(a, b)) with
     | Aabb.Box(lo, hi) => match lo with
       | Vec3.V3(lx, _, _) => match hi with
@@ -199,7 +199,7 @@ def common-is-the-intersection-wrapper() =
   // intersection, not a union/difference).
   let a = cube(2 / 1) in
   let b = move-x(1 / 1, cube(2 / 1)) in
-    if v3-eq(aabbr-size(bounding-box(common(a, b))), v3(1 / 1, 2 / 1, 2 / 1)) then
+  if v3-eq(aabbr-size(bounding-box(common(a, b))), v3(1 / 1, 2 / 1, 2 / 1)) then
     unit
   else
     trap("common(a,b) is the overlap box (1,2,2), smaller on x than either input")
@@ -209,7 +209,7 @@ def rotate-array-and-mirror-build-symmetric-solids() =
   // rotate-z(90) of a translated cube spins it about the origin; the conservative rotate bbox stays symmetric.
   // And mirror-x of a right-shifted cube reflects it to the left (bilateral pair via fuse).
   let bar = move-x(10 / 1, cube(2 / 1)) in // a 2×2×2 cube centred at x=10 → box x∈[9,11], y,z∈[-1,1]
-    // rotate-z(45, bar): SOUND conservative box is symmetric [-R,R]^3 with R = the L1 corner-radius
+  // rotate-z(45, bar): SOUND conservative box is symmetric [-R,R]^3 with R = the L1 corner-radius
   // (mx + my + mz = 11 + 1 + 1 = 13), so size 26 each axis (soundly encloses any rotation of the shifted bar).
   match bounding-box(rotate-z(45 / 1, bar)) with
     | Aabb.Box(lo, hi) => match lo with
@@ -235,7 +235,7 @@ def mirror-y-and-mirror-z-reflect-their-own-axis() =
   // flipped x would leave y at width 2 and instead widen x. Pins each builder reflects ITS OWN axis.
   let up = move-y(10 / 1, cube(2 / 1)) in // cube centred at y=10 → y∈[9,11]
   let fwd = move-z(10 / 1, cube(2 / 1)) in // cube centred at z=10 → z∈[9,11]
-    match bounding-box(fuse(up, mirror-y(up))) with
+  match bounding-box(fuse(up, mirror-y(up))) with
     | Aabb.Box(ylo, yhi) => // y spans [-11,11] (width 22); x and z stay the cube's width 2.
     if v3-y(yhi) - v3-y(ylo) == 22 / 1 and v3-x(yhi) - v3-x(ylo) == 2 / 1 then
       match bounding-box(fuse(fwd, mirror-z(fwd))) with
@@ -254,7 +254,7 @@ def the-single-axis-rotate-builders-put-the-angle-on-their-own-axis() =
   // STRUCTURALLY: rotate-x(30) must put 30 on x (0 on y,z), etc. Pins each single-axis rotate builder — a
   // copy-paste axis bug (rotate-x writing the angle to y) would otherwise be invisible until a mesh renders.
   let unit-cube = cube(2 / 1) in
-    match rotate-x(30 / 1, unit-cube) with
+  match rotate-x(30 / 1, unit-cube) with
     | Solid.Rotate(ax, _) => if v3-x(ax) == 30 / 1 and v3-y(ax) == rzero-h()
         and v3-z(ax) == rzero-h() then
       match rotate-y(40 / 1, unit-cube) with

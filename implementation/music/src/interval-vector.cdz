@@ -28,14 +28,14 @@ type Icv =
 /// an interval class); `ic(0,6) = 6` (the self-inverting tritone). Uses the shared `pc-of` fold.
 def interval-class(a: Int64, b: Int64) =
   let d = pc-of(a - b) in
-    if d < 12 - d then d else 12 - d
+  if d < 12 - d then d else 12 - d
 
 /// Add 1 to the count of `v` selected by interval class `ic` (1..6); ic 0 (same pitch class) is a no-op.
 /// The interval class chooses which of the six positional counts to increment (rebuilding the Icv), never
 /// a list index.
 def bump(v: Icv, ic: Int64) =
   let Icv.Icv(c1, c2, c3, c4, c5, c6) = v in
-    if ic == 1 then
+  if ic == 1 then
     Icv.Icv(c1 + 1, c2, c3, c4, c5, c6)
   else if ic == 2 then
     Icv.Icv(c1, c2 + 1, c3, c4, c5, c6)
@@ -72,7 +72,7 @@ def interval-class-vector(notes: List(Int64)) = icv-go(pc-set(notes), Icv.Icv(0,
 /// `1..6` traps: a caller should ask only for `k` in `1..6`, since there is no interval class outside it.
 def icv-count(v: Icv, k: Int64) =
   let Icv.Icv(c1, c2, c3, c4, c5, c6) = v in
-    if k == 1 then
+  if k == 1 then
     c1
   else if k == 2 then
     c2
@@ -93,7 +93,7 @@ def ic-tritone(v: Icv) = icv-count(v, 6)
 /// The total number of interval classes counted = the number of unordered pairs in the set = n*(n-1)/2.
 def icv-total(v: Icv) =
   let Icv.Icv(c1, c2, c3, c4, c5, c6) = v in
-    c1 + c2 + c3 + c4 + c5 + c6
+  c1 + c2 + c3 + c4 + c5 + c6
 
 /// ============================ @test suite (interval-class vector) ============================
 @test
@@ -101,7 +101,7 @@ def the-major-triad-vector-has-one-each-of-ic-three-four-five() =
   // C major {0,4,7}: pairs (0,4)=ic4, (0,7)=ic5, (4,7)=ic3 → one each of ic3, ic4, ic5 → [0,0,1,1,1,0].
   // The textbook major/minor triad interval-class vector.
   let v = interval-class-vector([60, 64, 67]) in
-    if icv-count(v, 1) == 0 then
+  if icv-count(v, 1) == 0 then
     if icv-count(v, 2) == 0 then
       if icv-count(v, 3) == 1 then
         if icv-count(v, 4) == 1 then
@@ -124,7 +124,7 @@ def a-minor-triad-shares-the-major-triad-vector() =
   // ordering. A minor {0,3,7}: (0,3)=ic3, (0,7)=ic5, (3,7)=ic4. Same multiset as the major triad.
   let maj = interval-class-vector([60, 64, 67]) in
   let min = interval-class-vector([60, 63, 67]) in
-    if icv-count(min, 3) == 1 then
+  if icv-count(min, 3) == 1 then
     if icv-count(min, 4) == 1 then
       if icv-count(min, 5) == 1 then
         if icv-total(maj) == icv-total(min) then unit else trap("same pair count")
@@ -141,7 +141,7 @@ def the-vector-is-octave-and-inversion-invariant() =
   // vector — it is a property of the pitch-class SET, not the voicing.
   let close = interval-class-vector([60, 64, 67]) in
   let spread = interval-class-vector([60, 76, 91]) in
-    if icv-count(close, 3) == icv-count(spread, 3) then
+  if icv-count(close, 3) == icv-count(spread, 3) then
     if icv-count(close, 4) == icv-count(spread, 4) then
       if icv-count(close, 5) == icv-count(spread, 5) then unit else trap("ic5 invariant")
     else
@@ -155,7 +155,7 @@ def duplicate-pitch-classes-collapse-to-one-set-member() =
   // [60, 64, 67, 72] (72 = C an octave up) has the SAME vector and pair total (3) as the bare triad.
   let bare = interval-class-vector([60, 64, 67]) in
   let doubled = interval-class-vector([60, 64, 67, 72]) in
-    if icv-total(bare) == 3 then
+  if icv-total(bare) == 3 then
     if icv-total(doubled) == 3 then
       if icv-count(bare, 4) == icv-count(doubled, 4) then
         unit
@@ -172,7 +172,7 @@ def the-diminished-seventh-is-all-tritones-and-minor-thirds() =
   // (0-6, 3-9) twice → vector [0,0,4,0,0,2]. A sharp test of tritone counting + the symmetric wrap
   // (9 to 0 is ic3, not ic9). icv-total = 6 = 4*3/2.
   let v = interval-class-vector([60, 63, 66, 69]) in
-    if icv-count(v, 3) == 4 then
+  if icv-count(v, 3) == 4 then
     if ic-tritone(v) == 2 then
       if icv-count(v, 1) == 0 then
         if icv-total(v) == 6 then unit else trap("four notes → six pairs")
@@ -189,7 +189,7 @@ def the-whole-tone-scale-has-the-maximal-tritone-count() =
   // NO semitones (ic1=0), NO fourths/fifths (ic5=0), and the MAXIMUM tritones for a six-note set (ic6=3).
   // Vector [0,6,0,6,0,3]. A strong structural fingerprint test.
   let v = interval-class-vector([60, 62, 64, 66, 68, 70]) in
-    if icv-count(v, 1) == 0 then
+  if icv-count(v, 1) == 0 then
     if icv-count(v, 5) == 0 then
       if ic-tritone(v) == 3 then
         if icv-count(v, 2) == 6 then
@@ -211,7 +211,7 @@ def a-single-note-and-the-empty-set-have-the-zero-vector() =
   // Fewer than two members → no pairs → the zero vector (total 0). The base case of the pair walk.
   let one = interval-class-vector([60]) in
   let none = interval-class-vector([]) in
-    if icv-total(one) == 0 then
+  if icv-total(one) == 0 then
     if icv-total(none) == 0 then
       if ic-tritone(one) == 0 then unit else trap("a lone note has no tritone")
     else
@@ -226,7 +226,7 @@ def the-chromatic-aggregate-has-the-maximal-symmetric-vector() =
   // totalling 66 = 12*11/2 pairs. The canonical maximal fingerprint; a strong whole-vector correctness
   // check (any off-by-one in the fold or the pair walk shifts these counts).
   let v = interval-class-vector([60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71]) in
-    if icv-count(v, 1) == 12 then
+  if icv-count(v, 1) == 12 then
     if icv-count(v, 2) == 12 then
       if icv-count(v, 3) == 12 then
         if icv-count(v, 4) == 12 then
@@ -252,7 +252,7 @@ def the-vector-is-independent-of-input-note-order() =
   // [67,60,64] and [60,64,67] produce the same vector.
   let scrambled = interval-class-vector([67, 60, 64]) in
   let sorted = interval-class-vector([60, 64, 67]) in
-    if icv-count(scrambled, 3) == icv-count(sorted, 3) then
+  if icv-count(scrambled, 3) == icv-count(sorted, 3) then
     if icv-count(scrambled, 4) == icv-count(sorted, 4) then
       if icv-count(scrambled, 5) == icv-count(sorted, 5) then unit else trap("ic5 order-invariant")
     else

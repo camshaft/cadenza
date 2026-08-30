@@ -37,16 +37,16 @@ def bolt-r() = 3 / 1
 /// half a thickness from the origin-centred box), with a bolt hole near the front.
 def base-plate() =
   let slab = move-z(thick() / (2 / 1), box(plate-len(), plate-wid(), thick())) in
-    // bolt hole: a vertical cylinder through the thickness, placed 3/4 along +x, centred in y.
+  // bolt hole: a vertical cylinder through the thickness, placed 3/4 along +x, centred in y.
   let hole = move-x(plate-len() / (4 / 1), cyl(thick() * (2 / 1), bolt-r())) in
-    cut(slab, move-z(thick() / (2 / 1), hole))
+  cut(slab, move-z(thick() / (2 / 1), hole))
 
 /// The vertical arm: a `plate-wid × arm-height × thick` slab standing UP. Built flat, then rotated 90° about
 /// x so it rises in +z, with a bolt hole through its face. (This is the rotation-mating the model needed.)
 def arm-flat() =
   let slab = move-z(thick() / (2 / 1), box(plate-wid(), arm-height(), thick())) in
   let hole = move-y(arm-height() / (3 / 1), cyl(thick() * (2 / 1), bolt-r())) in
-    cut(slab, move-z(thick() / (2 / 1), hole))
+  cut(slab, move-z(thick() / (2 / 1), hole))
 
 /// A triangular corner gusset (approximated as a small angled box) bracing the base↔arm joint.
 def gusset() = rotate-z(45 / 1, box(arm-height() / (2 / 1), thick(), plate-wid() / (2 / 1)))
@@ -64,7 +64,7 @@ def rzero() = 0 / 1
 def l-bracket() =
   let core = fuse(base-plate(), standing-arm()) in
   let braced = fuse(core, move-y((rzero() - plate-wid()) / (2 / 1) + thick() / (2 / 1), gusset())) in
-    braced
+  braced
 
 /// ---- @tests: pin the assembly mates ----------------------------------------------------------------
 /// 🪤 These tests deliberately DO NOT take `bounding-box` of the full multi-part assembly: `bounding-box` is
@@ -108,7 +108,7 @@ def the-base-plate-hole-does-not-grow-the-base() =
   // Sanity on the part itself (a small tree — reliable bbox): drilling the bolt hole (a cut) never grows the
   // base plate's envelope beyond the raw slab.
   let slab = move-z(thick() / (2 / 1), box(plate-len(), plate-wid(), thick())) in
-    if v3-eq(aabbr-size(bounding-box(base-plate())), aabbr-size(bounding-box(slab))) then
+  if v3-eq(aabbr-size(bounding-box(base-plate())), aabbr-size(bounding-box(slab))) then
     unit
   else
     trap("the bolt hole must not grow the base plate")

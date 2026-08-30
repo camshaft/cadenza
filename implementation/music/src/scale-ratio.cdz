@@ -132,23 +132,23 @@ def nearest-degree-go(ds: List(RInterval), target: Rational, best: Rational, bes
   | [] => best
   | [h, .. t] => let d = r-dist(octaves(h), target) in
     if d < best-d then
-    nearest-degree-go(t, target, octaves(h), d)
-  else
-    nearest-degree-go(t, target, best, best-d)
+      nearest-degree-go(t, target, octaves(h), d)
+    else
+      nearest-degree-go(t, target, best, best-d)
 
 /// COLLAPSE an absolute interval `i` into the scale `s`: return the nearest scale-degree interval (as an
 /// absolute `RInterval` from the reference). Snaps a foreign/chromatic interval onto the mode — the
 /// phase-2 "force into a mode" primitive, exact and tuning-agnostic. (An empty scale returns `i` unchanged.)
 def collapse-to-rscale(s: RScale, i: RInterval) =
   let target = octaves(i) - octaves(rscale-tonic(s)) in
-    match rscale-degrees(s) with
+  match rscale-degrees(s) with
     | [] => i
     | [h0, .. rest] => let nearest-frac = nearest-degree-go(
-        rest,
-        target,
-        octaves(h0),
-        r-dist(octaves(h0), target)
-      ) in
+          rest,
+          target,
+          octaves(h0),
+          r-dist(octaves(h0), target)
+        ) in
       rinterval(octaves(rscale-tonic(s)) + nearest-frac)
 
 /// ============================ @test suite (rational scales / modes) ============================
@@ -156,7 +156,7 @@ def collapse-to-rscale(s: RScale, i: RInterval) =
 def heptatonic-degrees-are-sevenths-of-the-octave() =
   // The 7 degrees are 0/7 .. 6/7 of the octave — mode-independent.
   let s = heptatonic-scale(rinterval(Rational.of(0, 1))) in
-    if rscale-size(s) == 7 then
+  if rscale-size(s) == 7 then
     if r-eq(rscale-degree(s, 1), degree-r(1)) then
       if r-eq(rscale-degree(s, 4), degree-r(4)) then unit else trap("fifth degree is 4/7")
     else
@@ -168,7 +168,7 @@ def heptatonic-degrees-are-sevenths-of-the-octave() =
 def chromatic-scale-has-twelve-twelfths() =
   // The chromatic scale's degrees are k/12; there are 12 of them.
   let s = chromatic-scale(rinterval(Rational.of(0, 1))) in
-    if rscale-size(s) == 12 then
+  if rscale-size(s) == 12 then
     if r-eq(rscale-degree(s, 7), edo-step(7, 12)) then
       unit
     else
@@ -180,7 +180,7 @@ def chromatic-scale-has-twelve-twelfths() =
 def a-fifth-is-a-chromatic-scale-member() =
   // 7/12 of an octave (a perfect fifth) is a member of the chromatic scale; 7/24 (a quarter-tone) is not.
   let s = chromatic-scale(rinterval(Rational.of(0, 1))) in
-    if in-rscale(s, edo-step(7, 12)) then
+  if in-rscale(s, edo-step(7, 12)) then
     if in-rscale(s, rinterval(Rational.of(7, 24))) then
       trap("a quarter tone is not chromatic")
     else
@@ -193,9 +193,9 @@ def membership-is-mode-independent-relative-to-the-tonic() =
   // The operator's point: shift the tonic and the SAME fractional degree is still a member relative to it.
   // A heptatonic scale on tonic 1/12 (up a semitone) still contains its own 3/7 degree measured from the tonic.
   let s = heptatonic-scale(edo-step(1, 12)) in
-    // absolute interval of degree 3 = tonic (1/12) + 3/7
+  // absolute interval of degree 3 = tonic (1/12) + 3/7
   let third = rinterval(octaves(edo-step(1, 12)) + octaves(degree-r(3))) in
-    if in-rscale(s, third) then unit else trap("degree 3 is a member relative to the shifted tonic")
+  if in-rscale(s, third) then unit else trap("degree 3 is a member relative to the shifted tonic")
 
 @test
 def degrees-preserve-relationships-across-a-transposition() =
@@ -205,7 +205,7 @@ def degrees-preserve-relationships-across-a-transposition() =
   let s1 = heptatonic-scale(r-octave) in
   let gap0 = rinterval(octaves(rscale-degree(s0, 2)) - octaves(rscale-degree(s0, 1))) in
   let gap1 = rinterval(octaves(rscale-degree(s1, 2)) - octaves(rscale-degree(s1, 1))) in
-    if r-eq(gap0, degree-r(1)) then
+  if r-eq(gap0, degree-r(1)) then
     if r-eq(gap0, gap1) then unit else trap("gap invariant under transposition")
   else
     trap("degree gap is 1/7")
@@ -216,7 +216,7 @@ def collapse-snaps-a-foreign-interval-to-the-nearest-degree() =
   // 1/7≈0.143) collapses to the nearer degree. 5/42 vs 0/7 (dist 5/42) vs 1/7=6/42 (dist 1/42) → nearest is 1/7.
   let s = heptatonic-scale(rinterval(Rational.of(0, 1))) in
   let foreign = rinterval(Rational.of(5, 42)) in
-    if r-eq(collapse-to-rscale(s, foreign), degree-r(1)) then
+  if r-eq(collapse-to-rscale(s, foreign), degree-r(1)) then
     unit
   else
     trap("5/42 snaps to the 1/7 degree")
@@ -225,7 +225,7 @@ def collapse-snaps-a-foreign-interval-to-the-nearest-degree() =
 def collapse-is-identity-on-an-exact-degree() =
   // An interval already ON a degree collapses to itself (distance 0 wins).
   let s = heptatonic-scale(rinterval(Rational.of(0, 1))) in
-    if r-eq(collapse-to-rscale(s, degree-r(3)), degree-r(3)) then unit else trap("3/7 stays 3/7")
+  if r-eq(collapse-to-rscale(s, degree-r(3)), degree-r(3)) then unit else trap("3/7 stays 3/7")
 
 @test
 def collapse-into-chromatic-snaps-a-quartertone-to-a-semitone() =
@@ -234,7 +234,7 @@ def collapse-into-chromatic-snaps-a-quartertone-to-a-semitone() =
   // 1/12=2/24 (dist 1/24): a tie; the FIRST-seen nearest (0/12, the tonic) wins since we keep strict <.
   let s = chromatic-scale(rinterval(Rational.of(0, 1))) in
   let quarter-tone = rinterval(Rational.of(1, 24)) in
-    // just assert it lands on an actual chromatic degree (in the scale)
+  // just assert it lands on an actual chromatic degree (in the scale)
   if in-rscale(s, collapse-to-rscale(s, quarter-tone)) then
     unit
   else
@@ -247,13 +247,13 @@ def collapse-is-tonic-relative() =
   let s = heptatonic-scale(edo-step(1, 12)) in
   let near = rinterval(octaves(edo-step(1, 12)) + Rational.of(5, 42)) in // tonic + ~0.119
   let want = rinterval(octaves(edo-step(1, 12)) + octaves(degree-r(1))) in // tonic + 1/7
-    if r-eq(collapse-to-rscale(s, near), want) then unit else trap("collapse is tonic-relative")
+  if r-eq(collapse-to-rscale(s, near), want) then unit else trap("collapse is tonic-relative")
 
 @test
 def chromatic-scale-projects-to-the-twelve-tet-semitones() =
   // The chromatic scale on tonic 0 over base 60 projects EXACTLY to [60,61,62,…,71] (k/12 → k semitones).
   let cs = chromatic-scale(rinterval(Rational.of(0, 1))) in
-    match rscale-to-midi(cs, 60) with
+  match rscale-to-midi(cs, 60) with
     | [a, b, c, .. _] => if a == 60 then
       if b == 61 then if c == 62 then unit else trap("D=62") else trap("C#=61")
     else
@@ -266,7 +266,7 @@ def heptatonic-skeleton-snaps-off-grid-degrees-to-nearest-semitone() =
   // 0/7→0, 1/7 (~1.71 st)→2, 2/7 (~3.43)→3, 3/7 (~5.14)→5, 4/7 (~6.86)→7, 5/7 (~8.57)→9, 6/7 (~10.29)→10.
   // Over base 60 → [60,62,63,65,67,69,70]. Pins the honest microtonal→MIDI quantization (7-EDO ≠ 12-TET).
   let hs = heptatonic-scale(rinterval(Rational.of(0, 1))) in
-    match rscale-to-midi(hs, 60) with
+  match rscale-to-midi(hs, 60) with
     | [d0, d1, _d2, d3, d4, _d5, d6] => if d0 == 60 then
       if d1 == 62 then
         if d3 == 65 then

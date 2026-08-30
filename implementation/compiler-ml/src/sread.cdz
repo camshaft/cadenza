@@ -92,7 +92,7 @@ def scan-number(s: String, i: Int64, acc: Int64) =
     (acc, i)
   else
     let c = char-at(s, i) in
-      if is-digit(c) then scan-number(s, i + 1, acc * 10 + digit-val(c)) else (acc, i)
+    if is-digit(c) then scan-number(s, i + 1, acc * 10 + digit-val(c)) else (acc, i)
 
 /// Skip spaces from `i`, returning the first non-space index (total; stops at end-of-string).
 def skip-space(s: String, i: Int64) =
@@ -118,7 +118,7 @@ def scan-atom(s: String, i: Int64, acc: String) =
     (acc, i)
   else
     let c = char-at(s, i) in
-      if is-space(c) then
+    if is-space(c) then
       (acc, i)
     else if c == "(" then
       (acc, i)
@@ -137,7 +137,7 @@ def scan-string(s: String, i: Int64, acc: String) =
     (acc, i)
   else
     let c = char-at(s, i) in
-      if c == "\"" then (acc, i + 1) else scan-string(s, i + 1, String.concat(acc, c))
+    if c == "\"" then (acc, i + 1) else scan-string(s, i + 1, String.concat(acc, c))
 
 /// The op-code for a binary operator SYMBOL, matching parse-db's codes (43 + / 45 - / 42 * / 47 / / 37 % /
 /// 60 < / 61 = (equality) / 62 > / 63 <= / 64 >= / 65 !=). Returns `Option.None` for an unrecognized symbol —
@@ -197,22 +197,22 @@ def ends-token(s: String, i: Int64) =
     true
   else
     let c = char-at(s, i) in
-      if is-space(c) then true else if c == ")" then true else false
+    if is-space(c) then true else if c == ")" then true else false
 
 def read-form(s: String, i: Int64, tree: Tree) =
   let j = skip-space(s, i) in
   let c = char-at(s, j) in
-    if is-digit(c) then
+  if is-digit(c) then
     let (v, k) = scan-number(s, j, 0) in
-      // a bare int literal is only well-formed if it ENDS at a token boundary; otherwise it is an
+    // a bare int literal is only well-formed if it ENDS at a token boundary; otherwise it is an
     // unsupported literal form (`1_000_000`/`123abc`/`0xFF`/`3.5`) → decline, never a partial value.
     if ends-token(s, k) then
       let (id, t1) = add-node(tree, Node.NLit(v)) in
-        (id, k, t1)
+      (id, k, t1)
     else
       let (_junk, k2) = scan-atom(s, k, "") in
       let (id, t1) = unsupported(tree) in
-        (id, k2, t1)
+      (id, k2, t1)
   else if c == "-" and is-digit(char-at(s, j + 1)) then
     // a NEGATIVE literal operand `-N`: a `-` IMMEDIATELY followed by a digit, negated → `NLit(0 - mag)`.
     // Unambiguous HERE: `read-form` reads an operand/expression position, so a leading `-<digit>` is
@@ -222,13 +222,13 @@ def read-form(s: String, i: Int64, tree: Tree) =
     // fell through to the unsupported arm). Mirrors `read-ann-form`'s existing `-N` handling. Must still
     // END at a token boundary (`-5x`/`-1_0` → decline, never a partial value).
     let (mag, k) = scan-number(s, j + 1, 0) in
-      if ends-token(s, k) then
+    if ends-token(s, k) then
       let (id, t1) = add-node(tree, Node.NLit(0 - mag)) in
-        (id, k, t1)
+      (id, k, t1)
     else
       let (_junk, k2) = scan-atom(s, k, "") in
       let (id, t1) = unsupported(tree) in
-        (id, k2, t1)
+      (id, k2, t1)
   else if c == "(" then
     read-paren-form(s, j + 1, tree)
   else if c == "\"" then
@@ -236,27 +236,27 @@ def read-form(s: String, i: Int64, tree: Tree) =
     // body from past the opening quote to the closing quote (no escapes yet — a `"` always closes).
     let (content, k) = scan-string(s, j + 1, "") in
     let (id, t1) = add-node(tree, Node.NStr(content)) in
-      (id, k, t1)
+    (id, k, t1)
   else if is-alpha(c) then
     let (atom, k) = scan-atom(s, j, "") in
-      if atom == "true" then
+    if atom == "true" then
       let (id, t1) = add-node(tree, Node.NBoolLit(1)) in
-        (id, k, t1)
+      (id, k, t1)
     else if atom == "false" then
       let (id, t1) = add-node(tree, Node.NBoolLit(0)) in
-        (id, k, t1)
+      (id, k, t1)
     else
       // a bare identifier is a VARIABLE reference → NVar keyed by the name's deterministic id.
       let (id, t1) = add-node(tree, Node.NVar(name-id(atom))) in
-        (id, k, t1)
+      (id, k, t1)
   else
     let (id, t1) = unsupported(tree) in
-      (id, j + 1, t1)
+    (id, j + 1, t1)
 
 /// Consume a `)` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
 def close-paren(s: String, i: Int64) =
   let k = skip-space(s, i) in
-    if char-at(s, k) == ")" then k + 1 else k
+  if char-at(s, k) == ")" then k + 1 else k
 
 /// After a `(` at index `i`: read the HEAD atom and dispatch. `(if c t e)` → `NIf`; `(let ((x v)) b)` →
 /// `NLet`; otherwise a binary PREFIX op `(sym a b)` → `NBin(op-code, a, b)`. A missing `)` is tolerated. The
@@ -264,7 +264,7 @@ def close-paren(s: String, i: Int64) =
 def read-paren-form(s: String, i: Int64, tree: Tree) =
   let h = skip-space(s, i) in
   let (sym, a0) = scan-atom(s, h, "") in
-    if sym == "if" then
+  if sym == "if" then
     read-if-form(s, a0, tree)
   else if sym == "let" then
     read-let-form(s, a0, tree)
@@ -315,12 +315,12 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
 def read-strlen-form(s: String, i: Int64, scalar: Bool, tree: Tree) =
   let (aId, a1, t1) = read-form(s, i, tree) in
   let a2 = close-paren(s, a1) in
-    match node-at(t1, aId) with
+  match node-at(t1, aId) with
     | Option.Some(Node.NStr(content)) => let len = if scalar then
-        String.scalar-len(content)
-      else
-        String.byte-len(content) in
-    let (id, t2) = add-node(t1, Node.NLit(len)) in
+          String.scalar-len(content)
+        else
+          String.byte-len(content) in
+      let (id, t2) = add-node(t1, Node.NLit(len)) in
       (id, a2, t2)
     | _ => let (id, t2) = unsupported(t1) in
       (id, a2, t2)
@@ -338,7 +338,7 @@ def read-app-or-bin(s: String, sym: String, a0: Int64, tree: Tree) = match op-co
 def read-nullary-call(s: String, a0: Int64, calleeName: Int64, tree: Tree) =
   let k = skip-space(s, a0) in
   let (id, t1) = add-node(tree, Node.NApp(calleeName, 0 - 1)) in
-    (id, k + 1, t1)
+  (id, k + 1, t1)
 
 /// A single-param call `(f arg)`: read the ONE argument form, then emit `NApp(calleeName, argId)` + consume `)`.
 /// The NApp carries the callee NAME (forward-ref); resolve/infer/lower map name→bodyId, then reach the param via
@@ -346,10 +346,10 @@ def read-nullary-call(s: String, a0: Int64, calleeName: Int64, tree: Tree) =
 def read-param-call(s: String, a0: Int64, calleeName: Int64, tree: Tree) =
   let (argId, a1, t1) = read-form(s, a0, tree) in
   let e = skip-space(s, a1) in
-    if char-at(s, e) == ")" then
+  if char-at(s, e) == ")" then
     // exactly 1 arg: `(f arg)`
     let (id, t2) = add-node(t1, Node.NApp(calleeName, argId)) in
-      (id, e + 1, t2)
+    (id, e + 1, t2)
   else
     read-2nd-arg(s, e, calleeName, argId, t1)
 
@@ -367,14 +367,14 @@ def read-2nd-arg(s: String, k: Int64, calleeName: Int64, argId: Int64, tree: Tre
   let (id, t2) = add-node(t1, Node.NApp(calleeName, argId)) in
   let t3 = record-arg2(t2, id, arg2Id) in
   let e = skip-space(s, a2) in
-    if char-at(s, e) == ")" then
+  if char-at(s, e) == ")" then
     // 2-arg call: `(f a b)`
     (id, e + 1, t3)
   else
     let (arg3Id, a3i, t4) = read-form(s, e, t3) in
-      // a 3rd arg: `(f a b c)`
+    // a 3rd arg: `(f a b c)`
     let g = skip-space(s, a3i) in
-      if char-at(s, g) == ")" then
+    if char-at(s, g) == ")" then
       // exactly 3 args: the call closes here
       (id, g + 1, record-arg3(t4, id, arg3Id))
     else
@@ -389,14 +389,14 @@ def read-2nd-arg(s: String, k: Int64, calleeName: Int64, argId: Int64, tree: Tre
 def read-4th-arg(s: String, g: Int64, id: Int64, arg3Id: Int64, tree: Tree) =
   let (arg4Id, a4i, t5) = read-form(s, g, tree) in
   let h = skip-space(s, a4i) in
-    if char-at(s, h) == ")" then
+  if char-at(s, h) == ")" then
     // exactly 4 args: the call closes here
     (id, h + 1, record-arg4(record-arg3(t5, id, arg3Id), id, arg4Id))
   else
     // a 5TH arg present — >4-arg calls aren't supported; do NOT record arg3/arg4 and consume through to a
     // boundary so the trailing-token guard DECLINES (over-application, CDZ0203).
     let (_x, a6, _t6) = read-form(s, h, t5) in
-      (id, close-paren(s, a6), tree)
+    (id, close-paren(s, a6), tree)
 
 /// A prefix binary op `(sym a b)`: read two operands + emit `NBin(op, a, b)`. `op` is the operator's already-
 /// resolved code (from the single `op-code-of` match in `read-app-or-bin`), threaded in so the lookup is not
@@ -410,16 +410,16 @@ def read-4th-arg(s: String, g: Int64, id: Int64, arg3Id: Int64, tree: Tree) =
 /// binary `(- a b)` is unaffected (a 2nd operand is present, so the unary arm doesn't fire).
 def read-bin-form(s: String, op: Int64, a0: Int64, tree: Tree) =
   let (leftId, a1, t1) = read-form(s, a0, tree) in
-    if op == 45 and char-at(s, skip-space(s, a1)) == ")" then
+  if op == 45 and char-at(s, skip-space(s, a1)) == ")" then
     let a3 = close-paren(s, a1) in // unary minus: `(- x)` → `0 - x`
     let (zeroId, t2) = add-node(t1, Node.NLit(0)) in
     let (id, t3) = add-node(t2, Node.NBin(45, zeroId, leftId)) in
-      (id, a3, t3)
+    (id, a3, t3)
   else
     let (rightId, a2, t2) = read-form(s, a1, t1) in
     let a3 = close-paren(s, a2) in
     let (id, t3) = add-node(t2, Node.NBin(op, leftId, rightId)) in
-      (id, a3, t3)
+    (id, a3, t3)
 
 /// COMPOUND-VALUE slice (stage 1, READER): a positional tuple literal `(tuple e0 e1 …)` → `NTuple([id0,id1,…])`.
 /// `i` is just past the `tuple` head atom. Read each element as an expression FORM (so `(tuple 1 (+ 2 3) x)`
@@ -432,7 +432,7 @@ def read-tuple-form(s: String, i: Int64, tree: Tree) =
   let (elemIds, e, t1) = read-tuple-elems(s, i, [] : List(Int64), tree) in
   let close = close-paren(s, e) in
   let (id, t2) = add-node(t1, Node.NTuple(elemIds)) in
-    (id, close, t2)
+  (id, close, t2)
 
 /// PROJECTION reader (stage A): `(. t i)` → `NProj(operandId, indexId)`. `i` is just past the `.` head atom.
 /// Read the projected operand as an expression FORM (so `(. (mk) 1)` / `(. (tuple 10 20) 1)` nest), then the
@@ -445,7 +445,7 @@ def read-proj-form(s: String, i: Int64, tree: Tree) =
   let (indexId, a2, t2) = read-form(s, a1, t1) in
   let close = close-paren(s, a2) in
   let (id, t3) = add-node(t2, Node.NProj(operandId, indexId)) in
-    (id, close, t3)
+  (id, close, t3)
 
 /// COMPOUND-VALUE slice (stage A, READER): a named-field record literal `(record (f0 v0) (f1 v1) …)` →
 /// `NRecord(fieldNameIds, valueIds)`. `i` is just past the `record` head atom. Each field is a `(name value)`
@@ -457,7 +457,7 @@ def read-record-form(s: String, i: Int64, tree: Tree) =
   let (nameIds, valIds, e, t1) = read-record-fields(s, i, [] : List(Int64), [] : List(Int64), tree) in
   let close = close-paren(s, e) in
   let (id, t2) = add-node(t1, Node.NRecord(nameIds, valIds)) in
-    (id, close, t2)
+  (id, close, t2)
 
 /// At `k` = positioned at the next field's `(` OR the record-closing `)`. Reads ONE field `(name value)` —
 /// scan the field-name atom, then read the value FORM (so `(record (a (+ 1 2)) (b x))` nests) — then RECURSES,
@@ -465,12 +465,12 @@ def read-record-form(s: String, i: Int64, tree: Tree) =
 /// read. Stops at the closing `)` (or end-of-input, tolerated), returning the accumulated fields + position.
 def read-record-fields(s: String, k: Int64, nameAcc: List(Int64), valAcc: List(Int64), tree: Tree) =
   let p = skip-space(s, k) in
-    if char-at(s, p) == "(" then
+  if char-at(s, p) == "(" then
     let b1 = p + 1 in // this field's `(`
     let (nm, v0) = scan-atom(s, skip-space(s, b1), "") in
     let (valId, v1, t1) = read-form(s, v0, tree) in
     let c1 = close-paren(s, v1) in // close this field `)`
-      read-record-fields(s, c1, List.push(nameAcc, name-id(nm)), List.push(valAcc, valId), t1)
+    read-record-fields(s, c1, List.push(nameAcc, name-id(nm)), List.push(valAcc, valId), t1)
   else
     (nameAcc, valAcc, p, tree)
 
@@ -479,11 +479,11 @@ def read-record-fields(s: String, k: Int64, nameAcc: List(Int64), valAcc: List(I
 /// node-id so the list is in source order.
 def read-tuple-elems(s: String, i: Int64, acc: List(Int64), tree: Tree) =
   let q = skip-space(s, i) in
-    if char-at(s, q) == ")" or char-at(s, q) == "" then
+  if char-at(s, q) == ")" or char-at(s, q) == "" then
     (acc, q, tree)
   else
     let (elemId, k1, t1) = read-form(s, q, tree) in
-      read-tuple-elems(s, k1, List.push(acc, elemId), t1)
+    read-tuple-elems(s, k1, List.push(acc, elemId), t1)
 
 /// After `(:` (index `i` past the `:` head): a TYPE ANNOTATION `(: <literal> TypeName)` — the range-check
 /// an integer annotation performs. This slice (2a-ii) handles a LITERAL operand at a fixed-width integer
@@ -512,14 +512,14 @@ def ann-with-value(s: String, k: Int64, v: Int64, tree: Tree) =
   let t0 = skip-space(s, k) in
   let (tyname, a2) = scan-atom(s, t0, "") in
   let a3 = close-paren(s, a2) in
-    if is-int-type(tyname) then
+  if is-int-type(tyname) then
     let signed = ty-signed(tyname) in
     let width = ty-width(tyname) in
-      if fits-ann(v, signed, width) then
+    if fits-ann(v, signed, width) then
       // in range → a WIDTH-ANNOTATED literal node: infer types it TIntW(signed,width), lower builds a
       // narrow CNum, emit picks i32-vs-i64 by width. The signed flag rides as 1|0 (Node payload is Int64).
       let (id, t1) = add-node(tree, Node.NAnnLit(v, if signed then 1 else 0, width)) in
-        (id, a3, t1)
+      (id, a3, t1)
     else
       unsupported-at(tree, a3) // out of range → decline
   else
@@ -529,32 +529,32 @@ def ann-with-value(s: String, k: Int64, v: Int64, tree: Tree) =
 def read-ann-form(s: String, i: Int64, tree: Tree) =
   let v0 = skip-space(s, i) in
   let c = char-at(s, v0) in
-    if is-digit(c) then
+  if is-digit(c) then
     // non-negative literal operand.
     let (v, k) = scan-number(s, v0, 0) in
-      if ends-token(s, k) then
+    if ends-token(s, k) then
       ann-with-value(s, k, v, tree)
     else
       let (_junk, k2) = scan-atom(s, k, "") in
-        unsupported-at(tree, k2) // malformed literal → decline
+      unsupported-at(tree, k2) // malformed literal → decline
   else if c == "-" then
     // NEGATIVE literal operand `-N`: a `-` immediately followed by digits, negated. A signed narrow type
     // holds negatives (`(: -5 Int8)` fits Int8's -128..127); an unsigned type will fail fits-width (no
     // negatives) → decline, matching rcdzc. A bare `-` not followed by a digit is not a literal → decline.
     let d0 = v0 + 1 in
-      if is-digit(char-at(s, d0)) then
+    if is-digit(char-at(s, d0)) then
       let (mag, k) = scan-number(s, d0, 0) in
-        if ends-token(s, k) then
+      if ends-token(s, k) then
         ann-with-value(s, k, 0 - mag, tree)
       else
         let (_junk, k2) = scan-atom(s, k, "") in
-          unsupported-at(tree, k2)
+        unsupported-at(tree, k2)
     else
       let (id, t1) = unsupported(tree) in
-        (id, d0, t1) // bare `-` → decline
+      (id, d0, t1) // bare `-` → decline
   else
     let (id, t1) = unsupported(tree) in
-      (id, v0, t1)
+    (id, v0, t1)
 
 // non-literal operand → out of slice, decline
 /// After `(do` (index `i` past the `do` atom): peel the canonical corpus MODULE wrapper
@@ -571,7 +571,7 @@ def read-ann-form(s: String, i: Int64, tree: Tree) =
 /// top-level form; `read-source` ignores the returned next-index).
 def unsupported-at(tree: Tree, i: Int64) =
   let (id, t1) = unsupported(tree) in
-    (id, i, t1)
+  (id, i, t1)
 
 /// Read ONE `(def (name) body)` (nullary) or `(def (name param) body)` (single untyped param, slice-3c)
 /// starting at `i` (just past the `def` atom). FLAT helper: returns `(nameId, bodyId, paramId, nextIndex,
@@ -582,7 +582,7 @@ def unsupported-at(tree: Tree, i: Int64) =
 def read-def-form(s: String, i: Int64, tree: Tree) =
   let m0 = open-paren(s, i) in
   let (nm, m1) = scan-atom(s, skip-space(s, m0), "") in
-    read-def-body(s, nm, skip-space(s, m1), tree)
+  read-def-body(s, nm, skip-space(s, m1), tree)
 
 /// After a def's name at `k` (space already skipped): `)` here → a NULLARY def (paramId -1), read the body.
 /// A `(` → a TYPED param `(: p T)` (slice-3c): read `p` as the NVar binder, SKIP the type name (the arg's type
@@ -592,14 +592,14 @@ def read-def-form(s: String, i: Int64, tree: Tree) =
 def read-def-body(s: String, nm: String, k: Int64, tree: Tree) =
   if char-at(s, k) == ")" then
     let (bodyId, j, t1) = read-form(s, k + 1, tree) in
-      (name-id(nm), bodyId, 0 - 1, 0 - 1, 0 - 1, 0 - 1, j, t1)
+    (name-id(nm), bodyId, 0 - 1, 0 - 1, 0 - 1, 0 - 1, j, t1)
   else if char-at(s, k) == "(" then
     read-typed-param(s, nm, k, tree) // `(: p T)` — a typed FIRST param
   else
     let (pnm, k1) = scan-atom(s, k, "") in
-      // a first UNTYPED param name
+    // a first UNTYPED param name
     let (paramId, t1) = add-node(tree, Node.NVar(name-id(pnm))) in
-      read-second-param(s, nm, paramId, skip-space(s, k1), t1)
+    read-second-param(s, nm, paramId, skip-space(s, k1), t1)
 
 /// After the FIRST param (node `paramId`, typed OR untyped) at `k` (space-skipped): the shared continuation
 /// that reads an OPTIONAL SECOND param and then the body. A `)` → a SINGLE-param def (param2 -1), read the
@@ -611,14 +611,14 @@ def read-def-body(s: String, nm: String, k: Int64, tree: Tree) =
 def read-second-param(s: String, nm: String, paramId: Int64, k: Int64, tree: Tree) =
   if char-at(s, k) == ")" then
     let (bodyId, j, t1) = read-form(s, k + 1, tree) in
-      (name-id(nm), bodyId, paramId, 0 - 1, 0 - 1, 0 - 1, j, t1)
+    (name-id(nm), bodyId, paramId, 0 - 1, 0 - 1, 0 - 1, j, t1)
   else if char-at(s, k) == "(" then
     read-typed-second-param(s, nm, paramId, k, tree) // `(: b T)` — a typed second param
   else
     let (p2nm, k1) = scan-atom(s, k, "") in
-      // a SECOND untyped param name
+    // a SECOND untyped param name
     let (param2Id, t1) = add-node(tree, Node.NVar(name-id(p2nm))) in
-      read-third-param(s, nm, paramId, param2Id, skip-space(s, k1), t1)
+    read-third-param(s, nm, paramId, param2Id, skip-space(s, k1), t1)
 
 /// After the SECOND param (nodes `paramId`, `param2Id`) at `k` (space-skipped): read an OPTIONAL THIRD param
 /// then the body. A `)` → a TWO-param def (param3 -1), read the body. A `(` → a TYPED third param `(: c T)` →
@@ -628,14 +628,14 @@ def read-second-param(s: String, nm: String, paramId: Int64, k: Int64, tree: Tre
 def read-third-param(s: String, nm: String, paramId: Int64, param2Id: Int64, k: Int64, tree: Tree) =
   if char-at(s, k) == ")" then
     let (bodyId, j, t1) = read-form(s, k + 1, tree) in
-      (name-id(nm), bodyId, paramId, param2Id, 0 - 1, 0 - 1, j, t1)
+    (name-id(nm), bodyId, paramId, param2Id, 0 - 1, 0 - 1, j, t1)
   else if char-at(s, k) == "(" then
     read-typed-third-param(s, nm, paramId, param2Id, k, tree) // `(: c T)` — a typed 3rd param
   else
     let (p3nm, k1) = scan-atom(s, k, "") in
-      // a THIRD untyped param name
+    // a THIRD untyped param name
     let (param3Id, t1) = add-node(tree, Node.NVar(name-id(p3nm))) in
-      read-fourth-param(s, nm, paramId, param2Id, param3Id, skip-space(s, k1), t1)
+    read-fourth-param(s, nm, paramId, param2Id, param3Id, skip-space(s, k1), t1)
 
 /// After the THIRD param (nodes `paramId`, `param2Id`, `param3Id`) at `k` (space-skipped): read an OPTIONAL
 /// FOURTH param then the body. A `)` → a THREE-param def (param4 -1), read the body. A `(` → a TYPED fourth
@@ -647,18 +647,18 @@ def read-third-param(s: String, nm: String, paramId: Int64, param2Id: Int64, k: 
 def read-fourth-param(s: String, nm: String, paramId: Int64, param2Id: Int64, param3Id: Int64, k: Int64, tree: Tree) =
   if char-at(s, k) == ")" then
     let (bodyId, j, t1) = read-form(s, k + 1, tree) in
-      (name-id(nm), bodyId, paramId, param2Id, param3Id, 0 - 1, j, t1)
+    (name-id(nm), bodyId, paramId, param2Id, param3Id, 0 - 1, j, t1)
   else if char-at(s, k) == "(" then
     read-typed-fourth-param(s, nm, paramId, param2Id, param3Id, k, tree) // `(: d T)` — a typed 4th param
   else
     let (p4nm, k1) = scan-atom(s, k, "") in
-      // a FOURTH untyped param name
+    // a FOURTH untyped param name
     let e = skip-space(s, k1) in
-      if char-at(s, e) == ")" then
+    if char-at(s, e) == ")" then
       // exactly 4 params: the signature closes here
       let (param4Id, t1) = add-node(tree, Node.NVar(name-id(p4nm))) in
       let (bodyId, j, t2) = read-form(s, e + 1, t1) in
-        (name-id(nm), bodyId, paramId, param2Id, param3Id, param4Id, j, t2)
+      (name-id(nm), bodyId, paramId, param2Id, param3Id, param4Id, j, t2)
     else
       // a FIFTH param — >4-param defs aren't supported yet; decline via the bodyId -1 sentinel.
       (name-id(nm), 0 - 1, paramId, param2Id, param3Id, 0 - 1, e, tree)
@@ -672,15 +672,15 @@ def read-fourth-param(s: String, nm: String, paramId: Int64, param2Id: Int64, pa
 def read-typed-fourth-param(s: String, nm: String, paramId: Int64, param2Id: Int64, param3Id: Int64, k: Int64, tree: Tree) =
   let a = skip-space(s, k + 1) in // past `(`
   let (colon, a1) = scan-atom(s, a, "") in
-    if colon == ":" then
+  if colon == ":" then
     let (param4Id, a3, t1) = add-typed-param-node(s, skip-space(s, a1), tree) in
-      if param4Id == 0 - 1 then
+    if param4Id == 0 - 1 then
       (name-id(nm), 0 - 1, paramId, param2Id, param3Id, 0 - 1, a3, t1) // bad type → decline
     else
       let a4 = close-paren(s, skip-space(s, a3)) in // the 4th param's `)`
       let a5 = close-paren(s, skip-space(s, a4)) in // the signature `)`
       let (bodyId, j, t2) = read-form(s, a5, t1) in
-        (name-id(nm), bodyId, paramId, param2Id, param3Id, param4Id, j, t2)
+      (name-id(nm), bodyId, paramId, param2Id, param3Id, param4Id, j, t2)
   else
     (name-id(nm), 0 - 1, paramId, param2Id, param3Id, 0 - 1, k, tree)
 
@@ -692,7 +692,7 @@ def read-typed-fourth-param(s: String, nm: String, paramId: Int64, param2Id: Int
 def read-typed-param(s: String, nm: String, k: Int64, tree: Tree) =
   let a = skip-space(s, k + 1) in // past `(`
   let (colon, a1) = scan-atom(s, a, "") in
-    if colon == ":" then
+  if colon == ":" then
     read-typed-param-name(s, nm, skip-space(s, a1), tree)
   else
     (name-id(nm), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, k, tree)
@@ -706,13 +706,13 @@ def read-typed-param(s: String, nm: String, k: Int64, tree: Tree) =
 def read-typed-second-param(s: String, nm: String, paramId: Int64, k: Int64, tree: Tree) =
   let a = skip-space(s, k + 1) in // past `(`
   let (colon, a1) = scan-atom(s, a, "") in
-    if colon == ":" then
+  if colon == ":" then
     let (param2Id, a3, t1) = add-typed-param-node(s, skip-space(s, a1), tree) in
-      if param2Id == 0 - 1 then
+    if param2Id == 0 - 1 then
       (name-id(nm), 0 - 1, paramId, 0 - 1, 0 - 1, 0 - 1, a3, t1) // bad type → decline
     else
       let a4 = close-paren(s, skip-space(s, a3)) in // the 2nd param's `)`
-        read-third-param(s, nm, paramId, param2Id, skip-space(s, a4), t1) // + optional 3rd param
+      read-third-param(s, nm, paramId, param2Id, skip-space(s, a4), t1) // + optional 3rd param
   else
     (name-id(nm), 0 - 1, paramId, 0 - 1, 0 - 1, 0 - 1, k, tree)
 
@@ -727,13 +727,13 @@ def read-typed-second-param(s: String, nm: String, paramId: Int64, k: Int64, tre
 def read-typed-third-param(s: String, nm: String, paramId: Int64, param2Id: Int64, k: Int64, tree: Tree) =
   let a = skip-space(s, k + 1) in // past `(`
   let (colon, a1) = scan-atom(s, a, "") in
-    if colon == ":" then
+  if colon == ":" then
     let (param3Id, a3, t1) = add-typed-param-node(s, skip-space(s, a1), tree) in
-      if param3Id == 0 - 1 then
+    if param3Id == 0 - 1 then
       (name-id(nm), 0 - 1, paramId, param2Id, 0 - 1, 0 - 1, a3, t1) // bad type → decline
     else
       let a4 = close-paren(s, skip-space(s, a3)) in // the 3rd param's `)`
-        read-fourth-param(s, nm, paramId, param2Id, param3Id, skip-space(s, a4), t1) // + optional 4th param
+      read-fourth-param(s, nm, paramId, param2Id, param3Id, skip-space(s, a4), t1) // + optional 4th param
   else
     (name-id(nm), 0 - 1, paramId, param2Id, 0 - 1, 0 - 1, k, tree)
 
@@ -745,13 +745,13 @@ def read-typed-third-param(s: String, nm: String, paramId: Int64, param2Id: Int6
 /// (corpus 07-type-system wants CDZ0101), or a non-int ground type `(: x Bool)` — DECLINES via bodyId -1.
 def read-typed-param-name(s: String, nm: String, a1: Int64, tree: Tree) =
   let (paramId, a3, t1) = add-typed-param-node(s, a1, tree) in
-    if paramId == 0 - 1 then
+  if paramId == 0 - 1 then
     (name-id(nm), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, a1, t1) // bad type → decline
   else
     // the typed param's `)` is consumed by read-second-param's close path... but the FIRST typed param's own
     // `)` must be consumed here before we look for a second param: skip it, then continue to read-second-param.
     let a4 = close-paren(s, skip-space(s, a3)) in
-      read-second-param(s, nm, paramId, skip-space(s, a4), t1)
+    read-second-param(s, nm, paramId, skip-space(s, a4), t1)
 
 /// Read a typed param's `pname Type` (the interior of a `(: pname Type)` after `(:`), starting at `a1`:
 /// scan the NAME, scan the Type, validate it is a recognized int type, add the NVar binder node, and RECORD its
@@ -760,15 +760,15 @@ def read-typed-param-name(s: String, nm: String, a1: Int64, tree: Tree) =
 /// Shared by the typed FIRST and typed SECOND param readers so the type-recording + validation is identical.
 def add-typed-param-node(s: String, a1: Int64, tree: Tree) =
   let (pnm, a2) = scan-atom(s, a1, "") in
-    // the param name
+  // the param name
   let (ty, a3) = scan-atom(s, skip-space(s, a2), "") in
-    // the Type name
+  // the Type name
   if ty == "" or (if is-int-type(ty) then false else true) then
     (0 - 1, a1, tree)
   else
     let (paramId, t1) = add-node(tree, Node.NVar(name-id(pnm))) in
     let t2 = record-param-type(t1, paramId, encode-param-type(ty-signed(ty), ty-width(ty))) in
-      (paramId, a3, t2)
+    (paramId, a3, t2)
 
 /// After `(do` (index `i`): read a SEQUENCE of `(def (name) body)` — record EVERY def (nameId→bodyId + params)
 /// in the def-table, threading `root` = main's body node (the module ROOT), which starts UNSET (-1). A `def`
@@ -781,7 +781,7 @@ def add-typed-param-node(s: String, a1: Int64, tree: Tree) =
 def read-do-form(s: String, i: Int64, root: Int64, tree: Tree) =
   let d0 = open-paren(s, i) in
   let (kw, d1) = scan-atom(s, skip-space(s, d0), "") in
-    if kw == "def" then
+  if kw == "def" then
     read-do-def(s, d1, root, tree)
   else if kw == "type" then
     read-do-type(s, d1, root, tree) // M2-a: user sum type → nullary-ctor defs
@@ -795,7 +795,7 @@ def read-do-form(s: String, i: Int64, root: Int64, tree: Tree) =
     // unbound export re-enters this arm, def-body-of None → poisons the root (poison overrides the
     // valid root threaded so far); all-valid exports thread `root` to the do's terminal `)`.
     let (expName, e1) = scan-atom(s, skip-space(s, d1), "") in
-      if root == 0 - 1 then
+    if root == 0 - 1 then
       unsupported-at(tree, d1) // no main seen → decline (as before)
     else
       match def-body-of(tree, name-id(expName)) with
@@ -812,7 +812,7 @@ def read-do-form(s: String, i: Int64, root: Int64, tree: Tree) =
 /// so a `(name arg…)` call can key `CLet(param, arg, body)` / the nested 2-param CLet. Flat.
 def read-do-def(s: String, d1: Int64, root: Int64, tree: Tree) =
   let (nameId, bodyId, paramId, param2Id, param3Id, param4Id, j, t1) = read-def-form(s, d1, tree) in
-    if bodyId == 0 - 1 then
+  if bodyId == 0 - 1 then
     unsupported-at(t1, j) // -1 bodyId = unsupported signature → decline
   else
     // main's body is the module ROOT — set `root` here but KEEP READING (record main as a def too, so a def
@@ -820,7 +820,7 @@ def read-do-def(s: String, d1: Int64, root: Int64, tree: Tree) =
     // forward-ref completion: main is no longer a stop-point. `root'` = main's bodyId once seen, else unchanged.
     let root2 = if nameId == name-id("main") then bodyId else root in
     let t2 = record-def(t1, nameId, bodyId) in
-      if paramId == 0 - 1 then
+    if paramId == 0 - 1 then
       read-do-next(s, j, root2, t2) // nullary def — body only
     else
       // param def: record param1 under BOTH nameId AND bodyId (lower-db's NApp arm looks it up by
@@ -828,16 +828,16 @@ def read-do-def(s: String, d1: Int64, root: Int64, tree: Tree) =
       // call wiring can build the nested CLet(p1,a1, CLet(p2,a2, [CLet(p3,a3, [CLet(p4,a4,]] body)))
       // (slice-3d/3e/3f).
       let t3 = record-param(record-param(t2, nameId, paramId), bodyId, paramId) in
-        if param2Id == 0 - 1 then
+      if param2Id == 0 - 1 then
         read-do-next(s, j, root2, t3) // single-param def
       else
         let t4 = record-param2(record-param2(t3, nameId, param2Id), bodyId, param2Id) in
-          if param3Id == 0 - 1 then
+        if param3Id == 0 - 1 then
           read-do-next(s, j, root2, t4) // two-param def
         else
           // three-param def: record param3 under BOTH nameId AND bodyId (slice-3e).
           let t5 = record-param3(record-param3(t4, nameId, param3Id), bodyId, param3Id) in
-            if param4Id == 0 - 1 then
+          if param4Id == 0 - 1 then
             read-do-next(s, j, root2, t5) // three-param def
           else
             // four-param def: record param4 under BOTH nameId AND bodyId (slice-3f).
@@ -862,7 +862,7 @@ def read-do-def(s: String, d1: Int64, root: Int64, tree: Tree) =
 def read-do-type(s: String, d1: Int64, root: Int64, tree: Tree) =
   let n0 = skip-space(s, d1) in
   let (tyname, n1) = scan-atom(s, n0, "") in
-    // the type NAME → its decl name-id (for TySum)
+  // the type NAME → its decl name-id (for TySum)
   read-do-ctors(s, skip-space(s, n1), name-id(tyname), 0, root, tree)
 
 /// Skip from index `i` (just INSIDE a `(`, at nesting depth 1) to just PAST that group's matching `)`. Paren-
@@ -875,7 +875,7 @@ def skip-to-close(s: String, i: Int64, depth: Int64) =
     i
   else
     let c = char-at(s, i) in
-      if c == "" then
+    if c == "" then
       i // ran off the end (malformed) — stop, total
     else if c == "(" then
       skip-to-close(s, i + 1, depth + 1)
@@ -891,12 +891,12 @@ def skip-to-close(s: String, i: Int64, depth: Int64) =
 def paren-payload-field-invalid-width(s: String, q: Int64) =
   let (head, a1) = scan-atom(s, skip-space(s, q + 1), "") in
   let w0 = skip-space(s, a1) in
-    if head == "Int" or head == "UInt" then
+  if head == "Int" or head == "UInt" then
     if char-at(s, w0) == "-" then
       true // negative int width → never admitted (1..=64)
     else if is-digit(char-at(s, w0)) then
       let (w, _) = scan-number(s, w0, 0) in
-        w < 1 or w > 64
+      w < 1 or w > 64
     else
       false // `(Int)` w/ no width → not our invalid case
   else if head == "Float" then
@@ -904,7 +904,7 @@ def paren-payload-field-invalid-width(s: String, q: Int64) =
       true
     else if is-digit(char-at(s, w0)) then
       let (w, _) = scan-number(s, w0, 0) in
-        if w == 32 or w == 64 then false else true
+      if w == 32 or w == 64 then false else true
     else
       false
   else
@@ -916,7 +916,7 @@ def paren-payload-field-invalid-width(s: String, q: Int64) =
 /// fold in the run closure (which tipped the self-host guest over the emit codegen ceiling). Stops at the `)`.
 def payload-group-has-invalid-width(s: String, p: Int64) =
   let q = skip-space(s, p) in
-    if char-at(s, q) == ")" then
+  if char-at(s, q) == ")" then
     false
   else if char-at(s, q) == "(" then
     if paren-payload-field-invalid-width(s, q) then
@@ -925,7 +925,7 @@ def payload-group-has-invalid-width(s: String, p: Int64) =
       payload-group-has-invalid-width(s, skip-to-close(s, q + 1, 1))
   else
     let (_pty, pn) = scan-atom(s, q, "") in
-      payload-group-has-invalid-width(s, pn)
+    payload-group-has-invalid-width(s, pn)
 
 /// The reserved def-table key for the invalid-width MARKER. `name-id` folds from acc=7 and only grows, so it
 /// NEVER yields 0 — 0 is unreachable by any real identifier (it's the same reserved sentinel `unsupported()`'s
@@ -989,7 +989,7 @@ def is-prelude-or-builtin-type(name: String) =
 /// ctor `(Pair Int64 Bool)` yields `[enc-int, enc-bool]` (was truncated to `[enc-int]`, losing field 1+).
 def read-payload-argtypes(s: String, p: Int64, acc: List(Int64)) =
   let q = skip-space(s, p) in
-    if char-at(s, q) == ")" then
+  if char-at(s, q) == ")" then
     acc
   else if char-at(s, q) == "(" then
     read-payload-argtypes(s, skip-to-close(s, q + 1, 1), List.push(acc, 0 - 1)) // nested/compound field → -1
@@ -1001,7 +1001,7 @@ def read-payload-argtypes(s: String, p: Int64, acc: List(Int64)) =
         encode-bool-type()
       else
         0 - 1 in
-      read-payload-argtypes(s, pn, List.push(acc, enc))
+    read-payload-argtypes(s, pn, List.push(acc, enc))
 
 /// gap-B-C — is a TOP-LEVEL payload ATOM an UNBOUND type reference? At `p` (first payload atom, after the ctor
 /// name) to the ctor's `)`: for each field, a NESTED `(…)` field is SKIPPED (nested applied-types are OUT of the
@@ -1026,17 +1026,17 @@ def type-atom-unbound(atom: String, tree: Tree) =
 /// carries the current candidate field-type atom/head, checked with `type-atom-unbound` when the group closes.
 def record-field-type-unbound(s: String, g: Int64, last: String, tree: Tree) =
   let q = skip-space(s, g) in
-    if char-at(s, q) == ")" then
+  if char-at(s, q) == ")" then
     type-atom-unbound(last, tree) // field group closed → check the last field-type atom
   else if char-at(s, q) == "(" then
     let (head, _) = scan-atom(s, skip-space(s, q + 1), "") in
-      // applied field type `(Head …)`
+    // applied field type `(Head …)`
     // STAY ONE LEVEL: the applied HEAD is the candidate field type (check on close if it's the last
     // element); skip past the whole `(…)` group WITHOUT recursing into its args (nested = out of scope).
     record-field-type-unbound(s, skip-to-close(s, q + 1, 1), head, tree)
   else
     let (atom, pn) = scan-atom(s, q, "") in
-      record-field-type-unbound(s, pn, atom, tree)
+    record-field-type-unbound(s, pn, atom, tree)
 
 // advance; this atom is the new candidate `last`
 /// gap-B-C — is a payload ATOM (from `p` to the ctor's `)`) an unbound type reference? `is-record` = the enclosing
@@ -1046,7 +1046,7 @@ def record-field-type-unbound(s: String, g: Int64, last: String, tree: Tree) =
 /// flat sum-ctor payload face, gap-B-C's original scope).
 def ctor-payload-has-unbound(s: String, p: Int64, is-record: Bool, tree: Tree) =
   let q = skip-space(s, p) in
-    if char-at(s, q) == ")" then
+  if char-at(s, q) == ")" then
     false // end of this ctor's payload
   else if char-at(s, q) == "(" then
     if is-record then
@@ -1059,7 +1059,7 @@ def ctor-payload-has-unbound(s: String, p: Int64, is-record: Bool, tree: Tree) =
       ctor-payload-has-unbound(s, skip-to-close(s, q + 1, 1), is-record, tree) // non-record nested field → SKIP
   else
     let (atom, pn) = scan-atom(s, q, "") in
-      if type-atom-unbound(atom, tree) then
+    if type-atom-unbound(atom, tree) then
       true // uppercase, non-builtin, undeclared → unbound
     else
       ctor-payload-has-unbound(s, pn, is-record, tree)
@@ -1073,12 +1073,12 @@ def ctor-payload-has-unbound(s: String, p: Int64, is-record: Bool, tree: Tree) =
 /// its field groups (is-record=true) — the field-type atom is checked, so `(record (: f NoSuchField))` declines.
 def type-ctors-have-unbound(s: String, k: Int64, tree: Tree) =
   let q = skip-space(s, k) in
-    if char-at(s, q) == ")" then
+  if char-at(s, q) == ")" then
     false // ctor list closed
   else if char-at(s, q) == "(" then
     let c0 = q + 1 in // just inside the ctor's `(`, depth 1
     let (cname, c1) = scan-atom(s, skip-space(s, c0), "") in
-      if ctor-payload-has-unbound(s, skip-space(s, c1), cname == "record", tree) then
+    if ctor-payload-has-unbound(s, skip-space(s, c1), cname == "record", tree) then
       true
     else
       type-ctors-have-unbound(s, skip-to-close(s, c0, 1), tree) // next ctor
@@ -1096,9 +1096,9 @@ def scan-source-unbound-type(s: String, i: Int64, tree: Tree) =
     false
   else if char-at(s, i) == "(" then
     let (kw, k) = scan-atom(s, skip-space(s, i + 1), "") in
-      if kw == "type" then
+    if kw == "type" then
       let (_tyname, n1) = scan-atom(s, skip-space(s, k), "") in
-        // skip the type NAME
+      // skip the type NAME
       if type-ctors-have-unbound(s, skip-space(s, n1), tree) then
         true
       else
@@ -1124,17 +1124,17 @@ def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64,
   else
     let c0 = open-paren(s, k) in // open a `(Ck)` — c0 is just inside, at depth 1
     let (cnm, c1) = scan-atom(s, skip-space(s, c0), "") in
-      // the ctor NAME
+    // the ctor NAME
     let c2 = skip-space(s, c1) in
-      if char-at(s, c2) == ")" then
+    if char-at(s, c2) == ")" then
       // NULLARY ctor `(Ck)` → a `Ck → NLit(tag)` def
       let (bodyId, t1) = add-node(tree, Node.NLit(tag)) in
       let t2 = record-def(t1, name-id(cnm), bodyId) in
-        // ALSO record the ctor→(declName,tag) in the ct table (M2-b-2b-ii/c2b): a nullary ctor stays
+      // ALSO record the ctor→(declName,tag) in the ct table (M2-b-2b-ii/c2b): a nullary ctor stays
       // a nullary def (used bare via def-body-of=NLit tag, M2-a), AND carries a ct entry so lower
       // recognizes it + infer types it TySum(declName). Harmless for M2-a's bare-tag eval path.
       let t3 = record-ctor-tag(t2, name-id(cnm), declName, tag) in
-        read-do-ctors(s, skip-space(s, c2 + 1), declName, tag + 1, root, t3)
+      read-do-ctors(s, skip-space(s, c2 + 1), declName, tag + 1, root, t3)
     else
       // a PAYLOAD ctor `(Ck T0 T1 …)`: RECORD `Ck → (declName, tag, argTypes)` so lower turns a use
       // `(Some 5)` / `(Pair 3 4)` = NApp(Some, args) into CCtor(tag, args) + infer types it TySum(declName)
@@ -1149,23 +1149,23 @@ def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64,
       // matching `)` and recurse tag+1.
       let argTypes = read-payload-argtypes(s, c2, []) in
       let t1 = record-ctor-tag-typed-list(tree, name-id(cnm), declName, tag, argTypes) in
-        // WHOLE-PROGRAM reject at read-time: a `(Int N)`/`(Float N)` payload with an INVALID width
+      // WHOLE-PROGRAM reject at read-time: a `(Int N)`/`(Float N)` payload with an INVALID width
       // (rcdzc CDZ0302) records a reserved MARKER def `__illwidth__ → NLit(1)`; `run-src` declines
       // any program whose tree carries that marker (a single `def-body-of` lookup — codegen-light,
       // vs a heavy ctor-table fold in the run closure that tipped the self-host guest over the emit
       // ceiling). A marker DEF survives main-sets-root (unlike poisoning root, which main overrides).
       let t2 = if payload-group-has-invalid-width(s, c2) then
           let (mid, tm) = add-node(t1, Node.NLit(1)) in
-            record-def(tm, illwidth-marker-key(), mid)
+          record-def(tm, illwidth-marker-key(), mid)
         else
           t1 in
-        read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t2)
+      read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t2)
 
 /// After a def ended at `j`: skip its closing `)` (if present) and read the next form in the do, threading the
 /// accumulated `root` (main's body, or -1 if not yet seen).
 def read-do-next(s: String, j: Int64, root: Int64, tree: Tree) =
   let e0 = skip-space(s, j) in
-    if char-at(s, e0) == ")" then
+  if char-at(s, e0) == ")" then
     read-do-form(s, e0 + 1, root, tree)
   else
     read-do-form(s, e0, root, tree)
@@ -1182,15 +1182,15 @@ def read-if-form(s: String, i: Int64, tree: Tree) =
   let (thenId, a2, t2) = read-form(s, a1, t1) in
   let (elseId, a3, t3) = read-form(s, a2, t2) in
   let k = skip-space(s, a3) in
-    if char-at(s, k) == ")" then
+  if char-at(s, k) == ")" then
     let (id, t4) = add-node(t3, Node.NIf(condId, thenId, elseId)) in
-      (id, k + 1, t4)
+    (id, k + 1, t4)
   else
     // too-many-operands: skip the extra form(s) to the close, emit a TErr-poison node → decline.
     let (_, a5, t5) = read-form(s, k, t3) in
     let a6 = close-paren(s, a5) in
     let (id, t6) = add-node(t5, Node.NBin(0 - 1, condId, thenId)) in
-      (id, a6, t6)
+    (id, a6, t6)
 
 /// M1-a INTEGER MATCH: `(match scrut (LIT then) (_ else))` → `NMatch(scrutId, litId, thenId, elseId)`. Read the
 /// SCRUTINEE form, then TWO parenthesized arms: arm1 `(LIT then)` = a literal PATTERN form + a body form; arm2
@@ -1198,13 +1198,13 @@ def read-if-form(s: String, i: Int64, tree: Tree) =
 /// literal/wildcard only (M1-a); general N-arm + ctor-patterns is a later slice. Lowers to CIf(CBin(==,scrut,lit)…).
 def read-match-form(s: String, i: Int64, tree: Tree) =
   let (scrutId, a1, t1) = read-form(s, i, tree) in
-    // the scrutinee, then the arm sequence
+  // the scrutinee, then the arm sequence
   let (armsId, a2, t2) = read-match-arms(s, a1, scrutId, t1) in
   let a3 = close-paren(s, a2) in // close the (match …)
-    // EXHAUSTIVE no-wildcard ctor-match: rewrite the last arm to an unconditional else (see
+  // EXHAUSTIVE no-wildcard ctor-match: rewrite the last arm to an unconditional else (see
   // finalize-exhaustive-match). A wildcard match / int match / non-exhaustive match is left untouched.
   let t3 = finalize-exhaustive-match(t2, armsId) in
-    (armsId, a3, t3)
+  (armsId, a3, t3)
 
 /// After a ctor-match CHAIN is read, make an EXHAUSTIVE no-wildcard match LOWER (idiomatic `match c (A …)(B …)`
 /// covering every ctor with no trailing `_`). The reader terminates a no-wildcard chain with `unsupported()` =
@@ -1218,7 +1218,7 @@ def read-match-form(s: String, i: Int64, tree: Tree) =
 /// env and RE-POISON them — a nullary body has no binders, so bodyEnv == env and the re-resolve is idempotent.
 def finalize-exhaustive-match(tree: Tree, armsId: Int64) =
   let (ctorNames, lastArmId, terminalId) = collect-ctor-arms(tree, armsId, [] : List(Int64), -1) in
-    if lastArmId == -1 then
+  if lastArmId == -1 then
     tree // not a ctor-match chain (int match / single wildcard)
   else
     match node-at(tree, terminalId) with
@@ -1301,18 +1301,18 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
   // (read-nullary-ctor-pattern-arm) reached at `)` scans an empty atom + reads a non-advancing body → INFINITE
   // LOOP (a wasm interrupt/timeout, not a decline). The reader must be TOTAL on malformed input.
   let g = skip-space(s, i) in
-    if char-at(s, g) == ")" or char-at(s, g) == "" then
+  if char-at(s, g) == ")" or char-at(s, g) == "" then
     let (id, t0) = unsupported(tree) in
-      (id, g, t0)
+    (id, g, t0)
   else
     let o = open-paren(s, i) in // open the arm `(pat body)`
     let p = skip-space(s, o) in
-      if char-at(s, p) == "_" then
+    if char-at(s, p) == "_" then
       let (_wild, w1) = scan-atom(s, p, "") in
-        // WILDCARD arm `(_ else)` — terminal
+      // WILDCARD arm `(_ else)` — terminal
       let (elseId, e1, t1) = read-form(s, w1, tree) in
       let e2 = close-paren(s, e1) in
-        (elseId, e2, t1) // the else body IS the chain's tail
+      (elseId, e2, t1) // the else body IS the chain's tail
     else if char-at(s, p) == "(" then
       // PAYLOAD ctor-pattern arm `((Ctor x) body)`
       read-ctor-pattern-arm(s, p, scrutId, tree) // M2-b-2b-ii-c → NMatchCtor
@@ -1322,9 +1322,9 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
       let (bodyId, q2, t2) = read-form(s, q1, t1) in
       let q3 = close-paren(s, q2) in
       let (restId, r1, t3) = read-match-arms(s, q3, scrutId, t2) in
-        // recurse for the rest
+      // recurse for the rest
       let (id, t4) = add-node(t3, Node.NMatch(scrutId, patId, bodyId, restId)) in
-        (id, r1, t4)
+      (id, r1, t4)
     else
       // ii-c2b-2: otherwise a NULLARY ctor-NAME pattern `(Green body)` → NMatchCtor with an EMPTY binder
       // LIST `[]` (a nullary ctor carries no payload). lower routes it via decl-is-enum-disc: enum-disc decl → CMatchEnum (bare-tag compare), mixed
@@ -1339,24 +1339,24 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
 /// the tag + the enum-disc-vs-boxed rep from the ctor name via decl-is-enum-disc (empty binder list → CMatchEnum).
 def read-nullary-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
   let (cnm, c1) = scan-atom(s, p, "") in
-    // the ctor NAME
+  // the ctor NAME
   match ctor-tag-of(tree, name-id(cnm)) with
     | Option.None(_) => // unknown ctor → decline: read body + close arm, recurse
-    let (id, t0) = unsupported(tree) in
-    let (_body, b1, t1) = read-form(s, c1, t0) in
-    let b2 = close-paren(s, b1) in
-    let (_rest, r1, t2) = read-match-arms(s, b2, scrutId, t1) in
+      let (id, t0) = unsupported(tree) in
+      let (_body, b1, t1) = read-form(s, c1, t0) in
+      let b2 = close-paren(s, b1) in
+      let (_rest, r1, t2) = read-match-arms(s, b2, scrutId, t1) in
       (id, r1, t2)
     | Option.Some(_ctorTag) => // known ctor → NMatchCtor, EMPTY binder list (no payload)
-    let (bodyId, q2, t2) = read-form(s, c1, tree) in
+      let (bodyId, q2, t2) = read-form(s, c1, tree) in
       // the arm body
-    let q3 = close-paren(s, q2) in // close the arm `(Green body)`
-    let (restId, r1, t3) = read-match-arms(s, q3, scrutId, t2) in
+      let q3 = close-paren(s, q2) in // close the arm `(Green body)`
+      let (restId, r1, t3) = read-match-arms(s, q3, scrutId, t2) in
       // recurse for rest
-    let (id, t4) = add-node(
-        t3,
-        Node.NMatchCtor(scrutId, name-id(cnm), [] : List(Int64), bodyId, restId)
-      ) in
+      let (id, t4) = add-node(
+          t3,
+          Node.NMatchCtor(scrutId, name-id(cnm), [] : List(Int64), bodyId, restId)
+        ) in
       (id, r1, t4)
 
 /// Read the payload BINDER atoms of a ctor-pattern `(Ctor x y …)` from index `k` (the first binder atom, after the
@@ -1366,11 +1366,11 @@ def read-nullary-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tre
 /// stops at `)` (or a nested `(` / end — malformed, treated as stop). Flat (≤2 nesting — the paren-cascade trap).
 def read-ctor-pattern-binders(s: String, k: Int64, acc: List(Int64), tree: Tree) =
   let q = skip-space(s, k) in
-    if char-at(s, q) == ")" or char-at(s, q) == "(" or char-at(s, q) == "" then
+  if char-at(s, q) == ")" or char-at(s, q) == "(" or char-at(s, q) == "" then
     (acc, q, tree) // pattern closes (or malformed) → done
   else
     let (bnm, k1) = scan-atom(s, q, "") in
-      // one binder name
+    // one binder name
     // WILDCARD `_`: a `_` binder position means IGNORE this field — emit the -1 no-binder SENTINEL (NO NVar
     // node), NOT a real binder. It still COUNTS for arity (List.push keeps the slot), but resolve/infer skip
     // -1 and eval consumes-the-slot-without-inserting. N wildcards never collide (no shared name-id(_) key).
@@ -1378,7 +1378,7 @@ def read-ctor-pattern-binders(s: String, k: Int64, acc: List(Int64), tree: Tree)
       read-ctor-pattern-binders(s, k1, List.push(acc, 0 - 1), tree)
     else
       let (bid, t1) = add-node(tree, Node.NVar(name-id(bnm))) in
-        read-ctor-pattern-binders(s, k1, List.push(acc, bid), t1)
+      read-ctor-pattern-binders(s, k1, List.push(acc, bid), t1)
 
 /// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x y …) body)` → NMatchCtor(scrut, patCtorName, binderIds, body, rest).
 /// `p` is at the inner `(` of the pattern (the arm's outer `(` already consumed by open-paren in read-match-arms).
@@ -1392,38 +1392,41 @@ def read-ctor-pattern-binders(s: String, k: Int64, acc: List(Int64), tree: Tree)
 def read-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
   let pi = open-paren(s, p) in // open the pattern `(Ctor x y …)`
   let (cnm, c1) = scan-atom(s, skip-space(s, pi), "") in
-    // the ctor NAME
+  // the ctor NAME
   match ctor-tag-of(tree, name-id(cnm)) with
     | Option.None(_) => // unknown ctor → decline, skip the WHOLE arm
-    let (id, t0) = unsupported(tree) in
-    let (_rest, r1, t1) = read-match-arms(s, skip-to-close(s, p, 1), scrutId, t0) in
+      let (id, t0) = unsupported(tree) in
+      let (_rest, r1, t1) = read-match-arms(s, skip-to-close(s, p, 1), scrutId, t0) in
       (id, r1, t1)
     | Option.Some(_ctorTag) => // known ctor (tag re-derived at lower via ctor-tag-of)
-    let (binderIds, bEnd, tb) = read-ctor-pattern-binders(s, c1, [], tree) in
+      let (binderIds, bEnd, tb) = read-ctor-pattern-binders(s, c1, [], tree) in
       // LOOP the binders → NVar list
-    // DECLINE (skip whole arm) unless the binder count EXACTLY matches the ctor's field arity:
-    //  - 0 binders `((Ctor) body)` — PR#835 no-binder rule (a payload ctor pattern must bind ≥1).
-    //  - count != arity — ARITY MISMATCH (v-inference ruling): a ctor pattern must bind ALL fields (or none).
-    //    A PARTIAL bind `((P x) …)` over a 2-field P silently drops payload[1..] — a readability/soundness trap
-    //    (can't tell "bind first, ignore rest" from a typo omitting y; rcdzc rejects payload-arity mismatch).
-    //    Intentional field-ignore is a later `_`-wildcard-binder slice. arity = |ctor-argtypes-of|.
-    let arity = match ctor-argtypes-of(tree, name-id(cnm)) with
-        | Option.Some(ats) => List.len(ats)
-        | Option.None(_) => 0 in
+      // DECLINE (skip whole arm) unless the binder count EXACTLY matches the ctor's field arity:
+      //  - 0 binders `((Ctor) body)` — PR#835 no-binder rule (a payload ctor pattern must bind ≥1).
+      //  - count != arity — ARITY MISMATCH (v-inference ruling): a ctor pattern must bind ALL fields (or none).
+      //    A PARTIAL bind `((P x) …)` over a 2-field P silently drops payload[1..] — a readability/soundness trap
+      //    (can't tell "bind first, ignore rest" from a typo omitting y; rcdzc rejects payload-arity mismatch).
+      //    Intentional field-ignore is a later `_`-wildcard-binder slice. arity = |ctor-argtypes-of|.
+      let arity = match ctor-argtypes-of(tree, name-id(cnm)) with
+          | Option.Some(ats) => List.len(ats)
+          | Option.None(_) => 0 in
       if List.len(binderIds) == 0 or (if List.len(binderIds) == arity then false else true) then
-      let (id, t0) = unsupported(tb) in
-      let (_rest, r1, t1) = read-match-arms(s, skip-to-close(s, p, 1), scrutId, t0) in
+        let (id, t0) = unsupported(tb) in
+        let (_rest, r1, t1) = read-match-arms(s, skip-to-close(s, p, 1), scrutId, t0) in
         (id, r1, t1)
-    else
-      let pc = close-paren(s, bEnd) in // close the pattern `(Ctor x y …)`
-      let (bodyId, q2, t2) = read-form(s, pc, tb) in
+      else
+        let pc = close-paren(s, bEnd) in // close the pattern `(Ctor x y …)`
+        let (bodyId, q2, t2) = read-form(s, pc, tb) in
         // the arm body
-      let q3 = close-paren(s, q2) in // close the arm `((Ctor x y …) body)`
-      let (restId, r1, t3) = read-match-arms(s, q3, scrutId, t2) in
+        let q3 = close-paren(s, q2) in // close the arm `((Ctor x y …) body)`
+        let (restId, r1, t3) = read-match-arms(s, q3, scrutId, t2) in
         // recurse for rest
-      // NMatchCtor carries the pattern ctor's NAME-id (single source of truth): lower re-derives
-      // the tag via ctor-tag-of, infer re-derives the decl via ctor-decl-of — they cannot drift.
-      let (id, t4) = add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), binderIds, bodyId, restId)) in
+        // NMatchCtor carries the pattern ctor's NAME-id (single source of truth): lower re-derives
+        // the tag via ctor-tag-of, infer re-derives the decl via ctor-decl-of — they cannot drift.
+        let (id, t4) = add-node(
+            t3,
+            Node.NMatchCtor(scrutId, name-id(cnm), binderIds, bodyId, restId)
+          ) in
         (id, r1, t4)
 
 /// M2-a nullary CTOR-PATTERNS in match: a match-arm pattern is an integer LITERAL (`(0 body)`) OR a nullary
@@ -1438,11 +1441,11 @@ def read-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
 /// Returns `(patNodeId, indexAfterPattern, tree')`.
 def read-arm-pattern(s: String, o: Int64, tree: Tree) =
   let p = skip-space(s, o) in
-    if is-digit(char-at(s, p)) or char-at(s, p) == "-" and is-digit(char-at(s, p + 1)) then
+  if is-digit(char-at(s, p)) or char-at(s, p) == "-" and is-digit(char-at(s, p + 1)) then
     read-form(s, o, tree) // an integer-literal pattern — read-form as-is
   else
     let (cnm, k) = scan-atom(s, p, "") in
-      // a CTOR name (possibly capitalized)
+    // a CTOR name (possibly capitalized)
     match def-body-of(tree, name-id(cnm)) with
       | Option.None(_) => let (id, t1) = unsupported(tree) in
         (id, k, t1) // unknown → decline
@@ -1466,7 +1469,7 @@ def read-and-form(s: String, i: Int64, tree: Tree) =
   let a3 = close-paren(s, a2) in
   let (falseId, t3) = add-node(t2, Node.NBoolLit(0)) in
   let (id, t4) = add-node(t3, Node.NIf(aId, bId, falseId)) in
-    (id, a3, t4)
+  (id, a3, t4)
 
 /// After `(or` (index `i` past the `or` atom): the short-circuit OR, DESUGARED to `NIf(a, true, b)` —
 /// `(or a b)` ≡ `if a then true else b`. Same NIf reuse (no new Core node); the `true` arm is a fresh
@@ -1477,7 +1480,7 @@ def read-or-form(s: String, i: Int64, tree: Tree) =
   let a3 = close-paren(s, a2) in
   let (trueId, t3) = add-node(t2, Node.NBoolLit(1)) in
   let (id, t4) = add-node(t3, Node.NIf(aId, trueId, bId)) in
-    (id, a3, t4)
+  (id, a3, t4)
 
 /// After `(not` (index `i` past the `not` atom): boolean NOT, DESUGARED to `NIf(a, false, true)` —
 /// `(not a)` ≡ `if a then false else true`. ONE operand. Both branch literals are fresh NBoolLits built
@@ -1488,12 +1491,12 @@ def read-not-form(s: String, i: Int64, tree: Tree) =
   let (falseId, t2) = add-node(t1, Node.NBoolLit(0)) in
   let (trueId, t3) = add-node(t2, Node.NBoolLit(1)) in
   let (id, t4) = add-node(t3, Node.NIf(aId, falseId, trueId)) in
-    (id, a2, t4)
+  (id, a2, t4)
 
 /// Consume a `(` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
 def open-paren(s: String, i: Int64) =
   let k = skip-space(s, i) in
-    if char-at(s, k) == "(" then k + 1 else k
+  if char-at(s, k) == "(" then k + 1 else k
 
 /// After `(let` (index `i` past the `let` atom): parse `(<bindings>) body` → right-nested `NLet`s.
 /// Grammar: `(` `(name value)…` `)` body — ONE OR MORE bindings. A MULTI-binding let
@@ -1505,7 +1508,7 @@ def open-paren(s: String, i: Int64) =
 /// All parens tolerated-if-missing (total). Delegates to read-let-bindings after opening the bindings-list.
 def read-let-form(s: String, i: Int64, tree: Tree) =
   let b0 = open-paren(s, i) in // outer bindings-list `(`
-    read-let-bindings(s, b0, tree)
+  read-let-bindings(s, b0, tree)
 
 /// At `k` = inside the bindings-list, positioned at the next binding's `(` OR the list-closing `)`. Reads ONE
 /// binding `(name value)`, then RECURSES for the rest of the bindings; the recursion returns the fully-built
@@ -1516,13 +1519,13 @@ def read-let-form(s: String, i: Int64, tree: Tree) =
 /// bindings-list (`)` immediately) reads the body directly (no NLet) — total, tolerant.
 def read-let-bindings(s: String, k: Int64, tree: Tree) =
   let p = skip-space(s, k) in
-    if char-at(s, p) == "(" then
+  if char-at(s, p) == "(" then
     let b1 = p + 1 in // this binding's `(`
     let (nm, v0) = scan-atom(s, skip-space(s, b1), "") in
     let (valId, v1, t1) = read-form(s, v0, tree) in
     let c1 = close-paren(s, v1) in // close this binding `)`
     let (innerId, e0, t2) = read-let-bindings(s, c1, t1) in
-      // the rest (bindings→body)
+    // the rest (bindings→body)
     // A let BINDER must be an IDENTIFIER, not a refutable literal: `(let ((0 5)) 42)` / `(let ((-1
     // 5)) 42)` have a numeric binder (a refutable PATTERN) which rcdzc rejects CDZ0210. A binder
     // atom that starts with a DIGIT (`0`) OR a `-` (a NEGATIVE literal `-1`) is such a literal →
@@ -1530,16 +1533,16 @@ def read-let-bindings(s: String, k: Int64, tree: Tree) =
     // silently binds `name-id`. An identifier binder (letter- or `_`-led) builds the NLet.
     if is-digit(char-at(nm, 0)) or char-at(nm, 0) == "-" then
       let (id, t3) = unsupported(t2) in
-        (id, e0, t3)
+      (id, e0, t3)
     else
       let (id, t3) = add-node(t2, Node.NLet(name-id(nm), valId, innerId)) in
-        (id, e0, t3)
+      (id, e0, t3)
   else
     // no more bindings: the list-closing `)` is here — consume it, read the body, then the `let`'s own `)`.
     let c2 = close-paren(s, p) in
     let (bodyId, e0, t1) = read-form(s, c2, tree) in
     let e1 = close-paren(s, e0) in
-      (bodyId, e1, t1)
+    (bodyId, e1, t1)
 
 /// Does `s` (from index `j`, space already skipped) open a `(do …)` module? A `(` followed by the atom
 /// `do`. Used by `read-source` to peel the corpus MODULE wrapper at the ENTRY (not mid-expression) — so
@@ -1547,7 +1550,7 @@ def read-let-bindings(s: String, k: Int64, tree: Tree) =
 def opens-do(s: String, j: Int64) =
   if char-at(s, j) == "(" then
     let (a, _) = scan-atom(s, skip-space(s, j + 1), "") in
-      a == "do"
+    a == "do"
   else
     false
 
@@ -1558,21 +1561,21 @@ def opens-do(s: String, j: Int64) =
 /// of the recursive reader rather than a node INSIDE the recursion cycle.
 def read-source(s: String) =
   let j = skip-space(s, 0) in
-    if opens-do(s, j) then
+  if opens-do(s, j) then
     let (_do, after-do) = scan-atom(s, skip-space(s, j + 1), "") in
     let (root, _, tree) = read-do-form(s, after-do, 0 - 1, empty-tree()) in
-      // gap-B-C: after the WHOLE do-block is read (registry complete), scan the source's type-decl payloads
+    // gap-B-C: after the WHOLE do-block is read (registry complete), scan the source's type-decl payloads
     // for an UNBOUND type reference (uppercase-led, non-builtin/prelude, undeclared, TOP-LEVEL). If found,
     // record the reserved unbound-type marker so run-src DECLINES (rcdzc CDZ0101). Whole-program so a
     // forward-referenced type isn't false-rejected; nested applied-types are OUT of scope (Option-C narrow).
     if scan-source-unbound-type(s, 0, tree) then
       let (mid, t1) = add-node(tree, Node.NLit(1)) in
-        (root, record-def(t1, unboundtype-marker-key(), mid))
+      (root, record-def(t1, unboundtype-marker-key(), mid))
     else
       (root, tree)
   else
     let (root, _, tree) = read-form(s, 0, empty-tree()) in
-      (root, tree)
+    (root, tree)
 
 @test
 def sr-op-code-of-is-option() =
@@ -1606,33 +1609,33 @@ def sr-op-code-of-is-option() =
 def sr-int-literal() =
   // "42" → one NLit(42), root is it.
   let (root, tree) = read-source("42") in
-    if is-lit(tree, root, 42) then unit else trap("root is NLit 42")
+  if is-lit(tree, root, 42) then unit else trap("root is NLit 42")
 
 @test
 def sr-int-leading-space() =
   // "  7" → leading spaces skipped, NLit(7).
   let (root, tree) = read-source("  7") in
-    if is-lit(tree, root, 7) then unit else trap("root is NLit 7 after spaces")
+  if is-lit(tree, root, 7) then unit else trap("root is NLit 7 after spaces")
 
 @test
 def sr-multidigit() =
   // "100" → NLit(100) (scan-number accumulates).
   let (root, tree) = read-source("100") in
-    if is-lit(tree, root, 100) then unit else trap("root is NLit 100")
+  if is-lit(tree, root, 100) then unit else trap("root is NLit 100")
 
 @test
 def sr-negative-literal() =
   // "-5" → NLit(-5): a `-` immediately followed by digits is a negative literal (the reference runs `-5`
   // and `(+ -5 3)`→-2; compiler-ml previously DECLINED a bare `-` operand). read-form's new `-N` arm.
   let (root, tree) = read-source("-5") in
-    if is-lit(tree, root, 0 - 5) then unit else trap("root is NLit -5")
+  if is-lit(tree, root, 0 - 5) then unit else trap("root is NLit -5")
 
 @test
 def sr-negative-literal-operand() =
   // "(+ -5 3)" → NBin(+, NLit -5, NLit 3): a negative literal reads as an arithmetic OPERAND (not a bare
   // `-` that falls through to decline). The left operand is NLit(-5).
   let (root, tree) = read-source("(+ -5 3)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NBin(op, l, r)) => if op == 43 then
       if is-lit(tree, l, 0 - 5) then
         if is-lit(tree, r, 3) then unit else trap("right NLit 3")
@@ -1648,7 +1651,7 @@ def sr-tuple-reads-positional-elements() =
   // element list (arbitrary arity). Stage-1 reader slice; downstream has no NTuple arm yet, so run-src on a
   // tuple declines — this test pins the READER shape (the node + element count), not an end-to-end value.
   let (root, tree) = read-source("(tuple 1 2 3)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NTuple(elems)) => (match List.at(elems, 0) with
       | Option.Some(e0) => if List.len(elems) == 3 and is-lit(tree, e0, 1) then
         unit
@@ -1663,7 +1666,7 @@ def sr-tuple-nests-element-forms() =
   // "(tuple (+ 1 2) x)" → NTuple([binNode, varNode]): each element is a full expression FORM, so a nested
   // arithmetic op and a variable read are valid tuple elements (2 elements).
   let (root, tree) = read-source("(tuple (+ 1 2) x)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NTuple(elems)) => (match List.at(elems, 0) with
       | Option.Some(e0) => if List.len(elems) == 2 and is-bin-op(tree, e0, 43) then
         unit
@@ -1679,7 +1682,7 @@ def sr-proj-reads-operand-and-index() =
   // nested NTuple) and the index FORM (NLit 1). Stage-A reader slice; resolve/infer/lower DECLINE an NProj, so
   // run-src on a projection declines — this pins the READER shape (the node + that index is NLit 1), not a value.
   let (root, tree) = read-source("(. (tuple 10 20) 1)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NProj(operandId, indexId)) => (match node-at(tree, operandId) with
       | Option.Some(Node.NTuple(elems)) => if List.len(elems) == 2 and is-lit(tree, indexId, 1) then
         unit
@@ -1696,7 +1699,7 @@ def sr-record-reads-named-fields() =
   // lower DECLINE an NRecord, so run-src on a record declines — this pins the READER shape (2 fields, first
   // value NLit 1, and the two lists are equal length), not an end-to-end value.
   let (root, tree) = read-source("(record (a 1) (b 2))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NRecord(nameIds, valIds)) => (match List.at(valIds, 0) with
       | Option.Some(v0) => if List.len(nameIds) == 2
           and (List.len(valIds) == 2 and is-lit(tree, v0, 1)) then
@@ -1713,7 +1716,7 @@ def sr-subtraction-still-binop() =
   // negative literal — the `-N` arm only fires in read-form (operand position); a `-` HEAD atom is scanned
   // by read-paren-form → read-app-or-bin. So subtraction is unaffected by the negative-literal arm.
   let (root, tree) = read-source("(- 0 5)") in
-    if is-bin-op(tree, root, 45) then
+  if is-bin-op(tree, root, 45) then
     unit
   else
     trap("(- 0 5) is a subtraction Bin (op 45), not a negative literal")
@@ -1723,7 +1726,7 @@ def sr-unary-minus-desugars-to-sub() =
   // "(- 5)" → NBin(45, NLit 0, NLit 5): unary minus (a `-` head with ONE operand) desugars to `0 - 5`
   // (mirroring parse-db's TNeg desugar). The reference runs `(- 5)`→-5; the reader previously declined it.
   let (root, tree) = read-source("(- 5)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NBin(op, l, r)) => if op == 45 then
       if is-lit(tree, l, 0) then
         if is-lit(tree, r, 5) then unit else trap("right operand NLit 5")
@@ -1739,7 +1742,7 @@ def sr-binary-sub-not-treated-as-unary() =
   // NLit 3), NOT the unary `0 - 10` desugar (the unary arm only fires when a `)` immediately follows the
   // first operand).
   let (root, tree) = read-source("(- 10 3)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NBin(op, l, r)) => if op == 45 then
       if is-lit(tree, l, 10) then
         if is-lit(tree, r, 3) then unit else trap("right NLit 3")
@@ -1753,19 +1756,19 @@ def sr-binary-sub-not-treated-as-unary() =
 def sr-true() =
   // "true" → NBoolLit(1).
   let (root, tree) = read-source("true") in
-    if is-bool-lit(tree, root, 1) then unit else trap("root is NBoolLit 1")
+  if is-bool-lit(tree, root, 1) then unit else trap("root is NBoolLit 1")
 
 @test
 def sr-false() =
   // "false" → NBoolLit(0).
   let (root, tree) = read-source("false") in
-    if is-bool-lit(tree, root, 0) then unit else trap("root is NBoolLit 0")
+  if is-bool-lit(tree, root, 0) then unit else trap("root is NBoolLit 0")
 
 @test
 def sr-prefix-add() =
   // "(+ 1 2)" → NBin(43, NLit 1, NLit 2): prefix binop with both operands.
   let (root, tree) = read-source("(+ 1 2)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NBin(op, l, r)) => if op == 43 then
       if is-lit(tree, l, 1) then
         if is-lit(tree, r, 2) then unit else trap("right NLit 2")
@@ -1779,13 +1782,13 @@ def sr-prefix-add() =
 def sr-prefix-lt() =
   // "(< 3 4)" → NBin(60, ...): the `<` symbol maps to op 60.
   let (root, tree) = read-source("(< 3 4)") in
-    if is-bin-op(tree, root, 60) then unit else trap("root is a < Bin (op 60)")
+  if is-bin-op(tree, root, 60) then unit else trap("root is a < Bin (op 60)")
 
 @test
 def sr-prefix-nested() =
   // "(+ 1 (* 2 3))" → root + whose RIGHT child is a * Bin (nested prefix form, children by id).
   let (root, tree) = read-source("(+ 1 (* 2 3))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NBin(op, _, r)) => if op == 43 then
       if is-bin-op(tree, r, 42) then unit else trap("+ 's right is a * Bin")
     else
@@ -1796,7 +1799,7 @@ def sr-prefix-nested() =
 def sr-prefix-eqeq() =
   // "(== 5 5)" → op 61 (the two-char == symbol scans as one atom). `==` is the accepted alias.
   let (root, tree) = read-source("(== 5 5)") in
-    if is-bin-op(tree, root, 61) then unit else trap("root is a == Bin (op 61)")
+  if is-bin-op(tree, root, 61) then unit else trap("root is a == Bin (op 61)")
 
 @test
 def sr-prefix-eq-equality() =
@@ -1804,7 +1807,7 @@ def sr-prefix-eq-equality() =
   // single-char `=` symbol scans as one atom and maps to op 61, so a real corpus `(= a b)` program reads as
   // an equality NBin (was unrecognized → declined before the fix).
   let (root, tree) = read-source("(= 5 5)") in
-    if is-bin-op(tree, root, 61) then
+  if is-bin-op(tree, root, 61) then
     unit
   else
     trap("root is a = Bin (op 61) — equality is spelled =")
@@ -1815,7 +1818,7 @@ def sr-and-desugars-to-if() =
   // fresh NBoolLit(0). Pins the desugar SHAPE (a b false), so infer/lower/eval — which already handle NIf —
   // run it with no new Core node.
   let (root, tree) = read-source("(and true false)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NIf(cond, thn, els)) => if is-bool-lit(tree, cond, 1) then
       if is-bool-lit(tree, thn, 0) then
         if is-bool-lit(tree, els, 0) then unit else trap("and else-arm is false")
@@ -1830,7 +1833,7 @@ def sr-or-desugars-to-if() =
   // "(or false true)" → NIf(false, true, true): (or a b) ≡ if a then true else b. The then-arm is a fresh
   // NBoolLit(1).
   let (root, tree) = read-source("(or false true)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NIf(cond, thn, els)) => if is-bool-lit(tree, cond, 0) then
       if is-bool-lit(tree, thn, 1) then
         if is-bool-lit(tree, els, 1) then unit else trap("or else-arm is b")
@@ -1845,7 +1848,7 @@ def sr-not-desugars-to-if() =
   // "(not true)" → NIf(true, false, true): (not a) ≡ if a then false else true. ONE operand; both branch
   // arms are fresh NBoolLits.
   let (root, tree) = read-source("(not true)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NIf(cond, thn, els)) => if is-bool-lit(tree, cond, 1) then
       if is-bool-lit(tree, thn, 0) then
         if is-bool-lit(tree, els, 1) then unit else trap("not else-arm is true")
@@ -1861,7 +1864,7 @@ def sr-nested-and-desugars-recursively() =
   // is `false`, else is `false`. Pins that the desugar COMPOSES — an `and` operand that is itself an `and`
   // recursively desugars to a nested NIf (not a flat/dropped operand). The outer else-arm is NBoolLit(0).
   let (root, tree) = read-source("(and (and true true) false)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NIf(cond, thn, els)) => // outer cond is the inner (and true true) → an NIf; outer then = the bare `false`; outer else = NBoolLit(0)
     if is-if(tree, cond) then
       if is-bool-lit(tree, thn, 0) then
@@ -1877,7 +1880,7 @@ def sr-not-of-and-desugars-recursively() =
   // "(not (and true false))" → NIf(<inner-and-NIf>, false, true): (not X) with X an `and` — the cond is the
   // inner and's desugar (an NIf), then/else the NOT literals. Pins not-over-a-compound-operand composes.
   let (root, tree) = read-source("(not (and true false))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NIf(cond, thn, els)) => if is-if(tree, cond) then
       if is-bool-lit(tree, thn, 0) then
         if is-bool-lit(tree, els, 1) then unit else trap("not else = true")
@@ -1891,7 +1894,7 @@ def sr-not-of-and-desugars-recursively() =
 def sr-if-shape() =
   // "(if true 1 2)" → NIf; cond is a bool literal, then/else the int literals.
   let (root, tree) = read-source("(if true 1 2)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NIf(cond, thn, els)) => if is-bool-lit(tree, cond, 1) then
       if is-lit(tree, thn, 1) then
         if is-lit(tree, els, 2) then unit else trap("else NLit 2")
@@ -1905,7 +1908,7 @@ def sr-if-shape() =
 def sr-if-with-comparison-cond() =
   // "(if (< 1 2) 10 20)" → NIf whose cond is a < Bin (nested prefix in the condition).
   let (root, tree) = read-source("(if (< 1 2) 10 20)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NIf(cond, _, _)) => if is-bin-op(tree, cond, 60) then
       unit
     else
@@ -1916,7 +1919,7 @@ def sr-if-with-comparison-cond() =
 def sr-nested-if-in-else() =
   // "(if false 1 (if true 2 3))" → else-branch is itself an NIf.
   let (root, tree) = read-source("(if false 1 (if true 2 3))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NIf(_, _, els)) => if is-if(tree, els) then
       unit
     else
@@ -1927,13 +1930,13 @@ def sr-nested-if-in-else() =
 def sr-var() =
   // "x" (bare identifier) → NVar keyed by name-id("x").
   let (root, tree) = read-source("x") in
-    if is-var(tree, root, name-id("x")) then unit else trap("root is NVar x")
+  if is-var(tree, root, name-id("x")) then unit else trap("root is NVar x")
 
 @test
 def sr-let-shape() =
   // "(let ((x 10)) x)" → NLet(id x, NLit 10, NVar x): the body var's id equals the binder's id.
   let (root, tree) = read-source("(let ((x 10)) x)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(nm, valId, bodyId)) => if nm == name-id("x") then
       if is-lit(tree, valId, 10) then
         if is-var(tree, bodyId, name-id("x")) then unit else trap("body is NVar x")
@@ -1949,7 +1952,7 @@ def sr-let-multi-binding-desugars-to-nested-nlet() =
   // right-nested single-lets (no new node). The OUTER NLet binds x; its body is the INNER NLet binding y.
   // Pins the desugar SHAPE — a single-binding let stays a flat NLet (sr-let-shape), 2+ bindings nest.
   let (root, tree) = read-source("(let ((x 1) (y 2)) (+ x y))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(nm1, v1, inner)) => if nm1 == name-id("x") then
       if is-lit(tree, v1, 1) then
         match node-at(tree, inner) with
@@ -1968,7 +1971,7 @@ def sr-let-multi-binding-desugars-to-nested-nlet() =
 def sr-let-binder-use-share-id() =
   // the binder id and the use id are the SAME (so resolve-db will bind them) — the whole point of name-id.
   let (root, tree) = read-source("(let ((y 5)) y)") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(nm, _, bodyId)) => (match node-at(tree, bodyId) with
       | Option.Some(Node.NVar(useId)) => if useId == nm then unit else trap("binder id == use id")
       | _ => trap("body is a var")
@@ -1979,7 +1982,7 @@ def sr-let-binder-use-share-id() =
 def sr-let-body-arith() =
   // "(let ((x 3)) (+ x 1))" → body is a + Bin whose left is NVar x.
   let (root, tree) = read-source("(let ((x 3)) (+ x 1))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, _, bodyId)) => if is-bin-op(tree, bodyId, 43) then
       unit
     else
@@ -1991,19 +1994,19 @@ def sr-module-int-body() =
   // the canonical corpus module shape `(do (def (main) 42) (export main))` → the body NLit(42) IS the
   // program's value (the module wrapper is peeled). Before this, the whole corpus declined.
   let (root, tree) = read-source("(do (def (main) 42) (export main))") in
-    if is-lit(tree, root, 42) then unit else trap("module body is NLit 42")
+  if is-lit(tree, root, 42) then unit else trap("module body is NLit 42")
 
 @test
 def sr-module-arith-body() =
   // `(do (def (main) (+ 1 2)) (export main))` → body is a + Bin (the wrapper peels to the body form).
   let (root, tree) = read-source("(do (def (main) (+ 1 2)) (export main))") in
-    if is-bin-op(tree, root, 43) then unit else trap("module body is a + Bin")
+  if is-bin-op(tree, root, 43) then unit else trap("module body is a + Bin")
 
 @test
 def sr-module-let-body() =
   // `(do (def (main) (let ((x 10)) x)) (export main))` → body is an NLet.
   let (root, tree) = read-source("(do (def (main) (let ((x 10)) x)) (export main))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NLet(_, _, _)) => unit
     | _ => trap("module body is an NLet")
 
@@ -2016,7 +2019,7 @@ def sr-module-parameterized-main-declines() =
   // is the body's NVar `n` rather than the old unsupported-NVar(0) — but the DECLINE semantic is unchanged:
   // main's param is not bound, so the body ref is unresolved. Pinned as the ROBUST run-level decline.)
   let (root, tree) = read-source("(do (def (main (: n Int64)) n) (export main))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NVar(_)) => unit // main's body is an (unbound) param-name reference → declines downstream
     | _ => trap("parameterized main's body is an unbound NVar → module declines")
 
@@ -2026,7 +2029,7 @@ def sr-module-helper-def-before-main-supported() =
   // main's body. Here main's body is `2` (the helper is recorded but unused) → root is NLit 2. (Was a decline
   // pre-3b-ii — the reader now reads a def-SEQUENCE, not just a leading nullary `main`.)
   let (root, tree) = read-source("(do (def (helper) 1) (def (main) 2) (export main))") in
-    if is-lit(tree, root, 2) then unit else trap("helper-then-main: root is main's body NLit 2")
+  if is-lit(tree, root, 2) then unit else trap("helper-then-main: root is main's body NLit 2")
 
 @test
 def sr-module-nullary-call-is-napp() =
@@ -2034,7 +2037,7 @@ def sr-module-nullary-call-is-napp() =
   // call-resolution arm fired because `mk` is a recorded def). `(do (def (mk) 42) (def (main) (mk)) …)` → root
   // is NApp(mkBodyId, -1). This is the source-level nullary-function call the whole slice-3 builds toward.
   let (root, tree) = read-source("(do (def (mk) 42) (def (main) (mk)) (export main))") in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NApp(_, _)) => unit
     | _ => trap("(mk) call → root is an NApp")
 
@@ -2047,7 +2050,7 @@ def sr-module-single-param-def-reads-and-records-param() =
   // CLet — is the next 3c slice; this pins the reader records the structure.) Alpha param names only for now
   // (the body var-reader's is-alpha set lacks `_`, so a corpus `_1` param name is a separate reader gap).
   let (root, tree) = read-source("(do (def (f n) (+ n 1)) (def (main) 5) (export main))") in
-    if is-lit(tree, root, 5) then
+  if is-lit(tree, root, 5) then
     // main's body is the root = NLit 5
     match param-of(tree, name-id("f")) with
       | Option.Some(_) => // f's param IS recorded
@@ -2071,7 +2074,7 @@ def sr-module-two-param-def-reads-and-records-both() =
   // 1-param from 2-param. (The 2-arg CALL wiring — resolve/infer/lower `(add 40 2)` → nested CLet — is the next
   // 3d slice; this pins the reader records both params. Sequence intact: main's body 5 is still the root.)
   let (root, tree) = read-source("(do (def (add a b) (+ a b)) (def (main) 5) (export main))") in
-    if is-lit(tree, root, 5) then
+  if is-lit(tree, root, 5) then
     match param-of(tree, name-id("add")) with
       | Option.Some(_) => // add's 1st param recorded
       (match param2-of(tree, name-id("add")) with
@@ -2093,7 +2096,7 @@ def sr-module-typed-first-mixed-param-def-records-both() =
   // the signature closed after the first param), so a typed-first 2-param def fast-declined. read-second-param
   // is now shared after BOTH the typed and untyped first-param paths, so any typed/untyped mix composes.
   let (root, tree) = read-source("(do (def (f (: a Int8) b) (+ a b)) (def (main) 5) (export main))") in
-    if is-lit(tree, root, 5) then
+  if is-lit(tree, root, 5) then
     match param-of(tree, name-id("f")) with
       | Option.Some(_) => (match param2-of(tree, name-id("f")) with
         | Option.Some(_) => unit
@@ -2108,7 +2111,7 @@ def sr-module-typed-second-mixed-param-def-records-both() =
   // the mirror: an UNTYPED first param + a TYPED second `(def (f a (: b Int8)) …)` also records both. Pins
   // that read-second-param dispatches a `(` second param to the typed-second reader.
   let (root, tree) = read-source("(do (def (f a (: b Int8)) (+ a b)) (def (main) 5) (export main))") in
-    if is-lit(tree, root, 5) then
+  if is-lit(tree, root, 5) then
     match param2-of(tree, name-id("f")) with
       | Option.Some(_) => unit
       | Option.None(_) => trap("typed-second mixed def records param2")
@@ -2120,7 +2123,7 @@ def sr-module-three-param-def-records-all-three() =
   // slice-3e: a THREE-param def `(def (f a b c) …)` now PARSES and records param/param2/param3 (was
   // fast-declined as ">2-param not supported" before slice-3e). Pins the reader records all three.
   let (root, tree) = read-source("(do (def (f a b c) (+ a (+ b c))) (def (main) 5) (export main))") in
-    if is-lit(tree, root, 5) then
+  if is-lit(tree, root, 5) then
     match param3-of(tree, name-id("f")) with
       | Option.Some(_) => unit // f's 3rd param recorded → 3-param def read cleanly
       | Option.None(_) => trap("a 3-param def records param3")
@@ -2136,7 +2139,7 @@ def sr-module-all-typed-three-param-records-param3() =
   let (root, tree) = read-source(
       "(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) 5) (export main))"
     ) in
-    if is-lit(tree, root, 5) then
+  if is-lit(tree, root, 5) then
     match param3-of(tree, name-id("f")) with
       | Option.Some(_) => unit
       | Option.None(_) => trap("an all-typed 3-param def records param3")
@@ -2149,7 +2152,7 @@ def sr-module-four-param-def-records-all-four() =
   // (read-fourth-param) + records param4 under BOTH nameId and bodyId (read-do-def), so `f` IS recorded and
   // its four param nodes are looked up by name-id. (The decline boundary moved to >4 params with slice-3f.)
   let (_root, tree) = read-source("(do (def (f a b c d) (+ a b)) (def (main) 5) (export main))") in
-    match def-body-of(tree, name-id("f")) with
+  match def-body-of(tree, name-id("f")) with
     | Option.Some(_) => (match param4-of(tree, name-id("f")) with
       | Option.Some(_) => unit // f recorded + its 4th param bound by name-id (correct)
       | Option.None(_) => trap("a 4-param def records param4 by name-id")
@@ -2162,7 +2165,7 @@ def sr-module-five-param-def-declines() =
   // mis-parse. read-fourth-param checks the char after param4 is `)`; a 5th param → bodyId -1 sentinel →
   // read-do-def declines → `f` is NOT recorded. (The decline boundary is >4 params as of slice-3f-wire.)
   let (_root, tree) = read-source("(do (def (f a b c d e) (+ a b)) (def (main) 5) (export main))") in
-    match def-body-of(tree, name-id("f")) with
+  match def-body-of(tree, name-id("f")) with
     | Option.None(_) => unit // f's >4-param signature declined → NOT recorded (correct)
     | Option.Some(_) => trap("a >4-param def `(def (f a b c d e) …)` declines — f is not recorded")
 
@@ -2173,7 +2176,7 @@ def sr-module-malformed-typed-param-declines() =
   // returns the bodyId -1 sentinel → read-do-def declines. Before the fix it close-paren'd from a wrong index,
   // mis-parsing the sig/body boundary. The root reads as an unbound NVar (the decline shape) → module declines.
   let (_root, tree) = read-source("(do (def (f (: n)) (+ n 1)) (def (main) 5) (export main))") in
-    match def-body-of(tree, name-id("f")) with
+  match def-body-of(tree, name-id("f")) with
     | Option.None(_) => unit // f was NOT recorded (its malformed signature declined) → correct
     | Option.Some(_) => trap(
       "a malformed typed-param `(: n)` (no type) declines — f is not recorded"
@@ -2189,7 +2192,7 @@ def sr-module-forward-call-reads-as-napp() =
   // reads as a nullary NApp to name-id("mk"), NOT the old ill-typed NBin(-1). (The end-to-end run→42 is pinned
   // by sread-eval's se-main-first-forward-ref-runs; this reader-layer test pins the AST SHAPE change.)
   let (root, tree) = read-source("(do (def (main) (mk)) (def (mk) 42) (export main))") in
-    if is-app(tree, root, name-id("mk"), 0 - 1) then
+  if is-app(tree, root, name-id("mk"), 0 - 1) then
     unit
   else
     trap("forward call `(mk)` now reads as a nullary NApp to name-id(mk) — forward-ref supported")
@@ -2203,7 +2206,7 @@ def sr-unknown-name-call-reads-as-napp-declines-late() =
   // AST shape is an NApp (not the old NBin(-1)); the decline moved from read-time to lower-time. This test pins
   // the reader-layer shape; the late decline is pinned by the resolve/infer/lower unknown-name arms.
   let (root, tree) = read-source("(foo)") in
-    if is-app(tree, root, name-id("foo"), 0 - 1) then
+  if is-app(tree, root, name-id("foo"), 0 - 1) then
     unit
   else
     trap(
@@ -2219,7 +2222,7 @@ def sr-do-form-in-cycle-reads() =
   // (this @test compiling+running IS the valid-emit witness). Read via read-form so the `(do` goes through
   // read-paren-form's in-cycle arm.
   let (root, _, tree) = read-form("(do (def (main) (+ 4 5)) (export main))", 0, empty-tree()) in
-    if is-bin-op(tree, root, 43) then unit else trap("in-cycle (do …) reads its body as a + Bin")
+  if is-bin-op(tree, root, 43) then unit else trap("in-cycle (do …) reads its body as a + Bin")
 
 // ---- type annotations (: <literal> TypeName) — the integer range-check (slice 2a-ii) ----
 @test
@@ -2227,7 +2230,7 @@ def sr-ann-in-range-runs() =
   // `(: 200 UInt8)` → 200 fits UInt8 → NAnnLit(200, unsigned=0, width=8): the width-annotated literal
   // carries its (signed, width) so the narrow type flows through infer→lower→emit.
   let (root, tree) = read-source("(: 200 UInt8)") in
-    if is-annlit(tree, root, 200, 0, 8) then
+  if is-annlit(tree, root, 200, 0, 8) then
     unit
   else
     trap("(: 200 UInt8) → NAnnLit(200, unsigned, 8)")
@@ -2236,17 +2239,14 @@ def sr-ann-in-range-runs() =
 def sr-ann-int8-in-range() =
   // `(: 127 Int8)` → 127 = Int8.max fits → NAnnLit(127, signed=1, width=8).
   let (root, tree) = read-source("(: 127 Int8)") in
-    if is-annlit(tree, root, 127, 1, 8) then
-    unit
-  else
-    trap("(: 127 Int8) → NAnnLit(127, signed, 8)")
+  if is-annlit(tree, root, 127, 1, 8) then unit else trap("(: 127 Int8) → NAnnLit(127, signed, 8)")
 
 @test
 def sr-ann-out-of-range-declines() =
   // `(: 300 UInt8)` → 300 does NOT fit UInt8 → unsupported() → an NVar(0) poison (root is NOT a literal),
   // so resolve→infer→eval decline. The range-check REJECTS, matching rcdzc.
   let (root, tree) = read-source("(: 300 UInt8)") in
-    if is-lit(tree, root, 300) then
+  if is-lit(tree, root, 300) then
     trap("(: 300 UInt8) must DECLINE (300 > UInt8.max)")
   else if is-var(tree, root, 0) then
     unit
@@ -2257,7 +2257,7 @@ def sr-ann-out-of-range-declines() =
 def sr-ann-int8-over-declines() =
   // `(: 128 Int8)` → 128 > Int8.max 127 → decline.
   let (root, tree) = read-source("(: 128 Int8)") in
-    if is-lit(tree, root, 128) then
+  if is-lit(tree, root, 128) then
     trap("(: 128 Int8) must DECLINE (128 > Int8.max)")
   else if is-var(tree, root, 0) then
     unit
@@ -2268,7 +2268,7 @@ def sr-ann-int8-over-declines() =
 def sr-ann-non-int-type-declines() =
   // `(: 5 Bool)` → Bool is not an integer type → decline (a later slice may type-annotate to Bool; not here).
   let (root, tree) = read-source("(: 5 Bool)") in
-    if is-lit(tree, root, 5) then
+  if is-lit(tree, root, 5) then
     trap("(: 5 Bool) is out of the integer-annotation slice → decline")
   else if is-var(tree, root, 0) then
     unit
@@ -2279,25 +2279,19 @@ def sr-ann-non-int-type-declines() =
 def sr-ann-negative-fits-int8() =
   // `(: 100 Int8)` fits (Int8 holds -128..127); confirms a mid-range signed value runs.
   let (root, tree) = read-source("(: 100 Int8)") in
-    if is-annlit(tree, root, 100, 1, 8) then
-    unit
-  else
-    trap("(: 100 Int8) → NAnnLit(100, signed, 8)")
+  if is-annlit(tree, root, 100, 1, 8) then unit else trap("(: 100 Int8) → NAnnLit(100, signed, 8)")
 
 @test
 def sr-ann-neg-literal-fits-int8() =
   // `(: -5 Int8)` → -5 fits Int8's -128..127 → NAnnLit(-5, signed, 8). (The negative-operand path.)
   let (root, tree) = read-source("(: -5 Int8)") in
-    if is-annlit(tree, root, 0 - 5, 1, 8) then
-    unit
-  else
-    trap("(: -5 Int8) → NAnnLit(-5, signed, 8)")
+  if is-annlit(tree, root, 0 - 5, 1, 8) then unit else trap("(: -5 Int8) → NAnnLit(-5, signed, 8)")
 
 @test
 def sr-ann-neg-min-fits-int8() =
   // `(: -128 Int8)` → Int8.min fits → NAnnLit(-128, signed, 8).
   let (root, tree) = read-source("(: -128 Int8)") in
-    if is-annlit(tree, root, 0 - 128, 1, 8) then
+  if is-annlit(tree, root, 0 - 128, 1, 8) then
     unit
   else
     trap("(: -128 Int8) → NAnnLit(-128, signed, 8)")
@@ -2306,7 +2300,7 @@ def sr-ann-neg-min-fits-int8() =
 def sr-ann-neg-under-int8-declines() =
   // `(: -129 Int8)` → below Int8.min -128 → decline.
   let (root, tree) = read-source("(: -129 Int8)") in
-    if is-lit(tree, root, 0 - 129) then
+  if is-lit(tree, root, 0 - 129) then
     trap("(: -129 Int8) must DECLINE (below Int8.min)")
   else if is-var(tree, root, 0) then
     unit
@@ -2317,7 +2311,7 @@ def sr-ann-neg-under-int8-declines() =
 def sr-ann-neg-into-unsigned-declines() =
   // `(: -1 UInt8)` → unsigned holds no negatives → fits-width false → decline (matches rcdzc).
   let (root, tree) = read-source("(: -1 UInt8)") in
-    if is-lit(tree, root, 0 - 1) then
+  if is-lit(tree, root, 0 - 1) then
     trap("(: -1 UInt8) must DECLINE (unsigned has no negatives)")
   else if is-var(tree, root, 0) then
     unit
@@ -2331,22 +2325,19 @@ def sr-ann-int64-identity-fits() =
   // range caps at 62), so the old fits-width gate wrongly DECLINED it while bare `5` (default Int64) ran.
   // `fits-ann` treats signed-64 as always-fitting → NAnnLit(5, signed, 64). rcdzc: (: 5 Int64) → 5.
   let (root, tree) = read-source("(: 5 Int64)") in
-    if is-annlit(tree, root, 5, 1, 64) then unit else trap("(: 5 Int64) → NAnnLit(5, signed, 64)")
+  if is-annlit(tree, root, 5, 1, 64) then unit else trap("(: 5 Int64) → NAnnLit(5, signed, 64)")
 
 @test
 def sr-ann-uint64-nonneg-fits() =
   // `(: 5 UInt64)` — native unsigned width. fits-ann: unsigned-64 fits iff v >= 0. rcdzc: (: 5 UInt64) → 5.
   let (root, tree) = read-source("(: 5 UInt64)") in
-    if is-annlit(tree, root, 5, 0, 64) then
-    unit
-  else
-    trap("(: 5 UInt64) → NAnnLit(5, unsigned, 64)")
+  if is-annlit(tree, root, 5, 0, 64) then unit else trap("(: 5 UInt64) → NAnnLit(5, unsigned, 64)")
 
 @test
 def sr-ann-int64-negative-fits() =
   // `(: -1 Int64)` — a negative fits signed Int64 (rcdzc: → -1). Signed-64 always fits.
   let (root, tree) = read-source("(: -1 Int64)") in
-    if is-annlit(tree, root, 0 - 1, 1, 64) then
+  if is-annlit(tree, root, 0 - 1, 1, 64) then
     unit
   else
     trap("(: -1 Int64) → NAnnLit(-1, signed, 64)")
@@ -2355,7 +2346,7 @@ def sr-ann-int64-negative-fits() =
 def sr-ann-uint64-negative-declines() =
   // `(: -1 UInt64)` — a negative CANNOT be UInt64 (fits-ann: unsigned-64 needs v >= 0) → decline.
   let (root, tree) = read-source("(: -1 UInt64)") in
-    if is-var(tree, root, 0) then
+  if is-var(tree, root, 0) then
     unit
   else
     trap("(: -1 UInt64) must DECLINE (unsigned has no negatives)")
@@ -2368,7 +2359,7 @@ def sr-typed-param-unbound-type-declines() =
   // was recorded and `(f 7)` silently ran to 7 (a fabricated value disagreeing with rcdzc). Now
   // read-typed-param-name's `is-int-type` guard fails → bodyId -1 sentinel → f is NOT recorded → module declines.
   let (_root, tree) = read-source("(do (def (f (: x foo)) x) (def (main) (f 7)) (export main))") in
-    match def-body-of(tree, name-id("f")) with
+  match def-body-of(tree, name-id("f")) with
     | Option.None(_) => unit // f declined (unbound type `foo`) → correct (was recorded + ran to 7)
     | Option.Some(_) => trap(
       "a typed param with an UNBOUND type `(: x foo)` declines — f is not recorded (corpus wants CDZ0101)"
@@ -2381,7 +2372,7 @@ def sr-typed-param-non-int-type-declines() =
   // reader returns the bodyId -1 sentinel. Before this, `(: x Bool)` fed `5` ran to 5 (the annotation was
   // discarded, so a non-Bool arg was never rejected). Mirrors the annotated-LITERAL rule (sr-ann-non-int-type).
   let (_root, tree) = read-source("(do (def (f (: x Bool)) x) (def (main) (f 5)) (export main))") in
-    match def-body-of(tree, name-id("f")) with
+  match def-body-of(tree, name-id("f")) with
     | Option.None(_) => unit
     | Option.Some(_) => trap(
       "a Bool-typed param declines (annotation not yet enforced) — f is not recorded"
@@ -2395,7 +2386,7 @@ def sr-typed-param-int-type-still-runs() =
   let (_root, tree) = read-source(
       "(do (def (f (: n Int64)) (+ n 1)) (def (main) (f 41)) (export main))"
     ) in
-    match def-body-of(tree, name-id("f")) with
+  match def-body-of(tree, name-id("f")) with
     | Option.Some(_) => unit // f recorded → a valid int-typed param still runs
     | Option.None(_) => trap(
       "a valid int-typed param `(: n Int64)` still records f (must not over-decline)"
@@ -2407,7 +2398,7 @@ def sr-typed-param-narrow-int-type-runs() =
   // FULL standard width set (not just Int64). (Narrow-int RANGE enforcement — Int8 fed 200 → overflow — is a
   // later slice that threads the width into infer; here the annotation is merely RECOGNIZED, so the def runs.)
   let (_root, tree) = read-source("(do (def (f (: a Int8)) a) (def (main) (f 100)) (export main))") in
-    match def-body-of(tree, name-id("f")) with
+  match def-body-of(tree, name-id("f")) with
     | Option.Some(_) => unit
     | Option.None(_) => trap("a valid narrow int-typed param `(: a Int8)` still records f")
 
@@ -2419,7 +2410,7 @@ def sr-typed-param-records-declared-type() =
   // def still records + runs (nothing reads the type yet); this just pins the reader captures it for infer's
   // next-slice fit-check. (param-of gives f's FIRST param node-id; param-type-of reads its recorded type.)
   let (_root, tree) = read-source("(do (def (f (: a Int8)) a) (def (main) 5) (export main))") in
-    match param-of(tree, name-id("f")) with
+  match param-of(tree, name-id("f")) with
     | Option.Some(paramId) => (match param-type-of(tree, paramId) with
       | Option.Some(e) => if pt-width(e) == 8 and pt-signed(e) then
         unit
@@ -2435,7 +2426,7 @@ def sr-untyped-param-records-no-type() =
   // type flows, as today). Distinguishes a narrow-typed param from a plain one — infer's fit-check fires ONLY on
   // a recorded type, so an untyped param is untouched.
   let (_root, tree) = read-source("(do (def (f n) (+ n 1)) (def (main) 5) (export main))") in
-    match param-of(tree, name-id("f")) with
+  match param-of(tree, name-id("f")) with
     | Option.Some(paramId) => (match param-type-of(tree, paramId) with
       | Option.None(_) => unit
       | Option.Some(_) => trap("an untyped param records no declared type")
@@ -2451,7 +2442,7 @@ def sr-ctor-pattern-payload-arm-reads-to-nmatchctor() =
   let (root, tree) = read-source(
       "(do (type Box (BB Int64)) (def (main c) (match c ((BB x) x) (_ 9))) (export main))"
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NMatchCtor(_, _, _, _, restId)) => (match node-at(tree, restId) with
       | Option.Some(Node.NLit(9)) => unit // the wildcard body (9) — later arm NOT corrupted
       | _ => trap(
@@ -2471,7 +2462,7 @@ def sr-ctor-pattern-unknown-ctor-declines-cleanly-pr835() =
   let (_root, tree) = read-source(
       "(do (type Color (Red) (Green)) (def (main c) (match c ((Unknown x) 7) (_ 9))) (def (helper) 42) (export main))"
     ) in
-    match def-body-of(tree, name-id("helper")) with
+  match def-body-of(tree, name-id("helper")) with
     | Option.Some(b) => (match node-at(tree, b) with
       | Option.Some(Node.NLit(42)) => unit // following def intact → reader positioned correctly
       | _ => trap(
@@ -2490,7 +2481,7 @@ def sr-ctor-pattern-no-binder-declines-pr835() =
   let (root, tree) = read-source(
       "(do (type Box (BB Int64)) (def (main c) (match c ((BB) 7) (_ 9))) (export main))"
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NVar(0)) => unit // clean poison — no empty-name binder built
     | Option.Some(Node.NMatchCtor(_, _, _, _, _)) => trap(
       "a NO-binder ctor pattern must DECLINE, not build an empty-name binder NMatchCtor"
@@ -2503,7 +2494,7 @@ def sr-multi-field-ctor-reads-all-payload-argtypes-slice1b() =
   // table (was TRUNCATED to field 0). ctor-argtypes-of returns the full list [Int64-enc, Bool-enc] in decl order;
   // ctor-argtype-of (single-field fast path) still returns the HEAD (field 0). Pins the reader now parses N atoms.
   let (_root, tree) = read-source("(do (type P (Pair Int64 Bool)) (def (main) 0) (export main))") in
-    match ctor-argtypes-of(tree, name-id("Pair")) with
+  match ctor-argtypes-of(tree, name-id("Pair")) with
     | Option.Some(ats) => if List.len(ats) == 2 then
       match List.at(ats, 0) with
         | Option.Some(a0) => if a0 == encode-param-type(true, 64) then
@@ -2525,7 +2516,7 @@ def sr-single-field-ctor-argtypes-still-one-element-slice1b() =
   // slice-1b backward-compat: a 1-field payload ctor `(BB Int64)` still yields a 1-element list [Int64-enc] — the
   // generalized N-atom reader reduces to the old single-atom behavior for arity 1 (no regression vs slice-1a shim).
   let (_root, tree) = read-source("(do (type Box (BB Int64)) (def (main) 0) (export main))") in
-    match ctor-argtypes-of(tree, name-id("BB")) with
+  match ctor-argtypes-of(tree, name-id("BB")) with
     | Option.Some(ats) => if List.len(ats) == 1 then
       match ctor-argtype-of(tree, name-id("BB")) with
         | Option.Some(a0) => if a0 == encode-param-type(true, 64) then
@@ -2543,7 +2534,7 @@ def sr-multi-field-ctor-unsupported-field-is-neg1-slice1b() =
   // records -1 (UNSUPPORTED) at that field's position — infer TErr's that binder so any use declines (NOT 0, which
   // would misread it as an Int64-placeholder). Field 0 (Int64) stays correct; field 1 (Foo) is -1.
   let (_root, tree) = read-source("(do (type Q (Two Int64 Foo)) (def (main) 0) (export main))") in
-    match ctor-argtypes-of(tree, name-id("Two")) with
+  match ctor-argtypes-of(tree, name-id("Two")) with
     | Option.Some(ats) => if List.len(ats) == 2 then
       match List.at(ats, 1) with
         | Option.Some(a1) => if a1 == 0 - 1 then unit else trap("unsupported field 1 = -1 sentinel")
@@ -2560,7 +2551,7 @@ def sr-ctor-pattern-multibinder-reads-binder-list() =
   let (root, tree) = read-source(
       "(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair x y) (+ x y)) (_ 9))) (export main))"
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NMatchCtor(_, _, binderIds, bodyId, _)) => if List.len(binderIds) == 2 then
       if is-bin-op(tree, bodyId, 43) then
         unit // body is `(+ x y)` (op 43) — real body, not binder y
@@ -2578,7 +2569,7 @@ def sr-ctor-pattern-wildcard-binder-reads-sentinel() =
   let (root, tree) = read-source(
       "(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair _ y) y) (_ 9))) (export main))"
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NMatchCtor(_, _, binderIds, _, _)) => if List.len(binderIds) == 2 then
       match List.at(binderIds, 0) with
         | Option.Some(b0) => if b0 == 0 - 1 then
@@ -2602,7 +2593,7 @@ def sr-ctor-pattern-multibinder-following-def-intact() =
   let (_root, tree) = read-source(
       "(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair x y) (+ x y)) (_ 9))) (def (helper) 42) (export main))"
     ) in
-    match def-body-of(tree, name-id("helper")) with
+  match def-body-of(tree, name-id("helper")) with
     | Option.Some(b) => (match node-at(tree, b) with
       | Option.Some(Node.NLit(42)) => unit // following def intact → reader positioned correctly past the arm
       | _ => trap(
@@ -2620,7 +2611,7 @@ def sr-ctor-pattern-single-binder-still-reads-nmatchctor() =
   let (root, tree) = read-source(
       "(do (type Box (BB Int64)) (def (main c) (match c ((BB x) x) (_ 9))) (export main))"
     ) in
-    match node-at(tree, root) with
+  match node-at(tree, root) with
     | Option.Some(Node.NMatchCtor(_, _, _, _, restId)) => (match node-at(tree, restId) with
       | Option.Some(Node.NLit(9)) => unit
       | _ => trap("single-binder arm's REST reaches the wildcard body NLit 9")
@@ -2638,7 +2629,7 @@ def sr-ctor-pattern-arity-mismatch-declines() =
   let (_root, tree) = read-source(
       "(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair x) x) (_ 9))) (def (helper) 42) (export main))"
     ) in
-    match def-body-of(tree, name-id("helper")) with
+  match def-body-of(tree, name-id("helper")) with
     | Option.Some(b) => (match node-at(tree, b) with
       | Option.Some(Node.NLit(42)) => unit // following def intact → arity-mismatch declined cleanly
       | _ => trap(

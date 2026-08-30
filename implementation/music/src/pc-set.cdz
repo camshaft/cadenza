@@ -11,7 +11,7 @@
 /// Floored pitch class `0..11` of a note number (negative notes fold up; matches analysis.cdz/chord.cdz).
 def pc-of(n: Int64) =
   let r = n % 12 in
-    if r < 0 then r + 12 else r
+  if r < 0 then r + 12 else r
 
 /// Insert `x` into a sorted ascending list, keeping it sorted and DEDUPED (a duplicate is dropped). This
 /// is what makes a pitch-class list a canonical SET. Recursive, annotated params.

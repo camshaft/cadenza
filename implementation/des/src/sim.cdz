@@ -16,12 +16,12 @@ type Duration =
 // Unwrap an Instant to its raw nanosecond count.
 def inst-ns(t: Instant) =
   let Instant.Instant(n) = t in
-    n
+  n
 
 // Unwrap a Duration to its raw nanosecond count.
 def dur-ns(d: Duration) =
   let Duration.Duration(n) = d in
-    n
+  n
 
 // Duration constructors (bach's `5.s()` / `.ms()` / `.us()` / `.ns()`), scaling a count to ns.
 def secs(n: UInt64) = Duration.Duration(n * 1000000000)
@@ -65,7 +65,7 @@ def run-sim(t: Type, task: Unit -> t) =
 // has no home; a consumer sleeps via `Sim.sleep(at(now, d))` or gets an effect-delegating wrapper later).
 def sleep-for(d: Duration) =
   let start = Sim.now() in
-    Sim.sleep(at(start, d))
+  Sim.sleep(at(start, d))
 
 // ─── tests (a @test PASSES by returning unit, FAILS by trapping) ───
 // Return unit iff the two ns counts are equal; TRAP (a genuinely-runtime UInt64 underflow) if they
@@ -74,14 +74,14 @@ def sleep-for(d: Duration) =
 // would make the assert false-green), so an unequal case traps before the test can return unit.
 def assert-eq-ns(actual: UInt64, expected: UInt64) =
   let diff = actual - expected + (expected - actual) in
-    if diff == 0 then unit else unit
+  if diff == 0 then unit else unit
 
 @test
 def sleep-then-now-observes-advanced-clock() =
   let observed = run-sim(Instant, fn(_u) =>
       Sim.sleep(Instant.Instant(5000000000));
       Sim.now()) in
-    assert-eq-ns(inst-ns(observed), 5000000000)
+  assert-eq-ns(inst-ns(observed), 5000000000)
 
 @test
 def two-sequential-sleeps-fast-forward-through-both() =
@@ -89,19 +89,19 @@ def two-sequential-sleeps-fast-forward-through-both() =
       Sim.sleep(Instant.Instant(2000000000));
       Sim.sleep(Instant.Instant(5000000000));
       Sim.now()) in
-    assert-eq-ns(inst-ns(observed), 5000000000)
+  assert-eq-ns(inst-ns(observed), 5000000000)
 
 @test
 def sleep-for-a-duration-advances-by-the-span() =
   let observed = run-sim(Instant, fn(_u) =>
       sleep-for(secs(3));
       Sim.now()) in
-    assert-eq-ns(inst-ns(observed), 3000000000)
+  assert-eq-ns(inst-ns(observed), 3000000000)
 
 @test
 def now-before-any-sleep-reads-zero() =
   let observed = run-sim(Instant, fn(_u) => Sim.now()) in
-    assert-eq-ns(inst-ns(observed), 0)
+  assert-eq-ns(inst-ns(observed), 0)
 
 // The generic return: a task may return a type OTHER than Instant (e.g. a consumer accumulating a
 // played-in-order event stream returns that list). Here the task sleeps then returns a raw UInt64 tick
@@ -112,6 +112,6 @@ def run-sim-returns-the-tasks-own-type-not-instant() =
   let observed = run-sim(UInt64, fn(_u) =>
       Sim.sleep(Instant.Instant(4000000000));
       inst-ns(Sim.now())) in
-    assert-eq-ns(observed, 4000000000)
+  assert-eq-ns(observed, 4000000000)
 
 export { inst-ns, dur-ns, secs, ms, us, ns, at, since, `before?`, run-sim }

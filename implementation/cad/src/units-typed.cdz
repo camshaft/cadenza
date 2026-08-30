@@ -50,15 +50,15 @@ def v3-len(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#mete
 /// re-wrapped as a meter quantity, so downstream code that wants units gets them.
 def m-x(v: Vec3m) =
   let Vec3m.V3m(x, _, _) = v in
-    x meter
+  x meter
 
 def m-y(v: Vec3m) =
   let Vec3m.V3m(_, y, _) = v in
-    y meter
+  y meter
 
 def m-z(v: Vec3m) =
   let Vec3m.V3m(_, _, z) = v in
-    z meter
+  z meter
 
 /// A single length → its exact bare-Rational METER magnitude (the storage projection; the boundary that a
 /// primitive's radius/height uses). A caller supplies a length in any unit; the language converts.
@@ -73,14 +73,14 @@ def meters(n: Int64) = Qty.of(Rational.of(n, 1 : Int64), Unit.of(#meter))
 /// fully exact. This is how S2 plugs into the model without touching the CSG core.
 def to-vec3(v: Vec3m) =
   let Vec3m.V3m(x, y, z) = v in
-    v3(x, y, z)
+  v3(x, y, z)
 
 /// ============================ @test suite (S2 — boundary unit typing, exact meters) ============================
 @test
 def v3-len-stores-exact-meters() =
   // Build from three 1/2/3-metre lengths; stored magnitudes are exactly 1, 2, 3 (bare Rational meters).
   let v = v3-len(meters(1), meters(2), meters(3)) in
-    match v with
+  match v with
     | Vec3m.V3m(x, y, z) => if x == 1 / 1 then
       if y == 2 / 1 then if z == 3 / 1 then unit else trap("z") else trap("y")
     else
@@ -92,7 +92,7 @@ def a-coordinate-round-trips-out-as-a-meter-length() =
   // magnitudes so a swapped accessor (m-y returning x, etc.) can't hide — the earlier version only read m-x,
   // leaving m-y/m-z (and an axis-swap in either) unpinned.
   let v = v3-len(meters(1), meters(2), meters(3)) in
-    if Qty.value(m-x(v)) == 1 / 1 then
+  if Qty.value(m-x(v)) == 1 / 1 then
     if Qty.value(m-y(v)) == 2 / 1 then
       if Qty.value(m-z(v)) == 3 / 1 then unit else trap("m-z must read the z coordinate (3 m)")
     else
@@ -107,7 +107,7 @@ def authoring-in-inches-stores-exact-meters() =
   let one-inch = Qty.of(1 / 1, Unit.of(#inch)) in
   let as-exact-meters = Qty.of(one-inch as meter, Unit.of(#meter)) in
   let v = v3-len(as-exact-meters, meters(0), meters(0)) in
-    match v with
+  match v with
     | Vec3m.V3m(x, _, _) => if x == 127 / 5000 then unit else trap("1 inch = 127/5000 m exactly")
 
 @test
@@ -115,7 +115,7 @@ def to-vec3-bridges-to-the-exact-csg-model() =
   // The meter-model vector re-packs to the bare-Rational Vec3 the CSG/bbox core consumes — same exact
   // magnitudes, so a units-typed build plugs into the existing exact machinery unchanged.
   let v = v3-len(meters(4), meters(5), meters(6)) in
-    match to-vec3(v) with
+  match to-vec3(v) with
     | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
 
 export { Vec3m.*, v3-len, m-x, m-y, m-z, len-m, meters, to-vec3 }

@@ -35,7 +35,7 @@ def run-of-db(db: Db, root: Int64) = match lower-of-db(db, root) with
 def run-tokens-db(ts: List(Tok)) =
   let (root, tree) = parse-tokens(ts) in
   let (_, v) = run-of-db(db-of(tree), root) in
-    v
+  v
 
 // ---- TESTS: source → value over the memoized Db pipeline --------------------------------------------
 /// THE MILESTONE program `let x = 2 in x * 3 + 1` as tokens — runs to 7 (over the Db this time).

@@ -25,7 +25,7 @@
 /// encoder uses. Assumes `m > 0`.
 def mod-floor(n: Int64, m: Int64) =
   let r = n % m in
-    if r < 0 then r + m else r
+  if r < 0 then r + m else r
 
 /// `2^k` for `0 <= k <= 62` (a fuel-free bounded doubling — `k` itself bounds the recursion). `2^63`
 /// overflows Int64, so `k` outside `0..=62` returns `0`, a sentinel the callers guard against BEFORE
@@ -46,10 +46,10 @@ def fits-width(v: Int64, signed: Bool, width: Int64) =
   if width-ok(width) then
     if signed then
       let half = pow2(width - 1) in // 2^(width-1)
-        0 - half <= v and v <= half - 1
+      0 - half <= v and v <= half - 1
     else
       let cap = pow2(width) in // 2^width
-        0 <= v and v <= cap - 1
+      0 <= v and v <= cap - 1
   else
     false
 
@@ -63,9 +63,9 @@ def wrap-to(v: Int64, signed: Bool, width: Int64) =
   if width-ok(width) then
     let m = pow2(width) in // 2^width, the modulus
     let low = mod-floor(v, m) in // v mod 2^width in 0..2^width-1
-      if signed then
+    if signed then
       let half = pow2(width - 1) in // 2^(width-1)
-        if low >= half then low - m else low // high bit set → the negative twin
+      if low >= half then low - m else low // high bit set → the negative twin
     else
       low
   else
@@ -106,15 +106,15 @@ def overflows(v: Int64, signed: Bool, width: Int64) =
 /// narrow widths 8/16/32 are comfortably in range).
 def checked-add(a: Int64, b: Int64, signed: Bool, width: Int64) =
   let r = a + b in
-    if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
+  if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
 
 def checked-sub(a: Int64, b: Int64, signed: Bool, width: Int64) =
   let r = a - b in
-    if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
+  if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
 
 def checked-mul(a: Int64, b: Int64, signed: Bool, width: Int64) =
   let r = a * b in
-    if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
+  if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
 
 // ---- pow2 / mod-floor ----
 @test

@@ -108,7 +108,7 @@ def rchord-to-midi(c: RChord, base: Int64) = to-midi-go(base, rchord-intervals(c
 def a-major-triad-stacks-a-major-third-and-a-fifth() =
   // Root, 4/12, 7/12 of the octave. On root 0/1 the notes are 0, 4/12, 7/12.
   let c = major-triad-r(rinterval(Rational.of(0, 1))) in
-    match rchord-intervals(c) with
+  match rchord-intervals(c) with
     | [a, b, d] => if r-eq(a, semitones-r(0)) then
       if r-eq(b, semitones-r(4)) then
         if r-eq(d, semitones-r(7)) then unit else trap("fifth")
@@ -121,14 +121,14 @@ def a-major-triad-stacks-a-major-third-and-a-fifth() =
 @test
 def a-minor-triad-lowers-the-third-to-three-twelfths() =
   let c = minor-triad-r(rinterval(Rational.of(0, 1))) in
-    match rchord-intervals(c) with
+  match rchord-intervals(c) with
     | [_, b, _] => if r-eq(b, semitones-r(3)) then unit else trap("minor third is 3/12")
     | _ => trap("three notes")
 
 @test
 def a-dominant-seventh-adds-ten-twelfths() =
   let c = dominant-seventh-r(rinterval(Rational.of(0, 1))) in
-    if rchord-size(c) == 4 then
+  if rchord-size(c) == 4 then
     if rchord-has(c, semitones-r(10)) then unit else trap("dominant adds a 10/12 seventh")
   else
     trap("four notes")
@@ -138,7 +138,7 @@ def a-chord-is-transposable-preserving-the-stack() =
   // Rooting the chord an octave up shifts every interval by 1/1 but preserves the stack fractions: the
   // third is still 4/12 ABOVE the root. Mode/root-independent, exact.
   let c = major-triad-r(r-octave) in
-    match rchord-intervals(c) with
+  match rchord-intervals(c) with
     | [root, third, _] => // third - root == 4/12 regardless of where the root sits.
     if r-eq(rinterval(octaves(third) - octaves(root)), semitones-r(4)) then
       if r-eq(root, r-octave) then unit else trap("root is at the octave")
@@ -150,7 +150,7 @@ def a-chord-is-transposable-preserving-the-stack() =
 def membership-is-exact-rational() =
   // A major triad on 0 contains 7/12 (its fifth) but not 6/12 (a tritone).
   let c = major-triad-r(rinterval(Rational.of(0, 1))) in
-    if rchord-has(c, semitones-r(7)) then
+  if rchord-has(c, semitones-r(7)) then
     if rchord-has(c, semitones-r(6)) then trap("no tritone in a major triad") else unit
   else
     trap("fifth is present")
@@ -159,7 +159,7 @@ def membership-is-exact-rational() =
 def a-diminished-triad-stacks-two-minor-thirds() =
   // dim triad on 0 = 0, 3/12, 6/12 (two stacked minor thirds); has its 6/12 diminished fifth, not a 7/12.
   let c = diminished-triad-r(rinterval(Rational.of(0, 1))) in
-    match rchord-intervals(c) with
+  match rchord-intervals(c) with
     | [_, b, d] => if r-eq(b, semitones-r(3)) then
       if r-eq(d, semitones-r(6)) then
         if rchord-has(c, semitones-r(7)) then trap("no perfect fifth in a dim triad") else unit
@@ -175,7 +175,7 @@ def an-augmented-triad-splits-the-octave-into-three-equal-thirds() =
   // each) that sum to exactly 12/12 = one octave, with zero drift. Pins that stacking the third above the
   // top note (8/12 + 4/12) lands on the octave EXACTLY in rational space (a property a float would smear).
   let c = augmented-triad-r(rinterval(Rational.of(0, 1))) in
-    match rchord-intervals(c) with
+  match rchord-intervals(c) with
     | [a, b, d] => if r-eq(a, semitones-r(0)) then
       if r-eq(b, semitones-r(4)) then
         if r-eq(d, semitones-r(8)) then
@@ -197,7 +197,7 @@ def a-rational-major-triad-projects-to-midi-c-e-g() =
   // The theory-core → wire bridge: a rational C-major triad on base 60 → MIDI [60, 64, 67] (C E G), and a
   // dominant seventh on 60 → [60, 64, 67, 70]. On the 12-TET grid the projection is exact.
   let cmaj = major-triad-r(rinterval(Rational.of(0, 1))) in
-    match rchord-to-midi(cmaj, 60) with
+  match rchord-to-midi(cmaj, 60) with
     | [a, b, d] => if a == 60 then
       if b == 64 then
         if d == 67 then
@@ -216,7 +216,7 @@ def a-rational-major-triad-projects-to-midi-c-e-g() =
 def rational-chord-to-midi-transposes-with-the-base() =
   // Projecting the same chord over a different base just shifts every note: C major on 67 (G) → [67,71,74].
   let cmaj = major-triad-r(rinterval(Rational.of(0, 1))) in
-    match rchord-to-midi(cmaj, 67) with
+  match rchord-to-midi(cmaj, 67) with
     | [a, b, d] => if a == 67 then
       if b == 71 then if d == 74 then unit else trap("74") else trap("71")
     else

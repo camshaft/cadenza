@@ -148,7 +148,7 @@ def yes-no() =
 def project-comm-sender() =
   // Buyer sends Title to Seller → LSend("Seller","Title",LEnd).
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if local-eq(project(g, "Buyer"), Local.LSend("Seller", "Title", Local.LEnd)) then
+  if local-eq(project(g, "Buyer"), Local.LSend("Seller", "Title", Local.LEnd)) then
     unit
   else
     trap("Buyer projects a comm it sends to LSend")
@@ -156,7 +156,7 @@ def project-comm-sender() =
 @test
 def project-comm-receiver() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if local-eq(project(g, "Seller"), Local.LRecv("Buyer", "Title", Local.LEnd)) then
+  if local-eq(project(g, "Seller"), Local.LRecv("Buyer", "Title", Local.LEnd)) then
     unit
   else
     trap("Seller projects a comm it receives to LRecv")
@@ -164,7 +164,7 @@ def project-comm-receiver() =
 @test
 def project-comm-bystander-is-end() =
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if local-eq(project(g, "Shipper"), Local.LEnd) then
+  if local-eq(project(g, "Shipper"), Local.LEnd) then
     unit
   else
     trap("an uninvolved role projects a comm to LEnd")
@@ -174,7 +174,7 @@ def project-seq-threads-continuation() =
   // Buyer: send Title, then receive Quote.
   let g = Chor.Seq(Chor.Comm("Buyer", "Seller", "Title"), Chor.Comm("Seller", "Buyer", "Quote")) in
   let expect = Local.LSend("Seller", "Title", Local.LRecv("Seller", "Quote", Local.LEnd)) in
-    if local-eq(project(g, "Buyer"), expect) then
+  if local-eq(project(g, "Buyer"), expect) then
     unit
   else
     trap("Buyer projects a sequence to nested send-then-recv")
@@ -187,7 +187,7 @@ def project-chooser-is-internal-choice() =
         Local.LBranch("No", Local.LSend("Seller", "No", Local.LEnd))
       ]
     ) in
-    if local-eq(project(yes-no(), "Buyer"), expect) then
+  if local-eq(project(yes-no(), "Buyer"), expect) then
     unit
   else
     trap("the chooser projects a choice to an INTERNAL choice of sends")
@@ -201,7 +201,7 @@ def project-told-role-is-external-choice() =
         Local.LBranch("No", Local.LRecv("Buyer", "No", Local.LEnd))
       ]
     ) in
-    if local-eq(project(yes-no(), "Seller"), expect) then
+  if local-eq(project(yes-no(), "Seller"), expect) then
     unit
   else
     trap("a told role projects a choice to an EXTERNAL choice from the chooser")
@@ -219,7 +219,7 @@ def project-rec-is-recursive-local() =
   // rec Loop . (Buyer -> Seller : Ping ; Loop) — Buyer's local type is rec Loop . !Seller.Ping ; Loop.
   let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
   let expect = Local.LRecT("Loop", Local.LSend("Seller", "Ping", Local.LVarT("Loop"))) in
-    if local-eq(project(g, "Buyer"), expect) then
+  if local-eq(project(g, "Buyer"), expect) then
     unit
   else
     trap("a guarded rec projects to a recursive local type")
@@ -228,7 +228,7 @@ def project-rec-is-recursive-local() =
 def project-rec-receiver-side() =
   let g = Chor.Rec("Loop", Chor.Seq(Chor.Comm("Buyer", "Seller", "Ping"), Chor.Var("Loop"))) in
   let expect = Local.LRecT("Loop", Local.LRecv("Buyer", "Ping", Local.LVarT("Loop"))) in
-    if local-eq(project(g, "Seller"), expect) then
+  if local-eq(project(g, "Seller"), expect) then
     unit
   else
     trap("the receiver's rec projection is a recursive recv")
@@ -237,7 +237,7 @@ def project-rec-receiver-side() =
 def project-distinguishes-roles() =
   // Non-vacuous: Buyer's and Seller's projections of the same comm must differ.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-    if local-eq(project(g, "Buyer"), project(g, "Seller")) then
+  if local-eq(project(g, "Buyer"), project(g, "Seller")) then
     trap("sender and receiver projections must differ")
   else
     unit
@@ -286,7 +286,7 @@ def project-told-role-keeps-divergent-branch-continuations() =
         )
       ]
     ) in
-    if local-eq(project(divergent-told(), "Seller"), expect) then
+  if local-eq(project(divergent-told(), "Seller"), expect) then
     unit
   else
     trap("the told role's external choice keeps each branch's distinct recv-then-send continuation")
@@ -306,7 +306,7 @@ def project-chooser-keeps-divergent-branch-continuations() =
         )
       ]
     ) in
-    if local-eq(project(divergent-told(), "Buyer"), expect) then
+  if local-eq(project(divergent-told(), "Buyer"), expect) then
     unit
   else
     trap("the chooser's internal choice keeps each branch's distinct send-then-recv continuation")

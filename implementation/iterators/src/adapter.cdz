@@ -81,8 +81,8 @@ def filter-map-step(const step: List(Int64) -> Option(Tuple(Int64, List(Int64)))
   | Option.None(_) => Option.None(unit)
   | Option.Some(pair) => let (x, s2) = pair in
     match f(x) with
-    | Option.None(_) => filter-map-step(step, s2, f)
-    | Option.Some(y) => Option.Some((y, s2))
+      | Option.None(_) => filter-map-step(step, s2, f)
+      | Option.Some(y) => Option.Some((y, s2))
 
 def filter-map(it, f: Int64 -> Option(Int64)) = match it with
   | Iter.Mk(s0, step) => Iter.Mk(s0, fn(s) => filter-map-step(step, s, f))

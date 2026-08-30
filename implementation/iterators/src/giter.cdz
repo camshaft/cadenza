@@ -542,7 +542,7 @@ def zip-mixed-element-types() =
 def zip-pairs-carry-both-elements() = match next(zip(from-list([7, 8]), from-list(["x", "y"]))) with
   | Option.None(_) => trap("zip of non-empty must yield")
   | Option.Some(p) => let (pair, _rest) = p in
-  let (l, r) = pair in
+    let (l, r) = pair in
     if l == 7 then if r == "x" then unit else trap("zip right elem") else trap("zip left elem")
 
 @test
@@ -731,11 +731,11 @@ def scan-string-accumulator() =
 def enumerate-ints-indices-climb() = match next(enumerate(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("enumerate of non-empty must yield")
   | Option.Some(p) => let (pair, _rest) = p in
-  let (i, v) = pair in
+    let (i, v) = pair in
     if i == 0 then
-    if v == 10 then unit else trap("enumerate first elem")
-  else
-    trap("enumerate first index")
+      if v == 10 then unit else trap("enumerate first elem")
+    else
+      trap("enumerate first index")
 
 @test
 def enumerate-preserves-length-ints() =
@@ -932,11 +932,11 @@ def zip3-three-different-element-types() = match next(
   ) with
   | Option.None(_) => trap("zip3 mixed must yield")
   | Option.Some(p) => let (triple, _rest) = p in
-  let (s, n, b) = triple in
+    let (s, n, b) = triple in
     if s == "a" then
-    if n == 1 then if b then unit else trap("zip3 bool") else trap("zip3 int")
-  else
-    trap("zip3 str")
+      if n == 1 then if b then unit else trap("zip3 bool") else trap("zip3 int")
+    else
+      trap("zip3 str")
 
 /// SLICE-15: `windows2` — closure-free sliding adjacent pairs (n-1 out), pinned at two element types and the
 /// short-input edges (0/1 element → empty).
@@ -948,7 +948,7 @@ def windows2-adjacent-pairs-ints() =
 def windows2-carries-both-neighbors() = match next(windows2(from-list([10, 20, 30]))) with
   | Option.None(_) => trap("windows2 must yield")
   | Option.Some(p) => let (pair, _rest) = p in
-  let (l, r) = pair in
+    let (l, r) = pair in
     if l == 10 then if r == 20 then unit else trap("windows2 right") else trap("windows2 left")
 
 @test

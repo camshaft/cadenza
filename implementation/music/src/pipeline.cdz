@@ -32,7 +32,7 @@ import { pitch, note } from "pitch"
 def collapse-piece-go(s: Scale, notes: List(Note), out: List(Note)) = match notes with
   | [] => out
   | [h, .. t] => let snapped-num = note(collapse-to-scale(s, note-pitch(h))) in
-  let moved = note-at(pitch(snapped-num), note-chan(h), note-vel(h), note-start(h), note-dur(h)) in
+    let moved = note-at(pitch(snapped-num), note-chan(h), note-vel(h), note-start(h), note-dur(h)) in
     collapse-piece-go(s, t, List.push(out, moved))
 
 /// Collapse a whole piece into the mode `s`.
@@ -57,7 +57,7 @@ def collapse-snaps-a-chromatic-piece-into-the-mode() =
   let cmaj = major(0) in
   let piece = [note-at(pitch(66), 0, 100, 0, 480), note-at(pitch(64), 0, 100, 480, 480)] in
   let snapped = collapse-piece(cmaj, piece) in
-    match snapped with
+  match snapped with
     | [a, b] => if note(note-pitch(a)) == 65 then
       if note(note-pitch(b)) == 64 then unit else trap("E stays E")
     else
@@ -69,7 +69,7 @@ def collapse-preserves-timing-and-channel() =
   // Only the pitch is snapped; channel/velocity/start/dur survive.
   let cmaj = major(0) in
   let piece = [note-at(pitch(66), 3, 77, 240, 480)] in
-    match collapse-piece(cmaj, piece) with
+  match collapse-piece(cmaj, piece) with
     | [a] => if note-chan(a) == 3 then
       if note-vel(a) == 77 then
         if note-start(a) == 240 then
@@ -87,7 +87,7 @@ def the-pipeline-collapses-then-transposes-then-remaps() =
   // F#4 (66) on channel 0 → collapse into C major → F4 (65) → transpose +7 → C5 (72) → remap to channel 9.
   let cmaj = major(0) in
   let piece = [note-at(pitch(66), 0, 100, 0, 480)] in
-    match pipeline(cmaj, 7, 9, piece) with
+  match pipeline(cmaj, 7, 9, piece) with
     | [a] => if note(note-pitch(a)) == 72 then
       if note-chan(a) == 9 then unit else trap("remapped to channel 9")
     else
@@ -99,7 +99,7 @@ def quantize-and-shift-keeps-the-channel() =
   // Same collapse+transpose but no remap — the channel is preserved.
   let cmaj = major(0) in
   let piece = [note-at(pitch(61), 5, 100, 0, 480)] in // C#4 (61) → collapse to C4 (60) → +2 → D4 (62)
-    match quantize-and-shift(cmaj, 2, piece) with
+  match quantize-and-shift(cmaj, 2, piece) with
     | [a] => if note(note-pitch(a)) == 62 then
       if note-chan(a) == 5 then unit else trap("channel kept")
     else
@@ -125,7 +125,7 @@ def a-whole-chromatic-run-collapses-into-major() =
       note-at(pitch(70), 0, 100, 1000, 100),
       note-at(pitch(71), 0, 100, 1100, 100)
     ] in
-    if all-in-major(collapse-piece(cmaj, chromatic-run)) then
+  if all-in-major(collapse-piece(cmaj, chromatic-run)) then
     unit
   else
     trap("every collapsed note is a C-major degree")
@@ -142,7 +142,7 @@ def collapse-is-idempotent-on-an-in-mode-piece() =
       note-at(pitch(67), 0, 100, 480, 240),
       note-at(pitch(71), 0, 100, 720, 240)
     ] in
-    if same-numbers(in-mode, collapse-piece(cmaj, in-mode)) then
+  if same-numbers(in-mode, collapse-piece(cmaj, in-mode)) then
     unit
   else
     trap("collapse fixes an in-mode piece")
@@ -152,7 +152,7 @@ def the-pipeline-is-empty-on-an-empty-piece() =
   // Every transform's recursive base case (`[] => out`, out seeded `[]`): no input notes → no output,
   // for collapse, the full pipeline, and quantize-and-shift alike.
   let cmaj = major(0) in
-    if List.len(collapse-piece(cmaj, [])) == 0 then
+  if List.len(collapse-piece(cmaj, [])) == 0 then
     if List.len(pipeline(cmaj, 7, 9, [])) == 0 then
       if List.len(quantize-and-shift(cmaj, 2, [])) == 0 then
         unit
@@ -185,7 +185,7 @@ def all-in-major(notes: List(Note)) = match notes with
 
 def pc-of(n: Int64) =
   let r = n % 12 in
-    if r < 0 then r + 12 else r
+  if r < 0 then r + 12 else r
 
 /// Is a pitch class a C-major (white-key) degree?
 def is-white-key(pc: Int64) =

@@ -43,8 +43,8 @@ def id-push-uniq(acc: List(Int64), x: Int64) = if id-mem(x, acc, 0) then acc els
 def free-sign-ids(t: Ty, acc: List(Int64)) = match t with
   | Ty.TyInt(it) => (let IntType.IntType(s, _) = it in
     match s with
-    | Sign.SVar(id) => id-push-uniq(acc, id)
-    | _ => acc)
+      | Sign.SVar(id) => id-push-uniq(acc, id)
+      | _ => acc)
   | Ty.TyFn(ps, r) => free-sign-ids(r, free-sign-list(ps, 0, acc))
   | _ => acc
 
@@ -60,8 +60,8 @@ def free-sign-list(ps: List(Ty), i: Int64, acc: List(Int64)) =
 def free-width-ids(t: Ty, acc: List(Int64)) = match t with
   | Ty.TyInt(it) => (let IntType.IntType(_, w) = it in
     match w with
-    | Width.WVar(id) => id-push-uniq(acc, id)
-    | _ => acc)
+      | Width.WVar(id) => id-push-uniq(acc, id)
+      | _ => acc)
   | Ty.TyFn(ps, r) => free-width-ids(r, free-width-list(ps, 0, acc))
   | _ => acc
 
@@ -102,7 +102,7 @@ def instantiate(sch: Scheme, n: Int64) =
   let Scheme.Scheme(sids, wids, body) = sch in
   let (su1, n1) = inst-sign-ren(subst-empty(), sids, 0, n) in
   let (su2, n2) = inst-width-ren(su1, wids, 0, n1) in
-    (apply(su2, body), n2)
+  (apply(su2, body), n2)
 
 // ---- GENERALIZE (rcdzc `generalize` — quantify free vars not free in the environment) ----------------
 /// Ids in `xs` that are NOT in `env` (the HM side-condition: quantify only vars the environment doesn't still
@@ -149,7 +149,7 @@ def hs-generalize-then-instantiate-is-fresh() =
   // renames it to a FRESH SVar(5) (not 0). This is the freshen-per-use that gives let-polymorphism.
   let body = Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(32))) in
   let sch = generalize(body, [] : List(Int64), [] : List(Int64)) in
-    match instantiate(sch, 5) with
+  match instantiate(sch, 5) with
     | (Ty.TyInt(IntType.IntType(Sign.SVar(fid), Width.WFixed(w))), n) => if fid == 5 and w == 32
         and n == 6 then
       unit
@@ -167,7 +167,7 @@ def hs-two-instantiations-are-disjoint() =
       [] : List(Int64)
     ) in
   let (_t1, n1) = instantiate(sch, 0) in
-    match instantiate(sch, n1) with
+  match instantiate(sch, n1) with
     | (Ty.TyInt(IntType.IntType(Sign.SVar(s2), Width.WVar(w2))), n2) => if s2 == 2 and w2 == 3
         and n2 == 4 then
       unit
@@ -182,7 +182,7 @@ def hs-env-var-is-not-generalized() =
   // the env's var, shared — must NOT be freshened, else we'd wrongly break the link to the environment).
   let body = Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(8))) in
   let sch = generalize(body, List.push([], 0), [] : List(Int64)) in
-    match instantiate(sch, 9) with
+  match instantiate(sch, 9) with
     | (Ty.TyInt(IntType.IntType(Sign.SVar(id), Width.WFixed(_))), n) => if id == 0 and n == 9 then
       unit
     else
@@ -199,7 +199,7 @@ def hs-free-vars-collects-both-axes-deduped() =
     ) in
   let sids = free-sign-ids(f, [] : List(Int64)) in
   let wids = free-width-ids(f, [] : List(Int64)) in
-    if List.len(sids) == 1 and List.len(wids) == 2 then
+  if List.len(sids) == 1 and List.len(wids) == 2 then
     unit
   else
     trap("sign ids dedup to [0], width ids [1,2]")

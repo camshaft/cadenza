@@ -117,7 +117,7 @@ def c-major-has-the-white-keys() =
   // C major (Ionian on C=0) is exactly the pitch classes {0,2,4,5,7,9,11} — the white keys.
   let cmaj = major(0) in
   let ds = scale-degrees(cmaj) in
-    if List.len(ds) == 7 then
+  if List.len(ds) == 7 then
     if pc-member(ds, 0) then
       if pc-member(ds, 4) then
         if pc-member(ds, 11) then
@@ -135,7 +135,7 @@ def c-major-has-the-white-keys() =
 def major-step-pattern-sums-to-an-octave() =
   // The step pattern of any diatonic mode sums to 12 (it closes the octave).
   let total = sum-list(major-steps, 0) in
-    if total == 12 then
+  if total == 12 then
     if sum-list(mode-steps(3), 0) == 12 then unit else trap("lydian sums to 12")
   else
     trap("major sums to 12")
@@ -145,9 +145,9 @@ def dorian-is-a-rotation-of-major() =
   // D Dorian shares the white keys with C major (a mode is a rotation of the parent scale). D=2.
   let d-dorian = dorian(2) in
   let ds = scale-degrees(d-dorian) in
-    // Every degree of D Dorian must be a white key (member of C major's pitch classes).
+  // Every degree of D Dorian must be a white key (member of C major's pitch classes).
   let cmaj = scale-degrees(major(0)) in
-    if all-members(ds, cmaj) then
+  if all-members(ds, cmaj) then
     if List.len(ds) == 7 then unit else trap("seven degrees")
   else
     trap("D Dorian is not all white keys")
@@ -158,13 +158,13 @@ def natural-minor-is-aeolian() =
   let a-min = natural-minor(9) in
   let ds = scale-degrees(a-min) in
   let cmaj = scale-degrees(major(0)) in
-    if all-members(ds, cmaj) then unit else trap("A minor is the white keys")
+  if all-members(ds, cmaj) then unit else trap("A minor is the white keys")
 
 @test
 def membership-tracks-pitch-class-any-octave() =
   // E4 (64, pitch class 4) is in C major; F#4 (66, pitch class 6) is not; E5 also in.
   let cmaj = major(0) in
-    if in-scale(cmaj, pitch(64)) then
+  if in-scale(cmaj, pitch(64)) then
     if in-scale(cmaj, pitch(76)) then
       if in-scale(cmaj, pitch(66)) then trap("F# is not in C major") else unit
     else
@@ -177,7 +177,7 @@ def collapse-snaps-a-chromatic-note-into-the-mode() =
   // F#4 (66) collapsed into C major floor-snaps to F4 (65) — the nearest scale degree at or below.
   let cmaj = major(0) in
   let snapped = collapse-to-scale(cmaj, pitch(66)) in
-    if note(snapped) == 65 then
+  if note(snapped) == 65 then
     // A note already in the scale is unchanged.
     if note(collapse-to-scale(cmaj, pitch(64))) == 64 then unit else trap("in-scale note unchanged")
   else
@@ -189,14 +189,14 @@ def every-chromatic-note-collapses-onto-a-scale-degree() =
   // scale degree — no note escapes the mode. Walk all 12 semitones above C4 and assert each collapses
   // into C major.
   let cmaj = major(0) in
-    if all-collapse-in-scale(cmaj, 60, 12) then unit else trap("a chromatic note escaped the mode")
+  if all-collapse-in-scale(cmaj, 60, 12) then unit else trap("a chromatic note escaped the mode")
 
 @test
 def collapse-never-moves-a-note-more-than-a-semitone-below-in-a-diatonic-scale() =
   // In a diatonic scale the largest gap is a whole tone, so a floor-snap moves a foreign note down by at
   // most 1 semitone. F#4 (66) → F4 (65) is exactly 1; C#4 (61) → C4 (60) is 1.
   let cmaj = major(0) in
-    if note(pitch(66)) - note(collapse-to-scale(cmaj, pitch(66))) == 1 then
+  if note(pitch(66)) - note(collapse-to-scale(cmaj, pitch(66))) == 1 then
     if note(pitch(61)) - note(collapse-to-scale(cmaj, pitch(61))) == 1 then
       unit
     else
@@ -212,7 +212,7 @@ def collapse-works-in-a-transposed-mode-not-just-c-major() =
   // silently relying on root==0.
   let dmaj = major(2) in
   let snapped = collapse-to-scale(dmaj, pitch(72)) in
-    if in-scale(dmaj, snapped) then
+  if in-scale(dmaj, snapped) then
     if note(snapped) == 71 then
       if note(collapse-to-scale(dmaj, pitch(73))) == 73 then
         unit
