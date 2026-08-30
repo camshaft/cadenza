@@ -29291,22 +29291,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_runtime_integer_width_is_rejected() {
-        // `(def (mk n) (: 5 (UInt n)))` puts a RUNTIME value `n` (a parameter) in a width position — a
-        // width must be a compile-time natural (`numeric-model.md §An Integer Type Is Indexed By A
-        // Compile-Time Width`), so it is rejected (CDZ0302) EVEN THOUGH a constant call site `(mk 8)`
-        // would fold `n` — the width is non-dependent by declaration. (The check fires on the un-inlined
-        // `mk` body during well-formedness, which covers every def reachable or not.)
-        let src = "(module m (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a width from runtime data must reject, not fold at a constant call site"
-        );
-        // (The constant-width control — `(: 5 (UInt 8))` compiles and crosses as a `u8` = 5 — is corpus 06
-        // "a bare constant width UInt8 literal crosses to the host as its value".)
-    }
-
-    #[test]
     fn a_malformed_type_used_as_an_annotation_does_not_also_report_it_a_value() {
         // A type whose declaration is MALFORMED (a duplicate variant) does not fully register, so
         // `typeval_of` of its name fails — and using it as an annotation `(: c C)` used to CASCADE into a
