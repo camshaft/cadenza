@@ -1003,8 +1003,11 @@
               # xtask does NOT depend on xtask-mandates — the dep was SEVERED (v-xtask-decompose 2026-08-28,
               # operator: cache each subcrate independently). The mandate lint is now the standalone
               # xtask-mandates crate + `apps.lint-mandates` + the rewired `mandateLintCheck`; nothing links
-              # it into xtask, so editing one never rebuilds the other. xtask-mandates' own closure is just
-              # itself (its sole dep syn is external).
+              # it into xtask, so editing one never rebuilds the other.
+              # xtask-mandates now deps xtask-support (v-fleet-tooling 2026-08-30, v-xtask-decompose OPTION A):
+              # the mandate binary runs `xtask_support::file_size_lint` (single source of truth with the
+              # monolith), so the file-size mandate has teeth in localGate. That adds xtask-support's closure
+              # (cadenza-ast + cdz-contract + xtask-support; sha2 is external) to xtask-mandates.
               # xtask now deps xtask-support (the shared foundation lib — content_address/hash_tree moved
               # there). xtask-support's own closure is cadenza-ast + cdz-contract + itself (cdz-contract deps
               # cadenza-ast; sha2 is external).
@@ -1034,7 +1037,7 @@
               # (cadenza-syntax-sexpr → cadenza-syntax-core + cadenza-ast) into a cadenza-ast Arenas and emits
               # the @generated .tsx. Closure = the sexpr-reader stack + itself.
               xtask-codegen-guide = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" "xtask-codegen-guide" ];
-              xtask-mandates = [ "xtask-mandates" ];
+              xtask-mandates = [ "cadenza-ast" "cdz-contract" "xtask-mandates" "xtask-support" ];
               # xtask-bench is a std-only leaf: NO workspace deps (not even xtask-support) — closure is just itself.
               xtask-bench = [ "xtask-bench" ];
               # xtask-install-lsp is a std+xshell LEAF: no workspace deps → closure is just itself.

@@ -20,5 +20,11 @@ path = "src/main.rs"
 
 [dependencies]
 # Rust-source parsing for the syn-based mandate rules (no-integration-tests, no-hard-coded-runtime-hash).
-# The sole dependency — the whole point of the carve-out.
 syn = { version = "2", features = ["full", "parsing", "visit"] }
+# xtask-support (v-fleet-tooling 2026-08-30, v-xtask-decompose-approved OPTION A): the file-size mandate
+# (`file_size_lint` + the self-expiring FILE_SIZE_ALLOWLIST) lives in xtask-support and is run by the
+# monolith `cargo xtask check`; the standalone mandate binary calls the SAME fn so the two can't DRIFT (a
+# single source of truth matters more than dep-purity for a GATE). This adds xtask-support's small closure
+# (cdz-contract + cadenza-ast + sha2) to this crate — a deliberate softening of the syn-only carve-out to
+# give the operator shrink-initiative teeth in local-gate (a GitHub required-status can't, under --admin).
+xtask-support = { path = "../xtask-support" }
