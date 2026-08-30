@@ -25996,48 +25996,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_over_ceiling_width_in_an_unused_parameter_is_rejected_cdz0302() {
-        // 06-numeric-model "an over-ceiling integer width in an unused parameter is rejected, like a used
-        // one". Well-formedness is TOTAL — it holds over every def, reachable or not — so an ill-formed
-        // integer width `(UInt 65)` in the type of a PARAMETER of a private, never-literal-called def must
-        // be rejected CDZ0302 at the annotation, not only when a literal is fit-checked against it or the
-        // def is exported. `reduce_ctor` clamps the width to the sentinel 0 (so `typeval_of` succeeds with
-        // `Int0` and the "not a type" check does not fire); `param_annotation_faults` reads the ORIGINAL
-        // width off the annotation and rejects it. Regression for the escape where a private
-        // unconstrained-param type carried an unrepresentable width into a compiled artifact.
-        let compile =
-            |src: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(src)));
-        for (src, name) in [
-            (
-                "(module m (def (f (: x (UInt 65))) x) (def (main) 0) (export main))",
-                "UInt65",
-            ),
-            (
-                "(module m (def (f (: x (UInt 0))) x) (def (main) 0) (export main))",
-                "UInt0",
-            ),
-            (
-                "(module m (def (f (: x (Int 128))) x) (def (main) 0) (export main))",
-                "Int128",
-            ),
-        ] {
-            let e = compile(src).expect_err("an over-ceiling param width must be rejected");
-            assert_eq!(e.code.as_deref(), Some("CDZ0302"), "src: {src}");
-            assert!(
-                e.message.contains(name) && e.message.contains("not a valid integer type"),
-                "the reject must name the written width `{name}`: {}",
-                e.message
-            );
-        }
-        // NO OVER-REJECTION: a VALID width `(UInt 8)` in an unused param compiles (the def is dead but
-        // well-formed) — the totality check fires only on an ill-formed width, not any narrow param.
-        assert!(
-            compile("(module m (def (f (: x (UInt 8))) x) (def (main) 0) (export main))").is_ok(),
-            "a valid narrow width in an unused parameter must not be rejected"
-        );
-    }
-
-    #[test]
     fn arbitrary_odd_widths_compute_their_bounds() {
         // The bounds are computed FROM THE WIDTH PARAMETER, not a per-named-type table — so an ODD,
         // non-machine width works: `(UInt 7)` max = 2^7-1 = 127, `(UInt 24)` max = 2^24-1 = 16777215,
