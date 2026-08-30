@@ -31559,7 +31559,7 @@ mod stage1 {
             let dval: String = format!(
                 "(record {})",
                 (0..n)
-                    .map(|i| format!("(op{i} (fn (x) (+ x {i})))"))
+                    .map(|i| format!("(= op{i} (fn (x) (+ x {i})))"))
                     .collect::<Vec<_>>()
                     .join(" ")
             );
