@@ -3471,3 +3471,25 @@
 (case "an unrelated-payload Option mismatch gets no match-it hint"
   (input  (do (def (h (: b Bool)) b) (def (g (: o (Option Int64))) (h o)) (export g)))
   (error  CDZ0203 (message "this argument") (message "expected here") (not "the value is optional")))
+
+; --- The per-member structural-delta hints ALSO fire at JOIN sites (list literal / if branches / match arms) ---
+; The same field / element-position / arity deltas above surface where two same-kind compounds meet at a join,
+; instead of dumping two whole renders. A LIST literal join is a homogeneity fault (CDZ0201); an `if`/`match`
+; branch join is a type mismatch (CDZ0203). A scalar clash at a join keeps its clean message (no delta tail) and
+; its int-literal->float retype fix — that no-delta control stays a small rcdzc residual (its fix-only quality
+; grade is a todo). (Migrated from rcdzc a_join_site_names_the_structural_delta_not_two_full_renders.)
+(case "a list literal of records differing in one field type names the differing field"
+  (input  (do (def (g) #list(#record((= x 1)) #record((= x true)))) (export g)))
+  (error  CDZ0201 (message "field `x` should be Int64, but this one is Bool")))
+
+(case "an if whose branch records differ in one field type names the differing field"
+  (input  (do (def (f (: b Bool)) (if b #record((= x 1)) #record((= x true)))) (export f)))
+  (error  CDZ0203 (message "field `x` should be Int64, but this one is Bool")))
+
+(case "a match whose arm tuples differ in one position names the differing position"
+  (input  (do (def (f (: n Int64)) (match n (0 #tuple(1 2)) (_ #tuple(1 true)))) (export f)))
+  (error  CDZ0203 (message "element 1 should be Int64, but this one is Bool")))
+
+(case "a list literal of tuples of different arity names the arity delta at the join"
+  (input  (do (def (g) #list(#tuple(1 2) #tuple(1 2 3))) (export g)))
+  (error  CDZ0201 (message "expected a tuple with 2 elements, but this one has 3")))

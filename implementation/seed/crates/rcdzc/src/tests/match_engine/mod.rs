@@ -2570,55 +2570,12 @@ fn an_unsolved_type_variable_renders_as_underscore_not_an_internal_number() {
 }
 
 #[test]
-fn a_join_site_names_the_structural_delta_not_two_full_renders() {
-    // The per-member structural-delta hints (record field, tuple position, collection axis) now also
-    // fire at the JOIN sites — a list literal, an `if`'s branches, a `match`'s arms — where two
-    // same-kind compounds that differ inside were dumped as two whole renders. `structural_delta_hint`
-    // bundles the three per-member helpers so all three sites point at the SPECIFIC difference.
-    // A LIST LITERAL of records differing in one field's TYPE.
-    let list =
-        reject_full("(module m (def (g) (list (record (x 1)) (record (x true)))) (export g))")
-            .expect("a list of records with a differing field rejects");
-    assert!(
-        list.message
-            .contains("field `x` should be Int64, but this one is Bool"),
-        "list literal names the differing field: {}",
-        list.message
-    );
-    // An `if` whose branches are records differing in one field's TYPE.
-    let iff = reject_full(
-        "(module m (def (f (: b Bool)) (if b (record (x 1)) (record (x true)))) (export f))",
-    )
-    .expect("if branches with a differing record field reject");
-    assert!(
-        iff.message
-            .contains("field `x` should be Int64, but this one is Bool"),
-        "if-branch names the differing field: {}",
-        iff.message
-    );
-    // A `match` whose arms are tuples differing in one position's TYPE.
-    let m = reject_full(
-        "(module m (def (f (: n Int64)) (match n (0 (tuple 1 2)) (_ (tuple 1 true)))) (export f))",
-    )
-    .expect("match arms with a differing tuple position reject");
-    assert!(
-        m.message
-            .contains("element 1 should be Int64, but this one is Bool"),
-        "match-arm names the differing position: {}",
-        m.message
-    );
-    // A LIST LITERAL of tuples of DIFFERENT ARITY names the arity delta (not per-position).
-    let arity = reject_full("(module m (def (g) (list (tuple 1 2) (tuple 1 2 3))) (export g))")
-        .expect("a list of tuples of different arity rejects");
-    assert!(
-        arity
-            .message
-            .contains("expected a tuple with 2 elements, but this one has 3"),
-        "list literal names the tuple arity delta: {}",
-        arity.message
-    );
-    // NO regression: a SCALAR clash keeps its clean message (no structural delta) AND its float-retype
-    // fix — the delta only fires for same-kind compounds that differ inside.
+fn a_join_site_scalar_clash_keeps_its_retype_fix_and_no_structural_delta() {
+    // RESIDUAL of a_join_site_names_the_structural_delta_not_two_full_renders — its per-member delta faces
+    // (list-literal / if-branch / match-arm record-field / tuple-position / tuple-arity) migrated to corpus
+    // 07-type-system. This keeps the scalar-clash NO-delta control the corpus grades only as a todo (its
+    // fix-only quality assertion): a SCALAR clash at a join gets NO structural-delta tail (the delta fires
+    // only for same-kind compounds that differ inside) AND still carries the int-literal->float retype fix.
     let scalar =
         reject_full("(module m (def (g) (list 1 2.0)) (export g))").expect("(list 1 2.0) rejects");
     assert!(
@@ -2628,7 +2585,7 @@ fn a_join_site_names_the_structural_delta_not_two_full_renders() {
     );
     assert!(
         scalar.fix.is_some(),
-        "the int-literal→float retype fix still rides along: {:?}",
+        "the int-literal->float retype fix still rides along: {:?}",
         scalar.fix
     );
 }
