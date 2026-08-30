@@ -14,15 +14,15 @@
 //! checkout / dev-gate and a no-op where the tree is unavailable.
 //!
 //! Regenerate the goldens after editing an `input.<ext>` (or adding a case) with:
-//!   CDZ_BLESS=1 cargo test -p cadenza-syntax --test syntax_corpus
+//!   CDZ_BLESS=1 cargo test -p cadenza-syntax --lib syntax_corpus_tests
 //! Bless writes `tree.sexp` for every case and writes `format.<ext>` only for a case whose input is NOT
 //! already canonical (removing a stale one where the input became canonical), so a clean case stays
 //! minimal (no redundant format file) per DESIGN §3.
 
 use std::path::{Path, PathBuf};
 
-use cadenza_syntax::convert::{self, Format, Options};
-use cadenza_syntax::sexpr;
+use crate::convert::{self, Format, Options};
+use crate::sexpr;
 
 /// The corpus root: `spec/syntax/`, relative to this crate's manifest dir (crate → crates → seed →
 /// implementation → repo root).
@@ -31,7 +31,7 @@ fn corpus_root() -> PathBuf {
 }
 
 /// `render_sexpr(arena)` with the corpus's one-trailing-newline convention — the `tree.sexp` golden.
-fn tree_golden(arena: &cadenza_syntax::ast::Arenas) -> Vec<u8> {
+fn tree_golden(arena: &crate::ast::Arenas) -> Vec<u8> {
     let mut s = sexpr::render_sexpr(arena);
     s.push('\n');
     s.into_bytes()
