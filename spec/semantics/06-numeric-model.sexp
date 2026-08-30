@@ -1737,6 +1737,20 @@
   (call   main (: 2.0 Float32)) (output (: 6 Int64))
   (call   main (: 9.0 Float32)) (output (: -1 Int64)))
 
+; The overflow companion of the map-value adopt: a bare literal that ADOPTS a narrow width must be
+; RANGE-checked against that adopted width, exactly as the explicit `(: <lit> Float32)` annotation is —
+; otherwise the adopt path materializes an out-of-range value the annotation path rejects (an adopt-vs-
+; annotation inconsistency). A Float32-overflowing bare value/key that adopts Float32 from a sibling is CDZ0302.
+(case "a bare Map.insert value that adopts Float32 and OVERFLOWS binary32 is rejected (CDZ0302, adopt range-check)"
+  (doc    "`(Map.insert (Map.insert Map.empty 0 1.0e300) 1 (: 2.0 Float32))` — the bare `1.0e300` adopts the
+           sibling entry's Float32 value width (seq-40 map-value adopt), and `1.0e300` is finite as Float64 but
+           OVERFLOWS binary32 (±inf, no written form) → CDZ0302, the SAME reject the explicit `(: 1.0e300
+           Float32)` gives. Pins that the adopt site range-checks the adopted literal against its unified width,
+           not just against the operand map's column (which is Any at the first insert) — else the adopt path
+           silently materialized an out-of-range float the annotation path rejects.")
+  (input  (do (def (main) (Map.insert (Map.insert Map.empty 0 1.0e300) 1 (: 2.0 Float32))) (export main)))
+  (error  CDZ0302))
+
 (case "an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)"
   (doc    "The passing control for the builder-chain overflow rejects above: an in-range `5` (fits Int8)
            inserted into a `(Map Int64 Int8)` compiles + runs — the width fit-check must REJECT only genuine

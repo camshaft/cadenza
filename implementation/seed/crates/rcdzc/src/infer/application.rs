@@ -1823,8 +1823,20 @@ pub(crate) fn check_application(
         // sibling-width skip). Range-check the inserted key against `kt` and value against `vt` via the same
         // `width_fault_against_ty` the annotation path uses. (The operand map's own inserts are checked when
         // `collect` recurses into `args[0]` below.)
+        // Range-check against the operand map's column (the sibling-inferred width, e.g. `300` over a UInt8
+        // column pinned by a prior insert), AND against the inserted literal's OWN adopted type (`key_ty`/
+        // `val_ty`). The latter matters when the operand column does NOT yet pin the width (the FIRST insert's
+        // operand is `Map.empty` → `Ty::Map(Any, Any)`, so `kt`/`vt` are `Any` and impose no range), but the
+        // literal ADOPTED a narrow width from a LATER sibling in the chain (seq-40 width-unification) —
+        // `(Map.insert (Map.insert Map.empty 0 1.0e300) 1 (: 2.0 Float32))`: the inner `1.0e300` adopts Float32
+        // (its `type_of`), and must be range-checked against THAT (it overflows binary32 → CDZ0302), matching
+        // the explicit `(: 1.0e300 Float32)` reject. Without the own-type check the adopt path materialized an
+        // out-of-range value (±inf / a wrapped int) that the annotation path rejects — an adopt-vs-annotation
+        // inconsistency (v-rb routed: the adopt-site range-check is this width-unification lane, not an emit demote).
         if let Some(reject) = width_fault_against_ty(db, args[1], &kt)
             .or_else(|| width_fault_against_ty(db, args[2], &vt))
+            .or_else(|| width_fault_against_ty(db, args[1], &key_ty))
+            .or_else(|| width_fault_against_ty(db, args[2], &val_ty))
         {
             out.push(reject);
         }
