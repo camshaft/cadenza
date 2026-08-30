@@ -1078,9 +1078,9 @@ pub fn emit(
                 // the runtime-`Bytes` looping walker, a later increment). The honest reason is the missing
                 // walker; consuming such a value to a scalar already works, only rendering it as the
                 // boundary result is deferred.
-                "rendering this value as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / runtime-collection result is not yet emitted); folding it to a scalar works"
+                "rendering this value as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / runtime-collection result); folding it to a scalar is supported"
             };
-            return Err(Reject::decline(format!(
+            return Err(Reject::unsupported(format!(
                 "returning a {} from `{}`: {why}",
                 e.result.render_name(&db.name_ctx()),
                 e.name
@@ -3027,9 +3027,9 @@ fn emit_closure_resource(
     // cell — a mismatched module. (Guarding here, before the list blocks below, prevents that miscompile; the
     // scalar-result sum path above already returned.) Threading sums through the list cores is a later widening.
     if sum_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
-        return Err(Reject::decline(
-            "a closure taking a sum (Option/Result) argument AND returning a list/compound/byte-rope is not yet \
-             emitted (the list-result cores thread tuple-arg rebuilds, not sum-arg rebuilds)",
+        return Err(Reject::unsupported(
+            "a closure taking a sum (Option/Result) argument AND returning a list/compound/byte-rope needs \
+             the sum-arg rebuild path in the list-result cores (they currently thread tuple-arg rebuilds)",
         ));
     }
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
@@ -4363,9 +4363,9 @@ fn emit_mixed_closure_resource(
             })
             .collect::<Result<_, _>>()?;
         let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
-            Reject::decline(format!(
-                "a plain export `{}` returning {} has no scalar host-boundary representation — a \
-                 compound result alongside a closure export is a later widening",
+            Reject::unsupported(format!(
+                "a plain export `{}` returning {} has no scalar host-boundary representation \
+                 (a compound result alongside a closure export needs the compound-boundary emit)",
                 e.name,
                 e.result.render_name(&db.name_ctx())
             ))
@@ -5192,9 +5192,9 @@ fn emit_distinct_sig_resource(
             })
             .collect::<Result<_, _>>()?;
         let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
-            Reject::decline(format!(
-                "a plain export `{}` returning {} has no scalar host-boundary representation — a \
-                 compound result alongside a closure export is a later widening",
+            Reject::unsupported(format!(
+                "a plain export `{}` returning {} has no scalar host-boundary representation \
+                 (a compound result alongside a closure export needs the compound-boundary emit)",
                 e.name,
                 e.result.render_name(&db.name_ctx())
             ))
@@ -5796,9 +5796,9 @@ fn emit_roundtrip_resource(
             })
             .collect::<Result<_, _>>()?;
         let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
-            Reject::decline(format!(
-                "a plain export `{}` returning {} has no scalar host-boundary representation — a \
-                 compound result alongside a round-trip closure is a later widening",
+            Reject::unsupported(format!(
+                "a plain export `{}` returning {} has no scalar host-boundary representation \
+                 (a compound result alongside a round-trip closure needs the compound-boundary emit)",
                 e.name,
                 e.result.render_name(&db.name_ctx())
             ))
@@ -5994,9 +5994,9 @@ fn emit_distinct_sig_roundtrip_resource(
         .iter()
         .find(|e| producer_sig(e).is_some() && !consumer_sigs(e).is_empty())
     {
-        return Err(Reject::decline(format!(
-            "the export `{}` both receives and returns a closure (a closure transformer) — not yet \
-             supported (DESIGN-closure-host-resource-rcdzc.md, closure transformers)",
+        return Err(Reject::unsupported(format!(
+            "the export `{}` both receives and returns a closure (a closure transformer) — the combined \
+             receive-and-return closure boundary emit is unbuilt (DESIGN-closure-host-resource-rcdzc.md)",
             t.name
         )));
     }
@@ -6124,9 +6124,9 @@ fn emit_distinct_sig_roundtrip_resource(
                 })
                 .collect::<Result<_, _>>()?;
             let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
-                Reject::decline(format!(
-                    "a plain export `{}` returning {} has no scalar host-boundary representation — a \
-                     compound result alongside a round-trip closure is a later widening",
+                Reject::unsupported(format!(
+                    "a plain export `{}` returning {} has no scalar host-boundary representation \
+                     (a compound result alongside a round-trip closure needs the compound-boundary emit)",
                     e.name,
                     e.result.render_name(&db.name_ctx())
                 ))
@@ -8677,10 +8677,10 @@ fn emit_bytes_provider_member(
     for &def in &layout.order {
         let body = def_body(db, def)?;
         if let Some((op, _, ty)) = host::first_unrepresentable_host_op(db, body, true) {
-            return Err(Reject::decline(format!(
+            return Err(Reject::unsupported(format!(
                 "a bytes-crossing member calls host op `{op}` whose `{ty}` signature has no host-boundary \
-                 form yet (a compound host result like `option<list<u8>>` needs the host compound-result \
-                 ABI — a later §3c slice); a representable host op IS emitted"
+                 form (a compound host result like `option<list<u8>>` needs the host compound-result \
+                 ABI); a representable host op is emitted"
             )));
         }
     }
