@@ -45,9 +45,10 @@ def unify-width(a: Width, b: Width) = match a with
 /// Unify two integer types: unify SIGN and WIDTH independently; both must combine (a Fixed mismatch on
 /// EITHER axis is a conflict, checked regardless of the other axis's state). `Some(IntType)` = the combined
 /// type, `None` = conflict (CDZ0301 analog).
-def unify-int(a: IntType, b: IntType) = match a with
-  | IntType.IntType(sa, wa) => match b with
-    | IntType.IntType(sb, wb) => match unify-sign(sa, sb) with
+def unify-int(a: IntType, b: IntType) =
+  let IntType.IntType(sa, wa) = a in
+  let IntType.IntType(sb, wb) = b in
+  match unify-sign(sa, sb) with
       | Option.Some(s) => (match unify-width(wa, wb) with
         | Option.Some(w) => Option.Some(IntType.IntType(s, w))
         | Option.None(_) => Option.None(unit)

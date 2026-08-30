@@ -65,9 +65,10 @@ def bind-or-check-width(su: Subst, ra: Width, rb: Width) = match ra with
 
 /// Unify two INTEGER types under a Subst: thread the Subst through the sign axis, THEN the width axis on the
 /// resulting Subst (so width unify sees sign's bindings — orthogonal but sequenced through one growing Subst).
-def unify-int-su(su: Subst, a: IntType, b: IntType) = match a with
-  | IntType.IntType(sa, wa) => match b with
-    | IntType.IntType(sb, wb) => (match unify-sign-su(su, sa, sb) with
+def unify-int-su(su: Subst, a: IntType, b: IntType) =
+  let IntType.IntType(sa, wa) = a in
+  let IntType.IntType(sb, wb) = b in
+  (match unify-sign-su(su, sa, sb) with
         | Option.Some(su1) => unify-width-su(su1, wa, wb)
         | Option.None(_) => Option.None(unit))
 
