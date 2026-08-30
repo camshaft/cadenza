@@ -37,6 +37,12 @@ inductive SymExpr where
   | tuple (elems : Array SymExpr)            -- a tuple value (lazy elements); positional projection reads one
   | record (fields : Array (ByteArray × SymExpr)) -- a record value, fields sorted by key; field projection reads one
   | ctor (tag : ByteArray) (args : Array SymExpr)  -- a tagged constructor value (Some/Ok/Err payload, None nullary)
+  -- SYMBOLIC destructuring (scrutinee not statically a concrete ctor/tuple): `proj` = the payload/element a
+  -- pattern binds (`sel` = ctor name for a variant payload, or a decimal index for a tuple element); `case`
+  -- = a match over a symbolic scrutinee, arms kept ORDER-SENSITIVELY as (discriminant-tag, body). Two `case`s
+  -- (or `proj`s) are equal iff structurally equal — so P and its cadenza round-trip with the SAME match prove.
+  | proj (base : SymExpr) (sel : ByteArray)
+  | case (scrut : SymExpr) (arms : Array (ByteArray × SymExpr))
   deriving BEq, Inhabited
 
 /-- The symbolic OUTCOME of evaluating a program with symbolic inputs. `cannotProve` records WHY so the
@@ -104,6 +110,8 @@ partial def mayTrap : SymExpr → Bool
   | .tuple es => es.any mayTrap
   | .record fs => fs.any (fun kv => mayTrap kv.2)
   | .ctor _ args => args.any mayTrap
+  | .proj b _ => mayTrap b
+  | .case s arms => mayTrap s || arms.any (fun a => mayTrap a.2)
 
 /-- Canonicalize a symbolic expression by SOUND rewrites only: recurse into subterms; SOUND constant
 folding of comparison/boolean ops (`foldConst?`); an `if` on a (now possibly-folded) constant boolean
@@ -153,6 +161,8 @@ partial def normalize : SymExpr → SymExpr
   | .tuple es => .tuple (es.map normalize)
   | .record fs => .record (fs.map (fun kv => (kv.1, normalize kv.2)))
   | .ctor tag args => .ctor tag (args.map normalize)
+  | .proj b s => .proj (normalize b) s
+  | .case s arms => .case (normalize s) (arms.map (fun a => (a.1, normalize a.2)))
   | .ite c t e =>
     match normalize c with
     | .const (.bool true) => normalize t
@@ -272,6 +282,63 @@ partial def symMatchPat (m : Module) (patId : Nat) (v : SymExpr) : Option (Optio
     | none => none
   | none => none
 
+/-- The discriminant TAG of a match pattern, for structurally identifying an arm of a symbolic `case`
+(a ctor name, `None`, `tuple`, or `_` for a wildcard/binder). `none` = a pattern the symbolic case cannot
+model (a literal, or a nested/complex form) → the whole match is undecidable. -/
+partial def symArmTag? (m : Module) (patId : Nat) : Option ByteArray :=
+  match m.nodes[patId]? with
+  | some (Node.atom lid) =>
+    (match m.leaves[lid]? with
+     | some (Leaf.name b) =>
+       if b == "None".toUTF8 then some "None".toUTF8
+       else if (variantCtorArity? m b).isSome then some b
+       else some "_".toUTF8
+     | _ => none)
+  | some (Node.list pc) =>
+    (match m.headName? (Node.list pc) with
+     | some h => if h == "tuple".toUTF8 || h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then some h
+                 else ctorAppName? m pc
+     | none => none)
+  | none => none
+
+/-- Bind a match pattern's variables to symbolic PROJECTIONS of the (symbolic) scrutinee, for a `case` arm.
+`none` = a pattern the symbolic case cannot model (arity ≥2 / newtype / struct / literal / nested-complex).
+Mirrors symMatchPat's parsing, but since the scrutinee is symbolic it produces `proj`-bound variables. -/
+partial def symBindPat (m : Module) (patId : Nat) (scrut : SymExpr) : Option (List (ByteArray × SymExpr)) :=
+  match m.nodes[patId]? with
+  | some (Node.atom lid) =>
+    (match m.leaves[lid]? with
+     | some (Leaf.name b) =>
+       if b == "_".toUTF8 then some []
+       else if b == "None".toUTF8 then some []
+       else if (variantCtorArity? m b).isSome then some []
+       else some [(b, scrut)]
+     | _ => none)
+  | some (Node.list pc) =>
+    (match m.headName? (Node.list pc) with
+     | some h =>
+       if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
+         (match pc[1]? with | some sp => symBindPat m sp (.proj scrut h) | none => some [])
+       else if h == "tuple".toUTF8 then
+         (pc.extract 1 pc.size).toList.zip (List.range (pc.size - 1)) |>.foldl (fun acc p =>
+           match acc with
+           | none => none
+           | some bs => (match symBindPat m p.1 (.proj scrut (toString p.2).toUTF8) with
+                         | some b2 => some (bs ++ b2) | none => none)) (some [])
+       else match ctorAppName? m pc with
+         | some cname => (match variantCtorArity? m cname with
+                          | some 1 => (match pc[1]? with | some sp => symBindPat m sp (.proj scrut cname) | none => some [])
+                          | some 0 => some []
+                          | _ => none)
+         | none => none
+     | none => none)
+  | none => none
+
+/-- Is this symbolic value a CONCRETE constructor/tuple/record/const (a match can be DECIDED), vs a symbolic
+form (var/app/ite/proj/case) that requires a symbolic `case`? -/
+def isConcreteSym : SymExpr → Bool
+  | .const _ => true | .ctor _ _ => true | .tuple _ => true | .record _ => true | _ => false
+
 /-- Call-inlining depth bound. A non-recursive call chain inlines within this; a recursive function
 exhausts it → `cannotProve` (sound — proving a recursive function's equivalence needs induction, which the
 symbolic evaluator does not do). 64 comfortably covers realistic non-recursive helper nesting. -/
@@ -353,22 +420,46 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
           (match symEval m senv fuel ty scrutId with
            | .cannotProve r => .cannotProve r
            | .sym v =>
-             let decided := (children.extract 2 children.size).foldl (fun (acc : Option SymOutcome) armId =>
-               match acc with
-               | some o => some o
-               | none =>
-                 match (m.nodes[armId]?).bind (fun n => match n with | .list ac => some ac | _ => none) with
-                 | some ac => (match ac[0]?, ac[1]? with
-                               | some patId, some bodyId =>
-                                 (match symMatchPat m patId v with
-                                  | some (some ext) => some (symEval m (ext ++ senv) fuel ty bodyId)
-                                  | some none => none
-                                  | none => some (.cannotProve "symeval: match arm undecidable (symbolic scrutinee / unmodeled pattern)"))
-                               | _, _ => some (.cannotProve "symeval: malformed match arm"))
-                 | none => some (.cannotProve "symeval: malformed match arm")) none
-             match decided with
-             | some o => o
-             | none => .cannotProve "symeval: no match arm matched (non-exhaustive?)")
+             if isConcreteSym v then
+               -- CONCRETE scrutinee: decide the arm (existing logic).
+               let decided := (children.extract 2 children.size).foldl (fun (acc : Option SymOutcome) armId =>
+                 match acc with
+                 | some o => some o
+                 | none =>
+                   match (m.nodes[armId]?).bind (fun n => match n with | .list ac => some ac | _ => none) with
+                   | some ac => (match ac[0]?, ac[1]? with
+                                 | some patId, some bodyId =>
+                                   (match symMatchPat m patId v with
+                                    | some (some ext) => some (symEval m (ext ++ senv) fuel ty bodyId)
+                                    | some none => none
+                                    | none => some (.cannotProve "symeval: match arm undecidable (unmodeled pattern)"))
+                                 | _, _ => some (.cannotProve "symeval: malformed match arm"))
+                   | none => some (.cannotProve "symeval: malformed match arm")) none
+               match decided with
+               | some o => o
+               | none => .cannotProve "symeval: no match arm matched (non-exhaustive?)"
+             else
+               -- SYMBOLIC scrutinee: build a `.case v arms`, binding each arm's pattern vars to projections
+               -- of `v` and symEvaluating the body. An unmodelable pattern/body → the whole match is
+               -- undecidable (cannotProve). Arms are kept ORDER-SENSITIVELY so P and P' with the SAME match
+               -- (same scrutinee, arms, bodies) prove equal; a reordered/transformed match → cannotProve.
+               let armsOpt := (children.extract 2 children.size).foldl (fun (acc : Option (Array (ByteArray × SymExpr))) armId =>
+                 match acc with
+                 | none => none
+                 | some arms =>
+                   match (m.nodes[armId]?).bind (fun n => match n with | .list ac => some ac | _ => none) with
+                   | some ac => (match ac[0]?, ac[1]? with
+                                 | some patId, some bodyId =>
+                                   (match symArmTag? m patId, symBindPat m patId v with
+                                    | some tag, some binds => (match symEval m (binds ++ senv) fuel ty bodyId with
+                                                               | .sym b => some (arms.push (tag, b))
+                                                               | .cannotProve _ => none)
+                                    | _, _ => none)
+                                 | _, _ => none)
+                   | none => none) (some #[])
+               match armsOpt with
+               | some arms => .sym (.case v arms)
+               | none => .cannotProve "symeval: match on a symbolic scrutinee has an unmodelable pattern/body")
         | none => .cannotProve "symeval: malformed match (no scrutinee)"
       else if h == "record".toUTF8 then
         -- a record value: (record (f1 v1) (f2 v2)…), fields sorted by key (matching evalRecord's canonical
@@ -755,5 +846,20 @@ private def _ovfProg : Module :=
                 Leaf.intLit false .dec (ByteArray.mk #[100]), Leaf.name "UInt8".toUTF8],
     nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 0, .atom 4, .list #[4, 3, 5]], root := 6 }
 #guard symEval _ovfProg [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.app "+" #[.const (.int 200), .const (.int 100)])
+
+-- SYMBOLIC-scrutinee match: `(def (main x) (match x ((Some a) a) (None n)))` — x is a symbolic param, so the
+-- match becomes a symbolic `.case` (Some-arm binds a to the symbolic payload proj; None-arm → n).
+private def _symMatchProg (n : UInt8) : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "main".toUTF8, Leaf.name "x".toUTF8,
+                Leaf.name "match".toUTF8, Leaf.name "Some".toUTF8, Leaf.name "a".toUTF8, Leaf.name "None".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[n]), Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[1, 2], .atom 3, .atom 5, .atom 6, .list #[5, 6], .atom 6,
+               .list #[7, 8], .atom 7, .atom 8, .list #[10, 11], .atom 4, .list #[13, 4, 9, 12],
+               .list #[0, 3, 14], .atom 9, .atom 2, .list #[16, 17], .atom 0, .list #[19, 15, 18]],
+    root := 20 }
+-- a symbolic-scrutinee match is a stable symbolic case → a program is PROVEN equivalent to itself for all inputs.
+#guard equivMain (_symMatchProg 0) (_symMatchProg 0) == EquivVerdict.proven
+-- two matches differing only in the None-arm body are NOT proven (the symbolic cases differ) — no false proven.
+#guard equivMain (_symMatchProg 0) (_symMatchProg 1) == EquivVerdict.cannotProve "normalized-but-different"
 
 end Oracle
