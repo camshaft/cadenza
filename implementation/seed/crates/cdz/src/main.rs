@@ -9054,8 +9054,8 @@ fn check_one(
     // The package demux table (`link-map`) — absent for a single file, so every node belongs to the
     // entry with its local id == the global id.
     let link_map = out
-        .artifact(rcdzc::link::KIND_LINK_MAP)
-        .map(rcdzc::link::decode_link_map)
+        .artifact(cadenza_compile_abi::link_map::KIND_LINK_MAP)
+        .map(cadenza_compile_abi::link_map::decode_link_map)
         .unwrap_or_default();
     // One line-start index per file (binary-searched line:col), parallel to `files`.
     let indices: Vec<_> = files
@@ -10343,8 +10343,8 @@ fn report_errors_located(out: &cadenza_compile_abi::CompileOutput, files: &[clos
     // identity `(0, id)`; a package finds the file whose `[base, base+count)` range holds the id. `None`
     // for a node in no file (a synthesized/prelude node).
     let link_map = out
-        .artifact(rcdzc::link::KIND_LINK_MAP)
-        .map(rcdzc::link::decode_link_map)
+        .artifact(cadenza_compile_abi::link_map::KIND_LINK_MAP)
+        .map(cadenza_compile_abi::link_map::decode_link_map)
         .unwrap_or_default();
     let file_of_node = |n: u32| -> Option<(usize, u32)> {
         if link_map.is_empty() {

@@ -12,6 +12,7 @@
 //! stay in `rcdzc`.
 
 pub mod abi;
+pub mod link_map;
 pub mod opt;
 pub mod overflow;
 pub mod sidecar;
@@ -22,6 +23,7 @@ pub use abi::{
     Artifact, CompileOutput, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE,
     wrap_prefix_suffix,
 };
+pub use link_map::{FileSpan, KIND_LINK_MAP, decode_link_map, encode_link_map};
 pub use opt::OptLevel;
 pub use overflow::{OverflowMode, OverflowSpec};
 pub use sidecar::{Query, Request, decode, encode};
