@@ -487,6 +487,34 @@
   (input  (do (def (main) (+ (Qty.of 1.0 (Unit.base #"meter")) (Qty.of 1.0 (Unit.base #"second")))) (export main)))
   (error  CDZ0501 (message "adding") (message "meter") (message "second")))
 
+; MIXED-MAGNITUDE-WIDTH under quantity arithmetic — the magnitudes UNIFY WITH THEIR CONSTRUCTION (operator
+; seq-32: "types unify with their construction — the literal adopts the one width"). A BARE literal magnitude
+; adopts its arith sibling quantity's concretely-fixed magnitude width (a length + a length share ONE `(Qty T
+; u)`, so the two magnitudes share one width `T`), exactly as a bare literal adopts a fixed sibling in plain
+; `(+ <lit> n)` — NOT a promotion. Before this the bare magnitude grounded to the Int64 DEFAULT while the
+; sibling was `UInt32`, so the quantity arith emitted an i64 op over the i32 magnitude — invalid wasm with no
+; diagnostic (fuzzer rcdzc-wasm-qty-add-mixed-magnitude-width). A genuine TWO-FIXED-width magnitude clash
+; (an ANNOTATED `(: 5 Int64)` magnitude beside a `UInt32` one) still REJECTS CDZ0301 — no silent widening.
+(case "a bare literal magnitude adopts its arith sibling's fixed integer width (unify with construction)"
+  (doc    "`(+ (Qty.of 5 meter) (Qty.of v0 meter))` over `v0 : UInt32`: the bare `5` adopts the sibling
+           quantity's `UInt32` magnitude (the arith unifies both quantities to one `(Qty UInt32 meter)`), so
+           `main 3` returns `(: (Qty.of 8 meter) (Qty UInt32 meter))` — the same bare-literal-adopts-a-fixed-
+           peer rule as `(+ 5 n)`, NOT a promotion. Formerly the bare `5` grounded to Int64 and the quantity
+           arith emitted an i64 op over the i32 magnitude → invalid wasm with no diagnostic.")
+  (input  (do (def (main (: v0 UInt32)) (Qty.value (+ (Qty.of 5 (Unit.base #"meter")) (Qty.of v0 (Unit.base #"meter"))))) (export main)))
+  (call   main (: 3 UInt32)) (output (: 8 UInt32))
+  (call   main (: 100 UInt32)) (output (: 105 UInt32)))
+
+(case "a two-fixed-width magnitude clash under quantity arithmetic is CDZ0301 (no silent widening)"
+  (doc    "`(+ (Qty.of (: 5 Int64) meter) (Qty.of v0 meter))` over `v0 : UInt32`: the LEFT magnitude is an
+           ANNOTATED `Int64`, the RIGHT a `UInt32` — two CONCRETELY-fixed widths that do NOT unify, so the
+           quantity add is a numeric-type contradiction, CDZ0301 (Cadenza never silently promotes). The
+           annotation makes `5` fixed Int64 (the literal's parent is the `(: …)`, not the `Qty.of`), so the
+           bare-literal adopt-the-peer rule does NOT apply — this is the genuine type error the adaptation is
+           carefully NOT.")
+  (input  (do (def (main (: v0 UInt32)) (+ (Qty.of (: 5 Int64) (Unit.base #"meter")) (Qty.of v0 (Unit.base #"meter")))) (export main)))
+  (error  CDZ0301))
+
 ; Adding a quantity and a plain number — `(+ (Qty.of 5 (Unit.of #"meter")) 3)` — is CDZ0501 (no implicit
 ; dimensionless coercion), and carries a same-unit WRAP fix: give the bare number the SAME unit as the
 ; quantity operand, `(Qty.of <n> (Unit.base #"meter"))` (the unit is recoverable from the quantity operand),

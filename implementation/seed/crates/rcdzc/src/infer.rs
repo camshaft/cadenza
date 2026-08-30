@@ -277,7 +277,15 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // `(< n 5)` type-check when `n : BigInt`: the `5` adopts its peer's `BigInt` rather than defaulting to
         // `Int64` and clashing CDZ0301. A `Core::ConstInt` typed `BigInt` already emits as a BigInt leaf.
         Resolved::Int(_) if literal_comparison_bigint_context(db, id) => Ty::BigInt,
-        Resolved::Int(_) => module_default_fraction_ty(db, id)
+        // A bare integer literal that is the MAGNITUDE of a `(Qty.of <lit> u)` in quantity arithmetic adopts
+        // its sibling quantity's concretely-fixed integer magnitude width (`qty_magnitude_context_ty`) — the
+        // Qty twin of `literal_binop_context_ty`'s width grounding, so `(+ (Qty.of 5 u) (Qty.of v0:UInt32 u))`
+        // grounds `5` to `UInt32` (VALID) instead of the Int64 default (which emitted an i64 op over the i32
+        // magnitude → invalid wasm). Filtered to an INT peer — an int literal never adopts a FLOAT magnitude
+        // (that stays a rejectable int-vs-float mix). A constraint, so it precedes the module defaults below.
+        Resolved::Int(_) => qty_magnitude_context_ty(db, id)
+            .filter(|t| matches!(t, Ty::Int(_)))
+            .or_else(|| module_default_fraction_ty(db, id))
             .or_else(|| module_default_int_ty(db, id))
             .unwrap_or_else(Ty::int),
         Resolved::Bool(_) => Ty::Bool,
@@ -387,7 +395,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // integer literal the default integer type, a decimal literal the default floating-point type.
         //= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
         //# When a module declares no default fraction literal type, a numeric literal with no other constraint MUST take the numeric model's default numeric type for its written form (an integer literal the default integer type, a decimal literal the default floating-point type).
-        Resolved::Float(_) => module_default_fraction_ty(db, id)
+        // The float twin of the integer arm above: a bare decimal literal that is the MAGNITUDE of a
+        // `(Qty.of <lit> u)` in quantity arithmetic adopts its sibling quantity's concretely-fixed FLOAT
+        // magnitude width (filtered to a FLOAT peer — a float literal never adopts an int magnitude). A
+        // constraint, so it precedes the module fraction/float defaults.
+        Resolved::Float(_) => qty_magnitude_context_ty(db, id)
+            .filter(|t| matches!(t, Ty::Float(_)))
+            .or_else(|| module_default_fraction_ty(db, id))
             .or_else(|| module_default_float_ty(db, id))
             .unwrap_or_else(Ty::float),
         Resolved::Unit => Ty::Unit,
@@ -932,6 +946,111 @@ fn literal_binop_float32_context(db: &mut Db, id: StructId) -> bool {
         // Keep climbing only through an ARITH op (a comparison's result is `Bool`, breaking the chain).
         if !prim.is_arith() {
             return false;
+        }
+        child = parent;
+    }
+}
+
+/// The magnitude TYPE a bare numeric LITERAL adopts from its QUANTITY-arithmetic context — the `Qty` twin of
+/// [`literal_binop_context_ty`]. A bare literal written as the MAGNITUDE of a `(Qty.of <lit> u)` whose quantity
+/// is an operand of arith over quantities — `(+ (Qty.of <lit> u) (Qty.of v u))` — adopts the SIBLING quantity's
+/// concretely-fixed magnitude type: the arith unifies the two quantities to one `(Qty T u)`, so their magnitudes
+/// share one width `T`, exactly as a bare literal adopts a fixed sibling in plain `(+ <lit> n)`. Without this the
+/// bare magnitude grounded to the `Int64`/`Float64` DEFAULT while the sibling magnitude was (e.g.) `UInt32`, so
+/// the quantity arith emitted an `i64` op over an `i32` magnitude → INVALID wasm with no diagnostic (fuzzer:
+/// rcdzc-wasm-qty-add-mixed-magnitude-width). Contextual literal TYPING (operator seq-32: "types unify with their
+/// construction — the literal adopts the one width"), NOT a promotion — a genuine two-FIXED-width magnitude clash
+/// still rejects CDZ0301 at the arith node (an ANNOTATED literal `(: 5 Int64)` has the annotation as its parent,
+/// not the `Qty.of`, so this never fires for it). Returns the sibling magnitude's concretely-fixed `Ty::Int`/
+/// `Ty::Float`, else `None`. Climbs through nested arith exactly as [`literal_binop_context_ty`] does.
+/// Whether `id` is a `(Qty.of <lit> u)` whose MAGNITUDE is a bare numeric LITERAL — a DEFERRED-magnitude
+/// quantity that imposes no width on an arith sibling (and, if consulted via `type_of`, would recurse back
+/// into [`qty_magnitude_context_ty`] and cycle). Decided STRUCTURALLY (no `type_of`), so it is safe to call
+/// while typing a sibling literal.
+fn sibling_is_bare_literal_quantity(db: &mut Db, id: StructId) -> bool {
+    let (head, mag) = {
+        let Resolved::Apply { head, args } = resolved_ref(db, id) else {
+            return false;
+        };
+        let Some(&mag) = args.first() else {
+            return false;
+        };
+        (*head, mag)
+    };
+    if crate::eval::meta_apply_of(db, head) != Some(crate::resolved::Prim::QtyOf) {
+        return false;
+    }
+    matches!(resolved_ref(db, mag), Resolved::Int(_) | Resolved::Float(_))
+}
+
+fn qty_magnitude_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
+    // The literal must be the MAGNITUDE (arg 0) of an enclosing `(Qty.of <lit> u)`.
+    let qty_of = db.parent_of(id)?;
+    let qhead = {
+        let Resolved::Apply { head, args } = resolved_ref(db, qty_of) else {
+            return None;
+        };
+        if args.first().copied() != Some(id) {
+            return None;
+        }
+        *head
+    };
+    if crate::eval::meta_apply_of(db, qhead) != Some(crate::resolved::Prim::QtyOf) {
+        return None;
+    }
+    // Climb the arith binop spine from the QUANTITY node; a sibling QUANTITY with a concretely-fixed magnitude
+    // fixes the shared magnitude width. Unwrap the sibling's `Ty::Qty` to its inner magnitude type.
+    let mut child = qty_of;
+    loop {
+        let parent = db.parent_of(child)?;
+        let (head, arg0, arg1) = {
+            let Resolved::Apply { head, args } = resolved_ref(db, parent) else {
+                return None;
+            };
+            if args.len() != 2 {
+                return None;
+            }
+            (*head, args[0], args[1])
+        };
+        let prim = crate::eval::meta_apply_of(db, head)?;
+        if !prim.is_binop() {
+            return None;
+        }
+        let sibling = if arg0 == child {
+            arg1
+        } else if arg1 == child {
+            arg0
+        } else {
+            return None;
+        };
+        // A sibling whose magnitude is ITSELF a bare numeric literal is DEFERRED and imposes no width —
+        // exactly `literal_binop_context_ty`'s "a deferred sibling (two bare literals) imposes nothing" rule.
+        // Crucially this BREAKS A CYCLE: were the sibling `(Qty.of <lit> u)` a bare-literal magnitude,
+        // `type_of(sibling)` below would recurse into that literal's own `compute` → back into THIS helper
+        // (each of `(* (Qty.of 2.0 m) (Qty.of 3.0 m))`'s magnitudes asking the other's type), and the
+        // type_of cycle-guard would resolve one to a default, corrupting the enclosing dimensional analysis
+        // (a spurious CDZ0501 on a well-dimensioned `meter²+meter²`). Detecting it STRUCTURALLY (no `type_of`)
+        // sidesteps the recursion; a genuinely-fixed sibling (a param/annotated/computed magnitude) still binds.
+        if sibling_is_bare_literal_quantity(db, sibling) {
+            if !prim.is_arith() {
+                return None;
+            }
+            child = parent;
+            continue;
+        }
+        if let crate::ty::Ty::Qty { inner, .. } = type_of(db, sibling) {
+            let it = *inner;
+            let fixed = match &it {
+                crate::ty::Ty::Int(i) => i.width_is_fixed(),
+                crate::ty::Ty::Float(f) => matches!(f.width, crate::ty::Width::Fixed(_)),
+                _ => false,
+            };
+            if fixed {
+                return Some(it);
+            }
+        }
+        if !prim.is_arith() {
+            return None;
         }
         child = parent;
     }
