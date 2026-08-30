@@ -1004,17 +1004,20 @@ pub const COMPOUND_ORDERING_NO_TOTAL_ORDER_DECLINE: &str =
 /// and drop the consequent [`COMPOUND_COMPARISON_DECLINE`].
 pub const DIFFERENT_TYPES_COMPARISON_MARKER: &str = "are different types";
 
-/// The message the emit path (`lower`) attaches to the UNCODED decline it returns when `reduce_handle`
-/// cannot fold a `handle` form. A MALFORMED handler — one whose arm names an operation its effect does
-/// not declare (CDZ0403), or that does not discharge every operation (CDZ0405) — cannot fold, so this
-/// decline rides ALONGSIDE the coded reject as a second `error:` for the same root cause (the misspelled
-/// / missing arm). Shared as a const so `compile::dedup_faults` drops it whenever a CDZ0403/CDZ0405 is
-/// present on the program — ONE primary, actionable "no" (the coded reject carries the fix), not a coded
-/// rejection shadowed by an emit-path decline (`reference-compiler.md` §Outcomes Are Ordered By Safety).
-/// A WELL-FORMED handler that is genuinely not-yet-reducible (a real cross-function / non-tail resume,
-/// with NO coded reject) keeps this honest decline — there is nothing stronger to defer to.
-pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not yet reducible by the tail-resumptive fold (cross-function \
-     or non-tail resume arrives in a later increment)";
+/// The message the emit path (`lower`) attaches to the CDZ0900 unsupported-construct decline it returns
+/// when `reduce_handle` cannot fold a `handle` form (seq-286: every decline carries a code; seq-280: the
+/// text is a clean capability statement, no "not yet" / "later increment" deferral framing). A MALFORMED
+/// handler — one whose arm names an operation its effect does not declare (CDZ0403), or that does not
+/// discharge every operation (CDZ0405) — cannot fold, so this decline rides ALONGSIDE the coded reject as
+/// a second `error:` for the same root cause (the misspelled / missing arm). Shared as a const so
+/// `compile::dedup_faults` drops it (by `message ==` this const, still `is_decline()`) whenever a
+/// CDZ0403/CDZ0405 is present on the program — ONE primary, actionable "no" (the coded reject carries the
+/// fix), not a rejection shadowed by an emit-path decline (`reference-compiler.md` §Outcomes Are Ordered By
+/// Safety). A WELL-FORMED handler that genuinely needs a cross-function / non-tail resume (with NO coded
+/// reject) keeps this CDZ0900 — there is nothing stronger to defer to; the "later increment" that would
+/// fold it is tracked internally, NOT in the user-facing text.
+pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not reducible by the tail-resumptive fold: it \
+     requires a cross-function or non-tail resume, which the effect specializer does not lower";
 
 /// The three UNCODED declines the emit path (`lower::lower_lambda_value`) returns when a closure that must
 /// cross the component boundary has a non-representable part — an `Any` (never-fixed) parameter or result,

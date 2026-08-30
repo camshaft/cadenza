@@ -2856,7 +2856,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                                 }
                             }
                         }
-                        return Core::Poison(Reject::decline(
+                        return Core::Poison(Reject::unsupported(
                             crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
                         ));
                     }
@@ -2884,7 +2884,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     });
                     match unbound_arm_op {
                         Some(op) => core_of(db, op),
-                        None => Core::Poison(Reject::decline(
+                        None => Core::Poison(Reject::unsupported(
                             crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
                         )),
                     }

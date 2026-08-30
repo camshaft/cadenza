@@ -4524,10 +4524,11 @@ fn a_recursive_fn_perform_the_specializer_cant_thread_declines_without_a_mangled
         "must not leak a mangled `#eff` specialization name: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-    // The decline is UNCODED (honest todo), NOT the coded "has no body" CDZ0201, and names the base fn.
+    // The decline is CDZ0900 (deferred/unsupported, seq-286: every decline carries a code), NOT the hard
+    // "has no body" CDZ0201, and names the base fn.
     assert!(
-        errors.iter().all(|d| d.code.is_none()),
-        "the recursive-spec decline must be uncoded (not a coded reject): {:?}",
+        errors.iter().all(|d| d.code.as_deref() == Some("CDZ0900")),
+        "the recursive-spec decline must be CDZ0900 (deferred), not CDZ0201 or uncoded: {:?}",
         errors
             .iter()
             .map(|d| (&d.code, &d.message))
@@ -4536,8 +4537,8 @@ fn a_recursive_fn_perform_the_specializer_cant_thread_declines_without_a_mangled
     assert!(
         errors
             .iter()
-            .any(|d| d.message.contains("check-all") && d.message.contains("not yet reducible")),
-        "expected an honest not-yet-reducible decline naming `check-all`: {:?}",
+            .any(|d| d.message.contains("check-all") && d.message.contains("cannot specialize")),
+        "expected an honest not-reducible decline naming `check-all`: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
@@ -4582,8 +4583,8 @@ fn a_width_mismatched_handler_state_declines_cleanly_never_invalid_wasm() {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert!(
-        errors.iter().all(|d| d.code.is_none()),
-        "any error must be an UNCODED decline (not a coded reject): {:?}",
+        errors.iter().all(|d| d.code.as_deref() == Some("CDZ0900")),
+        "any error must be the CDZ0900 deferred decline (not a hard coded reject): {:?}",
         errors
             .iter()
             .map(|d| (&d.code, &d.message))
@@ -4886,7 +4887,8 @@ fn a_handler_arm_with_the_wrong_parameter_count_is_cdz0201() {
     );
     // The consequent fold-decline is DROPPED — the wrong-arity CDZ0201 is the ONE primary error.
     assert!(
-        !err.message.contains("not yet reducible"),
+        !err.message
+            .contains("not reducible by the tail-resumptive fold"),
         "the fold-decline is suppressed in favor of the coded reject: {}",
         err.message
     );
@@ -5692,9 +5694,10 @@ fn a_handle_head_naming_a_value_reports_one_clear_diagnostic() {
         td[0].message
     );
     assert!(
-        !td.iter().any(
-            |d| d.message.contains("not yet reducible") || d.message.contains("has no variant")
-        ),
+        !td.iter().any(|d| d
+            .message
+            .contains("not reducible by the tail-resumptive fold")
+            || d.message.contains("has no variant")),
         "the misleading fold-decline + no-variant consequents are dropped: {td:?}"
     );
     // A PRELUDE TYPE head — `(handle Int64 …)` / `(handle Option …)` — is the same root cause but a
@@ -5725,7 +5728,9 @@ fn a_handle_head_naming_a_value_reports_one_clear_diagnostic() {
             d.message
         );
         assert!(
-            !pd.iter().any(|d| d.message.contains("not yet reducible")),
+            !pd.iter().any(|d| d
+                .message
+                .contains("not reducible by the tail-resumptive fold")),
             "the misleading fold-decline is dropped for `{head}`: {pd:?}"
         );
     }

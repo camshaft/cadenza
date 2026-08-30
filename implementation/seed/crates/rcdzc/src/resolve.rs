@@ -612,18 +612,19 @@ fn def_as_resolved(db: &Db, d: usize, name: &str) -> Resolved {
         // do-def-bound perform in the recursive fn — not yet specializable), `thread` returns `None` and the
         // reserved def is left bodyless. A reference to it must NOT surface the mangled internal name via a
         // coded CDZ0201 "`base#eff2` has no body" (a compiler-internal name in a user-facing message,
-        // corpus-bugfix/breaker 2026-07-28). Report an UNCODED "not yet reducible" decline naming the BASE
-        // fn instead — the same honest todo the handle fold gives for an unreducible shape (the specializer's
-        // body-clone increment that would fold it is later). A genuine user-authored bodyless def keeps its
-        // coded CDZ0201 (its name has no `#eff` marker).
+        // corpus-bugfix/breaker 2026-07-28). Report a CDZ0900 unsupported-construct decline naming the BASE
+        // fn instead (seq-286: every decline carries a code; seq-280: the user-facing text is a clean
+        // capability statement — the "later increment" framing stays here in-comment, NOT in the message):
+        // the cross-function / non-tail resume shape the specializer's body-clone increment will later fold.
+        // A genuine user-authored bodyless def keeps its coded CDZ0201 (its name has no `#eff` marker).
         None => {
             let poison = if let Some(base) =
                 name.split("#eff").next().filter(|_| name.contains("#eff"))
             {
-                Reject::decline(format!(
-                    "this handler is not yet reducible by the tail-resumptive fold: the recursive function \
-                     `{base}` performs a discharged operation in a form the effect specializer does not yet \
-                     handle (cross-function or non-tail resume arrives in a later increment)"
+                Reject::unsupported(format!(
+                    "the tail-resumptive fold cannot specialize `{base}`: it performs a discharged \
+                     operation via a cross-function or non-tail resume, which the effect specializer \
+                     does not lower"
                 ))
             } else {
                 Reject::coded(Code::Malformed, format!("`{name}` has no body"))

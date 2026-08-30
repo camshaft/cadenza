@@ -5484,9 +5484,9 @@ fn a_mutual_group_demand_perform_demand_in_a_let_wrapped_dispatch_folds() {
         "the group let-dispatch pre-check arm must let a mutual-group demand-perform-demand SCC compile",
     );
     assert!(
-        !out.diagnostics.iter().any(|d| d
-            .message
-            .contains("not yet reducible by the tail-resumptive fold")),
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
         "no tail-resumptive-fold decline on the demand-perform-demand mutual group",
     );
 }
