@@ -9328,3 +9328,71 @@
   (call   main (: 10 Int64)) (output (: 120404040707 Int64))
   (call   main (: 0 Int64)) (output (: 20202019697 Int64))
   (live-objects known-leak))
+
+; ── multi-shot continuation safe-rejects (migrated from rcdzc tests/mod.rs, delanguaging handoff from
+;    v-rcdzc-test-shrink 2026-08-30). A multi-shot arm `(+ (resume 1 s) (resume 2 s))` splices its
+;    delimited continuation C TWICE; that is sound ONLY when every op C performs is discharged BY THIS
+;    handler (folded to pure code). When C spans a HOST call or reaches an OUTER handler's effect, a second
+;    splice would re-issue that boundary/outer op per resume — so the fold declines cleanly rather than
+;    double it (host-composition invariant, §4.4). The decline is CLEAN: it never leaks an internal `#eff`
+;    specialization name or a `$s` state-param name (the message-pin below witnesses the clean text).
+
+(case "a multi-shot continuation spanning a host call declines cleanly, never doubling the host call"
+  (doc    "The leading `Amb.flip` gets continuation `C = (+ [] (Ask.ask))`; the multi-shot arm `(+ (resume 1
+           s) (resume 2 s))` would splice `C` twice, running the host-delegated `Ask.ask` once per resume — a
+           re-deriving host cannot reconstruct a chain of run-local heap handles (§4.4: a reified continuation
+           must not span a host call). So it stays a clean decline, never runs to a value (a doubled host
+           call). Migrated from rcdzc a_multishot_continuation_spanning_a_host_call_declines_not_doubles_the_call.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64))) (effect Ask (op ask (-> Unit Int64)))
+            (def (main) (host (Ask)
+              (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                (+ (Amb.flip) (Ask.ask)))))
+            (export main)))
+  (declines (message "not reducible by the tail-resumptive fold")))
+
+(case "a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it"
+  (doc    "An inner multi-shot `Amb` handler nested in an outer `Ctr` handler; the body `(+ (Ctr.tick)
+           (Amb.flip))`. The `Amb.flip` continuation is spliced twice by `(+ (resume 1 s) (resume 2 s))`,
+           which would re-issue the OUTER-handler-discharged `Ctr.tick` per resume — advancing the outer
+           state more than once for a single perform. The re-reducing fold is sound only when every performed
+           op in the continuation is discharged BY THIS handler; an op that escapes to an outer handler stays
+           a clean decline. Migrated from rcdzc a_multishot_continuation_reaching_an_outer_handler_effect_declines_not_doubles_it.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64))) (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 0 ((tick (u) s (resume s (+ s 1))))
+                (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                  (+ (Ctr.tick) (Amb.flip)))))
+            (export main)))
+  (declines (message "not reducible by the tail-resumptive fold")))
+
+(case "a multi-shot continuation reaching an outer effect via an if branch declines cleanly"
+  (doc    "The conditional-path companion: a multi-shot arm whose re-run continuation reaches an outer-handler
+           effect through an `if` BRANCH (not a strict operand). `(if (< (Amb.flip) 5) (Ctr.tick) 99)` — re-
+           running the continuation per `Amb.flip` resume would re-issue the outer `Ctr.tick` in the taken
+           branch, advancing the outer state more than once. Exercises the `if`/branch threading fold path,
+           distinct from the strict-operand shape. Migrated from rcdzc a_multishot_continuation_reaching_an_outer_effect_via_an_if_branch_declines.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64))) (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 0 ((tick (u) c (resume c (+ c 1))))
+                (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                  (if (< (Amb.flip) 5) (Ctr.tick) 99))))
+            (export main)))
+  (declines (message "not reducible by the tail-resumptive fold")))
+
+(case "a multi-shot continuation spanning a host call inside a do declines cleanly"
+  (doc    "The do-sequence companion: a multi-shot arm whose continuation spans a HOST call inside a `(do …)`.
+           `(do (Log.emit (Amb.flip)) 7)` under a multi-shot `flip` arm — re-running the continuation per
+           resume would emit the delegated `Log.emit` host call more than once (§4.4 host-composition
+           invariant). Exercises the `Core::Seq`/do path, distinct from the strict-operand host case. Migrated
+           from rcdzc a_multishot_continuation_spanning_a_host_call_in_a_do_declines.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64))) (effect Log (op emit (-> Int64 Unit)))
+            (def (main)
+              (host (Log)
+                (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                  (do (Log.emit (Amb.flip)) 7))))
+            (export main)))
+  (declines (message "not reducible by the tail-resumptive fold")))
