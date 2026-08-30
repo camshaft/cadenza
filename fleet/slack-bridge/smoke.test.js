@@ -28,6 +28,8 @@ const {
   renderFleetMessagePlain,
   relayPlan,
   isContentPostError,
+  RELAY_DEGRADE_AFTER,
+  RELAY_QUARANTINE_AFTER,
   helpText,
   isTransientSocketModeFault,
   KNOWN_KINDS,
@@ -333,15 +335,21 @@ test("markFailed dead-letters a message and it no longer drains (preserved, not 
   assert.strictEqual(JSON.parse(fs.readFileSync(dead, "utf8")).subject, "poison");
 });
 
-test("relayPlan escalates normal → degraded → quarantine (bounds a poison message)", () => {
-  // The escalation must be finite so a poison message is dead-lettered after a bounded number of polls and
-  // can NEVER block the queue forever. Pins the exact thresholds; must stay in lockstep with Rust relay_plan.
+test("relayPlan escalates normal → degraded → quarantine at the (drift-proof) thresholds", () => {
+  // Escalation must be finite so a poison message is dead-lettered after a bounded number of polls and can
+  // NEVER block the queue forever. Assert against the exported constants (not literals) so a future retune
+  // can't silently drift the Rust and Node relays apart — the boundaries themselves are the contract.
   assert.strictEqual(relayPlan(0), "normal");
-  assert.strictEqual(relayPlan(1), "normal");
-  assert.strictEqual(relayPlan(2), "degraded");
-  assert.strictEqual(relayPlan(3), "degraded");
-  assert.strictEqual(relayPlan(4), "quarantine");
-  assert.strictEqual(relayPlan(99), "quarantine");
+  assert.strictEqual(relayPlan(RELAY_DEGRADE_AFTER - 1), "normal");
+  assert.strictEqual(relayPlan(RELAY_DEGRADE_AFTER), "degraded");
+  assert.strictEqual(relayPlan(RELAY_QUARANTINE_AFTER - 1), "degraded");
+  assert.strictEqual(relayPlan(RELAY_QUARANTINE_AFTER), "quarantine");
+  assert.strictEqual(relayPlan(RELAY_QUARANTINE_AFTER + 100), "quarantine");
+  assert.ok(RELAY_DEGRADE_AFTER < RELAY_QUARANTINE_AFTER, "must degrade before quarantining");
+  // PATIENCE invariant: quarantine must be many minutes of SUSTAINED failure (polls are ~2s), so a brief
+  // Slack internal_error blip can't false-dead-letter a good message (the queue never wedges regardless,
+  // since a failing message is skipped past — quarantine only bounds a genuinely-undeliverable message).
+  assert.ok(RELAY_QUARANTINE_AFTER >= 60, `quarantine must be patient (>=~2min), got ${RELAY_QUARANTINE_AFTER}`);
 });
 
 test("isContentPostError classifies Slack API errors as content, transport/rate-limit as transient", () => {
