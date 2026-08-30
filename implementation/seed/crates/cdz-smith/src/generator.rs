@@ -1068,7 +1068,12 @@ impl Gen<'_> {
     /// Operator directive 2026-08-30: keep expanding generated program shapes.
     fn mixed_compound_expr(&mut self, depth: u32) {
         const LABELS: [&str; 3] = ["a", "b", "c"];
-        match self.cur.choice(3) {
+        match self.cur.choice(4) {
+            3 => {
+                // A MIXED-WIDTH OPERATION/AGGREGATE reconciliation (see [`mixed_width_recon`]).
+                self.mixed_width_recon();
+                return;
+            }
             0 => {
                 // Heterogeneous tuple, projected by index.
                 let n = 2 + self.cur.choice(2); // 2..=3 elements
@@ -1117,6 +1122,85 @@ impl Gen<'_> {
             _ => self
                 .out
                 .push_str(if self.cur.flip() { "true" } else { "false" }),
+        }
+    }
+
+    /// A MIXED-WIDTH OPERATION/AGGREGATE — a single value slot pinned WIDE (by a bare `Int64`/`Float64`
+    /// literal, which adapts) then given a NARROW CONCRETE operand (`(: <n> Int8/…/UInt32)` or a
+    /// `Float32`). This is the reconciliation seam where TWO cdz-smith findings live: `Qty.+` magnitude
+    /// i32/i64 and `Map` value f32/f64 — the type checker accepts the implicit widen (a bare literal +
+    /// a concrete narrow value TYPE-CHECKS; two CONCRETE different widths decline CDZ0301), but the
+    /// backend must emit the i32→i64 / f32→f64 conversion, and where it doesn't the component fails wasm
+    /// validation. Six shapes over the int- and float-width families: arithmetic `+`, `if`-join, `list`
+    /// element, `Map` value across inserts, and `Qty.+` magnitude — each reliably TYPES so it reaches the
+    /// backend (a miscompile → an invalid-wasm finding). Operator directive 2026-08-30: keep expanding.
+    fn mixed_width_recon(&mut self) {
+        let ff = self.cur.flip(); // float-width family (Float64+Float32) vs int-width (Int64+narrow int)
+        match self.cur.choice(5) {
+            0 => {
+                // Arithmetic `+` mixing a wide literal with a narrow concrete operand.
+                self.out.push_str("(+ ");
+                self.mw_wide(ff);
+                self.out.push(' ');
+                self.mw_narrow(ff);
+                self.out.push(')');
+            }
+            1 => {
+                // `if`-join: the two branches have different widths (branch-type reconciliation).
+                let b = if self.cur.flip() { "true" } else { "false" };
+                let _ = write!(self.out, "(if {b} ");
+                self.mw_wide(ff);
+                self.out.push(' ');
+                self.mw_narrow(ff);
+                self.out.push(')');
+            }
+            2 => {
+                // `list` with elements of different widths (element-slot reconciliation).
+                self.out.push_str("(list ");
+                self.mw_wide(ff);
+                self.out.push(' ');
+                self.mw_narrow(ff);
+                self.out.push(')');
+            }
+            3 => {
+                // `Map` value slot pinned wide by the first insert, then a narrow value (the #Map finding).
+                self.out.push_str("(Map.insert (Map.insert Map.empty 0 ");
+                self.mw_wide(ff);
+                self.out.push_str(") 1 ");
+                self.mw_narrow(ff);
+                self.out.push(')');
+            }
+            _ => {
+                // `Qty.+` magnitude reconciliation (the #Qty finding): wide + narrow magnitude.
+                self.out.push_str("(Qty.value (+ (Qty.of ");
+                self.mw_wide(ff);
+                self.out.push_str(" (Unit.base #\"mole\")) (Qty.of ");
+                self.mw_narrow(ff);
+                self.out.push_str(" (Unit.base #\"mole\"))))");
+            }
+        }
+    }
+
+    /// A WIDE literal for [`mixed_width_recon`]: a bare `Float64` decimal (float family) or a bare
+    /// integer literal (int family) — bare literals adapt to the slot width, pinning it wide.
+    fn mw_wide(&mut self, float_family: bool) {
+        if float_family {
+            self.float_lit();
+        } else {
+            let _ = write!(self.out, "{}", self.cur.range(0, 100));
+        }
+    }
+
+    /// A NARROW CONCRETE operand for [`mixed_width_recon`]: a `Float32` ascription (float family) or a
+    /// narrow fixed-width int ascription `(: <n> Int8/Int16/Int32/UInt8/UInt16/UInt32)` (int family).
+    /// A small value (0..100) fits every narrow width so the operand itself always type-checks.
+    fn mw_narrow(&mut self, float_family: bool) {
+        const NARROW_INT: [&str; 6] = ["Int8", "Int16", "Int32", "UInt8", "UInt16", "UInt32"];
+        if float_family {
+            self.f32_operand(0);
+        } else {
+            let t = NARROW_INT[self.cur.choice(NARROW_INT.len())];
+            let _ = write!(self.out, "(: {} {t})", self.cur.range(0, 100));
         }
     }
 
@@ -2283,6 +2367,39 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a mixed-width compound projection"
+        );
+    }
+
+    /// The mixed-width RECONCILIATION arm is reachable — some seed emits an operation/aggregate that pins
+    /// a slot WIDE (a bare literal) then supplies a NARROW concrete operand (`(: <n> <NarrowInt>)` /
+    /// `Float32`): the seam where the Map-value f32/f64 and Qty.+ i32/i64 findings live. Detected via the
+    /// distinctive two-insert `Map` value shape (literal keys 0 then 1, unique to this arm). Every such
+    /// program parses. Guards operator seq-23 mixed-width coverage (the high-yield family).
+    #[test]
+    fn some_seed_emits_a_mixed_width_reconciliation() {
+        let mut hit_map = false;
+        let mut hit_narrow_operand = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // The Map value shape is `(Map.insert (Map.insert Map.empty 0 <wide>) 1 <narrow>)` — literal
+            // keys 0/1 pin it to this arm (map_set_builtin uses generated keys, never this exact double).
+            if src.contains("(Map.insert (Map.insert Map.empty 0 ") {
+                hit_map = true;
+            }
+            // Any mixed-width shape ends its narrow operand with a fixed narrow-int ascription OR Float32
+            // used as a direct `+`/`if`/`list`/`Map`/`Qty` operand (as opposed to inside a tuple/record).
+            if src.contains("(Qty.value (+ (Qty.of ") {
+                hit_narrow_operand = true;
+            }
+        }
+        assert!(
+            hit_map || hit_narrow_operand,
+            "no seed emitted a mixed-width reconciliation shape (Map value / Qty.+ magnitude)"
         );
     }
 
