@@ -4622,63 +4622,10 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     );
 }
 
-#[test]
-fn a_record_match_pattern_typo_field_suggests_the_nearest_field() {
-    use crate::testkit::parse;
-    // A record PATTERN naming a near-miss field is a TYPO — suggest the nearest actual field, the
-    // record-pattern twin of the member-access `(. r fooo)` did-you-mean (CDZ0212). Same typo class;
-    // before this the pattern path dead-ended at "does not have" while the access path named the fix.
-    let typo = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (helpr y)) y))) \
-         (def (main) (f (record (helper 1)))) (export main))",
-    )))
-    .expect_err("a record-pattern typo field rejects");
-    assert_eq!(
-        typo.code.as_deref(),
-        Some("CDZ0201"),
-        "got: {}",
-        typo.message
-    );
-    assert!(
-        typo.message.contains("field `helpr`")
-            && typo.message.contains("does not have")
-            && typo.message.contains("did you mean `helper`?"),
-        "a confident near-miss names the fault AND suggests the nearest field: {}",
-        typo.message
-    );
-    // AND it carries an APPLYABLE replace fix on the field-name node — full parity with the member-access
-    // CDZ0212 did-you-mean (a heuristic rename `helpr` → `helper`), not just prose.
-    let fix = typo
-        .fix
-        .as_ref()
-        .expect("a confident record-pattern typo carries a rename fix");
-    assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-    assert_eq!(
-        fix.replacement, "helper",
-        "renames the typoed field to the nearest"
-    );
-    assert!(
-        !fix.verified,
-        "the nearest-name guess is heuristic, not verified"
-    );
-    // A FAR-MISS field (beyond `nearest`'s cutoff) must NOT get a baseless suggestion NOR a fix — the
-    // plain message stands.
-    let far = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (zzz y)) y))) \
-         (def (main) (f (record (helper 1)))) (export main))",
-    )))
-    .expect_err("a far-miss record-pattern field still rejects");
-    assert_eq!(far.code.as_deref(), Some("CDZ0201"), "got: {}", far.message);
-    assert!(
-        far.message.contains("field `zzz`") && !far.message.contains("did you mean"),
-        "a far-miss field carries no baseless suggestion: {}",
-        far.message
-    );
-    assert!(
-        far.fix.is_none(),
-        "a far-miss field carries no baseless rename fix"
-    );
-}
+// (a_record_match_pattern_typo_field_suggests_the_nearest_field migrated to corpus 05-compound-types:
+// "a record match pattern typo field suggests the nearest field with a rename fix" (CDZ0201, near-miss
+// suggest + (fix (kind replace)(replacement "helper")(unverified))) + the "a far-miss record match pattern
+// field carries no baseless suggestion or fix" twin (CDZ0201 (not "did you mean")(no-fix)). Fully corpus-expressible.)
 
 #[test]
 fn a_variant_payload_binder_shadowing_a_param_in_a_called_def_binds_the_payload() {
@@ -6061,34 +6008,10 @@ fn a_variant_with_a_lowercase_tuple_alias_payload_reads_as_a_payload_variant_not
 /// applied" — accurate but it named neither the variant nor the fix. Pins the rustc-gold wording + that the
 /// variant name is read from the SOURCE spelling for BOTH the bare (`None`) and qualified (`Option.None`)
 /// forms (`ctor_app_name`). The improved message anchors at the payload argument, not the whole call.
-#[test]
-fn a_nullary_variant_applied_to_a_payload_names_the_variant_and_the_fix() {
-    use crate::testkit::parse;
-    // Bare `None` with an Int64 payload — the message names `None` and the fix.
-    let bare = compile_component(&crate::codec::encode(&parse(
-        "(do (def (main) (match (None 5) ((Some x) x) ((None _) 0))) (export main))",
-    )))
-    .expect_err("a nullary variant applied to a non-unit payload must be rejected CDZ0201");
-    assert_eq!(bare.code.as_deref(), Some("CDZ0201"));
-    assert!(
-        bare.message.contains("`None` is nullary")
-            && bare.message.contains("cannot be applied")
-            && bare.message.contains("construct it as `None`"),
-        "nullary-payload reject should name the variant + the fix, got: {}",
-        bare.message
-    );
-    // Qualified `Option.None` — the variant name is read from the member key, not the module segment.
-    let qual = compile_component(&crate::codec::encode(&parse(
-        "(do (def (main) (match (Option.None 5) ((Some x) x) ((None _) 0))) (export main))",
-    )))
-    .expect_err("a qualified nullary variant applied to a payload must be rejected CDZ0201");
-    assert_eq!(qual.code.as_deref(), Some("CDZ0201"));
-    assert!(
-        qual.message.contains("`None` is nullary"),
-        "qualified nullary-payload reject should name the bare variant `None`, got: {}",
-        qual.message
-    );
-}
+// (a_nullary_variant_applied_to_a_payload_names_the_variant_and_the_fix migrated to corpus
+// 05-compound-types: "a nullary variant applied to a payload names the variant and that it cannot be
+// applied" + the qualified-`Option.None` twin — CDZ0201 (message "`None` is nullary")(cannot be applied)
+// (construct it as `None`). No white-box residue; fix facet source-proven.)
 
 /// `eval::fold_ctor_match` folds a `(match (Ctor payload) ((Ctor v) body))` over a VISIBLE constructor
 /// scrutinee to the arm body with the payload binder substituted — the resolve-time case-of-known-ctor
