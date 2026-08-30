@@ -1042,6 +1042,15 @@ impl<'a> Parser<'a> {
                 break;
             }
             let op_span = self.cur_span();
+            // A SAME-LINE trailing `//` comment on the LEFT operand sits at this operator token's leading
+            // slot (`a  // note` newline `and b`), tagged trailing. Attach it to `left` as
+            // `(comment-after …)` so it re-prints — otherwise it is stranded at the operator's slot and
+            // NEVER drained (the mid-infix-chain comment-loss, seq-277/C3). Only the same-line PREFIX is
+            // taken; an own-line comment before the operator stays (it leads the right operand). The infix
+            // PRINTER must re-emit a comment-after-wrapped operand with a break before the operator (else
+            // the `// note` would swallow the trailing ` op right`). `strip_comments` peels it.
+            let left_trailing = self.take_trailing_comment_here();
+            left = self.wrap_comment_after(left_trailing, left);
             self.bump(); // operator
             let head = self.name(op_name, op_span);
             // A `:` ascription whose RHS OPENS with `forall` is a type-position `forall` (`e : forall a. T`):
@@ -4833,6 +4842,47 @@ mod tests {
         assert!(
             printed.contains("// ---- SECTION between defs"),
             "comment text is re-emitted:\n{printed}"
+        );
+    }
+
+    #[test]
+    fn a_trailing_comment_on_a_non_last_infix_operand_survives_the_round_trip() {
+        // Regression (seq-277/C3 slice 3): a same-line `//` on a NON-LAST operand of a multi-line infix
+        // chain (`a and b  // note` newline `and c`) USED TO DROP — the Pratt infix loop never drained the
+        // operator token's leading slot. Reader: drain the operand's trailing comment before the operator
+        // and attach `(comment-after …)` to `left`. Printer: `infix_operand` re-emits it as `inner // note`
+        // and forces a break before the next operator. (Closes int-width.cdz's operand-trailing drops.)
+        let src = "def f(a, b, c) = a\n  and b   // note on b\n  and c\n\nexport { f }\n";
+        let count = |a: &Arenas| {
+            (0..a.structure.len() as u32)
+                .map(StructId)
+                .filter(|&id| a.head_name(id) == Some("comment-after"))
+                .count()
+        };
+        let p = read_ml(src);
+        assert!(p.ok(), "parses: {:?}", p.errors);
+        assert_eq!(
+            count(&p.arenas),
+            1,
+            "the operand-trailing comment is a (comment-after …) node"
+        );
+        let printed = crate::printer::print(&p.arenas, 100);
+        assert!(
+            printed.contains("// note on b"),
+            "comment re-emitted:\n{printed}"
+        );
+        let reparsed = read_ml(&printed);
+        assert!(reparsed.ok(), "reparse: {:?}\n{printed}", reparsed.errors);
+        assert_eq!(
+            count(&reparsed.arenas),
+            1,
+            "comment survives the round-trip\n{printed}"
+        );
+        // Idempotent: the forced break makes the reprint a fixed point.
+        assert_eq!(
+            crate::printer::print(&reparsed.arenas, 100),
+            printed,
+            "idempotent\n{printed}"
         );
     }
 
