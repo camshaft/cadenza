@@ -136,6 +136,25 @@ jobs:
   #         cache-key: test-macos-latest
   #     - run: cargo test --workspace
 
+  # Fast COMPILER-FREE corpus-hygiene lints (v-corpus-harness). Native cargo (like test-macos): both read
+  # spec/semantics/*.sexp (+ .gate-baseline) via the cdz-corpus bin — no compiler, no nix check, sub-second —
+  # so they run as a plain cargo step (v-nix ruling: a nix check deriv buys ~zero caching + the flake checks
+  # are generated). They catch drift that otherwise reds a full gate --check fleet-wide only after a ~15-30min
+  # gate: `nativize-check` (an INPUT compound value literal not in native #ctor form — M3; caught #5973→#5981)
+  # and `baseline-drift` (a VANISHED .gate-baseline title from a renamed/removed case; caught + fixed #5983).
+  corpus-lints:
+    name: corpus-lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: corpus-lints
+      - name: native #ctor input-form lint
+        run: cargo run -q -p cdz-corpus -- nativize-check spec/semantics/*.sexp
+      - name: baseline title-drift lint
+        run: cargo run -q -p cdz-corpus -- baseline-drift spec/semantics/*.sexp --baseline spec/semantics/.gate-baseline
+
   # ── standalone-crate gate ───────────────────────────────────────────────────
   # `fleet/slack-bridge` is its OWN cargo workspace (its slack-morphism/tokio async tree is kept out of
   # the seed lockfile), so the `--workspace` fmt/clippy/test jobs above DON'T cover it. Run its own gate
