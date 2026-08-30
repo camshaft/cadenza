@@ -313,7 +313,15 @@ impl Gen<'_> {
             // reach-test sweep (real fuzzing uses independent bytes, but the tests must reach every arm).
             // So the effect-program slot splits with an inner `flip()` (well-distributed over varied_seed).
             match self.cur.choice(3) {
-                0 => self.user_sum_program(),
+                0 => {
+                    // Slot 0 splits (via flip) between a user-sum type-decl program and a RECURSIVE
+                    // HEAP-BUILDER (a recursive fn that grows a list across calls — recursive heap alloc).
+                    if self.cur.flip() {
+                        self.user_sum_program();
+                    } else {
+                        self.rec_list_builder_program();
+                    }
+                }
                 1 => {
                     // Slot 1 splits (via flip) between the try/`?` boundary program and a MUTUAL-RECURSION
                     // program (both top-level shapes; the flip is well-distributed over varied_seed).
@@ -406,6 +414,42 @@ impl Gen<'_> {
         let start = self.cur.range(0, 8);
         let callee = if self.cur.flip() { &f } else { &g };
         let _ = write!(self.out, "(def (main) ({callee} {start})) (export main))");
+    }
+
+    /// A RECURSIVE HEAP-BUILDER program: a recursive `def` that GROWS a `(List Int64)` across its calls
+    /// (pushing an element per level), then `main` returns the built list (or its length). Reaches the
+    /// recursive-heap-ALLOCATION + accumulated-heap-value round-trip that the scalar recursive helpers
+    /// never exercise — and the built-list VALUE is compared by the differential (a heap-growth/aliasing
+    /// miscompile → a wrong list). TERMINATION: `(build (- n 1) …)` is structurally decreasing on `n`,
+    /// base-guarded `(if (<= n 0) …)`, and `main` starts at a small 0..=6 arg. Int64 elements so it types.
+    /// Two shapes: non-tail (`(List.push (build (- n 1)) n)`) and tail-accumulator (`(build (- n 1) (List.push acc n))`).
+    /// Operator directive 2026-08-30: keep expanding generated program shapes.
+    fn rec_list_builder_program(&mut self) {
+        let start = self.cur.range(0, 6);
+        let ret_len = self.cur.flip(); // main returns List.len of the built list, else the list itself
+        if self.cur.flip() {
+            // Non-tail builder: build(n) = if n<=0 then (list) else push(build(n-1), n).
+            self.out.push_str(
+                "(do (def (build (: n Int64)) (if (<= n 0) (list) ((. List push) (build (- n 1)) n))) (def (main) ",
+            );
+            if ret_len {
+                let _ = write!(self.out, "(List.len (build {start}))");
+            } else {
+                let _ = write!(self.out, "(build {start})");
+            }
+            self.out.push_str(") (export main))");
+        } else {
+            // Tail-accumulator builder: build(n, acc) = if n<=0 then acc else build(n-1, push(acc, n)).
+            self.out.push_str(
+                "(do (def (build (: n Int64) (: acc (List Int64))) (if (<= n 0) acc (build (- n 1) ((. List push) acc n)))) (def (main) ",
+            );
+            if ret_len {
+                let _ = write!(self.out, "(List.len (build {start} (list)))");
+            } else {
+                let _ = write!(self.out, "(build {start} (list))");
+            }
+            self.out.push_str(") (export main))");
+        }
     }
 
     /// A USER-DEFINED-SUM program: a top-level monomorphic `(type …)` declaration + a param-less `main`
@@ -2855,6 +2899,30 @@ mod tests {
             hit,
             "no seed in the sweep emitted a mutual-recursion program"
         );
+    }
+
+    /// The recursive heap-builder program is reachable — some seed emits a `(def (build …` that grows a
+    /// `(List Int64)` across recursive calls (`(. List push) … n`), reaching recursive-heap-allocation.
+    /// Every such program parses + carries a `(if (<= n 0)` base guard. Guards operator seq-23 coverage.
+    #[test]
+    fn some_seed_emits_a_recursive_list_builder() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(def (build ") {
+                hit = true;
+                assert!(
+                    src.contains("(if (<= n 0)") && src.contains("(. List push)"),
+                    "recursive list-builder missing base guard or List.push:\n{src}"
+                );
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a recursive list-builder");
     }
 
     /// The TAIL-accumulator recursive form is reachable — some seed emits a THREE-parameter helper
