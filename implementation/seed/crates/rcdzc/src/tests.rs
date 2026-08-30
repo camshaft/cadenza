@@ -46284,8 +46284,8 @@ mod closure_host_resource {
         assert!(
             err.message.contains("closure transformer")
                 && err.message.contains("twice")
-                && err.code.is_none(),
-            "expected the closure-transformer decline naming `twice`, got: {:?} / {}",
+                && err.code.as_deref() == Some("CDZ0900"),
+            "expected the closure-transformer CDZ0900 decline naming `twice`, got: {:?} / {}",
             err.code,
             err.message
         );

@@ -208,15 +208,15 @@ pub fn emit(
         {
             // "an argument" / "a result" — the article agrees with the position word.
             let article = if pos == "argument" { "an" } else { "a" };
-            return Err(Reject::decline(format!(
+            return Err(Reject::unsupported(format!(
                 "the host operation `{op}` has {article} {pos} of type `{ty}`, which has no component \
-                 boundary form this compiler emits yet on a bare `(effect …)`. On a bare effect, host \
+                 boundary form this compiler emits on a bare `(effect …)`. On a bare effect, host \
                  RESULTS cross as a scalar/unit, and host ARGUMENTS as a scalar/unit/string or a `list<u8>` \
                  (Bytes). A `list<u8>` (Bytes) or `option<list<u8>>` RESULT crosses on the WORLD-DRIVEN \
                  boundary path — a component that declares an imposed `(wit-world …)` for the effect's \
                  interface — NOT on a bare effect (that path lifts the host bytes into a value-heap handle; \
-                 the bare host-call emit does not yet). A record/compound ARGUMENT, or a \
-                 `list<list<u8>>`/`list<tuple<…>>` RESULT, is a later increment."
+                 the bare host-call emit does not). A record/compound ARGUMENT, or a \
+                 `list<list<u8>>`/`list<tuple<…>>` RESULT, is not supported on a bare effect."
             )));
         }
     }
@@ -744,9 +744,9 @@ pub fn emit(
     // AND delegates a host effect — a further fusion). An extern + the value-heap RUNTIME (a consumer that
     // receives a compound `value` handle from a peer and inspects it) IS emitted (X5, `assemble_extern_runtime`).
     if !extern_imports.is_empty() && !host_imports.is_empty() {
-        return Err(Reject::decline(
-            "a cross-component extern import composed with a host effect is not yet emitted \
-             (the extern + host import fusion is a later increment)",
+        return Err(Reject::unsupported(
+            "a cross-component extern import composed with a host effect is not supported \
+             (the extern + host import fusion is unavailable)",
         ));
     }
     // A program mixing a host effect AND the value-heap runtime composes BOTH import spaces. A scalar/unit
@@ -1102,9 +1102,9 @@ pub fn emit(
             let vt = match serialize::export_result_valtype(ty, &db.name_ctx()) {
                 Ok(Some(vt)) => vt,
                 _ => {
-                    return Err(Reject::decline(format!(
+                    return Err(Reject::unsupported(format!(
                         "parameter `{}` of `{}` has no scalar boundary representation — a non-scalar entry \
-                         parameter is not yet emitted on this export path",
+                         parameter is not supported on this export path",
                         ty.render_name(&db.name_ctx()),
                         e.name
                     )));
@@ -1128,9 +1128,9 @@ pub fn emit(
     // `params.len()` IS the flattened count. (Rust targets have no flat limit and compile these fine.)
     for be in &boundary {
         if be.params.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS {
-            return Err(Reject::decline(format!(
+            return Err(Reject::unsupported(format!(
                 "export `{}` has {} boundary parameters; the canonical ABI passes more than {} flat \
-                 parameters memory-indirect, which this backend does not yet emit — a >{}-parameter export \
+                 parameters memory-indirect, which this backend does not support — a >{}-parameter export \
                  is declined rather than emitting an invalid component",
                 be.name,
                 be.params.len(),
@@ -1461,12 +1461,12 @@ pub fn emit(
     {
         let ty_name = bad.result.render_name(&db.name_ctx());
         let ename = bad.name.clone();
-        return Err(Reject::decline(format!(
+        return Err(Reject::unsupported(format!(
             "the export `{ename}` returns `{ty_name}`, which the imposed world declares as a typed \
-             component type, but this compiler cannot emit that typed export yet — rather than silently \
+             component type, but this compiler cannot emit that typed export — rather than silently \
              cross it as an opaque `u32` handle (exporting a different type than the world declares), it \
              declines. (A record/enum/variant/tuple result under a declared world is supported; other \
-             compound results are a later increment.)"
+             compound results are not supported.)"
         )));
     }
 
@@ -1831,8 +1831,8 @@ fn resource_escape_dwarf(
     // sibling does, so the offsets align. `resource_dwarf_from_core` finishes the shared tail.
     if let crate::ty::Ty::Sum { .. } = &result {
         let Some(tpl) = crate::lower::sum_form_template(db, &result) else {
-            return Err(Reject::decline(
-                "a DWARF sidecar for this sum-returning export is not yet supported (its variant \
+            return Err(Reject::unsupported(
+                "a DWARF sidecar for this sum-returning export is not supported (its variant \
                  payload has no value form — matches the embedded path's own decline)",
             ));
         };
@@ -1885,8 +1885,8 @@ fn resource_escape_dwarf(
             crate::lower::runtime_bytes_form(db)
         };
         let Some(form) = form else {
-            return Err(Reject::decline(
-                "a DWARF sidecar for this runtime-Bytes/String export is not yet supported (no value form)",
+            return Err(Reject::unsupported(
+                "a DWARF sidecar for this runtime-Bytes/String export is not supported (no value form)",
             ));
         };
         let (imports, funcs, layout) = resource_escape_build(db, layout, |used| {
@@ -1951,8 +1951,8 @@ fn resource_escape_dwarf(
 
     // A runtime compound with no value-form walker yet (e.g. a runtime list) — the embedded path
     // declines the same shape, so the sidecar does too rather than emit into a core it can't build.
-    Err(Reject::decline(
-        "a DWARF sidecar for this runtime compound-returning export is not yet supported (no value \
+    Err(Reject::unsupported(
+        "a DWARF sidecar for this runtime compound-returning export is not supported (no value \
          form — matches the embedded path's own decline)",
     ))
 }
@@ -2690,23 +2690,23 @@ fn emit_closure_resource(
     // handles a SCALAR closure result + a single scalar/unit host effect; other shapes decline cleanly.
     if !host_imports.is_empty() {
         if ret_is_bytes || ret_is_compound || ret_is_collection {
-            return Err(Reject::decline(
+            return Err(Reject::unsupported(
                 "a closure export that BOTH delegates a build-time host effect AND returns a \
-                 byte-rope/compound/collection is not yet emitted (the host-composed closure core supports \
-                 a scalar result this increment)",
+                 byte-rope/compound/collection is not supported (the host-composed closure core supports \
+                 a scalar result)",
             ));
         }
         let iface = host_imports[0].effect.clone();
         if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::decline(
-                "a closure export delegating more than one host effect is not yet emitted (one interface \
+            return Err(Reject::unsupported(
+                "a closure export delegating more than one host effect is not supported (one interface \
                  per closure envelope)",
             ));
         }
         if host::set_needs_memory(&host_imports) {
-            return Err(Reject::decline(
-                "a closure export delegating a host op with a string parameter is not yet emitted (the \
-                 shared-memory host shape and the closure resource envelope compose in a later increment)",
+            return Err(Reject::unsupported(
+                "a closure export delegating a host op with a string parameter is not supported (the \
+                 shared-memory host shape and the closure resource envelope are not composed)",
             ));
         }
         return emit_closure_host_resource(
@@ -3819,9 +3819,9 @@ fn emit_multi_closure_resource(
     // thread tuples (`list_rebuilds`/`list_slots`) but NOT sums, so a sum + list result would fall into them
     // with a mismatched `arg_vts`. Decline HERE so it doesn't reach the single-tuple-oriented list routings.
     if sum_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
-        return Err(Reject::decline(
+        return Err(Reject::unsupported(
             "a multi-export closure taking an Option/Result arg AND returning a byte-rope/compound/collection \
-             is not yet emitted (the multi list-result path threads tuples, not sums; scalar-result works)",
+             is not supported (the multi list-result path threads tuples, not sums; scalar-result works)",
         ));
     }
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
@@ -5545,9 +5545,9 @@ fn emit_roundtrip_resource(
                 .iter()
                 .any(|(_, p)| matches!(p, crate::ty::Ty::Fn(_, _)))
     }) {
-        return Err(Reject::decline(format!(
+        return Err(Reject::unsupported(format!(
             "the export `{}` both RECEIVES a closure (a parameter) and RETURNS one (its result) — a \
-             closure transformer. That is not yet supported: the host would pass a closure in and get one \
+             closure transformer. That is not supported: the host would pass a closure in and get one \
              out of the same call, which needs the closure to cross as `own<t>` in both directions of one \
              boundary function (DESIGN-closure-host-resource-rcdzc.md, closure transformers)",
             t.name
@@ -5567,9 +5567,9 @@ fn emit_roundtrip_resource(
     // type + one lifted functype this increment).
     for p in &producers {
         if p.result != sig {
-            return Err(Reject::decline(
-                "a round-trip program mixing closures of DIFFERENT signatures is not yet supported \
-                 (one resource type per signature is a later slice)",
+            return Err(Reject::unsupported(
+                "a round-trip program mixing closures of DIFFERENT signatures is not supported \
+                 (one resource type per signature)",
             ));
         }
     }
@@ -5589,9 +5589,9 @@ fn emit_roundtrip_resource(
             ));
         }
         if closure_params.iter().any(|t| *t != &sig) {
-            return Err(Reject::decline(
+            return Err(Reject::unsupported(
                 "a round-trip consumer's closure parameter has a different signature than the produced \
-                 closure (mixed signatures are a later slice)",
+                 closure, which is not supported (mixed signatures)",
             ));
         }
     }
@@ -6014,9 +6014,9 @@ fn emit_distinct_sig_roundtrip_resource(
         let cs = consumer_sigs(e);
         if !cs.is_empty() {
             if cs.len() != 1 {
-                return Err(Reject::decline(
+                return Err(Reject::unsupported(
                     "a distinct-signature round-trip consumer with more than one closure parameter is \
-                     not yet supported",
+                     not supported",
                 ));
             }
             group_of(&cs[0], &mut sigs);
@@ -8662,8 +8662,8 @@ fn emit_bytes_provider_member(
 
     // A PEER-bound effect crosses as a handle over a SHARED runtime — not the host-fused bytes path; decline.
     if !db.effect_bindings.is_empty() {
-        return Err(Reject::decline(
-            "a bytes-crossing member bound to a peer interface is not yet emitted (the host-fused \
+        return Err(Reject::unsupported(
+            "a bytes-crossing member bound to a peer interface is not supported (the host-fused \
              bytes-roundtrip path handles host imports, not peer-bound effects)",
         ));
     }
@@ -8708,9 +8708,9 @@ fn emit_bytes_provider_member(
     }
     append_lifted_bodies(db, &mut funcs, layout)?;
     if !escape_lifted_table(layout).is_empty() {
-        return Err(Reject::decline(
-            "a bytes-crossing member using first-class closures is not yet emitted (the bytes-roundtrip \
-             core module lays no funcref table yet — a later slice)",
+        return Err(Reject::unsupported(
+            "a bytes-crossing member using first-class closures is not supported (the bytes-roundtrip \
+             core module lays no funcref table)",
         ));
     }
     let member_body_abs = layout
@@ -8768,9 +8768,9 @@ fn emit_bytes_provider_member(
         // FIRST full-A host slice: a single host import interface (the reducer's `kv`). Its component-import
         // name is the world's import interface name (FQ). A multi-host-interface member is a later slice.
         let [iface_import] = &world.imports[..] else {
-            return Err(Reject::decline(
+            return Err(Reject::unsupported(
                 "a host-fused bytes member with other than exactly one target-world import interface is \
-                 not yet emitted (single host interface, e.g. kv, is the first slice)",
+                 not supported (a single host interface, e.g. kv, is supported)",
             ));
         };
         iface_import.name.clone()
@@ -8801,9 +8801,9 @@ fn emit_bytes_provider_member(
         );
         (vec![bytes], base + 1)
     } else {
-        return Err(Reject::decline(
-            "a bytes-provider host set with more than one DISTINCT enum parameter type is not yet emitted \
-             (a single enum type per set this slice)",
+        return Err(Reject::unsupported(
+            "a bytes-provider host set with more than one distinct enum parameter type is not supported \
+             (a single enum type per set)",
         ));
     };
     let host_fns: Vec<envelope::HostFn> = host_imports
@@ -9009,10 +9009,10 @@ fn export_make_params(
                 let Some((_field_bytes, field_vts, rebuild_fields, shape)) =
                     nested_fixed_shape_tuple_arg(t)
                 else {
-                    return Err(Reject::decline(format!(
+                    return Err(Reject::unsupported(format!(
                         "a parameterized heap-return export's compound parameter `{}` is not a fixed-shape \
                          tuple/record of scalars (a variable-length field — a list/map/set inside the \
-                         compound — is not yet supported)",
+                         compound — is not supported)",
                         t.render_name(&db.name_ctx())
                     )));
                 };
@@ -9081,10 +9081,10 @@ impl MakeParams {
     /// the sum/bytes escape emitters; the recursive-sum + flat emitters handle compounds via the slot model.
     fn scalars_only(self) -> Result<(Vec<crate::backend::wasm::lir::ValType>, Vec<u8>), Reject> {
         if self.any_compound() {
-            return Err(Reject::decline(
-                "a compound parameter on this heap-return shape is not yet emitted (only a runtime \
+            return Err(Reject::unsupported(
+                "a compound parameter on this heap-return shape is not supported (only a runtime \
                  collection / recursive-sum / BigInt / Rational / fixed-compound result supports a \
-                 compound parameter this increment)",
+                 compound parameter)",
             ));
         }
         let bytes = self
