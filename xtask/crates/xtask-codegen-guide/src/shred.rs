@@ -11,8 +11,10 @@
 //! layout). The ML surface is `cdz convert --from sexpr --to ml` of the wrapped sexpr (wrapping commutes
 //! with surface conversion). Deterministic (case dirs = index+slug, no timestamps) for the CA nix cache.
 //!
-//! v1 SCOPE: single-file runnables + exercises (the ~all of them). DEFERRED (emit meta.deferred, no program):
-//! multi-file `(files …)` runnables (need the lowerToCompile port — a follow-up) + mode="test" runnables.
+//! SCOPE: single-file runnables + exercises (canonical: sexpr-authored + the ml toggle) AND multi-file
+//! `(files …)` runnables (lowered like the app's fileModel.ts `lowerToCompile` — one entry + preloaded
+//! peers, sexpr-only, no toggle, matching the node shred). DEFERRED (emit meta.deferred, no program):
+//! mode="test" runnables (they run via the @test-export driver — a v2 shred kind).
 
 use crate::wrap::{Surface, wrap_module};
 use cadenza_ast::ast::Arenas;
@@ -33,6 +35,13 @@ fn snippet_text(a: &Arenas, node: StructId, name: &str) -> Option<String> {
         .map(|&k| cadenza_syntax_sexpr::print_from(a, k))
         .collect();
     Some(parts.join("\n"))
+}
+
+/// Normalize an authored `surface` value to the two the compiler declares (`"ml"` | `"sexpr"`), as a
+/// `'static` literal — every guide surface is one of these, and a stray value degrades to sexpr (the
+/// authored default) rather than emitting a bogus surface string into the manifest.
+fn surface_lit(s: &str) -> &'static str {
+    if s == "ml" { "ml" } else { "sexpr" }
 }
 
 /// Render `sexpr_program` to ML via `cdz convert --from sexpr --to ml` (the caller puts `cdz` on PATH). This
@@ -64,6 +73,76 @@ fn render_ml(cdz: &str, sexpr_program: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
+/// One authored file of a multi-file `(files …)` runnable — a `(file (name ..)(source ..)(surface ..)[(entry
+/// "true")])` sub-form, decoded to its parts.
+struct MFile {
+    name: String,
+    source: String,
+    surface: String,
+    entry: bool,
+}
+
+/// Decode the `(file …)` children of a `(files …)` holder into [`MFile`]s (source = the `(source …)` form
+/// children printed, like a single-file program). Skips a child that isn't a well-formed `(file …)`.
+fn multifile_files(a: &Arenas, files_holder: StructId) -> Vec<MFile> {
+    super::children(a, files_holder)
+        .iter()
+        .filter_map(|&f| {
+            if a.head_name(f) != Some("file") {
+                return None;
+            }
+            Some(MFile {
+                name: super::named_attr(a, f, "name")?.to_string(),
+                source: snippet_text(a, f, "source")?,
+                surface: super::named_attr(a, f, "surface")
+                    .unwrap_or("sexpr")
+                    .to_string(),
+                entry: super::named_attr(a, f, "entry") == Some("true"),
+            })
+        })
+        .collect()
+}
+
+/// Lower a multi-file set to `(entry index, preloaded-peer indices in model order)` — a faithful port of
+/// fileModel.ts `lowerToCompile`: exactly one `entry:true` file (the genesis compiled as the program), every
+/// other file a preloaded peer; non-empty, unique names. Returns the same reason strings on a malformed set.
+fn lower_multifile(files: &[MFile]) -> Result<(usize, Vec<usize>), String> {
+    if files.is_empty() {
+        return Err("empty file set — add at least an entry file.".into());
+    }
+    if files.iter().any(|f| f.name.is_empty()) {
+        return Err("every file needs a non-empty `name` (the import link target).".into());
+    }
+    for (i, f) in files.iter().enumerate() {
+        if files[..i].iter().any(|g| g.name == f.name) {
+            return Err(format!(
+                "duplicate file name(s): {} — each file needs a unique name (imports resolve by name).",
+                f.name
+            ));
+        }
+    }
+    let entries: Vec<usize> = files
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.entry)
+        .map(|(i, _)| i)
+        .collect();
+    match entries.as_slice() {
+        [] => {
+            Err("no entry file — mark exactly one file `entry: true` (the genesis program).".into())
+        }
+        [e] => Ok((*e, (0..files.len()).filter(|&i| i != *e).collect())),
+        _ => Err(format!(
+            "multiple entry files ({}) — exactly one file may be the entry.",
+            entries
+                .iter()
+                .map(|&i| files[i].name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 /// A case's derived shred artifacts + metadata (kept minimal; JSON emitted by hand to match shred-examples).
 struct Case {
     dir: String,
@@ -73,8 +152,15 @@ struct Case {
     surfaces: Vec<&'static str>,
     deferred: bool,
     reason: Option<String>,
-    program_sexpr: Option<String>,
-    program_ml: Option<String>,
+    /// The program files to write, `(filename, contents)` — `program.<surface>` plus, for a multi-file case,
+    /// each preloaded `module-<name>.<surface>` peer. Empty for a deferred case.
+    files: Vec<(String, String)>,
+    /// Multi-file preloaded peers `(name, surface)` in model order (empty for a single-file case) — the flake
+    /// converts each to `module-<name>.<surface>` + passes `--entry`.
+    peers: Vec<(String, String)>,
+    entry_name: Option<String>,
+    multi_file: bool,
+    authored_surface: Option<&'static str>,
     expected: Option<String>,
     file_stem: String,
 }
@@ -95,8 +181,8 @@ fn slugify(stem: &str) -> String {
     s.trim_matches('-').to_string()
 }
 
-/// Derive one runnable/exercise case from its node. `cdz` renders the ml surface. Multi-file + test-mode
-/// runnables are marked deferred (no program) in v1.
+/// Derive one runnable/exercise case from its node. `cdz` renders the ml surface. mode="test" runnables are
+/// marked deferred (no program) — they need the @test-export driver.
 fn derive_case(
     a: &Arenas,
     node: StructId,
@@ -108,34 +194,73 @@ fn derive_case(
     let dir = format!("{idx:04}-{}", slugify(stem));
     let file_stem = stem.to_string();
 
-    // Multi-file / test-mode runnables: deferred in v1 (need the lowerToCompile port).
-    let is_multifile = super::named_node(a, node, "files").is_some();
-    let is_test = super::named_attr(a, node, "mode") == Some("test");
-    if is_multifile || is_test {
+    // mode="test" runnables: deferred (they run via the @test-export driver, a v2 shred kind).
+    if super::named_attr(a, node, "mode") == Some("test") {
         return Ok(Case {
             dir,
-            kind: if is_multifile {
-                "multi-file"
-            } else {
-                "test-mode"
-            },
+            kind: "test-mode",
             graded: false,
             expect_kind: "value",
             surfaces: vec![],
             deferred: true,
-            reason: Some(if is_multifile {
-                "multi-file (files …) runnable — lowerToCompile port pending (v2 shred kind)".into()
-            } else {
-                "mode=test runnable runs via the @test-export driver (v2 shred kind)".into()
-            }),
-            program_sexpr: None,
-            program_ml: None,
+            reason: Some(
+                "mode=test runnable runs via the @test-export driver (v2 shred kind)".into(),
+            ),
+            files: vec![],
+            peers: vec![],
+            entry_name: None,
+            multi_file: false,
+            authored_surface: None,
             expected: None,
             file_stem,
         });
     }
 
-    // The program: runnable → (source); exercise → (solution) (the gradeable correct program).
+    let expected = super::named_attr(a, node, "expected").map(str::to_string);
+    let expect_kind = if super::named_attr(a, node, "expect") == Some("error") {
+        "error"
+    } else {
+        "value"
+    };
+
+    // MULTI-FILE `(files …)`: lower the set like fileModel.ts `lowerToCompile` — entry → program.<surface>,
+    // preloaded peers → module-<name>.<surface>. Full modules (imports/exports), so NOT wrapped, and authored
+    // in one surface with no toggle (matches the node shred: surfaces=[from]).
+    if let Some(files_holder) = super::named_node(a, node, "files") {
+        let mfiles = multifile_files(a, files_holder);
+        let (entry_idx, peer_idxs) =
+            lower_multifile(&mfiles).map_err(|e| format!("{dir}: multi-file won't lower — {e}"))?;
+        let from = surface_lit(&mfiles[entry_idx].surface);
+        let mut files = vec![(format!("program.{from}"), mfiles[entry_idx].source.clone())];
+        let mut peers = Vec::new();
+        for &pi in &peer_idxs {
+            let s = surface_lit(&mfiles[pi].surface);
+            files.push((
+                format!("module-{}.{s}", mfiles[pi].name),
+                mfiles[pi].source.clone(),
+            ));
+            peers.push((mfiles[pi].name.clone(), s.to_string()));
+        }
+        return Ok(Case {
+            dir,
+            kind: "multi-file",
+            graded: expected.is_some(),
+            expect_kind,
+            surfaces: vec![from],
+            deferred: false,
+            reason: None,
+            files,
+            peers,
+            entry_name: Some("main".into()),
+            multi_file: true,
+            authored_surface: Some(from),
+            expected,
+            file_stem,
+        });
+    }
+
+    // SINGLE-FILE: runnable → (source); exercise → (solution) (the gradeable correct program). Wrap the
+    // sexpr snippet + render the ml toggle.
     let src_name = if kind == "exercise" {
         "solution"
     } else {
@@ -144,14 +269,7 @@ fn derive_case(
     let snippet = snippet_text(a, node, src_name)
         .ok_or_else(|| format!("{dir}: no ({src_name} …) program"))?;
     let program_sexpr = wrap_module(&snippet, Surface::Sexpr);
-    let program_ml_snippet = render_ml(cdz, &program_sexpr)?;
-
-    let expected = super::named_attr(a, node, "expected").map(str::to_string);
-    let expect_kind = if super::named_attr(a, node, "expect") == Some("error") {
-        "error"
-    } else {
-        "value"
-    };
+    let program_ml = render_ml(cdz, &program_sexpr)?;
 
     Ok(Case {
         dir,
@@ -161,8 +279,14 @@ fn derive_case(
         surfaces: vec!["sexpr", "ml"],
         deferred: false,
         reason: None,
-        program_sexpr: Some(program_sexpr),
-        program_ml: Some(program_ml_snippet),
+        files: vec![
+            ("program.sexpr".to_string(), program_sexpr),
+            ("program.ml".to_string(), program_ml),
+        ],
+        peers: vec![],
+        entry_name: None,
+        multi_file: false,
+        authored_surface: Some("sexpr"),
         expected,
         file_stem,
     })
@@ -170,6 +294,21 @@ fn derive_case(
 
 fn json_str(s: &str) -> String {
     super::json_string(s)
+}
+
+/// Render a case's `peers` array as JSON `[{ "name": .., "surface": .. }, …]` (empty `[]` for single-file).
+fn peers_json(peers: &[(String, String)]) -> String {
+    let items: Vec<String> = peers
+        .iter()
+        .map(|(n, s)| {
+            format!(
+                "{{ \"name\": {}, \"surface\": {} }}",
+                json_str(n),
+                json_str(s)
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
 }
 
 /// `--shred <out-dir> <cdz-bin> <ordered .cdzb list>`: decode each chapter binary AST, shred its
@@ -222,11 +361,8 @@ fn write_case(out_dir: &str, c: &Case) {
     let w = |name: &str, body: &str| {
         std::fs::write(dir.join(name), body).unwrap_or_else(|e| die(&format!("write {name}: {e}")));
     };
-    if let Some(p) = &c.program_sexpr {
-        w("program.sexpr", p);
-    }
-    if let Some(p) = &c.program_ml {
-        w("program.ml", p);
+    for (name, body) in &c.files {
+        w(name, body);
     }
     if let Some(e) = &c.expected {
         w("expected", e);
@@ -250,8 +386,15 @@ fn write_case(out_dir: &str, c: &Case) {
         json_str(c.expect_kind),
         surfaces,
     );
-    if !c.deferred {
-        meta.push_str(&format!(",\n  \"authoredSurface\": {}", json_str("sexpr")));
+    if let Some(s) = c.authored_surface {
+        meta.push_str(&format!(",\n  \"authoredSurface\": {}", json_str(s)));
+    }
+    if c.multi_file {
+        meta.push_str(",\n  \"multiFile\": true");
+        if let Some(e) = &c.entry_name {
+            meta.push_str(&format!(",\n  \"entryName\": {}", json_str(e)));
+        }
+        meta.push_str(&format!(",\n  \"peers\": {}", peers_json(&c.peers)));
     }
     if c.deferred {
         meta.push_str(",\n  \"deferred\": true");
@@ -275,8 +418,8 @@ fn write_manifest(out_dir: &str, cases: &[Case]) {
                 .map(|s| json_str(s))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!(
-                "    {{ \"dir\": {}, \"file\": {}, \"kind\": {}, \"graded\": {}, \"expectKind\": {}, \"surfaces\": [{}], \"deferred\": {} }}",
+            let mut e = format!(
+                "    {{ \"dir\": {}, \"file\": {}, \"kind\": {}, \"graded\": {}, \"expectKind\": {}, \"surfaces\": [{}], \"deferred\": {}",
                 json_str(&c.dir),
                 json_str(&format!("src/content/chapters/{}.tsx", c.file_stem)),
                 json_str(c.kind),
@@ -284,7 +427,15 @@ fn write_manifest(out_dir: &str, cases: &[Case]) {
                 json_str(c.expect_kind),
                 surfaces,
                 c.deferred,
-            )
+            );
+            if c.multi_file {
+                if let Some(en) = &c.entry_name {
+                    e.push_str(&format!(", \"entryName\": {}", json_str(en)));
+                }
+                e.push_str(&format!(", \"peers\": {}", peers_json(&c.peers)));
+            }
+            e.push_str(" }");
+            e
         })
         .collect();
     let manifest = format!(
@@ -341,6 +492,78 @@ mod tests {
                 Surface::Sexpr
             ),
             "(do (def (main) (f 5)) (export main))"
+        );
+    }
+
+    #[test]
+    fn lower_multifile_validates_and_orders() {
+        let mk = |name: &str, entry: bool| MFile {
+            name: name.into(),
+            source: format!("(do (export {name}))"),
+            surface: "sexpr".into(),
+            entry,
+        };
+        // one entry, peers in model order (non-entry, stable)
+        let files = vec![mk("events", false), mk("reducer", true)];
+        assert_eq!(lower_multifile(&files).unwrap(), (1, vec![0]));
+        // no entry
+        assert!(
+            lower_multifile(&[mk("a", false)])
+                .unwrap_err()
+                .contains("no entry file")
+        );
+        // multiple entries
+        assert!(
+            lower_multifile(&[mk("a", true), mk("b", true)])
+                .unwrap_err()
+                .contains("multiple entry files")
+        );
+        // duplicate names
+        assert!(
+            lower_multifile(&[mk("a", true), mk("a", false)])
+                .unwrap_err()
+                .contains("duplicate file name")
+        );
+        // empty set
+        assert!(lower_multifile(&[]).unwrap_err().contains("empty file set"));
+    }
+
+    #[test]
+    fn multifile_case_emits_program_and_peers() {
+        // the PlatformExecution shape: events (peer) + reducer (entry), both sexpr.
+        let text = "(chapter (slug \"x\") (runnable (files \
+            (file (name \"events\") (source (do (export turn))) (surface \"sexpr\")) \
+            (file (name \"reducer\") (source (do (export main))) (surface \"sexpr\") (entry \"true\")))))";
+        let a = cadenza_syntax_sexpr::read_all(text).unwrap();
+        let ch = super::super::locate_chapter(&a).unwrap();
+        let runnable = super::super::children(&a, ch)
+            .iter()
+            .copied()
+            .find(|&f| a.head_name(f) == Some("runnable"))
+            .unwrap();
+        // cdz is not invoked for multi-file (sexpr-only, no ml render), so a dummy path is fine.
+        let case = derive_case(&a, runnable, "runnable", "PlatformExecution", 7, "cdz").unwrap();
+        assert_eq!(case.kind, "multi-file");
+        assert!(case.multi_file && !case.deferred);
+        assert_eq!(case.surfaces, vec!["sexpr"]);
+        assert_eq!(case.entry_name.as_deref(), Some("main"));
+        assert_eq!(
+            case.peers,
+            vec![("events".to_string(), "sexpr".to_string())]
+        );
+        // entry program + one preloaded peer module, entry compiled as program.sexpr.
+        assert_eq!(
+            case.files,
+            vec![
+                (
+                    "program.sexpr".to_string(),
+                    "(do (export main))".to_string()
+                ),
+                (
+                    "module-events.sexpr".to_string(),
+                    "(do (export turn))".to_string()
+                ),
+            ]
         );
     }
 }
