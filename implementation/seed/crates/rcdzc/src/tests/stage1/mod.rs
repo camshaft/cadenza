@@ -2235,12 +2235,8 @@ fn an_unrealized_builtin_field_declines() {
 
 // ── the full binary-integer operator set (all fold at width 64) ──────────────────────────────
 
-#[test]
-fn division_by_zero_fails_the_build() {
-    // (/ 5 0) — a compile-provable trap fails the build (CDZ0304), not a shipped runtime trap. The
-    // message names the SPECIFIC cause (divide by zero), not a list of every possible trap.
-    assert!(expect_decline("(/ 5 0)").contains("divide by zero"));
-}
+// division_by_zero_fails_the_build (`(/ 5 0)` → CDZ0304) migrated to corpus 06-numeric-model
+// "division by zero traps". rcdzc test deleted (corpus-covered).
 
 #[test]
 fn dividing_a_runtime_value_by_the_constant_zero_fails_the_build() {
@@ -2289,12 +2285,8 @@ fn dividing_a_runtime_value_by_the_constant_zero_fails_the_build() {
     );
 }
 
-#[test]
-fn division_of_min_by_minus_one_overflows() {
-    // (/ MIN -1) overflows Int64 (the result 2^63 doesn't fit) — CDZ0304, named as an overflow (NOT
-    // a divide-by-zero: the divisor is -1, and the fold distinguishes the two Div traps).
-    assert!(expect_decline("(/ -9223372036854775808 -1)").contains("overflows Int64"));
-}
+// division_of_min_by_minus_one_overflows (`(/ -9223372036854775808 -1)` → CDZ0304) migrated to corpus
+// 06-numeric-model "division of the minimum integer by -1 overflows and traps". rcdzc test deleted (corpus-covered).
 
 #[test]
 fn a_conditional_const_divide_by_zero_demotes_to_a_kind_preserving_trap() {
@@ -2456,12 +2448,8 @@ fn a_self_identity_fold_is_blocked_when_the_operand_binding_can_trap() {
     );
 }
 
-#[test]
-fn left_shift_that_overflows_fails_the_build() {
-    // (<< 4611686018427387904 1) overflows Int64 — traps like `*`, so CDZ0304, not a silent wrap.
-    // The message names it as an overflow (in-range count, but the shifted result doesn't fit).
-    assert!(expect_decline("(<< 4611686018427387904 1)").contains("overflows Int64"));
-}
+// left_shift_that_overflows_fails_the_build (`(<< 4611686018427387904 1)` → CDZ0304) migrated to corpus
+// 06-numeric-model "a CONSTANT bare-Int64 left shift whose result overflows Int64 is rejected". rcdzc test deleted.
 
 // NOTE: the constant out-of-range shift-count rejects — `(<< 1 64)` (count ≥ width) and `(<< 1 -1)`
 // (negative count) — migrated to corpus 06-numeric-model "a constant shift by an OUT-OF-RANGE count is
@@ -2520,13 +2508,8 @@ fn constant_compound_equality_folds_and_a_runtime_one_emits_a_heap_walk() {
     );
 }
 
-#[test]
-fn provable_overflow_fails_the_build() {
-    // `(+ Int64.max 1)` overflows the checked Int64 — the compiler PROVES it via the fold and
-    // fails the build (CDZ0304) rather than shipping a component that traps (numeric-model.md).
-    let msg = expect_decline("(+ (. Int64 max) 1)");
-    assert!(msg.contains("overflow"), "got: {msg}");
-}
+// provable_overflow_fails_the_build (`(+ Int64.max 1)` → CDZ0304) migrated to corpus 06-numeric-model
+// "overflow of the default integer traps deterministically". rcdzc test deleted (corpus-covered).
 
 // ── type annotations `(: e T)`: transparent to the value, constrains the type ────────────────
 
