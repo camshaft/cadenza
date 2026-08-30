@@ -48,6 +48,21 @@
   (input  (do (def (main) (try (Ok 1) (Ok 2))) (export main)))
   (error  CDZ0201))
 
+; The s-expr surface head for the try operator is the keyword `try` (`(try e)`), NOT the `?` sigil many
+; languages use — the diagnostics call it "`?`/`try`", so an author may reach for `(? e)`. A `?` in HEAD
+; position resolves to no binding: CDZ0101, but the message names the real spelling (`(try <expression>)`,
+; "write `try`") rather than a nonsensical did-you-mean over a sigil. A bare `?` NOT in head position
+; (`(list ?)`) keeps the ORDINARY "unbound name `?`" with no try hint — only a `(? …)` head is the
+; reachable-for-try mistake. (Migrated from rcdzc the_sigil_question_mark_as_a_head_points_at_the_try_spelling;
+; the `?`→`try` head-rewrite FIX stays a white-box residual pending a corpus fix-grade.)
+(case "the `?` sigil in head position names the `try` spelling, not a bare unbound name"
+  (input  (do (def (main) (? (Ok 1))) (export main)))
+  (error  CDZ0101 (message "(try <expression>)") (message "write `try`")))
+
+(case "a bare `?` NOT in head position stays an ordinary unbound name with no try hint"
+  (input  (do (def (main) (list ?)) (export main)))
+  (error  CDZ0101 (message "unbound name `?`") (not "try")))
+
 (case "a `?` with no fallible enclosing function boundary is rejected"
   (doc    "`(def (main) (try (Ok 1)))` — main's body IS the `?`, whose type is the UNWRAPPED `Int64`, so
            main returns `Int64`, neither `Result` nor `Option`. A `?` short-circuits the enclosing
