@@ -39,6 +39,33 @@
   (call   main (: 3 Int64))  (output (: 111 Int64))
   (call   main (: 10 Int64)) (output (: 125 Int64)))
 
+(case "crn2 (perceus resume-seam gate pin) HEAP tuple state READ by projection AND threaded UNCHANGED via the state-tuple Proj, aliased across two dispatches — the tuple-Proj must classify the heap state element as COMPOUND, not scalar"
+  (doc    "The v-memory-safety-requested WITNESS for the effects resume-seam OccTable slice (design note
+           §5.1 / rev.3): the one real hazard is the state-tuple Proj (ValueKey PayloadNode) MIS-classifying
+           a heap-carrying state element as a SCALAR element (get_op Some => scalar/borrow) — which would
+           BORROW it, miss the escape, and free the threaded state under the consumer (a read-through-freed
+           UAF). Here the heap tuple state s is READ by projection ((. a 0)/(. b 1)) AND threaded UNCHANGED
+           (resume s s) across TWO dispatches that both alias it. main = (. s 0) + (. s 1) = 2n+1 (3->7,
+           10->21, 0->1). WITNESSED trap-CLEAN (v-effects a51) on BOTH the release runtime (rc-underflow OOB
+           class) and the debug #4635 getter-guard (read-through-freed class, the applicable one here) — so
+           the Proj classifies the heap state element as compound correctly and the reclaim walk counts both
+           the borrow-read and the thread occurrences; NO Proj-compound-classification arm needed, the slice
+           ships as-is. A regression that re-typed the state element as scalar would trap #4635 here (v-mem
+           §8 #5886: a TRAP is the reliable UAF signal, a live-objects count is not). Note: the debug
+           live-objects census does NOT catch the rc-underflow sub-class — this case's guard is the TRAP, not
+           the count.")
+  (input  (do
+            (effect M (op peek (-> Unit (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle M #tuple(n (+ n 1))
+                ((peek (u) s (resume s s)))
+                (let ((a (M.peek unit)) (b (M.peek unit)))
+                  (+ (. a 0) (. b 1)))))
+            (export main)))
+  (call   main (: 3 Int64))  (output (: 7 Int64))
+  (call   main (: 10 Int64)) (output (: 21 Int64))
+  (call   main (: 0 Int64))  (output (: 1 Int64)))
+
 (case "dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])"
   (input  (do
             (def (main) #list((: 127 Int32) 32767))
