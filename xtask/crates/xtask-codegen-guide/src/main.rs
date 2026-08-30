@@ -14,6 +14,7 @@ use cadenza_syntax_core::spans::SpanTable;
 
 // Guide shred (operator: shred in Rust from the binary AST). `wrap` = the wrapModule port; `shred` = the
 // `--shred` mode (decode binary AST → walk (source) subtrees → wrap + render + emit the corpus cases).
+mod playground;
 mod shred;
 mod wrap;
 
