@@ -3218,28 +3218,31 @@
 
 ; The three scalar-at cases above use a CONSTANT string AND a CONSTANT index, so they fold to a
 ; `Leaf::Char` at compile time (`lower_str_scalar_at`) and never exercise a runtime read. `String.scalar-at`
-; with a RUNTIME index — even over a constant string — is INTENTIONALLY not provided (operator char-rep
-; WONTFIX). Not a technical gap: at runtime a char IS just its integer code-point, so the `(Option Char)`
-; result IS buildable — but there is NO distinct char BOUNDARY representation, so a runtime char renders as
-; its code-point NUMBER, not a `#\c` literal. By design we DECLINE rather than hand back a `Char` that would
-; render as a number, and steer callers to the alternatives that render: `String.at` (a runtime
-; `(Option String)` one-scalar read) for a char-scan, or `Bytes.at` on `String.to-bytes` for byte scanning.
-; (Distinct from the runtime-char MATCH below, which EXECUTES: char COMPUTE — `=`/`<`/`match`/`from-int`/
-; `to-int` — works on the i32 code-point slot; only the boundary RENDER-as-char-literal is WONTFIX.)
-(case "String.scalar-at over a runtime index is intentionally declined (char-rep WONTFIX — a runtime char renders as its code-point number)"
-  (doc    "`(String.scalar-at \"café\" i)` with `i` a runtime Int64 PARAMETER cannot fold, and a runtime
-           `String.scalar-at` is INTENTIONALLY not provided (operator char-rep WONTFIX). Not a technical gap:
-           at runtime a char IS just its integer code-point, so the `(Option Char)` IS buildable — but there
-           is no distinct char BOUNDARY representation, so the result would render as a code-point NUMBER, not
-           a `#\\c` literal. By design it DECLINES and steers callers to `String.at` (a runtime `(Option
-           String)` one-scalar read) for a char-scan. Contrast the constant-index `(String.scalar-at \"café\"
-           3)` case above, which folds to `(Some #\\é)` at compile time (a statically-known char renders as a
-           literal). Companion to the runtime-char MATCH case below, which EXECUTES: char COMPUTE works on the
-           i32 code-point slot; only the boundary render-as-char-literal is WONTFIX.")
+; with a RUNTIME index EXECUTES: it emits `Core::StrScalarAt`, which calls the runtime `bytes-scalar-at` op
+; (wasm) / `chars().nth` (rust) to read the code-point and boxes it into a `Char`, mapping the out-of-range
+; sentinel to `None` — building the `(Option Char)`. A runtime `Char` renders as its `#\c` literal (char-as-bool
+; render tag-19; #5852 producer + #5932 emit): char is an int at runtime with a distinct RENDER tag, exactly as
+; `Bool` is an i32 that renders `true`/`false`. (Earlier this DECLINED under the char-rep WONTFIX; the operator
+; retracted that — char-as-bool — so it now computes + renders end-to-end.)
+(case "String.scalar-at over a runtime index reads the scalar-th Unicode scalar as a Char, fallibly"
+  (doc    "`(String.scalar-at \"café\" i)` with `i` a runtime Int64 PARAMETER cannot fold, so it EXECUTES the
+           runtime read: `Core::StrScalarAt` calls `bytes-scalar-at` (wasm) / `chars().nth` (rust), boxes the
+           code-point into a `Char`, and maps out-of-range to `None` — a `(Option Char)`. `\"café\"` is four
+           scalars (c, a, f, é), so index 3 is `é` → `(Some #\\é)`, index 0 is `c` → `(Some #\\c)`, and an
+           out-of-range index (9) → `(None unit)`. A runtime `Char` renders as its `#\\c` literal (char-as-bool
+           render tag; #5852 + #5932). Companion to the constant-index `(String.scalar-at \"café\" 3)` fold
+           above (same `(Some #\\é)` value, folded at compile time) and to the runtime-char MATCH case below.
+           INTERIM: each call currently over-retains 1 live object (the `Some`/`None` result cell is not
+           reclaimed on result-teardown), pinned `known-leak 1 1 1` — to be TIGHTENED to 0 when v-rust-backend's
+           `Core::StrScalarAt` Some/box reclaim fix lands. A LEAK, not a UAF (values correct on both backends;
+           operator seq-278 tolerates interim over-retention).")
   (input  (do
             (def (main (: i Int64)) (String.scalar-at "café" i))
             (export main)))
-  (declines))
+  (call   main (: 3 Int64)) (output (: (Some #\é) (Option Char)))
+  (call   main (: 0 Int64)) (output (: (Some #\c) (Option Char)))
+  (call   main (: 9 Int64)) (output (: (None unit) (Option Char)))
+  (live-objects known-leak 1 1 1))
 
 (case "converting a char to its integer scalar value is total"
   (doc    "Witnesses collections-and-text.md #A Char Converts To And From An Integer Totally:
@@ -3732,11 +3735,11 @@
 ; — EXECUTES on the i32 code-point COMPUTE slot (Char-rep 1-4/N: a Char is an i32 code-point value, dispatched
 ; by scalar value, boxable as a compound element / sum payload; runtime `Char.from-int` computes the Option at
 ; run time). So a runtime char match dispatches by scalar value — the executing witness the old decline-pin
-; promised (case below). This is the COMPUTE slot; there is NO distinct char BOUNDARY representation — that is
-; the operator char-rep WONTFIX (a char renders at the boundary as its code-point number, not a `#\c` literal;
-; see the runtime `String.scalar-at` intentional decline above). A future change that made the match silently
-; MISCOMPILE (a truncated-code-unit compare, a wrong scalar box) instead of dispatching correctly would flip
-; this case's outputs.
+; promised (case below). This is the COMPUTE slot; the boundary RENDER is the char-as-bool render tag (tag-19),
+; so a runtime char displays as its `#\c` literal, exactly as a runtime `Bool` renders `true`/`false` (see the
+; runtime `String.scalar-at` executing case above, which reads + renders a runtime `Char`). A future change that
+; made the match silently MISCOMPILE (a truncated-code-unit compare, a wrong scalar box) instead of dispatching
+; correctly would flip this case's outputs.
 (case "a match on a genuinely-runtime char (from a runtime Char.from-int) dispatches by scalar value"
   (doc    "`classify` matches a Char against char-literal arms; called with `(Char.from-int n)` where `n` is
            a runtime Int64 PARAMETER (so the char is NOT constant-folded to a literal like the cases above).
