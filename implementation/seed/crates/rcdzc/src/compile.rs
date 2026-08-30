@@ -3133,6 +3133,12 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         })
         .collect();
     for (body, nullary) in bodies {
+        // PER-DEF-BODY reset of the structural-reduction work counter (see `STRUCTURAL_REDUCTION_BUDGET`):
+        // this body's `type_errors`/reached-poison walk gets its OWN budget, so a divergent body (the
+        // self-app structural-explosion HANG) trips fast while the whole-compile cumulative total stays
+        // unbounded (a real multi-module compile legitimately does ~800k structural reductions across all
+        // bodies — a program-level counter would false-decline it, the Option.None carve-out regression).
+        db.structural_reductions = 0;
         // TYPE CHECKING FIRST, then the reached-poison (lowering) walk — the safety ordering
         // (`reference-compiler.md` §Outcomes Are Ordered By Safety). A CODED rejection (an ill-typed
         // program, CDZ####) is a stronger, more actionable "no" than an uncoded DECLINE (a construct

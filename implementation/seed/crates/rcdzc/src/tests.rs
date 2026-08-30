@@ -33582,6 +33582,41 @@ mod stage1 {
     }
 
     #[test]
+    fn a_minus_over_lambda_self_application_declines_not_an_inference_hang() {
+        // A THIRD hang class the fuzzer (v-cdz-smith) surfaced that ESCAPED the CDZ0999 reduction-limit:
+        // an arith/compare/eq operator applied to a LAMBDA-VALUE beside a self-application, inside an outer
+        // applied self-app. The `(- (fn v1) (v0 v0))` shape routes operator-on-a-function-value typing
+        // through the budget-FREE STRUCTURAL reduction (`enter_reduction_structural` — project_meta /
+        // reduce_to_record_id), which is NOT charged against `REDUCE_NODE_BUDGET`, so the exponentially-
+        // widening reduced term drove UNBOUNDED structural reductions within a single def body while staying
+        // in β-depth → type inference HUNG (the fault walk re-reduced the doubling term without a work
+        // bound). Fix: `enter_reduction_structural` now charges a PER-DEF-BODY `STRUCTURAL_REDUCTION_BUDGET`
+        // (reset in `collect_faults`' body loop, so the whole-compile cumulative — which a real multi-module
+        // build runs high, the Option.None carve-out — is not a program-level cap). The count grows WITH the
+        // exploding width so it trips BEFORE the width materializes → the term declines promptly (the
+        // ill-typed self-app surfaces its real CDZ0203/CDZ0201), never hangs. Property: 'never hang'. The
+        // escape class is the whole arith/compare/eq family, so all of {-, +, *, <, =} are pinned.
+        for s in [
+            // HANG-1 (v-cdz-smith minimization, minus + fn-value beside self-app, both bodies self-app):
+            "(module m (def (main) ((fn (v0) (v0 (- (fn (v1) v0) (v0 v0)))) (fn (v2) (- (fn (v4) v4) (v2 v2))))) (export main))",
+            // HANG-2 (the let-in-body variant — two redexes per substitution):
+            "(module m (def (main) ((fn (v0) (v0 (v0 v0))) (fn (v2) (let ((v3 (v2 5))) (- (fn (v4) v4) (v2 v2)))))) (export main))",
+            // The operator-family breadth (+ * < = all escape the same budget-free structural path):
+            "(module m (def (main) ((fn (v0) (v0 (+ (fn (v1) v0) (v0 v0)))) (fn (v2) (+ (fn (v4) v4) (v2 v2))))) (export main))",
+            "(module m (def (main) ((fn (v0) (v0 (* (fn (v1) v0) (v0 v0)))) (fn (v2) (* (fn (v4) v4) (v2 v2))))) (export main))",
+            "(module m (def (main) ((fn (v0) (v0 (< (fn (v1) v0) (v0 v0)))) (fn (v2) (< (fn (v4) v4) (v2 v2))))) (export main))",
+            "(module m (def (main) ((fn (v0) (v0 (= (fn (v1) v0) (v0 v0)))) (fn (v2) (= (fn (v4) v4) (v2 v2))))) (export main))",
+        ] {
+            // If the fix regresses, this HANGS the suite (a divergent structural walk) — a loud signal, the
+            // same discipline the sibling self-app hang tests use.
+            assert!(
+                compile_component(&crate::codec::encode(&parse(s))).is_err(),
+                "an operator-over-a-lambda self-application must decline in bounded time, not hang: {s}"
+            );
+        }
+    }
+
+    #[test]
     fn a_module_member_access_survives_reduction_budget_exhaustion() {
         // Regression for the compiler-ml self-host emit-cache collision (#3) + the sread-eval scaling
         // CDZ0201s — SAME root: `reduce_nodes` (the cumulative anti-divergence work budget) is monotonic
