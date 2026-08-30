@@ -40,7 +40,7 @@
 //!   shape-irrefutable at the outer `tuple` but its `(Some x)` element is refutable, so the whole
 //!   thing is refutable (the recursion above enforces this).
 
-use crate::ast::Leaf;
+use crate::ast::{CompoundCtor, Leaf};
 use crate::query::Tree;
 use std::collections::BTreeSet;
 
@@ -72,31 +72,34 @@ pub fn is_irrefutable_with(pat: &Tree, single_ctors: &SingleVariantCtors) -> boo
             let Some((head, rest)) = items.split_first() else {
                 return false; // an empty list is not a pattern shape we rewrite
             };
+            // A TUPLE pattern head — the NATIVE `#tuple(…)` (`Leaf::Ctor(Tuple)`, post-M3) or the legacy
+            // shadowable NAME head `tuple`. Irrefutable iff every sub-pattern is.
+            if is_compound_head(head, CompoundCtor::Tuple, "tuple") {
+                return rest.iter().all(|p| is_irrefutable_with(p, single_ctors));
+            }
+            // A RECORD pattern head — the NATIVE `#record(…)` (`Leaf::Ctor(Record)`) or the legacy NAME head
+            // `record`. Each field is the canonical `(= fieldname subpat)` triple (path B — same form as a
+            // value-record field); the sub-pattern is the LAST element. The `=` head is the native
+            // `Leaf::FieldPair` (M2 native-compound-data) or a legacy `Name("=")` (dual-read). A bare
+            // `(fieldname subpat)` pair is also tolerated (sub-pattern = 2nd element).
+            if is_compound_head(head, CompoundCtor::Record, "record") {
+                return rest.iter().all(|field| match field {
+                    Tree::List(fitems, _)
+                        if fitems.len() == 3
+                            && (matches!(&fitems[0], Tree::Atom(Leaf::FieldPair, _))
+                                || matches!(&fitems[0], Tree::Atom(Leaf::Name(eq), _) if &**eq == "=")) =>
+                    {
+                        is_irrefutable_with(&fitems[2], single_ctors)
+                    }
+                    Tree::List(fitems, _) if fitems.len() == 2 => {
+                        is_irrefutable_with(&fitems[1], single_ctors)
+                    }
+                    // A bare field name `(record x)` shorthand binds `x` irrefutably.
+                    Tree::Atom(Leaf::Name(n), _) => is_var_name(n),
+                    _ => false,
+                });
+            }
             match head {
-                Tree::Atom(Leaf::Name(h), _) if &**h == "tuple" => {
-                    rest.iter().all(|p| is_irrefutable_with(p, single_ctors))
-                }
-                Tree::Atom(Leaf::Name(h), _) if &**h == "record" => {
-                    // Each field is the canonical `(= fieldname subpat)` triple (path B — same form as a
-                    // value-record field); the sub-pattern is the LAST element. The `=` head is the native
-                    // `Leaf::FieldPair` (M2 native-compound-data) or a legacy `Name("=")` (dual-read). A
-                    // bare `(fieldname subpat)` pair is also tolerated (sub-pattern = 2nd element).
-                    rest.iter().all(|field| match field {
-                        Tree::List(fitems, _)
-                            if fitems.len() == 3
-                                && (matches!(&fitems[0], Tree::Atom(Leaf::FieldPair, _))
-                                    || matches!(&fitems[0], Tree::Atom(Leaf::Name(eq), _) if &**eq == "=")) =>
-                        {
-                            is_irrefutable_with(&fitems[2], single_ctors)
-                        }
-                        Tree::List(fitems, _) if fitems.len() == 2 => {
-                            is_irrefutable_with(&fitems[1], single_ctors)
-                        }
-                        // A bare field name `(record x)` shorthand binds `x` irrefutably.
-                        Tree::Atom(Leaf::Name(n), _) => is_var_name(n),
-                        _ => false,
-                    })
-                }
                 // A `(Ctor sub…)` sum-constructor pattern: irrefutable ONLY when `Ctor` is the sole
                 // variant of its (same-program) type AND every sub-pattern is irrefutable. A `guard`
                 // head (`(guard …)`) is never capitalized so it falls through to refutable here.
@@ -173,6 +176,18 @@ fn ctor_name_of(variant: &Tree) -> Option<String> {
 /// A Capitalized name is a constructor (`Wrap`, `Some`); a lowercase one is a var/type-param.
 fn is_ctor_name(n: &str) -> bool {
     n.chars().next().is_some_and(char::is_uppercase)
+}
+
+/// True if `head` is the head of a `ctor` compound pattern — the NATIVE `Leaf::Ctor(ctor)` (the post-M3
+/// `#tuple(…)`/`#record(…)` surface) OR the legacy shadowable NAME head (`tuple`/`record`). The two spell
+/// the same compound; the codemod must accept the native head so `--match-to-let` works on CURRENT code,
+/// not only legacy name-headed patterns (before this it no-oped on native `#tuple`/`#record` matches).
+fn is_compound_head(head: &Tree, ctor: CompoundCtor, legacy: &str) -> bool {
+    match head {
+        Tree::Atom(Leaf::Ctor(c), _) => *c == ctor,
+        Tree::Atom(Leaf::Name(h), _) => &**h == legacy,
+        _ => false,
+    }
 }
 
 /// A lowercase-led name is a variable/wildcard binder (irrefutable); a Capitalized name is a nullary
@@ -299,6 +314,34 @@ mod tests {
         assert!(
             normalize_sexpr("def f(p) = match p with | { x = a } => a")
                 .contains("(let (((record (= x a)) p)) a)")
+        );
+    }
+
+    #[test]
+    fn native_compound_head_single_arm_matches_convert() {
+        // Regression (concierge, seq-263 codemod gap): `cdz normalize --match-to-let` recognized the pattern
+        // head only as the LEGACY name-head `tuple`/`record`, so a NATIVE `#tuple(…)`/`#record(…)` single-arm
+        // match (post-M3, what current code carries) NO-OPED. `is_irrefutable_with` now accepts the native
+        // `Leaf::Ctor` head too, so these convert. Read via the s-expr surface (which produces the native
+        // ctor-leaf head), the path `cdz normalize` sees on native code.
+        let native = |src: &str| {
+            let a = crate::sexpr::read(src).unwrap();
+            let (out, n) = rewrite(&Tree::of(&a));
+            (crate::sexpr::print(&out.to_arena()), n)
+        };
+        // A native `#tuple(a b)` single-arm match → a let (previously left unchanged).
+        let (out, n) = native("(match p (#tuple(a b) (+ a b)))");
+        assert_eq!(n, 1, "native #tuple match must convert; got {n}: {out}");
+        assert_eq!(out, "(let ((#tuple(a b) p)) (+ a b))", "got {out}");
+        // A native `#record((= x a))` single-arm match → a let.
+        let (out, n) = native("(match p (#record((= x a)) a))");
+        assert_eq!(n, 1, "native #record match must convert; got {n}: {out}");
+        assert_eq!(out, "(let ((#record((= x a)) p)) a)", "got {out}");
+        // A native `#tuple` with a REFUTABLE sub-pattern (a literal) still does NOT convert.
+        let (_, n) = native("(match p (#tuple(a 0) a))");
+        assert_eq!(
+            n, 0,
+            "a refutable sub-pattern keeps the native tuple match refutable"
         );
     }
 
