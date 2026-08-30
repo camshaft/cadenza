@@ -6728,6 +6728,23 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_is_none_for_a_generic_callee_whose_type_is_unresolved() {
+        // A FULLY-GENERIC def (`def (id x) x`) has no monomorphic type: the compiler's `TypeOf` query answers
+        // `TypeInfo::Unknown` for it today (the still-open inferred-binder/polymorphic-scheme frontier), not a
+        // concrete `(-> a a)`. Signature help must treat `Unknown` as "no callable signature" and return None —
+        // NOT panic, and NOT leak a bogus label. This pins the `Unknown` arm of the binary-AST decode added in
+        // #6264 (the `Found`/`NoDef` arms are covered by the label tests + the unbound-callee test); it is the
+        // TOTALITY guard for the one decode arm those don't reach. If `TypeOf` ever starts resolving generic
+        // schemes, this becomes the trigger to add positive Var-lettering coverage (render_ty_scheme letters).
+        let text = "(do (def (id x) x) (def (main) (id 5)))";
+        let on_arg = text.find("id 5").unwrap() + 3; // on the `5`
+        assert!(
+            signature_help_at(text, false, byte_to_position(text, on_arg)).is_none(),
+            "a generic callee whose TypeOf is Unknown yields no signature (total, never a panic or bogus label)"
+        );
+    }
+
+    #[test]
     fn signature_help_is_none_outside_a_call() {
         // A cursor NOT inside a `(callee arg…)` named call → no signature popup (total, never an error).
         let text = "(do (def answer 42) (def (main) answer))";
