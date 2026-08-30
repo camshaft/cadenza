@@ -4625,9 +4625,11 @@ fn passthrough_status(program: &std::path::Path, args: &[String], tool: &str) ->
 /// `.provider.wasm` is keyed by, when available). The content hash — NOT the group key (which is the import
 /// NAME-set, stable across content edits) — is what a JIT-artifact (cwasm) cache must key on: a content change
 /// with an unchanged import set must invalidate the cwasm, else a stale compiled provider would be reused.
+#[cfg(feature = "standalone")]
 type ProviderPeer = (Vec<u8>, String, Option<String>);
 
 #[derive(Default)]
+#[cfg(feature = "standalone")]
 struct Precompiled {
     /// file-link-name → (that file's `@test` CONSUMER component bytes, the PROVIDER-GROUP key it links
     /// against). The group key indexes `providers`. A file absent here fell back (self-contained, decline,
@@ -4659,6 +4661,7 @@ struct Precompiled {
 /// `EmitTestsConsumerOnly` or a MISS `EmitTestsComposed`) that paid the closure monomorphize+layout TWICE on a
 /// HIT; folding to one emit pays it once. Best-effort throughout: a decline yields `(None, [])` and every file
 /// in the group falls back to its own `EmitTests`.
+#[cfg(feature = "standalone")]
 fn precompile_group(
     ast_inputs: Vec<cadenza_compile_abi::Artifact>,
     entry: &str,
@@ -4813,6 +4816,7 @@ fn precompile_group(
     (peer, consumers)
 }
 
+#[cfg(feature = "standalone")]
 fn precompile_tests_per_file(files: &[String]) -> Precompiled {
     use std::collections::HashMap;
     if files.is_empty() {
@@ -4966,6 +4970,7 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
 /// runtime it pairs with + swept by the same tooling. Returns `Option` (the call site degrades to "no cache"
 /// on `None`) so a future store-resolution failure can opt out cleanly; today it always resolves to `Some`
 /// (`default_store` is infallible), so caching is always available — a write failure is the actual degrade path.
+#[cfg(feature = "standalone")]
 fn provider_cache_dir() -> Option<std::path::PathBuf> {
     if let Ok(d) = std::env::var("CDZ_PROVIDER_CACHE") {
         let d = d.trim();
@@ -4999,6 +5004,7 @@ fn provider_cache_dir() -> Option<std::path::PathBuf> {
 /// is PER FILE (`seen`), matching the run. Order is the resolved-`files` order (path-sorted / manifest
 /// order) then declaration order — deterministic, so a drift-guard comparing a fresh `--list` to a
 /// committed one is stable. Ignores `--filter`/`--tag`: a manifest must enumerate the WHOLE suite.
+#[cfg(feature = "standalone")]
 fn list_tests(files: &[String], format: ListFormat) -> ExitCode {
     match format {
         // DEFAULT: the canonical cadenza-ast-BINARY `(test-list …)` value, written VERBATIM to stdout (the
@@ -5032,6 +5038,7 @@ fn list_tests(files: &[String], format: ListFormat) -> ExitCode {
 /// <is-property> <file>)…)` cadenza-ast value (the enumeration half of [`list_tests`], factored out so it
 /// is unit-testable without capturing stdout). `Err(ExitCode::FAILURE)` on a load/decode/link fault (a
 /// broken project cannot be honestly enumerated — failing red is what the drift-guard wants).
+#[cfg(feature = "standalone")]
 fn list_test_bytes(files: &[String]) -> Result<Vec<u8>, ExitCode> {
     // Both `--list` projections (cadenza-ast-binary + `--format nix`) share ONE enumeration; the binary form
     // encodes each collected `(name, is_property, file)` as a `(test …)` child of `(test-list …)`.
@@ -5052,6 +5059,7 @@ fn list_test_bytes(files: &[String]) -> Result<Vec<u8>, ExitCode> {
 
 /// A nix STRING literal for `s` — quotes + escapes `"`, `\`, a `${` antiquotation opener, and newlines, so
 /// a `@test` name or source path with a special char can't break the emitted (and `import`-ed) nix.
+#[cfg(feature = "standalone")]
 fn nix_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -5075,6 +5083,7 @@ fn nix_str(s: &str) -> String {
 /// output (the discovery drv is then content-stable — eval re-reads only on a real test add/remove, not
 /// ordering noise). Attr names (`name`/`is_property`/`file`) match the emit-shred manifest so the fan-out's
 /// `(file-stem, name)` join is clean. Pure: no timestamps/hashed paths, only the enumerated fields.
+#[cfg(feature = "standalone")]
 fn list_test_nix(mut entries: Vec<(String, bool, String)>) -> String {
     entries.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
     let mut s = String::from("[\n");
@@ -5094,6 +5103,7 @@ fn list_test_nix(mut entries: Vec<(String, bool, String)>) -> String {
 /// each file's import closure, build the compiler `Db`, keep only the ENTRY file's own `@test`s in a package
 /// (byte-for-byte `run_test_file`'s filter), dedup per file. `is_property` = `!params.is_empty() ||
 /// name.ends_with("-gen")` (the delegate `compile_tests` classification). Wasmtime-free.
+#[cfg(feature = "standalone")]
 fn collect_test_entries(files: &[String]) -> Result<Vec<(String, bool, String)>, ExitCode> {
     let mut entries: Vec<(String, bool, String)> = Vec::new();
     for file in files {
@@ -5183,6 +5193,7 @@ fn collect_test_entries(files: &[String]) -> Result<Vec<(String, bool, String)>,
 /// here we REWRITE it to this group's real `main-<group>.wasm` (or keep "" for standalone) and MERGE all
 /// groups' entries into the one manifest a runner reads (`cdz-run <target> --call <export> [--peer
 /// <main-iface>=<main-file>] --store S`). Compile-only; exits non-zero if any file fails to compile.
+#[cfg(feature = "standalone")]
 fn run_emit_shred(
     files: &[String],
     out_dir: &std::path::Path,
@@ -5412,6 +5423,23 @@ fn run_emit_shred(
     }
 }
 
+// `cdz test` runs the compiler + property-generator IN-PROCESS (it needs `rcdzc`: type-directed input
+// gen over a live `Db`, emit-shred compiles), so the whole test runner is `standalone`-only. A
+// `!standalone` (thin-dispatcher) build has no in-process runner — CI runs tests via the nix per-@test
+// shred matrix on the default-features seedCompiler, and devs run `cdz test` on a default-features build
+// (v-test-shred confirmed). The stub errors honestly (NON-ZERO) rather than exiting 0. A future external
+// `cdz-test` bin would delegate here.
+#[cfg(not(feature = "standalone"))]
+fn run_test(_args: &TestArgs) -> ExitCode {
+    eprintln!(
+        "{PROG}: `cdz test` requires the bundled compiler (rcdzc); this --no-default-features build has \
+         no in-process test runner. Run tests via the nix per-@test shred matrix (CI) or a \
+         default-features `cdz test` build (dev)."
+    );
+    ExitCode::FAILURE
+}
+
+#[cfg(feature = "standalone")]
 fn run_test(args: &TestArgs) -> ExitCode {
     // Resolve WHICH files to run. Cases:
     //  - NO arg → search UP from the current directory for the nearest `Project.cdz` (like `cargo test`
@@ -5761,6 +5789,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
 /// per-closure grouping's components/providers ([`Precompiled`]) PLUS the providers JIT'd ONCE up front
 /// (shared across every file so the heavy closure isn't re-JIT'd per file). Bundled so `run_test_file` takes
 /// one context arg instead of two parallel maps.
+#[cfg(feature = "standalone")]
 struct PrecompiledRun<'a> {
     precompiled: &'a Precompiled,
     jit_providers: &'a std::collections::HashMap<String, cdz_run::CompiledProvider>,
@@ -5768,6 +5797,7 @@ struct PrecompiledRun<'a> {
     report_time: bool,
 }
 
+#[cfg(feature = "standalone")]
 fn run_test_file(
     file: &str,
     filter: Option<&str>,
@@ -6570,6 +6600,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
 /// the boundary-crossable scalars this first property-testing increment supports (a compound param —
 /// tuple/sum/list — is a later increment via a guest-side `Gen` effect).
 #[derive(Clone, Copy)]
+#[cfg(feature = "standalone")]
 enum GenKind {
     /// A fixed-width integer: `(signed, width)`. Generated as a random value in the width's range.
     Int {
@@ -6587,6 +6618,7 @@ enum GenKind {
 /// the per-parameter generators (`None` = a param type the runner can't generate; empty = a nullary def run
 /// once), whether it is `@exhaustive`, and the per-parameter `@requires` integer `bounds` for constrained
 /// generation (empty ⇒ unconstrained). Distilled once per test in the collection loop before the run loop.
+#[cfg(feature = "standalone")]
 struct TestSpec {
     name: String,
     gens: Option<Vec<GenKind>>,
@@ -6606,6 +6638,7 @@ struct TestSpec {
 /// generatable scalar (so the test cannot be property-run). An EMPTY vec means a nullary def (run once).
 /// Each param's type is solved with `infer::type_of` on its binder (seeing through a `(: n T)` annotation,
 /// the shape a boundary parameter needs) — the same type `layout::export_params` crossed it as.
+#[cfg(feature = "standalone")]
 fn param_generators(db: &mut rcdzc::db::Db, def: usize) -> Option<Vec<GenKind>> {
     let params = db.defs[def].params.clone();
     let mut kinds = Vec::with_capacity(params.len());
@@ -6640,12 +6673,14 @@ fn param_generators(db: &mut rcdzc::db::Db, def: usize) -> Option<Vec<GenKind>> 
 /// constraint. The two are independent (a param is one or the other kind); an int param never sets
 /// `bool_force`, a bool param never narrows `[lo, hi]`.
 #[derive(Clone, Copy)]
+#[cfg(feature = "standalone")]
 struct ParamBound {
     lo: i128,
     hi: i128,
     bool_force: Option<bool>,
 }
 
+#[cfg(feature = "standalone")]
 impl ParamBound {
     /// The widest bound — no constraint. Narrowed by each recognized `@requires` comparison.
     fn unbounded() -> Self {
@@ -6682,6 +6717,7 @@ impl ParamBound {
 /// shape stays unconstrained exactly as before. `op` is one of the recognized operator strings; `left`/`right`
 /// are parameter POSITIONS (matching the `GenKind` vec order).
 #[derive(Clone, Copy)]
+#[cfg(feature = "standalone")]
 struct Relation {
     left: usize,
     op: &'static str,
@@ -6691,6 +6727,7 @@ struct Relation {
 /// Whether `l OP r` holds for the recognized operators (an unrecognized op vacuously holds — it was never
 /// recorded, so this is only reached for `< <= > >= =`). After `propagate_equalities` runs, an `=` relation
 /// always holds; it is still checked here so the rejection loop's `relations_hold` guard is total.
+#[cfg(feature = "standalone")]
 fn relation_holds(op: &str, l: i64, r: i64) -> bool {
     match op {
         "<" => l < r,
@@ -6707,6 +6744,7 @@ fn relation_holds(op: &str, l: i64, r: i64) -> bool {
 /// `a = b and b = c` fully propagates (all become `a`) regardless of the order the relations were recorded.
 /// Order relations are untouched here (they go through rejection sampling). Applied after each draw and after
 /// building each shrink trial.
+#[cfg(feature = "standalone")]
 fn propagate_equalities(relations: &[Relation], inputs: &mut [String]) {
     let eq_count = relations.iter().filter(|r| r.op == "=").count();
     for _ in 0..eq_count {
@@ -6721,6 +6759,7 @@ fn propagate_equalities(relations: &[Relation], inputs: &mut [String]) {
 /// Whether EVERY recorded relation holds over the rendered `inputs`. A param whose rendered value does not
 /// parse as an `i64` (e.g. a Bool `"true"`) makes its relation vacuously hold — relations are only recorded
 /// between integer params, so this is a defensive skip, never the common path.
+#[cfg(feature = "standalone")]
 fn relations_hold(relations: &[Relation], inputs: &[String]) -> bool {
     relations.iter().all(|rel| {
         let (Some(l), Some(r)) = (inputs.get(rel.left), inputs.get(rel.right)) else {
@@ -6746,6 +6785,7 @@ fn relations_hold(relations: &[Relation], inputs: &[String]) -> bool {
 /// Only INTEGER params are bounded here (the boundary-arg route generates Int/Bool/Float/Char; a comparison
 /// bound is meaningful for integers — Bool/Float/Char preconditions fall through unrecognized). Keyed by
 /// parameter POSITION (matching the `GenKind` vec order).
+#[cfg(feature = "standalone")]
 fn param_bounds(db: &rcdzc::db::Db, def: usize) -> (Vec<ParamBound>, Vec<Relation>) {
     let params = &db.defs[def].params;
     // Map each param NAME to its position, so a `(>= name lit)` predicate targets the right slot.
@@ -6777,6 +6817,7 @@ fn param_bounds(db: &rcdzc::db::Db, def: usize) -> (Vec<ParamBound>, Vec<Relatio
 /// satisfied by rejection sampling, an equality by propagation). It also descends a conjunction
 /// `(and p q …)` / `(& p q …)` so `(and (>= x 0) (< x 100))` bounds `x` to `[0, 99]`. Anything else (a call,
 /// a non-linear predicate) is left unrecognized — no change, exactly as before.
+#[cfg(feature = "standalone")]
 fn narrow_from_predicate(
     db: &rcdzc::db::Db,
     pred: cadenza_syntax::ast::StructId,
@@ -6851,6 +6892,7 @@ fn narrow_from_predicate(
 
 /// Narrow one `ParamBound` by `param OP lit` (or, when `mirrored`, `lit OP param`). A strict `<`/`>` becomes
 /// an inclusive bound via `±1` (integers). `=` pins both ends.
+#[cfg(feature = "standalone")]
 fn apply_cmp(op: &str, lit: i128, mirrored: bool, b: &mut ParamBound) {
     // Normalize the mirrored form `lit OP param` to `param OP' lit`: `lit < x` ⇔ `x > lit`, etc.
     let op = if mirrored {
@@ -6880,6 +6922,7 @@ fn apply_cmp(op: &str, lit: i128, mirrored: bool, b: &mut ParamBound) {
 /// The number of `(list …)` elements a synthesized variable-length list generator produces candidates for
 /// (mirrors `proptest_gen::G1_LIST_LEN`). The wrapper draws a count `c = gen % (LEN+1)`, then LEN candidate
 /// elements, keeping the first `c`. The decoder MUST use the same LEN to consume the pool in lockstep.
+#[cfg(feature = "standalone")]
 const RUNNER_LIST_LEN: usize = 3;
 
 /// Render the concrete value a shrunk driver `pool` decodes to for the wrapper's parameter generator shape
@@ -6889,6 +6932,7 @@ const RUNNER_LIST_LEN: usize = 3;
 /// decode vocabulary is the SAME one the generator was built from — it can never drift out of sync, and a
 /// `Sum`/nested shape is covered identically to the wrapper. The pool is consumed via a shared cursor in the
 /// SAME order the wrapper pulls `Test.gen-int`. `None` only if the pool runs dry (a malformed shrink).
+#[cfg(feature = "standalone")]
 fn render_pool_value(gty: &rcdzc::proptest_gen::GenTy, pool: &[i64]) -> Option<String> {
     let mut cursor = 0usize;
     decode_value(gty, pool, &mut cursor)
@@ -6901,6 +6945,7 @@ fn render_pool_value(gty: &rcdzc::proptest_gen::GenTy, pool: &[i64]) -> Option<S
 /// enumerate) — the caller then declines the `@exhaustive` cleanly. This is what lets `@exhaustive` PROVE a
 /// property over a small refined newtype's whole domain (drive the wrapper over each `v in lo..=hi`) instead
 /// of sampling / declining.
+#[cfg(feature = "standalone")]
 fn exhaustive_newtype_range(gen_ty: Option<&rcdzc::proptest_gen::GenTy>) -> Option<(i64, i64)> {
     use rcdzc::proptest_gen::GenTy;
     let GenTy::Sum { variants, .. } = gen_ty? else {
@@ -6918,6 +6963,7 @@ fn exhaustive_newtype_range(gen_ty: Option<&rcdzc::proptest_gen::GenTy>) -> Opti
 
 /// One step of the pool→value decode (see [`render_pool_value`]). `cursor` advances by exactly the number of
 /// `Test.gen-int` ints the corresponding `build_gen` arm consumes, in the same order.
+#[cfg(feature = "standalone")]
 fn decode_value(
     gty: &rcdzc::proptest_gen::GenTy,
     pool: &[i64],
@@ -7058,12 +7104,14 @@ fn decode_value(
 
 /// The outcome of one trial: PASS (the export returned) or FAIL (it trapped) with the failure message the
 /// test reported (via its `Test`/report host effect), if any.
+#[cfg(feature = "standalone")]
 enum TrialOutcome {
     Pass,
     Fail(Option<String>),
 }
 
 /// A property-test failure: the (rendered) inputs that reproduced it, and the reported message.
+#[cfg(feature = "standalone")]
 struct PropertyFailure {
     inputs: Vec<String>,
     message: Option<String>,
@@ -7075,6 +7123,7 @@ struct PropertyFailure {
 /// `CompiledComposition` and reused across every trial (`run_composition_capturing`) — so a multi-trial
 /// property test no longer re-JITs consumer+peer per trial (PR#892). Both paths yield the SAME
 /// `(Outcome, observed-op-list)` shape, so the trial logic (gen-int count, failure message) is identical.
+#[cfg(feature = "standalone")]
 enum RunTarget {
     Standalone(cdz_run::CompiledComponent),
     Composed(cdz_run::CompiledComposition),
@@ -7084,6 +7133,7 @@ enum RunTarget {
 /// export returned; FAIL carries the failure message the test reported (via its `Test`/report host effect)
 /// if any. `runtime` is the value-heap runtime bytes the component was resolved against (or `None` for a
 /// scalar/const test component that imports no runtime).
+#[cfg(feature = "standalone")]
 fn run_one_trial(
     target: &RunTarget,
     runtime: Option<&[u8]>,
@@ -7099,6 +7149,7 @@ fn run_one_trial(
 /// one-line counterexample stays legible); enabled by setting `CDZ_WASM_BACKTRACE` to any non-empty value
 /// other than `0`/`false`. A debug lever for localizing a COMPILED trap — the frame indices are the only
 /// locus for a self-host trap, where the usual isolate-the-case repro doesn't reproduce it.
+#[cfg(feature = "standalone")]
 fn wasm_backtrace_enabled() -> bool {
     match std::env::var("CDZ_WASM_BACKTRACE") {
         Ok(v) => {
@@ -7114,6 +7165,7 @@ fn wasm_backtrace_enabled() -> bool {
 /// same `Test` effect that carries `fail`). `cdz test` answers a `Test.gen-int` performance with the next int
 /// from a seeded pool, so a generator built on this ONE op — bolero's Driver model, one int source that
 /// type-directed generation decodes — needs no per-shape host coordination.
+#[cfg(feature = "standalone")]
 const GEN_OP_LABEL: &str = "test.gen-int";
 
 /// Run the test component IN-PROCESS (via the `cdz-run` LIBRARY — `run_capturing`, no sibling binary),
@@ -7122,6 +7174,7 @@ const GEN_OP_LABEL: &str = "test.gen-int";
 /// trial outcome AND how many `Test.gen-int` calls the guest actually made (counted from the OBSERVED host-op
 /// list `run_capturing` returns) — the signal that distinguishes a PROPERTY test (pulls ≥1 generated int)
 /// from a plain unit test (pulls none). An unconsumed pool response is harmless (ignored).
+#[cfg(feature = "standalone")]
 fn run_one_trial_with_pool(
     target: &RunTarget,
     runtime: Option<&[u8]>,
@@ -7213,6 +7266,7 @@ fn run_one_trial_with_pool(
 /// How many `Test.gen-int` performances the guest made, from the OBSERVED host-op list `run_capturing` returns
 /// (each entry is a dotted `E.op`, optionally `\t<str-args>`). `> 0` ⇒ the test is a PROPERTY test driven
 /// by the int pool. Matches the op field (before any tab) case-insensitively against the `Test.gen-int` label.
+#[cfg(feature = "standalone")]
 fn count_gen_calls(observed: &[String]) -> usize {
     observed
         .iter()
@@ -7230,6 +7284,7 @@ fn count_gen_calls(observed: &[String]) -> usize {
 /// performs), not just the first tab-carrying entry, or a benign log line would be misreported as the
 /// failure message. The LAST such `.fail` wins (the one closest to the trap). `None` if no reporting op
 /// carried a message (a bare trap with no assertion text).
+#[cfg(feature = "standalone")]
 fn observed_failure_message(observed: &[String]) -> Option<String> {
     observed.iter().rev().find_map(|entry| {
         let (op, msg) = entry.split_once('\t')?;
@@ -7246,6 +7301,7 @@ fn observed_failure_message(observed: &[String]) -> Option<String> {
 /// component that imports no runtime (no store needed), `Ok(Some(bytes))` when the store holds the exact
 /// required hash, and `Err` (a clear, once-per-file message) when the component needs a runtime the store
 /// does not hold — reported before running rather than as an opaque trap inside each test.
+#[cfg(feature = "standalone")]
 fn resolve_test_runtime(
     component: &[u8],
     store: &std::path::Path,
@@ -7281,6 +7337,7 @@ fn resolve_test_runtime(
 /// reproducible; each trial advances the seed deterministically (`seed + trial`), so the failing trial's
 /// inputs re-generate identically on replay. On the first failing trial, `shrink` searches for a smaller
 /// still-failing input before reporting.
+#[cfg(feature = "standalone")]
 fn run_property(
     gens: &[GenKind],
     bounds: &[ParamBound],
@@ -7302,6 +7359,7 @@ fn run_property(
 /// What a nullary-signature test turned out to be at runtime: a PLAIN unit test (consumed no generated
 /// int — its single-run outcome), or a generator-driven PROPERTY test (`None` = every trial passed, or
 /// the shrunk failing int pool).
+#[cfg(feature = "standalone")]
 enum GenDrivenOutcome {
     Plain(TrialOutcome),
     Property(Option<PropertyFailure>),
@@ -7311,6 +7369,7 @@ enum GenDrivenOutcome {
 /// generator pulls as many as its shape needs (a scalar 1, an `(Int64, Bool)` 2, a small list a few); a
 /// pool larger than any reasonable shape means the guest never runs dry, and unconsumed responses are
 /// ignored. (When compound generators land and can pull unboundedly, this becomes a per-trial budget.)
+#[cfg(feature = "standalone")]
 const GEN_POOL_SIZE: usize = 64;
 
 /// Run a nullary-signature test, deciding PLAIN vs generator-driven PROPERTY by whether it pulls any
@@ -7318,6 +7377,7 @@ const GEN_POOL_SIZE: usize = 64;
 /// it is a plain unit test — return its outcome directly (one run, today's semantics, unaffected by the
 /// unconsumed pool). If it consumed ≥1, it is a property test: run `trials` trials each with a FRESH
 /// seeded pool (`seed + trial`, reproducible), failing on the first trapping trial with the SHRUNK pool.
+#[cfg(feature = "standalone")]
 fn run_gen_driven(
     target: &RunTarget,
     runtime: Option<&[u8]>,
@@ -7359,6 +7419,7 @@ fn run_gen_driven(
 /// A seeded pool of `size` random `Int64`s — the driver stream a property test's generator pulls from.
 /// Reproducible from `seed` (bolero's `driver::Rng` over a seeded `Xoshiro256PlusPlus`), so a reported
 /// failing seed replays the exact pool.
+#[cfg(feature = "standalone")]
 fn gen_pool(seed: u64, size: usize) -> Vec<i64> {
     use bolero_generator::driver::{self, Rng};
     use bolero_generator::{ValueGenerator, produce};
@@ -7384,6 +7445,7 @@ fn gen_pool(seed: u64, size: usize) -> Vec<i64> {
 //# The shrinking search MUST terminate rather than search unboundedly.
 //= spec/capabilities/property-based-testing.md#shrinking-converges-to-a-minimal-failing-input
 //# The shrinking search MUST report a minimal failing input.
+#[cfg(feature = "standalone")]
 fn shrink_pool(
     pool: &[i64],
     gens: usize,
@@ -7481,6 +7543,7 @@ fn shrink_pool(
 /// function of `seed` (the same seed re-derives the same accepted draw). If fuel is exhausted (a relation
 /// too tight to hit by sampling), the last draw is returned unchanged — the (D) precondition trap then
 /// fires and the property reports honestly rather than looping forever.
+#[cfg(feature = "standalone")]
 fn generate_inputs(
     gens: &[GenKind],
     bounds: &[ParamBound],
@@ -7511,6 +7574,7 @@ fn generate_inputs(
 
 /// Draw one input tuple from `seed`, applying only the per-param `bounds` clamps (no relation handling —
 /// that is `generate_inputs`'s rejection loop). Split out so the rejection loop can re-draw cheaply.
+#[cfg(feature = "standalone")]
 fn draw_inputs(gens: &[GenKind], bounds: &[ParamBound], seed: u64) -> Vec<String> {
     use bolero_generator::driver::{self, Rng};
     use bolero_generator::{ValueGenerator, produce};
@@ -7563,6 +7627,7 @@ fn draw_inputs(gens: &[GenKind], bounds: &[ParamBound], seed: u64) -> Vec<String
 /// unbounded (`exhaustive_domain` returns `None`) — enumerating millions of cases would be a denial of
 /// service, not a proof. `Bool`×`Bool` = 4, a `UInt8` = 256, `UInt8`×`Bool` = 512 all fit comfortably;
 /// a 16-bit int (65 536) fits; a 32/64-bit int or a float does not (narrow the type to prove exhaustively).
+#[cfg(feature = "standalone")]
 const MAX_EXHAUSTIVE_CASES: usize = 100_000;
 
 /// The COMPLETE input domain of a property whose parameters are all bounded scalars — every combination of
@@ -7571,6 +7636,7 @@ const MAX_EXHAUSTIVE_CASES: usize = 100_000;
 /// would exceed [`MAX_EXHAUSTIVE_CASES`]) — such a property cannot be exhaustively proven and must narrow
 /// its types. An empty `gens` (a nullary signature) yields one case (the empty argument list), though the
 /// exhaustive path is only taken for a parameterized boundary-arg test.
+#[cfg(feature = "standalone")]
 fn exhaustive_domain(gens: &[GenKind]) -> Option<Vec<Vec<String>>> {
     // Build the per-parameter value sets (each the full rendered domain of that scalar), bailing if any is
     // unbounded, while tracking the running product so we stop before building an enormous set.
@@ -7606,6 +7672,7 @@ fn exhaustive_domain(gens: &[GenKind]) -> Option<Vec<Vec<String>>> {
 /// enumerated here; an integer is enumerable only for narrow widths (≤16 bits) whose range fits within
 /// [`MAX_EXHAUSTIVE_CASES`]; a `Float` is never enumerable. Each value is rendered exactly as
 /// `generate_inputs` renders it (so `cdz-run`'s `coerce_one` accepts it).
+#[cfg(feature = "standalone")]
 fn scalar_domain(g: &GenKind) -> Option<Vec<String>> {
     match g {
         GenKind::Bool => Some(vec!["false".to_string(), "true".to_string()]),
@@ -7635,6 +7702,7 @@ fn scalar_domain(g: &GenKind) -> Option<Vec<String>> {
 /// Render a generated `i64` as the decimal text for an integer parameter of the given signedness/width,
 /// truncated into that width's range so `cdz-run`'s `parse::<iN/uN>` accepts it (a wider raw value would
 /// fail to parse as the narrower type). The `as` truncation into range keeps the full value spread.
+#[cfg(feature = "standalone")]
 fn render_int(raw: i64, signed: bool, width: u32) -> String {
     match (signed, width) {
         (true, 8) => (raw as i8).to_string(),
@@ -7652,6 +7720,7 @@ fn render_int(raw: i64, signed: bool, width: u32) -> String {
 /// A reproducible RNG from a `u64` seed — `Xoshiro256PlusPlus` (bolero's own generator rng), whose
 /// `seed_from_u64` SplitMix64-expands the seed to the full state, so `cdz test --seed N` is deterministic
 /// without depending on OS entropy.
+#[cfg(feature = "standalone")]
 fn rand_from_seed(seed: u64) -> rand_xoshiro::Xoshiro256PlusPlus {
     use rand_core::SeedableRng;
     use rand_xoshiro::Xoshiro256PlusPlus;
@@ -7664,6 +7733,7 @@ fn rand_from_seed(seed: u64) -> rand_xoshiro::Xoshiro256PlusPlus {
 /// bounded — one left-to-right pass per position, each position bisected — so it terminates quickly and
 /// reports a smaller, more legible witness than the raw random input. Returns the shrunk inputs + the
 /// (possibly updated) failure message from the last failing run.
+#[cfg(feature = "standalone")]
 fn shrink(
     gens: &[GenKind],
     bounds: &[ParamBound],
@@ -7718,6 +7788,7 @@ fn shrink(
 /// The ordered shrink candidates for one argument (largest-reduction first), by kind: an integer halves
 /// toward 0 (then 0); a bool toward `false`; a float toward 0; a char toward `a`. Each is a value that,
 /// if it still fails, is a smaller witness than the current one.
+#[cfg(feature = "standalone")]
 fn shrink_candidates(g: &GenKind, current: &str) -> Vec<String> {
     match g {
         GenKind::Int { .. } => {
@@ -10355,6 +10426,7 @@ fn report_errors(out: &cadenza_compile_abi::CompileOutput) {
 /// declines with a well-anchored diagnostic (e.g. an invalid-kebab `@test`/export name, `node = Some`) yet
 /// the reporter dropped the anchor and printed only `cdz: error [CODE]: …`. A diagnostic with no anchor (or
 /// an unmappable node) falls back to the bare `cdz: error …` line, so it is never worse than `report_errors`.
+#[cfg(feature = "standalone")]
 fn report_errors_located(out: &cadenza_compile_abi::CompileOutput, files: &[closure::LoadedFile]) {
     // Per-file line index (binary-searched line:col), parallel to `files` — linear even with many faults.
     let indices: Vec<_> = files

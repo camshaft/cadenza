@@ -13,7 +13,7 @@
 //! `run_with_specs`, which takes exactly these accessor values.
 
 use cadenza_compile_abi::{OptLevel, OverflowMode, OverflowSpec, Target};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The parsed `cdz compile` arguments (see module docs). Mirrors `rcdzc::cli::CompileArgs`. `Parser`
 /// (not just `Args`) so it embeds as the `Compile` subcommand AND parses standalone in tests
@@ -103,6 +103,7 @@ impl CompileArgs {
     }
 
     /// The `--export <SYM>` splice-mode boundary export, if given.
+    #[cfg(feature = "standalone")]
     pub fn export(&self) -> Option<&str> {
         self.export.as_deref()
     }
@@ -127,7 +128,8 @@ impl CompileArgs {
     }
 
     /// The `--emit-diagnostics <PATH>` side-artifact path, if given.
-    pub fn emit_diagnostics(&self) -> Option<&Path> {
+    #[cfg(feature = "standalone")]
+    pub fn emit_diagnostics(&self) -> Option<&std::path::Path> {
         self.emit_diagnostics.as_deref()
     }
 }
