@@ -11080,6 +11080,21 @@
   (input (do (type A (Xyz)) (type B (Y)) (def (f (: a A)) (match a ((Y) 1))) (export f)))
   (error CDZ0203 (message "not a variant of the matched type A") (message "closest matches") (not "did you mean")))
 
+; A bogus match ARM HEAD is surfaced by `check` even when the arm sits over a SELF-RECURSIVE body (`go`
+; calling itself) — it was once silently accepted (exit 0, decline) inside a recursive def. An UNBOUND
+; arm head (`Zorp`, no such name) is CDZ0101; a qualified head naming a NON-MEMBER of an intrinsic MODULE
+; (`(. List Nil)` / `(. List Cons)` — `List` is a module, not a sum, so `Nil`/`Cons` are non-members) is
+; CDZ0201 naming the module + "member". (Migrated from rcdzc
+; a_list_arm_ctor_head_over_a_recursive_body_is_a_coded_fault_in_check; the well-formed recursive-fold
+; no-false-alarm control stays a white-box rcdzc pin — a `(List …)` entry parameter has no scalar boundary.)
+(case "an unbound match arm head over a recursive body is a coded CDZ0101, not silently accepted"
+  (input (do (def (go (: rest (List Int64))) (match rest ((Zorp x) (go #list(x))) (_ 0))) (export go)))
+  (error CDZ0101 (message "Zorp")))
+
+(case "a non-member intrinsic-module arm head over a recursive body is a coded CDZ0201"
+  (input (do (def (go (: rest (List Int64))) (match rest (((. List Nil) _) 0) (((. List Cons) h t) (go rest)))) (export go)))
+  (error CDZ0201 (message "List") (message "member")))
+
 ; --- A redundant match arm — the DUAL of non-exhaustiveness -----------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected has a dual: where a NON-exhaustive match leaves a
 ; value no arm covers (CDZ0210, a rejection), a REDUNDANT arm is one no value reaches — an EARLIER arm
