@@ -2550,7 +2550,14 @@ impl<'a> Parser<'a> {
             self.bump(); // optional leading `|`
         }
         loop {
-            items.push(self.effect_op());
+            let op = self.effect_op();
+            // A same-line `//` trailing this op (`| op : Sig  // note`) sits at the next `|`/decl-end
+            // token's leading slot, tagged trailing. Attach it to the op as `(comment-after …)` so it
+            // re-prints same-line — else a NON-last op's trailing is DROPPED, and the LAST op's trailing
+            // mis-attaches to the FOLLOWING def (seq-277 gap: db-query-perfield.cdz). Only the same-line
+            // PREFIX; own-line comments + leading `///` docs are drained elsewhere, untouched.
+            let trailing = self.take_trailing_comment_here();
+            items.push(self.wrap_comment_after(trailing, op));
             if self.at(Kind::Pipe) {
                 self.bump(); // `|`
             } else {
@@ -4926,6 +4933,49 @@ mod tests {
         // Idempotent: the forced break makes the reprint a fixed point.
         assert_eq!(
             crate::printer::print(&reparsed.arenas, 100),
+            printed,
+            "idempotent\n{printed}"
+        );
+    }
+
+    #[test]
+    fn a_trailing_comment_on_an_effect_op_survives_the_round_trip() {
+        // Regression (seq-277/C3): a same-line `//` on an effect op (`| op : Sig  // note`) USED TO DROP
+        // (a non-last op) or mis-attach to the FOLLOWING def (the last op) — the effect-op loop drained no
+        // comments. Reader attaches `(comment-after …)`; the printer + `is_effect_shape` peel + re-emit it
+        // same-line (closes db-query-perfield.cdz), while the leading `///` docs stay intact.
+        let src = "effect E =\n  | get : Int64 -> Int64 // note on get\n  | put : Int64 -> Unit // note on put\n\
+                   def f() = 1\n\nexport { f }\n";
+        let count = |a: &Arenas| {
+            (0..a.structure.len() as u32)
+                .map(StructId)
+                .filter(|&id| a.head_name(id) == Some("comment-after"))
+                .count()
+        };
+        let p = read_ml(src);
+        assert!(p.ok(), "parses: {:?}", p.errors);
+        assert_eq!(
+            count(&p.arenas),
+            2,
+            "both op-trailing comments attached as (comment-after …)"
+        );
+        let printed = crate::printer::print(&p.arenas, 100);
+        assert!(
+            printed.contains("// note on get") && printed.contains("// note on put"),
+            "both re-emitted:\n{printed}"
+        );
+        assert!(
+            printed.contains("effect E ="),
+            "stays the effect surface (not the generic call form):\n{printed}"
+        );
+        let rp = read_ml(&printed);
+        assert!(
+            rp.ok() && p.arenas.structurally_eq(&rp.arenas),
+            "round-trips: {:?}\n{printed}",
+            rp.errors
+        );
+        assert_eq!(
+            crate::printer::print(&rp.arenas, 100),
             printed,
             "idempotent\n{printed}"
         );
