@@ -3336,14 +3336,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // Runtime `Blake3.of` on the RUST backend is not yet emitted: emitted programs do not link the
         // `blake3` crate (unlike the wasm path's `hash-blake3` heap op). DECLINE cleanly (a rust-baseline
         // TODO, never a miscompile) until the rust-emit blake3 dep lands (coordinated with v-rust-backend).
-        Core::Blake3Of { .. } => Err(crate::diag::Reject::decline(
-            "Blake3.of on a runtime Bytes is not yet emitted on the rust backend (wasm heap op 91 only)",
+        // (Internal: the wasm backend covers these via heap ops 91/92/93; the Rust backend has no linked
+        // analogue. The user message stays a clean "not supported on the Rust backend" statement.)
+        Core::Blake3Of { .. } => Err(crate::diag::Reject::unsupported(
+            "Blake3.of on a runtime Bytes is not supported on the Rust backend (available on the wasm backend)",
         )),
-        Core::AstPrint { .. } => Err(crate::diag::Reject::decline(
-            "Ast.print on a runtime Ast is not yet emitted on the rust backend (wasm heap op 92 only)",
+        Core::AstPrint { .. } => Err(crate::diag::Reject::unsupported(
+            "Ast.print on a runtime Ast is not supported on the Rust backend (available on the wasm backend)",
         )),
-        Core::AstEncode { .. } => Err(crate::diag::Reject::decline(
-            "Ast.encode on a runtime Ast is not yet emitted on the rust backend (wasm heap op 93 only)",
+        Core::AstEncode { .. } => Err(crate::diag::Reject::unsupported(
+            "Ast.encode on a runtime Ast is not supported on the Rust backend (available on the wasm backend)",
         )),
         // `String.at`/`String.scalar-at` on a RUNTIME string → the i-th UNICODE SCALAR, fallibly, as a
         // one-scalar `(Option String)`. `.chars()` iterates by scalar value (matching the spec's
@@ -4331,8 +4333,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             for (i, &a) in args.iter().enumerate() {
                 let a_ty = type_of(db, a);
                 let Some(a_rt) = types::rust_type(&db.name_ctx(), &a_ty) else {
-                    return Err(Reject::decline(
-                        "the Rust backend does not yet render a host call with an argument of no native Rust type (later increment)",
+                    return Err(Reject::unsupported(
+                        "the Rust backend does not support a host call with an argument of no native Rust type",
                     ));
                 };
                 let av = emit(db, a, env, ctx)?;
@@ -4359,8 +4361,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     // generic shim param accepts `()`, and eval-order is pinned by the `let` binding below.
                     format!("{{ {av}; () }}")
                 } else {
-                    return Err(Reject::decline(
-                        "the Rust backend does not yet render a host call with a non-integer/bool/string/bytes/unit ARGUMENT (later increment)",
+                    return Err(Reject::unsupported(
+                        "the Rust backend does not support a host call with a non-integer/bool/string/bytes/unit argument",
                     ));
                 };
                 bindings.push_str(&format!("let __ha{i} = {bound}; "));
@@ -4387,8 +4389,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // sequence instead (an op in host_calls but not host_responses → a Unit-result shim).
                 Some(t) if t == "()" => format!("{{ {call}; () }}"),
                 _ => {
-                    return Err(Reject::decline(
-                        "the Rust backend does not yet render a host call whose result is not a fixed-width integer, bool, float, unit, string, or bytes (later increment)",
+                    return Err(Reject::unsupported(
+                        "the Rust backend does not support a host call whose result is not a fixed-width integer, bool, float, unit, string, or bytes",
                     ));
                 }
             };
@@ -4439,8 +4441,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // The `?`/try boundary block + break are the wasm backend's `block`/`br` shape (BRICK 3); the
         // Rust backend renders them in a later brick, so it declines for now.
-        Core::Block { .. } | Core::Break { .. } => Err(Reject::decline(
-            "the Rust backend does not yet render this compound value",
+        Core::Block { .. } | Core::Break { .. } => Err(Reject::unsupported(
+            "the Rust backend does not support rendering this compound value",
         )),
         // Runtime structural equality over a COMPOUND value. On the wasm backend this is a value-heap
         // equality walk; on the Rust backend a sum/tuple/record maps to a native type that
