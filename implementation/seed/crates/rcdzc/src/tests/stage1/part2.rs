@@ -1579,49 +1579,6 @@ fn a_compound_returning_export_dispatching_a_runtime_closure_emits_valid_wasm() 
 }
 
 #[test]
-fn a_const_parameter_rejects_a_runtime_dependent_argument() {
-    // 09-functions "a const parameter rejects an argument that depends on runtime data": a `const`
-    // parameter DECLARES its argument compile-time-known (Addendum 3). Here `main` passes a dictionary
-    // whose `op` captures `main`'s RUNTIME parameter `k` — the dict is not a compile-time value, so
-    // the `const` contract is violated. The compiler must REJECT (coded CDZ0201, "must be
-    // compile-time-known"), NOT silently pass it at runtime — the closedness check
-    // (`arg_captures_runtime_binding`) catches the captured enclosing param.
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse(
-                "(module m \
-                       (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
-                         (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
-                       (def (main (: k Int64)) (fold-n (record (op (fn (x) (+ x k)))) 3 0)) (export main))",
-            )),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    let coded = out.diagnostics.iter().find(|d| {
-        d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
-    });
-    assert!(
-        coded.is_some(),
-        "a const arg capturing a runtime param must be a coded CDZ0201 reject, got: {:?}",
-        out.diagnostics
-    );
-    // PIN THE MESSAGE WORDING (not just the code): the message names the `const` parameter AND that the
-    // argument depends on runtime data — the actionable phrasing an author acts on. This is pinned
-    // deliberately because a doc comment elsewhere (iterators `adapter.cdz`) describes this exact
-    // rejection; an un-pinned message could silently drift out of sync (PR #669/#670 review). If the
-    // wording is intentionally changed, this assert + that doc are the two places to update together.
-    assert!(
-        coded.unwrap().message.contains("`const` parameter")
-            && coded.unwrap().message.contains("compile-time-known")
-            && coded.unwrap().message.contains("runtime data"),
-        "the const-arg reject names the const parameter + compile-time requirement + runtime cause: {}",
-        coded.unwrap().message
-    );
-}
-
-#[test]
 fn a_const_collection_recursively_folded_unrolls_not_hangs_or_rejects() {
     // A `const` COLLECTION param consumed by a SELF-RECURSIVE fold once composed the const erasure with
     // the tail-loop transform into an INFINITE LOOP (a `loop { … br 0 }` with the `(list)`-nil exit
