@@ -20,8 +20,8 @@ import { run-of-db } from "db-eval"
 /// nuke the whim eval-tree"): the differential run path is now the CACHING pipeline, not the recompute-per-
 /// demand `eval-tree`. Unblocked by the bug#4 fix (rcdzc 26e3471ac) — the let-program-at-scale divergence that
 /// forced eval-tree here is gone (se-milestone-from-source passes over the Db now).
-def run-src(s: String) = match read-source(s) with
-  | (root, tree) =>
+def run-src(s: String) =
+  let (root, tree) = read-source(s) in
     // WHOLE-PROGRAM SCOPE check FIRST: an unbound name in an UNCALLED sibling def is still a hard reject (rcdzc
     // CDZ0101), but the demand-driven run only resolves main's reachable set — so require EVERY def body to be
     // WELL-SCOPED (no unbound name) before running, else DECLINE (matches the oracle's whole-program reject).
@@ -33,7 +33,7 @@ def run-src(s: String) = match read-source(s) with
         // (rcdzc) declines emitting a tuple-returning export, so the ML interp DECLINES a TyTuple main-result
         // to match (else the differential disagrees). A tuple used internally (projected to a scalar) is fine.
         and (if is-tuple-at(tree, root, root) then false else true) then
-      (match run-of-db(db-of(tree), root) with | (_, v) => v)
+      (let (_, v) = run-of-db(db-of(tree), root) in v)
      else Option.None(unit))
 
 /// Read + run, TAGGING the result with its ground type so the caller can render `true`/`false` for a
@@ -41,8 +41,8 @@ def run-src(s: String) = match read-source(s) with
 /// differential compares value STRINGS, so the ML side must render the same). `Some (value, isBool)` where
 /// `isBool` is `1` when the program's ROOT is `TBool`, else `0`; `None` when the program declines. One
 /// export (a single tuple-in-Option heap value) → one compile, so the driver stays a single invocation.
-def run-src-typed(s: String) = match read-source(s) with
-  | (root, tree) =>
+def run-src-typed(s: String) =
+  let (root, tree) = read-source(s) in
     // Same whole-program scope check as run-src (this is the entry `cdz run-ml` calls, so the differential's
     // gap1 fix lives HERE): an unbound name in an uncalled sibling def declines, matching the oracle. Plus the
     // two reader-time type-decl markers (invalid payload width CDZ0302, unbound payload TYPE gap-B-C CDZ0101).

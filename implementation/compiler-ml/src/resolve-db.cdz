@@ -232,7 +232,7 @@ def parse-of(ts: List(Tok)) = parse-tokens(ts)
 @test
 def rd-bound-simple() =
   // "let x = 2 in x" → the body's NVar x is BOUND to the enclosing let. The binder is a let binding name x.
-  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, _, bodyId)) =>
         (match resolved-at(tree, root, bodyId) with
@@ -244,14 +244,14 @@ def rd-bound-simple() =
 @test
 def rd-unbound-is-poison() =
   // a bare "x" (no enclosing let) → the NVar resolves to RPoison (a FILLED negative decision, not absence).
-  (match parse-of([var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([var(1)]) in
     (if resolved-poison(tree, root, root) then (if resolved-count(tree, root) == 1 then unit else trap("one resolved fact")) else trap("unbound x is Poison")))
 
 @test
 def rd-poison-is-filled-not-absent() =
   // absence ≠ value: an unbound var has Some(RPoison) in the column; a LITERAL-only program has NO entry
   // for its literal node (it needs no resolution) → None. Filled-negative vs not-determined are distinct.
-  (match parse-of([n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([n(5)]) in
     (match resolved-at(tree, root, root) with
       | Option.None(_) => (if resolved-count(tree, root) == 0 then unit else trap("a literal fills no resolve fact"))
       | Option.Some(_) => trap("a literal needs no resolution — absent, not filled")))
@@ -260,7 +260,7 @@ def rd-poison-is-filled-not-absent() =
 def rd-value-not-in-own-scope() =
   // let is NON-recursive: in "let x = x in 5", the RHS `x` refers to the OUTER scope (none) → RPoison. The
   // binding does not scope over its own value.
-  (match parse-of([letkw(), var(1), eq(), var(1), inkw(), n(5)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), var(1), inkw(), n(5)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, valId, _)) =>
         (if resolved-poison(tree, root, valId) then unit else trap("the value's x is unbound (let is non-recursive)"))
@@ -270,7 +270,7 @@ def rd-value-not-in-own-scope() =
 def rd-shadowing-inner-wins() =
   // "let x = 1 in let x = 2 in x" → the innermost x binds to the INNER let (shadowing). The binder is a let
   // of x that is NOT the root (outer) let.
-  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, _, innerLetId)) =>
         (match node-at(tree, innerLetId) with
@@ -285,7 +285,7 @@ def rd-shadowing-inner-wins() =
 @test
 def rd-nested-distinct-bindings() =
   // "let a = 1 in let b = 2 in a + b" → a binds to the OUTER let, b to the INNER let: two distinct bindings.
-  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), n(2), inkw(), var(1), plus(), var(2)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, _, innerLetId)) =>
         (match node-at(tree, innerLetId) with
@@ -307,7 +307,7 @@ def rd-outer-var-in-inner-let-value() =
   // env the outer let extended BEFORE the inner let's own binding is added (let is non-recursive — the inner
   // value sees the outer scope, not the inner binder). Pins that resolve threads the outer env into a nested
   // let-value, the path a `let b = <expr-using-outer> in …` takes.
-  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), var(1), inkw(), var(2)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(1), inkw(), letkw(), var(2), eq(), var(1), inkw(), var(2)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, _, innerLetId)) =>
         (match node-at(tree, innerLetId) with
@@ -320,7 +320,7 @@ def rd-outer-var-in-inner-let-value() =
 def rd-milestone-body-var-bound() =
   // THE MILESTONE `let x = 2 in x * 3 + 1`: the `x` in the body resolves to the let binder; the two literals
   // (3, 1) and the value literal (2) fill NO resolve facts. Exactly one resolved fact (the single NVar).
-  (match parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, _, bodyId)) =>
         (match node-at(tree, bodyId) with
@@ -337,7 +337,7 @@ def rd-if-branches-share-enclosing-scope() =
   // an `if` introduces NO binder (resolve-node's NIf arm resolves cond/then/else in the SAME env). In
   // "let x = 1 in if x then x else x" ALL THREE occurrences of x resolve to the ONE enclosing let — the
   // scope clause the header documents but nothing pinned. Exactly three resolved facts (the three vars).
-  (match parse-of([letkw(), var(1), eq(), n(1), inkw(), ifkw(), var(1), thenkw(), var(1), elsekw(), var(1)]) with | (root, tree) =>
+  (let (root, tree) = parse-of([letkw(), var(1), eq(), n(1), inkw(), ifkw(), var(1), thenkw(), var(1), elsekw(), var(1)]) in
     (match node-at(tree, root) with
       | Option.Some(Node.NLet(_, _, ifId)) =>
         (match node-at(tree, ifId) with
@@ -360,11 +360,11 @@ def rd-nullary-call-body-is-lexical-no-caller-capture() =
   // bare var `x` (NVar name 1): at the NApp, the CALLER env has x→the let; but the callee body must resolve in
   // a fresh scope → the body's `x` is POISON (unbound), NOT bound to the caller's let. This pins the fix —
   // before it (caller-env resolve) the body var wrongly bound to the enclosing let (dynamic capture).
-  (match add-node(empty-tree(), Node.NLit(0)) with | (valId, t1) =>          // the let value `0`
-    (match add-node(t1, Node.NVar(1)) with | (mkBodyId, t2) =>               // mk's body: bare var `x` (name 1)
+  (let (valId, t1) = add-node(empty-tree(), Node.NLit(0)) in          // the let value `0`
+    (let (mkBodyId, t2) = add-node(t1, Node.NVar(1)) in               // mk's body: bare var `x` (name 1)
       (let t2d = record-def(t2, 900, mkBodyId) in                            // register mk (name 900) → its body
-       (match add-node(t2d, Node.NApp(900, -1)) with | (callId, t3) =>    // `(mk)` — a nullary call to name 900
-        (match add-node(t3, Node.NLet(1, valId, callId)) with | (root, tree) => // `let x(=1) = 0 in (mk)`
+       (let (callId, t3) = add-node(t2d, Node.NApp(900, -1)) in    // `(mk)` — a nullary call to name 900
+        (let (root, tree) = add-node(t3, Node.NLet(1, valId, callId)) in // `let x(=1) = 0 in (mk)`
           // the callee body's var (mkBodyId) must be POISON — a fresh-scope resolve, no caller-let capture.
           (if resolved-poison(tree, root, mkBodyId) then unit
            else trap("callee body var resolves LEXICALLY (fresh scope) → Poison, NOT captured by the caller let")))))))
@@ -376,18 +376,18 @@ def rd-standalone-body-resolve-contract-b1b() =
   // lower-db exports lower-node for cross-module column building). This pins that composing them on a
   // recursive body TERMINATES and binds the body's param vars — the exact use B1b depends on. Body:
   //   if (n < 1) then 1 else (n * (fac (n - 1)))   — param n = NVar(1) at paramId; self-call NApp(900, sub).
-  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
-    (match add-node(t1, Node.NVar(1)) with | (nCond, t2) =>
-      (match add-node(t2, Node.NLit(1)) with | (oneCond, t3) =>
-        (match add-node(t3, Node.NBin(60, nCond, oneCond)) with | (condId, t4) =>
-          (match add-node(t4, Node.NLit(1)) with | (thenId, t5) =>
-            (match add-node(t5, Node.NVar(1)) with | (nMul, t6) =>
-              (match add-node(t6, Node.NVar(1)) with | (nArg, t7) =>
-                (match add-node(t7, Node.NLit(1)) with | (oneArg, t8) =>
-                  (match add-node(t8, Node.NBin(45, nArg, oneArg)) with | (subId, t9) =>
-                    (match add-node(t9, Node.NApp(900, subId)) with | (callId, t10) =>
-                      (match add-node(t10, Node.NBin(42, nMul, callId)) with | (elseId, t11) =>
-                        (match add-node(t11, Node.NIf(condId, thenId, elseId)) with | (bodyId, t12) =>
+  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+    (let (nCond, t2) = add-node(t1, Node.NVar(1)) in
+      (let (oneCond, t3) = add-node(t2, Node.NLit(1)) in
+        (let (condId, t4) = add-node(t3, Node.NBin(60, nCond, oneCond)) in
+          (let (thenId, t5) = add-node(t4, Node.NLit(1)) in
+            (let (nMul, t6) = add-node(t5, Node.NVar(1)) in
+              (let (nArg, t7) = add-node(t6, Node.NVar(1)) in
+                (let (oneArg, t8) = add-node(t7, Node.NLit(1)) in
+                  (let (subId, t9) = add-node(t8, Node.NBin(45, nArg, oneArg)) in
+                    (let (callId, t10) = add-node(t9, Node.NApp(900, subId)) in
+                      (let (elseId, t11) = add-node(t10, Node.NBin(42, nMul, callId)) in
+                        (let (bodyId, t12) = add-node(t11, Node.NIf(condId, thenId, elseId)) in
                           (let tree = record-def(t12, 900, bodyId) in
                            (let scope = param-scope(tree, paramId, (Map.empty : Map(Int64, Int64))) in
                             (let col = resolve-node(tree, bodyId, scope, (Map.empty : Map(Int64, Resolved))) in
@@ -400,8 +400,8 @@ def rd-bare-def-name-as-value-is-rdef() =
   // HO-2a: a bare def-name used as a VALUE (not called) resolves to RDef(name), NOT RPoison. Build a def `g`
   // (name 900) + a body that is the bare var `g` (NVar 900) in value position — `g` misses the (empty) var
   // scope but names a def → RDef(900). This is the fn-value-as-argument classification (`inc` in `apply inc 41`).
-  (match add-node(empty-tree(), Node.NLit(0)) with | (gBodyId, t1) =>          // g's body (arbitrary)
-    (match add-node(t1, Node.NVar(900)) with | (refId, t2) =>                  // a bare reference to `g` (name 900)
+  (let (gBodyId, t1) = add-node(empty-tree(), Node.NLit(0)) in          // g's body (arbitrary)
+    (let (refId, t2) = add-node(t1, Node.NVar(900)) in                  // a bare reference to `g` (name 900)
       (let tree = record-def(t2, 900, gBodyId) in                             // register g (name 900) → its body
        (let col = resolve-node(tree, refId, (Map.empty : Map(Int64, Int64)), (Map.empty : Map(Int64, Resolved))) in
         (match Map.lookup(col, refId) with

@@ -78,7 +78,7 @@ def can-call-args(args: List(Core), i: Int64, defidx: Map(Int64, Int64)) =
 def all-defs-emittable(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, fmap: Map(Int64, Int64)) =
   (if i == List.len(entries) then true
    else (match List.at(entries, i) with
-     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (_, body) =>
+     | Option.Some(e) => (let (_, pb) = e in (let (_, body) = pb in
          (if can-emit-d(body, fmap) then all-defs-emittable(entries, i + 1, fmap) else false)))
      | Option.None(_) => false))   // in-bounds i so unreachable; but this GATES emit-vs-decline — a missing entry = NOT emittable (safe default), never an optimistic pass
 
@@ -89,7 +89,7 @@ def recursive-types(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
 def recursive-types-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: List(Bytes)) =
   (if i == List.len(entries) then acc
    else (match List.at(entries, i) with
-     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (params, _) =>
+     | Option.Some(e) => (let (_, pb) = e in (let (params, _) = pb in
          recursive-types-go(entries, i + 1, List.push(acc, functype-bytes(List.len(params))))))
      | Option.None(_) => acc))
 
@@ -100,7 +100,7 @@ def recursive-bodies(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), main
 def recursive-bodies-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, fmap: Map(Int64, Int64), acc: List(Bytes)) =
   (if i == List.len(entries) then acc
    else (match List.at(entries, i) with
-     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (params, body) =>
+     | Option.Some(e) => (let (_, pb) = e in (let (params, body) = pb in
          recursive-bodies-go(entries, i + 1, fmap, List.push(acc, emit-def-body-d(params, body, fmap)))))
      | Option.None(_) => acc))
 
@@ -117,7 +117,7 @@ def entries-to-defs(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
 def entries-to-defs-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: Map(Int64, Tuple(List(Int64), Core))) =
   (if i == List.len(entries) then acc
    else (match List.at(entries, i) with
-     | Option.Some(e) => (match e with | (name, pb) => entries-to-defs-go(entries, i + 1, Map.insert(acc, name, pb)))
+     | Option.Some(e) => (let (name, pb) = e in entries-to-defs-go(entries, i + 1, Map.insert(acc, name, pb)))
      | Option.None(_) => acc))
 
 /// Does the recursive program interpret to a value? Runs main via eval-core-d under the eval def-env — the SAME
@@ -160,7 +160,7 @@ def any-body-has-ctor(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), mai
 def any-body-has-ctor-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64) =
   (if i == List.len(entries) then false
    else (match List.at(entries, i) with
-     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (_, body) =>
+     | Option.Some(e) => (let (_, pb) = e in (let (_, body) = pb in
          (if has-ctor(body) then true else any-body-has-ctor-go(entries, i + 1))))
      | Option.None(_) => false))
 
@@ -171,7 +171,7 @@ def any-body-has-fnref(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), ma
 def any-body-has-fnref-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64) =
   (if i == List.len(entries) then false
    else (match List.at(entries, i) with
-     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (_, body) =>
+     | Option.Some(e) => (let (_, pb) = e in (let (_, body) = pb in
          (if has-fnref(body) then true else any-body-has-fnref-go(entries, i + 1))))
      | Option.None(_) => false))
 
@@ -194,8 +194,8 @@ def ho-functypes() = List.push(List.push(List.push(List.push(([] : List(Bytes)),
 /// SOURCE → recursive wasm module. read → lower main Core → assemble the multi-function module. `Some(bytes)` =
 /// a runnable module exporting `main` (which calls the emitted recursive defs); `None` = ill-typed / out-of-subset
 /// / declines. The recursive companion to emit-db's `emit-src` (which is single-main only).
-def emit-rec-src(s: String) = match read-source(s) with
-  | (root, tree) => (match lower-tree(tree, root) with
+def emit-rec-src(s: String) =
+  let (root, tree) = read-source(s) in (match lower-tree(tree, root) with
       | Option.Some(core) => emit-recursive-module(core, tree)
       | Option.None(_) => Option.None(unit))
 
@@ -206,8 +206,8 @@ def emit-rec-src(s: String) = match read-source(s) with
 /// `emit-src-bytes` UNCHANGED (byte-identical, so existing single-main differentials do not shift). Returns
 /// `Option(List(UInt8))` — `None` = declined (ill-typed / out-of-subset), NEVER a trap, so run-emitted's
 /// declined-vs-error contract holds. Verdict semantics match emit-db's emit-src-bytes exactly.
-def emit-any-src-bytes(s: String) = match read-source(s) with
-  | (root, tree) => (match lower-tree(tree, root) with
+def emit-any-src-bytes(s: String) =
+  let (root, tree) = read-source(s) in (match lower-tree(tree, root) with
       | Option.Some(core) => (if is-def-env-empty(lower-def-env(tree))
                    then emit-src-bytes(s)                              // no recursive defs → emit-db single-main (imported), byte-identical
                    else (match emit-recursive-module(core, tree) with  // recursive → the multi-fn assembler
