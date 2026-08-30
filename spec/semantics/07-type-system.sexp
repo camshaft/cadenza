@@ -1367,9 +1367,18 @@
 (case "equality of an integer and a string is a type error"
   (doc    "`(= 1 \"x\")` compares an Int64 with a String — two different types across a kind boundary,
            rejected (CDZ0201). The equality companion of `(< 1 \"x\")` → CDZ0201; `=` never silently
-           compares representations across types.")
+           compares representations across types. The message names BOTH operands with the grammatically
+           correct indefinite article — `an Int64` (vowel sound), `a String` — not the ungrammatical
+           `a Int64`.")
   (input  (= 1 "x"))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "an Int64 and a String are different types")))
+
+(case "a cross-kind clash message picks the indefinite article by SOUND, not letter (a UInt8)"
+  (doc    "The article is chosen by the leading SOUND, not the letter: `UInt8` starts with a `yoo` sound, so
+           it keeps `a UInt8` (not `an UInt8`), while `Int64` takes `an`. `(< n \"x\")` over a UInt8 param
+           vs a String is CDZ0201 naming `a UInt8 and a String`. Pins the sound-based article rule.")
+  (input  (do (def (g (: n UInt8)) (< n "x")) (export g)))
+  (error  CDZ0201 (message "a UInt8 and a String")))
 
 (case "equality across types is rejected regardless of operand order"
   (doc    "The order-flipped companion: `(= \"x\" 1)` is the same cross-type comparison (String vs Int64)
