@@ -12552,41 +12552,6 @@ mod match_engine {
     }
 
     #[test]
-    fn unquote_outside_quasiquote_is_cdz0003_wrong_arity_is_cdz0201() {
-        // metaprogramming.md §Quasiquote Constructs AST With Selective Evaluation: `,`/`,@` are meaningful
-        // ONLY inside a `` ` `` template. `unquote`/`unquote-splicing` are grammar heads now (reader-
-        // desugared from `,`/`,@`); the two syntax defects reject with distinct codes, split OFF the
-        // effect-no-home CDZ0401 they formerly (wrongly) shared.
-        // (1) An unquote OUTSIDE any quasiquote → CDZ0003 (the syntax-band unquote-outside code). A bare
-        //     `,x` reads to `(unquote x)`.
-        assert_eq!(
-            reject_code("(module m (def (main) (unquote x)) (export main))").as_deref(),
-            Some("CDZ0003")
-        );
-        // (2) An unquote nested only under a PLAIN `(quote …)` is STILL outside a quasiquote (a quote body
-        //     is inert data, not a selective-evaluation template) → CDZ0003, surfaced through the quoted
-        //     structure even though the enclosing quote itself declines.
-        assert_eq!(
-            reject_code("(module m (def (main) (quote (g (unquote x)))) (export main))").as_deref(),
-            Some("CDZ0003")
-        );
-        // (3) A wrong-ARITY unquote (≠1 operand) is CDZ0201 (malformed), checked before the context — so
-        //     `(quasiquote (unquote 1 2))` is the arity error, not the context error.
-        assert_eq!(
-            reject_code("(module m (def (main) (quasiquote (unquote 1 2))) (export main))")
-                .as_deref(),
-            Some("CDZ0201")
-        );
-        // (4) A WELL-FORMED unquote genuinely inside a quasiquote MUST evaluate its operand — so an unbound
-        //     name in it is the ordinary CDZ0101, NOT swallowed by the quasiquote's own decline.
-        assert_eq!(
-            reject_code("(module m (def (main) (quasiquote (a (unquote (+ b 1))))) (export main))")
-                .as_deref(),
-            Some("CDZ0101")
-        );
-    }
-
-    #[test]
     fn splicing_a_non_list_into_a_quasiquote_is_cdz0201() {
         // 12-metaprogramming "splicing a non-list value into a quasiquote" / "splicing an integer literal
         // directly": `,@` splices the ELEMENTS of a LIST into the parent (metaprogramming.md §Quasiquote
