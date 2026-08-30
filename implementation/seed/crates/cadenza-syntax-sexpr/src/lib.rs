@@ -287,6 +287,33 @@ pub fn print_pretty_from(arenas: &Arenas, id: StructId, width: usize) -> String 
     doc.render(width)
 }
 
+/// Pretty-print a top-level PROGRAM for DISPLAY: if the root is a `(do …)` — the synthetic wrapper
+/// [`read_all`] adds around a bare multi-form file, or a user `do` at the root — print its member forms
+/// as FLUSH-LEFT, blank-line-separated siblings, with NO `(do …)` wrapper and NO indentation. A program
+/// reads as a stacked list of top-level definitions, so the synthetic `do` is elided and its members sit
+/// at column 0 (the shape the guide displays). A non-`do` root prints as the ordinary single form.
+///
+/// Distinct from [`print_pretty_width`], which faithfully SHOWS the `(do …)` structure (each member
+/// indented one level under the head) — that is the right rendering when the `do` IS the program's
+/// structure (e.g. `cdz convert --to sexpr`), but wrong for displaying a bare-defs file, where stripping
+/// the wrapper text alone would leave the members mis-indented (first flush, rest at the `do`'s 2-space
+/// indent). Use this for displayed program code; use `print_pretty_width` to show the arena faithfully.
+pub fn print_pretty_program(arenas: &Arenas, width: usize) -> String {
+    if arenas.head_name(arenas.root) == Some("do")
+        && let Struct::List(items) = arenas.get(arenas.root)
+        && items.len() > 1
+    {
+        // Each member printed at column 0 (its own box), blank-line-separated — flush-left siblings.
+        let members: Vec<StructId> = items[1..].to_vec();
+        return members
+            .iter()
+            .map(|&m| print_pretty_from(arenas, m, width))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
+    print_pretty_width(arenas, width)
+}
+
 /// Render occurrence `id`. `top` marks a declaration-level position (the root, or a module body) —
 /// where a top-level `(do …)` form-sequence blank-separates its members. It is cleared for every
 /// nested child, so a `(do …)` used as a function body deeper in the tree keeps its statements
@@ -1581,6 +1608,39 @@ mod tests {
             "(def (f) (do (g) (h)))",
             "a nested do (statement block) stays width-driven, not force-broken"
         );
+    }
+
+    #[test]
+    fn print_pretty_program_renders_top_level_defs_flush_left_no_do_wrapper() {
+        // OPERATOR seq-256 (render-fidelity): a bare multi-form program (`read_all` wraps it in a synthetic
+        // `(do …)`) must DISPLAY as FLUSH-LEFT, blank-separated top-level siblings — NO `(do …)` wrapper and
+        // NO indentation. The bug this fixes: stripping the `(do` wrapper text from `print_pretty_width`'s
+        // output left the members mis-indented (first flush at col 0, the rest at the do's 2-space indent);
+        // `print_pretty_program` elides the synthetic wrapper and prints each member at column 0 instead.
+        let a = read_all("(def (dbl (: x Int64)) (* x 2)) (def (main) (dbl 21))").unwrap();
+        assert_eq!(
+            print_pretty_program(&a, 100),
+            "(def (dbl (: x Int64)) (* x 2))\n\n(def (main) (dbl 21))",
+            "top-level defs are flush-left, blank-separated, no `(do …)` wrapper"
+        );
+        // No spurious indent on ANY line (the operator's exact complaint) + re-reads to the same program.
+        let out = print_pretty_program(&a, 100);
+        assert!(
+            out.lines().all(|l| !l.starts_with("  (def")),
+            "no top-level def is indented:\n{out}"
+        );
+        assert!(
+            read_all(&out).unwrap().structurally_eq(&a),
+            "flush-left program re-reads identically"
+        );
+        // `print_pretty_width` STILL shows the `(do …)` faithfully (this is a display-only variant).
+        assert!(
+            print_pretty_width(&a, 100).starts_with("(do\n"),
+            "print_pretty_width still shows the (do …) structure"
+        );
+        // A single top-level form (no synthetic do) prints as itself.
+        let one = read("(def (main) 1)").unwrap();
+        assert_eq!(print_pretty_program(&one, 100), "(def (main) 1)");
     }
 
     #[test]
