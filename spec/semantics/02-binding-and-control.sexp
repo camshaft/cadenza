@@ -6110,6 +6110,15 @@
   (input  (do (def (main) (do (if 5 1 2) 42)) (export main)))
   (error  CDZ0203 (message "condition must be Bool")))
 
+(case "an ill-typed condition inside a let body is still caught (the check descends through the let)"
+  (doc    "The let-body companion of the do-descent above: `(let ((x 5)) (if x 1 2))` binds `x` = 5 (Int64)
+           then uses it as an `if` CONDITION — the check walks into the let BODY, so the non-Bool condition
+           is still reported → CDZ0203 'if condition must be Bool', not skipped because it is nested under a
+           let. Pins that the type-fault walk descends through `let` bodies. (migrated from rcdzc
+           a_type_fault_inside_a_let_body_is_still_caught.)")
+  (input  (do (def (main) (let ((x 5)) (if x 1 2))) (export main)))
+  (error  CDZ0203 (message "condition must be Bool")))
+
 ; The DIVIDE-BY-ZERO face of the same elision: the trap-observation rule is about WHETHER the value is
 ; observed, not WHICH trap it would raise. An unused binding whose init is a divide-by-zero (`(/ 100 d)`
 ; at d = 0) is elided exactly as the overflow one above — the ÷0 trap does not occur and the body's value

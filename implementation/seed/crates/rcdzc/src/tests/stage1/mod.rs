@@ -1201,12 +1201,9 @@ fn a_lexical_well_formedness_fault_surfaces_in_an_unreached_body() {
     );
 }
 
-#[test]
-fn a_type_fault_inside_a_let_body_is_still_caught() {
-    // The check descends through a `let` — a bad condition in the body is still reported.
-    let msg = expect_decline("(let ((x 5)) (if x 1 2))");
-    assert!(msg.contains("condition must be Bool"), "got: {msg}");
-}
+// a_type_fault_inside_a_let_body_is_still_caught (`(let ((x 5)) (if x 1 2))` → CDZ0203 "condition must
+// be Bool") migrated to corpus 02-binding-and-control "an ill-typed condition inside a let body is still
+// caught (the check descends through the let)". rcdzc test deleted (corpus-covered).
 
 #[test]
 fn distinct_literal_map_keys_are_not_a_duplicate() {
