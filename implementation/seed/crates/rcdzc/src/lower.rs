@@ -626,7 +626,18 @@ fn lower_let(
     // `map` binder, or a sum-ctor pattern (`(Some x)`) are NOT caught — head_name is `:`/`bin`/`Some`/… ≠
     // tuple|record — so they keep the ordinary path (annotated-binder diagnostics, bin/list/map reclaim, the
     // CDZ0210 refutable-sum reject all unchanged).
+    // The gate below misfires on a DO-BLOCK VALUE-DEF, which `compute.rs` routes here as a SELF-KEYED
+    // `(V, V)` binding (binder-occ == init-occ == the value node V, keyed on V for the keep-analysis) —
+    // a bare-name binding `(def p0 V)`, NOT a destructure. When V is a record/tuple LITERAL, `.0` IS a
+    // compound ctor, so the `compound_ctor`/`head_name` probe below wrongly reads it as a destructure
+    // PATTERN and routes `(def p0 #record(…))` through a single-arm match of the record against ITSELF →
+    // match_tree raises a spurious CDZ0210 "non-exhaustive sum match" (corpus-15 regression: a do-local
+    // record binding + projection declined). A GENUINE destructure `let` has a pattern node DISTINCT from
+    // its init (`(let (((tuple a b) init)) …)` — pattern ≠ init); the self-keyed value-def has `.0 == .1`.
+    // So require `.0 != .1`: the destructure fast-path fires only for a real distinct-pattern destructure,
+    // and a bare-name value-def binding keeps the ordinary path (its projection stays a runtime `Proj`).
     if bindings.len() == 1
+        && bindings[0].0 != bindings[0].1
         && (matches!(
             db.ast
                 .compound_ctor_prim(bindings[0].0)
