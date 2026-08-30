@@ -5559,7 +5559,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // String, a `(map …)` on a List — it is a type error, but it was neither type-checked (each kind's
     // lowering branch below is gated on the matching scrutinee type, so a mismatched one falls through) nor
     // cleanly rejected (it reached the scalar/list path and declined with the misleading generic "a match
-    // pattern that is not a scalar literal or `_` is not yet supported"). Name the real fault (CDZ0203), the
+    // pattern that is not a scalar literal or `_` is not supported"). Name the real fault (CDZ0203), the
     // structural twin of the map-key / list-element pattern-type checks. (A Sum/Tuple/Record SCRUTINEE has
     // already returned to `lower_match_sum` above, which type-checks a `(list …)`/`(map …)` pattern against
     // it — so this only sees a SCALAR / Bytes / List / Map / Set scrutinee here, where the well-formed
@@ -5744,7 +5744,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                     return Core::Poison(reject);
                 }
                 return Core::Poison(Reject::decline(
-                    "a match pattern that is not a scalar literal or `_` is not yet supported",
+                    "a match pattern that is not a scalar literal or `_` is not supported",
                 ));
             }
         }
@@ -7529,7 +7529,7 @@ fn desugar_refutable_nested_list_elements(
         }
         if nested_positions.len() > 1 {
             return Some(Core::Poison(Reject::decline(
-                "a list arm with more than one refutable nested-list element is not yet supported \
+                "a list arm with more than one refutable nested-list element is not supported \
                  (match one nested list per arm)",
             )));
         }
@@ -7822,7 +7822,7 @@ fn desugar_refutable_map_list_elements(
         if map_positions.len() > 1 {
             // ≥2 map elements in one arm — the body-rematch nesting is a later increment. Decline honestly.
             return Some(Core::Poison(Reject::decline(
-                "a list arm with more than one map element is not yet supported (match one map element per arm)",
+                "a list arm with more than one map element is not supported (match one map element per arm)",
             )));
         }
         let mpos = map_positions[0];
@@ -8115,7 +8115,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                     return Core::Poison(reject);
                 }
                 return Core::Poison(Reject::decline(
-                    "a list match arm that is not an element pattern or a binder is not yet supported",
+                    "a list match arm that is not an element pattern or a binder is not supported",
                 ));
             }
         }
@@ -8631,7 +8631,7 @@ fn desugar_runtime_map_match(
                 return Some(Core::Poison(reject));
             }
             return Some(Core::Poison(Reject::decline(
-                "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
+                "a map match arm that is not a `(map …)` pattern or a binder is not supported",
             )));
         };
         // The irrefutability guard now sees only bare binders + irrefutable compounds (refutable values
@@ -8886,7 +8886,7 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                 return Core::Poison(reject);
             }
             return Core::Poison(Reject::decline(
-                "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
+                "a map match arm that is not a `(map …)` pattern or a binder is not supported",
             ));
         };
         // A value sub-pattern MAY be a bare binder OR an IRREFUTABLE nested pattern (`(tuple x y)`, a
@@ -9480,7 +9480,7 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         return Core::Poison(Reject::coded(
             Code::Malformed,
             "matching a record LITERAL whose fields perform an effect, destructured by a `(record …)` \
-             pattern, is not yet supported — the record's performing fields would fire once per field \
+             pattern, is not supported — the record's performing fields would fire once per field \
              binder (a re-evaluation miscompile). Bind the record with `let` first, then read its fields \
              by `(. r field)` projection: `(let ((r (record …))) (+ (. r a) (. r b)))`",
         ));
@@ -9872,7 +9872,7 @@ pub(crate) fn check_binding_pattern(
             let is_bare_binder_or_wild = db.ast.as_name(value_pat).is_some();
             if !is_bare_binder_or_wild {
                 return Err(Reject::decline(
-                    "a nested compound sub-pattern inside a record binding pattern is not yet supported \
+                    "a nested compound sub-pattern inside a record binding pattern is not supported \
                      (Increment B binds a record's fields to bare names; destructure a nested field with \
                      a further `let`)",
                 ));
@@ -18395,7 +18395,7 @@ fn lower_quantity_combine(
             Some(n) => n,
             None => {
                 return Core::Poison(Reject::decline(
-                    "runtime mixed-unit Rational combine over a non-Qty.of operand (not yet emitted)",
+                    "runtime mixed-unit Rational combine over a non-Qty.of operand is not supported",
                 ));
             }
         };
@@ -18403,7 +18403,7 @@ fn lower_quantity_combine(
             Some(n) => n,
             None => {
                 return Core::Poison(Reject::decline(
-                    "runtime mixed-unit Rational combine over a non-Qty.of operand (not yet emitted)",
+                    "runtime mixed-unit Rational combine over a non-Qty.of operand is not supported",
                 ));
             }
         };
@@ -18447,7 +18447,7 @@ fn lower_quantity_combine(
             Some(n) => n,
             None => {
                 return Core::Poison(Reject::decline(
-                    "runtime mixed-unit BigInt combine over a non-Qty.of operand (not yet emitted)",
+                    "runtime mixed-unit BigInt combine over a non-Qty.of operand is not supported",
                 ));
             }
         };
@@ -18455,7 +18455,7 @@ fn lower_quantity_combine(
             Some(n) => n,
             None => {
                 return Core::Poison(Reject::decline(
-                    "runtime mixed-unit BigInt combine over a non-Qty.of operand (not yet emitted)",
+                    "runtime mixed-unit BigInt combine over a non-Qty.of operand is not supported",
                 ));
             }
         };
@@ -18527,7 +18527,7 @@ fn lower_runtime_combine(
         Some(n) => n,
         None => {
             return Core::Poison(Reject::decline(
-                "runtime mixed-unit combine over a non-Qty.of operand (not yet emitted)",
+                "runtime mixed-unit combine over a non-Qty.of operand is not supported",
             ));
         }
     };
@@ -18535,7 +18535,7 @@ fn lower_runtime_combine(
         Some(n) => n,
         None => {
             return Core::Poison(Reject::decline(
-                "runtime mixed-unit combine over a non-Qty.of operand (not yet emitted)",
+                "runtime mixed-unit combine over a non-Qty.of operand is not supported",
             ));
         }
     };
@@ -18803,7 +18803,7 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
             Some(node) => return core_of(db, node),
             None => {
                 return Core::Poison(Reject::decline(
-                    "Unit.in over a runtime non-Qty.of Rational magnitude (not yet emitted)",
+                    "Unit.in over a runtime non-Qty.of Rational magnitude is not supported",
                 ));
             }
         }
@@ -18842,7 +18842,7 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
             Some(node) => return core_of(db, node),
             None => {
                 return Core::Poison(Reject::decline(
-                    "Unit.in over a runtime non-Qty.of BigInt magnitude (not yet emitted)",
+                    "Unit.in over a runtime non-Qty.of BigInt magnitude is not supported",
                 ));
             }
         }
@@ -18871,7 +18871,7 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
     match convert_operand_ast(db, q, num, den, inner_is_float) {
         Some(node) => core_of(db, node),
         None => Core::Poison(Reject::decline(
-            "Unit.in over a runtime non-Qty.of magnitude (not yet emitted)",
+            "Unit.in over a runtime non-Qty.of magnitude is not supported",
         )),
     }
 }
@@ -19678,7 +19678,7 @@ fn lower_negate(db: &mut Db, id: StructId, operand: StructId) -> Core {
             Some(v) => v,
             None => {
                 return Core::Poison(Reject::decline(
-                    "negation of a runtime non-Qty.of quantity magnitude (not yet emitted)",
+                    "negation of a runtime non-Qty.of quantity magnitude is not supported",
                 ));
             }
         }
@@ -20093,7 +20093,7 @@ fn lower_float_of_int(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
             let Some(i) = v.to_i64() else {
                 // A BigInt-magnitude constant (>i64) has no Int64 conversion source here — decline.
                 return Core::Poison(Reject::decline(
-                    "of-int of a value wider than Int64 is not yet supported",
+                    "of-int of a value wider than Int64 is not supported",
                 ));
             };
             let f = if width == 32 {
@@ -29201,7 +29201,7 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
     let Core::ListNew { elems } = core_of(db, list) else {
         // A runtime list (a parameter, a push-built list) is a later increment — decline cleanly.
         return Core::Poison(Reject::decline(
-            "Bytes.of of a runtime list is not yet supported (only a visible list literal)",
+            "Bytes.of of a runtime list is not supported (only a visible list literal)",
         ));
     };
     // Each element is a `UInt8` (the `Bytes.of : (List UInt8) → Bytes` scheme). A CONSTANT element
