@@ -359,7 +359,7 @@ pub fn grade_run<F>(
     test_run: &TestRun,
     compile_status: i32,
     compile_diag: &str,
-    diag_wire: Option<&str>,
+    diag_wire: Option<&[u8]>,
     mut run_trial: F,
 ) -> Result<GradeResult>
 where
@@ -741,15 +741,6 @@ pub struct DiagFaultFix {
     pub verified: bool,
 }
 
-/// The severity part of one wire fault (`error`/`warning`), or `None` for an unrecognized token.
-fn parse_severity(tok: &str) -> Option<Severity> {
-    match tok {
-        "error" => Some(Severity::Error),
-        "warning" => Some(Severity::Warning),
-        _ => None,
-    }
-}
-
 /// A diagnostic's severity — the grade-path mirror of `rcdzc::abi::Severity`. An error DENIES the produced
 /// component; a warning ACCOMPANIES one. A corpus case reads failure-ness from this, not from the
 /// diagnostic's kind (reject/decline/trap).
@@ -765,39 +756,42 @@ pub enum Severity {
 /// is SKIPPED (defensive — the grader treats a malformed line as no fault rather than erroring). A `-` in
 /// any optional column decodes to `None`/no-fix; the fix columns decode to a [`DiagFaultFix`] only when the
 /// fix-kind column is not `-`.
-pub fn parse_diagnostics(wire: &str) -> Vec<DiagFault> {
-    let mut out = Vec::new();
-    for line in wire.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        let cols: Vec<&str> = line.splitn(8, '\t').collect();
-        if cols.len() < 8 {
-            continue;
-        }
-        let Some(severity) = parse_severity(cols[0]) else {
-            continue;
-        };
-        let dash = |s: &str| (s != "-").then(|| s.to_string());
-        let fix = if cols[3] == "-" {
-            None
-        } else {
-            Some(DiagFaultFix {
-                kind: cols[3].to_string(),
-                node: dash(cols[4]).and_then(|s| s.parse::<u32>().ok()),
-                replacement: cols[5].to_string(),
-                verified: cols[6] == "verified",
-            })
-        };
-        out.push(DiagFault {
-            severity,
-            code: dash(cols[1]),
-            node: dash(cols[2]).and_then(|s| s.parse::<u32>().ok()),
-            fix,
-            message: cols[7].to_string(),
-        });
+pub fn parse_diagnostics(wire: &[u8]) -> Vec<DiagFault> {
+    // Decode the KIND_DIAGNOSTICS wire (binary-AST, seq-254/seq-284: binary-AST is THE data-exchange
+    // format) via the ONE codec `cadenza_compile_abi::decode_diagnostics`, then project each
+    // `abi::Diagnostic` onto the grade-path `DiagFault`. The binary wire is a SUPERSET of the old 8-tab
+    // text: it preserves the human `label` (which the grader does NOT assert, so we drop it), keeps
+    // newlines uncollapsed in message/replacement, and spells `InsertInto` as `insert-into` (the tab wire
+    // used `insert`) — the corpus `(fix (kind …))` cases already author `insert-into`, so grading aligns.
+    cadenza_compile_abi::decode_diagnostics(wire)
+        .into_iter()
+        .map(|d| DiagFault {
+            severity: match d.severity {
+                cadenza_compile_abi::Severity::Error => Severity::Error,
+                cadenza_compile_abi::Severity::Warning => Severity::Warning,
+            },
+            code: d.code,
+            node: d.node,
+            fix: d.fix.map(|f| DiagFaultFix {
+                kind: fix_kind_wire_name(f.kind).to_string(),
+                node: Some(f.node),
+                replacement: f.replacement,
+                verified: f.verified,
+            }),
+            message: d.message,
+        })
+        .collect()
+}
+
+/// The wire spelling of a `FixKind` — mirrors `cadenza_compile_abi`'s wire encoder and the corpus
+/// `(fix (kind …))` authoring (`insert-into`, not `insert`).
+fn fix_kind_wire_name(k: cadenza_compile_abi::FixKind) -> &'static str {
+    match k {
+        cadenza_compile_abi::FixKind::Replace => "replace",
+        cadenza_compile_abi::FixKind::InsertInto => "insert-into",
+        cadenza_compile_abi::FixKind::Wrap => "wrap",
+        cadenza_compile_abi::FixKind::Delete => "delete",
     }
-    out
 }
 
 impl DiagFault {
@@ -1475,6 +1469,40 @@ pub fn classify(reason: &str) -> Option<TrapCode> {
 mod tests {
     use super::*;
 
+    /// Build a binary-AST `KIND_DIAGNOSTICS` wire (seq-254) from compact fault specs — the round-trip input
+    /// for the `parse_diagnostics` tests, via the ONE codec `cadenza_compile_abi::encode_diagnostics`. Each
+    /// spec is `(severity, code?, node?, fix?, message)` where `fix` is `(kind, node, replacement, verified)`.
+    #[allow(clippy::type_complexity)]
+    fn bin_wire(
+        faults: &[(
+            cadenza_compile_abi::Severity,
+            Option<&str>,
+            Option<u32>,
+            Option<(cadenza_compile_abi::FixKind, u32, &str, bool)>,
+            &str,
+        )],
+    ) -> Vec<u8> {
+        let diags: Vec<cadenza_compile_abi::Diagnostic> = faults
+            .iter()
+            .map(
+                |(sev, code, node, fix, msg)| cadenza_compile_abi::Diagnostic {
+                    severity: *sev,
+                    code: code.map(|c| c.to_string()),
+                    node: *node,
+                    message: msg.to_string(),
+                    fix: fix.map(|(k, n, r, v)| cadenza_compile_abi::DiagnosticFix {
+                        label: String::new(),
+                        kind: k,
+                        node: n,
+                        replacement: r.to_string(),
+                        verified: v,
+                    }),
+                },
+            )
+            .collect();
+        cadenza_compile_abi::encode_diagnostics(&diags)
+    }
+
     #[test]
     fn declines_with_code_pins_the_decline_error_code() {
         // is_cdz_code discriminator: a `CDZxxxx` token, never prose.
@@ -1934,13 +1962,26 @@ mod tests {
 
         // (b) Wire present, ONE error CDZ0201 fault carrying a `replace` fix whose replacement is "foo",
         // verified — matches the pinned fix + count 1 → Pass.
-        let wire_ok = "error\tCDZ0201\t1\treplace\t1\tfoo\tverified\tbad separator";
-        let res = grade_run(&tr, 1, diag, Some(wire_ok), never).unwrap();
+        use cadenza_compile_abi::{FixKind, Severity as S};
+        let wire_ok = bin_wire(&[(
+            S::Error,
+            Some("CDZ0201"),
+            Some(1),
+            Some((FixKind::Replace, 1, "foo", true)),
+            "bad separator",
+        )]);
+        let res = grade_run(&tr, 1, diag, Some(&wire_ok), never).unwrap();
         assert_eq!(res.grade, Grade::Pass, "matching fix+count → pass");
 
         // (c) Wire present but the fix's replacement is "bar" (≠ pinned "foo") → the quality grade FAILS.
-        let wire_bad = "error\tCDZ0201\t1\treplace\t1\tbar\tverified\tbad separator";
-        let res = grade_run(&tr, 1, diag, Some(wire_bad), never).unwrap();
+        let wire_bad = bin_wire(&[(
+            S::Error,
+            Some("CDZ0201"),
+            Some(1),
+            Some((FixKind::Replace, 1, "bar", true)),
+            "bad separator",
+        )]);
+        let res = grade_run(&tr, 1, diag, Some(&wire_bad), never).unwrap();
         assert!(
             matches!(res.grade, Grade::Fail(_)),
             "mismatched fix replacement → fail: {:?}",
@@ -1948,9 +1989,23 @@ mod tests {
         );
 
         // (d) Wire present but carries TWO CDZ0201 faults (count ≠ 1) → the count facet FAILS.
-        let wire_two = "error\tCDZ0201\t1\treplace\t1\tfoo\tverified\tone\n\
-                        error\tCDZ0201\t2\treplace\t3\tfoo\tverified\ttwo";
-        let res = grade_run(&tr, 1, diag, Some(wire_two), never).unwrap();
+        let wire_two = bin_wire(&[
+            (
+                S::Error,
+                Some("CDZ0201"),
+                Some(1),
+                Some((FixKind::Replace, 1, "foo", true)),
+                "one",
+            ),
+            (
+                S::Error,
+                Some("CDZ0201"),
+                Some(2),
+                Some((FixKind::Replace, 3, "foo", true)),
+                "two",
+            ),
+        ]);
+        let res = grade_run(&tr, 1, diag, Some(&wire_two), never).unwrap();
         assert!(
             matches!(res.grade, Grade::Fail(_)),
             "count mismatch → fail: {:?}",
@@ -1979,20 +2034,23 @@ mod tests {
             no_other_errors: no_other,
         };
         let diag = "cdz: error [CDZ0201] (node 1): bad thing";
+        use cadenza_compile_abi::Severity as S;
         // (a) EXACTLY the asserted code emitted → Pass.
-        let wire_one = "error\tCDZ0201\t1\t-\t-\t-\t-\tbad thing";
+        let wire_one = bin_wire(&[(S::Error, Some("CDZ0201"), Some(1), None, "bad thing")]);
         assert_eq!(
-            grade_run(&mk(true), 1, diag, Some(wire_one), never)
+            grade_run(&mk(true), 1, diag, Some(&wire_one), never)
                 .unwrap()
                 .grade,
             Grade::Pass
         );
         // (b) an EXTRA unasserted CDZ0999 error (a cascade) → `(no-other-errors)` FAILS.
-        let wire_cascade = "error\tCDZ0201\t1\t-\t-\t-\t-\tbad thing\n\
-                            error\tCDZ0999\t2\t-\t-\t-\t-\tcascade";
+        let wire_cascade = bin_wire(&[
+            (S::Error, Some("CDZ0201"), Some(1), None, "bad thing"),
+            (S::Error, Some("CDZ0999"), Some(2), None, "cascade"),
+        ]);
         assert!(
             matches!(
-                grade_run(&mk(true), 1, diag, Some(wire_cascade), never)
+                grade_run(&mk(true), 1, diag, Some(&wire_cascade), never)
                     .unwrap()
                     .grade,
                 Grade::Fail(_)
@@ -2001,17 +2059,19 @@ mod tests {
         );
         // (c) WITHOUT the clause the same cascade is NOT flagged by this facet → Pass.
         assert_eq!(
-            grade_run(&mk(false), 1, diag, Some(wire_cascade), never)
+            grade_run(&mk(false), 1, diag, Some(&wire_cascade), never)
                 .unwrap()
                 .grade,
             Grade::Pass,
             "no clause → cascade not graded"
         );
         // (d) an extra WARNING is ignored (errors only) → Pass even with the clause.
-        let wire_warn = "error\tCDZ0201\t1\t-\t-\t-\t-\tbad thing\n\
-                         warning\tCDZ0305\t2\t-\t-\t-\t-\tdead arm";
+        let wire_warn = bin_wire(&[
+            (S::Error, Some("CDZ0201"), Some(1), None, "bad thing"),
+            (S::Warning, Some("CDZ0305"), Some(2), None, "dead arm"),
+        ]);
         assert_eq!(
-            grade_run(&mk(true), 1, diag, Some(wire_warn), never)
+            grade_run(&mk(true), 1, diag, Some(&wire_warn), never)
                 .unwrap()
                 .grade,
             Grade::Pass,
@@ -2125,12 +2185,27 @@ mod tests {
     /// `parse_diagnostics` decodes rcdzc's 8-column structured-diagnostics wire into typed faults — the
     /// foundation for corpus `(error …)`/`(warning …)` diagnostic-QUALITY assertions (fix/verified/count).
     #[test]
-    fn parse_diagnostics_decodes_the_eight_column_wire() {
-        // A coded ERROR with a verified REPLACE fix; a WARNING with no fix + a dash code; a heuristic WRAP.
-        let wire = "error\tCDZ0203\t7\treplace\t7\tfoo\tverified\tundefined name `fooo`; did you mean `foo`?\n\
-                    warning\t-\t-\t-\t-\t-\t-\tan unanchored note\n\
-                    error\tCDZ0210\t3\twrap\t3\t(Some …)\theuristic\tmatch is non-exhaustive\n";
-        let faults = parse_diagnostics(wire);
+    fn parse_diagnostics_decodes_the_binary_wire() {
+        use cadenza_compile_abi::{FixKind, Severity as S};
+        // A coded ERROR with a verified REPLACE fix; a WARNING with no fix + no code; a heuristic WRAP.
+        let wire = bin_wire(&[
+            (
+                S::Error,
+                Some("CDZ0203"),
+                Some(7),
+                Some((FixKind::Replace, 7, "foo", true)),
+                "undefined name `fooo`; did you mean `foo`?",
+            ),
+            (S::Warning, None, None, None, "an unanchored note"),
+            (
+                S::Error,
+                Some("CDZ0210"),
+                Some(3),
+                Some((FixKind::Wrap, 3, "(Some …)", false)),
+                "match is non-exhaustive",
+            ),
+        ]);
+        let faults = parse_diagnostics(&wire);
         assert_eq!(faults.len(), 3);
 
         assert_eq!(faults[0].severity, Severity::Error);
@@ -2155,32 +2230,32 @@ mod tests {
         assert!(!fix2.verified);
     }
 
-    /// A malformed line (too few columns) or an unrecognized severity token is SKIPPED, not an error — the
-    /// grader treats a bad line as no fault rather than failing the whole grade.
+    /// Non-binary-AST bytes decode to NO faults (the codec is tolerant), never a panic — the grader treats
+    /// a bad/absent wire as "no faults" rather than failing the whole grade.
     #[test]
-    fn parse_diagnostics_skips_malformed_lines() {
-        let wire = "error\tCDZ0203\t7\treplace\t7\tfoo\tverified\tok message\n\
-                    too\tfew\tcols\n\
-                    note\tCDZ0001\t1\t-\t-\t-\t-\tunknown severity token\n\
-                    \n";
-        let faults = parse_diagnostics(wire);
-        assert_eq!(
-            faults.len(),
-            1,
-            "only the well-formed error line survives: {faults:?}"
-        );
-        assert_eq!(faults[0].code.as_deref(), Some("CDZ0203"));
+    fn parse_diagnostics_ignores_non_binary_bytes() {
+        assert!(parse_diagnostics(b"not a binary-ast tree").is_empty());
+        assert!(parse_diagnostics(&[]).is_empty());
     }
 
     /// `count_faults` / `DiagFault::is` select by (severity, code) — the basis for a `(count N)` assertion
     /// that a presence-only check cannot express (e.g. "exactly one CDZ0305 dead-trap warning").
     #[test]
     fn count_faults_selects_by_severity_and_code() {
-        let wire = "warning\tCDZ0305\t1\t-\t-\t-\t-\tdead trap A\n\
-                    warning\tCDZ0305\t2\t-\t-\t-\t-\tdead trap B\n\
-                    error\tCDZ0305\t3\t-\t-\t-\t-\tsame code, different severity\n\
-                    warning\tCDZ0306\t4\t-\t-\t-\t-\tunused binding\n";
-        let faults = parse_diagnostics(wire);
+        use cadenza_compile_abi::Severity as S;
+        let wire = bin_wire(&[
+            (S::Warning, Some("CDZ0305"), Some(1), None, "dead trap A"),
+            (S::Warning, Some("CDZ0305"), Some(2), None, "dead trap B"),
+            (
+                S::Error,
+                Some("CDZ0305"),
+                Some(3),
+                None,
+                "same code, different severity",
+            ),
+            (S::Warning, Some("CDZ0306"), Some(4), None, "unused binding"),
+        ]);
+        let faults = parse_diagnostics(&wire);
         assert_eq!(count_faults(&faults, Severity::Warning, "CDZ0305"), 2);
         assert_eq!(count_faults(&faults, Severity::Error, "CDZ0305"), 1);
         assert_eq!(count_faults(&faults, Severity::Warning, "CDZ0306"), 1);
@@ -2193,10 +2268,19 @@ mod tests {
     /// grading brain for the operator-greenlit "corpus expresses fixes" capability.
     #[test]
     fn grade_diag_quality_checks_fix_count_and_no_fix() {
-        let wire = "error\tCDZ0203\t7\treplace\t7\tfoo\tverified\tundefined name; did you mean `foo`?\n\
-                    warning\tCDZ0305\t1\t-\t-\t-\t-\tdead trap A\n\
-                    warning\tCDZ0305\t2\t-\t-\t-\t-\tdead trap B\n";
-        let faults = parse_diagnostics(wire);
+        use cadenza_compile_abi::{FixKind, Severity as S};
+        let wire = bin_wire(&[
+            (
+                S::Error,
+                Some("CDZ0203"),
+                Some(7),
+                Some((FixKind::Replace, 7, "foo", true)),
+                "undefined name; did you mean `foo`?",
+            ),
+            (S::Warning, Some("CDZ0305"), Some(1), None, "dead trap A"),
+            (S::Warning, Some("CDZ0305"), Some(2), None, "dead trap B"),
+        ]);
+        let faults = parse_diagnostics(&wire);
         let pass = |g: &Grade| matches!(g, Grade::Pass);
 
         // Empty assertion = no-op Pass.

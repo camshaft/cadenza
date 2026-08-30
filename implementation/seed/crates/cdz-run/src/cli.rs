@@ -330,12 +330,13 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
             None => String::new(),
         };
-        // The structured diagnostics wire, when the compile phase captured it (`--diagnostics`). `Some`
-        // turns diagnostic-QUALITY grading ON for this case; `None` (flag absent) leaves it OFF.
-        let diag_wire: Option<String> = cli
+        // The structured diagnostics wire (binary-AST, seq-254), when the compile phase captured it
+        // (`--diagnostics`). Read as BYTES (the wire is a binary-AST tree, decoded by the grader via
+        // cadenza_compile_abi::decode_diagnostics). `Some` turns diagnostic-QUALITY grading ON; `None` OFF.
+        let diag_wire: Option<Vec<u8>> = cli
             .diagnostics
             .as_ref()
-            .map(|p| std::fs::read_to_string(p).unwrap_or_default());
+            .map(|p| std::fs::read(p).unwrap_or_default());
         let baseline = match &cli.baseline {
             Some(p) => Some(
                 std::fs::read_to_string(p)

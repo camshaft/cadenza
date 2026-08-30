@@ -36,7 +36,7 @@ pub fn grade(
     // The STRUCTURED diagnostics wire (`KIND_DIAGNOSTICS`) for the compiled program, when the compile phase
     // captured it — feeds `grade_diag_quality` so a case's `(fix …)`/`(count …)` facets are asserted. `None`
     // when uncaptured (diagnostic-QUALITY grading OFF; the code+message checks still run from `compile_diag`).
-    diag_wire: Option<&str>,
+    diag_wire: Option<&[u8]>,
     baseline: Option<&str>,
     // CLASSIFY mode (`--emit-verdict PATH`, gate-delete `--save` replacement): when set, write this case's
     // current verdict (`<tag>\t<description>`) to PATH and return success WITHOUT the baseline regression
