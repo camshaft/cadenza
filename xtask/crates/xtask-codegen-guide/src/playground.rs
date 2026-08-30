@@ -53,6 +53,21 @@ fn locate_playground(a: &Arenas) -> Option<StructId> {
     None
 }
 
+/// Find the `(example …)` form in a per-example doc — the root, or (when `read_all` wrapped a single top-level
+/// form in a synthetic `(do …)`) its `(example …)` child. Mirrors `locate_chapter`.
+fn locate_example(a: &Arenas) -> Option<StructId> {
+    if a.head_name(a.root) == Some("example") {
+        return Some(a.root);
+    }
+    if let Struct::List(items) = a.get(a.root) {
+        return items
+            .iter()
+            .copied()
+            .find(|&c| a.head_name(c) == Some("example"));
+    }
+    None
+}
+
 /// Canonical-render the `(source …)` holder's program forms — each child pretty-printed (wrapper kept) and
 /// blank-line joined. `None` when the holder is absent.
 fn canonical_source(a: &Arenas, example: StructId) -> Option<String> {
@@ -85,8 +100,56 @@ fn expected_value(a: &Arenas, example: StructId) -> Option<String> {
     Some(parts.join(" "))
 }
 
-/// Read + validate every `(example …)` in a `(playground …)` doc, in source order. Returns an error string
-/// (not a panic) on a malformed/invalid example so the codegen can fail loudly with a pointed message.
+/// Read + validate ONE `(example …)` form. Returns an error string (not a panic) on a malformed/invalid
+/// example so the codegen can fail loudly with a pointed message.
+pub fn read_one_example(a: &Arenas, ex: StructId) -> Result<PlaygroundExample, String> {
+    let id = super::named_attr(a, ex, "id")
+        .ok_or("an (example …) is missing (id \"…\")")?
+        .to_string();
+    let name = super::named_attr(a, ex, "name")
+        .ok_or_else(|| format!("example {id}: missing (name \"…\")"))?
+        .to_string();
+    let theme = super::named_attr(a, ex, "theme")
+        .ok_or_else(|| format!("example {id}: missing (theme \"…\")"))?
+        .to_string();
+    if !THEMES.contains(&theme.as_str()) {
+        return Err(format!(
+            "example {id}: unknown theme {theme:?} — allowed: {THEMES:?} (extend the Example union + this set together)"
+        ));
+    }
+    let surface = super::named_attr(a, ex, "surface")
+        .ok_or_else(|| format!("example {id}: missing (surface \"…\")"))?
+        .to_string();
+    if !SURFACES.contains(&surface.as_str()) {
+        return Err(format!(
+            "example {id}: unknown surface {surface:?} — allowed: {SURFACES:?}"
+        ));
+    }
+    let source =
+        canonical_source(a, ex).ok_or_else(|| format!("example {id}: missing (source …)"))?;
+    let expected = expected_value(a, ex);
+    let expect_error = super::named_attr(a, ex, "expect-error") == Some("true");
+    // A pinned `expected` value must be sexpr-authored (compared on the sexpr pass) — mirrors the
+    // examples.test.ts lint. Playground examples are sexpr, so this is a codegen guard against drift.
+    if expected.is_some() && surface != "sexpr" {
+        return Err(format!(
+            "example {id}: an (expected …) pin requires (surface \"sexpr\") — it is compared on the sexpr pass"
+        ));
+    }
+    Ok(PlaygroundExample {
+        id,
+        name,
+        theme,
+        surface,
+        source,
+        expected,
+        expect_error,
+    })
+}
+
+/// Read + validate every `(example …)` in a `(playground …)` doc, in source order. Kept for the single-doc
+/// form + the shred (a `(playground …)` .cdzb); the file-per-example source-of-truth is read by
+/// [`read_playground_dir`]. Error string on a malformed example.
 pub fn read_playground(a: &Arenas) -> Result<Vec<PlaygroundExample>, String> {
     let root = locate_playground(a).ok_or("no (playground …) form in the document")?;
     let mut out = Vec::new();
@@ -94,50 +157,46 @@ pub fn read_playground(a: &Arenas) -> Result<Vec<PlaygroundExample>, String> {
         if a.head_name(ex) != Some("example") {
             continue; // tolerate non-example children (comments/metadata) — walk only (example …)
         }
-        let id = super::named_attr(a, ex, "id")
-            .ok_or("an (example …) is missing (id \"…\")")?
-            .to_string();
-        let name = super::named_attr(a, ex, "name")
-            .ok_or_else(|| format!("example {id}: missing (name \"…\")"))?
-            .to_string();
-        let theme = super::named_attr(a, ex, "theme")
-            .ok_or_else(|| format!("example {id}: missing (theme \"…\")"))?
-            .to_string();
-        if !THEMES.contains(&theme.as_str()) {
-            return Err(format!(
-                "example {id}: unknown theme {theme:?} — allowed: {THEMES:?} (extend the Example union + this set together)"
-            ));
-        }
-        let surface = super::named_attr(a, ex, "surface")
-            .ok_or_else(|| format!("example {id}: missing (surface \"…\")"))?
-            .to_string();
-        if !SURFACES.contains(&surface.as_str()) {
-            return Err(format!(
-                "example {id}: unknown surface {surface:?} — allowed: {SURFACES:?}"
-            ));
-        }
-        let source =
-            canonical_source(a, ex).ok_or_else(|| format!("example {id}: missing (source …)"))?;
-        let expected = expected_value(a, ex);
-        let expect_error = super::named_attr(a, ex, "expect-error") == Some("true");
-        // A pinned `expected` value must be sexpr-authored (compared on the sexpr pass) — mirrors the
-        // examples.test.ts lint. Playground examples are sexpr, so this is a codegen guard against drift.
-        if expected.is_some() && surface != "sexpr" {
-            return Err(format!(
-                "example {id}: an (expected …) pin requires (surface \"sexpr\") — it is compared on the sexpr pass"
-            ));
-        }
-        out.push(PlaygroundExample {
-            id,
-            name,
-            theme,
-            surface,
-            source,
-            expected,
-            expect_error,
-        });
+        out.push(read_one_example(a, ex)?);
     }
     Ok(out)
+}
+
+/// Read + validate every per-example `.sexp` in a directory (the file-per-example source-of-truth, seq-279),
+/// in FILENAME order (files are `<NNNN>-<id>.sexp`, index-prefixed → the dropdown order sorts by name). Each
+/// file is a bare `(example …)` form. Error string on a malformed file/example.
+pub fn read_playground_dir(dir: &std::path::Path) -> Result<Vec<PlaygroundExample>, String> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("read dir {}: {e}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("sexp"))
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        return Err(format!("no *.sexp examples in {}", dir.display()));
+    }
+    let mut out = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).map_err(|e| format!("read {}: {e}", f.display()))?;
+        let a = cadenza_syntax_sexpr::read_all(&text)
+            .map_err(|e| format!("parse {}: {e:?}", f.display()))?;
+        let ex =
+            locate_example(&a).ok_or_else(|| format!("{}: no (example …) form", f.display()))?;
+        out.push(read_one_example(&a, ex)?);
+    }
+    Ok(out)
+}
+
+/// Read playground examples from a decoded doc — either a legacy `(playground …)` multi-example doc OR a
+/// single per-example `(example …)` file (seq-279; the shred's per-example `.cdzb`). Returns all found.
+pub fn read_playground_any(a: &Arenas) -> Result<Vec<PlaygroundExample>, String> {
+    if locate_playground(a).is_some() {
+        return read_playground(a);
+    }
+    if let Some(ex) = locate_example(a) {
+        return Ok(vec![read_one_example(a, ex)?]);
+    }
+    Err("no (playground …) or (example …) form in the document".into())
 }
 
 /// Emit the body of the `EXAMPLES: Example[] = [ … ];` array — the @GENERATED region of examples.ts — from
@@ -236,13 +295,13 @@ struct BootEntry {
     expect_error: bool,
 }
 
-/// Extract the hand-authored `EXAMPLES[]` entries from examples.ts and emit the `(playground …)` doc — the
-/// one-time fork1a migration input, IN RUST (operator: no JS tooling; the xtask owns codegen). A lightweight
-/// LINE scan (the xtask has no regex crate) over the file's regular entry format: one-per-line `key: "value",`
-/// fields, plus `source`, a backtick template that may span lines (closed by the next UNESCAPED backtick —
-/// Cadenza sources mention backticks only inside `\``-escaped comments). Only scans inside the
-/// `export const EXAMPLES … = [` array (skips the interface).
-pub fn bootstrap_from_examples_ts(ts: &str) -> Result<String, String> {
+/// Extract the hand-authored `EXAMPLES[]` entries from examples.ts → `(id, bare-(example …)-sexp)` per
+/// example (source-order) — the one-time fork1a migration input, IN RUST (operator: no JS tooling; the xtask
+/// owns codegen). A lightweight LINE scan (the xtask has no regex crate) over the file's regular entry format:
+/// one-per-line `key: "value",` fields, plus `source`, a backtick template that may span lines (closed by the
+/// next UNESCAPED backtick — Cadenza sources mention backticks only inside `\``-escaped comments). Only scans
+/// inside the `export const EXAMPLES … = [` array (skips the interface).
+pub fn bootstrap_from_examples_ts(ts: &str) -> Result<Vec<(String, String)>, String> {
     let mut entries: Vec<BootEntry> = Vec::new();
     let mut cur: Option<BootEntry> = None;
     let mut in_array = false;
@@ -314,52 +373,62 @@ pub fn bootstrap_from_examples_ts(ts: &str) -> Result<String, String> {
             "no EXAMPLES entries found in examples.ts (did the array/format change?)".into(),
         );
     }
-    let mut doc = String::from("(playground\n");
-    for e in &entries {
-        if e.surface != "sexpr" {
-            return Err(format!(
-                "example {:?}: surface {:?} — the bootstrap embeds sexpr sources verbatim only",
-                e.id, e.surface
-            ));
-        }
-        let mut form = format!(
-            "  (example\n    (id {})\n    (name {})\n    (theme {})\n    (surface {})\n    (source {})",
-            super::json_string(&e.id),
-            super::json_string(&e.name),
-            super::json_string(&e.theme),
-            super::json_string(&e.surface),
-            e.source.trim(),
-        );
-        if let Some(exp) = &e.expected {
-            // expected is an SEXPR VALUE, not a code-string (operator seq-279) — the value text is already
-            // sexpr (a bare atom or an ascribed `(: …)` form), so splice it raw, not json_string-quoted.
-            form.push_str(&format!("\n    (expected {exp})"));
-        }
-        if e.expect_error {
-            form.push_str("\n    (expect-error \"true\")");
-        }
-        form.push(')');
-        doc.push_str(&form);
-        doc.push('\n');
-    }
-    doc.push_str(")\n");
-    Ok(doc)
+    entries
+        .iter()
+        .map(|e| Ok((e.id.clone(), format_example_form(e)?)))
+        .collect()
 }
 
-/// `--playground-bootstrap <examples.ts>`: emit the `(playground …)` doc (to the sibling examples.sexp) from
-/// the hand-authored examples.ts — the one-time fork1a migration input. After the flip, examples.sexp is
-/// authored directly + examples.ts is @generated (`--playground-registry`), so this is used once.
+/// Format one bootstrapped entry as a standalone bare `(example …)` sexp file body (example at column 0,
+/// attrs 2-space). source embedded VERBATIM (canonicalized on read); expected an SEXPR value (seq-279).
+fn format_example_form(e: &BootEntry) -> Result<String, String> {
+    if e.surface != "sexpr" {
+        return Err(format!(
+            "example {:?}: surface {:?} — the bootstrap embeds sexpr sources verbatim only",
+            e.id, e.surface
+        ));
+    }
+    let mut form = format!(
+        "(example\n  (id {})\n  (name {})\n  (theme {})\n  (surface {})\n  (source {})",
+        super::json_string(&e.id),
+        super::json_string(&e.name),
+        super::json_string(&e.theme),
+        super::json_string(&e.surface),
+        e.source.trim(),
+    );
+    if let Some(exp) = &e.expected {
+        form.push_str(&format!("\n  (expected {exp})"));
+    }
+    if e.expect_error {
+        form.push_str("\n  (expect-error \"true\")");
+    }
+    form.push_str(")\n");
+    Ok(form)
+}
+
+/// `--playground-bootstrap <examples.ts>`: one-time fork1a migration — emit ONE `.sexp` per example into the
+/// sibling `examples/` directory (`<NNNN>-<id>.sexp`, index-prefixed for dropdown order), from the
+/// hand-authored examples.ts. Deletes the old single examples.sexp. After this, the per-example files are the
+/// source-of-truth + examples.ts is @generated (`--playground-registry`).
 pub fn run_playground_bootstrap(examples_ts: &str) {
     let ts = std::fs::read_to_string(examples_ts)
         .unwrap_or_else(|e| die(&format!("read {examples_ts}: {e}")));
-    let doc =
+    let forms =
         bootstrap_from_examples_ts(&ts).unwrap_or_else(|e| die(&format!("{examples_ts}: {e}")));
-    let out = std::path::Path::new(examples_ts).with_file_name("examples.sexp");
-    std::fs::write(&out, &doc).unwrap_or_else(|e| die(&format!("write {}: {e}", out.display())));
-    let n = doc.matches("  (example\n").count();
+    let base = std::path::Path::new(examples_ts);
+    let dir = base.with_file_name("examples");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(&format!("mkdir {}: {e}", dir.display())));
+    for (i, (id, form)) in forms.iter().enumerate() {
+        let fname = format!("{:04}-{}.sexp", i + 1, id);
+        std::fs::write(dir.join(&fname), form)
+            .unwrap_or_else(|e| die(&format!("write {fname}: {e}")));
+    }
+    let _ = std::fs::remove_file(base.with_file_name("examples.sexp"));
     println!(
-        "✓ --playground-bootstrap: wrote {n} examples → {}",
-        out.display()
+        "✓ --playground-bootstrap: wrote {} per-example files → {}",
+        forms.len(),
+        dir.display()
     );
 }
 
@@ -389,15 +458,12 @@ pub fn regenerate_examples_region(ts_src: &str, body: &str) -> Result<String, St
 }
 
 /// `--playground-registry [--check] <examples.ts>`: regenerate (or `--check`) the `EXAMPLES[]` region of
-/// examples.ts from the sibling `examples.sexp` source-of-truth (read → validate → emit → replace the region).
+/// examples.ts from the sibling `examples/` directory (the per-example `.sexp` source-of-truth — read all →
+/// validate → emit → replace the region).
 pub fn run_playground_registry(examples_ts: &str, check: bool) {
-    let sexp_path = std::path::Path::new(examples_ts).with_file_name("examples.sexp");
-    let sexp = std::fs::read_to_string(&sexp_path)
-        .unwrap_or_else(|e| die(&format!("read {}: {e}", sexp_path.display())));
-    let a = cadenza_syntax_sexpr::read_all(&sexp)
-        .unwrap_or_else(|e| die(&format!("parse {}: {e:?}", sexp_path.display())));
+    let dir = std::path::Path::new(examples_ts).with_file_name("examples");
     let examples =
-        read_playground(&a).unwrap_or_else(|e| die(&format!("{}: {e}", sexp_path.display())));
+        read_playground_dir(&dir).unwrap_or_else(|e| die(&format!("{}: {e}", dir.display())));
     let body = emit_examples_array(&examples);
     let src = std::fs::read_to_string(examples_ts)
         .unwrap_or_else(|e| die(&format!("read {examples_ts}: {e}")));
@@ -406,7 +472,7 @@ pub fn run_playground_registry(examples_ts: &str, check: bool) {
     if check {
         if next != src {
             eprintln!(
-                "✗ --playground-registry --check: {examples_ts} EXAMPLES[] is OUT OF SYNC with examples.sexp — regenerate + commit."
+                "✗ --playground-registry --check: {examples_ts} EXAMPLES[] is OUT OF SYNC with examples/ — regenerate + commit."
             );
             std::process::exit(1);
         }
@@ -565,26 +631,30 @@ mod tests {
                   \x20   expectError: true,\n\
                   \x20 },\n\
                   ];\n";
-        let doc = bootstrap_from_examples_ts(ts).unwrap();
-        // the emitted doc round-trips through the reader → the entries we authored
-        let a = cadenza_syntax_sexpr::read_all(&doc).unwrap();
-        let exs = read_playground(&a).unwrap();
-        assert_eq!(exs.len(), 2);
-        assert_eq!(exs[0].id, "one");
-        assert_eq!(exs[0].theme, "basics");
+        let forms = bootstrap_from_examples_ts(ts).unwrap();
+        assert_eq!(forms.len(), 2); // interface's `id`/`surface` NOT scanned as entries
+        assert_eq!(forms[0].0, "one");
+        assert_eq!(forms[1].0, "two");
+        // each emitted form is a standalone bare (example …) that reads back to the authored example
+        let read = |form: &str| {
+            let a = cadenza_syntax_sexpr::read_all(form).unwrap();
+            let ex = locate_example(&a).expect("emitted form is not an (example …)");
+            read_one_example(&a, ex).unwrap()
+        };
+        let one = read(&forms[0].1);
+        assert_eq!(one.id, "one");
+        assert_eq!(one.theme, "basics");
         // the escaped-quote expected survives extraction + re-emission (unescaped then sexpr-escaped)
-        assert_eq!(exs[0].expected.as_deref(), Some("(: \"hi\" String)"));
-        assert!(!exs[0].expect_error);
-        assert_eq!(exs[1].id, "two");
-        assert!(exs[1].expect_error);
-        assert_eq!(exs[1].expected, None);
+        assert_eq!(one.expected.as_deref(), Some("(: \"hi\" String)"));
+        assert!(!one.expect_error);
+        let two = read(&forms[1].1);
+        assert_eq!(two.id, "two");
+        assert!(two.expect_error);
+        assert_eq!(two.expected, None);
         // multi-line source captured, and the escaped `\`` inside the comment did NOT close the template early
         assert!(
-            exs[1].source.contains("(def (main) (+ 1 2))")
-                && exs[1].source.contains("(export main)")
+            two.source.contains("(def (main) (+ 1 2))") && two.source.contains("(export main)")
         );
-        // the interface's `id: string` / `surface: Surface` were NOT scanned as entries
-        assert!(exs.iter().all(|e| e.id == "one" || e.id == "two"));
     }
 
     #[test]
