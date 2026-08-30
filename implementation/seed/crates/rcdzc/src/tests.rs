@@ -34875,28 +34875,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_exhaustive_nested_sum_match_is_rejected() {
-        // A nested match missing the inner `Neg` case with no wildcard is NON-EXHAUSTIVE at the INNER
-        // switch (the outer `Full` is reached, but its inner `Inner` leaves `Neg` uncovered). The
-        // decision tree checks exhaustiveness at EACH switch, so this is CDZ0210 — not a silent
-        // fallthrough. `(Full (Pos x))` + `Empty` leaves the inner `Neg` uncovered.
-        use crate::testkit::parse;
-        let src = "(module m \
-                     (type Inner (Pos Int64) (Neg Int64)) \
-                     (type Box (Full Inner) Empty) \
-                     (def (classify (: b Box)) \
-                        (match b ((Box.Full (Inner.Pos x)) x) (Box.Empty -1))) \
-                     (export classify))";
-        let msg = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a non-exhaustive nested match must be rejected")
-            .message;
-        assert!(
-            msg.contains("non-exhaustive") || msg.contains("cover every variant"),
-            "got: {msg}"
-        );
-    }
-
-    #[test]
     fn a_capturing_closure_stored_and_also_directly_called_is_force_kept() {
         // WARNING: INVALID-ARTIFACT regression (breaker adv-50, both backends): a CAPTURING `let`-bound lambda
         // whose HANDLE ESCAPES WHOLE (stored into a heap collection / sum payload) AND is ALSO DIRECTLY

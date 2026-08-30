@@ -10382,6 +10382,23 @@
             (export main)))
   (error  CDZ0210))
 
+(case "a nested match missing an inner variant under a DISC-0 user-sum variant is non-exhaustive"
+  (doc    "The user-sum, disc-0 companion of the nested-exhaustiveness cases: `(type Box (Full Inner) Empty)`
+           carries the nested user-sum `(type Inner (Pos Int64) (Neg Int64))` at variant `Full` = discriminant
+           0. The match arms `(Box.Full (Inner.Pos x))` and `Box.Empty` but leaves `(Box.Full (Inner.Neg _))`
+           uncovered, so it is non-exhaustive and rejects CDZ0210, NAMING the uncovered inner variant `Neg`.
+           The decision tree checks exhaustiveness at EACH switch, so the inner `Inner.Pos | Inner.Neg` set
+           under `Full` is checked even though `Full` is the FIRST variant — the disc-0 user-sum companion of
+           the disc-≥1 `W.V (Option …)` case above and the built-in `Option (Option …)` case (02). A compiler
+           that checked the inner switch only under a disc-≥1 variant would accept this ill-typed match.
+           (Migrated from rcdzc a_non_exhaustive_nested_sum_match_is_rejected.)")
+  (input  (do
+            (type Inner (Pos Int64) (Neg Int64))
+            (type Box (Full Inner) Empty)
+            (def (classify (: b Box)) (match b ((Box.Full (Inner.Pos x)) x) (Box.Empty -1)))
+            (export classify)))
+  (error  CDZ0210 (message "`Neg`")))
+
 (case "a literal-refined variant arm does not satisfy exhaustiveness"
   (doc    "A payload-LITERAL refinement `((W.V 0) …)` covers only the `V` payload EQUAL TO 0 — it does not
            cover the `V` variant (a `V` carrying any other value is unmatched), so a match with only
