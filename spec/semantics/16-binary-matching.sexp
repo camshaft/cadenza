@@ -811,16 +811,24 @@
   (doc    "`(bin (byte 5))` uses `byte` where the kind is `bytes` — a confident typo of a known segment
            kind. The kind head names no segment, so it is rejected (CDZ0201, 'unrecognized bin segment kind
            `byte` — did you mean `bytes`?'), the bin-segment did-you-mean. Pins the misspelled-kind path
-           (the rename fix), distinct from a valid kind with a bad layout (CDZ0220 above).")
+           (the rename fix), distinct from a valid kind with a bad layout (CDZ0220 above). (fix migrated
+           from rcdzc a_misspelled_bin_segment_kind_offers_the_rename_fix.)")
   (input  (do (def (main) (bin (byte 5))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "did you mean `bytes`?") (fix (kind replace) (replacement "bytes"))))
 
 (case "a misspelled utf8 segment kind is rejected"
   (doc    "`(bin (utf 65))` uses `utf` for `utf8` — another confident kind typo, rejected CDZ0201 with the
            `utf8` rename suggestion. Pins that the did-you-mean covers the text-segment kind as well as
            `bytes`, so a near-miss on any closed-vocabulary kind is named.")
   (input  (do (def (main) (bin (utf 65))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "did you mean `utf8`?") (fix (kind replace) (replacement "utf8"))))
+
+(case "a misspelled bits segment kind is rejected with the bits rename"
+  (doc    "`(bin (bit b))` uses `bit` for `bits` — the bit-width-segment kind typo, rejected CDZ0201 with the
+           `bits` rename. Completes the did-you-mean coverage across the closed kind vocabulary. From rcdzc
+           a_misspelled_bin_segment_kind_offers_the_rename_fix.")
+  (input  (do (def (f (: b Bytes)) (bin (bit b))) (export f)))
+  (error  CDZ0201 (message "did you mean `bits`?") (fix (kind replace) (replacement "bits"))))
 
 (case "a fixed-width integer segment of a non-byte-aligned width is rejected"
   (doc    "`(bin (u9 5))` names a 9-bit unsigned integer segment — `uNN` segments are the byte-aligned
@@ -838,7 +846,7 @@
            complement of the misspelled-kind case: the vocabulary is closed and a head outside it — near or
            far — is rejected.")
   (input  (do (def (main) (bin (zzz 5))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "unrecognized bin segment kind") (no-fix)))
 
 ; ============================================================================================
 ; Fit — a segment REQUIRES its width-typed value. A CONSTANT literal grounds to that width and a
