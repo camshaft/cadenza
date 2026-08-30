@@ -18859,7 +18859,7 @@
   (input  (do (def (f (: mp (Map Int64 Int64)))
                 (match mp (#map((= 1 v) .. rest (= 2 w)) v) (_ 0)))
               (export f)))
-  (error CDZ0201))
+  (error  CDZ0201 (message "map rest pattern is") (not "unbound name")))
 
 (case "a nested map pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
   (doc    "The NESTED twin of the top-level malformed-map-rest case: a `(map (k v) .. rest (j w))` with a
