@@ -965,7 +965,7 @@ mod tests {
         let inputs = vec![
             Artifact::new(Artifact::KIND_AST, "lib", lib),
             Artifact::new(Artifact::KIND_AST, "app", app),
-            Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()),
+            cadenza_compile_abi::abi::entry_artifact("app"),
         ];
         let out = crate::compile(&inputs, &[Target::Wasm]);
         assert!(
@@ -997,7 +997,7 @@ mod tests {
         let inputs = vec![
             Artifact::new(Artifact::KIND_AST, "lib", lib),
             Artifact::new(Artifact::KIND_AST, "app", app),
-            Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()),
+            cadenza_compile_abi::abi::entry_artifact("app"),
         ];
         let out = crate::compile(&inputs, &[Target::Wasm]);
         assert!(
@@ -1080,7 +1080,7 @@ mod tests {
         let inputs = vec![
             Artifact::new(Artifact::KIND_AST, "lib", lib),
             Artifact::new(Artifact::KIND_AST, "app", app),
-            Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()),
+            cadenza_compile_abi::abi::entry_artifact("app"),
         ];
         crate::compile(&inputs, &[Target::Wasm])
     }
@@ -1115,7 +1115,7 @@ mod tests {
             "app",
             crate::codec::encode(&app_arena),
         ));
-        inputs.push(Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()));
+        inputs.push(cadenza_compile_abi::abi::entry_artifact("app"));
         crate::compile(&inputs, &[Target::Wasm])
     }
 
@@ -1701,11 +1701,7 @@ mod tests {
                 )
             })
             .collect();
-        inputs.push(Artifact::new(
-            KIND_ENTRY,
-            "entry",
-            entry.as_bytes().to_vec(),
-        ));
+        inputs.push(cadenza_compile_abi::abi::entry_artifact(entry));
         crate::compile(&inputs, &[Target::Wasm])
     }
 

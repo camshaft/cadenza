@@ -60,7 +60,7 @@ pub const KIND_COMPONENT_NAME: &str = "component-name";
 /// A boundary artifact-builder the FRONT-END (`cdz`) uses to deliver a package the same way the
 /// artifacts-in compiler path does, so it lives here rather than in `rcdzc::cli` (which `pub use`s it).
 pub fn entry_artifact(name: &str) -> Artifact {
-    Artifact::new(KIND_ENTRY, "entry", name.as_bytes().to_vec())
+    Artifact::new(KIND_ENTRY, "entry", crate::name_wire::encode_name(name))
 }
 
 /// Build the [`KIND_COMPONENT_NAME`] input artifact naming a provider's published interface (X4b) — its
@@ -69,7 +69,7 @@ pub fn component_name_artifact(iface: &str) -> Artifact {
     Artifact::new(
         KIND_COMPONENT_NAME,
         "component-name",
-        iface.as_bytes().to_vec(),
+        crate::name_wire::encode_name(iface),
     )
 }
 

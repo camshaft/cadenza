@@ -153,7 +153,7 @@ fn compile_with_opt_inner(
     let entry_name = inputs
         .iter()
         .find(|a| a.kind == link::KIND_ENTRY)
-        .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+        .and_then(|a| cadenza_compile_abi::decode_name(&a.bytes));
     let (mut arenas, linkage, source_snapshots) =
         match link_inputs(&ast_arts, entry_name.as_deref()) {
             Ok(a) => a,
@@ -212,7 +212,7 @@ fn compile_with_opt_inner(
     db.component_name = inputs
         .iter()
         .find(|a| a.kind == link::KIND_COMPONENT_NAME)
-        .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+        .and_then(|a| cadenza_compile_abi::decode_name(&a.bytes));
     // The PREPARSED TARGET WIT WORLD (binary-AST), if the program targets one — the §3b full-A ingest and
     // the SOLE bytes-boundary signal. Raw `cadenza-ast` bytes; the world-structure reader decodes + walks it
     // for emit-to-match (a member the world declares `list<u8>`-in/out over a value-encodable guest compound
@@ -765,7 +765,7 @@ fn compile_with_opt_inner(
                     artifacts.push(Artifact::new(
                         link::KIND_COMPONENT_NAME,
                         CLOSURE_IFACE,
-                        CLOSURE_IFACE.as_bytes().to_vec(),
+                        cadenza_compile_abi::encode_name(CLOSURE_IFACE),
                     ));
                     // Each file's CONSUMER: excludes the union cross-edges from its emission set + imports them
                     // from the provider (named by `db.file_path`, the same demux `EmitTestsPerFile` uses).

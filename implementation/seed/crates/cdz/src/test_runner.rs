@@ -217,7 +217,7 @@ pub(crate) fn precompile_group(
         .artifacts
         .iter()
         .find(|a| a.kind == "component-name")
-        .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+        .and_then(|a| cadenza_compile_abi::decode_name(&a.bytes));
     let consumers = out
         .artifacts
         .iter()

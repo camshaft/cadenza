@@ -386,11 +386,7 @@ pub fn compile_with_preloaded(
 
     // The `KIND_ENTRY` marker makes `main` the package entry, so `compile` links the files instead of
     // treating them as one flat arena.
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::link::KIND_ENTRY,
-        "entry",
-        b"main".to_vec(),
-    ));
+    inputs.push(rcdzc::cli::entry_artifact("main"));
 
     Ok(finish_compile(
         &inputs,
@@ -1130,11 +1126,7 @@ fn link_preloaded_query(
             }
         }
     }
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::link::KIND_ENTRY,
-        "entry",
-        b"main".to_vec(),
-    ));
+    inputs.push(rcdzc::cli::entry_artifact("main"));
     inputs.push(rcdzc::Artifact::new(
         rcdzc::sidecar::KIND_SIDECAR,
         "drive",
