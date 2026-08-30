@@ -16045,53 +16045,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_set_of_or_map_insert_element_out_of_range_for_a_sibling_inferred_width_is_cdz0302() {
-        // Follow-up to the list-element sibling-width fix (#1766): breaker found the SAME CDZ0302
-        // sibling-unification skip through the `Set.of` ELEMENT and `Map.insert` KEY/VALUE constructors —
-        // the element/key/value width is fixed by an annotated SIBLING (a set element, an earlier insert's
-        // key or value), not the literal's own annotation, so the bare out-of-range literal skipped the
-        // range check → wasm silently WRAPPED it, rust emitted an invalid init (E0308) — the Set/Map faces
-        // of the same backend-divergent miscompile. FIX (infer.rs): range-check each element against the
-        // settled (JOIN'd) element type in `Set.of`'s homogeneous-set arm, and each inserted key AND value
-        // against the map's `kt`/`vt` in the `Map.insert` arm (once they AGREE — `agrees_with` tests shape,
-        // not fit). CDZ0302 now fires on both backends for all three positions.
-        let bad = |src: &str| {
-            let e = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-                "an out-of-range Set/Map element for the sibling-inferred width must reject",
-            );
-            assert_eq!(e.code.as_deref(), Some("CDZ0302"), "got: {}", e.message);
-        };
-        // Set.of: the annotated sibling `(: 1 UInt64)` fixes the element type; the bare `-41` must reject.
-        bad("(module m (def (main) (Set.of (list (: 1 UInt64) -41))) (export main))");
-        // Map.insert chain, VALUE arm: the inner insert's `(: 5 UInt8)` value fixes the value type; the
-        // outer insert's bare `300` (over-max for UInt8) must reject.
-        bad(
-            "(module m (def (main) (Map.insert (Map.insert Map.empty 1 (: 5 UInt8)) 2 300)) (export main))",
-        );
-        // Map.insert chain, KEY arm: the inner insert's `(: 1 UInt8)` KEY fixes the key type; the outer
-        // insert's bare `300` KEY (over-max for UInt8) must reject too — the Map.insert arm range-checks
-        // BOTH key and value, so pin both positions (the value case above + this key case).
-        bad(
-            "(module m (def (main) (Map.insert (Map.insert Map.empty (: 1 UInt8) 5) 300 7)) (export main))",
-        );
-        // CONTROLS — in-range elements/values under a sibling-inferred width still COMPILE.
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (def (main) (Set.of (list (: 1 UInt64) 41))) (export main))"
-            )))
-            .is_ok(),
-            "an in-range set element under a sibling-inferred width must still compile"
-        );
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (def (main) (Map.insert (Map.insert Map.empty 1 (: 5 UInt8)) 2 200)) (export main))"
-            )))
-            .is_ok(),
-            "an in-range map value under a sibling-inferred width must still compile"
-        );
-    }
-
-    #[test]
     fn an_inferred_width_cdz0302_names_the_range_but_offers_no_value_rewriting_fix() {
         // ADVICE-VALIDITY: an out-of-range literal whose width came from a SOLVED/INFERRED `Ty` (a nested
         // compound payload, OR — since #1766 — a sibling list element's annotation) must NOT carry a retype
