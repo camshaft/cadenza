@@ -4019,36 +4019,11 @@ fn a_small_operand_shift_whose_result_exceeds_i64_folds_at_the_unsigned_width_bu
     );
 }
 
-#[test]
-fn an_out_of_range_literal_names_the_valid_range() {
-    // CDZ0302 states the concrete VALID RANGE the literal missed (rustc's "the range is `-128..=127`"),
-    // not only the type name — a signed N-bit is `-(2^(N-1))..=2^(N-1)-1`, an unsigned N-bit
-    // `0..=2^N-1`. The range is mechanically derived from the annotated type's sign+width.
-    let d = reject_full("(module m (def (main) (: 999 (Int 8))) (export main))")
-        .expect("an over-width Int8 literal is rejected");
-    assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
-    assert!(
-        d.message.contains("Int8") && d.message.contains("-128..=127"),
-        "names the type AND its valid range: {}",
-        d.message
-    );
-    // Unsigned: the range starts at 0 (and a negative literal is out of range).
-    let u = reject_full("(module m (def (main) (: 300 (UInt 8))) (export main))")
-        .expect("an over-width UInt8 literal is rejected");
-    assert!(
-        u.message.contains("0..=255"),
-        "an unsigned range starts at 0: {}",
-        u.message
-    );
-    // The widest unsigned bound renders exactly (needs u128 arithmetic, not i64).
-    let w = reject_full("(module m (def (main) (: 18446744073709551616 (UInt 64))) (export main))")
-        .expect("2^64 does not fit UInt64");
-    assert!(
-        w.message.contains("0..=18446744073709551615"),
-        "UInt64.max renders exactly: {}",
-        w.message
-    );
-}
+// (an_out_of_range_literal_names_the_valid_range migrated to corpus 06-numeric-model, the "CDZ0302 names the
+// valid range" block: "an out-of-range signed literal names its valid range in the diagnostic" (`(: 128 Int8)`
+// → message "-128..=127"), "an out-of-range unsigned literal names a range starting at zero" (`(: 256 UInt8)`
+// → message "0..=255"), and "the widest unsigned range bound renders exactly (u128 arithmetic, not i64)"
+// (`(: 18446744073709551616 UInt64)` → message "0..=18446744073709551615"). All three graded PASS on wasm.)
 
 #[test]
 fn a_suffixed_bigint_literal_annotated_or_passed_to_int64_faults_once_as_a_type_mismatch() {

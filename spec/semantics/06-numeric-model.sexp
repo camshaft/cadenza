@@ -382,6 +382,29 @@
   (input  (do (def (main) (: 999 Int16)) (export main)))
   (call   main) (output (: 999 Int16)))
 
+; The CDZ0302 out-of-range diagnostic names the concrete VALID RANGE the literal missed (rustc's "the range
+; is `-128..=127`"), not merely the type name — a signed N-bit is `-(2^(N-1))..=2^(N-1)-1`, an unsigned N-bit
+; `0..=2^N-1`, mechanically derived from the annotated type's sign+width. (Migrated from rcdzc
+; an_out_of_range_literal_names_the_valid_range.)
+(case "an out-of-range signed literal names its valid range in the diagnostic"
+  (doc    "`(: 128 Int8)` overflows Int8 by one; the CDZ0302 message names the concrete signed range
+           `-128..=127`, not just the type — so the author sees exactly which bound was missed.")
+  (input  (do (def (main) (: 128 Int8)) (export main)))
+  (error  CDZ0302 (message "-128..=127")))
+
+(case "an out-of-range unsigned literal names a range starting at zero"
+  (doc    "`(: 256 UInt8)` overflows UInt8 by one; the CDZ0302 message names the unsigned range `0..=255`,
+           which starts at 0 (an unsigned type has no negative reading) — the unsigned face of the range pin.")
+  (input  (do (def (main) (: 256 UInt8)) (export main)))
+  (error  CDZ0302 (message "0..=255")))
+
+(case "the widest unsigned range bound renders exactly (u128 arithmetic, not i64)"
+  (doc    "`(: 18446744073709551616 UInt64)` is 2^64, one past UInt64.max; the CDZ0302 message names the full
+           range `0..=18446744073709551615` with the upper bound rendered EXACTLY — computing UInt64.max needs
+           u128 arithmetic, not i64, so this pins the widest bound does not truncate or wrap.")
+  (input  (do (def (main) (: 18446744073709551616 UInt64)) (export main)))
+  (error  CDZ0302 (message "0..=18446744073709551615")))
+
 (case "a checked integer conversion at the signed boundary fits and converts unchanged"
   (doc    "`(Int8.of (: 127 Int32))` = 127 — the largest value that fits Int8 (Int8.max) converts unchanged.
            Pins the inclusive upper boundary of the checked conversion.")
