@@ -127,6 +127,43 @@ pub fn read_playground(a: &Arenas) -> Result<Vec<PlaygroundExample>, String> {
     Ok(out)
 }
 
+/// Emit the body of the `EXAMPLES: Example[] = [ … ];` array — the @GENERATED region of examples.ts — from
+/// the read examples. Mirrors the chapters.ts `--registry` in-place array generation: only this array region
+/// is generated; the `Example` interface + header stay hand-written. Each entry matches the authored format
+/// (2-space item indent, 4-space fields; string fields JSON-quoted; `source` a backtick template literal
+/// holding the canonical program verbatim; optional `expected`/`expectError` only when present). Per
+/// operator seq-259 the `source` is the CANONICAL rendering (from `read_playground`), so a reformat vs the
+/// old hand-authored text is expected + intended.
+pub fn emit_examples_array(examples: &[PlaygroundExample]) -> String {
+    let mut s = String::new();
+    for ex in examples {
+        s.push_str("  {\n");
+        s.push_str(&format!("    id: {},\n", super::json_string(&ex.id)));
+        s.push_str(&format!("    name: {},\n", super::json_string(&ex.name)));
+        s.push_str(&format!("    theme: {},\n", super::json_string(&ex.theme)));
+        s.push_str(&format!(
+            "    surface: {},\n",
+            super::json_string(&ex.surface)
+        ));
+        // A template literal — escape `\`, backtick, and `${` so a source containing them can't break out
+        // (Cadenza sources don't today, so this is a no-op on real data → byte-matches the authored file).
+        let src = ex
+            .source
+            .replace('\\', "\\\\")
+            .replace('`', "\\`")
+            .replace("${", "\\${");
+        s.push_str(&format!("    source: `{src}`,\n"));
+        if let Some(e) = &ex.expected {
+            s.push_str(&format!("    expected: {},\n", super::json_string(e)));
+        }
+        if ex.expect_error {
+            s.push_str("    expectError: true,\n");
+        }
+        s.push_str("  },\n");
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +221,32 @@ mod tests {
                 .unwrap_err()
                 .contains("requires (surface \"sexpr\")")
         );
+    }
+
+    #[test]
+    fn emits_examples_array_in_authored_format() {
+        let doc = "(playground \
+            (example (id \"hello\") (name \"Hello\") (theme \"basics\") (surface \"sexpr\") \
+              (source (do (def (main) (+ 2 3)) (export main))) (expected \"5\")) \
+            (example (id \"neg\") (name \"Bad\") (theme \"numbers\") (surface \"sexpr\") \
+              (source (do (def (main) (+ 1 \"x\")) (export main))) (expect-error \"true\")))";
+        let exs = read(doc).unwrap();
+        let ts = emit_examples_array(&exs);
+        // graded entry: JSON-quoted fields, backtick source, expected present, no expectError
+        assert!(ts.contains("  {\n    id: \"hello\",\n    name: \"Hello\",\n"));
+        assert!(ts.contains("    theme: \"basics\",\n    surface: \"sexpr\",\n"));
+        // source is a backtick template literal holding the CANONICAL program (print_pretty_from breaks a
+        // `(do …)` block into 2-space-indented, blank-separated members — the formatter's canonical style).
+        assert!(ts.contains("    source: `(do\n  (def (main) (+ 2 3))\n\n  (export main))`,\n"));
+        assert!(ts.contains("    expected: \"5\",\n"));
+        // negative entry: expectError present, expected absent
+        assert!(ts.contains("    id: \"neg\",\n"));
+        assert!(ts.contains("    expectError: true,\n"));
+        // exactly two items closed
+        assert_eq!(ts.matches("  },\n").count(), 2);
+        // the graded entry carries no expectError line
+        let hello = &ts[ts.find("id: \"hello\"").unwrap()..ts.find("id: \"neg\"").unwrap()];
+        assert!(!hello.contains("expectError"));
     }
 
     #[test]
