@@ -21041,7 +21041,7 @@ mod diagnostics {
             let rec: String = format!(
                 "(record {})",
                 (0..n)
-                    .map(|i| format!("(k{i} {i})"))
+                    .map(|i| format!("(= k{i} {i})"))
                     .collect::<Vec<_>>()
                     .join(" ")
             );
@@ -26957,7 +26957,7 @@ mod stage1 {
         // compile, and RETURN the projected field (k0 = 0), in bounded time.
         let w = 200;
         let fields = (0..w)
-            .map(|i| format!("(k{i} {i})"))
+            .map(|i| format!("(= k{i} {i})"))
             .collect::<Vec<_>>()
             .join(" ");
         let mut calls = String::from("0");
@@ -31626,7 +31626,7 @@ mod stage1 {
         // is a deterministic pure function of the program, so no min-of-runs is needed.
         fn proj_src(n: usize) -> String {
             let fields: String = (0..n)
-                .map(|i| format!("(f{i} {i})"))
+                .map(|i| format!("(= f{i} {i})"))
                 .collect::<Vec<_>>()
                 .join(" ");
             // A balanced `+`-tree of `(. (mk) f_i)` projections — every leaf is a fresh `(mk)` call, so the
