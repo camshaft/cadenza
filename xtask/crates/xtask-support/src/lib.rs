@@ -501,6 +501,108 @@ pub fn emoji_free_lint(repo: &Path) -> Result<(), String> {
     ))
 }
 
+/// The source-file byte ceiling (operator directive seq-274): 512 KiB. Above ~512 KB GitHub stops
+/// syntax-highlighting a file, so an oversized source file becomes un-highlighted and hard to review.
+/// Keyed on BYTES (GitHub's actual cutoff), not LOC.
+pub const MAX_SOURCE_BYTES: u64 = 512 * 1024;
+
+/// Files already over [`MAX_SOURCE_BYTES`] at seq-274 adoption, GRANDFATHERED pending a split (repo-relative
+/// paths). The lint blocks any NEW oversized file without red-flagging the fleet on day one. SELF-EXPIRING:
+/// an entry that no longer exists OR has dropped back under the limit is STALE and FAILS the lint, forcing
+/// its removal — so this list can only SHRINK as files are split, never rot. REMOVE an entry once its file
+/// is split under the limit. (cdz-runtime/lib.rs is being split under seq-273.)
+pub const FILE_SIZE_ALLOWLIST: &[&str] = &[
+    "implementation/seed/crates/rcdzc/src/tests.rs",
+    "implementation/seed/crates/rcdzc/src/lower.rs",
+    "implementation/seed/crates/rcdzc/src/backend/wasm/select.rs",
+    "implementation/seed/crates/cdz-runtime/src/lib.rs",
+    "implementation/seed/crates/rcdzc/src/infer.rs",
+    "implementation/seed/crates/rcdzc/src/effects.rs",
+    "implementation/seed/crates/cdz/src/main.rs",
+    "implementation/seed/crates/rcdzc/src/backend/wasm/mod.rs",
+    "implementation/seed/crates/rcdzc/src/backend/wasm/envelope.rs",
+];
+
+/// FILE-SIZE lint (operator directive seq-274): FAIL if any `implementation/**/*.rs` source file exceeds
+/// [`MAX_SOURCE_BYTES`], EXCEPT the grandfathered [`FILE_SIZE_ALLOWLIST`]. Also FAILS on a STALE allowlist
+/// entry (a file no longer over-limit or missing) so the grandfather set can only shrink. `repo` is the repo
+/// root (CDZ_REPO_ROOT for the nix app). Mirrors `emoji_free_lint`'s enumerate-or-fail-loudly discipline.
+pub fn file_size_lint(repo: &Path) -> Result<(), String> {
+    file_size_lint_with(repo, FILE_SIZE_ALLOWLIST)
+}
+
+/// The testable core of [`file_size_lint`], parameterized on the allowlist so hermetic tests can supply a
+/// synthetic one (the real [`FILE_SIZE_ALLOWLIST`] names paths that don't exist under a temp fixture).
+fn file_size_lint_with(repo: &Path, allowlist: &[&str]) -> Result<(), String> {
+    let root = repo.join("implementation");
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_rs_files(&root, &mut files).map_err(|e| {
+        format!(
+            "cannot enumerate {} for the file-size lint: {e}",
+            root.display()
+        )
+    })?;
+    files.sort();
+    if files.is_empty() {
+        return Err(format!(
+            "no *.rs source files found under {} — the file-size lint would pass vacuously",
+            root.display()
+        ));
+    }
+    let allow: std::collections::BTreeSet<&str> = allowlist.iter().copied().collect();
+    let mut seen_allowed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for file in &files {
+        let len = std::fs::metadata(file)
+            .map_err(|e| format!("cannot stat {} for the file-size lint: {e}", file.display()))?
+            .len();
+        if len <= MAX_SOURCE_BYTES {
+            continue;
+        }
+        let rel = file
+            .strip_prefix(repo)
+            .unwrap_or(file)
+            .display()
+            .to_string();
+        if allow.contains(rel.as_str()) {
+            seen_allowed.insert(rel);
+        } else {
+            offenders.push(format!(
+                "{rel}: {len} bytes (over the {MAX_SOURCE_BYTES}-byte limit) — split it into smaller modules"
+            ));
+        }
+    }
+    let stale: Vec<&str> = allowlist
+        .iter()
+        .copied()
+        .filter(|e| !seen_allowed.contains(*e))
+        .collect();
+    if offenders.is_empty() && stale.is_empty() {
+        return Ok(());
+    }
+    let mut msg = String::new();
+    if !offenders.is_empty() {
+        msg.push_str(&format!(
+            "found {} source file(s) over the {MAX_SOURCE_BYTES}-byte (512 KiB) limit — GitHub stops \
+             syntax-highlighting above ~512 KB, so split each into smaller modules. At:\n  {}",
+            offenders.len(),
+            offenders.join("\n  ")
+        ));
+    }
+    if !stale.is_empty() {
+        if !msg.is_empty() {
+            msg.push_str("\n\n");
+        }
+        msg.push_str(&format!(
+            "{} STALE file-size-allowlist entr(ies) — now under the limit or missing; REMOVE from \
+             FILE_SIZE_ALLOWLIST (the grandfather list must shrink as files are split):\n  {}",
+            stale.len(),
+            stale.join("\n  ")
+        ));
+    }
+    Err(msg)
+}
+
 // ── GATE-BASELINE text algebra (v-xtask-decompose) — the pure, std-only baseline-text primitives shared
 // by the gate (verdict grading + save), the `merge-baseline` git driver, the `check` baseline-no-dup lint,
 // and the standalone `xtask-canonicalize-baselines` command. Moved here so the canonicalizer command crate
@@ -922,5 +1024,55 @@ expect\tdone\n\
         assert_eq!(first_line(b"hello\nworld"), "hello");
         assert_eq!(first_line(b"single"), "single");
         assert_eq!(first_line(b""), "");
+    }
+
+    /// Build a unique temp `<repo>/implementation/` fixture and write `name` with `bytes` bytes.
+    fn size_fixture(tag: &str, name: &str, bytes: usize) -> PathBuf {
+        let repo = std::env::temp_dir().join(format!(
+            "cdz-filesize-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dir = repo.join("implementation");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(name), vec![b'x'; bytes]).unwrap();
+        repo
+    }
+
+    #[test]
+    fn file_size_lint_flags_oversized_non_allowlisted() {
+        let repo = size_fixture("over", "huge.rs", (MAX_SOURCE_BYTES + 1) as usize);
+        let err = file_size_lint_with(&repo, &[]).unwrap_err();
+        assert!(err.contains("huge.rs"), "names the offender: {err}");
+        assert!(err.contains("split"), "tells you to split it: {err}");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn file_size_lint_passes_under_limit_and_allowlisted() {
+        // A small file passes; a huge one ON the allowlist passes (grandfathered, no stale entry).
+        let repo = size_fixture("ok", "small.rs", 10);
+        assert!(file_size_lint_with(&repo, &[]).is_ok());
+        std::fs::remove_dir_all(&repo).ok();
+
+        let repo = size_fixture("grand", "huge.rs", (MAX_SOURCE_BYTES + 1) as usize);
+        assert!(file_size_lint_with(&repo, &["implementation/huge.rs"]).is_ok());
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn file_size_lint_flags_stale_allowlist_entry() {
+        // An allowlisted file that is UNDER the limit (or missing) is a stale entry → must be removed.
+        let repo = size_fixture("stale", "small.rs", 10);
+        let err = file_size_lint_with(&repo, &["implementation/small.rs"]).unwrap_err();
+        assert!(
+            err.contains("STALE"),
+            "flags the stale allowlist entry: {err}"
+        );
+        assert!(err.contains("small.rs"), "names the stale entry: {err}");
+        std::fs::remove_dir_all(&repo).ok();
     }
 }
