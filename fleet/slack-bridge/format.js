@@ -73,15 +73,30 @@ function parseOperatorMessage(text, defaultTo) {
 // Rust SLACK_TEXT_CAP); the full text still lives in the fleet inbox.
 const SLACK_TEXT_CAP = 3500;
 
+// Slack treats &, <, > as CONTROL characters in message `text` (they open link/entity parsing). An
+// unescaped one mis-parses or makes chat.postMessage return `internal_error` — e.g. a body with `<512KiB`
+// or a generic like `Rc<[T]>` / `Vec<T>`, both common in fleet notes (this deterministically failed the
+// rich post of a real concierge note in production). Per Slack's docs, replace them with HTML entities in
+// the CONTENT so a full-fidelity rich post succeeds. `&` MUST be replaced first (else we'd re-escape the
+// `&` in `&lt;`/`&gt;`). Only the message content is escaped — NOT the mrkdwn markers (`*`/`_`/backticks)
+// we add for structure.
+function escapeSlackEntities(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 /// Render a fleet message (drained from the bridge's inbox, i.e. an agent → operator message) as a
 /// Slack-mrkdwn string. Shows who it's from, the kind, the subject, and the body/ref when present. Kept
 /// compact so a stream of them reads well in a channel, and length-capped so a big body can't fail the post.
 function renderFleetMessage(msg) {
-  const from = msg.from || "unknown";
-  const kind = msg.kind || "note";
-  const lines = [`*${from}* · _${kind}_` + (msg.subject ? `: ${msg.subject}` : "")];
-  if (msg.ref) lines.push("`" + msg.ref + "`");
-  if (msg.body && msg.body.trim()) lines.push(msg.body.trim());
+  const from = escapeSlackEntities(msg.from || "unknown");
+  const kind = escapeSlackEntities(msg.kind || "note");
+  const subject = escapeSlackEntities(msg.subject || "");
+  const lines = [`*${from}* · _${kind}_` + (subject ? `: ${subject}` : "")];
+  if (msg.ref) lines.push("`" + escapeSlackEntities(msg.ref) + "`");
+  if (msg.body && msg.body.trim()) lines.push(escapeSlackEntities(msg.body.trim()));
   const out = lines.join("\n");
   // Cap by CODE POINTS, not UTF-16 code units: `out.length`/`slice` count UTF-16 units and would split an
   // astral-plane char (surrogate pair) at the boundary into an ill-formed string, AND disagree with the
