@@ -20,7 +20,7 @@
            materialized and compared, not merely folded.")
   (input  (Blake3.of b""))
   (output (: b"\xaf\x13\x49\xb9\xf5\xf9\xa1\xa6\xa0\x40\x4d\xea\x36\xdc\xc9\x49\x9b\xcb\x25\xc9\xad\xc1\x12\xb7\xcc\x9a\x93\xca\xe4\x1f\x32\x62" Bytes))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "Blake3.of is a 32-byte digest"
   (doc    "A BLAKE3-256 digest is always 32 bytes, whatever the input length. Pins the output width so a
@@ -1691,7 +1691,7 @@
   (input  (do (def (run (: n Int64)) (Ast.print (Ast.Int (BigInt.of n)))) (export run)))
   (call   run 42)
   (output (: "42" String))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "runtime Ast.print renders a nested Ast.List byte-identical to the compile-time fold"
   (doc    "The nested case (#3621: the op reads list elements via vec-get): `(Ast.List (list (Ast.Name \"f\")
@@ -1700,14 +1700,14 @@
   (input  (do (def (run (: n Int64)) (Ast.print (Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of n)))))) (export run)))
   (call   run 2)
   (output (: "(f 2)" String))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "runtime Ast.print renders a doubly-nested Ast.List"
   (doc    "A list-of-list — `((f 2))` — pins the recursive vec-get walk to depth 2.")
   (input  (do (def (run (: n Int64)) (Ast.print (Ast.List #list((Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of n)))))))) (export run)))
   (call   run 2)
   (output (: "((f 2))" String))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "compile-time Ast.print of the same Ast folds to the identical text"
   (doc    "The compile-time control: a CONSTANT `Ast.Int` folds to the `Core::ConstStr` \"42\" via

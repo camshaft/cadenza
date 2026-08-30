@@ -668,16 +668,17 @@ pub fn render(records: &[Record]) -> String {
             out.push_str(cn);
             out.push('\n');
         }
-        // `live-objects\t<N>` — the post-run heap-balance the case asserts on the debug-counters runtime
-        // (orthogonal to the value/trap outcome). A `known-leak` marker renders as `live-objects\tknown-leak\t<N>`
-        // so the consumer can carry the opt-out intent. Absent for a case with no `(live-objects …)`.
-        if let Some(n) = r.live_objects {
+        // `live-objects\t<N>` — the post-run CLEAN residual the case asserts on the debug-counters runtime
+        // (the reachable-return cell count; N=0 = fully reclaimed). Orthogonal to the value/trap outcome.
+        // A KNOWN-LEAK case (seq-15 pure-binary marker) renders as `live-objects\tknown-leak` with NO count —
+        // it is accepted-as-leaking and NOT count-checked (magnitude does not matter). Absent for a case with
+        // no `(live-objects …)`.
+        if r.live_objects_known_leak {
+            out.push_str("live-objects\tknown-leak\n");
+        } else if let Some(n) = r.live_objects {
             out.push_str("live-objects\t");
-            if r.live_objects_known_leak {
-                out.push_str("known-leak\t");
-            }
-            // Per-call positional counts render tab-separated (`live-objects\t3\t13\t0`); a uniform count
-            // renders as the single `live-objects\t<N>`.
+            // Per-call positional CLEAN residuals render tab-separated (`live-objects\t0\t0\t0`); a uniform
+            // residual renders as the single `live-objects\t<N>`.
             match &r.live_objects_per_call {
                 Some(counts) => {
                     let joined: Vec<String> = counts.iter().map(u32::to_string).collect();
@@ -1179,11 +1180,13 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     .and_then(|t| t.first().copied())
                     .and_then(|id| string_leaf(a, id));
             }
-            // `(live-objects N)` — assert the value-heap runtime's live-cell count is N after the run (the
-            // heap-balance invariant; N=0 is no leak). Orthogonal to the value/trap outcome; the gate drives
-            // this on the debug-counters runtime. `(live-objects known-leak N)` is the OPT-OUT MARKER form —
-            // the count is prefixed by the literal `known-leak` (a grandfathered tolerated leak); both assert
-            // == N.
+            // `(live-objects N)` — a CLEAN case: assert the value-heap runtime's live-cell count is EXACTLY N
+            // after the run (the reachable-return residual; N=0 = fully reclaimed). Orthogonal to the
+            // value/trap outcome; the gate drives this on the debug-counters runtime.
+            // `(live-objects known-leak)` (seq-15 PURE-BINARY marker) = accepted-as-leaking, NOT count-checked
+            // (magnitude does not matter). A legacy `(live-objects known-leak N …)` is still PARSED (the count
+            // is retained in the fields) but the count is IGNORED for grading and DROPPED by render/shred — so
+            // an un-migrated file still grades binary. Grading semantics live in the grade callers.
             Some("live-objects") => {
                 let ids = a.as_form(clause, "live-objects").unwrap_or(&[]);
                 let mut toks: Vec<String> = ids
@@ -2411,25 +2414,44 @@ mod tests {
         assert!(text.contains("live-objects\t0\n"));
     }
 
-    /// A `(live-objects known-leak N)` opt-out marker parses into the count + the `known_leak` flag and
-    /// renders as a `live-objects\tknown-leak\t<N>` line (distinct from a plain `live-objects\t<N>`).
+    /// seq-15 PURE-BINARY: a `(live-objects known-leak)` marker sets the `known_leak` flag and renders as a
+    /// bare `live-objects\tknown-leak` line (NO count). A legacy `(live-objects known-leak N)` still parses
+    /// (the count is retained but IGNORED for grading) yet renders BARE too — so an un-migrated file grades
+    /// binary and round-trips to the count-free form.
     #[test]
     fn live_objects_known_leak_marker_parses_and_renders() {
-        let src = r#"(case "x"
+        // Bare marker (the migrated form).
+        let bare = r#"(case "x"
+                 (input (do (type L (Cons (Tuple Int64 L)) Nil) (def (main) (L.Cons (tuple 1 (L.Nil ())))) (export main)))
+                 (call main) (output (: (L.Cons (tuple 1 (L.Nil ()))) L))
+                 (live-objects known-leak))"#;
+        let recs = read(bare).unwrap();
+        assert!(recs[0].live_objects_known_leak);
+        assert_eq!(recs[0].live_objects, None);
+        assert!(
+            to_records(bare)
+                .unwrap()
+                .contains("live-objects\tknown-leak\n")
+        );
+        // Legacy count-bearing marker: still parses the flag, but renders BARE (count dropped).
+        let legacy = r#"(case "x"
                  (input (do (type L (Cons (Tuple Int64 L)) Nil) (def (main) (L.Cons (tuple 1 (L.Nil ())))) (export main)))
                  (call main) (output (: (L.Cons (tuple 1 (L.Nil ()))) L))
                  (live-objects known-leak 2))"#;
-        let recs = read(src).unwrap();
-        assert_eq!(recs[0].live_objects, Some(2));
+        let recs = read(legacy).unwrap();
         assert!(recs[0].live_objects_known_leak);
-        let text = to_records(src).unwrap();
-        assert!(text.contains("live-objects\tknown-leak\t2\n"));
+        let text = to_records(legacy).unwrap();
+        assert!(
+            text.contains("live-objects\tknown-leak\n"),
+            "legacy renders bare: {text}"
+        );
+        assert!(!text.contains("known-leak\t2"), "count is dropped: {text}");
     }
 
-    /// A `(live-objects N1 N2 N3)` clause with 2+ counts parses PER-CALL: `live_objects` = the first, and
-    /// `live_objects_per_call` = the whole list; it renders tab-separated (`live-objects\t3\t13\t0`). The
-    /// `known-leak` marker composes with the per-call form. This is the arm-dependent balance a single
-    /// count cannot express (FLETCHER-16: a leak scaling with input size), surfaced by #5008.
+    /// A CLEAN `(live-objects N1 N2 N3)` clause with 2+ counts parses PER-CALL: `live_objects` = the first,
+    /// and `live_objects_per_call` = the whole list; it renders tab-separated (`live-objects\t0\t0\t0`) — the
+    /// arm-dependent CLEAN residual a single count cannot express. (The known-leak marker is now count-free,
+    /// so per-call counts are a CLEAN-case-only feature.)
     #[test]
     fn live_objects_per_call_positional_parses_and_renders() {
         let src = r#"(case "x"
@@ -2437,14 +2459,14 @@ mod tests {
                  (call main (: 1 Int64)) (output (: 1 Int64))
                  (call main (: 4 Int64)) (output (: 4 Int64))
                  (call main (: 0 Int64)) (output (: 0 Int64))
-                 (live-objects known-leak 3 13 0))"#;
+                 (live-objects 0 0 0))"#;
         let recs = read(src).unwrap();
-        assert_eq!(recs[0].live_objects, Some(3)); // first count (uniform / direct-gate path)
-        assert_eq!(recs[0].live_objects_per_call, Some(vec![3, 13, 0]));
-        assert!(recs[0].live_objects_known_leak);
+        assert_eq!(recs[0].live_objects, Some(0)); // first count (uniform / direct-gate path)
+        assert_eq!(recs[0].live_objects_per_call, Some(vec![0, 0, 0]));
+        assert!(!recs[0].live_objects_known_leak);
         let text = to_records(src).unwrap();
         assert!(
-            text.contains("live-objects\tknown-leak\t3\t13\t0\n"),
+            text.contains("live-objects\t0\t0\t0\n"),
             "per-call render: {text}"
         );
         // A single-count clause stays uniform (no per-call list).

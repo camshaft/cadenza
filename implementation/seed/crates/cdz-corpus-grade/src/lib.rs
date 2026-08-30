@@ -326,6 +326,17 @@ pub fn check_live_objects(
     None
 }
 
+/// seq-15 PURE-BINARY leak semantics: a KNOWN-LEAK case (`(live-objects known-leak)`) is NEVER count-checked
+/// (the leak magnitude does not matter — [`check_live_objects`] is simply skipped for it by the grade
+/// callers). This surfaces the FIX signal instead: return `true` iff the known-leak case now measures FULLY
+/// CLEAN — at least one heap trial ran and EVERY heap trial ended at 0 live cells — so its reclaim fix has
+/// landed and the `(live-objects known-leak)` marker is a TIGHTEN CANDIDATE ready to drop. Non-blocking (the
+/// grade prints an advisory, never fails on it). A no-heap case (all `None`) is not a candidate (nothing
+/// measured).
+pub fn known_leak_now_clean(per_trial: &[Option<u32>]) -> bool {
+    per_trial.iter().any(Option::is_some) && per_trial.iter().flatten().all(|&n| n == 0)
+}
+
 /// Clamp each observed live-cell count UP to its expected threshold — the LEAK-CEILING tolerance for a
 /// KNOWN-LEAK case graded on a strictly-safer path (the corpus-cadenza cadenza-hop, opted in via the
 /// `--tolerate-fewer-live-objects` flag). A known-leak `N` is a TOLERATED-leak CEILING, so a path that
@@ -2399,6 +2410,18 @@ mod tests {
         )));
     }
 
+    /// seq-15 `known_leak_now_clean`: a known-leak case is a TIGHTEN CANDIDATE iff a heap trial ran and EVERY
+    /// heap trial measured 0 (its reclaim fix landed). Any residual leak, or an all-no-heap case, is not.
+    #[test]
+    fn known_leak_now_clean_flags_only_fully_clean() {
+        assert!(known_leak_now_clean(&[Some(0)])); // single heap trial, now clean
+        assert!(known_leak_now_clean(&[Some(0), None, Some(0)])); // all heap trials clean, no-heap skipped
+        assert!(!known_leak_now_clean(&[Some(0), Some(1)])); // one trial still leaks → not yet
+        assert!(!known_leak_now_clean(&[Some(2)])); // still leaks
+        assert!(!known_leak_now_clean(&[None, None])); // no heap trial measured → not a candidate
+        assert!(!known_leak_now_clean(&[])); // no trials
+    }
+
     /// `check_live_objects` balances EVERY trial, not just call[0] — the fix for the systemic false-green
     /// where a multi-call case that balanced on the first call hid a leak on later calls.
     #[test]
@@ -2530,7 +2553,12 @@ mod tests {
         assert_eq!(tr.live_objects, Some(0));
         assert!(!tr.live_objects_known_leak);
         assert_eq!(tr.live_objects_per_call, None);
-        // known-leak marker → count + flag.
+        // seq-15 PURE-BINARY: a bare `known-leak` marker (no count) → flag set, count None.
+        let tr = decode_test_run(&build(Some(&["known-leak"]))).unwrap();
+        assert_eq!(tr.live_objects, None);
+        assert!(tr.live_objects_known_leak);
+        assert_eq!(tr.live_objects_per_call, None);
+        // A legacy count-bearing marker still decodes (flag + count) — grading ignores the count.
         let tr = decode_test_run(&build(Some(&["known-leak", "3"]))).unwrap();
         assert_eq!(tr.live_objects, Some(3));
         assert!(tr.live_objects_known_leak);

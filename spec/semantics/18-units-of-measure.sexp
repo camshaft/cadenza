@@ -665,7 +665,7 @@
                               (Qty.of (BigInt.of 100) (Unit.base #"meter"))))) (export main)))
   (call   main (: 5 Int64)) (output (: 105 BigInt))
   (call   main (: 1000000000000 Int64)) (output (: 1000000000100 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a quantity over a BigInt magnitude compares by its exact value"
   (doc    "A `(Qty BigInt meter)` COMPARISON routes to the exact bigint compare (`bigint-cmp`) on the
@@ -1207,7 +1207,7 @@
                 (Qty.value (Qty.pow (Qty.of (BigInt.of n) (Unit.base #"meter")) 2))) (export main)))
   (call   main (: 5 Int64)) (output (: 25 BigInt))
   (call   main (: 1000000 Int64)) (output (: 1000000000000 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "the power form derives the same dimension as repeated multiplication"
   (doc    "`(= (Qty.pow (Qty.of 2.0 meter) 2) (* (Qty.of 2.0 meter) (Qty.of 2.0 meter)))` is true: raising
@@ -1329,7 +1329,7 @@
   (input  (do (def (main)
                 (Qty.value (Qty.pow (Qty.of (BigInt.of 4) (Unit.base #"meter")) -1))) (export main)))
   (output (: 0 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ============================================================================================
 ; Comparison — same dimension required (the ordering/equality obligation)
@@ -2097,7 +2097,7 @@
                             (Qty.of (BigInt.of 500) (Unit.base #"meter")))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 2500 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)"
   (doc    "A parameter annotated at a NON-reference unit — `(: a (Qty Int64 kilometer))` — must keep its
@@ -2139,7 +2139,7 @@
                             (Qty.of (BigInt.of 500) (Unit.base #"meter")))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 6500 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a runtime mixed-scale combine converts a COMPUTED Float quantity operand"
   (doc    "The Float companion: `(+ (* (Qty.of n kilometer) 2.0) (Qty.of 500.0 meter))` with a runtime
@@ -2180,7 +2180,7 @@
                             (Qty.of (Rational.of 500 1) (Unit.base #"meter")))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 2500/1 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a runtime exact mixing of inch and millimeter keeps the fractional scale"
   (doc    "THE exact-mixing case at RUNTIME: `(+ (Qty.of (Rational.of v 1) inch) (Qty.of (Rational.of 1 1)
@@ -2195,7 +2195,7 @@
                             (Qty.of (Rational.of 1 1) (Unit.of #"millimeter")))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 33/1250 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a runtime Unit.in conversion emits the scale multiply (Int)"
   (doc    "`(Unit.in meter (Qty.of v kilometer))` with `v` a runtime Int64: converts v km to meters by
@@ -2221,7 +2221,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3000 BigInt))
   (call   main (: 1000000000000 Int64)) (output (: 1000000000000000 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "Unit.in over a BigInt quantity truncates a non-dividing ratio"
   (doc    "`(Unit.in kilometer (Qty.of (BigInt.of v) meter))` — 2500 m in km, 2500/1000 does not divide,
@@ -2233,7 +2233,7 @@
               (Unit.in (Unit.of #"kilometer") (Qty.of (BigInt.of v) (Unit.of #"meter"))))
             (export main)))
   (call   main (: 2500 Int64)) (output (: 2 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "Unit.in over a runtime Rational-magnitude quantity converts exactly and unwraps"
   (doc    "`(Unit.in meter (Qty.of (Rational.of v 1) kilometer))` with a RUNTIME `v`: converts the
@@ -2247,7 +2247,7 @@
               (Unit.in (Unit.of #"meter") (Qty.of (Rational.of v 1) (Unit.of #"kilometer"))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3000/1 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "Unit.in over a runtime Rational quantity keeps a fractional scale exact"
   (doc    "`(Unit.in meter (Qty.of (Rational.of v 1) inch))` with a runtime `v`: inch = 127/5000 m, so
@@ -2259,7 +2259,7 @@
               (Unit.in (Unit.of #"meter") (Qty.of (Rational.of v 1) (Unit.of #"inch"))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 127/5000 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; ============================================================================================
 ; DERIVED-dimension families — a named unit can name a DERIVED dimension (a rate = information/time, a
@@ -2496,7 +2496,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 15 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a BigInt-inner quantity grows past Int64.max without trapping"
   (doc    "`(* (Qty.of (BigInt.of Int64.max) meter) (BigInt.of 2))` = 18446744073709551614 : BigInt —
@@ -2511,7 +2511,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 18446744073709551614 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a BigInt-inner quantity ADDITION past Int64.max stays exact through the wrapper"
   (doc    "The additive companion of the multiplicative grow-past-Int64.max case above: `(+ (Qty.of
@@ -3028,7 +3028,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 6 BigInt))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a Rational-inner quantity stored in a List reads back canonicalized through List.at"
   (doc    "The Rational twin of the BigInt List case: `(List.at (list (Qty (Rational v 2) m) …) 0)`. A
@@ -3044,7 +3044,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 5/2 Rational))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 ; --- Quantity inside a COMPOUND key (list-of-Qty / tuple-of-Qty): key canonicalization -------------
 ; A list-typed or list-CONTAINING Map/Set key is CANONICALIZED at the key site (value-canonicalize into
@@ -3137,7 +3137,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "a whole MAP holding a quantity VALUE renders it scaled to reference in the value form"
   (doc    "The value-form RENDER of a whole Map whose VALUE is a quantity (the render companion of the
@@ -3472,7 +3472,7 @@
                      (QCons (Qty.of 5 (Unit.base #"meter")) (QNil)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 8 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 ; --- Qty through program structure (module exports, CHAMP values, closure envs, extract/compute/
 ; reinsert) with the dimension checks holding at each boundary; the #44 workaround perimeter
@@ -3695,7 +3695,7 @@
                         ((. Qty of) ((. BigInt of) 500) ((. Unit base) #"meter")))))
     (export main)))
   (call main (: 3 Int64)) (output (: 6500 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ── breaker batch 553: quantities as CHAMP KEYS (the hash/eq agreement pattern on a type whose
 ; `=` is scale-converting). The design forecloses the divergence: same-unit keys round-trip with

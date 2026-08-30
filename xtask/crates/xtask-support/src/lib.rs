@@ -83,8 +83,13 @@ pub struct CorpusRecord {
     pub wit_world: Option<String>,
     /// The interface a `(wit-world …)` case's guest exports under (stream `component-name` line).
     pub component_name: Option<String>,
-    /// The live-heap-cell count a `(live-objects N)` clause asserts after the run. `None` if absent.
+    /// The live-heap-cell residual a CLEAN `(live-objects N)` clause asserts after the run. `None` if absent.
+    /// Unused (kept `None`/ignored) for a known-leak case — see `live_objects_known_leak`.
     pub live_objects: Option<u32>,
+    /// `true` iff the case carries the seq-15 PURE-BINARY `(live-objects known-leak)` marker — an
+    /// accepted-as-leaking case that is NOT count-checked (its leak magnitude does not matter). The gate maps
+    /// it to `LiveObjectsCheck::Off`.
+    pub live_objects_known_leak: bool,
 }
 
 /// One (call, expected-payload) trial of a case — a single run of the compiled program.
@@ -162,6 +167,7 @@ pub fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut warns: Vec<(String, Option<String>)> = Vec::new();
     let (mut wit_world, mut component_name): (Option<String>, Option<String>) = (None, None);
     let mut live_objects: Option<u32> = None;
+    let mut live_objects_known_leak = false;
     let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
     // The pending `(then …)` continuation's args (two-call-on-one-handle), or `None` until a `then-call`
     // marker line opens it. Flushed into the trial's `Call` alongside `call_args` on the `expect` line.
@@ -187,6 +193,7 @@ pub fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 wit_world: std::mem::take(&mut wit_world),
                 component_name: std::mem::take(&mut component_name),
                 live_objects: live_objects.take(),
+                live_objects_known_leak: std::mem::take(&mut live_objects_known_leak),
             });
             // Defensive: a well-formed record ends every trial with an `expect`, so nothing is pending.
             call_export = None;
@@ -278,21 +285,29 @@ pub fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 // `--component-name`) and the run (`--call <iface>#<export>`).
                 "wit-world" => wit_world = Some(val.to_string()),
                 "component-name" => component_name = Some(val.to_string()),
-                // `live-objects\t<N>` (or `live-objects\tknown-leak\t<N>` for the opt-out marker) — the
-                // post-run heap-balance the case asserts on the debug-counters runtime. Both forms assert
-                // == N (the known-leak intent is source-only; the gate needs just the count), so strip an
-                // optional `known-leak\t` prefix and parse N.
+                // `live-objects\t<N>` — a CLEAN case's post-run residual (the reachable-return count; N=0 =
+                // fully reclaimed), asserted on the debug-counters runtime. `live-objects\tknown-leak`
+                // (seq-15 PURE-BINARY marker, NO count) = accepted-as-leaking, NOT count-checked (the gate
+                // maps it to `LiveObjectsCheck::Off`). A legacy `known-leak\t<N>` still parses (count ignored
+                // under binary).
                 "live-objects" => {
-                    let count = val.strip_prefix("known-leak\t").unwrap_or(val);
-                    // ONE count = uniform; 2+ TAB-separated counts = PER-CALL positional (`live-objects
-                    // 3 13 0`, from #5008's every-call surfacing). This DIRECT gate checks the FIRST call's
-                    // balance, so it uses the FIRST count; without splitting, `"3\t13\t0".parse` fails →
-                    // None → the case falls to the Default(0) check → a spurious pass→fail regression. (The
-                    // nix `cdz-run --grade` path reads the full per-call list; this direct path is call[0].)
-                    live_objects = count
-                        .split('\t')
-                        .next()
-                        .and_then(|s| s.trim().parse::<u32>().ok());
+                    if let Some(rest) = val.strip_prefix("known-leak") {
+                        live_objects_known_leak = true;
+                        // Bare marker → no count; a legacy `known-leak\t<N>` leaves the (ignored) first count.
+                        live_objects = rest
+                            .trim_start_matches('\t')
+                            .split('\t')
+                            .next()
+                            .and_then(|s| s.trim().parse::<u32>().ok());
+                    } else {
+                        // ONE count = uniform; 2+ TAB-separated counts = PER-CALL positional (`live-objects
+                        // 0 0 0`). This DIRECT gate checks the FIRST call's balance, so it uses the FIRST
+                        // count. (The nix `cdz-run --grade` path reads the full per-call list; this is call[0].)
+                        live_objects = val
+                            .split('\t')
+                            .next()
+                            .and_then(|s| s.trim().parse::<u32>().ok());
+                    }
                 }
                 _ => {}
             }

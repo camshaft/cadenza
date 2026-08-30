@@ -1121,18 +1121,23 @@ enum LiveObjectsCheck {
     /// OPT-OUT DEFAULT (a case with no `(live-objects …)` clause): a heap-importing case must end at 0 live
     /// cells (no leak / no double-free); a no-heap case is skipped.
     Default,
-    /// Assert the live-cell count == N — an explicit `(live-objects N)` or a `(live-objects known-leak N)`
-    /// opt-out marker (both grade as == N; the marker's known-leak intent is recorded in the corpus source).
+    /// Assert the live-cell count == N — an explicit `(live-objects N)` CLEAN residual (the reachable-return
+    /// count; N=0 = fully reclaimed). A `(live-objects known-leak)` case is NOT this — it maps to `Off`.
     Expect(u32),
 }
 
 impl LiveObjectsCheck {
-    /// Map a corpus record's recorded `live_objects` count (`None` = no clause) to the gate check under the
-    /// opt-out model: no clause ⇒ the default (heap ⇒ 0), an explicit count ⇒ assert == N.
-    fn from_record(count: Option<u32>) -> Self {
-        match count {
-            Some(n) => LiveObjectsCheck::Expect(n),
-            None => LiveObjectsCheck::Default,
+    /// Map a corpus record to the gate check under seq-15 PURE-BINARY leak semantics: a KNOWN-LEAK case is
+    /// NOT count-checked (`Off` — its leak magnitude does not matter, per the operator ruling); a CLEAN case
+    /// asserts its EXACT residual (explicit count ⇒ `Expect(n)`, no clause ⇒ `Default` = heap ⇒ 0).
+    fn from_record(count: Option<u32>, known_leak: bool) -> Self {
+        if known_leak {
+            LiveObjectsCheck::Off
+        } else {
+            match count {
+                Some(n) => LiveObjectsCheck::Expect(n),
+                None => LiveObjectsCheck::Default,
+            }
         }
     }
 
@@ -4176,7 +4181,7 @@ fn gate_one_case(
                 .map(|(i, t)| {
                     // Heap balance is checked on the FIRST trial only (see `grade`).
                     let live_objects = if i == 0 {
-                        LiveObjectsCheck::from_record(rec.live_objects)
+                        LiveObjectsCheck::from_record(rec.live_objects, rec.live_objects_known_leak)
                     } else {
                         LiveObjectsCheck::Off
                     };
@@ -4280,7 +4285,7 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
             // (`cdz-run --grade`) already keys the balance off the first runnable trial. Later trials still
             // grade their value/trap outcome; they just skip the balance (`Off`).
             let live_objects = if i == 0 {
-                LiveObjectsCheck::from_record(rec.live_objects)
+                LiveObjectsCheck::from_record(rec.live_objects, rec.live_objects_known_leak)
             } else {
                 LiveObjectsCheck::Off
             };
@@ -6803,6 +6808,7 @@ mod trap_grading_tests {
             wit_world: None,
             component_name: None,
             live_objects: None,
+            live_objects_known_leak: false,
         };
         // The run: a value 42 whose compile emitted `unused binding `unused``.
         let ran = vec![Ran::Value(

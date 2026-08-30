@@ -716,7 +716,7 @@
   (output (: 1 Int64))
   (call   main (: 999 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak))
 
 (case "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
   (doc    "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
@@ -741,7 +741,7 @@
   (output (: 0 Int64))
   (call   main (: 999 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a generated map workload agrees with a linear-scan model at EVERY key of the domain"
   (doc    "The exhaustive-agreement upgrade of the count-model pin above (which checks ONE aggregate):
@@ -771,7 +771,7 @@
   (output (: 16 Int64))
   (call   main (: 777 Int64))
   (output (: 16 Int64))
-  (live-objects known-leak 259))
+  (live-objects known-leak))
 
 (case "the per-key linear-scan model oracle has DISCRIMINATING power — a value-forgetting model diverges at every present key"
   (doc    "The vacuity guard for the per-key model oracle above: a model that MISREADS the stored value does
@@ -803,7 +803,7 @@
   (output (: -999 Int64))
   (call   main (: 777 Int64))
   (output (: -999 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a generated insert/remove Set workload agrees with a BITMASK model at every step's end"
   (doc    "The model-oracles above drive INSERT-only workloads; this one mixes DELETIONS: the seeded
@@ -832,7 +832,7 @@
   (call main (: 12345 Int64) (: 40 Int64)) (output (: 41 Int64))
   (call main (: 99 Int64) (: 25 Int64)) (output (: 41 Int64))
   (call main (: 7 Int64) (: 12 Int64)) (output (: 51 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "generated small-alphabet strings dedup in a Set by content across per-draw construction"
   (doc    "A STRING generator (seeded picks from a 4-letter alphabet, 1-or-2-char words via a draw
@@ -860,7 +860,7 @@
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
   (call main (: 7 Int64) (: 5 Int64)) (output (: 3 Int64))
   (call main (: 99 Int64) (: 2 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 2 2 3))
+  (live-objects known-leak))
 
 (case "generated string keys OVERWRITE by content and the first word's final value is observable"
   (doc    "The value-side companion: word→draw-index inserted per draw (collided keys OVERWRITE by
@@ -894,7 +894,7 @@
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 31 Int64))
   (call main (: 99 Int64) (: 4 Int64)) (output (: 41 Int64))
   (call main (: 11 Int64) (: 6 Int64)) (output (: 43 Int64))
-  (live-objects known-leak 16 21 30))
+  (live-objects known-leak))
 
 (case "symbols interned from GENERATED strings dedup by content in a symbol set"
   (doc    "The symbol-intern analogue: Symbol.of over generator-produced strings dedups by CONTENT
@@ -917,7 +917,7 @@
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
   (call main (: 99 Int64) (: 6 Int64)) (output (: 4 Int64))
   (call main (: 5 Int64) (: 2 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a LIST shrinker drops elements greedily and converges to a minimal failing sublist"
   (doc    "COMPOUND shrinking (the scalar shrink pins above search upward over integers): greedy
@@ -958,7 +958,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1102 Int64))
   (call main (: 2 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 10 0))
+  (live-objects known-leak))
 
 (case "a generated list reverses twice to itself — an involution property over generated content"
   (doc    "The involution law over GENERATED content: an 8-element list of masked LCG draws, reversed
@@ -1018,7 +1018,7 @@
   (call   main (: 12345 Int64)) (output (: 1 Int64))
   (call   main (: 777 Int64)) (output (: 1 Int64))
   (call   main (: -7 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4 4 6))
+  (live-objects known-leak))
 
 (case "a scalar-aware string shrinker converges to the 1-minimal failing string"
   (doc    "The STRING sibling of the list-shrinker pin (:782) and the original program behind the
@@ -1048,7 +1048,7 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 304 Int64))
   (call   main (: 0 Int64)) (output (: 202 Int64))
-  (live-objects known-leak 12 0))
+  (live-objects known-leak))
 
 ; --- The 2-D coordinate-descent pair shrinker. ---
 
@@ -1101,7 +1101,7 @@
             (export main)))
   (call   main (: true Bool)) (output (: 50 Int64))
   (call   main (: false Bool)) (output (: 51 Int64))
-  (live-objects known-leak 34))
+  (live-objects known-leak))
 
 ; --- In-domain shrinking: the shrink search stays within a refinement's window (Refinements × Shrinking). ---
 
@@ -1199,7 +1199,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 3007 Int64))
   (call   main (: 2 Int64)) (output (: 3002 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a Value.encode/Value.decode round-trip preserves a RECORD's fields"
   (doc    "Extends the round-trips to a `(Record (a Int64) (b Int64))` — the R2 value-form `(record (= k v) ..)`
@@ -1291,7 +1291,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 70099 Int64))
   (call   main (: 3 Int64)) (output (: 30099 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a Value.encode/Value.decode round-trip preserves a SET's elements"
   (doc    "Extends the round-trips to a `(Set Int64)` — the R2 value-form `((. Set of) (list e …))` shape,
@@ -1309,7 +1309,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 3007 Int64))
   (call   main (: 2 Int64)) (output (: 3002 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a Value.encode/Value.decode round-trip preserves a FLOAT element of a compound"
   (doc    "Extends the round-trips to a `(Tuple Int64 Float64)` — exercising the R2 value-form FLOAT leaf, an
@@ -1346,7 +1346,7 @@
             (export main)))
   (call   main (: 9999999999 Int64)) (output (: 9999999999 Int64))
   (call   main (: 7 Int64)) (output (: 7 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a Value.encode/Value.decode round-trip preserves a Rational (normalized num/den name leaf)"
   (doc    "Extends the round-trips to a `Rational` — the R2 value-form is a SINGLE NAME leaf whose text is
@@ -1365,7 +1365,7 @@
             (export main)))
   (call   main (: 6 Int64)) (output (: 6 Int64))
   (call   main (: 5 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 

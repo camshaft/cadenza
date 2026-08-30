@@ -258,7 +258,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 10700 Int64))
   (call   main (: 0 Int64)) (output (: 10100 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws"
   (input  (do
@@ -1115,7 +1115,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 105 Int64))
   (call   main (: 2 Int64)) (output (: 24 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "lf2 a PERFORMING recursive walk — each element visit draws, pairing element order with state order"
   (input  (do
@@ -1242,7 +1242,7 @@
   (call   main (: 5 Int64)) (output (: 108 Int64))
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 3 Int64)) (output (: 103 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 ;; ── string CONTENT built, sliced, gated, and measured through the effect thread (breaker sg) ─────
 ;; sg1 a string BUILT by a walk of draws (EXACT content compared — dropped/doubled/reordered
@@ -1432,7 +1432,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 19215 Int64))
   (call   main (: 0 Int64)) (output (: 14210 Int64))
-  (live-objects known-leak 108))
+  (live-objects known-leak))
 
 ;; ── arm-INTERNAL computation shapes (breaker al) ─────────────────────────────────────────────────
 ;; What an arm may compute before resuming: al1 chained LET locals feeding both slots; al2 a PURE
@@ -2428,7 +2428,7 @@
   (call   main (: 5 Int64)) (output (: 20056 Int64))
   (call   main (: 0 Int64)) (output (: 71 Int64))
   (call   main (: 1 Int64)) (output (: 12 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ;; ── fa: FOLD-style accumulators through a performing recursion ───────────────
 ;; The draw feeds an accumulator PARAMETER rather than the return path. fa1's
@@ -2516,7 +2516,7 @@
   (call   main (: 1 Int64)) (output (: 304 Int64))
   (call   main (: 0 Int64)) (output (: 203 Int64))
   (call   main (: -2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "fa5 a TWO-effect fold — each level's step multiplies a draw from each thread, both threads advancing independently"
   (input  (do
@@ -3661,7 +3661,7 @@
   (call   main (: 8 Int64)) (output (: 3161 Int64))
   (call   main (: 2 Int64)) (output (: 4041 Int64))
   (call   main (: 0 Int64)) (output (: 71 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate"
   (input  (do
@@ -3803,7 +3803,7 @@
   (call   main (: 3 Int64)) (output (: 6735 Int64))
   (call   main (: 0 Int64)) (output (: 6402 Int64))
   (call   main (: -4 Int64)) (output (: 5958 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "ns5 the nested two-layer match FOLDS when the scrutinee is a pure literal — only op-built scrutinees push it off the fold"
   (input  (do
@@ -3887,7 +3887,7 @@
   (call   main (: 4 Int64)) (output (: 814 Int64))
   (call   main (: 0 Int64)) (output (: 370 Int64))
   (call   main (: -3 Int64)) (output (: 37 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "bt1 a BOOL handler state TOGGLES per dispatch — three draws read the alternating flag, seeded by input parity"
   (input  (do
@@ -4199,7 +4199,7 @@
             (export main)))
   (call   main (: 48 Int64)) (output (: 8826 Int64))
   (call   main (: 21 Int64)) (output (: 1833 Int64))
-  (live-objects known-leak 27))
+  (live-objects known-leak))
 
 (case "pw1 a TRIPLING state crosses fixed thresholds — three compares catch the crossing at input-dependent depth"
   (input  (do
@@ -4357,7 +4357,7 @@
   (call   main (: 3 Int64)) (output (: 16012 Int64))
   (call   main (: 0 Int64)) (output (: 7012 Int64))
   (call   main (: -2 Int64)) (output (: 1012 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback"
   (input  (do
@@ -5286,7 +5286,7 @@
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 0 Int64)) (output (: 76 Int64))
   (call   main (: 4 Int64)) (output (: 48 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "dd5 a do-def BINDS a whole cross-effect handle region — the region's seed draws from the outer thread"
   (input  (do
@@ -5585,7 +5585,7 @@
   (call   main (: 1 Int64)) (output (: 1101 Int64))
   (call   main (: 4 Int64)) (output (: 1401 Int64))
   (call   main (: 0 Int64)) (output (: 1001 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "bf2 the frame grows by u16 BE records — dump decodes the SECOND record through a fixed-width first segment"
   (input  (do
@@ -5602,7 +5602,7 @@
   (call   main (: 1 Int64)) (output (: 201 Int64))
   (call   main (: 4 Int64)) (output (: 204 Int64))
   (call   main (: 0 Int64)) (output (: 200 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "bf3 tagged-record round-trip — arms ENCODE (tag,val) u8 pairs into the frame state, the body decodes the REPLAYED frame"
   (input  (do
@@ -5621,7 +5621,7 @@
   (call   main (: 1 Int64)) (output (: 111221 Int64))
   (call   main (: 4 Int64)) (output (: 114224 Int64))
   (call   main (: 0 Int64)) (output (: 110220 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice"
   (input  (do
@@ -5974,7 +5974,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 62 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "sk4 a Set of TUPLES as handler state with three arms — insert in one arm, contains in a sibling"
   (input  (do
@@ -6023,7 +6023,7 @@
   (call   main (: 5 Int64)) (output (: 24 Int64))
   (call   main (: 0 Int64)) (output (: 4 Int64))
   (call   main (: -3 Int64)) (output (: -8 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "ra1 a RACE between two effect threads — a recursive walk draws BOTH per round until the fast thread catches the slow one's head start"
   (input  (do
@@ -6136,7 +6136,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 74 Int64))
   (call   main (: 0 Int64)) (output (: 54 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "an inner match on a LOCALLY-BUILT Option from the payload (scalar state) — a non-state inner scrutinee beside the dispatch"
   (input  (do
@@ -6464,7 +6464,7 @@
   (call   main (: 5 Int64)) (output (: 201 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: -4 Int64)) (output (: 21 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0"
   (input  (do
@@ -6513,7 +6513,7 @@
   (call   main (: 5 Int64)) (output (: 220 Int64))
   (call   main (: 0 Int64)) (output (: 320 Int64))
   (call   main (: -3 Int64)) (output (: 188 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 
 ; ── String-keyed locks: payload-vs-state equality, rolling codes, and lockout (breaker lk) ────
@@ -6547,7 +6547,7 @@
   (call   main (: 2 Int64)) (output (: 12 Int64))
   (call   main (: 1 Int64)) (output (: 122 Int64))
   (call   main (: 0 Int64)) (output (: 12 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak))
 
 (case "lk2 a ROLLING-code lock — each successful match advances the key index through a list of string keys, |n mod 3| picks the start"
   (input  (do
@@ -6571,7 +6571,7 @@
   (call   main (: 0 Int64)) (output (: 1101 Int64))
   (call   main (: 1 Int64)) (output (: 101 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 91))
+  (live-objects known-leak))
 
 (case "lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter"
   (input  (do
@@ -6665,7 +6665,7 @@
   (call   main (: 5 Int64)) (output (: 633 Int64))
   (call   main (: 0 Int64)) (output (: 78 Int64))
   (call   main (: -3 Int64)) (output (: -255 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak))
 
 (case "sw3 the window CAPACITY is itself state — a grow op resizes the window mid-stream, windowed MAX tracked across the resize"
   (input  (do
@@ -6704,7 +6704,7 @@
   (call   main (: 5 Int64)) (output (: 117 Int64))
   (call   main (: 0 Int64)) (output (: 77 Int64))
   (call   main (: -8 Int64)) (output (: 55 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak))
 
 (case "sw4 windowed AVERAGE with the truncating divide — window sum over live length, a negative window exercises toward-zero"
   (input  (do
@@ -6737,7 +6737,7 @@
   (call   main (: 5 Int64)) (output (: 47 Int64))
   (call   main (: 0 Int64)) (output (: 19 Int64))
   (call   main (: -6 Int64)) (output (: -9 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak))
 
 (case "sw5 DISTINCT-count over the window — a Set built per dispatch from the last-3 list measures dedupe, n=7 collides with the constant feed"
   (input  (do
@@ -6770,7 +6770,7 @@
   (call   main (: 5 Int64)) (output (: 1122 Int64))
   (call   main (: 7 Int64)) (output (: 1111 Int64))
   (call   main (: 0 Int64)) (output (: 1122 Int64))
-  (live-objects known-leak 25))
+  (live-objects known-leak))
 
 (case "sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nested handle — the composed face of the slot-clobber fix"
   (input  (do
@@ -7210,7 +7210,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 27000000000000000027 BigInt))
   (call   main (: 0 Int64)) (output (: 27000000000000000000 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walks past both thresholds, one row compares a genuine multi-limb value"
   (input  (do
@@ -7239,7 +7239,7 @@
   (call   main (: 0 Int64)) (output (: 1/1 Rational))
   (call   main (: 1 Int64)) (output (: 2/1 Rational))
   (call   main (: -1 Int64)) (output (: 0/1 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "rq2 floor/ceil/numerator/denominator READ a rational state — canonicalization (8/4 to 2/1) and negative rounding both pinned"
   (input  (do
@@ -7274,7 +7274,7 @@
   (call   main (: 2 Int64)) (output (: 199 Int64))
   (call   main (: 1 Int64)) (output (: 99 Int64))
   (call   main (: 0 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 
 ; ── User GENERIC sums resolving BY NAME (breaker gs — the resolve-path fix promotion) ─────────
@@ -7334,7 +7334,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 13 Int64))
   (call   main (: -9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "gs5 the generic applied to ITSELF — (Container (Container Int64)) double-wraps and double-unwraps"
   (input  (do
@@ -7420,7 +7420,7 @@
   (call   main (: 5 Int64)) (output (: 2651 Int64))
   (call   main (: 0 Int64)) (output (: 2101 Int64))
   (call   main (: -3 Int64)) (output (: 1771 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "u64s1 a UInt64 handler state ABOVE the i64 boundary — unsigned comparison in the arm stays correct as the thread advances past 2^63"
   (input  (do
@@ -7530,7 +7530,7 @@
   (call   main (: 5 Int64)) (output (: 312 Int64))
   (call   main (: 0 Int64)) (output (: 307 Int64))
   (call   main (: -3 Int64)) (output (: 304 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "fx5 the float state SATURATES to infinity mid-thread — a squaring ladder crosses Float64.max, the arm's finite/inf verdict flips per dispatch"
   (input  (do
@@ -7863,7 +7863,7 @@
                              (at-or b (- (Bytes.len b) 1)))))))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3691 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "br2 the arm returns a SLICE of the growing Bytes state — a window over rope-accumulated bytes crosses dispatch"
   (input  (do
@@ -7886,7 +7886,7 @@
                              (+ (* 10 (at-or w2 0)) (at-or w2 (- (Bytes.len w2) 1))))))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 260410 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 (case "a computed-index String.at over an effect-grown rope emits valid wasm"
   (doc    "Pins breaker finding 18 (v-wasm-opt fix 27aba9cc5). A String handler state grown by a RECURSIVE
@@ -7915,7 +7915,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "a computed-index Bytes.at over a to-bytes view of an effect-grown rope emits valid wasm"
   (doc    "Second face of breaker finding 18 (same fix 27aba9cc5). The to-bytes-view computed Bytes.at read
@@ -7942,7 +7942,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 122 Int64))
   (call   main (: 1 Int64)) (output (: 122 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "an aborting arm's unread op-argument still threads its foreign perform's state advance"
   (doc    "Pins the ABORTING-arm face of the strict-fold #17 foreign-perform-in-unread-arg fix (v-effects:
@@ -8056,7 +8056,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5000162 Int64))
   (call   main (: 0 Int64)) (output (: 112 Int64))
-  (live-objects known-leak 17))
+  (live-objects known-leak))
 
 ; ── Abort-after-advance + arm-built value-eq (breaker batch 228) ──────────────
 ; ag3 pins the abort-arm reading the ADVANCED state after one resumptive
@@ -8117,7 +8117,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 400800 Int64))
   (call   main (: 0 Int64)) (output (: 100200 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 (case "sga1 the arm answers with SET ALGEBRA over its state and an argument-built set — union, intersection, and difference sizes cross dispatch"
   (input  (do
@@ -8357,7 +8357,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 461 Int64))
   (call   main (: 1 Int64)) (output (: 161 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; ── Per-branch strides + square-and-multiply (breaker batch 235) ──────────────
 ; pbr1/pbr2 pin the arm resuming under a CONDITIONAL where each branch carries
@@ -8496,7 +8496,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 7 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "dgn1 digit-peel of a NEGATIVE state — truncated division and dividend-sign remainder agree through the thread, three negative digits"
   (input  (do
@@ -8563,7 +8563,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 11216060 Int64))
   (call   main (: 7 Int64)) (output (: 11224140 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak))
 
 (case "mk21 a scalar-map handler whose second put uses a COMPUTED key — the checked-add scratch and the Option-handle slot stay width-partitioned"
   (input  (do
@@ -8810,7 +8810,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 7 Int64))
   (call   main (: 9 Int64)) (output (: 9 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides"
   (input  (do
@@ -8869,7 +8869,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 230 Int64))
   (call   main (: 1 Int64)) (output (: 120 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run"
   (input  (do
@@ -9159,7 +9159,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 601919 Int64))
   (call   main (: 5 Int64)) (output (: 1103434 Int64))
-  (live-objects known-leak 23))
+  (live-objects known-leak))
 
 (case "neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption"
   (input  (do
@@ -9181,7 +9181,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 10.0 Float64))
   (call   main (: 5 Int64)) (output (: 54.0 Float64))
-  (live-objects known-leak 24))
+  (live-objects known-leak))
 
 ; --- breaker batch 248: symbol-keyed buckets, tag-filtered event ledger, binary-search oracle inversion ---
 (case "smy1 a SYMBOL-KEYED Map state — the op takes a Symbol and routes accumulation by interned identity, the same label from two different dispatches lands in one bucket"
@@ -9228,7 +9228,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 123008070 Int64))
   (call   main (: 20 Int64)) (output (: 123042070 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak))
 
 (case "bis1 BINARY SEARCH against an ORACLE effect — the arm only answers -1/0/1 vs the hidden target, the body's recursive driver narrows (lo,hi) from the verdicts, dispatch count is data-dependent"
   (input  (do
@@ -9281,7 +9281,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 20707 Int64))
   (call   main (: 0 Int64)) (output (: 31010 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "hst1 a HISTOGRAM state with in-arm BUCKETING — observe divides into decade buckets and counts, mode walks the sorted enumeration to answer the densest bucket"
   (input  (do
@@ -9310,7 +9310,7 @@
             (export main)))
   (call   main (: 12 Int64)) (output (: 1213013 Int64))
   (call   main (: 33 Int64)) (output (: 1234034 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak))
 
 (case "swd1 a SLIDING-WINDOW dedup state — the last-three list slides via push-and-drop-head rebuilt in the arm, membership answers flip as elements age out"
   (input  (do
@@ -9337,7 +9337,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 11212 Int64))
   (call   main (: 5 Int64)) (output (: 11222 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak))
 
 ; --- breaker batch 250: negative-mod rotation cipher, prefix-sum table (the finding-23 rich form,
 ; both ListAt/ListUpdate index fixes in), sorted enumeration after remove-churn ---
@@ -9418,7 +9418,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 304063 Int64))
   (call   main (: 1 Int64)) (output (: 1032 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 ; --- breaker batch 251: rover nested-record with chained Record.with, ping-pong cross-feed, sticky-Err failure machine ---
 (case "nrs1 a ROVER state — nested record {pos:{x,y}, steps}; each move applies SIGNED deltas to both inner fields via Record.with and answers the manhattan distance"
@@ -9439,7 +9439,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 50801 Int64))
   (call   main (: 5 Int64)) (output (: 101306 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "pp1 a PING-PONG data thread across two handlers — A's answer feeds B's argument and B's answer feeds A's next argument, additive and modular-multiplicative arms advance independently"
   (input  (do
@@ -9593,7 +9593,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 111221031 Int64))
   (call   main (: 0 Int64)) (output (: 111221001 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak))
 
 (case "bud1 a BUDGET-GATED accumulator — two spends consume the budget, the third answers the negated total from exhaustion, a refill re-arms exactly one more spend, the final read exposes the accumulated total"
   (input  (do
@@ -9624,7 +9624,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 10351024 Int64))
   (call   main (: 30 Int64)) (output (: 10081051 Int64))
-  (live-objects known-leak 60))
+  (live-objects known-leak))
 
 ; --- breaker batch 254: set-of-tuples structural dedup, rope-vs-flat set keys, prepend-rope accumulator ---
 (case "stt1 a SET-OF-TUPLES state seeded by Set.of — structural dedup across dispatches: the repeated pair does not grow the set and the order-swapped pair only counts when the components differ"
@@ -9685,7 +9685,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 13051 Int64))
   (call   main (: 1 Int64)) (output (: 35071 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; --- breaker batch 255: mixed-width four-param op, three result types on one thread, UTF-8 validity flip mid-run ---
 (case "mx4 a FOUR-param op mixing two Int64s, a NARROW UInt8, and a Bool — the narrow slot rides between wide ones and the flag doubles the first argument"
@@ -9780,7 +9780,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1213339 Int64))
   (call   main (: 10 Int64)) (output (: 1220360 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak))
 
 (case "xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step"
   (input  (do
@@ -9836,7 +9836,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3572911 Int64))
   (call   main (: 30 Int64)) (output (: 3842911 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak))
 
 ; --- breaker batch 257: base-100 odometer carry cascade, value-yielding map ops, unsigned bytes high-water ---
 (case "odo1 a BASE-100 ODOMETER — the list of wheels absorbs each tick with a CASCADING CARRY that rebuilds cells by List.update and GROWS the list when the top wheel overflows"
@@ -9863,7 +9863,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 153213303 Int64))
   (call   main (: 95 Int64)) (output (: 245205395 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "swt1 VALUE-YIELDING map ops in the arm — Map.swap answers the PRIOR value it replaced and Map.take answers the value it removed, both tuple-projected in the arm with absent-key sentinels"
   (input  (do
@@ -10022,7 +10022,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 150724121 Int64))
   (call   main (: 0 Int64)) (output (: 80010051 Int64))
-  (live-objects known-leak 37))
+  (live-objects known-leak))
 
 (case "rsp1 a ROLE-INVERTING parity splitter — feed routes each value to the even or odd accumulator, flip INVERTS the routing so post-flip evens land in the odd bucket, the flip answers the packed snapshot"
   (input  (do
@@ -10093,7 +10093,7 @@
             (export main)))
   (call   main (: 13 Int64)) (output (: 22122 Int64))
   (call   main (: 22 Int64)) (output (: 22221 Int64))
-  (live-objects known-leak 50))
+  (live-objects known-leak))
 
 (case "lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW"
   (input  (do
@@ -10120,7 +10120,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 123 Int64))
   (call   main (: 9 Int64)) (output (: 112 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak))
 
 (case "rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 rounded half-to-even, the parity of the truncated quotient decides which halves bump"
   (input  (do
@@ -10168,7 +10168,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 10201010706 Int64))
   (call   main (: 2 Int64)) (output (: 30405041712 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak))
 
 (case "tok1 a TOKENIZER protocol — next-tok skips leading spaces, answers the token's byte-len, and threads the REST of the string; the drained stream answers zero forever"
   (input  (do
@@ -10198,7 +10198,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 3421 Int64))
   (call   main (: 1 Int64)) (output (: 2321 Int64))
-  (live-objects known-leak 611))
+  (live-objects known-leak))
 
 (case "rle2 a RUN-LENGTH ENCODER state — equal-to-last feeds bump the tail pair's count via List.update at len-1, fresh values push a new pair; the n=5 seed merges the middle literal into one long run"
   (input  (do
@@ -10232,7 +10232,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1112213132 Int64))
   (call   main (: 5 Int64)) (output (: 1112131415 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak))
 
 ; --- breaker batch 262: priority-pop selection, two-pointer merge across handlers, checkpoint/restore pair ---
 (case "pq1 a PRIORITY-POP protocol — pushes append unsorted (priority,value) pairs, popmin scans for the strict minimum priority (first-of-equals wins) answers its value and removes it by filtered rebuild"
@@ -10274,7 +10274,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1232010 Int64))
   (call   main (: 9 Int64)) (output (: 1231030 Int64))
-  (live-objects known-leak 40))
+  (live-objects known-leak))
 
 (case "mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain"
   (input  (do
@@ -10303,7 +10303,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1245 Int64))
   (call   main (: 6 Int64)) (output (: 1465 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak))
 
 (case "ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint"
   (input  (do
@@ -10424,7 +10424,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 6312052 Int64))
   (call   main (: 0 Int64)) (output (: 306022 Int64))
-  (live-objects known-leak 58))
+  (live-objects known-leak))
 
 ; --- breaker batch 264: base-7 codec round-trip, escrow conservation pair, weighted quorum vote ---
 (case "bas1 a BASE-7 codec state — encode peels a value's digits MSB-first onto the list (recursive prepend-peel), decode folds the WHOLE accumulated digit run back and clears; concatenated encodes decode as positional composition"
@@ -10459,7 +10459,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 230733050 Int64))
   (call   main (: 48 Int64)) (output (: 233393050 Int64))
-  (live-objects known-leak 47))
+  (live-objects known-leak))
 
 (case "esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot"
   (input  (do
@@ -10491,7 +10491,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 66391070100 Int64))
   (call   main (: 5 Int64)) (output (: 16010540100 Int64))
-  (live-objects known-leak 41))
+  (live-objects known-leak))
 
 (case "quo1 a WEIGHTED QUORUM vote — each member's weight tallies ONCE (revotes no-op via the voted set), unknown members answer a sentinel, and the pass bit flips when the tally crosses the quorum"
   (input  (do
@@ -10521,7 +10521,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 303071191 Int64))
   (call   main (: 1 Int64)) (output (: 303040161 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak))
 
 ; --- breaker batch 265: Lamport clock, debounce gate, op-log replay ---
 (case "lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to max(local,remote)+1; the stale remote (already-past timestamp) still ticks by one through the max"
@@ -10600,7 +10600,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 307141523 Int64))
   (call   main (: 5 Int64)) (output (: 812192028 Int64))
-  (live-objects known-leak 37))
+  (live-objects known-leak))
 
 ; --- breaker batch 266: bitmask set in one Int64, digital-root nested recursion, two-phase commit ---
 (case "bms1 a BITMASK SET in one Int64 — set ORs a shifted bit, clear ANDs with the XOR-complement answering whether the bit was live, popcount peels the mask; the clear of an absent high bit is a no-op zero"
@@ -10696,7 +10696,7 @@
             (export main)))
   (call   main (: 8 Int64)) (output (: 1110602 Int64))
   (call   main (: 3 Int64)) (output (: 1001003 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; --- breaker batch 267: frequency decay with fixed point, interval overlap counting, RPN stack machine ---
 (case "dcy1 a FREQUENCY-DECAY tracker — every observe first HALVES all counts dropping the zeroed rows, then bumps the observed key by four; the whole-map transform and the single-key update compose in one arm"
@@ -10724,7 +10724,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 104106204205 Int64))
   (call   main (: 2 Int64)) (output (: 104106107107 Int64))
-  (live-objects known-leak 36))
+  (live-objects known-leak))
 
 (case "ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range"
   (input  (do
@@ -10749,7 +10749,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1231 Int64))
   (call   main (: 8 Int64)) (output (: 1131 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak))
 
 (case "rpn1 an RPN EVALUATOR — pushes stack operands, the operator ops pop two and push the result; the (n+3)*2 program evaluates through five dispatches with stack depths and intermediates exposed"
   (input  (do
@@ -10789,7 +10789,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 1207214 Int64))
   (call   main (: 10 Int64)) (output (: 1213226 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ;; ── Hysteresis gate, paren-depth validator, Gray-code walker (breaker batch 268) ────────────
 (case "hys1 a HYSTERESIS gate — the output turns on at eight and off at three, HOLDING between the thresholds; the same mid-band feed answers differently depending on which side entered it"
@@ -10834,7 +10834,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 11121112 Int64))
   (call   main (: 1 Int64)) (output (: 11100101 Int64))
-  (live-objects known-leak 22))
+  (live-objects known-leak))
 
 (case "gry1 a GRAY-CODE generator — each tick answers the threaded counter's Gray encoding (n XOR n>>1) then advances; the body XOR-popcounts consecutive answers proving the single-bit-change law"
   (input  (do
@@ -10907,7 +10907,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 70601 Int64))
   (call   main (: 4 Int64)) (output (: 70600 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak))
 
 (case "bor1 a TWO-LIMB borrow decrement — subtracting from the low limb borrows from the high one when it underflows, and a borrow with no high limb left SATURATES both to zero"
   (input  (do
@@ -10934,7 +10934,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 9800000000 Int64))
   (call   main (: 50 Int64)) (output (: 104500470000 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak))
 
 ;; ── Leader election rounds, loop-driven plateau twin, LCG reservoir pick (breaker batch 270) ──
 (case "led1 BULLY leader election — registrations grow the candidate set, elect scans for the highest id, and deregistering the ELECTED leader (its id threaded through the body) forces re-election from the survivors"
@@ -10966,7 +10966,7 @@
             (export main)))
   (call   main (: 9 Int64)) (output (: 12309205 Int64))
   (call   main (: 3 Int64)) (output (: 12305203 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak))
 
 (case "plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list"
   (input  (do
@@ -10989,7 +10989,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 1424344454 Int64))
   (call   main (: 7 Int64)) (output (: 1424242437 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak))
 
 (case "rsv1 DETERMINISTIC reservoir sampling — an LCG threaded beside the reservoir decides keep-or-replace by count-modulus, seeds route which offers displace the kept element"
   (input  (do
@@ -11010,7 +11010,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 102020 Int64))
   (call   main (: 7 Int64)) (output (: 101030 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak))
 
 ;; ── Josephus elimination, tortoise-and-hare cycle finder, day-clock rollover (breaker batch 271) ──
 (case "jos1 JOSEPHUS elimination — every dispatch advances the cursor k-1 around the SHRINKING ring by modulo, removes the survivor there by filtered rebuild, and answers the eliminated id"
@@ -11035,7 +11035,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 20401 Int64))
   (call   main (: 3 Int64)) (output (: 30105 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak))
 
 (case "tth1 TORTOISE-AND-HARE cycle detection — the handler owns the successor function and counts calls, the body's two-speed recursive driver meets inside the cycle and the call tally rides in the answer"
   (input  (do
@@ -11107,7 +11107,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 11234 Int64))
   (call   main (: 5 Int64)) (output (: 11122 Int64))
-  (live-objects known-leak 312))
+  (live-objects known-leak))
 
 (case "sky1 SKYLINE visibility with demolition — feeds answer whether the building tops all before it, demolish removes EVERY copy of the max forcing the threshold to recompute from survivors"
   (input  (do
@@ -11141,7 +11141,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 1112030413 Int64))
   (call   main (: 2 Int64)) (output (: 1102130313 Int64))
-  (live-objects known-leak 56))
+  (live-objects known-leak))
 
 (case "brk1 TYPED-BRACKET matching — opens push their code, a close must match the TOP of the expected stack (LIFO discipline), a wrong-type close flips the sticky invalid; the seed orders the closes right or wrong"
   (input  (do
@@ -11176,7 +11176,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 11121110 Int64))
   (call   main (: 1 Int64)) (output (: 11120101 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 ;; ── Compensating undo-stack, two-stack FIFO refill, token-bucket limiter (breaker batch 273) ──
 (case "cmt1 a COMPENSATING transaction log — each do applies its delta AND pushes the inverse onto the undo stack, each compensate pops the LAST inverse and applies it, unwinding in strict LIFO order back to the seed"
@@ -11215,7 +11215,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 151815251510 Int64))
   (call   main (: 0 Int64)) (output (: 50805150500 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak))
 
 (case "tsqS a TWO-STACK amortized FIFO queue — enq pushes the in-stack, deq pops the out-stack and reverse-refills from the in-stack only when empty, so an element enqueued between refills never overtakes one already staged"
   (input  (do
@@ -11251,7 +11251,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 111211 Int64))
   (call   main (: 0 Int64)) (output (: 10201 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "odf1 a TOKEN-BUCKET rate limiter with overdraft penalties — spend succeeds only when the bucket covers it (else a penalty tick and a 0 answer), refill saturates at the cap, and the final draw reads the accumulated penalty count"
   (input  (do
@@ -11287,7 +11287,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 4001008001002 Int64))
   (call   main (: 0 Int64)) (output (: 500031003 Int64))
-  (live-objects known-leak 298))
+  (live-objects known-leak))
 
 ;; ── Vickrey second-price auction, dedup key-collision stream, circuit breaker (breaker batch 274) ──
 (case "bid1 a SECOND-PRICE auction tracker — each bid answers the index of the CURRENT leader (a beaten high demotes to second, a middle bid bumps only second), and the closing draws read the winner index and the price he actually pays"
@@ -11320,7 +11320,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10103030317 Int64))
   (call   main (: 0 Int64)) (output (: 10203040412 Int64))
-  (live-objects known-leak 342))
+  (live-objects known-leak))
 
 (case "ddp1 a FIRST-TIME dedup stream over a Map of seen-counts — a first observation echoes the value, a repeat answers the negated repeat count, and the seed COLLIDES a computed key with a literal so the two runs disagree on which draws are repeats at all"
   (input  (do
@@ -11384,7 +11384,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 3999998990700 Int64))
   (call   main (: 0 Int64)) (output (: -101000099 Int64))
-  (live-objects known-leak 312))
+  (live-objects known-leak))
 
 ;; ── Integer P+I controller, inventory hold/settle/release, delimiter-join rope (breaker batch 275) ──
 (case "pid1 an integer P+I CONTROLLER stepping a plant toward the setpoint 20 — each step folds the error into the integral, applies u = (2*err + integral) / 4 with a NEGATIVE dividend on the overshoot face, and the closing draw reads the wound-up integral"
@@ -11415,7 +11415,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 172123232306 Int64))
   (call   main (: 0 Int64)) (output (: 152327272608 Int64))
-  (live-objects known-leak 789))
+  (live-objects known-leak))
 
 (case "hld1 an INVENTORY hold/settle/release protocol — hold reserves against available (on-hand minus already-held) answering the running held total or the NEGATED available on reject, settle deducts held from on-hand, release just drops the holds, and the seeds reject DIFFERENT holds"
   (input  (do
@@ -11448,7 +11448,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 4130503049505 Int64))
   (call   main (: 0 Int64)) (output (: 3960403039604 Int64))
-  (live-objects known-leak 173))
+  (live-objects known-leak))
 
 (case "tpl1 a DELIMITER-JOIN rope builder — the first fragment lands bare, every later one is prefixed with the separator, the empty-vs-seeded start decides whether the FIRST dispatch takes the bare branch, and multibyte fragments keep the byte-length answers honest"
   (input  (do
@@ -11502,7 +11502,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 121212090916 Int64))
   (call   main (: 0 Int64)) (output (: 20505080808 Int64))
-  (live-objects known-leak 34))
+  (live-objects known-leak))
 
 (case "zgz1 a ZIGZAG codec accumulator — enc maps signed to unsigned (2v for non-negative, -2v-1 for negative) and folds the code into the state sum, dec UN-zigzags the accumulated sum whose parity decides the sign, and the seeds put the decode answers on opposite signs"
   (input  (do
@@ -11560,7 +11560,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 40706021088 Int64))
   (call   main (: 0 Int64)) (output (: 40706020392 Int64))
-  (live-objects known-leak 301))
+  (live-objects known-leak))
 
 ;; ── Rolling-key cipher, first-free-slot bitmask allocator, quarter-turn point orbit (breaker batch 277) ──
 (case "vig1 a VIGENERE-style rolling-key cipher — enc adds and dec subtracts the key byte selected by the ADVANCING key index mod 3, both mod 26, so interleaved enc/dec draws consume ONE shared key stream and the seed shapes the middle key byte"
@@ -11656,7 +11656,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 29187903130101 Int64))
   (call   main (: 0 Int64)) (output (: 31097903030101 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak))
 
 ;; ── Weighted quorum w/ punitive veto, capacity-2 LRU cache, Pascal row builder (breaker batch 278) ──
 (case "qrm1 WEIGHTED QUORUM voting with a punitive veto — votes accumulate weight answering whether the threshold is met, veto ZEROES the tally and RAISES the threshold by two, tally packs weight and quorum-bit, and the seed sets the initial threshold so the same votes pass on one seed and never on the other"
@@ -11693,7 +11693,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 9018000170 Int64))
   (call   main (: 0 Int64)) (output (: 19108010271 Int64))
-  (live-objects known-leak 484))
+  (live-objects known-leak))
 
 (case "lru1 a CAPACITY-2 LRU cache — put inserts as most-recent and answers the evicted key or 0, get answers the value refreshing recency or -1 on miss, and the SEED collides the computed key with a literal so one run UPDATES where the other EVICTS"
   (input  (do
@@ -11741,7 +11741,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5009905 Int64))
   (call   main (: 0 Int64)) (output (: 6000606 Int64))
-  (live-objects known-leak 74))
+  (live-objects known-leak))
 
 (case "pas1 PASCAL'S TRIANGLE row advanced through effect state — next rebuilds the row by a recursive pairwise-sum answering the row total (a power of two), coef reads the SEED-KEYED binomial coefficient mid-descent and after, and the out-of-range read answers -1"
   (input  (do
@@ -11778,7 +11778,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 2040108160599 Int64))
   (call   main (: 0 Int64)) (output (: 2040208160399 Int64))
-  (live-objects known-leak 60))
+  (live-objects known-leak))
 
 ;; ── Horner base-swap evaluator, round-robin skip mask, stopwatch lap splits (breaker batch 279) ──
 (case "hrn1 a HORNER polynomial evaluator with a MID-STREAM base swap — feed folds acc*x+c answering the running value, swapx replaces the base answering the old one, and the seed shapes the INITIAL base so the pre-swap accumulations diverge while the post-swap coefficients ride on top"
@@ -11844,7 +11844,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 30100010203030399 Int64))
   (call   main (: 0 Int64)) (output (: 10103000203030399 Int64))
-  (live-objects known-leak 28))
+  (live-objects known-leak))
 
 (case "lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds"
   (input  (do
@@ -11881,7 +11881,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 30606090312150603 Int64))
   (call   main (: 0 Int64)) (output (: 20404060208100402 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak))
 
 ;; ── Luhn checksum, exponential backoff with cap, volume-weighted average price (breaker batch 280) ──
 (case "lhn1 a LUHN checksum accumulator — feed doubles every second digit by POSITION PARITY subtracting nine from two-digit doubles, chk answers 1 on a multiple of ten else the residue, and the seed-fed digit doubles on both runs but only one crosses the subtract-nine threshold"
@@ -11943,7 +11943,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 204081615020418 Int64))
   (call   main (: 0 Int64)) (output (: 204060613020416 Int64))
-  (live-objects known-leak 166))
+  (live-objects known-leak))
 
 (case "vwp1 a VOLUME-WEIGHTED average price tracker — trade accrues (price*qty, qty) answering the running notional, vwap answers the truncated notional-over-volume or -1 before any trade, and the LEADING -1 row drives the whole packed total negative while the seed shifts one trade's price through both later readouts"
   (input  (do
@@ -12082,7 +12082,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: -100010097 Int64))
   (call   main (: 0 Int64)) (output (: 100009921 Int64))
-  (live-objects known-leak 98))
+  (live-objects known-leak))
 
 (case "lky1 a LEAKY-BUCKET meter — arrive fills toward the seed-shaped capacity answering only the OVERFLOW spill (level clamps at the brim), drain leaks five clamped at empty answering the new level, and the small bucket spills twice where the large one never does"
   (input  (do
@@ -12140,7 +12140,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 399190203 Int64))
   (call   main (: 0 Int64)) (output (: -100819898 Int64))
-  (live-objects known-leak 210))
+  (live-objects known-leak))
 
 ;; ── Turnstile FSM (passing 6-dispatch face), ripple-carry flip counts, Kadane tracker (breaker batch 283) ──
 (case "trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row"
@@ -12172,7 +12172,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10099019901 Int64))
   (call   main (: 0 Int64)) (output (: -9900990199 Int64))
-  (live-objects known-leak 564))
+  (live-objects known-leak))
 
 (case "rpc1 a RIPPLE-CARRY counter — inc answers the number of bits FLIPPED by that increment (the XOR of old and new popcounted, the amortized-analysis witness), pop reads the live bit count, and the seeds start at 10 and 0 so the carry chains fire at different steps"
   (input  (do
@@ -12228,7 +12228,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 39805121012 Int64))
   (call   main (: 0 Int64)) (output (: 39795070507 Int64))
-  (live-objects known-leak 59))
+  (live-objects known-leak))
 
 ;; ── Leading-digit counter, continued-fraction expander, Borda count (breaker batch 284) ───────
 (case "ldg1 a LEADING-DIGIT counter — feed strips each value to its leading digit through a recursive divide-down callee, a hit on the seed-wanted digit answers digit*10 plus the running hit count while a miss answers the bare digit, and the two seeds hunt DIFFERENT digits through one shared stream"
@@ -12277,7 +12277,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 201359899 Int64))
   (call   main (: 0 Int64)) (output (: 201020201 Int64))
-  (live-objects known-leak 154))
+  (live-objects known-leak))
 
 (case "brd1 a BORDA count over three candidates — each ballot awards two points to its first choice and one to its second answering the first choice's new total, lead answers the current leader with ties to the lowest id, and the seed steers ONE ballot's first choice producing a three-way tie on one run and a runaway winner on the other"
   (input  (do
@@ -12315,7 +12315,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 203010300 Int64))
   (call   main (: 0 Int64)) (output (: 204000300 Int64))
-  (live-objects known-leak 70))
+  (live-objects known-leak))
 
 ;; ── Annealing acceptance schedule, battery reserve, eight-bit LFSR (breaker batch 285) ────────
 (case "tmp1 a SIMULATED-ANNEALING acceptance schedule — cool decays the temperature by nine-tenths truncating, accept takes any improvement and any worsening still under the heat counting the accepts, and the hot seed accepts EVERYTHING the cold seed rejects while both take the improving move"
@@ -12353,7 +12353,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 17201640157010105 Int64))
   (call   main (: 0 Int64)) (output (: 3600320128000001 Int64))
-  (live-objects known-leak 67))
+  (live-objects known-leak))
 
 (case "chg1 a BATTERY controller with a protected reserve — charge clamps at one hundred, draw refuses any request that would dip below the seed-shaped reserve answering the negated shortfall with the level UNTOUCHED, and the same draw sequence trips the refusal at DIFFERENT points per seed with the refused row's level surviving to the next draw"
   (input  (do
@@ -12440,7 +12440,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 102040101000000 Int64))
   (call   main (: 0 Int64)) (output (: 99000001020401 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak))
 
 (case "bwl1 a SPARE-CHAIN scorer — each roll adds its pins plus a DOUBLE when the previous two rolls summed to ten, threading a two-roll history through the state, and only the seed whose opening pair hits ten fires the bonus so the scores drift apart from the third row"
   (input  (do
@@ -12497,7 +12497,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 101515161919 Int64))
   (call   main (: 0 Int64)) (output (: 101119202323 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak))
 
 ;; ── Delta codec cross-talk, Egyptian multiplication, TMR voter (breaker batch 287) ───────────
 (case "dlt1 a DELTA encoder and decoder sharing ONE previous-value slot — enc answers the difference storing the raw value, dec answers the reconstruction storing it, interleaving them CROSS-TALKS through the shared slot by design, and after the seed washes out of the second row the tails converge exactly"
@@ -12546,7 +12546,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 107121149105105 Int64))
   (call   main (: 0 Int64)) (output (: 107007135035035 Int64))
-  (live-objects known-leak 270))
+  (live-objects known-leak))
 
 (case "tmr1 a TRIPLE-MODULAR-REDUNDANCY voter — set writes one of three channel slots, vote answers the majority value or -1 counting the all-differ disagreements, and the seed corrupts channel zero so one run stays unanimous while the other walks through a majority flip, a full disagreement, and a healed two-vote majority"
   (input  (do
@@ -12589,7 +12589,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 121212120712121200 Int64))
   (call   main (: 0 Int64)) (output (: 21212120699020201 Int64))
-  (live-objects known-leak 74))
+  (live-objects known-leak))
 
 ;; ── Phase-change heater (constant-guard face), rule-90 automaton, water jugs (breaker batch 288) ──
 (case "phs5 inner guard made CONSTANT (latent never checked) — each tick delivers one quantum which either RAISES the temperature by a degree or, exactly at the melting point with latent heat unpaid, pays two units of latent answering a tagged fifty-plus row, and the warm seed climbs straight through while the cold seed hits the plateau and stalls there"
@@ -12617,7 +12617,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 60708091011 Int64))
   (call   main (: 0 Int64)) (output (: 20352545658 Int64))
-  (live-objects known-leak 358))
+  (live-objects known-leak))
 
 (case "cel1 a RULE-NINETY cellular automaton in one Int64 byte — step XORs the left-shifted and right-shifted worlds masked to eight bits answering the new generation, density popcounts between steps, and the seeds' initial worlds diverge into different orbits with different densities"
   (input  (do
@@ -12684,7 +12684,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 33033510110 Int64))
   (call   main (: 0 Int64)) (output (: 502353535023 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ;; ── Implicit-stream merge, parking-fee meter, stone-taking game (breaker batch 289) ──────────
 (case "tie1 a TWO-POINTER merge of IMPLICIT arithmetic streams — the heads bind once through match binders, take answers the smaller advancing that stream's index, a TIE answers fifty-plus-the-value advancing the a-side, and the seed offsets stream a so one run opens with a tie and the other buries its tie mid-stream"
@@ -12714,7 +12714,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10305065909 Int64))
   (call   main (: 0 Int64)) (output (: 510104050709 Int64))
-  (live-objects known-leak 224))
+  (live-objects known-leak))
 
 (case "prk1 a PARKING-LOT fee meter — enter stamps the time, exit charges the seed-shaped first-hour rate plus two per further hour CAPPED at fifteen (a zero-duration stay is free), rev totals the day, and the cap row is identical across seeds while the uncapped rows and the total differ"
   (input  (do
@@ -12749,7 +12749,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 2080600071523 Int64))
   (call   main (: 0 Int64)) (output (: 2060600071521 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "stg1 a STONE-TAKING game — take removes up to k stones clamped at the pile answering pile-times-ten plus whose turn it was, the player landing the pile at zero answers a hundred-plus-their-id, and the smaller pile ends three moves early so its tail is drained-pile wins for alternating players"
   (input  (do
@@ -12772,7 +12772,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 180141120091050101 Int64))
   (call   main (: 0 Int64)) (output (: 80041020101100101 Int64))
-  (live-objects known-leak 416))
+  (live-objects known-leak))
 
 ;; ── FIFO id-range queue, gearbox odometer, single-wall reflecting walk (breaker batch 290) ───
 (case "bnfE 2-tuple FIFO control — (front, back) only, no counter"
@@ -12803,7 +12803,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1040203030405 Int64))
   (call   main (: 0 Int64)) (output (: 1020203010399 Int64))
-  (live-objects known-leak 381))
+  (live-objects known-leak))
 
 (case "gbx1 a THREE-SPEED gearbox odometer — shift moves the gear clamped to the one-to-three range answering the landed gear, drive accrues time-times-the-gear's-speed into the odometer answering the total, and the seed's starting gear compounds through every drive so the odometers pull apart while the shift answers converge"
   (input  (do
@@ -12869,7 +12869,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 4030228030446 Int64))
   (call   main (: 0 Int64)) (output (: 2010008010226 Int64))
-  (live-objects known-leak 231))
+  (live-objects known-leak))
 
 ;; ── Twin-effect identity pin, cross-effect arm-perform relay, hourglass flips (breaker batch 291) ──
 (case "twn1 TWO structurally IDENTICAL effect declarations (same op name, same signature, different effect names) nested as a tower — interleaved draws must dispatch to the CORRECT handler by effect identity alone, the sharpest post-schema-hash identity probe: same-shape effects with different seeds thread independently"
@@ -12940,7 +12940,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 15120603001815 Int64))
   (call   main (: 0 Int64)) (output (: 5020603000805 Int64))
-  (live-objects known-leak 452))
+  (live-objects known-leak))
 
 ;; ── Hamming XOR-fold tracker, first-fit packing, snooze alarm (breaker batch 292) ────────────
 (case "hmg1 a HAMMING-distance tracker with an XOR-folding reference — cmp answers the popcount of the value against the reference remembering the value, lock folds the last value INTO the reference by XOR answering the old one, and the seed reference propagates through both locks so the distance rows diverge after the first fold"
@@ -12997,7 +12997,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5103999999100110 Int64))
   (call   main (: 0 Int64)) (output (: 7001104999101099 Int64))
-  (live-objects known-leak 144))
+  (live-objects known-leak))
 
 (case "cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick"
   (input  (do
@@ -13027,7 +13027,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 403050403020089 Int64))
   (call   main (: 0 Int64)) (output (: 201030200890201 Int64))
-  (live-objects known-leak 1090))
+  (live-objects known-leak))
 
 ;; ── Greedy change-making, progressive tax brackets, pitch-class walker (breaker batch 293) ──
 (case "mnc1 a GREEDY change-making counter — pay walks the denomination ladder accumulating quotients by repeated divide-and-remainder answering the coin count, the seed decides whether a SEVEN-coin exists in the ladder, and amounts touching the seven diverge (two versus eight coins for eight cents) while seven-free amounts agree"
@@ -13140,7 +13140,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 3006063 Int64))
   (call   main (: 0 Int64)) (output (: 3002023 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 ;; ── Golf scorecard, vending machine, pagination cursor (breaker batch 294) ──
 (case "gsc1 a GOLF scorecard with a birdie-streak multiplier — each hole answers its par delta where consecutive under-par holes MULTIPLY the negative contribution by the deepening streak, an over-par hole resets the streak, card totals, and the seed shifts one hole's strokes so the streak bonus doubles differently"
   (input  (do
@@ -13169,7 +13169,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: -101990103 Int64))
   (call   main (: 0 Int64)) (output (: -103990105 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "vnd1 a VENDING machine with a change float — insert accumulates credit, buy vends only when the credit covers the seven-cent price AND the float covers the change (answering the change, growing the float by price minus change, zeroing credit), refusing otherwise with distinct negated codes, and the seed's starting float decides whether ANY sale completes"
   (input  (do
@@ -13201,7 +13201,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 4980902100293 Int64))
   (call   main (: 0 Int64)) (output (: 4980848183738 Int64))
-  (live-objects known-leak 97))
+  (live-objects known-leak))
 
 (case "pgn1 a PAGINATION cursor over a seed-sized collection — next serves up to the page size answering the count actually served (the LAST page runs short), a drained cursor answers -1, rewind resets answering the pages served, and the smaller collection drains one page EARLIER so its short page and its -1 land at different rows"
   (input  (do
@@ -13232,7 +13232,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 80808060412 Int64))
   (call   main (: 0 Int64)) (output (: 80803990312 Int64))
-  (live-objects known-leak 139))
+  (live-objects known-leak))
 
 ;; ── xhs cross-handler shared-let mid-arm foreign-perform family — miscompile class closed by eead20a60; xhsE freeze-completeness-boundary CLOSED (2026-08-27): the freeze inlines a computed perform-arg's arm-local let-refs to their drain-safe inits (breaker batch 295) ──
 (case "xhs1 CROSS-HANDLER shared-let — the inner step arm let-binds the advanced column, PERFORMS the outer note with it mid-arm (accumulating), then resumes packing the binder with the note's answer while threading the binder as next-state; the seed bias shifts every column so both the inner rows and the outer accumulator diverge"
@@ -13583,7 +13583,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 44071111 Int64))
   (call   main (: 0 Int64)) (output (: 33069109 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?"
   (input
@@ -13661,7 +13661,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 8320793510993591 Int64))
   (call   main (: 0 Int64)) (output (: 2800808311093201 Int64))
-  (live-objects known-leak 389))
+  (live-objects known-leak))
 
 (case "brw1 a BREW fermenter with a stuck-fermentation rescue — each day the gravity drops by the yeast health floored at ten (an inline min), a drop under three counts as STUCK earning a four-point yeast boost and a seven-hundred alarm with the standing gravity, a healthy day answers gravity and the yeast's low digit, pitching adds yeast, the read packs all three, and the weak seed sticks on DAY ONE (rescuing early) while the strong one ferments clean until the floor"
   (input  (do
@@ -13696,7 +13696,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5550505006004464460 Int64))
   (call   main (: 0 Int64)) (output (: 7580526007004574571 Int64))
-  (live-objects known-leak 371))
+  (live-objects known-leak))
 
 (case "tel1 a TELESCOPE tracker with a slew-rate limit — track names a target locking within five degrees (else a nine-hundred miss with the gap's low digits), slew moves the azimuth toward the target by at most SEVEN degrees (a two-sided inline clamp of the signed difference) tagging an exact arrival, the read packs azimuth lock and arrival, and one seed starts within locking range so every row down to the read disagrees with the far-parked run"
   (input  (do
@@ -13735,7 +13735,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1030271010303013011 Int64))
   (call   main (: 0 Int64)) (output (: 9170170091302402400 Int64))
-  (live-objects known-leak 866))
+  (live-objects known-leak))
 
 ;; ── xhsGGrow selector-freeze x growing-fold composition guard, seismograph drift, cipher-wheel dual-moduli, toll-plaza inverse-compound (breaker batch 300) ──
 (case "xhsGGrow conditional mid-arm foreign perform WITH a growing List.push next-state — composition of the conditional-selector freeze (7106ad497) and the growing-state correct-fold (95f5ab8d2)"
@@ -13760,7 +13760,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 40077107 Int64))
   (call   main (: 0 Int64)) (output (: 30066106 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "ssm2 the SEISMOGRAPH at three readings — deviation over four logs an event (peak by inline max, baseline nudged up), quiet drifts one signed step, and the seeds disagree on whether the THIRD reading is an aftershock event or a quiet drift so even the event counts split"
   (input  (do
@@ -13793,7 +13793,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 751060090631 Int64))
   (call   main (: 0 Int64)) (output (: 771080762812 Int64))
-  (live-objects known-leak 107))
+  (live-objects known-leak))
 
 (case "cwl1 a CIPHER WHEEL that slips every third letter — encoding adds the offset mod twenty-six and every THIRD encode advances the wheel one notch (a nine-tagged row counting the slip), other rows carry the stroke's residue tag, the read packs offset strokes and slips, and the seed's starting offset wraps one alphabet where the other doesn't so the ciphertext rows share nothing"
   (input  (do
@@ -13823,7 +13823,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1710421491011141 Int64))
   (call   main (: 0 Int64)) (output (: 1012320790310441 Int64))
-  (live-objects known-leak 331))
+  (live-objects known-leak))
 
 (case "tol1 a TOLL PLAZA with an exact-change lane — a five rides the exact lane counting itself and feeding the till, an overpayment needs the till to COVER the change (the till keeps the toll, the change flows back) else the car is DELAYED with the till untouched, an underpayment bounces with a four-hundred tag, the read packs till exact and delayed, and the seed's float lets one plaza serve every car while the other delays all three overpayers"
   (input  (do
@@ -13855,7 +13855,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 211010910612310 Int64))
   (call   main (: 0 Int64)) (output (: 9011019029030513 Int64))
-  (live-objects known-leak 70))
+  (live-objects known-leak))
 
 ;; ── Reservoir gate, deadman switch, tiered billing (breaker batch 301) ──
 (case "tdr1 a RESERVOIR gate with a ratcheting threshold — inflow raises the level, gate releases HALF truncating only above the threshold (which ratchets up by one after every release), and the LOWER starting threshold releases on the very first gate while the higher one holds, the runs re-converging on the final held gate"
@@ -13886,7 +13886,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5000904110500 Int64))
   (call   main (: 0 Int64)) (output (: 5020703100500 Int64))
-  (live-objects known-leak 90))
+  (live-objects known-leak))
 
 (case "dth1 a DEAD-MAN'S switch — beat resets the miss counter answering the uptime tick, poll counts a miss answering it until the seed-shaped threshold LATCHES the alarm, and once latched EVERY answer is -9 forever (beats cannot clear it); the lower threshold latches six rows early and the long -9 tail pins the latch as absorbing"
   (input  (do
@@ -13921,7 +13921,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 101020201019091 Int64))
   (call   main (: 0 Int64)) (output (: 100909090909091 Int64))
-  (live-objects known-leak 369))
+  (live-objects known-leak))
 
 (case "stp1 TIERED flat-fee billing — use accrues usage answering it, bill answers the current tier's flat fee (five under ten, twelve under twenty-five, twenty above) resetting usage, total reads the collected fees, and the seed pre-loads usage so the FIRST bill lands in a different tier while the later cycles converge"
   (input  (do
@@ -13955,7 +13955,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 18122012040529 Int64))
   (call   main (: 0 Int64)) (output (: 8052012040522 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ;; ── Perfect shuffle, order book, tug of war (breaker batch 302) ──
 (case "sfl1 a PERFECT-SHUFFLE position tracker — each shuffle doubles the tracked card's position mod seven (the out-shuffle orbit on eight cards, position seven fixed), where packs position and shuffle count, and the two seeds ride the SAME 3-cycle orbit entered at different points so the rows are rotations of each other"
@@ -13985,7 +13985,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1022204010225 Int64))
   (call   main (: 0 Int64)) (output (: 2044201020445 Int64))
-  (live-objects known-leak 366))
+  (live-objects known-leak))
 
 (case "orq1 an ORDER-BOOK spread tracker — bid raises the best bid and ask lowers the best ask (both answering the spread or -1 while a side is empty), a CROSSED book resets both sides answering zero, and the seed only shifts the opening bid so the first spread differs while the tightening ladder and the cross land identically"
   (input  (do
@@ -14028,7 +14028,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: -9496990001 Int64))
   (call   main (: 0 Int64)) (output (: -9296990001 Int64))
-  (live-objects known-leak 282))
+  (live-objects known-leak))
 
 (case "tow1 a TUG-OF-WAR marker with a latching win line — each pull moves the marker toward its side answering the position until crossing plus-or-minus ten LATCHES the result (every later pull answers the frozen plus-or-minus hundred), where reads the final marker, and the offset seed loses THREE pulls early so its frozen tail overlaps the other run's still-live rows"
   (input  (do
@@ -14063,7 +14063,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 39690929989 Int64))
   (call   main (: 0 Int64)) (output (: 19398989989 Int64))
-  (live-objects known-leak 705))
+  (live-objects known-leak))
 
 ;; ── Batch writer, fizzbuzz classifier, load limiter (breaker batch 303) ──
 (case "bch1 a BATCH-coalescing writer — write buffers answering the count until the THIRD item self-flushes answering a hundred plus the batch sum, sync force-flushes the partial answering its sum or -1 when empty, and two seed-shaped values land in DIFFERENT batches so both the partial-sync and the self-flush rows carry the seed"
@@ -14156,7 +14156,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 610995408501 Int64))
   (call   main (: 0 Int64)) (output (: 598995004502 Int64))
-  (live-objects known-leak 76))
+  (live-objects known-leak))
 
 ;; ── Refill limiter, Hanoi cycle, gold panning (breaker batch 304) ──
 (case "rrl1 a REFILL-ON-READ rate limiter — every take first refills the bucket by the seed rate clamped at capacity ten then serves or answers the negated shortfall (tokens kept on refusal), and the faster drip keeps the refusals shallow while the slow one starves deeper on the same request stream"
@@ -14280,7 +14280,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1010100 Int64))
   (call   main (: 0 Int64)) (output (: 101000200 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak))
 
 (case "spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for the minimum of its indexed duration and the remaining tank (shortfalls accumulated), refill restores the seed-shaped capacity answering the shortfall so far, and the small tank starves two zones in the first pass and one in the second while the large tank never starves"
   (input  (do
@@ -14311,7 +14311,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5080300080800 Int64))
   (call   main (: 0 Int64)) (output (: 5050006080212 Int64))
-  (live-objects known-leak 75))
+  (live-objects known-leak))
 
 (case "vtc1 a VOTE-TO-CLOSE quorum — second registers answering the count until the seed-shaped threshold CLOSES the motion (answering a hundred plus the count; later ops answer minus a hundred), withdraw decrements while open clamping at zero, and the lower threshold closes one second earlier turning the tail into closed sentinels"
   (input  (do
@@ -14346,7 +14346,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10001030200 Int64))
   (call   main (: 0 Int64)) (output (: 10002009900 Int64))
-  (live-objects known-leak 28))
+  (live-objects known-leak))
 
 ;; ── Traffic light cycle, metronome accents, wind chill (breaker batch 306) ──
 (case "lgt1 a TRAFFIC light with a demand sensor — tick counts down green-three yellow-one red-seed cycling on zero (answers pack color-times-ten plus remaining), demand during a LONG red shortens the remainder to one answering a hundred plus the old value (otherwise it just reads), and the seed-shaped red length changes both the red row and the demand's rebate"
@@ -14386,7 +14386,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 201112403030202 Int64))
   (call   main (: 0 Int64)) (output (: 201112302030202 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "mrt1 a METRONOME with a downbeat accent — tick advances the beat wrapping at the seed-shaped bar length (counting bars), accent answers a hundred plus the bar count ON a downbeat or the beats remaining until the next one, and the four-beat bar catches the second accent ON the downbeat while the three-beat bar misses both"
   (input  (do
@@ -14418,7 +14418,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1020302040201 Int64))
   (call   main (: 0 Int64)) (output (: 1020301010202 Int64))
-  (live-objects known-leak 43))
+  (live-objects known-leak))
 
 (case "wnd1 a WIND-CHILL stepper — gust sets the wind answering temp minus twice the wind CLAMPED at minus thirty (extremes counted), warm raises the temperature answering it, ext reads the extreme count, and only the cold seed drives one gust past the clamp so its rows ride deep negative while the warm seed never clamps"
   (input  (do
@@ -14450,7 +14450,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: -2890920690100 Int64))
   (call   main (: 0 Int64)) (output (: -12991929791099 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak))
 
 ;; ── Two-tank balancer, compound interest, bike cadence (breaker batch 307) ──
 (case "tnkB inline-thrice twin driven by the level difference — each siphon binds a quarter of the always-positive gap moving it A-to-B answering the transfer, pour tops tank A, levels reads the residual gap, and the seed sets tank B so the same siphon sequence converges through DIFFERENT geometric ladders to the same final gap (A stays the fuller tank throughout)"
@@ -14621,7 +14621,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 131211100908 Int64))
   (call   main (: 0 Int64)) (output (: 30200999899 Int64))
-  (live-objects known-leak 359))
+  (live-objects known-leak))
 
 ;; ── Tidal predictor, frog ladder, canal lock stairs (breaker batch 309) ──
 (case "tid1 a TIDAL predictor on a triangle wave — read advances one hour answering the level (rising to the seed amplitude then falling), moor answers one when the current level covers the draft or the negated shortfall, and the smaller amplitude peaks EARLIER so the same moor probes catch one tide still rising and the other already ebbing"
@@ -14680,7 +14680,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5091212172121 Int64))
   (call   main (: 0 Int64)) (output (: 3050606091111 Int64))
-  (live-objects known-leak 215))
+  (live-objects known-leak))
 
 (case "lok1 a CANAL lock filling toward a seed pool level — enter answers the full gap, each equalize raises the lock two clamped at the pool answering the new level, exit answers a hundred plus the trip count when the levels MATCH or the remaining gap negated, and the low pool completes passage on the third equalize while the high pool is still twelve short at the same row"
   (input  (do
@@ -14715,7 +14715,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 160203880590 Int64))
   (call   main (: 0 Int64)) (output (: 60203980701 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak))
 
 ;; ── Drum pattern, plant pruning, popcorn kettle (breaker batch 310) ──
 (case "drm1 a DRUM sequencer over sixteenth-note steps — each hit answers the firing drums as a bitmask (kick on quarters, snare on the backbeats, hat on every seed-shaped division), cnt counts non-silent steps, and the halved hat rate turns every other row SILENT while the kick and snare rows coincide exactly"
@@ -14781,7 +14781,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 4080308110607 Int64))
   (call   main (: 0 Int64)) (output (: 2040006080306 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak))
 
 (case "pop1 a POPCORN kettle — each heat raises the temperature five degrees answering how many NEW kernels popped (thresholds every three degrees from the seed base, the count derived by differencing the running total), bowl reads the total, and the cool kettle pops a single late kernel while the hot one accelerates through five"
   (input  (do
@@ -14850,7 +14850,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 360840240130320 Int64))
   (call   main (: 0 Int64)) (output (: 180540170160610 Int64))
-  (live-objects known-leak 226))
+  (live-objects known-leak))
 
 (case "tps1 a LETTERPRESS galley — setting a word takes its width plus a space when the twelve-em line holds it, else BREAKS the line (counted, the word opening the next line at its bare width), justifying pads the line to twelve recording the gap as respacing, the read packs lines width and respacing, and the seed's headline stub pushes one galley's words onto broken lines while the other sets them flush with a ZERO-gap justify"
   (input  (do
@@ -14886,7 +14886,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1047160667230236 Int64))
   (call   main (: 0 Int64)) (output (: 541260007130130 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak))
 
 (case "cdr1 a CIDER press splitting juice from pomace — pressing yields two-thirds of the hopper as juice (integer) with the REMAINDER going to pomace and the hopper emptying (a dry press answers nine-hundred with the pomace's low digit touching nothing), loading adds apples, the read packs juice hopper and pomace, and the seed's first pressing yields four-to-one on the full hopper against one-to-one on the meagre one with the split ratios diverging every round"
   (input  (do
@@ -14923,7 +14923,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 430440259050605 Int64))
   (call   main (: 0 Int64)) (output (: 110440239030303 Int64))
-  (live-objects known-leak 63))
+  (live-objects known-leak))
 
 ;; ── zipline brake run, butter churn quarter-scoops, gondola reflecting cable (breaker batch 312) ──
 
@@ -14965,7 +14965,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 869011371371 Int64))
   (call   main (: 0 Int64)) (output (: 449010750751 Int64))
-  (live-objects known-leak 120))
+  (live-objects known-leak))
 
 (case "chn1 a BUTTER churn — churning turns a QUARTER of the cream to butter floored at one whole scoop (the empty churn answering nine hundred), pouring past ten SPILLS the excess (an eight-hundred row with the excess and the running spill's low digit), the read packs butter cream and spills, and the seed's cream quarters to different scoops every churn with one pail spilling its pour and the other taking it whole"
   (input  (do
@@ -15007,7 +15007,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 278110280481 Int64))
   (call   main (: 0 Int64)) (output (: 120640150250 Int64))
-  (live-objects known-leak 138))
+  (live-objects known-leak))
 
 (case "gnd1 a GONDOLA on a reflecting cable — move advances the car by the signed direction held in state binding the new position ONCE in a let consumed by the terminus test both answers and both next-states, REFLECTS at either terminus by negating the direction and counting the trip, answers pack the let-bound position an arithmetic direction bit and the trip count, span reads position and trips without advancing, and the seed places the start so one run reflects mid-sequence while the other reaches the far terminus one move later"
   (input  (do
@@ -15039,7 +15039,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 210310030411301201 Int64))
   (call   main (: 0 Int64)) (output (: 110210020310411301 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak))
 
 ;; ── Johnson twisted-ring two-Bool state, balance-scale arg-vs-arg, organ state-indexed arg select (breaker batch 313) ──
 
@@ -15075,7 +15075,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 112272132475 Int64))
   (call   main (: 0 Int64)) (output (: 217232431425 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak))
 
 (case "blc1 a BALANCE SCALE weighing TWO op arguments against each other — weigh's three-way arg-vs-arg comparison answers side and margin counting only LEFT wins, every weigh folds the signed difference into the running tilt, level reports the tilt's magnitude by sign-splitting WITHOUT abs tagging lean direction in the hundreds digit, and the seed loads the left pan of three weighings so one run balances twice level-right while the other tips left twice and reads a levelled beam last"
   (input  (do
@@ -15112,7 +15112,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 300300400111301411 Int64))
   (call   main (: 0 Int64)) (output (: 210210520121301401 Int64))
-  (live-objects known-leak 68))
+  (live-objects known-leak))
 
 (case "org1 an ORGAN with three ranks and a stop selector — chord passes THREE pipe volumes and the state's selector picks WHICH argument sounds through a nested-if ladder folding it into the played total and stepping the selector two ranks around, swell re-aims the selector by the played total leaving the total untouched, and the seed sets the opening stop so the two runs sound different ranks from the same three-volume chords at every dispatch"
   (input  (do
@@ -15228,7 +15228,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 210721251062762292 Int64))
   (call   main (: 0 Int64)) (output (: 200211722052252763 Int64))
-  (live-objects known-leak 838))
+  (live-objects known-leak))
 
 ;; ── match-in-INIT bisection window, let-chain perform args, Bool ops under connectives (breaker batch 315) ──
 
@@ -15268,7 +15268,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 151142002342002342 Int64))
   (call   main (: 0 Int64)) (output (: 151132012223003333 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "pst1 a POSTMARK desk where every stamp weight is a LET CHAIN COMPUTED AT THE PERFORM SITE — the second stamp's argument let-binds the first answer's tens digit doubled-plus-one, the third stamp's argument chains two lets folding the second answer's low digit with the audit's remainder before a mod-seven clamp, stamp folds the weight into the total counting stamps and echoing weight and count, audit reads the total mod one hundred, and the seed sets the first weight so every downstream let chain carries different bindings between the runs"
   (input  (do
@@ -18262,7 +18262,7 @@
     (export main)))
   (call main (: 10 Int64))
   (output (: 60 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "cx5c LET-BOUND effectful closure invoked directly (no HOF)"
   (input (do
@@ -18602,7 +18602,7 @@
     (export main)))
   (call main (: 2 Int64))
   (output (: 18 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; -- breaker batch 510 (2026-08-27): the closure-capture-in-arm cell of #4147's threading. The arm
 ; APPLIES a main-local closure per discharged op and it threads correctly (12) — contrast chr1,
@@ -18624,7 +18624,7 @@
     (export main)))
   (call main (: 2 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ;; ── breaker batch 534: IMMORTAL constants × the handler seam (post constant-kind completion:
 ;; bytes/string/list/tuple/record/map/set all build-once). An immortal 33-trie now crosses the
@@ -18790,7 +18790,7 @@
 (export main)))
   (call main (: 4 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "nei1 cross-effect interleave: an inner B handler's arm performs the OUTER A effect, whose state advances across two B draws"
   (doc    "Two DIFFERENT nested effects (distinct from the same-effect cn shadow series): the inner B arm's

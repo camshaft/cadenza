@@ -213,7 +213,7 @@
   (host-responses (respond env.rate-num (: 7 Int64)) (respond env.rate-den (: 2 Int64)))
   (host-calls (call env.rate-num) (call env.rate-den))
   (output (: 7/2 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)"
   (doc    "#13 B2 — the actual `@param(...) : Length` shape: a Quantity whose MAGNITUDE is an exact Rational.
@@ -235,7 +235,7 @@
   (host-responses (respond env.rate-num (: 7 Int64)) (respond env.rate-den (: 2 Int64)))
   (host-calls (call env.rate-num) (call env.rate-den))
   (output (: 7/1 Rational))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; The case above fixes ONE response. On its own it cannot distinguish a run that genuinely CONSUMES the
 ; response value from a compiler that hardcoded 100 — both produce 100. This pair pins that the response
@@ -306,7 +306,7 @@
   (host-responses (respond io.sink (: 42 Int64)))
   (host-calls (call io.sink))
   (call   main (: 50 Int64)) (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)"
   (doc    "The consuming-op discipline at the ARG site: `b` is passed to io.sink AND re-read by
@@ -324,7 +324,7 @@
   (host-responses (respond io.sink (: 7 Int64)))
   (host-calls (call io.sink))
   (call   main (: 0 Int64)) (output (: 57 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)"
   (doc    "The multi-arg slot-threading edge of the host-ARG marshal: a RUNTIME String/Bytes arg reserves
@@ -348,7 +348,7 @@
   (host-responses (respond io.send (: 5 Int64)))
   (host-calls (call io.send))
   (call   main (: 0 Int64)) (output (: 75 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "one host effect with TWO ops interleaves its calls in program order"
   (doc    "The per-run response cursor over a MULTI-OP effect: geta, getb, geta consume rows 1,2,3 in
@@ -1258,7 +1258,7 @@
                 (+ (Ctr.next unit) (times (fn ((: u Unit)) 5) n 0))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a 100k-iteration pure tail loop under a handler runs in constant stack"
   (doc    "The SCALE face of loops-under-handlers (existing loop pins are ≤33 deep): a 100000-iteration
@@ -1376,7 +1376,7 @@
                   (_ -1N))))
             (export main)))
   (call   main (: 25 Int64)) (output (: 25 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an effect op resumed with a whole MAP threads the CHAMP through the continuation"
   (doc    "A collection HANDLE as the resume value: the arm resumes with a 2-entry map, and the body
@@ -2016,7 +2016,7 @@
             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) ((. List len) (build 3))))
             (export main)))
   (call   main) (output (: 3 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 (case "a self-call and a sibling perform as direct subtraction operands thread out-state via multi-value return"
   (doc    "`(- (build (- n 1)) (Idx.next))` — the recursive self-call is the LEFT operand and the perform the
@@ -3025,7 +3025,7 @@
                     ((None _u) -200)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "two sequential lookups on the same Map with perform-threaded keys stay independent"
   (doc    "The map/key same-base emit witnessed clean (see the sibling pin above for the fixed
@@ -4113,7 +4113,7 @@
                        ((None _u) -100))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 48 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "a record with a LIST field crosses resume — the body projects and folds the collection field"
   (doc    "Record crossings carry all-scalar pins both ways plus a rope-String field on the argument
@@ -4184,7 +4184,7 @@
                 (St.total (build 1 (* n 8) #list()))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 820 Int64))
-  (live-objects known-leak 45))
+  (live-objects known-leak))
 
 (case "a 40-element SET op result — a multi-node CHAMP payload crosses resume"
   (doc    "The CHAMP sibling of the multi-leaf RRB pins: a 40-element recursively-built set (spaced
@@ -4239,7 +4239,7 @@
                 (St.total #list((BigInt.of n) (BigInt.of 100) (BigInt.of 3000)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3105 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 (case "a list of RATIONALS op result — exact fractions cross resume and fold to a canonical sum"
   (doc    "The exact-arithmetic element face: `(list 1/2 1/3 1/30)` crosses resume and the body folds
@@ -4260,7 +4260,7 @@
                      (Int64.of (Rational.denominator r))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 145 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak))
 
 (case "a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch"
   (doc    "Every crossing pin carries heap in ONE slot per dispatch (scalar the other way); a
@@ -4573,7 +4573,7 @@
                    0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 495000 Int64))
-  (live-objects known-leak 268))
+  (live-objects known-leak))
 
 (case "a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed"
   (doc    "A body-built slice VIEW (not a copy) crossing INTO a dispatch (the existing view pins put
@@ -5139,7 +5139,7 @@
                     (List.len nxs)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an empty SET literal in a match-Option fallback grounds through the join"
   (doc    "The Set sibling of the empty-literal join class: the fallback is `(Set.of (list))` and
@@ -5152,7 +5152,7 @@
                   (Set.len (Set.insert xs n)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "an IF-join with an unsolved-Var arm and an empty-list sibling grounds like a match join"
   (doc    "The join kind is irrelevant (a concrete-sibling IF always worked — the sibling supplied
@@ -5167,7 +5167,7 @@
                   (List.len (List.push xs n)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a MAP-OF-LISTS handler state accumulates per dispatch — the upsert idiom end to end"
   (doc    "The real-world shape that found the class: a `(Map String (List Int64))` handler state
@@ -5191,7 +5191,7 @@
                          (Db.add #tuple("a" 9)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1123 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak))
 
 (case "an empty MAP fallback beside an unsolved-Var arm grounds — the Map-of-Maps face"
   (doc    "The last face of the empty-collection join class (fixed after the sibling pins above):
@@ -5206,7 +5206,7 @@
                   (Map.len (Map.insert inner "x" n)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a handler state SHRINKS per dispatch — Map.remove down to empty across resume cycles"
   (doc    "The shrink direction of heap state (the growth pins push/insert): three evictions read
@@ -5257,7 +5257,7 @@
                   (+ (* 100 (List.len xs)) (sum-snd xs 0 0)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 235 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "Set.to-list of the state crosses resume ORDERED — the body reads elements positionally"
   (doc    "The total-order contract surviving the marshal: the set {30, 5, 9} enumerates sorted
@@ -5310,7 +5310,7 @@
                    (St.pair #tuple(#list(1 2) #list(1 2 9))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "the arm slices a crossed multibyte String at a scalar boundary — the slice window respects UTF-8"
   (doc    "Char-indexed slicing over a marshaled rope: \\\"aédc\\\" crosses as the op argument and the
@@ -5328,7 +5328,7 @@
                 (St.cut (String.concat "a" "édc"))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a mid-scalar byte window crosses to the arm and String.from-bytes declines it"
   (doc    "The adversarial byte/char face: slicing é's continuation byte alone (`Bytes.slice b 1 1`
@@ -5636,7 +5636,7 @@
                 (sum-t (St.grow (Tree.Node #tuple((Tree.Leaf n) (Tree.Leaf 7)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 22 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow"
   (doc    "Two marshals back-to-back on one heap value through two DIFFERENT handlers: `(B.use
@@ -5948,7 +5948,7 @@
                 (go #list(1 2 3) 0 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 38 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "a map-via-effects walk — each element transformed by a dispatch, output order preserved"
   (doc    "The MAP direction of the element×dispatch pairing (il-fold pins the accumulate
@@ -5970,7 +5970,7 @@
                         (match (List.at out 2) ((Some c) c) ((None _u) -1)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3120 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "filter-via-effects — a STATEFUL predicate dispatch decides each element's survival"
   (doc    "The FILTER direction: each element crosses to a predicate arm whose threshold ADVANCES
@@ -5991,7 +5991,7 @@
                      (match (List.at out 1) ((Some b) b) ((None _u) -1))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 304 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "a byte-walk lexer performing per byte — Bytes.at pairs with an advancing draw per position"
   (doc    "The iteration-triad discipline extended to BYTES walks (the bin-decode pins parse frames
@@ -6009,7 +6009,7 @@
                 (lex (bin (u8 (UInt8.wrap 1)) (u8 (UInt8.wrap 2)) (u8 (UInt8.wrap 3))) 0 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 135 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "an emit/flush byte-writer seeded EMPTY — three emits accumulate, flush reads the frame back"
   (doc    "The empty-seed writer (the wire-accumulator pin seeds non-empty and returns lengths):
@@ -6057,7 +6057,7 @@
                          (match (Bytes.at out 2) ((Some x) x) ((None _u) -1))))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 307 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a BigInt arithmetic tower over one perform draw — cube then divide, narrowed once"
   (doc    "Multi-step exact arithmetic downstream of a single crossing (the argument pins do one op
@@ -6523,7 +6523,7 @@
                     ((None _u) -200)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a let-bound value in a handle body flows into a perform's argument (the always-worked twin)"
   (doc    "The let-twin of the do-def perform-arg repro above — the semantically identical shape with the
@@ -8983,7 +8983,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "a handler STATE that is a recursive sum GROWS one constructor per operation"
   (doc    "The recursive-sum face of heap-valued handler state (list/record/set/string states are pinned;
@@ -10358,7 +10358,7 @@
   ; the recursive `drive` returns — a Perceus reclaim gap for a capturing closure that escapes into a
   ; recursive HOF (a stable 1-object leak, independent of n; v-core-opt reclaim lane, same class as the
   ; xar5 resume-escape fence). The FOLD is correct (main(n) = n·1275); only the closure cell leaks.
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; -- breaker batch 500 (2026-08-27): the BOTH-branches-performing edge of #4038's Form D
 ; distribution — each if-branch is its own performing creation-wrapper; only the TAKEN branch's

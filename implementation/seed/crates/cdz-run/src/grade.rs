@@ -167,21 +167,24 @@ pub fn grade(
     // meaningful only on the DEBUG-COUNTERS runtime the exec passes via `--runtime` (→ `runtime` here); the
     // shipped runtime reports 0 vacuously.
     let mut result = result;
-    // On a KNOWN-LEAK case with the leak-ceiling tolerance (corpus-cadenza hop), clamp each observed count up
-    // to its ceiling so `count <= N` passes (strictly-safer reclaim) while `count > N` still fails. The direct
-    // path passes `tolerate_fewer_live_objects=false` → no clamp → exact `== N`. Non-known-leak pins are never
-    // clamped (an exact balance assertion, not a ceiling).
-    let balance_counts = if tolerate_fewer_live_objects && test_run.live_objects_known_leak {
-        cdz_corpus_grade::leak_ceiling_clamp(
-            &per_trial_live,
-            test_run.live_objects.unwrap_or(0),
-            test_run.live_objects_per_call.as_deref(),
-        )
-    } else {
-        per_trial_live.clone()
-    };
-    if let Some(msg) = check_live_objects(
-        &balance_counts,
+    // seq-15 PURE-BINARY leak semantics (operator ruling): a KNOWN-LEAK case is NOT count-checked — its leak
+    // magnitude does not matter, so the balance assertion is SKIPPED. Instead surface a non-blocking TIGHTEN
+    // CANDIDATE advisory when it now measures fully clean (its reclaim fix landed → the `(live-objects
+    // known-leak)` marker can be dropped). A CLEAN case (no known-leak marker) asserts its EXACT residual on
+    // EVERY heap trial: > expected = a clean→leak regression (the signal the corpus MUST catch), < expected =
+    // an over-free/UAF risk. The `tolerate_fewer_live_objects` leak-ceiling path is vestigial under binary
+    // (a known-leak case never reaches a ceiling check); retained only for signature stability.
+    let _ = tolerate_fewer_live_objects;
+    if test_run.live_objects_known_leak {
+        if cdz_corpus_grade::known_leak_now_clean(&per_trial_live) {
+            eprintln!(
+                "TIGHTEN CANDIDATE: {} — a (live-objects known-leak) case now measures 0 live cells on every \
+                 heap trial; its reclaim fix has landed, drop the known-leak marker",
+                test_run.description
+            );
+        }
+    } else if let Some(msg) = check_live_objects(
+        &per_trial_live,
         test_run.live_objects,
         test_run.live_objects_per_call.as_deref(),
     ) {

@@ -216,7 +216,7 @@
                 (q-front q2)))
             (export main)))
   (output (: "B" String))
-  (live-objects known-leak 13))
+  (live-objects known-leak))
 
 (case "same-Instant queue entries resume in FIFO insertion order (§3.4 tie-break)"
   (doc    "The FIFO same-time tie-break the corpus determinism rests on (design §3.4, confirmed against
@@ -248,7 +248,7 @@
                 (q-front q2)))
             (export main)))
   (output (: "B" String))
-  (live-objects known-leak 14))
+  (live-objects known-leak))
 
 (case "draining the event queue yields entries in time-order with FIFO same-time ties"
   (doc    "The whole-queue witness of the scheduler's event order (design §4.2 example): insert four
@@ -286,7 +286,7 @@
                 (q-drain q4)))
             (export main)))
   (output (: "B,B2,A,main" String))
-  (live-objects known-leak 37))
+  (live-objects known-leak))
 
 (case "INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation"
   (doc    "The LIVE-MUTATION face (the draining case above inserts everything THEN drains): pops and
@@ -335,7 +335,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: "A,B,C,D" String))
   (call main (: 2 Int64)) (output (: "A,B,Z,C,D" String))
-  (live-objects known-leak 54 59))
+  (live-objects known-leak))
 
 (case "the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order"
   (doc    "Beside the time-ordered event queue, the scheduler keeps a READY queue for work that can run
@@ -365,7 +365,7 @@
                 (r-drain r3)))
             (export main)))
   (output (: "A,B,C" String))
-  (live-objects known-leak 19))
+  (live-objects known-leak))
 
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 2 — the `Sim` effect declaration + task API shape (§4). `now` is tail-resumptive and
@@ -589,7 +589,7 @@
                 (q-drain q3)))
             (export main)))
   (output (: "A,B,C" String))
-  (live-objects known-leak 25))
+  (live-objects known-leak))
 
 (case "interleaved same/different Instants keep FIFO within a time and ascending across times"
   (doc    "The combined ordering invariant: insert X@2s, P@1s, Y@2s, Q@1s (interleaving two times, two
@@ -626,7 +626,7 @@
                 (q-drain q4)))
             (export main)))
   (output (: "P,Q,X,Y" String))
-  (live-objects known-leak 34))
+  (live-objects known-leak))
 
 (case "a RUNTIME-count generated batch insorts fully time-ordered, verified by a sortedness walk"
   (doc    "The parametric-count companion of the fixed-eight drain below: `fill` insorts n events whose
@@ -663,7 +663,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: true Bool))
-  (live-objects known-leak 116))
+  (live-objects known-leak))
 
 (case "a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group"
   (doc    "A larger stress of the ordering invariant: eight events at times 5,2,8,2,1,8,3,2 (labels a..h)
@@ -697,7 +697,7 @@
                 (q-drain q)))
             (export main)))
   (output (: "e,b,d,h,g,a,c,f" String))
-  (live-objects known-leak 66))
+  (live-objects known-leak))
 
 (case "a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order"
   (doc    "The `sleep(0)` / scheduler-step primitive edge: a zero-`Duration` wake files at the CURRENT
@@ -739,7 +739,7 @@
                 (String.concat front (String.concat "|" (q-front-label q4)))))
             (export main)))
   (output (: "B|C" String))
-  (live-objects known-leak 16))
+  (live-objects known-leak))
 
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 4 (partial) — the PRIMARY/SECONDARY termination decision (§7.4, §7.5; operator-required).
@@ -978,7 +978,7 @@
   (call   main (: 5 Int64)) (output (: 41 Int64))
   (call   main (: 25 Int64)) (output (: 42 Int64))
   (call   main (: 99 Int64)) (output (: 43 Int64))
-  (live-objects known-leak 13 11 11))
+  (live-objects known-leak))
 
 ; --- The adjacent-pair timeline window. ---
 
@@ -1000,7 +1000,7 @@
             (export main)))
   (call   main (: 50 Int64))
   (output (: 200 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 ; --- Record event payloads through the pqueue insort. ---
 
@@ -1028,7 +1028,7 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 19 Int64))
   (call   main (: 99 Int64)) (output (: 31 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; ── breaker batch 582: the DES event-queue census (a sum-spine priority queue driven through
 ; insert-rebuild mutation — the file pins ORDER/VALUE but not census). deq1 = build a 10-entry
@@ -1055,4 +1055,4 @@
 (export main)))
   (call main (: 10 Int64))
   (output (: 55 Int64))
-  (live-objects known-leak 86))
+  (live-objects known-leak))

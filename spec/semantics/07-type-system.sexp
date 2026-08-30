@@ -2774,7 +2774,7 @@
 (export main)))
   (call main (: 50 Int64))
   (output (: 75 Int64))
-  (live-objects known-leak 126))
+  (live-objects known-leak))
 
 ; ── breaker batch 585: generic monomorphization at TWO distinct heap domains, TRI-TARGET. This is
 ; the exact shape the gtx transformer miscompiled (rust E0308, grounded elements to Unit) before
@@ -2816,7 +2816,7 @@
 (export main)))
   (call main (: 50 Int64))
   (output (: 75 Int64))
-  (live-objects known-leak 252))
+  (live-objects known-leak))
 
 ; ── breaker batch 587: element-DISCARDING generic at two heap domains, TRI-TARGET. A Wrap
 ; rewrapped (payload threaded but never read) then peeked (payload discarded, returns 1),

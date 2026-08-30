@@ -123,7 +123,7 @@
                       (Term.Abs 1 (Term.Var 1))) 1 0))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "breaker holsubst: a free occurrence beside a shadow substitutes selectively"
   (doc    "Promoted breaker probe — see the section comment.")
@@ -146,7 +146,7 @@
                       (Term.Comb (Term.Var 9) (Term.Abs 1 (Term.Var 1)))) 1 0))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "breaker holsubst: the naive subst's documented capture hazard"
   (doc    "Promoted breaker probe — see the section comment.")
@@ -169,7 +169,7 @@
                       (Term.Abs 2 (Term.Var 2))) 1 0))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 
 ; --- Capture-avoiding subst: the α-rename's structural edges ----------------------------------------
@@ -222,7 +222,7 @@
                       (Term.Abs 8 (Term.Comb (Term.Var 1) (Term.Var 7)))) 1 0))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak))
 
 (case "breaker capsubst: a non-capturing substitution takes the plain path"
   (doc    "Promoted breaker probe — see the section comment.")
@@ -268,7 +268,7 @@
                       (Term.Abs 1 (Term.Var 5))) 1 0))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 
 ; --- ∀-elimination with a real substitution (the non-identity SPEC face) ---------------------------
@@ -317,7 +317,7 @@
                ((Option.None _) -2)))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 (case "TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption"
   (doc "The soundness fix (TRANS/MK_COMB union operand hypotheses) is pinned for the one-operand case; this pins the actual union — both operands carry a distinct assumption and the result must retain BOTH. A TRANS that kept only one operand's hypotheses (or emptied them) would silently discharge a live assumption, letting an unproven equation escape. trans({a=b}|-a=b, {b=c}|-b=c) = {a=b, b=c}|-a=c, so hyps has length 2.")
@@ -425,7 +425,7 @@
                ((Option.None _) -2)))
            (export main)))
   (call main (: 0 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 ; --- Increment 12 slice-2 ∨/∃ NEIGHBORS (breaker): the unforgeability + hyp-preservation faces skipped ---
 ; The slice-2 case tests EXISTS-intro's POSITIVE path (matching witness) and DISJ1. These pin the unpinned
@@ -476,7 +476,7 @@
                    ((Option.None) true)))))
            (export main)))
   (output (: true Bool))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 (case "breaker exists: DISJ2 preserves the premise's hypothesis"
   (doc    "The slice-2 case exercises DISJ1; this pins DISJ2, the mirror ∨-introduction. From ASSUME(b) : {b}⊢b,
@@ -550,7 +550,7 @@
                    ((Option.None) false)))))
            (export main)))
   (output (: true Bool))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "breaker exists: EXISTS-intro preserves multiple hypotheses from the premise"
   (doc    "EXISTS-intro carries ALL of the premise’s hypotheses, not just one. The premise is built through kernel
@@ -605,7 +605,7 @@
                      ((Option.None) false))))))
            (export main)))
   (output (: true Bool))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; --- Increment 12 conjunction NEIGHBORS (breaker): the elim/accumulation faces the landed case skips ---
 ; The Inc-12 conjunction case pins CONJ union + CONJUNCT1 preservation over a single conj. These pin the

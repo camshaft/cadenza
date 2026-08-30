@@ -2366,7 +2366,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 5 BigInt))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "unquote-splicing a list of nested lists declines — no scalar leaf to lift into"
   (doc    "The splice-lift wraps a scalar element in its matching `Ast` leaf (or splices an `Ast` element
@@ -3166,7 +3166,7 @@
             (def (main) (eval-expr (quote (* (+ 1 2) 4))))
             (export main)))
   (output (: 12 BigInt))
-  (live-objects known-leak 10))
+  (live-objects known-leak))
 
 (case "a variadic Ast form is folded via a tail-splice rest-binder over its operands"
   (doc    "The n-ary / variadic-macro idiom, using the FINAL `,@rest` splice binder: `` `(f ,@rest) `` binds
@@ -3187,7 +3187,7 @@
             (def (main) (sum-form (quote (f 10 20 30))))
             (export main)))
   (output (: 60 BigInt))
-  (live-objects known-leak 13))
+  (live-objects known-leak))
 
 (case "a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)"
   (doc    "The DECLINE-GUARD companion of the two working walks above. The idiomatic fold shape — a recursive
@@ -3795,7 +3795,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 64 14))
+  (live-objects known-leak))
 
 (case "an eval splice consumes a value extracted from a CHAMP map at run time"
   (doc    "The splice pins feed literals and locals; this operand comes OUT of a Map — `(Map.lookup m k)`
@@ -4215,7 +4215,7 @@
     (export main)))
   (call main (: 1.0 Float64))
   (output (: "inf.0" String))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0"
   (input (do
@@ -4224,7 +4224,7 @@
     (export main)))
   (call main (: 1.0 Float64))
   (output (: "NaN.0" String))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "nfp3 Ast.print renders a -inf leaf inside a list as -inf.0"
   (input (do
@@ -4233,7 +4233,7 @@
     (export main)))
   (call main (: 1.0 Float64))
   (output (: "(f -inf.0)" String))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; -- a quasiquote PATTERN dispatches on the head symbol of a RUNTIME Ast (built via Ast.List/Ast.Name so it
 ; is not a constant); migration from rcdzc a_runtime_string_pattern_dispatches_by_content, 2026-08-27. The
@@ -4300,4 +4300,4 @@
 (export main)))
   (call main (: 50 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak 400))
+  (live-objects known-leak))

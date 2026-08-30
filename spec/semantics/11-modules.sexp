@@ -791,7 +791,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 32 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "two module functions are mutually recursive"
   (doc    "Mutual recursion between two module members: `ev` calls `od`, `od` calls `ev` — neither reaches

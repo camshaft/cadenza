@@ -373,7 +373,7 @@
                 (. (. (bump p0 d) pos) y)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "a Record.with over a runtime record with MULTIPLE preserved fields evaluates the operand once"
   (doc    "The materialize-once discipline for a runtime-record row-op (v-inference 13fd27095, after the
@@ -505,7 +505,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "the same without-extend chain on a LIST-borne record computes"
   (doc    "Finding #45 control: the identical extend-of-without chain, but the base record is read out of a
@@ -539,7 +539,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 65 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 (case "a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)"
   (doc    "The ALIAS face of Record.with persistence: the existing persistence pins read the original
@@ -579,7 +579,7 @@
                   (+ (. done x) (* 1000 (. seed x))))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3008 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)"
   (doc    "Finding #45 boundary: the same chain but `r` is read via a DOUBLE lookup (a map nested in a map).
@@ -597,7 +597,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak))
 
 (case "a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value"
   (doc    "Finding #45 witness 2 — the borrowed-operand face (wasm fix v-wasm-opt 8f18044a3, v-memory-safety
@@ -622,7 +622,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 (case "merging records that share a field name is rejected"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint (2nd
@@ -748,7 +748,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 32 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "chained Record.with updates on one field compose with the last write winning"
   (doc    "`(Record.with (Record.with r #\"x\" 10) #\"x\" 20)` — two updates of the SAME field chained:
@@ -782,7 +782,7 @@
                 (+ (* (. (. p1 pos) y) 10) (. (. p1 pos) x))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 51 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 (case "a nested-record parameter projects its inner fields through two dot levels"
   (doc    "The read face of the nested-record param surface: a fn whose parameter is annotated
@@ -1280,7 +1280,7 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 87 Int64))
   (call   main (: 0 Int64)) (output (: 37 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "Record.pop hands back a CLOSURE field as the popped value and it applies"
   (doc    "The fn-field face of the value-yielding removal: `(Record.pop r f)` returns
@@ -1329,7 +1329,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 907 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; --- Open sums through program structure: a three-module concrete chain and a generic tuple
 ; slot; Record.extend widening a map-extracted record into a new map. ---
@@ -1397,7 +1397,7 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 510 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
 
 ; --- Record.without on a map-extracted record, both maps staying typed. ---
 
@@ -1421,7 +1421,7 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 1005 Int64))
   (call   main (: 0 Int64)) (output (: 1000 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 ; --- Open-row projection over COLLECTION-borne records. ---
 
@@ -1439,7 +1439,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 28 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak))
 
 ; --- Construction-path equality for row-op results with RUNTIME leaves (the const twins
 ; above fold before emit; these run the heap path-copies). ---

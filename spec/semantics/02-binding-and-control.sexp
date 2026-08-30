@@ -4563,7 +4563,7 @@
             (def (top b) (match (dn b 0) (#tuple(ast pos) ast)))
             (def (main) (match (top #list(42 7)) ((AInt n) n) (_ -1))) (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak))
 
 ; The recursive-descent PARSER face of the mutual-recursion cursor thread: the decoder above destructures
 ; the returned (value, cursor) tuple with a tuple PATTERN in a match arm; a hand-written precedence parser
@@ -4602,7 +4602,7 @@
               (let ((a (pa 0))) (let ((b (pa (. a 1)))) (+ (ev (. a 0)) (ev (. b 0))))))
             (export run)))
   (output (: -14 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak))
 
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
@@ -4678,7 +4678,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 633 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak))
 
 ; A RECORD binding pattern. A record is a fixed-shape product like a tuple, so `(record (x a) (y b))` in a
 ; binder position destructures the value BY FIELD — binding `a`/`b` to the `x`/`y` fields — with NO
@@ -5573,7 +5573,7 @@
   (output (: 21 Int64))
   (call   main (: false Bool) (: false Bool) (: 10 Int64) (: 20 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
 ; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
@@ -6696,7 +6696,7 @@
             (export main)))
   (call   main (: 5 Int64) (: -1 Int64)) (output (: (tuple 1 1) (Tuple Int64 Int64)))
   (call   main (: -1 Int64) (: 5 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 (case "the dual-absorption fold keeps a trapping absorbed operand's short-circuit form"
   (doc    "When the absorbed-away operand carries a trap, the fold's trap-free guard declines, leaving the
@@ -6722,7 +6722,7 @@
   (output (: (tuple 1 1) (Tuple Int64 Int64)))
   (call   main (: -1 Int64) (: 5 Int64))
   (output (: (tuple 0 0) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ── COMPLEMENTARY COMPARISONS: two ordering tests that PARTITION every value fold to true / false ─────
 ; When two comparisons on the SAME operand pair are exact complements over the total order — `<`/`>=` or
@@ -6899,7 +6899,7 @@
   (call   main (: 5 Int64))  (output (: (tuple 1 0) (Tuple Int64 Int64)))
   (call   main (: 6 Int64))  (output (: (tuple 0 0) (Tuple Int64 Int64)))
   (call   main (: 12 Int64)) (output (: (tuple 0 1) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  (live-objects known-leak))
 
 ; ── BRANCHLESS boolean connectives over trap-free operands (value parity of the no-short-circuit emit) ─
 ; `(and p q)` / `(or p q)` over cheap trap-free operands (leaves or comparisons) need no short-circuit
@@ -7243,7 +7243,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 120 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak))
 
 ; --- The do-def shadow WORKING perimeter (banked as box-the-fix pins around the v-inference
 ; do-def-shadow-over-param/let unbind fix): the shapes that were CORRECT before and after —
@@ -8403,4 +8403,4 @@
   (input (do (type N (I Int64) (J Int64)) (def (bump (: n Int64)) (if (< n 0) (N.J n) (N.I n))) (def (mk (: n Int64)) (N.I n))
              (def (find (: n Int64)) (match (bump n) ((guard (N.I x) (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) (export find)))
   (call find (: 0 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak))
