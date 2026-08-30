@@ -58,7 +58,7 @@ fn a_scalar_host_op_result_escaping_as_a_resource_emits_a_valid_component() {
     // String-param host op takes the shared-memory `_mem` variant, a later increment). Routed by
     // v-peer-linking + concierge (host-envelope seam); byte-reviewed by v-peer-linking.
     let src = "(do (effect H (op h (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (host (H) (\"tuple\" (H.h x) x))) (export main))";
+                   (def (main (: x Int64)) (host (H) #tuple((H.h x) x))) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src)))
         .expect("a scalar host op result-escaping as a resource now emits");
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
@@ -78,7 +78,7 @@ fn two_distinct_host_effects_in_a_resource_escape_decline_cleanly() {
     for src in [
         // FLAT (tuple) — two effects A, B
         "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) \
-             (def (main (: x Int64)) (host (A) (host (B) (\"tuple\" (A.a x) (B.b x))))) (export main))",
+             (def (main (: x Int64)) (host (A) (host (B) #tuple((A.a x) (B.b x))))) (export main))",
         // SUM (Option)
         "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) (type Opt (None) (Some Int64)) \
              (def (main (: x Int64)) (host (A) (host (B) (Some (+ (A.a x) (B.b x)))))) (export main))",
