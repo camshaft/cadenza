@@ -2621,122 +2621,18 @@ fn a_record_type_mismatch_is_not_reported_as_a_field_set_difference() {
     );
 }
 
-#[test]
-fn a_tuple_arity_mismatch_names_the_element_counts() {
-    // The tuple analogue of the record field-set hint: a tuple of the wrong ARITY names the element
-    // counts (rustc's "expected a tuple with 3 elements, found one with 2") instead of dumping both
-    // full tuple renders. Fires only on an arity difference; a same-arity per-position TYPE mismatch is
-    // left to the full render.
-    let fewer = reject_full(
-        "(module m (def (h (: t (Tuple Int64 Int64 Int64))) (. t 0)) \
-               (def (g) (h (tuple 1 2))) (export g))",
-    )
-    .expect("a 2-tuple where a 3-tuple is wanted rejects");
-    assert_eq!(
-        fewer.code.as_deref(),
-        Some("CDZ0203"),
-        "got: {}",
-        fewer.message
-    );
-    assert!(
-        fewer
-            .message
-            .contains("expected a tuple with 3 elements, but this one has 2"),
-        "names the arity delta: {}",
-        fewer.message
-    );
-    // More elements than the type has room for.
-    let more = reject_full(
-        "(module m (def (h (: t (Tuple Int64 Int64))) (. t 0)) \
-               (def (g) (h (tuple 1 2 3))) (export g))",
-    )
-    .expect("a 3-tuple where a 2-tuple is wanted rejects");
-    assert!(
-        more.message
-            .contains("expected a tuple with 2 elements, but this one has 3"),
-        "names the arity delta the other direction: {}",
-        more.message
-    );
-    // When the arities MATCH but an element's TYPE differs, name the SPECIFIC position (0-indexed,
-    // matching the projection `(. t 1)` and the "tuple index N" message) and its expected vs actual
-    // type — NOT an arity message (the counts agree).
-    let type_diff = reject_full(
-        "(module m (def (h (: t (Tuple Int64 Bool))) (. t 0)) \
-               (def (g) (h (tuple 1 2))) (export g))",
-    )
-    .expect("a same-arity element-type mismatch rejects");
-    assert!(
-        !type_diff.message.contains("expected a tuple with"),
-        "a same-arity element-type mismatch is not an arity delta: {}",
-        type_diff.message
-    );
-    assert!(
-        type_diff
-            .message
-            .contains("element 1 should be Bool, but this one is Int64"),
-        "names the specific differing position + its types: {}",
-        type_diff.message
-    );
-}
+// (a_tuple_arity_mismatch_names_the_element_counts migrated to corpus 07-type-system: too-few / too-many
+// tuple arities name the element-count delta ("expected a tuple with N elements, but this one has M"), and a
+// same-arity element-type mismatch names the specific position ("element 1 should be Bool, but this one is
+// Int64") not an arity delta. All 3 PASS wasm.)
 
 #[test]
-fn a_collection_element_mismatch_names_the_differing_axis() {
-    // The collection analogue of the record/tuple per-member hint: a `List`/`Map`/`Set` whose
-    // element / key / value TYPE differs from the expected type names the differing AXIS and its
-    // expected-vs-actual type ("its elements should be Int64, but these are Bool") instead of leaving
-    // the reader to diff `(Map String Int64)` against `(Map Int64 Int64)` to see it is the KEY axis.
-    // A `List` element mismatch.
-    let list = reject_full(
-        "(module m (def (h (: xs (List Int64))) xs) (def (g) (h (list true))) (export g))",
-    )
-    .expect("a (List Bool) where (List Int64) is wanted rejects");
-    assert_eq!(
-        list.code.as_deref(),
-        Some("CDZ0203"),
-        "got: {}",
-        list.message
-    );
-    assert!(
-        list.message
-            .contains("its elements should be Int64, but these are Bool"),
-        "names the list element axis: {}",
-        list.message
-    );
-    // A `Map` KEY mismatch — the KEY axis is named (not the value).
-    let key = reject_full(
-        "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (1 2)))) (export g))",
-    )
-    .expect("a (Map Int64 Int64) where (Map String Int64) is wanted rejects");
-    assert!(
-        key.message
-            .contains("its keys should be String, but these are Int64"),
-        "names the map KEY axis: {}",
-        key.message
-    );
-    // A `Map` VALUE mismatch — the VALUE axis is named (the key agrees).
-    let val = reject_full(
-        "(module m (def (h (: mp (Map Int64 Int64))) mp) (def (g) (h (map (1 true)))) (export g))",
-    )
-    .expect("a (Map Int64 Bool) where (Map Int64 Int64) is wanted rejects");
-    assert!(
-        val.message
-            .contains("its values should be Int64, but these are Bool"),
-        "names the map VALUE axis: {}",
-        val.message
-    );
-    // BOTH map axes differ → report the KEY (leftmost) axis, deterministically.
-    let both = reject_full(
-        "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (1 true)))) (export g))",
-    )
-    .expect("a map with both axes wrong rejects");
-    assert!(
-        both.message.contains("its keys should be String")
-            && !both.message.contains("its values should be"),
-        "both-axes-differ reports the leftmost (key) axis: {}",
-        both.message
-    );
-    // NO false axis hint across DIFFERENT collection kinds (a Set where a List is annotated) — the
-    // element types agree but the kinds differ, so there is no single "axis" to name.
+fn a_collection_element_mismatch_across_kinds_names_no_axis() {
+    // RESIDUAL of a_collection_element_mismatch_names_the_differing_axis — its per-axis message faces
+    // (list-element / map-key / map-value / both-axes-leftmost, + the no-mechanical-fix control) migrated to
+    // corpus 07-type-system. This keeps the cross-KIND no-hint control the corpus grades only as a todo: a
+    // `(List Int64)` where a `(Set Int64)` is annotated has agreeing element types but differing KINDS, so no
+    // single "axis" is named (no spurious "its elements should be …" hint across collection kinds).
     let kinds =
         reject_full("(module m (def (h (: s (Set Int64))) s) (def (g) (h (list 1))) (export g))")
             .expect("a List where a Set is wanted rejects");
@@ -2745,8 +2641,6 @@ fn a_collection_element_mismatch_names_the_differing_axis() {
         "no axis hint across different collection kinds: {}",
         kinds.message
     );
-    // No mechanical fix — the repair is retyping the elements, which the author must supply.
-    assert!(list.fix.is_none(), "no mechanical fix: {:?}", list.fix);
 }
 
 #[test]
