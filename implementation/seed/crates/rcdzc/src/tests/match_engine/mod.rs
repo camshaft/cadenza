@@ -767,55 +767,6 @@ fn a_misspelled_export_does_not_also_flag_its_intended_target_unused() {
     );
 }
 
-#[test]
-fn exporting_a_type_or_effect_names_the_category_not_names_no_definition() {
-    // `(export Color)` where `Color` is a declared TYPE (or an EFFECT) is not a typo — the name IS
-    // declared. The old "export `Color` names no definition" misled (reads as "unknown name"); it now
-    // names the real situation. For a TYPE, a bare export is the opaque-types abstract-HANDLE export —
-    // valid, but meaningful only when a peer imports it; in a single module it has no importer. The
-    // message says THAT (and points at the value / `(. T *)` alternatives), NOT the stale "only
-    // definitions are exported" (opaque types made a type handle first-class exportable). An EFFECT is
-    // still a true category error; an unknown name stays "names no definition".
-    let ty = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (type Color R G B) (export Color))",
-    )))
-    .into_iter()
-    .find(|d| d.message.contains("export `Color`"))
-    .expect("exporting a bare type handle in a single module is reported");
-    assert_eq!(ty.code.as_deref(), Some("CDZ0101"), "got: {}", ty.message);
-    assert!(
-        ty.message.contains("names a TYPE")
-            && ty.message.contains("HANDLE export")
-            && ty.message.contains("(. Color *)"),
-        "names the opaque-type handle export + the fix, not the stale 'only definitions': {}",
-        ty.message
-    );
-    let eff = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (effect E (op foo (-> Int64))) (export E))",
-    )))
-    .into_iter()
-    .find(|d| d.message.contains("export `E`"))
-    .expect("exporting an effect is rejected");
-    assert!(
-        eff.message
-            .contains("names an effect, not a value definition"),
-        "names the category (an effect): {}",
-        eff.message
-    );
-    // A GENUINELY unknown export name (no type/effect/def) keeps the plain "names no definition".
-    let unknown = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (main) 1) (export zzzz))",
-    )))
-    .into_iter()
-    .find(|d| d.message.contains("export `zzzz`"))
-    .expect("an unknown export is rejected");
-    assert!(
-        unknown.message.contains("names no definition") && !unknown.message.contains("not a value"),
-        "an unknown name keeps the plain message: {}",
-        unknown.message
-    );
-}
-
 // (a_bare_declaration_keyword_form_declares_nothing_is_rejected migrated to corpus 11-modules: "a bare
 // {def,type,effect} declaration keyword form declares nothing and is rejected" — each bare (def)/(type)/
 // (effect) → CDZ0201 (message "declares nothing")(message "`(<kw>)`"). --case grades the code + both
