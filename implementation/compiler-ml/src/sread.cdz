@@ -644,7 +644,15 @@ def read-third-param(s: String, nm: String, paramId: Int64, param2Id: Int64, k: 
 /// body → a FOUR-param def. The 4-param shape is a common corpus case, both untyped (`sum-elems b i k n`) and
 /// ALL-typed (`exists-intro (: x Int64) (: body Term) …`). Returns the 8-tuple
 /// `(nameId, bodyId, paramId, param2Id, param3Id, param4Id, nextIndex, tree')`.
-def read-fourth-param(s: String, nm: String, paramId: Int64, param2Id: Int64, param3Id: Int64, k: Int64, tree: Tree) =
+def read-fourth-param(
+  s: String,
+  nm: String,
+  paramId: Int64,
+  param2Id: Int64,
+  param3Id: Int64,
+  k: Int64,
+  tree: Tree
+) =
   if char-at(s, k) == ")" then
     let (bodyId, j, t1) = read-form(s, k + 1, tree) in
     (name-id(nm), bodyId, paramId, param2Id, param3Id, 0 - 1, j, t1)
@@ -669,7 +677,15 @@ def read-fourth-param(s: String, nm: String, paramId: Int64, param2Id: Int64, pa
 /// malformed `(: …)` (missing `:` / bad type) declines via bodyId -1. `paramId`/`param2Id`/`param3Id` are the
 /// already-read first three params. infer-param4 binds param4 to its declared narrow type + fit-checks arg4, so
 /// a typed 4th param enforces exactly like a typed 1st/2nd/3rd (CDZ0302/CDZ0304).
-def read-typed-fourth-param(s: String, nm: String, paramId: Int64, param2Id: Int64, param3Id: Int64, k: Int64, tree: Tree) =
+def read-typed-fourth-param(
+  s: String,
+  nm: String,
+  paramId: Int64,
+  param2Id: Int64,
+  param3Id: Int64,
+  k: Int64,
+  tree: Tree
+) =
   let a = skip-space(s, k + 1) in // past `(`
   let (colon, a1) = scan-atom(s, a, "") in
   if colon == ":" then
@@ -724,7 +740,14 @@ def read-typed-second-param(s: String, nm: String, paramId: Int64, k: Int64, tre
 /// `(: …)` (missing `:` / bad type) declines via bodyId -1. `paramId`/`param2Id` are the already-read first two
 /// params. infer-param3 already binds param3 to its declared narrow type + fit-checks arg3, so a typed 3rd
 /// param enforces exactly like a typed 1st/2nd (CDZ0302/CDZ0304).
-def read-typed-third-param(s: String, nm: String, paramId: Int64, param2Id: Int64, k: Int64, tree: Tree) =
+def read-typed-third-param(
+  s: String,
+  nm: String,
+  paramId: Int64,
+  param2Id: Int64,
+  k: Int64,
+  tree: Tree
+) =
   let a = skip-space(s, k + 1) in // past `(`
   let (colon, a1) = scan-atom(s, a, "") in
   if colon == ":" then

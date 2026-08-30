@@ -26,9 +26,14 @@ def pitch-of(n: Int64) = Pitch.Pitch(n)
 
 /// A BLOCK CHORD: place every note of `nums` (MIDI note numbers, e.g. from `chord-notes`) at the SAME
 /// start tick, all for `dur` ticks, on one channel + velocity. Recursive driver with annotated params.
-def chord-block-go(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur: Int64, out: List(
-  Note
-)) = match nums with
+def chord-block-go(
+  nums: List(Int64),
+  chan: Int64,
+  vel: Int64,
+  start: Int64,
+  dur: Int64,
+  out: List(Note)
+) = match nums with
   | [] => out
   | [h, .. t] =>
     chord-block-go(
@@ -46,9 +51,15 @@ def chord-block(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur: I
 
 /// An ARPEGGIO: spread the notes out in time, one per `step` ticks, each lasting `dur` ticks, ascending
 /// from `start`. Recursive driver; `at` threads the running tick position (annotated).
-def arpeggiate-go(nums: List(Int64), chan: Int64, vel: Int64, at: Int64, step: Int64, dur: Int64, out: List(
-  Note
-)) = match nums with
+def arpeggiate-go(
+  nums: List(Int64),
+  chan: Int64,
+  vel: Int64,
+  at: Int64,
+  step: Int64,
+  dur: Int64,
+  out: List(Note)
+) = match nums with
   | [] => out
   | [h, .. t] =>
     arpeggiate-go(

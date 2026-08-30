@@ -58,7 +58,14 @@ def branch(state: Int64, len: Rational, depth: Int64) =
     let n = roll(state, 1 : Int64, 3 : Int64) in // 1..3 children
     add-children(lcg-next(state), len, depth, n, 0 : Int64, segment(len))
 
-def add-children(state: Int64, len: Rational, depth: Int64, n: Int64, i: Int64, acc: Solid(Rational)) =
+def add-children(
+  state: Int64,
+  len: Rational,
+  depth: Int64,
+  n: Int64,
+  i: Int64,
+  acc: Solid(Rational)
+) =
   if i == n then
     (acc, state)
   else

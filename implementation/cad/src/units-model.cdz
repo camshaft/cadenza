@@ -23,18 +23,20 @@ def meters(n: Rational) = n meter
 
 /// A units-carrying 3-vector: three meter lengths. A bare number here is a CDZ0301 type error — the units
 /// enforcement the operator wants, at the point of authoring.
-def v3m(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#meter)), z: Qty(
-  Rational,
-  Unit.base(#meter)
-)) = Vec3.V3(x, y, z)
+def v3m(
+  x: Qty(Rational, Unit.base(#meter)),
+  y: Qty(Rational, Unit.base(#meter)),
+  z: Qty(Rational, Unit.base(#meter))
+) = Vec3.V3(x, y, z)
 
 /// ---- units-carrying primitive + combinator constructors: build a `Solid(Qty[meter])` ------------------
 /// Each dimension is a length `Qty[meter]`; the resulting model's type tracks length end-to-end.
 /// An axis-aligned box of FULL size (w, d, h) — each a meter length — centred at the origin.
-def cube-m(w: Qty(Rational, Unit.base(#meter)), d: Qty(Rational, Unit.base(#meter)), h: Qty(
-  Rational,
-  Unit.base(#meter)
-)) = Solid.Cube(v3m(w, d, h))
+def cube-m(
+  w: Qty(Rational, Unit.base(#meter)),
+  d: Qty(Rational, Unit.base(#meter)),
+  h: Qty(Rational, Unit.base(#meter))
+) = Solid.Cube(v3m(w, d, h))
 
 /// A sphere of the given radius (a meter length).
 def sphere-m(r: Qty(Rational, Unit.base(#meter))) = Solid.Sphere(r)
@@ -48,18 +50,21 @@ def cylinder-m(height: Qty(Rational, Unit.base(#meter)), r: Qty(Rational, Unit.b
 def union-m(a: Solid(Qty(Rational, Unit.base(#meter))), b: Solid(Qty(Rational, Unit.base(#meter)))) =
   Solid.Union(a, b)
 
-def difference-m(a: Solid(Qty(Rational, Unit.base(#meter))), b: Solid(
-  Qty(Rational, Unit.base(#meter))
-)) = Solid.Difference(a, b)
+def difference-m(
+  a: Solid(Qty(Rational, Unit.base(#meter))),
+  b: Solid(Qty(Rational, Unit.base(#meter)))
+) = Solid.Difference(a, b)
 
-def intersection-m(a: Solid(Qty(Rational, Unit.base(#meter))), b: Solid(
-  Qty(Rational, Unit.base(#meter))
-)) = Solid.Intersection(a, b)
+def intersection-m(
+  a: Solid(Qty(Rational, Unit.base(#meter))),
+  b: Solid(Qty(Rational, Unit.base(#meter)))
+) = Solid.Intersection(a, b)
 
 /// Translate a units-carrying solid by a meter offset vector.
-def translate-m(by: Vec3(Qty(Rational, Unit.base(#meter))), s: Solid(
-  Qty(Rational, Unit.base(#meter))
-)) = Solid.Translate(by, s)
+def translate-m(
+  by: Vec3(Qty(Rational, Unit.base(#meter))),
+  s: Solid(Qty(Rational, Unit.base(#meter)))
+) = Solid.Translate(by, s)
 
 /// ---- the render edge: lower `Solid(Qty[meter])` → `Solid(Rational)` (bare meters) --------------------
 /// Unwraps each coordinate `Qty[meter]` to its exact bare-Rational meter magnitude (`Qty.value`), so the
@@ -91,9 +96,10 @@ def lower-path-q(p: Path(Qty(Rational, Unit.base(#meter)))) =
   let Path.Segs(xs) = p in
   Path.Segs(lower-path-q-go(xs, []))
 
-def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#meter)))), acc: List(
-  PathSeg(Rational)
-)) = match xs with
+def lower-path-q-go(
+  xs: List(PathSeg(Qty(Rational, Unit.base(#meter)))),
+  acc: List(PathSeg(Rational))
+) = match xs with
   | [] => acc
   | [s, .. t] => lower-path-q-go(t, List.push(acc, lower-pathseg-q(s)))
 

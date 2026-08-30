@@ -116,10 +116,11 @@ def can-call-args(args: List(Core), i: Int64, defidx: Map(Int64, Int64)) =
 /// body holds an out-of-subset form (e.g. a CMatchSum/CCtor, eval-only) would otherwise emit a malformed body
 /// instead of the module cleanly declining to `None`. Index recursion over the entries; `true` iff all bodies
 /// pass `can-emit-d`. (main is checked separately at the call site.)
-def all-defs-emittable(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, fmap: Map(
-  Int64,
-  Int64
-)) =
+def all-defs-emittable(
+  entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
+  i: Int64,
+  fmap: Map(Int64, Int64)
+) =
   if i == List.len(entries) then
     true
   else
@@ -136,9 +137,11 @@ def all-defs-emittable(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
 def recursive-types(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
   List.push(recursive-types-go(entries, 0, [] : List(Bytes)), functype-bytes(0))
 
-def recursive-types-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: List(
-  Bytes
-)) =
+def recursive-types-go(
+  entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
+  i: Int64,
+  acc: List(Bytes)
+) =
   if i == List.len(entries) then
     acc
   else
@@ -151,19 +154,22 @@ def recursive-types-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
 
 /// The CODE bodies for a recursive module — `emit-def-body-d(params, body, fmap)` per def-env entry (in order),
 /// then the main body `emit-def-body-d([], mainCore, fmap)`. `fmap` = name→funcidx so a body's CCall emits a call.
-def recursive-bodies(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), mainCore: Core, fmap: Map(
-  Int64,
-  Int64
-)) =
+def recursive-bodies(
+  entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
+  mainCore: Core,
+  fmap: Map(Int64, Int64)
+) =
   List.push(
     recursive-bodies-go(entries, 0, fmap, [] : List(Bytes)),
     emit-def-body-d([] : List(Int64), mainCore, fmap)
   )
 
-def recursive-bodies-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, fmap: Map(
-  Int64,
-  Int64
-), acc: List(Bytes)) =
+def recursive-bodies-go(
+  entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
+  i: Int64,
+  fmap: Map(Int64, Int64),
+  acc: List(Bytes)
+) =
   if i == List.len(entries) then
     acc
   else
@@ -191,10 +197,11 @@ def range-list-go(i: Int64, n: Int64, acc: List(Int64)) =
 def entries-to-defs(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
   entries-to-defs-go(entries, 0, Map.empty : Map(Int64, Tuple(List(Int64), Core)))
 
-def entries-to-defs-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: Map(
-  Int64,
-  Tuple(List(Int64), Core)
-)) =
+def entries-to-defs-go(
+  entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
+  i: Int64,
+  acc: Map(Int64, Tuple(List(Int64), Core))
+) =
   if i == List.len(entries) then
     acc
   else

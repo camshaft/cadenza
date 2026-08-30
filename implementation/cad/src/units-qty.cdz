@@ -39,10 +39,11 @@ type Vec3q =
 
 /// Build a `Vec3q` from three length quantities (the units-carrying constructor). A length authored in any
 /// unit converts to exact meters before it reaches here; a bare `Rational` is a CDZ0301 type error.
-def v3q(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#meter)), z: Qty(
-  Rational,
-  Unit.base(#meter)
-)) = Vec3q.V3q(x, y, z)
+def v3q(
+  x: Qty(Rational, Unit.base(#meter)),
+  y: Qty(Rational, Unit.base(#meter)),
+  z: Qty(Rational, Unit.base(#meter))
+) = Vec3q.V3q(x, y, z)
 
 /// A meter length from a magnitude — the everyday component builder (`qm(5)` = 5-metre length), sugar over
 /// `Qty.of`. `n` is a `Rational` (under this module's `default-fraction Rational`, a caller's bare `5`

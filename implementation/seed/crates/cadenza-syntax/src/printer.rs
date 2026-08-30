@@ -811,6 +811,28 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
+    /// A `def`/`fn` PARAMETER list `(p, …)` with the SAME all-or-nothing layout as `plain_call`: inline
+    /// when it fits, else the open `(` stays on the header line, EACH param drops to its own line indented
+    /// one level, and the close `)` sits on its own line dedented back to the construct's column (operator
+    /// seq-92 — no partial mid-param wrap). The caller has already printed the head (`def name` / `fn`).
+    fn print_param_list(&mut self, params: &[StructId]) {
+        self.doc.cbox(INDENT);
+        self.doc.word("(");
+        if !params.is_empty() {
+            self.doc.zerobreak();
+            for (i, &p) in params.iter().enumerate() {
+                if i > 0 {
+                    self.doc.word(",");
+                    self.doc.space();
+                }
+                self.print_param(p);
+            }
+            self.doc.break_with(0, -INDENT);
+        }
+        self.doc.word(")");
+        self.doc.end();
+    }
+
     /// Last-arg-hugging layout: `head(a, b, <block>)` where the head args `a, b` stay on the line
     /// and `<block>` breaks internally. The head args live in their OWN box that does not contain
     /// the block, so the block's internal hardbreaks cannot force the head args apart; they are
@@ -1269,17 +1291,13 @@ impl<'a> Printer<'a> {
         if paren {
             self.doc.word("(");
         }
-        self.doc.word("fn(");
+        self.doc.word("fn");
         if let Struct::List(params) = self.a.get(args[0]) {
             let params = params.clone();
-            for (i, &p) in params.iter().enumerate() {
-                if i > 0 {
-                    self.doc.word(", ");
-                }
-                self.print_param(p);
-            }
+            self.print_param_list(&params);
+        } else {
+            self.print_param_list(&[]);
         }
-        self.doc.word(")");
         self.print_return_type(ret_ty);
         self.doc.word(" =>");
         // A block-like body hugs the `=>` (breaks internally); a plain body drops to an indented
@@ -1315,14 +1333,7 @@ impl<'a> Printer<'a> {
             let sig = sig.clone();
             // name
             self.expr(sig[0], 0);
-            self.doc.word("(");
-            for (i, &p) in sig[1..].iter().enumerate() {
-                if i > 0 {
-                    self.doc.word(", ");
-                }
-                self.print_param(p);
-            }
-            self.doc.word(")");
+            self.print_param_list(&sig[1..]);
             self.print_return_type(ret_ty);
             self.doc.word(" =");
         }
@@ -7461,6 +7472,25 @@ mod tests {
         // level deeper (operator seq-86: "why is the last statement indented").
         let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
         assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
+    }
+
+    #[test]
+    fn def_and_fn_param_lists_wrap_one_per_line_when_they_overflow() {
+        // Operator seq-92/93: a `def`/`fn` param list that does NOT fit goes one-param-per-line — open
+        // `(` on the header, each param indented one level, close `)` on its own dedented line. A param
+        // list that FITS stays inline.
+        assert_eq!(
+            assert_roundtrip(
+                "def v3q(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#meter)), z: Qty(Rational, Unit.base(#meter))) = Vec3q.V3q(x, y, z)",
+                100,
+            ),
+            "def v3q(\n  x: Qty(Rational, Unit.base(#meter)),\n  y: Qty(Rational, Unit.base(#meter)),\n  z: Qty(Rational, Unit.base(#meter))\n) = Vec3q.V3q(x, y, z)"
+        );
+        // Fits on one line → stays inline (no force-break).
+        assert_eq!(
+            assert_roundtrip("def f(x: Int64, y: Int64) = x + y", 80),
+            "def f(x: Int64, y: Int64) = x + y"
+        );
     }
 
     #[test]

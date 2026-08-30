@@ -462,10 +462,14 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
 /// unchanged. An arg3 with NO param3 (over-applied) → `None` (declines). slice-3f: the body wrapped BEFORE
 /// param3 is `inner-body-with-param4` (a 4th CLet innermost) so the full chain is
 /// `CLet(p3,a3, CLet(p4,a4, body))`. Keeps the lower-node NApp arm flat.
-def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(
-  Int64,
-  Resolved
-), tcol: Map(Int64, Ty)) = match arg3-of(tree, id) with
+def inner-body-with-param3(
+  tree: Tree,
+  id: Int64,
+  calleeId: Int64,
+  bodyCore: Core,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) = match arg3-of(tree, id) with
   | Option.None(_) => // 2-arg call, no 3rd arg. Saturated ONLY if the callee has no 3rd param; a Some param3-of means the
     // call is UNDER-applied → decline (mirror of the arg3/no-param3 over-application guard below).
     (match param3-of(tree, calleeId) with
@@ -489,10 +493,14 @@ def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Cor
 /// body)`. If this NApp node `id` has a 4th arg (arg4-of) AND the callee a 4th param (param4-of), lower arg4
 /// and wrap → `CLet(param4, arg4Core, bodyCore)`; a ≤3-arg call (arg4-of None) returns `bodyCore` unchanged.
 /// An arg4 with NO param4 (over-applied) → `None` (declines). The mirror of inner-body-with-param3.
-def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(
-  Int64,
-  Resolved
-), tcol: Map(Int64, Ty)) = match arg4-of(tree, id) with
+def inner-body-with-param4(
+  tree: Tree,
+  id: Int64,
+  calleeId: Int64,
+  bodyCore: Core,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) = match arg4-of(tree, id) with
   | Option.None(_) => // 3-arg call, no 4th arg. Saturated ONLY if the callee has no 4th param; a Some param4-of means the
     // call is UNDER-applied → decline (mirror of the arg4/no-param4 over-application guard below).
     (match param4-of(tree, calleeId) with
@@ -510,10 +518,14 @@ def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Cor
 /// slice-B1a: lower a RECURSIVE call `(f a1 a2 ..)` to a NON-inlining `CCall(calleeName, args)`. Extracted
 /// from lower-ok's NApp arm to keep that arm small. Lowers the arg slots into a List(Core); any ill-typed arg
 /// declines the whole call (None). A LEAF w.r.t. lowering — does NOT descend the callee body.
-def lower-recursive-call(tree: Tree, id: Int64, calleeId: Int64, argId: Int64, rcol: Map(
-  Int64,
-  Resolved
-), tcol: Map(Int64, Ty)) =
+def lower-recursive-call(
+  tree: Tree,
+  id: Int64,
+  calleeId: Int64,
+  argId: Int64,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) =
   // ARITY GATE (the recursive twin of the inline NApp path's guards): the recursive path routes here BEFORE
   // the inline arity guards, and lower-rec-args lowers whatever slots are present with NO param check, so a
   // wrong-arity self/mutual call (under- OR over-application) would build a ragged CCall that eval runs. Decline
@@ -579,9 +591,14 @@ def lower-binder-list(binderIds: List(Int64)) = binderIds
 
 /// Lower each tuple ELEMENT node in order into a `List(Core)` (the CCtor(0, …) payload). Any element that
 /// fails to lower declines the whole tuple (None). Mirrors lower-rec-args' arg-list lowering, N-ary.
-def lower-tuple-elems(tree: Tree, ids: List(Int64), rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty), i: Int64, acc: List(
-  Core
-)) =
+def lower-tuple-elems(
+  tree: Tree,
+  ids: List(Int64),
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty),
+  i: Int64,
+  acc: List(Core)
+) =
   if i == List.len(ids) then
     Option.Some(acc)
   else
@@ -592,10 +609,13 @@ def lower-tuple-elems(tree: Tree, ids: List(Int64), rcol: Map(Int64, Resolved), 
           | Option.None(_) => Option.None(unit)
           | Option.Some(ec) => lower-tuple-elems(tree, ids, rcol, tcol, i + 1, List.push(acc, ec))
 
-def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(
-  Int64,
-  Ty
-)) =
+def lower-rec-args(
+  tree: Tree,
+  id: Int64,
+  argId: Int64,
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) =
   if argId == -1 then
     Option.Some([] : List(Core)) // nullary recursive call → no args
   else
@@ -618,10 +638,12 @@ def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolve
 /// Helper: lower an OPTIONAL arg-slot node (from arg2/3/4-of). `None` slot → `Some []` (absent arg, no
 /// contribution); a present slot that lowers → `Some [core]`; a present slot that fails to lower → `None`
 /// (the call declines). Returns `Option(List(Core))` — the singleton-or-empty list is spliced by the caller.
-def lower-rec-arg-opt(tree: Tree, slot: Option(Int64), rcol: Map(Int64, Resolved), tcol: Map(
-  Int64,
-  Ty
-)) = match slot with
+def lower-rec-arg-opt(
+  tree: Tree,
+  slot: Option(Int64),
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty)
+) = match slot with
   | Option.None(_) => Option.Some([] : List(Core))
   | Option.Some(argN) =>
     match lower-node(tree, argN, rcol, tcol) with
@@ -695,10 +717,11 @@ def lower-one-def(tree: Tree, nameId: Int64, bodyId: Int64) =
 /// caller's column wiring → a malformed Core that traps at eval — the tick-30 bug). A recursive def whose body
 /// doesn't lower is skipped (a call to it declines at eval — total). Terminates: each recursive body is lowered
 /// ONCE and its self-calls are CCall leaves (no re-entry into this fold).
-def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(
-  Int64,
-  Tuple(List(Int64), Core)
-)) = match entries with
+def build-def-env(
+  tree: Tree,
+  entries: List(Tuple(Int64, Int64)),
+  acc: Map(Int64, Tuple(List(Int64), Core))
+) = match entries with
   | [] => acc
   | [e, .. rest] =>
     let (nameId, bodyId) = e in
