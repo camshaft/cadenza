@@ -3392,3 +3392,34 @@
 (case "a map with BOTH axes wrong reports the leftmost (key) axis deterministically"
   (input  (do (def (h (: mp (Map String Int64))) mp) (def (g) (h #map((= 1 true)))) (export g)))
   (error  CDZ0203 (message "its keys should be String") (not "its values should be")))
+
+; The record + function analogues of the tuple/collection delta hints above. A same-field-set record whose
+; field TYPE differs names the specific field ("field `x` should be Int64, but this one is Bool") and is NOT
+; reported as a field-SET difference (nothing is missing/extra). Two curried function types name the specific
+; difference — a RESULT-type mismatch or an ARITY mismatch — rather than two full arrow renders; a same-arity
+; PARAMETER difference instead resolves at the inner argument position (no fn-signature tail). All CDZ0203.
+; (Migrated from rcdzc a_record_type_mismatch_is_not_reported_as_a_field_set_difference +
+; a_function_type_mismatch_names_the_differing_result_or_arity.)
+(case "a same-field-set record with a differing field type names the field, not a field-set difference"
+  (input  (do (def (h (: p (Record (: x Int64)))) (. p x)) (def (g) (h #record((= x true)))) (export g)))
+  (error  CDZ0203 (message "field `x` should be Int64, but this one is Bool") (not "missing field") (not "no such field")))
+
+(case "a function argument with the wrong RESULT type names the result axis"
+  (input  (do (def (k (: f (-> Int64 Bool))) (f 1)) (def (bad (: x Int64)) x) (def (g) (k bad)) (export g)))
+  (error  CDZ0203 (message "its result should be Bool, but this one returns Int64")))
+
+(case "a function argument of the wrong ARITY names the argument-count delta"
+  (input  (do (def (k (: f (-> Int64 Int64))) (f 1)) (def (bad (: x Int64) (: y Int64)) x) (def (g) (k bad)) (export g)))
+  (error  CDZ0203 (message "expected a function taking 1 argument, but this one takes 2")))
+
+(case "a same-arity function PARAMETER difference resolves at the inner argument, no fn-signature tail"
+  (input  (do (def (k (: f (-> Int64 Int64))) (f 1)) (def (bad (: x Bool)) 0) (def (g) (k bad)) (export g)))
+  (error  CDZ0203 (message "argument") (not "its result should be") (not "expected a function taking")))
+
+(case "the function-signature delta hint also fires at a value-annotation site"
+  (input  (do (def (bad (: x Int64)) x) (def (g) (: bad (-> Int64 Bool))) (export g)))
+  (error  CDZ0203 (message "its result should be Bool, but this one returns Int64")))
+
+(case "two IDENTICAL function types produce no fault (function argument type-checks clean)"
+  (input  (do (def (k (: f (-> Int64 Int64))) (f 1)) (def (good (: x Int64)) x) (def (g) (k good)) (export g)))
+  (output (: 1 Int64)))
