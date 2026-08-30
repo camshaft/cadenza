@@ -111,9 +111,9 @@ pub(super) fn emit_list_arg_marshal(
             (Some(ValType::I32), 2) => Lir::I32Store16 { offset: 0 },
             (Some(ValType::I32), 1) => Lir::I32Store8 { offset: 0 },
             _ => {
-                return Err(Reject::decline(
-                    "a `list<T>` host-arg with a non-`list<u8>`/non-scalar/non-list element is not yet \
-                     marshaled (a later increment)",
+                return Err(Reject::unsupported(
+                    "a `list<T>` host-arg with a non-`list<u8>`/non-scalar/non-list element is not \
+                     supported",
                 ));
             }
         })
@@ -534,9 +534,9 @@ pub(super) fn emit_product_to_mem(
                 )?;
             }
             _ => {
-                return Err(Reject::decline(
+                return Err(Reject::unsupported(
                     "a product host-arg element field that is not a scalar, `Bytes`, option<scalar>, or \
-                     variant<scalar> is a later increment",
+                     variant<scalar> is not supported",
                 ));
             }
         }
@@ -720,8 +720,8 @@ pub(super) fn variant_register_join_vt(
             Some(ValType::I32) if vt == ValType::I64 => ValType::I64,
             Some(ValType::I64) if vt == ValType::I32 => ValType::I64,
             _ => {
-                return Err(Reject::decline(
-                    "a variant mixes int and float payloads (the reinterpret join is a later increment)",
+                return Err(Reject::unsupported(
+                    "a variant that mixes int and float payloads is not supported",
                 ));
             }
         });
@@ -1224,9 +1224,9 @@ pub(super) fn emit_record_arg_marshal(
                             out.push(Lir::LocalSet(cursor)); // cursor += len
                         }
                         _ => {
-                            return Err(Reject::decline(
-                                "a record host-arg tuple field with a non-scalar/non-`Bytes` element is a \
-                                 later increment",
+                            return Err(Reject::unsupported(
+                                "a record host-arg tuple field with a non-scalar/non-`Bytes` element is \
+                                 not supported",
                             ));
                         }
                     }
