@@ -1045,8 +1045,13 @@ pub fn run_capturing(
         // PRECOMPILED (seq-250): `component_bytes` is a `.cwasm` — deserialize it (the cranelift-free path)
         // instead of JIT-compiling via `compile_component`. Downstream `run_capturing_compiled` is unchanged.
         let engine = engine();
+        // A precompiled `.cwasm` is a serialized cranelift module, NOT the component wasm the
+        // `cdz-result-type` custom section (bytes-second) lives in, so there is nothing to byte-scan here —
+        // the result-Ty map is empty (type-blind render, the pre-bytes-second behavior). The typed render is
+        // driven on the JIT path (`compile_component`); `cdz test`'s precompiled path renders type-blind.
         CompiledComponent {
             component: load_guest(&engine, component_bytes, opts)?,
+            result_types: std::collections::HashMap::new(),
         }
     } else {
         compile_component(component_bytes)?
