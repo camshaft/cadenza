@@ -13,6 +13,32 @@
   (call   main (: 5 Int64)) (output (: -995 Int64))
   (call   main (: 20 Int64)) (output (: -1100 Int64)))
 
+(case "crn1 a COMPOUND (tuple) resume value threaded across a NESTED same-effect straddle — each arm resumes (tuple state op-arg), read by projection before/inside/after the inner handle"
+  (doc    "The nested-straddle twin of op2's single-site compound resume: the op RESULT type is a
+           (Tuple Int64 Int64), and each arm resumes `(tuple s v)` (state + op-arg) while advancing its own
+           state. The OUTER handler is dispatched at `(M.probe 1)` BEFORE and `(M.probe 2)` AFTER an inner
+           `(handle M 100 …)` of the SAME effect, so the compound resume value crosses the straddle and the
+           outer state read by the post-inner probe must be the OUTER state advanced by the pre-inner probe
+           (untouched by the inner region). n=3: a=(tuple 3 1) → (. a 0)=3; inner (tuple 100 4) → 100+4=104;
+           post-inner (. (M.probe 2) 0) reads outer state 4 (advanced by a: 3+1) → 3+104+4=111. Guards that
+           a heap COMPOUND resume value (the #st/#seed threading + compound construction the UAF/glb1 seams
+           live in) threads correctly across a nested same-effect handle — probed sound (v-effects a46), no
+           prior nested-handler compound-resume coverage (op2 is single-handler).")
+  (input  (do
+            (effect M (op probe (-> Int64 (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle M n
+                ((probe (v) s (resume (tuple s v) (+ s v))))
+                (let ((a (M.probe 1)))
+                  (+ (. a 0)
+                     (+ (handle M 100
+                          ((probe (v) s (resume (tuple s v) (* s 2))))
+                          (let ((b (M.probe 4))) (+ (. b 0) (. b 1))))
+                        (. (M.probe 2) 0))))))
+            (export main)))
+  (call   main (: 3 Int64))  (output (: 111 Int64))
+  (call   main (: 10 Int64)) (output (: 125 Int64)))
+
 (case "dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])"
   (input  (do
             (def (main) #list((: 127 Int32) 32767))
