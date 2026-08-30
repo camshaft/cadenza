@@ -1118,6 +1118,34 @@
   (input  (: #record((= a 1) (= x 2)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
+; The field-set mismatch above (annotation position, bare) carries an ACTIONABLE repair wherever a record
+; literal meets a `(Record …)` type — a function ARGUMENT, a LET-BINDER, or NESTED inside a shared field. A
+; single key that is a plausible TYPO of an expected field (`fooo` for `foo`) surfaces as simultaneously
+; missing + extra and offers a heuristic RENAME fix on the misspelled key (the same repair a `(. r fooo)`
+; access typo gets), drilling into the inner literal when the typo is nested. A genuinely-MISSING field (not a
+; typo of a supplied one) is an ADD, not a rename: an insert fix appending `(= <f> (trap "TODO"))` (`trap`
+; inhabits any field type, clearing the fault in one shot). No false rename for a genuinely-missing nested
+; field. (Migrated from rcdzc a_misspelled_field_in_a_record_argument_offers_a_rename.)
+(case "a misspelled field in a record ARGUMENT names the field-diff and offers a rename fix"
+  (input  (do (def (g (: r (Record (: foo Int64)))) (. r foo)) (def (main) (g #record((= fooo 1)))) (export main)))
+  (error  CDZ0203 (message "missing field `foo`") (message "no such field `fooo`") (fix (kind replace) (replacement-contains "foo"))))
+
+(case "a genuinely-missing field in a record ARGUMENT carries an add (insert) fix, not a rename"
+  (input  (do (def (g (: r (Record (: x Int64) (: y Int64)))) (. r x)) (def (main) (g #record((= x 1)))) (export main)))
+  (error  CDZ0203 (message "missing field `y`") (fix (kind insert-into) (replacement-contains "(= y (trap \"TODO\"))"))))
+
+(case "a misspelled field in a record LET-BINDER carries the same field rename fix"
+  (input  (do (def (main) (let (((: r (Record (: foo Int64))) #record((= fooo 1)))) 0)) (export main)))
+  (error  CDZ0203 (fix (kind replace) (replacement-contains "foo"))))
+
+(case "a misspelled field in a SHARED nested record drills the rename into the inner literal"
+  (input  (do (def (g (: r (Record (: inner (Record (: foo Int64)))))) (. r inner)) (def (main) (g #record((= inner #record((= fooo 1)))))) (export main)))
+  (error  CDZ0203 (fix (kind replace) (replacement-contains "foo"))))
+
+(case "a genuinely-missing nested field gets no rename fix"
+  (input  (do (def (g (: r (Record (: inner (Record (: a Int64) (: b Int64)))))) (. r inner)) (def (main) (g #record((= inner #record((= a 1)))))) (export main)))
+  (error  CDZ0203 (no-fix)))
+
 ; The variant-payload TYPE check must fire wherever the constructor appears — including as the direct
 ; scrutinee of a `match`. A sum's shape is "its variant names with their payload types" (type-system.md
 ; #The Structural Types Are Record, Tuple, And Sum), and "a value of a sum type MUST be constructed
