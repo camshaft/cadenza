@@ -1050,8 +1050,12 @@ pub const LIST_REST_BINDER_NAME_ONLY: &str = "the rest binder of a list pattern 
 
 pub const TYPE_VALUE_NO_RUNTIME_DECLINE: &str = "a type value has no runtime form";
 pub const NULLARY_LAMBDA_NO_CLOSURE_DECLINE: &str = "a nullary lambda has no runtime closure form";
+// seq-280: user-facing text is a clean capability statement — the "not yet built" runtime-closure
+// framing (a built-in used as a value would need a synthesized runtime closure the compiler does not
+// yet emit) stays here in-comment, NOT in the message. (The compute.rs:1020 emit stays a codeless
+// decline for now; v-compiler-primitives flips it to CDZ0900 once v-inference's dedup/test-path fix lands.)
 pub const PRIM_AS_VALUE_DECLINE: &str =
-    "a built-in operation used as a value needs runtime closures (not yet built)";
+    "a built-in operation used as a value needs a runtime closure";
 
 /// A stable SUBSTRING of the coded CDZ0201 type-export reject (`export <name> is a TYPE, not a runtime
 /// value …`). `dedup_faults` matches this to recognize the reject that makes the type-value decline family
