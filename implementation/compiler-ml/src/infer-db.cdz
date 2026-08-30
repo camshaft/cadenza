@@ -48,7 +48,7 @@ def mk-int(signed: Bool, width: Int64) = ty-fixed-int(signed, width)
 /// callers only apply this after confirming `is-int-ty`, so a non-int never reaches here; we still return a
 /// total value via ground-default's identity on non-ints matching nothing — guarded by is-int-ty at call sites.
 def int-parts-of(t: Ty) = match ground-default(t) with
-  | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
+  | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in
       (match s with | Sign.Unsigned => (match w with | Width.WFixed(n) => (false, n) | _ => (false, 64))
                     | _ => (match w with | Width.WFixed(n) => (true, n) | _ => (true, 64))))
   | _ => (true, 64)
@@ -67,7 +67,7 @@ def t-int-deferred() = ty-deferred-int()
 /// Is `t` a deferred int — its WIDTH axis unresolved (WidthDef / an un-bound WVar)? ARC-A2: checks the axis
 /// state, not the retired width-0 sentinel. (Sign deferral is orthogonal; the deferred literal's mark is width.)
 def is-deferred-int(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with | IntType.IntType(_, w) => (match w with
+  | Ty.TyInt(it) => (let IntType.IntType(_, w) = it in (match w with
       | Width.WidthDef => true
       | Width.WVar(_) => true
       | Width.WFixed(_) => false))
@@ -651,7 +651,7 @@ def ty-to-typed-int(t: Ty) = match ground-default(t) with
 /// context that grounds it: another arith op, or the root (lower emits a literal as cnum64 regardless; a bare
 /// deferred value never carries width 0 into Core — see t-int-deferred).
 def ty-to-typed-defer(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with | IntType.IntType(_, w) =>
+  | Ty.TyInt(it) => (let IntType.IntType(_, w) = it in
       // ARC-A1: an un-bound WVar width is NOT-yet-fixed, exactly like WidthDef — keep it as the deferred sentinel
       // so an enclosing op can still ground the whole component (a var resolves via unify like deferred until B3).
       (match w with | Width.WidthDef => t-int-deferred() | Width.WVar(_) => t-int-deferred() | Width.WFixed(_) => ty-to-typed-int(t)))

@@ -132,8 +132,7 @@ def width-deferred(w: Width) = match w with
 /// still-deferred type must be defaulted at the root first. Binds sign/width one level, then tests each
 /// (avoids the deep-nested-pattern compiler limitation).
 def is-ground-int(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with
-    | IntType.IntType(s, w) => if sign-deferred(s) then
+  | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in if sign-deferred(s) then
       false
     else
       if width-deferred(w) then false else true
@@ -143,8 +142,8 @@ def is-ground-int(t: Ty) = match t with
 /// GROUND a (possibly-deferred) type to its default (rcdzc's backend grounding of an unresolved sign/width):
 /// a deferred sign → Signed, a deferred width → 64. A fixed axis is unchanged; a non-int type is unchanged.
 def ground-default(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with
-    | IntType.IntType(s, w) => let s2 = if sign-deferred(s) then Sign.Signed else s in
+  | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in
+    let s2 = if sign-deferred(s) then Sign.Signed else s in
     let w2 = if width-deferred(w) then Width.WFixed(64) else w in
     Ty.TyInt(IntType.IntType(s2, w2))
   )
@@ -193,9 +192,7 @@ def width-eq(a: Width, b: Width) = match a with
 /// `Ty` (replacing infer-db's monomorphic `type-eq`). Bind-per-level (deep-nested-match limitation).
 def ty-eq(a: Ty, b: Ty) = match a with
   | Ty.TyInt(ita) => (match b with
-    | Ty.TyInt(itb) => (match ita with
-      | IntType.IntType(sa, wa) => match itb with
-        | IntType.IntType(sb, wb) => if sign-eq(sa, sb) then width-eq(wa, wb) else false
+    | Ty.TyInt(itb) => (let IntType.IntType(sa, wa) = ita in let IntType.IntType(sb, wb) = itb in if sign-eq(sa, sb) then width-eq(wa, wb) else false
     )
     | _ => false
   )
@@ -295,8 +292,7 @@ def ty-bool-not-int() =
 /// output, which resolves `SignDef`→`Signed`, so a fully-ground int is the norm at the call sites. Models
 /// "not a fixed-width int" as typed absence (`WidthDef` / non-int → `None`) — no in-band `-1` sentinel.
 def int-parts(t: Ty) = match t with
-  | Ty.TyInt(it) => (match it with
-    | IntType.IntType(s, w) => (match w with
+  | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in (match w with
       | Width.WFixed(n) => Option.Some((s, n))
       | Width.WidthDef => Option.None(unit)
       | Width.WVar(_) => Option.None(unit)))   // ARC-A1: an un-bound var width is NOT a fixed width → None (same as WidthDef)
