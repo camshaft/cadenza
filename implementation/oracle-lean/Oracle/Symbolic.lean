@@ -157,6 +157,17 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
     else if isB b true then a
     else if isB b false && !mayTrap a then SymExpr.const (Value.bool false)
     else .app op args'
+  -- SOUND BITWISE identities — WIDTH-INDEPENDENT (0 is all-zero bits, `<<`/`>>` by 0 is identity at any
+  -- width), the bit-op companions of the integer ones above. `x&0`/`0&x`→0 DROPS the operand → `!mayTrap`
+  -- guard; `x|0`/`x^0`/`x<<0`/`x>>0`→x and `x&x`/`x|x`→x PRESERVE the operand (incl. its traps).
+  | "&", #[a, b] => if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
+                    else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
+                    else if a == b then a
+                    else .app op args'
+  | "|", #[a, b] => if isI b 0 then a else if isI a 0 then b else if a == b then a else .app op args'
+  | "^", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
+  | "<<", #[a, b] => if isI b 0 then a else .app op args'
+  | ">>", #[a, b] => if isI b 0 then a else .app op args'
   | _, _ => .app op args'
 
 /-- Canonicalize a symbolic expression by SOUND rewrites; `normalizeAppIdentities` carries the
@@ -764,6 +775,16 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 -- SOUNDNESS: a bitwise op MAY trap (shift-out-of-range), so an equal-branch `if` over it does NOT collapse.
 #guard normalize (.ite (.app "<<" #[.var 0, .var 1]) (.var 2) (.var 2))
        == SymExpr.ite (.app "<<" #[.var 0, .var 1]) (.var 2) (.var 2)
+-- SOUND BITWISE algebraic identities (width-independent): x|0→x, x&0→0 (guarded), x^0→x, x<<0/x>>0→x, x&x/x|x→x.
+#guard normalize (.app "|" #[.var 0, .const (.int 0)]) == SymExpr.var 0
+#guard normalize (.app "^" #[.var 0, .const (.int 0)]) == SymExpr.var 0
+#guard normalize (.app "<<" #[.var 0, .const (.int 0)]) == SymExpr.var 0
+#guard normalize (.app "&" #[.var 0, .const (.int 0)]) == SymExpr.const (.int 0)
+#guard normalize (.app "&" #[.var 0, .var 0]) == SymExpr.var 0
+#guard normalize (.app "|" #[.var 3, .var 3]) == SymExpr.var 3
+-- x&0→0 ONLY when the dropped operand is trap-free; a trapping operand keeps the `&` (trap preserved).
+#guard normalize (.app "&" #[.app "/" #[.var 0, .const (.int 0)], .const (.int 0)])
+       == SymExpr.app "&" #[.app "/" #[.var 0, .const (.int 0)], .const (.int 0)]
 -- SHORT-CIRCUIT boolean identities: (or true X)→true, (or X false)→X, (and false X)→false, (and X true)→X.
 #guard normalize (.app "or" #[.const (.bool true), .var 0]) == SymExpr.const (.bool true)
 #guard normalize (.app "or" #[.var 0, .const (.bool false)]) == SymExpr.var 0
