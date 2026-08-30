@@ -550,6 +550,35 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 111 Int64)))
 
+; A map pattern's SHAPE is constrained at resolve. (a) A keyed map pattern tests KEY PRESENCE, so it is
+; REFUTABLE (the key may be absent) and cannot sit in a BINDING position (a def param / let binder), where
+; only an irrefutable pattern is legal — the only irrefutable map form is a whole-map name-bind. A keyed map
+; binding param is rejected CDZ0210 (the map analogue of the fixed-arity / leading-rest list refutability),
+; in both the native `#map(…)` and name-alias `(map …)` spellings. (b) A map REST `.. rest` binds the
+; remaining map and must be LAST — a keyed entry AFTER the rest is a malformed rest shape, rejected CDZ0201.
+; A well-formed rest-LAST map pattern in a match arm still matches. (Migrated from rcdzc
+; a_map_destructuring_binding_param_is_refutable_rejected_cdz0210 +
+; a_map_rest_pattern_with_an_entry_after_the_rest_is_rejected_cdz0201.)
+(case "a keyed map destructuring binding param is refutable and rejected CDZ0210"
+  (input  (do (def (get #map((= 1 v))) v) (def (main) (get #map((= 1 5)))) (export main)))
+  (error  CDZ0210 (message "map binding pattern is refutable")))
+
+(case "a keyed map binding param rejects the same in the name-alias (map …) spelling"
+  (input  (do (def (get (map (= 1 v))) v) (def (main) (get (map (= 1 5)))) (export main)))
+  (error  CDZ0210 (message "map binding pattern is refutable")))
+
+(case "a map rest pattern with a keyed entry after the rest is a malformed shape, rejected CDZ0201"
+  (input  (do (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) .. rest (= 2 w)) v) (_ 0))) (export f)))
+  (error  CDZ0201))
+
+(case "a map rest post-entry rejects the same in the name-alias (map …) spelling"
+  (input  (do (def (f (: mp (Map Int64 Int64))) (match mp ((map (= 1 v) .. rest (= 2 w)) v) (_ 0))) (export f)))
+  (error  CDZ0201))
+
+(case "a well-formed rest-last map pattern matches the keyed entry and binds the rest"
+  (input  (do (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) .. rest) v) (_ 0))) (def (main) (f #map((= 1 42) (= 2 99)))) (export main)))
+  (call   main) (output (: 42 Int64)))
+
 (case "a tuple pattern over a non-tuple scrutinee is a type error"
   (doc    "`(match 5 ((tuple a b) a) (_ 0))` — a `(tuple …)` pattern matches a Tuple value, and the Int64
            `5` is not a Tuple, rejected CDZ0203. The pattern-position companion of `(. 5 0)` (positional
