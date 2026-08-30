@@ -5418,6 +5418,12 @@ fn check(paths: &Paths, profile: &str) {
     // never touches functional emoji in string/char literals (Unicode test strings, output markers) or the
     // legitimate technical typography (em-dash/arrows/math) it deliberately allows. See `emoji_free_lint`.
     log.step_native("emoji-free", || xtask_support::emoji_free_lint(&paths.repo));
+    // File-size lint (operator directive seq-274): FAIL on any `implementation/**/*.rs` over 512 KiB —
+    // GitHub stops syntax-highlighting above ~512 KB, so an oversized source file is un-highlighted +
+    // hard to review. Cheap (a stat walk, no rebuild). A grandfather allowlist carries the files already
+    // over the limit at adoption (each pending a split); the lint blocks NEW oversized files and shrinks
+    // as the allowlisted ones are split. See `xtask_support::file_size_lint`.
+    log.step_native("file-size", || xtask_support::file_size_lint(&paths.repo));
     // Mandate-enforcement lint: NO LONGER an inline step here (v-xtask-decompose 2026-08-28). The
     // mandate lint now lives in the STANDALONE `xtask-mandates` crate + the nix `mandateLintCheck`
     // (rewired to `cargo run -p xtask-mandates`), which gate-local folds into its fail-set — the
