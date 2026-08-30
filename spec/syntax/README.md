@@ -1,0 +1,74 @@
+# Parser/printer golden corpus (`spec/syntax/`)
+
+This directory is a **language-agnostic golden corpus for the surface layer** — the parsers and
+printers that today live in the `cadenza-syntax` crate (*"the decoupled ML front-end… REFERENCE
+implementation destined to be rewritten in Cadenza"*). It does for the **front-end** what
+[`spec/semantics/`](../semantics/README.md) does for the compiler's *behavior*: it makes one neutral,
+runnable oracle so the parsers/printers can be **re-implemented in Cadenza and validated against the
+same goldens, byte-for-byte** — swap the implementation-under-test, keep the corpus.
+
+See the design: [`implementation/design/DESIGN-parser-test-corpus.md`](../../implementation/design/DESIGN-parser-test-corpus.md).
+
+**What this is NOT.** It is not a second semantics corpus. It never runs a program or checks a runtime
+value. It pins *syntax* — what tree the parser builds and what text the printer emits — and stops at
+the front-end boundary. The desugar to Core and everything downstream is `spec/semantics/`'s job.
+
+## The form: directory-per-case
+
+Each case is a **directory** `spec/syntax/<surface>/NN-name/`:
+
+```
+spec/syntax/<surface>/NN-name/
+  input.<ext>      # the surface source, byte-exact               (required)
+  tree.sexp        # the expected STRUCTURAL parse tree            (required)
+  format.<ext>     # the expected canonical format                 (OPTIONAL — see below)
+```
+
+- `<surface>` groups cases by surface: `ml/` (`.cdz`/`.ml`), `sexp/` (`.sexp`), later `json/` `toml/`
+  `cedar/` `md/`. The surface is implied by `input`'s extension.
+- `NN-name` is a zero-padded ordinal + short slug (`03-let`), for stable reading order.
+- `tree.sexp` is always `.sexp` regardless of the input surface — the parse tree is *one*
+  representation for *all* surfaces, which is what makes the corpus language-agnostic. An `ml/` case
+  and an equivalent `sexp/` case have **byte-identical** `tree.sexp` (compare `ml/02-arith-precedence`
+  and `sexp/02-arith-precedence`).
+
+## `tree.sexp` — the structural parse-tree golden
+
+`tree.sexp` is `render_sexpr(read(input))` — the arena the parser produces, rendered as a canonical
+s-expression, with **comments expanded to explicit tree nodes** (`(comment "text" form)`,
+`(comment-after "text" form)`, `(doc "text")`, `(module-doc "text")`) rather than collapsed to `;`
+trivia. A `;` is trivia the reader may drop, so a golden written with `;` would not pin the comment as
+part of the compared tree; the structural form makes every comment part of the arena the golden pins,
+and it re-reads to the identical arena. Infix desugars to a plain operator-headed list with precedence
+(no synthetic `(op …)` layer): `1 + 2 * 3` → `(+ 1 (* 2 3))`.
+
+## `format.<ext>` — the optional canonical-format golden
+
+The formatter (`cdz fmt`) re-prints a surface canonically and is idempotent by contract.
+
+- **`format.<ext>` present** → assert `fmt(input) == format.<ext>` (bytes). Use it when `input` is
+  deliberately messy (extra spaces, bad indentation) to pin how it canonicalizes.
+- **`format.<ext>` absent** → assert `fmt(input) == input` (bytes): `input` is thereby asserted to be
+  *already canonical*. This keeps clean cases minimal and doubles as a free fmt-idempotence guard.
+
+`fmt` here is "read the surface, re-print it in the SAME surface, terminate with one newline" — exactly
+what `cdz fmt` compares against.
+
+## The gate
+
+- **Increment 2 (now):** a self-consistency check — `tests/syntax_corpus.rs` in `cadenza-syntax`
+  enforces the two equalities above against the reference reader/printer. Run it with `cargo test -p
+  cadenza-syntax --test syntax_corpus`. Regenerate goldens after editing an input (or adding a case)
+  with `CDZ_BLESS=1 cargo test -p cadenza-syntax --test syntax_corpus`.
+- **Increment 3 (next):** the dedicated syntax grader (`Pass`/`Todo`/`Fail`, additive
+  `.gate-baseline`) + per-case nix derivations (`.#checks.<arch>-linux.syntax-corpus`), following the
+  semantics corpus's per-case caching. That is the authoritative, cached, parallel gate.
+
+## How it drives the future Cadenza-parser rewrite
+
+For every case, the implementation-under-test must satisfy `render_sexpr(parse(input)) == tree.sexp`
+and `fmt(input) == format.<ext>`-or-`input`. Today that impl is the reference `cadenza-syntax` (Rust);
+tomorrow it is the Cadenza-written parser/printer, which must reproduce the identical goldens. A
+construct the new parser has not yet reached *declines* → `Todo`, so the rewrite lands incrementally,
+feature by feature, never a flag-day — the same "one oracle, swappable implementation" property the
+semantics corpus gave the compiler.
