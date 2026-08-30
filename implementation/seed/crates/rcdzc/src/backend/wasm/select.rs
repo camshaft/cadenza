@@ -4403,6 +4403,20 @@ fn needs_get_int_narrow(db: &mut Db, id: StructId) -> bool {
 /// closure capture, a map value) — an enum-disc payload (`(Some (Green))`, a `Color` element in a tuple)
 /// must widen exactly like a narrow int, or an i32 reaches the i64 `box-int` and wasm rejects the module.
 fn emit_box_i32_to_i64_extend(db: &mut Db, id: StructId, out: &mut Emit) {
+    // S141 (NON-TAIL width mismatch, fuzzer nontail witness): an ascription `(: e Narrow)` ERASES in
+    // lowering (`Resolved::Annot` → `core_of(expr)`, lower.rs) with NO coercion, so `type_of(id)` is the
+    // narrow (i32-slot) ascribed type while the value ACTUALLY emitted is `e`'s. When `e` is a `Core::Call`
+    // whose callee committed to an i64 result — a recursive helper whose result type stayed a var / widened
+    // to `Int64` in its own body, so its emitted wasm function is `(result i64)` — the stack holds an i64,
+    // and the `is_narrow_int` extend below would run `i64.extend_i32_u` on it → "type mismatch: expected
+    // i32, found i64" (invalid wasm). Mirror #5749's `emit_tail` fix: reconcile against the value's ACTUAL
+    // emitted valtype (the callee's committed result valtype, the SAME source of truth as its `(result …)`
+    // decl), NOT `type_of(id)` which the ascription narrowed. `box-int`'s heap cell is i64, so an
+    // already-i64 value needs NO extend. (A callee that genuinely returns the narrow int emits `(result
+    // i32)` → `call_result_valtype` is I32 → the extend below fires correctly, unchanged.)
+    if call_result_valtype(db, id) == Some(ValType::I64) {
+        return;
+    }
     if let Some(m) = is_narrow_int(db, id) {
         out.push(if m.signed {
             Lir::I64ExtendI32S
@@ -4413,6 +4427,23 @@ fn emit_box_i32_to_i64_extend(db: &mut Db, id: StructId, out: &mut Emit) {
         // An enum-disc value is a non-negative i32 discriminant → zero-extend to the i64 cell.
         out.push(Lir::I64ExtendI32U);
     }
+}
+
+/// The ACTUAL emitted result valtype of `id` WHEN it lowers to a direct `Core::Call` — the callee's
+/// COMMITTED result valtype (the `valtype_of` of its body's solved type, all params bound so the body type
+/// IS the result), which is EXACTLY what the callee's emitted wasm function declares as its `(result …)`
+/// and therefore what a `call` to it leaves on the stack. This is NOT `type_of(id)`: a call-site ascription
+/// `(: (rec …) UInt8)` erases in lowering and narrows `type_of(id)` while the callee still returns its own
+/// (possibly i64) width. Mirrors `emit_tail`'s #5749 callee-valtype derivation, reused at the non-tail box
+/// boundary (`emit_box_i32_to_i64_extend`). `None` for a non-Call node or a callee with no inspectable body
+/// (an import) — in which case the caller keeps its `type_of`-driven coercion.
+fn call_result_valtype(db: &mut Db, id: StructId) -> Option<ValType> {
+    let callee = match core_of(db, id) {
+        Core::Call { callee, .. } => callee,
+        _ => return None,
+    };
+    let body = db.defs.get(callee).and_then(|d| d.body)?;
+    valtype_of(&type_of(db, body))
 }
 
 /// A selected function body: its flat instruction sequence, the value types of its declared (non-
