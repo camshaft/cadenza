@@ -1185,26 +1185,10 @@ impl<'a> Parser<'a> {
     fn prefix(&mut self) -> StructId {
         let span = self.cur_span();
         match self.kind() {
-            // A native RATIONAL literal `<num>r<den>` (`3r2`; seq-204) → the rational node
-            // `(RationalTag <num-int> <den-int>)` (the surface twin of `Builder::rational`; the printer
-            // renders the node back to `3r2`). Split the token text on the `r` marker (a parse-time text
-            // split of the literal — NOT a binary-rep string; the AST carries two first-class Int leaves).
-            // No unit-suffix sugar (a rational is not a quantity magnitude, like a `Suffixed` literal).
-            Kind::Rational => {
-                let t = self.bump().unwrap();
-                let text = self.text(t).to_string();
-                match text.split_once('r') {
-                    Some((num_s, den_s)) => {
-                        let num = self.atom(literal::classify_word(num_s), span);
-                        let den = self.atom(literal::classify_word(den_s), span);
-                        let tag = self.atom(Leaf::Rational, span);
-                        self.list(vec![tag, num, den], span)
-                    }
-                    // The lexer only emits `Kind::Rational` for `<digits>r<digits>`, so the `r` is always
-                    // present; defensive fall-through builds the numerator alone rather than panicking.
-                    None => self.numeric_atom(&text, span),
-                }
-            }
+            // NOTE (seq-204): there is NO ML rational LITERAL — the operator dropped the `r` glyph and
+            // unspaced `3/2` is Int64 division, so the lexer never emits a rational token. A native rational
+            // VALUE node `(RationalTag <num> <den>)` is built by the compiler (const-fold / `(/ n d)`
+            // grounding), never parsed from a scalar literal; the printer still renders such a node `num/den`.
             Kind::Int | Kind::Float => {
                 let t = self.bump().unwrap();
                 let text = self.text(t).to_string();
