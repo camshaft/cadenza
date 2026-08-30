@@ -6335,6 +6335,17 @@ fn lease_nix_config(existing: Option<&str>, budget: usize) -> String {
 /// 45min gives margin. A SIGKILL'd check's lease is reclaimed after this instead of leaking a slot.
 const CHECK_LEASE_TTL_SECS: u64 = 45 * 60;
 
+/// How many check-lease SLOTS a `local-gate` build consumes (v-fleet-tooling 2026-08-30, concierge-nod).
+/// gate-local is the FLEET'S HEAVIEST build (the full corpus × cadenza matrix) — heavy enough that even the
+/// adaptive cap's moderate-load value is too many CONCURRENT local-gates: a cohort granted at load ~24 (cap
+/// 4) self-induced a load-125 spike (4 local-gates at ~0% CPU, deadlocked on the nix lock; v-deferral-declines
+/// 2026-08-30), and the acquire-time cap can't claw a running cohort back. So a gate lease counts as 2 slots
+/// (a normal vertical `cargo xtask check` stays 1): at cap 4 (load ~24) at most TWO local-gates co-run, at cap
+/// 2 (load-saturated) at most ONE — the concurrency scales DOWN with load via the same adaptive cap, no magic
+/// serialize-to-N number. Weight 1 is provably identical to the pre-weight behavior (`vert+1 ≤ cap` ⟺ `vert <
+/// cap`), so only the heavy gate path changes. Tunable/revertible (set to 1 to disable the weighting).
+const GATE_LEASE_WEIGHT: usize = 2;
+
 /// A waiting vertical becomes AGED after blocking this long for a check slot — past here it may take one
 /// over-cap slot so a slow-build cap (cap-2 + 30-40min gate builds) can't starve it indefinitely behind a
 /// churn of newer waiters. 20min: shorter than the observed heavy-build durations, so a starved agent
@@ -6489,6 +6500,10 @@ fn scan_check_leases_with(
         }
         if name.contains("-priority.lease") {
             priority += 1;
+        } else if name.contains("-gate.lease") {
+            // A heavy `local-gate` lease consumes GATE_LEASE_WEIGHT slots (see the const) — the `vertical`
+            // total is a WEIGHT SUM, not a file count, so the cap bounds concurrent BUILD WEIGHT.
+            vertical += GATE_LEASE_WEIGHT;
         } else {
             vertical += 1;
         }
@@ -6496,14 +6511,20 @@ fn scan_check_leases_with(
     (priority, vertical, reaped)
 }
 
-/// The acquire DECISION (pure, so it's unit-testable without the fs/poll loop): may a caller take a
-/// slot NOW given its class and the live counts? PRIORITY (pr-sync's merge gate) always may — it never
+/// The acquire DECISION (pure, so it's unit-testable without the fs/poll loop): may a caller take its
+/// slot(s) NOW given its class and the live WEIGHT? PRIORITY (pr-sync's merge gate) always may — it never
 /// waits behind vertical checks. A VERTICAL may only when NO priority lease is held (yield to the merge
-/// queue) AND the vertical count is under the cap.
+/// queue) AND its own weight FITS under the cap alongside the live vertical weight.
+///
+/// `vert_weight` = the summed WEIGHT of live vertical leases (a heavy `local-gate` lease counts
+/// [`GATE_LEASE_WEIGHT`], a normal `cargo xtask check` counts 1). `my_weight` = this acquirer's weight.
+/// The predicate is `vert_weight + my_weight <= cap` — which for `my_weight == 1` is exactly the old
+/// `vert_weight < cap`, so the light path is unchanged; a weight-2 gate needs two slots' worth of room.
 fn check_lease_go(
     priority: bool,
     prio_live: usize,
-    vert_live: usize,
+    vert_weight: usize,
+    my_weight: usize,
     max: usize,
     aged: bool,
 ) -> bool {
@@ -6513,11 +6534,11 @@ fn check_lease_go(
     // A vertical yields to any held priority lease. Under the cap it goes; and an AGED vertical — one that
     // has been WAITING past the starvation threshold (v-core-opt starved 4x under cap-2, 2026-08-29) — may
     // take ONE over-cap slot (`max + 1`), so a slow-build cap can't starve it INDEFINITELY behind a churn of
-    // newer waiters winning the 3s poll race. Bounded to a single extra holder: a SECOND aged waiter sees
-    // `vert_live == max + 1` and keeps waiting, and the nix-daemon CPUQuota caps total build CPU regardless,
-    // so the brief over-cap can't oversubscribe the box. Aged still yields to priority (never jumps pr-sync).
+    // newer waiters winning the 3s poll race. Bounded to a single extra holder: a SECOND aged waiter sees the
+    // weight already at `max + 1` and keeps waiting, and the nix-daemon CPUQuota caps total build CPU
+    // regardless, so the brief over-cap can't oversubscribe the box. Aged still yields to priority.
     let cap = if aged { max + 1 } else { max };
-    prio_live == 0 && vert_live < cap
+    prio_live == 0 && vert_weight + my_weight <= cap
 }
 
 /// Acquire a check-lease for `cargo xtask check`, blocking (with a poll loop) until it's this process's
@@ -6528,12 +6549,34 @@ fn check_lease_go(
 /// `priority` defaults from the `CDZ_CHECK_PRIORITY` env (set by pr-sync's gate invocation) but callers
 /// may pass an explicit value.
 pub fn acquire_check_lease(repo: &Path, priority: bool) -> CheckLease {
+    // Default weight 1 (a normal vertical `cargo xtask check` / a `with-lease` build). The heavy
+    // `local-gate` path uses `acquire_check_lease_weighted` with `GATE_LEASE_WEIGHT`.
+    acquire_check_lease_weighted(repo, priority, 1)
+}
+
+/// Like [`acquire_check_lease`] but the vertical acquirer declares how many lease SLOTS its build consumes
+/// (`weight`). A heavy `local-gate` passes [`GATE_LEASE_WEIGHT`] so the fleet-wide cap bounds concurrent
+/// build WEIGHT (not a flat file count) — see [`GATE_LEASE_WEIGHT`]. `weight` is ignored for a priority
+/// acquirer (pr-sync's merge gate never waits and is single). A `weight >= GATE_LEASE_WEIGHT` vertical writes
+/// a `-gate.lease` (which [`scan_check_leases_with`] sums as `GATE_LEASE_WEIGHT`); weight 1 → `-vertical.lease`.
+pub fn acquire_check_lease_weighted(repo: &Path, priority: bool, weight: usize) -> CheckLease {
     let Some(dir) = check_lease_dir(repo) else {
         eprintln!("check-lease: no lease dir (failing OPEN — unthrottled).");
         return CheckLease { file: None };
     };
     let pid = std::process::id();
-    let class = if priority { "priority" } else { "vertical" };
+    // The class also encodes the WEIGHT for the scan: a heavy vertical is a `gate` lease (weight
+    // GATE_LEASE_WEIGHT), a light one a `vertical` lease (weight 1); priority is its own single class.
+    let class = if priority {
+        "priority"
+    } else if weight >= GATE_LEASE_WEIGHT {
+        "gate"
+    } else {
+        "vertical"
+    };
+    // The acquirer's own weight the go-predicate charges against the cap (1 for priority — irrelevant since
+    // priority never waits; else the declared build weight).
+    let my_weight = if priority { 1 } else { weight.max(1) };
     let file = dir.join(format!("{pid}-{class}.lease"));
     let max = check_lease_max();
 
@@ -6547,13 +6590,13 @@ pub fn acquire_check_lease(repo: &Path, priority: bool) -> CheckLease {
     loop {
         let now = now_unix();
         let aged = now.saturating_sub(wait_start) >= CHECK_LEASE_AGING_SECS;
-        let (prio_live, vert_live) = scan_check_leases(&dir, now);
-        let go = check_lease_go(priority, prio_live, vert_live, max, aged);
+        let (prio_live, vert_weight) = scan_check_leases(&dir, now);
+        let go = check_lease_go(priority, prio_live, vert_weight, my_weight, max, aged);
         if go {
             if aged && !priority {
                 println!(
-                    "check-lease: AGED in after waiting {}s — taking one over-cap slot (was {vert_live}/{max}) \
-                     so a slow-build cap can't starve this vertical.",
+                    "check-lease: AGED in after waiting {}s — taking one over-cap slot (live weight was \
+                     {vert_weight}/{max}, this build's weight {my_weight}) so a slow-build cap can't starve it.",
                     now.saturating_sub(wait_start)
                 );
             }
@@ -6566,8 +6609,8 @@ pub fn acquire_check_lease(repo: &Path, priority: bool) -> CheckLease {
         }
         if !waited_notice {
             println!(
-                "check-lease: waiting for a check slot ({vert_live}/{max} vertical in use, \
-                 {prio_live} priority) — yielding to the merge queue…"
+                "check-lease: waiting for a check slot (live vertical weight {vert_weight}/{max}, this \
+                 build's weight {my_weight}, {prio_live} priority) — yielding to the merge queue…"
             );
             waited_notice = true;
         } else if !aged_notice && now.saturating_sub(wait_start) >= CHECK_LEASE_AGING_SECS / 2 {
@@ -10010,7 +10053,11 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // lease is FAIL-OPEN (a lease-dir hiccup yields an inert guard → never hard-blocks a merge gate) and is
     // held for the whole build (RAII drop of `_lease` on return). Fan-out is already bounded by the
     // `--max-jobs 4` in `nix_gate_argv`, so the slot cap is the missing piece, not a per-holder budget.
-    let _lease = acquire_check_lease(&fleet.repo, false);
+    // WEIGHTED: local-gate is the heaviest build, so it takes GATE_LEASE_WEIGHT slots (not 1) — otherwise a
+    // cohort granted at moderate load (cap 4) self-induces a load spike that the acquire-time cap can't claw
+    // back (the load-125 deadlock, 2026-08-30). At weight 2 the adaptive cap yields ≤2 concurrent local-gates
+    // at load ~24 and ≤1 when saturated — the concurrency scales down with load. See `GATE_LEASE_WEIGHT`.
+    let _lease = acquire_check_lease_weighted(&fleet.repo, false, GATE_LEASE_WEIGHT);
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
     eprintln!(
@@ -20959,16 +21006,18 @@ branch refs/heads/fleet/trunk-tools
         // (the fake pids 111/222/… may or may not exist on the host — don't depend on /proc here).
         let all_alive = |_: &str| Some(true);
 
-        // Two vertical + one priority live lease, plus a non-lease file that must be ignored.
+        // Two vertical (weight 1 each) + one priority + one GATE (weight GATE_LEASE_WEIGHT) live lease, plus
+        // a non-lease file that must be ignored. The `vertical` return is a WEIGHT SUM: 2×1 + 1×gate-weight.
         std::fs::write(dir.join("111-vertical.lease"), "x").unwrap();
         std::fs::write(dir.join("222-vertical.lease"), "x").unwrap();
         std::fs::write(dir.join("333-priority.lease"), "x").unwrap();
+        std::fs::write(dir.join("555-gate.lease"), "x").unwrap();
         std::fs::write(dir.join("notes.txt"), "ignore me").unwrap();
         let (prio, vert, reaped) = scan_check_leases_with(&dir, now, all_alive);
         assert_eq!(
             (prio, vert, reaped),
-            (1, 2, 0),
-            "counts priority vs vertical, ignores non-.lease, reaps nothing when all alive + fresh"
+            (1, 2 + GATE_LEASE_WEIGHT, 0),
+            "priority is a count; vertical SUMS weight (two weight-1 + one gate); ignores non-.lease; reaps none"
         );
 
         // A lease whose mtime is older than the TTL is reclaimed (a crashed holder's leaked slot):
@@ -20981,7 +21030,10 @@ branch refs/heads/fleet/trunk-tools
         // remains; assert the stale one was removed and nothing lingers past the TTL.
         assert!(!stale.exists(), "a lease older than the TTL is reclaimed");
         assert_eq!((prio2, vert2), (0, 0), "everything past the TTL is reaped");
-        assert_eq!(reaped2, 4, "all four TTL-stale leases counted as reaped");
+        assert_eq!(
+            reaped2, 5,
+            "all five TTL-stale leases (incl the gate lease) counted as reaped"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -21157,42 +21209,81 @@ branch refs/heads/fleet/trunk-tools
     #[test]
     fn check_lease_go_priority_wins_and_vertical_yields() {
         // PRIORITY (pr-sync merge gate) always goes — even at/over the cap and with priority peers.
-        assert!(check_lease_go(true, 0, 0, 3, false));
+        assert!(check_lease_go(true, 0, 0, 1, 3, false));
         assert!(
-            check_lease_go(true, 2, 99, 3, false),
+            check_lease_go(true, 2, 99, 1, 3, false),
             "priority never waits behind vertical or the cap"
         );
 
-        // VERTICAL (not aged) goes only when no priority is held AND under the cap.
-        assert!(check_lease_go(false, 0, 0, 3, false));
-        assert!(check_lease_go(false, 0, 2, 3, false), "under the cap → go");
-        assert!(!check_lease_go(false, 0, 3, 3, false), "at the cap → wait");
+        // VERTICAL weight-1 (a normal `cargo xtask check`) goes only when no priority is held AND its 1 slot
+        // fits under the cap. These MUST match the pre-weight behavior exactly (`vert+1 <= cap` ⟺ `vert < cap`).
+        assert!(check_lease_go(false, 0, 0, 1, 3, false));
         assert!(
-            !check_lease_go(false, 0, 4, 3, false),
+            check_lease_go(false, 0, 2, 1, 3, false),
+            "under the cap → go"
+        );
+        assert!(
+            !check_lease_go(false, 0, 3, 1, 3, false),
+            "at the cap → wait"
+        );
+        assert!(
+            !check_lease_go(false, 0, 4, 1, 3, false),
             "over the cap → wait"
         );
         assert!(
-            !check_lease_go(false, 1, 0, 3, false),
+            !check_lease_go(false, 1, 0, 1, 3, false),
             "a held priority lease makes vertical yield even with free slots"
         );
 
-        // AGED vertical (starved past the threshold) takes ONE over-cap slot — bounded, and still yields
-        // to priority.
+        // AGED vertical (weight 1, starved past the threshold) takes ONE over-cap slot — bounded, still yields.
         assert!(
-            check_lease_go(false, 0, 3, 3, true),
+            check_lease_go(false, 0, 3, 1, 3, true),
             "aged → may take the +1 over-cap slot (at the cap)"
         );
         assert!(
-            !check_lease_go(false, 0, 4, 3, true),
+            !check_lease_go(false, 0, 4, 1, 3, true),
             "aged is bounded at max+1 — a SECOND over-cap waiter still waits"
         );
         assert!(
-            !check_lease_go(false, 1, 3, 3, true),
+            !check_lease_go(false, 1, 3, 1, 3, true),
             "aged still yields to a held priority lease (never jumps pr-sync)"
         );
         assert!(
-            check_lease_go(false, 0, 2, 3, true),
+            check_lease_go(false, 0, 2, 1, 3, true),
             "aged under the cap goes (aging only adds headroom, never blocks)"
+        );
+
+        // WEIGHT-2 (a heavy `local-gate` lease) needs TWO slots' worth of room: `vert_weight + 2 <= cap`.
+        // At cap 4 (load ~24): TWO gates (weight 4) fit, a THIRD (would be 6) does not — the deadlock fix.
+        assert!(
+            check_lease_go(false, 0, 0, 2, 4, false),
+            "cap 4: one gate (0+2<=4) → go"
+        );
+        assert!(
+            check_lease_go(false, 0, 2, 2, 4, false),
+            "cap 4: a second gate (2+2<=4) → go"
+        );
+        assert!(
+            !check_lease_go(false, 0, 4, 2, 4, false),
+            "cap 4: a THIRD gate (4+2=6>4) waits — bounds concurrent local-gates to 2 at load ~24"
+        );
+        // At cap 2 (saturated): at most ONE gate; none once a gate is held.
+        assert!(
+            check_lease_go(false, 0, 0, 2, 2, false),
+            "cap 2: one gate (0+2<=2) → go"
+        );
+        assert!(
+            !check_lease_go(false, 0, 2, 2, 2, false),
+            "cap 2: a second gate (2+2>2) waits — ≤1 concurrent local-gate when saturated"
+        );
+        // A weight-2 gate also yields to priority, and can still AGE into the +1 over-cap headroom.
+        assert!(
+            !check_lease_go(false, 1, 0, 2, 4, false),
+            "gate yields to a held priority lease"
+        );
+        assert!(
+            check_lease_go(false, 0, 3, 2, 4, true),
+            "aged gate: 3+2=5 <= max+1=5 → takes the over-cap slot"
         );
     }
 
