@@ -2232,7 +2232,10 @@ pub(crate) fn ast_module_field(ast: &mut Arenas) -> StructId {
     };
     let op = list_op_record(ast, "reflect-module", module_type);
     let module_name = push_atom(ast, Leaf::Name("module".into()));
-    push_list(ast, vec![module_name, op]) // (module <op-record>)
+    {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, module_name, op])
+    } // (module <op-record>)
 }
 
 /// The `(print <op-record>)` field for the built-in `Ast` record — `Ast.print v : String`, the compiler-
@@ -2250,7 +2253,10 @@ pub(crate) fn ast_print_field(ast: &mut Arenas) -> StructId {
     let print_lambda = mono_op_type_lambda(ast, "Ast", "String");
     let op = list_op_record(ast, "print", print_lambda);
     let print_name = push_atom(ast, Leaf::Name("print".into()));
-    push_list(ast, vec![print_name, op]) // (print <op-record>)
+    {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, print_name, op])
+    } // (print <op-record>)
 }
 
 /// The `(read <op-record>)` field for the built-in `Ast` record — `Ast.read s : Ast`, the compiler-exposed
@@ -2263,7 +2269,10 @@ pub(crate) fn ast_read_field(ast: &mut Arenas) -> StructId {
     let read_lambda = mono_op_type_lambda(ast, "String", "Ast");
     let op = list_op_record(ast, "read", read_lambda);
     let read_name = push_atom(ast, Leaf::Name("read".into()));
-    push_list(ast, vec![read_name, op]) // (read <op-record>)
+    {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, read_name, op])
+    } // (read <op-record>)
 }
 
 /// The built-in `Ast` record's ASSOCIATED FUNCTIONS — the prelude-defined non-ctor member fields
@@ -2293,7 +2302,10 @@ pub(crate) fn ast_associated_fields(ast: &mut Arenas) -> Vec<StructId> {
 pub(crate) fn ordering_of_field(ast: &mut Arenas) -> StructId {
     let op = operator_record(ast, "compare", OpShape::Compare);
     let of_name = push_atom(ast, Leaf::Name("of".into()));
-    push_list(ast, vec![of_name, op]) // (of <op-record>)
+    {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, of_name, op])
+    } // (of <op-record>)
 }
 
 /// Build the MONOMORPHIC operator scheme `(fn () (-> FROM TO))` — a zero-parameter type-lambda over the
