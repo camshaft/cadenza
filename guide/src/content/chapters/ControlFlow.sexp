@@ -10,7 +10,7 @@
   (runnable
     (source (if (< 3 5) 100 200))
     (id "if-branch"))
-  (p (try-change (example "if-branch") (find "<") (replace "") "\">Change " (c "&lt;") " to " (c "&gt;")) " and it runs again to take the other branch, giving " (c "200") ".")
+  (p (try-change (example "if-branch") (find "<") (replace ">") "Change " (c "&lt;") " to " (c "&gt;")) " and it runs again to take the other branch, giving " (c "200") ".")
   (p "Because an " (c "if") " produces a value and that value needs one type, both branches must agree. Ask for one branch that returns a number and another that returns a boolean, and the compiler refuses:")
   (note "This one is " (strong "meant to be refused") ". Run it and read the status bar: the branches can't have different types, because the " (c "if") " as a whole is a value.")
   (runnable
