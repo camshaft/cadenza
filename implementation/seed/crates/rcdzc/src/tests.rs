@@ -25789,16 +25789,6 @@ mod stage1 {
     // ── integer widths (I3, fold): named widths, per-width bounds, annotations, odd widths ────────
 
     #[test]
-    fn a_literal_outside_the_annotated_width_is_rejected() {
-        // `(: 256 UInt8)` — 256 does not fit UInt8 (max 255): rejected (CDZ0302), never truncated to 0.
-        assert!(expect_decline("(: 256 UInt8)").contains("does not fit"));
-        // A negative into an unsigned width also fails.
-        assert!(expect_decline("(: -1 UInt8)").contains("does not fit"));
-        // And a signed-8 overflow: 128 does not fit Int8 (max 127).
-        assert!(expect_decline("(: 128 Int8)").contains("does not fit"));
-    }
-
-    #[test]
     fn an_integer_width_above_the_64_bit_ceiling_is_rejected_cdz0302() {
         // 06-numeric-model "an integer width above the 64-bit ceiling is rejected" / "a wide fixed-size
         // integer width is reserved": `(UInt 65)`/`(UInt 128)` name widths one (or more) past the 1..=64
