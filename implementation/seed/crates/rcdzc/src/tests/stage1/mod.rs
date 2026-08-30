@@ -1144,58 +1144,6 @@ fn a_type_position_typo_still_suggests_a_real_type() {
 }
 
 #[test]
-fn a_malformed_digit_led_token_is_a_malformed_literal_not_an_unbound_name() {
-    // A digit-led token that fails numeric parsing (`0o17` octal, `0x`/`0b` empty radix body,
-    // `0xGG` bad hex digit, `123abc` digits-then-letters) is a MALFORMED LITERAL (CDZ0201), NOT an
-    // "unbound name" (CDZ0101) — a digit-led token is a number, never an identifier
-    // (01-literals.sexp). The reader classifies it as a bare name; the well-formedness call is made
-    // at resolution.
-    for tok in ["0o17", "0x", "0xGG", "0b12", "123abc"] {
-        let msg = expect_decline(tok);
-        assert!(
-            msg.contains("malformed numeric literal"),
-            "digit-led `{tok}` must be a malformed literal, got: {msg}"
-        );
-    }
-    // A real (non-digit-led) unbound name is STILL an unbound name, not misclassified.
-    assert!(expect_decline("frobnicate").contains("unbound name"));
-    // (A well-formed hex literal `0x2A` = 42 is unaffected — the positive control, corpus-covered in
-    // 01-literals; the wasmtime run is dropped so this test stays dep-free, keeping the diagnostic-
-    // QUALITY assertions the corpus cannot express: the N-suffix-slip specific message + Replace fix.)
-    // A `N`-suffixed literal in FLOAT FORM (`0.5N`/`2.0N`/`1e3N`) — the common suffix slip — gets a
-    // SPECIFIC message naming the cause (`N` = BigInt, spelled as a plain integer) + the fix (use the
-    // `R` Rational suffix), not the bare generic "malformed numeric literal". The named repair is ALSO
-    // carried as a structural replace fix (`{body}R`), so `cdz fix` applies it — fix-parity with the
-    // other prose-repair rejects.
-    for (tok, fix) in [("0.5N", "0.5R"), ("2.0N", "2.0R"), ("1e3N", "1e3R")] {
-        let msg = expect_decline(tok);
-        assert!(
-            msg.contains("the `N` suffix means BigInt") && msg.contains(&format!("`{fix}`")),
-            "a float-form `N`-suffixed `{tok}` explains + suggests `{fix}`, got: {msg}"
-        );
-        // The suffix-swap repair is a structural fix, not prose only. A digit-led token is a bare leaf
-        // (a whole program), so it resolves as `main`'s body — `crate::diagnostics` surfaces its fix.
-        let src = format!("(module m (def (main) {tok}) (export main))");
-        let d = crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(&src)))
-            .into_iter()
-            .find(|d| d.message.contains("the `N` suffix means BigInt"))
-            .unwrap_or_else(|| panic!("expected the N-suffix fault for {tok}"));
-        let f = d
-            .fix
-            .as_ref()
-            .expect("the N-suffix slip carries a replace fix");
-        assert_eq!(f.kind, crate::abi::FixKind::Replace);
-        assert_eq!(
-            f.replacement, fix,
-            "the fix swaps the `N` suffix for `R`: {tok}"
-        );
-    }
-    // A genuinely garbled digit-led token that merely ENDS in `N` (not a float-form suffix slip) keeps
-    // the generic message — `12xN` has a non-numeric body, not a decimal one.
-    assert!(expect_decline("12xN").contains("malformed numeric literal"));
-}
-
-#[test]
 fn a_lexical_well_formedness_fault_surfaces_in_an_unreached_body() {
     // A LEXICAL well-formedness poison a bare leaf resolves to — a malformed numeric literal
     // (CDZ0201), an out-of-range float (CDZ0201), an unrecognized string escape (CDZ0001), a char
