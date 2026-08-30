@@ -1763,6 +1763,10 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             collect_host_arg_strings(db, string, out);
             collect_host_arg_strings(db, index, out);
         }
+        Core::StrScalarAt { operand, index, .. } => {
+            collect_host_arg_strings(db, operand, out);
+            collect_host_arg_strings(db, index, out);
+        }
         Core::StrSlice {
             string, start, end, ..
         } => {

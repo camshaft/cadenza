@@ -1385,6 +1385,10 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             collect_host_imports(db, string, out);
             collect_host_imports(db, index, out);
         }
+        Core::StrScalarAt { operand, index, .. } => {
+            collect_host_imports(db, operand, out);
+            collect_host_imports(db, index, out);
+        }
         Core::StrSlice {
             string, start, end, ..
         } => {
