@@ -7129,6 +7129,9 @@ fn run_one_trial_with_pool(
         runtime: runtime.map(<[u8]>::to_vec),
         runtime_cache_dir: Some(store.to_path_buf()),
         host_responses,
+        // `cdz run` JIT-compiles the freshly-built project (it HAS the compiler); precompiled/deserialize
+        // mode is the cranelift-free corpus-exec path, not this front-end.
+        precompiled: false,
     };
     // Both targets were JIT-compiled ONCE by the caller + are reused across every trial (`Component::new` is
     // ~99% of a run's cost). STANDALONE runs the compiled component; COMPOSED links the compiled consumer

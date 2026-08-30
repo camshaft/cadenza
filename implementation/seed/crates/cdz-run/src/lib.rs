@@ -78,6 +78,24 @@ fn jit_component(_engine: &Engine, _bytes: &[u8]) -> Result<Component> {
     )
 }
 
+/// Load a runnable component from `bytes` honoring [`RunOpts::precompiled`] (seq-250): in precompiled mode
+/// the bytes are a serialized `.cwasm` and are loaded with `Component::deserialize` (no compiler needed —
+/// the cranelift-FREE exec path); otherwise they are a component `.wasm` JIT-compiled via [`jit_component`].
+/// Composition + instantiation downstream are identical either way. Every guest/consumer/provider load on a
+/// run path routes through here so `--precompiled` is honored uniformly.
+fn load_guest(engine: &Engine, bytes: &[u8], opts: &RunOpts) -> Result<Component> {
+    if opts.precompiled {
+        // SAFETY: `bytes` is a `.cwasm` produced by our own `cdz-run --precompile-out` (the cranelift-ON
+        // precompile tool) for a compatible engine. `deserialize` re-validates the artifact's embedded
+        // compatibility header (wasmtime version + target + Config-compat set) and returns `Err` on any
+        // mismatch, so a foreign/stale/tampered artifact is rejected here, never mis-executed.
+        unsafe { Component::deserialize(engine, bytes) }
+            .map_err(|e| anyhow!("deserialize precompiled component (.cwasm): {e}"))
+    } else {
+        jit_component(engine, bytes)
+    }
+}
+
 /// Core-module compile choke-point — the `Module::new` companion of [`jit_component`], gated the same way
 /// (wasmtime's `Module::new` is `#[cfg(any(cranelift, winch))]`).
 #[cfg(feature = "cranelift")]
@@ -284,6 +302,16 @@ fn load_runtime_component(
     runtime_bytes: &[u8],
     opts: &RunOpts,
 ) -> Result<Component> {
+    // PRECOMPILED (seq-250): `runtime_bytes` is already a serialized `.cwasm` (the shared runtime artifact,
+    // precompiled ONCE by the cranelift-ON tool and passed via `--runtime`). Deserialize it directly —
+    // skip the fp-named JIT cache dance entirely (the cranelift-free exec cannot compile a cache miss, and
+    // its `engine_fp` is a sentinel that would never match the tool's artifact name anyway).
+    if opts.precompiled {
+        // SAFETY: same contract as `load_guest` — a `.cwasm` from our own precompile tool; `deserialize`
+        // re-validates the compatibility header and errs on mismatch.
+        return unsafe { Component::deserialize(engine, runtime_bytes) }
+            .map_err(|e| anyhow!("deserialize precompiled value-heap runtime (.cwasm): {e}"));
+    }
     let Some(dir) = opts.runtime_cache_dir.as_deref() else {
         // No cache configured — compile directly.
         return jit_component(engine, runtime_bytes)
@@ -427,6 +455,14 @@ pub struct RunOpts {
     /// Responses). Empty for a program that makes no host call. Coerced to each call's declared result
     /// type at binding. The corpus `(host-responses …)` fixture supplies these.
     pub host_responses: Vec<HostResponse>,
+
+    /// PRECOMPILED mode (seq-250 AOT corpus-exec): the component bytes handed to the run functions — the
+    /// guest AND the `runtime` — are serialized `.cwasm` AOT artifacts (from `cdz-run --precompile-out`),
+    /// to be loaded with `Component::deserialize` instead of JIT-compiled with `Component::new`. This is
+    /// what lets the cranelift-FREE exec (`--no-default-features`) run a corpus program: it cannot compile,
+    /// so every component reaches it pre-compiled. `false` (default) = the historical JIT path, unchanged.
+    /// Composition/instantiation is IDENTICAL either way — only how the `Component`s are obtained differs.
+    pub precompiled: bool,
 }
 
 /// One recorded host-call RESPONSE — the operation it answers and the value the host returns. The
@@ -498,8 +534,8 @@ fn compose_and_instantiate(
     opts: &RunOpts,
 ) -> Result<(Store<()>, wasmtime::component::Instance)> {
     let engine = engine();
-    let component =
-        jit_component(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let component = load_guest(&engine, component_bytes, opts)
+        .map_err(|e| anyhow!("invalid component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
     if let Some(req) = find_runtime_req(&engine, &component) {
@@ -545,8 +581,8 @@ pub fn run_with_live_objects(
 ) -> Result<(Outcome, Vec<String>, Option<u32>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
-    let component =
-        jit_component(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let component = load_guest(&engine, component_bytes, opts)
+        .map_err(|e| anyhow!("invalid component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
 
@@ -998,7 +1034,16 @@ pub fn run_capturing(
     // `run_capturing_compiled` per run — `Component::new` is the dominant cost (measured ~8s for the
     // self-host test component vs ~0.1s to run it), so re-JITing identical bytes per test is the multiplier
     // to avoid. This wrapper keeps the existing single-run API (the corpus/oracle callers) byte-identical.
-    let compiled = compile_component(component_bytes)?;
+    let compiled = if opts.precompiled {
+        // PRECOMPILED (seq-250): `component_bytes` is a `.cwasm` — deserialize it (the cranelift-free path)
+        // instead of JIT-compiling via `compile_component`. Downstream `run_capturing_compiled` is unchanged.
+        let engine = engine();
+        CompiledComponent {
+            component: load_guest(&engine, component_bytes, opts)?,
+        }
+    } else {
+        compile_component(component_bytes)?
+    };
     run_capturing_compiled(&compiled, opts, second_call, drop_handle, call_member)
 }
 
@@ -1106,6 +1151,14 @@ pub struct Peer {
 pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> Result<Outcome> {
     // The no-host-bindings special case of [`run_with_peers_hosted`] (like `run_agent` is of the hosted
     // form) — a composed run whose only non-Cadenza surface is `opts.host_responses`, no live closures.
+    if opts.precompiled {
+        // Peer composition (`compile_composition`) JIT-compiles and takes no `RunOpts`, so it cannot yet
+        // deserialize `.cwasm` artifacts — see `run_with_peers_live_objects`. Fail clearly.
+        anyhow::bail!(
+            "precompiled mode does not yet support peer composition (`--peer`); run peer cases with a \
+             cranelift-enabled build, or await precompiled peer-composition support"
+        );
+    }
     run_with_peers_hosted(consumer_bytes, peers, opts, Vec::new())
 }
 
@@ -1491,6 +1544,18 @@ pub fn run_with_peers_live_objects(
     drop_handle: bool,
     call_member: Option<&str>,
 ) -> Result<(Outcome, Vec<String>, Option<u32>)> {
+    // PRECOMPILED (seq-250): the peer-composition path (`compile_composition`) JIT-compiles the consumer +
+    // each peer and takes no `RunOpts`, so it cannot yet load precompiled `.cwasm` artifacts. A cranelift-
+    // free exec therefore cannot run a `(peer …)` corpus case yet — fail with a clear signal rather than the
+    // opaque "cannot JIT-compile" from `jit_component`. Threading `precompiled` through `compile_composition`
+    // (+ its providers variant) is the follow-up that lifts this.
+    if opts.precompiled {
+        anyhow::bail!(
+            "precompiled mode does not yet support peer composition (`--peer`); the consumer+peers are \
+             still JIT-compiled — run peer cases with a cranelift-enabled build, or await precompiled \
+             peer-composition support"
+        );
+    }
     let compiled = compile_composition(consumer_bytes, peers)?;
     run_composition_hosted_capturing(
         &compiled,
@@ -4128,6 +4193,37 @@ mod tests {
             .expect("second load deserializes the cached artifact");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_precompiled_artifact_deserializes_into_the_cranelift_free_execs_engine_config() {
+        // seq-250 CROSS-CONFIG COMPAT self-check (v-nix's acceptance concern, verified in-PR). The AOT
+        // corpus-exec deserializes `.cwasm` artifacts produced by the cranelift-ON precompile tool into a
+        // cranelift-FREE engine. The ONLY `Config` delta between the two engines is `cranelift_opt_level`
+        // (set in `engine()`, absent in the compiler-free build); everything else — `epoch_interruption`,
+        // target, tunables, wasmtime version — is identical. This pins that `opt_level` is NOT a
+        // deserialize-compatibility bit, so a tool-produced artifact loads in the exec.
+        //
+        // A single build cannot hold BOTH a compiler-on and a compiler-off engine, so we mimic the
+        // cranelift-free exec's `engine()` with a second cranelift-ON engine that OMITS `cranelift_opt_level`
+        // — its deserialize-compat metadata is exactly the cranelift-free engine's (whose only removed knob
+        // is that opt_level). If wasmtime ever DID record opt_level as a compat bit, this deserialize would
+        // fail here, flagging that `engine()`'s Config needs aligning before the exec can load tool artifacts.
+        let component_bytes = wat::parse_str("(component)").expect("assemble empty component");
+        let artifact =
+            precompile_component_bytes(&component_bytes).expect("precompile via engine()");
+
+        let mut cfg = Config::new();
+        cfg.epoch_interruption(true); // matches engine(); opt_level deliberately NOT set (the exec's delta)
+        let exec_like = Engine::new(&cfg).expect("build an exec-like (no-opt-level) engine");
+        // SAFETY: our own freshly-produced artifact; deserialize re-validates the compat header.
+        let loaded = unsafe { Component::deserialize(&exec_like, &artifact) };
+        assert!(
+            loaded.is_ok(),
+            "a cranelift-ON-precompiled .cwasm must deserialize into the cranelift-free exec's engine \
+             config (opt_level is not a compat bit); got: {:?}",
+            loaded.err()
+        );
     }
 
     #[test]

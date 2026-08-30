@@ -53,6 +53,10 @@ pub fn grade(
     // corpus-cadenza cadenza-hop exec (the direct wasm exec leaves it false → exact `== N` drift guard). See
     // [`leak_ceiling_clamp`]. `false` for the normal single-path grade.
     tolerate_fewer_live_objects: bool,
+    // PRECOMPILED (seq-250 AOT corpus-exec): the `component_bytes` and `runtime` handed in are serialized
+    // `.cwasm` artifacts to `Component::deserialize`, not `.wasm` to JIT — set on every `RunOpts` below so
+    // the cranelift-free exec runs them. `false` = the JIT path, unchanged.
+    precompiled: bool,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
     // The recorded host-response tape, shared across every trial's run.
@@ -104,6 +108,7 @@ pub fn grade(
                 runtime: runtime.clone(),
                 runtime_cache_dir: runtime_cache_dir.clone(),
                 host_responses: host_responses.clone(),
+                precompiled,
             };
             // A `(then …)` two-call continuation and a `(drop)` clause on the trial's call drive the closure
             // resource the same way the direct gate does (`--call-twice`/`--then-arg`, `--drop-handle`), so a
