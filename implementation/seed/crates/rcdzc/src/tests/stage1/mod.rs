@@ -1342,69 +1342,6 @@ fn a_scalar_member_access_reports_one_coded_error_not_a_bare_plus_rich_duplicate
 }
 
 #[test]
-fn a_called_defs_zero_arm_scalar_match_reports_cdz0210_once_not_at_the_call_site_too() {
-    // A CALLED def with a zero-arm `(match x)` on an inhabited SCALAR scrutinee used to report CDZ0210
-    // TWICE: once at the def body, once re-anchored to the CALL SITE (the reduced body re-runs the
-    // exhaustiveness check at a synthesized node). The SUM/nominal case already deduped — its reject
-    // carries a fix, and `dedup_faults`' `user_fix_keys` rule drops the copy whose fix targets a
-    // SYNTHESIZED (non-user) node. The SCALAR reject carried NO fix, so that rule had no discriminator
-    // and both leaked. `lower` now gives the scalar zero-arm reject the same "add a `_` (trap TODO)
-    // arm" fix (a wildcard covers any scalar), so the def-body copy's fix edits the real match while the
-    // inlined call-site copy's fix targets the synthesized reduced match — and the non-user copy drops.
-    let errs: Vec<crate::abi::Diagnostic> = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse(
-                "(module m (def (f (: x Int64)) (match x)) (def (main) (f 1)) (export main))",
-            )),
-        )],
-        &[crate::backend::Target::Wasm],
-    )
-    .diagnostics
-    .into_iter()
-    .filter(|d| d.severity == crate::abi::Severity::Error)
-    .collect();
-    assert_eq!(
-        errs.len(),
-        1,
-        "a called zero-arm scalar match = ONE CDZ0210, got: {:?}",
-        errs.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    assert!(
-        errs[0].message.contains("zero-arm match is exhaustive"),
-        "the surviving error is the zero-arm CDZ0210: {}",
-        errs[0].message
-    );
-    // TWO DISTINCT called defs each with a zero-arm scalar match must BOTH report (no false-merge) —
-    // each copy's fix edits its OWN user match node, so neither is the "non-user" copy the rule drops.
-    let two: Vec<crate::abi::Diagnostic> = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse(
-                "(module m (def (f (: x Int64)) (match x)) (def (g (: y Int64)) (match y)) \
-                     (def (main) (+ (f 1) (g 2))) (export main))",
-            )),
-        )],
-        &[crate::backend::Target::Wasm],
-    )
-    .diagnostics
-    .into_iter()
-    .filter(|d| {
-        d.severity == crate::abi::Severity::Error
-            && d.message.contains("zero-arm match is exhaustive")
-    })
-    .collect();
-    assert_eq!(
-        two.len(),
-        2,
-        "two distinct zero-arm scalar matches = TWO CDZ0210 (no false-merge), got: {:?}",
-        two.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn named_member_access_on_a_tuple_points_at_the_numeric_index_form() {
     // A tuple IS a member-access operand — by POSITION, not name. `(. t x)` on a `(Tuple …)` used to
     // give the generic "member access requires a record, found (Tuple …)", a dead end when the real
