@@ -1214,7 +1214,6 @@ pub(crate) fn champ_size_of(node: Handle) -> u32 {
 
 // The canonical empty map: both bitmaps 0, size 0, no handles (exactly `is_empty_node`). U3's
 // remove-to-empty MUST reproduce this representation so callers can recognise emptiness uniformly.
-#[allow(dead_code)]
 // The shared IMMORTAL empty-MAP singleton (the IMM_UNIT / empty-vec analog for maps) — lazily minted,
 // rc=IMMORTAL (census-excluded), so an empty map allocates ONCE and is reused, never per-occurrence.
 runtime_local! {
@@ -2818,7 +2817,6 @@ pub(crate) fn op_map_iter_val(cur: Handle) -> Handle {
 
 // The canonical empty set — byte-identical to the empty map (`alloc_raw(vec![], champ_header(0,0,0))`);
 // the collection kind is compile-time knowledge, not a runtime tag.
-#[allow(dead_code)]
 // The shared IMMORTAL empty-SET singleton (per-type, mirrors EMPTY_MAP). Separate from EMPTY_MAP for
 // type-clarity + zero cross-type aliasing, though an empty set + empty map are structurally identical.
 runtime_local! {
