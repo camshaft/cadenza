@@ -82,6 +82,22 @@ enum CorpusCmd {
         #[arg(required = true)]
         files: Vec<String>,
     },
+    /// GUARD a corpus git-diff for `(live-objects …)` clause EDITS — the fresh-store-before-repin discipline.
+    ///
+    /// The debug live-objects census is corrupted by a STALE store (after a runtime-hash bump) or heavy
+    /// PARALLEL-build contention — so a live-objects count "drift" seen under fleet load is SUSPECT and must
+    /// be reconfirmed on a freshly-built isolated store before it is re-pinned (else a re-pin can MASK a real
+    /// leak, or chase a spurious count). This guard git-diffs `spec/semantics` against `--base` and flags any
+    /// changed `(live-objects …)` line with that reminder. Render-only `(output …)` edits are exempt
+    /// (byte-deterministic). Advisory by default (exit 0 + warn); `--strict` exits non-zero on any hit.
+    LiveObjectsGuard {
+        /// The git ref to diff against (the base the re-pin is measured relative to).
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// Exit NON-ZERO when a `(live-objects …)` edit is present (default: advisory warn, exit 0).
+        #[arg(long)]
+        strict: bool,
+    },
 }
 
 /// Run a corpus command per `args`, returning the process exit code. `prog` names the tool in
@@ -98,6 +114,7 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
             list_missing,
         } => check_baseline_drift(files, baseline, *list_missing),
         CorpusCmd::NativizeCheck { files } => check_nativize_idempotence(files),
+        CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -217,6 +234,64 @@ fn check_nativize_idempotence(files: &[String]) -> Result<(), String> {
             "{} file(s) have classic-form input compounds — corpus must use native #ctor form (operator M3)",
             non_native.len()
         ))
+    }
+}
+
+/// Scan a `git diff --unified=0` for changed `(live-objects …)` clause lines, returning `(file, line)` per
+/// hit. A `+++ b/<path>` header sets the current file; a `+`/`-` body line (not the `+++`/`---` headers)
+/// containing `(live-objects` is a re-pin edit. Pure over the diff text so it is unit-testable.
+fn scan_live_objects_edits(diff: &str) -> Vec<(String, String)> {
+    let mut cur_file = String::new();
+    let mut hits = Vec::new();
+    for line in diff.lines() {
+        if let Some(f) = line.strip_prefix("+++ b/") {
+            cur_file = f.to_string();
+        } else if (line.starts_with('+') || line.starts_with('-'))
+            && !line.starts_with("+++")
+            && !line.starts_with("---")
+            && line.contains("(live-objects")
+        {
+            hits.push((cur_file.clone(), line[1..].trim().to_string()));
+        }
+    }
+    hits
+}
+
+/// `live-objects-guard --base REF [--strict]`: flag `(live-objects …)` clause edits in a `spec/semantics`
+/// git-diff so a live-objects re-pin is reconfirmed on a fresh isolated store before landing (the census is
+/// corrupted by a stale store / build contention). Advisory (exit 0) unless `--strict`.
+fn check_live_objects_edits(base: &str, strict: bool) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .args(["diff", "--unified=0", base, "--", "spec/semantics"])
+        .output()
+        .map_err(|e| format!("git diff {base} failed to run: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git diff {base} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let hits = scan_live_objects_edits(&String::from_utf8_lossy(&out.stdout));
+    if hits.is_empty() {
+        println!("live-objects-guard: OK — no (live-objects …) clause edits vs {base}");
+        return Ok(());
+    }
+    for (f, l) in &hits {
+        eprintln!("live-objects-guard: (live-objects …) EDIT in {f}: {l}");
+    }
+    eprintln!(
+        "live-objects-guard: RECONFIRM each count on a FRESHLY-BUILT isolated store (not under fleet \
+         load) before landing — the debug live-objects census is corrupted by a stale store (post \
+         runtime-hash bump) OR heavy parallel-build contention; a re-pin off a suspect count can MASK a \
+         real leak. Render-only (output …) edits are exempt (byte-deterministic)."
+    );
+    if strict {
+        Err(format!(
+            "{} (live-objects …) edit(s) vs {base} — reconfirm on a fresh isolated store (or re-run without --strict once confirmed)",
+            hits.len()
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -740,6 +815,46 @@ fn slug(desc: &str) -> String {
 mod tests {
     use super::*;
     use cadenza_syntax::sexpr;
+
+    #[test]
+    fn scan_live_objects_edits_flags_clause_changes_not_output_or_context() {
+        let diff = "\
+diff --git a/spec/semantics/28-wit-abi-boundary.sexp b/spec/semantics/28-wit-abi-boundary.sexp
++++ b/spec/semantics/28-wit-abi-boundary.sexp
+@@ -1231,1 +1231,1 @@
+-  (live-objects known-leak 1))
++  (live-objects 0))
++  (output #record((= a 1)))
+diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
++++ b/spec/semantics/19-sets.sexp
+@@ -1,1 +1,1 @@
+-  (live-objects 0))
++  (live-objects known-leak 12))
+   (live-objects 3))
+";
+        let hits = scan_live_objects_edits(diff);
+        // FOUR live-objects EDIT lines (- old + + new in each of file 28 and file 19); the `(output …)`
+        // change and the unchanged-context `(live-objects 3)` line (leading space, no +/-) are NOT flagged.
+        assert_eq!(hits.len(), 4);
+        assert!(
+            hits.iter()
+                .any(|(f, l)| f.ends_with("28-wit-abi-boundary.sexp")
+                    && l == "(live-objects known-leak 1))")
+        );
+        assert!(
+            hits.iter()
+                .any(|(f, l)| f.ends_with("28-wit-abi-boundary.sexp") && l == "(live-objects 0))")
+        );
+        assert!(
+            hits.iter()
+                .any(|(f, l)| f.ends_with("19-sets.sexp") && l == "(live-objects 0))")
+        );
+        assert!(
+            hits.iter()
+                .any(|(f, l)| f.ends_with("19-sets.sexp") && l == "(live-objects known-leak 12))")
+        );
+        assert!(hits.iter().all(|(_, l)| !l.contains("(output")));
+    }
 
     /// `baseline_descriptions` reads the description half of each `verdict\tdescription` line, skipping
     /// `#`-comments and blanks (matching the gate's baseline shape).
