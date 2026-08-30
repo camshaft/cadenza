@@ -27,6 +27,25 @@
 # materializes). Running the tracked source directly would resolve WORKTREES against the wrong dir.
 set -uo pipefail
 
+# SINGLETON GUARD: warm-keep is idempotent + best-effort + can run 15-40min (much longer under a COLD /
+# input-addressed-churning corpus, where it may not finish within the hour at all). So the hourly cron (or a
+# concurrent manual run) can fire a SECOND invocation while the first is still building → duplicate warm-keeps
+# compete for the SAME corpus derivation build = wasted load that ADDS to the very contention warm-keep exists
+# to relieve (observed: 3 concurrent cdz-warm-keep under the cold-corpus churn, 2026-08-30). flock -n so only
+# ONE warm-keep runs at a time; a later fire SKIPS (exit 0 — the next hourly fire retries, and warm-keep is
+# idempotent so nothing is lost). Held for the whole run (fd 9 stays open until this script exits, covering the
+# child `nix run`). FAIL-OPEN: if flock is absent or the lock can't be opened, run anyway (never block a
+# re-warm on the guard). Lock lives in the warm-root dir (own-user, survives; the app's `rm -f warm*` glob
+# never matches a dotfile, so it is not swept).
+_lock_dir="${CDZ_WARM_ROOT:-$HOME/.cdz-warm-roots}"
+mkdir -p "$_lock_dir" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1 && exec 9>"$_lock_dir/.warm-keep.lock" 2>/dev/null; then
+  if ! flock -n 9; then
+    echo "warm-keep: another warm-keep is already running (flock held) — skipping this invocation (idempotent; next hourly fire retries)." >&2
+    exit 0
+  fi
+fi
+
 HUB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKTREES="$(cd "$HUB/../worktrees" 2>/dev/null && pwd || true)"
 if [ -z "${WORKTREES:-}" ] || [ ! -d "$WORKTREES" ]; then
