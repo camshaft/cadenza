@@ -4031,19 +4031,47 @@
         # ONLY (surface conversion sexpr↔ml — it does NOT compile or run, so NO runtime store / npm ci needed,
         # unlike guideExamplesCheck). It loads guide/src/wasm/pkg/cdz_wasm.js, so stage cdzWasmPkg (the #5089-
         # fixed browser-compiler pkg) there. `cargo xtask guide-wasm` is the non-nix equivalent of that staging.
+        # seq-248 (fork1 complete): the guide shred is now the RUST `xtask-codegen-guide --shred` (from the
+        # binary AST), NOT the node scripts/shred-examples.mjs. The caller converts each doc .sexp → binary AST
+        # (`cdz convert --from sexpr --to binary`) and feeds them; the shred auto-detects each .cdzb's doc type
+        # (chapter runnable/exercise · playground example · homepage runnable) and emits the per-case dirs +
+        # manifest.json. FEED ORDER = case dir order: 42 chapters (alphabetical stem) → HomePage → 59 playground
+        # examples (numeric-prefix order), reproducing the prior 0000-0350 chapters / 0351 homepage / 0352-0410
+        # playground layout → 410 cases (coverage-neutral with the retired node shred). No node / no browser wasm.
         guideShred = pkgs.stdenvNoCC.mkDerivation {
           pname = "guide-shred";
           version = "0.0.0";
           src = pkgs.lib.fileset.toSource { root = ./guide; fileset = ./guide; };
-          nativeBuildInputs = [ pkgs.nodejs_22 ];
+          nativeBuildInputs = [ seedCompiler xtaskCodegenGuideBin ];
           __contentAddressed = true;
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
           buildPhase = ''
             runHook preBuild
-            mkdir -p src/wasm/pkg
-            cp ${cdzWasmPkg}/cdz_wasm.js ${cdzWasmPkg}/cdz_wasm_bg.wasm src/wasm/pkg/
-            node --expose-gc scripts/shred-examples.mjs --out-dir "$out"
+            cdz=${seedCompiler}/bin/cdz
+            mkdir -p cdzb
+            cdzbs=()
+            # NOTE: the .cdzb BASENAME becomes the chapter Stem in the manifest (dir slug + `file` path), so keep
+            # it EXACTLY the source stem (a prefix would leak into the slug). FEED ORDER (= case dir order) is the
+            # cdzbs[] append order below, independent of the basenames; chapter/playground/homepage stems don't
+            # collide (CamelCase vs numeric vs HomePage). The doc TYPE is detected from each doc's root node.
+            # 1) chapters (sorted glob = alphabetical stem) → dirs 0000-0350
+            for sexp in src/content/chapters/*.sexp; do
+              stem=$(basename "$sexp" .sexp)
+              "$cdz" convert --from sexpr --to binary "$sexp" > "cdzb/$stem.cdzb"
+              cdzbs+=("cdzb/$stem.cdzb")
+            done
+            # 2) HomePage → dir 0351
+            "$cdz" convert --from sexpr --to binary src/content/HomePage.sexp > cdzb/HomePage.cdzb
+            cdzbs+=("cdzb/HomePage.cdzb")
+            # 3) playground examples (sorted glob = 0001-0059 numeric order) → dirs 0352-0410
+            for sexp in src/playground/examples/*.sexp; do
+              stem=$(basename "$sexp" .sexp)
+              "$cdz" convert --from sexpr --to binary "$sexp" > "cdzb/$stem.cdzb"
+              cdzbs+=("cdzb/$stem.cdzb")
+            done
+            [ "''${#cdzbs[@]}" -gt 0 ] || { echo "guideShred: no chapter/playground/homepage .sexp found — glob/path broke" >&2; exit 1; }
+            xtask-codegen-guide --shred "$out" "$cdz" "''${cdzbs[@]}"
             runHook postBuild
           '';
           # The CLI writes the per-case dirs + manifest.json straight to $out.
