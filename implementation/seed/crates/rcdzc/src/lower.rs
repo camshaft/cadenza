@@ -14791,8 +14791,8 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
     if let Some(forms) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
         let last_ix = forms.len().saturating_sub(1);
         for (i, f) in forms.iter().enumerate() {
-            // A do-local `(def …)` is a binding, not a value statement — its refs are collected where the
-            // def is used (by name), not as a statement here; skip it (matching `compute`'s `do` split).
+            // A do-local `(def …)` is a binding, not a value statement — its own name-refs are collected
+            // where the def is used (by name), not as a statement here; skip the def as a whole.
             if db.ast.head_name(*f) != Some("def") {
                 // The TAIL (last form) IS the do's value, so it inherits the caller's `proj_operand`: a
                 // `do` sitting in a projection/member operand position projects its tail, so a bare `Ref`
@@ -14801,6 +14801,21 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
                 // statements are sequenced (their value discarded) → never a projection operand → `false`.
                 let po = if i == last_ix { proj_operand } else { false };
                 collect_binding_uses(db, *f, po, out);
+            } else if let Some(v) = crate::resolve::do_value_def_value(db, *f) {
+                // A do-local VALUE-def `(def b <init>)` is skipped as a binding, but its INITIALIZER can
+                // reference ENCLOSING bindings — `(def bag1 #list(f))` ESCAPES `f` (whole-value) into bag1's
+                // cell. That use is real and must be counted: an enclosing capturing closure that escapes
+                // into a later binding's initializer AND is also directly called `(f 2)` is the CALL-
+                // BOTH-WAYS force-keep shape (`should_keep_binding`). Skipping the def dropped the escape-use,
+                // so `f` was seen as `called_direct` only (not `escapes_whole`) → the force-keep misfired →
+                // `f` was beta-substituted (re-lowered as a fresh `Core::Closure` per use) instead of
+                // materialized into one shared slot → the direct use's cell mis-resolved to a wrong local →
+                // INVALID WASM (breaker: a closure escaping into `#list(f)` with a residual direct `(f 2)`).
+                // Recurse the INITIALIZER (not the def's name, which is collected by its own by-name uses) at
+                // `false` (a whole-value escape) so the escape is seen. A FUNCTION-def has no value-init →
+                // `None` → still skipped (its body is a separate lambda scope). Over-counting a dead def's
+                // use only over-KEEPS (a slot / minor leak), never miscompiles (seq-278 leak > UAF).
+                collect_binding_uses(db, v, false, out);
             }
         }
         return;
