@@ -55,7 +55,10 @@ export function parseInline(s) {
         i = s.indexOf(">", i) + 1;
         continue;
       }
-      const tag = /^<([A-Za-z]+)([^>]*)>/.exec(s.slice(i));
+      // Attrs may contain `>` inside a quoted value (e.g. `<TryChange … replace=">">`) or a `{…}` expression,
+      // so the attrs run must consume quoted strings / brace groups WHOLE rather than stopping at the first
+      // `>` — a naive `[^>]*` truncates at that inner `>`, dropping the attr and leaking the tail into prose.
+      const tag = /^<([A-Za-z]+)((?:[^>"{]|"[^"]*"|\{[^}]*\})*)>/.exec(s.slice(i));
       if (tag) {
         flush();
         const name = tag[1];
