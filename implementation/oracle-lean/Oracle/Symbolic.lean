@@ -135,50 +135,49 @@ selects its branch; an `if` whose branches are identical collapses. Deliberately
 reassociate ARITHMETIC (needs width/overflow-trap-aware semantics — T2.0d; an unsound fold = a FALSE
 "proven"). Folding a comparison/boolean CONDITION composes with `if`-selection to prove more of an
 optimizer's branch-elimination rewrites. -/
-partial def normalize : SymExpr → SymExpr
+def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
+  let isI := fun (e : SymExpr) (n : Int) => e == SymExpr.const (Value.int n)
+  let isB := fun (e : SymExpr) (b : Bool) => e == SymExpr.const (Value.bool b)
+  match op, args' with
+  | "+", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
+  | "-", #[a, b] => if isI b 0 then a else .app op args'
+  | "*", #[a, b] => if isI b 1 then a else if isI a 1 then b
+                    else if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
+                    else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
+                    else .app op args'
+  | "or", #[a, b] =>
+    if isB a true then SymExpr.const (Value.bool true)
+    else if isB a false then b
+    else if isB b false then a
+    else if isB b true && !mayTrap a then SymExpr.const (Value.bool true)
+    else .app op args'
+  | "and", #[a, b] =>
+    if isB a false then SymExpr.const (Value.bool false)
+    else if isB a true then b
+    else if isB b true then a
+    else if isB b false && !mayTrap a then SymExpr.const (Value.bool false)
+    else .app op args'
+  | _, _ => .app op args'
+
+/-- Canonicalize a symbolic expression by SOUND rewrites; `normalizeAppIdentities` carries the
+`app`-arm algebraic identities (split out so this matcher stays simple enough for equation-lemma
+generation). -/
+def normalize : SymExpr → SymExpr
   | .var n => .var n
   -- canonicalize a float constant to its `.f64` value so a float LITERAL (`.float`) and a computed/folded
   -- float (`.f64`) with the same value compare structurally equal (else a folded `(+ 475.0 514.0)`=.f64
   -- would not match the literal `989.0`=.float). A non-float const (int/bool/…) is unchanged.
   | .const v => .const (match Value.asF64? v with | some f => .f64 f | none => v)
   | .app op args =>
-    let args' := args.map normalize
+    let args' := args.attach.map (fun x => normalize x.val)
     match foldConst? op args' with
     | some v => .const v
-    | none =>
-      -- SOUND INTEGER algebraic identities (common optimizer simplifications). `x+0`/`x-0`/`x*1` preserve
-      -- the operand (incl. its traps) and never overflow; `x*0`→0 DROPS the operand so it needs a trap-free
-      -- guard. INTEGER `0`/`1` ONLY — the float analogues (`x+0.0`, `x*0.0`) are UNSOUND (`-0.0`, `nan`/`inf`).
-      let isI := fun (e : SymExpr) (n : Int) => e == SymExpr.const (Value.int n)
-      let isB := fun (e : SymExpr) (b : Bool) => e == SymExpr.const (Value.bool b)
-      match op, args' with
-      | "+", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
-      | "-", #[a, b] => if isI b 0 then a else .app op args'
-      | "*", #[a, b] => if isI b 1 then a else if isI a 1 then b
-                        else if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
-                        else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
-                        else .app op args'
-      -- SHORT-CIRCUIT boolean identities (Cadenza `or`/`and` evaluate left→right, short-circuiting). `or`:
-      -- `(or true _)`→true UNCONDITIONALLY (2nd operand not evaluated); `(or false b)`→b; `(or a false)`→a;
-      -- `(or a true)`→true ONLY if `!mayTrap a` (a IS evaluated first — a trapping a must still trap). `and` dual.
-      | "or", #[a, b] =>
-        if isB a true then SymExpr.const (Value.bool true)
-        else if isB a false then b
-        else if isB b false then a
-        else if isB b true && !mayTrap a then SymExpr.const (Value.bool true)
-        else .app op args'
-      | "and", #[a, b] =>
-        if isB a false then SymExpr.const (Value.bool false)
-        else if isB a true then b
-        else if isB b true then a
-        else if isB b false && !mayTrap a then SymExpr.const (Value.bool false)
-        else .app op args'
-      | _, _ => .app op args'
-  | .tuple es => .tuple (es.map normalize)
-  | .record fs => .record (fs.map (fun kv => (kv.1, normalize kv.2)))
-  | .ctor tag args => .ctor tag (args.map normalize)
+    | none => normalizeAppIdentities op args'
+  | .tuple es => .tuple (es.attach.map (fun x => normalize x.val))
+  | .record fs => .record (fs.attach.map (fun x => (x.val.1, normalize x.val.2)))
+  | .ctor tag args => .ctor tag (args.attach.map (fun x => normalize x.val))
   | .proj b s => .proj (normalize b) s
-  | .case s arms => .case (normalize s) (arms.map (fun a => (a.1, normalize a.2)))
+  | .case s arms => .case (normalize s) (arms.attach.map (fun x => (x.val.1, normalize x.val.2)))
   | .ite c t e =>
     match normalize c with
     | .const (.bool true) => normalize t
@@ -189,6 +188,14 @@ partial def normalize : SymExpr → SymExpr
       -- collapse identical branches ONLY when the condition can't trap (dropping a trapping condition
       -- would unsoundly claim `(if <trapping-c> a a)` — which traps — equal to `a`).
       if t' == e' && !mayTrap c' then t' else .ite c' t' e'
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals
+    first
+      | omega
+      | (have h := Array.sizeOf_lt_of_mem x.property; omega)
+      | (rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega)
 
 /-- A symbolic environment: each program parameter name bound to its symbolic variable. -/
 abbrev SymEnv := List (ByteArray × SymExpr)
