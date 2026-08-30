@@ -16,7 +16,7 @@ export default function ControlFlow() {
         source={`(if (< 3 5) 100 200)`}
         id="if-branch"
       />
-      <P><TryChange example="if-branch" find="<" replace="">{"\">Change "}<C>&lt;</C> to <C>&gt;</C></TryChange> and it runs again to take the other branch, giving <C>200</C>.</P>
+      <P><TryChange example="if-branch" find="<" replace=">">Change <C>&lt;</C> to <C>&gt;</C></TryChange> and it runs again to take the other branch, giving <C>200</C>.</P>
       <P>Because an <C>if</C> produces a value and that value needs one type, both branches must agree. Ask for one branch that returns a number and another that returns a boolean, and the compiler refuses:</P>
       <Note>This one is <strong>meant to be refused</strong>. Run it and read the status bar: the branches can't have different types, because the <C>if</C> as a whole is a value.</Note>
       <Runnable
