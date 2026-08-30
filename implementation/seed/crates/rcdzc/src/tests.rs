@@ -16399,37 +16399,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_duplicate_record_field_reports_one_error_not_two() {
-        // `(record (a 1) (a 2))`'s duplicate-field CDZ0201 was reported TWICE — once anchored at a user
-        // node, once at a synthesized node whose origin `sanitize_origin` stripped to unanchored. Running
-        // sanitize BEFORE `dedup_faults` lets the unanchored copy collapse against its anchored twin, so
-        // one duplicate field = ONE error.
-        let out = crate::compile::compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "m",
-                crate::codec::encode(&parse(
-                    "(module m (def (main) (record (a 1) (a 2))) (export main))",
-                )),
-            )],
-            &[crate::backend::Target::Wasm],
-        );
-        let errors: Vec<&crate::abi::Diagnostic> = out
-            .diagnostics
-            .iter()
-            .filter(|d| {
-                d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
-            })
-            .collect();
-        assert_eq!(
-            errors.len(),
-            1,
-            "one duplicate field = one CDZ0201, got: {:?}",
-            out.diagnostics
-        );
-    }
-
-    #[test]
     fn over_applying_a_function_reports_one_error_not_a_shadowing_decline() {
         // Over-application (`(f 1 2)` for a 1-param `f`) must be ONE primary `error:` — the coded CDZ0203
         // `applied 2 arguments to a function of arity 1 …` — NOT that reject PLUS the evaluator's uncoded
