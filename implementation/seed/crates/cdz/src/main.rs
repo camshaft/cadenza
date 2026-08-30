@@ -6980,35 +6980,18 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
     // ONE line-start index over the source, so each token's line:col is a binary search, not a from-start
     // newline scan — `highlight` emits a token for EVERY node (a whole-file classify), and the per-token
     // from-start `line_col` made it O(tokens × source_len) = O(N²) (a 6400-def file = 5.1s, 99.7% in
     // `line_col`). With the index it is linear. (The fixes-8-11 pattern — the same swap `uses`/`scope`
     // already carry.)
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    // Each line is `node-id<TAB>kind`. Map the node to a `file:line:col`, skipping a span-less node (so
-    // every emitted token — human OR `--json` — carries a real position; no raw-id fallback here). Both
-    // output shapes are computed from the SAME resolved `(kind, line, col)` so they can't drift.
-    let mut malformed = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut cols = line.splitn(2, '\t');
-        let (node, kind) = match (cols.next(), cols.next()) {
-            (Some(n), Some(k)) => (n, k),
-            _ => {
-                report_malformed_query_row("highlight", line);
-                malformed = true;
-                continue;
-            }
-        };
-        if let Some(span) = node
-            .parse::<u32>()
-            .ok()
-            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
-        {
+    // Each `(node-id, kind)` pair, decoded from the canonical binary-AST wire (`highlight_wire`, ZERO
+    // string parsing). Map the node to a `file:line:col`, skipping a span-less node (so every emitted
+    // token — human OR `--json` — carries a real position; no raw-id fallback here). Both output shapes
+    // are computed from the SAME resolved `(kind, line, col)` so they can't drift.
+    for (node, kind) in cadenza_compile_abi::decode_highlight(bytes) {
+        if let Some(span) = spans.get(cadenza_syntax::StructId(node)) {
             let (l, c) = index.line_col(&source, span.start);
             if args.json {
                 use cadenza_syntax::query::json;
@@ -7016,18 +6999,14 @@ fn run_highlight(args: &HighlightArgs) -> ExitCode {
                 obj.string("file", &args.file);
                 obj.raw("line", &l.to_string());
                 obj.raw("col", &c.to_string());
-                obj.string("kind", kind);
+                obj.string("kind", &kind);
                 println!("{}", obj.finish());
             } else {
                 println!("{}:{l}:{c}: {kind}", args.file);
             }
         }
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 // ── shared plumbing ────────────────────────────────────────────────────────────────────────────────

@@ -3774,21 +3774,14 @@ fn semantic_tokens_for(text: &str, is_ml: bool) -> Vec<SemanticToken> {
     let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_HIGHLIGHT) else {
         return Vec::new();
     };
-    let hl_text = String::from_utf8_lossy(bytes);
 
-    // Gather each classified leaf as an absolute (line, start-char, length, token-type) tuple. The
-    // Highlight query already emits leaves in ascending node-id order, but node id is not source order,
-    // so sort by (line, start) before delta-encoding (LSP requires ascending position).
+    // Gather each classified leaf as an absolute (line, start-char, length, token-type) tuple, decoded
+    // from the canonical binary-AST wire (`highlight_wire`, ZERO string parsing). The Highlight query
+    // already emits leaves in ascending node-id order, but node id is not source order, so sort by
+    // (line, start) before delta-encoding (LSP requires ascending position).
     let mut abs: Vec<(u32, u32, u32, u32)> = Vec::new();
-    for line in hl_text.lines() {
-        let mut cols = line.splitn(2, '\t');
-        let (Some(node), Some(kind)) = (cols.next(), cols.next()) else {
-            continue;
-        };
-        let Some(token_type) = highlight_kind_to_token_index(kind) else {
-            continue;
-        };
-        let Some(id) = node.parse::<u32>().ok() else {
+    for (id, kind) in cadenza_compile_abi::decode_highlight(bytes) {
+        let Some(token_type) = highlight_kind_to_token_index(&kind) else {
             continue;
         };
         let Some(span) = spans.get(cadenza_syntax::StructId(id)) else {

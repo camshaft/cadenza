@@ -239,9 +239,10 @@ fn run_query_text(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<String, JsEr
 }
 
 /// The raw-bytes twin of [`run_query_text`], for a query whose result artifact is canonical BINARY AST
-/// rather than UTF-8 text (e.g. `Query::Diagnostics` → `KIND_DIAGNOSTICS`, decoded with
-/// `rcdzc::decode_diagnostics`). Interpreting a binary-AST artifact as text and splitting it on tabs
-/// would yield garbage faults, so a structured consumer takes the bytes here and decodes them.
+/// rather than UTF-8 text (e.g. `Query::Diagnostics` → `KIND_DIAGNOSTICS` via `rcdzc::decode_diagnostics`,
+/// `Query::Highlight` → `KIND_HIGHLIGHT` via `rcdzc::sidecar::decode_highlight`). Interpreting a binary-AST
+/// artifact as text and splitting it on tabs would yield garbage, so a structured consumer takes the bytes
+/// here and decodes them.
 fn run_query_bytes(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<Vec<u8>, JsError> {
     let arenas = rcdzc::codec::decode(ast_bytes)
         .ok_or_else(|| JsError::new("internal: re-encoded AST failed to decode"))?;
@@ -1774,8 +1775,9 @@ pub fn semantic_tokens(text: &str, from: &str) -> Result<Vec<SemanticToken>, JsE
     let Ok((ast_bytes, Some(spans))) = parse_spanned(text, from) else {
         return Ok(Vec::new()); // unparseable / span-less — leave it to the lexical fallback
     };
-    // Ride the `Highlight` query — one `node-id<TAB>kind` line per classified leaf, ascending id order.
-    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Highlight)?;
+    // Ride the `Highlight` query — a `(node-id, kind)` pair per classified leaf, ascending id order,
+    // on the canonical binary-AST wire (ZERO string parsing).
+    let hl_bytes = run_query_bytes(&ast_bytes, &rcdzc::Query::Highlight)?;
     // Single-file: a node id keys directly into the user span table (a span-less node is dropped — it
     // should not happen for a user leaf).
     let resolve_span = |n: u32| {
@@ -1783,30 +1785,29 @@ pub fn semantic_tokens(text: &str, from: &str) -> Result<Vec<SemanticToken>, JsE
             .get(cadenza_syntax::ast::StructId(n))
             .map(|s| (s.start as u32, s.end as u32))
     };
-    Ok(highlight_lines_to_tokens(&text_out, resolve_span))
+    Ok(highlight_tokens_to_semantic(
+        &rcdzc::sidecar::decode_highlight(&hl_bytes),
+        resolve_span,
+    ))
 }
 
-/// Parse the `node-id<TAB>kind` lines the `Highlight` sidecar query emits into JS [`SemanticToken`]s.
+/// Turn the `(node-id, kind)` pairs the `Highlight` sidecar query emits into JS [`SemanticToken`]s.
 /// `resolve_span` maps a real node id to its `[from, to)` byte range in the source UNDER EDIT — the ONE
 /// thing the single-file and preloaded-package paths differ on (the package path demuxes a GLOBAL id
 /// through the link-map to the user file first). A node `resolve_span` places OUTSIDE the source under
 /// edit (a token in a preloaded library) returns `None` and is DROPPED — the editor only colours its own
 /// buffer.
-fn highlight_lines_to_tokens(
-    text_out: &str,
+fn highlight_tokens_to_semantic(
+    tokens: &[(u32, String)],
     resolve_span: impl Fn(u32) -> Option<(u32, u32)>,
 ) -> Vec<SemanticToken> {
     let mut out = Vec::new();
-    for line in text_out.lines() {
-        let mut cols = line.splitn(2, '\t');
-        let (Some(node), Some(kind)) = (cols.next(), cols.next()) else {
-            continue;
-        };
-        if let Some((from, to)) = node.parse::<u32>().ok().and_then(&resolve_span) {
+    for (node, kind) in tokens {
+        if let Some((from, to)) = resolve_span(*node) {
             out.push(SemanticToken {
                 from,
                 to,
-                kind: kind.to_string(),
+                kind: kind.clone(),
             });
         }
     }
@@ -1863,11 +1864,10 @@ pub fn semantic_tokens_with_preloaded(
     let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_HIGHLIGHT) else {
         return Ok(Vec::new()); // no highlight artifact — fall back to lexical colours
     };
-    let text_out = String::from_utf8(bytes.to_vec())
-        .map_err(|_| JsError::new("highlight artifact was not valid UTF-8"))?;
-
+    // Decode the `(node-id, kind)` pairs from the canonical binary-AST wire (ZERO string parsing).
+    let tokens = rcdzc::sidecar::decode_highlight(bytes);
     let resolve_span = user_span_resolver(&out, spans);
-    Ok(highlight_lines_to_tokens(&text_out, resolve_span))
+    Ok(highlight_tokens_to_semantic(&tokens, resolve_span))
 }
 
 /// The compilation DISPOSITION of the definition under the cursor — what the compiler DID with it — for

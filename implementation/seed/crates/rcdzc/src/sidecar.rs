@@ -70,6 +70,11 @@ pub use cadenza_compile_abi::sidecar::{
     KIND_TYPE_INFO, KIND_USES,
 };
 
+// The binary-AST query-answer codecs (per-KIND `*_wire` modules in `cadenza-compile-abi`) re-exported
+// so a consumer that depends only on `rcdzc` (e.g. `cdz-wasm`) can decode via `rcdzc::sidecar::…`
+// without a direct `cadenza-compile-abi` dep — the same copy the producer above encodes with.
+pub use cadenza_compile_abi::{decode_highlight, encode_highlight};
+
 // The `Request` (materialize an output column) + `Query` (read a fact column) enums that make up one
 // sidecar request list now live in the shared `cadenza-compile-abi` crate — the compile-boundary
 // contract types `cdz` and `rcdzc` agree on. Re-exported here so `crate::sidecar::Request`/`::Query`
@@ -393,20 +398,23 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // itself a token (its head/children are), so only leaves are emitted. Classification reads
             // the resolved column + the meta channels a value already carries (see `classify_highlight`).
             let node_count = db.ast.structure.len();
-            let mut text = String::new();
+            let mut tokens: Vec<(u32, &str)> = Vec::new();
             for i in 0..node_count {
                 let id = StructId(i as u32);
                 if !db.is_user_node(id) {
                     continue;
                 }
                 if let Some(kind) = classify_highlight(db, id) {
-                    text.push_str(&format!("{}\t{}\n", id.0, kind.as_str()));
+                    tokens.push((id.0, kind.as_str()));
                 }
             }
+            // Each classified leaf as a `(node-id, kind)` pair — canonical BINARY AST (`highlight_wire`,
+            // operator P0 seq-284/307-308: no bespoke TAB/newline text), a root list of `(Int Str)` forms
+            // the `cdz`/`cdz-wasm` consumers decode via the shared codec, never a string split.
             QueryResult {
                 kind: KIND_HIGHLIGHT,
                 name: "highlight".to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_highlight(&tokens),
             }
         }
         Query::DocOf { name } => {

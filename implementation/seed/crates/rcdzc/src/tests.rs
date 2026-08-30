@@ -35840,6 +35840,13 @@ mod sidecar_driven {
             .map(|a| a.bytes.as_slice())
     }
 
+    /// The `(node-id, kind)` highlight pairs decoded from the binary-AST `KIND_HIGHLIGHT` wire.
+    fn highlight_pairs(out: &crate::abi::CompileOutput) -> Vec<(u32, String)> {
+        cadenza_compile_abi::decode_highlight(
+            artifact_bytes(out, KIND_HIGHLIGHT).expect("a highlight artifact"),
+        )
+    }
+
     #[test]
     fn a_type_of_query_reads_the_type_column() {
         // A `TypeOf` request for a nullary def answers with its rendered type — the same canonical text
@@ -39122,16 +39129,9 @@ mod sidecar_driven {
     fn highlight_kinds_of(src: &str, spelling: &str) -> Vec<String> {
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
-        // node-id → kind
-        let by_id: std::collections::BTreeMap<u32, String> = text
-            .lines()
-            .filter_map(|l| {
-                let mut p = l.splitn(2, '\t');
-                let id: u32 = p.next()?.parse().ok()?;
-                Some((id, p.next()?.to_string()))
-            })
-            .collect();
+        // node-id → kind (decoded from the binary-AST wire)
+        let by_id: std::collections::BTreeMap<u32, String> =
+            highlight_pairs(&out).into_iter().collect();
         // Find every leaf whose name spelling matches, then read its kind.
         let arenas = parse(src);
         let mut kinds = Vec::new();
@@ -39305,10 +39305,10 @@ mod sidecar_driven {
         assert_eq!(highlight_kinds_of(src, "t"), vec!["variable", "variable"]);
         // NOTHING in a clean `@tag` program is painted error-red.
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        let pairs = highlight_pairs(&out);
         assert!(
-            !text.lines().any(|l| l.ends_with("\tunbound")),
-            "no token in a clean @tag program is unbound:\n{text}"
+            !pairs.iter().any(|(_, k)| k == "unbound"),
+            "no token in a clean @tag program is unbound:\n{pairs:?}"
         );
     }
 
@@ -39332,10 +39332,10 @@ mod sidecar_driven {
         assert_eq!(highlight_kinds_of(src, "t"), vec!["variable", "variable"]);
         // NOTHING in a clean stacked-annotation program is painted error-red.
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        let pairs = highlight_pairs(&out);
         assert!(
-            !text.lines().any(|l| l.ends_with("\tunbound")),
-            "no token in a clean stacked-annotation program is unbound:\n{text}"
+            !pairs.iter().any(|(_, k)| k == "unbound"),
+            "no token in a clean stacked-annotation program is unbound:\n{pairs:?}"
         );
     }
 
@@ -39424,14 +39424,14 @@ mod sidecar_driven {
         // `true`/`42`/`0` are non-NAME leaves (Bool / Int), so the by-name helper can't find them; check
         // the raw artifact carries a `literal` (the bool) and a `number` (the ints).
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).unwrap();
+        let pairs = highlight_pairs(&out);
         assert!(
-            text.lines().any(|l| l.ends_with("\tliteral")),
-            "the bool literal is classified: {text}"
+            pairs.iter().any(|(_, k)| k == "literal"),
+            "the bool literal is classified: {pairs:?}"
         );
         assert!(
-            text.lines().any(|l| l.ends_with("\tnumber")),
-            "a number token is classified: {text}"
+            pairs.iter().any(|(_, k)| k == "number"),
+            "a number token is classified: {pairs:?}"
         );
     }
 
@@ -39445,15 +39445,15 @@ mod sidecar_driven {
         // by-name helper can't find them — read the raw artifact, like the bool/number test.)
         let each = |src: &str, kind: &str| {
             let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-            let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+            let pairs = highlight_pairs(&out);
             assert!(
-                text.lines().any(|l| l.ends_with(&format!("\t{kind}"))),
-                "expected a `{kind}` token in:\n{text}"
+                pairs.iter().any(|(_, k)| k == kind),
+                "expected a `{kind}` token in:\n{pairs:?}"
             );
             // A well-formed literal program never paints error-red.
             assert!(
-                !text.lines().any(|l| l.ends_with("\tunbound")),
-                "a clean literal program has no unbound token:\n{text}"
+                !pairs.iter().any(|(_, k)| k == "unbound"),
+                "a clean literal program has no unbound token:\n{pairs:?}"
             );
         };
         // A CHAR literal `#\a`.
@@ -39496,10 +39496,10 @@ mod sidecar_driven {
                    (def (main) (handle Ask unit ((ask (u) s (resume 42 s))) (Ask.ask))) \
                    (export main))";
         let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
-        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        let pairs = highlight_pairs(&out);
         assert!(
-            !text.lines().any(|l| l.ends_with("\tunbound")),
-            "no token in a clean effect program is unbound:\n{text}"
+            !pairs.iter().any(|(_, k)| k == "unbound"),
+            "no token in a clean effect program is unbound:\n{pairs:?}"
         );
         // The declaration/control heads are keywords.
         assert_eq!(highlight_kinds_of(src, "effect"), vec!["keyword"]);
