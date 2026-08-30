@@ -74,7 +74,7 @@
 //! arguments but declines to run — the "present, but not yet realized" state a prelude `unrealized`
 //! field or a construction-less sum constructor already has.
 
-use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::{Db, Def, EffectDecl, OpDecl};
 use crate::fxhash::FxHashMap as HashMap;
 use crate::prelude::{meta_field, push_atom, push_list};
@@ -271,8 +271,10 @@ pub fn op_field(ast: &Arenas, record: StructId, op_name: &str) -> Option<StructI
 /// marks it an effect (identity = the declaration occurrence); each operation is a field to its
 /// operation-value record.
 fn effect_record(ast: &mut Arenas, decl: &EffectDecl) -> StructId {
-    // The record PRIMITIVE head is the STRING `"record"` (the NAME `record` is a shadowable alias).
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    // The record head is the NATIVE ctor-LEAF `Leaf::Ctor(Record)` (unshadowable, recognized by kind — the
+    // NAME `record` is a shadowable alias); it resolves structurally via `compound_ctor_prim` exactly as the
+    // legacy `"record"` string head did (dual-read), shedding a string head ahead of the M3 reader-flip.
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let mut children = vec![head];
 
     // `(meta t)` — the effect type-value, so a later pass can recover the effect's identity.
@@ -301,7 +303,7 @@ fn effect_record(ast: &mut Arenas, decl: &EffectDecl) -> StructId {
 ///  - `(meta effect-op)` — the operation's IDENTITY `(effect-op <decl> <index>)`, so a later pass
 ///    recovers which effect+operation a projected op value denotes without a name scan.
 fn op_value(ast: &mut Arenas, decl: &EffectDecl, op: &OpDecl, index: u32) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     // `(meta t)` — the operation's arrow type, wrapped in a ZERO-PARAM `(fn () (-> Param Result))`. The
     // wrapper is LOAD-BEARING (the same lesson the monomorphic String/Bytes ops learned): a BARE arrow
     // as `(meta t)` makes `typeval_of` collapse the whole op-value RECORD to `Ty::Type` (an arrow IS a
