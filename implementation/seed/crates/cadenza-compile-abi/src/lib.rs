@@ -32,6 +32,7 @@ pub mod result_types_wire;
 // (`REQUIRED_RUNTIME_HASH` / `DEBUG_RUNTIME_HASH` / `REQUIRED_NFC_HASH`), read by the thin `!standalone`
 // `cdz` (doctor) without linking `rcdzc`; `rcdzc::backend::wasm::runtime_abi` re-exports them.
 pub mod runtime_hash;
+pub mod scope_wire;
 pub mod sidecar;
 pub mod spans;
 pub mod symbols_wire;
@@ -54,6 +55,7 @@ pub use opt::OptLevel;
 pub use overflow::{OverflowMode, OverflowSpec};
 pub use resolve_wire::{decode_resolve, encode_resolve};
 pub use result_types_wire::{decode_result_types, encode_result_types};
+pub use scope_wire::{ScopeBinding, decode_scope, encode_scope};
 pub use sidecar::{Query, Request, decode, encode};
 pub use symbols_wire::{decode_symbols, encode_symbols};
 pub use target::Target;
