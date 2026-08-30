@@ -2669,3 +2669,13 @@
 (case "a malformed constructor-export with too many segments gets the constructor-export message"
   (input (do (type T (A) (B)) (export (. T A B)) (def (main) 1) (export main)))
   (error CDZ0201 (message "a constructor-export is")))
+
+(case "a constructor-export whose TYPE head is a near-miss suggests the declared type with a rename fix"
+  (doc   "`(export (. Colr *))` names `Colr` where `(type Color …)` is declared — a near-miss of the
+          declared sum. The type head names no sum type (CDZ0201, expected `to be a sum type`), and it
+          suggests the declared type + carries a rename fix on the type-name occurrence (`Colr` -> `Color`),
+          the type-name twin of the constructor-NAME did-you-mean. (Migrated from rcdzc
+          a_ctor_export_with_a_mistyped_type_name_suggests_the_declared_type.)")
+  (input (do (type Color (R) (G)) (export (. Colr *)) (def (main) 5) (export main)))
+  (error CDZ0201 (message "to be a sum type") (message "did you mean `Color`?")
+                 (fix (kind replace) (replacement "Color"))))
