@@ -264,6 +264,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // consulted here FIRST like the fraction/int defaults. A `Core::ConstInt` typed `BigInt` already
         // emits as a BigInt leaf, so no lowering change is needed.
         Resolved::Int(_) if db.bigint_ctor_arg_literals.contains(&id) => Ty::BigInt,
+        // A bare integer literal that is a direct COMPARISON operand beside a concretely-`BigInt` sibling
+        // GROUNDS to `Ty::BigInt` — contextual literal typing (a constraint, so it precedes the module
+        // defaults below, exactly as the ctor-arg grounding does), NOT a promotion (see
+        // `literal_comparison_bigint_context`; scoped to comparison, not arithmetic). This is why `(= n 5)` /
+        // `(< n 5)` type-check when `n : BigInt`: the `5` adopts its peer's `BigInt` rather than defaulting to
+        // `Int64` and clashing CDZ0301. A `Core::ConstInt` typed `BigInt` already emits as a BigInt leaf.
+        Resolved::Int(_) if literal_comparison_bigint_context(db, id) => Ty::BigInt,
         Resolved::Int(_) => module_default_fraction_ty(db, id)
             .or_else(|| module_default_int_ty(db, id))
             .unwrap_or_else(Ty::int),
@@ -922,6 +929,56 @@ fn literal_binop_float32_context(db: &mut Db, id: StructId) -> bool {
         }
         child = parent;
     }
+}
+
+/// True iff a bare INTEGER literal at `id` is a direct COMPARISON operand beside a concretely-`BigInt`
+/// sibling, so it grounds to `Ty::BigInt`. A comparison (`= < > <= >= compare`) relates its two operands to
+/// ONE type and yields `Bool`, so a bare literal compared against a `BigInt` takes `BigInt` — the comparison
+/// twin of a bare literal grounding to a constructor's declared `BigInt` payload (`bigint_ctor_arg_literals`)
+/// and of `literal_binop_context_ty`'s WIDTH grounding, here extended to the unbounded integer (a DISTINCT
+/// `Ty`, not an `IntTy` width). This is contextual literal TYPING (lossless, operator-approved seq-257), NOT
+/// a numeric promotion: only a BARE LITERAL grounds; a non-literal `Int64` VALUE compared to a `BigInt` still
+/// mismatches CDZ0301 (that unify is untouched). So `(= n 5)` / `(< n 5)` with `n : BigInt` type-check (the
+/// `5` is BigInt), while `(= n m)` with `m : Int64` still declines.
+///
+/// SCOPED to COMPARISON, deliberately NOT arithmetic: `(+ (BigInt.of 1) 1) → CDZ0301` is a pinned spec case
+/// (numeric-model.md §"Numeric Types Do Not Silently Promote", `06-numeric-model` "a BigInt operation does
+/// not silently promote a fixed-width operand"), and seq-257's operator examples are all comparisons. A
+/// comparison's result is `Bool` (no promoted result value to speak of); extending the grounding to
+/// arithmetic would REVERSE that documented case, so it is left to a separate operator ruling.
+fn literal_comparison_bigint_context(db: &mut Db, id: StructId) -> bool {
+    let Some(parent) = db.parent_of(id) else {
+        return false;
+    };
+    let (head, arg0, arg1) = {
+        let Resolved::Apply { head, args } = resolved_ref(db, parent) else {
+            return false;
+        };
+        if args.len() != 2 {
+            return false;
+        }
+        (*head, args[0], args[1])
+    };
+    // The parent must be a binary COMPARISON with `id` as one of its two operands.
+    let Some(prim) = crate::eval::meta_apply_of(db, head) else {
+        return false;
+    };
+    if !prim.is_comparison() {
+        return false;
+    }
+    let sibling = if arg0 == id {
+        arg1
+    } else if arg1 == id {
+        arg0
+    } else {
+        return false;
+    };
+    // The sibling grounds the literal only when it is CONCRETELY `BigInt`. A sibling that is itself a bare
+    // integer literal imposes nothing (two bare literals both default to Int64) — and skipping it before
+    // reading its type is also the termination guard: `type_of` on a bare-literal sibling would re-enter
+    // THIS check from the sibling (`(= 5 6)`: 5 reads 6, 6 reads 5, …). A `BigInt`-suffixed `5N` is an
+    // ANNOTATION node (`as_int` is `None`), so it is still consulted.
+    db.ast.as_int(sibling).is_none() && matches!(type_of(db, sibling), Ty::BigInt)
 }
 
 /// The CDZ0302 fault if the value at `value` is an integer LITERAL that does not fit the NARROW integer

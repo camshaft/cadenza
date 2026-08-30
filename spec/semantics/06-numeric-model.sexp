@@ -12295,6 +12295,42 @@
   (input (do (def (main) (match (W 99999999999999999999999) ((W x) x))) (type W (W BigInt)) (export main)))
   (output (: 99999999999999999999999 BigInt)))
 
+; -- seq-257 (2026-08-30): a bare integer literal adopts its COMPARISON peer's BigInt type, the comparison
+; twin of the constructor-payload grounding above. A comparison relates its two operands to one type and
+; yields Bool, so a bare literal compared against a concretely-BigInt operand takes BigInt rather than
+; defaulting to Int64 and clashing CDZ0301. This is contextual literal TYPING (lossless, precedes the module
+; default), NOT a promotion: only a BARE literal grounds — a genuine Int64 VALUE compared to a BigInt is
+; still an unpromotable mix (the last case fences that). SCOPED to comparison, NOT arithmetic: the earlier
+; "a BigInt operation does not silently promote a fixed-width operand" case pins `(+ (BigInt.of 1) 1)` →
+; CDZ0301, and that arithmetic no-promotion rule is deliberately left in force.
+
+(case "a bare literal adopts its equality peer's BigInt type (== against a BigInt)"
+  (doc    "`(= (BigInt.of 5) 5)` — the bare `5` has no intrinsic width, so it adopts the concrete BigInt of
+           its equality peer (the comparison twin of a bare literal grounding to a declared BigInt payload)
+           rather than defaulting to Int64 and clashing CDZ0301; the equality type-checks and holds → 111.")
+  (input (do (def (main) (if (= (BigInt.of 5) 5) 111 222)) (export main)))
+  (output (: 111 Int64)))
+
+(case "a bare literal adopts its ordering peer's BigInt type (< against a BigInt)"
+  (doc    "`(< (BigInt.of 5) 7)` — the bare `7` adopts BigInt from its `<` peer, so the ordering is a BigInt
+           comparison (not an Int64/BigInt mix) and 5 < 7 holds → 111.")
+  (input (do (def (main) (if (< (BigInt.of 5) 7) 111 222)) (export main)))
+  (output (: 111 Int64)))
+
+(case "an i64-overflowing bare literal grounds to BigInt from its comparison peer (no range fault)"
+  (doc    "`(= (BigInt.of 5) 99999999999999999999999999)` — the 26-digit literal exceeds every fixed width,
+           but adopting BigInt from its peer holds it losslessly, so there is neither a CDZ0201 range fault
+           nor a CDZ0301 mix; 5 ≠ that value → 222.")
+  (input (do (def (main) (if (= (BigInt.of 5) 99999999999999999999999999) 111 222)) (export main)))
+  (output (: 222 Int64)))
+
+(case "a genuine Int64 VALUE beside a BigInt still rejects (only a bare literal grounds, no promotion)"
+  (doc    "The seq-257 grounding is literal-typing-from-context, NOT numeric promotion: only a BARE literal
+           adopts a BigInt peer. A NON-literal Int64 value `m` beside a BigInt is still an unpromotable mix,
+           rejected CDZ0301 — the no-silent-promotion rule is untouched.")
+  (input (do (def (main (: m Int64)) (= (BigInt.of 5) m)) (export main)))
+  (error  CDZ0301))
+
 ; -- breaker batch 508 (2026-08-27): the #4086 demote's BREADTH across trap sources (the owner's
 ; dzb pins cover the division faces; these add shift-OOB, the Int64.min/-1 overflow, and
 ; Rem-by-zero — each conditionally reached, each demoting to a runtime trap that never fires on
