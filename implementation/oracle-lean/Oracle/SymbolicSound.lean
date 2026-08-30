@@ -89,7 +89,10 @@ def denoteApp (op : String) (w : IntTy) (oargs : Array Outcome) : Outcome :=
   else .unsupported "denote: unsupported operator arity"
 
 def denote (ρ : Nat → Value) (w : IntTy) : SymExpr → Outcome
-  | .const v => .value v
+  -- a `.const` denotes to its SEMANTIC value; a float literal is canonicalized to its `.f64` (its actual
+  -- runtime value) exactly as `normalize` does, so `denote (normalize e) = denote e` holds STRUCTURALLY
+  -- (a float literal and a computed `.f64` of the same value denote identically).
+  | .const v => .value (match Value.asF64? v with | some f => .f64 f | none => v)
   | .var n => .value (ρ n)
   | .ite c t e =>
     match denote ρ w c with
@@ -312,5 +315,19 @@ theorem mayTrap_sound (ρ : Nat → Value) (w : IntTy) (e : SymExpr) :
          simp only [Array.any_eq_false] at hany
          have hmt : mayTrap y.val = false := by have := hany i hi; rw [hval] at this; simpa using this
          exact ih y hmt)
+
+/-! ### Capstone base cases: `denote (normalize e) = denote e` on the leaves.
+The normalizer preserves meaning on `var` (it is the identity) and `const` (float canonicalization is
+now aligned in `denote`, so the equality is structural). These are the base cases of the full
+`denote (normalize e) = denote e` soundness theorem; its inductive cases — the `.app` fold/identities,
+the `.ite` fold/collapse (which uses `mayTrap_sound`), and the compound-congruence cases — remain. -/
+theorem denote_normalize_var (ρ : Nat → Value) (w : IntTy) (n : Nat) :
+    denote ρ w (normalize (.var n)) = denote ρ w (.var n) := by rw [normalize_var]
+
+theorem denote_normalize_const (ρ : Nat → Value) (w : IntTy) (v : Value) :
+    denote ρ w (normalize (.const v)) = denote ρ w (.const v) := by
+  have hf : ∀ f : Float, Value.asF64? (.f64 f) = some f := fun _ => rfl
+  simp only [normalize, denote]
+  cases h : Value.asF64? v <;> simp [h, hf]
 
 end Oracle
