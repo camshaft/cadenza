@@ -450,6 +450,17 @@
             (+ (Qty.of 1.0 (Qty.unit y)) (Qty.of 2.0 (Unit.base #"second")))))
   (error  CDZ0501))
 
+(case "adding a length and a time is a dimensional mismatch naming the operation and bare units"
+  (doc    "L1-2: adding a length directly to a time is a DIMENSIONAL mismatch — CDZ0501 (units-of-measure.md
+           §A Dimensional Mismatch Is An Error), a compile-time rejection (units erase before the program
+           runs, never a runtime trap). The message names the OPERATION (adding) and the two bare UNITS
+           (meter, second) and states the equal-dimensions rule — the rustc-gold form, not a full `(Qty …)`
+           type dump. (Migrated from rcdzc combining_quantities_of_incompatible_dimension_is_cdz0501; the
+           message-does-NOT-dump-the-full-`(Qty …)`-type negative is the inexpressible remainder kept as a
+           shrunk white-box residual.)")
+  (input  (do (def (main) (+ (Qty.of 1.0 (Unit.base #"meter")) (Qty.of 1.0 (Unit.base #"second")))) (export main)))
+  (error  CDZ0501 (message "adding") (message "meter") (message "second")))
+
 ; Adding a quantity and a plain number — `(+ (Qty.of 5 (Unit.of #"meter")) 3)` — is CDZ0501 (no implicit
 ; dimensionless coercion), and carries a same-unit WRAP fix: give the bare number the SAME unit as the
 ; quantity operand, `(Qty.of <n> (Unit.base #"meter"))` (the unit is recoverable from the quantity operand),

@@ -18238,22 +18238,18 @@ mod match_engine {
 
     #[test]
     fn combining_quantities_of_incompatible_dimension_is_cdz0501() {
-        // L1-2: adding a length to a time is a DIMENSIONAL mismatch — CDZ0501 (units-of-measure.md §A
-        // Dimensional Mismatch Is An Error), the code that opens the CDZ05xx verification-layer band. It
-        // is a compile-time rejection (units erase before the program runs), never a runtime trap.
+        // WHITE-BOX RESIDUAL. The CDZ0501 code + the message NAMING the operation (adding) and bare units
+        // (meter, second) are now the corpus 18-units-of-measure case "adding a length and a time is a
+        // dimensional mismatch naming the operation and bare units". This keeps ONLY the inexpressible
+        // remainder: the message must NOT dump the full `(Qty …)` operand types (a message-ABSENCE negative
+        // the corpus grade has no clause for) — the rustc-gold form is bare units + rule, not a type dump.
         let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"meter\")) \
                    ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a length + a time must reject CDZ0501 (dimensional mismatch)");
-        assert_eq!(err.code.as_deref(), Some("CDZ0501"), "got: {}", err.message);
-        // The message names the OPERATION and just the UNITS (not the whole `(Qty …)` types), and states
-        // the equal-dimensions rule — the rustc-gold form, not a bare type dump.
         assert!(
-            err.message.contains("adding")
-                && err.message.contains("meter")
-                && err.message.contains("second")
-                && !err.message.contains("(Qty"),
-            "names the op + bare units + rule, no full-type dump: {}",
+            !err.message.contains("(Qty"),
+            "the dimensional-mismatch message names bare units, not a full `(Qty …)` type dump: {}",
             err.message
         );
     }
