@@ -716,56 +716,10 @@ fn a_value_juxtaposed_with_a_type_names_the_missing_colon_annotation() {
     );
 }
 
-#[test]
-fn applying_a_monomorphic_sum_type_to_arguments_says_it_takes_no_type_parameters() {
-    // The common sum-annotation slip: `(: t (T Int64))` where `(type T (Leaf Int64) …)` is MONOMORPHIC
-    // (takes no type parameters). The reader parses `(T Int64)` as applying `T` to `Int64`; since `T`
-    // reduces to a type-value with ZERO declared params, the message names the exact fix — write `T`,
-    // not `(T …)` — rather than the generic "not in call position" (which reads wrong when the type is
-    // in annotation position, just over-applied). A user `(Color 5)` in value call position takes the
-    // same precise message (a nullary sum can't be applied to anything, and the fix is the same). A
-    // GENERIC sum given args is a different (correct) path; a prelude scalar like `Int64` has no decl
-    // and keeps the generic message (the sibling test above).
-    for (src, name) in [
-        (
-            "(module m (type T (Leaf Int64) (Node Int64)) \
-                   (def (f (: t (T Int64))) (match t ((T.Leaf n) n) ((T.Node n) n))) \
-                   (def (main) (f (T.Leaf 5))) (export main))",
-            "T",
-        ),
-        (
-            "(module m (type Color R G B) (def (main) (Color 5)) (export main))",
-            "Color",
-        ),
-    ] {
-        let d = reject_full(src).unwrap_or_else(|| panic!("applying {name} is rejected"));
-        assert!(
-            d.message
-                .contains(&format!("`{name}` is a type that takes no type parameters"))
-                && d.message
-                    .contains(&format!("write `{name}`, not `({name} …)`")),
-            "names the no-type-parameters fix for {name}: {}",
-            d.message
-        );
-        // The named fix is now APPLYABLE: a replace of the whole `(T …)` application with the bare type
-        // `T` (strip the spurious args). Heuristic — it clears the fault in the common ANNOTATION slip
-        // (`(: t (T Int64))`); in value call position it trades this error for a clearer one, so it is
-        // not asserted verified.
-        let fix = d
-            .fix
-            .as_ref()
-            .unwrap_or_else(|| panic!("{name} carries the write-`{name}` fix"));
-        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-        assert_eq!(
-            fix.replacement, *name,
-            "replaces `({name} …)` with the bare `{name}`"
-        );
-        assert!(
-            !fix.verified,
-            "heuristic — right in annotation position, not asserted for value position"
-        );
-    }
-}
+// (applying_a_monomorphic_sum_type_to_arguments_says_it_takes_no_type_parameters migrated to corpus
+// 07-type-system: "annotating with a monomorphic sum applied to a type argument says it takes no type
+// parameters" (`(: t (T Int64))` → CDZ0203 + replace-with-`T` fix) and "applying a monomorphic sum in value
+// position says it takes no type parameters" (`(Color 5)` → CDZ0203 + replace-with-`Color` fix). Both PASS wasm.)
 
 // (a_prelude_type_constructor_with_the_wrong_arity_names_its_expected_argument_count migrated to corpus
 // 07-type-system, the "PRELUDE type-constructor wrong-arity" block: List over-applied, Map under-applied, Set
@@ -1318,83 +1272,11 @@ fn a_non_type_argument_in_a_type_constructor_names_the_position() {
     );
 }
 
-#[test]
-fn a_user_generic_sum_with_the_wrong_type_arg_count_names_its_expected_arity() {
-    // A USER generic sum applied to the wrong number of type args — `(Box Int64 Bool)` where `(type Box
-    // (W a) …)` declares ONE type parameter — REDUCES to a `Ty::Sum` (silently dropping the extra arg),
-    // so `typeval_of` succeeds and the "not a type" path never fires; it compiled clean. The arity is
-    // now checked independently (off the sum's declared param count) and names the fix, echoing the
-    // sum's own parameter names — the user-sum twin of M110's prelude-ctor arity check.
-    for (src, expect) in [
-        (
-            "(module m (type Box (W a) (E)) (def (g (: b (Box Int64 Bool))) b) (def (main) 0) (export main))",
-            "`Box` takes 1 type argument, but 2 were supplied — write `(Box a)`",
-        ),
-        (
-            "(module m (type Pair (P a b)) (def (g (: p (Pair Int64))) p) (def (main) 0) (export main))",
-            "`Pair` takes 2 type arguments, but 1 was supplied — write `(Pair a b)`",
-        ),
-        // The value-annotation site routes through the same check.
-        (
-            "(module m (type Box (W a) (E)) (def (g) (: 5 (Box Int64 Bool))) (export g))",
-            "`Box` takes 1 type argument, but 2 were supplied — write `(Box a)`",
-        ),
-    ] {
-        let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message.contains(expect),
-            "names the generic-sum arity + fix:\n  expected: {expect}\n  got: {}",
-            d.message
-        );
-    }
-    // The CORRECT arity is clean, and a MONOMORPHIC sum applied to args keeps M108's "takes no type
-    // parameters" message (not this arity one — a 0-param sum is a different fault).
-    assert!(
-            reject_full(
-                "(module m (type Box (W a) (E)) (def (g (: b (Box Int64))) (match b ((W n) n) ((E) 0))) (def (main) 0) (export main))"
-            )
-            .is_none_or(|d| !d.message.contains("takes 1 type argument")),
-            "the correct arity `(Box Int64)` raises no arity fault"
-        );
-    let mono = reject_full(
-        "(module m (type Color R G) (def (g (: t (Color Int64))) t) (def (main) 0) (export main))",
-    )
-    .expect("a monomorphic sum applied to args rejects");
-    assert!(
-        mono.message.contains("takes no type parameters"),
-        "a monomorphic sum keeps the M108 message, not the arity one: {}",
-        mono.message
-    );
-    // A NESTED wrong-arity ctor — inside a `List`, a `Tuple` element, or a record field — is caught
-    // too (the check recurses into type-argument positions), not only at the top-level annotation.
-    for src in [
-        "(module m (type Box (W a) (E)) (def (g (: xs (List (Box Int64 Bool)))) xs) (def (main) 0) (export main))",
-        "(module m (type Box (W a) (E)) (def (g (: t (Tuple Int64 (Box Int64 Bool)))) t) (def (main) 0) (export main))",
-        "(module m (type Box (W a) (E)) (def (g (: r (Record (b (Box Int64 Bool))))) r) (def (main) 0) (export main))",
-        // A nested PRELUDE ctor at the wrong arity is caught by the same recursion.
-        "(module m (def (g (: xs (List (Map Int64)))) xs) (def (main) 0) (export main))",
-    ] {
-        let d = reject_full(src).unwrap_or_else(|| panic!("nested wrong-arity rejects: {src}"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message.contains("takes")
-                && d.message.contains("type argument")
-                && d.message.contains("supplied"),
-            "the nested ctor's arity is named: {}",
-            d.message
-        );
-    }
-    // NO false positive: a deeply-nested but WELL-FORMED type is clean (the recursion only flags a
-    // genuine arity mismatch, not every nested ctor).
-    assert!(
-            reject_full(
-                "(module m (def (g (: xs (List (Map Int64 (Set Int64))))) xs) (def (main) 0) (export main))"
-            )
-            .is_none_or(|d| !d.message.contains("takes")),
-            "a valid deeply-nested type raises no arity fault"
-        );
-}
+// (a_user_generic_sum_with_the_wrong_type_arg_count_names_its_expected_arity migrated to corpus 07-type-system,
+// the "USER generic sum wrong-arity" block: `(Box Int64 Bool)` over-applied (takes 1, 2 supplied), `(Pair Int64)`
+// under-applied (takes 2, 1 supplied), and the value-annotation-site `(: 5 (Box Int64 Bool))` — each CDZ0203
+// naming the sum arity + fix. The correct-arity-clean + monomorphic-keeps-M108-message controls are covered by
+// the working generic-sum cases and the monomorphic-sum cases above. All 3 PASS wasm.)
 
 #[test]
 fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
