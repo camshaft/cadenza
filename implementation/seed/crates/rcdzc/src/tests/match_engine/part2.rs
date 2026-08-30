@@ -4149,86 +4149,13 @@ fn remainder_on_same_dimension_integer_quantities_is_well_formed() {
     );
 }
 
-#[test]
-fn an_if_join_over_different_unit_quantities_names_the_scale_not_a_shadowed_declaration() {
-    // Two same-dimension quantities at DIFFERENT units (km vs m) are distinct `(Qty T u)` types (the
-    // unit carries the scale), so an if-join rejects them CDZ0203 — but BOTH render to
-    // `(Qty Int64 (Unit.base #"meter"))` (the reference-unit name, scale dropped), so the generic
-    // same-name-distinct-type hint would wrongly blame "a declaration shadows a built-in".
-    // `qty_scale_mismatch_hint` fires first and names the REAL cause (same dimension, different units,
-    // convert with in/as). Pins the diagnostic content, not just the code.
-    let diag = reject_full(
-        "(module m (def (main (: b Bool)) ((. Qty value) \
-             (if b ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
-                   ((. Qty of) 500 ((. Unit base) #\"meter\"))))) (export main))",
-    )
-    .expect("an if over km vs m branches is rejected");
-    assert_eq!(
-        diag.code.as_deref(),
-        Some("CDZ0203"),
-        "a quantity-scale join clash is CDZ0203"
-    );
-    assert!(
-        diag.message.contains("SAME dimension at DIFFERENT units"),
-        "the message must name the scale difference, not a shadowed declaration: {}",
-        diag.message
-    );
-    assert!(
-        !diag.message.contains("shadows a built-in"),
-        "the misleading shadowed-declaration hint must NOT fire for a quantity-scale clash: {}",
-        diag.message
-    );
-    // A cross-DIMENSION join (meter vs second) is a plain distinguishable mismatch — no scale tail.
-    let cross = reject_full(
-        "(module m (def (main (: b Bool)) ((. Qty value) \
-             (if b ((. Qty of) 1 ((. Unit base) #\"meter\")) \
-                   ((. Qty of) 2 ((. Unit base) #\"second\"))))) (export main))",
-    )
-    .expect("an if over meter vs second branches is rejected");
-    assert!(
-        !cross.message.contains("SAME dimension at DIFFERENT units"),
-        "a cross-dimension clash must NOT claim same-dimension: {}",
-        cross.message
-    );
-}
+// (an_if_join_over_different_unit_quantities_names_the_scale_not_a_shadowed_declaration migrated to corpus
+// 18-units-of-measure: an if-join over km-vs-m same-dimension quantities → CDZ0203 "SAME dimension at
+// DIFFERENT units" + (not "shadows a built-in"); a cross-dimension if-join stays a plain mismatch. PASS wasm.)
 
-#[test]
-fn a_list_of_different_unit_quantities_names_the_scale_not_two_identical_looking_types() {
-    // A LIST-element join over two same-dimension DIFFERENT-scale quantities (km vs m) is the peer-join
-    // sibling of the if/match case: both elements render `(Qty Float64 (Unit.base #"meter"))` (scale
-    // dropped), so the bare "must share one type: (Qty … meter) and (Qty … meter)" reads as a
-    // contradiction. `peer_type_delta_hint` now routes through `qty_scale_mismatch_hint`, so the list
-    // join names the REAL cause (same dimension, different units, convert with in/as). Pins the
-    // list-element diagnostic to fix-parity with the if/match join sites.
-    let diag = reject_full(
-        "(module m (def (main) ((. Qty value) ((. List at) \
-             (list ((. Qty of) 5.0 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
-                   ((. Qty of) 2.0 ((. Unit base) #\"meter\"))) 0))) (export main))",
-    )
-    .expect("a list of km vs m quantities is rejected");
-    assert_eq!(
-        diag.code.as_deref(),
-        Some("CDZ0201"),
-        "a list-homogeneity quantity-scale clash is CDZ0201"
-    );
-    assert!(
-        diag.message.contains("SAME dimension at DIFFERENT units"),
-        "the list-element message must name the scale difference, not two identical-looking types: {}",
-        diag.message
-    );
-    // A cross-DIMENSION list (meter vs second) stays a plain distinguishable mismatch — no scale tail.
-    let cross = reject_full(
-        "(module m (def (main) ((. Qty value) ((. List at) \
-             (list ((. Qty of) 5.0 ((. Unit base) #\"meter\")) \
-                   ((. Qty of) 2.0 ((. Unit base) #\"second\"))) 0))) (export main))",
-    )
-    .expect("a list over meter vs second is rejected");
-    assert!(
-        !cross.message.contains("SAME dimension at DIFFERENT units"),
-        "a cross-dimension list clash must NOT claim same-dimension: {}",
-        cross.message
-    );
-}
+// (a_list_of_different_unit_quantities_names_the_scale_not_two_identical_looking_types migrated to corpus
+// 18-units-of-measure: a list-element join over km-vs-m same-dimension quantities → CDZ0201 "SAME dimension
+// at DIFFERENT units"; a cross-dimension list clash stays a plain mismatch. PASS wasm.)
 
 #[test]
 fn a_nominal_over_float32_qty_stored_as_a_map_value_emits_valid_wasm() {
