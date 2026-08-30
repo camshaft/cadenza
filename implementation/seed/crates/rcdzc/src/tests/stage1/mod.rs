@@ -3596,42 +3596,11 @@ fn a_handle_with_an_unbound_effect_name_reports_one_error_not_a_shadowing_declin
 
 #[test]
 fn a_handler_arm_for_an_undeclared_operation_is_cdz0403() {
-    // E2a: a handler arm naming an operation its effect does not declare is a closed-set violation —
-    // CDZ0403 (`capabilities-and-effects.md` §A Handler Arm Names An Operation Its Effect Declares).
-    // `Choose` declares only `pick`; an arm `((. Choose guess) …)` names `guess` — undeclared. This
-    // is CDZ0403, not the generic "record has no field" CDZ0201 the member projection alone gives.
-    let src = "(do (effect Choose (op pick (-> Unit Int64))) \
-                   (def (main) (handle Choose unit ((guess () s (resume 5 s))) ((. Choose pick)))) \
-                   (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a handler arm for an undeclared op must be rejected");
-    assert_eq!(
-        err.code.as_deref(),
-        Some("CDZ0403"),
-        "expected CDZ0403 (handler arm names an undeclared op), got: {}",
-        err.message
-    );
-    // TWO-TIER (the effect-op analogue of the member-access enrichment): `guess` is FAR from the sole
-    // declared op `pick`, so no confident "did you mean" — instead LIST the effect's operations
-    // ("— closest matches: `pick`") so the author sees what `Choose` actually offers, not a dead-end.
-    assert!(
-        !err.message.contains("did you mean") && err.message.contains("closest matches: `pick`"),
-        "a far undeclared op lists the effect's declared operations: {}",
-        err.message
-    );
-    // A far miss (no confident replacement) now carries the FALLBACK mechanical repair: DELETE the
-    // whole undeclared arm — always a valid edit that clears the closed-set violation, so the CDZ0403
-    // is actionable even when the compiler cannot guess a replacement op.
-    assert_eq!(
-        err.fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Delete),
-        "a far undeclared-op arm carries a delete-the-arm fix: {:?}",
-        err.fix
-    );
-    assert!(
-        err.fix.as_ref().is_some_and(|f| !f.verified),
-        "the delete is heuristic (the author may have meant a different op)"
-    );
+    // The compile-path FAR-MISS face (CDZ0403 + "closest matches: `pick`" + no "did you mean" + a
+    // delete-the-arm fix, for `guess` far from the sole declared op `pick`) migrated to corpus 14b
+    // "a handler arm for an operation the effect does not declare is rejected". What STAYS here is the
+    // TIER-1 CLOSE-typo path, asserted on the diagnostics QUERY path (crate::diagnostics) the corpus
+    // cannot drive.
     // A CLOSE typo (`picks`→`pick`, edit distance 1) instead gets the confident "did you mean" + a
     // replace fix on the mistyped op key — the tier-1 path.
     let close = "(do (effect Choose (op pick (-> Unit Int64))) \
