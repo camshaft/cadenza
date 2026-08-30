@@ -1501,6 +1501,30 @@
   (input  (and false undefined-name))
   (error  CDZ0101))
 
+; The fixed-arity grammar forms `if`/`and`/`or`/`not` reject a wrong operand count (CDZ0201, "takes
+; exactly …"). TOO MANY operands carries a delete-the-surplus fix — the same surplus-arg delete an
+; over-applied operator / a too-many-operand quote gets. TOO FEW carries NO fix (nothing to delete).
+; (Migrated from rcdzc a_fixed_arity_grammar_form_with_too_many_operands_offers_a_delete_fix.)
+(case "an `if` with too many operands offers a delete-the-surplus fix"
+  (input  (do (def (main) (if true 1 2 3)) (export main)))
+  (error  CDZ0201 (message "takes exactly") (fix (kind delete))))
+
+(case "an `and` with too many operands offers a delete-the-surplus fix"
+  (input  (do (def (main) (and true false true)) (export main)))
+  (error  CDZ0201 (message "takes exactly") (fix (kind delete))))
+
+(case "an `or` with too many operands offers a delete-the-surplus fix"
+  (input  (do (def (main) (or true false true)) (export main)))
+  (error  CDZ0201 (message "takes exactly") (fix (kind delete))))
+
+(case "a `not` with too many operands offers a delete-the-surplus fix"
+  (input  (do (def (main) (not true false)) (export main)))
+  (error  CDZ0201 (message "takes exactly") (fix (kind delete))))
+
+(case "a too-FEW-operand `and` carries no fix (nothing to delete)"
+  (input  (do (def (main) (and true)) (export main)))
+  (error  CDZ0201 (message "takes exactly") (no-fix)))
+
 (case "a let-bound variable is in scope inside a boolean connective operand"
   (doc    "The complement of the short-circuited-unbound case above, and the boundary its scope check
            must not over-reach into: a `let`-bound (or parameter) name used in an `and`/`or` operand is
