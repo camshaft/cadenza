@@ -154,6 +154,29 @@
   (input  (do (def (main) (Qty.value (Qty.of 5 Unit.one))) (export main)))
   (call   main) (output (: 5 Int64)))
 
+; `Qty.of <value> <unit>` requires its FIRST argument (the MAGNITUDE) to be a NUMERIC scalar — Int, Float,
+; Rational, or BigInt. `Qty.of`'s scheme `∀a. a → Unit → (Qty a u)` does not constrain the magnitude, and
+; `type_of`'s `Qty.of` arm wraps whatever type the value has, so a NON-numeric magnitude (a tuple, a bool, a
+; string) silently passed `cdz check` and reached emit — where `Qty.pow`/scale assume a scalar and mis-width
+; the boxed compound (an i32/i64 mismatch → invalid wasm, a checker-accepts-illtyped miscompile). Now
+; CDZ0201 at check, naming the numeric requirement (reject-don't-miscompile) — the magnitude twin of the
+; not-a-unit second-arg reject above. A CONCRETE non-numeric type only; an unsolved value is not pre-judged.
+(case "a Qty.of magnitude that is a tuple is rejected as not numeric"
+  (input  (do (def (main) (Qty.value (Qty.pow (Qty.of (tuple true) (Unit.base #"gram")) 2))) (export main)))
+  (error  CDZ0201 (message "a quantity's magnitude must be a numeric value")))
+
+(case "a Qty.of magnitude that is a string is rejected as not numeric"
+  (input  (do (def (main) (Qty.value (Qty.of "x" (Unit.base #"gram")))) (export main)))
+  (error  CDZ0201 (message "a quantity's magnitude must be a numeric value")))
+
+(case "a Qty.of magnitude that is a bool is rejected as not numeric"
+  (input  (do (def (main) (Qty.value (Qty.of true (Unit.base #"gram")))) (export main)))
+  (error  CDZ0201 (message "a quantity's magnitude must be a numeric value")))
+
+(case "a valid Float magnitude Qty.of is accepted (no over-rejection of the numeric case)"
+  (input  (do (def (main) (Qty.value (Qty.of 5.0 (Unit.base #"gram")))) (export main)))
+  (call   main) (output (: 5.0 Float64)))
+
 ; A quantity in a NON-REFERENCE unit DISPLAYS at its dimension's reference unit with the magnitude
 ; SCALED to that reference — the same normalize-to-reference the mixed-unit combine runs, so a single
 ; quantity and a homogeneous combine render identically. This is the fix for the calc relabel bug
