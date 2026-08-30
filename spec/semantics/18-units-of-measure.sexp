@@ -259,6 +259,32 @@
   (input  (do (def (main) (Qty.of (Int8.of 5) (Unit.prefix kilo (Unit.base #"meter")))) (export main)))
   (error  CDZ0304))
 
+; The narrow-inner width check also covers ARITHMETIC overflow, not just the scaled-display magnitude above:
+; a quantity's `+` runs the ERASED inner numeric op, so a `(Qty Int8 m)` add must overflow-trap like a bare
+; Int8. `(+ (Qty.of (Int8.of 100) m) (Qty.of (Int8.of 100) m))` = 200 overflows Int8 — a compile-provable
+; overflow is CDZ0304 (a constant OPERATION with no value), the SAME code the bare Int8 add gets, NOT CDZ0302
+; ("literal does not fit its width": each 100 FITS Int8, it is the SUM that overflows). The width check peels
+; `Ty::Qty` to the inner Int8 width; without the peel the over-range constant slipped to a BACKEND CDZ0302
+; `cdz check` never saw (a check-vs-compile gap). (Migrated from rcdzc
+; a_narrow_width_int_quantity_overflow_is_cdz0304_not_backend_cdz0302.)
+(case "a narrow-width quantity ADD whose sum overflows the inner type is rejected (same-unit arith path)"
+  (input  (do (def (main) (Qty.value (+ (Qty.of (Int8.of 100) (Unit.base #"meter")) (Qty.of (Int8.of 100) (Unit.base #"meter"))))) (export main)))
+  (error  CDZ0304))
+
+(case "a mixed-scale narrow-width quantity combine whose reference-converted sum overflows is rejected"
+  (doc    "The reference-CONVERTING arith path honors the inner width too: `1 km` → `1000 m`, then
+           `1000 + 50` = 1050 overflows UInt8 (max 255) → CDZ0304, folded inside the quantity-combine Int arm
+           after the scale conversion — the mixed-scale twin of the same-unit add overflow above.")
+  (input  (do (def (main) (Qty.value (+ (Qty.of (UInt8.of 1) (Unit.prefix kilo (Unit.base #"meter"))) (Qty.of (UInt8.of 50) (Unit.base #"meter"))))) (export main)))
+  (error  CDZ0304))
+
+(case "a narrow-width quantity add whose sum FITS the inner type runs normally (no spurious overflow trap)"
+  (doc    "The control of the narrow-width arith overflow pair: `50 + 50` = 100 fits Int8 (max 127), so the
+           same-dimension add runs and `Qty.value` reads back 100 — the overflow gate does not over-reject a
+           fitting narrow-width sum.")
+  (input  (do (def (main) (Qty.value (+ (Qty.of (Int8.of 50) (Unit.base #"meter")) (Qty.of (Int8.of 50) (Unit.base #"meter"))))) (export main)))
+  (call   main) (output (: 100 Int64)))
+
 (case "a magnitude literal that overflows the annotated Qty INNER width is rejected"
   (doc    "The ANNOTATION face of Qty magnitude width (distinct from the scaled-display CDZ0304 pair above —
            no unit scaling here, the bare literal itself does not fit): `(: (Qty.of 999 meter) (Qty Int8
