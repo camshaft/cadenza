@@ -33,6 +33,6 @@ pub use diagnostics_wire::{decode_diagnostics, encode_diagnostics};
 pub use link_map::{FileSpan, KIND_LINK_MAP, decode_link_map, encode_link_map};
 pub use opt::OptLevel;
 pub use overflow::{OverflowMode, OverflowSpec};
-pub use result_types_wire::{DecodedTy, decode_result_types, encode_result_types};
+pub use result_types_wire::{decode_result_types, encode_result_types};
 pub use sidecar::{Query, Request, decode, encode};
 pub use target::Target;
