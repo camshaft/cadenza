@@ -9020,11 +9020,11 @@
   (error  CDZ0203 (no-fix)))
 
 (case "a numeric map-VALUE leaf offers the inner bare-literal retype fix"
-  (input  (do (def (h (: m (Map Int64 Float64))) m) (def (g) (h (map (1 5)))) (export g)))
+  (input  (do (def (h (: m (Map Int64 Float64))) m) (def (g) (h #map((= 1 5)))) (export g)))
   (error  CDZ0203 (fix (kind replace) (replacement "5.0"))))
 
 (case "a numeric map-KEY leaf offers the inner bare-literal retype fix"
-  (input  (do (def (h (: m (Map Float64 Int64))) m) (def (g) (h (map (1 5)))) (export g)))
+  (input  (do (def (h (: m (Map Float64 Int64))) m) (def (g) (h #map((= 1 5)))) (export g)))
   (error  CDZ0203 (fix (kind replace) (replacement "1.0"))))
 
 ; The SUM twin of the compound-leaf retype: a variant-constructed value whose payload's inner numeric
