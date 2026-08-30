@@ -288,8 +288,17 @@ struct Gen<'a> {
 }
 
 impl Gen<'_> {
-    /// `(do (def (main <params>) <body>) (export main))`
+    /// `(do (def (main <params>) <body>) (export main))` — or, ~1/4 of the time, a USER-SUM program
+    /// (a top-level `(type …)` declaration + a `main` that constructs and matches it).
     fn program(&mut self) {
+        // Occasionally emit a user-defined-sum program: this reaches the sum TYPE-DECLARATION + tag
+        // layout + user-ctor construct/match emit — a path the built-in Option/Result arm and the rest
+        // of the grammar never touch (a `(type …)` decl must be TOP-LEVEL). Operator directive
+        // 2026-08-30: keep expanding the shapes of programs.
+        if self.cur.choice(4) == 0 {
+            self.user_sum_program();
+            return;
+        }
         self.out.push_str("(do (def (main");
         // 0..=2 typed parameters, each seeding a typed binding into the body's scope.
         let nparams = self.cur.choice(3);
@@ -304,6 +313,55 @@ impl Gen<'_> {
         let depth = 5;
         self.expr(depth, Kind::Any);
         self.out.push_str(") (export main))");
+    }
+
+    /// A USER-DEFINED-SUM program: a top-level monomorphic `(type …)` declaration + a param-less `main`
+    /// that CONSTRUCTS a variant (with generated numeric payloads for variety) and MATCHES all arms.
+    /// Reaches the sum type-decl / tag-layout / user-ctor construct + match-dispatch emit that no other
+    /// path exercises (built-in Option/Result don't declare a type; a `(type …)` must be top-level).
+    /// Three shapes mirror the corpus: a multi-variant sum with payloads, nullary variants (an enum),
+    /// and a single-variant struct-newtype (which erases to its field tuple). Int64 fields so it types.
+    fn user_sum_program(&mut self) {
+        let depth = 4;
+        match self.cur.choice(3) {
+            0 => {
+                // Multi-variant with payloads: construct one variant, match both (bind + use payloads).
+                self.out.push_str(
+                    "(do (type Shape (Circle Int64) (Rect Int64 Int64)) (def (main) (match ",
+                );
+                if self.cur.flip() {
+                    self.out.push_str("(Circle ");
+                    self.expr(depth, Kind::Num);
+                    self.out.push(')');
+                } else {
+                    self.out.push_str("(Rect ");
+                    self.expr(depth, Kind::Num);
+                    self.out.push(' ');
+                    self.expr(depth, Kind::Num);
+                    self.out.push(')');
+                }
+                self.out
+                    .push_str(" ((Circle a) a) ((Rect a b) (+ a b)))) (export main))");
+            }
+            1 => {
+                // Nullary variants (an enum) — construct one, match all three arms.
+                self.out
+                    .push_str("(do (type Color (Red) (Green) (Blue)) (def (main) (match ");
+                self.out
+                    .push_str(["(Red)", "(Green)", "(Blue)"][self.cur.choice(3)]);
+                self.out
+                    .push_str(" ((Red) 1) ((Green) 2) ((Blue) 3))) (export main))");
+            }
+            _ => {
+                // Single-variant struct-newtype (erases to a field tuple) — construct + destructure.
+                self.out
+                    .push_str("(do (type Pt (Mk Int64 Int64)) (def (main) (match (Mk ");
+                self.expr(depth, Kind::Num);
+                self.out.push(' ');
+                self.expr(depth, Kind::Num);
+                self.out.push_str(") ((Mk a b) (+ a b)))) (export main))");
+            }
+        }
     }
 
     /// Emit one expression of the requested (hint) kind, within the depth budget.
@@ -1614,6 +1672,35 @@ mod tests {
         );
     }
 
+    /// The user-sum program shape is reachable — some seed emits a TOP-LEVEL `(type …)` declaration with
+    /// a matching `main` that constructs + matches a user ctor — and every such program parses. Guards
+    /// the sum type-decl / user-ctor construct + match emit reach (operator directive 2026-08-30).
+    #[test]
+    fn some_seed_emits_a_user_sum_type_decl() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(do (type ") {
+                assert!(
+                    src.contains("((Circle a)")
+                        || src.contains("((Red) ")
+                        || src.contains("((Mk a b)"),
+                    "user-sum program declared a type without the expected match arms:\n{src}"
+                );
+                hit = true;
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a user-sum type declaration"
+        );
+    }
+
     /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
     /// only other def) — and every program that path can emit still parses. Also asserts the
     /// TERMINATION STRUCTURE holds on every such program: the helper carries a `(if (<= ` base-case
@@ -1766,7 +1853,9 @@ mod tests {
     /// `varied_seed` sweep's byte distribution does not reach this deep body residue.)
     #[test]
     fn some_seed_emits_a_discard_resume_arm() {
-        let seed = [0u8, 16, 0, 3, 1, 2, 2, 2, 2, 2, 2, 2];
+        // Leading `1` consumes program()'s user-sum-vs-normal `choice(4)` (1 % 4 != 0 → normal main),
+        // then the original bytes align: b1 % 22 == 16 → effect_handler, b2 % 4 == 0 → scalar state, …
+        let seed = [1u8, 0, 16, 0, 3, 1, 2, 2, 2, 2, 2, 2, 2];
         let src = generate(&seed).source;
         assert!(
             cadenza_syntax::sexpr::read(&src).is_ok(),
@@ -1785,7 +1874,9 @@ mod tests {
     /// generic `varied_seed` sweep's byte distribution does not reach this deep body residue.)
     #[test]
     fn some_seed_emits_a_double_resume_arm() {
-        let seed = [0u8, 16, 0, 3, 2, 2, 2, 2, 2, 2, 2, 2];
+        // Leading `1` consumes program()'s user-sum-vs-normal `choice(4)` (1 % 4 != 0 → normal main),
+        // then the original bytes align: b1 % 22 == 16 → effect_handler, b2 % 4 == 0 → scalar, b4 → double.
+        let seed = [1u8, 0, 16, 0, 3, 2, 2, 2, 2, 2, 2, 2, 2];
         let src = generate(&seed).source;
         assert!(
             cadenza_syntax::sexpr::read(&src).is_ok(),
