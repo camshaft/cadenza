@@ -18910,6 +18910,21 @@
               (export f)))
   (error CDZ0201 (message "must be the final element") (not "unbound name")))
 
+; A structural SET match pattern `#set(…)` is UNSUPPORTED — a set is unordered with no positional structure
+; to destructure — so it is a coded, CHECK-surfaced CDZ0201 whose message names the fix (bind the whole set
+; with a name or `_`, and query it with Set.contains / Set.size). This was once a silent-in-check +
+; uncoded-in-compile fall-through: the SET matcher path was the fourth left uncovered after the list/map/
+; scalar-fallthrough coded-fault fixes (v-rcdzc-ts-1 edge-hunt → queue/48 → v-ast-compound fix #6339). The
+; two-`..` `#set(1 .. r1 .. r2)` facet stays a rust pin — its malformed double-`..` surface does not
+; ML-round-trip, same as the #map two-`..` case.
+(case "a bare structural set match pattern is a coded, check-surfaced rejection"
+  (input  (do (def (f (: s (Set Int64))) (match s (#set(1) 0) (_ 9))) (export f)))
+  (error  CDZ0201 (message "set match pattern is not supported")))
+
+(case "a rest-form set match pattern is likewise a coded rejection (a set has no positional structure)"
+  (input  (do (def (f (: s (Set Int64))) (match s (#set(1 .. r) 0) (_ 9))) (export f)))
+  (error  CDZ0201 (message "set match pattern is not supported")))
+
 ; --- Consumed loop-invariant heap extractions: the per-kind family ----------------------------------
 ; Two same-day fixes closed this family (aac1b72bc: LICM refuses a heap-typed Proj hoist root;
 ; 50f64b3ae: a consumed sum-payload child retains while its scrutinee lives — my filed SumExpect

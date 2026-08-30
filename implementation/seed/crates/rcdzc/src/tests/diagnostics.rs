@@ -1716,20 +1716,21 @@ fn a_bogus_map_or_scalar_path_arm_head_over_a_recursive_body_is_a_coded_fault_in
 /// list/map rest-shape rejects and the nested-record match decline use — so `check`≡`compile`.
 #[test]
 fn a_set_match_pattern_is_a_coded_check_surfaced_rejection_not_silent() {
-    // Parameterized body (non-nullary) so this exercises the check≡compile path via `match_pattern_fault`,
-    // not only the nullary-exported emit walk. Rest-form `#set(1 .. r)` (the queue/48 repro), bare
-    // `#set(1)`, and the two-`..` `#set(1 .. r1 .. r2)` all reach the same fall-through → all now CDZ0201.
-    for pat in ["#set(1 .. r)", "#set(1)", "#set(1 .. r1 .. r2)"] {
-        let src =
-            format!("(module m (def (f (: s (Set Int64))) (match s ({pat} 0) (_ 9))) (export f))");
-        let all = diags_of(&src);
-        assert!(
-            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("set match pattern is not supported")),
-            "a `{pat}` set match pattern surfaces the coded CDZ0201 rejection in check \
-             (was a silent uncoded decline): {all:?}"
-        );
-    }
+    // The bare `#set(1)` and single-`..` `#set(1 .. r)` forms migrated to corpus 05-compound-types ("a
+    // bare/rest-form set match pattern is a coded, check-surfaced rejection"). The TWO-`..`
+    // `#set(1 .. r1 .. r2)` form STAYS here as a white-box pin — its malformed double-`..` surface does not
+    // ML-round-trip (same corpus-inexpressibility as the #map two-`..` case), so it can't be a corpus input.
+    // It reaches the same fall-through → the coded, check-surfaced CDZ0201.
+    let pat = "#set(1 .. r1 .. r2)";
+    let src =
+        format!("(module m (def (f (: s (Set Int64))) (match s ({pat} 0) (_ 9))) (export f))");
+    let all = diags_of(&src);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+            && d.message.contains("set match pattern is not supported")),
+        "the two-`..` `{pat}` set match pattern surfaces the coded CDZ0201 rejection in check \
+         (was a silent uncoded decline; bare + single-`..` forms migrated to corpus 05): {all:?}"
+    );
     // NO false alarm: a scalar-only match over a Set scrutinee (a whole-value binder + wildcard, NO
     // `#set(…)` pattern) routes to the scalar path with a valid binder probe — it must stay clean.
     let ok = "(module m (def (f (: s (Set Int64))) (match s (whole 0) (_ 9))) (export f))";
