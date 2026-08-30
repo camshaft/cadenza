@@ -17,16 +17,17 @@ facts the normalizer's trap-guarded rewrites rest on:
 
   • `mayTrap` is FALSE on both leaves (`const`/`var`) — the trap-freedom fact that directly licenses
     dropping a constant or variable operand in a trap-guarded rewrite (`x*0 → 0`, `if x a a → a`).
+  • `normalize` is the IDENTITY on a symbolic input (`.var n`) — a variable has no sound rewrite, so
+    the canonicalizer leaves it untouched (the base case the whole recursion bottoms out on).
 
-Scope note — `symToValue?` and `mayTrap` are now TOTAL (structural `termination_by sizeOf` defs,
-converted from `partial` alongside this file), so their equation lemmas exist and `simp` proves their
-leaf facts (below). Still deferred: `normalize` remains a `partial def` (it recurses through
-`foldConst?`/`evalArithOp` with many arms), hence OPAQUE in the kernel — no equation lemmas, so
-`rfl`/`simp`/`unfold` cannot prove `normalize (.var n) = .var n`. The same
-`attach`+`termination_by sizeOf`+`decreasing_by` treatment used here unlocks it next (see the vertical
-log). Likewise the full goal `denote (normalize e) = denote e` needs the `denote` semantics (with an
-ambient integer width, since a symbolic arithmetic `app` is width-erased) and equation lemmas for
-`normalize`.
+Scope note — `symToValue?`, `mayTrap`, and `normalize` are now all TOTAL (structural
+`termination_by sizeOf` defs, converted from `partial` alongside this file; `normalize`'s `app`-arm
+algebraic identities were split into `normalizeAppIdentities` so its matcher stays simple enough for
+equation-lemma generation). Their equation lemmas exist and `simp` proves the leaf facts below. The
+REMAINING work is the deeper normalizer theorems — most of all the soundness goal
+`denote (normalize e) = denote e` (the canonicalizer preserves meaning ⇒ `symEquiv` is never a false
+`proven`), which needs the `denote` semantics (with an ambient integer width, since a symbolic
+arithmetic `app` is width-erased). Totality of all three is the foundation that unblocks it.
 -/
 import Oracle.Symbolic
 
@@ -83,6 +84,13 @@ variable/constant condition, `or a true → true` when `a` is a leaf). -/
 
 theorem mayTrap_const (v : Value) : mayTrap (.const v) = false := by simp [mayTrap]
 theorem mayTrap_var (n : Nat) : mayTrap (.var n) = false := by simp [mayTrap]
+
+/-! ## `normalize` is the identity on a symbolic input.
+`normalize` is a total (`termination_by sizeOf`) def; its `.var` arm is literally `.var n`, so `simp`
+discharges this via the equation lemma. A symbolic input has no sound rewrite — the canonicalizer
+leaves it untouched (the base case the recursion terminates on). -/
+
+theorem normalize_var (n : Nat) : normalize (.var n) = .var n := by simp [normalize]
 
 /-! ## Trap classification: `arithOps` ∪ `bitwiseOps` = exactly the trapping ops.
 `arithOps`/`bitwiseOps` are plain `List String` data, so membership is decidable — these `decide`
