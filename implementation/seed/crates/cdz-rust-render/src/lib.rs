@@ -1298,10 +1298,11 @@ pub fn cdz_render_at(
         // A borrow — the value may be used only here; the helper takes `&prog::Ident`.
         return format!("{fn_name}(&{path})");
     }
-    // A FLOAT (`Float32`/`Float64`) renders via cdz-run's canonical `display_float`, NOT Rust's `{}`:
-    // a whole float is `N.0` (Rust's `{}` prints `42`, the corpus wants `42.0`), `-0.0` and `NaN` are
-    // named. Inline the exact `display_float` logic (widening a Float32 to f64 first) so the Rust-gate
-    // render matches the value form the wasm gate + cdz-run produce.
+    // A FLOAT (`Float32`/`Float64`) renders to cdz-run's canonical VALUE form, NOT Rust's `{}`: a whole
+    // float is `N.0` (Rust's `{}` prints `42`, the corpus wants `42.0`), `-0.0` keeps its sign, and NaN
+    // is the canonical `nan` (the round-trippable form the binary-AST printer emits; seq-287 routed
+    // cdz-run's render_val through it — `Leaf::FloatNan` → `nan` — and this Rust-gate render matches it,
+    // retiring the old `NaN` spelling). Inline it (widening a Float32 to f64 first) so both gates agree.
     if ty == "Float64" || ty == "Float32" {
         // `.clone() as f64` (not a bare `as f64`): the path may be a VALUE (`.0`, top-level `__r`) OR a
         // `&f64` reference (a payload binder in a sum-render helper `match &v { Enum::Float(__p) => … }`
@@ -1312,7 +1313,7 @@ pub fn cdz_render_at(
         return format!(
             "{{ let __f = ({path}).clone() as f64; \
              if __f == 0.0 && __f.is_sign_negative() {{ \"-0.0\".to_string() }} \
-             else if __f.is_nan() {{ \"NaN\".to_string() }} \
+             else if __f.is_nan() {{ \"nan\".to_string() }} \
              else if __f.fract() == 0.0 && __f.is_finite() {{ format!(\"{{:.0}}.0\", __f) }} \
              else {{ format!(\"{{}}\", __f) }} }}"
         );
