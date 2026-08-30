@@ -8942,6 +8942,27 @@
   (input  (do (def x #set(1 "a")) (export x)))
   (error  CDZ0201 (message "Int64") (message "String") (no-fix)))
 
+; When two JOIN-site records (list elements / `if` branches / `match` arms) differ only by a MISSPELLED
+; field (`foo` vs `fooo`), the homogeneity reject (CDZ0201) carries the key-rename fix on the OUTLIER (the
+; side that broke homogeneity against the established first type) — `fooo` -> `foo`. A genuinely different
+; field SET (not a typo) gets no rename. (Migrated from rcdzc a_join_site_record_field_typo_offers_the_rename_fix.)
+(case "a list of records differing by a misspelled field offers the rename fix"
+  (input  (do (def (g) #list(#record((= foo 1)) #record((= fooo 2)))) (export g)))
+  (error  CDZ0201 (fix (kind replace) (replacement "foo"))))
+
+(case "if branches of records differing by a misspelled field offer the rename fix"
+  (input  (do (def (f (: b Bool)) (if b #record((= foo 1)) #record((= fooo 2)))) (export f)))
+  (error  CDZ0203 (fix (kind replace) (replacement "foo"))))
+
+(case "match arms of records differing by a misspelled field offer the rename fix"
+  (input  (do (type C (A) (B))
+              (def (f (: c C)) (match c ((A) #record((= foo 1))) ((B) #record((= fooo 2))))) (export f)))
+  (error  CDZ0203 (fix (kind replace) (replacement "foo"))))
+
+(case "join-site records with a genuinely different field set get no rename fix"
+  (input  (do (def (f (: b Bool)) (if b #record((= a 1) (= b 2)) #record((= a 3)))) (export f)))
+  (error  CDZ0203 (no-fix)))
+
 ; Homogeneity is a property of the LIST VALUE, so it must hold under `List.push` too, not only for a
 ; list LITERAL. collections-and-text.md #A List Is Grown By Functional Construction: `List.push`
 ; "MUST produce a NEW LIST VALUE" — and a list value's elements share one type (#A List Is An Ordered
