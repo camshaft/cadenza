@@ -1118,6 +1118,20 @@
   (input  (: #record((= a 1) (= x 2)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
+; A record TYPE in a mismatch message renders CAPITALIZED with `(: name T)` ascription fields — the
+; type-constructor head an author writes in an annotation (`(Record (: a Bool))`), consistent with
+; `Tuple`/`List`/`Map`/`Set` — NOT the lowercase VALUE-constructor spelling `(record …)` (which a type
+; annotation rejects "not a type"). So the rendered type ROUND-TRIPS: a reader can copy it straight into an
+; annotation and it compiles. (Migrated from rcdzc a_record_type_renders_capitalized_matching_its_annotation_
+; spelling — the reject render + the acceptance round-trip.)
+(case "a record-type mismatch message renders the type capitalized, matching the annotation spelling"
+  (input  (do (def y (: #record((= a 1)) (Record (: a Bool)))) (export y)))
+  (error  CDZ0203 (message "(Record (: a Bool))") (message "(Record (: a Int64))") (not "(record (")))
+
+(case "the rendered capitalized record type round-trips as a valid annotation and runs"
+  (input  (do (def (f (: r (Record (: a Bool)))) (. r a)) (def (main) (f #record((= a true)))) (export main)))
+  (output (: true Bool)))
+
 ; The field-set mismatch above (annotation position, bare) carries an ACTIONABLE repair wherever a record
 ; literal meets a `(Record …)` type — a function ARGUMENT, a LET-BINDER, or NESTED inside a shared field. A
 ; single key that is a plausible TYPO of an expected field (`fooo` for `foo`) surfaces as simultaneously
