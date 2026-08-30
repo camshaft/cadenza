@@ -620,14 +620,15 @@ impl<'a> Parser<'a> {
         true
     }
 
-    /// If the cursor is at a `..` rest/spread marker, consume it, push the `..` marker plus the
-    /// following binder (parsed by `elem`) onto `items`, and return `true`; otherwise consume nothing
-    /// and return `false`. The arena stays FLAT — a `Leaf::Name("..")` sibling immediately followed by
-    /// the rest node — the SAME shape the s-expression surface writes and the list/map lowering scans
-    /// for (`(list p… .. rest)`, `(map (k p) .. rest)`). This is the one rest/spread marker shared by
-    /// every collection in both construction (`[1, 2, .. rest]`) and pattern (`[x, .. rest]`) position;
-    /// well-formedness (exactly one binder after `..`, `..` last) is left to the compiler, matching the
-    /// s-expr surface, which likewise accepts the flat form and rejects a malformed one at lowering.
+    /// If the cursor is at a `..` rest/spread marker, consume it + the following binder (parsed by
+    /// `elem`) and push a single WRAPPED node `(.. <binder>)` onto `items`, returning `true`; otherwise
+    /// consume nothing and return `false`. The rest/spread is a self-contained `(.. operand)` form — a
+    /// `List` whose head is the `..` `Name` — in BOTH construction (`[1, 2, ..rest]` → `(list 1 2 (.. rest))`)
+    /// and pattern (`[x, ..rest]` → `(list x (.. rest))`) position (operator 2026-08-29: `(.. v)` everywhere,
+    /// "a lot more consistent... otherwise we're putting an infix operator in sexpr"). Supersedes the legacy
+    /// FLAT `Name("..")` + next-sibling marker; the compiler + every surface recognize both via
+    /// [`Arenas::rest_marker`] (Phase 1, #5890), and the s-expr reader normalizes the legacy flat form to
+    /// this wrapped shape. Well-formedness (one binder, position) is left to the compiler, as before.
     fn rest_marker(
         &mut self,
         items: &mut Vec<StructId>,
@@ -638,8 +639,10 @@ impl<'a> Parser<'a> {
         }
         let dd_span = self.cur_span();
         self.bump(); // `..`
-        items.push(self.name("..", dd_span));
-        items.push(elem(self));
+        let head = self.name("..", dd_span);
+        let operand = elem(self);
+        let span = dd_span.merge(self.prev_span());
+        items.push(self.list(vec![head, operand], span));
         true
     }
 
@@ -6498,7 +6501,7 @@ mod tests {
         );
         assert_eq!(
             sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
-            "(def (head (list x .. rest)) x)"
+            "(def (head (list x (.. rest))) x)"
         );
         // A `#{`-led MAP pattern parameter. The entry is the canonical `(= key sub)` `FieldPair` triple
         // (symmetric with map VALUES + record-pattern fields, operator M3 ruling — was a 2-element pair).
@@ -6520,11 +6523,11 @@ mod tests {
         // Pattern parameters COMPOSE and mix with plain-name / annotated params.
         assert_eq!(
             sexpr::print(&parse_ok("def f([(a, b), .. rest]) = a")),
-            "(def (f (list (tuple a b) .. rest)) a)"
+            "(def (f (list (tuple a b) (.. rest))) a)"
         );
         assert_eq!(
             sexpr::print(&parse_ok("def f(x, [a, .. rest]) = x")),
-            "(def (f x (list a .. rest)) x)"
+            "(def (f x (list a (.. rest))) x)"
         );
     }
 
@@ -6569,7 +6572,7 @@ mod tests {
         // The reported gap: a list-REST pattern parameter (`def head([x, .. rest]) = x`).
         assert_eq!(
             sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
-            "(def (head (list x .. rest)) x)"
+            "(def (head (list x (.. rest))) x)"
         );
         assert_eq!(
             sexpr::print(&parse_ok("def g(b[u8(n)]) = n")),
@@ -6661,7 +6664,7 @@ mod tests {
         );
         assert_eq!(
             sexpr::print(&parse_ok("let [x, .. rest] = ys in x")),
-            "(let (((list x .. rest) ys)) x)"
+            "(let (((list x (.. rest)) ys)) x)"
         );
         // A plain-name binder is unchanged, and a `let` may MIX a name and a pattern binder.
         assert_eq!(sexpr::print(&parse_ok("let x = 1 in x")), "(let ((x 1)) x)");

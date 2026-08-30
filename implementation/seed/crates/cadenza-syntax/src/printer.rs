@@ -3026,9 +3026,15 @@ impl<'a> Printer<'a> {
                 self.doc.space();
             }
             first = false;
-            // A `..` marker consumes the next item as its rest binder (`.. rest`); a marker with no
-            // following item is malformed input — render it as a bare `..` so nothing is dropped.
-            if self.head_name(items[i]).as_deref() == Some("..") && i + 1 < items.len() {
+            // A `..` rest/spread marker. The WRAPPED form `(.. operand)` (a list headed by `..`, the
+            // canonical `(.. v)`-migration shape) carries its operand as a child, so it spans ONE slot;
+            // the legacy FLAT form (a bare `Name("..")`) takes the NEXT sibling as its operand, spanning
+            // TWO. A marker with no operand is malformed input — render a bare `..` so nothing is dropped.
+            if let Some(args) = self.a.as_form(items[i], "..") {
+                self.doc.word(".. ");
+                emit_rest(self, args.first().copied().unwrap_or(items[i]));
+                i += 1;
+            } else if self.a.as_name(items[i]) == Some("..") && i + 1 < items.len() {
                 self.doc.word(".. ");
                 emit_rest(self, items[i + 1]);
                 i += 2;
@@ -3042,12 +3048,13 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// Whether `items` contains a `Leaf::Name("..")` rest/spread marker — a list/map carrying one must
-    /// render through the rest-aware path (`bracketed_rest`) rather than the plain `bracketed`.
+    /// Whether `items` contains a rest/spread `..` marker — in EITHER the wrapped `(.. operand)` node or
+    /// the legacy flat `Name("..")`+sibling shape — so a list/map/record/set carrying one renders through
+    /// the rest-aware path (`bracketed_rest`) rather than the plain `bracketed`. Routes through the shared
+    /// Phase-1 recognizer [`Arenas::rest_marker`], which sees both shapes; a bare `head_name` scan would
+    /// miss the wrapped form (`head_name` names only atom leaves, not a list headed by `..`).
     fn has_rest_marker(&self, items: &[StructId]) -> bool {
-        items
-            .iter()
-            .any(|&e| self.head_name(e).as_deref() == Some(".."))
+        self.a.rest_marker(items).is_some()
     }
 
     /// `b[<segment>, …]` — a binary literal, the surface for the `(bin <segment> …)` grammar form (the
@@ -3767,7 +3774,13 @@ impl<'a> Printer<'a> {
                 self.doc.word(", ");
             }
             first = false;
-            if self.head_name(items[i]).as_deref() == Some("..") && i + 1 < items.len() {
+            if let Some(args) = self.a.as_form(items[i], "..") {
+                // WRAPPED `(.. operand)` — operand is a child, spans one slot.
+                self.doc.word(".. ");
+                self.pattern(args.first().copied().unwrap_or(items[i]));
+                i += 1;
+            } else if self.a.as_name(items[i]) == Some("..") && i + 1 < items.len() {
+                // Legacy FLAT `..` marker — operand is the next sibling, spans two slots.
                 self.doc.word(".. ");
                 self.pattern(items[i + 1]);
                 i += 2;
@@ -4540,7 +4553,13 @@ impl<'a> Printer<'a> {
         // Every other item must be a well-formed field.
         let mut i = 0;
         while i < args.len() {
-            if self.head_name(args[i]).as_deref() == Some("..") {
+            // A construction spread: the wrapped `(.. operand)` node spans ONE slot; the legacy flat
+            // `Name("..")`+operand marker spans TWO. Both may appear at any position, more than once.
+            if self.a.as_form(args[i], "..").is_some() {
+                i += 1;
+                continue;
+            }
+            if self.a.as_name(args[i]) == Some("..") {
                 if i + 1 >= args.len() {
                     return false; // a `..` with no operand is malformed → generic form
                 }
@@ -4581,7 +4600,13 @@ impl<'a> Printer<'a> {
         // uniform with list/record; `bracketed_rest` renders them. Every other item must be a pair.
         let mut i = 0;
         while i < args.len() {
-            if self.head_name(args[i]).as_deref() == Some("..") {
+            // A construction spread: the wrapped `(.. operand)` node spans ONE slot; the legacy flat
+            // `Name("..")`+operand marker spans TWO. Both may appear at any position, more than once.
+            if self.a.as_form(args[i], "..").is_some() {
+                i += 1;
+                continue;
+            }
+            if self.a.as_name(args[i]) == Some("..") {
                 if i + 1 >= args.len() {
                     return false; // a `..` with no operand is malformed → generic form
                 }
