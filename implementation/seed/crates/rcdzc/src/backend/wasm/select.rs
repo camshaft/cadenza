@@ -368,6 +368,11 @@ const OP_AST_PRINT: &str = "ast-print";
 /// guided by a baked 9-disc descriptor. Byte-identical to the compile-time `codec::encode` fold. Backs
 /// `Core::AstEncode`.
 const OP_AST_ENCODE: &str = "ast-encode";
+/// `ast-decode(bytes-handle, discs) -> handle` — parse canonical `cdzast` `Bytes` back to a heap `Ast`
+/// value guided by the SAME baked 9-disc descriptor as `ast-encode`, returning a fresh Ast handle or `0`
+/// (`NULL_HANDLE`) on a parse failure. TOTAL (never traps). Backs `Core::AstDecode` (the emit wraps the
+/// handle-or-0 as `(Result Ast e)`).
+const OP_AST_DECODE: &str = "ast-decode";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-prepend(v, elem) -> handle` — a new list = `elem` then `v`'s elements (consumes both). The

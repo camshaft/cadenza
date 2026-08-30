@@ -218,6 +218,10 @@ fn binding_escapes_dup_aware_inner(
         Core::AstEncode { operand, .. } => {
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
+        // `Ast.decode` (runtime) BORROWS its Bytes operand (parses to a fresh Ast handle — operand not retained).
+        Core::AstDecode { operand, .. } => {
+            binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
+        }
         Core::Proj { operand, .. } => {
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
             binding_escapes_dup_aware(db, operand, binder, scalar_element, dup_sites)
@@ -1921,6 +1925,7 @@ pub(super) fn child_ids_of(c: &Core, cs: &mut Vec<StructId>) {
         | Core::Blake3Of { operand }
         | Core::AstPrint { operand, .. }
         | Core::AstEncode { operand, .. }
+        | Core::AstDecode { operand, .. }
         | Core::MapSize { map: operand }
         | Core::SetLen { set: operand }
         | Core::SetToList { set: operand, .. }
@@ -2470,6 +2475,9 @@ pub(super) fn mark_binder_dups_inner(
         Core::AstPrint { operand, .. } => borrow(db, operand, live_after, sites),
         // `Ast.encode` (runtime) BORROWS its Ast operand (an inspector; the baked `discs` is not a node).
         Core::AstEncode { operand, .. } => borrow(db, operand, live_after, sites),
+        // `Ast.decode` (runtime) BORROWS its Bytes operand (the baked `discs` is not a node; the fresh Ast
+        // result is owned by the Ok wrap).
+        Core::AstDecode { operand, .. } => borrow(db, operand, live_after, sites),
         // `Bytes.compact` (adv-66) is NOT a borrow — it lowers to the SAME runtime `bytes-compact` op as
         // `StrToBytes` (op_bytes_compact: flattens the rope IN PLACE and returns the SAME handle), so it
         // CONSUMES its operand and hands the handle back as the result. `binding_escapes_dup_aware` already

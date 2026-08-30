@@ -641,6 +641,22 @@ pub enum Core {
         operand: StructId,
         discs: std::rc::Rc<[u8]>,
     },
+    /// `Ast.decode b` on a RUNTIME `Bytes` — the TOTAL inverse of `AstEncode`: parse the canonical `cdzast`
+    /// `Bytes` back to a heap `Ast` value via the value-heap runtime op `ast-decode` (heap index 94), then
+    /// wrap the result as `(Result Ast e)`. A CONSTANT `Bytes` folds to an `(Ok …)`/`(Err …)` `Core::SumNew`
+    /// in `lower_ast_decode` and never reaches here; this is the RUNTIME path. The op BORROWS both the
+    /// `bytes` handle and `discs` and returns a fresh OWNED `Ast` handle, or `0` (`NULL_HANDLE`) on a parse
+    /// failure (ill-formed / truncated / trailing / non-Ast-shape) — TOTAL, never a trap. The emit wraps
+    /// that handle-or-0 as the Result sum: a non-zero handle → `(Ok <ast>)` (the handle is owned, used as
+    /// the payload directly), `0` → `(Err unit)` (mirrors `StrFromBytes`'s `Some`/`None` null-wrap). `discs`
+    /// is the SAME baked descriptor `AstEncode` uses (the two are one round-trip). `disc_ok`/`disc_err` are
+    /// the built-in `Result` sum's discriminants for the wrap.
+    AstDecode {
+        operand: StructId,
+        discs: std::rc::Rc<[u8]>,
+        disc_ok: u32,
+        disc_err: u32,
+    },
     /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
     /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
     /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).

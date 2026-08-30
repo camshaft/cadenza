@@ -220,6 +220,7 @@ pub(super) fn collect_host_arg_strings_at(
         | Core::Blake3Of { operand }
         | Core::AstPrint { operand, .. }
         | Core::AstEncode { operand, .. }
+        | Core::AstDecode { operand, .. }
         | Core::StrFromBytes { bytes: operand, .. }
         | Core::StrToBytes { string: operand }
         | Core::NfcNormalize { string: operand }

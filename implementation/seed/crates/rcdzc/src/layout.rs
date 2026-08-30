@@ -1467,6 +1467,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::Blake3Of { operand }
         | Core::AstPrint { operand, .. }
         | Core::AstEncode { operand, .. }
+        | Core::AstDecode { operand, .. }
         | Core::StrFromBytes { bytes: operand, .. }
         | Core::StrToBytes { string: operand }
         | Core::ValueEncode { value: operand, .. }
@@ -1797,6 +1798,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::Blake3Of { operand }
         | crate::core::Core::AstPrint { operand, .. }
         | crate::core::Core::AstEncode { operand, .. }
+        | crate::core::Core::AstDecode { operand, .. }
         | crate::core::Core::StrFromBytes { bytes: operand, .. }
         | crate::core::Core::StrToBytes { string: operand }
         | crate::core::Core::ValueEncode { value: operand, .. }

@@ -2644,6 +2644,53 @@ pub(super) fn emit(
             layout,
             out,
         ),
+        // `Ast.decode` (runtime) — parse the canonical `cdzast` BYTES back to a heap `Ast`. The op-call shape
+        // is identical to `AstEncode` (emit the bytes operand, bake the 9-disc descriptor, `ast-decode` op 94
+        // BORROWS both and drops the discs buffer + owned operand) — but op 94 returns a heap Ast HANDLE, or
+        // `0` (`NULL_HANDLE`) on a parse failure, so the result must be WRAPPED as `(Result Ast e)`: a nonzero
+        // handle → `(Ok <ast>)` (the handle is owned, used directly as the payload), `0` → `(Err unit)` (the
+        // inline-unit constant — the runtime returned no handle, nothing to drop). Mirrors `StrFromBytes`'s
+        // `Some`/`None` null-wrap. `codec::decode`-identical to the compile-time fold (shared codec + discs).
+        Core::AstDecode {
+            operand,
+            discs,
+            disc_ok,
+            disc_err,
+        } => {
+            emit_ast_op_with_discs(
+                db,
+                operand,
+                &discs,
+                OP_AST_DECODE,
+                slots,
+                base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?; // [handle-or-0]
+            // `emit_ast_op_with_discs` used `base`/`base+1` (ast + discs slots) and floated the operand emit
+            // above them; both are dead now, so reuse `base` for the i32 result handle.
+            let result_slot = base;
+            *high = (*high).max(result_slot + 1);
+            scratch_ty.insert(result_slot, ValType::I32);
+            out.push(Lir::LocalSet(result_slot)); // result_slot = handle-or-0, stack empty
+            out.push(Lir::LocalGet(result_slot));
+            out.push(Lir::ConstI32(NULL_HANDLE));
+            out.push(Lir::I32Ne); // [ok?]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Ok(handle): the decoded Ast handle is OWNED (op 94 returns a fresh handle); use it
+            // directly as the payload under `disc_ok`, no `dup`.
+            out.push(Lir::ConstI32(disc_ok as i32)); // [disc_ok]
+            out.push(Lir::LocalGet(result_slot)); // [disc_ok, handle]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Ok-handle]
+            out.push(Lir::Else);
+            // ELSE — Err(unit): the unit payload is the inline-unit constant. Op 94 returned 0 (no handle),
+            // so there is nothing to release here (mirrors `StrFromBytes`'s `None`).
+            emit_none_option(disc_err, out); // [Err-handle] — sum-new(disc_err, IMM_UNIT)
+            out.push(Lir::End);
+            Ok(())
+        }
         // A runtime `String.from-bytes(bytes)` — the TOTAL UTF-8 decode. Emit the bytes handle,
         // `str-from-bytes` (CONSUMES it; strict UTF-8 validate → the buffer AS a String handle, or NULL when
         // invalid), then build `Some(handle)` / `None`. The returned handle is already OWNED (str-from-bytes
