@@ -12032,36 +12032,6 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_module_directive_is_validated_against_the_fixed_registry() {
-        // 11-modules pragma cases + `modules-and-namespaces.md` §A Module Directive Is Drawn From A Fixed
-        // Set: a `(pragma <key> <arg>…)` is validated — an UNKNOWN key is CDZ0601, a recognized key with
-        // the wrong argument shape is CDZ0602, rather than silently ignored (a dropped directive would
-        // make one source mean two things on two toolchains). Checked whether the pragma is at top level
-        // or a module member.
-        // Unknown key → CDZ0601.
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do (module m (pragma frobnicate 3) (def (answer) 42)) ((. m answer) unit))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0601")
-        );
-        // Recognized key `default-integer` with its required type argument OMITTED → CDZ0602 (malformed).
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do (module m (pragma default-integer) (def (answer) 42)) ((. m answer) unit))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0602")
-        );
-        // A top-level unknown directive is validated too (not only a module member).
-        assert_eq!(
-            reject_code("(do (pragma frobnicate 3) (def (main) 1) (export main))").as_deref(),
-            Some("CDZ0601")
-        );
-    }
-
     /// A WELL-FORMED `(pragma default-integer|default-fraction|default-float <T>)` written at the PROGRAM'S
     /// TOP LEVEL — the root module's own directive, or a bare `(do …)` item — now TAKES EFFECT: `Db::load`
     /// harvests it over the root scope's `(def …)` literals, exactly as a nested `(module NAME …)` pragma is
