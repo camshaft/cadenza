@@ -214,11 +214,35 @@ def paramSpec? (m : Module) (specId : Nat) : Option (ByteArray × Option IntTy) 
     match m.leaves[lid]? with | some (Leaf.name b) => some (b, none) | _ => none
   | none => none
 
+/-- The overflow mode for unqualified `+`/`-`/`*` of the given signedness, from a module-level
+`(pragma overflow (signed <mode>) (unsigned <mode>))` directive (corpus 06-numeric). Returns `true`
+(WRAP: two's-complement mod 2^w) when the pragma sets THIS signedness to `wrap`; otherwise `false`
+(the default trap-on-overflow). Signedness-selective: `(signed wrap)` governs only signed ops, so an
+unsigned overflow under a signed-only wrap pragma still traps. The runtime codegen reads the SAME
+`overflow_mode_of`, so a wrap module's constant and runtime overflow agree — the oracle must too, else
+it emits a false `trap overflow` where the program yields a wrapped value. -/
+def overflowWraps? (m : Module) (signed : Bool) : Bool :=
+  let wantSign : ByteArray := (if signed then "signed" else "unsigned").toUTF8
+  m.nodes.any (fun node =>
+    match node with
+    | Node.list cs =>
+      headName? m node == some "pragma".toUTF8 &&
+      (cs[1]?).bind (nameOf? m) == some "overflow".toUTF8 &&
+      -- among the `(signedness mode)` pairs (children from index 2 on), OUR signedness is set to `wrap`
+      (cs.extract 2 cs.size).any (fun cid =>
+        match m.nodes[cid]? with
+        | some (Node.list scs) =>
+          (scs[0]?).bind (nameOf? m) == some wantSign && (scs[1]?).bind (nameOf? m) == some "wrap".toUTF8
+        | _ => false)
+    | _ => false)
+
 /-- Evaluate a binary integer operator, trapping on overflow / divide-by-zero per `ty`. Division and
 remainder truncate toward zero (matching the checked wasm `i64.div_s`/`rem_s` the compiler emits). An
 `unknown` width makes overflow undecidable → `unsupported` (a sound coverage-gap, never a guess);
-`big` never overflows. -/
-def evalArithOp (op : String) (a b : Int) (ty : IntTy) : Outcome :=
+`big` never overflows. `wrapOverflow` (from a `(pragma overflow … wrap)` module, via `overflowWraps?`)
+makes `+`, `-`, `*` overflow WRAP (two's-complement mod 2^w) instead of trapping — division,
+remainder, and the signed MIN-over-minus-one case are unaffected (the pragma governs only `+`, `-`, `*`). -/
+def evalArithOp (op : String) (a b : Int) (ty : IntTy) (wrapOverflow : Bool := false) : Outcome :=
   match ty.width with
   | .unknown => .unsupported "eval: arithmetic at an unresolved (unknown) integer width"
   | .big =>
@@ -238,7 +262,13 @@ def evalArithOp (op : String) (a b : Int) (ty : IntTy) : Outcome :=
         if inB r then .value (.int r) else .trap "overflow"
     else
       let r := if op == "+" then a + b else if op == "-" then a - b else a * b
-      if inB r then .value (.int r) else .trap "overflow"
+      if inB r then .value (.int r)
+      else if wrapOverflow then
+        -- two's-complement wrap mod 2^w (SAME formula as `(. <IntTy> wrapping-add) …`)
+        let modw : Int := (2 : Int) ^ w
+        let p := ((r % modw) + modw) % modw
+        .value (.int (if ty.signed && p ≥ (2 : Int) ^ (w - 1) then p - modw else p))
+      else .trap "overflow"
 
 /-- Binary FLOAT arithmetic on the operands' `f64` values. A float arith result is a COMPUTED `f64`
 (`Value.f64`), compared bit-exact by `valueEqSpec` against any float spelling; IEEE division by zero
@@ -1371,7 +1401,7 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
     | some eId =>
       let opTy := (operandTyEnv? m env eId).getD ty
       match evalNode m env opTy fuel eId with
-      | .value (.int a) => evalArithOp "-" 0 a opTy    -- negation = 0 - a at the operand's width
+      | .value (.int a) => evalArithOp "-" 0 a opTy (overflowWraps? m opTy.signed)  -- negation = 0 - a at the operand's width
       | .value _ => .unsupported "eval: unary minus of a non-integer"
       | other => other
     | none => .unsupported "eval: malformed unary minus"
@@ -1400,7 +1430,7 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
       | _, .errReturn v => .errReturn v
       | .value va, .value vb =>
         match va, vb with
-        | .int a, .int b => evalArithOp op a b opTy
+        | .int a, .int b => evalArithOp op a b opTy (overflowWraps? m opTy.signed)
         -- exact Rational arithmetic (`+ - * /`): closed, normalized, no rounding; `/` by 0 traps.
         | .rational a b, .rational c d => rationalArith op a b c d
         | _, _ =>
