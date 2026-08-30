@@ -3273,6 +3273,25 @@
   (input  (do (def (f (: a Char) (: b Char)) (< a b)) (def (main) 0) (export main)))
   (call   main) (output (: 0 Int64)))
 
+; `Char.to-int : Char -> Int64` and `Symbol.to-string : Symbol -> String` are TOTAL prelude conversions, so
+; a Char where Int64 is wanted (`(+ #\a 1)`) / a Symbol where String is wanted gets the corresponding WRAP
+; fix (the char/symbol twins of the String->Bytes coercion). The arg lead names the readable "this argument
+; is a Char, but a value of type Int64 is expected here". When the expected int is NARROWER than Int64 (the
+; wrap yields Int64), the int-width `.of` coercion takes over instead. (Migrated from rcdzc
+; a_char_or_symbol_where_a_scalar_string_is_expected_offers_its_total_conversion.)
+(case "a char where an integer is expected offers the Char.to-int wrap fix"
+  (input  (do (def (main) (+ #\a 1)) (export main)))
+  (error  CDZ0203 (message "this argument is a Char, but a value of type Int64 is expected here")
+                  (fix (kind wrap) (replacement "(Char.to-int …)"))))
+
+(case "a symbol where a string is expected offers the Symbol.to-string wrap fix"
+  (input  (do (def (f (: s String)) s) (def (g (: sym Symbol)) (f sym)) (export g)))
+  (error  CDZ0203 (fix (kind wrap) (replacement "(Symbol.to-string …)"))))
+
+(case "a char summed into a NARROW int takes the int-width coercion, not Char.to-int"
+  (input  (do (def (g (: n Int8)) (+ n (Char.to-int #\a))) (export g)))
+  (error  CDZ0301 (fix (kind wrap) (replacement-contains "Int8.of"))))
+
 (case "Char.to-int reads a genuinely-runtime char (if-selected) by scalar value"
   (doc    "The runtime Char rep (Char-rep 1/N): a char chosen at RUN TIME — `(if b #\\a #\\z)` unifies two
            char literals into ONE `Char` value whose identity is known only at run time, so it is NOT
