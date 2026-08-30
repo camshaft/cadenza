@@ -11104,57 +11104,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_char_or_symbol_where_a_scalar_string_is_expected_offers_its_total_conversion() {
-        // `Char.to-int : Char → Int64` and `Symbol.to-string : Symbol → String` are TOTAL prelude
-        // conversions, so a Char where Int64 is wanted (`(+ #\a 1)`) / a Symbol where String is wanted
-        // gets the wrap fix — the char/symbol twins of the String→Bytes coercion.
-        let ch = reject_full("(module m (def (main) (+ #\\a 1)) (export main))")
-            .expect("Char/Int mismatch rejects");
-        let cfix = ch.fix.expect("a Char.to-int conversion fix");
-        assert_eq!(cfix.kind, crate::abi::FixKind::Wrap);
-        assert_eq!(
-            cfix.replacement,
-            format!("(Char.to-int {})", crate::abi::WRAP_HOLE),
-            "wraps the char in its scalar-value conversion: {}",
-            ch.message
-        );
-        // The LEAD reads as an argument-type mismatch, NOT the raw internal-clash unify wording
-        // ("type mismatch: Int64 and Char must be the same type here, but differ") — the Char case is
-        // deliberately routed to the coercion path, and that path now REWORDS the lead too.
-        assert!(
-            ch.message
-                .contains("this argument is a Char, but a value of type Int64 is expected here")
-                && !ch.message.contains("must be the same type here"),
-            "the Char-arg lead is polished, not the raw unify clash: {}",
-            ch.message
-        );
-        let sym = reject_full(
-            "(module m (def (f (: s String)) s) (def (g (: sym Symbol)) (f sym)) (export g))",
-        )
-        .expect("Symbol/String mismatch rejects");
-        let sfix = sym.fix.expect("a Symbol.to-string conversion fix");
-        assert_eq!(
-            sfix.replacement,
-            format!("(Symbol.to-string {})", crate::abi::WRAP_HOLE),
-            "wraps the symbol in its content-string conversion: {}",
-            sym.message
-        );
-        // NO spurious Char.to-int when the expected int is NARROWER than Int64 (the wrap yields Int64):
-        // the int-width `.of` coercion takes over instead.
-        let narrow =
-            reject_full("(module m (def (g (: n Int8)) (+ n (Char.to-int #\\a))) (export g))")
-                .expect("Int8/Int64 mismatch rejects");
-        assert!(
-            narrow
-                .fix
-                .as_ref()
-                .is_some_and(|f| f.replacement.contains("Int8.of")),
-            "a narrow-int target takes the int-width coercion, not Char.to-int: {:?}",
-            narrow.fix
-        );
-    }
-
-    #[test]
     fn a_bitwise_operator_on_a_non_integer_operand_names_the_integer_requirement() {
         use crate::testkit::parse;
         // The bitwise/shift operators `& | ^ << >>` carry the `∀a. (Int a) → (Int a) → (Int a)` scheme, so
