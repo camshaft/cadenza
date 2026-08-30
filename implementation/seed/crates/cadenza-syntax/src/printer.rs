@@ -703,7 +703,7 @@ impl<'a> Printer<'a> {
                 // line in a def/module BODY position (handled by print_def/print_module); a stray
                 // `(doc …)` elsewhere falls through to the generic call form.
                 "comment" if args.len() == 2 && self.is_string(args[0]) => {
-                    return self.print_comment(args[0], args[1]);
+                    return self.print_comment(args[0], args[1], parent_prec);
                 }
                 // A `(module-doc "text")` — a FILE/MODULE-level doc-comment (a leading `///` on a
                 // non-documentable form, e.g. a file header before the first `import`). Unlike a
@@ -1330,12 +1330,16 @@ impl<'a> Printer<'a> {
         self.doc.word(format!("///{}", self.doc_line_text(text)));
     }
 
-    /// `(comment "text" node)` -> `// text` on its own line, then the annotated node beneath it.
-    fn print_comment(&mut self, text: StructId, node: StructId) {
+    /// `(comment "text" node)` -> `// text` on its own line, then the annotated node beneath it. The
+    /// comment wrapper is TRANSPARENT to precedence, so `node` is printed at the SAME `parent_prec` the
+    /// wrapper was asked for — otherwise a comment-wrapped body that needed parenthesizing (a non-last
+    /// match-arm body whose tail is an open `match`/`handle`, forced with `PREC_KEYWORD`) would print the
+    /// inner form BARE, and the following `| pat` would be absorbed into it (a structural round-trip bug).
+    fn print_comment(&mut self, text: StructId, node: StructId, parent_prec: u8) {
         self.doc.cbox(0);
         self.doc.word(format!("//{}", self.doc_line_text(text)));
         self.doc.hardbreak();
-        self.expr(node, 0);
+        self.expr(node, parent_prec);
         self.doc.end();
     }
 

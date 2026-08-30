@@ -1851,6 +1851,34 @@ impl Arenas {
         }
     }
 
+    /// If `id` is a reader COMMENT wrapper — a leading `(comment "text" form)` (a `//`/`;` on its own line
+    /// above `form`) or a trailing `(comment-after "text" form)` (a same-line comment) — the wrapped `form`.
+    /// Both share the identical `[<string>, <form>]` tail (first tail element a `Str` leaf), so both peel by
+    /// the one rule. `None` when `id` is not a well-formed comment wrapper. One layer only — [`peel_comments`]
+    /// follows the whole chain.
+    pub fn comment_wrapped_form(&self, id: StructId) -> Option<StructId> {
+        let tail = self
+            .as_form(id, "comment")
+            .or_else(|| self.as_form(id, "comment-after"))?;
+        let (&text, &form) = (tail.first()?, tail.get(1)?);
+        // The first tail element must be a STRING (the comment text); else it is not a reader comment node.
+        matches!(self.get(text), Struct::Atom(l) if matches!(self.leaf(*l), Leaf::Str(_)))
+            .then_some(form)
+    }
+
+    /// Follow a chain of reader-produced comment wrappers ([`comment_wrapped_form`], leading and/or trailing
+    /// in any mix) down to the form they annotate, returning the innermost non-comment form (or `id` itself
+    /// when it is not a comment wrapper). Structural consumers that DISPATCH on a form's head (the corpus
+    /// case/clause walks, the compiler's comment strip) call this so a comment annotating a form is
+    /// transparent to them — the comment survives in the tree for printing but never hides the form it
+    /// wraps. Read-only: unlike the compiler's in-place `strip_comments`, this does not mutate the arena.
+    pub fn peel_comments(&self, mut id: StructId) -> StructId {
+        while let Some(form) = self.comment_wrapped_form(id) {
+            id = form;
+        }
+        id
+    }
+
     /// The `(numerator, denominator)` of a native RATIONAL node — a `List` of exactly three whose head is
     /// the [`Leaf::Rational`] tag. `None` otherwise. The read twin of [`Builder::rational`]; the two
     /// returned ids are ordinary `Int` value-leaf atoms (normalized: lowest-terms, sign-on-numerator,
