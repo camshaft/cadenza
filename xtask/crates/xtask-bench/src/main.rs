@@ -223,10 +223,15 @@ fn measure(repo: &Path) -> BTreeMap<String, u64> {
         .args([
             "test",
             "--release",
-            "tests::hot_op_allocation_ceilings",
+            // BARE unique test name (NOT `--exact tests::…`): path-ROBUST so a test-module reorg does not
+            // silently break the bench. #6096 split cdz-runtime's `tests.rs` into cfg-test submodules, moving
+            // this test to `tests::codec_tests::hot_op_allocation_ceilings`; the old `--exact
+            // tests::hot_op_allocation_ceilings` filter then matched 0 tests → "no ALLOC lines captured" red.
+            // The name is unique in the crate, and `parse_alloc_lines` keys on the `ALLOC ` marker (not the
+            // libtest banner path), so a bare substring filter is exact enough + survives future moves.
+            "hot_op_allocation_ceilings",
             "--",
             "--ignored",
-            "--exact",
             "--nocapture",
             "--test-threads=1",
         ])
