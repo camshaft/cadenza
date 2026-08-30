@@ -368,29 +368,6 @@ fn a_cross_kind_operator_clash_uses_the_correct_indefinite_article() {
         Ty::Unit.render_with_article(&crate::ty::NameCtx::new(&[])),
         "a Unit"
     );
-
-    // The cross-kind operator clash message uses it — `(< 1 "x")` reads "an Int64 and a String …",
-    // NOT the old ungrammatical "a Int64 and a String …".
-    let d = first_error("(module m (def (main) (< 1 \"x\")) (export main))");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message
-            .contains("an Int64 and a String are different types"),
-        "cross-kind clash names both operands with correct articles: {}",
-        d.message
-    );
-    assert!(
-        !d.message.contains("a Int64"),
-        "no ungrammatical `a Int64`: {}",
-        d.message
-    );
-    // A UInt8 operand keeps `a` (the "yoo" sound), confirming the rule is sound-based not letter-based.
-    let du = first_error("(module m (def (g (: n UInt8)) (< n \"x\")) (export g))");
-    assert!(
-        du.message.contains("a UInt8 and a String"),
-        "UInt8 keeps `a` (yoo sound): {}",
-        du.message
-    );
 }
 
 /// A mismatched-type comparison — `(< 1 "x")` (Int64 vs String) — reports the coded "… are different
