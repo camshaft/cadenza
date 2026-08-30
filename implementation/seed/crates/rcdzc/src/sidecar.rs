@@ -503,11 +503,11 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
         Query::ParamManifest => {
-            let text = param_manifest_text(db);
+            let sites = param_manifest_value(db);
             QueryResult {
                 kind: KIND_PARAM_MANIFEST,
                 name: "param-manifest".to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::param_manifest_wire::encode(&sites),
             }
         }
         Query::FuncLayout => {
@@ -789,43 +789,46 @@ fn hash_subtree(db: &Db, id: StructId, h: &mut crate::fxhash::FxHasher) {
     }
 }
 
-/// The `ParamManifest` read: one `@param` site per line,
-/// `name<TAB>widget<TAB>type<TAB>range-lo<TAB>range-hi<TAB>options<TAB>default<TAB>name-node`. Scans the
-/// sites read-only (`param_sidecar::scan_manifest` over `db.ast`), then renders each record's DECLARED
-/// TYPE via the type column (`infer::type_of` → `Ty::render_name`) — the one field that needs the `Db`.
-/// The value fields (range elements, options list, default value) are emitted as ARENA NODE IDS (`-` when
-/// the kv is absent), which the consumer renders via the shared-`StructId` arena; `widget` is the bare
-/// atom or `-`; `name-node` is the param name occurrence the consumer maps to `file:line:col`. Order is
-/// scan order (ascending site id), a deterministic function of the program. TOTAL: no sites → empty.
-fn param_manifest_text(db: &mut Db) -> String {
-    // Scan first (an immutable borrow of the arena), collecting the records, THEN render types (a mutable
-    // borrow of `db` for `type_of`'s memoization) — the two borrows must not overlap.
+/// The `ParamManifest` read: one [`ParamSite`] per `@param` site. Scans the sites read-only
+/// (`param_sidecar::scan_manifest` over `db.ast`), then, for each, resolves the DECLARED TYPE and carries it
+/// as a FULL structured `Ty` sub-AST (`eval::encode_ty_payload`) — NOT a `Ty::render_name` string (operator
+/// P0 seq-254/284: "I want the full type ast!"); the consumer renders it back to a display string via
+/// `cadenza_syntax::render_ty::render_ty_name`. The value fields (range elements, options list, default
+/// value) ride as ARENA NODE IDS (absent when the kv is absent), which the consumer renders via the
+/// shared-`StructId` arena; `widget` is the bare atom or absent; `name_node` is the param name occurrence
+/// the consumer maps to `file:line:col`. Order is scan order (ascending site id), a deterministic function
+/// of the program. TOTAL: no sites → empty vec.
+///
+/// [`ParamSite`]: cadenza_compile_abi::param_manifest_wire::ParamSite
+fn param_manifest_value(db: &mut Db) -> Vec<cadenza_compile_abi::param_manifest_wire::ParamSite> {
+    use cadenza_compile_abi::param_manifest_wire::ParamSite;
+    // Scan first (an immutable borrow of the arena), collecting the records, THEN reduce+encode each type (a
+    // mutable borrow of `db` for `typeval_of`/`type_of`/`encode_ty_payload`) — the two borrows must not
+    // overlap. `scan_manifest` returns OWNED records, so its borrow ends before the loop.
     let records = crate::param_sidecar::scan_manifest(&db.ast);
-    let node_or_dash = |o: Option<StructId>| o.map_or_else(|| "-".to_string(), |n| n.0.to_string());
-    let mut text = String::new();
+    let mut sites = Vec::with_capacity(records.len());
     for rec in records {
-        let widget = rec.widget.as_deref().unwrap_or("-");
         // `rec.ty` is the annotation's TYPE-EXPRESSION node (the `Type` in `(: … Type)`). REDUCE it to the
         // declared type VALUE (`eval::typeval_of` — the same evaluator the annotation path uses, so the
         // manifest's type equals what the type checker asserts), NOT `type_of` (which would give the node's
-        // KIND, `Type`). A node that does not reduce to a type value falls back to `type_of`'s render so the
-        // field stays definite (total).
-        let ty = match crate::eval::typeval_of(db, rec.ty) {
-            Some(t) => t.render_name(&db.name_ctx()),
-            None => crate::infer::type_of(db, rec.ty).render_name(&db.name_ctx()),
-        };
-        let (range_lo, range_hi) = match rec.range {
-            Some((lo, hi)) => (lo.0.to_string(), hi.0.to_string()),
-            None => ("-".to_string(), "-".to_string()),
-        };
-        let options = node_or_dash(rec.options);
-        let default = node_or_dash(rec.default);
-        text.push_str(&format!(
-            "{}\t{widget}\t{ty}\t{range_lo}\t{range_hi}\t{options}\t{default}\t{}\n",
-            rec.name, rec.name_node.0
-        ));
+        // KIND, `Type`); a node that does not reduce falls back to `type_of` so the field stays definite.
+        // Then carry the FULL structured Ty as a sub-AST (`encode_ty_payload`), extracted into a standalone
+        // arena (as `ExportedTypes`/`result_types` do), so no render-name string rides the wire.
+        let ty_val = crate::eval::typeval_of(db, rec.ty)
+            .unwrap_or_else(|| crate::infer::type_of(db, rec.ty));
+        let ty_node = crate::eval::encode_ty_payload(db, &ty_val);
+        let ty = extract_subtree(&db.ast, ty_node);
+        sites.push(ParamSite {
+            name: rec.name,
+            widget: rec.widget,
+            ty,
+            range: rec.range.map(|(lo, hi)| (lo.0, hi.0)),
+            options: rec.options.map(|s| s.0),
+            default: rec.default.map(|s| s.0),
+            name_node: rec.name_node.0,
+        });
     }
-    text
+    sites
 }
 
 /// A top-level declaration's OUTLINE KIND — the fixed closed vocabulary a `Symbols` line reports, the LSP

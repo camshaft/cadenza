@@ -38706,39 +38706,56 @@ mod sidecar_driven {
                    (def (main) 0) (export main))";
         let out = compile(&inputs(src, &[Request::Query(Query::ParamManifest)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        let text = artifact_text(&out, KIND_PARAM_MANIFEST).expect("a param-manifest artifact");
-        let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
-        assert_eq!(rows.len(), 2, "two @param sites → two rows: {text:?}");
-        // Pin the WIRE SHAPE the CLI depends on: exactly 8 TAB-separated fields per row
-        // (name, widget, type, range-lo, range-hi, options, default, name-node). The `cdz param-manifest`
-        // reader `splitn(8)`s each row and now FAILS LOUDLY on a row that isn't 8-wide (Copilot PR #525),
-        // so pinning the column count HERE stops the producer from silently drifting the consumer's shape.
-        for r in &rows {
-            assert_eq!(r.len(), 8, "each param-manifest row has 8 fields: {r:?}");
-        }
+        // The manifest is now canonical binary AST (operator P0 seq-284): decode the sites via the shared
+        // codec. The DECLARED TYPE rides as a FULL structured `Ty` sub-AST (a standalone arena per site),
+        // NOT a render_name string — a scalar type's payload is a bare type-name leaf (`Int64`/`Bool`).
+        let bytes = &out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == KIND_PARAM_MANIFEST)
+            .expect("a param-manifest artifact")
+            .bytes;
+        let sites = cadenza_compile_abi::param_manifest_wire::decode(bytes);
+        assert_eq!(sites.len(), 2, "two @param sites → two sites");
 
-        // width: slider widget, Int64 type, a range (both element nodes present, not `-`), no options/default.
-        let width = rows.iter().find(|r| r[0] == "width").expect("width row");
-        assert_eq!(width[1], "slider", "width widget: {width:?}");
+        // width: slider widget, Int64 type (a full Ty sub-AST), a range present, no options/default.
+        let width = sites
+            .iter()
+            .find(|s| s.name == "width")
+            .expect("width site");
+        assert_eq!(width.widget.as_deref(), Some("slider"), "width widget");
+        // Int64 rides as the STRUCTURED `(Int 64)` payload (encode_ty_payload), NOT a "Int64" render string —
+        // the full-Ty-AST point. (A consumer renders it back to "Int64" via render_ty_name.)
         assert_eq!(
-            width[2], "Int64",
-            "width declared type rendered via the type column: {width:?}"
+            width
+                .ty
+                .as_form(width.ty.root, "Int")
+                .and_then(|t| t.first())
+                .and_then(|&w| width.ty.as_int(w))
+                .and_then(|v| v.to_i64()),
+            Some(64),
+            "width declared type is a structured (Int 64) sub-AST"
         );
-        assert_ne!(width[3], "-", "width range-lo is a node id: {width:?}");
-        assert_ne!(width[4], "-", "width range-hi is a node id: {width:?}");
-        assert_eq!(width[5], "-", "width has no options: {width:?}");
-        assert_eq!(width[6], "-", "width has no default: {width:?}");
-        assert_ne!(
-            width[7], "-",
-            "width name-node is a jumpable node id: {width:?}"
+        assert!(
+            width.range.is_some(),
+            "width has a range: {:?}",
+            width.range
         );
+        assert_eq!(width.options, None, "width has no options");
+        assert_eq!(width.default, None, "width has no default");
 
-        // mirror: toggle widget, Bool type, NO range → both range columns are the `-` sentinel (stable schema).
-        let mirror = rows.iter().find(|r| r[0] == "mirror").expect("mirror row");
-        assert_eq!(mirror[1], "toggle", "mirror widget: {mirror:?}");
-        assert_eq!(mirror[2], "Bool", "mirror declared type: {mirror:?}");
-        assert_eq!(mirror[3], "-", "mirror has no range-lo: {mirror:?}");
-        assert_eq!(mirror[4], "-", "mirror has no range-hi: {mirror:?}");
+        // mirror: toggle widget, Bool type, NO range (absent → None, a stable schema).
+        let mirror = sites
+            .iter()
+            .find(|s| s.name == "mirror")
+            .expect("mirror site");
+        assert_eq!(mirror.widget.as_deref(), Some("toggle"), "mirror widget");
+        assert_eq!(
+            mirror.ty.as_name(mirror.ty.root),
+            Some("Bool"),
+            "mirror declared type"
+        );
+        assert_eq!(mirror.range, None, "mirror has no range");
     }
 
     #[test]
@@ -38747,9 +38764,15 @@ mod sidecar_driven {
         let src = "(do (def (main) 0) (export main))";
         let out = compile(&inputs(src, &[Request::Query(Query::ParamManifest)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        assert_eq!(
-            artifact_text(&out, KIND_PARAM_MANIFEST).as_deref(),
-            Some("")
+        let bytes = &out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == KIND_PARAM_MANIFEST)
+            .expect("a param-manifest artifact")
+            .bytes;
+        assert!(
+            cadenza_compile_abi::param_manifest_wire::decode(bytes).is_empty(),
+            "no @param sites → empty manifest"
         );
     }
 

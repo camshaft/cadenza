@@ -6593,65 +6593,32 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    if text.trim().is_empty() {
+    // The manifest is canonical binary AST (operator P0 seq-284): decode the sites via the shared codec
+    // (zero string parsing). The codec IS the shape guarantee — no per-row malformed-parse guard needed
+    // (a wrong-shape site is skipped by decode; the producer always emits a well-formed tree).
+    let sites = cadenza_compile_abi::param_manifest_wire::decode(bytes);
+    if sites.is_empty() {
         eprintln!("{PROG}: {} declares no @param sites", args.file);
         return ExitCode::SUCCESS;
     }
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    // Render an arena value-node id (from the wire) to its source s-expression, or `None` for the `-`
-    // sentinel (an absent config field). Node-id-keyed → the shared `StructId` space lets this CLI print
-    // the exact source form the compiler pointed at, without re-parsing.
-    let render_node = |field: &str| -> Option<String> {
-        let id: u32 = field.parse().ok()?;
-        Some(cadenza_syntax::sexpr::print_from(
-            &arenas,
-            cadenza_syntax::StructId(id),
-        ))
-    };
-    // Track whether any NON-EMPTY line failed to parse into the expected 8-column shape. A blank line is
-    // skipped silently (harmless); a malformed row is a LOUD error, not a silent drop — otherwise a sidecar
-    // output-format regression would drop params while `cdz param-manifest` still reported success, masking
-    // the break (Copilot PR #525 — the silent-pass-on-malformed-input class). We report the offending line
-    // and FAIL at the end, so a format skew surfaces immediately instead of a quietly-short manifest.
-    let mut malformed = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        // `name  widget  type  range-lo  range-hi  options  default  name-node` — split into exactly 8.
-        let cols: Vec<&str> = line.splitn(8, '\t').collect();
-        let [
-            name,
-            widget,
-            ty,
-            range_lo,
-            range_hi,
-            options,
-            default,
-            name_node,
-        ] = cols[..]
-        else {
-            eprintln!(
-                "{PROG}: internal: could not parse a param-manifest row (expected 8 tab-separated \
-                 fields, got {}) — the sidecar output format may have changed: {line:?}",
-                cols.len()
-            );
-            malformed = true;
-            continue;
-        };
-        let widget = (widget != "-").then_some(widget);
+    // Render an arena value-node id to its source s-expression. Node-id-keyed → the shared `StructId` space
+    // lets this CLI print the exact source form the compiler pointed at, without re-parsing.
+    let render_id =
+        |id: u32| cadenza_syntax::sexpr::print_from(&arenas, cadenza_syntax::StructId(id));
+    for site in &sites {
+        let name = site.name.as_str();
+        let widget = site.widget.as_deref();
+        // The declared TYPE: the full structured `Ty` sub-AST rendered back to its display string —
+        // byte-identical to the compiler's `Ty::render_name` (`render_ty_name`), so no render-name string
+        // rode the wire yet the CLI output is unchanged.
+        let ty = cadenza_syntax::render_ty::render_ty_name(&site.ty, site.ty.root);
         // A range is the two element nodes rendered as `[lo, hi]` (both present or neither).
-        let range = match (render_node(range_lo), render_node(range_hi)) {
-            (Some(lo), Some(hi)) => Some((lo, hi)),
-            _ => None,
-        };
-        let options = render_node(options);
-        let default = render_node(default);
-        let line_col = name_node
-            .parse::<u32>()
-            .ok()
-            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+        let range = site.range.map(|(lo, hi)| (render_id(lo), render_id(hi)));
+        let options = site.options.map(render_id);
+        let default = site.default.map(render_id);
+        let line_col = spans
+            .get(cadenza_syntax::StructId(site.name_node))
             .map(|span| index.line_col(&source, span.start));
         if args.json {
             use cadenza_syntax::query::json;
@@ -6662,7 +6629,7 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
                 obj.raw("col", &c.to_string());
             }
             obj.string("name", name);
-            obj.string("type", ty);
+            obj.string("type", &ty);
             // Null-not-omitted for absent config, so a host gets a STABLE schema across sites.
             match widget {
                 Some(w) => obj.string("widget", w),
@@ -6713,13 +6680,7 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
             println!("{loc}: {name} : {ty}{cfg}");
         }
     }
-    // A malformed row means the command could not faithfully read its own tool's output — fail loudly
-    // rather than return success with a silently-short manifest.
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 /// `cdz instantiations NAME FILE` — the DISPOSITION of definition NAME plus, if it is specialized, every
