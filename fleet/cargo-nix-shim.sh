@@ -73,8 +73,12 @@ if [ "$_sub" = "xtask" ] && [ "${2:-}" = "fleet" ]; then run_real "$@"; fi
 # trailing arg → soft-warn + real cargo (conservative).
 if [ "$_sub" = "xtask" ] && [ "${2:-}" = "build" ] && [ -z "${3:-}" ]; then
   _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
-  echo "cargo-shim: routing 'cargo xtask build' → nix run $_flake#build (all-nix: front-end + store from the shared /nix/store, zero cargo/target bloat; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
-  exec nix run "$_flake#build"
+  echo "cargo-shim: routing 'cargo xtask build' → cargo xtask fleet with-lease nix run $_flake#build (all-nix + LEASED: a full store rebuild is a heavy nix build, so it takes a check-lease slot — bounds the concurrent cold-build herd, e.g. the 43-agent input-addressed .#runtime rebuild that oversubscribes the big-nix-lock on a hash-bump flag-day; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
+  # with-lease acquires a VERTICAL check-lease (bounded-wait, fail-open) then runs the build → ≤cap concurrent
+  # store rebuilds, the rest bounded-wait+trickle. It sets CDZ_LEASED_NIX=1 so the inner `nix run` passes the
+  # nix-shim (no double-route/recursion); `cargo xtask fleet …` is cargo-shim control-plane exempt (above) so
+  # this re-invocation runs real cargo, not this shim. Deadlock-safe: no lease-holder nests a .#build lease.
+  exec cargo xtask fleet with-lease nix run "$_flake#build"
 fi
 
 # ROUTE `cargo xtask test` → `nix run <flake>#fast-gate` (v-fleet-tooling, coord v-xtask-decompose seq-202
@@ -109,8 +113,8 @@ if [ "$_sub" = "build" ]; then
   done
   if [ "$_has_p" = 0 ]; then
     _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
-    echo "cargo-shim: routing 'cargo build' → nix run $_flake#build (all-nix: front-end bins from the shared store, zero target/ bloat; a specific crate — cargo build -p CRATE — still runs cargo; bypass CDZ_NO_CARGO_SHIM=1)." >&2
-    exec nix run "$_flake#build"
+    echo "cargo-shim: routing 'cargo build' → cargo xtask fleet with-lease nix run $_flake#build (all-nix + LEASED: the store rebuild takes a check-lease slot to bound the concurrent cold-build herd; a specific crate — cargo build -p CRATE — still runs cargo; bypass CDZ_NO_CARGO_SHIM=1)." >&2
+    exec cargo xtask fleet with-lease nix run "$_flake#build"
   fi
 fi
 
