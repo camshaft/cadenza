@@ -438,7 +438,7 @@ pass	String.from-bytes rejects a lone continuation byte
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
 pass	String.from-bytes rejects an overlong encoding
 pass	String.from-bytes validates a multi-byte scalar straddling a runtime byte-rope's seam
-pass	String.scalar-at over a runtime index declines pending the runtime Char rep
+pass	String.scalar-at over a runtime index is intentionally declined (char-rep WONTFIX — a runtime char renders as its code-point number)
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	String.scalar-len over an owned-temporary runtime rope leaves no live heap objects
