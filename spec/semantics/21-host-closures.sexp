@@ -1519,7 +1519,7 @@
   (input  (do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
               (export main)))
   (call   main (: 5 Int64))
-  (output (5 6))
+  (output #list(5 6))
   (live-objects known-leak 1))
 
 (case "a Bytes-returning closure on a different argument"
@@ -1528,7 +1528,7 @@
   (input  (do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
               (export main)))
   (call   main (: 100 Int64))
-  (output (100 101))
+  (output #list(100 101))
   (live-objects known-leak 1))
 
 (case "a capturing closure returning Bytes"
@@ -1538,7 +1538,7 @@
   (input  (do (def (tag (: hdr Int64)) (fn ((: n Int64)) (bin (u8 (UInt8.wrap hdr)) (u8 (UInt8.wrap n)))))
               (export tag)))
   (call   tag (: 9 Int64) (: 200 Int64))
-  (output (9 200))
+  (output #list(9 200))
   (live-objects known-leak 1))
 
 ; A STRING closure result crosses the same way a `Bytes` one does. A `String` is a UTF-8 byte-rope handle,
@@ -1554,7 +1554,7 @@
            is a byte-rope handle).")
   (input  (do (def (main) (fn ((: n Int64)) "hi")) (export main)))
   (call   main (: 0 Int64))
-  (output (104 105))
+  (output #list(104 105))
   (live-objects known-leak 1))
 
 (case "a closure returning a runtime String (concat) crosses as its bytes"
@@ -1563,7 +1563,7 @@
            bytes copy reads a genuine runtime byte-rope handle, not only a compile-time-known string.")
   (input  (do (def (main) (fn ((: n Int64)) ((. String concat) "ab" "c"))) (export main)))
   (call   main (: 0 Int64))
-  (output (97 98 99))
+  (output #list(97 98 99))
   (live-objects known-leak 1))
 
 (case "a capturing closure returning a String"
@@ -1572,7 +1572,7 @@
            Composes make-param capture with a `String` closure result.")
   (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) ((. String concat) "x" "y"))) (export mk)))
   (call   mk (: 7 Int64) (: 0 Int64))
-  (output (120 121))
+  (output #list(120 121))
   (live-objects known-leak 1))
 
 ; EMPTY byte-rope closure results — the copy loop must handle n=0 (empty Bytes / empty String). An empty
@@ -1585,7 +1585,7 @@
            0 must skip the loop cleanly).")
   (input  (do (def (main) (fn ((: n Int64)) (bin))) (export main)))
   (call   main (: 0 Int64))
-  (output ())
+  (output #list())
   (live-objects known-leak 1))
 
 (case "a closure returning an empty String crosses as the empty list"
@@ -1593,7 +1593,7 @@
            empty `list<u8>`. Confirms the n=0 edge on the String result path too.")
   (input  (do (def (main) (fn ((: n Int64)) "")) (export main)))
   (call   main (: 0 Int64))
-  (output ())
+  (output #list())
   (live-objects known-leak 1))
 
 ; MULTI-EXPORT byte-rope-result closures: N same-signature closures each returning a `Bytes`/`String` share
@@ -1609,7 +1609,7 @@
               (def (b) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
               (export a) (export b)))
   (call   a (: 5 Int64))
-  (output (5))
+  (output #list(5))
   (live-objects known-leak 1))
 
 (case "two same-signature Bytes-returning closures share one call — second"
@@ -1620,7 +1620,7 @@
               (def (b) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
               (export a) (export b)))
   (call   b (: 5 Int64))
-  (output (5 6))
+  (output #list(5 6))
   (live-objects known-leak 1))
 
 (case "two same-signature String-returning closures share one call"
@@ -1631,7 +1631,7 @@
               (def (bye) (fn ((: n Int64)) "by"))
               (export greet) (export bye)))
   (call   bye (: 0 Int64))
-  (output (98 121))
+  (output #list(98 121))
   (live-objects known-leak 1))
 
 ; A BYTE-ROPE-result closure ALONGSIDE a PLAIN export — the mixed shape extended to the compound `call`.
@@ -1647,7 +1647,7 @@
               (def (two) 2)
               (export mk) (export two)))
   (call   mk (: 5 Int64))
-  (output (5 6))
+  (output #list(5 6))
   (live-objects known-leak 1))
 
 (case "a Bytes-returning closure alongside a plain export — the plain runs"
@@ -1667,7 +1667,7 @@
               (def (dbl (: x Int64)) (* x 2))
               (export greet) (export dbl)))
   (call   greet (: 0 Int64))
-  (output (104 105))
+  (output #list(104 105))
   (live-objects known-leak 1))
 
 (case "a String-returning closure alongside a parameterized plain export — the plain runs"
@@ -1694,7 +1694,7 @@
               (def (mks) (fn ((: b Bool)) (bin (u8 (if b 1 0)))))
               (export mkb) (export mks)))
   (call   mkb (: 5 Int64))
-  (output (5 6))
+  (output #list(5 6))
   (live-objects known-leak 1))
 
 (case "distinct-sig byte-rope closures — the Bool→Bytes one"
@@ -1704,7 +1704,7 @@
               (def (mks) (fn ((: b Bool)) (bin (u8 (if b 1 0)))))
               (export mkb) (export mks)))
   (call   mks (: true Bool))
-  (output (1))
+  (output #list(1))
   (live-objects known-leak 1))
 
 (case "distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one"
@@ -1716,7 +1716,7 @@
               (def (inc) (fn ((: x Int64)) (+ x 1)))
               (export mkb) (export inc)))
   (call   mkb (: 9 Int64))
-  (output (9 10))
+  (output #list(9 10))
   (live-objects known-leak 1))
 
 (case "distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one"
@@ -1738,7 +1738,7 @@
               (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
               (export greet) (export mkb)))
   (call   greet (: 0 Int64))
-  (output (104 105))
+  (output #list(104 105))
   (live-objects known-leak 1))
 
 (case "distinct-sig byte-rope closure alongside a plain export — the closure"
@@ -1750,7 +1750,7 @@
               (def (two) 2)
               (export mkb) (export isz) (export two)))
   (call   mkb (: 3 Int64))
-  (output (3))
+  (output #list(3))
   (live-objects known-leak 1))
 
 (case "distinct-sig byte-rope closure alongside a plain export — the plain"
@@ -1781,7 +1781,7 @@
                 (bin (u8 (UInt8.wrap (g x))) (u8 (UInt8.wrap (+ (g x) 1)))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (6 7)))
+  (output #list(6 7)))
 
 (case "round-trip: a consumer returns a byte-rope built from a single closure result"
   (doc    "`mk` doubles; `app : (own<t>, Int64) -> Bytes` = `(bin (u8 (g x)))`. `app(handle, 10)` → the
@@ -1790,7 +1790,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
               (export mk) (export app)))
   (call   app (: 10 Int64))
-  (output (20)))
+  (output #list(20)))
 
 (case "round-trip: a String-returning consumer of a closure"
   (doc    "`label : (own<t>, Int64) -> String` returns the constant \"hi\" (UTF-8 `[104,105]`) — a String
@@ -1799,7 +1799,7 @@
               (def (label (: g (-> Int64 Int64)) (: x Int64)) "hi")
               (export mk) (export label)))
   (call   label (: 0 Int64))
-  (output (104 105)))
+  (output #list(104 105)))
 
 (case "round-trip byte-rope consumer alongside a plain export — the consumer"
   (doc    "`app : (own<t>, Int64) -> Bytes` beside a plain `seven : () -> 7`. `app(handle, 41)` → `[42]`.
@@ -1809,7 +1809,7 @@
               (def (seven) 7)
               (export mk) (export app) (export seven)))
   (call   app (: 41 Int64))
-  (output (42)))
+  (output #list(42)))
 
 (case "round-trip byte-rope consumer alongside a plain export — the plain"
   (doc    "The SAME program, calling the plain `seven` → 7. Confirms the plain top-level export is reachable
@@ -1831,7 +1831,7 @@
               (def (asbytes (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
               (export mk) (export asnum) (export asbytes)))
   (call   asbytes (: 8 Int64))
-  (output (9)))
+  (output #list(9)))
 
 (case "round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one"
   (doc    "The SAME two-consumer program, driving the SCALAR consumer: `asnum(handle, 8)` → 9 (by value, NOT
@@ -1862,7 +1862,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 5 Int64))
-  (output (6 7)))
+  (output #list(6 7)))
 
 (case "distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one"
   (doc    "The SAME two-resource-type program, driving the SCALAR consumer of the OTHER signature: `appb :
@@ -1886,7 +1886,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (bin (u8 (UInt8.wrap (h y))) (u8 99)))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 40 Int64))
-  (output (41)))
+  (output #list(41)))
 
 (case "distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one"
   (doc    "The SAME program, driving the OTHER byte-rope consumer: `appb(mkb-handle, false)` → `mkb`'s
@@ -1898,7 +1898,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (bin (u8 (UInt8.wrap (h y))) (u8 99)))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: false Bool))
-  (output (8 99)))
+  (output #list(8 99)))
 
 ; A COMPOUND (tuple/record) closure RESULT — the closure's `call` returns the canonical VALUE FORM as
 ; `list<u8>` (the value-heap escape's `runtime_value_form_template` + `encode_walk_body` walker, keyed on
@@ -2199,7 +2199,7 @@
               (def (inc) (fn ((: x Int64)) (+ x 1)))
               (export mkt) (export mkb) (export inc)))
   (call   mkb (: false Bool))
-  (output (8))
+  (output #list(8))
   (live-objects known-leak 1))
 
 (case "distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar"
@@ -2281,7 +2281,7 @@
               (def (asbytes (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
               (export mk) (export aspair) (export asbytes)))
   (call   asbytes (: 40 Int64))
-  (output (41)))
+  (output #list(41)))
 
 (case "round-trip: a compound consumer alongside a plain export — the plain"
   (doc    "A tuple-returning consumer `app` beside a plain `five : () -> 5`. Calling `five` → 5. Confirms a
@@ -2358,7 +2358,7 @@
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (bin (u8 (UInt8.wrap (h y)))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: false Bool))
-  (output (8)))
+  (output #list(8)))
 
 ; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT — the closure's `call` returns the canonical
 ; value form as `list<u8>`, rendered at RUN TIME by the runtime `value-encode(rep, desc)` op (the recursive-
@@ -2731,7 +2731,7 @@
               (def (inc) (fn ((: y Int64)) (+ y 1)))
               (export lst) (export pr) (export byt) (export inc)))
   (call   byt (: 65 Int64))
-  (output (65))
+  (output #list(65))
   (live-objects known-leak 1))
 
 (case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar"
@@ -3308,7 +3308,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1))))))
               (export mk)))
   (call   mk (: #tuple(5 6) (Tuple Int64 Int64)))
-  (output (: (5 6) Bytes))
+  (output #list(5 6))
   (live-objects known-leak 1))
 
 ; A fixed-shape compound ARGUMENT now composes with a fixed-shape COMPOUND result too (the value-form result
@@ -3382,7 +3382,7 @@
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (if (= (. p 0) (. p 1)) "eq" "ne")))
               (export mk)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)))
-  (output (: (101 113) Bytes))
+  (output #list(101 113))
   (live-objects known-leak 1))
 
 (case "a fixed-shape Tuple ARG with a SUM (Option) RESULT crosses the direct-call boundary"
@@ -3585,7 +3585,7 @@
   (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. p 1))))))
               (export mk)))
   (call   mk (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
-  (output (: (100 10 3) Bytes))
+  (output #list(100 10 3))
   (live-objects known-leak 1))
 
 (case "a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary"
@@ -3821,7 +3821,7 @@
                          (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. (. p 1) 0))) (u8 (UInt8.wrap (. (. p 1) 1))))))
               (export mk)))
   (call   mk (: #tuple(100 #tuple(10 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (output (: (100 10 3) Bytes))
+  (output #list(100 10 3))
   (live-objects known-leak 3))
 
 (case "a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary"
@@ -4182,7 +4182,7 @@
               (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 0))))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: 100 Int64) (: #tuple(10 3) (Tuple Int64 Int64)))
-  (output (: (100 10 3) Bytes))
+  (output #list(100 10 3))
   (live-objects known-leak 1))
 
 (case "MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result"
@@ -4309,7 +4309,7 @@
                 (bin (u8 (UInt8.wrap (. p 0))) (u8 (UInt8.wrap (. q 1))))))
               (export mk)))
   (call   mk (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
-  (output (: (5 10) Bytes))
+  (output #list(5 10))
   (live-objects known-leak 1))
 
 (case "THREE Tuple args with a LIST result"
@@ -4502,7 +4502,7 @@
               (def (mk-b) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (bin (u8 (UInt8.wrap (. p 1))))))
               (export mk-a) (export mk-b)))
   (call   mk-a (: #tuple(5 5) (Tuple Int64 Int64)) (: #tuple(5 10) (Tuple Int64 Int64)))
-  (output (: (5 10) Bytes))
+  (output #list(5 10))
   (live-objects known-leak 1))
 
 (case "MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`"
@@ -5657,7 +5657,7 @@
                     ((. Bytes concat) ((. Bytes of) #list(((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
               (def (main) (uleb 624485)) (export main)))
   (call-method to-bytes)
-  (output (229 142 38))
+  (output #list(229 142 38))
   (live-objects known-leak 1))
 
 (case "a runtime Bytes value's encode member still renders after other member calls (call-method)"
@@ -5699,7 +5699,7 @@
                     ((. Bytes concat) ((. Bytes of) #list(((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
               (def (main) (uleb 624485)) (export main)))
   (call-method to-bytes)
-  (output (: (229 142 38) (List UInt8)))
+  (output #list(229 142 38))
   (live-objects known-leak 1))
 
 ; ── breaker batch 566: the host-closure × immortal-era campaign opens. hcp1-3 = the green capture
