@@ -9440,3 +9440,53 @@
             (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
             (export main)))
   (declines (message "not reducible by the tail-resumptive fold")))
+
+; ── effect safe-rejects: escaping / captured-continuation / partial-application (migrated from rcdzc
+;    tests/mod.rs, delanguaging handoff from v-rcdzc-test-shrink 2026-08-30). A performing closure or a
+;    reified continuation that CROSSES its handler's extent has no home for its perform / no machine
+;    representation at the boundary, so the compiler refuses it up front rather than emit a trapping or
+;    wrong-valued artifact. Pinned by exact diagnostic CODE (a hard rejection) where one is assigned.
+
+(case "an escaping closure whose body performs is rejected (perform out of the handler's extent)"
+  (doc    "The handler's body value is `(fn (x) (+ x (St.get)))` — a closure that ESCAPES the `handle St`
+           (it is returned, then applied `(… 10)` AFTER the handle closes). Its `St.get` would run
+           out-of-extent, with no handler live, so it is a soundness rejection (CDZ0401 effect-escape), not
+           a value. Migrated from rcdzc an_escaping_closure_whose_body_performs_still_declines.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main (: k Int64))
+              ((handle St k ((get (u) s (resume s s)))
+                 (fn ((: x Int64)) (+ x (St.get)))) 10))
+            (export main)))
+  (error CDZ0401))
+
+(case "an escaping captured continuation is refused, not miscompiled"
+  (doc    "A handler arm that RETURNS its continuation as an escaping value — `(flip (u) s (fn (x) (resume x
+           s)))` yields the resume as a lambda; the handle value IS that lambda, applied `(k 5)` after the
+           handle closes. This is the genuine captured-`k` frontier (§4.4): it needs a reified `Ty::Cont`
+           heap value the seed does not build, so it is refused up front (a handle value that is a function
+           has no machine representation at the boundary) — never compiled to a trapping / wrong-valued
+           artifact. Currently a codeless decline (a latent seq-286 code gap, tracked separately). Migrated
+           from rcdzc an_escaping_captured_continuation_is_refused_not_miscompiled.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (let ((k (handle Amb 0 ((flip (u) s (fn (x) (resume x s)))) (+ 100 (Amb.flip)))))
+                (k 5)))
+            (export main)))
+  (declines))
+
+(case "a partial application of a performing closure that escapes its handler is rejected"
+  (doc    "`mk` boxes a curried closure `(fn a (fn b (+ a (+ b (E.tick)))))`; `main` handles `E` and applies
+           the projected closure to ONE of its two args (`(f 3)` — a genuine 1-of-2 partial), RETURNING the
+           residual closure as the handle body's value. The residual closure PERFORMS `E.tick` and ESCAPES
+           its handler (returned out of the `handle`), so lifting it to a standalone function hits the
+           effect-escape / unrepresentable-closure rejection (CDZ0201) — a clean reject, never a mis-emit /
+           invalid wasm. Migrated from rcdzc a_partial_application_of_a_performing_closure_under_a_handler_declines_cleanly.")
+  (input  (module m
+            (effect E (op tick (-> Unit Int64)))
+            (type Box (C (-> Int64 (-> Int64 Int64))))
+            (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a (+ b (E.tick)))))))
+            (def (main) (handle E 0 ((tick (u) s (resume s (+ s 1)))) (match (mk) ((Box.C f) (f 3)))))
+            (export main)))
+  (error CDZ0201))
