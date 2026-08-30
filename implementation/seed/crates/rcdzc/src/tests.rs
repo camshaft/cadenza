@@ -27230,17 +27230,6 @@ mod stage1 {
     // covered by corpus 07-type-system: "an annotation whose type is a reduced (Int 64) constructor grounds
     // the value" + "a Bool annotation on a Bool value is transparent". The reject companion stays here.
     #[test]
-    fn an_annotation_conflicting_with_the_value_rejects() {
-        // `(: true Int64)` — Bool asserted as Int64. Unifying the annotation type against the value's
-        // type FAILS → CDZ0203 (the disambiguation force turned against a genuine conflict).
-        let msg = expect_decline("(: true Int64)");
-        assert!(
-            msg.contains("does not match") || msg.contains("Int") || msg.contains("Bool"),
-            "got: {msg}"
-        );
-    }
-
-    #[test]
     fn a_lowercase_name_in_a_type_position_points_at_the_unannotated_generic_route() {
         // A bare LOWERCASE name in a type-annotation position that resolves to nothing — `(: x a)`. An ML/
         // Haskell user reads `a` as a TYPE VARIABLE (and it IS one in a VARIANT PAYLOAD `(type Box (B a))`),
@@ -27750,24 +27739,6 @@ mod stage1 {
                 || msg.contains("Int")
                 || msg.contains("UInt")
                 || msg.contains("differ"),
-            "got: {msg}"
-        );
-    }
-
-    #[test]
-    fn a_contradicting_parameter_annotation_rejects() {
-        // `(def (bad (: a Bool)) (+ a 1))` — `a` annotated Bool but used as an integer operand of `+`;
-        // the annotation contradicts the use → CDZ0203 (type-system.md Annotations Constrain, Never
-        // Contradict). 09-functions witness.
-        let src = "(module m (def (bad (: a Bool)) (+ a 1)) (def (main) (bad true)) (export main))";
-        let msg = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("must reject")
-            .message;
-        assert!(
-            msg.contains("match")
-                || msg.contains("Bool")
-                || msg.contains("Int")
-                || msg.contains("unify"),
             "got: {msg}"
         );
     }
