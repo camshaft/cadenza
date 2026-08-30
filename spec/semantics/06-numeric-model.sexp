@@ -345,7 +345,7 @@
 ; an_out_of_range_literal_carries_a_widen_the_annotation_fix / a_negative_into_unsigned_offers_the_smallest_signed_type.)
 (case "an out-of-range integer literal widens to the smallest fitting width of the same signedness"
   (input  (do (def (main) (: 999 Int8)) (export main)))
-  (error  CDZ0302 (fix (kind replace) (replacement "Int16") (unverified))))
+  (error  CDZ0302 (message "does not fit") (fix (kind replace) (replacement "Int16") (unverified))))
 
 (case "an out-of-range integer literal widens straight to the widest fitting width, not an intermediate"
   (input  (do (def (main) (: 5000000000 Int8)) (export main)))
@@ -353,7 +353,7 @@
 
 (case "an out-of-range UNSIGNED integer literal widens within the unsigned family"
   (input  (do (def (main) (: 300 UInt8)) (export main)))
-  (error  CDZ0302 (fix (kind replace) (replacement "UInt16") (unverified))))
+  (error  CDZ0302 (message "does not fit") (fix (kind replace) (replacement "UInt16") (unverified))))
 
 (case "an out-of-range integer literal past every fixed width retypes to BigInt"
   (input  (do (def (main) (: 99999999999999999999999 Int8)) (export main)))
@@ -361,7 +361,7 @@
 
 (case "a negative out-of-range integer literal in an unsigned type retypes to the smallest signed width"
   (input  (do (def (main) (: -5 UInt8)) (export main)))
-  (error  CDZ0302 (fix (kind replace) (replacement "Int8") (unverified))))
+  (error  CDZ0302 (message "does not fit") (fix (kind replace) (replacement "Int8") (unverified))))
 
 (case "a negative out-of-range integer literal too large for Int8 escalates to the next signed width"
   (input  (do (def (main) (: -200 UInt8)) (export main)))
