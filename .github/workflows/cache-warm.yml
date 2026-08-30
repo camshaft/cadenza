@@ -68,7 +68,7 @@ jobs:
         with:
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
-          extra-conf: "extra-experimental-features = ca-derivations"
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true"
       # SAVE-ON-SUCCESS SPLIT (v-nix+v-ft 2026-08-06): cache-warm does NOT use the shared nix-store-cache
       # composite (which the 10 checks.yml jobs use for combined restore+save) — it splits restore + save so
       # the SAVE can be gated on JOB success. WHY: a cache-warm run that FAILS a later step (e.g. the 10:01
