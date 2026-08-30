@@ -2613,9 +2613,21 @@
   (input (do (def (f) 1) (def (f) 2) (def (main) (f)) (export main)))
   (error CDZ0201 (message "defined more than once") (fix (kind delete))))
 
-(case "a duplicate parameter name is rejected as a nonlinear binder"
+(case "a duplicate parameter name is rejected as a nonlinear binder with a rename fix"
+  (doc   "CDZ0102 carries the mechanical repair: RENAME the repeated binder to a fresh non-colliding name
+          (`x` → `x2`), making the parameter list linear. Heuristic (unverified — the rename clears the hard
+          error but the fresh binder is then unused until the author wires it up). Enhanced from rcdzc
+          a_non_linear_parameter_carries_a_rename_fix_avoiding_collisions.")
   (input (do (def (f x x) x) (def (main) (f 1 2)) (export main)))
-  (error CDZ0102))
+  (error CDZ0102 (fix (kind replace) (replacement "x2") (unverified))))
+
+(case "a nonlinear-parameter rename fix dodges an existing later binder name"
+  (doc   "The fresh name avoids EVERY param name (earlier AND later), not just a `+1` suffix: with a later
+          `x2` already present, the duplicate `x` renames to `x3`, not the already-taken `x2`. Pins the
+          collision-avoidance half of the rename heuristic. From rcdzc
+          a_non_linear_parameter_carries_a_rename_fix_avoiding_collisions.")
+  (input (do (def (f x x x2) x) (def (main) (f 1 2 3)) (export main)))
+  (error CDZ0102 (fix (kind replace) (replacement "x3") (unverified))))
 
 ; An export clause names a DEFINITION: `(export <name>)` / `(export <name>…)`. An argument that is not a
 ; bare name — `(export (g x))` / `(export 5)` / `(export)` / a non-name element of a multi-name export — was

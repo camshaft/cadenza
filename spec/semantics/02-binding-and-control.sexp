@@ -4855,6 +4855,16 @@
   (input  (do (def (main) (let ((#list(a a .. rest) #list(1 2 3))) a)) (export main)))
   (error  CDZ0102))
 
+(case "a non-linear tuple match pattern is rejected CDZ0102 with a rename fix"
+  (doc    "A repeated binder in a MATCH pattern — `(#tuple(a a) a)` binds `a` twice — is the nonlinear reject
+           CDZ0102, and it carries the mechanical repair: RENAME the repeated binder to a fresh
+           non-colliding name (`a` → `a2`), making the pattern linear. Heuristic (unverified — the rename
+           clears the hard error but the fresh binder is then unused until the author wires it up). The
+           match-pattern companion of the non-linear list-binder and duplicate-parameter cases. (Migrated
+           from rcdzc a_non_linear_pattern_binder_carries_a_rename_fix.)")
+  (input  (match #tuple(1 2) (#tuple(a a) a)))
+  (error  CDZ0102 (fix (kind replace) (replacement "a2") (unverified))))
+
 ; The refutable / ill-shaped / non-linear rejections. A binding position has no alternative arm, so its
 ; pattern MUST be irrefutable and its shape MUST match the value's type (core-semantics.md #A Binding
 ; Position Accepts An Irrefutable Pattern).
