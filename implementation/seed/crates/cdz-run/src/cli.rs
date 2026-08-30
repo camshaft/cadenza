@@ -229,6 +229,15 @@ pub struct RunArgs {
     /// The artifact loads only under an engine with a matching compatibility hash (the `.cwasm` cache key).
     #[arg(long = "precompile-out", value_name = "PATH")]
     pub precompile_out: Option<PathBuf>,
+
+    /// PRECOMPILED mode (seq-250 AOT corpus-exec): treat `<component>` AND `--runtime` as precompiled
+    /// `.cwasm` AOT artifacts (from `--precompile-out`) and load them with `Component::deserialize` rather
+    /// than JIT-compiling — the only way the cranelift-free exec (`--no-default-features`) can run a corpus
+    /// program. Composition + instantiation are unchanged, so grades are identical to the JIT path. Pair
+    /// with `--grade` for the corpus exec: `--precompiled --component guest.cwasm --runtime rt.cwasm`.
+    /// (Peer `(--peer …)` cases are not yet supported in this mode — a clear error is returned.)
+    #[arg(long = "precompiled")]
+    pub precompiled: bool,
 }
 
 /// Run a component per `args`, printing the value to stdout (host calls to stderr) and returning the
@@ -350,17 +359,31 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
                 // this fallback the `--runtime` override (the grade's DEBUG-COUNTERS runtime) is not applied
                 // to the peer, so it resolves the SHIPPED runtime by hash and the heap-balance count is
                 // vacuous — the exact same consumer/peer runtime-sharing the direct-run path resolves.
-                let runtime = match required_runtime(&bytes)? {
-                    Some(req) => Some(resolve_runtime(cli, &req)?),
-                    None => {
-                        let mut rt = None;
-                        for peer in &peers {
-                            if let Some(req) = required_runtime(&peer.bytes)? {
-                                rt = Some(resolve_runtime(cli, &req)?);
-                                break;
+                let runtime = if cli.precompiled {
+                    // PRECOMPILED (seq-250): `bytes` is a `.cwasm`, NOT parseable by `required_runtime`
+                    // (which reads raw component imports). The runtime is supplied explicitly as its own
+                    // precompiled `.cwasm` via `--runtime`; read it directly. (`find_runtime_req` inside the
+                    // run path still inspects the DESERIALIZED component to decide whether to compose it, so
+                    // a scalar guest with no runtime import ignores an unneeded `--runtime`.)
+                    match &cli.runtime {
+                        Some(path) => Some(std::fs::read(path).map_err(|e| {
+                            anyhow::anyhow!("read precompiled --runtime {}: {e}", path.display())
+                        })?),
+                        None => None,
+                    }
+                } else {
+                    match required_runtime(&bytes)? {
+                        Some(req) => Some(resolve_runtime(cli, &req)?),
+                        None => {
+                            let mut rt = None;
+                            for peer in &peers {
+                                if let Some(req) = required_runtime(&peer.bytes)? {
+                                    rt = Some(resolve_runtime(cli, &req)?);
+                                    break;
+                                }
                             }
+                            rt
                         }
-                        rt
                     }
                 };
                 let rcd = resolve_runtime_cache_dir(
@@ -385,6 +408,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             cli.emit_verdict.as_deref(),
             &peers,
             cli.tolerate_fewer_live_objects,
+            cli.precompiled,
         );
     }
 
@@ -404,9 +428,21 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     // Resolve the value-heap runtime ONLY if the component records one — a scalar/const component
     // imports nothing and needs no runtime, so a missing store is not an error there. When it does,
     // resolve BY CONTENT ADDRESS: the exact hash the component records must be in the store.
-    let runtime = match required_runtime(&component_bytes)? {
-        Some(req) => Some(resolve_runtime(cli, &req)?),
-        None => None,
+    // PRECOMPILED (seq-250): a `.cwasm` guest is not parseable by `required_runtime`; the runtime is
+    // supplied as its own precompiled `.cwasm` via `--runtime` (or omitted for a scalar guest). The run
+    // path's `find_runtime_req` still inspects the deserialized component to decide whether to compose it.
+    let runtime = if cli.precompiled {
+        match &cli.runtime {
+            Some(path) => Some(std::fs::read(path).map_err(|e| {
+                anyhow::anyhow!("read precompiled --runtime {}: {e}", path.display())
+            })?),
+            None => None,
+        }
+    } else {
+        match required_runtime(&component_bytes)? {
+            Some(req) => Some(resolve_runtime(cli, &req)?),
+            None => None,
+        }
     };
 
     // Parse each `--host-response op=value` into a `HostResponse`. A missing `=` takes the whole string
@@ -463,6 +499,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         runtime,
         runtime_cache_dir,
         host_responses,
+        precompiled: cli.precompiled,
     };
     // A `--call-twice` request (the corpus `(then …)` two-call-on-one-handle drive): the second call's
     // args, threaded alongside `opts` into the run path down to the closure-escape dispatch. `None` for an
