@@ -1233,6 +1233,25 @@
   (input  (% "ab" "cd"))
   (error  CDZ0201))
 
+; NO PHANTOM Int64 CLASH: a same-typed non-numeric arithmetic operand reaches the numeric-requirement
+; rejection through the operator's own check — it must NOT leak the generic scheme-unify's phantom "type
+; mismatch: Int64 and <T> must be the same type here", an `Int64` the author never wrote. These PARAMETER
+; versions (where the scheme-unify path runs, unlike the const-folded literal cases above) pin the negative
+; via the `(not …)` message-absence form. (Migrated from rcdzc
+; arithmetic_on_a_non_numeric_operand_carries_no_phantom_int64_clash, which pre-dated `(not …)` and so had
+; stayed white-box; #6146's message-absence sub-form now lets the corpus assert it.)
+(case "same-typed String operands to + reject without a phantom Int64 clash"
+  (input  (do (def (f (: a String) (: b String)) (+ a b)) (export f)))
+  (error  CDZ0201 (message "arithmetic is not defined on String") (not "must be the same type here")))
+
+(case "same-typed String operands to % reject without a phantom Int64 clash"
+  (input  (do (def (f (: a String) (: b String)) (% a b)) (export f)))
+  (error  CDZ0201 (message "arithmetic is not defined on String") (not "must be the same type here")))
+
+(case "same-typed List operands to + reject without a phantom Int64 clash"
+  (input  (do (def (f (: a (List Int64)) (: b (List Int64))) (+ a b)) (export f)))
+  (error  CDZ0201 (message "arithmetic is not defined on") (not "must be the same type here")))
+
 ; --- Arithmetic on a MISMATCHED non-numeric pair names BOTH real types -----------------------
 ; The cases above add two operands of the SAME non-numeric type. When the two operands are DIFFERENT
 ; non-numeric types — `(+ "ab" (list 1 2))`, a String and a List — the diagnostic names BOTH real types

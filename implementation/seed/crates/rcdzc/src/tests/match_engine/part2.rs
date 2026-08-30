@@ -138,28 +138,10 @@ fn a_mixed_int_float_arithmetic_operand_is_cdz0301_with_a_conform_to_first_coerc
     assert_eq!(rem.code.as_deref(), Some("CDZ0301"), "got: {}", rem.message);
 }
 
-#[test]
-fn arithmetic_on_a_non_numeric_operand_carries_no_phantom_int64_clash() {
-    // WHITE-BOX RESIDUAL of the non-numeric-arithmetic diagnostic (its positive half — the
-    // "arithmetic is not defined on <T>" message + the `.concat` rewrite / no-fix per type — is now the
-    // corpus 07 "arithmetic is not defined on a non-numeric type" family). This keeps the NEGATIVE the
-    // corpus cannot assert: a same-typed non-numeric `+`/`-` must NOT leak the generic scheme-unify's
-    // phantom "type mismatch: Int64 and <T> must be the same type here" — an `Int64` the author never
-    // wrote (Rem `%` had leaked it until brought into the family). A message-ABSENCE, so it stays here.
-    for src in [
-        "(module m (def (f (: a String) (: b String)) (+ a b)) (export f))",
-        "(module m (def (f (: a String) (: b String)) (% a b)) (export f))",
-        "(module m (def (f (: a (List Int64)) (: b (List Int64))) (+ a b)) (export f))",
-    ] {
-        let d = reject_full(src).unwrap_or_else(|| panic!("{src} must reject"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{src}: {}", d.message);
-        assert!(
-            !d.message.contains("Int64 and") && !d.message.contains("must be the same type here"),
-            "no phantom Int64 internal-clash message: {}",
-            d.message
-        );
-    }
-}
+// (arithmetic_on_a_non_numeric_operand_carries_no_phantom_int64_clash migrated to corpus 07-type-system,
+// beside the same-type non-numeric arithmetic family: "same-typed String/List operands to +/% reject without
+// a phantom Int64 clash" — CDZ0201 + (not "must be the same type here"), the message-absence now expressible
+// via #6146's (not …) sub-form (the test pre-dated it, so it had stayed white-box). All 3 PASS wasm.)
 
 #[test]
 fn a_compound_operand_against_a_scalar_names_the_kind_boundary() {
