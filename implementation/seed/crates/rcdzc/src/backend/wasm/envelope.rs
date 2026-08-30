@@ -6324,39 +6324,7 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
     out
 }
 
-/// Assemble a MULTI-EXPORT BYTE-ROPE-result closure component: N `make-<name>` functions sharing ONE `call`
-/// that returns `list<u8>` (a `Bytes`/`String` closure result). Combines [`assemble_multi_closure_resource`]
-/// (N makes + shared call) with [`assemble_closure_bytes_resource`] (memory + cabi_realloc + the
-/// Memory/Realloc-lifted list `call`). Pairs with [`serialize::multi_closure_bytes_resource_core_module`].
-///
-/// Core-func indices (k = imports.len(), N = makes): lowered ops 0..k; `t-dtor` k; `resource.new` k+1,
-/// `resource.rep` k+2; aliased make[i] k+3+i, `call` k+3+N, `cabi_realloc` k+4+N (memory is a memory index).
-/// Component types: 0 = import instance-type, 1 = resource; per make own<t> (2+2i) + functype (3+2i); call
-/// own<t> (2+2N) + `list<u8>` (3+2N) + call-ft (4+2N). Component funcs: aliased ops 0..k; make[i] lift → k+i,
-/// `call` lift → k+N.
-#[allow(clippy::too_many_arguments)]
-pub fn assemble_multi_closure_bytes_resource(
-    main_core: &[u8],
-    dtor_core: &[u8],
-    imports: &[&RtOp],
-    import_name: &str,
-    makes: &[ClosureMakeAbi],
-    arg_bytes: &[u8],
-    plain: &[PlainExportAbi],
-) -> Vec<u8> {
-    assemble_multi_closure_bytes_resource_borrow(
-        main_core,
-        dtor_core,
-        imports,
-        import_name,
-        makes,
-        arg_bytes,
-        plain,
-        false,
-    )
-}
-
-/// [`assemble_multi_closure_bytes_resource`] with a `call_borrow` switch (C-HOST-6, multi-export
+/// Assemble a MULTI-EXPORT BYTE-ROPE-result closure component with a `call_borrow` switch (C-HOST-6, multi-export
 /// `list<u8>`-result — byte-rope/compound/collection). When TRUE the shared `call`'s self is `borrow<t>`
 /// (repeatable — each make's handle survives across calls) on the outer lift + the nested re-export;
 /// `make`s + plain exports unaffected. `false` reproduces the shipped own component byte-for-byte.
@@ -7353,25 +7321,9 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
 /// functions are `makes ++ consumers` (a consumer functype is `(own<t_g>, args…)->R` in SOURCE param
 /// order) instead of `makes + [call-g]`. `main_core` is `serialize::distinct_sig_roundtrip_core_module`'s
 /// output. Same G-resource core-func layout as `assemble_distinct_sig_resource`.
-pub fn assemble_distinct_sig_roundtrip_resource(
-    main_core: &[u8],
-    dtor_core: &[u8],
-    imports: &[&RtOp],
-    import_name: &str,
-    groups: &[RtSigGroupAbi],
-) -> Vec<u8> {
-    assemble_distinct_sig_roundtrip_resource_mixed(
-        main_core,
-        dtor_core,
-        imports,
-        import_name,
-        groups,
-        &[],
-    )
-}
-
-/// The distinct-signature round-trip envelope with P PLAIN (non-closure) exports riding alongside the G
-/// resource groups. Generalizes [`assemble_distinct_sig_roundtrip_resource`] (P=0): each plain body is
+///
+/// This is the P PLAIN (non-closure) exports variant, riding alongside the G
+/// resource groups (the P=0 case is just `plain = &[]`): each plain body is
 /// aliased off the SAME program instance (after the `total_fns` closure funcs), lifted as an ORDINARY
 /// top-level component func, and exported directly under its kebab name. Index deltas over P=0: plain
 /// bodies aliased AFTER the closure funcs (core `k+3g+total_fns+j`), functypes AFTER the fn functypes
@@ -7654,9 +7606,10 @@ pub struct ClosureConsumeAbi {
 }
 
 /// Assemble a ROUND-TRIP closure-resource component (C-HOST-4): N producer `make-<name>` functions PLUS M
-/// CONSUMER functions, published together under `cadenza:closure/exports`. A producer mints a closure
-/// handle (`() / (params…) -> own<t>`); a consumer takes a handle back (`(g: own<t>, args…) -> R`) and
-/// applies it. Structurally the multi-export envelope with the shared `call` generalized to M named
+/// CONSUMER functions, published together under `cadenza:closure/exports`, with P PLAIN (non-closure)
+/// exports riding alongside the producers + consumers (the P=0 case is just `plain = &[]`). A producer mints
+/// a closure handle (`() / (params…) -> own<t>`); a consumer takes a handle back (`(g: own<t>, args…) -> R`)
+/// and applies it. Structurally the multi-export envelope with the shared `call` generalized to M named
 /// consumers (each a `call`-shaped functype). `main_core` is
 /// [`serialize::roundtrip_resource_core_module`]'s output (exporting each `make-<name>` + each consumer).
 ///
@@ -7665,28 +7618,8 @@ pub struct ClosureConsumeAbi {
 /// k+3+N+j. Component funcs: aliased ops 0..k, lifted make[i] → comp func k+i, consumer[j] → k+N+j.
 /// Component types: 0 = import instance-type, 1 = resource; then per make: `own<t>` + make-functype; then
 /// per consumer: `own<t>` + consume-functype.
-pub fn assemble_roundtrip_resource(
-    main_core: &[u8],
-    dtor_core: &[u8],
-    imports: &[&RtOp],
-    import_name: &str,
-    makes: &[ClosureMakeAbi],
-    consumers: &[ClosureConsumeAbi],
-    _spans: Option<()>,
-) -> Vec<u8> {
-    assemble_roundtrip_resource_mixed(
-        main_core,
-        dtor_core,
-        imports,
-        import_name,
-        makes,
-        consumers,
-        &[],
-    )
-}
-
-/// The round-trip envelope with P PLAIN (non-closure) exports riding alongside the producers + consumers.
-/// Generalizes [`assemble_roundtrip_resource`] (P=0): each plain body is aliased off the SAME program
+///
+/// Each plain body is aliased off the SAME program
 /// instance (after the nfns closure funcs), lifted as an ORDINARY top-level component func, and exported
 /// directly under its kebab name — the same plain-export composition the multi-export mixed envelope uses.
 /// Without this, a plain export in a round-trip program was SILENTLY DROPPED (a valid component missing the
