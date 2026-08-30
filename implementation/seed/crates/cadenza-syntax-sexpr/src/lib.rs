@@ -21,18 +21,18 @@ use unicode_normalization::UnicodeNormalization;
 #[derive(Debug)]
 pub struct ReadError(pub String);
 
-/// The maximum nesting depth the reader accepts before returning a [`ReadError`]. The reader is
-/// ITERATIVE (an explicit worklist, see [`read`]'s `read_node`), so arbitrary nesting depth consumes
-/// O(depth) HEAP and O(1) native stack and CANNOT overflow the native stack (SIGABRT) — the former
-/// recursive descent could, worst on the guide's `cdz-wasm` (a ~1 MB stack parsing UNTRUSTED browser
-/// input). This cap is therefore a clean POLICY limit that trips far from any stack limit, not a race
-/// against the native stack.
+/// The former nesting-depth cap. **The s-expr reader NO LONGER ENFORCES this** — it is iterative (an
+/// explicit worklist, see [`read`]'s `read_node`), so arbitrary nesting depth consumes O(depth) HEAP and
+/// O(1) native stack and CANNOT overflow the native stack (SIGABRT); a deep source parses, bounded only
+/// by input size (which the untrusted `cdz-wasm` ingestion boundary caps as a resource limit — the
+/// correct layer). The cap existed ONLY to dodge the former recursive descent's overflow, which the
+/// rewrite eliminates (operator directive: the reader must not be recursive, no near-overflow guard).
 ///
-/// Set to the compiler's own `DESCENT_DEPTH_LIMIT` (rcdzc `db.rs` = 1024): the compiler already
-/// DECLINES a program nested past that ("expression nests too deeply to compile"), so a source the
-/// parser rejects here is one the compiler would reject anyway — no valid program is lost. (Dropping
-/// the cap entirely for the now-overflow-proof reader is a follow-up decision; kept for now so this
-/// refactor stays behavior-neutral.)
+/// This re-export REMAINS because the ML Pratt parser (`cadenza-syntax`) still references
+/// `sexpr::MAX_NESTING_DEPTH` for its OWN depth guards (its recursive descent is not yet converted);
+/// those guards are removed in a follow-up increment (gated on a consumer-iterativeness audit), after
+/// which this const can retire. The compiler's separate `DESCENT_DEPTH_LIMIT` (rcdzc `db.rs`) still
+/// bounds a deep AST that reaches the compiler ("expression nests too deeply to compile").
 pub use cadenza_syntax_core::MAX_NESTING_DEPTH;
 
 /// Parse a single s-expression from `text` into its own `Arenas` (rooted at the parsed form). This is
@@ -175,8 +175,8 @@ pub fn print_from(arenas: &Arenas, id: StructId) -> String {
 
 fn print_node(a: &Arenas, id: StructId, out: &mut String) {
     // An EXPLICIT work stack, not native recursion: `print` runs on arenas from ANY source — a decoded
-    // binary AST in particular, which `codec::decode` accepts at arbitrary nesting depth (no cap, unlike
-    // the reader's `MAX_NESTING_DEPTH`). A recursive walk overflowed the native stack (SIGABRT) on such a
+    // binary AST in particular, which `codec::decode` accepts at arbitrary nesting depth (as does the
+    // reader now — both are uncapped). A recursive walk overflowed the native stack (SIGABRT) on such a
     // deep-but-valid tree, crashing the process on `cdz convert binary → sexpr`; the printer must stay
     // total. `Node(id)` renders an occurrence; `Str(" ")`/`Str(")")` are the separators/closers queued
     // AFTER a list's children. Items pop LIFO, so a list pushes (in reverse): `)`, then child_n, sep,
@@ -348,7 +348,7 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
     // An EXPLICIT work stack, not native recursion: `pretty_node` BUILDS the Oppen `Doc` token stream by
     // walking the arena — one frame per nesting level in the recursive form — and `print_pretty` runs on
     // arenas from ANY source, including a decoded binary AST that `codec::decode` accepts at ARBITRARY
-    // depth (no cap, unlike the reader's `MAX_NESTING_DEPTH`). A recursive build overflowed the native
+    // depth (as does the reader now — both uncapped). A recursive build overflowed the native
     // stack (SIGABRT) on a deep tree, crashing `cdz convert binary → sexpr` (pretty is the default). The
     // token stream this emits is byte-identical to the recursive version's — only the driver differs.
     enum Work {
@@ -982,12 +982,6 @@ struct Reader<'a, 'b> {
     /// TRAILING comment on that node's line. Cleared when [`Reader::skip_ws`] crosses a newline; starts
     /// `false` (a file-leading comment is never trailing).
     after_node: bool,
-    /// The current nesting depth — incremented when [`Self::read_node`]'s worklist opens a `(` or
-    /// `#word(` frame and decremented when that frame closes, so it counts open forms on the descent
-    /// path (sigils are NOT counted, matching the former recursive guard). Past [`MAX_NESTING_DEPTH`]
-    /// the reader returns a [`ReadError`]. The reader is iterative, so this is a clean policy limit —
-    /// not a race against the native stack (which arbitrary depth can no longer overflow).
-    depth: u32,
     /// When `Some`, every structure occurrence pushes its source span here, in creation order, so
     /// the table stays exactly 1:1 with the arena (`spans[id]` is that occurrence's span). `None`
     /// on the plain [`read`] path — then the `mk_*` helpers are pure builder calls, byte-identical.
@@ -1002,7 +996,6 @@ impl<'a, 'b> Reader<'a, 'b> {
             b,
             comments: Vec::new(),
             after_node: false,
-            depth: 0,
             spans: track.then(|| SpanTable::new(FileId::default())),
         }
     }
@@ -1159,21 +1152,6 @@ impl<'a, 'b> Reader<'a, 'b> {
         node
     }
 
-    /// The depth guard, shared by the two recursive-descent points (`(…)` and `#word(…)`): past
-    /// [`MAX_NESTING_DEPTH`] open forms return a clean [`ReadError`] rather than descend further.
-    /// Checked BEFORE consuming the opener so the error anchors at the offending byte. Since the reader
-    /// is now ITERATIVE (see [`Self::read_node`]) this is a clean policy limit, not a race against the
-    /// native stack — but the diagnostic is byte-identical to the former recursive guard.
-    fn ensure_depth(&self) -> Result<(), ReadError> {
-        if self.depth >= MAX_NESTING_DEPTH {
-            return Err(ReadError(format!(
-                "expression nests too deeply to parse (more than {MAX_NESTING_DEPTH} levels) at byte {}",
-                self.pos
-            )));
-        }
-        Ok(())
-    }
-
     /// Read a node, then fold any tightly-following `.member` postfixes into member access. This is what
     /// makes `(Int 8).max` and `Int8.max` read to the SAME `(. … max)` shape — the paren form is the
     /// postfix sibling of the bare-token dotted-name sugar (`classify_token`), extended to an arbitrary
@@ -1189,8 +1167,9 @@ impl<'a, 'b> Reader<'a, 'b> {
     /// size. The arena + span-table build order is byte-identical to the recursive form — children are
     /// built before their parent, and a sigil's head after its inner — because each `mk_*` fires at
     /// exactly the point the recursion would have reached it (verified against the recursive form by the
-    /// round-trip + span suites). `self.depth` still counts only open `(`/`#word(` (never sigils,
-    /// matching the old guard), so the `MAX_NESTING_DEPTH` diagnostic is unchanged.
+    /// round-trip + span suites). There is NO nesting-depth cap: since the reader can no longer overflow
+    /// the native stack, an arbitrarily deep source parses (bounded only by input size, which the
+    /// untrusted cdz-wasm ingestion boundary caps as a resource limit — the correct layer).
     fn read_node(&mut self) -> Result<StructId, ReadError> {
         // One entry per open construct on the descent path — the explicit stack that was the native call
         // stack. `leading` holds the own-line comments staged for the element currently being read (it is
@@ -1238,8 +1217,6 @@ impl<'a, 'b> Reader<'a, 'b> {
                             return Err(ReadError(format!("unexpected ')' at byte {}", self.pos)));
                         }
                         Some(b'(') => {
-                            self.ensure_depth()?;
-                            self.depth += 1;
                             let start = self.pos;
                             self.bump(); // '('
                             stack.push(Frame::List {
@@ -1266,8 +1243,6 @@ impl<'a, 'b> Reader<'a, 'b> {
                             let word = self
                                 .compound_literal_word()
                                 .expect("guarded by compound_literal_word().is_some()");
-                            self.ensure_depth()?;
-                            self.depth += 1;
                             let start = self.pos; // at '#'
                             // `#` + the ctor word are ASCII, so advancing by their byte length lands on '('.
                             self.pos += 1 + word.len();
@@ -1368,7 +1343,6 @@ impl<'a, 'b> Reader<'a, 'b> {
                                 self.alias_field_pairify(&mut items);
                                 let id = self.mk_list(items, span);
                                 let result = self.memberize(id, span);
-                                self.depth -= 1;
                                 next = Next::Deliver(result);
                             }
                             Some(_) => {
@@ -1416,7 +1390,6 @@ impl<'a, 'b> Reader<'a, 'b> {
                                 }
                                 self.bump();
                                 let result = self.mk_list(items, Span::new(start, self.pos));
-                                self.depth -= 1;
                                 next = Next::Deliver(result);
                             }
                             Some(_) => {
@@ -2548,84 +2521,42 @@ mod tests {
     }
 
     #[test]
-    fn deeply_nested_input_is_diagnosed_not_crashed() {
-        // `read` recurses one native frame per nesting level, so DESCENDING to the depth guard
-        // (`MAX_NESTING_DEPTH` = 1024) needs more stack than a default `cargo test` worker on a small-
-        // stack platform (macOS ~512 KB–1 MB). Run on a large-stacked thread so the test exercises the
-        // depth guard, not the worker's stack limit (a spurious SIGABRT unrelated to this assertion).
-        let h = std::thread::Builder::new()
-            .stack_size(64 * 1024 * 1024)
-            .spawn(|| {
-                // A pathologically deep but syntactically valid nest overflowed the native stack
-                // (SIGABRT) in the unguarded recursive descent; the depth guard makes it a clean
-                // `ReadError` instead. The depth here (limit + a margin) exceeds `MAX_NESTING_DEPTH`.
-                let n = (MAX_NESTING_DEPTH as usize) + 50;
-                let src = format!("{}1{}", "(+ ".repeat(n), " 1)".repeat(n));
-                let err = read(&src).expect_err("deep nesting must be a clean error, not a crash");
-                assert!(
-                    err.0.contains("nests too deeply"),
-                    "expected a depth-limit diagnostic, got: {}",
-                    err.0
-                );
-                // Just UNDER the limit still parses (the guard does not reject a valid moderate nest).
-                let ok = (MAX_NESTING_DEPTH as usize) - 1;
-                let shallow = format!("{}1{}", "(+ ".repeat(ok), " 1)".repeat(ok));
-                assert!(
-                    read(&shallow).is_ok(),
-                    "a nest just under the limit must still parse"
-                );
-            })
-            .expect("spawn deep-read worker");
-        if let Err(payload) = h.join() {
-            std::panic::resume_unwind(payload);
-        }
-    }
-
-    #[test]
-    fn read_reaches_the_depth_cap_on_the_default_thread_stack() {
-        // The reader is ITERATIVE (an explicit worklist, O(depth) HEAP + O(1) native stack), so it
-        // DESCENDS to the depth cap on the DEFAULT `cargo test` worker stack (~2 MB) — NO big-stack
-        // thread. This is the exact property the former recursive descent lacked: reaching
-        // `MAX_NESTING_DEPTH` (1024) native frames overflowed a small worker stack (SIGABRT), which is
-        // why `deeply_nested_input_is_diagnosed_not_crashed` had to spawn a 64 MiB thread. Here we run on
-        // THIS thread's stack, proving arbitrary nesting cannot overflow it. (The cap itself is retained
-        // as a policy limit; a form AT the cap returns the clean diagnostic, a form just under it parses.)
-        let over = (MAX_NESTING_DEPTH as usize) + 50;
-        let deep = format!("{}1{}", "(+ ".repeat(over), " 1)".repeat(over));
-        let err = read(&deep).expect_err("past the cap must be a clean error, never a crash");
-        assert!(
-            err.0.contains("nests too deeply"),
-            "expected a depth-limit diagnostic, got: {}",
-            err.0
+    fn arbitrarily_deep_input_parses_on_the_default_thread_stack_no_cap() {
+        // The reader is ITERATIVE (an explicit worklist, O(depth) HEAP + O(1) native stack) and has NO
+        // nesting-depth cap, so an arbitrarily deep — FAR past the former MAX_NESTING_DEPTH (1024) —
+        // source PARSES on the DEFAULT `cargo test` worker stack (~2 MB), with no big-stack thread. The
+        // former recursive descent overflowed the native stack (SIGABRT) descending even to 1024, which
+        // is why the predecessor tests had to spawn a 64 MiB thread and assert a depth-limit ReadError;
+        // both the thread AND the cap are gone (operator directive: the reader must not be recursive, no
+        // near-overflow guard). This pins the core "the reader can't blow the stack" property fleet-wide.
+        // Input size is the only bound (the untrusted cdz-wasm boundary caps it as a resource limit).
+        let n = 20_000usize; // ~20x the old cap — a recursive reader dies well before this on any stack
+        // The `(…)` list descent path.
+        let deep = format!("{}1{}", "(+ ".repeat(n), " 1)".repeat(n));
+        let a = read(&deep).expect("arbitrarily deep list input parses — no cap, no overflow");
+        assert_eq!(
+            a.head_name(a.root),
+            Some("+"),
+            "the deep form parsed to a `+` application (not an error)"
         );
-        // A nest just under the cap parses on the default stack (a recursive reader would have needed a
-        // big-stack thread to descend even this far).
-        let ok = (MAX_NESTING_DEPTH as usize) - 1;
-        let shallow = format!("{}1{}", "(+ ".repeat(ok), " 1)".repeat(ok));
+        // The `#word(…)` collection-literal descent path (its own former recursion point) is likewise
+        // uncapped + overflow-proof.
+        let nested_list = format!("{}1{}", "#list(".repeat(n), ")".repeat(n));
         assert!(
-            read(&shallow).is_ok(),
-            "a nest just under the cap must parse on the default thread stack"
-        );
-        // Same guarantee for the `#word(…)` collection-literal descent path (its own recursion point):
-        // a deeply nested `#list(#list(… ))` reaches the cap on the default stack as a clean error.
-        let nested_list = format!("{}1{}", "#list(".repeat(over), ")".repeat(over));
-        let err = read(&nested_list).expect_err("deep #word( nesting must be a clean error");
-        assert!(
-            err.0.contains("nests too deeply"),
-            "expected a depth-limit diagnostic for #word( nesting, got: {}",
-            err.0
+            read(&nested_list).is_ok(),
+            "arbitrarily deep #word( nesting parses on the default stack — no cap, no overflow"
         );
     }
 
     #[test]
     fn print_is_iterative_not_recursive_on_a_deep_arena() {
         // `print`/`print_node` runs on arenas from ANY source — a decoded binary AST in particular, which
-        // `codec::decode` accepts at ARBITRARY nesting depth (no cap, unlike the reader's
-        // MAX_NESTING_DEPTH). A native-recursive walk overflowed the stack (SIGABRT) on such a deep tree,
-        // crashing the process on `cdz convert binary → sexpr`. Build a deep single-child chain DIRECTLY
-        // (bypassing the reader cap) and assert `print` completes and is correct. 12k levels is well past
-        // the native recursion limit; the output here is O(depth) (one `(`/`)` per level, no cumulative
-        // indent — unlike the debug tree view), so a deep chain is cheap.
+        // `codec::decode` accepts at ARBITRARY nesting depth (as does the reader now — both uncapped). A
+        // native-recursive walk overflowed the stack (SIGABRT) on such a deep tree, crashing the process
+        // on `cdz convert binary → sexpr`. Build a deep single-child chain DIRECTLY (not via the reader)
+        // and assert `print` completes and is correct. 12k levels is well past the native recursion limit;
+        // the output here is O(depth) (one `(`/`)` per level, no cumulative indent — unlike the debug tree
+        // view), so a deep chain is cheap.
         let depth = 12_000usize;
         let mut b = Builder::new();
         let mut cur = b.name("x");
@@ -2635,10 +2566,10 @@ mod tests {
         let a = b.finish(cur);
         let out = print(&a); // must NOT overflow (a recursive walk did)
         // The rendering is `(((…(x)…)))`: `depth` opens, then `x`, then `depth` closes — correct shape,
-        // proving the iterative walk emits the same nesting a recursive one would. (Re-reading it is not
-        // asserted here: `read` is intentionally depth-capped at MAX_NESTING_DEPTH=1024, so a 12k-deep
-        // form is not round-trippable through the READER — that cap is the reader's own guarantee, tested
-        // in `deeply_nested_input_is_diagnosed_not_crashed`. THIS test pins the PRINTER's totality.)
+        // proving the iterative walk emits the same nesting a recursive one would. (THIS test pins the
+        // PRINTER's totality; the READER's own arbitrary-depth totality — it is now uncapped + iterative,
+        // so a 12k-deep form IS re-readable — is pinned by
+        // `arbitrarily_deep_input_parses_on_the_default_thread_stack_no_cap`.)
         assert_eq!(out, format!("{}x{}", "(".repeat(depth), ")".repeat(depth)));
     }
 
