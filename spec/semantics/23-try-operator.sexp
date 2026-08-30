@@ -60,7 +60,7 @@
   (error  CDZ0101 (message "(try <expression>)") (message "write `try`")))
 
 (case "a bare `?` NOT in head position stays an ordinary unbound name with no try hint"
-  (input  (do (def (main) (list ?)) (export main)))
+  (input  (do (def (main) #list(?)) (export main)))
   (error  CDZ0101 (message "unbound name `?`") (not "try")))
 
 (case "a `?` with no fallible enclosing function boundary is rejected"
