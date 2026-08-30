@@ -307,6 +307,15 @@
   (input  (do (def (a) (fn ((: x Int8)) (: (+ x 100) Int64))) (export a)))
   (error  CDZ0203))
 
+(case "an exported closure whose body applies an arithmetic operator to a non-numeric operand is rejected"
+  (doc    "`(fn ((: x Int64)) (+ x true))` — inside the exported closure body, `+` types at
+           `∀a. (Int a) → (Int a) → (Int a)`, so the `Bool` operand `true` fails to unify against `(Int a)`:
+           a type mismatch CDZ0203. This is the UNIFICATION-fault face of the closure-export body type-check
+           (the annotation-mismatch faces above are the equality-annotation face) — both must reject the
+           ill-typed body before emit rather than skip the check and emit an invalid component.")
+  (input  (do (def (a) (fn ((: x Int64)) (+ x true))) (export a)))
+  (error  CDZ0203))
+
 ; RICHER CAPTURING closures — the C-HOST-2 make-forwarding + captured-cell machinery is arity- and
 ; body-shape-agnostic, so a closure that captures SEVERAL values, drives control flow off a captured
 ; Bool, binds a `let` in its body, or calls a top-level helper all cross the boundary and are invoked
