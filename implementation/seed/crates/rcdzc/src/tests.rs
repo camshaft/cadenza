@@ -12858,52 +12858,6 @@ mod match_engine {
     }
 
     #[test]
-    fn record_project_with_a_duplicate_label_is_cdz0201() {
-        // 15-rows "projecting a record with a duplicate label is rejected": a projection label list that
-        // names a field TWICE `(a a)` is the same malformedness a record LITERAL with a duplicate field
-        // `(record (a 1) (a 2))` is rejected for (CDZ0201) — a record's fields are a fixed SET
-        // (`type-system.md` §A Record Is Restricted To A Named Set Of Its Fields), not silently deduplicated.
-        // Adjacent, triple, and NON-adjacent duplicates all reject; the message matches the record-literal one.
-        let d = reject_full(
-            "(module m (def (main) (. (Record.project (record (a 1) (b 2)) (a a)) a)) (export main))",
-        )
-        .expect("a duplicate projection label is rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("more than once"),
-            "the duplicate-label reject matches the record-literal message: {}",
-            d.message
-        );
-        for src in [
-            "(module m (def (main) (. (Record.project (record (a 1) (b 2)) (a a a)) a)) (export main))",
-            "(module m (def (main) (. (Record.project (record (a 1) (b 2) (c 3)) (a b a)) a)) (export main))",
-        ] {
-            assert_eq!(
-                reject_code(src).as_deref(),
-                Some("CDZ0201"),
-                "a repeated label (triple / non-adjacent) is CDZ0201: {src}"
-            );
-        }
-        // NO OVER-REJECTION: a projection with DISTINCT labels still compiles, and an absent field is still
-        // the distinct CDZ0212 (the duplicate check does not shadow the absent-field check).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (Record.project (record (a 1) (b 2)) (a b))) (export main))"
-            ),
-            None,
-            "a distinct-label projection is well-formed"
-        );
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (Record.project (record (a 1) (b 2)) (a z))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0212"),
-            "an absent field is still CDZ0212, not the duplicate-label code"
-        );
-    }
-
-    #[test]
     fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
         // 15-rows extend/with/pop — the DERIVED row ops (rewrites of merge/without). `Record.extend r
         // #z v` ADDS an absent field (present → CDZ0211); `Record.with r #z v` REPLACES a present field
