@@ -27667,51 +27667,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_over_ceiling_integer_width_carries_a_bigint_retype_fix() {
-        // The ACTIONABLE half of the over-ceiling CDZ0302 (`diagnostics.md` §A Diagnostic Carries A Route
-        // To A Fix): a fixed width strictly greater than 64 (`(UInt 65)`, `(Int 128)`) is "reserved to the
-        // big-integer layer" — the message says so — so the reject now carries a REPLACE fix retyping the
-        // whole `(Int W)`/`(UInt W)` compound to the unbounded `BigInt`, which holds any magnitude. This
-        // is the type-level twin of the literal-range fix's `BigInt` continuation. Heuristic (the author
-        // may instead have meant a specific in-range width), but it clears the fault in one shot.
-        for src in ["(: 5 (UInt 65))", "(: 5 (Int 128))", "(: 5 (Int 200))"] {
-            let body = format!("(module m (def (main) {src}) (export main))");
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(&body)))
-                .into_iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .expect("an over-ceiling width is rejected");
-            assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
-            let fix = d
-                .fix
-                .expect("an over-ceiling width carries a BigInt retype fix");
-            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-            assert_eq!(
-                fix.replacement, "BigInt",
-                "retypes the over-ceiling width to the unbounded BigInt: {src}"
-            );
-            assert!(
-                !fix.verified,
-                "the author may have meant a specific in-range width → heuristic"
-            );
-        }
-        // NO FIX for a ZERO or MALFORMED width — there is no single correct target (the author may have
-        // dropped or mistyped the number), and a false suggestion is worse than none. The reject still
-        // fires; it just carries the message alone.
-        for src in ["(: 5 (UInt 0))", "(: 5 (Int -8))"] {
-            let body = format!("(module m (def (main) {src}) (export main))");
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(&body)))
-                .into_iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .expect("a zero/malformed width is still rejected");
-            assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
-            assert!(
-                d.fix.is_none(),
-                "a zero/malformed width has no single confident repair → no fix: {src}"
-            );
-        }
-    }
-
-    #[test]
     fn an_over_ceiling_width_in_an_unused_parameter_is_rejected_cdz0302() {
         // 06-numeric-model "an over-ceiling integer width in an unused parameter is rejected, like a used
         // one". Well-formedness is TOTAL — it holds over every def, reachable or not — so an ill-formed

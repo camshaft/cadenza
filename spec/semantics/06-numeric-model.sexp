@@ -272,7 +272,7 @@
 ; a_malformed_integer_width_is_rejected_not_dropped / a_runtime_integer_width_is_rejected_not_dropped.)
 (case "a negative integer width is rejected as non-natural"
   (input  (do (def (main) (: 5 (Int -8))) (export main)))
-  (error  CDZ0302 (message "width must be a compile-time natural number")))
+  (error  CDZ0302 (message "width must be a compile-time natural number") (no-fix)))
 
 (case "a boolean in integer-width position is rejected as non-natural"
   (input  (do (def (main) (: 300 (Int true))) (export main)))
@@ -285,6 +285,25 @@
 (case "a runtime-valued integer width is rejected, not dropped to the default Int64"
   (input  (do (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main)))
   (error  CDZ0302))
+
+; A fixed integer width strictly GREATER than 64 is well-formed as a natural but "reserved to the
+; big-integer layer" — CDZ0302, and it carries a REPLACE fix retyping the whole `(Int W)`/`(UInt W)`
+; compound to the unbounded `BigInt` (which holds any magnitude — the type-level twin of the literal-range
+; BigInt continuation). Heuristic → unverified (the author may have meant a specific in-range width). But a
+; ZERO or otherwise MALFORMED width has NO single confident target (dropped vs mistyped number), so it
+; carries NO fix — `(no-fix)` pins that a false suggestion is worse than none. (Migrated from rcdzc
+; an_over_ceiling_integer_width_carries_a_bigint_retype_fix.)
+(case "an over-the-64-bit-ceiling unsigned width retypes to BigInt"
+  (input  (do (def (main) (: 5 (UInt 65))) (export main)))
+  (error  CDZ0302 (fix (kind replace) (replacement "BigInt") (unverified))))
+
+(case "an over-the-64-bit-ceiling signed width well past 64 retypes to BigInt"
+  (input  (do (def (main) (: 5 (Int 128))) (export main)))
+  (error  CDZ0302 (fix (kind replace) (replacement "BigInt") (unverified))))
+
+(case "a zero integer width is rejected and carries no fix (no confident target)"
+  (input  (do (def (main) (: 5 (UInt 0))) (export main)))
+  (error  CDZ0302 (no-fix)))
 
 ; An out-of-range integer literal (a value that overflows its annotated width) is CDZ0302, and carries a
 ; rustc-style "value doesn't fit; use a wider type" REPLACE fix: retype the annotation to the SMALLEST
