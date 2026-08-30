@@ -26,8 +26,8 @@ def resolve-into-db(db: Db, root: Int64) =
 /// Merge a resolved column (a `Map(NodeId, Resolved)` from `resolve-tree`) into the Db's resolved column.
 /// Reconstructs the Db carrying the filled column (the whole-tree walk produced every fact in one pass, so
 /// this is a single column-swap, not per-node fills).
-def merge-resolved(db: Db, rcol: Map(Int64, Resolved)) = match db with
-  | Db.Db(t, _, tc, cc) => Db.Db(t, rcol, tc, cc)
+def merge-resolved(db: Db, rcol: Map(Int64, Resolved)) =
+  let Db.Db(t, _, tc, cc) = db in Db.Db(t, rcol, tc, cc)
 
 /// The RESOLVE producer read (rcdzc `resolved_of(db, id)`): demand the resolved fact at `id`, filling the
 /// column first if absent. Returns `(db', Option(Resolved))` — the (possibly-updated) Db + the fact
@@ -41,20 +41,21 @@ import { Tok, parse-tokens } from "parse-db"
 import { db-of } from "db"
 
 /// `let x = 2 in x` as a Db — the body var (id) binds to the let. Returns (root, db).
-def let-db() = match parse-tokens([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]) with
-  | (root, tree) => (root, db-of(tree))
+def let-db() =
+  let (root, tree) = parse-tokens([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]) in
+  (root, db-of(tree))
 
 @test
 def dr-resolve-fills-column() =
   // resolving `let x = 2 in x` fills the resolved column (the body var gets an RBound fact) → filled > 0.
-  (match let-db() with | (root, d0) =>
+  (let (root, d0) = let-db() in
     (let db1 = resolve-into-db(d0, root) in
      (if (resolved-filled(db1) > 0) then unit else trap("resolve fills the column"))))
 
 @test
 def dr-bound-var-is-rbound() =
   // the body var (a NAME node) resolves to RBound(binder). Find it via resolved-of-db; expect Some(RBound).
-  (match let-db() with | (root, d0) =>
+  (let (root, d0) = let-db() in
     (match node-var-id(db-tree(d0), root) with
       | Option.Some(varId) => (match resolved-of-db(d0, root, varId) with
           | (_, Option.Some(Resolved.RBound(_))) => unit
@@ -67,7 +68,7 @@ def dr-bound-var-is-rbound() =
 def dr-second-resolve-is-memo-hit() =
   // resolve twice: the 2nd is a HIT (column already filled) → same filled count, Db unchanged shape. Proves
   // fill-once — no re-resolve. (Compares filled counts: equal after the 2nd call.)
-  (match let-db() with | (root, d0) =>
+  (let (root, d0) = let-db() in
     (let db1 = resolve-into-db(d0, root) in
      (let n1 = resolved-filled(db1) in
       (let db2 = resolve-into-db(db1, root) in
@@ -76,7 +77,7 @@ def dr-second-resolve-is-memo-hit() =
 @test
 def dr-unbound-is-poison() =
   // a bare unbound var `y` resolves to a FILLED RPoison (a decline is a determined fact, not Absent).
-  (match parse-tokens([Tok.TName(9)]) with | (root, tree) =>
+  (let (root, tree) = parse-tokens([Tok.TName(9)]) in
     (match resolved-of-db(db-of(tree), root, root) with
       | (_, Option.Some(Resolved.RPoison)) => unit
       | _ => trap("unbound var is a filled RPoison")))
