@@ -3603,3 +3603,29 @@
 (case "an unsolved type variable renders as underscore in an if-branch join"
   (input  (do (def (f (: b Bool)) (if b (Some 1) (Ok 2))) (export f)))
   (error  CDZ0203 (message "(Result Int64 _)") (not "?")))
+
+; When a differing record field / tuple position is itself a same-shape nested compound, the delta hint DRILLS
+; through the shared structure to the deepest SCALAR leaf and names the dotted access PATH ("field `a.b.c`
+; should be Int64, but this one is Bool") — a record field contributes its name, a tuple position its 0-based
+; index — instead of re-rendering the whole sub-compound. The drill STOPS at a field-SET difference deeper
+; down (naming the immediate field, not a misleading leaf path). (Migrated from rcdzc
+; a_nested_compound_mismatch_drills_to_the_exact_leaf_path.)
+(case "a two-level nested record mismatch drills to the dotted leaf path"
+  (input  (do (def (h (: r (Record (: inner (Record (: x Int64)))))) (. r inner)) (def (g) (h #record((= inner #record((= x true)))))) (export g)))
+  (error  CDZ0203 (message "field `inner.x` should be Int64, but this one is Bool")))
+
+(case "a three-level nested record mismatch grows the dotted path"
+  (input  (do (def (h (: r (Record (: a (Record (: b (Record (: c Int64)))))))) (. r a)) (def (g) (h #record((= a #record((= b #record((= c true)))))))) (export g)))
+  (error  CDZ0203 (message "field `a.b.c` should be Int64, but this one is Bool")))
+
+(case "a nested-path mismatch mixes a record field name and a tuple index"
+  (input  (do (def (h (: r (Record (: pt (Tuple Int64 Int64))))) (. r pt)) (def (g) (h #record((= pt #tuple(1 true))))) (export g)))
+  (error  CDZ0203 (message "field `pt.1` should be Int64, but this one is Bool")))
+
+(case "a tuple element path drills into a nested record field"
+  (input  (do (def (h (: t (Tuple (Record (: x Int64)) Int64))) (. t 1)) (def (g) (h #tuple(#record((= x true)) 2))) (export g)))
+  (error  CDZ0203 (message "element 0.x should be Int64, but this one is Bool")))
+
+(case "the leaf-path drill stops at a deeper field-set difference, naming the immediate field"
+  (input  (do (def (h (: r (Record (: inner (Record (: x Int64) (: y Int64)))))) (. r inner)) (def (g) (h #record((= inner #record((= x 1)))))) (export g)))
+  (error  CDZ0203 (message "field `inner` should be") (not "inner.")))
