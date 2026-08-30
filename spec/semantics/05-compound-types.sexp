@@ -63,14 +63,14 @@
 ; gets NO baseless suggestion and NO fix — the plain message stands. (Migrated from rcdzc
 ; a_record_match_pattern_typo_field_suggests_the_nearest_field.)
 (case "a record match pattern typo field suggests the nearest field with a rename fix"
-  (input  (do (def (f (: r (Record (: helper Int64)))) (match r ((record (helpr y)) y)))
-              (def (main) (f (record (helper 1)))) (export main)))
+  (input  (do (def (f (: r (Record (: helper Int64)))) (match r (#record((= helpr y)) y)))
+              (def (main) (f #record((= helper 1)))) (export main)))
   (error  CDZ0201 (message "field `helpr`") (message "does not have") (message "did you mean `helper`?")
                   (fix (kind replace) (replacement "helper") (unverified))))
 
 (case "a far-miss record match pattern field carries no baseless suggestion or fix"
-  (input  (do (def (f (: r (Record (: helper Int64)))) (match r ((record (zzz y)) y)))
-              (def (main) (f (record (helper 1)))) (export main)))
+  (input  (do (def (f (: r (Record (: helper Int64)))) (match r (#record((= zzz y)) y)))
+              (def (main) (f #record((= helper 1)))) (export main)))
   (error  CDZ0201 (message "field `zzz`") (not "did you mean") (no-fix)))
 
 (case "a record field holding a sum is projected then matched"
