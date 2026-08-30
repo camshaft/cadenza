@@ -28,11 +28,11 @@
             (effect M (op probe (-> Int64 (Tuple Int64 Int64))))
             (def (main (: n Int64))
               (handle M n
-                ((probe (v) s (resume (tuple s v) (+ s v))))
+                ((probe (v) s (resume #tuple(s v) (+ s v))))
                 (let ((a (M.probe 1)))
                   (+ (. a 0)
                      (+ (handle M 100
-                          ((probe (v) s (resume (tuple s v) (* s 2))))
+                          ((probe (v) s (resume #tuple(s v) (* s 2))))
                           (let ((b (M.probe 4))) (+ (. b 0) (. b 1))))
                         (. (M.probe 2) 0))))))
             (export main)))
