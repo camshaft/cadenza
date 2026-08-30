@@ -6569,7 +6569,8 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
     let key = match read_key(db, tail[1]) {
         Some(sym) => sym,
         None => {
-            return Resolved::Poison(Reject::decline(
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
                 "a computed member key is not supported; use a Map for dynamic keyed access",
             ));
         }
