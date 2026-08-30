@@ -750,6 +750,20 @@ pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 32;
 /// one declines promptly instead of hanging. Reset per `Db` (a fresh compile); never decremented.
 pub(crate) const REDUCE_NODE_BUDGET: u64 = 1_000_000;
 
+/// PER-DEF-BODY bound on STRUCTURAL reductions (the `Ref`/nominal-unwrap hops through
+/// [`enter_reduction_structural`], which — unlike the β-reduction [`enter_reduction`] — is NOT charged
+/// against [`REDUCE_NODE_BUDGET`], so a term that explodes through the structural path alone escapes that
+/// guard). A self-application whose type/fault walk re-reduces an exponentially-WIDENING term
+/// (`((fn (v0) (v0 (- (fn v1) (v0 v0)))) …)`) drives UNBOUNDED structural reductions in ONE def body while
+/// staying within β-depth — the `cdz-smith` type-inference HANG escaping CDZ0999. This counts structural
+/// reductions PER DEF BODY (reset in `collect_faults`' body loop); the count grows WITH the exploding width
+/// so it trips BEFORE the width materializes (fast decline), while a real def body's structural reductions
+/// stay far below it (v-compiler-perf's volume data: the whole compile is ~800k CUMULATIVE across ALL defs,
+/// so any one body is a small fraction — this per-body ceiling has a wide margin). Past it,
+/// `enter_reduction_structural` denies entry (declines like the depth limit), so the walk bottoms out with a
+/// resource-limit CDZ0999 instead of hanging. (Tunable; v-compiler-perf gates the self-host carve-out.)
+pub(crate) const STRUCTURAL_REDUCTION_BUDGET: u64 = 2_000_000;
+
 /// The bound on RECURSIVE-DESCENT depth across the demand queries (`type_of`, the fault `collect`, and
 /// `core_of`) — a backstop against a native stack overflow on pathologically deep input. Each query is
 /// recursive descent (a node's answer re-enters the query for its sub-expressions), so a deeply NESTED
@@ -1416,6 +1430,13 @@ pub struct Db {
     /// declines a too-deep one. Reset to 0 per `Db` (a fresh compile); never decremented (it measures
     /// total synthesis work, not current depth).
     pub(crate) reduce_nodes: u64,
+
+    /// PER-DEF-BODY count of STRUCTURAL reductions ([`enter_reduction_structural`] entries) — RESET to 0 at
+    /// the top of each def-body walk in `collect_faults` (NOT per `Db`: a program-level cumulative count
+    /// would re-introduce the Option.None carve-out regression the structural path exists to avoid, since a
+    /// real multi-module compile legitimately does ~800k structural reductions cumulatively). Bounds the
+    /// self-app structural-explosion HANG per body against [`STRUCTURAL_REDUCTION_BUDGET`].
+    pub(crate) structural_reductions: u64,
 
     /// The current RECURSIVE-DESCENT depth across the demand queries (`type_of`, `collect`, `core_of`)
     /// — the recursive-descent backstop. Bumped on entering a query's recursion and restored on exit;
@@ -2992,6 +3013,7 @@ impl Db {
             nonfinal_splice_patterns,
             reduce_depth: 0,
             reduce_nodes: 0,
+            structural_reductions: 0,
             descent_depth: 0,
             walk_depth: 0,
             callee_visited: crate::fxhash::FxHashSet::default(),
@@ -3228,6 +3250,16 @@ impl Db {
         if self.reduce_depth >= REDUCE_DEPTH_LIMIT {
             return None;
         }
+        // PER-DEF-BODY structural-reduction WORK bound: the structural path is not charged against
+        // `REDUCE_NODE_BUDGET`, so a self-app whose type/fault walk drives an exponentially-widening
+        // structural re-reduction escapes that guard and HANGS. Count structural reductions (reset per
+        // def body in `collect_faults`); past the ceiling, deny entry — the walk declines with a
+        // resource-limit CDZ0999 instead of diverging. The count grows WITH the exploding width → trips
+        // BEFORE the width materializes (fast), while a real body stays far below the ceiling.
+        if self.structural_reductions >= STRUCTURAL_REDUCTION_BUDGET {
+            return None;
+        }
+        self.structural_reductions += 1;
         self.reduce_depth += 1;
         Some(ReductionGuard { db: self })
     }
