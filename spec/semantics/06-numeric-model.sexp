@@ -1645,7 +1645,7 @@
            `Float32` sibling (seq-40 — one specified width fixes the homogeneous list), so `main 0` reads the
            first element `1.0` as a Float32. Formerly `1.0` stayed the Float64 default and the RUST backend
            emitted a Vec mixing f32/f64 (E0308) while wasm compiled it un-unified — a cross-backend differential.")
-  (input  (do (def (main) (list 1.0 (: 2.0 Float32))) (export main)))
+  (input  (do (def (main) #list(1.0 (: 2.0 Float32))) (export main)))
   (call   main) (output (: #list(1.0 2.0) (List Float32))))
 
 ; The sibling-inferred width check also reaches a bare `(list …)` DESCENDED THROUGH a collection builder —
