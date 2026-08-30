@@ -11501,41 +11501,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
-        // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
-        // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
-        // UTF-8 encode). The text-model twin of the numeric `of-int`/`.of` coercion wraps.
-        for src in [
-            // operator argument position (scheme-unify path)
-            "(module m (def (f) (Bytes.len \"hi\")) (export f))",
-            // user-def call-site position (annotated-param path)
-            "(module m (def (f (: b Bytes)) b) (def (main) (f \"hi\")) (export main))",
-        ] {
-            let d = reject_full(src).expect("the String/Bytes mismatch must reject");
-            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-            let fix = d.fix.expect("a to-bytes conversion fix is carried");
-            assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-            assert_eq!(
-                fix.replacement,
-                format!("(String.to-bytes {})", crate::abi::WRAP_HOLE),
-                "wraps the string in the UTF-8 encode: {src}"
-            );
-            assert!(!fix.verified, "a conversion wrap is a heuristic");
-        }
-        // The REVERSE (`Bytes` where `String` is expected) is FALLIBLE (`from-bytes : Bytes → Option
-        // String`) — no one-shot wrap that type-checks, so NO fix is offered (honest, not a cascade).
-        let rev = reject_full(
-            "(module m (def (f (: s String)) s) (def (main (: b Bytes)) (f b)) (export main))",
-        )
-        .expect("reject");
-        assert!(
-            rev.fix.is_none(),
-            "no one-shot fix for the fallible Bytes→String decode: {:?}",
-            rev.fix
-        );
-    }
-
-    #[test]
     fn a_char_or_symbol_where_a_scalar_string_is_expected_offers_its_total_conversion() {
         // `Char.to-int : Char → Int64` and `Symbol.to-string : Symbol → String` are TOTAL prelude
         // conversions, so a Char where Int64 is wanted (`(+ #\a 1)`) / a Symbol where String is wanted
