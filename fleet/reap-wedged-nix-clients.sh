@@ -45,21 +45,22 @@ APPLY=0
 # Append a timestamped audit line to REAP_LOG (best-effort; never fail the reap on a log-write error).
 log() { echo "$(date -Is) $*" >>"$REAP_LOG" 2>/dev/null || true; }
 
-# (0) ORPHANED-LEAK branch (v-fleet-tooling 2026-08-30): an ORPHANED (ppid=1) own-user `nix build
-# .#checks.<arch>.local-gate` is a LEAK — its owning agent/window DIED (the proc reparented to init), so
-# NOTHING will ever consume the gate result or manage the proc. Unlike a SLOW legit build (which has a
-# LIVE owner), an orphaned gate is unambiguous waste, so it is reaped REGARDLESS of age or the wedge
-# signature — the reaper's false-negative bias (never kill real work) does NOT apply here: there is no
-# owner doing work. SCOPED to `local-gate` ONLY (always agent-synchronous → orphan = leak); deliberately
-# NOT other `.#checks.*` (an orphaned corpus-* could be a legit warm-keep fire-and-forget warm build).
-# Own-user only (a kill across uids would EPERM); honors REAP_EXEMPT_REGEX. Closes the leaked-gate class
-# the 180min wedge-gate misses — 4 such orphaned local-gates (42-60min, 0% CPU) were hand-reaped at load 99.
-orphans="$(ps -eo pid,ppid,euid,args 2>/dev/null \
-  | awk -v me="$(id -u)" -v exempt="$REAP_EXEMPT_REGEX" \
-      '$2 == 1 && $3 == me && /nix build \.#checks/ && /local-gate/ && !/awk/ && (exempt == "" || $0 !~ exempt) {print $1}')"
+# (0) ORPHANED-LEAK branch (v-fleet-tooling 2026-08-30; AGE-FLOORED after a false-positive, v-deferral-declines
+# #6163). An ORPHANED (ppid=1) own-user `nix build .#checks.<arch>.local-gate` MIGHT be a leak (owner died) —
+# BUT ppid==1 ALONE is NOT sufficient: a LEGIT local-gate under contention runs 15-40min, and its nix client
+# can transiently/briefly show ppid==1 (or be freshly orphaned by an unrelated wrapper kill) while its build
+# is still ACTIVELY progressing + wanted. Reaping "regardless of age" therefore CULLED HEALTHY in-progress
+# builds → a fleet-wide land-block (the reaper's own false-negative-bias — never kill real work — was
+# violated). FIX: only reap an orphan OLDER than WEDGED_CLIENT_MIN (180min) — far beyond ANY legit local-gate
+# (15-40min), so no in-progress build is ever reaped, while a truly-leaked orphan lingering >3h is still
+# cleaned. Own-user only; local-gate only; honors REAP_EXEMPT_REGEX. (A sub-180min genuine leak self-resolves:
+# the daemon finishes the build + the client exits — no early reap needed, and never worth risking a legit kill.)
+orphans="$(ps -eo pid,ppid,euid,etimes,args 2>/dev/null \
+  | awk -v me="$(id -u)" -v exempt="$REAP_EXEMPT_REGEX" -v minage=$((WEDGED_CLIENT_MIN * 60)) \
+      '$2 == 1 && $3 == me && $4 > minage && /nix build \.#checks/ && /local-gate/ && !/awk/ && (exempt == "" || $0 !~ exempt) {print $1}')"
 if [ -n "$orphans" ]; then
   n_orph="$(printf '%s\n' "$orphans" | grep -c .)"
-  echo "reap-wedged-nix-clients: ${n_orph} ORPHANED (ppid=1, own-user) local-gate LEAK(s) — owner dead, reaping regardless of age. $([ "$APPLY" = 1 ] && echo 'KILLING:' || echo 'WOULD-KILL (dry-run; pass --apply):')"
+  echo "reap-wedged-nix-clients: ${n_orph} ORPHANED (ppid=1, own-user) local-gate LEAK(s) older than ${WEDGED_CLIENT_MIN}min (beyond any legit build) — owner dead. $([ "$APPLY" = 1 ] && echo 'KILLING:' || echo 'WOULD-KILL (dry-run; pass --apply):')"
   for p in $orphans; do
     oinfo="$(ps -o pid,etime,args -p "$p" 2>/dev/null | tail -1 | cut -c1-100)"
     echo "  $oinfo"
