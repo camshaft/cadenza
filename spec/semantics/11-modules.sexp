@@ -1753,6 +1753,71 @@
         (export main)))
   (call   main (: 5 Int64)) (error CDZ0202))
 
+(case "a built-in comparison on a LIST of an abstract type is rejected (opacity walks the list spine)"
+  (doc    "The list arm of the compound direct-`=` reject: `(= #list((mk k)) #list((mk k)))` with an abstract
+           `Temp` element — the built-in structural comparison walks the list spine and observes the `Temp`
+           representation through equality, so it rejects CDZ0202 like the tuple form above. The opacity walk
+           (`key_ty_contains_abstract_at`) covers a `Ty::List` element arm, not just tuple.")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (if (= #list((mk k)) #list((mk k))) 1 0))
+        (export main)))
+  (call   main (: 5 Int64)) (error CDZ0202))
+
+(case "a built-in comparison on two MAPS with abstract VALUES is rejected (direct-`=` walks the value spine)"
+  (doc    "The value-spine complement of the map-KEY reject and of the hold-legal case below: HOLDING an
+           abstract value as a map value under a concrete key is legal (insert/lookup compares only the key,
+           never the value spine), but a direct `(= m1 m2)` on two whole maps walks BOTH keys AND values via
+           champ_eq, observing the abstract VALUE's private representation — so it rejects CDZ0202.
+           `key_ty_contains_abstract_at` walks the `Ty::Map` value arm and the direct-`=` site passes the
+           whole operand type. Pins that HOLDING is legal but COMPARING the whole map is not.")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (if (= (Map.insert Map.empty k (mk k)) (Map.insert Map.empty k (mk k))) 1 0))
+        (export main)))
+  (call   main (: 5 Int64)) (error CDZ0202))
+
+(case "a built-in comparison on two RECORDS with an abstract FIELD is rejected (opacity walks the record spine)"
+  (doc    "The record arm of the compound direct-`=` reject: `(= #record((= t (mk k))) …)` with an abstract
+           `Temp` field — built-in record comparison walks the field spine and observes the `Temp`
+           representation through equality, so it rejects CDZ0202 like the tuple/list forms.
+           `key_ty_contains_abstract_at` recurses into `Ty::Record` fields.")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (if (= #record((= t (mk k))) #record((= t (mk k)))) 1 0))
+        (export main)))
+  (call   main (: 5 Int64)) (error CDZ0202))
+
+(case "a built-in comparison on a concrete-only compound stays legal (the opacity recursion finds no abstract leaf)"
+  (doc    "The negative control of the compound direct-`=` sweep: with the SAME abstract `temp` module in
+           scope, comparing two CONCRETE-only tuples `(= #tuple(k 1) #tuple(k 1))` stays legal — the opacity
+           recursion walks the compound, finds no abstract leaf, and does not over-reject. Guards the CDZ0202
+           compound-walk from creeping onto concrete-only compounds. Returns 1 (the tuples are equal).")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (if (= #tuple(k 1) #tuple(k 1)) 1 0))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "a built-in comparison on a concrete-only RECORD stays legal (no over-reject through the record recursion)"
+  (doc    "The record arm of the concrete-only control: `(= #record((= t k)) #record((= t k)))` with a
+           concrete `Int64` field stays legal — the record recursion finds no abstract leaf. Returns 1.")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (if (= #record((= t k)) #record((= t k))) 1 0))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
 (case "a Set/Map lookup over an abstract-element collection reached via a param is rejected (read-side opacity)"
   (doc    "The read-side completion of the opacity sweep: the collection need not be LOCALLY constructed —
            a `(Set Temp)` reached through a fn PARAM (or import), then `Set.contains`/`Map.lookup`/`Set.union`
