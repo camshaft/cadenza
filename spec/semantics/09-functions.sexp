@@ -5715,12 +5715,22 @@
            parameter NAME is in the warning's dynamic tail (`unused parameter `y``), so only the stable lead
            `unused parameter` is pinned. Wasm-graded (warnings ride the shared compile stage = target-
            independent; the rust/rust-async run paths cannot observe compile stderr, so the (warns ..) check
-           is skipped there, not failed). Portable companion of the rcdzc unused-parameter warning assertion;
-           the confident `_y` prefix FIX the rust test also pins is a HAS-FIX shape the (warns ..) substring
-           clause cannot express, so that test is kept for the fix.")
+           is skipped there, not failed). Portable companion of the rcdzc unused-parameter warning assertion.
+           The confident `_y` prefix FIX is the first MACHINE-APPLICABLE (VERIFIED) fix — the `_`-silencing
+           rule makes renaming the binder to `_y` behaviour-preserving and clears the warning by
+           construction, so an agent applies it without review — now expressed via the diagnostic-quality
+           `(warning …)` clause. (fix migrated from rcdzc an_unused_binding_carries_a_verified_underscore_prefix_fix.)")
   (input  (do (def (f x y) x) (def (main) (f 7 8)) (export main)))
   (output (: 7 Int64))
-  (warns  CDZ0306 (message "unused parameter")))
+  (warning CDZ0306 (message "unused parameter")
+                   (fix (kind replace) (replacement "_y") (verified))))
+
+(case "applying the unused-parameter underscore fix (`y` to `_y`) silences the warning"
+  (doc    "The VERIFIED fix's correctness, demonstrated: renaming the unused parameter to `_y` compiles +
+           runs identically (`(f 7 8)` = 7). The `_`-prefix is the silencing rule, so the completed form is
+           behaviour-preserving — what makes the fix machine-applicable.")
+  (input  (do (def (f x _y) x) (def (main) (f 7 8)) (export main)))
+  (output (: 7 Int64)))
 
 (case "an argument bound to a used parameter IS observed, so its trap occurs (the anchor)"
   (doc    "The control: `(def (f x y) y)` returns its SECOND parameter, so `(f 7 (/ 1 d))` with d = 0
