@@ -186,9 +186,9 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             // step off the `SumPayload` walk to the record.
             let rec_ty = crate::infer::record_field_at_path(db, scrutinee, &path, &heads);
             let crate::ty::Ty::Record(rec_fields) = rec_ty else {
-                return Core::Poison(Reject::decline(
+                return Core::Poison(Reject::unsupported(
                     "a nested record match binder over a scrutinee whose nested value is not a record \
-                     (or is a variant-nested record) is not yet matched",
+                     (or is a variant-nested record) is not supported",
                 ));
             };
             let Some(slot) = rec_fields.keys().position(|k| *k == key) else {
@@ -1262,9 +1262,9 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     // Synthesis could not classify the eta-lambda (an unresolved/degenerate head) — decline
                     // cleanly rather than emit an under-arity call (still reject-don't-miscompile).
                     trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), arity = closure_arity, "apply: PARTIAL application of a runtime closure → decline (residual-closure synthesis failed)");
-                    return Core::Poison(Reject::decline(
+                    return Core::Poison(Reject::unsupported(
                         "a partial application of a runtime closure (fewer arguments than its arity) \
-                         is not yet emittable — apply it to all its arguments, or wrap the remaining \
+                         is not supported — apply it to all its arguments, or wrap the remaining \
                          ones in an explicit lambda",
                     ));
                 }
@@ -2082,15 +2082,15 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     Core::Poison(r) => Core::Poison(r),
                     Core::ListNew { elems } => match lower_ast_splice_lift(db, id, &elems) {
                         Some(core) => core,
-                        None => Core::Poison(Reject::decline(
+                        None => Core::Poison(Reject::unsupported(
                             "an active `,@` splice needs a compile-time-constant list of scalar \
                                  (Int64/Float64/Bool/String) or Ast elements (the runtime splice map \
-                                 is not yet built)",
+                                 is not supported)",
                         )),
                     },
-                    _ => Core::Poison(Reject::decline(
+                    _ => Core::Poison(Reject::unsupported(
                         "an active `,@` splice needs a compile-time-constant list (the runtime \
-                         splice map is not yet built)",
+                         splice map is not supported)",
                     )),
                 },
                 // `ast-lift` — the runtime active-unquote lift (`∀a. a → Ast`): wrap the operand's value in
