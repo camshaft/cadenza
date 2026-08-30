@@ -6793,7 +6793,7 @@
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
             (def (main (: k Int64)) (fold-n #record((= op (fn (x) (+ x k)))) 3 0))
             (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "const") (message "compile-time-known") (message "runtime data")))
 
 (case "a const collection recursively folded UNROLLS to its result at compile time"
   (doc    "A `const` COLLECTION parameter (here a `(List Int64)`) consumed by a SELF-RECURSIVE fold FULLY
