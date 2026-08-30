@@ -4490,11 +4490,6 @@
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
         # so `nix build .#cdz-calc` builds it directly; apps.cdz injects it as CDZ_CALC_BIN for interactive use.
         packages.cdz-calc = cdzCalc;
-        # TEMP (seq-250 AOT acceptance re-verify w/ #5922 NFC-deserialize): removed after mkCorpusExec rewire.
-        packages.cdz-run-exec = cdzRunExec;
-        packages.cdz-run-tool = cdzRun;
-        packages.runtime-debug-wasm = runtimeDebug;
-        packages.component-store-tmp = componentStore;
         packages.cargo-artifacts-release = cargoArtifactsRelease;
         packages.cargo-artifacts-release-codegen = cargoArtifactsReleaseCodegen;
         packages.rcdzc-wasm = rcdzcWasm;
