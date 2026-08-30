@@ -3329,6 +3329,18 @@
   (input  (match 5 (5 1)))
   (error  CDZ0210))
 
+(case "a non-exhaustive scalar match names the wildcard gap and offers an add-wildcard-arm fix"
+  (doc    "An open Int scalar match with literal arms and no wildcard — `(match n (0 1) (1 2))` over a
+           parameter `n` — is non-exhaustive (a finite literal set cannot cover Int64), CDZ0210, and the
+           message names the missing `wildcard`. It carries an INSERT fix appending a `(_ (trap \"TODO\"))`
+           wildcard arm — the scalar twin of the sum add-arms fix. The body is a `trap` (∀a. String → a),
+           NOT `unit`, so the added arm type-checks against sibling arms of ANY result type in ONE shot (a
+           bare `unit` would cascade to a CDZ0203 'match arms differ'). Heuristic (placeholder body →
+           unverified). (Migrated from rcdzc a_non_exhaustive_scalar_match_offers_a_wildcard_arm_fix.)")
+  (input  (do (def (f (: n Int64)) (match n (0 1) (1 2))) (export f)))
+  (error  CDZ0210 (message "wildcard")
+                  (fix (kind insert-into) (replacement "(_ (trap \"TODO\"))") (unverified))))
+
 ; Exhaustiveness composes into NESTED patterns, not only the top-level variant set. core-semantics.md
 ; #Patterns Compose (a constructor pattern's binder MAY itself be a constructor pattern, matched
 ; recursively) with #Matching Is Exhaustive Or Rejected ("cover every value of the scrutinee's type"):

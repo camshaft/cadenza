@@ -10460,6 +10460,27 @@
             (export classify)))
   (error  CDZ0210 (message "`Neg`")))
 
+; A nested-payload non-exhaustive match NAMES the uncovered INNER variant (CDZ0210 "`B` not covered"), not
+; the generic "must cover every variant". `(match o ((Some (A)) 1) ((None) 0))` over `Option C` where
+; `C = (A)|(B)` leaves `(Some (B))` uncovered — the inner sum `C` under `Some` is missing `B`. A nested gap's
+; covering arm can't be flat-appended (unlike a top-level gap), so it is message-only, NO fix. Multiple
+; missing inner variants are all named. (Migrated from rcdzc a_nested_non_exhaustive_match_names_the_uncovered_inner_variant.)
+(case "a nested non-exhaustive match names the uncovered inner variant (no flat-append fix)"
+  (input  (do (type C (A) (B))
+              (def (f (: o (Option C))) (match o ((Some (A)) 1) ((None) 0))) (export f)))
+  (error  CDZ0210 (message "`B`") (message "not covered") (no-fix)))
+
+(case "a nested non-exhaustive match names MULTIPLE uncovered inner variants"
+  (input  (do (type C (A) (B) (E))
+              (def (f (: o (Option C))) (match o ((Some (A)) 1) ((None) 0))) (export f)))
+  (error  CDZ0210 (message "`B`") (message "`E`")))
+
+(case "an exhaustive nested match compiles clean (no false non-exhaustiveness)"
+  (input  (do (type C (A) (B))
+              (def (f (: o (Option C))) (match o ((Some (A)) 1) ((Some (B)) 2) ((None) 0)))
+              (def (main) (f (Some (A)))) (export main)))
+  (call   main) (output (: 1 Int64)))
+
 (case "a literal-refined variant arm does not satisfy exhaustiveness"
   (doc    "A payload-LITERAL refinement `((W.V 0) …)` covers only the `V` payload EQUAL TO 0 — it does not
            cover the `V` variant (a `V` carrying any other value is unmatched), so a match with only
