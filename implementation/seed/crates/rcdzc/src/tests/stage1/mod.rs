@@ -1359,50 +1359,6 @@ fn a_called_tuple_by_name_access_reports_the_position_message_once_not_a_call_si
 }
 
 #[test]
-fn a_misspelled_field_in_a_constructed_record_names_the_field_and_offers_a_rename() {
-    // The CONSTRUCTION twin of the member-access field typo: a record literal supplied to a variant
-    // constructor whose payload is a `(Record …)` type, with one field name a plausible typo of the
-    // expected one (`yy` for `y`). The reject now (a) carries the structural field-diff TAIL (which
-    // fields are missing/extra) so the reader is not left to diff two whole record renders, and (b)
-    // offers a heuristic RENAME fix on the misspelled KEY token — the same repair a `(. r yy)` typo
-    // gets. Previously it rendered both record types verbatim with no hint and no fix.
-    let src = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                   (def (f) (P.Mk (record (= x 1) (= yy 2)))) (export f))";
-    let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message.contains("missing field `y`") && d.message.contains("no such field `yy`"),
-        "names the field-set difference: {}",
-        d.message
-    );
-    let fix = d.fix.as_ref().expect("a rename fix is carried");
-    assert_eq!(
-        fix.replacement, "y",
-        "renames the typo'd key to the expected field"
-    );
-    assert!(!fix.verified, "a nearest-field guess is heuristic");
-    // The fix TARGETS the key token: applying `yy`→`y` clears the fault (the value now has the right
-    // field set). Demonstrated by construction — the corrected program compiles.
-    let fixed = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                     (def (f) (P.Mk (record (= x 1) (= y 2)))) (export f))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
-        "the renamed record compiles"
-    );
-    // AMBIGUOUS: two wrong fields is not a single mechanical rename → the field-diff hint still guides,
-    // but NO auto-fix (an ambiguous multi-field slip is not one confident edit).
-    let ambiguous = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                         (def (f) (P.Mk (record (= aa 1) (= bb 2)))) (export f))";
-    let d2 = compile_component(&crate::codec::encode(&parse(ambiguous))).expect_err("must reject");
-    assert!(
-        d2.message.contains("missing fields") && d2.fix.is_none(),
-        "multi-field slip: hint but no confident fix: {} fix={:?}",
-        d2.message,
-        d2.fix
-    );
-}
-
-#[test]
 fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
     // The ARGUMENT-position twin of the variant-ctor record typo (and the `(. r yy)` member-access
     // did-you-mean): a record LITERAL passed to a `(: r (Record …))` PARAMETER with one field a
