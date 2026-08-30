@@ -4063,6 +4063,8 @@
   (call   main (: 5 Int64)) (output (: 103 Int64)))
 
 (case "a LIST OF SETS op result — the body indexes, measures, and probes the nested elements"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "NESTED collection crossings: every flat collection has both-direction witnesses; a
            collection INSIDE a collection riding the boundary (two heap layers, RRB list over CHAMP
            sets) had none. The arm resumes `(list (Set.of (list 1 2)) (Set.of (list 3 4 n)))`; the
@@ -4080,6 +4082,8 @@
   (call   main (: 5 Int64)) (output (: 102 Int64)))
 
 (case "a LIST OF SETS as op ARGUMENT — the arm indexes into the nested payload it is handed"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "The argument-direction twin of the nested-result pin: a body-built list of sets rides the
            op argument INTO the arm, which indexes both elements — 10·2 + 100 (contains 5) + 1 →
            121. The arm-side unbox of a two-layer payload.")

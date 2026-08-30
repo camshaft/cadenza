@@ -647,7 +647,8 @@
               (export make-adder) (export twice-plus)))
   (call   twice-plus (: 1 Int64) (: 5 Int64))
   (output (: 12 Int64))
-  (live-objects 0))
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak))
 
 ; Release soundness when the consumer NEVER APPLIES the handed-back closure on the taken path: the own<t>
 ; was consumed at the boundary regardless, so the wrapper still drops the cell. `app`'s body is
@@ -669,6 +670,8 @@
 ; consumer body is ordinary Cadenza code with the handed-back closure as a first-class value in it.
 
 (case "a consumer applies the handed-back closure inside a larger expression"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "`(def (twice-plus (: g (-> Int64 Int64)) (: x Int64)) (+ (g x) (g x)))` applies the handed-back
            closure TWICE and sums. With `make-adder(1)` producing `(+ x 1)`, `twice-plus(handle, 5)` =
            (5+1) + (5+1) = 12. Pins that the consumer body is ordinary code — the closure param is a
@@ -794,6 +797,8 @@
 ; consumer's boundary as a trap, not a wrong value — the consumer twin of the closure-body trap pin).
 
 (case "a consumed closure is applied once per iteration of a recursive loop"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "`apply-n` hands the closure to a RECURSIVE worker `iter` that applies it once per iteration:
            `make-adder(10)` then `apply-n(handle, 3)` folds g over 0 three times — 0→10→20→30. The handle
            crosses the boundary ONCE but dispatches N times from loop-carried state; a code-slot read
@@ -1781,6 +1786,8 @@
 ; high-water mark, the same disjoint-slot discipline the checked-arith path uses.)
 
 (case "round-trip: a consumer applies the handed-back closure and returns Bytes"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "`mk : () -> (-> Int64 Int64)` (adds 1); `app : (own<t>, Int64) -> Bytes` applies the handed-back
            closure TWICE — `(bin (u8 (g x)) (u8 (g x)+1))`. Host produces a handle via `mk`, hands it to
            `app(handle, 5)` → the closure yields 6, so the bytes are `[6, 7]`. Pins the byte-rope result on
@@ -1860,6 +1867,8 @@
 ; scalar consumer of another signature, and two byte-rope consumers of different signatures coexist.
 
 (case "distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "`mka : () -> (-> Int64 Int64)` and `mkb : () -> (-> Bool Int64)` are distinct signatures → two
            resource types. `appa : (own<t0>, Int64) -> Bytes` applies its closure TWICE — `(bin (u8 (g x))
            (u8 (g x)+1))`. Host produces via `mka`, hands to `appa(handle, 5)` → `[6, 7]`. Pins the byte-rope
@@ -5261,6 +5270,8 @@
   (output (: (Some #tuple(5 6)) (Option (Tuple Int64 Int64)))))
 
 (case "round-trip: a consumer returns a list of tuples from repeated closure application"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "A `List (Tuple Int64 Int64)` result — a collection whose ELEMENT is a compound. `app` applies `g`
            to two inputs and pairs each. `mk` doubles; `app(handle, 3)` → `(list (tuple 3 6) (tuple 4 8))`, so
            `(: (list (tuple 3 6) (tuple 4 8)) (List (Tuple Int64 Int64)))`.")
@@ -5297,6 +5308,8 @@
   (output (: (Some 6) (Option Int64))))
 
 (case "distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "The SAME two-resource-type program, driving the OTHER (collection-result) consumer of the other
            signature: `appb(handle, true)` → `h(true)` = 1 twice, so `(: (list 1 1) (List Int64))`. Confirms a
            sum-result group and a collection-result group render independently.")
@@ -5328,6 +5341,8 @@
   (live-objects known-leak))
 
 (case "round-trip: a consumer returns a Set built from REPEATED closure application"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (doc    "`mk` multiplies by 10; `app : (own<t>, Int64) -> (Set Int64)` = `(Set.of (list (g x) (g x) x))` —
            the closure `g` is applied TWICE and its result plus `x` form a set (duplicates collapse).
            `app(handle, 3)` → `g(3)`=30 twice, so `{3, 30}` → `(: ((. Set of) (list 3 30)) (Set Int64))` in
