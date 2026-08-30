@@ -292,8 +292,7 @@ type EntryIter =
   | EFromList(List(Tuple(Int64, Int64)))
 
 /// Step an `EntryIter`: yield `Option(((key, value), rest))`, `None` at exhaustion. Total and pure.
-def entry-next(it) = match it with
-  | EntryIter.EFromList(xs) => match xs with
+def entry-next(it) = let EntryIter.EFromList(xs) = it in match xs with
     | [] => Option.None(unit)
     | [h, .. t] => Option.Some((h, EntryIter.EFromList(t)))
 
@@ -1693,8 +1692,7 @@ def zip-entries-bounds-infinite() =
 type Susp =
   | Thunk(Unit -> Int64)
 
-def force-susp(s: Susp) = match s with
-  | Susp.Thunk(f) => f(unit)
+def force-susp(s: Susp) = let Susp.Thunk(f) = s in f(unit)
 
 @test
 def unit-param-closure-boxed-regression() =
