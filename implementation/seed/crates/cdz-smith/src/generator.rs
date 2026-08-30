@@ -1617,13 +1617,14 @@ impl Gen<'_> {
         self.out.push_str("))"); // close (handle …), close (do …)
     }
 
-    /// A self-contained, GUARANTEED-TERMINATING TWO-op effect + handler, reaching multi-op DISPATCH —
-    /// the handler routes each perform to the matching op arm and threads ONE shared scalar state across
-    /// the two heterogeneous ops (the "continuation destructuring across arm branches" cmb1 territory)
-    /// that the single-op `effect_handler_expr` never exercises. Shape (nested `do`, no program surgery):
-    /// `(do (effect E (op o1 (-> Int64 Int64)) (op o2 (-> Int64 Int64)))
-    ///      (handle E <init> ((o1 (p) s (resume s (+ s <operand>))) (o2 (p) s (resume (+ s p) s)))
-    ///        (<op> (E.o1 a) (E.o2 b))))`.
+    /// A self-contained, GUARANTEED-TERMINATING N-op effect + handler (N ∈ 2..=4), reaching multi-op
+    /// DISPATCH at breadth — the handler routes each perform to the matching op arm and threads ONE shared
+    /// scalar state across N heterogeneous ops (the "continuation destructuring across arm branches" cmb1
+    /// territory, and with N≥3 the wider op-routing / `br_table`-style dispatch) that the single-op
+    /// `effect_handler_expr` never exercises. Shape (nested `do`, no program surgery):
+    /// `(do (effect E (op o1 (-> Int64 Int64)) … (op oN (-> Int64 Int64)))
+    ///      (handle E <init> ((o1 (p) s (resume s (+ s <operand>))) … (oN (p) s (resume (<op> s p) s)))
+    ///        (<op> … (<op> (E.o1 a) (E.o2 b)) … (E.oN z))))`  (body left-folds a perform of every op).
     /// TERMINATION/SAFETY as `effect_handler_expr`: each arm body is a bare single `(resume …)`, the body
     /// performs a FIXED (non-recursive) count, and neither effect nor op names are value bindings, so a
     /// generated operand can't re-perform into a loop. Int64 throughout so it type-checks.
@@ -1632,34 +1633,42 @@ impl Gen<'_> {
             let v = self.env.fresh();
             format!("E{}", &v[1..]) // capitalized effect name, e.g. E7
         };
-        let o1 = self.env.fresh();
-        let o2 = self.env.fresh();
-        let p1 = self.env.fresh();
-        let p2 = self.env.fresh();
+        let n_ops = 2 + self.cur.choice(3); // 2..=4 ops — multi-op dispatch BREADTH
+        let ops: Vec<String> = (0..n_ops).map(|_| self.env.fresh()).collect();
+        let params: Vec<String> = (0..n_ops).map(|_| self.env.fresh()).collect();
         let s = self.env.fresh();
-        let _ = write!(
-            self.out,
-            "(do (effect {e} (op {o1} (-> Int64 Int64)) (op {o2} (-> Int64 Int64))) (handle {e} {} (({o1} ({p1}) {s} (resume {s} (+ {s} ",
-            self.cur.range(0, 9),
-        );
-        let mark = self.env.push(p1, Kind::Num); // p1 and the shared scalar state s visible to the operand
-        self.env.push(s.clone(), Kind::Num);
-        self.expr(depth.saturating_sub(1), Kind::Num); // o1 new-state operand (may reference p1 / s)
-        self.env.truncate(mark);
-        self.out.push_str(")))"); // close (+ …), (resume …), the o1 arm
-        let _ = write!(self.out, " ({o2} ({p2}) {s} (resume (+ {s} {p2}) {s}))"); // o2 arm (balanced)
+        // Effect decl: (effect E (op o1 (-> Int64 Int64)) … (op oN (-> Int64 Int64)))
+        let _ = write!(self.out, "(do (effect {e}");
+        for o in &ops {
+            let _ = write!(self.out, " (op {o} (-> Int64 Int64))");
+        }
+        let _ = write!(self.out, ") (handle {e} {} (", self.cur.range(0, 9));
+        // Arms: the FIRST carries a generated numeric operand (differential richness — where a backend
+        // divergence surfaces); the rest are fixed varied tail-resumes threading the shared state `s`.
+        for (i, (o, p)) in ops.iter().zip(&params).enumerate() {
+            if i == 0 {
+                let _ = write!(self.out, "({o} ({p}) {s} (resume {s} (+ {s} ");
+                let mark = self.env.push(p.clone(), Kind::Num); // p and shared state s visible to the operand
+                self.env.push(s.clone(), Kind::Num);
+                self.expr(depth.saturating_sub(1), Kind::Num); // op1 new-state operand (may reference p / s)
+                self.env.truncate(mark);
+                self.out.push_str(")))"); // close (+ …), (resume …), the op1 arm
+            } else {
+                let op = ["+", "-", "*"][self.cur.choice(3)];
+                let _ = write!(self.out, " ({o} ({p}) {s} (resume ({op} {s} {p}) {s}))"); // balanced arm
+            }
+        }
         self.out.push(')'); // close the arm-list
-        let bodyop = match self.cur.choice(3) {
-            0 => "+",
-            1 => "-",
-            _ => "*",
-        };
-        let _ = write!(
-            self.out,
-            " ({bodyop} ({e}.{o1} {}) ({e}.{o2} {}))", // handled body: perform BOTH ops (balanced)
-            self.cur.range(0, 9),
-            self.cur.range(0, 9),
-        );
+        // Handled body: perform EVERY op, left-folded with a combining operator (balanced).
+        let bodyop = ["+", "-", "*"][self.cur.choice(3)];
+        self.out.push(' ');
+        for _ in 0..n_ops - 1 {
+            let _ = write!(self.out, "({bodyop} ");
+        }
+        let _ = write!(self.out, "({e}.{} {})", ops[0], self.cur.range(0, 9));
+        for o in &ops[1..] {
+            let _ = write!(self.out, " ({e}.{o} {}))", self.cur.range(0, 9)); // perform + close one bodyop
+        }
         self.out.push_str("))"); // close (handle …), (do …)
     }
 
@@ -2497,6 +2506,34 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a two-op effect");
+    }
+
+    /// The multi-op effect now reaches BREADTH — some seed emits an `(effect …)` declaring THREE-OR-MORE
+    /// `(op …)` clauses, exercising wider op-routing (≥3 handler arms) than the fixed two-op shape. Every
+    /// such program parses. Guards operator seq-23 multi-op-dispatch-breadth coverage.
+    #[test]
+    fn some_seed_emits_a_three_plus_op_effect() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // Count `(op ` clauses inside the FIRST effect decl (between `(effect ` and its `(handle `).
+            if let Some(decl) = src.find("(effect ")
+                && let Some(end) = src[decl..].find("(handle ")
+                && src[decl..decl + end].matches("(op ").count() >= 3
+            {
+                hit = true;
+                assert!(
+                    src.matches("(resume ").count() >= 3,
+                    "3+-op effect handler should have an arm (resume) per op:\n{src}"
+                );
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a 3+-op effect");
     }
 
     /// The BOOL-state effect handler is reachable — some seed emits an effect op typed `(-> Bool Bool)`
