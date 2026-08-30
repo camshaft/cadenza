@@ -928,8 +928,8 @@ fn a_partial_guest_missing_world_export_members_declines_cleanly() {
                                       (sender (Record (reducer Bytes) (host Bytes))) \
                                       (payload Bytes) (token Bytes)))) \
                    (record \
-                     (requests (list)) \
-                     (outcome Outcome.Continue))) \
+                     (= requests (list)) \
+                     (= outcome Outcome.Continue))) \
                  (export onMessage))";
     let out = crate::compile::compile(
         &[
@@ -1357,7 +1357,7 @@ fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
     use crate::testkit::parse;
     // `.x` of `(if p (record (y b)(x a)) (record (y a)(x b)))` → `(if p a b)`.
     let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
-                 (. (if p (record (y b) (x a)) (record (y a) (x b))) x)) (export pick))";
+                 (. (if p (record (= y b) (= x a)) (record (= y a) (= x b))) x)) (export pick))";
     // Compiles, and the member read PUSHES INTO the branches: the folded Core is a bare `Core::If` over the
     // selected field values (by NAME — fields written out of order), NOT a `Core::Proj` over an if-of-records
     // (the un-folded form, which would per-call `arr-alloc` both branch records then arr-get one field back).
@@ -1703,7 +1703,7 @@ fn a_common_constructor_hoist_covers_records_by_shared_key_set() {
     let src = "(module m \
                  (def (mk (: c Bool) (: x Int64) (: y Int64) (: n Int64)) \
                    (if (< n 0) (mk c x y (+ n 1)) \
-                     (if c (record (a x) (b 1)) (record (a y) (b 1))))) \
+                     (if c (record (= a x) (= b 1)) (record (= a y) (= b 1))))) \
                  (def (main (: c Bool) (: x Int64) (: y Int64)) \
                    (. (mk c x y 0) a)) \
                  (export main))";
@@ -2012,7 +2012,7 @@ fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_prese
     // updates `b`, leaving TWO preserved fields (`a`, `c`). Before the fix the constant appeared TWICE (once
     // per preserved-field projection); the fix makes it ONE. (Verified: neutralizing the let-bind → 2.)
     let src = "(module m \
-        (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+        (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1)))) \
         (def (upd (: v Int64)) (. (Record.with (mk (+ v 987654321)) #\"b\" 99) a)) \
         (def (main (: v Int64)) (upd v)) \
         (export main))";
@@ -2136,7 +2136,7 @@ fn record_project_and_without_over_a_runtime_record_build_from_projections_mater
     // `project` KEEPS {a, c} (2 fields, so ≥2 projections share the operand).
     check(
         "(module m \
-         (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+         (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1)))) \
          (def (upd (: v Int64)) (. (Record.project (mk (+ v 987654321)) (a c)) a)) \
          (def (main (: v Int64)) (upd v)) \
          (export main))",
@@ -2145,7 +2145,7 @@ fn record_project_and_without_over_a_runtime_record_build_from_projections_mater
     // `without` DROPS {b}, keeping {a, c} (2 fields).
     check(
         "(module m \
-         (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+         (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1)))) \
          (def (upd (: v Int64)) (. (Record.without (mk (+ v 987654321)) (b)) a)) \
          (def (main (: v Int64)) (upd v)) \
          (export main))",
@@ -2168,7 +2168,7 @@ fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize
     // POP: `(Record.pop (mk (+ v 987654321)) a)` → `(a-value, {b,c})`; read tuple element 0 = popped a = 1.
     // The operand feeds BOTH the popped value's projection AND the rest record's ≥1 projection.
     let pop_src = "(module m \
-        (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+        (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1)))) \
         (def (upd (: v Int64)) (. (Record.pop (mk (+ v 987654321)) a) 0)) \
         (def (main (: v Int64)) (upd v)) \
         (export main))";
@@ -2185,8 +2185,8 @@ fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize
     // MERGE: union of TWO runtime records `(mkA (+ v 987654321))` and `(mkB (+ v 111222333))`; read `c`
     // (from `b`, the second operand) = 3. Each operand carries its own distinctive constant → each once.
     let merge_src = "(module m \
-        (def (mkA (: n Int64)) (if (= n 0) (record (a 1) (b 2)) (mkA (- n 1)))) \
-        (def (mkB (: n Int64)) (if (= n 0) (record (c 3) (d 4)) (mkB (- n 1)))) \
+        (def (mkA (: n Int64)) (if (= n 0) (record (= a 1) (= b 2)) (mkA (- n 1)))) \
+        (def (mkB (: n Int64)) (if (= n 0) (record (= c 3) (= d 4)) (mkB (- n 1)))) \
         (def (upd (: v Int64)) (. (Record.merge (mkA (+ v 987654321)) (mkB (+ v 111222333))) c)) \
         (def (main (: v Int64)) (upd v)) \
         (export main))";
@@ -2219,7 +2219,7 @@ fn a_reducer_event_shaped_record_with_bytes_imports_the_value_encode_runtime() {
     use crate::testkit::parse;
     // Fields sorted (BTreeMap): `ct` < `pl`. `ct` = String, `pl` = Bytes. Runtime-built (recursion defeats
     // the constant fold), so it takes the runtime value-encode walker — the reducer apply's result path.
-    let src = "(module m (def (f n) (if (= n 0) (record (ct \"wasm\") (pl (Bytes.of (list 1 2 3)))) (f (- n 1)))) \
+    let src = "(module m (def (f n) (if (= n 0) (record (= ct \"wasm\") (= pl (Bytes.of (list 1 2 3)))) (f (- n 1)))) \
                  (def (main) (f 2)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
@@ -2593,7 +2593,7 @@ fn a_multi_arg_world_import_perform_with_a_record_arg_lowers_to_a_synchronous_ho
                  (def (apply (: e (Record (ct String) (pl Bytes)))) \
                    (host (deliver) \
                      ((. deliver deliver-message) (. e pl) \
-                        (record (contract (. e pl)) (payload (. e pl)))))) \
+                        (record (= contract (. e pl)) (= payload (. e pl)))))) \
                  (export apply))";
     let mut db = Db::load(crate::testkit::parse(src));
     db.wit_world = Some(reducer_deliver_record_import_world_bytes());
@@ -3274,7 +3274,7 @@ fn an_external_artifact_world_import_resolves_without_a_hand_declared_effect() {
     let src = "(module m \
                  (def (apply (: e (Record (ct String) (pl Bytes)))) \
                    (host (identity) \
-                     (list (record (op (. e ct)) (arg ((. identity id))))))) \
+                     (list (record (= op (. e ct)) (= arg ((. identity id))))))) \
                  (export apply))";
     let out = crate::compile::compile(
         &[
@@ -3535,7 +3535,7 @@ fn an_in_source_world_decl_drives_the_bytes_provider_emit_identically_to_the_art
     // The reducer body is IDENTICAL in both compiles; the sole difference is where the target world comes
     // from. A pure fold reading the Event's fields into a one-element effect-list — the first full-A shape.
     let reducer_body = "(def (apply (: e (Record (ct String) (pl Bytes)))) \
-                          (list (record (op (. e ct)) (arg (. e pl))))) \
+                          (list (record (= op (. e ct)) (= arg (. e pl))))) \
                         (export apply)";
 
     // (A) ARTIFACT PATH (the §3b ingest): the reducer source alone + the world as an external artifact.
@@ -3616,7 +3616,7 @@ fn a_module_with_two_top_level_world_decls_declines_no_miscompile() {
                         (world other (export fold (member apply \
                           (func (param input (\"list\" (u8))) (result (\"list\" (u8))))))) \
                         (def (apply (: e (Record (ct String) (pl Bytes)))) \
-                          (list (record (op (. e ct)) (arg (. e pl))))) \
+                          (list (record (= op (. e ct)) (= arg (. e pl))))) \
                         (export apply))";
     let out = crate::compile::compile(
         &[
@@ -3663,7 +3663,7 @@ fn a_bytes_member_with_a_scalar_param_declines_cleanly_no_miscompile() {
     use crate::testkit::parse;
     // `apply` takes a scalar Int64 (no value-form shape) and returns a compound effect-list.
     let src = "(module m \
-                 (def (apply (: n Int64)) (list (record (op \"x\") (arg n)))) \
+                 (def (apply (: n Int64)) (list (record (= op \"x\") (= arg n)))) \
                  (export apply))";
     let out = crate::compile::compile(
         &[
@@ -4244,8 +4244,8 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     // with seed = 0, `.a` = 2.
     let src = "(module m \
                  (def (f (: r (Record (a Int64) (b Int64)))) \
-                    (record (a (+ (. r a) 1)) (b (. r b)))) \
-                 (def (main (: seed Int64)) (. (f (f (record (a seed) (b 5)))) a)) (export main))";
+                    (record (= a (+ (. r a) 1)) (= b (. r b)))) \
+                 (def (main (: seed Int64)) (. (f (f (record (= a seed) (= b 5)))) a)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src)))
         .expect("a composed record-transform call must compile");
     assert!(
@@ -4262,8 +4262,8 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     // heap; `.c` is independent of the seed — `(* c 3)` twice over c = 2 → 18 regardless.
     let three = "(module m \
                    (def (f (: r (Record (a Int64) (b Int64) (c Int64)))) \
-                      (record (a (+ (. r a) 1)) (b (. r b)) (c (* (. r c) 3)))) \
-                   (def (main (: seed Int64)) (. (f (f (record (a seed) (b 5) (c 2)))) c)) (export main))";
+                      (record (= a (+ (. r a) 1)) (= b (. r b)) (= c (* (. r c) 3)))) \
+                   (def (main (: seed Int64)) (. (f (f (record (= a seed) (= b 5) (= c 2)))) c)) (export main))";
     let three_bytes = compile_component(&crate::codec::encode(&parse(three)))
         .expect("a three-field composed record-transform call must compile");
     assert!(
@@ -4531,7 +4531,7 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
     assert_eq!(
         code_of(
             "(module m (def (main) \
-               (let (((record (x 0) (y b)) (record (x 3) (y 4)))) b)) (export main))"
+               (let (((record (x 0) (y b)) (record (= x 3) (= y 4)))) b)) (export main))"
         )
         .as_deref(),
         Some("CDZ0210")
@@ -4540,7 +4540,7 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
     assert_eq!(
         code_of(
             "(module m (def (main) \
-               (let (((record (nope a)) (record (x 3) (y 4)))) a)) (export main))"
+               (let (((record (nope a)) (record (= x 3) (= y 4)))) a)) (export main))"
         )
         .as_deref(),
         Some("CDZ0203")
@@ -4554,7 +4554,7 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
     assert_eq!(
         code_of(
             "(module m (def (main) \
-               (let (((record (x a) (y a)) (record (x 3) (y 4)))) a)) (export main))"
+               (let (((record (x a) (y a)) (record (= x 3) (= y 4)))) a)) (export main))"
         )
         .as_deref(),
         Some("CDZ0102")
@@ -4563,7 +4563,7 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
     // the nested binder `a` must attribute to the unwired feature, so the code is NOT the unbound-name one.
     let nested = compile_component(&crate::codec::encode(&parse(
         "(module m (def (main) \
-           (let (((record (p (tuple a b))) (record (p (tuple 1 2))))) (+ a b))) (export main))",
+           (let (((record (p (tuple a b))) (record (= p (tuple 1 2))))) (+ a b))) (export main))",
     )))
     .expect_err("nested compound record field value declines");
     assert_ne!(nested.code.as_deref(), Some("CDZ0101"));
@@ -4583,7 +4583,7 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     use crate::testkit::parse;
     // absent field → CDZ0201
     let absent = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (main) (match (record (x 3)) ((record (nope a)) a))) (export main))",
+        "(module m (def (main) (match (record (= x 3)) ((record (nope a)) a))) (export main))",
     )))
     .expect_err("absent field rejects");
     assert_eq!(absent.code.as_deref(), Some("CDZ0201"));
@@ -4595,7 +4595,7 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     // pattern CDZ0201 is the sole primary.
     let diags = crate::host::run_with_compiler_stack(|| {
         crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (main) (match (record (x 3)) ((record (nope a)) a))) (export main))",
+            "(module m (def (main) (match (record (= x 3)) ((record (nope a)) a))) (export main))",
         )))
     });
     let field_faults: Vec<_> = diags
@@ -4611,7 +4611,7 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     // nested compound field value → clean decline, NOT CDZ0101
     let nested = compile_component(&crate::codec::encode(&parse(
         "(module m (def (main) \
-           (match (record (p (tuple 1 2))) ((record (p (tuple a b))) (+ a b)))) (export main))",
+           (match (record (= p (tuple 1 2))) ((record (p (tuple a b))) (+ a b)))) (export main))",
     )))
     .expect_err("nested compound record match field declines");
     assert_ne!(nested.code.as_deref(), Some("CDZ0101"));
@@ -6066,7 +6066,7 @@ fn a_host_fused_kv_prefix_scan_reducer_emits_and_loads() {
     let src = "(module m \
       (effect kv (op prefix-scan (-> Bytes (List (Tuple Bytes Bytes))))) \
       (def (apply (: e (Record (ct String) (pl Bytes)))) \
-        (host (kv) (do (kv.prefix-scan (. e pl)) (list (record (op (. e ct)) (arg (. e pl))))))) \
+        (host (kv) (do (kv.prefix-scan (. e pl)) (list (record (= op (. e ct)) (= arg (. e pl))))))) \
       (export apply))";
     let out = crate::compile::compile(
         &[
@@ -6174,7 +6174,7 @@ fn a_host_fused_kv_delete_bool_reducer_emits_and_loads() {
     let src = "(module m \
       (effect kv (op delete (-> Bytes Bool))) \
       (def (apply (: e (Record (ct String) (pl Bytes)))) \
-        (host (kv) (if (kv.delete (. e pl)) (list (record (op (. e ct)) (arg (. e pl)))) (list)))) \
+        (host (kv) (if (kv.delete (. e pl)) (list (record (= op (. e ct)) (= arg (. e pl)))) (list)))) \
       (export apply))";
     let out = crate::compile::compile(
         &[
@@ -6532,7 +6532,7 @@ fn collect_static_bytes_interns_distinct_constant_bytes_literals() {
     // every child, so a literal is hoistable wherever it appears, not only as a whole function body.
     assert_eq!(
         collect(
-            "(module m (def (g) (record (pl (Bytes.of (list 5 6))))) (def (main) 0) (export main))",
+            "(module m (def (g) (record (= pl (Bytes.of (list 5 6))))) (def (main) 0) (export main))",
             &["g"]
         ),
         vec![vec![5u8, 6]],
@@ -6646,7 +6646,7 @@ fn is_markable_constant_compound_flags_scalar_bytes_and_nested_only() {
     // A constant record (incl. a String field) → markable.
     assert!(
         markable(
-            &format!("{m}(def (main) (record (x 1) (y \"hi\"))) (export main))"),
+            &format!("{m}(def (main) (record (= x 1) (= y \"hi\"))) (export main))"),
             "main"
         ),
         "a constant record with scalar + string fields must be markable"

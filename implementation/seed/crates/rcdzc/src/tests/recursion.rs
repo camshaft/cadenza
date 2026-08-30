@@ -20,7 +20,7 @@ fn a_row_op_over_a_record_with_a_unit_field_does_not_spuriously_dup_the_unit_pro
     // skipped. Use a record with both a Unit and a String field, drop the qty, keep name+u.
     let bytes = compile(
         "(module m (def (main (: k Int64)) (do \
-               (def inv (Map.insert Map.empty 1 (record (name \"w\") (u unit) (qty k)))) \
+               (def inv (Map.insert Map.empty 1 (record (= name \"w\") (= u unit) (= qty k)))) \
                (def r (Option.expect (Map.lookup inv 1) \"s\")) \
                (String.byte-len (. (Record.without r (qty)) name)))) (export main))",
     );

@@ -666,7 +666,7 @@ fn a_bytes_provider_member_with_a_constant_result_pre_encodes_the_static_bytes()
     let src = "(module m \
                      (world reducer (export fold (member apply \
                        (func (param input (\"list\" (u8))) (result (\"list\" (u8))))))) \
-                     (def (apply (: e (Record (n Int64)))) (record (a 1) (b 2))) \
+                     (def (apply (: e (Record (n Int64)))) (record (= a 1) (= b 2))) \
                      (export apply))";
     let out = crate::compile::compile(
         &[
@@ -696,7 +696,7 @@ fn a_bytes_provider_member_with_a_constant_result_pre_encodes_the_static_bytes()
         .expect("constant-result provider validates");
     // Expected: the bare value form of the constant result `(record (a 1) (b 2))`.
     let mut db = crate::db::Db::load(parse(
-        "(module m (def (apply (: e (Record (n Int64)))) (record (a 1) (b 2))) (export apply))",
+        "(module m (def (apply (: e (Record (n Int64)))) (record (= a 1) (= b 2))) (export apply))",
     ));
     let d = db.def_by_name("apply").expect("apply");
     let body = db.defs[d].body.expect("body");

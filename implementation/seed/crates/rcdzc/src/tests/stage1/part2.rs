@@ -13,7 +13,7 @@ fn a_host_op_composed_with_the_value_heap_runtime_emits_a_valid_component() {
     // VALID component (wasmtime parses it). Running it end-to-end also needs cdz-run to link both the
     // host responses and the runtime — a separate increment; component validity is the structural gate.
     let src = "(do (effect ask (op ask (-> Unit Int64))) \
-                   (def (main) (host (ask) (Map.len (Map.insert (map (1 10)) (ask.ask) 20)))) (export main))";
+                   (def (main) (host (ask) (Map.len (Map.insert (map (= 1 10)) (ask.ask) 20)))) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src)))
         .expect("a host op composed with the value-heap runtime now emits");
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
@@ -1207,8 +1207,8 @@ fn a_pure_data_record_const_param_folds_through_a_bare_recursive_call() {
     // pinned here.) The fold to a scalar imports NO value-heap runtime — the record never materializes.
     let src = "(module m \
                (def (f (const (: r (Record (a Int64) (b Int64))))) \
-                 (if (= (. r a) 0) (. r b) (f (record (a (- (. r a) 1)) (b (+ (. r b) 1)))))) \
-               (def (main) (f (record (a 3) (b 0)))) (export main))";
+                 (if (= (. r a) 0) (. r b) (f (record (= a (- (. r a) 1)) (= b (+ (. r b) 1)))))) \
+               (def (main) (f (record (= a 3) (= b 0)))) (export main))";
     // Compiles (the activation gate admits a data record — not a decline / machine-repr emit error).
     compile_component(&crate::codec::encode(&parse(src)))
         .expect("a pure-data record const-param recursion compiles");
@@ -1243,8 +1243,8 @@ fn a_taken_trap_over_a_record_const_param_surfaces_its_message() {
         "(module m \
                (def (f (const (: r (Record (a Int64) (b Int64))))) \
                  (if (= (. r a) 0) (trap \"record base reached\") \
-                     (f (record (a (- (. r a) 1)) (b (+ (. r b) 1)))))) \
-               (def (main) (f (record (a 2) (b 0)))) (export main))",
+                     (f (record (= a (- (. r a) 1)) (= b (+ (. r b) 1)))))) \
+               (def (main) (f (record (= a 2) (= b 0)))) (export main))",
     ));
     let diags = crate::compile::diagnostics(&mut db);
     assert!(
@@ -1630,7 +1630,7 @@ fn a_const_collection_recursively_folded_unrolls_not_hangs_or_rejects() {
             "(module m \
                    (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
                      (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
-                   (def (main) (fold-n (record (op (fn (x) (+ x 10)))) 3 0)) (export main))"
+                   (def (main) (fold-n (record (= op (fn (x) (+ x 10)))) 3 0)) (export main))"
         ),
         None,
         "a const-dictionary recursive consumer (runtime-counter-driven) still compiles"
@@ -1686,8 +1686,8 @@ fn an_inline_never_def_with_a_const_dict_still_erases_the_dict() {
              (@ inline-never \
                (def (apply2 (const (: d (Record (op (-> Int64 Int64))))) (: x Int64)) \
                  ((. d op) ((. d op) x)))) \
-             (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5) \
-                            (apply2 (record (op (fn (n) (+ n 10)))) 100))) (export main))";
+             (def (main) (+ (apply2 (record (= op (fn (n) (+ n 10)))) 5) \
+                            (apply2 (record (= op (fn (n) (+ n 10)))) 100))) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     // The fold VALUE (145) is covered by the corpus dictionary-erasure family (09-functions "a recursive
     // consumer of a dictionary record inlines and erases the dictionary" + companions); only the
@@ -1789,7 +1789,7 @@ fn a_deeply_nested_inlined_projection_chain_registers_callables_linearly() {
         let dval: String = format!(
             "(record {})",
             (0..n)
-                .map(|i| format!("(op{i} (fn (x) (+ x {i})))"))
+                .map(|i| format!("(= op{i} (fn (x) (+ x {i})))"))
                 .collect::<Vec<_>>()
                 .join(" ")
         );
@@ -1856,7 +1856,7 @@ fn check_no_home_follows_a_shared_callee_body_once_per_handler_context() {
     // is a deterministic pure function of the program, so no min-of-runs is needed.
     fn proj_src(n: usize) -> String {
         let fields: String = (0..n)
-            .map(|i| format!("(f{i} {i})"))
+            .map(|i| format!("(= f{i} {i})"))
             .collect::<Vec<_>>()
             .join(" ");
         // A balanced `+`-tree of `(. (mk) f_i)` projections — every leaf is a fresh `(mk)` call, so the
@@ -2201,7 +2201,7 @@ fn a_wide_runtime_map_match_resolves_synth_names_in_bounded_time() {
             .join(" ");
         format!(
             "(module m (def (f (: m (Map String Int64))) (match m {arm_forms} (_ -1))) \
-                   (def (main) (f (map (\"k0\" 1)))) (export main))"
+                   (def (main) (f (map (= \"k0\" 1)))) (export main))"
         )
     }
     // A small instance compiles clean (a valid runtime-map match).
@@ -3783,7 +3783,7 @@ fn a_variant_with_a_record_payload_whose_field_is_lowercase_is_not_generic() {
     // "a variant carrying a RECORD payload constructs and matches" (which links the value-heap runtime).
     let src = "(module m (type P (Pt (Record (x Int64) (y Int64))) O) \
                      (def (sum r) (+ (. r x) (. r y))) \
-                     (def (main) (match (P.Pt (record (x 3) (y 4))) ((P.Pt r) (sum r)) (P.O 0))) \
+                     (def (main) (match (P.Pt (record (= x 3) (= y 4))) ((P.Pt r) (sum r)) (P.O 0))) \
                      (export main))";
     assert!(
         compile_component(&crate::codec::encode(&parse(src))).is_ok(),
@@ -4512,7 +4512,7 @@ fn a_compound_wrapped_self_application_declines_not_a_stack_overflow() {
     );
     // The record-wrapped sibling is the SAME class (a self-app in a record field) — it must likewise
     // TERMINATE with a coded rejection, exercising the shared structural guard on a different compound.
-    let rec = "(module m (def (main) ((fn (v0) (record (a (v0 v0)) (b 1))) (fn (v2) (record (a (v2 v2)) (b 1))))) (export main))";
+    let rec = "(module m (def (main) ((fn (v0) (record (= a (v0 v0)) (= b 1))) (fn (v2) (record (= a (v2 v2)) (= b 1))))) (export main))";
     let reject = compile_component(&crate::codec::encode(&parse(rec)))
         .expect_err("a record-wrapped self-application must decline, not crash");
     assert!(

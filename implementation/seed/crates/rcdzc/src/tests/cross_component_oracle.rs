@@ -1893,14 +1893,14 @@ fn record_type_field_ascription_is_read_by_reduce_ctor_and_decode_ty() {
     // and a field whose value type MISMATCHES the ascription is REJECTED — proving the field TYPE
     // (not just the name) is read through the full annotate/check pipeline.
     let ok = "(module m \
-            (def (main) (: (record (a 1) (b true)) (Record (: a Int64) (: b Bool)))) \
+            (def (main) (: (record (= a 1) (= b true)) (Record (: a Int64) (: b Bool)))) \
             (export main))";
     assert!(
         crate::compile::compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
         "a record value annotated with an ascription-form record type must compile"
     );
     let bad = "(module m \
-            (def (main) (: (record (a true) (b true)) (Record (: a Int64) (: b Bool)))) \
+            (def (main) (: (record (= a true) (= b true)) (Record (: a Int64) (: b Bool)))) \
             (export main))";
     assert!(
         crate::compile::compile_component(&crate::codec::encode(&parse(bad))).is_err(),

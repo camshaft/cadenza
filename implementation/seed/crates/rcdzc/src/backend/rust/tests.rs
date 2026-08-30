@@ -1388,7 +1388,7 @@ fn a_top_level_immediate_capture_free_lambda_export_eta_peels_to_a_plain_fn() {
 fn map_and_set_emit_native_btree_collections() {
     // A `(Map K V)` → `BTreeMap<K,V>`, a `(Set E)` → `BTreeSet<E>` (BTree = sorted = canonical order).
     let m = compile_rust(
-        "(module m (def (f (: n Int64)) (if (= n 0) (map (1 10) (2 20)) (f (+ n -1)))) \
+        "(module m (def (f (: n Int64)) (if (= n 0) (map (= 1 10) (= 2 20)) (f (+ n -1)))) \
            (def (g) (Map.len (f 1))) (export g))",
     );
     assert!(
@@ -1405,7 +1405,7 @@ fn map_and_set_emit_native_btree_collections() {
     );
     // Map.lookup → a native Option via `.get(&k).cloned()`; Set.contains → a bool via `.contains(&e)`.
     let look = compile_rust(
-        "(module m (def (f (: n Int64)) (if (= n 0) (map (1 10)) (f (+ n -1)))) \
+        "(module m (def (f (: n Int64)) (if (= n 0) (map (= 1 10)) (f (+ n -1)))) \
            (def (g (: k Int64)) (match (Map.lookup (f 1) k) ((Some v) v) ((None _) -1))) (export g))",
     );
     assert!(
@@ -1661,7 +1661,7 @@ fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
     // tuple `(f64, i64)`, so the wrapper threads through it exactly like a tuple → keys as `(__CdzF64, i64)`.
     let rec = compile_rust(
         "(module m (def (main (: x Float64)) \
-           (Set.len (Set.of (list (record (f x) (n 1)))))) (export main))",
+           (Set.len (Set.of (list (record (= f x) (= n 1)))))) (export main))",
     );
     assert!(
         rec.contains("BTreeSet<(__CdzF64, i64)>") && rec.contains("__CdzF64::new("),
@@ -1755,8 +1755,8 @@ fn a_float_nested_inside_a_compound_key_field_is_wrapped_not_just_a_direct_float
     let m = compile_rust(
         "(module m (def (run) \
            (match (Map.lookup \
-                    (Map.insert (Map.empty) (record (t (tuple 2.5 3)) (n 5)) 42) \
-                    (record (t (tuple 2.5 3)) (n 5))) \
+                    (Map.insert (Map.empty) (record (= t (tuple 2.5 3)) (= n 5)) 42) \
+                    (record (= t (tuple 2.5 3)) (= n 5))) \
              ((Some v) v) ((None _) -1))) (export run))",
     );
     // The key type carries the nested wrapper; the emitted KEY VALUE must wrap that nested float too — i.e.
@@ -1775,8 +1775,8 @@ fn a_float_nested_inside_a_compound_key_field_is_wrapped_not_just_a_direct_float
     let miss = compile_rust(
         "(module m (def (run) \
            (match (Map.lookup \
-                    (Map.insert (Map.empty) (record (t (tuple 2.5 3)) (n 5)) 42) \
-                    (record (t (tuple 9.5 3)) (n 5))) \
+                    (Map.insert (Map.empty) (record (= t (tuple 2.5 3)) (= n 5)) 42) \
+                    (record (= t (tuple 9.5 3)) (= n 5))) \
              ((Some v) v) ((None _) -1))) (export run))",
     );
     if let Some(out) = rustc_run(&miss, "run()") {
@@ -1878,7 +1878,7 @@ fn rustc_roundtrip_map_and_set_compute_and_enumerate_in_order() {
     // Map: build `{1:10, 2:20, 3:30}` at runtime, sum its size + a lookup. 3 keys + lookup(2)=20 = 23.
     let mp = compile_rust(
         "(module m \
-           (def (f (: n Int64)) (if (= n 0) (map (1 10) (2 20) (3 30)) (f (+ n -1)))) \
+           (def (f (: n Int64)) (if (= n 0) (map (= 1 10) (= 2 20) (= 3 30)) (f (+ n -1)))) \
            (def (look (: k Int64)) (match (Map.lookup (f 1) k) ((Some v) v) ((None _) -1))) \
            (def (g) (+ (Map.len (f 1)) (look 2))) (export g))",
     );
@@ -2332,7 +2332,7 @@ fn a_compound_construct_grounds_a_narrow_field_literal_to_the_declared_slot_widt
     // (a) Int8 record field: the literal grounds to i8, computes 100 (matches wasm).
     let i8rec = compile_rust(
         "(module m (def (get (: r (Record (: x Int8)))) (. r x)) \
-           (def (run) (get (record (x 100)))) (export run))",
+           (def (run) (get (record (= x 100)))) (export run))",
     );
     assert!(
         i8rec.contains("100u8 as i8") && !i8rec.contains("100u64 as i64"),
@@ -2344,7 +2344,7 @@ fn a_compound_construct_grounds_a_narrow_field_literal_to_the_declared_slot_widt
     // (b) Float32 record field: grounds to f32 (was the same E0308 class), computes 1.5.
     let f32rec = compile_rust(
         "(module m (def (get (: r (Record (: x Float32)))) (. r x)) \
-           (def (run) (get (record (x 1.5)))) (export run))",
+           (def (run) (get (record (= x 1.5)))) (export run))",
     );
     assert!(
         f32rec.contains("f32::from_bits(") && !f32rec.contains("f64::from_bits("),
@@ -2367,7 +2367,7 @@ fn a_compound_construct_grounds_a_narrow_field_literal_to_the_declared_slot_widt
     }
     let i64rec = compile_rust(
         "(module m (def (get (: r (Record (: x Int64)))) (. r x)) \
-           (def (run) (get (record (x 100)))) (export run))",
+           (def (run) (get (record (= x 100)))) (export run))",
     );
     if let Some(out) = rustc_run(&i64rec, "run()") {
         assert_eq!(
@@ -2716,7 +2716,7 @@ fn a_runtime_record_emits_a_sorted_field_tuple() {
     // structural; at run time it IS a positional array in sorted key order). Field read → `.index`.
     // Fields declared OUT of order still emit sorted: `(record (b n) (a 7))` → `((7), n)` (a before b).
     let rs = compile_rust(
-        "(module m (def (f (: n Int64)) (if (= n 0) (record (b n) (a 7)) (f (+ n -1)))) \
+        "(module m (def (f (: n Int64)) (if (= n 0) (record (= b n) (= a 7)) (f (+ n -1)))) \
                     (def (main) (f 1)) (export main))",
     );
     assert!(rs.contains("-> (i64, i64)"), "record → tuple type:\n{rs}");
@@ -4732,7 +4732,7 @@ fn rustc_roundtrip_record_match_literal_field_probe_computes() {
     // x-literal matches, b=4; and the miss (x=9) → -1. Const-folds to a scalar (no runtime).
     let hit = compile_rust(
         "(module m (def (run) \
-           (match (record (x 3) (y 4)) ((record (x 3) (y b)) b) (_ -1))) (export run))",
+           (match (record (= x 3) (= y 4)) ((record (x 3) (y b)) b) (_ -1))) (export run))",
     );
     if let Some(out) = rustc_run(&hit, "run()") {
         assert_eq!(
@@ -4742,7 +4742,7 @@ fn rustc_roundtrip_record_match_literal_field_probe_computes() {
     }
     let miss = compile_rust(
         "(module m (def (run) \
-           (match (record (x 9) (y 4)) ((record (x 3) (y b)) b) (_ -1))) (export run))",
+           (match (record (= x 9) (= y 4)) ((record (x 3) (y b)) b) (_ -1))) (export run))",
     );
     if let Some(out) = rustc_run(&miss, "run()") {
         assert_eq!(
@@ -7042,7 +7042,7 @@ fn a_record_arg_closure_consumer_emits_a_param_shapes_note() {
     let m = compile_rust(
         "(module m \
            (def (mkb (: k Int64)) (fn ((: r (Record (: a Int64) (: b Int64)))) (+ (* (. r a) (. r b)) k))) \
-           (def (appb (: h (-> (Record (: a Int64) (: b Int64)) Int64)) (: y Int64)) (h (record (a y) (b y)))) \
+           (def (appb (: h (-> (Record (: a Int64) (: b Int64)) Int64)) (: y Int64)) (h (record (= a y) (= b y)))) \
            (export mkb) (export appb))",
     );
     assert!(
@@ -7065,7 +7065,7 @@ fn a_closure_factory_returning_a_record_emits() {
     // result closure round-trip family on rust-async. A record ARG stays deferred (the harness arg-rebuild
     // needs a sorted-field fix — a separate slice), so `s2_arg_ok` is NOT widened for Record here.
     let m = compile_rust(
-        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (record (x x) (y (+ x k))))) (export mk))",
+        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (record (= x x) (= y (+ x k))))) (export mk))",
     );
     assert!(
         m.contains("pub fn mk(k: i64) -> std::rc::Rc<dyn Fn(i64) -> (i64, i64)>"),
@@ -7802,9 +7802,9 @@ fn rustc_roundtrip_record_with_option_field_compare_is_lexicographic_in_sorted_k
     // the sorted-key tiebreak reaches the second field only on an equal first.
     let src = "(module m \
         (def (mk-a (: k Int64) (: y Int64)) \
-          (: (record (a (Some k)) (b y)) (Record (a (Option Int64)) (b Int64)))) \
+          (: (record (= a (Some k)) (= b y)) (Record (a (Option Int64)) (b Int64)))) \
         (def (mk-n (: y Int64)) \
-          (: (record (a (: (None unit) (Option Int64))) (b y)) (Record (a (Option Int64)) (b Int64)))) \
+          (: (record (= a (: (None unit) (Option Int64))) (= b y)) (Record (a (Option Int64)) (b Int64)))) \
         (def (cmp3 (: x (Record (a (Option Int64)) (b Int64))) (: y (Record (a (Option Int64)) (b Int64)))) \
           (match (Ordering.of x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (def (p1) (cmp3 (mk-a 1 9) (mk-n 0))) \

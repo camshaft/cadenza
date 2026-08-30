@@ -304,7 +304,7 @@ fn a_record_type_renders_capitalized_matching_its_annotation_spelling() {
     // DESIGN-record-type-syntax). It used to render lowercase `(record …)` — the VALUE constructor
     // spelling, which a type annotation REJECTS ("not a type"), so a mismatch message named a type the
     // reader could not have written. The rendered type must round-trip as a valid annotation.
-    let d = first_error("(module m (def y (: (record (a 1)) (Record (: a Bool)))) (export y))");
+    let d = first_error("(module m (def y (: (record (= a 1)) (Record (: a Bool)))) (export y))");
     assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
     assert!(
         d.message.contains("(Record (: a Bool))") && d.message.contains("(Record (: a Int64))"),
@@ -571,7 +571,7 @@ fn many_typod_field_accesses_of_one_wide_record_suggest_in_bounded_time() {
         let rec: String = format!(
             "(record {})",
             (0..n)
-                .map(|i| format!("(k{i} {i})"))
+                .map(|i| format!("(= k{i} {i})"))
                 .collect::<Vec<_>>()
                 .join(" ")
         );
@@ -931,7 +931,7 @@ fn an_eliminated_provable_trap_warns_but_still_compiles() {
     // bound to an unused parameter. All compile (the value is not observed) AND warn CDZ0305.
     for src in [
         "(module m (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main))",
-        "(module m (def (main) (. (record (a 42) (b (/ 100 0))) a)) (export main))",
+        "(module m (def (main) (. (record (= a 42) (= b (/ 100 0))) a)) (export main))",
         "(module m (def (main) (let ((t (/ 100 0))) 5)) (export main))",
         "(module m (def (f x y) x) (def (main) (f 7 (/ 100 0))) (export main))",
     ] {

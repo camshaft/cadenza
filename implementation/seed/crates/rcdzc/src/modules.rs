@@ -99,7 +99,10 @@ fn module_record(
                 continue;
             }
             let k = push_atom(ast, Leaf::Name(inner_name.into()));
-            children.push(push_list(ast, vec![k, inner_rec]));
+            children.push({
+                let eq = push_atom(ast, Leaf::Name("=".into()));
+                push_list(ast, vec![eq, k, inner_rec])
+            });
         } else if let Some(name) = def_member_name(ast, member) {
             // A `(def …)` member — include its field ONLY if visible (exported, or no clause). `def_field`
             // is called after the visibility check so a private member appends nothing.
@@ -136,7 +139,10 @@ fn module_record(
         let meta_head = push_atom(ast, Leaf::Name("meta".into()));
         let caps_name = push_atom(ast, Leaf::Name("capabilities".into()));
         let meta_key = push_list(ast, vec![meta_head, caps_name]);
-        children.push(push_list(ast, vec![meta_key, list_val]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, meta_key, list_val])
+        });
     }
     push_list(ast, children)
 }
@@ -244,7 +250,10 @@ fn def_field(ast: &mut Arenas, member: StructId) -> Option<StructId> {
     // Bare-name value declaration `(def x V)` — field `x` → its value `V`.
     if let Some(name) = ast.as_name(sig).map(str::to_string) {
         let k = push_atom(ast, Leaf::Name(name.into()));
-        return Some(push_list(ast, vec![k, body]));
+        return Some({
+            let eqh = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eqh, k, body])
+        });
     }
     // List signature `(NAME param…)` — clone the children out before mutating the arena.
     let Struct::List(children) = ast.get(sig) else {
@@ -273,14 +282,20 @@ fn def_field(ast: &mut Arenas, member: StructId) -> Option<StructId> {
         let annotated = push_list(ast, vec![colon, unit_param, unit_ty]);
         let params_list = push_list(ast, vec![annotated]);
         let lambda = push_list(ast, vec![fn_head, params_list, body]);
-        return Some(push_list(ast, vec![k, lambda]));
+        return Some({
+            let eqh = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eqh, k, lambda])
+        });
     }
     // Function `(def (f p…) BODY)` — field value is the lambda `(fn (p…) BODY)`. The params are the RAW
     // signature occurrences (bare `a` or annotated `(: a T)`), exactly the shape a `Resolved::Lambda` / a
     // top-level def's params carry, so the ordinary application path β-reduces it.
     let params_list = push_list(ast, params);
     let lambda = push_list(ast, vec![fn_head, params_list, body]);
-    Some(push_list(ast, vec![k, lambda]))
+    Some({
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, k, lambda])
+    })
 }
 
 /// Register each module member FUNCTION (a `(def (f p…) body)` with parameters) — recursively, into
