@@ -8963,6 +8963,36 @@
   (input  (do (def (f (: b Bool)) (if b #record((= a 1) (= b 2)) #record((= a 3)))) (export f)))
   (error  CDZ0203 (no-fix)))
 
+; A record value whose FIELD SET differs from the expected record type names the SPECIFIC fields (rustc's
+; "missing field `y`" / "no such field `z`"), not two full record renders; two missing fields are plural +
+; sorted. When the field NAMES match but a field's TYPE differs, it names the specific field + its expected
+; vs actual type ("field `x` should be Int64, but this one is Bool"), pinpointing the culprit even in a wide
+; record. (Migrated from rcdzc a_record_field_set_mismatch_names_the_specific_missing_or_extra_fields.)
+(case "a record missing a required field names the missing field"
+  (input  (do (def (h (: p (Record (: x Int64) (: y Int64)))) (. p x))
+              (def (g) (h #record((= x 1)))) (export g)))
+  (error  CDZ0203 (message "missing field `y`")))
+
+(case "a record with an extra field names the field the type has no place for"
+  (input  (do (def (h (: p (Record (: x Int64) (: y Int64)))) (. p x))
+              (def (g) (h #record((= x 1) (= y 2) (= z 3)))) (export g)))
+  (error  CDZ0203 (message "no such field `z`")))
+
+(case "a record missing two fields names both, plural and sorted"
+  (input  (do (def (h (: p (Record (: x Int64) (: y Int64) (: w Int64)))) (. p x))
+              (def (g) (h #record((= x 1)))) (export g)))
+  (error  CDZ0203 (message "missing fields `w`, `y`")))
+
+(case "a same-field-set record with a differing field TYPE names the field and its expected/actual type"
+  (input  (do (def (h (: p (Record (: x Int64)))) (. p x))
+              (def (g) (h #record((= x true)))) (export g)))
+  (error  CDZ0203 (message "field `x` should be Int64, but this one is Bool")))
+
+(case "a wide record with one wrong field TYPE pinpoints the culprit field"
+  (input  (do (def (h (: p (Record (: x Int64) (: y Int64) (: z Int64)))) (. p x))
+              (def (g) (h #record((= x 1) (= y true) (= z 3)))) (export g)))
+  (error  CDZ0203 (message "field `y` should be Int64, but this one is Bool")))
+
 ; Homogeneity is a property of the LIST VALUE, so it must hold under `List.push` too, not only for a
 ; list LITERAL. collections-and-text.md #A List Is Grown By Functional Construction: `List.push`
 ; "MUST produce a NEW LIST VALUE" — and a list value's elements share one type (#A List Is An Ordered
