@@ -50,20 +50,16 @@ def v3q(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#meter))
 def qm(n: Rational) = n meter
 
 /// The three length components, each read back OUT as a meter quantity (units preserved).
-def q-x(v: Vec3q) = match v with
-  | Vec3q.V3q(x, _, _) => x
+def q-x(v: Vec3q) = let Vec3q.V3q(x, _, _) = v in x
 
-def q-y(v: Vec3q) = match v with
-  | Vec3q.V3q(_, y, _) => y
+def q-y(v: Vec3q) = let Vec3q.V3q(_, y, _) = v in y
 
-def q-z(v: Vec3q) = match v with
-  | Vec3q.V3q(_, _, z) => z
+def q-z(v: Vec3q) = let Vec3q.V3q(_, _, z) = v in z
 
 /// Bridge a units-carrying `Vec3q` to the exact bare-`Rational` `Vec3` the CSG/bbox core consumes:
 /// unwrap each length to its exact meter magnitude (`Qty.value` — the magnitude IS the meter coordinate).
 /// Still fully exact (no f64); this is how a Qty-field build plugs into the existing exact machinery.
-def vec3q-to-vec3(v: Vec3q) = match v with
-  | Vec3q.V3q(x, y, z) => v3(Qty.value(x), Qty.value(y), Qty.value(z))
+def vec3q-to-vec3(v: Vec3q) = let Vec3q.V3q(x, y, z) = v in v3(Qty.value(x), Qty.value(y), Qty.value(z))
 
 /// ============================ @test suite (S2b — Qty-field product, exact meters) ============================
 @test

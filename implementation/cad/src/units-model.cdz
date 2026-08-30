@@ -61,11 +61,11 @@ def translate-m(by: Vec3(Qty(Rational, Unit.base(#"meter"))), s: Solid(Qty(Ratio
 /// the B-via-generic ruling — the same generic `Solid`/`Vec3`, two instantiations, a structural map between.
 
 def lower-v(v: Vec3(Qty(Rational, Unit.base(#"meter")))) =
-  match v with | Vec3.V3(x, y, z) => Vec3.V3(Qty.value(x), Qty.value(y), Qty.value(z))
+  let Vec3.V3(x, y, z) = v in Vec3.V3(Qty.value(x), Qty.value(y), Qty.value(z))
 
 /// Unwrap a 2-D vector's `Qty[meter]` coords to bare-Rational meters.
 def lower-v2(v: Vec2(Qty(Rational, Unit.base(#"meter")))) =
-  match v with | Vec2.V2(x, y) => Vec2.V2(Qty.value(x), Qty.value(y))
+  let Vec2.V2(x, y) = v in Vec2.V2(Qty.value(x), Qty.value(y))
 
 /// Unwrap one path segment's `Qty[meter]` coords to bare-Rational meters.
 def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#"meter")))) = match s with
@@ -80,7 +80,7 @@ def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#"meter")))) = match s wi
 /// accumulating the unwrapped segments in order (the fleet-standard `[h, .. t]`-destructure + `List.push` fold;
 /// no index counter).
 def lower-path-q(p: Path(Qty(Rational, Unit.base(#"meter")))) =
-  match p with | Path.Segs(xs) => Path.Segs(lower-path-q-go(xs, []))
+  let Path.Segs(xs) = p in Path.Segs(lower-path-q-go(xs, []))
 def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#"meter")))), acc: List(PathSeg(Rational))) =
   match xs with
     | [] => acc
@@ -89,7 +89,7 @@ def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#"meter")))), acc: 
 /// Unwrap a 2-D profile's `Qty[meter]` coords to bare-Rational meters (the render-edge twin of `lower-v`
 /// for the extrude/revolve profile arms).
 def lower-p(p: Profile(Qty(Rational, Unit.base(#"meter")))) = match p with
-  | Profile.Rect(sz) => (match sz with | Vec2.V2(w, h) => Profile.Rect(Vec2.V2(Qty.value(w), Qty.value(h))))
+  | Profile.Rect(sz) => (let Vec2.V2(w, h) = sz in Profile.Rect(Vec2.V2(Qty.value(w), Qty.value(h))))
   | Profile.Circle(r) => Profile.Circle(Qty.value(r))
   | Profile.PathProfile(pth) => Profile.PathProfile(lower-path-q(pth))
 
