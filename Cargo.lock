@@ -514,6 +514,7 @@ name = "cdz-run"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cadenza-compile-abi",
  "cadenza-syntax",
  "cdz-contract",
  "cdz-corpus-grade",
