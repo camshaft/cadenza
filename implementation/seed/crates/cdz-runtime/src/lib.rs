@@ -1666,6 +1666,11 @@ mod doc {
     pub const KIND_SET_CTOR: u8 = 24;
     pub const KIND_FIELD_PAIR: u8 = 25;
     pub const KIND_MEMBER: u8 = 26;
+    // Native exact-rational (seq-204): PAYLOADLESS tag leaf (single kind byte, no body — like FIELD_PAIR/
+    // MEMBER). A rational VALUE is the LIST `(KIND_RATIONAL <num> <den>)`: this tag as the head atom, then
+    // two ordinary Int leaves (numerator, denominator, normalized). Self-typing (no colon frame). This is
+    // the DocBuilder emitter's mirror of cadenza-ast's codec kind 27 (byte-identical by construction).
+    pub const KIND_RATIONAL: u8 = 27;
     pub const TAG_ATOM: u8 = 0;
     pub const TAG_LIST: u8 = 1;
 }
@@ -2720,16 +2725,18 @@ fn encode_value(
                         out.push(b.atom(l));
                     }
                     Shape::Rational => {
-                        // Read the two BigInt components (`unbox_rational`) and render the single `num/den`
-                        // NAME leaf — the constant-Rational value form. Each component is formatted decimal
-                        // in the runtime (`Big::to_decimal_string`), since a rational is ONE name leaf (the
-                        // codec's Int leaf would format on the host, but there is no "num/den" wire kind).
+                        // seq-204 NATIVE rational (head+children): the list `(KIND_RATIONAL <num> <den>)` —
+                        // the payloadless Rational tag head + two normalized BigInt components as ordinary Int
+                        // leaves. Self-typing (bare). Byte-identical to Builder::rational + rust emit by
+                        // construction. Children are known BigInts → build directly (no work-queue recursion).
                         let (num, den) = unbox_rational(h);
-                        let mut s = num.to_decimal_string();
-                        s.push('/');
-                        s.push_str(&den.to_decimal_string());
-                        let l = b.name_leaf(&s);
-                        out.push(b.atom(l));
+                        let tag_leaf = b.ctor_leaf(doc::KIND_RATIONAL);
+                        let tag = b.atom(tag_leaf);
+                        let num_leaf = b.bigint_leaf(&num);
+                        let num_atom = b.atom(num_leaf);
+                        let den_leaf = b.bigint_leaf(&den);
+                        let den_atom = b.atom(den_leaf);
+                        out.push(b.list_head_tail(tag, &[num_atom, den_atom]));
                     }
                     Shape::Bool => {
                         let l = b.bool_leaf(op_get_bool(h));
@@ -3310,14 +3317,15 @@ fn parse_doc(d: &[u8]) -> Option<ParsedDoc> {
                 let len = doc_read_leb(d, &mut pos)? as usize;
                 ParsedLeaf::Bytes(doc_read_bytes(d, &mut pos, len)?.to_vec())
             }
-            // M2 native-compound ctor-head kinds (20-26) — payloadless single kind byte (no body to read).
+            // M2 native-compound ctor-head kinds (20-27) — payloadless single kind byte (no body to read).
             doc::KIND_LIST_CTOR
             | doc::KIND_TUPLE_CTOR
             | doc::KIND_RECORD_CTOR
             | doc::KIND_MAP_CTOR
             | doc::KIND_SET_CTOR
             | doc::KIND_FIELD_PAIR
-            | doc::KIND_MEMBER => ParsedLeaf::Ctor(kind),
+            | doc::KIND_MEMBER
+            | doc::KIND_RATIONAL => ParsedLeaf::Ctor(kind), // 27: payloadless native-rational tag head (seq-204)
             _ => return None, // unknown kind — malformed
         };
         leaves.push(leaf);
@@ -3584,11 +3592,21 @@ fn decode_value_opt(
             Some(imm_unit())
         }
         Shape::Rational => {
-            // A single `num/den` NAME leaf.
-            let name = doc_atom_name(doc, struct_ix)?;
-            let (num_s, den_s) = name.split_once('/')?;
-            let num = big_from_decimal(num_s)?;
-            let den = big_from_decimal(den_s)?;
+            // seq-204 native head+children: the list `(KIND_RATIONAL <num-int> <den-int>)` — payloadless
+            // Rational tag head + two ordinary Int children. Rebuild each Big (as Shape::Int/BigInt) then
+            // re-normalize (defensive — a well-formed producer already emits lowest-terms/sign-on-num/den>0).
+            let kids = doc_list_kids(doc, struct_ix)?;
+            if kids.len() != 3 || doc_atom_ctor(doc, kids[0])? != doc::KIND_RATIONAL {
+                return None;
+            }
+            let ParsedLeaf::Int(nneg, nmag) = doc_atom_leaf(doc, kids[1])? else {
+                return None;
+            };
+            let ParsedLeaf::Int(dneg, dmag) = doc_atom_leaf(doc, kids[2])? else {
+                return None;
+            };
+            let num = big_from_be_mag(*nneg, nmag);
+            let den = big_from_be_mag(*dneg, dmag);
             Some(box_rational_normalized(&num, &den))
         }
         Shape::Tuple(elems) => {
