@@ -581,6 +581,13 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
                   (match evalArithOp hs a b ty with
                    | .value v => .sym (SymExpr.const v)
                    | _ => .sym (SymExpr.app hs args))
+                -- BITWISE const-fold at width `ty` via the real `evalBitOp` (same discipline as arith):
+                -- fold ONLY when it yields a VALUE; a trapping shift (out-of-range count) / unsupported keeps
+                -- the op SYMBOLIC, so a would-trap case is never falsely folded to a value.
+                else if bitwiseOps.contains hs then
+                  (match evalBitOp hs a b ty with
+                   | .value v => .sym (SymExpr.const v)
+                   | _ => .sym (SymExpr.app hs args))
                 else .sym (SymExpr.app hs args)
               -- FLOAT const-fold. Round each op to f32 when the operands mention Float32 — the backend
               -- rounds per-op to f32, so folding at f64 would diverge (v-cdz-smith fp-0); else fold at f64
