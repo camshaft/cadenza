@@ -1,0 +1,12 @@
+{
+  "_doc": "WASM-LANE residual skip-set for the guideShred BATCH matrix (v-nix's mkGuideWasmCase/guideWasmShredAgg). An entry is a case that FAILS in the browser cdz-wasm compiler on a FRESH instance (reload_every=1 / near-fresh) but PASSES natively (cargo xtask run) — i.e. one of the residual per-input compiler-wasm mis-runs ('memory access out of bounds' / wasm-only), whose ROOT fix is v-memory-safety's (the compiler frees per-call allocations / the wasm-specific miscompile). The wasm matrix SKIPS these so the aggregate gates GREEN over the passers, and tracks them RED for v-memory-safety (the operator shred model: isolated per-example residual signals). This is the WASM lane's analogue of example-blocklist.json (the NATIVE content/compiler blocklist) — kept separate because these pass native + fail only in wasm. CRITICAL DISTINCTION — this is NOT for ACCUMULATION-only fails: a case that PASSES on a fresh instance but OOBs after N reused compiles in one worker is bounded by a small CDZ_BATCH_RELOAD_EVERY (worker respawn = fresh compiler), NOT blocklisted (it is a PASSING example; blocklisting it would wrongly hide a green case). Only true fresh-fail/pass-native cases belong here. RE-RUN LOOP: when v-memory-safety fixes the wasm root and a case passes on a fresh instance, DELETE its entry so it ships. Each entry: `dir` (the guideShred <NNNN>-slug case dir), `file` (chapter), `reason`, `owner`, `kind`:'compiler-wasm'.",
+  "wasmBlocked": [
+    {
+      "dir": "0247-propertytesting",
+      "file": "src/content/chapters/PropertyTesting.tsx",
+      "reason": "Compiles + runs correctly NATIVELY (cargo xtask run), but OOBs ('memory access out of bounds') in the browser cdz-wasm compiler on a FRESH instance (v-nix batch matrix: fails at CDZ_BATCH_RELOAD_EVERY=5, near-fresh) — a true per-input compiler-wasm bug, NOT accumulation. One of the residual pass-native/fail-wasm mis-runs.",
+      "owner": "v-memory-safety",
+      "kind": "compiler-wasm"
+    }
+  ]
+}
