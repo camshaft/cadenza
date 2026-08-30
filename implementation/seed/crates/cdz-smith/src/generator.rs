@@ -315,7 +315,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(21) {
+        match self.cur.choice(22) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -334,6 +334,7 @@ impl Gen<'_> {
             17 => self.effect_multiop_expr(depth),
             18 => self.map_set_builtin_expr(depth),
             19 => self.record_expr(depth),
+            20 => self.sum_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -728,6 +729,73 @@ impl Gen<'_> {
         if project {
             // Project a field that is definitely present (index < n).
             let _ = write!(self.out, " {})", LABELS[self.cur.choice(n)]);
+        }
+    }
+
+    /// A built-in SUM value — `Option` (`(Some e)`/`(None)`) or `Result` (`(Ok e)`/`(Err e)`) — either
+    /// bare or wrapped in an exhaustive `match` that DESTRUCTURES it and binds the payload. Reaches the
+    /// SUM lowering the crash hunt never exercised in general position: tagged-variant CONSTRUCTION +
+    /// match dispatch on a user-visible sum + payload binding (only effect-state used `(Some …)` before;
+    /// operator directive 2026-08-30 to keep expanding generated inputs). Numeric payloads so it types.
+    fn sum_expr(&mut self, depth: u32) {
+        let is_result = self.cur.flip();
+        if self.cur.flip() {
+            // Bare construction (no match) — reaches sum-value construction + boxing.
+            if is_result {
+                if self.cur.flip() {
+                    self.out.push_str("(Ok ");
+                    self.expr(depth.saturating_sub(1), Kind::Num);
+                    self.out.push(')');
+                } else {
+                    self.out.push_str("(Err ");
+                    self.expr(depth.saturating_sub(1), Kind::Num);
+                    self.out.push(')');
+                }
+            } else if self.cur.flip() {
+                self.out.push_str("(Some ");
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            } else {
+                self.out.push_str("(None)");
+            }
+            return;
+        }
+        // Construct-then-MATCH: exhaustive destructuring that binds the payload into the arm body.
+        let v = self.env.fresh();
+        if is_result {
+            // scrutinee: (Ok e) or (Err e)
+            if self.cur.flip() {
+                self.out.push_str("(match (Ok ");
+            } else {
+                self.out.push_str("(match (Err ");
+            }
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            let _ = write!(self.out, ") ((Ok {v}) ");
+            let mark = self.env.push(v.clone(), Kind::Num);
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            self.env.truncate(mark);
+            let e = self.env.fresh();
+            let _ = write!(self.out, ") ((Err {e}) ");
+            let mark = self.env.push(e, Kind::Num);
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            self.env.truncate(mark);
+            self.out.push_str("))");
+        } else {
+            // scrutinee: (Some e) or (None)
+            if self.cur.flip() {
+                self.out.push_str("(match (Some ");
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            } else {
+                self.out.push_str("(match (None)");
+            }
+            let _ = write!(self.out, " ((Some {v}) ");
+            let mark = self.env.push(v.clone(), Kind::Num);
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            self.env.truncate(mark);
+            self.out.push_str(") ((None) ");
+            self.expr(depth.saturating_sub(1), Kind::Num);
+            self.out.push_str("))");
         }
     }
 
@@ -1511,6 +1579,39 @@ mod tests {
         }
         assert!(hit, "no seed in the sweep emitted a record");
         assert!(saw_projection, "no seed projected a field from a record");
+    }
+
+    /// The sum arm is reachable — some seed emits an Option/Result CONSTRUCTION and some seed a
+    /// construct-then-MATCH destructuring — and every program it can emit parses. Guards the sum
+    /// construction + match-dispatch reach in general position (operator directive 2026-08-30).
+    #[test]
+    fn some_seed_emits_a_sum() {
+        // `(Ok …)`/`(Err …)` (Result) are emitted ONLY by `sum_expr` — effect-handler state uses
+        // Option (`(Some …)`) — so a Result ctor + a Result-match isolate the new arm specifically.
+        let mut saw_result_ctor = false;
+        let mut saw_result_match = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(Ok ") || src.contains("(Err ") {
+                saw_result_ctor = true;
+            }
+            if src.contains("((Ok ") || src.contains("((Err ") {
+                saw_result_match = true;
+            }
+        }
+        assert!(
+            saw_result_ctor,
+            "no seed in the sweep emitted a Result constructor (sum_expr arm)"
+        );
+        assert!(
+            saw_result_match,
+            "no seed in the sweep emitted a Result-destructuring match (sum_expr arm)"
+        );
     }
 
     /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
