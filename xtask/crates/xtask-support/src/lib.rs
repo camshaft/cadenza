@@ -518,7 +518,6 @@ pub const FILE_SIZE_ALLOWLIST: &[&str] = &[
     "implementation/seed/crates/cdz-runtime/src/lib.rs",
     "implementation/seed/crates/rcdzc/src/infer.rs",
     "implementation/seed/crates/rcdzc/src/effects/mod.rs",
-    "implementation/seed/crates/cdz/src/main.rs",
     "implementation/seed/crates/rcdzc/src/backend/wasm/mod.rs",
 ];
 
