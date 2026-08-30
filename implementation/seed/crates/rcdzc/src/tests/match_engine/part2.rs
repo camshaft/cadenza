@@ -2968,38 +2968,12 @@ fn a_string_annotation_checks_against_a_string_value() {
     );
 }
 
-#[test]
-fn checked_integer_conversion_over_range_message_is_actionable() {
-    // `T.of` is the CHECKED (range-checked) integer conversion; its in-range folds and out-of-range
-    // CDZ0302 rejects (magnitude + sign) are corpus-covered in 06-numeric-model ("a checked integer
-    // conversion in range yields the value unchanged", "…at the signed boundary…", "an out-of-range
-    // checked integer conversion of a constant is rejected", "a checked conversion of a negative
-    // constant into an unsigned type is rejected"). This rcdzc test keeps only the ACTIONABLE-message
-    // white-box pin (the corpus records the code, not the message text).
-    // The message is ACTIONABLE (like the annotation-position CDZ0302, not the terse "(unsigned
-    // 8-bit)"): it names the offending VALUE, the target width TYPE, and the VALID RANGE, plus the
-    // `.wrap`-vs-`.of` hint. `(UInt8.of 300)` → "the value 300 does not fit … UInt8 (the valid range is
-    // 0..=255) — `.of` traps out of range; use `.wrap` to truncate …".
-    let d = reject_full("(module m (def (main) ((. UInt8 of) (: 300 Int32))) (export main))")
-        .expect("an out-of-range checked conversion rejects");
-    assert!(
-        d.message.contains("300")
-            && d.message.contains("UInt8")
-            && d.message.contains("0..=255")
-            && d.message.contains("`.wrap`"),
-        "the checked-conversion over-range message names the value, target type, range, and wrap \
-             hint: {}",
-        d.message
-    );
-    // A signed target names its negative-inclusive range.
-    let s = reject_full("(module m (def (main) ((. Int8 of) (: 200 Int32))) (export main))")
-        .expect("Int8.of 200 rejects");
-    assert!(
-        s.message.contains("Int8") && s.message.contains("-128..=127"),
-        "a signed checked conversion names the signed range: {}",
-        s.message
-    );
-}
+// (checked_integer_conversion_over_range_message_is_actionable migrated to corpus 06-numeric-model: the
+// actionable-message pins now live on the checked-conversion reject cases — "an out-of-range checked integer
+// conversion of a constant is rejected" (`(UInt8.of 256)` → message "0..=255"), "a checked conversion of a
+// negative constant into an unsigned type is rejected" (`(UInt8.of -1)` → message ".wrap", the .of-vs-.wrap
+// hint), and the added "an out-of-range signed checked conversion names its signed valid range"
+// (`(Int8.of 200)` → message "-128..=127"). All three graded PASS on wasm.)
 
 #[test]
 fn a_provably_nonnegative_index_elides_the_list_at_lower_bound_check() {

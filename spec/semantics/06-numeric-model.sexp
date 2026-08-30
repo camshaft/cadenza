@@ -441,16 +441,27 @@
 (case "an out-of-range checked integer conversion of a constant is rejected"
   (doc    "`(UInt8.of (: 256 Int32))` — 256 is one past UInt8.max (valid 0..=255), a magnitude the compiler
            knows overflows at const-fold, so the checked conversion is rejected CDZ0302 at compile time — not
-           a runtime trap and never a silent truncation to 0 the way `.wrap` would give.")
+           a runtime trap and never a silent truncation to 0 the way `.wrap` would give. The reject message
+           is ACTIONABLE like the annotation-position CDZ0302 (not the terse '(unsigned 8-bit)'): it names
+           the offending value, the target width, the valid range (0..=255), AND the `.of`-vs-`.wrap` hint —
+           here pinned on the range. (Migrated from rcdzc checked_integer_conversion_over_range_message_is_actionable.)")
   (input  ((. UInt8 of) (: 256 Int32)))
-  (error  CDZ0302))
+  (error  CDZ0302 (message "0..=255")))
 
 (case "a checked conversion of a negative constant into an unsigned type is rejected"
   (doc    "`(UInt8.of (: -1 Int32))` — UInt8 has no negative values, so a negative source is out of range
            and rejected CDZ0302 (where `(UInt8.wrap -1)` would give 255). Pins that `.of` checks the SIGN
-           boundary, not only the magnitude boundary.")
+           boundary, not only the magnitude boundary. The actionable message carries the `.of`-vs-`.wrap`
+           hint — `.of` traps out of range, use `.wrap` to truncate — pinned via the `.wrap` substring.")
   (input  ((. UInt8 of) (: -1 Int32)))
-  (error  CDZ0302))
+  (error  CDZ0302 (message ".wrap")))
+
+(case "an out-of-range signed checked conversion names its signed valid range"
+  (doc    "The SIGNED face of the actionable checked-conversion over-range message: `(Int8.of (: 200 Int32))`
+           — 200 is past Int8.max (127), so the checked conversion rejects CDZ0302 with a message naming the
+           signed range `-128..=127` (negative-inclusive), the counterpart to the unsigned `0..=255` above.")
+  (input  ((. Int8 of) (: 200 Int32)))
+  (error  CDZ0302 (message "-128..=127")))
 
 ; The FLOAT analogue of an out-of-range integer width: `(Float N)` is admitted ONLY for N ∈ {32,64} (the IEEE
 ; single/double set) — a set MEMBERSHIP test, not a range, so 16 and 48 BOTH reject even though 48 is within
