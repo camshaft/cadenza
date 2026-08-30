@@ -17387,7 +17387,15 @@ fn emit(
         // guard (unlike the integer arith below). Both operands share the result's float type (binary-op
         // unification), so they emit at the same width.
         Core::Arith { op, lhs, rhs } if op.is_float_arith() => {
-            let width = match crate::infer::type_of(db, id) {
+            // PEEL `Ty::Qty`/`Ty::Nominal` (strip_nominal → peel Qty → strip_nominal, via `peel_qty_ty`) —
+            // a float arith over a QUANTITY, `(Qty Float32 u)`, solves to `Ty::Qty { inner: Float32 }`, NOT a
+            // bare `Ty::Float`. WITHOUT the peel this fell to the f64 DEFAULT, so a `(Qty Float32)` `*`/`+`
+            // emitted `f64.mul` (promoting its operands f32→f64) while a nested `Qty.value`-of-a-`*` operand
+            // — itself now f64 — was RE-promoted `f64.promote_f32` on an already-f64 → "expected f32, found
+            // f64", INVALID wasm (a nested Qty-mul over a Float32 magnitude; the arith twin of the ConstFloat
+            // `peel_qty_ty` fix b4ce14cb + `int_ty_of`'s Qty peel). Peeling grounds every nested op to the
+            // SAME f32 width, so all are `f32.mul` with no promote.
+            let width = match peel_qty_ty(crate::infer::type_of(db, id)) {
                 crate::ty::Ty::Float(ft) => ft.ground_width(),
                 _ => crate::ty::DEFAULT_FLOAT_WIDTH,
             };
