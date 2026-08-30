@@ -292,8 +292,8 @@ pub(super) fn lower_match_bin(
                         crate::resolved::SegKind::Utf8 { .. } => true,
                     });
                     if !ok {
-                        return Core::Poison(Reject::decline(
-                            "a runtime bin match with a bit-field or non-final unsized bytes segment is not yet lowered",
+                        return Core::Poison(Reject::unsupported(
+                            "a runtime bin match with a bit-field or non-final unsized bytes segment is not lowered",
                         ));
                     }
                     let Some(else_body) = acc else {
@@ -1767,8 +1767,8 @@ pub(super) fn pattern_constraints(
         // miscompile.
         for &(_, v) in &entries {
             if db.ast.as_name(v).is_none() {
-                return Err(Reject::decline(
-                    "a nested (non-binder) map-pattern value sub-pattern is not yet matched",
+                return Err(Reject::unsupported(
+                    "a nested (non-binder) map-pattern value sub-pattern is not supported",
                 ));
             }
         }
