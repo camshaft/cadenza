@@ -694,15 +694,15 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
             // A qualified head (a `.` member) means a prelude-shadowed variant — the runtime writes
             // `(. Type Variant)`, which this slice does not yet build. Decline rather than emit a wrong head.
             if variants.iter().any(|(_, h, _)| h.contains('.')) {
-                return Err(Reject::decline(
-                    "Value.encode native rust: prelude-shadowed sum variant (qualified head) not yet wired",
+                return Err(Reject::unsupported(
+                    "Value.encode native rust does not support a prelude-shadowed sum variant (qualified head)",
                 ));
             }
             let mut arms = String::new();
             for (disc, head, arity) in variants {
                 if super::enums::variant_is_recursive(db, &sum_ty, disc) {
-                    return Err(Reject::decline(
-                        "Value.encode native rust: recursive (boxed) sum variant not yet wired",
+                    return Err(Reject::unsupported(
+                        "Value.encode native rust does not support a recursive (boxed) sum variant",
                     ));
                 }
                 let path = sum_variant_path_of_ty(db, &sum_ty, disc)?;
@@ -745,8 +745,8 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
             }
             Ok(format!("(match {val_expr} {{ {arms} }})"))
         }
-        other => Err(Reject::decline(format!(
-            "Value.encode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum — incremental slices)"
+        other => Err(Reject::unsupported(format!(
+            "Value.encode native rust does not support value shape {other:?} (supported: Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum)"
         ))),
     }
 }
@@ -955,8 +955,8 @@ fn emit_value_reconstruct(
                     .collect()
             };
             if variants.iter().any(|(_, h, _)| h.contains('.')) {
-                return Err(Reject::decline(
-                    "Value.decode native rust: prelude-shadowed sum variant (qualified head) not yet wired",
+                return Err(Reject::unsupported(
+                    "Value.decode native rust does not support a prelude-shadowed sum variant (qualified head)",
                 ));
             }
             let mut body = format!(
@@ -965,8 +965,8 @@ fn emit_value_reconstruct(
             );
             for (disc, head, arity) in variants {
                 if super::enums::variant_is_recursive(db, &sum_ty, disc) {
-                    return Err(Reject::decline(
-                        "Value.decode native rust: recursive (boxed) sum variant not yet wired",
+                    return Err(Reject::unsupported(
+                        "Value.decode native rust does not support a recursive (boxed) sum variant",
                     ));
                 }
                 let path = sum_variant_path_of_ty(db, &sum_ty, disc)?;
@@ -1029,8 +1029,8 @@ fn emit_value_reconstruct(
             body.push_str("None })()");
             Ok(body)
         }
-        other => Err(Reject::decline(format!(
-            "Value.decode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum — incremental slices)"
+        other => Err(Reject::unsupported(format!(
+            "Value.decode native rust does not support value shape {other:?} (supported: Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum)"
         ))),
     }
 }
@@ -1136,8 +1136,8 @@ fn emit_type_node(ty: &Ty, ncx: &crate::ty::NameCtx) -> Result<String, Reject> {
                 Ok(s)
             }
         }
-        other => Err(Reject::decline(format!(
-            "Value.encode native rust: type-node for value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum — incremental slices)"
+        other => Err(Reject::unsupported(format!(
+            "Value.encode native rust does not support a type-node for value shape {other:?} (supported: Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum)"
         ))),
     }
 }
@@ -3417,8 +3417,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // generate rust that HANGS rustc (the recursion runs through a collection payload, e.g. `Ast =
             // … (List (List Ast))`). Decline up front — the recursive-type value codec is a later increment.
             if value_codec_type_is_recursive(db, &vty, &mut std::collections::BTreeSet::new()) {
-                return Err(Reject::decline(
-                    "Value.encode native rust: recursive-type value codec not yet wired (would generate non-terminating rust)",
+                return Err(Reject::unsupported(
+                    "Value.encode native rust does not support a recursive-type value codec (its value-form walk would generate non-terminating rust)",
                 ));
             }
             // The `<type-node>` half of the `(: <value> <type-node>)` frame — computed under a scoped
@@ -3461,8 +3461,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // A RECURSIVE target type's value-form reconstruct walks unbounded depth → non-terminating rust
             // that HANGS rustc (recursion through a collection payload). Decline up front (later increment).
             if value_codec_type_is_recursive(db, &target, &mut std::collections::BTreeSet::new()) {
-                return Err(Reject::decline(
-                    "Value.decode native rust: recursive-type value codec not yet wired (would generate non-terminating rust)",
+                return Err(Reject::unsupported(
+                    "Value.decode native rust does not support a recursive-type value codec (its value-form reconstruct would generate non-terminating rust)",
                 ));
             }
             let b = emit(db, bytes, env, ctx)?;
