@@ -286,15 +286,19 @@ impl<'a> Printer<'a> {
                 self.leaf(&leaf);
             }
             Struct::List(items) => {
-                // A native RATIONAL value `(RationalTag <num-int> <den-int>)` (seq-204) renders as the
-                // first-class scalar literal `<num>r<den>` (e.g. `3r2`), the surface twin of
-                // `Builder::rational` — the reader lexes `3r2` straight back to the same tag node. NO
-                // `Rational.of` resugar, NO `(: … Rational)` ascription, NO `num/den` string (operator's
-                // "native value, no sugar/desugar"). Rendered here at the list level because the tag is a
-                // payloadless head (like FieldPair/Member). Children are ordinary Int atoms (num, den).
+                // A native RATIONAL value `(RationalTag <num-int> <den-int>)` (seq-204), rendered here at
+                // the list level because the tag is a payloadless head (like FieldPair/Member); children are
+                // ordinary Int atoms (num, den). BOTH modes render the mathematical `num/den` (slash, no
+                // space) — the operator's seq-204 ruling ("stick with 3/2 with no space", dropped the `r`
+                // glyph, which collided with the unit-suffix). DISPLAY mode additionally drops an integral
+                // `/1` (`8/1` → `8`, the REPL/notebook value surface); CANONICAL keeps it. The sign stays on
+                // the numerator. There is NO ML rational LITERAL (unspaced `3/2` is Int64 division), so `3/2`
+                // is a value-render form only, not a source round-trip — a rational reaches ML source via
+                // `(/ n d)`-style construction, never a bare literal. NO `Rational.of` resugar, NO
+                // `(: … Rational)` ascription (operator's "native value, no sugar/desugar").
                 if let Some((num, den)) = self.a.rational_parts(id) {
                     self.expr(num, 0);
-                    self.doc.word("r");
+                    self.doc.word("/");
                     self.expr(den, 0);
                     return;
                 }
@@ -6215,18 +6219,16 @@ mod tests {
             let a = sexpr::read(src).unwrap();
             print_display(&a, 80)
         };
-        // A rational value is a `Name("1/4")` leaf. The canonical printer keeps it re-readable — a
-        // resugar to the ML constructor `Rational.of(n, d)` (the round-trip surface can't spell a bare
-        // `1/3`, which re-lexes as division); display prints just the bare number.
-        assert_eq!(disp("(: 1/3 Rational)"), "1/3");
-        assert_eq!(
-            print(&sexpr::read("(: 1/3 Rational)").unwrap(), 80),
-            "Rational.of(1, 3)"
-        );
-        // An integral rational drops its `/1` denominator.
-        assert_eq!(disp("(: 8/1 Rational)"), "8");
+        // A native rational value `(RationalTag num den)` (seq-204): BOTH display and canonical render the
+        // mathematical `num/den` (slash, no space; operator dropped the `r` glyph). DISPLAY additionally
+        // drops an integral `/1`; canonical keeps it. (The sexpr surface spells the literal with `/` — safe,
+        // since sexpr division is prefix `(/ a b)`.)
+        assert_eq!(disp("1/3"), "1/3");
+        assert_eq!(print(&sexpr::read("1/3").unwrap(), 80), "1/3");
+        // An integral rational drops its `/1` denominator in display.
+        assert_eq!(disp("8/1"), "8");
         // A negative rational keeps its sign on the numerator.
-        assert_eq!(disp("(: -1/2 Rational)"), "-1/2");
+        assert_eq!(disp("-1/2"), "-1/2");
         // The outer `(: value type)` result annotation is stripped in display; a scalar shows bare.
         assert_eq!(disp("(: 5.0 Float64)"), "5.0");
         // A quantity value renders in its concise `<value> <unit>` surface — a base unit bare, a
@@ -6288,12 +6290,11 @@ mod tests {
         let mut rng = SplitMix64(0x5a71_0a11_0d15_9107);
         for _ in 0..4000 {
             // A random CANONICAL rational n/d — the sign lives on the NUMERATOR and the denominator is
-            // POSITIVE (the value form `cdz-run` emits; a `n/-d` spelling is not a well-formed Rational
-            // leaf — it backtick-escapes — so it is not a value the display path ever receives). Mixed
-            // numerator signs, incl. integral (d|n) and both reduced + reducible spellings.
+            // POSITIVE (the sexpr reader accepts `[-]?digits / digits`, so `d` stays ≥ 1). Mixed numerator
+            // signs, incl. integral (d|n) and both reduced + reducible spellings.
             let n = (rng.next() % 201) as i64 - 100; // -100..=100 (sign on the numerator)
             let d = (rng.next() % 100) as i64 + 1; // 1..=100, always positive (never zero)
-            let src = format!("(: {n}/{d} Rational)");
+            let src = format!("{n}/{d}"); // the native rational literal (seq-204: slash, no space)
             let Ok(arena) = sexpr::read(&src) else {
                 continue;
             };
@@ -9473,17 +9474,18 @@ mod tests {
     }
 
     #[test]
-    fn native_rational_literal_prints_and_reparses() {
-        // seq-204: a rational is a FIRST-CLASS native literal `<num>r<den>` (the `r` marker — NOT `/`, which
-        // is Int64 integer division) that lexes to the native `(RationalTag <num-int> <den-int>)` node and
-        // prints STRAIGHT BACK — NO `Rational.of` resugar, NO `(: … Rational)` ascription, NO `num/den`
-        // string (operator: native value, no sugar/desugar). Idempotent ml→binary→ml round-trip.
-        assert_eq!(assert_roundtrip("3r2", 80), "3r2");
-        assert_eq!(assert_roundtrip("-3r2", 80), "-3r2"); // sign rides the numerator
-        assert_eq!(assert_roundtrip("22r7", 80), "22r7"); // multi-digit num + den
-        assert_eq!(assert_roundtrip("1r3", 80), "1r3");
-        // A spaced `3 / 2` is UNAFFECTED — it stays Int64 division, never a rational literal.
-        assert_eq!(assert_roundtrip("3 / 2", 80), "3 / 2");
+    fn ml_has_no_rational_literal_slash_is_int64_division() {
+        // seq-204: the operator DROPPED the `r` rational glyph, and there is NO bare `<num>/<den>` rational
+        // literal on the ML surface — unspaced `3/2` is Int64 integer division `(/ 3 2)`, identical to the
+        // spaced `3 / 2`. (A rational VALUE node still renders `num/den` — see the sexpr-sourced
+        // `display_surface_renders_values_readably`; ML SOURCE reaches a rational via `(/ n d)`-style
+        // construction, never a scalar literal, per the operator's "native value, no sugar/desugar".)
+        let spaced = assert_roundtrip("3 / 2", 80);
+        let unspaced = assert_roundtrip("3/2", 80);
+        assert_eq!(
+            spaced, unspaced,
+            "unspaced `3/2` is the same Int64 division as `3 / 2`, not a rational literal"
+        );
     }
 
     #[test]
