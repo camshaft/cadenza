@@ -117,10 +117,14 @@ pub(crate) fn precompile_group(
     // over THIS GROUP's closure only — grouping shrinks each provider AND scopes each cache entry to one
     // closure (a lib change busts only the groups whose closure includes it).
     let consumer_out = drive(cadenza_compile_abi::Request::EmitTestsConsumerOnly);
+    // The closure-hash sidecar is canonical binary AST (a root `Ast.Int` `u64`); decode via the shared codec
+    // (zero string parsing) and render the historical `{:016x}` cache-KEY string so on-disk provider/cwasm
+    // cache files stay byte-stable. A missing / malformed sidecar decodes to None — the "no shared-closure"
+    // decline path below.
     let closure_hash = consumer_out
         .artifact(cadenza_compile_abi::sidecar::KIND_CLOSURE_HASH)
-        .map(|b| String::from_utf8_lossy(b).trim().to_string())
-        .filter(|h| !h.is_empty());
+        .and_then(cadenza_compile_abi::decode_closure_hash)
+        .map(|h| format!("{h:016x}"));
 
     // OBSERVABILITY (`CDZ_PROVIDER_CACHE_TRACE` = any non-empty value): emit ONE line to stderr PER GROUP
     // recording the cache decision + closure key, so a caller can VERIFY a run warmed/hit the cache (which

@@ -36691,7 +36691,13 @@ mod sidecar_driven {
             1,
             "one closure-hash sidecar on the composed (miss) path"
         );
-        let hstr = String::from_utf8(hashes[0].bytes.clone()).unwrap();
+        // The closure-hash wire is canonical binary AST (a root `Ast.Int` u64) — decode via the shared codec
+        // and render the `{:016x}` key form (operator P0 seq-284: binary AST everywhere, no bespoke hex text).
+        let hstr = format!(
+            "{:016x}",
+            cadenza_compile_abi::decode_closure_hash(&hashes[0].bytes)
+                .expect("closure-hash decodes to a u64")
+        );
         assert!(
             hstr.len() == 16 && hstr.chars().all(|c| c.is_ascii_hexdigit()),
             "closure-hash is a 16-hex-digit u64: {hstr:?}"
@@ -37175,7 +37181,12 @@ mod sidecar_driven {
                 .filter(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
                 .collect();
             assert_eq!(hashes.len(), 1, "exactly one closure-hash sidecar");
-            String::from_utf8(hashes[0].bytes.clone()).unwrap()
+            // Canonical binary-AST wire (root `Ast.Int` u64) → the `{:016x}` cache-key form.
+            format!(
+                "{:016x}",
+                cadenza_compile_abi::decode_closure_hash(&hashes[0].bytes)
+                    .expect("closure-hash decodes to a u64")
+            )
         };
 
         let consumer = drive(Request::EmitTestsConsumerOnly);
@@ -37250,7 +37261,13 @@ mod sidecar_driven {
             .artifacts
             .iter()
             .find(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .map(|a| {
+                format!(
+                    "{:016x}",
+                    cadenza_compile_abi::decode_closure_hash(&a.bytes)
+                        .expect("closure-hash decodes to a u64")
+                )
+            })
             .expect("Query::ClosureHash returns a closure-hash artifact");
         assert!(
             q_hash.len() == 16 && q_hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -37262,7 +37279,13 @@ mod sidecar_driven {
             .artifacts
             .iter()
             .find(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .map(|a| {
+                format!(
+                    "{:016x}",
+                    cadenza_compile_abi::decode_closure_hash(&a.bytes)
+                        .expect("closure-hash decodes to a u64")
+                )
+            })
             .expect("EmitTestsComposed emits a closure-hash sidecar");
         // The DRIFT-GUARD: the decision-key hash == the persist-key hash (one canonical definition).
         assert_eq!(

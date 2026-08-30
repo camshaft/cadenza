@@ -746,7 +746,8 @@ fn compile_with_opt_inner(
                     if let Some(bytes) = provider_bytes {
                         artifacts.push(Artifact::new("component-provider", CLOSURE_IFACE, bytes));
                     }
-                    // The closure CONTENT-HASH (a `u64` hex over the union edge set) — emitted on BOTH the
+                    // The closure CONTENT-HASH (a `u64` fold over the union edge set, carried as canonical
+                    // binary AST via `encode_closure_hash`) — emitted on BOTH the
                     // provider (MISS) AND the consumer-only path. On a MISS a runner persists the provider
                     // keyed by this exact hash (recompute-free) + validates its own HIT-decision hash against
                     // this canonical one (a fold of the same `def_content_hash` = FuncLayout col-2 — a
@@ -763,7 +764,7 @@ fn compile_with_opt_inner(
                     artifacts.push(Artifact::new(
                         sidecar::KIND_CLOSURE_HASH,
                         CLOSURE_IFACE,
-                        hash.into_bytes(),
+                        cadenza_compile_abi::encode_closure_hash(hash),
                     ));
                     artifacts.push(Artifact::new(
                         link::KIND_COMPONENT_NAME,

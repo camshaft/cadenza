@@ -503,11 +503,11 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
         Query::ClosureHash => {
-            let hash = closure_hash_text(db);
+            let hash = closure_hash_value(db);
             QueryResult {
                 kind: KIND_CLOSURE_HASH,
                 name: "closure-hash".to_string(),
-                bytes: hash.into_bytes(),
+                bytes: cadenza_compile_abi::encode_closure_hash(hash),
             }
         }
     }
@@ -631,8 +631,9 @@ fn func_layout_text(db: &mut Db) -> String {
 /// ([`closure_content_hash`]) — the SAME canonical value the `EmitTestsComposed` miss-path `closure-hash`
 /// sidecar emits, so a provider-cache's decision key, persist key, and validation all agree. A build with no
 /// `@test` layout, or no cross-edge (single-file / nothing shared), folds the EMPTY set → a defined stable
-/// "no closure" hash. TOTAL: never errors (an un-layoutable program yields the empty-set hash).
-fn closure_hash_text(db: &mut Db) -> String {
+/// "no closure" hash. TOTAL: never errors (an un-layoutable program yields the empty-set hash). Returns the
+/// raw `u64` fold; the caller encodes it as the canonical binary-AST `KIND_CLOSURE_HASH` wire.
+fn closure_hash_value(db: &mut Db) -> u64 {
     use std::collections::BTreeMap;
     crate::layout::force_monomorphize(db);
     let layout = match crate::layout::compute_tests(db) {
@@ -693,8 +694,11 @@ pub(crate) fn def_content_hash(db: &Db, def: usize) -> u64 {
 /// (`Request::EmitTestsConsumerOnly`). The `EmitTestsComposed` driver emits it as a `closure-hash` sidecar on
 /// the MISS path (recompute-free persist); a runner's own hash (folding the SAME `def_content_hash` — the
 /// FuncLayout col-2 value — over its cross-edge set) must match, so the two sides key identically (a drift-
-/// guard). SORTED so the fold is order-independent; hex-rendered for a stable sidecar byte form.
-pub(crate) fn closure_content_hash(db: &Db, edges: &[usize]) -> String {
+/// guard). SORTED so the fold is order-independent. Returns the raw `u64` fold; the emit paths encode it as
+/// the canonical binary-AST `KIND_CLOSURE_HASH` wire (operator P0 seq-284: binary AST everywhere — no bespoke
+/// hex-string byte form), and a consumer that wants the historical `{:016x}` cache-key filename formats the
+/// decoded `u64` itself.
+pub(crate) fn closure_content_hash(db: &Db, edges: &[usize]) -> u64 {
     use std::hash::Hasher;
     let mut per_def: Vec<u64> = edges.iter().map(|&d| def_content_hash(db, d)).collect();
     per_def.sort_unstable();
@@ -702,7 +706,7 @@ pub(crate) fn closure_content_hash(db: &Db, edges: &[usize]) -> String {
     for hv in per_def {
         h.write_u64(hv);
     }
-    format!("{:016x}", h.finish())
+    h.finish()
 }
 
 /// Feed the AST subtree rooted at `id` into `h` — the node's structural KIND then, recursively, its
