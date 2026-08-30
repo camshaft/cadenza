@@ -162,7 +162,11 @@ struct Case {
     multi_file: bool,
     authored_surface: Option<&'static str>,
     expected: Option<String>,
-    file_stem: String,
+    /// The source file this case came from, for `meta.file` + the per-file aggregate grouping — a chapter's
+    /// `src/content/chapters/<Stem>.tsx` or the playground's `src/playground/examples.ts`.
+    file: String,
+    /// The playground example's `id` (playground cases only) — `meta.playgroundId`, mirrors the node shred.
+    playground_id: Option<String>,
 }
 
 /// `slugify` matching shred-examples.mjs: strip path + extension, non-alnum runs → `-`, trim, lowercase.
@@ -192,7 +196,7 @@ fn derive_case(
     cdz: &str,
 ) -> Result<Case, String> {
     let dir = format!("{idx:04}-{}", slugify(stem));
-    let file_stem = stem.to_string();
+    let file = format!("src/content/chapters/{stem}.tsx");
 
     // mode="test" runnables: deferred (they run via the @test-export driver, a v2 shred kind).
     if super::named_attr(a, node, "mode") == Some("test") {
@@ -212,7 +216,8 @@ fn derive_case(
             multi_file: false,
             authored_surface: None,
             expected: None,
-            file_stem,
+            file,
+            playground_id: None,
         });
     }
 
@@ -255,7 +260,8 @@ fn derive_case(
             multi_file: true,
             authored_surface: Some(from),
             expected,
-            file_stem,
+            file,
+            playground_id: None,
         });
     }
 
@@ -288,7 +294,48 @@ fn derive_case(
         multi_file: false,
         authored_surface: Some("sexpr"),
         expected,
-        file_stem,
+        file,
+        playground_id: None,
+    })
+}
+
+/// Derive a shred case from a playground example — a WHOLE-program sexpr module (NOT wrapped) rendered in
+/// BOTH surfaces (the reader toggles it), graded by `expected` / `expect-error`. Mirrors the node shred's
+/// playground path (kind="playground", playgroundId, surfaces=[authored, other]). dir slug = `NNNN-examples`.
+fn derive_playground_case(
+    pe: &crate::playground::PlaygroundExample,
+    idx: usize,
+    cdz: &str,
+) -> Result<Case, String> {
+    let from = surface_lit(&pe.surface);
+    if from != "sexpr" {
+        return Err(format!(
+            "playground {}: surface {:?} — the shred renders sexpr-authored playground programs only",
+            pe.id, pe.surface
+        ));
+    }
+    let other = "ml";
+    // source is a full `(do …)` module; render the toggle surface via cdz convert (wrapping-free).
+    let ml_src = render_ml(cdz, &pe.source)?;
+    Ok(Case {
+        dir: format!("{idx:04}-examples"),
+        kind: "playground",
+        graded: pe.expected.is_some(),
+        expect_kind: if pe.expect_error { "error" } else { "value" },
+        surfaces: vec![from, other],
+        deferred: false,
+        reason: None,
+        files: vec![
+            ("program.sexpr".to_string(), pe.source.clone()),
+            ("program.ml".to_string(), ml_src),
+        ],
+        peers: vec![],
+        entry_name: None,
+        multi_file: false,
+        authored_surface: Some(from),
+        expected: pe.expected.clone(),
+        file: "src/playground/examples.ts".to_string(),
+        playground_id: Some(pe.id.clone()),
     })
 }
 
@@ -329,19 +376,31 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
         let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("read {path}: {e}")));
         let a = cadenza_ast::codec::decode(&bytes)
             .unwrap_or_else(|| die(&format!("decode {path}: invalid binary AST")));
-        let chapter =
-            super::locate_chapter(&a).unwrap_or_else(|| die(&format!("{path}: no (chapter …)")));
-        for &f in super::children(&a, chapter) {
-            let kind = match a.head_name(f) {
-                Some("runnable") => "runnable",
-                Some("exercise") => "exercise",
-                _ => continue,
-            };
-            idx += 1;
-            let case = derive_case(&a, f, kind, &stem, idx, cdz)
-                .unwrap_or_else(|e| die(&format!("shred {path} #{idx}: {e}")));
-            write_case(out_dir, &case);
-            cases.push(case);
+        // A .cdzb is either a chapter doc (runnable/exercise) or the playground doc (examples).
+        if let Some(chapter) = super::locate_chapter(&a) {
+            for &f in super::children(&a, chapter) {
+                let kind = match a.head_name(f) {
+                    Some("runnable") => "runnable",
+                    Some("exercise") => "exercise",
+                    _ => continue,
+                };
+                idx += 1;
+                let case = derive_case(&a, f, kind, &stem, idx, cdz)
+                    .unwrap_or_else(|e| die(&format!("shred {path} #{idx}: {e}")));
+                write_case(out_dir, &case);
+                cases.push(case);
+            }
+        } else {
+            // Playground doc: each `(example …)` is a whole-program module, rendered in both surfaces.
+            let examples = crate::playground::read_playground(&a)
+                .unwrap_or_else(|e| die(&format!("{path}: {e}")));
+            for pe in &examples {
+                idx += 1;
+                let case = derive_playground_case(pe, idx, cdz)
+                    .unwrap_or_else(|e| die(&format!("shred {path} #{idx}: {e}")));
+                write_case(out_dir, &case);
+                cases.push(case);
+            }
         }
     }
 
@@ -380,7 +439,7 @@ fn write_case(out_dir: &str, c: &Case) {
         .join(", ");
     let mut meta = format!(
         "{{\n  \"file\": {},\n  \"kind\": {},\n  \"graded\": {},\n  \"expectKind\": {},\n  \"surfaces\": [{}]",
-        json_str(&format!("src/content/chapters/{}.tsx", c.file_stem)),
+        json_str(&c.file),
         json_str(c.kind),
         c.graded,
         json_str(c.expect_kind),
@@ -388,6 +447,9 @@ fn write_case(out_dir: &str, c: &Case) {
     );
     if let Some(s) = c.authored_surface {
         meta.push_str(&format!(",\n  \"authoredSurface\": {}", json_str(s)));
+    }
+    if let Some(pid) = &c.playground_id {
+        meta.push_str(&format!(",\n  \"playgroundId\": {}", json_str(pid)));
     }
     if c.multi_file {
         meta.push_str(",\n  \"multiFile\": true");
@@ -421,13 +483,16 @@ fn write_manifest(out_dir: &str, cases: &[Case]) {
             let mut e = format!(
                 "    {{ \"dir\": {}, \"file\": {}, \"kind\": {}, \"graded\": {}, \"expectKind\": {}, \"surfaces\": [{}], \"deferred\": {}",
                 json_str(&c.dir),
-                json_str(&format!("src/content/chapters/{}.tsx", c.file_stem)),
+                json_str(&c.file),
                 json_str(c.kind),
                 c.graded,
                 json_str(c.expect_kind),
                 surfaces,
                 c.deferred,
             );
+            if let Some(pid) = &c.playground_id {
+                e.push_str(&format!(", \"playgroundId\": {}", json_str(pid)));
+            }
             if c.multi_file {
                 if let Some(en) = &c.entry_name {
                     e.push_str(&format!(", \"entryName\": {}", json_str(en)));
@@ -493,6 +558,29 @@ mod tests {
             ),
             "(do (def (main) (f 5)) (export main))"
         );
+    }
+
+    #[test]
+    fn playground_case_rejects_ml_surface() {
+        // the cdz-free guard: an ml-authored playground example is rejected before any render (the sexpr
+        // path is validated end-to-end — it renders the ml toggle via `cdz convert`). All 59 real examples
+        // are sexpr, so this only guards a future ml-authored one from silently mis-shredding.
+        let pe = crate::playground::PlaygroundExample {
+            id: "x".into(),
+            name: "X".into(),
+            theme: "basics".into(),
+            surface: "ml".into(),
+            source: "def main() = 1".into(),
+            expected: None,
+            expect_error: false,
+        };
+        match derive_playground_case(&pe, 1, "cdz-unused") {
+            Err(e) => assert!(
+                e.contains("sexpr-authored playground programs only"),
+                "got: {e}"
+            ),
+            Ok(_) => panic!("expected an ml-surface playground example to be rejected"),
+        }
     }
 
     #[test]
