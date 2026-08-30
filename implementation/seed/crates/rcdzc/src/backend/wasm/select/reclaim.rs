@@ -1523,6 +1523,41 @@ pub(super) fn collect_captured_occurrences(
     id: StructId,
     by_index: &mut HashMap<usize, Vec<StructId>>,
 ) {
+    // MEMO (v-memory-safety sign-off; simplest of the reclaim family — key = id ALONE, no context). Each
+    // subtree's Captured-occurrence contribution is a pure fn of id + the immutable graph. MULTIPLICITY: the
+    // walk APPENDS per visit (no dedup), so cache each node's OWN contribution in a FRESH accumulator (NOT a
+    // delta vs the shared `by_index`) and MERGE=APPEND on EVERY hit — a shared subtree reached via N paths
+    // gives N appends = the SAME per-visit multiplicity the ~570× re-walk produced (merging once-per-distinct
+    // would UNDER-count). DFS order preserved (own-first then children in core_child_ids order, extended in
+    // walk order). NO in_progress/tainted — acyclic by spec (Core::Call args-only) + memo writes post-return.
+    if let Some(cached) = db.captured_occ_memo.get(&id) {
+        for (index, occs) in cached {
+            by_index
+                .entry(*index)
+                .or_default()
+                .extend(occs.iter().copied());
+        }
+        return;
+    }
+    let mut own: HashMap<usize, Vec<StructId>> = HashMap::new();
+    collect_captured_occurrences_inner(db, id, &mut own);
+    for (index, occs) in &own {
+        by_index
+            .entry(*index)
+            .or_default()
+            .extend(occs.iter().copied());
+    }
+    db.captured_occ_memo.insert(id, own);
+}
+
+/// The unmemoized worker of [`collect_captured_occurrences`]. Its recursive calls resolve to the MEMOIZED
+/// wrapper above, so a shared subtree reached via many lifted-body walks is computed once + spliced (appended)
+/// thereafter — preserving per-visit multiplicity and DFS order.
+fn collect_captured_occurrences_inner(
+    db: &mut Db,
+    id: StructId,
+    by_index: &mut HashMap<usize, Vec<StructId>>,
+) {
     if let Core::Captured { index, .. } = core_of(db, id) {
         by_index.entry(index).or_default().push(id);
     }
