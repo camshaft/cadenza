@@ -25228,7 +25228,7 @@ mod stage1 {
         // `(. Int64 of)` is now REALIZED — `of` is the checked conversion — so a still-unrealized field is
         // used here; see `checked_integer_conversion_folds_in_range_and_traps_out_of_range`.)
         let msg = expect_decline("(. (Int 100) max)");
-        assert!(msg.contains("not yet realized"), "got: {msg}");
+        assert!(msg.contains("is not supported"), "got: {msg}");
     }
 
     // ── the full binary-integer operator set (all fold at width 64) ──────────────────────────────
