@@ -162,7 +162,7 @@
 ; CDZ0201 at check, naming the numeric requirement (reject-don't-miscompile) — the magnitude twin of the
 ; not-a-unit second-arg reject above. A CONCRETE non-numeric type only; an unsolved value is not pre-judged.
 (case "a Qty.of magnitude that is a tuple is rejected as not numeric"
-  (input  (do (def (main) (Qty.value (Qty.pow (Qty.of (tuple true) (Unit.base #"gram")) 2))) (export main)))
+  (input  (do (def (main) (Qty.value (Qty.pow (Qty.of #tuple(true) (Unit.base #"gram")) 2))) (export main)))
   (error  CDZ0201 (message "a quantity's magnitude must be a numeric value")))
 
 (case "a Qty.of magnitude that is a string is rejected as not numeric"

@@ -24446,8 +24446,8 @@
            re-introduction of the re-eval. `slow 33` is a Fibonacci-style fold: x+y = 9227465.")
   (input  (do
             (def (slow (: n Int64))
-              (if (<= n 1) (tuple n n)
-                  (let ((#tuple(a b) (slow (- n 1)))) (tuple (+ a b) a))))
+              (if (<= n 1) #tuple(n n)
+                  (let ((#tuple(a b) (slow (- n 1)))) #tuple((+ a b) a))))
             (def (main) (let ((#tuple(x y) (slow 33))) (+ x y)))
             (export main)))
   (output (: 9227465 Int64)))
