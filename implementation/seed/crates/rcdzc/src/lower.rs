@@ -27466,9 +27466,7 @@ fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> Option<bool> {
         // A REST pattern `(list p0 … p_{k-1} .. rest)` matches a list with at least the leading count, each
         // leading element matching; a FIXED pattern `(list p0 … p_{n-1})` matches a list of exactly n, each
         // element matching.
-        let rest_pos = items
-            .iter()
-            .position(|&it| db.ast.as_name(it) == Some(".."));
+        let rest_pos = db.ast.rest_marker(&items).map(|(i, _, _)| i);
         return match rest_pos {
             Some(rp) => {
                 if xs.len() < rp {
