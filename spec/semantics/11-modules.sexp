@@ -200,6 +200,15 @@
   (input  (. List ln))
   (error  CDZ0201 (message "the `List` module has no member `ln`") (message "did you mean `len`?") (fix (kind replace) (replacement "len") (unverified))))
 
+; The member suggestions offered for a miss are the operand's REAL members only — internal META CHANNELS (the
+; `"meta"`-namespaced `(meta t)`/`(meta apply)`/… type/apply channels a prelude sum module carries) are the
+; compiler's own, not user-facing, so they are FILTERED from the closest-matches list. `(Option.Ok 5)` names
+; a variant `Option` does not have; the suggestions are the real variants `Some`/`None`, never the internal
+; `t`. (Migrated from rcdzc a_meta_channel_field_is_not_offered_as_a_member_suggestion.)
+(case "an internal meta channel is not offered as a member suggestion"
+  (input  (Option.Ok 5))
+  (error  CDZ0201 (message "closest matches:") (message "`Some`") (message "`None`") (not "`t`")))
+
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
            of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record
