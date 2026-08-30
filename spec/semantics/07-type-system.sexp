@@ -1983,7 +1983,29 @@
            Never; this pins that a MALFORMED trap message is refused up front, not run.")
   (input  (do
             (def (main) (trap 42)) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203 (message "`trap`'s message must be a String") (message "a value of type Int64 was given") (not "must be the same type here")))
+
+; `trap : ∀a. String → a` — its polymorphic RESULT `a` made a naive scheme-unify ground the operand to
+; String and leak the OPAQUE "String and <T> must be the same type here" clash. The reject now NAMES the real
+; fault (the message must be a String, showing `(trap "reason")`) across operand types, and does NOT leak the
+; internal same-type-here wording. A wrong-ARITY trap keeps its own over-application message (arity 1), not
+; the message-type reject; a well-formed String-message trap in a polymorphic position compiles + runs clean.
+; (Migrated from rcdzc a_non_string_trap_message_names_the_string_requirement_not_a_phantom_clash.)
+(case "a non-String trap message names the String requirement (Bool operand)"
+  (input  (do (def (f) (trap true)) (export f)))
+  (error  CDZ0203 (message "`trap`'s message must be a String") (message "a value of type Bool was given") (not "must be the same type here")))
+
+(case "a non-String trap message names the String requirement (tuple operand)"
+  (input  (do (def (f) (trap #tuple(1 2))) (export f)))
+  (error  CDZ0203 (message "`trap`'s message must be a String") (message "a value of type (Tuple Int64 Int64) was given") (not "must be the same type here")))
+
+(case "a wrong-arity trap keeps the over-application message, not the message-type reject"
+  (input  (do (def (f) (trap "a" "b")) (export f)))
+  (error  CDZ0203 (message "function of arity 1") (not "message must be a String")))
+
+(case "a well-formed String-message trap in a polymorphic position compiles and runs clean"
+  (input  (do (def (f (: x Bool)) (if x 1 (trap "no"))) (def (main) (f true)) (export main)))
+  (call   main) (output (: 1 Int64)))
 
 (case "a match on an uninhabited scrutinee is exhaustive with zero arms"
   (doc    "Witnesses type-system.md #Never Is The Empty Sum (4th sentence: a match on a Never-typed

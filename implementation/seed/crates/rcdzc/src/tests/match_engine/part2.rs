@@ -670,66 +670,6 @@ fn a_malformed_unit_composition_operand_is_named_not_silently_shipped() {
 }
 
 #[test]
-fn a_non_string_trap_message_names_the_string_requirement_not_a_phantom_clash() {
-    use crate::testkit::parse;
-    // `trap : ∀a. String → a` — its message MUST be a String. A non-String message (`(trap 5)`,
-    // `(trap true)`) is a type error, but `trap`'s polymorphic RESULT `a` made the generic scheme-unify
-    // ground the operand to `String` and report the OPAQUE "type mismatch: String and Int64 must be the
-    // same type here" (reads like an internal clash). It now names the real fault — the operand-type
-    // twin of the member-op wrong-type-arg message — with the `(trap "reason")` example.
-    for (src, ty) in [
-        ("(module m (def (f) (trap 5)) (export f))", "Int64"),
-        ("(module m (def (f) (trap true)) (export f))", "Bool"),
-        (
-            "(module m (def (f) (trap (tuple 1 2))) (export f))",
-            "(Tuple Int64 Int64)",
-        ),
-    ] {
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.message.contains("`trap`'s message must be a String"))
-            .unwrap_or_else(|| panic!("a non-String trap message must be named: {src}"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-        assert!(
-            d.message
-                .contains(&format!("a value of type {ty} was given"))
-                && !d.message.contains("must be the same type here"),
-            "names the message-type, not a phantom clash: {}",
-            d.message
-        );
-    }
-    // NO false positive: a String message, a String-typed param message, and a `trap` in a polymorphic
-    // position (an `if` branch whose other branch fixes the result type) are all clean; the wrong-ARITY
-    // `(trap "a" "b")` keeps its own over-application CDZ0203 (not the message-type reject).
-    for ok in [
-        "(module m (def (f) (trap \"boom\")) (export f))",
-        "(module m (def (f (: msg String)) (trap msg)) (export f))",
-        "(module m (def (f (: x Bool)) (if x 1 (trap \"no\"))) (def (main) (f true)) (export main))",
-    ] {
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                .iter()
-                .any(|d| d.message.contains("`trap`'s message must be a String")),
-            "a well-formed trap is not flagged: {ok}"
-        );
-    }
-    // The wrong-arity trap keeps the over-application message, NOT the message-type one.
-    let arity = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (f) (trap \"a\" \"b\")) (export f))",
-    )));
-    assert!(
-        arity
-            .iter()
-            .any(|d| d.message.contains("function of arity 1"))
-            && !arity
-                .iter()
-                .any(|d| d.message.contains("`trap`'s message must be a String")),
-        "a wrong-arity trap keeps the over-application message: {:?}",
-        arity.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn a_non_string_read_argument_names_the_string_requirement_not_a_phantom_clash() {
     use crate::testkit::parse;
     // The `trap` SIBLING: `read : String → Ast` (parses re-readable text back into an `Ast`). A
