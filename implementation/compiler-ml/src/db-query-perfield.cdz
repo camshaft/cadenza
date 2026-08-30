@@ -163,17 +163,17 @@ def types-col(db: Db) =
 /// shared-state shape the operator confirmed + v-effects' fold targets.
 def run-type-of(db0: Db, root: Int64) =
   handle DbState(db0) with
-    | get-ty(id, db) => (resume(require-ty(db, id), db))
+    | get-ty(id, db) => resume(require-ty(db, id), db)
     | set-ty(pair, db) => (
       let (id, t) = pair in
       resume(unit, fill-ty(db, id, t))
     )
-    | get-resolved(id, db) => (resume(require-resolved(db, id), db))
-    | node-of(id, db) => (resume(node-at(db-tree(db), id), db))
-    | def-body-node(name, db) => (resume(def-body-of(db-tree(db), name), db))
-    | call-recursive(name, db) => (resume(call-is-recursive(db-tree(db), name), db))
-    | param-node(name, db) => (resume(param-of(db-tree(db), name), db))
-    | get-tcol(db) => (resume(types-col(db), db))
+    | get-resolved(id, db) => resume(require-resolved(db, id), db)
+    | node-of(id, db) => resume(node-at(db-tree(db), id), db)
+    | def-body-node(name, db) => resume(def-body-of(db-tree(db), name), db)
+    | call-recursive(name, db) => resume(call-is-recursive(db-tree(db), name), db)
+    | param-node(name, db) => resume(param-of(db-tree(db), name), db)
+    | get-tcol(db) => resume(types-col(db), db)
     | get-tree(db) => resume(db-tree(db), db)
   in
   type-of(root)

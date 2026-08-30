@@ -2690,7 +2690,17 @@ impl<'a> Printer<'a> {
     ///     body with a LEADING `//` comment keeps the comment on the `=>` line (`print_comment` then
     ///     breaks); any other body soft-breaks (inline when it fits, else it WRAPS to the indented line).
     fn print_arm_body(&mut self, body: StructId, body_prec: u8) {
-        if body_prec > 0 {
+        let peeled = self.a.peel_comments(body);
+        // The seq-95 explicit-paren LAYOUT applies ONLY when the body ACTUALLY parenthesizes at
+        // `body_prec` — a block form (`if`/`let`/`match`/`fn`/`handle`/`host`, which paren at
+        // `PREC_KEYWORD` = 1) or a bare-`|` infix (`PREC_PIPE_PAREN`). A single-expression body
+        // (call/var/literal/simple infix) does NOT paren at `PREC_KEYWORD` (operator seq-101 — no
+        // UNNEEDED parens): it takes the bare path below, where `expr(body, body_prec)` still emits the
+        // right parens for anything mis-classified here, so this stays correctness-safe (a missed block
+        // form just renders with the pre-seq-95 glued-paren layout, never a broken round-trip).
+        let paren_layout = body_prec == PREC_PIPE_PAREN
+            || (body_prec == PREC_KEYWORD && self.head_is_block_form(peeled));
+        if paren_layout {
             self.doc.word(" (");
             self.doc.cbox(INDENT);
             self.doc.zerobreak();
@@ -2702,15 +2712,30 @@ impl<'a> Printer<'a> {
         }
         self.doc.cbox(INDENT);
         let has_lead_comment = self.a.as_form(body, "comment").is_some();
-        if !has_lead_comment && self.is_let_shape_form(self.a.peel_comments(body)) {
+        if !has_lead_comment && self.is_let_shape_form(peeled) {
             self.doc.hardbreak();
         } else if has_lead_comment {
             self.doc.word(" ");
         } else {
             self.doc.space();
         }
-        self.expr(body, 0);
+        self.expr(body, body_prec);
         self.doc.end();
+    }
+
+    /// True if `id` prints as a BLOCK FORM — `if`/`let`/`match`/`fn`/`handle`/`host` — the forms whose
+    /// printers wrap in parens at any operand precedence (`parent_prec > 0`, so `PREC_KEYWORD` = 1 wraps
+    /// them but never an infix or a call). Used to decide whether a parenthesized arm body gets the seq-95
+    /// `=> ( … )` layout (a call/var/literal body does not, so it stays bare — operator seq-101).
+    fn head_is_block_form(&self, id: StructId) -> bool {
+        let head = match self.a.get(id) {
+            Struct::List(items) => items.first().copied(),
+            _ => None,
+        };
+        matches!(
+            head.and_then(|h| self.head_name(h)).as_deref(),
+            Some("if" | "let" | "match" | "fn" | "handle" | "host")
+        )
     }
 
     /// `host E, … in body` — an entrypoint delegation. `args` is `(E …) body`; the effects render as a
@@ -7477,6 +7502,22 @@ mod tests {
         // level deeper (operator seq-86: "why is the last statement indented").
         let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
         assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
+    }
+
+    #[test]
+    fn single_expression_arm_body_stays_bare_no_unneeded_parens_seq101() {
+        // Operator seq-101 (bug in seq-95): a SINGLE-EXPRESSION arm body (a call/var/literal) must stay
+        // BARE after `=>` — NOT wrapped in parens. Only a body that genuinely needs grouping (a block
+        // form: a let-in chain, a multi-line body) gets the seq-95 `=> ( … )` paren layout. Handle arms
+        // exercise both: non-last call bodies are bare; the non-last `let` body is paren-wrapped.
+        let out = assert_roundtrip(
+            "def main(db0) = handle DbState(db0) with\n  | get-tcol(db) => resume(types-col(db), db)\n  | get-ty(id, db) => resume(require-ty(db, id), db)\n  | set-ty(pair, db) => let (id, t) = pair in resume(unit, fill-ty(db, id, t))\n  | get-resolved(id, db) => resume(require-resolved(db, id), db)\n  in run-program(db0)",
+            100,
+        );
+        assert_eq!(
+            out,
+            "def main(db0) =\n  handle DbState(db0) with\n    | get-tcol(db) => resume(types-col(db), db)\n    | get-ty(id, db) => resume(require-ty(db, id), db)\n    | set-ty(pair, db) => (\n      let (id, t) = pair in\n      resume(unit, fill-ty(db, id, t))\n    )\n    | get-resolved(id, db) => resume(require-resolved(db, id), db)\n  in\n  run-program(db0)"
+        );
     }
 
     #[test]
