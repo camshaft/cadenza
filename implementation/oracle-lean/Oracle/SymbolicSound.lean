@@ -108,6 +108,26 @@ leaves it untouched (the base case the recursion terminates on). -/
 
 theorem normalize_var (n : Nat) : normalize (.var n) = .var n := by simp [normalize]
 
+/-! ### `normalize` recurses STRUCTURALLY through the value-shaped constructors.
+For the non-`app`/non-`ite` compound shapes `normalize` is a pure congruence — it rebuilds the same
+constructor with each child normalized, introducing no fold/rewrite (those live only in the `.app`
+algebraic identities and the `.ite` fold+collapse). Pinning these equations (a) guards the recursion
+SHAPE against a future refactor and (b) supplies the congruence lemmas an eventual
+`denote (normalize e) = denote e` proof needs for these constructors. `simp [normalize]` discharges each
+via the (now-total) equation lemmas. -/
+
+theorem normalize_proj (b : SymExpr) (s : ByteArray) : normalize (.proj b s) = .proj (normalize b) s := by
+  simp [normalize]
+theorem normalize_tuple (es : Array SymExpr) :
+    normalize (.tuple es) = .tuple (es.attach.map (fun x => normalize x.val)) := by simp [normalize]
+theorem normalize_ctor (tag : ByteArray) (args : Array SymExpr) :
+    normalize (.ctor tag args) = .ctor tag (args.attach.map (fun x => normalize x.val)) := by
+  simp [normalize]
+theorem normalize_case (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
+    normalize (.case s arms)
+      = .case (normalize s) (arms.attach.map (fun x => (x.val.1, normalize x.val.2))) := by
+  simp [normalize]
+
 /-! ## Trap classification: `arithOps` ∪ `bitwiseOps` = exactly the trapping ops.
 `arithOps`/`bitwiseOps` are plain `List String` data, so membership is decidable — these `decide`
 facts pin that `mayTrap`'s `arithOps.contains op || bitwiseOps.contains op` guard fires on ALL
