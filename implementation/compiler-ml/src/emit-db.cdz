@@ -528,7 +528,7 @@ def defenv-funcidx-map(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
 def defenv-funcidx-map-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: Map(Int64, Int64)) =
   (if i == List.len(entries) then acc
    else (match List.at(entries, i) with
-     | Option.Some(e) => (match e with | (name, _) => defenv-funcidx-map-go(entries, i + 1, Map.insert(acc, name, i)))
+     | Option.Some(e) => (let (name, _) = e in defenv-funcidx-map-go(entries, i + 1, Map.insert(acc, name, i)))
      | Option.None(_) => acc))
 
 /// slice-B'(Bp2): emit ONE recursive def's FUNCTION BODY. A def with param binder-ids `params` and lowered
@@ -683,8 +683,8 @@ def emit-text(s: String) = emit-src-for(Target.Text, s)
 /// target-neutral Core, then dispatch to the target's emitter (`target-emit`). `emit-src` is the Wasm
 /// specialization (the W4 host harness's call point). A Rust backend would be `emit-src-for(Target.Rust, s)`
 /// with the pipeline above unchanged — the whole point of the seam.
-def emit-src-for(target: Target, s: String) = match read-source(s) with
-  | (root, tree) => (match lower-tree(tree, root) with
+def emit-src-for(target: Target, s: String) =
+  let (root, tree) = read-source(s) in (match lower-tree(tree, root) with
       | Option.Some(core) => target-emit(target, core)
       | Option.None(_) => Option.None(unit))
 

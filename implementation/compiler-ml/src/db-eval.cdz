@@ -27,8 +27,8 @@ def run-of-db(db: Db, root: Int64) =
 
 /// The Db RUN driver from a token program: parse → Db → run over the memoized pipeline → value. The
 /// eval-db.run equivalent, Db-threaded. `Some v` | `None` (ill-typed / malformed).
-def run-tokens-db(ts: List(Tok)) = match parse-tokens(ts) with
-  | (root, tree) => (match run-of-db(db-of(tree), root) with | (_, v) => v)
+def run-tokens-db(ts: List(Tok)) =
+  let (root, tree) = parse-tokens(ts) in (let (_, v) = run-of-db(db-of(tree), root) in v)
 
 // ---- TESTS: source → value over the memoized Db pipeline --------------------------------------------
 
