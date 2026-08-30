@@ -4309,7 +4309,18 @@
             (pragma nonesuch Rational)
             (def (main) 1)
             (export main)))
-  (error  CDZ0601))
+  (error  CDZ0601 (no-fix)))
+
+; CDZ0601 is a CLOSED-SET violation (the pragma registry is fixed), so a NEAR-MISS key typo gets a
+; did-you-mean: `default-integr` -> `default-integer` names the suggestion + carries a rename fix on the key
+; occurrence (the candidate pool IS the registry, so the suggestion is always a valid key). A FAR key
+; (`nonesuch` above) gets the plain reject with no fix — and since a suggestion always rides with a fix,
+; `(no-fix)` there also pins the absence of a did-you-mean. (Migrated from rcdzc
+; an_unknown_directive_near_a_registry_key_suggests_it.)
+(case "a near-miss pragma key suggests the registry key with a rename fix"
+  (input  (do (pragma default-integr Int64) (def (main) 1) (export main)))
+  (error  CDZ0601 (message "did you mean `default-integer`?")
+                  (fix (kind replace) (replacement "default-integer") (unverified))))
 
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode

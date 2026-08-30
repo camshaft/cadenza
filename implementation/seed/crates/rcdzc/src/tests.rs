@@ -12501,44 +12501,6 @@ mod match_engine {
     }
 
     #[test]
-    fn an_unknown_directive_near_a_registry_key_suggests_it() {
-        // CDZ0601 is a CLOSED-SET violation (the pragma registry is fixed), so a near-miss typo gets the
-        // same "did you mean?" fix a mistyped name/field/variant does: `default-integr` → replace with
-        // `default-integer`, targeting the KEY occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic
-        // Carries A Route To A Fix). The candidate pool IS the registry, so the suggestion is always a
-        // key the validator accepts. (The corrected pragma still declines downstream — the directive's
-        // semantic effect is unbuilt — so the fix stays HEURISTIC and `cdz fix --all` won't auto-apply it;
-        // the VALUE is the suggestion an agent reads, exactly as rustc suggests a spelling amid other errors.)
-        let d = reject_full("(do (pragma default-integr Int64) (def (main) 1) (export main))")
-            .expect("an unknown directive key is rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0601"), "got: {}", d.message);
-        let fix = d.fix.expect("a near-miss key carries a did-you-mean fix");
-        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-        assert_eq!(fix.replacement, "default-integer");
-        assert!(!fix.verified, "a nearest-key guess is heuristic");
-        // The suggestion is ALSO named in the human message (not only in the structured fix), matching
-        // every other did-you-mean site — visible without `--json`.
-        assert!(
-            d.message.contains("did you mean `default-integer`?"),
-            "the message must name the suggestion; got: {}",
-            d.message
-        );
-        // A FAR key gets no misleading suggestion (the plain reject, no message hint).
-        let far =
-            reject_full("(do (pragma frobnicate 3) (def (main) 1) (export main))").expect("reject");
-        assert!(
-            far.fix.is_none(),
-            "no suggestion for an unrelated key: {:?}",
-            far.fix
-        );
-        assert!(
-            !far.message.contains("did you mean"),
-            "no message hint for an unrelated key: {}",
-            far.message
-        );
-    }
-
-    #[test]
     fn an_if_with_ml_then_else_keywords_names_the_syntax_not_the_arity() {
         // A user who knows the ML surface writes `(if b then 1 else 0)`, reaching for the `then`/`else`
         // KEYWORDS — but this s-expr surface's `if` is three POSITIONAL forms with no keywords. The stray
