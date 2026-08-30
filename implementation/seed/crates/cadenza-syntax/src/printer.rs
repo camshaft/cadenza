@@ -1950,22 +1950,47 @@ impl<'a> Printer<'a> {
         // `match`'s `|`-led arms. The `|` is the surface separator between the structural variant
         // entries, never a node in the tree.
         for &raw in variants {
-            // Peel LEADING own-line `(comment …)` wrapper(s): each prints as a `// …` line ABOVE the
-            // variant (before its `| `). A LOOP handles multiple (decoded ASTs may nest; `is_type_shape`
-            // accepts them via `strip_field_comments`, so the printer must be total). The remaining
-            // TRAILING `(comment-after …)` is handled by `print_variant` (same-line, pre-existing).
+            // Peel BOTH comment wrappers in EITHER nesting order (a variant can carry a LEADING
+            // `(comment …)` own-line comment AND a TRAILING `(comment-after …)` same-line one — e.g. a
+            // multi-line trailing comment on the PRIOR variant leaves its own-line continuation lines as
+            // this variant's leading, nested OUTSIDE or INSIDE its own trailing). A leading text prints as
+            // a `// …` line ABOVE the `| `; a trailing text ` // …` after the variant. Peeling only the
+            // leading `comment` (with `print_variant` doing the trailing) failed when the outer wrapper was
+            // the `comment-after` — the inner leading `(comment …)` then rendered as a garbage
+            // `comment(text, …)` variant (seq-277/C3: ty.cdz's multi-line variant trailing comments).
+            // `is_type_shape` accepts all of this via `strip_field_comments`, so the printer must be total.
             let mut v = raw;
-            while let Some(a) = self.a.as_form(v, "comment")
-                && a.len() == 2
-                && self.is_string(a[0])
-            {
+            let mut lead_texts: Vec<StructId> = Vec::new();
+            let mut trail_texts: Vec<StructId> = Vec::new();
+            loop {
+                if let Some(a) = self.a.as_form(v, "comment")
+                    && a.len() == 2
+                    && self.is_string(a[0])
+                {
+                    lead_texts.push(a[0]);
+                    v = a[1];
+                    continue;
+                }
+                if let Some(a) = self.a.as_form(v, "comment-after")
+                    && a.len() == 2
+                    && self.is_string(a[0])
+                {
+                    trail_texts.push(a[0]);
+                    v = a[1];
+                    continue;
+                }
+                break;
+            }
+            for &text in &lead_texts {
                 self.doc.hardbreak();
-                self.doc.word(format!("//{}", self.doc_line_text(a[0])));
-                v = a[1];
+                self.doc.word(format!("//{}", self.doc_line_text(text)));
             }
             self.doc.hardbreak();
             self.doc.word("| ");
             self.print_variant(v);
+            for &text in trail_texts.iter().rev() {
+                self.doc.word(format!(" //{}", self.doc_line_text(text)));
+            }
         }
         // The open-sum tail prints after the last variant, on its own line, as `.. r` — re-read by
         // `type_expr`'s trailing row-var parse to the same two sibling atoms (round-trip identity).

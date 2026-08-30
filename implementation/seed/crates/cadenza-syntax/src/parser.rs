@@ -4982,6 +4982,52 @@ mod tests {
     }
 
     #[test]
+    fn a_multiline_trailing_comment_on_a_type_variant_round_trips() {
+        // Regression (seq-277/C3): a MULTI-LINE trailing comment on a variant (`| A(T) // line1` then
+        // own-line `// line2` continuations) leaves the continuation lines as the NEXT variant's LEADING
+        // comment, nested OUTSIDE that variant's own trailing `(comment-after …)`. `print_type` peeled only
+        // a leading `comment` (outer), so with `(comment-after trail (comment lead V))` the inner leading
+        // comment rendered as a garbage `comment(text, V)` variant + dropped. Now it peels BOTH wrappers in
+        // either order. (Closes ty.cdz / parse-db.cdz / lower-db.cdz variant multi-line trailing drops.)
+        let src = "type T =\n  | A(Int64) // trailing on A\n  // continuation of A\n  | B(Int64) // trailing on B\n\nexport {}\n";
+        let comments = |a: &Arenas| {
+            (0..a.structure.len() as u32)
+                .map(StructId)
+                .filter(|&id| matches!(a.head_name(id), Some("comment") | Some("comment-after")))
+                .count()
+        };
+        let p = read_ml(src);
+        assert!(p.ok(), "parses: {:?}", p.errors);
+        let n = comments(&p.arenas);
+        assert_eq!(
+            n, 3,
+            "A-trailing + A-continuation + B-trailing all attached (got {n})"
+        );
+        let printed = crate::printer::print(&p.arenas, 100);
+        assert!(
+            !printed.contains("comment("),
+            "no garbage comment(...) variant:\n{printed}"
+        );
+        assert!(
+            printed.contains("// trailing on A")
+                && printed.contains("// continuation of A")
+                && printed.contains("// trailing on B"),
+            "all three re-emitted:\n{printed}"
+        );
+        let rp = read_ml(&printed);
+        assert!(
+            rp.ok() && p.arenas.structurally_eq(&rp.arenas),
+            "round-trips: {:?}\n{printed}",
+            rp.errors
+        );
+        assert_eq!(
+            crate::printer::print(&rp.arenas, 100),
+            printed,
+            "idempotent\n{printed}"
+        );
+    }
+
+    #[test]
     fn an_own_line_comment_after_the_last_sum_variant_is_not_dropped() {
         // Regression (seq-277/C3): an own-line comment after the LAST variant of a `type T = | A | B`
         // decl (before the next form) USED TO DROP — the variant loop drained it as the "next variant's"
