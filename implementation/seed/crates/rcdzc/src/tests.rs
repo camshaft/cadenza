@@ -8984,9 +8984,20 @@ mod match_engine {
             if out.artifact(Target::Wasm.artifact_kind()).is_some() {
                 return None; // compiled — no rejection
             }
+            // SKIP the umbrella CDZ0900 "unsupported construct" decline (seq-286): it is a safe NOT-YET
+            // decline, NOT a program-is-wrong reject (diag.rs `Code::UnsupportedConstruct`), and it is
+            // commonly a SCAFFOLD artifact here — a test that exports `(def (f (: xs (List/Map/…))) …)` to
+            // exercise a MATCH/pattern hits the "non-scalar entry parameter is not supported on this export
+            // path" CDZ0900 (backend/wasm/mod.rs, flipped decline()→unsupported() in #6101) regardless of the
+            // pattern under test. Before #6101 that decline was code-`None`, so `reject_code` returned `None`
+            // for it (invisible); skipping CDZ0900 restores that intent so `reject_code` surfaces the PATTERN/
+            // program-error code (CDZ0201/CDZ0210/CDZ0101/…) the callers actually assert, not the boundary
+            // not-yet. (No caller asserts a CDZ0900 via `reject_code`; the two CDZ0900 assertions read the
+            // diagnostic directly.)
             out.diagnostics
                 .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .find(|d| d.code.as_deref() != Some("CDZ0900"))
                 .and_then(|d| d.code.clone())
         })
     }
@@ -15973,9 +15984,13 @@ mod match_engine {
             {
                 return None;
             }
+            // Skip the umbrella CDZ0900 not-yet decline (seq-286) — here the non-scalar `(List Int64)` entry
+            // param hits the "non-scalar entry parameter" CDZ0900 on the export path (#6101) regardless of the
+            // match under test; surface the exhaustiveness/pattern code (CDZ0210/…), not that boundary not-yet.
             out.diagnostics
                 .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .find(|d| d.code.as_deref() != Some("CDZ0900"))
                 .and_then(|d| d.code.clone())
         };
         // A guarded rest-arm alone is non-exhaustive (its guard may fail).
