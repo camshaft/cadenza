@@ -825,9 +825,9 @@ pub(super) fn build_host_group(
         // the shared `(list u8)` (index 0) for such a record, which the field's cref references. Only a string
         // param or a spilled compound result still declines the record-arg composition this slice.
         if has_str_param || has_spilled_result {
-            return Err(Reject::decline(
+            return Err(Reject::unsupported(
                 "a record host-argument composes only in a host interface with no string parameter and no \
-                 option/list/bytes compound RESULT (a later increment)",
+                 option/list/bytes compound result",
             ));
         }
         // MULTIPLE record params per interface (deliver's message + response): lay EACH op's record type into
@@ -845,9 +845,9 @@ pub(super) fn build_host_group(
     } else if !enum_params.is_empty() {
         let distinct = enum_params.iter().all(|c| *c == enum_params[0]);
         if !distinct {
-            return Err(Reject::decline(
-                "a host interface with more than one DISTINCT enum parameter type is not yet emitted (a \
-                 single enum type per interface this slice)",
+            return Err(Reject::unsupported(
+                "a host interface with more than one distinct enum parameter type is not supported (one \
+                 enum type per interface)",
             ));
         }
         // A SINGLE shared `enum` DEFINE (at `base`) + EXPORT (at `base+1`); every enum op references it.
@@ -867,9 +867,9 @@ pub(super) fn build_host_group(
     } else if !variant_params.is_empty() {
         let distinct = variant_params.iter().all(|c| *c == variant_params[0]);
         if !distinct {
-            return Err(Reject::decline(
-                "a host interface with more than one DISTINCT bare-variant parameter type is not yet emitted \
-                 (a single variant type per interface this slice)",
+            return Err(Reject::unsupported(
+                "a host interface with more than one distinct bare-variant parameter type is not supported \
+                 (one variant type per interface)",
             ));
         }
         // A SINGLE shared `variant` DEFINE (at `base`) + EXPORT (at `base+1`); every variant-param op refs it.

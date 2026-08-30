@@ -5994,8 +5994,8 @@ fn emit(
                 out.push(Lir::CallImport(OP_RATIONAL_OF)); // → [rational handle]
                 Ok(())
             }
-            _ => Err(Reject::decline(
-                "a constant Rational with a component beyond i64 is not yet materialized at run time",
+            _ => Err(Reject::unsupported(
+                "a constant Rational with a component beyond i64 is not supported at run time",
             )),
         },
         // The canonical NaN emits an `f64.const`/`f32.const` of the canonical NaN bit pattern at the
@@ -12770,8 +12770,8 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // safe here, so refusing is the sound outcome, not an unchecked emit with unspecified aliasing.
         //= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
         //# The compiler MUST reject a program whose aliasing the memory discipline cannot establish as safe, rather than emit a component with unspecified aliasing behavior.
-        _ => Err(Reject::decline(
-            "borrowing op operand has an ownership this backend cannot yet prove",
+        _ => Err(Reject::unsupported(
+            "borrowing op operand has an ownership this backend cannot prove",
         )),
     }
 }

@@ -308,8 +308,8 @@ pub(super) fn emit_result_lift(
         Ty::Bool | Ty::Char | Ty::Int(_) | Ty::Float(_) | Ty::Qty { .. } => {
             emit_scalar_leaf_lift(db, ty, ptr_slot, offset, out)
         }
-        other => Err(Reject::decline(format!(
-            "the general result-lift does not yet wire a `{}` spilled-result leaf",
+        other => Err(Reject::unsupported(format!(
+            "the general result-lift does not support a `{}` spilled-result leaf",
             other.render_name(&db.name_ctx())
         ))),
     }

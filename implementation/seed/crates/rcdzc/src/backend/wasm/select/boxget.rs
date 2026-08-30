@@ -148,8 +148,8 @@ pub(super) fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject
         // type here — inference would have solved it — so this cannot mask a real unresolved-type bug.)
         Ty::Var(_) | Ty::Any => Ok(Some(OP_BOX_INT)),
         Ty::Unit => Ok(None),
-        other => Err(Reject::decline(format!(
-            "a tuple element of type {} needs the value heap (not yet built)",
+        other => Err(Reject::unsupported(format!(
+            "a tuple element of type {} requires the value heap, which is not supported",
             other.render_name(&db.name_ctx())
         ))),
     }
@@ -216,8 +216,8 @@ pub(super) fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject
         // total match on a partly-un-built sum (`(Result C ?)` only ever `Ok`) compile its dead `Err` arm.
         Ty::Var(_) | Ty::Any => Ok(Some(OP_GET_INT)),
         Ty::Unit => Ok(None),
-        other => Err(Reject::decline(format!(
-            "projecting a tuple element of type {} needs the value heap (not yet built)",
+        other => Err(Reject::unsupported(format!(
+            "projecting a tuple element of type {} requires the value heap, which is not supported",
             other.render_name(&db.name_ctx())
         ))),
     }
