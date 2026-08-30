@@ -8663,6 +8663,9 @@ fn encode_recursive_sum_walk_body(
     call_op("bytes-len", &mut body);
     set(n, &mut body);
 
+    // Grow linear memory to cover OUT+n before the copy-out (large documents can exceed the 1-page min).
+    emit_grow_to_cover_out(n, OUT, &mut body);
+
     // COPY LOOP: i = 0; block { loop { if i>=n br 1; store8(OUT+i, bytes-get(doc, i)); i++; br 0 } }.
     const_i32(0, &mut body);
     set(i, &mut body);
@@ -8877,6 +8880,8 @@ fn emit_bytes_roundtrip_apply_body(
     get(doc, &mut body);
     call_op("bytes-len", &mut body);
     set(n, &mut body);
+    // Grow linear memory to cover OUT+n before the copy-out (a large roundtrip result can exceed 1 page).
+    emit_grow_to_cover_out(n, OUT, &mut body);
     const_i32(0, &mut body);
     set(i, &mut body);
     body.push(op::BLOCK);
@@ -8930,6 +8935,55 @@ fn emit_bytes_roundtrip_apply_body(
     let mut e = uleb_bytes(body.len() as u64);
     e.extend_from_slice(&body);
     e
+}
+
+/// Emit a `memory.grow`-to-cover guard: before a copy-OUT loop writes `n` bytes at `OUT`, ensure linear
+/// memory is at least `ceil((OUT + n) / 65536)` pages. The initial memory is `(memory 1)` = one 64KiB page
+/// (growable, no max), so a document whose canonical bytes exceed `65536 - OUT` would otherwise write past
+/// the page boundary and trap (`memory fault @ 0x10000` — the snowflake large-recursive-sum-return OOB).
+/// `n_local` is the i32 local holding the document byte length; `out_offset` is the fixed `OUT` base.
+///
+/// Shape: `if (needed_pages - memory.size) > 0 { memory.grow(needed_pages - memory.size); drop }` where
+/// `needed_pages = (n + OUT + 65535) >> 16`. `memory.grow` is a no-op path when memory already suffices
+/// (the `IF` guard is false), and it never traps — it returns the previous size (or -1 on failure), which
+/// we `drop`. The delta is recomputed inside the `IF` rather than stashed in a local, keeping this a pure
+/// append with no local-count bookkeeping in the callers.
+fn emit_grow_to_cover_out(n_local: u32, out_offset: i64, body: &mut Vec<u8>) {
+    use crate::backend::wasm::wasm_abi::op;
+    const MEMORY_SIZE: u8 = 0x3f;
+    const MEMORY_GROW: u8 = 0x40;
+    // needed_pages = (n + OUT + 65535) >> 16 = ceil((OUT + n) / 65536).
+    let needed = |body: &mut Vec<u8>| {
+        body.push(op::LOCAL_GET);
+        uleb128(n_local as u64, body);
+        body.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(out_offset + 65535, body);
+        body.push(op::I32_ADD);
+        body.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(16, body);
+        body.push(op::I32_SHR_U);
+    };
+    // (needed_pages - memory.size) > 0 ?
+    needed(body);
+    body.push(MEMORY_SIZE);
+    body.push(0x00); // mem index 0
+    body.push(op::I32_SUB);
+    body.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(0, body);
+    body.push(op::I32_GT_S);
+    body.push(op::IF);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        // memory.grow(needed_pages - memory.size); drop
+        needed(body);
+        body.push(MEMORY_SIZE);
+        body.push(0x00);
+        body.push(op::I32_SUB);
+        body.push(MEMORY_GROW);
+        body.push(0x00); // mem index 0
+        body.push(op::DROP);
+    }
+    body.push(op::END);
 }
 
 /// §3c — a minimal bump-allocator `cabi_realloc(orig_ptr, orig_size, align, new_size) -> i32` body for a
