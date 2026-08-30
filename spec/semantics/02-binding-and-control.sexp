@@ -1525,6 +1525,37 @@
   (input  (do (def (main) (and true)) (export main)))
   (error  CDZ0201 (message "takes exactly") (no-fix)))
 
+; A 2-operand `if` (`(if b then)` — the reflex of a statement-`if` language) is a wrong-arity `if`, but
+; `if` is an EXPRESSION here (both branches must yield a value), so rather than the generic count nit it
+; NAMES the missing else + why, and carries an INSERT fix appending a `(trap "TODO")` else — `trap` inhabits
+; any type, so the completed `(if b then (trap "TODO"))` type-checks against the then-branch. A 1-operand
+; `(if b)` (no then EITHER) is not a clean add-else, so it stays the generic arity message with no fix.
+; (Migrated from rcdzc an_if_missing_its_else_branch_offers_to_add_one.)
+(case "an `if` missing its else branch names the missing else and offers to add a trap placeholder"
+  (input  (do (def (f (: b Bool)) (if b 1)) (export f)))
+  (error  CDZ0201 (message "no else branch") (message "expression")
+                  (fix (kind insert-into) (replacement-contains "(trap \"TODO\")"))))
+
+(case "an `if` with the added trap-placeholder else branch compiles and runs"
+  (input  (do (def (f (: b Bool)) (if b 1 (trap "TODO"))) (def (main) (f true)) (export main)))
+  (call   main) (output (: 1 Int64)))
+
+(case "a lone-condition `if` (no then either) keeps the generic arity message with no fix"
+  (input  (do (def (f (: b Bool)) (if b)) (export f)))
+  (error  CDZ0201 (message "takes exactly 3 operands") (no-fix)))
+
+; A `(guard <pattern> <cond>)` match-arm head is a fixed-arity form (2 tail elements). A SURPLUS third
+; element routes through the same fixed-arity reject — a delete-the-surplus fix (fix-parity with
+; `if`/`and`/member). Too FEW (a lone `(guard x)`) has nothing to delete → no fix. (Migrated from rcdzc
+; a_guarded_pattern_with_a_surplus_element_offers_a_delete_fix.)
+(case "a guarded pattern with a surplus element offers a delete-the-surplus fix"
+  (input  (do (def (f (: n Int64)) (match n ((guard x (> x 0) extra) 1) (_ 0))) (export f)))
+  (error  CDZ0201 (message "a guarded pattern must be") (fix (kind delete))))
+
+(case "a too-few-element guarded pattern carries no fix (nothing to delete)"
+  (input  (do (def (f (: n Int64)) (match n ((guard x) 1) (_ 0))) (export f)))
+  (error  CDZ0201 (message "a guarded pattern must be") (no-fix)))
+
 (case "a let-bound variable is in scope inside a boolean connective operand"
   (doc    "The complement of the short-circuited-unbound case above, and the boundary its scope check
            must not over-reach into: a `let`-bound (or parameter) name used in an `and`/`or` operand is
