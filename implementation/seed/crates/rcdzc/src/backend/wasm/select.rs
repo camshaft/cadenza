@@ -2679,18 +2679,35 @@ fn collect_captured_escape_dup_sites(db: &mut Db, body: StructId, sites: &mut Ha
     let mut by_index: HashMap<usize, Vec<StructId>> = HashMap::new();
     collect_captured_occurrences(db, body, &mut by_index);
     for (index, occs) in by_index {
-        // MULTI-read (or zero) → not the single-escaping-read shape; leave unmarked (residual / nothing).
-        if occs.len() != 1 {
+        // PER-OCCURRENCE escape-dup (Perceus borrowed-parameter rule, #5857 Increment A). Emit one dup
+        // PER ESCAPING occurrence of the capture, NOT one total. A capture used in N>1 escaping positions
+        // (`#tuple(a a)`) needs a dup at EACH escaping read so the returned value owns N independent refs
+        // and the monolithic closure-cell drop nets each ref to a live rc; the old `occs.len() != 1` punt
+        // emitted ZERO dups for a multi-occurrence capture → the closure-drop freed the shared cell while
+        // the result still held N refs = the hczm1 over-free (release `unreachable`). This brings the
+        // capture collector up to the binder path (`mark_binder_dups`), which already handles
+        // per-occurrence multiplicity correctly; each occurrence is a DISTINCT `Core::Captured` node, so
+        // inserting the escaping ones into the site set yields exactly one dup per escaping read (no
+        // multiset needed — that is Increment B, for a single node consumed twice).
+        //
+        // PRE-GATE on the per-index escape query: an index NONE of whose reads escape (every read a borrow,
+        // e.g. `List.len a` / a scalar field read — hcd1/hcd2) contributes no dup, skip it whole.
+        if !capture_escapes_via_body(db, body, index) {
             continue;
         }
-        let occ = occs[0];
-        // A scalar capture unboxes to a raw value (no heap handle, no refcount) → no dup needed.
-        if !is_heap_type(&type_of(db, occ)) {
-            continue;
-        }
-        // The sole read escapes (non-borrow) → its returned ref must be independent of the env-cell drop.
-        if capture_escapes_via_body(db, body, index) {
-            sites.insert(occ);
+        for occ in occs {
+            // A scalar capture unboxes to a raw value (no heap handle, no refcount) → no dup needed.
+            if !is_heap_type(&type_of(db, occ)) {
+                continue;
+            }
+            // THIS occurrence escapes (a consuming / result / call-arg position) vs is only BORROWED (a
+            // `Proj` operand — relaxed to `tail_borrowed`). Keyed on the specific node (`EscapeTarget::
+            // Node`), so a capture both PROJECTED and ESCAPED (hczm2) dups ONLY the escaping occurrence —
+            // the projection is a borrow. Reuses the exact borrow-vs-consume walk the snowflake
+            // SumPayload-escape dup (#5833) already drives per node.
+            if binding_escapes_dup_aware(db, body, EscapeTarget::Node(occ), false, None) {
+                sites.insert(occ);
+            }
         }
     }
 }

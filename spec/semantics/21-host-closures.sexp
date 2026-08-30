@@ -5815,6 +5815,62 @@
   (output (: (record (= t (tuple 1 7))) (Record (: t (Tuple Int64 Int64)))))
   (live-objects 0))
 
+; ── hczm/ifcap: PER-OCCURRENCE capture escape-dup (#5857 Increment A, Perceus borrowed-param rule).
+; A captured heap value that ESCAPES the closure body in N>1 positions needs one dup PER escaping
+; occurrence (not one total): the monolithic closure-cell drop then nets each escaped ref to a live
+; rc. The old collector punted `occs.len() != 1` → ZERO dups for a multi-escape capture → the cell
+; drop freed the shared capture while the result still held N refs (over-free, release `unreachable`).
+; ifcap1 is the anti-OVER-dup control: two syntactic escapes across mutually-exclusive if-arms, but
+; the dup is placed AT the occurrence (inside the arm), so only the taken arm's dup fires → exactly
+; one dup per dynamic path (a flat 2-dup count would LEAK the untaken arm's dup here).
+
+(case "hczm1 a captured TUPLE escaping TWICE in the returned value reclaims cleanly (per-occurrence escape-dup)"
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) #tuple(a a)))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (drop)
+  (output (: (tuple (tuple 1 7) (tuple 1 7)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (live-objects 0))
+
+(case "hczm2 a captured TUPLE READ once (projection) AND escaping once reclaims cleanly"
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) #tuple((. a 0) a)))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (drop)
+  (output (: (tuple 1 (tuple 1 7)) (Tuple Int64 (Tuple Int64 Int64))))
+  (live-objects 0))
+
+(case "hczm3 a captured LIST escaping TWICE reclaims cleanly (vec-rep twin of hczm1)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
+             (def (h (: n Int64)) (let ((xs (bld n))) (fn ((: q Int64)) #tuple(xs xs)))) (export h)))
+  (call h (: 3 Int64) (: 5 Int64))
+  (drop)
+  (output (: #tuple(#list(1 2 3) #list(1 2 3)) (Tuple (List Int64) (List Int64))))
+  (live-objects 0))
+
+(case "hczm4 a captured MAP escaping TWICE reclaims cleanly (CHAMP twin)"
+  (input (do (def (f (: n Int64)) (let ((m #map((= n 10) (= 0 20)))) (fn ((: q Int64)) #tuple(m m)))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (drop)
+  (output (: #tuple(#map((= 0 20) (= 1 10)) #map((= 0 20) (= 1 10))) (Tuple (Map Int64 Int64) (Map Int64 Int64))))
+  (live-objects 0))
+
+(case "ifcap1 a captured TUPLE escaping via BOTH mutually-exclusive if-arms reclaims cleanly (anti-over-dup control: one dup per PATH, not two)"
+  (doc "Two syntactic escapes of `a`, one per if-arm. Only the taken arm runs, so exactly one dup fires
+        at runtime — the dup is placed at the occurrence node, inside its arm. A flat per-occurrence
+        count (2 dups) would leak the untaken arm's orphaned dup; per-occurrence PLACEMENT gives the
+        MAX-over-arms behaviour for free. live-objects 0 proves it is one dup, not two.")
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) (if (> q 0) a a)))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (drop)
+  (output (: (tuple 1 7) (Tuple Int64 Int64)))
+  (live-objects 0))
+
+(case "ifcap2 a captured TUPLE escaping via ONE if-arm only reclaims cleanly"
+  (input (do (def (f (: n Int64)) (let ((a #tuple(n 7))) (fn ((: q Int64)) (if (> q 0) a #tuple(0 0))))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (drop)
+  (output (: (tuple 1 7) (Tuple Int64 Int64)))
+  (live-objects 0))
+
 ; ── breaker batch 568: nested-closure + CHAMP-capture cells (campaign cells 3-4; the tuple-capture
 ; projection cells stay blocked on the hcx1 ICE). A closure capturing ANOTHER closure dispatches
 ; through it; a CHAMP (Map) capture serves lookups by the call arg; and the handle drop cascades
