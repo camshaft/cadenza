@@ -118,6 +118,29 @@ test("stripModule dedents multi-line (do …) children so top-level siblings sit
   );
 });
 
+test("stripModule unwraps a multi-line bare (def (main) …) expr with canonical indentation", () => {
+  // a bare expression wraps to `(def (main) <expr>)`; when the expr breaks multi-line the printer indents
+  // the `def` body 2 spaces, so the unwrapped expr's children must be dedented to their own canonical
+  // indent (NOT left over-indented by the leaked def-body 2sp). Mirrors the ML single-main-body case.
+  const printed =
+    "(do\n" +
+    "  (def\n" +
+    "    (main)\n" +
+    "    (let\n" +
+    "      ((first-long-binding 1) (second-long-binding 2) (third-binding 3))\n" +
+    "      (+ first-long-binding (+ second-long-binding third-binding))))\n" +
+    "\n" +
+    "  (export main))";
+  assert.equal(
+    stripModule(printed, "sexpr"),
+    "(let\n" +
+      "  ((first-long-binding 1) (second-long-binding 2) (third-binding 3))\n" +
+      "  (+ first-long-binding (+ second-long-binding third-binding)))",
+  );
+  // single-line bare main still unwraps to the bare expression (regression guard)
+  assert.equal(stripModule(wrapModule("(+ 2 3)", "sexpr"), "sexpr"), "(+ 2 3)");
+});
+
 test("wrapPrefixOf is the UTF-8 byte offset of the snippet within the wrapped program", () => {
   const wrapped = wrapModule("(+ 2 3)", "sexpr");
   const prefix = wrapPrefixOf("(+ 2 3)", wrapped);
