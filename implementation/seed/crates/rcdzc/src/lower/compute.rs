@@ -1017,7 +1017,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Prim(Prim::FloatInf) => Core::ConstFloatInf,
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
-        Resolved::Prim(_) => Core::Poison(Reject::decline(crate::diag::PRIM_AS_VALUE_DECLINE)),
+        Resolved::Prim(_) => Core::Poison(Reject::unsupported(crate::diag::PRIM_AS_VALUE_DECLINE)),
         // Application — the ONE path, dispatched by the head value's `(meta apply)` primitive. An
         // arithmetic prim folds (below); a type-constructor prim reduces via the evaluator to a built
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
