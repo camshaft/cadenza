@@ -111,18 +111,30 @@ jobs:
       - name: test (via nix — per-crate aggregate, hermetic)
         run: nix build .#checks.x86_64-linux.test --print-build-logs
 
-  test-macos:
-    # `test (macos-latest)` STAYS native cargo-on-macOS (intentional non-swap): it provides macOS PLATFORM
-    # coverage a linux-nix check can't — a body-swap is valid only when the nix check runs on the platform
-    # the context name promises (v-fleet-tooling ruling). Same context name as the old matrix leg.
-    name: test (macos-latest)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: test-macos-latest
-      - run: cargo test --workspace
+  # ── test (macos-latest): DISABLED (operator directive 2026-08-30, v-gha-green) ──────────────────────
+  # Commented out because it was PERPETUALLY RED on an ACCEPTED gap, not a real failure: cdz-platform's
+  # `mod contracts` resolves to `contracts.rs`, which is GENERATED at build time by nix (xtask-codegen-
+  # contracts / build-time-nix). The native `cargo test --workspace` on the macOS runner does NOT run that
+  # nix codegen, so cdz-platform fails to compile with `error[E0583]: file not found for module contracts`.
+  # There is no native-macOS equivalent for the build-time-nix step, so this job could never go green as-is.
+  # Operator: "if we're ignoring macos then we should just comment it out" — i.e. remove it from the run
+  # rather than leave it red-and-ignored on every hourly board. NB it is NOT in the required ruleset
+  # (10560470 = ruleset-10 minus test-macos), so disabling it changes no merge gate.
+  # RE-ENABLE when native macOS can build contracts.rs (e.g. a build.rs / committed-contracts path, or a
+  # macOS nix check that runs the codegen). Restore the job below verbatim.
+  #
+  # test-macos:
+  #   # `test (macos-latest)` STAYS native cargo-on-macOS (intentional non-swap): it provides macOS PLATFORM
+  #   # coverage a linux-nix check can't — a body-swap is valid only when the nix check runs on the platform
+  #   # the context name promises (v-fleet-tooling ruling). Same context name as the old matrix leg.
+  #   name: test (macos-latest)
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #     - uses: ./.github/actions/setup-rust
+  #       with:
+  #         cache-key: test-macos-latest
+  #     - run: cargo test --workspace
 
   # ── standalone-crate gate ───────────────────────────────────────────────────
   # `fleet/slack-bridge` is its OWN cargo workspace (its slack-morphism/tokio async tree is kept out of
