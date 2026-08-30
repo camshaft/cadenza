@@ -24330,3 +24330,40 @@
   (call main (: 7 Int64)) (output (: 21 BigInt))
   (call main (: -3 Int64)) (output (: -9 BigInt))
   (live-objects known-leak 6))
+
+; ---- destructure-let materialize-once + reclaim (v-compiler-primitives #6000; v-memory-safety ruling A) ----
+; A tuple/record destructure-`let` lowers AS a single irrefutable-arm `match` over the init, so it inherits the
+; match's materialize-ONCE scrutinee (the init is evaluated exactly once, not re-lowered per element projection —
+; the fix for the exponential match->let re-eval hang) AND the match's OWNED-scrutinee reclaim (the heap init is
+; freed exactly once after the destructure — the fix for the double-free/UAF a naive keep-once would cause).
+
+(case "a tuple destructure-let over a RECURSIVE heap-tuple init evaluates the init ONCE and reclaims it (no re-eval, no leak)"
+  (doc    "`grow` returns a heap tuple `(n, xs::List)`; the recursive step destructures that tuple result with
+           `(let ((#tuple(a b) (grow …))) …)`. Lowering the destructure-let as a single-arm match materializes the
+           `grow` call once (a per-element-projection re-eval would be exponential) and reclaims the heap tuple/list
+           after the arm. `grow 5 []` builds a length-10 list; `main` reads its length. live-objects 0 = the whole
+           heap-tuple/list chain reclaims with no leak and no double-free.")
+  (input  (do
+            (def (grow (: n Int64) (: xs (List Int64)))
+              (if (<= n 0) (tuple n xs)
+                  (let ((#tuple(a b) (grow (- n 1) (List.push xs n))))
+                       (tuple a (List.push b n)))))
+            (def (main) (let ((#tuple(k ys) (grow 5 (list)))) (List.len ys)))
+            (export main)))
+  (output (: 10 Int64))
+  (live-objects 0))
+
+(case "a destructure-let whose heap init is ALSO borrowed whole in the body reclaims the init ONCE (no double-free)"
+  (doc    "The BORROWED-ALONGSIDE control: `z` is a heap tuple `(List, Int)` from a non-inlinable recursive `mk`,
+           destructured into `(a b)` AND projected whole again as `(. z 1)` in the body. Lowered as a match, `z` is
+           the scrutinee reference; the body's re-use of `z` keeps it borrowed, so the match's borrow classification
+           does NOT early-free it — `z` reclaims exactly once by its owner (no double-free). Value = len[7,7,7] + b +
+           (. z 1) = 3 + 8 + 8 = 19; live-objects 0.")
+  (input  (do
+            (def (mk (: n Int64)) (if (< n 0) (mk (+ n 1)) (tuple (list n n n) (+ n 1))))
+            (def (main)
+              (let ((z (mk 7)))
+                   (let ((#tuple(a b) z)) (+ (List.len a) (+ b (. z 1))))))
+            (export main)))
+  (output (: 19 Int64))
+  (live-objects 0))
