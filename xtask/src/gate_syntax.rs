@@ -280,9 +280,123 @@ pub fn gate_syntax(paths: &Paths, opts: &GateSyntaxOpts) -> i32 {
     }
 }
 
-/// Compare `verdicts` against the committed baseline. Mirrors the semantics gate's `check_baseline`:
-/// reds on a `Pass → not-Pass` regression, a `Fail` whose baseline is not `pass`/`fail` (the gate-hole
-/// guard), and — on a FULL run only — a vanished baseline case. `Todo → Pass` and new cases are additive.
+/// The outcome of comparing the current verdicts against a baseline text — the PURE core of
+/// `--check`, split out so its invariants are unit-testable without touching the filesystem. Mirrors
+/// the semantics gate's `check_baseline` invariants (xtask/src/main.rs), which were hard-won:
+///  1. CONFLICTING (same title, DIFFERENT verdicts) baseline dups → `conflict = true` (exit 3): a
+///     `merge=union` file can carry a dup LINE, and a map-keyed load silently masks one verdict.
+///     A BENIGN dup (same verdict both copies) is a routine merge artifact — deduped in memory
+///     (`benign_dups` counts them) and NOT a failure.
+///  3. The FAILING-hole guard: a current `Fail` whose baseline is NEITHER `pass` (a regression, caught
+///     separately) NOR `fail` (a tracked known-fail) reds — a `todo`/absent case that now fails must
+///     not slip past the pass-regression rule (v-nix 2026-08-27). Applies regardless of `subset`.
+///  4. TRACKED KNOWN-FAIL: a `fail` verdict against an explicit `fail` baseline is a deliberate,
+///     git-committed pin — reported (`tracked_fail`) for visibility but NOT a gate failure; a later
+///     PASS shows up in `gained`, prompting a re-baseline.
+///  5. VANISHED (a baseline title with no current case) reds only on a FULL run; a `subset` run
+///     (`--files`/`--case`) skips it (the case lives in another selection).
+#[derive(Debug, Default, PartialEq)]
+struct BaselineCompare {
+    /// `pass → not-pass` regressions, formatted `title (was → now)`.
+    regressed: Vec<String>,
+    /// Baseline titles absent from this run (full run only).
+    vanished: Vec<String>,
+    /// Current fails not covered by a `pass`/`fail` baseline (the gate-hole guard).
+    failing: Vec<String>,
+    /// Current fails pinned by an explicit `fail` baseline — visible, not gate-redding.
+    tracked_fail: Vec<String>,
+    /// Cases that went `not-pass → pass` — additive, reported but never failing.
+    gained: Vec<String>,
+    /// A CONFLICTING duplicate title in the baseline (different verdicts) — a hard integrity error.
+    conflict: Vec<String>,
+    /// Count of BENIGN same-verdict duplicate lines (a `merge=union` artifact) — harmless.
+    benign_dups: usize,
+}
+
+impl BaselineCompare {
+    /// The process exit code: 3 on a conflicting-dup integrity error, 1 on any regression/vanished/
+    /// failing, else 0 (`tracked_fail`/`gained`/`benign_dups` never red).
+    fn exit_code(&self) -> i32 {
+        if !self.conflict.is_empty() {
+            3
+        } else if !self.regressed.is_empty()
+            || !self.vanished.is_empty()
+            || !self.failing.is_empty()
+        {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// Compare current `verdicts` against `baseline_text` — the PURE, I/O-free core carrying the five
+/// invariants documented on [`BaselineCompare`]. `subset` is a `--files`/`--case` run (skips vanished).
+fn compare_baseline(
+    verdicts: &[(String, Verdict)],
+    baseline_text: &str,
+    subset: bool,
+) -> BaselineCompare {
+    let mut out = BaselineCompare::default();
+    // Parse the baseline into a title→verdict map, splitting BENIGN (same-verdict) from CONFLICTING
+    // (different-verdict) duplicate lines as we go.
+    let mut base: BTreeMap<String, Verdict> = BTreeMap::new();
+    for line in baseline_text.lines() {
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((v, d)) = line.split_once('\t')
+            && let Some(verdict) = Verdict::parse(v)
+        {
+            match base.insert(d.to_string(), verdict) {
+                None => {}
+                Some(prev) if prev == verdict => out.benign_dups += 1,
+                Some(_) => out.conflict.push(d.to_string()),
+            }
+        }
+    }
+    if !out.conflict.is_empty() {
+        out.conflict.sort();
+        out.conflict.dedup();
+        return out; // a conflicting baseline is an integrity error — do not compare against it.
+    }
+
+    let now: BTreeMap<&str, Verdict> = verdicts.iter().map(|(d, v)| (d.as_str(), *v)).collect();
+    for (desc, &was) in &base {
+        match now.get(desc.as_str()) {
+            None => {
+                if !subset {
+                    out.vanished.push(desc.clone());
+                }
+            }
+            Some(&is) if was == Verdict::Pass && is != Verdict::Pass => {
+                out.regressed
+                    .push(format!("{desc} ({} → {})", was.tag(), is.tag()));
+            }
+            Some(&is) if was != Verdict::Pass && is == Verdict::Pass => {
+                out.gained.push(desc.clone())
+            }
+            Some(_) => {}
+        }
+    }
+    for (d, v) in verdicts {
+        if *v != Verdict::Fail {
+            continue;
+        }
+        match base.get(d.as_str()) {
+            // A `fail` baseline is a deliberate tracked known-fail — visible, not redding.
+            Some(Verdict::Fail) => out.tracked_fail.push(d.clone()),
+            // A `pass` baseline that now fails is already a regression (caught above).
+            Some(Verdict::Pass) => {}
+            // A `todo` baseline or an absent case that now fails reds — the gate-hole guard.
+            _ => out.failing.push(d.clone()),
+        }
+    }
+    out
+}
+
+/// Compare `verdicts` against the committed baseline file, print the report, and return the exit code.
+/// The I/O + reporting shell around the pure [`compare_baseline`].
 fn check_baseline(repo: &Path, verdicts: &[(String, Verdict)], subset: bool) -> i32 {
     let path = baseline_path(repo);
     let text = match std::fs::read_to_string(&path) {
@@ -295,91 +409,187 @@ fn check_baseline(repo: &Path, verdicts: &[(String, Verdict)], subset: bool) -> 
             return 2;
         }
     };
-    let mut base: BTreeMap<String, Verdict> = BTreeMap::new();
-    let mut conflicting: Vec<String> = Vec::new();
-    for line in text.lines() {
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
-        if let Some((v, d)) = line.split_once('\t')
-            && let Some(verdict) = Verdict::parse(v)
-            && let Some(prev) = base.insert(d.to_string(), verdict)
-            && prev != verdict
-        {
-            conflicting.push(d.to_string());
-        }
-    }
-    if !conflicting.is_empty() {
-        conflicting.sort();
-        conflicting.dedup();
+    let cmp = compare_baseline(verdicts, &text, subset);
+
+    if !cmp.conflict.is_empty() {
         eprintln!(
             "gate-syntax --check: {} CONFLICTING duplicate title(s) in {} (same title, different \
-             verdicts — regenerate with `gate-syntax --save`):",
-            conflicting.len(),
+             verdicts — the map-keyed load silently masks one; regenerate with `gate-syntax --save`):",
+            cmp.conflict.len(),
             path.display()
         );
-        for d in &conflicting {
+        for d in &cmp.conflict {
             eprintln!("  •  {d}");
         }
         return 3;
     }
-
-    let now: BTreeMap<&str, Verdict> = verdicts.iter().map(|(d, v)| (d.as_str(), *v)).collect();
-    let mut regressed = Vec::new();
-    let mut vanished = Vec::new();
-    for (desc, &was) in &base {
-        match now.get(desc.as_str()) {
-            None => {
-                if !subset {
-                    vanished.push(desc.clone());
-                }
-            }
-            Some(&is) if was == Verdict::Pass && is != Verdict::Pass => {
-                regressed.push(format!("{desc} ({} → {})", was.tag(), is.tag()));
-            }
-            Some(_) => {}
+    if cmp.benign_dups > 0 {
+        // Benign same-verdict dups are a `merge=union` artifact — harmless (deduped in memory for the
+        // compare). `--check` is READ-ONLY: rewriting here would leave a dirty worktree and block every
+        // agent's `fleet sync`. Dedup-on-disk is `gate-syntax --save`'s job.
+        eprintln!(
+            "gate-syntax --check: {} benign (same-verdict) duplicate line(s) in {} — a merge=union \
+             artifact, harmless (deduped in memory). Run `gate-syntax --save` to rewrite clean.",
+            cmp.benign_dups,
+            path.display()
+        );
+    }
+    if !cmp.gained.is_empty() {
+        println!("newly passing ({}):", cmp.gained.len());
+        for g in &cmp.gained {
+            println!("  +  {g}");
         }
     }
-    // A `Fail` whose baseline is neither `pass` (caught above) nor `fail` (a tracked known-fail) reds —
-    // the gate-hole guard: a `todo`/absent case that now fails must not slip past the pass-regression rule.
-    let failing: Vec<&str> = verdicts
-        .iter()
-        .filter(|(d, v)| {
-            *v == Verdict::Fail
-                && !matches!(base.get(d.as_str()), Some(Verdict::Pass | Verdict::Fail))
-        })
-        .map(|(d, _)| d.as_str())
-        .collect();
-
-    if !regressed.is_empty() {
-        println!("REGRESSED ({}):", regressed.len());
-        for r in &regressed {
+    if !cmp.regressed.is_empty() {
+        println!("REGRESSED ({}):", cmp.regressed.len());
+        for r in &cmp.regressed {
             println!("  -  {r}");
         }
     }
-    if !vanished.is_empty() {
-        println!("vanished from the corpus ({}):", vanished.len());
-        for v in &vanished {
+    if !cmp.vanished.is_empty() {
+        println!("vanished from the corpus ({}):", cmp.vanished.len());
+        for v in &cmp.vanished {
             println!("  ?  {v}");
         }
     }
-    if !failing.is_empty() {
-        println!("FAILING ({}):", failing.len());
-        for f in &failing {
+    if !cmp.failing.is_empty() {
+        println!("FAILING ({}):", cmp.failing.len());
+        for f in &cmp.failing {
             println!("  x  {f}");
         }
     }
+    if !cmp.tracked_fail.is_empty() {
+        // Visible but NOT redding — git-committed known-wrong pins (a deferred-fix repro).
+        println!(
+            "KNOWN-FAIL — tracked known-wrong (baseline `fail`), not a gate failure ({}):",
+            cmp.tracked_fail.len()
+        );
+        for f in &cmp.tracked_fail {
+            println!("  ⊗  {f}");
+        }
+    }
 
-    if regressed.is_empty() && vanished.is_empty() && failing.is_empty() {
-        println!("gate-syntax --check: OK (no regressions vs baseline)");
-        0
+    let code = cmp.exit_code();
+    if code == 0 {
+        println!(
+            "gate-syntax --check: OK (no regressions vs baseline; {} newly passing)",
+            cmp.gained.len()
+        );
     } else {
         println!(
             "gate-syntax --check: FAIL ({} regressed, {} vanished, {} failing)",
-            regressed.len(),
-            vanished.len(),
-            failing.len()
+            cmp.regressed.len(),
+            cmp.vanished.len(),
+            cmp.failing.len()
         );
-        1
+    }
+    code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(pairs: &[(&str, Verdict)]) -> Vec<(String, Verdict)> {
+        pairs.iter().map(|(d, v)| (d.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn pass_to_not_pass_is_the_only_regression() {
+        // pass→fail and pass→todo REGRESS; todo→pass GAINS; a steady pass/todo is quiet.
+        let baseline = "pass\ta\npass\tb\ntodo\tc\ntodo\td\n";
+        let now = v(&[
+            ("a", Verdict::Fail), // pass→fail: regressed
+            ("b", Verdict::Todo), // pass→todo: regressed
+            ("c", Verdict::Pass), // todo→pass: gained (additive)
+            ("d", Verdict::Todo), // steady todo: quiet
+        ]);
+        let cmp = compare_baseline(&now, baseline, false);
+        assert_eq!(
+            cmp.regressed.len(),
+            2,
+            "pass→fail and pass→todo both regress"
+        );
+        assert_eq!(cmp.gained, vec!["c".to_string()], "todo→pass is a gain");
+        // `b` is a pass→todo regression, NOT a `failing` (it is not a Fail verdict).
+        assert!(cmp.failing.is_empty());
+        assert_eq!(cmp.exit_code(), 1);
+    }
+
+    #[test]
+    fn failing_hole_guard_reds_a_todo_or_absent_case_that_now_fails() {
+        // The v-nix gate-hole: a todo-baselined or ABSENT case that now FAILs must red even though it is
+        // not a pass→not-pass regression.
+        let baseline = "todo\ta\n"; // `b` is absent from the baseline (a fresh case)
+        let now = v(&[("a", Verdict::Fail), ("b", Verdict::Fail)]);
+        let cmp = compare_baseline(&now, baseline, false);
+        assert!(cmp.regressed.is_empty(), "neither was a baseline pass");
+        assert_eq!(
+            cmp.failing.len(),
+            2,
+            "a todo→fail AND an absent→fail both red (the gate-hole guard)"
+        );
+        assert_eq!(cmp.exit_code(), 1);
+    }
+
+    #[test]
+    fn tracked_known_fail_is_visible_but_not_redding() {
+        // A `fail` verdict against an explicit `fail` baseline is a deliberate pin — reported, not red.
+        let baseline = "fail\ta\npass\tb\n";
+        let now = v(&[("a", Verdict::Fail), ("b", Verdict::Pass)]);
+        let cmp = compare_baseline(&now, baseline, false);
+        assert_eq!(cmp.tracked_fail, vec!["a".to_string()]);
+        assert!(
+            cmp.failing.is_empty(),
+            "a fail+fail-baseline is NOT the gate-hole failing set"
+        );
+        assert!(cmp.regressed.is_empty());
+        assert_eq!(
+            cmp.exit_code(),
+            0,
+            "a tracked known-fail does not red the gate"
+        );
+    }
+
+    #[test]
+    fn vanished_reds_only_on_a_full_run() {
+        // A baseline title with no current case is vanished on a FULL run, ignored on a SUBSET run.
+        let baseline = "pass\ta\npass\tb\n";
+        let now = v(&[("a", Verdict::Pass)]); // `b` not run
+        assert_eq!(
+            compare_baseline(&now, baseline, false).vanished,
+            vec!["b".to_string()],
+            "full run flags the vanished case"
+        );
+        assert_eq!(compare_baseline(&now, baseline, false).exit_code(), 1);
+        assert!(
+            compare_baseline(&now, baseline, true).vanished.is_empty(),
+            "subset run skips the vanished check"
+        );
+        assert_eq!(compare_baseline(&now, baseline, true).exit_code(), 0);
+    }
+
+    #[test]
+    fn benign_dup_is_harmless_but_conflicting_dup_is_a_hard_error() {
+        let now = v(&[("a", Verdict::Pass)]);
+        // Benign: the same title+verdict twice (a merge=union artifact) — counted, not fatal.
+        let benign = "pass\ta\npass\ta\n";
+        let cmp = compare_baseline(&now, benign, false);
+        assert_eq!(cmp.benign_dups, 1);
+        assert!(cmp.conflict.is_empty());
+        assert_eq!(cmp.exit_code(), 0, "a benign dup does not red");
+        // Conflicting: the same title with DIFFERENT verdicts — a hard integrity error (exit 3).
+        let conflicting = "pass\ta\ntodo\ta\n";
+        let cmp = compare_baseline(&now, conflicting, false);
+        assert_eq!(cmp.conflict, vec!["a".to_string()]);
+        assert_eq!(cmp.exit_code(), 3, "a conflicting dup is exit 3");
+    }
+
+    #[test]
+    fn comment_and_blank_lines_are_ignored() {
+        let baseline = "# header\n\npass\ta\n";
+        let cmp = compare_baseline(&v(&[("a", Verdict::Pass)]), baseline, false);
+        assert_eq!(cmp.exit_code(), 0);
+        assert_eq!(cmp.benign_dups, 0);
     }
 }
