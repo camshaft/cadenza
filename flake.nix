@@ -1817,6 +1817,19 @@
             inherit pname src;
             version = "0.0.0";
             outputs = if emitRaw then [ "out" "raw" ] else [ "out" ];
+            # CONTENT-ADDRESSED (v-nix 2026-08-30, concierge-priority herd-eliminator): the runtime/nfc
+            # component's OUTPUT is the canonicalized wasm bytes (cdz content-hash 058B5h/…), which are
+            # STABLE across unrelated main commits — but as an input-addressed derivation its nix STORE PATH
+            # moved per-commit (its .drv inputs churn), so cache-warm's push at commit A was a 404 for a
+            # consumer on commit B → every resuming/gate-local agent COLD-BUILT the runtime (the 43-agent
+            # load-80 herd). Making it __contentAddressed makes the store path a function of the emitted
+            # BYTES (not inputs), so it is STABLE across commits → cachix hits ANY commit → no cold-build
+            # herd. This does NOT change REQUIRED_RUNTIME_HASH (that is cdz's content-hash of the same bytes,
+            # unaffected by the nix store path) → NO flag-day. Consistent with the flake's existing CA
+            # derivations (test-shred/corpus/guideShred/cwasm), consumed build-time so no IFD.
+            __contentAddressed = true;
+            outputHashMode = "recursive";
+            outputHashAlgo = "sha256";
 
             nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ]
               ++ pkgs.lib.optionals (stampNfcHash != null) [ cdzComponentRewrite ];
