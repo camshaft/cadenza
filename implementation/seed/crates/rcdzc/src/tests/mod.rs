@@ -6002,12 +6002,6 @@ fn a_variant_with_a_lowercase_tuple_alias_payload_reads_as_a_payload_variant_not
     );
 }
 
-/// Applying a NULLARY variant to a non-unit payload — `(None 5)` — is rejected CDZ0201 with an ACTIONABLE
-/// message: it NAMES the variant, says it carries no payload, and gives the fix (construct it bare). The
-/// old message was a generic "a nullary variant takes the unit value, but a payload of type Int64 was
-/// applied" — accurate but it named neither the variant nor the fix. Pins the rustc-gold wording + that the
-/// variant name is read from the SOURCE spelling for BOTH the bare (`None`) and qualified (`Option.None`)
-/// forms (`ctor_app_name`). The improved message anchors at the payload argument, not the whole call.
 // (a_nullary_variant_applied_to_a_payload_names_the_variant_and_the_fix migrated to corpus
 // 05-compound-types: "a nullary variant applied to a payload names the variant and that it cannot be
 // applied" + the qualified-`Option.None` twin — CDZ0201 (message "`None` is nullary")(cannot be applied)
