@@ -14846,3 +14846,35 @@
 
 (case "a Bool value under a narrow-width let-binder annotation is a type clash, not a width fault"
   (input (do (def (main) (let (((: a Bool) 5)) a)) (export main))) (error CDZ0203))
+
+(case "lm1 a let-destructured const closure forwards PER-SITE — let and match faces agree, never cross-specialize"
+  (doc "The #6340 fence (fingerprint-delimiter fix, let-vs-match const-forwarding CDZ0201 retired):
+        the monomorphization fingerprint appended the numeric closure code UN-delimited and the
+        divergence guard tests substring containment, so code 2 ⊂ code 25 spuriously tripped the
+        guard on the let face (match face was fine) — the #6345 adapter.cdz sweep's blocker. Now a
+        single-variant sum destructured by LET forwards its const closure exactly like MATCH, and
+        two sites with DISTINCT closures each keep their own specialization: site A folds (+ x 3)
+        (drive from 0 = 3n) and site B folds (+ (* 2 x) 1) (= 2^n - 1), on BOTH faces →
+        3n*10000 + (2^n-1)*100 + 3n*10 + (2^n-1). n=7: 21|127 → 223037. Rust-agreed 223037;
+        hop declines CDZ0900 (fn-typed param, pre-existing baseline). A cross-specialization
+        (fingerprint collision) would corrupt exactly one weighted digit pair.")
+  (input (do
+    (type (Box a) (Mk a))
+    (def (drive (: f (-> Int64 Int64)) (: acc Int64) (: k Int64))
+      (if (> k 0) (drive f (f acc) (- k 1)) acc))
+    (def (use-let (: b (Box (-> Int64 Int64))) (: k Int64))
+      (let (((Mk f) b)) (drive f 0 k)))
+    (def (use-match (: b (Box (-> Int64 Int64))) (: k Int64))
+      (match b ((Mk f) (drive f 0 k))))
+    (def (main (: n Int64))
+      (+ (* 10000 (use-let (Mk (fn ((: x Int64)) (+ x 3))) n))
+         (+ (* 100 (use-let (Mk (fn ((: x Int64)) (+ (* 2 x) 1))) n))
+            (+ (* 10 (use-match (Mk (fn ((: x Int64)) (+ x 3))) n))
+               (use-match (Mk (fn ((: x Int64)) (+ (* 2 x) 1))) n)))))
+    (export main)))
+  (call main (: 0 Int64)) (output (: 0 Int64))
+  (call main (: 2 Int64)) (output (: 60363 Int64))
+  (call main (: 7 Int64)) (output (: 223037 Int64))
+  ; flat 4 live at every call (breaker census 2026-08-30) — the Box-of-closure retention family,
+  ; same class as the B multi-apply residuals (v-core-opt); #5766 tolerate-fewer passes the collapse.
+  (live-objects known-leak))
