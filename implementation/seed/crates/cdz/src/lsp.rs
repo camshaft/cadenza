@@ -6773,6 +6773,47 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_computes_label_offsets_for_a_compound_parameter_type() {
+        // A parameter whose type is a PARENTHESISED compound (`(List Int64)`) exercises a different label-offset
+        // path than the scalar `Int64` case (`signature_help_gives_per_parameter_label_offsets_…`): the offset
+        // finder locates the multi-token substring `(List Int64)` in the label and must return a range that
+        // reads back as exactly that compound. `sum : (-> (List Int64) Int64)` — one parameter (the trailing
+        // Int64 is the return), so exactly one LabelOffsets slot spanning the compound type.
+        let text = "(do (def (sum (: xs (List Int64))) 0) (def (main) (sum [1 2])))";
+        let on_arg = text.find("sum [1 2]").unwrap() + 4; // inside the call args
+        let sh = signature_help_at(text, false, byte_to_position(text, on_arg))
+            .expect("a signature inside the call");
+        let sig = &sh.signatures[0];
+        assert_eq!(
+            sig.label, "sum : (-> (List Int64) Int64)",
+            "compound param type renders cleanly in the label"
+        );
+        let params = sig
+            .parameters
+            .as_ref()
+            .expect("per-parameter labels emitted");
+        assert_eq!(
+            params.len(),
+            1,
+            "one parameter (the return Int64 is dropped)"
+        );
+        let ParameterLabel::LabelOffsets([s, e]) = params[0].label else {
+            panic!("expected LabelOffsets, got {:?}", params[0].label);
+        };
+        let label_utf16: Vec<u16> = sig.label.encode_utf16().collect();
+        assert!(
+            (e as usize) <= label_utf16.len() && s < e,
+            "offset [{s},{e}] must be a valid range into label {:?}",
+            sig.label
+        );
+        let slice = String::from_utf16(&label_utf16[s as usize..e as usize]).unwrap();
+        assert_eq!(
+            slice, "(List Int64)",
+            "the highlighted slot reads as the compound param type"
+        );
+    }
+
+    #[test]
     fn signature_help_is_none_for_a_call_to_an_unbound_callee() {
         // A call whose head names NO definition — `TypeOf` answers an error string ("no such definition …"),
         // not an arrow, so the `->` guard rejects it and no bogus signature leaks. (Totality: never a panic
