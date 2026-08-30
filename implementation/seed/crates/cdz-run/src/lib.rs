@@ -2502,7 +2502,8 @@ fn compose_nfc_into_runtime_linker(
              CDZ_STORE to the store dir if it is elsewhere"
         )
     })?;
-    let nfc = jit_component(engine, &nfc_bytes).map_err(|e| anyhow!("load NFC component: {e}"))?;
+    let nfc =
+        load_guest(engine, &nfc_bytes, opts).map_err(|e| anyhow!("load NFC component: {e}"))?;
     // NFC is a leaf (imports nothing) → instantiate against a fresh empty linker.
     let nfc_linker: Linker<()> = Linker::new(engine);
     let nfc_instance = nfc_linker
@@ -2552,6 +2553,17 @@ fn resolve_nfc_by_hash(opts: &RunOpts, hash: &str) -> Option<Vec<u8>> {
         .clone()
         .or_else(|| std::env::var_os("CDZ_STORE").map(std::path::PathBuf::from))
         .unwrap_or_else(nfc_default_store);
+    if opts.precompiled {
+        // PRECOMPILED (seq-250 AOT corpus-exec): the value-heap runtime imports the NFC component and the
+        // Linker composes it from the store at instantiate — but the cranelift-free exec cannot JIT a raw
+        // `.wasm`. So load the store's PRECOMPILED sibling `<hash>.cwasm` (produced once by the cranelift-ON
+        // tool alongside the runtime: `cdz-run <store>/<hash>.wasm --precompile-out <store>/<hash>.cwasm`);
+        // `load_guest` then `deserialize`s it. No SOURCE content-address check here — a `.cwasm` hashes
+        // differently than its `.wasm` source (the address `hash` names the source); `Component::deserialize`
+        // validates the artifact's OWN integrity + engine-compatibility instead. This generalizes to any
+        // store-composed dependency the runtime pulls, not just NFC — precompile each store component once.
+        return std::fs::read(store.join(format!("{hash}.cwasm"))).ok();
+    }
     let bytes = std::fs::read(store.join(format!("{hash}.wasm"))).ok()?;
     (crate::cli::content_address(&bytes) == hash).then_some(bytes)
 }
