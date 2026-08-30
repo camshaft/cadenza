@@ -74,26 +74,17 @@ default-features = false
 # at each decision — a name's resolution, a solved type, a fold outcome, a decline — so a debugging
 # run sees exactly what the compiler chose and why. `trace!` is ZERO-COST when no subscriber is
 # installed (the default), so the corpus gate and normal builds pay nothing; a subscriber is set up
-# only at the HOST boundary (the CLI bin, tests). In the eventual Cadenza port these call sites map
-# to a trace EFFECT — a structured event emitted to an ambient handler — so instrumenting with
-# events (not the crate's span/subscriber internals threaded through logic) keeps the port clean.
+# only at the HOST boundary (the `rcdzc-cli` crate's `run`, tests). In the eventual Cadenza port these
+# call sites map to a trace EFFECT — a structured event emitted to an ambient handler — so instrumenting
+# with events (not the crate's span/subscriber internals threaded through logic) keeps the port clean.
+# NOTE: the LIBRARY takes only `tracing` (event-emission macros, ~zero cost). The trace SINK
+# (`tracing-subscriber`) and the arg parser (`clap`) are HOST-BOUNDARY deps that now live in the separate
+# `rcdzc-cli` crate, NOT here — the compiler is a PURE LIBRARY (operator directive 2026-08-30: "the
+# compiler should not be pulling clap in as a dependency … should be a pure library"). Do NOT re-add
+# `clap`/`tracing-subscriber` to the compiler; a new arg or trace-sink concern belongs in `rcdzc-cli`.
 version = "0.1"
 default-features = false
 features = ["std"]
-
-[dependencies.clap]
-# Used ONLY by the CLI bin (the host boundary — filesystem + args), never by the lib core. Same
-# clap 4 + derive the workspace's xtask uses.
-version = "4"
-features = ["derive"]
-
-[dependencies.tracing-subscriber]
-# Installs the trace SINK — used ONLY at the host boundary (the CLI bin, and the test harness), never
-# by the lib core. The bin turns on trace output from `CDZ_LOG` (a tool-private env var, NOT the shared
-# `RUST_LOG` — so it doesn't fan out to cargo/wasmtime in the pipeline); the core just emits events.
-# Env-filter lets a debugging run select `rcdzc=trace` without recompiling.
-version = "0.3"
-features = ["env-filter", "fmt"]
 
 [dev-dependencies]
 # The real front-end reader (TESTS ONLY — like wasm-encoder below, never in the compile

@@ -1,0 +1,43 @@
+# rcdzc-cli — the `rcdzc` compiler's COMMAND-LINE surface, extracted so the compiler LIBRARY (`rcdzc`)
+# stays a PURE library with no `clap` dependency (operator directive 2026-08-30: "The compiler should
+# not be pulling clap in as a dependency … The compiler should be a pure library").
+#
+# This crate owns the HOST-boundary arg parsing: the `clap`-derived `CompileArgs` (+ its `TargetArg`/
+# `OptLevelArg`/`OverflowModeArg` value-enums), the `run`/`parse_and_run` entry points, and the trace
+# SINK install (`tracing-subscriber`) — the two host-only deps the compiler library no longer carries.
+# It depends on `rcdzc`-the-library and drives the SAME clap-free compile driver (`rcdzc::cli::
+# run_with_specs`) the unified `cdz` binary drives, so both front-ends run ONE implementation.
+#
+# It builds the standalone `cdz-compile` binary (the per-case `build` phase of the corpus nix caching
+# pipeline) — a compiler-only closure: `rcdzc` + this thin clap layer, WITHOUT the rest of `cdz` (LSP,
+# syntax tooling, corpus, run). That small closure is exactly why the bin lives here and not in `cdz`.
+[package]
+name = "rcdzc-cli"
+version = "0.0.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "cdz-compile"
+path = "src/bin/cdz-compile.rs"
+
+[dependencies.rcdzc]
+# The compiler LIBRARY. This crate is the clap layer ON TOP of it: it parses args into the library's
+# core types (`rcdzc::{Target,OptLevel}`, `rcdzc::db::OverflowSpec`) and calls the library's clap-free
+# compile driver (`rcdzc::cli::run_with_specs`). rcdzc itself no longer depends on clap.
+path = "../rcdzc"
+
+[dependencies.clap]
+# The arg parser — lives HERE (the host boundary), never in the compiler library. Same clap 4 + derive
+# the workspace's xtask + `cdz` use.
+version = "4"
+features = ["derive"]
+
+[dependencies.tracing-subscriber]
+# Installs the trace SINK at the host boundary — used ONLY by `run` (the bin's front door). The library
+# core only EMITS `tracing` events (zero-cost when no subscriber is installed); the bin decides the
+# sink, turning on trace output from `CDZ_LOG` (a tool-private env var, NOT the shared `RUST_LOG`).
+version = "0.3"
+features = ["env-filter", "fmt"]

@@ -125,7 +125,7 @@ fn spawn(
             eprintln!(
                 "{prog}: cdz-compile not found (looked at $CDZ_COMPILE_BIN, beside `cdz`, then \
                  $PATH) — the `delegate-compile` feature spawns the compiler instead of linking it; \
-                 build it with `cargo build -p rcdzc --bin cdz-compile` and re-run"
+                 build it with `cargo build -p rcdzc-cli --bin cdz-compile` and re-run"
             );
             ExitCode::FAILURE
         }
@@ -229,7 +229,7 @@ pub fn delegate_project_to_bytes(
             eprintln!(
                 "{prog}: cdz-compile not found (looked at $CDZ_COMPILE_BIN, beside `cdz`, then \
                  $PATH) — a delegating (`--no-default-features`) `cdz` spawns the compiler instead of \
-                 linking it; build it with `cargo build -p rcdzc --bin cdz-compile` and re-run"
+                 linking it; build it with `cargo build -p rcdzc-cli --bin cdz-compile` and re-run"
             );
             return Err(());
         }
@@ -491,7 +491,7 @@ pub fn run_query_over_inputs(
             eprintln!(
                 "{prog}: cdz-compile not found (looked at $CDZ_COMPILE_BIN, beside `cdz`, then \
                  $PATH) — a delegating (`--no-default-features`) `cdz` spawns the compiler instead of \
-                 linking it; build it with `cargo build -p rcdzc --bin cdz-compile` and re-run"
+                 linking it; build it with `cargo build -p rcdzc-cli --bin cdz-compile` and re-run"
             );
             return empty_output();
         }

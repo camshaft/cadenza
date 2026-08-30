@@ -136,7 +136,8 @@ cedar = ["cadenza-syntax/cedar"]
 # With `standalone` OFF (`--no-default-features`, how the NIX build packages `cdz`), the compiler surface
 # DELEGATES to the external `cdz-compile` process instead — so a compiler change need not rebuild `cdz` and
 # the two cache/rebuild independently (`design/DESIGN-cdz-delegate-compile.md`). Behavior-identical either
-# way (cdz-compile IS `rcdzc::cli::run`, fed the same artifacts/flags).
+# way (cdz-compile IS `rcdzc_cli::run` — the clap layer over `rcdzc::cli::run_with_specs` — fed the same
+# artifacts/flags).
 # INCREMENTAL: this slice inverts the `cdz compile`/`cdz build` path; the query/LSP/run/test surfaces still
 # run in-process in BOTH configs (so `rcdzc` stays a NON-optional dep for now). A later slice delegates those
 # too and flips `standalone = ["dep:rcdzc"]` + `rcdzc = { optional = true }`, at which point a `!standalone`

@@ -688,6 +688,12 @@
           # data/wasm-abi.sexp by `xtask-codegen-wasm-abi --crate-lib` (committed byte-identical for now).
           wasm-abi-table = "implementation/seed/crates/wasm-abi-table";
           rcdzc = "implementation/seed/crates/rcdzc";
+          # rcdzc-cli (v-cdz-crate-split 2026-08-30): the clap arg-parsing layer + the `cdz-compile` bin,
+          # extracted so the `rcdzc` compiler is a PURE LIBRARY with no clap (operator directive). A ROOT
+          # workspace member (implementation/seed/crates/* glob, no own [workspace]), so — like the others —
+          # it MUST be registered here or the crane deps-layer src omits its Cargo.toml and the workspace
+          # fails to load. `cdzCompile` builds `-p rcdzc-cli --bin cdz-compile`.
+          rcdzc-cli = "implementation/seed/crates/rcdzc-cli";
           xtask = "xtask";
           # xtask-mandates (v-xtask-decompose): the mandate-lint carved out of the xtask monolith into its
           # own minimal-dep crate (syn only). A ROOT workspace member (under the new `xtask/crates/*` glob,
@@ -1045,6 +1051,11 @@
               # cadenza-compile-abi's own closure is [cadenza-ast cadenza-compile-abi], but rcdzc already reaches
               # cadenza-ast (via cadenza-syntax), so it adds only cadenza-compile-abi itself to rcdzc's closure.
               rcdzc = [ "cadenza-ast" "cadenza-compile-abi" "cadenza-syntax" "cadenza-syntax-cedar" "cadenza-syntax-core" "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml" "cdz-num" "cdz-rt" "rcdzc" ];
+              # rcdzc-cli (v-cdz-crate-split 2026-08-30): the clap CLI layer + `cdz-compile` bin. Its ONLY
+              # first-party path-dep is `rcdzc` (clap + tracing-subscriber are external), so its closure is
+              # rcdzc's closure ∪ {rcdzc-cli}. rcdzc's OWN closure is unchanged (rcdzc-cli deps rcdzc, not
+              # the reverse; rcdzc dropped only the external clap/tracing-subscriber).
+              rcdzc-cli = [ "cadenza-ast" "cadenza-compile-abi" "cadenza-syntax" "cadenza-syntax-cedar" "cadenza-syntax-core" "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml" "cdz-num" "cdz-rt" "rcdzc" "rcdzc-cli" ];
               cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" "cadenza-syntax-cedar" "cadenza-syntax-core" "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml" ];
               cadenza-syntax-core = [ "cadenza-ast" "cadenza-syntax-core" ];
               cadenza-syntax-cedar = [ "cadenza-ast" "cadenza-syntax-cedar" "cadenza-syntax-core" ];
@@ -2341,7 +2352,11 @@
         # shred (parser closure — excludes rcdzc), build (compiler closure = rcdzc), exec (runtime closure —
         # cdz-run deps wasmtime/cadenza-syntax/cdz-contract/cdz-rt, NO rcdzc, so COMPILER-FREE by construction).
         cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
-        cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; injectRuntimeHash = true; };
+        # The `cdz-compile` bin now lives in the `rcdzc-cli` crate (the clap arg-parsing layer), NOT in
+        # the `rcdzc` compiler LIBRARY — operator directive 2026-08-30 made rcdzc a PURE library (no clap).
+        # rcdzc-cli's closure = rcdzc's closure ∪ {rcdzc-cli} (clap/tracing-subscriber are external, not
+        # first-party), so the compiler-only closure is unchanged apart from the thin clap leaf.
+        cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc-cli"; bin = "cdz-compile"; closure = crateClosure "rcdzc-cli"; injectRuntimeHash = true; };
         cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
         # cdzRunExec — CRANELIFT-FREE corpus executor (seq-250/271 AOT split, #5893/#5910/#5922). Drops the
         # default `cranelift` feature → deserialize-only (Component::deserialize of precompiled .cwasm), no JIT.
@@ -4792,6 +4807,10 @@
                 crate = "rcdzc";
                 extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
               };
+              # rcdzc-cli (v-cdz-crate-split 2026-08-30): the clap CLI layer + `cdz-compile` bin over the
+              # rcdzc LIBRARY. Its own targets (lib + bin + one clap unit test) reference no external dirs —
+              # rcdzc enters only as a compiled lib DEP (not its tests), so no spec/semantics extraSrc needed.
+              clippy-rcdzc-cli = mkCrateClippyCrane { crate = "rcdzc-cli"; };
               clippy-xtask = mkCrateClippyCrane { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
               clippy-xtask-mandates = mkCrateClippyCrane { crate = "xtask-mandates"; };
               clippy-xtask-support = mkCrateClippyCrane { crate = "xtask-support"; };
@@ -4853,6 +4872,10 @@
                 crate = "rcdzc";
                 extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
               };
+              # rcdzc-cli (v-cdz-crate-split 2026-08-30): runs its clap unit test (overflow-flag parsing).
+              # REQUIRED by testCrateCoverageAssert now that rcdzc-cli is a workspace member. No extraSrc —
+              # rcdzc is a compiled lib dep here, not its own test target.
+              test-rcdzc-cli = mkCrateTestCrane { crate = "rcdzc-cli"; };
               test-xtask = mkCrateTestCrane { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
               test-xtask-mandates = mkCrateTestCrane { crate = "xtask-mandates"; };
               test-xtask-support = mkCrateTestCrane { crate = "xtask-support"; };
@@ -4924,12 +4947,12 @@
             # contexts → NO ruleset change (v-ft: a 2-way rebalance keeps the contexts). Target: both ~4-5m.
             clippyShardA = pkgs.runCommand "cargo-clippy-shard-a"
               {
-                inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax clippy-cdz-platform
+                inherit (perCrateClippyCrane) clippy-rcdzc clippy-rcdzc-cli clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax clippy-cdz-platform
                   clippy-cdz-component-rewrite clippy-cdz-contract
                   clippy-cadenza-syntax-cedar clippy-cadenza-syntax-core clippy-cadenza-syntax-json
                   clippy-cadenza-syntax-sexpr clippy-cadenza-syntax-toml clippy-cadenza-compile-abi;
               } ''
-              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax(+core/cedar/json/sexpr/toml) + cadenza-compile-abi + cdz-platform + cdz-component-rewrite + cdz-contract" > $out
+              echo "ok: clippy shard A — rcdzc + rcdzc-cli + cdz-num + cdz-calc + cadenza-syntax(+core/cedar/json/sexpr/toml) + cadenza-compile-abi + cdz-platform + cdz-component-rewrite + cdz-contract" > $out
             '';
             clippyShardB = pkgs.runCommand "cargo-clippy-shard-b"
               {
