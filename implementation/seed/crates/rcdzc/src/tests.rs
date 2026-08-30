@@ -18346,131 +18346,28 @@ mod match_engine {
     }
 
     #[test]
-    fn an_unknown_unit_in_a_quantity_literal_is_named_with_a_suggestion() {
-        // A `(Qty.of n (Unit.of #"name"))` naming a unit that is neither a built-in family nor a user
-        // `Unit.define` (`zorks`, the British `metre`, a typo `secnd`) fails to reduce and otherwise
-        // surfaced only as a generic "no machine representation" decline that never mentions the unit. It
-        // is now a CDZ0201 naming the unknown unit, with a did-you-mean over the known unit vocabulary.
-        let find = |src: &str| {
-            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-                .into_iter()
-                .find(|d| d.message.contains("unknown unit"))
-                .unwrap_or_else(|| panic!("no unknown-unit fault for {src}"))
-        };
-        let d = find("(module m (def (main) (Qty.of 5 (Unit.of #\"zorks\"))) (export main))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("`zorks`"),
-            "names the unit: {}",
-            d.message
-        );
-        // A near-miss of a real unit gets a confident suggestion (British spelling / typo).
-        let metre = find("(module m (def (main) (Qty.of 5 (Unit.of #\"metre\"))) (export main))");
-        assert!(metre.message.contains("did you mean `meter`?"));
-        // The confident suggestion is APPLYABLE: it carries a heuristic Replace fix on the NAME literal,
-        // and — since the argument is a SYMBOL literal `#"metre"` — the replacement PRESERVES the `#"…"`
-        // delimiter (`#"meter"`), so applying it re-renders a valid `(Unit.of #"meter")`, not the
-        // malformed bare-name `(Unit.of meter)`.
-        let fix = metre
+    fn an_unknown_unit_string_literal_fix_keeps_the_string_delimiter() {
+        // WHITE-BOX RESIDUAL of the unknown-unit did-you-mean (its symbol-form fix, near-miss/compose
+        // guidance, and Unit.define-base cases are now the corpus 18 unknown-unit cases). Keeps the facet
+        // the corpus grade cannot see: when the Unit.of argument is a plain STRING `"metre"` (not the
+        // `#"…"` symbol), the rename fix PRESERVES the string delimiter (`"meter"`) — a string arg surfaces
+        // a different PRIMARY diagnostic in the grade path, so the did-you-mean rides a non-primary fault
+        // the corpus does not match; this pins it directly.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (Qty.of 5 (Unit.of \"metre\"))) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("unknown unit"))
+        .expect("no unknown-unit fault");
+        let fix = d
             .fix
             .as_ref()
-            .expect("the unknown-unit did-you-mean carries a replace fix");
-        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            .expect("the string-form unknown-unit did-you-mean carries a fix");
         assert_eq!(
-            fix.replacement, "#\"meter\"",
-            "rewrites the typo to the near unit, keeping the #\"…\" symbol delimiter"
-        );
-        assert!(!fix.verified, "a nearest-name guess is heuristic");
-        // ROUND-TRIP: applying the fix (`#"metre"` → `#"meter"`) yields a program with no unknown-unit
-        // fault — the suggestion is a real repair, witnessed by compiling the corrected source.
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(
-                "(module m (def (main) (Qty.of 5 (Unit.of #\"meter\"))) (export main))"
-            )))
-            .iter()
-            .any(|d| d.message.contains("unknown unit")),
-            "applying the unit fix (#\"metre\" → #\"meter\") clears the unknown-unit fault"
-        );
-        assert!(
-            find("(module m (def (main) (Qty.of 5 (Unit.of #\"secnd\"))) (export main))")
-                .message
-                .contains("did you mean `second`?"),
-        );
-        // The delimiter is PRESERVED per the argument literal's kind: a plain STRING argument `"metre"`
-        // (not the `#"…"` symbol form) gets a string-delimited replacement `"meter"`, so applying it
-        // re-renders a valid string argument rather than a mismatched symbol or a bare name.
-        let str_metre =
-            find("(module m (def (main) (Qty.of 5 (Unit.of \"metre\"))) (export main))");
-        let str_fix = str_metre
-            .fix
-            .as_ref()
-            .expect("the string-form unknown-unit did-you-mean also carries a fix");
-        assert_eq!(
-            str_fix.replacement, "\"meter\"",
+            fix.replacement, "\"meter\"",
             "a string-literal unit argument keeps the \"…\" delimiter"
         );
-        // An ABBREVIATION with no confident typo neighbour (`mph`'s nearest units by edit distance are the
-        // unrelated `bps`/`mbps`/`bit`) does NOT get a misleading "closest matches" list — it gets
-        // ACTIONABLE guidance: how to COMPOSE a compound unit and how to DECLARE the name with `Unit.define`.
-        let mph =
-            find("(module m (def (main) (Qty.of 45 (Unit.of #\"mph\"))) (export main))").message;
-        assert!(
-            !mph.contains("closest matches") && !mph.contains("`bps`"),
-            "no misleading closest-matches noise: {mph}"
-        );
-        assert!(
-            mph.contains("compose a compound unit")
-                && mph.contains("(Unit.of #\"hour\")")
-                && mph.contains("(Unit.define #\"mph\""),
-            "actionable compound/declare guidance carrying the unknown name: {mph}"
-        );
-        // An unknown BASE unit inside a `Unit.define` is caught too.
-        assert!(
-            find("(module m (Unit.define #\"furlong\" (Unit.of #\"zorks\") 660 1) (def (main) 1) (export main))")
-                .message
-                .contains("`zorks`"),
-        );
-        // NO false positive: built-in units and a user-declared unit + its use are clean.
-        for ok in [
-            "(module m (def (main) (Qty.of 5 (Unit.of #\"meter\"))) (export main))",
-            "(module m (def (main) (Qty.of 5 (Unit.of #\"mbps\"))) (export main))",
-            "(module m (Unit.define #\"furlong\" (Unit.of #\"foot\") 660 1) \
-             (def (main) (Qty.of 5 (Unit.of #\"furlong\"))) (export main))",
-        ] {
-            assert!(
-                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                    .iter()
-                    .any(|d| d.message.contains("unknown unit")),
-                "a known/declared unit is not flagged: {ok}"
-            );
-        }
-        // NO SPURIOUS "not a SYMBOL" companion: an unknown unit `#"name"` IS a well-formed symbol literal,
-        // so `check_unit_composition`'s "names its unit with a SYMBOL, but this is a Symbol value" reject
-        // must NOT fire alongside the unknown-unit one. Before the symbol-arg exclusion, `5 furlong` got
-        // BOTH — the second self-contradictory (it names the very `#"…"` form the arg already is). The
-        // unknown-unit diagnostic is the SOLE fault for a bad unit name.
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (main) (Qty.of 5 (Unit.of #\"furlong\"))) (export main))",
-        )));
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.message.contains("names its unit with a SYMBOL")),
-            "no spurious not-a-SYMBOL reject on a valid symbol naming an unknown unit: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-        // A genuinely NON-symbol arg (an integer) STILL earns the "not a SYMBOL" reject — the exclusion is
-        // for a valid symbol only, not a blanket suppression.
-        assert!(
-            crate::diagnostics(&mut crate::db::Db::load(parse(
-                "(module m (def (main) (Qty.of 1 (Unit.of 42))) (export main))"
-            )))
-            .iter()
-            .any(|d| d.message.contains("names its unit with a SYMBOL")),
-            "a non-symbol Unit.of arg still names the symbol requirement"
-        );
     }
-
     #[test]
     fn remainder_on_same_dimension_integer_quantities_is_well_formed() {
         use crate::testkit::parse;
