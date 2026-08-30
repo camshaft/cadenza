@@ -7,6 +7,11 @@
 //!   render_sexpr(read(input))                     == tree.sexp                         (bytes)
 //!   fmt(input)                                     == format.<ext>  (or input if absent) (bytes)
 //!
+//! A DECLINE case (Increment 4, the grader's `Todo`) carries NO `tree.sexp`: the reader is expected to
+//! REFUSE its `input` (a malformed or not-yet-realized surface). read-Ok ⟺ well-formed (has a golden);
+//! read-Err ⟺ decline (no golden). A decline may carry an optional `error.txt` pinning a substring its
+//! diagnostic must contain (parse-error quality, DESIGN §10).
+//!
 //! It is the Increment-2 gate — a bootstrapping self-consistency check, no new harness. Increment 3 adds
 //! the real syntax grader + per-case nix derivations (the authoritative, cached gate). Because this test
 //! reads files from the repo's `spec/` tree (which a crate-scoped nix test sandbox may not carry), it
@@ -120,21 +125,45 @@ fn syntax_corpus_goldens_are_self_consistent() {
             continue;
         };
         let input = std::fs::read(&input_path).expect("read input file");
+        let tree_path = case.join("tree.sexp");
+        let ext = input_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
 
-        // Read the surface into the arena. A malformed input (a decline) is out of scope for Increment 2
-        // (it is Increment 4's `Todo` path) — report it so we don't author one here by accident.
+        // Read the surface into the arena. A case is a DECLINE case (Increment 4's `Todo` path) IFF it
+        // carries no `tree.sexp`: the reader is expected to REFUSE the input (a malformed or not-yet-
+        // realized surface), which has no parse tree. read Ok ⟺ well-formed (has a `tree.sexp` golden);
+        // read Err ⟺ decline (no golden). This deterministic split is what lets the corpus pin
+        // parse-error behavior alongside successful parses.
         let arena = match convert::read(&input, surface) {
             Ok(a) => a,
             Err(e) => {
-                failures.push(format!(
-                    "{label}: input does not parse ({e}) — declines are Increment 4"
-                ));
+                // A decline. It must NOT carry a tree.sexp (a well-formed case that regressed to a
+                // decline would still have its golden — catch that). An optional `error.txt` pins a
+                // substring the diagnostic must contain (DESIGN §10 parse-error-quality); an unpinned
+                // decline just records that it declines.
+                if tree_path.exists() {
+                    failures.push(format!(
+                        "{label}: input DECLINES ({e}) but a tree.sexp golden exists — a well-formed \
+                         case regressed to a decline, or delete tree.sexp to record it as a decline case"
+                    ));
+                } else if let Ok(want) = std::fs::read_to_string(case.join("error.txt")) {
+                    let want = want.trim();
+                    if !want.is_empty() && !e.to_string().contains(want) {
+                        failures.push(format!(
+                            "{label}: decline message {:?} lacks the pinned error.txt substring {want:?}",
+                            e.to_string()
+                        ));
+                    }
+                }
                 continue;
             }
         };
 
+        // A well-formed case MUST NOT be mislabeled as a decline: if it parses, it needs a golden.
         // tree.sexp — the structural parse-tree golden.
-        let tree_path = case.join("tree.sexp");
         let want_tree = tree_golden(&arena);
         if bless {
             std::fs::write(&tree_path, &want_tree).expect("write tree.sexp");
@@ -150,10 +179,6 @@ fn syntax_corpus_goldens_are_self_consistent() {
         }
 
         // format.<ext> (or input-is-canonical). The format golden is in the input's own surface.
-        let ext = input_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
         let format_path = case.join(format!("format.{ext}"));
         let formatted = match fmt_bytes(&input, surface) {
             Ok(b) => b,
