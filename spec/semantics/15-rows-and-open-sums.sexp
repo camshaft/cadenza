@@ -267,7 +267,25 @@
   (input  (do
             (def (main) (. (Record.project #record((= a 1) (= b 2)) (a a)) a))
             (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "more than once")))
+
+(case "projecting a record with a TRIPLED label is rejected (the duplicate-label check is not adjacency-limited to a pair)"
+  (doc    "The duplicate-projection-label reject fires on ANY repeat count, not just a pair: `(a a a)` names
+           `a` three times and is CDZ0201 like `(a a)`. Pins that the label-list linearity check counts
+           occurrences rather than only comparing adjacent neighbours.")
+  (input  (do
+            (def (main) (. (Record.project #record((= a 1) (= b 2)) (a a a)) a))
+            (export main)))
+  (error  CDZ0201 (message "more than once")))
+
+(case "projecting a record with a NON-ADJACENT duplicate label is rejected (a repeat separated by another label still rejects)"
+  (doc    "The duplicate is caught regardless of position: `(a b a)` repeats `a` with `b` between the two
+           occurrences and is CDZ0201 — the check is over the whole label SET, not adjacent pairs. Guards
+           against a naive neighbour-only scan that would miss a separated repeat.")
+  (input  (do
+            (def (main) (. (Record.project #record((= a 1) (= b 2) (= c 3)) (a b a)) a))
+            (export main)))
+  (error  CDZ0201 (message "more than once")))
 
 (case "dropping fields from a record leaves the remaining fields"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields:
