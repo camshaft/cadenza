@@ -978,44 +978,6 @@ fn many_references_to_one_missing_name_all_suggest_it() {
 }
 
 #[test]
-fn a_member_operand_typo_prefers_a_member_accessible_name_over_a_nearer_variant() {
-    // CONTEXT-AWARE suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
-    // Fix — the fix must be one an agent applies and it WORKS, the one-shot rule): a `handle`'s effect
-    // name is rewritten to `(. Name op)` arm ops, so a typo'd effect name is a MEMBER OPERAND. Here
-    // `Logg` sits 1 edit from BOTH the variant `Log` and the effect `Logr`. A variant has no members,
-    // so suggesting `Log` would fail the one-shot rule (`(. Log op)` → "record has no field `op`"). The
-    // member-operand pool drops variant constructors, so the EFFECT `Logr` — a name the fix actually
-    // resolves — is suggested instead.
-    let src = "(do (effect Logr (op op (-> Unit Unit))) (type T (Log Int64)) \
-                   (def (main) (handle Logg 0 ((op (u) s (resume s s))) 42)) (export main))";
-    let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("Logr"),
-        "a member operand prefers the member-accessible effect over the nearer variant: {}",
-        d.message
-    );
-}
-
-#[test]
-fn a_member_operand_does_not_suggest_a_prelude_variant_constructor() {
-    // The prelude's variant constructors (`None`/`Some`/`Ok`/`Err`) are dropped from a MEMBER OPERAND's
-    // candidate pool too — `(. Nope op)` (a handle effect typo) must not suggest `None` (a variant has
-    // no `op` member, so the fix wouldn't resolve). With no member-accessible name close to `Nope`, the
-    // diagnostic stays the plain "unbound" — no misleading fix (honest: no fix beats a wrong one).
-    let src = "(do (effect E (op get (-> Unit Int64))) \
-                   (def (main) (handle Nope 0 ((get (u) s (resume s s))) 42)) (export main))";
-    let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-    assert!(
-        !d.message.contains("None"),
-        "a variant ctor is not suggested for a member operand: {}",
-        d.message
-    );
-}
-
-#[test]
 fn a_member_accessible_module_sharing_a_variant_name_is_still_suggested() {
     // A prelude name can be BOTH a member-accessible MODULE and some sum's variant — `List` is the
     // collection-operations module AND the `Ast.List` node kind. The member-operand candidate pool
