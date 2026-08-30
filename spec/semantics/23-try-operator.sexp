@@ -631,9 +631,12 @@
            fallible Result/Option, found Float64` on top: the operand's own fault is the primary `no`. Pins
            that the `?` collect arm collects the operand's faults FIRST and suppresses its shape/boundary
            checks when the operand already carries a coded fault (the `Member`-arm operand-is-poison
-           discipline). Grades on CDZ0301 — the operand mismatch — not the suppressed `?` cascade.")
+           discipline). Grades on CDZ0301 — the operand mismatch — not the suppressed `?` cascade;
+           `(no-other-errors)` pins that NO second coded fault (in particular no CDZ0203 `?`-shape reject)
+           accompanies it. (Enhanced from rcdzc
+           try_on_an_ill_typed_operand_reports_the_operand_error_not_a_fallible_cascade.)")
   (input  (do (def (main) (let ((x (try (+ 1 2.0)))) (Some x))) (export main)))
-  (error  CDZ0301))
+  (error  CDZ0301 (no-other-errors)))
 
 (case "a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands"
   (doc    "The BRICK 3b shape as a graded TODO (the decline is documented at :15/:99/:149 but had no
