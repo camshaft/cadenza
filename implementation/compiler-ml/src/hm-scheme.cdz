@@ -68,25 +68,25 @@ def free-width-list(ps: List(Ty), i: Int64, acc: List(Int64)) =
 def inst-sign-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
   (if i == List.len(ids) then (su, n)
    else (match List.at(ids, i) with
-     | Option.Some(qid) => (match fresh-sign(n) with
-         | (fv, n1) => inst-sign-ren(subst-bind-sign(su, qid, fv), ids, i + 1, n1))
+     | Option.Some(qid) => (
+         let (fv, n1) = fresh-sign(n) in inst-sign-ren(subst-bind-sign(su, qid, fv), ids, i + 1, n1))
      | Option.None(_) => (su, n)))
 
 /// The width twin.
 def inst-width-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
   (if i == List.len(ids) then (su, n)
    else (match List.at(ids, i) with
-     | Option.Some(qid) => (match fresh-width(n) with
-         | (fv, n1) => inst-width-ren(subst-bind-width(su, qid, fv), ids, i + 1, n1))
+     | Option.Some(qid) => (
+         let (fv, n1) = fresh-width(n) in inst-width-ren(subst-bind-width(su, qid, fv), ids, i + 1, n1))
      | Option.None(_) => (su, n)))
 
 /// INSTANTIATE a scheme at a use site: freshen every quantified var, apply the renaming to the body, return
 /// (fresh Ty, next-counter). Two instantiations of the SAME scheme get DISJOINT vars (threading the counter) —
 /// the essence of let-polymorphism. A `mono` scheme (no quantifiers) instantiates to its body unchanged.
 def instantiate(sch: Scheme, n: Int64) = match sch with
-  | Scheme.Scheme(sids, wids, body) => (match inst-sign-ren(subst-empty(), sids, 0, n) with
-      | (su1, n1) => (match inst-width-ren(su1, wids, 0, n1) with
-          | (su2, n2) => (apply(su2, body), n2)))
+  | Scheme.Scheme(sids, wids, body) => (
+      let (su1, n1) = inst-sign-ren(subst-empty(), sids, 0, n) in (
+          let (su2, n2) = inst-width-ren(su1, wids, 0, n1) in (apply(su2, body), n2)))
 
 // ---- GENERALIZE (rcdzc `generalize` — quantify free vars not free in the environment) ----------------
 /// Ids in `xs` that are NOT in `env` (the HM side-condition: quantify only vars the environment doesn't still
@@ -132,8 +132,7 @@ def hs-two-instantiations-are-disjoint() =
   // TWO instantiations of the same polymorphic scheme get DISJOINT fresh vars (thread the counter): first from 0
   // → SVar(0)/WVar(1), second from that counter → SVar(2)/WVar(3). Independent solving per use — the point.
   let sch = generalize(Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1))), ([] : List(Int64)), ([] : List(Int64))) in
-  match instantiate(sch, 0) with
-    | (_t1, n1) => (match instantiate(sch, n1) with
+  let (_t1, n1) = instantiate(sch, 0) in (match instantiate(sch, n1) with
         | (Ty.TyInt(IntType.IntType(Sign.SVar(s2), Width.WVar(w2))), n2) =>
             (if (s2 == 2) and (w2 == 3) and (n2 == 4) then unit else trap("second instantiation is SVar(2)/WVar(3)"))
         | _ => trap("second instantiation has fresh vars"))
