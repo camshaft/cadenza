@@ -4987,10 +4987,10 @@ pub(super) fn emit(
                     // consume the peer's value into a SCALAR the entrypoint returns (e.g. read the field/
                     // element and return it, or `List.len`) rather than returning the raw compound, OR
                     // handle the effect in-program instead of binding it to a peer.
-                    Reject::decline(format!(
+                    Reject::unsupported(format!(
                         "a peer-bound effect op (`{op}` on `{iface}`) is reached in an entrypoint whose \
                          RESULT escapes as a runtime resource (it returns the compound/collection the peer \
-                         produced) — the resource-escape boundary does not yet carry the peer import. \
+                         produced) — the resource-escape boundary does not support carrying the peer import. \
                          Consume the peer's value into a scalar the entrypoint returns, or handle the \
                          effect in-program instead of binding it to a peer"
                     ))
