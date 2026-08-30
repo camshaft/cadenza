@@ -1886,13 +1886,29 @@ pub(crate) fn run_watch(args: &WatchArgs) -> ExitCode {
             // A watch `run` sets only the entry + its interactive call/args/store; every other flag takes
             // its default (no grade, no leak-ceiling, no verdict/diagnostics wire, sexp render). The spread
             // keeps this site compiling when a new `RunArgs` field is added (the cross-crate E0063 class).
-            WatchCmd::Run => run_project(&cdz_run::cli::RunArgs {
-                component: Some(std::path::PathBuf::from(&dir_str)),
-                call: call.clone(),
-                args: run_args.clone(),
-                store: store.clone(),
-                ..Default::default()
-            }),
+            WatchCmd::Run => {
+                // call/args/store ride the thin `RunArgs.rest` passthrough (verbatim to the `cdz-run`
+                // binary, exactly as CLI `--call`/`--arg`/`--store`) — post cdz-run sever, `cdz` forwards
+                // run flags rather than re-declaring cdz-run's CLI.
+                let mut rest: Vec<String> = Vec::new();
+                if let Some(c) = &call {
+                    rest.push("--call".into());
+                    rest.push(c.clone());
+                }
+                for a in &run_args {
+                    rest.push("--arg".into());
+                    rest.push(a.clone());
+                }
+                if let Some(s) = &store {
+                    rest.push("--store".into());
+                    rest.push(s.to_string_lossy().into_owned());
+                }
+                run_project(&crate::run_args::RunArgs {
+                    component: Some(std::path::PathBuf::from(&dir_str)),
+                    rest,
+                    ..Default::default()
+                })
+            }
         }
     };
 

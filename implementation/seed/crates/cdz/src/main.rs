@@ -68,6 +68,7 @@ mod doc_module;
 mod compile_args;
 #[cfg(not(feature = "standalone"))]
 mod delegate;
+mod run_args;
 mod test_runner;
 use test_runner::*;
 
@@ -187,7 +188,7 @@ enum Cmd {
     /// `cdz` on the PATH both compiles and runs (`cdz compile foo.cdz -o - | cdz run -`). A run is capped
     /// at a wall-clock deadline (default 30s) so a runaway loop TRAPS rather than hanging — set
     /// `CDZ_RUN_TIMEOUT_SECS=<n>` to change it, `=0` to disable (e.g. under a debugger).
-    Run(cdz_run::cli::RunArgs),
+    Run(run_args::RunArgs),
 
     // ── corpus (cdz-corpus) ─────────────────────────────────────────────────────────────────────
     /// Read + migrate the executable-semantics corpus (`records`/`migrate`/`check`) — the maintenance
@@ -2431,73 +2432,7 @@ fn run_arg_is_source_file(component: Option<&std::path::Path>) -> bool {
 /// project run doesn't leak its internal temp path), writes them to a temp `.wasm` in the manifest dir for
 /// the runner, then delegates to the same `cdz-run` code path the direct `cdz run <file>` uses — passing
 /// through `--call`/`--arg`/`--store`/`--host-response`/`--peer` unchanged. The temp is removed after.
-/// Reconstruct the argv to hand the external `cdz-run` binary from a parsed [`cdz_run::cli::RunArgs`] —
-/// the thin-`cdz` seam for forwarding `run_project`'s run-step (which runs a freshly-built component) to the
-/// runner binary instead of linking `cdz_run::cli::run` in-process. `cdz-run` `#[command(flatten)]`s the SAME
-/// `RunArgs`, so a faithful argv re-parses into an identical struct → behavior-preserving. Emits ONLY the
-/// RUN-relevant fields; the PROJECT-build fields (`release`/`opt_level`) and GRADE-mode fields
-/// (`grade`/`compile_status`/`compile_diag`/`component_name`/`baseline`) are intentionally omitted — they do
-/// not affect running an already-built `.wasm` (a `cdz run <project>` never carries the grade flags, and the
-/// build tier was already consumed to produce the component). The mapping is pinned by a unit test.
-fn cdz_run_forward_argv(a: &cdz_run::cli::RunArgs) -> Vec<String> {
-    use cdz_run::cli::OutputFormat;
-    let mut v: Vec<String> = Vec::new();
-    if let Some(c) = &a.component {
-        v.push(c.to_string_lossy().into_owned());
-    }
-    if let Some(call) = &a.call {
-        v.push("--call".into());
-        v.push(call.clone());
-    }
-    for arg in &a.args {
-        v.push("--arg".into());
-        v.push(arg.clone());
-    }
-    if a.call_twice {
-        v.push("--call-twice".into());
-    }
-    for ta in &a.then_args {
-        v.push("--then-arg".into());
-        v.push(ta.clone());
-    }
-    if a.drop_handle {
-        v.push("--drop-handle".into());
-    }
-    if let Some(m) = &a.call_member {
-        v.push("--call-member".into());
-        v.push(m.clone());
-    }
-    v.push("--format".into());
-    v.push(
-        match a.format {
-            OutputFormat::Sexp => "sexp",
-            OutputFormat::BinaryAst => "binary-ast",
-        }
-        .into(),
-    );
-    if let Some(rt) = &a.runtime {
-        v.push("--runtime".into());
-        v.push(rt.to_string_lossy().into_owned());
-    }
-    if let Some(st) = &a.store {
-        v.push("--store".into());
-        v.push(st.to_string_lossy().into_owned());
-    }
-    for hr in &a.host_responses {
-        v.push("--host-response".into());
-        v.push(hr.clone());
-    }
-    for p in &a.peers {
-        v.push("--peer".into());
-        v.push(p.clone());
-    }
-    if a.report_live_objects {
-        v.push("--report-live-objects".into());
-    }
-    v
-}
-
-fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
+fn run_project(args: &run_args::RunArgs) -> ExitCode {
     // The project target: the given `Project.cdz`/directory, or `None` (a bare `cdz run`) → an upward
     // search from the cwd, exactly as `resolve_project_specs` handles a `None` argument.
     let target = args
@@ -2569,20 +2504,20 @@ fn run_project(args: &cdz_run::cli::RunArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Run the freshly-built component through the SAME `cdz-run` path as a direct `cdz run <file>`: clone
-    // the parsed args, point `component` at the built wasm, and append each dep as a `--peer iface=path`
-    // (the other flags pass through unchanged). A CLI-given `--peer` is preserved; deps are added on top.
-    let mut run_args = args.clone();
-    run_args.component = Some(out_wasm.clone());
+    // Forward to the external `cdz-run` binary (thin-`cdz` seam — the runner holds wasmtime, reached on
+    // PATH via `$CDZ_RUN_BIN` → sibling → `$PATH`; v-nix injects `$CDZ_RUN_BIN` at the seed sites, #5115):
+    // the freshly-built component, then THIS run's passthrough args verbatim (`rest` — `--call`/`--arg`/…),
+    // then each path-dep as a `--peer iface=path`. A CLI-given `--peer` (already in `rest`) is preserved;
+    // deps are added on top. The project build flags (`--release`/`--opt-level`) were consumed above and
+    // are NOT forwarded (the component is already built). `cdz-run` re-parses this as its full `RunArgs`.
+    let mut fwd: Vec<String> = vec![out_wasm.to_string_lossy().into_owned()];
+    fwd.extend(args.rest.iter().cloned());
     for (iface, path) in &dep_peers {
-        run_args.peers.push(format!("{iface}={}", path.display()));
+        fwd.push("--peer".into());
+        fwd.push(format!("{iface}={}", path.display()));
     }
-    // Run the built component through the external `cdz-run` binary (thin-`cdz` seam — the runner holds
-    // wasmtime, reached on PATH via `$CDZ_RUN_BIN` → sibling → `$PATH`) rather than linking
-    // `cdz_run::cli::run` in-process. `cdz-run` re-parses the reconstructed argv into the same `RunArgs`,
-    // so this is behavior-preserving; v-nix injects `$CDZ_RUN_BIN` at the seed `cdz run` sites (#5115).
     let program = locate_plugin("run").unwrap_or_else(|| PathBuf::from(bin_name("cdz-run")));
-    let code = passthrough_status(&program, &cdz_run_forward_argv(&run_args), "cdz-run");
+    let code = passthrough_status(&program, &fwd, "cdz-run");
     let _ = std::fs::remove_file(&out_wasm); // best-effort cleanup of the temp artifact
     for (_iface, path) in &dep_peers {
         let _ = std::fs::remove_file(path); // clean up each temp dep component
@@ -9413,73 +9348,5 @@ mod tests {
         assert_eq!(parse_plugin_summary(""), None);
         assert_eq!(parse_plugin_summary("\n  \n"), None);
         assert_eq!(parse_plugin_summary("one\ntwo\n"), None);
-    }
-
-    // Pins the run_project run-step forward's RunArgs->argv reconstruction (a missed/mis-mapped field would
-    // silently regress `cdz run <project>`). Every RUN-relevant field set distinctively; the build/grade
-    // fields (release/opt_level/grade/compile_status/compile_diag/component_name/baseline) are set to their
-    // zero values and MUST NOT appear in the argv.
-    #[test]
-    fn cdz_run_forward_argv_maps_every_run_relevant_field() {
-        use cdz_run::cli::{OutputFormat, RunArgs};
-        let full = RunArgs {
-            component: Some(std::path::PathBuf::from("built.wasm")),
-            call: Some("go".into()),
-            args: vec!["-4".into(), "x".into()],
-            call_twice: true,
-            then_args: vec!["7".into()],
-            drop_handle: true,
-            call_member: Some("len".into()),
-            format: OutputFormat::BinaryAst,
-            runtime: Some(std::path::PathBuf::from("/rt.wasm")),
-            store: Some(std::path::PathBuf::from("/store")),
-            host_responses: vec!["ask.ask=10".into()],
-            peers: vec!["cadenza:math/api=math.wasm".into()],
-            report_live_objects: true,
-            // Every remaining field (the build/grade wire: release/opt_level/grade/compile_status/
-            // compile_diag/diagnostics/component_name/tolerate_fewer_live_objects/baseline/emit_verdict/
-            // core_*) stays at its zero default and MUST NOT emit any argv — the spread pins exactly that.
-            ..Default::default()
-        };
-        assert_eq!(
-            cdz_run_forward_argv(&full),
-            vec![
-                "built.wasm",
-                "--call",
-                "go",
-                "--arg",
-                "-4",
-                "--arg",
-                "x",
-                "--call-twice",
-                "--then-arg",
-                "7",
-                "--drop-handle",
-                "--call-member",
-                "len",
-                "--format",
-                "binary-ast",
-                "--runtime",
-                "/rt.wasm",
-                "--store",
-                "/store",
-                "--host-response",
-                "ask.ask=10",
-                "--peer",
-                "cadenza:math/api=math.wasm",
-                "--report-live-objects",
-            ]
-        );
-        // Minimal: only a component + the always-emitted default `--format sexp`; nothing else leaks.
-        // Only a component; every other field defaults (format→Sexp), so nothing but the component + the
-        // always-emitted default `--format sexp` leaks into the argv.
-        let minimal = RunArgs {
-            component: Some(std::path::PathBuf::from("c.wasm")),
-            ..Default::default()
-        };
-        assert_eq!(
-            cdz_run_forward_argv(&minimal),
-            vec!["c.wasm", "--format", "sexp"]
-        );
     }
 }
