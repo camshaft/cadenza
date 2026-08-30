@@ -77,14 +77,16 @@ def denoteBinary (op : String) (w : IntTy) (oa ob : Outcome) : Outcome :=
   | _, .diverges => .diverges
   | _, _ => .unsupported "denote: unmodeled operand outcome"
 
-/-- Dispatch a denoted application on its arity (unary/binary; else unsupported). NON-recursive, so its
-array-literal patterns are fine — kept OUT of `denote` (whose WF-recursive equation compiler rejects
-`#[a,b]` patterns). -/
+/-- Dispatch a denoted application on its arity (unary/binary; else unsupported). NON-recursive, kept
+OUT of `denote` (whose WF-recursive equation compiler rejects array-literal patterns). Uses a
+dependent-`if` on `oargs.size` with proof-carrying indexing (`oargs[i]'h`) rather than `#[oa]`/`#[oa,ob]`
+literal patterns, because those literal-array matches defeat both `split` and `simp`'s equation
+generation — this size form lets the soundness proofs (`denoteApp_ne_trap`) case via `by_cases` and get
+operand membership from `Array.getElem_mem`. -/
 def denoteApp (op : String) (w : IntTy) (oargs : Array Outcome) : Outcome :=
-  match oargs with
-  | #[oa] => denoteUnary op oa
-  | #[oa, ob] => denoteBinary op w oa ob
-  | _ => .unsupported "denote: unsupported operator arity"
+  if h1 : oargs.size = 1 then denoteUnary op (oargs[0]'(by omega))
+  else if h2 : oargs.size = 2 then denoteBinary op w (oargs[0]'(by omega)) (oargs[1]'(by omega))
+  else .unsupported "denote: unsupported operator arity"
 
 def denote (ρ : Nat → Value) (w : IntTy) : SymExpr → Outcome
   | .const v => .value v
@@ -214,7 +216,7 @@ theorem denoteBinary_ne_trap (op : String) (w : IntTy) (oa ob : Outcome) (k : St
       simp only [denoteBinary] at h
       split at h
       · simp_all
-      · split at h <;> simp_all [hop]
+      · split at h <;> simp_all
     | trap t => exact hb t rfl
     | diverges => simp [denoteBinary] at h
     | unsupported r => simp [denoteBinary] at h
@@ -277,5 +279,38 @@ theorem arithOps_excludes_booleans :
 (`arithOps ∪ bitwiseOps`) excludes every comparison/boolean, the ops a trap-guarded rewrite may drop. -/
 theorem bitwiseOps_excludes_comparisons_and_booleans :
     (["=", "<", ">", "<=", ">=", "and", "or", "not"].any (bitwiseOps.contains ·)) = false := by decide
+
+/-- Bridge to the `.app` case of `mayTrap` soundness: a denoted application never traps when the op is
+non-arithmetic and every operand outcome is trap-free — `denoteApp` dispatches to `denoteUnary` /
+`denoteBinary` (both trap-free by the lemmas above) or to `.unsupported`. -/
+theorem denoteApp_ne_trap (op : String) (w : IntTy) (oargs : Array Outcome) (k : String)
+    (hop : arithOps.contains op = false)
+    (hall : ∀ o ∈ oargs, ∀ t, o ≠ .trap t) :
+    denoteApp op w oargs ≠ .trap k := by
+  unfold denoteApp
+  split
+  · exact denoteUnary_ne_trap op _ k (hall _ (Array.getElem_mem _))
+  · split
+    · exact denoteBinary_ne_trap op w _ _ k hop
+        (hall _ (Array.getElem_mem _)) (hall _ (Array.getElem_mem _))
+    · intro hc; exact Outcome.noConfusion hc
+
+theorem mayTrap_sound (ρ : Nat → Value) (w : IntTy) (e : SymExpr) :
+    mayTrap e = false → ∀ k, denote ρ w e ≠ .trap k := by
+  induction e using denote.induct (ρ := ρ) (w := w) <;> intro h <;>
+    first
+      | (intro k; simp_all [denote, mayTrap]; done)
+      | (rename_i op args ih
+         simp only [mayTrap, Bool.or_eq_false_iff] at h
+         obtain ⟨⟨ha, _⟩, hany⟩ := h
+         intro k
+         simp only [denote]
+         apply denoteApp_ne_trap op w _ k (by simpa using ha)
+         intro o ho
+         obtain ⟨y, hy, rfl⟩ := Array.mem_map.1 ho
+         obtain ⟨i, hi, hval⟩ := Array.getElem_of_mem hy
+         simp only [Array.any_eq_false] at hany
+         have hmt : mayTrap y.val = false := by have := hany i hi; rw [hval] at this; simpa using this
+         exact ih y hmt)
 
 end Oracle
