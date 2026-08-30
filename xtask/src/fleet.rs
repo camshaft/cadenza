@@ -317,6 +317,36 @@ impl Fleet {
     /// validates a role against the tracked source (`self.src`), NOT this hub copy. So the hub `loops/` +
     /// `AGENTS-fleet.md` are a HUMAN-reference snapshot (the paths docs point at), not what windows read.
     fn materialize_source(&self) {
+        // STALE-WORKTREE GUARD (fixes the materialize-revert bug, concierge-greenlit 2026-08-30). Materialize
+        // deploys fleet/ from the INVOKING worktree (`self.src`). A worktree PURELY BEHIND origin/main — a
+        // stale checkout that hasn't synced a just-landed fleet/ change — would REVERT the hub's NEWER file
+        // (observed: the seq-267 shim flickered off when a peer's `fleet up` ran from an un-synced worktree,
+        // and refresh-tools then installed the stale copy). So skip materializing FROM such a worktree: a
+        // synced worktree (HEAD at/ahead of origin/main — including one testing an un-landed local fleet/
+        // edit, which is at origin/main + dirty, not "behind") still deploys normally, and every agent syncs
+        // each tick so a current worktree re-materializes momentarily. Uses the SAME purely-behind predicate
+        // `sync` uses. FAIL-OPEN: any git hiccup (origin/main unfetched, not a repo) → both checks false →
+        // predicate false → proceed (never block bootstrap on a git error).
+        if let Some(wt) = self.src.parent() {
+            let anc = |a: &str, b: &str| {
+                Command::new("git")
+                    .current_dir(wt)
+                    .args(["merge-base", "--is-ancestor", a, b])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            };
+            if sync_head_should_fast_forward_to_origin_main(
+                anc("HEAD", "origin/main"),
+                anc("origin/main", "HEAD"),
+            ) {
+                eprintln!(
+                    "fleet: SKIP materialize — this worktree is purely BEHIND origin/main (stale checkout); \
+                     not reverting the hub's newer fleet/ files. A synced worktree re-materializes each tick."
+                );
+                return;
+            }
+        }
         let loops_dst = self.root.join("loops");
         std::fs::create_dir_all(&loops_dst).ok();
         if let Ok(rd) = std::fs::read_dir(self.src.join("loops")) {
