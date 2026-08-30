@@ -1146,6 +1146,30 @@
   (input  (do (def (g (: r (Record (: inner (Record (: a Int64) (: b Int64)))))) (. r inner)) (def (main) (g #record((= inner #record((= a 1)))))) (export main)))
   (error  CDZ0203 (no-fix)))
 
+; A field-set mismatch that is a pure OMISSION or a lone SURPLUS (not a typo — no rename applies) carries the
+; construction analogue of rustc's "add the missing field" / "no field `z`" edits (diagnostics.md §A Diagnostic
+; Carries A Route To A Fix). MISSING fields → an INSERT fix appending a `(= <f> (trap "TODO"))` placeholder per
+; missing field (`trap : ∀a. String → a` inhabits any field type, clearing the fault in one shot); a lone
+; SURPLUS field → a DELETE fix removing the extra entry. The direct value-annotation site carries the same
+; fixes. A field set that is SIMULTANEOUSLY missing and extra with no confident near-miss is ambiguous — the
+; message guides, but no mechanical fix. (Migrated from rcdzc
+; a_record_field_set_mismatch_offers_add_missing_or_delete_extra_fields.)
+(case "a record ARGUMENT missing fields carries an add (insert) fix with a placeholder per missing field"
+  (input  (do (def (f (: r (Record (: x Int64) (: y Int64) (: z Int64)))) r) (def (main) (f #record((= x 1)))) (export main)))
+  (error  CDZ0203 (message "missing fields `y`, `z`") (fix (kind insert-into) (replacement-contains "(= y (trap \"TODO\"))"))))
+
+(case "a record ARGUMENT with a lone surplus field carries a delete fix"
+  (input  (do (def (f (: r (Record (: x Int64)))) r) (def (main) (f #record((= x 1) (= y 2)))) (export main)))
+  (error  CDZ0203 (message "no such field `y`") (fix (kind delete))))
+
+(case "the direct value-annotation site also carries the add fix for a missing record field"
+  (input  (do (def (main) (: #record((= x 1)) (Record (: x Int64) (: y Int64)))) (export main)))
+  (error  CDZ0203 (fix (kind insert-into) (replacement-contains "(= y (trap \"TODO\"))"))))
+
+(case "an ambiguous missing-and-extra record field set (not a typo) gets no mechanical fix"
+  (input  (do (def (f (: r (Record (: x Int64) (: y Int64)))) r) (def (main) (f #record((= x 1) (= zzzzzz 2)))) (export main)))
+  (error  CDZ0203 (no-fix)))
+
 ; The variant-payload TYPE check must fire wherever the constructor appears — including as the direct
 ; scrutinee of a `match`. A sum's shape is "its variant names with their payload types" (type-system.md
 ; #The Structural Types Are Record, Tuple, And Sum), and "a value of a sum type MUST be constructed
