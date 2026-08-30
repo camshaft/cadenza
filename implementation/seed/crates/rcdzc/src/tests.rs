@@ -18476,24 +18476,6 @@ mod match_engine {
     }
 
     #[test]
-    fn redeclaring_a_builtin_unit_with_a_conflicting_conversion_is_cdz0502() {
-        // F2-6: `(Unit.define #"foot" (Unit.of #"meter") 2 1)` redeclares the built-in `foot` (381/1250 m)
-        // as 2 m — a conflicting conversion → CDZ0502 (units-of-measure.md §A Named Unit's Conversion Is
-        // Unique). CDZ0502 is now REACHABLE by a program (was previously only a reserved code). An
-        // AGREEING redeclaration would be admissible.
-        let src = "(do ((. Unit define) #\"foot\" ((. Unit of) #\"meter\") 2 1) \
-                   (def (main) 0) (export main))";
-        assert_eq!(
-            compile_component(&crate::codec::encode(&parse(src)))
-                .err()
-                .and_then(|d| d.code.as_deref().map(str::to_string))
-                .as_deref(),
-            Some("CDZ0502"),
-            "a conflicting unit redeclaration must reject CDZ0502"
-        );
-    }
-
-    #[test]
     fn a_unit_conflict_anchors_to_a_user_node() {
         // CDZ0502 must carry a source location, not print an unanchored `cdz:` prefix. The unit-conflict
         // rejects (built-in redecl + duplicate declaration) now `.at()` the offending declaration's
