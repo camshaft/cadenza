@@ -1325,7 +1325,9 @@
         mkTestShred = { proj, dir, mode }:
           pkgs.runCommand "test-shred-${proj}"
             {
-              nativeBuildInputs = [ seedCompiler ];
+              # cdzRun (cranelift-ON) for the standalone AOT precompile below (seq-271). two-stage doesn't
+              # precompile (its per-test wasm isn't self-contained — needs the compile-time splice).
+              nativeBuildInputs = [ seedCompiler ] ++ pkgs.lib.optional (mode == "standalone") cdzRun;
               __contentAddressed = true;
               outputHashMode = "recursive";
               outputHashAlgo = "sha256";
@@ -1344,6 +1346,17 @@
               [ -f "$out/manifest.cdzb" ] || { echo "test-shred: --${mode} produced no manifest for ${proj} (real emit failure)" >&2; exit 1; }
               echo "test-shred: --${mode} for ${proj} exited non-zero (expected under two-stage — some @tests declined, e.g. higher-order-param / user-sum re-emit gap); manifest present, proceeding with the shreddable subset" >&2
             fi
+            # AOT (standalone, seq-271): precompile each self-contained per-test wasm → .cwasm ONCE (cranelift-ON,
+            # CA-cached WITH the shred), so mkTestExec runs cranelift-FREE deserialize-only (the ~41% JIT cut).
+            # Standalone tests are self-contained (manifest main-file="" → no peer) → all precompilable. The
+            # `[ -e ] || continue` guard is NULLGLOB-safe (nix stdenv has nullglob ON; a bare `*.wasm` no-match
+            # would otherwise misfire — the mkCorpusPrecompile lesson). manifest is .cdzb, so `*.wasm` = per-test.
+            ${pkgs.lib.optionalString (mode == "standalone") ''
+              for w in "$out"/*.wasm; do
+                [ -e "$w" ] || continue
+                cdz-run "$w" --precompile-out "''${w%.wasm}.cwasm"
+              done
+            ''}
           '';
         # EXEC — grade ONE @test. Closure = the COMPILER-FREE `cdz-run` + the `cdz` binary (for the `cdz
         # convert` decode) + the value-heap store. The manifest is a cadenza-ast VALUE; `cdz convert --to
@@ -1367,7 +1380,7 @@
             } ''
             set -euo pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
-            export CDZ_STORE="${componentStore}"
+            # (CDZ_STORE set per-branch below — AOT uses componentStoreCwasm, JIT/two-stage use componentStore.)
             # Decode this @test's manifest entry by (name, fileStem). 7 positional fields:
             # name is-property file export target main-iface main-file. main-iface/main-file mean different
             # things per mode: STANDALONE — main-iface is the peer interface + main-file its wasm (a --peer
@@ -1393,11 +1406,21 @@
             fi
             IFS=$'\t' read -r texport ttarget tiface tmain <<< "$line"
             ${if mode == "standalone" then ''
-              # STANDALONE: the per-test wasm is self-contained — run it DIRECTLY (no compiler splice). If the
-              # manifest records a peer (iface + main-file), wire it via --peer.
-              args=("${shred}/$ttarget" --call "$texport" --store "${componentStore}" --runtime ${runtimeDebug})
-              if [ -n "$tmain" ]; then args+=(--peer "$tiface=${shred}/$tmain"); fi
-              cdz-run "''${args[@]}"
+              # STANDALONE: AOT/JIT split (mirrors mkCorpusExec, seq-271). A non-peer test (main-file="") with a
+              # precompiled cwasm (from the shred) runs CRANELIFT-FREE via deserialize (the ~41% JIT cut);
+              # componentStoreCwasm resolves store deps as <hash>.cwasm (#5922), runtimeDebugCwasm is the
+              # precompiled debug runtime. A --peer test (not precompiled-capable) or a missing cwasm JIT-falls-
+              # back to cdzRun — byte-for-byte the pre-AOT behavior.
+              cwasm="${shred}/''${ttarget%.wasm}.cwasm"
+              if [ -z "$tmain" ] && [ -e "$cwasm" ]; then
+                export CDZ_STORE="${componentStoreCwasm}"
+                ${cdzRunExec}/bin/cdz-run "$cwasm" --precompiled --runtime ${runtimeDebugCwasm} --call "$texport"
+              else
+                export CDZ_STORE="${componentStore}"
+                args=("${shred}/$ttarget" --call "$texport" --runtime ${runtimeDebug})
+                if [ -n "$tmain" ]; then args+=(--peer "$tiface=${shred}/$tmain"); fi
+                cdz-run "''${args[@]}"
+              fi
             '' else ''
               # TWO-STAGE: SPLICE+COMPILE the shared closure fragment (built once, cache-HIT across the suite) +
               # this test's fragment → standalone wasm (cdz-compile multi-input + --export), then run it.
