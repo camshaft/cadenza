@@ -24837,3 +24837,11 @@
 (case "a reused rest binder across sibling rest-lists is non-linear"
   (input  (do (def (f (: p (Tuple (List Int64) (List Int64)))) (match p (#tuple(#list(a .. r) #list(b .. r)) a) (_ 0))) (def (main) (f #tuple(#list(1) #list(2)))) (export main)))
   (error  CDZ0102))
+
+; A ctor-element list arm is REFUTABLE (its discriminant test may fail), so — like a literal element or any
+; guarded arm — it does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every
+; discriminant still leave the empty list (and the discriminant-failure path) uncovered → CDZ0210. (Migrated
+; from rcdzc a_refutable_ctor_list_element_still_requires_a_catch_all; the runtime dispatch is corpus-covered.)
+(case "a refutable-ctor list element still requires a catch-all covering every length"
+  (input  (do (type Op (Add Int64) (Neg Int64)) (def (f (: xs (List Op))) (match xs (#list((Op.Add n) .. r) n) (#list((Op.Neg n) .. r) n))) (def (main) (f #list((Op.Add 5)))) (export main)))
+  (error  CDZ0210))

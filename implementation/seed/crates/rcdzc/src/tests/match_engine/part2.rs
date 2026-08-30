@@ -1744,23 +1744,9 @@ fn a_sum_variants_list_payload_split_across_empty_and_rest_arms_is_exhaustive() 
 // relaxation fires ONLY on JOINTLY-total coverage; any length/value/variant gap still rejects. --case
 // grades the reject codes (all 7 across the block PASS).)
 
-#[test]
-fn a_refutable_ctor_list_element_still_requires_a_catch_all() {
-    // A discriminant test may fail, so — like a literal element or any guarded arm — a ctor-element arm
-    // does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every discriminant
-    // still leave the empty list (and the discriminant-failure path) uncovered → CDZ0210.
-    assert_eq!(
-        reject_code(
-            "(module m (type Op (Add Int64) (Neg Int64)) \
-                   (def (f (: xs (List Op))) \
-                     (match xs ((list (Op.Add n) .. r) n) ((list (Op.Neg n) .. r) n))) \
-                 (def (main) (f (list (Op.Add 5)))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0210"),
-        "a refutable-ctor-element match still needs a catch-all covering every length"
-    );
-}
+// (a_refutable_ctor_list_element_still_requires_a_catch_all migrated to corpus 05-compound-types: a
+// ctor-element list arm is refutable so does not count toward length-coverage — two ctor arms still leave
+// the empty list uncovered → CDZ0210. PASS wasm.)
 
 #[test]
 fn a_map_list_element_dispatches_by_key_presence() {
