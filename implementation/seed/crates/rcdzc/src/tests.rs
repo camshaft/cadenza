@@ -40032,8 +40032,9 @@ mod sidecar_driven {
 
     #[test]
     fn no_sidecar_input_is_todays_behavior() {
-        // The common path: no `sidecar` artifact at all. Behavior is exactly today's — `targets` drives
-        // emission, one component out, no query artifacts.
+        // The common path: no `sidecar` artifact at all. Behavior is today's — `targets` drives emission:
+        // the component, PLUS the bytes-second guest result-type map (`KIND_RESULT_TYPES`, #5951 run-wiring
+        // emitted whenever the layout has boundary exports — here `(export main)`). No QUERY artifacts.
         let src = "(module m (def (main) 42) (export main))";
         let out = compile(
             &[Artifact::new(
@@ -40044,8 +40045,16 @@ mod sidecar_driven {
             &[Target::Wasm],
         );
         assert!(!out.has_error());
-        assert_eq!(out.artifacts.len(), 1, "exactly the component");
-        assert_eq!(out.artifacts[0].kind, "component");
+        assert_eq!(
+            out.artifacts.len(),
+            2,
+            "the component + the result-type map (no query artifacts)"
+        );
+        assert!(out.artifact("component").is_some(), "the component");
+        assert!(
+            out.artifact(Artifact::KIND_RESULT_TYPES).is_some(),
+            "the bytes-second result-type map"
+        );
     }
 
     #[test]
