@@ -4734,45 +4734,12 @@ fn an_unknown_type_in_a_record_parameter_annotation_names_only_the_type_not_the_
 /// here is a trap-free parameter (nothing to preserve by evaluating it); a trapping scrutinee is
 /// covered by `a_trapping_scrutinee_of_an_all_same_match_is_still_evaluated`.
 
-#[test]
-fn a_non_wildcard_pattern_after_a_literal_still_needs_a_wildcard() {
-    // Two literal arms with no wildcard — non-exhaustive over the integers (CDZ0210), regardless of
-    // whether the runtime scrutinee would hit one.
-    assert_eq!(
-        reject_code("(module m (def (f (: n Int64)) (match n (0 1) (1 2))) (export f))").as_deref(),
-        Some("CDZ0210")
-    );
-}
+// (a_non_wildcard_pattern_after_a_literal_still_needs_a_wildcard migrated to corpus 02-binding-and-control:
+// two literal arms with no wildcard → non-exhaustive CDZ0210. PASS wasm.)
 
-#[test]
-fn a_bool_match_missing_a_literal_is_still_non_exhaustive() {
-    // The relaxation is precise: a Bool match is exhaustive ONLY with BOTH `true` and `false` arms.
-    // A single Bool literal (or two of the SAME literal) leaves a value uncovered → CDZ0210, exactly
-    // as an Int64 match without a wildcard. Pins that "both Bool literals ⇒ exhaustive" does not
-    // over-accept a partial Bool match.
-    assert_eq!(
-        reject_code("(module m (def (main (: b Bool)) (match b (true 1))) (export main))")
-            .as_deref(),
-        Some("CDZ0210")
-    );
-    assert_eq!(
-        reject_code("(module m (def (main (: b Bool)) (match b (false 2))) (export main))")
-            .as_deref(),
-        Some("CDZ0210")
-    );
-    // Two of the SAME literal do not cover the other value.
-    assert_eq!(
-        reject_code("(module m (def (main (: b Bool)) (match b (true 1) (true 2))) (export main))")
-            .as_deref(),
-        Some("CDZ0210")
-    );
-    // An Int64 match without a wildcard stays rejected — the relaxation is Bool-specific.
-    assert_eq!(
-        reject_code("(module m (def (main (: n Int64)) (match n (0 1) (1 2))) (export main))")
-            .as_deref(),
-        Some("CDZ0210")
-    );
-}
+// (a_bool_match_missing_a_literal_is_still_non_exhaustive migrated to corpus 02-binding-and-control: a Bool
+// match with only true / only false / two-of-the-same-literal is non-exhaustive (CDZ0210); both-arms is
+// exhaustive and runs; an Int64 literal match without a wildcard stays CDZ0210. All PASS wasm.)
 
 #[test]
 fn do_local_record_binding_projection_is_not_a_destructure() {
