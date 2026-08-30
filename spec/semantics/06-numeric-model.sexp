@@ -18,6 +18,38 @@
   (input  (+ 2 2.0))
   (error  CDZ0301))
 
+; The int/float no-promotion CDZ0301 carries a CONFORM-TO-FIRST one-shot repair: the FIRST operand establishes
+; the intended numeric type and the SECOND is conformed to it, deterministically (there is no `+.` to swap to).
+; A trailing int LITERAL against a float-first retypes UP to a float literal (`1` → `1.0`); a trailing float
+; literal against an int-first drops the fractional form (`1.0` → `1`); a COMPUTED (non-literal) int second
+; operand wraps in `Float64.of-int`; and an int LITERAL first against a non-literal float falls back to
+; retyping the literal up (`5` → `5.0`), so both operand orders offer the identical repair. `%` is integer-only
+; (no float form) so a float operand still rejects CDZ0301, just with no float-arithmetic fold. (Migrated from
+; rcdzc a_mixed_int_float_arithmetic_operand_is_cdz0301_with_a_conform_to_first_coercion_fix.)
+(case "a float-first arithmetic mix retypes the trailing integer literal up to a float"
+  (input  (do (def (main) (+ 2.0 1)) (export main)))
+  (error  CDZ0301 (fix (kind replace) (replacement "1.0"))))
+
+(case "an int-first arithmetic mix drops the trailing float literal's fractional form"
+  (input  (do (def (main) (+ 2 1.0)) (export main)))
+  (error  CDZ0301 (fix (kind replace) (replacement "1"))))
+
+(case "a computed integer second operand against a float wraps in Float64.of-int"
+  (input  (do (def (g (: n Int64)) (+ 1.0 n)) (export g)))
+  (error  CDZ0301 (fix (replacement-contains "Float64.of-int"))))
+
+(case "an int literal FIRST against a non-literal float retypes the literal up"
+  (input  (do (def (g (: y Float64)) (+ 5 y)) (def (main) (g 1.0)) (export main)))
+  (error  CDZ0301 (fix (replacement "5.0"))))
+
+(case "the mirror order (non-literal float then int literal) offers the identical literal retype"
+  (input  (do (def (g (: y Float64)) (+ y 5)) (def (main) (g 1.0)) (export main)))
+  (error  CDZ0301 (fix (replacement "5.0"))))
+
+(case "the integer-only remainder operator rejects a float operand (CDZ0301, no float fold)"
+  (input  (do (def (main) (% 5.0 2.0)) (export main)))
+  (error  CDZ0301))
+
 ; A NON-NUMERIC operand to an arithmetic operator is a DIFFERENT fault from the Int/Float no-promotion mix
 ; above: `+` types at `∀a. (Int a) → (Int a) → (Int a)`, so a `Bool` operand fails to UNIFY against `(Int a)`
 ; — the generic operator-scheme unification catches it (no arithmetic-specific check), reported as the plain

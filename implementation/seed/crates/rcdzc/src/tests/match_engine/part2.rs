@@ -56,87 +56,12 @@ fn if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix() {
     );
 }
 
-#[test]
-fn a_mixed_int_float_arithmetic_operand_is_cdz0301_with_a_conform_to_first_coercion_fix() {
-    // A genuine int/float MIX is rejected CDZ0301 — the same operator accepts only one numeric type
-    // (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric Type). The
-    // one-shot repair conforms the SECOND operand to the FIRST operand's type (the first establishes
-    // the intended type), deterministic and order-consistent. This replaces the old operator-swap
-    // repair — there is no `+.` to swap to.
-    //
-    // FLOAT-first (`(+ 2.0 1)`): the second operand `1` is retyped UP to a float literal `1.0`.
-    let ffirst = reject_full("(module m (def (main) (+ 2.0 1)) (export main))").expect("reject");
-    assert_eq!(
-        ffirst.code.as_deref(),
-        Some("CDZ0301"),
-        "got: {}",
-        ffirst.message
-    );
-    assert_eq!(
-        ffirst.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("1.0"),
-        "float-first: retypes the trailing integer literal to a float: {}",
-        ffirst.message
-    );
-    // INT-first (`(+ 2 1.0)`): the second operand `1.0` is retyped DOWN to the integer `1` (drop `.0`).
-    let ifirst = reject_full("(module m (def (main) (+ 2 1.0)) (export main))").expect("reject");
-    assert_eq!(
-        ifirst.code.as_deref(),
-        Some("CDZ0301"),
-        "got: {}",
-        ifirst.message
-    );
-    assert_eq!(
-        ifirst.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("1"),
-        "int-first: drops the fractional form of the trailing float literal: {}",
-        ifirst.message
-    );
-    // A COMPUTED integer SECOND operand (a param, not a literal) wraps in `Float64.of-int` when the
-    // first operand is a float.
-    let computed =
-        reject_full("(module m (def (g (: n Int64)) (+ 1.0 n)) (export g))").expect("reject");
-    assert_eq!(computed.code.as_deref(), Some("CDZ0301"));
-    assert!(
-        computed
-            .fix
-            .as_ref()
-            .is_some_and(|f| f.replacement.contains("Float64.of-int")),
-        "a computed int second operand wraps in Float64.of-int: {:?}",
-        computed.fix
-    );
-    // SYMMETRIC coverage: an int LITERAL FIRST operand against a NON-LITERAL float second (`(+ 5 y)`,
-    // `y : Float64`). Conforming the second operand yields no one-shot (a runtime float has no int
-    // spelling), so the fix falls back to conforming the FIRST operand — retype the literal `5` →
-    // `5.0`. Without the fallback this offered NO fix while the mirror `(+ y 5)` did (an order
-    // asymmetry for the identical slip).
-    let lit_first = reject_full(
-        "(module m (def (g (: y Float64)) (+ 5 y)) (def (main) (g 1.0)) (export main))",
-    )
-    .expect("reject");
-    assert_eq!(lit_first.code.as_deref(), Some("CDZ0301"));
-    assert_eq!(
-        lit_first.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("5.0"),
-        "an int literal FIRST against a non-literal float retypes the literal up: {}",
-        lit_first.message
-    );
-    // The mirror `(+ y 5)` retypes the same literal — both orders now offer the identical repair.
-    let lit_second = reject_full(
-        "(module m (def (g (: y Float64)) (+ y 5)) (def (main) (g 1.0)) (export main))",
-    )
-    .expect("reject");
-    assert_eq!(
-        lit_second.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("5.0"),
-        "the mirror order retypes the literal too: {}",
-        lit_second.message
-    );
-    // `%` is integer-only (no float form) — a `(% 5.0 2.0)` falls through to the scheme, which rejects
-    // a float operand; still CDZ0301, but no float-arithmetic fold.
-    let rem = reject_full("(module m (def (main) (% 5.0 2.0)) (export main))").expect("reject");
-    assert_eq!(rem.code.as_deref(), Some("CDZ0301"), "got: {}", rem.message);
-}
+// (a_mixed_int_float_arithmetic_operand_is_cdz0301_with_a_conform_to_first_coercion_fix migrated to corpus
+// 06-numeric-model, the "conform-to-first" repair block beside the (+ 2 2.0) no-promotion case: float-first
+// retypes the trailing int literal up (replacement "1.0"), int-first drops the float fractional form
+// (replacement "1"), a computed int second operand wraps (replacement-contains "Float64.of-int"), an int
+// literal first against a non-literal float retypes up (replacement "5.0") in both operand orders, and the
+// integer-only % rejects a float operand (CDZ0301, no fix). All 6 PASS wasm.)
 
 // (arithmetic_on_a_non_numeric_operand_carries_no_phantom_int64_clash migrated to corpus 07-type-system,
 // beside the same-type non-numeric arithmetic family: "same-typed String/List operands to +/% reject without
