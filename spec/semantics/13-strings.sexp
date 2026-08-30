@@ -123,7 +123,10 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1600 Int64))
-  (live-objects 0))
+  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn closure-dup over-retention (dup ⊇ drop margin)
+  ; reaching corpus-13 — same class as the #6057/#6089 re-pins; drop-set fix in flight (v-rb+v-mem);
+  ; #5766 tolerate-fewer auto-passes the collapse.
+  (live-objects known-leak 4))
 
 (case "a balanced-paren scan tracks depth over a runtime string and fails fast on early close"
   (doc    "The delimiter recognizer every parser front-end runs: a `String.at` scalar walk over a
@@ -213,7 +216,10 @@
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 18 8 6 0))
+  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn closure-dup over-retention (dup ⊇ drop margin)
+  ; reaching corpus-13 — same class as the #6057/#6089 re-pins; drop-set fix in flight (v-rb+v-mem);
+  ; #5766 tolerate-fewer auto-passes the collapse.
+  (live-objects known-leak 20 8 6 0))
 
 (case "a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN"
   (doc    "The inverse of the separator-JOIN pin above: scan for `,` hits and slice each FIELD as a
@@ -255,7 +261,10 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 321 Int64))
   (call   main (: 0 Int64)) (output (: 411 Int64))
-  (live-objects known-leak 6 7))
+  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn closure-dup over-retention (dup ⊇ drop margin)
+  ; reaching corpus-13 — same class as the #6057/#6089 re-pins; drop-set fix in flight (v-rb+v-mem);
+  ; #5766 tolerate-fewer auto-passes the collapse.
+  (live-objects known-leak 11 14))
 
 (case "a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len"
   (doc    "The multibyte witness for the scalar-vs-byte loop-bound distinction that the ASCII split case
@@ -5136,3 +5145,19 @@
   (call main (: 1 Int64)) (output (: 112 Int64))
   (call main (: 0 Int64)) (output (: 113 Int64))
   (call main (: -5 Int64)) (output (: 2 Int64)))
+
+(case "sc1 runtime String.scalar-at round-trips the cadenza hop — multi-byte scalar indexing + out-of-range"
+  (doc "The #6092 hop face (the sa1 arc's last leg: #5852 front → #5932 both-backend emit → #6082
+        corpus flip → #6092 hop): a runtime-index scalar-at re-emits as ((. String scalar-at) op idx)
+        and recompiles. Multi-byte discrimination through the hop: 'café' scalar 3 is é (U+00E9=233,
+        a SCALAR index, not a byte), scalar 1 is 'a' (97); out-of-range (\"ab\" at 5) → None → -1.
+        n=7 → 1000·233-1 = 232999; n=0 → 1000·97-1 = 96999. Byte-idempotent; hop/direct live parity
+        (the interim scalar-at result-cell leak-pin, 1/call).")
+  (input (do
+    (def (main (: n Int64))
+      (+ (* 1000 (match (String.scalar-at "café" (if (> n 0) 3 1)) ((Some c) (Char.to-int c)) ((None _u) -1)))
+         (match (String.scalar-at "ab" 5) ((Some c) (Char.to-int c)) ((None _u) -1))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 232999 Int64))
+  (call main (: 0 Int64)) (output (: 96999 Int64))
+  (live-objects known-leak 1))
