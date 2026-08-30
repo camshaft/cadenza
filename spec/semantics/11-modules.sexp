@@ -221,6 +221,24 @@
   (input  (do (def (main) (Lst.len #list(1 2))) (export main)))
   (error  CDZ0101 (message "did you mean `List`?") (fix (kind replace) (replacement "List") (unverified))))
 
+; An `(export X)` where `X` IS declared (not a typo) names the real situation by CATEGORY, not the stale
+; "names no definition" (which reads as "unknown name"). A bare TYPE export is the opaque-types abstract-
+; HANDLE export — valid but meaningful only to a peer importer, so in a single module it is flagged and points
+; at the value / `(. T *)` alternatives. An EFFECT export is a true category error ("names an effect, not a
+; value definition"). A GENUINELY unknown name keeps the plain "names no definition" (never "not a value").
+; (Migrated from rcdzc exporting_a_type_or_effect_names_the_category_not_names_no_definition.)
+(case "exporting a bare TYPE handle in a single module names the type-handle export"
+  (input  (do (type Color R G B) (export Color)))
+  (error  CDZ0101 (message "names a TYPE") (message "HANDLE export") (message "(. Color *)")))
+
+(case "exporting an EFFECT names the category, not a value definition"
+  (input  (do (effect E (op foo (-> Int64))) (export E)))
+  (error  CDZ0101 (message "names an effect, not a value definition")))
+
+(case "a genuinely unknown export name keeps the plain names-no-definition message"
+  (input  (do (def (main) 1) (export zzzz)))
+  (error  CDZ0101 (message "names no definition") (not "not a value")))
+
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
            of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record
