@@ -201,7 +201,7 @@ mod tests {
     // alone — no run (and no rustc shell).
     #[test]
     fn a_declined_case_is_graded_from_the_diagnostic() {
-        let tr = one_trial(None, GExpect::Declines(vec![]));
+        let tr = one_trial(None, GExpect::Declines(None, vec![]));
         let res = grade_to_result(
             &tr,
             None,

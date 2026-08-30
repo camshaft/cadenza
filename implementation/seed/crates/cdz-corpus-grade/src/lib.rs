@@ -202,8 +202,18 @@ pub enum GExpect {
     /// artifact): a warning ACCOMPANIES a produced component. Pairs with a `(count N)` for the exact-count
     /// warning cases (e.g. "exactly one CDZ0305 dead-trap warning") a presence-only `(warns …)` can't express.
     Warning(String, Vec<String>),
-    /// `(expect-declines msg?)` — the compiler must refuse (any code, or codeless); optional message substring.
-    Declines(Vec<String>),
+    /// `(expect-declines [CODE] msg?)` — the compiler must refuse. The optional leading `CODE` (a `CDZxxxx`
+    /// leaf) PINS the decline's error-code (the seq-286 coded-decline umbrella, e.g. `CDZ0900` for a
+    /// not-yet-built construct); when present the refusal's emitted code must equal it (a different/absent
+    /// code is `Todo` — refused, but not confirmed as that code). `None` = the classic form (any code /
+    /// codeless). Remaining leaves are required message substrings (AND).
+    Declines(Option<String>, Vec<String>),
+}
+
+/// A `CDZxxxx` error-code leaf (four digits) — the discriminator that lets `(expect-declines …)` carry an
+/// OPTIONAL leading code without ambiguity against a bare message substring (prose never matches this).
+pub fn is_cdz_code(s: &str) -> bool {
+    s.len() == 7 && s.starts_with("CDZ") && s[3..].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// A decoded `test-run.ast`: the case's run/grade metadata.
@@ -383,8 +393,13 @@ where
                 }
                 continue;
             }
-            GExpect::Declines(msg) => {
-                worst = worst.worse(grade_compile_declines(compiled, compile_diag, msg));
+            GExpect::Declines(code, msg) => {
+                worst = worst.worse(grade_compile_declines(
+                    compiled,
+                    compile_diag,
+                    code.as_deref(),
+                    msg,
+                ));
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
@@ -630,14 +645,25 @@ pub fn grade_compile_error(compiled: bool, diag: &str, want: &str, msgs: &[Strin
 
 /// Grade an `(expect-declines msg*)` — ANY refusal passes (coded or codeless); a compiled program is a
 /// Fail; EVERY pinned message substring must appear (empty = any refusal passes).
-pub fn grade_compile_declines(compiled: bool, diag: &str, msgs: &[String]) -> Grade {
+pub fn grade_compile_declines(
+    compiled: bool,
+    diag: &str,
+    want_code: Option<&str>,
+    msgs: &[String],
+) -> Grade {
     if compiled {
         return Grade::Fail("expected the compiler to DECLINE but it COMPILED (miscompile)".into());
     }
-    if msgs.is_empty() {
-        return Grade::Pass;
+    let (got_code, message) = first_error_diag(diag);
+    // An asserted CODE (seq-286 coded-decline pin) must match the refusal's emitted code. A different/absent
+    // code is Todo — the compiler refused, just not (yet) with the pinned code (refused-to-confirm, never a
+    // false pass) — mirroring `grade_compile_error`'s not-that-code arm. A codeless assertion accepts any
+    // refusal (back-compat).
+    if let Some(want) = want_code
+        && got_code.as_deref() != Some(want)
+    {
+        return Grade::Todo(format!("declined, but not with {want} (got {got_code:?})"));
     }
-    let (_, message) = first_error_diag(diag);
     match msgs.iter().find(|p| !message.contains(p.as_str())) {
         Some(p) => Grade::Fail(format!("declined, but message {message:?} lacks {p:?}")),
         None => Grade::Pass,
@@ -1187,12 +1213,17 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                 }
             }
             Some("expect-declines") => {
-                // declines has no code — every leaf is a required message substring (AND).
-                let msgs: Vec<String> = a
+                // Optional leading `CDZxxxx` code (seq-286 coded-decline pin); remaining leaves are required
+                // message substrings (AND). A bare-message first leaf (prose) stays codeless (back-compat).
+                let leaves: Vec<String> = a
                     .as_form(child, "expect-declines")
                     .map(|t| t.iter().filter_map(|&id| str_leaf(a, id)).collect())
                     .unwrap_or_default();
-                expect = Some(GExpect::Declines(msgs));
+                let (code, msgs) = match leaves.split_first() {
+                    Some((head, rest)) if is_cdz_code(head) => (Some(head.clone()), rest.to_vec()),
+                    _ => (None, leaves),
+                };
+                expect = Some(GExpect::Declines(code, msgs));
             }
             // `(count N)` — the fault-count the `(severity, code)` set must match exactly; `(once)` is the
             // common `(count 1)` shorthand.
@@ -1443,6 +1474,51 @@ pub fn classify(reason: &str) -> Option<TrapCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declines_with_code_pins_the_decline_error_code() {
+        // is_cdz_code discriminator: a `CDZxxxx` token, never prose.
+        assert!(is_cdz_code("CDZ0900"));
+        assert!(!is_cdz_code("CDZ090")); // too short
+        assert!(!is_cdz_code("CDZ09XX")); // non-digit
+        assert!(!is_cdz_code("does not yet compile"));
+
+        let d = "error [CDZ0900]: the compiler does not yet compile this construct";
+        // codeless assertion: ANY refusal passes (back-compat with classic `(declines)`).
+        assert!(matches!(
+            grade_compile_declines(false, d, None, &[]),
+            Grade::Pass
+        ));
+        // matching code (+ optional present message substring) -> Pass.
+        assert!(matches!(
+            grade_compile_declines(false, d, Some("CDZ0900"), &[]),
+            Grade::Pass
+        ));
+        assert!(matches!(
+            grade_compile_declines(false, d, Some("CDZ0900"), &["does not yet".into()]),
+            Grade::Pass
+        ));
+        // WRONG code -> Todo (refused, but not confirmed as that code — never a false pass).
+        assert!(matches!(
+            grade_compile_declines(false, d, Some("CDZ0901"), &[]),
+            Grade::Todo(_)
+        ));
+        // codeless decline diagnostic but a code was pinned -> Todo.
+        assert!(matches!(
+            grade_compile_declines(false, "error: some refusal", Some("CDZ0900"), &[]),
+            Grade::Todo(_)
+        ));
+        // COMPILED (did not decline) -> Fail regardless of code.
+        assert!(matches!(
+            grade_compile_declines(true, d, Some("CDZ0900"), &[]),
+            Grade::Fail(_)
+        ));
+        // matching code but a MISSING message substring -> Fail.
+        assert!(matches!(
+            grade_compile_declines(false, d, Some("CDZ0900"), &["absent phrase".into()]),
+            Grade::Fail(_)
+        ));
+    }
 
     #[test]
     fn expected_value_extracts_bare_scalar_compound_and_string() {
