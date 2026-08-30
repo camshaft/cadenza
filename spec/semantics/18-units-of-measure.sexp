@@ -249,6 +249,25 @@
   (input  (do (def (main) (Qty.of 9223372036854776 (Unit.prefix kilo (Unit.base #"meter")))) (export main)))
   (error  CDZ0304))
 
+; The two BOUNDARY controls of the scaled-display overflow gate: it must fire ONLY when the scale-multiply
+; actually overflows, never a step early and never when there is no scale to apply. (Migrated from rcdzc
+; a_quantity_whose_reference_scaled_magnitude_overflows_its_inner_int_declines.)
+(case "a prefixed-unit magnitude whose reference-scaled value JUST fits Int64 is not rejected"
+  (doc    "The just-under-overflow control of the CDZ0304 scaled-display reject above: `9223372036854775 km`
+           × 1000 = 9223372036854775000 = 9.223e18 < Int64 max (9223372036854775807), so the scaled magnitude
+           FITS and the quantity renders normally at its reference `meter` — the overflow gate is not
+           off-by-one and does not reject a value one step below the ceiling.")
+  (input  (Qty.of 9223372036854775 (Unit.prefix kilo (Unit.base #"meter"))))
+  (output (: (Qty.of 9223372036854775000 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
+
+(case "a reference-unit magnitude at Int64 max is not rejected (no scale to overflow)"
+  (doc    "The no-scale control: `(Qty.of 9223372036854775807 meter)` is already in the dimension's REFERENCE
+           unit (scale 1/1), so the display applies NO scale multiply — an Int64-max magnitude has nothing to
+           overflow and must render as-is. Pins that the scaled-display overflow gate fires on the SCALE
+           multiply, not on the raw magnitude, so a reference-unit max value is never false-rejected.")
+  (input  (Qty.of 9223372036854775807 (Unit.base #"meter")))
+  (output (: (Qty.of 9223372036854775807 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
+
 (case "a narrow-width quantity whose reference-scaled magnitude overflows its inner type is rejected"
   (doc    "The NARROW-WIDTH twin of the Int64 scaled-display overflow above: `(Qty.of (Int8.of 5) kilometer)`
            scales to `5 × 1000` = 5000 at its reference `meter`, which EXCEEDS Int8's max (127). The

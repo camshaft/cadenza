@@ -1530,38 +1530,14 @@ fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_co
     );
 }
 
-#[test]
-fn a_quantity_whose_reference_scaled_magnitude_overflows_its_inner_int_declines() {
-    // A quantity displays scaled to its dimension's REFERENCE unit; when that scaled magnitude exceeds
-    // the inner Int width it is a compile-time overflow (CDZ0304), NOT a value to render. Operator
-    // overflow ruling: a STATICALLY-KNOWN scaled magnitude that overflows DECLINES at compile time (the
-    // constant twin of the runtime scale-multiply's trap). The OLD render emitted the out-of-range value
-    // (a wrong-VALUE miscompile). `9223372036854776 km` × 1000 = 9.2e18 > i64 MAX (9223372036854775807).
-    let overflow = "(module m (def (main) (Qty.of 9223372036854776 (Unit.prefix kilo (Unit.base #\"meter\")))) (export main))";
-    assert_eq!(
-        reject_code(overflow).as_deref(),
-        Some("CDZ0304"),
-        "a km magnitude whose ×1000 reference-scaled value overflows Int64 must DECLINE, not render out-of-range"
-    );
-    // NO false decline: a value whose reference-scaled magnitude FITS compiles fine.
-    // 9223372036854775 km × 1000 = 9.223e18 < i64 MAX; 5 km → 5000 m.
-    let just_fits = "(module m (def (main) (Qty.of 9223372036854775 (Unit.prefix kilo (Unit.base #\"meter\")))) (export main))";
-    assert_eq!(
-        reject_code(just_fits),
-        None,
-        "a scaled magnitude that fits Int64 must NOT be rejected"
-    );
-    let small = "(module m (def (main) (Qty.of 5 (Unit.prefix kilo (Unit.base #\"meter\")))) (export main))";
-    assert_eq!(reject_code(small), None, "5 km (→ 5000 m) must compile");
-    // A REFERENCE-unit (scale 1/1) magnitude at i64 MAX is NOT scaled, so it must NOT be rejected.
-    let ref_max =
-        "(module m (def (main) (Qty.of 9223372036854775807 (Unit.base #\"meter\"))) (export main))";
-    assert_eq!(
-        reject_code(ref_max),
-        None,
-        "a reference-unit i64-MAX magnitude has no scale to overflow"
-    );
-}
+// (a_quantity_whose_reference_scaled_magnitude_overflows_its_inner_int_declines migrated to corpus
+// 18-units-of-measure: the reject `(Qty.of 9223372036854776 kilometer)` → CDZ0304 (×1000 scaled magnitude
+// overflows Int64) is the "a quantity whose reference-scaled magnitude overflows its inner Int is rejected"
+// case; the two NO-OVER-REJECTION boundary controls are the added "a prefixed-unit magnitude whose
+// reference-scaled value JUST fits Int64 is not rejected" (9223372036854775 km → 9223372036854775000 m,
+// one step below the ceiling) and "a reference-unit magnitude at Int64 max is not rejected (no scale to
+// overflow)" (a scale-1 reference unit has nothing to overflow). The fitting-scaled-value render path is
+// also covered by the Float display case "a prefixed quantity displays scaled to its reference unit".)
 
 #[test]
 fn an_explosive_self_application_const_fold_declines_instead_of_overflowing_the_stack() {
