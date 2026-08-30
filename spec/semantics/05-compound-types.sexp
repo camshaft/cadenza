@@ -24533,3 +24533,18 @@
             (def (main) (let ((#tuple(x y) (slow 33))) (+ x y)))
             (export main)))
   (output (: 9227465 Int64)))
+
+(case "a DEEP recursive NAME-HEAD tuple destructure-let terminates within deadline — guards the ML/paren-surface path (#6042)"
+  (doc    "Companion to the #6013 termination guard, for the NAME-HEAD binder form `(tuple a b)` — what the
+           ML/paren surface `let (a,b) = …` desugars to (distinct from the `#tuple(a b)` ctor-leaf form; #6000
+           fixed the ctor-leaf path, #6042 the name-head path). This is the shape the reported hang actually
+           used (parse-db, the match→let sweep). Same slow(33) Fibonacci fold; fixed = linear = instant; a
+           re-regression of the name-head gate → per-element init re-eval → ~3^33 → the gate wall-clock
+           deadline traps it → CAUGHT. x+y = 9227465.")
+  (input  (do
+            (def (slow (: n Int64))
+              (if (<= n 1) (tuple n n)
+                  (let (((tuple a b) (slow (- n 1)))) (tuple (+ a b) a))))
+            (def (main) (let (((tuple x y) (slow 33))) (+ x y)))
+            (export main)))
+  (output (: 9227465 Int64)))
