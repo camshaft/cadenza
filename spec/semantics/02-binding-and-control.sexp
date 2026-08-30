@@ -4956,6 +4956,20 @@
   (input  (match #tuple(1 2) (#tuple(a a) a)))
   (error  CDZ0102 (fix (kind replace) (replacement "a2") (unverified))))
 
+; A misspelled variant ctor as a LIST-ELEMENT pattern draws its did-you-mean from the element sum's
+; variants: `#list((Ad) .. r)` on `(List Op)` where `(type Op (Add) (Sub))` — a near-miss `Ad` for `Add` is
+; CDZ0201 "did you mean `Add`?" + a rename fix on the variant name. A FAR miss lists the closest matches
+; (no baseless fix). (Migrated from rcdzc a_misspelled_variant_in_a_list_element_pattern_suggests_the_near_variant.)
+(case "a misspelled variant in a list-element pattern suggests the near variant with a rename fix"
+  (input  (do (type Op (Add) (Sub))
+              (def (f (: xs (List Op))) (match xs (#list((Ad) .. r) 1) (_ 0))) (export f)))
+  (error  CDZ0201 (message "did you mean `Add`?") (fix (kind replace) (replacement "Add"))))
+
+(case "a far-miss variant in a list-element pattern lists the closest matches with no fix"
+  (input  (do (type Op (Add) (Sub))
+              (def (f (: xs (List Op))) (match xs (#list((Zzz) .. r) 1) (_ 0))) (export f)))
+  (error  CDZ0201 (message "closest matches") (no-fix)))
+
 ; The refutable / ill-shaped / non-linear rejections. A binding position has no alternative arm, so its
 ; pattern MUST be irrefutable and its shape MUST match the value's type (core-semantics.md #A Binding
 ; Position Accepts An Irrefutable Pattern).

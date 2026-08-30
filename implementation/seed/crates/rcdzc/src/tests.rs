@@ -16158,42 +16158,11 @@ mod match_engine {
     }
 
     #[test]
-    fn a_misspelled_variant_in_a_list_element_pattern_suggests_the_near_variant() {
-        // A misspelled variant ctor as a LIST-ELEMENT pattern — `(list (Ad) .. r)` on `(List Op)` for
-        // `(type Op (Add) (Sub))` — read as "a binding pattern head is not a … constructor" (an unbound
-        // name is not a ctor), the opaque shape message with no route to a fix. It now carries the same
-        // "did you mean `Add`?" + rename fix a direct match arm's typo gets (the element sum's variants are
-        // the candidate set, via `enrich_pattern_head_suggestion`).
-        let d = reject_full(
-            "(module m (type Op (Add) (Sub)) \
-               (def (f (: xs (List Op))) (match xs ((list (Ad) .. r) 1) (_ 0))) (export f))",
-        )
-        .expect("must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("did you mean `Add`?"),
-            "a misspelled list-element variant names the near one: {}",
-            d.message
-        );
-        // The fix rewrites the misspelled NAME node (`Ad` → `Add`); the surface re-render splices it into
-        // the enclosing `(Ad)` → `(Add)`, but the carried replacement is the bare variant name.
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("Add"),
-            "carries the rename fix on the variant name"
-        );
-        // A FAR miss lists the closest matches (no baseless fix); a NON-SUM element type keeps the bare
-        // shape message (no false suggestion).
-        let far = reject_full(
-            "(module m (type Op (Add) (Sub)) \
-               (def (f (: xs (List Op))) (match xs ((list (Zzz) .. r) 1) (_ 0))) (export f))",
-        )
-        .expect("must reject");
-        assert!(
-            far.message.contains("closest matches") && far.fix.is_none(),
-            "a far-miss list-element variant lists options, no fix: {}",
-            far.message
-        );
+    fn a_non_sum_list_element_pattern_gets_no_spurious_variant_suggestion() {
+        // WHITE-BOX RESIDUAL of the misspelled-list-element-variant suggest (its positive halves — the
+        // near-miss "did you mean `Add`?" + rename fix and the far-miss "closest matches" — are now the
+        // corpus 02 list-element-variant cases). Keeps the NEGATIVE the corpus cannot assert: a NON-SUM
+        // element type gets NO variant suggestion (a message-ABSENCE).
         let non_sum = reject_full(
             "(module m (def (f (: xs (List Int64))) (match xs ((list (Foo) .. r) 1) (_ 0))) (export f))",
         )
