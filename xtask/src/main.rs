@@ -5191,6 +5191,17 @@ fn check(paths: &Paths, profile: &str) {
     let xtask = xtask.to_string_lossy().to_string();
     log.step("codegen", &format!("{xtask} codegen --check"), repo);
 
+    // The unsupported-error registry (`data/unsupported.sexp`) MUST stay current with the `DeclineId`
+    // catalog (rcdzc/src/diag.rs) — a new/removed decline id or a changed code/reason without a regen
+    // drifts the tracker. Same hard-gate discipline as `codegen --check`, but its OWN crate (deps rcdzc)
+    // so the fleet hot path (`cargo xtask fleet …`) never pulls the compiler. (Unsupported-error tracker,
+    // operator seq-286-broad; DESIGN-unsupported-tracker.md Inc-2.)
+    log.step(
+        "unsupported-registry",
+        "cargo run --quiet -p xtask-codegen-unsupported -- --check",
+        repo,
+    );
+
     // The wasm runtime is EXCLUDED from the native workspace, so a plain `cargo build` skips it — a
     // silent gap the check closes by building it explicitly for its target.
     let rt = paths.seed.join("crates/cdz-runtime");

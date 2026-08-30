@@ -1,0 +1,26 @@
+# xtask-codegen-unsupported — generate/check the repo-root `data/unsupported.sexp` registry from the
+# compiler's `DeclineId` catalog (the "oracle" in rcdzc/src/diag.rs). Increment 2 of the unsupported-error
+# tracker (implementation/design/DESIGN-unsupported-tracker.md, operator seq-286-broad).
+#
+# It iterates `rcdzc::diag::DeclineId::ALL` (structurally complete) and writes one `(unsupported <key> …)`
+# form per decline REASON, carrying the COMPILER-DERIVED fields (`code`, `reason`) and PRESERVING the
+# human-authored `(blocked-on …)` routing block across regenerations. `--check` mode reds on drift (a new
+# id with no entry, a dead entry, or a code/reason change), the staleness gate wired into `xtask check`.
+#
+# It is its OWN crate (NOT folded into xtask) precisely so `cargo xtask fleet …` — the fleet hot path run
+# every tick — does NOT pull in the heavy rcdzc compiler; only running the codegen builds rcdzc. Mirrors
+# the xtask-codegen-wasm-abi / -contracts pattern (v-xtask-decompose: per-command minimal-dep crates).
+[package]
+name = "xtask-codegen-unsupported"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-codegen-unsupported"
+path = "src/main.rs"
+
+[dependencies]
+# The compiler — read ONLY the DeclineId catalog (enum + ALL/key/code/reason). Heavy, but this crate is
+# built only when generating/checking the registry, never on the fleet hot path.
+rcdzc = { path = "../../../implementation/seed/crates/rcdzc" }
