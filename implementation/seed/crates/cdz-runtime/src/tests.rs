@@ -1099,22 +1099,18 @@ fn value_encode_of_a_framed_rational_is_the_colon_framed_golden() {
     );
     op_drop(back);
 
-    // FULL document: ':' , '3/4' (a single NAME leaf), 'Rational' (3 leaves) + spine. The value leaf
-    // is the num/den NAME text — NOT a KIND_INT (BigInt) and NOT a record.
-    let expect: &[u8] = &[
-        0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-        0x03, // 3 leaves
-        0x0a, 0x01, 0x3a, // ':'
-        0x0a, 0x03, 0x33, 0x2f, 0x34, // NAME '3/4'
-        0x0a, 0x08, 0x52, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x61, 0x6c, // 'Rational'
-        // struct spine:
-        0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x03, 0x00, 0x01, 0x02, 0x03,
-    ];
-    assert_eq!(
-        got, expect,
-        "framed rational must be the full colon-framed golden document"
+    // seq-204: the value is now the native head+children list `(KIND_RATIONAL 3 4)` — NOT the old
+    // num/den NAME. iterative==recursive + decode∘encode==id above pin the bytes; the exact 3-way
+    // cross-renderer byte golden (op62 == rust emit == cadenza-ast Builder::rational) re-pins together
+    // in the coordinated flag-day land. Assert the form is native here:
+    assert!(
+        got.contains(&doc::KIND_RATIONAL),
+        "the value must carry the native KIND_RATIONAL(27) tag head, not a num/den name"
     );
-    assert_eq!(got[8], 0x03, "rational leaf count = 3");
+    assert!(
+        !got.windows(3).any(|w| w == b"3/4"),
+        "no legacy num/den NAME string — 3 and 4 are ordinary Int child leaves"
+    );
 
     op_drop(r);
     assert_eq!(live_nodes(), 0, "no leak");
@@ -1339,12 +1335,15 @@ fn encode_value_recursive(
             b.atom(l)
         }
         S::Rational => {
+            // seq-204 native head+children (mirrors encode_value): `(KIND_RATIONAL <num> <den>)`.
             let (num, den) = unbox_rational(h);
-            let mut s = num.to_decimal_string();
-            s.push('/');
-            s.push_str(&den.to_decimal_string());
-            let l = b.name_leaf(&s);
-            b.atom(l)
+            let tag_leaf = b.ctor_leaf(doc::KIND_RATIONAL);
+            let tag = b.atom(tag_leaf);
+            let num_leaf = b.bigint_leaf(&num);
+            let num_atom = b.atom(num_leaf);
+            let den_leaf = b.bigint_leaf(&den);
+            let den_atom = b.atom(den_leaf);
+            b.list_head_tail(tag, &[num_atom, den_atom])
         }
         S::Bool => {
             let l = b.bool_leaf(op_get_bool(h));
