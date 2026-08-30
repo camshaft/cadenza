@@ -17702,14 +17702,23 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             value: v,
             radix: Radix::Dec,
         })),
-        // A constant RATIONAL renders as its canonical written form `num/den` (numeric-model.md §An Exact
-        // Rational Has A Canonical Normalized Form — `2/4` and `1/2` share ONE form; a whole rational is
-        // `5/1`). The pair is already normalized (lowest terms, sign on the numerator, denom > 0). Baked
-        // as a NAME leaf `"num/den"` (there is no rational reader literal; `1/2` reads back as this same
-        // name atom), matching the corpus `(: 1/2 Rational)` value surface.
+        // A constant RATIONAL bakes as the native rational NODE (seq-204): a payloadless `Leaf::Rational`
+        // tag head + two ordinary `Leaf::Int` children (numerator, denominator) — the SAME structure the
+        // runtime `value-encode` (op62) emits, so a CONST rational and a RUNTIME rational of the same value
+        // are BYTE-IDENTICAL (one content-address; the operator's binary-AST canonical-exchange mandate).
+        // The pair is already normalized (lowest terms, sign on the numerator, denom > 0). The tag is
+        // interned FIRST to match op62's node leaf order (pre-order); v-runtime confirms the byte-match.
         Core::ConstRational(n, d) => {
-            let text = format!("{}/{}", n.to_decimal_string(), d.to_decimal_string());
-            Some(b.atom_leaf(Leaf::Name(text.into())))
+            let tag = b.atom_leaf(Leaf::Rational);
+            let num = b.atom_leaf(Leaf::Int {
+                value: n,
+                radix: Radix::Dec,
+            });
+            let den = b.atom_leaf(Leaf::Int {
+                value: d,
+                radix: Radix::Dec,
+            });
+            Some(b.list(vec![tag, num, den]))
         }
         // A constant float bakes as its exact decimal leaf — the codec encodes it (KIND_FLOAT), and the
         // host reader renders it back. A quantity over a Float64 magnitude reaches here through
@@ -17951,8 +17960,18 @@ fn const_value_ast_scaled(
             let sd = dd.mul(&IntValue::from_i128(den));
             match normalized_rational(sn, sd) {
                 Core::ConstRational(rn, rd) => {
-                    let text = format!("{}/{}", rn.to_decimal_string(), rd.to_decimal_string());
-                    Some(b.atom_leaf(Leaf::Name(text.into())))
+                    // Native rational NODE (seq-204), byte-identical to op62 — tag head first, then the
+                    // two normalized Int children (num, den). See the top-level `const_value_ast` arm.
+                    let tag = b.atom_leaf(Leaf::Rational);
+                    let num = b.atom_leaf(Leaf::Int {
+                        value: rn,
+                        radix: Radix::Dec,
+                    });
+                    let den = b.atom_leaf(Leaf::Int {
+                        value: rd,
+                        radix: Radix::Dec,
+                    });
+                    Some(b.list(vec![tag, num, den]))
                 }
                 _ => None,
             }
@@ -17982,12 +18001,20 @@ fn const_value_ast_at(
             Some(b.atom_leaf(Leaf::Float(canon)))
         }
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
-        // A RATIONAL magnitude renders as its canonical `num/den` name leaf (the same form as the
-        // top-level `const_value_ast` Rational arm), so a `(Qty Rational u)` value renders
-        // `(Qty.of num/den <unit>)` — the exact-rational quantity surface the units corpus records.
+        // A RATIONAL magnitude bakes as the native rational NODE (seq-204, same as the top-level
+        // `const_value_ast` Rational arm), so a `(Qty Rational u)` value renders `(Qty.of <n>r<d> <unit>)`
+        // byte-identical to op62 — tag head first, then the two normalized Int children.
         Core::ConstRational(n, d) => {
-            let text = format!("{}/{}", n.to_decimal_string(), d.to_decimal_string());
-            Some(b.atom_leaf(Leaf::Name(text.into())))
+            let tag = b.atom_leaf(Leaf::Rational);
+            let num = b.atom_leaf(Leaf::Int {
+                value: n,
+                radix: Radix::Dec,
+            });
+            let den = b.atom_leaf(Leaf::Int {
+                value: d,
+                radix: Radix::Dec,
+            });
+            Some(b.list(vec![tag, num, den]))
         }
         // A non-scalar inner value is not a Layer-1 quantity magnitude — decline the escape.
         _ => None,
