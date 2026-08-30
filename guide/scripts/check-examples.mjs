@@ -132,7 +132,10 @@ async function loadComponent(componentBytes, name) {
 // The browser runner (runWorker.ts) wires this exact interface — the harness MUST too, or every
 // list/map/record/tuple-returning example looks like a run failure when it actually works in-app.
 const HEAP_IMPORT = "cadenza:runtime/heap";
-const runtimePath = join(guideRoot, "src/wasm/runtime.wasm");
+// The value-heap runtime component. Default = the staged src/wasm/runtime.wasm (stage-wasm resolves it from
+// the store by the compiler's required_runtime_hash). The per-example shred injects it via CDZ_RUNTIME_WASM
+// (the flake stages the exact runtime for each ca-derivation, alongside CDZ_WASM_PKG).
+const runtimePath = process.env.CDZ_RUNTIME_WASM ?? join(guideRoot, "src/wasm/runtime.wasm");
 
 // FINDING#23: the value-heap runtime now IMPORTS `cadenza:nfc/normalize` — a separate component that
 // NFC-normalizes a String's UTF-8 bytes (the heavy Unicode tables live there, not in the runtime). In
