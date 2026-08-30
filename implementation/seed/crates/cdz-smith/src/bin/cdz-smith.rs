@@ -86,6 +86,8 @@ fn main() -> ExitCode {
         }
         #[cfg(feature = "differential")]
         "module-declines" => cmd_module_declines(&args[1..]),
+        #[cfg(feature = "differential")]
+        "module-fuzz" => cmd_module_fuzz(&args[1..]),
         #[cfg(not(feature = "differential"))]
         "module-declines" => {
             eprintln!(
@@ -444,6 +446,114 @@ fn cmd_host_declines(args: &[String]) -> ExitCode {
 /// so breaker can drop it straight into a corpus file. Deduped to `--declines-dir` like the other sweeps.
 /// `--count` (default 2000), `--seed`, `--declines-dir`. Exits 0 (declines are EXPECTED output).
 #[cfg(feature = "differential")]
+/// FUZZ import/export resolution + cross-module compile (operator seq-22): generate rich MULTI-MODULE
+/// programs ([`cdz_smith::hostgen::generate_module_fuzz`]) and compile them via
+/// [`cdz_smith::oracle::compile_modules_catching`], filing a CRASH or INVALID-WASM as a finding (a
+/// combined multi-file `(module "n" …) (input entry)` repro). Compiled/Declined are tallied. Unlike
+/// `module-declines` (which mines the DECLINE→breaker pipeline over a single identity module), this is
+/// the crash/invalid-wasm oracle over the whole import/export surface.
+#[cfg(feature = "differential")]
+fn cmd_module_fuzz(args: &[String]) -> ExitCode {
+    use cdz_smith::finding::{Category, Filed, Finding, FindingStore};
+    use cdz_smith::oracle::{Verdict, compile_modules_catching};
+
+    let mut count: u64 = 2000;
+    let mut seed: Option<u64> = None;
+    let mut findings: Option<PathBuf> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--findings" => findings = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith module-fuzz: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let store = match FindingStore::open(&findings_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cdz-smith module-fuzz: cannot open findings dir: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let commit = driver::detect_commit();
+    let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
+    eprintln!(
+        "[cdz-smith] module-fuzz @{commit} | {count} programs | seed {run_seed} | findings → {}",
+        findings_dir.display()
+    );
+
+    // Combined multi-file repro for a filed finding: `(module "n" <src>) … (input <entry>)`.
+    fn combined_repro(modules: &[(String, String)], entry: &str) -> String {
+        let mut p = String::new();
+        for (name, src) in modules {
+            p.push_str(&format!("(module \"{name}\" {src}) "));
+        }
+        p.push_str(&format!("(input {entry})"));
+        p
+    }
+
+    let mut rng = run_seed;
+    let (mut compiled, mut declined, mut new_buckets, mut dup) = (0u64, 0u64, 0u64, 0u64);
+    for _ in 0..count {
+        let mut bytes = Vec::with_capacity(16);
+        for _ in 0..16 {
+            rng = rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = rng;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            bytes.push(((z ^ (z >> 31)) >> 24) as u8);
+        }
+        let (modules, entry) = cdz_smith::hostgen::generate_module_fuzz(&bytes);
+        let (category, crash, detail) = match compile_modules_catching(&modules, &entry) {
+            Verdict::Compiled { .. } => {
+                compiled += 1;
+                continue;
+            }
+            Verdict::Declined { .. } | Verdict::ParseError(_) => {
+                declined += 1;
+                continue;
+            }
+            Verdict::Crash(info) => (Category::Crash, Some(info), None),
+            Verdict::InvalidWasm { detail, .. } => (Category::InvalidWasm, None, Some(detail)),
+        };
+        let finding = Finding {
+            category,
+            program: combined_repro(&modules, &entry),
+            crash,
+            detail,
+            commit: commit.clone(),
+        };
+        match store.file(&finding) {
+            Ok(Filed::New(path)) => {
+                new_buckets += 1;
+                eprintln!(
+                    "[cdz-smith] NEW module-fuzz {:?} bucket → {}",
+                    finding.category,
+                    path.display()
+                );
+            }
+            Ok(Filed::Duplicate(_)) => dup += 1,
+            Err(e) => eprintln!("[cdz-smith] module-fuzz: failed to file finding: {e}"),
+        }
+    }
+    eprintln!(
+        "[cdz-smith] module-fuzz done: {compiled} compiled, {declined} declined, {new_buckets} new buckets, {dup} dup hits"
+    );
+    if new_buckets > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn cmd_module_declines(args: &[String]) -> ExitCode {
     let mut count: u64 = 2000;
     let mut seed: Option<u64> = None;

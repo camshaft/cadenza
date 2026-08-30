@@ -230,6 +230,39 @@ pub fn generate_module_program(entropy: &[u8]) -> (String, String) {
     (module_src, entry_src)
 }
 
+/// A richer MULTI-MODULE program for FUZZING import/export resolution + cross-module compile (operator
+/// seq-22: "start emitting modules and multiple files and hammering on the import/export system"). Two
+/// sibling modules `liba`/`libb`, each exporting an identity def over an arbitrary WIT type; the ENTRY
+/// imports from BOTH and calls them in a tuple. ~Half the time `libb` ALSO imports liba's `f` and calls
+/// it — a cross-module import CHAIN (liba → libb → entry), stressing transitive import resolution.
+/// Returns `(modules, entry_src)` for [`crate::oracle::compile_modules_catching`]. All names are exported
+/// where imported + all imports resolve, so a clean program compiles; a resolution/emit bug is a finding.
+pub fn generate_module_fuzz(entropy: &[u8]) -> (Vec<(String, String)>, String) {
+    let mut c = Cursor::new(entropy);
+    let ta = gen_wit(&mut c, MAX_TYPE_DEPTH);
+    let tb = gen_wit(&mut c, MAX_TYPE_DEPTH);
+    let liba = format!("(do (def (f (: x {})) x) (export f))", ta.ty);
+    let cross = c.pick(2) == 0;
+    let libb = if cross {
+        // libb imports liba's `f` and applies it (cross-module import chain), then exports `g`.
+        format!(
+            "(do (import \"liba\" (f)) (def (g (: y {})) (f {})) (export g))",
+            tb.ty, ta.lit
+        )
+    } else {
+        format!("(do (def (g (: y {})) y) (export g))", tb.ty)
+    };
+    // Entry imports from BOTH modules and calls each.
+    let entry = format!(
+        "(do (import \"liba\" (f)) (import \"libb\" (g)) (def (main) (tuple (f {}) (g {}))) (export main))",
+        ta.lit, tb.lit
+    );
+    (
+        vec![("liba".to_string(), liba), ("libb".to_string(), libb)],
+        entry,
+    )
+}
+
 /// Coerce entropy into a WIT-WORLD guest + world pair for the per-cell WIT-BINDING decline surface (via
 /// [`crate::oracle::compile_world_catching`]). The world declares interface `iface` with one member `f`
 /// of an ARBITRARY WIT type `T` ([`gen_wit`]'s `wit` form): `(world w (export iface (member f (func
@@ -297,6 +330,38 @@ mod tests {
                 "module program must be cleanly handled, got {verdict:?} for entry: {entry_src}"
             );
         }
+    }
+
+    /// The richer MULTI-MODULE fuzz shapes (`generate_module_fuzz`, operator seq-22) are CLEANLY HANDLED
+    /// (Compiled|Declined, never Crash/InvalidWasm) across a sweep — the import/export-resolution +
+    /// cross-module-compile soundness floor — and the cross-module-import variant (libb imports liba) IS
+    /// reached. A Crash/InvalidWasm here is a real finding the `module-fuzz` campaign captures.
+    #[test]
+    fn module_fuzz_programs_are_cleanly_handled() {
+        let mut saw_cross = false;
+        for seed in 0u64..128 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let (modules, entry_src) = generate_module_fuzz(&bytes);
+            assert_eq!(modules.len(), 2, "two sibling modules");
+            if modules.iter().any(|(_, s)| s.contains("(import \"liba\"")) {
+                saw_cross = true;
+            }
+            let verdict = compile_modules_catching(&modules, &entry_src);
+            assert!(
+                matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
+                "multi-module fuzz program must be cleanly handled, got {verdict:?}\nmodules: {modules:?}\nentry: {entry_src}"
+            );
+        }
+        assert!(
+            saw_cross,
+            "no seed produced the cross-module-import variant (libb imports liba)"
+        );
     }
 
     /// Every `generate_host_unit_effect` program COMPILES to a value (the gradeable Unit-effect shape rcdzc
