@@ -2301,6 +2301,15 @@
             (export main)))
   (error  CDZ0216))
 
+(case "a heterogeneous native #map literal NAMES the two clashing value types (diagnostic quality)"
+  (doc    "`#map((= 1 1) (= 2 \"b\"))` mixes an Int64 value with a String value -> CDZ0201, and the message
+           NAMES both clashing types (\"the values differ: Int64 and String\"), matching the `map` name-alias
+           (`Apply(MapNew)`) path — the native-literal (`Resolved::Map`) arm must not give a WORSE, type-name-
+           less message than the alias for the identical fault. Pins the diagnostic quality the infer.rs
+           submodule split (#6039) had regressed on this literal arm to the generic \"do not share a type\".")
+  (input  (do (def (main) (Map.len #map((= 1 1) (= 2 "b")))) (export main)))
+  (error  CDZ0201 (message "values differ") (message "Int64") (message "String")))
+
 (case "a function KEY in a NATIVE MAP LITERAL is rejected (CDZ0216 — the #map sibling of the native #set bypass)"
   (doc    "The NATIVE `#map` LITERAL face: `(map ((fn (x) x) 1))` — a map literal whose sole entry is keyed by
            a function — is CDZ0216, the same as `(Map.insert Map.empty f 1)`. Sibling of the native-`#set`
