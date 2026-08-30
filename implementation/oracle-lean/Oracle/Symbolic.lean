@@ -178,7 +178,11 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
                     else if a == b then a
                     else .app op args'
   | "|", #[a, b] => if isI b 0 then a else if isI a 0 then b else if a == b then a else .app op args'
-  | "^", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
+  -- `x^0`/`0^x`→x PRESERVE the operand; `x^x`→0 (XOR of equal operands is all-zero at ANY width, the
+  -- common zeroing idiom; the XOR companion of `x-x→0`/`x&0→0`) DROPS the operand → `!mayTrap` guard.
+  | "^", #[a, b] => if isI b 0 then a else if isI a 0 then b
+                    else if a == b && !mayTrap a then SymExpr.const (Value.int 0)
+                    else .app op args'
   | "<<", #[a, b] => if isI b 0 then a else .app op args'
   | ">>", #[a, b] => if isI b 0 then a else .app op args'
   -- DOUBLE-NEGATION `not (not x) → x`: the two `not`s evaluate `x` once and cancel (bool involution),
@@ -824,6 +828,10 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.app "&" #[.var 0, .const (.int 0)]) == SymExpr.const (.int 0)
 #guard normalize (.app "&" #[.var 0, .var 0]) == SymExpr.var 0
 #guard normalize (.app "|" #[.var 3, .var 3]) == SymExpr.var 3
+-- x^x→0 (XOR zeroing idiom) ONLY when the dropped operand is trap-free; a trapping operand keeps the `^`.
+#guard normalize (.app "^" #[.var 0, .var 0]) == SymExpr.const (.int 0)
+#guard normalize (.app "^" #[.app "/" #[.var 0, .const (.int 0)], .app "/" #[.var 0, .const (.int 0)]])
+       == SymExpr.app "^" #[.app "/" #[.var 0, .const (.int 0)], .app "/" #[.var 0, .const (.int 0)]]
 -- x&0→0 ONLY when the dropped operand is trap-free; a trapping operand keeps the `&` (trap preserved).
 #guard normalize (.app "&" #[.app "/" #[.var 0, .const (.int 0)], .const (.int 0)])
        == SymExpr.app "&" #[.app "/" #[.var 0, .const (.int 0)], .const (.int 0)]
