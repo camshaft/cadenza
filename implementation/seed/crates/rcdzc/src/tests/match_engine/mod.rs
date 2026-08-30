@@ -2637,76 +2637,10 @@ fn a_join_site_option_or_unapplied_fn_clash_carries_the_annotation_sites_hint() 
     );
 }
 
-#[test]
-fn a_nested_compound_mismatch_drills_to_the_exact_leaf_path() {
-    // When a differing record field / tuple position is ITSELF a same-shape nested compound, the hint
-    // drills through the shared structure to the deepest SCALAR leaf and names the access PATH — "field
-    // `a.b.c` should be Int64, but this one is Bool" — instead of re-rendering the whole differing
-    // sub-compound (`field `a` should be (Record (b (Record (c Int64)))) …`). Dotted path: a record
-    // field contributes its name, a tuple position its 0-based index.
-    // A two-level record nest.
-    let two = reject_full(
-        "(module m (def (h (: r (Record (inner (Record (x Int64)))))) (. r inner)) \
-               (def (g) (h (record (inner (record (x true)))))) (export g))",
-    )
-    .expect("a nested record with a differing leaf rejects");
-    assert!(
-        two.message
-            .contains("field `inner.x` should be Int64, but this one is Bool"),
-        "drills to the dotted leaf path: {}",
-        two.message
-    );
-    // A three-level record nest — the path grows.
-    let three = reject_full(
-        "(module m (def (h (: r (Record (a (Record (b (Record (c Int64)))))))) (. r a)) \
-               (def (g) (h (record (a (record (b (record (c true)))))))) (export g))",
-    )
-    .expect("a 3-level nested record rejects");
-    assert!(
-        three
-            .message
-            .contains("field `a.b.c` should be Int64, but this one is Bool"),
-        "drills through three levels: {}",
-        three.message
-    );
-    // A record field that is a TUPLE — the path mixes a field name and a 0-based position (`pt.1`).
-    let mixed = reject_full(
-        "(module m (def (h (: r (Record (pt (Tuple Int64 Int64))))) (. r pt)) \
-               (def (g) (h (record (pt (tuple 1 true))))) (export g))",
-    )
-    .expect("a record with a differing tuple field rejects");
-    assert!(
-        mixed
-            .message
-            .contains("field `pt.1` should be Int64, but this one is Bool"),
-        "mixes field name and tuple index in the path: {}",
-        mixed.message
-    );
-    // A tuple whose element is a RECORD — path starts with the 0-based index (`element 0.x`).
-    let tup = reject_full(
-        "(module m (def (h (: t (Tuple (Record (x Int64)) Int64))) (. t 1)) \
-               (def (g) (h (tuple (record (x true)) 2))) (export g))",
-    )
-    .expect("a tuple with a differing record element rejects");
-    assert!(
-        tup.message
-            .contains("element 0.x should be Int64, but this one is Bool"),
-        "tuple element path drills into the record field: {}",
-        tup.message
-    );
-    // The drill STOPS at a field-SET difference deeper down — it names the immediate field with the
-    // sub-render (whose missing field the render shows), NOT a misleading leaf path.
-    let stop = reject_full(
-        "(module m (def (h (: r (Record (inner (Record (x Int64) (y Int64)))))) (. r inner)) \
-               (def (g) (h (record (inner (record (x 1)))))) (export g))",
-    )
-    .expect("a nested field-set difference rejects");
-    assert!(
-        stop.message.contains("field `inner` should be") && !stop.message.contains("inner."),
-        "drill stops at a nested field-set difference (no dotted leaf): {}",
-        stop.message
-    );
-}
+// (a_nested_compound_mismatch_drills_to_the_exact_leaf_path migrated to corpus 07-type-system: a differing
+// nested field/position drills to the dotted leaf path ("field `a.b.c` should be Int64, but this one is
+// Bool"; "field `pt.1`…"; "element 0.x…") across 2/3-level records, record-of-tuple and tuple-of-record; the
+// drill stops at a deeper field-SET difference (names the immediate field, not a leaf path). All 5 PASS wasm.)
 
 // (a_wrong_type_argument_to_a_prelude_member_op_names_the_operation migrated to corpus 07-type-system: a
 // wrong-element-type `List.push` (CDZ0201) / conversion `Int64.of` (CDZ0203) names "`Op` expects an argument
