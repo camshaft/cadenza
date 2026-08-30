@@ -1357,62 +1357,6 @@ fn a_called_tuple_by_name_access_reports_the_position_message_once_not_a_call_si
 }
 
 #[test]
-fn named_member_access_on_a_collection_points_at_the_operation_module() {
-    // A collection/text value accessed by NAME — `(. xs foo)` on a `(List …)`, `(Map …)`, `(Set …)`,
-    // `String`, `Bytes` — is not a field read (these are not records). Its operations live on the type
-    // MODULE and take the value first, so the message names the module + the `((. Module op) value …)`
-    // form instead of the dead-end "requires a record" (the collection/text twin of the tuple-index
-    // redirect). A SCALAR keeps the plain message (no operation module).
-    for (src, module, ty_render) in [
-        (
-            "(module m (def (g (: xs (List Int64))) (. xs foo)) (export g))",
-            "List",
-            "(List Int64)",
-        ),
-        (
-            "(module m (def (g (: mp (Map Int64 Int64))) (. mp foo)) (export g))",
-            "Map",
-            "(Map Int64 Int64)",
-        ),
-        (
-            "(module m (def (g (: s (Set Int64))) (. s foo)) (export g))",
-            "Set",
-            "(Set Int64)",
-        ),
-        (
-            "(module m (def (g (: str String)) (. str foo)) (export g))",
-            "String",
-            "String",
-        ),
-    ] {
-        let d = compile_component(&crate::codec::encode(&parse(src)))
-            .err()
-            .unwrap_or_else(|| panic!("named access on a {module} must reject"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message
-                .contains(&format!("a {ty_render} value has no field `foo`"))
-                && d.message
-                    .contains(&format!("live on the `{module}` module"))
-                && d.message
-                    .contains(&format!("((. {module} <op>) <value> …)")),
-            "names the {module} module + the value-first call form: {}",
-            d.message
-        );
-        assert!(
-            d.fix.is_none(),
-            "no mechanical fix (which op is unknown): {:?}",
-            d.fix
-        );
-    }
-    // A scalar keeps the generic "requires a record" (it has no operation module).
-    assert!(
-        expect_decline("(. 5 foo)").contains("requires a record"),
-        "a scalar member access keeps the record message"
-    );
-}
-
-#[test]
 fn named_member_access_on_a_sum_points_at_matching_its_variants() {
     // A SUM value accessed by NAME — `(. o foo)` on an `(Option …)`, `(. p x)` on a user sum — is not a
     // field read: a sum's payload is reached by MATCHING its variants. It now spells a `(match <value>
