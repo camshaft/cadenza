@@ -465,11 +465,11 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // run would otherwise lower. Then filter the record to the instances whose SOURCE definition is
             // the named one (mapping each record's `orig_body` back to its def via `def_index_by_body`).
             crate::layout::force_monomorphize(db);
-            let text = instantiations_text(db, name);
+            let report = instantiations_value(db, name);
             QueryResult {
                 kind: KIND_INSTANTIATIONS,
                 name: name.clone(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::instantiations_wire::encode(&report),
             }
         }
         Query::Symbols => {
@@ -952,12 +952,21 @@ fn decl_name_node(db: &Db, occ: StructId, head: &str) -> StructId {
 /// (`Core::Call` callees) and `db.exports`, all forced complete by the caller (`force_monomorphize`).
 /// Deterministic: instances are in synthesis order (a function of the source). Total: an UNKNOWN name has
 /// no def → the empty string (no `disp` line); a known def always gets exactly one `disp` line.
-fn instantiations_text(db: &mut Db, name: &str) -> String {
-    // Resolve the name to its source def. An unknown name → empty (total). A def name that ALSO has
-    // specializations resolves to the ORIGINAL (a specialization's synthetic `#mono` name never equals a
-    // user name), so `def_by_name` is the right lookup.
+fn instantiations_value(
+    db: &mut Db,
+    name: &str,
+) -> cadenza_compile_abi::instantiations_wire::Instantiations {
+    use cadenza_compile_abi::instantiations_wire::{Instance, Instantiations};
+    // Resolve the name to its source def. An unknown name → `known: false` (total). A def name that ALSO
+    // has specializations resolves to the ORIGINAL (a specialization's synthetic `#mono` name never equals
+    // a user name), so `def_by_name` is the right lookup.
     let Some(def_idx) = db.def_by_name(name) else {
-        return String::new();
+        return Instantiations {
+            known: false,
+            name_node: None,
+            dispositions: Vec::new(),
+            instances: Vec::new(),
+        };
     };
 
     // The disposition set: which fate(s) this def met over the whole program. Each is a read of a column
@@ -1009,18 +1018,15 @@ fn instantiations_text(db: &mut Db, name: &str) -> String {
     }
 
     // The source def's NAME occurrence (its signature's first child), so a consumer can jump to the
-    // definition; `-` if the signature is malformed. Same name-occurrence convention as `Exports`.
+    // definition; `None` (the old `-`) if the signature is malformed. Same name-occurrence convention as
+    // `Exports`.
     let sig = db.defs[def_idx].sig_occ;
     let name_node = match db.ast.get(sig) {
-        Struct::List(kids) => kids
-            .first()
-            .map_or_else(|| "-".to_string(), |n| n.0.to_string()),
-        _ => "-".to_string(),
+        Struct::List(kids) => kids.first().map(|n| n.0),
+        _ => None,
     };
 
-    let mut text = format!("disp\t{name_node}\t{}\n", dispositions.join("+"));
-
-    // The instantiation payload lines — one per DISTINCT specialization of this def, in synthesis order.
+    // The instantiation payload — one entry per DISTINCT specialization of this def, in synthesis order.
     // Snapshot first (the immutable `db.instantiations` borrow cannot coexist with the `def_index_by_body`
     // reads), then keep those whose `orig_body` maps back to this def.
     let records: Vec<(StructId, usize, Vec<String>)> = db
@@ -1028,20 +1034,22 @@ fn instantiations_text(db: &mut Db, name: &str) -> String {
         .iter()
         .map(|inst| (inst.orig_body, inst.spec_index, inst.args.clone()))
         .collect();
+    let mut instances: Vec<Instance> = Vec::new();
     for (orig_body, spec_index, args) in records {
         if db.def_index_by_body(orig_body) != Some(def_idx) {
             continue;
         }
-        let spec_name = db.defs[spec_index].name.clone();
-        text.push_str("inst\t");
-        text.push_str(&spec_name);
-        text.push('\t');
-        text.push_str(&name_node);
-        text.push('\t');
-        text.push_str(&args.join(";"));
-        text.push('\n');
+        instances.push(Instance {
+            spec_name: db.defs[spec_index].name.clone(),
+            args,
+        });
     }
-    text
+    Instantiations {
+        known: true,
+        name_node,
+        dispositions,
+        instances,
+    }
 }
 
 /// The documentation of a NAME — the `DocOf` read, an ordered fallback returning the FIRST source that

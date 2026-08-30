@@ -39946,7 +39946,29 @@ mod sidecar_driven {
             "an instantiations query does not fail: {:?}",
             out.diagnostics
         );
-        artifact_text(&out, KIND_INSTANTIATIONS).unwrap_or_default()
+        // The instantiations artifact is now canonical binary AST (operator P0 seq-284); decode it and
+        // reconstruct the historical `disp`/`inst` TAB text so the existing parsing helpers/assertions
+        // still pin the report shape. An unknown name (known=false) → empty, as the old empty artifact was.
+        let Some(a) = out.artifacts.iter().find(|a| a.kind == KIND_INSTANTIATIONS) else {
+            return String::new();
+        };
+        let report = cadenza_compile_abi::instantiations_wire::decode(&a.bytes)
+            .expect("instantiations artifact decodes as binary AST");
+        if !report.known {
+            return String::new();
+        }
+        let node = report
+            .name_node
+            .map_or_else(|| "-".to_string(), |n| n.to_string());
+        let mut text = format!("disp\t{node}\t{}\n", report.dispositions.join("+"));
+        for inst in &report.instances {
+            text.push_str(&format!(
+                "inst\t{}\t{node}\t{}\n",
+                inst.spec_name,
+                inst.args.join(";")
+            ));
+        }
+        text
     }
 
     /// The DISPOSITION of `name` — the `disp` line's third column (e.g. `specialized` / `inlined` /
