@@ -140,7 +140,7 @@ fn a_wrapped_dotdot_rest_pattern_binds_identically_to_the_flat_marker() {
         "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (= 1 v) .. rest) v) (_ 0))) (export f))",
     );
     let wrap_map = compile(
-        "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (= 1 v) (.. rest)) v) (_ 0))) (export f))",
+        "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (= 1 v) (= .. rest)) v) (_ 0))) (export f))",
     );
     assert_eq!(
         wrap_map
@@ -153,7 +153,7 @@ fn a_wrapped_dotdot_rest_pattern_binds_identically_to_the_flat_marker() {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>(),
-        "wrapped `(map … (.. rest))` must behave identically to flat `(map … .. rest)` (Phase 1 \
+        "wrapped `(map … (= .. rest))` must behave identically to flat `(map … .. rest)` (Phase 1 \
          dual-recognize)",
     );
 }
@@ -928,8 +928,8 @@ fn a_partial_guest_missing_world_export_members_declines_cleanly() {
                                       (sender (Record (reducer Bytes) (host Bytes))) \
                                       (payload Bytes) (token Bytes)))) \
                    (record \
-                     (requests (list)) \
-                     (outcome Outcome.Continue))) \
+                     (= requests (list)) \
+                     (= outcome Outcome.Continue))) \
                  (export onMessage))";
     let out = crate::compile::compile(
         &[
@@ -1357,7 +1357,7 @@ fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
     use crate::testkit::parse;
     // `.x` of `(if p (record (y b)(x a)) (record (y a)(x b)))` → `(if p a b)`.
     let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
-                 (. (if p (record (y b) (x a)) (record (y a) (x b))) x)) (export pick))";
+                 (. (if p (record (= y b) (= x a)) (record (= y a) (= x b))) x)) (export pick))";
     // Compiles, and the member read PUSHES INTO the branches: the folded Core is a bare `Core::If` over the
     // selected field values (by NAME — fields written out of order), NOT a `Core::Proj` over an if-of-records
     // (the un-folded form, which would per-call `arr-alloc` both branch records then arr-get one field back).
@@ -1703,7 +1703,7 @@ fn a_common_constructor_hoist_covers_records_by_shared_key_set() {
     let src = "(module m \
                  (def (mk (: c Bool) (: x Int64) (: y Int64) (: n Int64)) \
                    (if (< n 0) (mk c x y (+ n 1)) \
-                     (if c (record (a x) (b 1)) (record (a y) (b 1))))) \
+                     (if c (record (= a x) (= b 1)) (record (= a y) (= b 1))))) \
                  (def (main (: c Bool) (: x Int64) (: y Int64)) \
                    (. (mk c x y 0) a)) \
                  (export main))";
@@ -2012,7 +2012,7 @@ fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_prese
     // updates `b`, leaving TWO preserved fields (`a`, `c`). Before the fix the constant appeared TWICE (once
     // per preserved-field projection); the fix makes it ONE. (Verified: neutralizing the let-bind → 2.)
     let src = "(module m \
-        (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+        (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1)))) \
         (def (upd (: v Int64)) (. (Record.with (mk (+ v 987654321)) #\"b\" 99) a)) \
         (def (main (: v Int64)) (upd v)) \
         (export main))";
@@ -2136,7 +2136,7 @@ fn record_project_and_without_over_a_runtime_record_build_from_projections_mater
     // `project` KEEPS {a, c} (2 fields, so ≥2 projections share the operand).
     check(
         "(module m \
-         (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+         (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1)))) \
          (def (upd (: v Int64)) (. (Record.project (mk (+ v 987654321)) (a c)) a)) \
          (def (main (: v Int64)) (upd v)) \
          (export main))",
@@ -2145,7 +2145,7 @@ fn record_project_and_without_over_a_runtime_record_build_from_projections_mater
     // `without` DROPS {b}, keeping {a, c} (2 fields).
     check(
         "(module m \
-         (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+         (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1)))) \
          (def (upd (: v Int64)) (. (Record.without (mk (+ v 987654321)) (b)) a)) \
          (def (main (: v Int64)) (upd v)) \
          (export main))",
@@ -2168,7 +2168,7 @@ fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize
     // POP: `(Record.pop (mk (+ v 987654321)) a)` → `(a-value, {b,c})`; read tuple element 0 = popped a = 1.
     // The operand feeds BOTH the popped value's projection AND the rest record's ≥1 projection.
     let pop_src = "(module m \
-        (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+        (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1)))) \
         (def (upd (: v Int64)) (. (Record.pop (mk (+ v 987654321)) a) 0)) \
         (def (main (: v Int64)) (upd v)) \
         (export main))";
@@ -2185,8 +2185,8 @@ fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize
     // MERGE: union of TWO runtime records `(mkA (+ v 987654321))` and `(mkB (+ v 111222333))`; read `c`
     // (from `b`, the second operand) = 3. Each operand carries its own distinctive constant → each once.
     let merge_src = "(module m \
-        (def (mkA (: n Int64)) (if (= n 0) (record (a 1) (b 2)) (mkA (- n 1)))) \
-        (def (mkB (: n Int64)) (if (= n 0) (record (c 3) (d 4)) (mkB (- n 1)))) \
+        (def (mkA (: n Int64)) (if (= n 0) (record (= a 1) (= b 2)) (mkA (- n 1)))) \
+        (def (mkB (: n Int64)) (if (= n 0) (record (= c 3) (= d 4)) (mkB (- n 1)))) \
         (def (upd (: v Int64)) (. (Record.merge (mkA (+ v 987654321)) (mkB (+ v 111222333))) c)) \
         (def (main (: v Int64)) (upd v)) \
         (export main))";
@@ -2593,7 +2593,7 @@ fn a_multi_arg_world_import_perform_with_a_record_arg_lowers_to_a_synchronous_ho
                  (def (apply (: e (Record (ct String) (pl Bytes)))) \
                    (host (deliver) \
                      ((. deliver deliver-message) (. e pl) \
-                        (record (contract (. e pl)) (payload (. e pl)))))) \
+                        (record (= contract (. e pl)) (= payload (. e pl)))))) \
                  (export apply))";
     let mut db = Db::load(crate::testkit::parse(src));
     db.wit_world = Some(reducer_deliver_record_import_world_bytes());
@@ -3274,7 +3274,7 @@ fn an_external_artifact_world_import_resolves_without_a_hand_declared_effect() {
     let src = "(module m \
                  (def (apply (: e (Record (ct String) (pl Bytes)))) \
                    (host (identity) \
-                     (list (record (op (. e ct)) (arg ((. identity id))))))) \
+                     (list (record (= op (. e ct)) (= arg ((. identity id))))))) \
                  (export apply))";
     let out = crate::compile::compile(
         &[
@@ -3535,7 +3535,7 @@ fn an_in_source_world_decl_drives_the_bytes_provider_emit_identically_to_the_art
     // The reducer body is IDENTICAL in both compiles; the sole difference is where the target world comes
     // from. A pure fold reading the Event's fields into a one-element effect-list — the first full-A shape.
     let reducer_body = "(def (apply (: e (Record (ct String) (pl Bytes)))) \
-                          (list (record (op (. e ct)) (arg (. e pl))))) \
+                          (list (record (= op (. e ct)) (= arg (. e pl))))) \
                         (export apply)";
 
     // (A) ARTIFACT PATH (the §3b ingest): the reducer source alone + the world as an external artifact.
@@ -3616,7 +3616,7 @@ fn a_module_with_two_top_level_world_decls_declines_no_miscompile() {
                         (world other (export fold (member apply \
                           (func (param input (\"list\" (u8))) (result (\"list\" (u8))))))) \
                         (def (apply (: e (Record (ct String) (pl Bytes)))) \
-                          (list (record (op (. e ct)) (arg (. e pl))))) \
+                          (list (record (= op (. e ct)) (= arg (. e pl))))) \
                         (export apply))";
     let out = crate::compile::compile(
         &[
@@ -3663,7 +3663,7 @@ fn a_bytes_member_with_a_scalar_param_declines_cleanly_no_miscompile() {
     use crate::testkit::parse;
     // `apply` takes a scalar Int64 (no value-form shape) and returns a compound effect-list.
     let src = "(module m \
-                 (def (apply (: n Int64)) (list (record (op \"x\") (arg n)))) \
+                 (def (apply (: n Int64)) (list (record (= op \"x\") (= arg n)))) \
                  (export apply))";
     let out = crate::compile::compile(
         &[
@@ -4244,8 +4244,8 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     // with seed = 0, `.a` = 2.
     let src = "(module m \
                  (def (f (: r (Record (a Int64) (b Int64)))) \
-                    (record (a (+ (. r a) 1)) (b (. r b)))) \
-                 (def (main (: seed Int64)) (. (f (f (record (a seed) (b 5)))) a)) (export main))";
+                    (record (= a (+ (. r a) 1)) (= b (. r b)))) \
+                 (def (main (: seed Int64)) (. (f (f (record (= a seed) (= b 5)))) a)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src)))
         .expect("a composed record-transform call must compile");
     assert!(
@@ -4262,8 +4262,8 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     // heap; `.c` is independent of the seed — `(* c 3)` twice over c = 2 → 18 regardless.
     let three = "(module m \
                    (def (f (: r (Record (a Int64) (b Int64) (c Int64)))) \
-                      (record (a (+ (. r a) 1)) (b (. r b)) (c (* (. r c) 3)))) \
-                   (def (main (: seed Int64)) (. (f (f (record (a seed) (b 5) (c 2)))) c)) (export main))";
+                      (record (= a (+ (. r a) 1)) (= b (. r b)) (= c (* (. r c) 3)))) \
+                   (def (main (: seed Int64)) (. (f (f (record (= a seed) (= b 5) (= c 2)))) c)) (export main))";
     let three_bytes = compile_component(&crate::codec::encode(&parse(three)))
         .expect("a three-field composed record-transform call must compile");
     assert!(
@@ -4531,7 +4531,7 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
     assert_eq!(
         code_of(
             "(module m (def (main) \
-               (let (((record (x 0) (y b)) (record (x 3) (y 4)))) b)) (export main))"
+               (let (((record (= x 0) (= y b)) (record (= x 3) (= y 4)))) b)) (export main))"
         )
         .as_deref(),
         Some("CDZ0210")
@@ -4540,21 +4540,21 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
     assert_eq!(
         code_of(
             "(module m (def (main) \
-               (let (((record (nope a)) (record (x 3) (y 4)))) a)) (export main))"
+               (let (((record (= nope a)) (record (= x 3) (= y 4)))) a)) (export main))"
         )
         .as_deref(),
         Some("CDZ0203")
     );
     // (c) non-record bound value → CDZ0203.
     assert_eq!(
-        code_of("(module m (def (main) (let (((record (x a)) 5)) a)) (export main))").as_deref(),
+        code_of("(module m (def (main) (let (((record (= x a)) 5)) a)) (export main))").as_deref(),
         Some("CDZ0203")
     );
     // (d) non-linear (two fields bind `a`) → CDZ0102.
     assert_eq!(
         code_of(
             "(module m (def (main) \
-               (let (((record (x a) (y a)) (record (x 3) (y 4)))) a)) (export main))"
+               (let (((record (= x a) (= y a)) (record (= x 3) (= y 4)))) a)) (export main))"
         )
         .as_deref(),
         Some("CDZ0102")
@@ -4563,7 +4563,7 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
     // the nested binder `a` must attribute to the unwired feature, so the code is NOT the unbound-name one.
     let nested = compile_component(&crate::codec::encode(&parse(
         "(module m (def (main) \
-           (let (((record (p (tuple a b))) (record (p (tuple 1 2))))) (+ a b))) (export main))",
+           (let (((record (= p (tuple a b))) (record (= p (tuple 1 2))))) (+ a b))) (export main))",
     )))
     .expect_err("nested compound record field value declines");
     assert_ne!(nested.code.as_deref(), Some("CDZ0101"));
@@ -4583,7 +4583,7 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     use crate::testkit::parse;
     // absent field → CDZ0201
     let absent = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (main) (match (record (x 3)) ((record (nope a)) a))) (export main))",
+        "(module m (def (main) (match (record (= x 3)) ((record (= nope a)) a))) (export main))",
     )))
     .expect_err("absent field rejects");
     assert_eq!(absent.code.as_deref(), Some("CDZ0201"));
@@ -4595,7 +4595,7 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     // pattern CDZ0201 is the sole primary.
     let diags = crate::host::run_with_compiler_stack(|| {
         crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (main) (match (record (x 3)) ((record (nope a)) a))) (export main))",
+            "(module m (def (main) (match (record (= x 3)) ((record (= nope a)) a))) (export main))",
         )))
     });
     let field_faults: Vec<_> = diags
@@ -4611,7 +4611,7 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     // nested compound field value → clean decline, NOT CDZ0101
     let nested = compile_component(&crate::codec::encode(&parse(
         "(module m (def (main) \
-           (match (record (p (tuple 1 2))) ((record (p (tuple a b))) (+ a b)))) (export main))",
+           (match (record (= p (tuple 1 2))) ((record (= p (tuple a b))) (+ a b)))) (export main))",
     )))
     .expect_err("nested compound record match field declines");
     assert_ne!(nested.code.as_deref(), Some("CDZ0101"));
@@ -4629,8 +4629,8 @@ fn a_record_match_pattern_typo_field_suggests_the_nearest_field() {
     // record-pattern twin of the member-access `(. r fooo)` did-you-mean (CDZ0212). Same typo class;
     // before this the pattern path dead-ended at "does not have" while the access path named the fix.
     let typo = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (helpr y)) y))) \
-         (def (main) (f (record (helper 1)))) (export main))",
+        "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (= helpr y)) y))) \
+         (def (main) (f (record (= helper 1)))) (export main))",
     )))
     .expect_err("a record-pattern typo field rejects");
     assert_eq!(
@@ -4664,8 +4664,8 @@ fn a_record_match_pattern_typo_field_suggests_the_nearest_field() {
     // A FAR-MISS field (beyond `nearest`'s cutoff) must NOT get a baseless suggestion NOR a fix — the
     // plain message stands.
     let far = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (zzz y)) y))) \
-         (def (main) (f (record (helper 1)))) (export main))",
+        "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (= zzz y)) y))) \
+         (def (main) (f (record (= helper 1)))) (export main))",
     )))
     .expect_err("a far-miss record-pattern field still rejects");
     assert_eq!(far.code.as_deref(), Some("CDZ0201"), "got: {}", far.message);
@@ -6851,7 +6851,7 @@ mod recursion {
         // skipped. Use a record with both a Unit and a String field, drop the qty, keep name+u.
         let bytes = compile(
             "(module m (def (main (: k Int64)) (do \
-               (def inv (Map.insert Map.empty 1 (record (name \"w\") (u unit) (qty k)))) \
+               (def inv (Map.insert Map.empty 1 (record (= name \"w\") (= u unit) (= qty k)))) \
                (def r (Option.expect (Map.lookup inv 1) \"s\")) \
                (String.byte-len (. (Record.without r (qty)) name)))) (export main))",
         );
@@ -9082,11 +9082,11 @@ mod match_engine {
         for (label, src) in [
             (
                 "native #record field key is β-immune (not substituted → corrupted)",
-                "(module m (def (f (: x Int64)) #record((x 5))) (def (main) (f 7)) (export main))",
+                "(module m (def (f (: x Int64)) #record((= x 5))) (def (main) (f 7)) (export main))",
             ),
             (
                 "name-alias record field key β-immune (control)",
-                "(module m (def (f (: x Int64)) (record (x 5))) (def (main) (f 7)) (export main))",
+                "(module m (def (f (: x Int64)) (record (= x 5))) (def (main) (f 7)) (export main))",
             ),
             (
                 "native #tuple ctor-payload is an irrefutable match binder",
@@ -9258,7 +9258,7 @@ mod match_engine {
             ),
             (
                 "name-alias record equality (control)",
-                "(module m (def (main) (= (record (x 1) (y 2)) (record (y 2) (x 1)))) (export main))",
+                "(module m (def (main) (= (record (= x 1) (= y 2)) (record (= y 2) (= x 1)))) (export main))",
             ),
             (
                 "native #map equality",
@@ -9953,9 +9953,10 @@ mod match_engine {
         // rewords to the readable arg-site lead + the structural DELTA (which field/element differs), the
         // same hint the annotation / peer-join sites carry.
         // A record FIELD-SET difference names the missing/extra field.
-        let rec =
-            reject_full("(module m (def (main) (= (record (x 1)) (record (y 2)))) (export main))")
-                .expect("comparing two different-field records rejects");
+        let rec = reject_full(
+            "(module m (def (main) (= (record (= x 1)) (record (= y 2)))) (export main))",
+        )
+        .expect("comparing two different-field records rejects");
         assert_eq!(rec.code.as_deref(), Some("CDZ0203"), "got: {}", rec.message);
         assert!(
             rec.message.contains("missing field `x`")
@@ -9965,7 +9966,7 @@ mod match_engine {
         );
         // A record FIELD-TYPE difference (same field set) names the differing field's types.
         let field_ty = reject_full(
-            "(module m (def (main) (= (record (x 1)) (record (x true)))) (export main))",
+            "(module m (def (main) (= (record (= x 1)) (record (= x true)))) (export main))",
         )
         .expect("comparing records with a differing field type rejects");
         assert!(
@@ -10076,7 +10077,7 @@ mod match_engine {
         // message names the specific fields (rustc's "missing field `y`" / "no field `z`").
         let missing = reject_full(
             "(module m (def (h (: p (Record (x Int64) (y Int64)))) (. p x)) \
-               (def (g) (h (record (x 1)))) (export g))",
+               (def (g) (h (record (= x 1)))) (export g))",
         )
         .expect("a record missing a field rejects");
         assert_eq!(
@@ -10093,7 +10094,7 @@ mod match_engine {
         // An EXTRA field the expected record has no place for.
         let extra = reject_full(
             "(module m (def (h (: p (Record (x Int64) (y Int64)))) (. p x)) \
-               (def (g) (h (record (x 1) (y 2) (z 3)))) (export g))",
+               (def (g) (h (record (= x 1) (= y 2) (= z 3)))) (export g))",
         )
         .expect("a record with an extra field rejects");
         assert!(
@@ -10104,7 +10105,7 @@ mod match_engine {
         // Two missing fields → plural, sorted (deterministic, order-independent).
         let two = reject_full(
             "(module m (def (h (: p (Record (x Int64) (y Int64) (w Int64)))) (. p x)) \
-               (def (g) (h (record (x 1)))) (export g))",
+               (def (g) (h (record (= x 1)))) (export g))",
         )
         .expect("a record missing two fields rejects");
         assert!(
@@ -10117,7 +10118,7 @@ mod match_engine {
         // message (nothing is missing/extra), and not just two full record renders the reader must diff.
         let type_diff = reject_full(
             "(module m (def (h (: p (Record (x Int64)))) (. p x)) \
-               (def (g) (h (record (x true)))) (export g))",
+               (def (g) (h (record (= x true)))) (export g))",
         )
         .expect("a same-fields different-type record rejects");
         assert!(
@@ -10137,7 +10138,7 @@ mod match_engine {
         // burying it in a full-render diff.
         let wide = reject_full(
             "(module m (def (h (: p (Record (x Int64) (y Int64) (z Int64)))) (. p x)) \
-               (def (g) (h (record (x 1) (y true) (z 3)))) (export g))",
+               (def (g) (h (record (= x 1) (= y true) (= z 3)))) (export g))",
         )
         .expect("a wide record with one wrong field rejects");
         assert!(
@@ -10231,7 +10232,7 @@ mod match_engine {
         );
         // A `Map` KEY mismatch — the KEY axis is named (not the value).
         let key = reject_full(
-            "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (1 2)))) (export g))",
+            "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (= 1 2)))) (export g))",
         )
         .expect("a (Map Int64 Int64) where (Map String Int64) is wanted rejects");
         assert!(
@@ -10242,7 +10243,7 @@ mod match_engine {
         );
         // A `Map` VALUE mismatch — the VALUE axis is named (the key agrees).
         let val = reject_full(
-            "(module m (def (h (: mp (Map Int64 Int64))) mp) (def (g) (h (map (1 true)))) (export g))",
+            "(module m (def (h (: mp (Map Int64 Int64))) mp) (def (g) (h (map (= 1 true)))) (export g))",
         )
         .expect("a (Map Int64 Bool) where (Map Int64 Int64) is wanted rejects");
         assert!(
@@ -10253,7 +10254,7 @@ mod match_engine {
         );
         // BOTH map axes differ → report the KEY (leftmost) axis, deterministically.
         let both = reject_full(
-            "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (1 true)))) (export g))",
+            "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (= 1 true)))) (export g))",
         )
         .expect("a map with both axes wrong rejects");
         assert!(
@@ -10440,9 +10441,10 @@ mod match_engine {
         // same-kind compounds that differ inside were dumped as two whole renders. `structural_delta_hint`
         // bundles the three per-member helpers so all three sites point at the SPECIFIC difference.
         // A LIST LITERAL of records differing in one field's TYPE.
-        let list =
-            reject_full("(module m (def (g) (list (record (x 1)) (record (x true)))) (export g))")
-                .expect("a list of records with a differing field rejects");
+        let list = reject_full(
+            "(module m (def (g) (list (record (= x 1)) (record (= x true)))) (export g))",
+        )
+        .expect("a list of records with a differing field rejects");
         assert!(
             list.message
                 .contains("field `x` should be Int64, but this one is Bool"),
@@ -10451,7 +10453,7 @@ mod match_engine {
         );
         // An `if` whose branches are records differing in one field's TYPE.
         let iff = reject_full(
-            "(module m (def (f (: b Bool)) (if b (record (x 1)) (record (x true)))) (export f))",
+            "(module m (def (f (: b Bool)) (if b (record (= x 1)) (record (= x true)))) (export f))",
         )
         .expect("if branches with a differing record field reject");
         assert!(
@@ -10506,7 +10508,7 @@ mod match_engine {
         // where the diagnostic anchors. Verified fixes.
         // LIST-element.
         let list = reject_full(
-            "(module m (def (g) (list (record (foo 1)) (record (fooo 2)))) (export g))",
+            "(module m (def (g) (list (record (= foo 1)) (record (= fooo 2)))) (export g))",
         )
         .expect("a list of records with a field typo rejects");
         assert_eq!(
@@ -10525,7 +10527,7 @@ mod match_engine {
         );
         // IF-branch.
         let iff = reject_full(
-            "(module m (def (f (: b Bool)) (if b (record (foo 1)) (record (fooo 2)))) (export f))",
+            "(module m (def (f (: b Bool)) (if b (record (= foo 1)) (record (= fooo 2)))) (export f))",
         )
         .expect("if branches with a record field typo reject");
         assert!(
@@ -10539,7 +10541,7 @@ mod match_engine {
         // MATCH-arm.
         let m = reject_full(
             "(module m (type C (A) (B)) \
-               (def (f (: c C)) (match c ((A) (record (foo 1))) ((B) (record (fooo 2))))) (export f))",
+               (def (f (: c C)) (match c ((A) (record (= foo 1))) ((B) (record (= fooo 2))))) (export f))",
         )
         .expect("match arms with a record field typo reject");
         assert!(
@@ -10552,7 +10554,7 @@ mod match_engine {
         );
         // NO false rename: a genuinely different field-SET across branches (not a typo) → message only.
         let diff = reject_full(
-            "(module m (def (f (: b Bool)) (if b (record (a 1) (b 2)) (record (a 3)))) (export f))",
+            "(module m (def (f (: b Bool)) (if b (record (= a 1) (= b 2)) (record (= a 3)))) (export f))",
         )
         .expect("if branches with a differing field set reject");
         assert!(
@@ -10579,7 +10581,7 @@ mod match_engine {
         let rec = crate::host::run_with_compiler_stack(|| {
             crate::diagnostics(&mut crate::db::Db::load(parse(
                 "(module m (def (main) \
-                   (let (((: r (Record (foo Int64))) (record (fooo 1)))) (. r foo))) (export main))",
+                   (let (((: r (Record (foo Int64))) (record (= fooo 1)))) (. r foo))) (export main))",
             )))
         });
         let errs: Vec<_> = rec
@@ -10625,7 +10627,7 @@ mod match_engine {
         let genuine = crate::host::run_with_compiler_stack(|| {
             crate::diagnostics(&mut crate::db::Db::load(parse(
                 "(module m (def (main) \
-                   (let (((: r (Record (foo Int64))) (record (foo 1)))) (. r bar))) (export main))",
+                   (let (((: r (Record (foo Int64))) (record (= foo 1)))) (. r bar))) (export main))",
             )))
         });
         assert!(
@@ -10710,7 +10712,7 @@ mod match_engine {
         // A two-level record nest.
         let two = reject_full(
             "(module m (def (h (: r (Record (inner (Record (x Int64)))))) (. r inner)) \
-               (def (g) (h (record (inner (record (x true)))))) (export g))",
+               (def (g) (h (record (= inner (record (= x true)))))) (export g))",
         )
         .expect("a nested record with a differing leaf rejects");
         assert!(
@@ -10722,7 +10724,7 @@ mod match_engine {
         // A three-level record nest — the path grows.
         let three = reject_full(
             "(module m (def (h (: r (Record (a (Record (b (Record (c Int64)))))))) (. r a)) \
-               (def (g) (h (record (a (record (b (record (c true)))))))) (export g))",
+               (def (g) (h (record (= a (record (= b (record (= c true)))))))) (export g))",
         )
         .expect("a 3-level nested record rejects");
         assert!(
@@ -10735,7 +10737,7 @@ mod match_engine {
         // A record field that is a TUPLE — the path mixes a field name and a 0-based position (`pt.1`).
         let mixed = reject_full(
             "(module m (def (h (: r (Record (pt (Tuple Int64 Int64))))) (. r pt)) \
-               (def (g) (h (record (pt (tuple 1 true))))) (export g))",
+               (def (g) (h (record (= pt (tuple 1 true))))) (export g))",
         )
         .expect("a record with a differing tuple field rejects");
         assert!(
@@ -10748,7 +10750,7 @@ mod match_engine {
         // A tuple whose element is a RECORD — path starts with the 0-based index (`element 0.x`).
         let tup = reject_full(
             "(module m (def (h (: t (Tuple (Record (x Int64)) Int64))) (. t 1)) \
-               (def (g) (h (tuple (record (x true)) 2))) (export g))",
+               (def (g) (h (tuple (record (= x true)) 2))) (export g))",
         )
         .expect("a tuple with a differing record element rejects");
         assert!(
@@ -10761,7 +10763,7 @@ mod match_engine {
         // sub-render (whose missing field the render shows), NOT a misleading leaf path.
         let stop = reject_full(
             "(module m (def (h (: r (Record (inner (Record (x Int64) (y Int64)))))) (. r inner)) \
-               (def (g) (h (record (inner (record (x 1)))))) (export g))",
+               (def (g) (h (record (= inner (record (= x 1)))))) (export g))",
         )
         .expect("a nested field-set difference rejects");
         assert!(
@@ -10782,7 +10784,7 @@ mod match_engine {
         // tuple's differing position is `2` (position 1, the Float64 slot)→`2.0`.
         let cases = [
             (
-                "(module m (def (h (: r (Record (x Float64)))) (. r x)) (def (g) (h (record (x 5)))) (export g))",
+                "(module m (def (h (: r (Record (x Float64)))) (. r x)) (def (g) (h (record (= x 5)))) (export g))",
                 "record field",
                 "5.0",
             ),
@@ -10798,7 +10800,7 @@ mod match_engine {
             ),
             (
                 "(module m (def (h (: r (Record (a (Record (b Float64)))))) (. r a)) \
-                   (def (g) (h (record (a (record (b 5)))))) (export g))",
+                   (def (g) (h (record (= a (record (= b 5)))))) (export g))",
                 "nested record leaf",
                 "5.0",
             ),
@@ -10822,7 +10824,7 @@ mod match_engine {
         }
         // NO fix for a NON-numeric leaf (Bool vs Int has no coercion) — message only.
         let boolish = reject_full(
-            "(module m (def (h (: r (Record (x Int64)))) (. r x)) (def (g) (h (record (x true)))) (export g))",
+            "(module m (def (h (: r (Record (x Int64)))) (. r x)) (def (g) (h (record (= x true)))) (export g))",
         )
         .expect("a Bool-leaf record rejects");
         assert!(
@@ -10833,7 +10835,7 @@ mod match_engine {
         // A MAP entry's VALUE / KEY numeric leaf is covered too — `(map (1 5))` vs `(Map Int64 Float64)`
         // retypes the value `5`→`5.0`; vs `(Map Float64 Int64)` retypes the key `1`→`1.0`.
         let mapval = reject_full(
-            "(module m (def (h (: m (Map Int64 Float64))) m) (def (g) (h (map (1 5)))) (export g))",
+            "(module m (def (h (: m (Map Int64 Float64))) m) (def (g) (h (map (= 1 5)))) (export g))",
         )
         .expect("a map with an Int value where Float wanted rejects");
         assert_eq!(
@@ -10843,7 +10845,7 @@ mod match_engine {
             mapval.message
         );
         let mapkey = reject_full(
-            "(module m (def (h (: m (Map Float64 Int64))) m) (def (g) (h (map (1 5)))) (export g))",
+            "(module m (def (h (: m (Map Float64 Int64))) m) (def (g) (h (map (= 1 5)))) (export g))",
         )
         .expect("a map with an Int key where Float wanted rejects");
         assert_eq!(
@@ -10956,7 +10958,7 @@ mod match_engine {
         // names the field rather than leaving the reader to diff two rendered record types.
         let delta = reject_full(
             "(module m (def (g (: xs (List (Record (x Int64))))) \
-             ((. List push) xs (record (y 2)))) (export g))",
+             ((. List push) xs (record (= y 2)))) (export g))",
         )
         .expect("a structurally-mismatched List.push element rejects");
         assert!(
@@ -10999,7 +11001,7 @@ mod match_engine {
                 crate::abi::Artifact::KIND_AST,
                 "m",
                 crate::codec::encode(&parse(
-                    "(module m (def (main) ((. Map len) (map (1 2)) 99)) (export main))",
+                    "(module m (def (main) ((. Map len) (map (= 1 2)) 99)) (export main))",
                 )),
             )],
             &[crate::backend::Target::Wasm],
@@ -13121,7 +13123,7 @@ mod match_engine {
         // A projection onto present fields is well-formed — it compiles (no fault).
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.project (record (a 1) (b 2) (c 3)) (a c))) (export main))"
+                "(module m (def (main) (Record.project (record (= a 1) (= b 2) (= c 3)) (a c))) (export main))"
             ),
             None,
             "a projection onto present fields must be well-formed"
@@ -13129,7 +13131,7 @@ mod match_engine {
         // A named field the operand does not hold → CDZ0212 (a STATIC label, never a runtime None).
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.project (record (a 1) (b 2)) (a z))) (export main))"
+                "(module m (def (main) (Record.project (record (= a 1) (= b 2)) (a z))) (export main))"
             )
             .as_deref(),
             Some("CDZ0212"),
@@ -13138,7 +13140,7 @@ mod match_engine {
         // A CDZ0212 absent-field name that near-misses a real field carries a did-you-mean — the closed
         // set is the operand record's own fields, so the same suggestion a member access `(. r k)` gets.
         let d = reject_full(
-            "(module m (def (main) (Record.without (record (alpha 1) (beta 2)) (alpa))) (export main))",
+            "(module m (def (main) (Record.without (record (= alpha 1) (= beta 2)) (alpa))) (export main))",
         )
         .expect("an absent-field CDZ0212");
         assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
@@ -13159,7 +13161,7 @@ mod match_engine {
         // mean" — but now LISTS the record's fields ("— closest matches: `alpha`"), the row-op twin of the
         // member-access two-tier, so a far label tells the author what fields exist instead of dead-ending.
         let far = reject_full(
-            "(module m (def (main) (Record.without (record (alpha 1)) (zzzzzz))) (export main))",
+            "(module m (def (main) (Record.without (record (= alpha 1)) (zzzzzz))) (export main))",
         )
         .expect("an absent-field CDZ0212");
         assert!(
@@ -13177,7 +13179,7 @@ mod match_engine {
         // break `(: r (Record (a Int64)))`. A one-field record annotated with its own type compiles.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (: (record (a 1)) (Record (a Int64)))) (export main))"
+                "(module m (def (main) (: (record (= a 1)) (Record (a Int64)))) (export main))"
             ),
             None,
             "Record must still work as the record-type constructor in an annotation"
@@ -13193,7 +13195,7 @@ mod match_engine {
         // `without` of a PRESENT field is well-formed.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.without (record (a 1) (b 2) (c 3)) (b))) (export main))"
+                "(module m (def (main) (Record.without (record (= a 1) (= b 2) (= c 3)) (b))) (export main))"
             ),
             None,
             "dropping a present field is well-formed"
@@ -13201,7 +13203,7 @@ mod match_engine {
         // `without` of an ABSENT field → CDZ0212 (a drop of a field never held is a static error).
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.without (record (a 1)) (z))) (export main))"
+                "(module m (def (main) (Record.without (record (= a 1)) (z))) (export main))"
             )
             .as_deref(),
             Some("CDZ0212"),
@@ -13210,7 +13212,7 @@ mod match_engine {
         // `merge` of DISJOINT field sets is well-formed.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.merge (record (a 1)) (record (b 2)))) (export main))"
+                "(module m (def (main) (Record.merge (record (= a 1)) (record (= b 2)))) (export main))"
             ),
             None,
             "merging disjoint records is well-formed"
@@ -13219,7 +13221,7 @@ mod match_engine {
         // choose which operand's value the shared field takes).
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.merge (record (a 1)) (record (a 2)))) (export main))"
+                "(module m (def (main) (Record.merge (record (= a 1)) (record (= a 2)))) (export main))"
             )
             .as_deref(),
             Some("CDZ0211"),
@@ -13244,7 +13246,7 @@ mod match_engine {
         for (op, arg2) in [
             ("project", "(x)"),
             ("without", "(x)"),
-            ("merge", "(record (y 1))"),
+            ("merge", "(record (= y 1))"),
             ("extend", "(x 5)"),
             ("with", "(x 5)"),
         ] {
@@ -13312,7 +13314,7 @@ mod match_engine {
         // (`type-system.md` §A Record Is Restricted To A Named Set Of Its Fields), not silently deduplicated.
         // Adjacent, triple, and NON-adjacent duplicates all reject; the message matches the record-literal one.
         let d = reject_full(
-            "(module m (def (main) (. (Record.project (record (a 1) (b 2)) (a a)) a)) (export main))",
+            "(module m (def (main) (. (Record.project (record (= a 1) (= b 2)) (a a)) a)) (export main))",
         )
         .expect("a duplicate projection label is rejected");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
@@ -13322,8 +13324,8 @@ mod match_engine {
             d.message
         );
         for src in [
-            "(module m (def (main) (. (Record.project (record (a 1) (b 2)) (a a a)) a)) (export main))",
-            "(module m (def (main) (. (Record.project (record (a 1) (b 2) (c 3)) (a b a)) a)) (export main))",
+            "(module m (def (main) (. (Record.project (record (= a 1) (= b 2)) (a a a)) a)) (export main))",
+            "(module m (def (main) (. (Record.project (record (= a 1) (= b 2) (= c 3)) (a b a)) a)) (export main))",
         ] {
             assert_eq!(
                 reject_code(src).as_deref(),
@@ -13335,14 +13337,14 @@ mod match_engine {
         // the distinct CDZ0212 (the duplicate check does not shadow the absent-field check).
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.project (record (a 1) (b 2)) (a b))) (export main))"
+                "(module m (def (main) (Record.project (record (= a 1) (= b 2)) (a b))) (export main))"
             ),
             None,
             "a distinct-label projection is well-formed"
         );
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.project (record (a 1) (b 2)) (a z))) (export main))"
+                "(module m (def (main) (Record.project (record (= a 1) (= b 2)) (a z))) (export main))"
             )
             .as_deref(),
             Some("CDZ0212"),
@@ -13360,14 +13362,14 @@ mod match_engine {
         // extend adds an ABSENT field (well-formed); a PRESENT field is CDZ0211.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.extend (record (a 1)) #\"b\" 2)) (export main))"
+                "(module m (def (main) (Record.extend (record (= a 1)) #\"b\" 2)) (export main))"
             ),
             None,
             "extend of an absent field is well-formed"
         );
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.extend (record (a 1)) #\"a\" 2)) (export main))"
+                "(module m (def (main) (Record.extend (record (= a 1)) #\"a\" 2)) (export main))"
             )
             .as_deref(),
             Some("CDZ0211"),
@@ -13376,14 +13378,14 @@ mod match_engine {
         // with replaces a PRESENT field (well-formed, may retype); an ABSENT field is CDZ0212.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.with (record (a 1) (b 2)) #\"b\" true)) (export main))"
+                "(module m (def (main) (Record.with (record (= a 1) (= b 2)) #\"b\" true)) (export main))"
             ),
             None,
             "with of a present field (even retyping) is well-formed"
         );
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.with (record (a 1)) #\"z\" 5)) (export main))"
+                "(module m (def (main) (Record.with (record (= a 1)) #\"z\" 5)) (export main))"
             )
             .as_deref(),
             Some("CDZ0212"),
@@ -13392,13 +13394,13 @@ mod match_engine {
         // pop of a PRESENT field is well-formed; an ABSENT field is CDZ0212.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.pop (record (a 1) (b 2)) a)) (export main))"
+                "(module m (def (main) (Record.pop (record (= a 1) (= b 2)) a)) (export main))"
             ),
             None,
             "pop of a present field is well-formed"
         );
         assert_eq!(
-            reject_code("(module m (def (main) (Record.pop (record (a 1)) z)) (export main))")
+            reject_code("(module m (def (main) (Record.pop (record (= a 1)) z)) (export main))")
                 .as_deref(),
             Some("CDZ0212"),
             "pop of an absent field is CDZ0212"
@@ -13406,7 +13408,7 @@ mod match_engine {
         // A mistyped `pop`/`with` field near a real one carries a did-you-mean — the closed-set
         // suggestion `without`/`project` already give, over the operand record's fields.
         let dp = reject_full(
-            "(module m (def (main) (Record.pop (record (alpha 1) (beta 2)) alpa)) (export main))",
+            "(module m (def (main) (Record.pop (record (= alpha 1) (= beta 2)) alpa)) (export main))",
         )
         .expect("pop of an absent field is CDZ0212");
         assert!(
@@ -13415,7 +13417,7 @@ mod match_engine {
             dp.message
         );
         let dw = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1) (beta 2)) #\"alpa\" 9)) (export main))",
+            "(module m (def (main) (Record.with (record (= alpha 1) (= beta 2)) #\"alpa\" 9)) (export main))",
         )
         .expect("with of an absent field is CDZ0212");
         assert!(
@@ -13440,7 +13442,7 @@ mod match_engine {
         );
         // NO OVERREACH: a far-miss field keeps the message but carries no fix.
         let far = reject_full(
-            "(module m (def (main) (Record.pop (record (alpha 1)) zzzzzz)) (export main))",
+            "(module m (def (main) (Record.pop (record (= alpha 1)) zzzzzz)) (export main))",
         )
         .expect("pop of an absent field is CDZ0212");
         assert!(
@@ -13461,7 +13463,7 @@ mod match_engine {
 
         // extend a PRESENT field → CDZ0211 + a VERIFIED swap `extend`→`with`.
         let de = reject_full(
-            "(module m (def (main) (Record.extend (record (a 1)) #\"a\" 2)) (export main))",
+            "(module m (def (main) (Record.extend (record (= a 1)) #\"a\" 2)) (export main))",
         )
         .expect("extend of a present field is CDZ0211");
         assert_eq!(de.code.as_deref(), Some("CDZ0211"), "got: {}", de.message);
@@ -13480,7 +13482,7 @@ mod match_engine {
         // an existing field is exactly `with`'s precondition, so the applied form type-checks.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.with (record (a 1)) #\"a\" 2)) (export main))"
+                "(module m (def (main) (Record.with (record (= a 1)) #\"a\" 2)) (export main))"
             ),
             None,
             "applying the verified `extend`→`with` swap must recompile clean"
@@ -13488,7 +13490,7 @@ mod match_engine {
 
         // with an ABSENT field that is NOT a near typo → CDZ0212 + a VERIFIED swap `with`→`extend`.
         let dw = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1)) #\"zzzzz\" 5)) (export main))",
+            "(module m (def (main) (Record.with (record (= alpha 1)) #\"zzzzz\" 5)) (export main))",
         )
         .expect("with of an absent field is CDZ0212");
         assert_eq!(dw.code.as_deref(), Some("CDZ0212"), "got: {}", dw.message);
@@ -13506,7 +13508,7 @@ mod match_engine {
         // new field is exactly `extend`'s precondition, so the applied form type-checks.
         assert_eq!(
             reject_code(
-                "(module m (def (main) (Record.extend (record (alpha 1)) #\"zzzzz\" 5)) (export main))"
+                "(module m (def (main) (Record.extend (record (= alpha 1)) #\"zzzzz\" 5)) (export main))"
             ),
             None,
             "applying the verified `with`→`extend` swap must recompile clean"
@@ -13514,7 +13516,7 @@ mod match_engine {
 
         // A NEAR-miss field still prefers the label typo-fix (the likelier intent), NOT the op swap.
         let dn = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1)) #\"alpXa\" 5)) (export main))",
+            "(module m (def (main) (Record.with (record (= alpha 1)) #\"alpXa\" 5)) (export main))",
         )
         .expect("with of a near-miss field is CDZ0212");
         let fn_ = dn
@@ -13640,7 +13642,7 @@ mod match_engine {
         // the NEGATIVE that a scalar clash gets NO delta tail — a message-ABSENCE the corpus cannot assert.)
         // A set of records differing in one field TYPE.
         let sr = reject_full(
-            "(module m (def x (Set.of (list (record (x 1)) (record (x true))))) (export x))",
+            "(module m (def x (Set.of (list (record (= x 1)) (record (= x true))))) (export x))",
         )
         .expect("reject");
         assert!(
@@ -13651,7 +13653,7 @@ mod match_engine {
         );
         // A map KEY delta (records differing in a field) and a map VALUE delta (sum payload axis).
         let mkd = reject_full(
-            "(module m (def x (map ((record (x 1)) 0) ((record (x true)) 1))) (export x))",
+            "(module m (def x (map (= (record (= x 1)) 0) (= (record (= x true)) 1))) (export x))",
         )
         .expect("reject");
         assert!(
@@ -13660,8 +13662,9 @@ mod match_engine {
             "map key names the differing record field: {}",
             mkd.message
         );
-        let mvd = reject_full("(module m (def x (map (0 (Some 5)) (1 (Some 2.0)))) (export x))")
-            .expect("reject");
+        let mvd =
+            reject_full("(module m (def x (map (= 0 (Some 5)) (= 1 (Some 2.0)))) (export x))")
+                .expect("reject");
         assert!(
             mvd.message
                 .contains("its payload should be Int64, but this one is Float64"),
@@ -13789,7 +13792,7 @@ mod match_engine {
         // inserted key's type differs from the map's"), and offers the int-literal→float retype where it
         // bridges the clash.
         let key = reject_full(
-            "(module m (def (main) (Map.len ((. Map insert) (map (1 2)) \"k\" 3))) (export main))",
+            "(module m (def (main) (Map.len ((. Map insert) (map (= 1 2)) \"k\" 3))) (export main))",
         )
         .expect("a Map.insert key-type clash must reject");
         assert_eq!(key.code.as_deref(), Some("CDZ0201"), "got: {}", key.message);
@@ -13799,7 +13802,7 @@ mod match_engine {
             key.message
         );
         let val = reject_full(
-            "(module m (def (main) (Map.len ((. Map insert) (map (1 2)) 9 \"v\"))) (export main))",
+            "(module m (def (main) (Map.len ((. Map insert) (map (= 1 2)) 9 \"v\"))) (export main))",
         )
         .expect("a Map.insert value-type clash must reject");
         assert!(
@@ -13809,7 +13812,7 @@ mod match_engine {
         );
         // Inserting an int VALUE into a map whose values are Float → the `n.0` retype fix (int-lit→float).
         let f = reject_full(
-            "(module m (def (main) (Map.len ((. Map insert) (map (1 1.0)) 9 3))) (export main))",
+            "(module m (def (main) (Map.len ((. Map insert) (map (= 1 1.0)) 9 3))) (export main))",
         )
         .expect("reject");
         assert_eq!(
@@ -13824,7 +13827,7 @@ mod match_engine {
         // reader to diff `(Record (x Int64))` against `(Record (y Int64))`.
         let cd = reject_full(
             "(module m (def (f (: mm (Map String (Record (x Int64))))) \
-             ((. Map insert) mm \"k\" (record (y 2)))) (export f))",
+             ((. Map insert) mm \"k\" (record (= y 2)))) (export f))",
         )
         .expect("a Map.insert compound value-type clash must reject");
         assert!(
@@ -15582,7 +15585,7 @@ mod match_engine {
                 crate::abi::Artifact::KIND_AST,
                 "m",
                 crate::codec::encode(&parse(
-                    "(module m (def (main) ((. Map len) (map (1 2)) 99)) (export main))",
+                    "(module m (def (main) ((. Map len) (map (= 1 2)) 99)) (export main))",
                 )),
             )],
             &[crate::backend::Target::Wasm],
@@ -15649,7 +15652,7 @@ mod match_engine {
             None
         );
         assert_eq!(
-            reject_code("(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))"),
+            reject_code("(module m (def (main) (. (record (= x 1) (= y 2)) x)) (export main))"),
             None
         );
     }
@@ -16642,8 +16645,8 @@ mod match_engine {
         assert!(
             reject_code(
                 "(module m (def (f (: xs (List (Map Int64 Int64)))) \
-                   (match xs ((list (map (1 a)) .. rest) a) (_ (- 0 1)))) \
-                 (def (main) (f (list (map (1 77))))) (export main))"
+                   (match xs ((list (map (= 1 a)) .. rest) a) (_ (- 0 1)))) \
+                 (def (main) (f (list (map (= 1 77))))) (export main))"
             )
             .is_none(),
             "a map list element now compiles (dispatches by key presence)"
@@ -19834,7 +19837,7 @@ mod match_engine {
             "a generic sum with a type param in a TUPLE payload must compile — not reject B as nullary"
         );
         let rec = "(module m (type Box (B (Record (val a))) N) \
-                     (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0))) \
+                     (def (main) (match (Box.B (record (= val 7))) ((Box.B r) (. r val)) (Box.N 0))) \
                    (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(rec))).is_ok(),
@@ -20001,7 +20004,7 @@ mod match_engine {
             // value annotation `(: value T)`
             "(module m (def (main) (: 5 (Record (x Nonesuch)))) (export main))",
             // let-binder annotation
-            "(module m (def (main) (let (((: r (Record (x Nonesuch))) (record (x 5)))) r)) (export main))",
+            "(module m (def (main) (let (((: r (Record (x Nonesuch))) (record (= x 5)))) r)) (export main))",
         ] {
             let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
             assert!(
@@ -20584,7 +20587,8 @@ mod diagnostics {
         // DESIGN-record-type-syntax). It used to render lowercase `(record …)` — the VALUE constructor
         // spelling, which a type annotation REJECTS ("not a type"), so a mismatch message named a type the
         // reader could not have written. The rendered type must round-trip as a valid annotation.
-        let d = first_error("(module m (def y (: (record (a 1)) (Record (: a Bool)))) (export y))");
+        let d =
+            first_error("(module m (def y (: (record (= a 1)) (Record (: a Bool)))) (export y))");
         assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
         assert!(
             d.message.contains("(Record (: a Bool))") && d.message.contains("(Record (: a Int64))"),
@@ -21497,7 +21501,7 @@ mod diagnostics {
         // bound to an unused parameter. All compile (the value is not observed) AND warn CDZ0305.
         for src in [
             "(module m (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main))",
-            "(module m (def (main) (. (record (a 42) (b (/ 100 0))) a)) (export main))",
+            "(module m (def (main) (. (record (= a 42) (= b (/ 100 0))) a)) (export main))",
             "(module m (def (main) (let ((t (/ 100 0))) 5)) (export main))",
             "(module m (def (f x y) x) (def (main) (f 7 (/ 100 0))) (export main))",
         ] {
@@ -21713,7 +21717,7 @@ mod diagnostics {
         // parameterized (non-nullary), so this exercises the check≡compile path — the diagnostic must NAME
         // the feature, no CDZ0101.
         let src = "(module m (def (f (: t (Tuple (Record (x (Tuple Int64 Int64))) Int64))) \
-               (match t ((tuple (record (x (tuple a b))) c) (+ (+ a b) c)))) (export f))";
+               (match t ((tuple (record (= x (tuple a b))) c) (+ (+ a b) c)))) (export f))";
         let all = diags_of(src);
         assert!(
             all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
@@ -22277,7 +22281,7 @@ mod diagnostics {
         // MAP matcher: a real `(map …)` arm routes to `lower_match_map`, and the sibling `(Zorp …)` arm
         // head — unbound — is reported by check (was silent). `go` is self-recursive.
         let map_arm = "(module m (def (go (: mp (Map Int64 Int64))) \
-                       (match mp ((map (1 v)) v) ((Zorp x) (go mp)) (_ 0))) (export go))";
+                       (match mp ((map (= 1 v)) v) ((Zorp x) (go mp)) (_ 0))) (export go))";
         let all = diags_of(map_arm);
         assert!(
             all.iter()
@@ -22298,7 +22302,7 @@ mod diagnostics {
         // NO false alarm: a WELL-FORMED runtime map match (a `(map …)` arm + catch-all) stays clean — the
         // coded-head propagation fires only on an unbound/non-member ctor head, never a real pattern.
         let ok = "(module m (def (go (: mp (Map Int64 Int64))) \
-                  (match mp ((map (1 v)) v) (_ 0))) (export go))";
+                  (match mp ((map (= 1 v)) v) (_ 0))) (export go))";
         // Bind once — `diags_of` recompiles the module (PR #1167 review).
         let ok_diags = diags_of(ok);
         assert!(
@@ -22320,7 +22324,7 @@ mod diagnostics {
         // Body references the field binder `a`. `f` is a parameterized (non-nullary) body, so this
         // exercises the check≡compile path — it must be CLEAN now that record match resolves the binder.
         let uses_binder = "(module m (def (f (: r (Record (x Int64)))) \
-                           (match r ((record (x a)) a))) (export f))";
+                           (match r ((record (= x a)) a))) (export f))";
         let all = diags_of(uses_binder);
         assert!(
             all.iter()
@@ -22358,7 +22362,7 @@ mod diagnostics {
     fn a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_binder() {
         // `..` non-final (a further entry after the rest binder). Body references the value binder `v`.
         let non_final = "(module m (def (f (: mp (Map Int64 Int64))) \
-                         (match mp ((map (1 v) .. rest (2 w)) v) (_ 0))) (export f))";
+                         (match mp ((map (= 1 v) .. rest (= 2 w)) v) (_ 0))) (export f))";
         let all = diags_of(non_final);
         assert!(
             all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
@@ -22375,7 +22379,7 @@ mod diagnostics {
         // binder, so a `(k v)` pair after `..` left its value `w` unrecognized → a spurious CDZ0101 layered
         // on the malformed pattern. Now `w` is recognized inert (no unbound leak); one clean rest-shape reject.
         let w_after = "(module m (def (f (: mp (Map Int64 Int64))) \
-                       (match mp ((map (1 v) .. rest (2 w)) w) (_ 0))) (export f))";
+                       (match mp ((map (= 1 v) .. rest (= 2 w)) w) (_ 0))) (export f))";
         let all = diags_of(w_after);
         assert!(
             all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
@@ -22388,7 +22392,7 @@ mod diagnostics {
         );
         // Two `..` markers — same clear message, no unbound leak.
         let two_dots = "(module m (def (f (: mp (Map Int64 Int64))) \
-                        (match mp ((map (1 v) .. r1 .. r2) v) (_ 0))) (export f))";
+                        (match mp ((map (= 1 v) .. r1 .. r2) v) (_ 0))) (export f))";
         let all = diags_of(two_dots);
         assert!(
             all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
@@ -22401,7 +22405,7 @@ mod diagnostics {
         );
         // NO false alarm: a WELL-FORMED map rest pattern (`.. rest` final, one binder) checks clean.
         let ok = "(module m (def (f (: mp (Map Int64 Int64))) \
-                  (match mp ((map (1 v) .. rest) v) (_ 0))) (export f))";
+                  (match mp ((map (= 1 v) .. rest) v) (_ 0))) (export f))";
         // Bind once — `diags_of` recompiles the module (PR #1167 review).
         let ok_diags = diags_of(ok);
         assert!(
@@ -22414,7 +22418,7 @@ mod diagnostics {
         // SAME specific rest-shape message (not the vague "a malformed map pattern") and NO unbound leak —
         // the `pattern_constraints` + Case-Mmr nested twin of the top-level fix.
         let nested = "(module m (type W (Wrap (Map Int64 Int64))) \
-                      (def (f (: w W)) (match w ((Wrap (map (1 v) .. r (2 x))) v) (_ 0))) (export f))";
+                      (def (f (: w W)) (match w ((Wrap (map (= 1 v) .. r (= 2 x))) v) (_ 0))) (export f))";
         let all = diags_of(nested);
         assert!(
             all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
@@ -22427,7 +22431,7 @@ mod diagnostics {
         );
         // NO false alarm: a WELL-FORMED nested map (`.. r` final) still checks clean.
         let nested_ok = "(module m (type W (Wrap (Map Int64 Int64))) \
-                         (def (f (: w W)) (match w ((Wrap (map (1 v) .. r)) v) (_ 0))) (export f))";
+                         (def (f (: w W)) (match w ((Wrap (map (= 1 v) .. r)) v) (_ 0))) (export f))";
         // Bind once — `diags_of` recompiles the module (PR #1167 review).
         let nested_ok_diags = diags_of(nested_ok);
         assert!(
@@ -24769,10 +24773,10 @@ mod stage1 {
         // The negative direction the O(N) scan must preserve: distinct written literals are NOT a
         // duplicate, so the map literal compiles clean (no CDZ0201). Distinct ints (incl. one dec + one
         // hex that are DIFFERENT values), distinct strings, distinct bools.
-        assert!(compiles_ok("(map (1 10) (2 20))"));
-        assert!(compiles_ok("(map (1 10) (0x2 20) (3 30))"));
+        assert!(compiles_ok("(map (= 1 10) (= 2 20))"));
+        assert!(compiles_ok("(map (= 1 10) (= 0x2 20) (= 3 30))"));
         assert!(compiles_ok("(map (\"a\" 1) (\"b\" 2))"));
-        assert!(compiles_ok("(map (true 1) (false 2))"));
+        assert!(compiles_ok("(map (= true 1) (= false 2))"));
     }
 
     #[test]
@@ -24783,7 +24787,9 @@ mod stage1 {
         // key THROUGH its binding — as a pairwise `const_compound_eq` on the folded values would —
         // conflates the two; the direct-literal gate keeps them apart, so the program COMPILES (the
         // overwrite is a runtime fact, checked by the 05-compound-types §2510 corpus case's `Map.len`).
-        assert!(compiles_ok("(let ((a 5)) (let ((b 5)) (map (a 1) (b 2))))"));
+        assert!(compiles_ok(
+            "(let ((a 5)) (let ((b 5)) (map (= a 1) (= b 2))))"
+        ));
     }
 
     #[test]
@@ -25080,7 +25086,7 @@ mod stage1 {
         // The record analogue of the unbound-name "did you mean?" — a field typo (`height` → `heigth`)
         // on a compile-time-visible record names the near field AND carries a heuristic fix on the KEY
         // token (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
-        let d = expect_error("(. (record (width 10) (height 20)) heigth)");
+        let d = expect_error("(. (record (= width 10) (= height 20)) heigth)");
         assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
         assert!(
             d.message.contains("did you mean `height`?"),
@@ -25098,7 +25104,7 @@ mod stage1 {
         // record TYPE; the field typo is caught on that type and suggested the same way. `get-h`'s body
         // `(. r heigth)` faults once `r`'s record argument flows in.
         let src = "(module m (def (get-h r) (. r heigth)) \
-                   (def (main) (get-h (record (width 10) (height 20)))) (export main))";
+                   (def (main) (get-h (record (= width 10) (= height 20)))) (export main))";
         let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
         assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
         assert_eq!(
@@ -25118,7 +25124,7 @@ mod stage1 {
         // offers a heuristic RENAME fix on the misspelled KEY token — the same repair a `(. r yy)` typo
         // gets. Previously it rendered both record types verbatim with no hint and no fix.
         let src = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                   (def (f) (P.Mk (record (x 1) (yy 2)))) (export f))";
+                   (def (f) (P.Mk (record (= x 1) (= yy 2)))) (export f))";
         let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         assert!(
@@ -25135,7 +25141,7 @@ mod stage1 {
         // The fix TARGETS the key token: applying `yy`→`y` clears the fault (the value now has the right
         // field set). Demonstrated by construction — the corrected program compiles.
         let fixed = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                     (def (f) (P.Mk (record (x 1) (y 2)))) (export f))";
+                     (def (f) (P.Mk (record (= x 1) (= y 2)))) (export f))";
         assert!(
             compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
             "the renamed record compiles"
@@ -25143,7 +25149,7 @@ mod stage1 {
         // AMBIGUOUS: two wrong fields is not a single mechanical rename → the field-diff hint still guides,
         // but NO auto-fix (an ambiguous multi-field slip is not one confident edit).
         let ambiguous = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                         (def (f) (P.Mk (record (aa 1) (bb 2)))) (export f))";
+                         (def (f) (P.Mk (record (= aa 1) (= bb 2)))) (export f))";
         let d2 =
             compile_component(&crate::codec::encode(&parse(ambiguous))).expect_err("must reject");
         assert!(
@@ -25162,7 +25168,7 @@ mod stage1 {
         // names the field-set difference AND offers the RENAME fix on the misspelled key. Previously the
         // argument site named the difference but declined the fix the variant-ctor site already gave.
         let src = "(module m (def (g (: r (Record (foo Int64)))) (. r foo)) \
-                   (def (main) (g (record (fooo 1)))) (export main))";
+                   (def (main) (g (record (= fooo 1)))) (export main))";
         let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
         assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
         assert!(
@@ -25178,7 +25184,7 @@ mod stage1 {
         );
         // The renamed argument compiles.
         let fixed = "(module m (def (g (: r (Record (foo Int64)))) (. r foo)) \
-                     (def (main) (g (record (foo 1)))) (export main))";
+                     (def (main) (g (record (= foo 1)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
             "the renamed record argument compiles"
@@ -25187,7 +25193,7 @@ mod stage1 {
         // message names the missing field AND carries an insert fix appending `(y (trap "TODO"))` to the
         // record literal (a `trap` placeholder inhabits any field type, so it clears the fault in one shot).
         let missing = "(module m (def (g (: r (Record (x Int64) (y Int64)))) (. r x)) \
-                       (def (main) (g (record (x 1)))) (export main))";
+                       (def (main) (g (record (= x 1)))) (export main))";
         let dm =
             compile_component(&crate::codec::encode(&parse(missing))).expect_err("must reject");
         assert!(
@@ -25211,7 +25217,7 @@ mod stage1 {
         // binder gets the SAME rename on the primary binding-mismatch reject (previously it declined the
         // fix the argument + value-annotation sites gave).
         let binder = "(module m (def (main) \
-                       (let (((: r (Record (foo Int64))) (record (fooo 1)))) 0)) (export main))";
+                       (let (((: r (Record (foo Int64))) (record (= fooo 1)))) 0)) (export main))";
         let db_ =
             compile_component(&crate::codec::encode(&parse(binder))).expect_err("must reject");
         assert_eq!(db_.code.as_deref(), Some("CDZ0203"), "got: {}", db_.message);
@@ -25228,7 +25234,7 @@ mod stage1 {
         // the numeric-leaf drill.
         let nested = "(module m \
                       (def (g (: r (Record (inner (Record (foo Int64)))))) (. r inner)) \
-                      (def (main) (g (record (inner (record (fooo 1)))))) (export main))";
+                      (def (main) (g (record (= inner (record (= fooo 1)))))) (export main))";
         let dn = compile_component(&crate::codec::encode(&parse(nested))).expect_err("must reject");
         let nfix = dn.fix.as_ref().expect("a nested rename fix is carried");
         assert!(
@@ -25240,7 +25246,7 @@ mod stage1 {
         // The renamed nested record compiles.
         let nested_fixed = "(module m \
                             (def (g (: r (Record (inner (Record (foo Int64)))))) (. r inner)) \
-                            (def (main) (g (record (inner (record (foo 1)))))) (export main))";
+                            (def (main) (g (record (= inner (record (= foo 1)))))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(nested_fixed))).is_ok(),
             "the renamed nested record compiles"
@@ -25248,7 +25254,7 @@ mod stage1 {
         // NO false rename: a genuinely-missing NESTED field (not a typo) gets no fix.
         let nested_missing = "(module m \
                               (def (g (: r (Record (inner (Record (a Int64) (b Int64)))))) (. r inner)) \
-                              (def (main) (g (record (inner (record (a 1)))))) (export main))";
+                              (def (main) (g (record (= inner (record (= a 1)))))) (export main))";
         let dnm = compile_component(&crate::codec::encode(&parse(nested_missing)))
             .expect_err("must reject");
         assert!(
@@ -25269,7 +25275,7 @@ mod stage1 {
         // MISSING fields → an INSERT fix appending `(field (trap "TODO"))` per missing field. `trap` (∀a.
         // String → a) inhabits any field type, so applying it clears the fault in one shot (verifiable).
         let miss = "(module m (def (f (: r (Record (x Int64) (y Int64) (z Int64)))) r) \
-                    (def (main) (f (record (x 1)))) (export main))";
+                    (def (main) (f (record (= x 1)))) (export main))";
         let dm = compile_component(&crate::codec::encode(&parse(miss))).expect_err("must reject");
         assert_eq!(dm.code.as_deref(), Some("CDZ0203"), "got: {}", dm.message);
         assert!(
@@ -25297,7 +25303,7 @@ mod stage1 {
 
         // A lone SURPLUS field → a DELETE fix removing the `(field value)` entry.
         let extra = "(module m (def (f (: r (Record (x Int64)))) r) \
-                     (def (main) (f (record (x 1) (y 2)))) (export main))";
+                     (def (main) (f (record (= x 1) (= y 2)))) (export main))";
         let de = compile_component(&crate::codec::encode(&parse(extra))).expect_err("must reject");
         assert!(
             de.message.contains("no such field `y`"),
@@ -25313,7 +25319,7 @@ mod stage1 {
         );
         // The delete resolves the fault (removing `(y 2)` leaves the expected shape).
         let extra_fixed = "(module m (def (f (: r (Record (x Int64)))) r) \
-                           (def (main) (f (record (x 1)))) (export main))";
+                           (def (main) (f (record (= x 1)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(extra_fixed))).is_ok(),
             "the record with the surplus field removed compiles"
@@ -25321,7 +25327,7 @@ mod stage1 {
 
         // The DIRECT value-annotation site carries the same fixes.
         let annot_miss = "(module m (def (main) \
-                          (: (record (x 1)) (Record (x Int64) (y Int64)))) (export main))";
+                          (: (record (= x 1)) (Record (x Int64) (y Int64)))) (export main))";
         let da =
             compile_component(&crate::codec::encode(&parse(annot_miss))).expect_err("must reject");
         assert!(
@@ -25337,7 +25343,7 @@ mod stage1 {
         // NO false fix — BOTH a missing AND an extra field that is NOT a typo of the missing one is
         // ambiguous (neither a clean add nor a clean delete nor a rename), so the message guides, no fix.
         let ambig = "(module m (def (f (: r (Record (x Int64) (y Int64)))) r) \
-                     (def (main) (f (record (x 1) (zzzzzz 2)))) (export main))";
+                     (def (main) (f (record (= x 1) (= zzzzzz 2)))) (export main))";
         let dz = compile_component(&crate::codec::encode(&parse(ambig))).expect_err("must reject");
         assert!(
             dz.fix.is_none(),
@@ -25449,7 +25455,7 @@ mod stage1 {
         // fields are: …". A record/module is a CLOSED, small field set, so listing them is signal an agent
         // acts on (it no longer has to read the type/prelude to learn what exists), not noise. No FIX (a
         // list of options is not one mechanical edit) and no false "did you mean" (there is no near typo).
-        let d = expect_error("(. (record (width 10) (height 20)) zzzzzz)");
+        let d = expect_error("(. (record (= width 10) (= height 20)) zzzzzz)");
         assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
         assert!(
             !d.message.contains("did you mean"),
@@ -25628,7 +25634,7 @@ mod stage1 {
         // CDZ0603 fires ONLY on the fixed retired set — a name that was never a member (`Map.siz`, a plain
         // typo) still takes the ordinary CDZ0201 unknown-member did-you-mean, so the rename hint never
         // shadows a normal typo. (Guards the "diagnostic-only, tight retired set" invariant.)
-        let d = expect_error("(Map.siz (map (1 2)))");
+        let d = expect_error("(Map.siz (map (= 1 2)))");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         assert!(
             d.message.contains("the `Map` module has no member `siz`"),
@@ -25705,7 +25711,7 @@ mod stage1 {
                 crate::abi::Artifact::KIND_AST,
                 "m",
                 crate::codec::encode(&parse(
-                    "(module m (def (main) ((. (record (compute 1)) computee) 5)) (export main))",
+                    "(module m (def (main) ((. (record (= compute 1)) computee) 5)) (export main))",
                 )),
             )],
             &[crate::backend::Target::Wasm],
@@ -25741,7 +25747,7 @@ mod stage1 {
         // `spec/semantics/05-compound-types.sexp`.) A record
         // consumed INTERNALLY still folds/declines per its use; this pins that a constant record RESULT
         // compiles to a component.
-        let src = "(module m (def (main) (record (x 1))) (export main))";
+        let src = "(module m (def (main) (record (= x 1))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a constant record return must compile via the resource escape"
@@ -26991,13 +26997,13 @@ mod stage1 {
                 .message
         };
         // A record FIELD-SET difference.
-        let rec = msg("(let (((: r (Record (x Int64))) (record (y 2)))) r)");
+        let rec = msg("(let (((: r (Record (x Int64))) (record (= y 2)))) r)");
         assert!(
             rec.contains("a binder annotated") && rec.contains("missing field `x`"),
             "the record field-set delta is named on the binder: {rec}"
         );
         // A record FIELD-TYPE difference (same field set).
-        let field_ty = msg("(let (((: r (Record (x Int64))) (record (x true)))) r)");
+        let field_ty = msg("(let (((: r (Record (x Int64))) (record (= x true)))) r)");
         assert!(
             field_ty.contains("field `x` should be Int64, but this one is Bool"),
             "the field-type delta is named: {field_ty}"
@@ -27653,7 +27659,7 @@ mod stage1 {
         );
         // The map/list LITERAL cases (already covered) still reject — no regression.
         assert!(
-            codes_for("(Map.len (: (map (1 200)) (Map Int64 Int8)))")
+            codes_for("(Map.len (: (map (= 1 200)) (Map Int64 Int8)))")
                 .contains(&"CDZ0302".to_string()),
             "the map-LITERAL width check still rejects (no regression)"
         );
@@ -27817,13 +27823,13 @@ mod stage1 {
         // the record arm of the recursion — previously the tuple/list/map routes were witnessed but a
         // record with an abstract FIELD was not, though the walk already covered it.
         assert!(
-            codes_for("(if (= (record (t (mk k))) (record (t (mk k)))) 1 0)")
+            codes_for("(if (= (record (= t (mk k))) (record (= t (mk k)))) 1 0)")
                 .contains(&"CDZ0202".to_string()),
             "comparing two records with an abstract FIELD must reject CDZ0202 (eq walks the record spine)"
         );
         // CONTROL: a concrete-only record compared stays legal (no over-reject through the record recursion).
         assert!(
-            !codes_for("(if (= (record (t k)) (record (t k))) 1 0)")
+            !codes_for("(if (= (record (= t k)) (record (= t k))) 1 0)")
                 .contains(&"CDZ0202".to_string()),
             "comparing concrete-only records stays legal (no CDZ0202)"
         );
@@ -27995,7 +28001,7 @@ mod stage1 {
         // field is wrong. A SCALAR mismatch (Int64 vs Bool — no structural delta) keeps the bare message.
         let src = "(do (effect Log (op put (-> (Record (x Int64)) Unit))) \
                    (def (main) (handle Log unit ((put (r) s (resume unit s))) \
-                   ((. Log put) (record (y 2))))) (export main))";
+                   ((. Log put) (record (= y 2))))) (export main))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a structurally-mismatched perform argument must be rejected");
         assert!(
@@ -29600,7 +29606,7 @@ mod stage1 {
         // VALID component (wasmtime parses it). Running it end-to-end also needs cdz-run to link both the
         // host responses and the runtime — a separate increment; component validity is the structural gate.
         let src = "(do (effect ask (op ask (-> Unit Int64))) \
-                   (def (main) (host (ask) (Map.len (Map.insert (map (1 10)) (ask.ask) 20)))) (export main))";
+                   (def (main) (host (ask) (Map.len (Map.insert (map (= 1 10)) (ask.ask) 20)))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a host op composed with the value-heap runtime now emits");
         wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
@@ -30873,8 +30879,8 @@ mod stage1 {
         // pinned here.) The fold to a scalar imports NO value-heap runtime — the record never materializes.
         let src = "(module m \
                (def (f (const (: r (Record (a Int64) (b Int64))))) \
-                 (if (= (. r a) 0) (. r b) (f (record (a (- (. r a) 1)) (b (+ (. r b) 1)))))) \
-               (def (main) (f (record (a 3) (b 0)))) (export main))";
+                 (if (= (. r a) 0) (. r b) (f (record (= a (- (. r a) 1)) (= b (+ (. r b) 1)))))) \
+               (def (main) (f (record (= a 3) (= b 0)))) (export main))";
         // Compiles (the activation gate admits a data record — not a decline / machine-repr emit error).
         compile_component(&crate::codec::encode(&parse(src)))
             .expect("a pure-data record const-param recursion compiles");
@@ -30909,8 +30915,8 @@ mod stage1 {
             "(module m \
                (def (f (const (: r (Record (a Int64) (b Int64))))) \
                  (if (= (. r a) 0) (trap \"record base reached\") \
-                     (f (record (a (- (. r a) 1)) (b (+ (. r b) 1)))))) \
-               (def (main) (f (record (a 2) (b 0)))) (export main))",
+                     (f (record (= a (- (. r a) 1)) (= b (+ (. r b) 1)))))) \
+               (def (main) (f (record (= a 2) (= b 0)))) (export main))",
         ));
         let diags = crate::compile::diagnostics(&mut db);
         assert!(
@@ -31276,7 +31282,7 @@ mod stage1 {
                     "(module m \
                        (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
                          (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
-                       (def (main (: k Int64)) (fold-n (record (op (fn (x) (+ x k)))) 3 0)) (export main))",
+                       (def (main (: k Int64)) (fold-n (record (= op (fn (x) (+ x k)))) 3 0)) (export main))",
                 )),
             )],
             &[crate::backend::Target::Wasm],
@@ -31355,7 +31361,7 @@ mod stage1 {
                 "(module m \
                    (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
                      (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
-                   (def (main) (fold-n (record (op (fn (x) (+ x 10)))) 3 0)) (export main))"
+                   (def (main) (fold-n (record (= op (fn (x) (+ x 10)))) 3 0)) (export main))"
             ),
             None,
             "a const-dictionary recursive consumer (runtime-counter-driven) still compiles"
@@ -31411,8 +31417,8 @@ mod stage1 {
              (@ inline-never \
                (def (apply2 (const (: d (Record (op (-> Int64 Int64))))) (: x Int64)) \
                  ((. d op) ((. d op) x)))) \
-             (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5) \
-                            (apply2 (record (op (fn (n) (+ n 10)))) 100))) (export main))";
+             (def (main) (+ (apply2 (record (= op (fn (n) (+ n 10)))) 5) \
+                            (apply2 (record (= op (fn (n) (+ n 10)))) 100))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         // The fold VALUE (145) is covered by the corpus dictionary-erasure family (09-functions "a recursive
         // consumer of a dictionary record inlines and erases the dictionary" + companions); only the
@@ -33542,7 +33548,7 @@ mod stage1 {
         // "a variant carrying a RECORD payload constructs and matches" (which links the value-heap runtime).
         let src = "(module m (type P (Pt (Record (x Int64) (y Int64))) O) \
                      (def (sum r) (+ (. r x) (. r y))) \
-                     (def (main) (match (P.Pt (record (x 3) (y 4))) ((P.Pt r) (sum r)) (P.O 0))) \
+                     (def (main) (match (P.Pt (record (= x 3) (= y 4))) ((P.Pt r) (sum r)) (P.O 0))) \
                      (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
@@ -34239,7 +34245,7 @@ mod stage1 {
         );
         // The record-wrapped sibling is the SAME class (a self-app in a record field) — it must likewise
         // TERMINATE with a coded rejection, exercising the shared structural guard on a different compound.
-        let rec = "(module m (def (main) ((fn (v0) (record (a (v0 v0)) (b 1))) (fn (v2) (record (a (v2 v2)) (b 1))))) (export main))";
+        let rec = "(module m (def (main) ((fn (v0) (record (= a (v0 v0)) (= b 1))) (fn (v2) (record (= a (v2 v2)) (= b 1))))) (export main))";
         let reject = compile_component(&crate::codec::encode(&parse(rec)))
             .expect_err("a record-wrapped self-application must decline, not crash");
         assert!(
@@ -34623,7 +34629,7 @@ mod stage1 {
         // untouched — the pattern parser consumes the marker before it could reach the value-ref path.
         for ok in [
             "(module m (def (f (: xs (List Int64))) (match xs ((list a .. r) a) (_ 0))) (export f))",
-            "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (k v) .. rest) k) (_ 0))) (export f))",
+            "(module m (def (f (: mp (Map Int64 Int64))) (match mp ((map (= k v) .. rest) k) (_ 0))) (export f))",
             "(module m (def (f (: xs (List Int64))) (let (((list a .. r) xs)) a)) (export f))",
         ] {
             assert!(
@@ -35941,7 +35947,7 @@ mod r2_runtime_resource {
         let src = "(module m \
                      (world reducer (export fold (member apply \
                        (func (param input (\"list\" (u8))) (result (\"list\" (u8))))))) \
-                     (def (apply (: e (Record (n Int64)))) (record (a 1) (b 2))) \
+                     (def (apply (: e (Record (n Int64)))) (record (= a 1) (= b 2))) \
                      (export apply))";
         let out = crate::compile::compile(
             &[
@@ -35971,7 +35977,7 @@ mod r2_runtime_resource {
             .expect("constant-result provider validates");
         // Expected: the bare value form of the constant result `(record (a 1) (b 2))`.
         let mut db = crate::db::Db::load(parse(
-            "(module m (def (apply (: e (Record (n Int64)))) (record (a 1) (b 2))) (export apply))",
+            "(module m (def (apply (: e (Record (n Int64)))) (record (= a 1) (= b 2))) (export apply))",
         ));
         let d = db.def_by_name("apply").expect("apply");
         let body = db.defs[d].body.expect("body");
@@ -40631,7 +40637,7 @@ mod sidecar_driven {
         // matched by NEITHER, and painted a spurious `unbound` instead of `label`. Now the grandparent is
         // recognized via `compound_form_of` and the FieldPair key is read as the label. Native ≡ alias:
         let native = "(module m (def (main) (. #record((= x 1) (= y 2)) x)) (export main))";
-        let legacy = "(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))";
+        let legacy = "(module m (def (main) (. (record (= x 1) (= y 2)) x)) (export main))";
         for (label, src) in [("native #record", native), ("alias record", legacy)] {
             let kinds = highlight_kinds_of(src, "x");
             assert!(
@@ -40645,7 +40651,7 @@ mod sidecar_driven {
     fn highlight_treats_a_record_field_and_member_key_as_labels() {
         // A record field name and a member-access key are DATA (symbols), never resolved to a value — so
         // they are `label`, not a spurious unbound name.
-        let src = "(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))";
+        let src = "(module m (def (main) (. (record (= x 1) (= y 2)) x)) (export main))";
         // `x` appears as a record field name AND as the member key — both `label` (never `unbound`).
         let kinds = highlight_kinds_of(src, "x");
         assert!(
@@ -40805,14 +40811,14 @@ mod sidecar_driven {
         let src = "(module m \
                    (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
                      (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
-                   (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
-                                  (fold-n (record (op (fn (x) (* x 2)))) 3 1))) \
+                   (def (main) (+ (fold-n (record (= op (fn (x) (+ x 10)))) 3 0) \
+                                  (fold-n (record (= op (fn (x) (* x 2)))) 3 1))) \
                    (export main))";
         assert_eq!(
             instantiation_args(src, "fold-n"),
             vec![
-                "const d = (record (op (fn (x) (* x 2))));n: Int64;acc: Int64",
-                "const d = (record (op (fn (x) (+ x 10))));n: Int64;acc: Int64",
+                "const d = (record (= op (fn (x) (* x 2))));n: Int64;acc: Int64",
+                "const d = (record (= op (fn (x) (+ x 10))));n: Int64;acc: Int64",
             ],
         );
     }
@@ -40824,12 +40830,12 @@ mod sidecar_driven {
         let src = "(module m \
                    (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
                      (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
-                   (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
-                                  (fold-n (record (op (fn (x) (+ x 10)))) 2 5))) \
+                   (def (main) (+ (fold-n (record (= op (fn (x) (+ x 10)))) 3 0) \
+                                  (fold-n (record (= op (fn (x) (+ x 10)))) 2 5))) \
                    (export main))";
         assert_eq!(
             instantiation_args(src, "fold-n"),
-            vec!["const d = (record (op (fn (x) (+ x 10))));n: Int64;acc: Int64"],
+            vec!["const d = (record (= op (fn (x) (+ x 10))));n: Int64;acc: Int64"],
         );
     }
 }
@@ -49665,14 +49671,14 @@ mod cross_component_oracle {
         // and a field whose value type MISMATCHES the ascription is REJECTED — proving the field TYPE
         // (not just the name) is read through the full annotate/check pipeline.
         let ok = "(module m \
-            (def (main) (: (record (a 1) (b true)) (Record (: a Int64) (: b Bool)))) \
+            (def (main) (: (record (= a 1) (= b true)) (Record (: a Int64) (: b Bool)))) \
             (export main))";
         assert!(
             crate::compile::compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
             "a record value annotated with an ascription-form record type must compile"
         );
         let bad = "(module m \
-            (def (main) (: (record (a true) (b true)) (Record (: a Int64) (: b Bool)))) \
+            (def (main) (: (record (= a true) (= b true)) (Record (: a Int64) (: b Bool)))) \
             (export main))";
         assert!(
             crate::compile::compile_component(&crate::codec::encode(&parse(bad))).is_err(),
@@ -50034,7 +50040,7 @@ fn a_host_fused_kv_prefix_scan_reducer_emits_and_loads() {
     let src = "(module m \
       (effect kv (op prefix-scan (-> Bytes (List (Tuple Bytes Bytes))))) \
       (def (apply (: e (Record (ct String) (pl Bytes)))) \
-        (host (kv) (do (kv.prefix-scan (. e pl)) (list (record (op (. e ct)) (arg (. e pl))))))) \
+        (host (kv) (do (kv.prefix-scan (. e pl)) (list (record (= op (. e ct)) (= arg (. e pl))))))) \
       (export apply))";
     let out = crate::compile::compile(
         &[
@@ -50142,7 +50148,7 @@ fn a_host_fused_kv_delete_bool_reducer_emits_and_loads() {
     let src = "(module m \
       (effect kv (op delete (-> Bytes Bool))) \
       (def (apply (: e (Record (ct String) (pl Bytes)))) \
-        (host (kv) (if (kv.delete (. e pl)) (list (record (op (. e ct)) (arg (. e pl)))) (list)))) \
+        (host (kv) (if (kv.delete (. e pl)) (list (record (= op (. e ct)) (= arg (. e pl)))) (list)))) \
       (export apply))";
     let out = crate::compile::compile(
         &[
@@ -50500,7 +50506,7 @@ fn collect_static_bytes_interns_distinct_constant_bytes_literals() {
     // every child, so a literal is hoistable wherever it appears, not only as a whole function body.
     assert_eq!(
         collect(
-            "(module m (def (g) (record (pl (Bytes.of (list 5 6))))) (def (main) 0) (export main))",
+            "(module m (def (g) (record (= pl (Bytes.of (list 5 6))))) (def (main) 0) (export main))",
             &["g"]
         ),
         vec![vec![5u8, 6]],
@@ -50614,7 +50620,7 @@ fn is_markable_constant_compound_flags_scalar_bytes_and_nested_only() {
     // A constant record (incl. a String field) → markable.
     assert!(
         markable(
-            &format!("{m}(def (main) (record (x 1) (y \"hi\"))) (export main))"),
+            &format!("{m}(def (main) (record (= x 1) (= y \"hi\"))) (export main))"),
             "main"
         ),
         "a constant record with scalar + string fields must be markable"

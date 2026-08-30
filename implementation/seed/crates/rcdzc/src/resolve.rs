@@ -2002,7 +2002,7 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
         return Some(Resolved::Poison(
             Reject::coded(
                 crate::diag::Code::Malformed,
-                "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                "a map rest pattern is `(map (= k v) … .. rest)` — exactly one binder after `..`",
             )
             .at(map_pat),
         ));

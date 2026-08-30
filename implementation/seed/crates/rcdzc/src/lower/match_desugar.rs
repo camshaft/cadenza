@@ -3427,7 +3427,7 @@ pub(super) fn desugar_runtime_map_match(
                 return Some(Core::Poison(
                     Reject::coded(
                         Code::Malformed,
-                        "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                        "a map rest pattern is `(map (= k v) … .. rest)` — exactly one binder after `..`",
                     )
                     .at(inner),
                 ));
@@ -3691,7 +3691,7 @@ pub(super) fn lower_match_map(
                 return Core::Poison(
                     Reject::coded(
                         Code::Malformed,
-                        "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                        "a map rest pattern is `(map (= k v) … .. rest)` — exactly one binder after `..`",
                     )
                     .at(map_inner),
                 );

@@ -7547,7 +7547,7 @@ fn emit_sum_payload(
     // Also covers a RECORD scrutinee: a record is emitted as a Rust tuple in SORTED field-name order
     // (`types::rust_type` / `Core::Record`), so a record-field probe path `[Elem(sorted_slot)]` reads the
     // j-th tuple position `.{slot}` — identical to a tuple element. This is what lets a record-match LITERAL
-    // FIELD probe `((record (x 3) (y b)) …)` render on Rust: `pattern_constraints` emits a `lit_test` at
+    // FIELD probe `((record (= x 3) (= y b)) …)` render on Rust: `pattern_constraints` emits a `lit_test` at
     // `[Elem(slot)]` over the record scrutinee, whose subject read reaches here with no bind → before, it
     // fell through to "sum payload has no bound match arm" (the record LitTest declined on Rust though it
     // computed on wasm). The direct field read is the record twin of the runtime-tuple direct read.

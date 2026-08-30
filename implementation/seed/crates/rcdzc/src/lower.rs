@@ -5531,7 +5531,7 @@ fn pattern_constraints(
                 if crate::resolve::map_form_is_malformed_rest(db, pat) {
                     return Err(Reject::coded(
                         Code::Malformed,
-                        "a map rest pattern is `(map (k v) … .. rest)` — exactly one binder after `..`",
+                        "a map rest pattern is `(map (= k v) … .. rest)` — exactly one binder after `..`",
                     )
                     .at(pat));
                 }
@@ -27618,7 +27618,7 @@ mod tests {
         // covered for the schema-hash S3 hard gate. `WitType` has no Map variant, so it reads back as the
         // list<tuple> it emits.
         assert_eq!(
-            desc_wit("(map (1 2))"),
+            desc_wit("(map (= 1 2))"),
             Some(W::List(Box::new(W::Tuple(vec![W::S64, W::S64])))),
             "Map<s64,s64> emits list<tuple<s64,s64>>"
         );
@@ -27649,7 +27649,7 @@ mod tests {
         // A record's fields must be NAME-SORTED (the canonical order all 3 producers agree on). rcdzc's
         // Ty::Record is a name-sorted BTreeMap, so iterating it in natural order already emits sorted fields
         // — the sort is free. Declared here in NON-sorted order (`z` before `a`) to prove the emit sorts.
-        match desc_wit("(record (z 1) (a true))") {
+        match desc_wit("(record (= z 1) (= a true))") {
             Some(W::Record(fields)) => {
                 let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
                 assert_eq!(names, vec!["a", "z"], "record fields emit name-sorted");
