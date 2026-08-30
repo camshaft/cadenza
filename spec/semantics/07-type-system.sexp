@@ -2914,6 +2914,41 @@
   (call main)
   (output (: 5 Int64)))
 
+; ── let-binder annotation MISMATCH offers the SAME coercion fix as a value annotation / argument position
+;    (migrated from rcdzc an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix +
+;    a_known_type_let_binder_mismatch_keeps_its_coercion_fix) ──
+; A `(let (((: x T) init)) …)` whose annotation T mismatches the INIT value's type is CDZ0203 ("a binder
+; annotated T is bound to a value of type U") and carries the SAME numeric/text/sum coercion fix the value
+; annotation `(: value T)` and the argument position give (the D33 lesson — one repair fires wherever the
+; mismatch surfaces). No coercion (a Bool into Int64) → the bare reject, no fix.
+(case "an int-width let-binder annotation mismatch offers the of-conversion wrap fix"
+  (input  (do (def (f (: n Int8)) (let (((: x Int64) n)) x)) (export f)))
+  (error  CDZ0203 (message "value of type Int8") (fix (kind wrap) (replacement-contains "(Int64.of "))))
+
+(case "a Bool let-binder init annotated Int64 has no coercion and carries no fix"
+  (input  (do (def (f) (let (((: x Int64) true)) x)) (export f)))
+  (error  CDZ0203 (message "value of type Bool") (no-fix)))
+
+(case "an int LITERAL let-binder init annotated Float retypes to a float literal"
+  (input  (do (def (f) (let (((: x Float64) 3)) x)) (export f)))
+  (error  CDZ0203 (message "annotated Float64") (fix (kind replace) (replacement "3.0"))))
+
+(case "a NON-literal int let-binder init annotated Float wraps in of-int"
+  (input  (do (def (f (: n Int64)) (let (((: x Float64) n)) x)) (export f)))
+  (error  CDZ0203 (fix (kind wrap) (replacement-contains "(Float64.of-int "))))
+
+(case "an integer-valued float LITERAL let-binder init annotated Int drops the fraction"
+  (input  (do (def (f) (let (((: x Int64) 3.0)) x)) (export f)))
+  (error  CDZ0203 (message "value of type Float64") (fix (kind replace) (replacement "3"))))
+
+(case "a String let-binder init annotated Bytes wraps in to-bytes"
+  (input  (do (def (f (: s String)) (let (((: x Bytes) s)) x)) (export f)))
+  (error  CDZ0203 (message "value of type String") (fix (kind wrap) (replacement-contains "(String.to-bytes "))))
+
+(case "a payload-typed let-binder init annotated its sum wraps in the variant constructor"
+  (input  (do (def (f) (let (((: x (Option Int64)) 5)) x)) (export f)))
+  (error  CDZ0203 (message "annotated (Option Int64)") (fix (kind wrap) (replacement-contains "(Some "))))
+
 ; ── malformed VARIANT POSITION in a type declaration (migrated from rcdzc
 ;    a_malformed_variant_position_in_a_type_declaration_is_rejected) ──
 ; A `(type …)` tail element is a VARIANT: a bare NAME (`Red`) or a `(Name payload…)` form. Anything else —
