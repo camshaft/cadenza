@@ -83,34 +83,46 @@ fn a_type_of_query_reads_the_type_column() {
         "a query does not fail: {:?}",
         out.diagnostics
     );
-    assert_eq!(
-        artifact_text(&out, KIND_TYPE_INFO).as_deref(),
-        Some("Int64")
-    );
+    // KIND_TYPE_INFO is now a tagged binary-AST verdict (`decode_type_info`); `main : Int64` is a
+    // `Found` carrying the structured `(Int 64)` payload (head `Int`). The rendered display "Int64" is the
+    // CONSUMER's job (render_ty_scheme).
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            assert_eq!(ty.head_name(ty.root), Some("Int"), "main : Int64 payload")
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
 }
 
 #[test]
 fn a_type_of_query_for_a_function_renders_its_arrow_type() {
-    // A def with a parameter denotes a function; its type is the arrow the annotation fixes.
+    // A def with a parameter denotes a function; its type is the arrow the annotation fixes — a `Found`
+    // carrying a `(-> …)` arrow payload (head `->`); the "(-> Int64 Int64)" display is the consumer's job.
     let src = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
     let out = compile(
         &inputs(src, &[Request::Query(Query::TypeOf { name: "f".into() })]),
         &[],
     );
-    assert_eq!(
-        artifact_text(&out, KIND_TYPE_INFO).as_deref(),
-        Some("(-> Int64 Int64)")
-    );
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            assert_eq!(ty.head_name(ty.root), Some("->"), "f is a function arrow")
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
 }
 
 #[test]
-fn a_type_of_query_names_distinct_generic_vars_so_the_tie_structure_is_visible() {
-    // A GENERIC scheme's `cdz type` answer names each DISTINCT quantified type variable with a stable
-    // letter (`a`, `b`, …) instead of collapsing every var to `_` — so a reader sees which `_`s are the
-    // SAME variable. This is the tool for diagnosing a recursive-generic monomorphization TIE: an
-    // element-TIED producer and an UNtied one print differently.
-    //   - `from-list : List a -> Iter a` — the element is TIED (one var `a` on both sides). It composes
-    //     at multiple element types; `render_name` would print `(-> (List _) (Iter _))`, hiding the tie.
+fn a_type_of_query_emits_the_generic_scheme_arrow_payload() {
+    // A GENERIC def's `TypeOf` verdict is a `Found` carrying the generalized scheme's STRUCTURED arrow
+    // payload (the tie structure lives in the payload's `(Var N)` numbers — the SAME var on both sides of
+    // `from-list : (-> (List a) (Iter a))`). Rendering those vars as stable letters `a`,`b`,… (vs collapsed
+    // `_`), so a reader sees the tie, is now the CONSUMER's job via `render_ty_scheme` (v-syntax's parity
+    // battery covers the lettering); here we assert the producer emits the arrow payload for both a generic
+    // and a monomorphic scheme.
     let src = "(module m (type Iter (Nil) (Cons a (Iter a))) \
                     (def (from-list xs) (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t))))) \
                     (def (main) 0) (export main))";
@@ -123,22 +135,32 @@ fn a_type_of_query_names_distinct_generic_vars_so_the_tie_structure_is_visible()
         ),
         &[],
     );
-    assert_eq!(
-        artifact_text(&out, KIND_TYPE_INFO).as_deref(),
-        Some("(-> (List a) (Iter a))"),
-        "a tied producer names the SAME var on both sides (not two collapsed `_`)"
-    );
-    // A MONOMORPHIC scheme is byte-identical to `render_name` (no vars to name).
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            assert_eq!(
+                ty.head_name(ty.root),
+                Some("->"),
+                "from-list is a function arrow"
+            )
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
+    // A MONOMORPHIC scheme also emits its arrow payload.
     let mono = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
     let out2 = compile(
         &inputs(mono, &[Request::Query(Query::TypeOf { name: "f".into() })]),
         &[],
     );
-    assert_eq!(
-        artifact_text(&out2, KIND_TYPE_INFO).as_deref(),
-        Some("(-> Int64 Int64)"),
-        "a monomorphic scheme renders unchanged"
-    );
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out2, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            assert_eq!(ty.head_name(ty.root), Some("->"), "f is a function arrow")
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
 }
 
 #[test]
@@ -158,11 +180,17 @@ fn a_type_of_query_for_an_unknown_name_is_total() {
         &[],
     );
     assert!(!out.has_error());
-    let text = artifact_text(&out, KIND_TYPE_INFO).unwrap_or_default();
-    assert!(
-        text.starts_with("no such definition `ghost`"),
-        "names the missing definition: {text}"
-    );
+    // A name that names nothing → the `NoDef` verdict carrying the total message (the consumer prints it +
+    // exits FAILURE — no string-match needed).
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::NoDef(msg) => assert!(
+            msg.starts_with("no such definition `ghost`"),
+            "names the missing definition: {msg}"
+        ),
+        other => panic!("expected NoDef, got {other:?}"),
+    }
 
     // A NEAR-typo of a real def gets a confident "did you mean?" pointing at it.
     let out2 = compile(
@@ -174,10 +202,15 @@ fn a_type_of_query_for_an_unknown_name_is_total() {
         ),
         &[],
     );
-    assert_eq!(
-        artifact_text(&out2, KIND_TYPE_INFO).as_deref(),
-        Some("no such definition `computee` — did you mean `compute`?"),
-    );
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out2, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::NoDef(msg) => assert_eq!(
+            msg,
+            "no such definition `computee` — did you mean `compute`?"
+        ),
+        other => panic!("expected NoDef, got {other:?}"),
+    }
 }
 
 #[test]
@@ -200,11 +233,15 @@ fn a_query_answers_even_when_the_program_fails_to_emit() {
     // Emit failed: an error diagnostic, and NO component artifact.
     assert!(out.has_error());
     assert!(out.artifact("component").is_none());
-    // …but the query still answered, carried past the failure.
-    assert_eq!(
-        artifact_text(&out, KIND_TYPE_INFO).as_deref(),
-        Some("Int64")
-    );
+    // …but the query still answered, carried past the failure — a `Found` with `g`'s `(Int 64)` payload.
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            assert_eq!(ty.head_name(ty.root), Some("Int"), "g : Int64 payload")
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
 }
 
 #[test]
@@ -2377,10 +2414,15 @@ fn emit_and_query_compose_in_one_run() {
     );
     assert!(!out.has_error(), "{:?}", out.diagnostics);
     assert!(out.artifact("component").is_some());
-    assert_eq!(
-        artifact_text(&out, KIND_TYPE_INFO).as_deref(),
-        Some("Int64")
-    );
+    // The TYPE_INFO verdict rides alongside the emit — a `Found` with the `(Int 64)` payload (head `Int`).
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            assert_eq!(ty.head_name(ty.root), Some("Int"), "Int64 payload")
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
 }
 
 #[test]
