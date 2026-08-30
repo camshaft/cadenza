@@ -479,6 +479,23 @@
               (export main)))
   (call   main) (output (: 8 Int64)))
 
+; The "a plain number" CDZ0501 message + its `(Qty.of …)` wrap fix are meaningful ONLY when the
+; non-quantity operand is actually a NUMBER. A quantity added to a NON-numeric value — an `(Option (Qty …))`
+; (the common `List.at`/`Map.get` result), a tuple, a string — is NOT a dimension slip; mislabeling it "a
+; plain number" and offering a `(Qty.of …)` wrap would be nonsense. The additive-check arm is gated on the
+; non-quantity operand being numeric; otherwise it falls through to the generic scheme-unify, which reports
+; the accurate CDZ0203 for the real type clash (naming the `(Option …)`), NOT CDZ0501. The corpus grade of
+; the PRIMARY as CDZ0203 is itself the regression guard against the CDZ0501 mislabel. (Migrated from rcdzc
+; adding_a_quantity_to_a_non_numeric_operand_is_cdz0203_not_the_plain_number_cdz0501; the not-among-any-diag
+; CDZ0501-"a plain number" message-ABSENCE negative is the inexpressible remainder kept white-box.)
+(case "adding a quantity to a non-numeric Option operand is a plain CDZ0203 type mismatch, not a dimension slip"
+  (input  (do (def (main) (Qty.value (+ (Qty.of 5 (Unit.base #"meter")) (List.at #list((Qty.of 1 (Unit.base #"meter"))) 0)))) (export main)))
+  (error  CDZ0203))
+
+(case "with the Option operand on the LEFT, the quantity-add clash names the (Option (Qty …)) type"
+  (input  (do (def (main) (Qty.value (+ (List.at #list((Qty.of 1 (Unit.base #"meter"))) 0) (Qty.of 5 (Unit.base #"meter"))))) (export main)))
+  (error  CDZ0203 (message "Option")))
+
 ; `*`/`/` on a quantity is dimensionally always well-formed, but the INNER numeric types must still agree
 ; (no silent promotion): a Float64 quantity scaled by a bare Int64 (`(* (Qty.of 5.0 …) 1)`) is CDZ0301 with
 ; the `1` -> `1.0` widening fix — matching the quantity's Float inner (without the check the mismatch reached

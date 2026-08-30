@@ -18402,14 +18402,13 @@ mod match_engine {
 
     #[test]
     fn adding_a_quantity_to_a_non_numeric_operand_is_cdz0203_not_the_plain_number_cdz0501() {
-        // The `_ =>` arm of the additive quantity/non-quantity check reports CDZ0501 "a quantity and a
-        // plain number" + a `(Qty.of <n> <unit>)` repair — meaningful ONLY when the non-quantity operand is
-        // actually a NUMBER. A quantity added to a NON-numeric value (an `(Option (Qty …))` — the common
-        // `List.at`/`Map.get` result — a tuple, a string) is not a dimension slip; mislabeling it "a plain
-        // number" and offering a `(Qty.of …)` wrap is nonsense. The arm is now gated on the non-quantity
-        // operand being numeric; otherwise it falls through to the generic scheme-unify path, which reports
-        // the accurate CDZ0203 for the real type clash. Here `(List.at xs 0) : (Option (Qty …))` added to a
-        // `(Qty …)` must be CDZ0203 naming the `Option`, NOT CDZ0501 "a plain number".
+        // WHITE-BOX RESIDUAL. The positives are now the corpus 18-units-of-measure cases "adding a quantity
+        // to a non-numeric Option operand is a plain CDZ0203 type mismatch, not a dimension slip" and "with
+        // the Option operand on the LEFT, the quantity-add clash names the (Option (Qty …)) type" (the
+        // PRIMARY grading as CDZ0203 is itself the guard against the CDZ0501 mislabel regressing); the
+        // bare-number CDZ0501 control is the existing wrap-fix cases. This keeps ONLY the inexpressible
+        // remainder: NO diagnostic (not just the primary) may mislabel the non-numeric operand "a plain
+        // number" (CDZ0501) — a message-ABSENCE-across-ALL-diags negative the corpus grade has no clause for.
         let src = "(module m \
                      (def (main) ((. Qty value) \
                        (+ ((. Qty of) 5 ((. Unit base) #\"meter\")) \
@@ -18417,54 +18416,12 @@ mod match_engine {
                      (export main))";
         let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
         assert!(
-            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0203")),
-            "a quantity added to an `(Option (Qty …))` must be a plain CDZ0203 type mismatch: {:?}",
-            diags
-                .iter()
-                .map(|d| (&d.code, &d.message))
-                .collect::<Vec<_>>()
-        );
-        assert!(
             !diags
                 .iter()
                 .any(|d| d.code.as_deref() == Some("CDZ0501")
                     && d.message.contains("a plain number")),
-            "a non-numeric operand must NOT be mislabeled 'a plain number' (CDZ0501): {:?}",
+            "a non-numeric operand must NOT be mislabeled 'a plain number' (CDZ0501) by ANY diagnostic: {:?}",
             diags
-                .iter()
-                .map(|d| (&d.code, &d.message))
-                .collect::<Vec<_>>()
-        );
-        // With the Option operand on the LEFT, the reported clash NAMES the `(Option (Qty …))` — proving the
-        // fall-through reaches the generic mismatch on the actual non-numeric type (not a scheme-Int leak).
-        let rev = "(module m \
-                     (def (main) ((. Qty value) \
-                       (+ ((. List at) (list ((. Qty of) 1 ((. Unit base) #\"meter\"))) 0) \
-                          ((. Qty of) 5 ((. Unit base) #\"meter\"))))) \
-                     (export main))";
-        let rev_diags = crate::diagnostics(&mut crate::db::Db::load(parse(rev)));
-        assert!(
-            rev_diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0203") && d.message.contains("Option")),
-            "with the Option operand first, CDZ0203 names the `(Option (Qty …))`: {:?}",
-            rev_diags
-                .iter()
-                .map(|d| (&d.code, &d.message))
-                .collect::<Vec<_>>()
-        );
-        // REGRESSION: a quantity + a genuine BARE NUMBER is still CDZ0501 "a plain number" (the arm's
-        // intended target — the numeric operand keeps its dimension-slip message + `(Qty.of …)` repair).
-        let bare = "(module m (def (main) ((. Qty value) \
-                      (+ ((. Qty of) 5 ((. Unit base) #\"meter\")) 3))) (export main))";
-        let bare_diags = crate::diagnostics(&mut crate::db::Db::load(parse(bare)));
-        assert!(
-            bare_diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0501")
-                    && d.message.contains("a plain number")),
-            "a quantity + a bare number is still CDZ0501 'a plain number': {:?}",
-            bare_diags
                 .iter()
                 .map(|d| (&d.code, &d.message))
                 .collect::<Vec<_>>()
