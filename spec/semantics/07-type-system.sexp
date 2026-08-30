@@ -1604,6 +1604,26 @@
   (input  (do (type UserId (Mk Int64)) (def (g (: u UserId)) (+ u 1)) (export g)))
   (error  CDZ0201 (message "kind boundary")))
 
+; A first-class TYPE VALUE (a type name `Color`/`Int64`, a module) used as an arithmetic/comparison operand is
+; a type error — there is no `+` on types, and type EQUALITY is the dedicated `Type.eq`, not the bare `=`/`+`.
+; A naive generic scheme leaked a phantom "Int64 and Type" clash. Now a Type-VALUE vs a scalar names the KIND
+; BOUNDARY (no phantom Int64), and TWO type-value operands in arithmetic name "arithmetic is not defined on
+; Type". (Distinct from the cases above, where the operand is a VALUE of a user type; here it is the type
+; itself.) (Migrated from rcdzc arithmetic_or_comparison_with_a_type_value_operand_names_it_not_a_phantom_int64
+; — the reject-naming facets; the two-type bare-`=` no-relabel control + the spanless-decline dedup stay a
+; rust residual.)
+(case "an arithmetic op with a user-type VALUE operand and a scalar names the kind boundary, not a phantom Int64"
+  (input  (do (type Color (Red)) (def (main) (+ Color 1)) (export main)))
+  (error  CDZ0201 (message "kind boundary") (message "Type") (not "Int64 and Type")))
+
+(case "two type-value operands in arithmetic name that arithmetic is not defined on Type"
+  (input  (do (type Color (Red)) (def (main) (+ Color Color)) (export main)))
+  (error  CDZ0201 (message "arithmetic is not defined on Type")))
+
+(case "a prelude type name as an arithmetic operand names the kind boundary, not a phantom Int64"
+  (input  (do (def (main) (+ Int64 1)) (export main)))
+  (error  CDZ0201 (message "kind boundary") (not "Int64 and Type")))
+
 (case "comparing a user sum against a record (different compound kinds) names the kind boundary"
   (input  (do (type Color (Red)) (def (g (: c Color) (: r (Record (: x Int64)))) (= c r)) (export g)))
   (error  CDZ0201 (message "kind boundary")))

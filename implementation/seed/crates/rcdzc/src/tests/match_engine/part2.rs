@@ -31,44 +31,14 @@ use super::*;
 
 #[test]
 fn arithmetic_or_comparison_with_a_type_value_operand_names_it_not_a_phantom_int64() {
-    // A first-class TYPE value (`Color`, `Int64`, a module name) in an arithmetic/comparison op is
-    // always a type error (there is no `+` on types; type EQUALITY is the dedicated `Type.eq`, not the
-    // bare `=`/`+`). It leaked the generic scheme's phantom "type mismatch: Int64 and Type". Now: a Type
-    // vs a scalar names the kind boundary; two Types in arithmetic name "arithmetic is not defined on
-    // Type".
-    // Type vs scalar (arithmetic) → kind boundary, no phantom Int64.
-    let mixed = reject_full("(module m (type Color (Red)) (def (main) (+ Color 1)) (export main))")
-        .expect("(+ Type Int) rejects");
-    assert_eq!(
-        mixed.code.as_deref(),
-        Some("CDZ0201"),
-        "got: {}",
-        mixed.message
-    );
-    assert!(
-        mixed.message.contains("kind boundary")
-            && mixed.message.contains("Type")
-            && !mixed.message.contains("Int64 and Type"),
-        "a Type-vs-scalar op names the kind boundary, no phantom `Int64 and Type`: {}",
-        mixed.message
-    );
-    // Two Types in arithmetic → "arithmetic is not defined on Type".
-    let both =
-        reject_full("(module m (type Color (Red)) (def (main) (+ Color Color)) (export main))")
-            .expect("(+ Type Type) rejects");
-    assert!(
-        both.message.contains("arithmetic is not defined on Type"),
-        "two Type operands name the real type: {}",
-        both.message
-    );
-    // A prelude type name (`Int64`) as an operand is the same.
-    let prelude = reject_full("(module m (def (main) (+ Int64 1)) (export main))")
-        .expect("(+ Int64-type Int) rejects");
-    assert!(
-        prelude.message.contains("kind boundary") && !prelude.message.contains("Int64 and Type"),
-        "a prelude type value operand names the kind boundary: {}",
-        prelude.message
-    );
+    // Residual: the corpus-inexpressible facets of the type-value-operand reject (the reject-NAMING facets —
+    // a Type-value vs a scalar → CDZ0201 "kind boundary" / no phantom `Int64 and Type`, and two Type operands
+    // → "arithmetic is not defined on Type" — moved to corpus 07-type-system "an arithmetic op with a
+    // user-type VALUE operand …" + siblings). What stays: (a) the NO-relabel control — a bare `(= Int64
+    // Int64)` on two Type operands declines its OWN way (CDZ0900, type equality is `Type.eq`), NOT relabeled a
+    // kind boundary (the cross-kind guard needs a positive `(message)` companion to grade, awkward for a
+    // CDZ0900 decline), and (b) the DEDUP — an arithmetic op on a type value is ONE error, the spanless
+    // UNCODED "type value has no runtime form" decline dropped (count-by-code cannot pin a codeless dup).
     // NO false change: a bare `(= Int64 Int64)` (two Types) is NOT relabeled — type equality is
     // `Type.eq`, and the bare `=` on two types keeps its own path (both share the Type kind tag, so the
     // cross-kind guard does not fire).
