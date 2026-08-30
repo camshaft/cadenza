@@ -1534,6 +1534,16 @@
   (input  (do (def (main) (not true false)) (export main)))
   (error  CDZ0201 (message "takes exactly") (fix (kind delete))))
 
+(case "a binary arithmetic operator with too many operands offers a delete-the-surplus fix"
+  (doc    "The ARITHMETIC-operator sibling of the grammar-form over-application cluster above: `(+ n 1 2)`
+           applies the binary `+` to THREE operands — a clear operator-specific CDZ0201 'takes exactly 2
+           operands' (not the generic arity phrasing), carrying the SAME delete-the-surplus fix. Contrast the
+           one-operand under-application `(+ n)`, which CURRIES into a partial application (07-type-system),
+           not an arity error. (Migrated from rcdzc
+           a_binary_operator_over_or_under_application_on_a_function_param_surfaces_in_the_query.)")
+  (input  (do (def (g (: n Int64)) (+ n 1 2)) (export g)))
+  (error  CDZ0201 (message "takes exactly 2 operands") (fix (kind delete))))
+
 (case "a too-FEW-operand `and` carries no fix (nothing to delete)"
   (input  (do (def (main) (and true)) (export main)))
   (error  CDZ0201 (message "takes exactly") (no-fix)))
