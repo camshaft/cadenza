@@ -222,9 +222,9 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
                     // A native RATIONAL node `(RationalTag <num> <den>)` (seq-204) → the scalar literal
                     // `<num>/<den>` (`3/2`, slash no space; operator seq-204 dropped the `r` glyph). The
                     // sexpr surface CAN spell it with `/` because sexpr division is the PREFIX `(/ a b)`, so
-                    // a bare `3/2` atom never collides with division (unlike the ML surface). Re-reads
-                    // STRAIGHT back to the tag via `split_rational_literal`. NO `#rational` wrapper (that is
-                    // only the bare-atom fallback marker). Push reverse: den, "/", num → pops num, "/", den.
+                    // a bare `3/2` atom never collides (unlike the ML surface). Re-reads STRAIGHT back to the
+                    // tag via `split_rational_literal`. NO `#rational` wrapper (that is only the bare-atom
+                    // fallback marker). Push reverse: den, "/", num → pops num, "/", den.
                     if let Some((num, den)) = a.rational_parts(id) {
                         stack.push(Work::Node(den));
                         stack.push(Work::Str("/"));
@@ -534,9 +534,10 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         Leaf::Ctor(c) => out.push_str(compound_ctor_word(*c)),
         Leaf::FieldPair => out.push('='),
         Leaf::Member => out.push('.'),
-        // The rational-literal HEAD leaf (seq-204) is likewise a LIST head: the well-formed `num/den`
-        // render is at the list level (`print_node` via `rational_parts`), so this bare tag renders only a
-        // best-effort marker for a stray atom occurrence, keeping the printer total.
+        // A native rational TAG leaf (seq-204) appearing as a BARE atom — i.e. NOT as the head of a
+        // well-formed `(RationalTag <num> <den>)` node (that list form is resugared to `num/den` at the
+        // list level, in `print_node` / the pretty printer). A stray tag alone has no operands to render,
+        // so it falls back to the marker word `#rational` (mirrors the `#ctor`-style bare-head fallbacks).
         Leaf::Rational => out.push_str("#rational"),
     }
 }
