@@ -1193,6 +1193,34 @@
   (input  (do (def (get (: r (Record (: x Int8)))) (. r x)) (def (main) (get #record((= x 100)))) (export main)))
   (output (: 100 Int8)))
 
+; The width the fit-check grounds a bare literal to can come from a SIBLING LIST ELEMENT's annotation via the
+; list-element type JOIN, not only from an outer/nested annotation descending: `#list((: 1 UInt64) -41)` has
+; no outer annotation, but the element-type JOIN takes the fixed UInt64 width from the annotated sibling
+; regardless of POSITION, so the bare `-41` is checked against UInt64 → CDZ0302 (like a direct annotation),
+; not silently wrapped. Before, the join width was skipped for a bare sibling element and the value wrapped
+; (wasm) / emitted invalid (rust) — a backend-divergent miscompile. Order-independent; fires on over-max as
+; well as negatives; an IN-RANGE element and a plain (no narrow/unsigned sibling) list are unaffected.
+; (Migrated from rcdzc a_list_element_literal_out_of_range_for_a_sibling_inferred_width_is_cdz0302.)
+(case "a list element out of range for a SIBLING element's annotated width is rejected"
+  (input  (do (def (main) #list((: 1 UInt64) -41)) (export main)))
+  (error  CDZ0302))
+
+(case "the sibling-inferred list-element width check is order-independent (the bare element first)"
+  (input  (do (def (main) #list(-41 (: 1 UInt64))) (export main)))
+  (error  CDZ0302))
+
+(case "a list element over the max of a SIBLING-inferred narrow width is rejected"
+  (input  (do (def (main) #list((: 1 UInt8) 300)) (export main)))
+  (error  CDZ0302))
+
+(case "an in-range list element under a sibling-inferred width compiles and runs (no over-rejection)"
+  (input  (do (def (main) #list((: 1 UInt64) 41)) (export main)))
+  (call   main) (output (: #list(1 41) (List UInt64))))
+
+(case "a plain integer list is unaffected by the sibling-inferred width range check"
+  (input  (do (def (main) #list(1 2 3)) (export main)))
+  (call   main) (output (: #list(1 2 3) (List Int64))))
+
 ; ── the CONTROL-FLOW-OPERAND face of the narrow-width fit-check: when an `if`/`match`/`let` is an OPERAND of
 ; a narrow op, its branches emit at the node's own deferred→i64 width, so a compile-time-constant branch value
 ; that overflows the narrow op width must be range-checked at the wrap site (CDZ0302), matching the DIRECT

@@ -16092,47 +16092,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_element_literal_out_of_range_for_a_sibling_inferred_width_is_cdz0302() {
-        // Fuzzer/corpus-bugfix differential: an integer-literal list element whose element TYPE is fixed by
-        // a SIBLING (not the element's own annotation) skipped the CDZ0302 range check → wasm SILENTLY
-        // WRAPPED (`-41` into a huge UInt64) while rust emitted an invalid u64 init (E0308) — a
-        // backend-divergent miscompile. The list carries no OUTER annotation, so the annotation-driven
-        // `nested_literal_width_faults` never ran, and the bare literal's own `type_of` is the `Int64`
-        // default. FIX: after the list-element unify settles the element type (the JOIN of the element
-        // types, which takes the fixed width from the annotated sibling regardless of POSITION), re-run
-        // `width_fault_against_ty` on each element against it → CDZ0302 uniformly, like a direct annotation.
-        let bad = |src: &str| {
-            let e = compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err("an out-of-range element for the sibling-inferred width must reject");
-            assert_eq!(e.code.as_deref(), Some("CDZ0302"), "got: {}", e.message);
-        };
-        // Negative literal in an unsigned list — the annotated sibling FIRST, then the bare element.
-        bad("(module m (def (main) (list (: 1 UInt64) -41)) (export main))");
-        // ORDER-INDEPENDENT: the bare `-41` FIRST, the annotated sibling second — the join still fixes
-        // UInt64, so the leading bare literal is checked against it (not its own deferred Int64).
-        bad("(module m (def (main) (list -41 (: 1 UInt64))) (export main))");
-        // OVER-MAX (not just negatives), on a NARROW width — 300 does not fit UInt8.
-        bad("(module m (def (main) (list (: 1 UInt8) 300)) (export main))");
-        // CONTROL — an IN-RANGE bare element under a sibling-inferred unsigned width still COMPILES (the
-        // check rejects only genuinely out-of-range literals, not every bare element).
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (def (main) (list (: 1 UInt64) 41)) (export main))"
-            )))
-            .is_ok(),
-            "an in-range element under a sibling-inferred width must still compile"
-        );
-        // CONTROL — a plain int list (no narrow/unsigned sibling) is unaffected.
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (def (main) (list 1 2 3)) (export main))"
-            )))
-            .is_ok(),
-            "a plain integer list is unaffected by the sibling-width range check"
-        );
-    }
-
-    #[test]
     fn an_inferred_width_cdz0302_names_the_range_but_offers_no_value_rewriting_fix() {
         // ADVICE-VALIDITY: an out-of-range literal whose width came from a SOLVED/INFERRED `Ty` (a nested
         // compound payload, OR — since #1766 — a sibling list element's annotation) must NOT carry a retype
