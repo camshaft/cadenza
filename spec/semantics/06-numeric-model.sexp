@@ -1725,6 +1725,18 @@
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 1 (: 2.0 Float32)) 2 3.0)) (export main)))
   (call   main) (output (: #map((= 1 2.0) (= 2 3.0)) (Map Int64 Float32))))
 
+(case "a bare Map.insert FLOAT KEY adopts the sibling Float32 width + keys/looks-up through the wrapper"
+  (doc    "The KEY-column twin of the float-value adopt: `(Map.insert (Map.insert Map.empty (: 1.0 Float32) 5)
+           2.0 6)` — the bare KEY `2.0` adopts the sibling key's annotated `Float32` (seq-40 key-adopt), so the
+           map is `(Map Float32 Int64)` and both keys key/hash through the __CdzF32 total-order wrapper (float
+           keys are a realized feature). A `Map.lookup` at `2.0` hits its entry -> 6. Pins that the KEY column
+           unifies cross-backend and float keys USE correctly (insert + lookup) — the bare `2.0` does not strand
+           at the Float64 default (which mismatched the settled Float32 key column, the E0308/E0605 v-rb #6211
+           fixed for the key-use path).")
+  (input  (do (def (main (: probe Float32)) (match (Map.lookup (Map.insert (Map.insert Map.empty (: 1.0 Float32) 5) 2.0 6) probe) ((Some v) v) ((None u) -1))) (export main)))
+  (call   main (: 2.0 Float32)) (output (: 6 Int64))
+  (call   main (: 9.0 Float32)) (output (: -1 Int64)))
+
 (case "an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)"
   (doc    "The passing control for the builder-chain overflow rejects above: an in-range `5` (fits Int8)
            inserted into a `(Map Int64 Int8)` compiles + runs — the width fit-check must REJECT only genuine
