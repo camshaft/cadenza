@@ -460,12 +460,14 @@ fn cmd_module_fuzz(args: &[String]) -> ExitCode {
     let mut count: u64 = 2000;
     let mut seed: Option<u64> = None;
     let mut findings: Option<PathBuf> = None;
+    let mut edge = false; // --edge: fuzz the malformed import/export RESOLUTION-error paths instead
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
             "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
             "--findings" => findings = it.next().map(PathBuf::from),
+            "--edge" => edge = true,
             other => {
                 eprintln!("cdz-smith module-fuzz: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -485,8 +487,9 @@ fn cmd_module_fuzz(args: &[String]) -> ExitCode {
     };
     let commit = driver::detect_commit();
     let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
+    let mode = if edge { "module-edge" } else { "module-fuzz" };
     eprintln!(
-        "[cdz-smith] module-fuzz @{commit} | {count} programs | seed {run_seed} | findings → {}",
+        "[cdz-smith] {mode} @{commit} | {count} programs | seed {run_seed} | findings → {}",
         findings_dir.display()
     );
 
@@ -511,7 +514,11 @@ fn cmd_module_fuzz(args: &[String]) -> ExitCode {
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             bytes.push(((z ^ (z >> 31)) >> 24) as u8);
         }
-        let (modules, entry) = cdz_smith::hostgen::generate_module_fuzz(&bytes);
+        let (modules, entry) = if edge {
+            cdz_smith::hostgen::generate_module_edge(&bytes)
+        } else {
+            cdz_smith::hostgen::generate_module_fuzz(&bytes)
+        };
         let (category, crash, detail) = match compile_modules_catching(&modules, &entry) {
             Verdict::Compiled { .. } => {
                 compiled += 1;
@@ -535,7 +542,7 @@ fn cmd_module_fuzz(args: &[String]) -> ExitCode {
             Ok(Filed::New(path)) => {
                 new_buckets += 1;
                 eprintln!(
-                    "[cdz-smith] NEW module-fuzz {:?} bucket → {}",
+                    "[cdz-smith] NEW {mode} {:?} bucket → {}",
                     finding.category,
                     path.display()
                 );
@@ -545,7 +552,7 @@ fn cmd_module_fuzz(args: &[String]) -> ExitCode {
         }
     }
     eprintln!(
-        "[cdz-smith] module-fuzz done: {compiled} compiled, {declined} declined, {new_buckets} new buckets, {dup} dup hits"
+        "[cdz-smith] {mode} done: {compiled} compiled, {declined} declined, {new_buckets} new buckets, {dup} dup hits"
     );
     if new_buckets > 0 {
         ExitCode::from(1)
