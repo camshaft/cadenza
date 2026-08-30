@@ -346,6 +346,46 @@ theorem denoteBinary_arith (op : String) (w : IntTy) (x y : Int)
     denoteBinary op w (.value (.int x)) (.value (.int y)) = evalArithOp op x y w := by
   simp only [denoteBinary, hf, hop, if_true]
 
+/-! ### Arithmetic-identity value characterizations: the constant-RESULT normalizer folds are denote-sound.
+The operand-DROPPING algebraic identities (`x*0→0`, `0*x→0`, `x-x→0`, `x%1→0` — each `!mayTrap`-guarded)
+rewrite to `.const 0`. Their denote-soundness is exactly: whenever the arithmetic op yields a value at
+ALL, that value is `.int 0`. Stated in VALUE-CONDITIONED form (`… = .value v → v = .int 0`), so they are
+unconditionally true — vacuous under an unresolved width (`evalArithOp` = `.unsupported`) or an
+out-of-range/overflow trap (`.trap`), which sidesteps the width/typing subtlety. These are the concrete
+arithmetic core the eventual capstone `.app`-identity subcase consumes (via `denoteBinary_arith`). -/
+theorem evalArithOp_mul_zero_r (x : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "*" x 0 ty = .value v) : v = .int 0 := by
+  simp only [evalArithOp, Int.mul_zero] at h
+  split at h <;> simp_all
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+
+theorem evalArithOp_mul_zero_l (y : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "*" 0 y ty = .value v) : v = .int 0 := by
+  simp only [evalArithOp, Int.zero_mul] at h
+  split at h <;> simp_all
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+
+theorem evalArithOp_sub_self (x : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "-" x x ty = .value v) : v = .int 0 := by
+  simp only [evalArithOp, Int.sub_self] at h
+  split at h <;> simp_all
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+
+theorem evalArithOp_mod_one (x : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "%" x 1 ty = .value v) : v = .int 0 := by
+  simp only [evalArithOp, Int.tmod_one] at h
+  split at h <;> simp_all
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+  all_goals (try (split at h <;> simp_all))
+
 /-! ### Capstone base cases: `denote (normalize e) = denote e` on the leaves.
 The normalizer preserves meaning on `var` (it is the identity) and `const` (float canonicalization is
 now aligned in `denote`, so the equality is structural). These are the base cases of the full
