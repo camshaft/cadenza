@@ -1373,10 +1373,13 @@ pub(super) fn reify_effect_to_tuple(
     if let Some(t) = target_arg
         && !matches!(crate::infer::type_of(db, t), crate::ty::Ty::Bytes)
     {
-        return Core::Poison(Reject::decline(
-            "reifying a world-effect perform whose @resource target is not Bytes needs an in-fold \
-             value-encode primitive (schema-hash phase-1a: only a Bytes resource designation — a peer \
-             or session id — rides the target wire field; a structured resource rides Value.encode)",
+        // ROADMAP (v-effects world-effect reification): a non-Bytes @resource target is schema-hash
+        // phase-1a — a structured resource target will ride an in-fold value-encode in a later increment.
+        return Core::Poison(Reject::unsupported(
+            "reifying a world-effect perform whose @resource target is not Bytes is unsupported: only a \
+             Bytes resource designation (a peer or session id) rides the target wire field; a structured \
+             resource target requires an in-fold value-encode the reifier does not apply to the @resource \
+             field",
         ));
     }
     // PAYLOAD (capability-blind): one Bytes remaining arg → Some(bytes verbatim); zero → None; a SINGLE
@@ -1412,10 +1415,12 @@ pub(super) fn reify_effect_to_tuple(
             db.push_list(vec![some_h, app]) // (Some ((. Value encode) <arg>))
         }
         _ => {
-            return Core::Poison(Reject::decline(
-                "reifying a world-effect perform with a MULTI-argument payload (after the @resource arg is \
-                 skipped) needs bundling the args into a tuple before the in-fold value-encode (phase-1b): \
-                 a single Bytes or single structured payload reifies today; multi-arg rides a later slice",
+            // ROADMAP (v-effects world-effect reification): multi-arg payload is schema-hash phase-1b —
+            // bundling multiple args into a tuple before the in-fold value-encode is a later increment.
+            return Core::Poison(Reject::unsupported(
+                "reifying a world-effect perform with a multi-argument payload is unsupported: a single \
+                 Bytes or single structured payload reifies; multiple args require bundling into a tuple \
+                 before the in-fold value-encode",
             ));
         }
     };
