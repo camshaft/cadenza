@@ -616,12 +616,11 @@ legacy spelling breaks), coordinated by the concierge.
    100% native, `check:examples` 410/0, notebook 21/21. Unblocked by the native match-arm fix set
    (#5429/#5436/#5459) + the op-handler-arm codemod exemption (#5475). v-guide-infra re-verifies post-cut
    (ping them).
-2. **Corpus (output)→#ctor render re-pin — BLOCKED/in-flight** (v-corpus-harness): rides v-rb's
-   `render_val_typed` (Option 3: rcdzc returns the guest result-Ty as a typed in-process return, gate threads
-   it to cdz-run; no wasm section / guest-bytes / ca-cache change). The render-HALF has already landed
-   (v-runtime `f9f8717c`) AHEAD of the expected-output re-pin, so corpus files with compound-value outputs are
-   TRANSIENTLY RED (e.g. 03-equality case 0203: expected `(tuple …)`, got `#tuple(…)`). v-corpus-harness
-   executes the bulk re-pin atomically when the ref lands, then PINGS v-ast-compound to open the window.
+2. **Corpus (output)→#ctor render re-pin — MET (2026-08-30, bytes-second co-land #5951).** Rode v-rb's
+   render #ctor + cdz-result-type section; #5951 re-pinned the compound-value `(output …)` expectations to
+   native `#ctor` (incl. ch28/ch21). Combined with the corpus-INPUT side now fully native (drift-check = 0
+   after #5955, §13.6), the ENTIRE corpus is native end-to-end and ready ahead of the window. The remaining
+   window gate is v-syntax's reader-flip driver (step-2 below); the corpus precondition no longer blocks.
 
 ### 13.2 Atomic-land steps by owner (all in ONE flag-day `--ref`)
 - **v-syntax (step-2, reader):** flip `pattern_atom` → native ctor-leaf; stop emitting/recognizing the
@@ -725,21 +724,28 @@ live dual-read (native ctor-leaf `structurally_eq` its name alias) and lands cle
   cached `nix build .#checks.<sys>.corpus-NN` check): **#5882** (09-functions tuple), **#5889** (14b/14c
   effects handle-state/resume tuples). Each was a new classic-form input a peer added post the corpus-wide
   rehearsal; caught by the per-tick drift-check (`cdz-nativize --skip-outputs` idempotence over all files).
-- **The ONLY output-render-coupled file is `28-wit-abi-boundary.sexp`:** it mixes WIT type descriptors
-  (independently nativizable — `wit_world.rs` reads the type spelling via `head_name().or_else(head_ctor)`, so
-  it accepts native `#record`/`#list` heads) with VALUE-ROUND-TRIP cases (no `wit-world` clause) whose input
-  literal is rendered back as the output. Nativizing 28's inputs BEFORE the output re-pin regresses one such
-  case (expected classic `(record …)`, got native `#record(…)`; class-(a) render-drift, gate-confirmed
-  2026-08-30). So **28-wit is the one file deferred to the bytes-second output re-pin co-land** (v-rb + v-corpus-
-  harness), then nativized as a follow-up. Not a permanent exemption.
-- **Drift-guard (durable):** v-corpus-harness accepted (2026-08-30) a `cdz corpus` hygiene LINT asserting
-  `nativize_compound_source_skip_outputs(file) == file` per `spec/semantics/*.sexp` (idempotence ⇒ inputs
-  already native); lands bundled with their live-objects-edit guard right after their bytes-second co-land,
-  with 28-wit on a temporary exemption list (dropped when its inputs are nativized). This replaces the by-hand
-  per-tick drift-check.
-- **Net effect on the atomic window:** the corpus-INPUT surface is nearly fully pre-migrated by window time
-  (only 28-wit remains, folded into the bytes-second co-land), so §13.2's corpus-input bullet shrinks to "confirm
-  drift-check clean + 28-wit folded", NOT a bulk in-window pass.
+- **`28-wit-abi-boundary.sexp` — RESOLVED (bytes-second #5951 landed + cdz-nativize wit exemption #5955).**
+  Earlier (tick-120/122) I modelled 28-wit as an output-render-COUPLED file to nativize as a follow-up
+  after bytes-second. That was wrong on both halves, corrected 2026-08-30 after #5951 (the bytes-second
+  co-land) landed:
+  - Its VALUE literals were ALREADY native — the inputs were native and #5951 re-pinned its `(output …)` to
+    `#ctor`. So there was NO ch28 input-nativize follow-up to do.
+  - Its only remaining classic `record`/`list` heads are **WIT-WORLD TYPE DESCRIPTORS** (`(record (= x
+    (s64)))`, `(list (u8))` inside `(wit-world …)`) — WIT type SYNTAX, not compound value literals, hence OUT
+    of M3's value-literal scope. And they are NOT safely nativizable: though the WIT type PARSER accepts
+    native heads (`wit_world.rs` `head_ctor`), the imposed-WIT-world REDUCER path DECLINES a native-headed
+    type descriptor (gate-confirmed: corpus-28 case "…via an imposed WIT world" went pass→Todo).
+  - **Fix (#5955):** `cdz-nativize` now EXEMPTS `(wit-world …)`/`(world …)` subtrees from head-nativize
+    (`in_wit` flag; mirrors the handler-arm-op exemption). So WIT type descriptors are a **permanent**
+    non-target (correct M3 semantics), not a temporary deferral.
+- **Drift-guard (durable) — now EXEMPTION-FREE:** the full-corpus drift-check
+  `nativize_compound_source_skip_outputs(file) == file` reports **ZERO drift across all 34 files** (28-wit
+  included) after #5955. v-corpus-harness accepted (2026-08-30) a `cdz corpus` hygiene LINT of exactly this
+  idempotence, landing bundled with their live-objects-edit guard; it needs **NO 28-wit exemption** (empty
+  exemption list — cleaner + guards future wit-boundary files too). This replaces the by-hand per-tick check.
+- **Net effect on the atomic window:** the corpus-INPUT surface is FULLY pre-migrated (drift-check = 0), and
+  the corpus-OUTPUT re-pin (#13.1.2) landed with bytes-second #5951. So the corpus is entirely ready ahead of
+  the window — §13.2's corpus-input step reduces to "confirm drift-check still 0", NOT any in-window pass.
 - 🪤 **Codemod hardening (#5904, 2026-08-30):** `cdz-nativize` field-pairified a construction SPREAD `(.. v)`
   inside a record/map (2-element list → wrongly `(= .. v)`), corrupting it — fixed to skip `..`-headed entries
   (regression-tested). Relevant now that #5826/#5890 made construction-spreads live inside record/set/all four
