@@ -9,7 +9,7 @@
 //! Doc shape (round-trips losslessly through the main sexpr reader — de-risked 2026-08-30):
 //!   (playground
 //!     (example (id "..") (name "..") (theme "..") (surface "sexpr")
-//!       (source (do … (export main))) [(expected "..")] [(expect-error "true")])
+//!       (source (do … (export main))) [(expected <value>)] [(expect-error "true")])
 //!     …)
 //!
 //! A playground buffer is a WHOLE program compiled verbatim, so its sexpr source keeps its `(do …)` wrapper
@@ -68,6 +68,23 @@ fn canonical_source(a: &Arenas, example: StructId) -> Option<String> {
     Some(parts.join("\n\n"))
 }
 
+/// The expected-result of an `(expected <value>)` form, rendered as text — a flat value form like
+/// `(: #tuple(1 2) (Tuple Int64 Int64))` or a bare atom (`5`, `true`). Stored as an SEXPR value, NOT a code
+/// string (operator seq-279 "no code in strings"); rendered via `print_from` (byte-stable round-trip, so the
+/// emitted examples.ts `expected: "…"` string is unchanged from the hand-authored one). `None` when absent.
+fn expected_value(a: &Arenas, example: StructId) -> Option<String> {
+    let holder = super::named_node(a, example, "expected")?;
+    let kids = super::children(a, holder);
+    if kids.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = kids
+        .iter()
+        .map(|&k| cadenza_syntax_sexpr::print_from(a, k))
+        .collect();
+    Some(parts.join(" "))
+}
+
 /// Read + validate every `(example …)` in a `(playground …)` doc, in source order. Returns an error string
 /// (not a panic) on a malformed/invalid example so the codegen can fail loudly with a pointed message.
 pub fn read_playground(a: &Arenas) -> Result<Vec<PlaygroundExample>, String> {
@@ -101,7 +118,7 @@ pub fn read_playground(a: &Arenas) -> Result<Vec<PlaygroundExample>, String> {
         }
         let source =
             canonical_source(a, ex).ok_or_else(|| format!("example {id}: missing (source …)"))?;
-        let expected = super::named_attr(a, ex, "expected").map(str::to_string);
+        let expected = expected_value(a, ex);
         let expect_error = super::named_attr(a, ex, "expect-error") == Some("true");
         // A pinned `expected` value must be sexpr-authored (compared on the sexpr pass) — mirrors the
         // examples.test.ts lint. Playground examples are sexpr, so this is a codegen guard against drift.
@@ -314,7 +331,9 @@ pub fn bootstrap_from_examples_ts(ts: &str) -> Result<String, String> {
             e.source.trim(),
         );
         if let Some(exp) = &e.expected {
-            form.push_str(&format!("\n    (expected {})", super::json_string(exp)));
+            // expected is an SEXPR VALUE, not a code-string (operator seq-279) — the value text is already
+            // sexpr (a bare atom or an ascribed `(: …)` form), so splice it raw, not json_string-quoted.
+            form.push_str(&format!("\n    (expected {exp})"));
         }
         if e.expect_error {
             form.push_str("\n    (expect-error \"true\")");
@@ -423,7 +442,7 @@ mod tests {
     fn reads_and_validates_examples() {
         let doc = "(playground \
             (example (id \"hello\") (name \"Hello\") (theme \"basics\") (surface \"sexpr\") \
-              (source (do (def (main) (+ 2 3)) (export main))) (expected \"5\")) \
+              (source (do (def (main) (+ 2 3)) (export main))) (expected 5)) \
             (example (id \"neg\") (name \"See the squiggle\") (theme \"numbers\") (surface \"sexpr\") \
               (source (do (def (main) (+ 1 \"x\")) (export main))) (expect-error \"true\")))";
         let exs = read(doc).unwrap();
@@ -461,7 +480,7 @@ mod tests {
         assert!(read(bad_surface).unwrap_err().contains("unknown surface"));
         // an (expected …) pin on a non-sexpr example is rejected
         let ml_pin = "(playground (example (id \"x\") (name \"X\") (theme \"basics\") (surface \"ml\") \
-              (source (do (def (main) 1) (export main))) (expected \"1\")))";
+              (source (do (def (main) 1) (export main))) (expected 1)))";
         assert!(
             read(ml_pin)
                 .unwrap_err()
@@ -473,7 +492,7 @@ mod tests {
     fn emits_examples_array_in_authored_format() {
         let doc = "(playground \
             (example (id \"hello\") (name \"Hello\") (theme \"basics\") (surface \"sexpr\") \
-              (source (do (def (main) (+ 2 3)) (export main))) (expected \"5\")) \
+              (source (do (def (main) (+ 2 3)) (export main))) (expected 5)) \
             (example (id \"neg\") (name \"Bad\") (theme \"numbers\") (surface \"sexpr\") \
               (source (do (def (main) (+ 1 \"x\")) (export main))) (expect-error \"true\")))";
         let exs = read(doc).unwrap();
