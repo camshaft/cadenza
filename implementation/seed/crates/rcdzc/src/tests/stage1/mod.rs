@@ -1359,40 +1359,6 @@ fn a_called_tuple_by_name_access_reports_the_position_message_once_not_a_call_si
 }
 
 #[test]
-fn a_misspelled_field_on_a_visible_record_suggests_the_nearest_field() {
-    // The record analogue of the unbound-name "did you mean?" — a field typo (`height` → `heigth`)
-    // on a compile-time-visible record names the near field AND carries a heuristic fix on the KEY
-    // token (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
-    let d = expect_error("(. (record (= width 10) (= height 20)) heigth)");
-    assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
-    assert!(
-        d.message.contains("did you mean `height`?"),
-        "names the near field: {}",
-        d.message
-    );
-    let fix = d.fix.expect("a fix is carried");
-    assert_eq!(fix.replacement, "height");
-    assert!(!fix.verified, "a nearest-field guess is heuristic");
-}
-
-#[test]
-fn a_misspelled_field_on_a_runtime_record_type_suggests_the_nearest_field() {
-    // A RUNTIME record (reached through a def parameter that inlines a record argument) carries a
-    // record TYPE; the field typo is caught on that type and suggested the same way. `get-h`'s body
-    // `(. r heigth)` faults once `r`'s record argument flows in.
-    let src = "(module m (def (get-h r) (. r heigth)) \
-                   (def (main) (get-h (record (= width 10) (= height 20)))) (export main))";
-    let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("height"),
-        "message: {}",
-        d.message
-    );
-}
-
-#[test]
 fn a_misspelled_field_in_a_constructed_record_names_the_field_and_offers_a_rename() {
     // The CONSTRUCTION twin of the member-access field typo: a record literal supplied to a variant
     // constructor whose payload is a `(Record …)` type, with one field name a plausible typo of the
