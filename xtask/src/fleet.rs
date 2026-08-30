@@ -6367,6 +6367,16 @@ const CHECK_LEASE_AGING_SECS: u64 = 540;
 /// (540s) still gets first chance; only the can't-fit-even-aged pathological case hits this cap.
 const CHECK_LEASE_WAIT_MAX: u64 = 600;
 
+/// Max CONCURRENT priority queue-jumps a `priority-grant` marker can hand out (seq-43 priority-lane,
+/// v-nix-aligned 2026-08-30). A critical-path land that is check-lease STARVED (a weight-2 vertical can
+/// never win a slot under sustained contention — see #6181) can be GRANTED a queue-jump by listing its
+/// branch in `<check-leases>/priority-grant`. Bounded to this many live priority leases so an over-broad
+/// marker can't oversubscribe (pr-sync's own priority is never capped — it acquires unconditionally; only
+/// the GRANT defers when priority is already this full). GRANTING is rebuild-free (edit the marker); the
+/// granted agent honors its OWN grant on its next tick's rebuild (~1 tick lag). FORWARD-COMPATIBLE: a stale
+/// xtask that predates this check just ignores the marker → normal bounded-wait (graceful, no flag-day).
+const GATE_PRIORITY_GRANT_MAX: usize = 2;
+
 /// An acquired check-lease; releasing (removing the lease file) happens on drop, so a normal `check`
 /// exit — or an early `return`/panic — frees the slot without an explicit release call.
 pub struct CheckLease {
@@ -6569,6 +6579,56 @@ fn check_lease_go(
     // the plain `vert_weight < cap`; a weight-2 gate needs two slots' worth of room.
     let cap = if aged { max + GATE_LEASE_WEIGHT } else { max };
     vert_weight + my_weight <= cap
+}
+
+/// The PURE priority-grant decision (seq-43 priority-lane, testable without fs/git): is a build on `branch`
+/// granted a queue-jump? True iff `branch` is listed in the `priority-grant` marker (a newline list; blank
+/// lines + `#`-comments ignored) AND fewer than `cap` priority leases are already live (so an over-broad
+/// marker can't oversubscribe — see [`GATE_PRIORITY_GRANT_MAX`]).
+fn gate_priority_grant_decision(marker: &str, branch: &str, prio_live: usize, cap: usize) -> bool {
+    if prio_live >= cap {
+        return false;
+    }
+    let branch = branch.trim();
+    !branch.is_empty()
+        && marker
+            .lines()
+            .map(str::trim)
+            .any(|l| !l.is_empty() && !l.starts_with('#') && l == branch)
+}
+
+/// Is THIS build (in `repo`) granted a priority queue-jump via the `<check-leases>/priority-grant` marker?
+/// Reads the marker + this worktree's branch + the live priority count, then [`gate_priority_grant_decision`].
+/// FAIL-SAFE: any missing/unreadable marker, no branch, or unresolvable lease dir → `false` = normal
+/// bounded-wait (a build is NEVER wrongly granted priority). Called by `run_gate_local` for a critical-path
+/// land that would otherwise starve; concierge/operator GRANTS by adding the branch to the marker (rebuild-free).
+fn gate_priority_granted(repo: &Path) -> bool {
+    let Some(dir) = check_lease_dir(repo) else {
+        return false;
+    };
+    let Ok(marker) = std::fs::read_to_string(dir.join("priority-grant")) else {
+        return false; // no marker → no grants (the common case)
+    };
+    let branch = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if branch.is_empty() {
+        return false;
+    }
+    let prio_live = scan_check_leases(&dir, now_unix()).0;
+    let granted =
+        gate_priority_grant_decision(&marker, &branch, prio_live, GATE_PRIORITY_GRANT_MAX);
+    if granted {
+        eprintln!(
+            "check-lease: PRIORITY-GRANT — branch '{branch}' is in the priority-grant marker ({prio_live}/{GATE_PRIORITY_GRANT_MAX} priority live) → this gate-local jumps the queue for its verdict."
+        );
+    }
+    granted
 }
 
 /// Acquire a check-lease for `cargo xtask check`, blocking (with a poll loop) until it's this process's
@@ -10112,7 +10172,14 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // cohort granted at moderate load (cap 4) self-induces a load spike that the acquire-time cap can't claw
     // back (the load-125 deadlock, 2026-08-30). At weight 2 the adaptive cap yields ≤2 concurrent local-gates
     // at load ~24 and ≤1 when saturated — the concurrency scales down with load. See `GATE_LEASE_WEIGHT`.
-    let _lease = acquire_check_lease_weighted(&fleet.repo, false, GATE_LEASE_WEIGHT);
+    // PRIORITY-GRANT (seq-43 priority-lane): a critical-path land that is check-lease STARVED (a weight-2
+    // vertical can never win a slot under sustained contention) can be GRANTED a queue-jump by listing its
+    // branch in the `<check-leases>/priority-grant` marker → acquire as priority (jumps, like pr-sync),
+    // bounded to GATE_PRIORITY_GRANT_MAX so an over-broad marker can't oversubscribe. Default (no marker /
+    // branch not listed) → false → normal weighted vertical acquire. Forward-compatible: a stale xtask skips
+    // this entirely → normal behavior (v-nix, no flag-day).
+    let priority = gate_priority_granted(&fleet.repo);
+    let _lease = acquire_check_lease_weighted(&fleet.repo, priority, GATE_LEASE_WEIGHT);
     // If the lease acquire GAVE UP (waited past CHECK_LEASE_WAIT_MAX under sustained contention), do NOT
     // build — return NoChecks so this tick ENDS (the agent's Bash call returns, the /loop re-fires, the next
     // tick's `sync` REBUILDS xtask + retries the gate). This is the anti-freeze fix: without it, the unbounded
@@ -21270,6 +21337,39 @@ branch refs/heads/fleet/trunk-tools
             0,
             "an absent dir sweeps nothing"
         );
+    }
+
+    #[test]
+    fn gate_priority_grant_decision_needs_listed_branch_under_cap() {
+        let m = "# grant these critical-path lands a queue-jump\nfleet/v-core-opt\n\nnix/seq248\n";
+        // Listed branch, priority not full → GRANTED.
+        assert!(gate_priority_grant_decision(m, "fleet/v-core-opt", 0, 2));
+        assert!(
+            gate_priority_grant_decision(m, "nix/seq248", 1, 2),
+            "1 < cap 2 → still grant"
+        );
+        // Listed but priority already at the cap → NOT granted (can't oversubscribe).
+        assert!(
+            !gate_priority_grant_decision(m, "fleet/v-core-opt", 2, 2),
+            "prio_live == cap → defer (bounds concurrent jumps)"
+        );
+        // Not listed → never granted, even with free priority slots.
+        assert!(!gate_priority_grant_decision(
+            m,
+            "fleet/v-someone-else",
+            0,
+            2
+        ));
+        // Comment lines + blanks are not matchable branches; empty branch never grants.
+        assert!(!gate_priority_grant_decision(
+            m,
+            "# grant these critical-path lands a queue-jump",
+            0,
+            2
+        ));
+        assert!(!gate_priority_grant_decision(m, "", 0, 2));
+        // Empty marker → nothing granted.
+        assert!(!gate_priority_grant_decision("", "fleet/v-core-opt", 0, 2));
     }
 
     #[test]
