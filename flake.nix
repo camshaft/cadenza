@@ -5167,6 +5167,33 @@
             # /crates + the whole ./xtask dir, which holds the allowlist .txt). Fast native source-scan
             # (seconds, ~no gate-time add). v-ft pre-fixed a vendored-file false-positive so it won't red on
             # fold-in.
+            # cdz-fmt-check (v-code-cleanliness seq-282 #6321; v-nix nix-gate 2026-08-30): the AUTHORITATIVE
+            # fleet-wide merge gate for `cdz fmt --check` on the 6 canonical domain src dirs (the local
+            # companion is `cargo xtask check`'s cdz-fmt-check step). `cdz fmt` is NOT feature-gated (main.rs
+            # `Cmd::Fmt => run_fmt` delegates to cadenza-syntax) — pure front-end, NO store/runtime — so it
+            # runs on the CACHED seedCompiler bin over a fileset of ONLY the 6 dirs (cheap + build-hold-safe,
+            # no cargo rebuild). SCOPE = these 6 src dirs ONLY (raw recursion over manifest-less dirs);
+            # widening waits on cdz-platform (v-platform) + the .sexp reader-fix landing, in lockstep with
+            # #6321's local scope. Exits 0 today (dirs canonical via v-syntax fmt-all #6317/#6319).
+            cdzFmtCheckSrc = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./implementation/compiler-ml/src
+                ./implementation/cad/src
+                ./implementation/music/src
+                ./implementation/des/src
+                ./implementation/iterators/src
+                ./implementation/choreography/src
+              ];
+            };
+            cdzFmtCheck = pkgs.runCommand "cdz-fmt-check" { } ''
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cd ${cdzFmtCheckSrc}
+              ${seedCompiler}/bin/cdz fmt --check \
+                implementation/compiler-ml/src implementation/cad/src implementation/music/src \
+                implementation/des/src implementation/iterators/src implementation/choreography/src
+              echo "ok: cdz-fmt-check (6 canonical domain src dirs — cdz fmt --check clean)" > "$out"
+            '';
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -5231,6 +5258,10 @@
                   # binaryen-117 pin (Path A).)
                   guideExamplesShredded
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
+                  # cdzFmtCheck FOLDED IN (v-code-cleanliness seq-282, v-nix 2026-08-30): the AUTHORITATIVE
+                  # fleet-wide `cdz fmt --check` gate on the 6 canonical domain src dirs. Cheap front-end
+                  # (cached seedCompiler bin, no store/runtime), green-confirmed standalone before the fold.
+                  cdzFmtCheck
                   mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
                   wasmtimeSingleHolderAssert compilerPureLibraryAssert
                   # cdz-wasm NATIVE tests (host, OOB-free) — GATES the browser compiler's sidecar consumers
@@ -5426,6 +5457,9 @@
             # mandate-lint: cargo xtask lint-mandates (no-integration-tests + future mechanizable mandates).
             # Folded into localGate's FAIL-SET (above) so a violation blocks the merge path (operator).
             mandate-lint = mandateLintCheck;
+            # cdz-fmt-check: cdz fmt --check on the 6 canonical domain src dirs (v-code-cleanliness seq-282).
+            # Folded into localGate's FAIL-SET (below) — the AUTHORITATIVE fleet-wide fmt gate.
+            cdz-fmt-check = cdzFmtCheck;
             # LOCAL GATE aggregate — the GHA-outage fallback (see the `localGate` binding above). pr-sync
             # invokes `nix build .#checks.aarch64-linux.local-gate` for a single green/red over the 9
             # merge-required contexts (ruleset-10 minus test-macos) without any GH runner.
