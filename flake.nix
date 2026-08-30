@@ -3545,6 +3545,24 @@
           echo "ok: corpus-vanished — every committed baseline case still has a corpus case (3 baselines)" > "$out"
         '';
 
+        # corpus-NATIVIZE (v-fleet-tooling 2026-08-30, wiring v-corpus-harness's lint per concierge): the M3
+        # INPUT-FORM guard — every corpus INPUT compound-value literal must be native #ctor form, not a classic
+        # name-head like `(list …)`/`(map …)`. A non-native input reds a full `gate --check` fleet-wide only
+        # after the ~15-30min gate; this catches it in seconds AND (folded into localGate below) HOLDs a
+        # self-merge on a violation — the teeth a GitHub required-status can't give, since `gh pr merge
+        # --admin` bypasses required checks (#6025 self-merged classic-form past the ADVISORY checks.yml job).
+        # The one legit exemption (corpus-05 #6047, the #6042 name-head parity guard) is honored via the
+        # single-source `nativize_compound_impl` marker cdz-corpus's `nativize-check` shares — green-confirmed
+        # 34/34 by v-corpus-harness before this fold. Mirrors corpusVanishedCheck (own cdzCorpus, same file set).
+        corpusNativizeCheck = pkgs.runCommand "corpus-nativize-check"
+          { nativeBuildInputs = [ cdzCorpus ]; } ''
+          set -euo pipefail
+          cdz-corpus nativize-check ${
+            pkgs.lib.concatMapStringsSep " " (f: "${./spec/semantics + "/${f}"}") corpusFileNames
+          }
+          echo "ok: corpus-nativize — all corpus files in native #ctor compound-value input form" > "$out"
+        '';
+
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
         # runtime-ABI STALENESS gate: xtask regenerates runtime_abi.rs (+ wasm_abi.rs) — reading the
         # runtime WIT + BUILDING the cdz-runtime (release + debug) and cdz-nfc components via
@@ -5029,7 +5047,14 @@
                 inherit clippyShardA clippyShardB codegenCheck gateCheck gateCheckRust guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
                   mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
-                  wasmtimeSingleHolderAssert;
+                  wasmtimeSingleHolderAssert
+                  # corpus-hygiene lints FOLDED IN (v-fleet-tooling 2026-08-30, v-corpus-harness green +
+                  # concierge exempt-first-then-fold): corpusNativizeCheck (M3 input #ctor form; #6025 escaped
+                  # the ADVISORY checks.yml job because --admin bypasses required GHA) + corpusVanishedCheck
+                  # (baseline title-drift; existed as checks.corpus-vanished but was NOT gated). Both cheap
+                  # (cdzCorpus + a sexp scan) + green-confirmed on the corpus before the fold, so no gate-time
+                  # regression + no false red. This is the teeth a required-status can't give under self-merge.
+                  corpusNativizeCheck corpusVanishedCheck;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -5088,6 +5113,7 @@
             # The GLOBAL half of gap #7: a baseline case with no corpus case (silently dropped, its verdict
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
+            corpus-nativize = corpusNativizeCheck;
             # The wasm-opt OPTIMALITY-GAP sweep (advisory, never a gate constituent): the whole-corpus
             # `wasm-opt-gaps.sexp` aggregate; the per-file `wasm-opt-gaps-<file>` aggregates are spread in below
             # so a slice (e.g. 01-literals + 10-bytes) builds in isolation. See DESIGN-wasm-opt-gap-analysis-rcdzc.md.
