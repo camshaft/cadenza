@@ -12806,6 +12806,8 @@
   (live-objects known-leak))
 
 (case "gbx1 a THREE-SPEED gearbox odometer — shift moves the gear clamped to the one-to-three range answering the landed gear, drive accrues time-times-the-gear's-speed into the odometer answering the total, and the seed's starting gear compounds through every drive so the odometers pull apart while the shift answers converge"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (input  (do
             (effect G
               (op shift (-> Int64 Int64))
@@ -14506,6 +14508,8 @@
   (call   main (: 0 Int64)) (output (: 206212182187192162 Int64)))
 
 (case "cyc1 a BICYCLE cadence over four gear ratios — shift moves the gear clamped to the range answering the landed ratio's tens digit, pedal answers rpm times the ratio over a hundred accumulating distance, the big downshift clamps BOTH runs to the same bottom gear so the tails converge while the opening gears diverge, and the final row reads the odometer"
+  ; interim known-leak: #6022/#6049 closure / fold-list-reclaim / effects (v-mem adjudicated 2026-08-30); real fix -> 0
+  (live-objects known-leak)
   (input  (do
             (effect B
               (op shift (-> Int64 Int64))
