@@ -6517,12 +6517,13 @@ fn scan_check_leases_with(
 
 /// The acquire DECISION (pure, so it's unit-testable without the fs/poll loop): may a caller take its
 /// slot(s) NOW given its class and the live WEIGHT? PRIORITY (pr-sync's merge gate) always may — it never
-/// waits behind vertical checks. A VERTICAL may only when NO priority lease is held (yield to the merge
-/// queue) AND its own weight FITS under the cap alongside the live vertical weight.
+/// waits behind vertical checks. A VERTICAL yields to any held priority lease; then, if it has AGED (waited
+/// past the threshold) it acquires UNCONDITIONALLY (the anti-starvation guarantee — see the `aged` branch);
+/// otherwise its own weight must FIT under the cap alongside the live vertical weight.
 ///
 /// `vert_weight` = the summed WEIGHT of live vertical leases (a heavy `local-gate` lease counts
 /// [`GATE_LEASE_WEIGHT`], a normal `cargo xtask check` counts 1). `my_weight` = this acquirer's weight.
-/// The predicate is `vert_weight + my_weight <= cap` — which for `my_weight == 1` is exactly the old
+/// The NON-aged predicate is `vert_weight + my_weight <= max` — which for `my_weight == 1` is exactly the old
 /// `vert_weight < cap`, so the light path is unchanged; a weight-2 gate needs two slots' worth of room.
 fn check_lease_go(
     priority: bool,
@@ -6535,14 +6536,26 @@ fn check_lease_go(
     if priority {
         return true;
     }
-    // A vertical yields to any held priority lease. Under the cap it goes; and an AGED vertical — one that
-    // has been WAITING past the starvation threshold (v-core-opt starved 4x under cap-2, 2026-08-29) — may
-    // take ONE over-cap slot (`max + 1`), so a slow-build cap can't starve it INDEFINITELY behind a churn of
-    // newer waiters winning the 3s poll race. Bounded to a single extra holder: a SECOND aged waiter sees the
-    // weight already at `max + 1` and keeps waiting, and the nix-daemon CPUQuota caps total build CPU
-    // regardless, so the brief over-cap can't oversubscribe the box. Aged still yields to priority.
-    let cap = if aged { max + 1 } else { max };
-    prio_live == 0 && vert_weight + my_weight <= cap
+    // A vertical ALWAYS yields to a held priority lease (the merge queue) — even when aged, it never jumps
+    // pr-sync's gate.
+    if prio_live != 0 {
+        return false;
+    }
+    // ANTI-STARVATION GUARANTEE (OPTION 1, concierge-directed 2026-08-30): a vertical that has WAITED past
+    // CHECK_LEASE_AGING_SECS acquires UNCONDITIONALLY — ignoring the weight/cap. WHY the old bounded `max + 1`
+    // over-cap slot was NOT enough: under SUSTAINED over-cap (`vert_weight` already >= cap, from a prior aged
+    // admission OR mixed old-weight leases), a 2nd aged waiter still could not fit (`vert_weight + my_weight`
+    // exceeds `max + 1`) — so a starved build waited for its own aging but was KILLED first (exit 144, the
+    // loop/harness ~10min command-timeout) → death → retry → more load (v-deferral-declines CDZ0900, starved
+    // ~13 ticks). Letting an aged build in unconditionally GUARANTEES it eventually acquires — no
+    // starvation-death, for ANY weight. Bounded in practice by: the aging wait staggers admissions, NON-aged
+    // acquirers stay capped (below), and the nix-daemon CPUQuota caps total build CPU regardless.
+    if aged {
+        return true;
+    }
+    // NOT aged: this build's weight must fit under the cap alongside the live vertical weight (`my_weight ==
+    // 1` reduces to the plain `vert_weight < max`; a weight-2 gate needs two slots' worth of room).
+    vert_weight + my_weight <= max
 }
 
 /// Acquire a check-lease for `cargo xtask check`, blocking (with a poll loop) until it's this process's
@@ -6585,8 +6598,8 @@ pub fn acquire_check_lease_weighted(repo: &Path, priority: bool, weight: usize) 
     let max = check_lease_max();
 
     // Poll until it's our turn. A priority acquirer skips the wait entirely. A vertical that WAITS past
-    // CHECK_LEASE_AGING_SECS becomes AGED and may take one over-cap slot (fairness — see `check_lease_go`),
-    // so a slow-build cap can't starve it indefinitely. The wait is measured from THIS loop's start (no
+    // CHECK_LEASE_AGING_SECS becomes AGED and acquires UNCONDITIONALLY (anti-starvation — see `check_lease_go`),
+    // so a slow-build cap can't starve it into an exit-144 death. The wait is measured from THIS loop's start (no
     // persistent waiter state needed — the blocking loop already knows how long it has waited).
     let wait_start = now_unix();
     let mut waited_notice = false;
@@ -6599,8 +6612,8 @@ pub fn acquire_check_lease_weighted(repo: &Path, priority: bool, weight: usize) 
         if go {
             if aged && !priority {
                 println!(
-                    "check-lease: AGED in after waiting {}s — taking one over-cap slot (live weight was \
-                     {vert_weight}/{max}, this build's weight {my_weight}) so a slow-build cap can't starve it.",
+                    "check-lease: AGED in after waiting {}s — acquiring unconditionally (live weight was \
+                     {vert_weight}/{max}, this build's weight {my_weight}) so a starved build can't die waiting.",
                     now.saturating_sub(wait_start)
                 );
             }
@@ -6619,7 +6632,7 @@ pub fn acquire_check_lease_weighted(repo: &Path, priority: bool, weight: usize) 
             waited_notice = true;
         } else if !aged_notice && now.saturating_sub(wait_start) >= CHECK_LEASE_AGING_SECS / 2 {
             println!(
-                "check-lease: still waiting ({}s) — will AGE into an over-cap slot at {}s if still starved.",
+                "check-lease: still waiting ({}s) — will AGE IN (acquire unconditionally) at {}s if still starved.",
                 now.saturating_sub(wait_start),
                 CHECK_LEASE_AGING_SECS
             );
@@ -21239,14 +21252,20 @@ branch refs/heads/fleet/trunk-tools
             "a held priority lease makes vertical yield even with free slots"
         );
 
-        // AGED vertical (weight 1, starved past the threshold) takes ONE over-cap slot — bounded, still yields.
+        // AGED (OPTION 1): a build past the aging threshold acquires UNCONDITIONALLY — yield ONLY to priority.
+        // This is the anti-starvation GUARANTEE (a starved build always eventually acquires → no exit-144
+        // death); the old bounded `+1` slot let a 2nd aged waiter starve under sustained over-cap.
         assert!(
             check_lease_go(false, 0, 3, 1, 3, true),
-            "aged → may take the +1 over-cap slot (at the cap)"
+            "aged at the cap → go (unconditional)"
         );
         assert!(
-            !check_lease_go(false, 0, 4, 1, 3, true),
-            "aged is bounded at max+1 — a SECOND over-cap waiter still waits"
+            check_lease_go(false, 0, 4, 1, 3, true),
+            "aged OVER the cap → go (was bounded-wait; now unconditional — the anti-starvation fix)"
+        );
+        assert!(
+            check_lease_go(false, 0, 99, 1, 3, true),
+            "aged FAR over the cap → still go (a starved build must eventually acquire, never die waiting)"
         );
         assert!(
             !check_lease_go(false, 1, 3, 1, 3, true),
@@ -21254,7 +21273,7 @@ branch refs/heads/fleet/trunk-tools
         );
         assert!(
             check_lease_go(false, 0, 2, 1, 3, true),
-            "aged under the cap goes (aging only adds headroom, never blocks)"
+            "aged under the cap goes"
         );
 
         // WEIGHT-2 (a heavy `local-gate` lease) needs TWO slots' worth of room: `vert_weight + 2 <= cap`.
@@ -21280,14 +21299,19 @@ branch refs/heads/fleet/trunk-tools
             !check_lease_go(false, 0, 2, 2, 2, false),
             "cap 2: a second gate (2+2>2) waits — ≤1 concurrent local-gate when saturated"
         );
-        // A weight-2 gate also yields to priority, and can still AGE into the +1 over-cap headroom.
+        // A weight-2 gate yields to priority; and once AGED it acquires unconditionally (the exact case that
+        // DIED before OPTION 1: weight-2 could never fit under sustained over-cap, so it starved to exit-144).
         assert!(
             !check_lease_go(false, 1, 0, 2, 4, false),
             "gate yields to a held priority lease"
         );
         assert!(
-            check_lease_go(false, 0, 3, 2, 4, true),
-            "aged gate: 3+2=5 <= max+1=5 → takes the over-cap slot"
+            check_lease_go(false, 0, 10, 2, 2, true),
+            "aged weight-2 gate FAR over cap-2 → go (the CDZ0900 starvation-death case: now acquires)"
+        );
+        assert!(
+            !check_lease_go(false, 1, 10, 2, 2, true),
+            "aged weight-2 gate STILL yields to priority (never jumps pr-sync, even far-aged)"
         );
     }
 
