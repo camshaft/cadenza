@@ -6119,6 +6119,21 @@
   (input  (do (def (main) (let ((x 5)) (if x 1 2))) (export main)))
   (error  CDZ0203 (message "condition must be Bool")))
 
+; A near-miss of an IN-SCOPE name gets a did-you-mean suggestion with a REPLACE fix (a heuristic
+; nearest-name guess, edit-distance ≤ cutoff): a `let` binder `counter` referenced as `countr`, and a
+; top-level def `compute` called as `computee`. Both reject CDZ0101 and carry a replace-fix to the near
+; name. (migrated from rcdzc an_unbound_name_close_to_a_let_binding_suggests_the_binding +
+; an_unbound_name_close_to_a_def_suggests_it_with_a_heuristic_fix; the latter's fix-ANCHOR pin — the fix
+; targets the faulting node — stays a rust residue the corpus can't assert.)
+
+(case "an unbound name close to a let binding suggests the binding with a replace fix"
+  (input  (do (def (main) (let ((counter 5)) (+ countr 1))) (export main)))
+  (error  CDZ0101 (fix (kind replace) (replacement "counter"))))
+
+(case "an unbound name close to a top-level def suggests it with a replace fix"
+  (input  (do (def (compute x) x) (def (main) (computee 1)) (export main)))
+  (error  CDZ0101 (message "did you mean `compute`?") (fix (kind replace) (replacement "compute"))))
+
 ; The DIVIDE-BY-ZERO face of the same elision: the trap-observation rule is about WHETHER the value is
 ; observed, not WHICH trap it would raise. An unused binding whose init is a divide-by-zero (`(/ 100 d)`
 ; at d = 0) is elided exactly as the overflow one above — the ÷0 trap does not occur and the body's value

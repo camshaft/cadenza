@@ -696,25 +696,18 @@ fn same_named_defs_are_distinct_bindings() {
 
 #[test]
 fn an_unbound_name_close_to_a_def_suggests_it_with_a_heuristic_fix() {
-    // A typo of a top-level def (`compute` → `computee`) is CDZ0101, but the diagnostic now NAMES
-    // the near candidate AND carries a structural fix an agent applies directly
-    // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+    // The suggest+fix faces — CDZ0101 message "did you mean `compute`?" + a replace-fix to `compute`,
+    // and the heuristic (unverified) flag — migrated to corpus 02-binding-and-control "an unbound name
+    // close to a top-level def suggests it with a replace fix". What STAYS here is the fix-ANCHOR pin the
+    // corpus cannot assert: the fix's node is the faulting reference itself (diagnostic + fix target the
+    // SAME span, so an editor highlights and rewrites it).
     let src = "(module m (def (compute x) x) (def (main) (computee 1)) (export main))";
     let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-    assert!(
-        d.message.contains("did you mean `compute`?"),
-        "message should name the candidate: {}",
-        d.message
-    );
     let fix = d.fix.expect("a fix is carried");
-    assert_eq!(fix.replacement, "compute");
     assert!(
         !fix.verified,
         "a nearest-name guess is heuristic, not verified"
     );
-    // The fix's node is the faulting reference itself — the diagnostic anchors there too, so an
-    // editor highlights and rewrites the same span.
     assert_eq!(Some(fix.node), d.node, "fix targets the faulting node");
 }
 
@@ -889,19 +882,9 @@ fn a_miscased_boolean_literal_suggests_the_lowercase_literal() {
     );
 }
 
-#[test]
-fn an_unbound_name_close_to_a_let_binding_suggests_the_binding() {
-    // A lexical binder in scope is a suggestion candidate too — `counter` bound by an enclosing
-    // `let`, referenced as `countr`.
-    let d = expect_error("(let ((counter 5)) (+ countr 1))");
-    assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("counter"),
-        "message: {}",
-        d.message
-    );
-}
+// an_unbound_name_close_to_a_let_binding_suggests_the_binding (`(let ((counter 5)) (+ countr 1))` →
+// CDZ0101 replace-fix "counter") migrated to corpus 02-binding-and-control "an unbound name close to a
+// let binding suggests the binding with a replace fix". rcdzc test deleted (corpus-covered).
 
 #[test]
 fn an_unbound_name_close_to_a_match_arm_pattern_binder_suggests_it() {
