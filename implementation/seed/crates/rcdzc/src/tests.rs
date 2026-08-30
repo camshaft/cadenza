@@ -8617,47 +8617,21 @@ mod match_engine {
     }
 
     #[test]
-    fn a_ctor_export_with_a_mistyped_type_name_suggests_the_declared_type() {
-        // A constructor-export `(export (. Colr *))` whose TYPE head is a near-miss of a declared sum —
-        // `Colr` for `(type Color …)` — named "not a declared type" but offered NO did-you-mean (the
-        // sibling ctor-NAME typo already did). It now suggests the declared type + carries a rename fix on
-        // the type-name occurrence, the type-name twin of the ctor-name did-you-mean.
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (type Color (R) (G)) (export (. Colr *)) (def (main) 5) (export main))",
-        )))
-        .into_iter()
-        .find(|d| d.message.contains("to be a sum type"))
-        .expect("a mistyped ctor-export type head reports");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("did you mean `Color`?"),
-            "suggests the declared type: {}",
-            d.message
-        );
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("Color"),
-            "carries the type-name rename fix: {:?}",
-            d.fix
-        );
-        // NO false suggestion: a value def / effect with that exact name keeps its category, no type hint;
-        // a far-miss undeclared name gets no hint.
-        for (src, must_not) in [
-            (
-                "(module m (def (helper) 5) (export (. helper *)) (def (main) 5) (export main))",
-                "did you mean",
-            ),
-            (
-                "(module m (type Color (R)) (export (. zzzzz *)) (def (main) 5) (export main))",
-                "did you mean",
-            ),
+    fn a_ctor_export_type_head_gets_no_spurious_did_you_mean() {
+        // WHITE-BOX RESIDUAL of the ctor-export mistyped-type-head suggest (its positive half — a near-miss
+        // `Colr` -> `Color` "did you mean" + rename fix — is now the corpus 11-modules ctor-export case).
+        // Keeps the NEGATIVE the corpus cannot assert: a value-named export head, and a FAR-miss undeclared
+        // name, must NOT get a spurious type suggestion — a message-ABSENCE.
+        for src in [
+            "(module m (def (helper) 5) (export (. helper *)) (def (main) 5) (export main))",
+            "(module m (type Color (R)) (export (. zzzzz *)) (def (main) 5) (export main))",
         ] {
             let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
                 .into_iter()
                 .find(|d| d.message.contains("to be a sum type"))
                 .unwrap_or_else(|| panic!("expected a ctor-export reject: {src}"));
             assert!(
-                !d.message.contains(must_not),
+                !d.message.contains("did you mean"),
                 "no spurious type suggestion: {src} -> {}",
                 d.message
             );
