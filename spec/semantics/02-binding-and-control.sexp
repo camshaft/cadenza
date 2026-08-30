@@ -8427,3 +8427,35 @@
              (def (find (: n Int64)) (match (bump n) ((guard (N.I x) (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) (export find)))
   (call find (: 0 Int64)) (output (: 3 Int64))
   (live-objects known-leak))
+
+; --- An int-literal-vs-float branch clash in `if`/`match` offers a float-literal retype fix ----
+; A branch clash between an INTEGER LITERAL and a FLOAT branch carries the same one-shot repair the list-
+; element / annotation sites give: rewrite the int literal `n` as a float `n.0` so both branches unify at the
+; float type (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Either branch may
+; hold the int literal, and the fix targets whichever one it is. NOTE the code differs by construct: an `if`
+; branch clash surfaces as CDZ0201 (a malformed conditional), a `match` arm clash as CDZ0203 (an arm-type
+; mismatch) — both carry the retype fix. A cross-KIND clash (int-vs-bool) is NOT coercible, so no fix is
+; offered. (Migrated from rcdzc if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix.)
+(case "an if with an int-literal then-branch and a float else-branch retypes the int literal up"
+  (input  (do (def (f (: b Bool)) (if b 1 2.0)) (export f)))
+  (error  CDZ0201 (fix (kind replace) (replacement "1.0"))))
+
+(case "an if with a float then-branch and an int-literal else-branch retypes the else int literal up"
+  (input  (do (def (f (: b Bool)) (if b 1.0 2)) (export f)))
+  (error  CDZ0201 (fix (kind replace) (replacement "2.0"))))
+
+(case "a match with an int-literal arm and a later float arm retypes the int-literal arm up"
+  (input  (do (def (f (: x Int64)) (match x (0 1) (_ 2.0))) (export f)))
+  (error  CDZ0203 (fix (kind replace) (replacement "1.0"))))
+
+(case "a match with a float arm and a later int-literal arm retypes the int-literal arm up"
+  (input  (do (def (f (: x Int64)) (match x (0 1.0) (_ 2))) (export f)))
+  (error  CDZ0203 (fix (kind replace) (replacement "2.0"))))
+
+(case "an int-vs-bool if branch clash is not coercible, so no float-retype fix is offered"
+  (doc    "`(if b 1 true)` clashes an Int64 branch with a Bool branch — a cross-KIND clash with no shared
+           numeric type, so unlike the int-vs-float cases it carries NO literal-retype fix (there is no
+           `1`→`1.0` that would unify a number with a boolean). Pins that the retype fix is offered only for a
+           genuinely coercible int-literal-vs-float clash.")
+  (input  (do (def (f (: b Bool)) (if b 1 true)) (export f)))
+  (error  CDZ0203 (no-fix)))

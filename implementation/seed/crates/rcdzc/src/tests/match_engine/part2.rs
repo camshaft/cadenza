@@ -3,58 +3,11 @@ use crate::testkit::parse;
 
 use super::*;
 
-#[test]
-fn if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix() {
-    // An `if`-branch / match-arm clash between an INTEGER LITERAL and a FLOAT branch has the SAME
-    // one-shot repair the list-element and annotation sites give: rewrite the integer literal `n` as a
-    // float literal `n.0` so both branches unify at the float type (the int-lit↔float retype now fires
-    // at annotation + list + if + match sites — `spec/capabilities/diagnostics.md` §A Diagnostic
-    // Carries A Route To A Fix). Either branch may hold the int literal.
-    let d = reject_full("(module m (def (f (: b Bool)) (if b 1 2.0)) (export f))")
-        .expect("an if-branch numeric clash must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("1.0"),
-        "retypes the then-branch int literal: {}",
-        d.message
-    );
-    // The FLOAT branch is first → the int literal is the else-branch (`2` → `2.0`).
-    let d2 =
-        reject_full("(module m (def (f (: b Bool)) (if b 1.0 2)) (export f))").expect("reject");
-    assert_eq!(
-        d2.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("2.0"),
-        "message: {}",
-        d2.message
-    );
-    // A match arm: the first arm's int literal is retyped to match a later float arm.
-    let d3 = reject_full("(module m (def (f (: x Int64)) (match x (0 1) (_ 2.0))) (export f))")
-        .expect("a match-arm numeric clash must reject");
-    assert_eq!(
-        d3.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("1.0"),
-        "retypes the first arm's int literal: {}",
-        d3.message
-    );
-    // Symmetric: a later arm's int literal (`2` → `2.0`) when the first arm is float.
-    let d4 = reject_full("(module m (def (f (: x Int64)) (match x (0 1.0) (_ 2))) (export f))")
-        .expect("reject");
-    assert_eq!(
-        d4.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("2.0"),
-        "message: {}",
-        d4.message
-    );
-    // A cross-KIND clash (Int64 vs Bool) is NOT coercible — no float-retype fix is offered.
-    let d5 =
-        reject_full("(module m (def (f (: b Bool)) (if b 1 true)) (export f))").expect("reject");
-    assert!(
-        d5.fix.is_none(),
-        "an int-vs-bool if clash has no literal-retype fix: {:?}",
-        d5.fix
-    );
-}
+// (if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix migrated to corpus 02-binding-and-control,
+// the int-literal-vs-float branch-clash retype-fix block: an `if` clash → CDZ0201, a `match` arm clash →
+// CDZ0203, each carrying a replace fix that retypes whichever branch holds the int literal up to a float
+// (`(if b 1 2.0)`→"1.0", `(if b 1.0 2)`→"2.0", `(match x (0 1) (_ 2.0))`→"1.0", `(match x (0 1.0) (_ 2))`→"2.0");
+// the cross-kind int-vs-bool `(if b 1 true)` carries no fix (CDZ0203 (no-fix)). All 5 PASS wasm.)
 
 // (a_mixed_int_float_arithmetic_operand_is_cdz0301_with_a_conform_to_first_coercion_fix migrated to corpus
 // 06-numeric-model, the "conform-to-first" repair block beside the (+ 2 2.0) no-promotion case: float-first
