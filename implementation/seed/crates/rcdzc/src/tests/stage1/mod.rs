@@ -869,28 +869,19 @@ fn a_wildcard_used_as_a_value_names_the_binding_position_misuse() {
 
 #[test]
 fn a_miscased_boolean_literal_suggests_the_lowercase_literal() {
-    // `True`/`False` (the cross-language habit) read as unbound NAMES (the lexer only classifies
-    // lowercase `true`/`false` as `Leaf::Bool`), so the one-shot fix is the lowercase literal — which
-    // re-lexes as the boolean. `true`/`false` are candidates in value position (distance 1 from
-    // `True`/`False`, within the cutoff), so the CDZ0101 names them AND carries the replace fix.
-    let t = expect_error("True");
-    assert_eq!(t.code.as_deref(), Some("CDZ0101"), "got: {}", t.message);
-    assert_eq!(
-        t.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("true"),
-        "True suggests the lowercase literal: {}",
-        t.message
-    );
-    let f = expect_error("(if False true false)");
-    assert_eq!(
-        f.fix.as_ref().map(|x| x.replacement.as_str()),
-        Some("false"),
-        "False suggests the lowercase literal: {}",
-        f.message
-    );
-    // NO OVERREACH: `TRUE` (all-caps, edit distance 4) is beyond the typo cutoff → no baseless
-    // suggestion, the plain unbound-name message.
+    // The POSITIVE suggest+fix faces — `True` -> replace-fix `true`, `False` -> replace-fix `false` —
+    // migrated to corpus 01-literals ("a miscased boolean True/False suggests the lowercase … literal
+    // with a replace fix"). What STAYS here is the heuristic-CUTOFF pin the corpus can't cleanly express:
+    // NO OVERREACH — `TRUE` (all-caps, edit distance 4) is beyond the typo cutoff → no baseless
+    // suggestion, the plain unbound-name message (corpus `(not "did you mean")` grades only `todo` for a
+    // suggestion-ABSENCE, so this negative cutoff assertion is kept as a rust residue).
     let caps = expect_error("TRUE");
+    assert_eq!(
+        caps.code.as_deref(),
+        Some("CDZ0101"),
+        "got: {}",
+        caps.message
+    );
     assert!(
         caps.fix.is_none() && !caps.message.contains("did you mean"),
         "an all-caps TRUE is too far to suggest: {}",
