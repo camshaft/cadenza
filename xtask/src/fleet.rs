@@ -6349,9 +6349,12 @@ const GATE_LEASE_WEIGHT: usize = 2;
 
 /// A waiting vertical becomes AGED after blocking this long for a check slot — past here it may take one
 /// over-cap slot so a slow-build cap (cap-2 + 30-40min gate builds) can't starve it indefinitely behind a
-/// churn of newer waiters. 20min: shorter than the observed heavy-build durations, so a starved agent
-/// forces in mid-way rather than waiting the full build; long enough that normal contention resolves first.
-const CHECK_LEASE_AGING_SECS: u64 = 20 * 60;
+/// churn of newer waiters. 9min (was 20min): a lease-starved gate-local is KILLED by the loop/harness
+/// command-timeout at ~10min (exit 144) — LONGER than the old 20min aging, so a starved build died BEFORE it
+/// could age in (v-deferral-declines CDZ0900 starved ~13 ticks, 2026-08-30). 540s ages the FIRST waiter in
+/// BEFORE that ~600s kill = real relief (concierge OPTION-2 interim). The robust anti-starvation fix (an
+/// aged build acquires unconditionally, not just a bounded +1 slot) is OPTION-1, a tested follow-up.
+const CHECK_LEASE_AGING_SECS: u64 = 540;
 
 /// An acquired check-lease; releasing (removing the lease file) happens on drop, so a normal `check`
 /// exit — or an early `return`/panic — frees the slot without an explicit release call.
