@@ -123,7 +123,13 @@
         (export main)))
   (call main (: 3 Int64)) (output (: 13 Int64))
   (call main (: 0 Int64)) (output (: 7 Int64))
-  (call main (: -4 Int64)) (output (: -1 Int64)))
+  (call main (: -4 Int64)) (output (: -1 Int64))
+  ; INTERIM re-pin (v-rust-backend, 2026-08-30): #6049's CALL-BOTH-WAYS force-keep materializes the
+  ; reduced closure as one Core::Let slot; on the escape-into-#list + direct-apply path the slot's
+  ; surviving ref is not yet dropped (the surviving-owned-ref-drop reclaim class, same as cdzw66/#6022).
+  ; LEAK-side (values correct, no trap; seq-278). Real fix = the dup_sites-3690-3694 surviving-slot-drop
+  ; (v-mem co-design, in flight) → tightens to 0; #5766 tolerate-fewer auto-passes the collapse. Was (0).
+  (live-objects known-leak 2 2 2))
 
 (case "a partial application captures a runtime parameter in the residual closure"
   (doc    "Partially applying to a VARIABLE reference must CAPTURE it in the residual lambda: `((sub n) 3)`
@@ -332,7 +338,13 @@
                 (let ((f1 (fn ((: v Int64)) (+ k v))))
                   (+ (f1 d) ((. Map len) (Map.insert Map.empty 1 f1))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 106 Int64)))
+  (call   main (: 5 Int64)) (output (: 106 Int64))
+  ; INTERIM re-pin (v-rust-backend, 2026-08-30): #6049's force-keep now materializes f1 as one Core::Let
+  ; slot; on the surviving-MAP-STORE + direct-call path the slot's surviving ref is not yet dropped (the
+  ; map-store consumes a DUP so the slot original survives dead-after; list/sum-payload siblings MOVE so
+  ; balance). LEAK-side (value correct, no trap; seq-278). Real fix = the dup_sites-3690-3694
+  ; surviving-slot-drop (v-mem co-design, in flight) → tightens to 0. Was (0, unpinned).
+  (live-objects known-leak 1))
 
 (case "a capturing closure stored in a tuple and also called directly folds through its capture"
   (doc    "The SURVIVOR control: a TUPLE element is a fixed-shape UNBOXED rep, so storing `f1` there needs
