@@ -167,6 +167,37 @@
   (input  (do (def (main) (+ (: 1 UInt8) (: 2 Int32))) (export main)))
   (error  CDZ0301))
 
+(case "a mutual-recursion group's bare-literal return adopts a sibling's concrete width (seq-40 piece 4, #6049)"
+  (doc    "Two mutually-recursive defs v0/v1: v0's base arm is a BARE literal `5`, v1's base arm is an
+           ANNOTATED `(: 3 UInt16)`. The group's return type UNIFIES — the bare `5` ADOPTS the sibling's
+           concrete UInt16 (seq-40 width-unification), so both schemes return UInt16 and the emit is valid.
+           Regression pin for #6049: the scheme solve used to ground v0's bare `5` to a DEFERRED int (the
+           `Int64` default) while v1 was in-flight in the mutual-recursion SCC and CACHE it, so v0's Int64
+           return disagreed with v1's UInt16 at the machine width — the emit lowered v0's recursive `v1`-call
+           (an i32) into v0's i64 return slot → INVALID wasm (`cdz check` passed; the component would not
+           compile). Now `def_scheme`/`type_of` DEFER an ungrounded-width result computed under a
+           mutual-recursion solve (uncached), so a later clean demand re-grounds the bare literal against the
+           now-concrete sibling. v1(3) walks v1→v0→v1→v0 to v0's base = 5.")
+  (input  (do
+    (def (v0 (: a Int64)) (if (<= a 0) 5 (v1 (- a 1))))
+    (def (v1 (: b Int64)) (if (<= b 0) (: 3 UInt16) (v0 (- b 1))))
+    (def (main) (v1 3))
+    (export main)))
+  (call   main) (output (: 5 UInt16)))
+
+(case "a mutual-recursion group with two concrete-different return widths is rejected (no silent unify)"
+  (doc    "The reject companion to the #6049 acceptance above: v0's base is `(: 5 Int32)`, v1's is
+           `(: 3 UInt16)` — two CONCRETE, DIFFERENT integer types across the recursive group. Neither base is
+           a bare literal that could adopt, so the `if`-arm unification fails at each def → CDZ0201 (`if
+           branches differ: Int32 vs UInt16`): the no-silent-promotion rule applied across a mutual-recursion
+           return, a clean decline rather than an invalid-wasm miscompile.")
+  (input  (do
+    (def (v0 (: a Int64)) (if (<= a 0) (: 5 Int32) (v1 (- a 1))))
+    (def (v1 (: b Int64)) (if (<= b 0) (: 3 UInt16) (v0 (- b 1))))
+    (def (main) (v1 3))
+    (export main)))
+  (error  CDZ0201))
+
 (case "wrapping a non-integer source is rejected"
   (doc    "`(UInt8.wrap true)` applies the narrowing wrap `∀(w,s). Int^s_w -> UInt8` to a Bool source.
            `true` has no `(Int a)` instance, so unifying the source against the wrap's integer domain FAILS
