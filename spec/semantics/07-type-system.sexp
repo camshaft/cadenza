@@ -3003,6 +3003,30 @@
   (call main)
   (output (: 0 Int64)))
 
+; ── variant-CONSTRUCTOR-APPLICATION payload VALUE mismatch offers the SAME coercion fix as an argument
+;    position (migrated from rcdzc a_wrong_type_constructor_payload_offers_the_same_coercion_fix_as_an_argument) ──
+; Distinct from the declaration-site payload TYPE-position validation above: here the payload type is well-formed
+; and the fault is a wrong-typed VALUE APPLIED to the constructor — CDZ0201 "a variant constructor's payload has
+; declared type T, but a value of type U was applied". It carries the same numeric/text coercion fix the argument
+; position gives: an int-width source `(Int64.of …)` (wrap), an int-valued-float `3.0`→`3` (drop the fraction,
+; replace), a `String`→`Bytes` `(String.to-bytes …)` (wrap). A source with NO coercion to the declared type (a
+; Bool into Int64) carries the bare CDZ0201 with no fix — a false suggestion is worse than none.
+(case "a variant constructor int-width payload mismatch offers the of-conversion wrap fix"
+  (input  (do (type P (Mk Int64)) (def (f (: a Int8)) (Mk a)) (export f)))
+  (error  CDZ0201 (message "Int8 was applied") (fix (kind wrap) (replacement-contains "(Int64.of "))))
+
+(case "a variant constructor int-valued-float payload mismatch offers the drop-the-fraction fix"
+  (input  (do (type P (Mk Int64)) (def (f) (Mk 3.0)) (export f)))
+  (error  CDZ0201 (message "Float64 was applied") (fix (kind replace) (replacement "3"))))
+
+(case "a variant constructor String-into-Bytes payload mismatch offers the to-bytes wrap fix"
+  (input  (do (type P (Mk Bytes)) (def (f (: s String)) (Mk s)) (export f)))
+  (error  CDZ0201 (message "String was applied") (fix (kind wrap) (replacement-contains "(String.to-bytes "))))
+
+(case "a variant constructor payload mismatch with no coercion carries the bare reject and no fix"
+  (input  (do (type P (Mk Int64)) (def (f) (Mk true)) (export f)))
+  (error  CDZ0201 (message "Bool was applied") (no-fix)))
+
 (case "an unknown type in an effect operation arg is rejected at the declaration"
   (input (do (effect E (op e (-> Nonesuch Unit))) (def (main) 0) (export main)))
   (error CDZ0101 (message "Nonesuch")))

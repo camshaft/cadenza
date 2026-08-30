@@ -371,50 +371,9 @@ fn over_application_offers_a_delete_the_extra_argument_fix() {
     }
 }
 
-#[test]
-fn a_wrong_type_constructor_payload_offers_the_same_coercion_fix_as_an_argument() {
-    // A VARIANT-CONSTRUCTOR payload mismatch (CDZ0201) now offers the SAME numeric/text coercion fix the
-    // argument position does (the D33 lesson, consolidated via `numeric_text_coercion_fix`): an int-width
-    // `(Mk a)` a:Int8 payload Int64 → `(Int64.of a)`; an int-valued-float `(Mk 3.0)` payload Int64 → `3`;
-    // a `String` payload `Bytes` → `(String.to-bytes s)`. Each is CDZ0201 (the ctor-payload code) + a fix.
-    let intw = first_error("(module m (type P (Mk Int64)) (def (f (: a Int8)) (Mk a)) (export f))");
-    assert_eq!(
-        intw.code.as_deref(),
-        Some("CDZ0201"),
-        "got: {}",
-        intw.message
-    );
-    assert_eq!(
-        intw.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some(format!("(Int64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
-        "ctor payload int-width coercion: {}",
-        intw.message
-    );
-    let flt = first_error("(module m (type P (Mk Int64)) (def (f) (Mk 3.0)) (export f))");
-    assert_eq!(
-        flt.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
-        Some((crate::abi::FixKind::Replace, "3")),
-        "ctor payload int-valued-float drop: {}",
-        flt.message
-    );
-    let byt =
-        first_error("(module m (type P (Mk Bytes)) (def (f (: s String)) (Mk s)) (export f))");
-    assert_eq!(
-        byt.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE)).as_deref(),
-        "ctor payload String→Bytes coercion: {}",
-        byt.message
-    );
-    // NO coercion (a Bool payload where Int64 is declared) → the bare CDZ0201, no fix.
-    let no = first_error("(module m (type P (Mk Int64)) (def (f) (Mk true)) (export f))");
-    assert_eq!(no.code.as_deref(), Some("CDZ0201"), "got: {}", no.message);
-    assert!(
-        no.fix.is_none(),
-        "no coercion Bool→Int64 payload: {:?}",
-        no.fix
-    );
-}
-
+// (a_wrong_type_constructor_payload_offers_the_same_coercion_fix_as_an_argument migrated to corpus 07-type-system:
+//  variant-ctor payload VALUE mismatch -> CDZ0201 + the same coercion fixes as argument position — Int8→Int64
+//  (Int64.of wrap), 3.0→Int64 ("3" drop-fraction replace), String→Bytes (String.to-bytes wrap), Bool→Int64 (no-fix).)
 // (a_bare_literal_over_int64_that_fits_uint64_offers_an_annotate_uint64_fix migrated to corpus 06-numeric-model:
 //  bare-literal past Int64.max -> CDZ0201 annotate-UInt64 wrap fix (2^64-1 + the 2^63 boundary), past UInt64.max
 //  -> annotate-BigInt fix, and the BigInt.of cascade -> no-fix + "write the literal directly as a" message.)
