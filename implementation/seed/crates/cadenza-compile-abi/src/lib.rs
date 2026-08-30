@@ -15,6 +15,7 @@ pub mod abi;
 pub mod closure_hash_wire;
 pub mod diagnostics_wire;
 pub mod doc_wire;
+pub mod effect_bind_wire;
 pub mod export_types_wire;
 pub mod func_layout_wire;
 pub mod highlight_wire;

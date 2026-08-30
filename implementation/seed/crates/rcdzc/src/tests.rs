@@ -47659,7 +47659,10 @@ mod cross_component_oracle {
                     Artifact::new(
                         crate::link::KIND_EFFECT_BIND,
                         "effect-bind",
-                        b"Math=cadenza:mathv2/api".to_vec(),
+                        cadenza_compile_abi::effect_bind_wire::encode(&[(
+                            "Math".to_string(),
+                            "cadenza:mathv2/api".to_string(),
+                        )]),
                     ),
                 ],
                 &[Target::Wasm],
