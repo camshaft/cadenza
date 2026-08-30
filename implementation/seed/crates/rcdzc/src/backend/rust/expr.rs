@@ -4874,8 +4874,8 @@ fn emit_value_ord_walk_seen(
                 return Ok(format!("{fn_name}(&{l}, &{r})"));
             }
             if !args.is_empty() {
-                return Err(Reject::decline(
-                    "runtime ordering over a GENERIC sum is not yet rendered by the Rust backend (needs a generic helper fn)",
+                return Err(Reject::unsupported(
+                    "runtime ordering over a generic sum is not supported by the Rust backend",
                 ));
             }
             seen.push(sum_ty);
@@ -4947,8 +4947,8 @@ fn emit_value_ord_walk_seen(
             }
             Ok(format!("{fn_name}(&{l}, &{r})"))
         }
-        _ => Err(Reject::decline(
-            "runtime ordering over this compound is not yet rendered by the Rust backend",
+        _ => Err(Reject::unsupported(
+            "runtime ordering over this compound is not supported by the Rust backend",
         )),
     }
 }
@@ -5087,8 +5087,8 @@ fn emit_value_eq_walk_seen(
             // inline-match generic path below — the gap this closes (was falsely declined as recursive-generic).
             if seen.contains(&sum_ty) {
                 if !args.is_empty() {
-                    return Err(Reject::decline(
-                        "runtime structural equality over a RECURSIVE GENERIC sum is not yet rendered by the Rust backend (needs a generic helper fn)",
+                    return Err(Reject::unsupported(
+                        "runtime structural equality over a recursive generic sum is not supported by the Rust backend",
                     ));
                 }
                 return Ok(format!("{fn_name}(&{l}, &{r})"));
@@ -5170,8 +5170,8 @@ fn emit_value_eq_walk_seen(
             Ok(format!("{fn_name}(&{l}, &{r})"))
         }
         // Any other shape should have been excluded by `ty_float_walkable` before we got here.
-        _ => Err(Reject::decline(
-            "runtime structural equality over this compound is not yet rendered by the Rust backend",
+        _ => Err(Reject::unsupported(
+            "runtime structural equality over this compound is not supported by the Rust backend",
         )),
     }
 }
@@ -6164,16 +6164,16 @@ fn emit_match_impl(
             // declines at `is_scalar` before a `Core::Match` is built, so no `Probe::Str` reaches a
             // runtime match emit on either backend.
             crate::core::Probe::Str(_) => {
-                return Err(crate::diag::Reject::decline(
-                    "a runtime string-literal match is not yet emitted",
+                return Err(crate::diag::Reject::unsupported(
+                    "a runtime string-literal match is not supported by the Rust backend",
                 ));
             }
             // A byte-string-literal probe reaching a scalar `Core::Match` emit is unreachable in practice
             // (a runtime Bytes match desugars to a `value-eq` if-chain in `lower`, and a Bytes is not
             // `is_scalar`, so no `Probe::Bytes` survives to a scalar match); decline defensively like `Str`.
             crate::core::Probe::Bytes(_) => {
-                return Err(crate::diag::Reject::decline(
-                    "a runtime byte-string-literal match is not yet emitted",
+                return Err(crate::diag::Reject::unsupported(
+                    "a runtime byte-string-literal match is not supported by the Rust backend",
                 ));
             }
             // A runtime char-literal probe (Char-rep 3/N): the scrutinee is a native rust `char`
@@ -6185,15 +6185,15 @@ fn emit_match_impl(
             // A `ListLen` probe only ever FOLDS (a constant list payload); a runtime list payload declines
             // at `build_lit_test` before a decision tree is emitted, so it never reaches a runtime match.
             crate::core::Probe::ListLen { .. } => {
-                return Err(crate::diag::Reject::decline(
-                    "a runtime list-pattern match is not yet emitted",
+                return Err(crate::diag::Reject::unsupported(
+                    "a runtime list-pattern match is not supported by the Rust backend",
                 ));
             }
             // A `MapHasKeys` probe only ever FOLDS (a constant map sub-value); a runtime map declines at
             // `build_lit_test`, so it never reaches a runtime match emit.
             crate::core::Probe::MapHasKeys { .. } => {
-                return Err(crate::diag::Reject::decline(
-                    "a runtime map-pattern match is not yet emitted",
+                return Err(crate::diag::Reject::unsupported(
+                    "a runtime map-pattern match is not supported by the Rust backend",
                 ));
             }
             crate::core::Probe::Wild => "_".to_string(),
@@ -7499,8 +7499,8 @@ fn emit_sum_payload(
                         }
                     }
                     crate::core::PathStep::Payload => {
-                        return Err(Reject::decline(
-                            "a nested sum payload is not yet rendered by the Rust backend",
+                        return Err(Reject::unsupported(
+                            "a nested sum payload is not supported by the Rust backend",
                         ));
                     }
                     crate::core::PathStep::RestFrom(k) => {
