@@ -1491,6 +1491,13 @@
         # same-name @tests before its flat layout is collision-free; both await v-cadenza re-emit coverage).
         testShredSuites = {
           iterators = { dir = ./implementation/iterators; mode = "standalone"; };
+          # seq-271 (operator: compiler-ml now optional → shred + AOT-cache ALL other pkgs). cad (138/138),
+          # choreography (177/177) + music (299/299) are FULL standalone (v-test-shred validated fresh on
+          # current main) → they auto-inherit the #5970 AOT wiring (per-test .cwasm precompile in mkTestShred +
+          # cranelift-free mkTestExec) = the caching win. (des: ~0 @tests, skip; compiler-ml: opt-out, declines.)
+          cad = { dir = ./implementation/cad; mode = "standalone"; };
+          choreography = { dir = ./implementation/choreography; mode = "standalone"; };
+          music = { dir = ./implementation/music; mode = "standalone"; };
         };
         testShredFileAggs = pkgs.lib.mapAttrs'
           (proj: cfg: pkgs.lib.nameValuePair "test-shred-${proj}"
