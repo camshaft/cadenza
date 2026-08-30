@@ -48,14 +48,11 @@ def v3-len(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#mete
 
 /// Read a coordinate back OUT as a length-`Qty` in meters (the dual of `v3-len`). The stored magnitude is
 /// re-wrapped as a meter quantity, so downstream code that wants units gets them.
-def m-x(v: Vec3m) = match v with
-  | Vec3m.V3m(x, _, _) => x meter
+def m-x(v: Vec3m) = let Vec3m.V3m(x, _, _) = v in x meter
 
-def m-y(v: Vec3m) = match v with
-  | Vec3m.V3m(_, y, _) => y meter
+def m-y(v: Vec3m) = let Vec3m.V3m(_, y, _) = v in y meter
 
-def m-z(v: Vec3m) = match v with
-  | Vec3m.V3m(_, _, z) => z meter
+def m-z(v: Vec3m) = let Vec3m.V3m(_, _, z) = v in z meter
 
 /// A single length → its exact bare-Rational METER magnitude (the storage projection; the boundary that a
 /// primitive's radius/height uses). A caller supplies a length in any unit; the language converts.
@@ -68,8 +65,7 @@ def meters(n: Int64) = Qty.of(Rational.of(n, 1 : Int64), Unit.of(#meter))
 /// Bridge a meter-model vector to the exact bare-`Rational` `Vec3` the existing CSG/bbox machinery
 /// (exact.cdz) consumes — the magnitudes ARE the (meter) coordinates, so this is a direct re-pack, still
 /// fully exact. This is how S2 plugs into the model without touching the CSG core.
-def to-vec3(v: Vec3m) = match v with
-  | Vec3m.V3m(x, y, z) => v3(x, y, z)
+def to-vec3(v: Vec3m) = let Vec3m.V3m(x, y, z) = v in v3(x, y, z)
 
 /// ============================ @test suite (S2 — boundary unit typing, exact meters) ============================
 @test
