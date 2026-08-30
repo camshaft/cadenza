@@ -4613,19 +4613,31 @@ fn a_pathologically_deep_expression_declines_not_crashes() {
     // input) never reaches the compiler with pathological depth. (The compiler's own
     // `DESCENT_DEPTH_LIMIT` still guards a deep BINARY AST that bypasses the reader.) Here the reader
     // is the first line of defence: a 4000-deep nest is a `ReadError`, not a panic/crash — and the
-    // guard trips long before the reader's own recursion could overflow, so no large stack is needed.
-    let mut body = "1".to_string();
-    for _ in 0..4000 {
-        body = format!("(+ 1 {body})");
-    }
-    let src = format!("(module m (def (main) {body}) (export main))");
-    let err = cadenza_syntax::sexpr::read(&src)
-        .expect_err("a pathologically deep expression must be a clean reader error, not a crash");
-    assert!(
-        err.0.contains("deeply") || err.0.contains("nests"),
-        "got: {}",
-        err.0
-    );
+    // reader's guard fires (returns `ReadError`) at `MAX_NESTING_DEPTH` (1024) — but the recursive
+    // descent to REACH that depth needs more than the default ~2MB test-thread stack (its 1024 frames
+    // overflow it), so on native-debug the worker aborts (SIGABRT) before the guard can trip. That is a
+    // TEST-HARNESS stack-size issue, not a reader bug: run the body on a larger-stack worker so the
+    // reader reaches its guard and returns the clean `ReadError` the test asserts.
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let mut body = "1".to_string();
+            for _ in 0..4000 {
+                body = format!("(+ 1 {body})");
+            }
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let err = cadenza_syntax::sexpr::read(&src).expect_err(
+                "a pathologically deep expression must be a clean reader error, not a crash",
+            );
+            assert!(
+                err.0.contains("deeply") || err.0.contains("nests"),
+                "got: {}",
+                err.0
+            );
+        })
+        .expect("spawn the larger-stack deep-recursion worker")
+        .join()
+        .expect("the deep-recursion worker must not panic/crash");
 }
 
 #[test]
