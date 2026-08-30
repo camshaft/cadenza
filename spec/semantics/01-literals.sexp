@@ -126,6 +126,29 @@
   (input  0o17)
   (error  CDZ0201 (message "malformed numeric literal")))
 
+; A LEXICAL well-formedness poison a bare leaf resolves to (a malformed numeric literal, an out-of-range
+; float, a char naming a non-scalar) is a defect of the TOKEN, independent of reachability — like an unbound
+; name. So `check` must surface it in EVERY body, including a PARAMETERIZED body or a NON-EXPORTED nullary
+; def (neither reached by the standalone emit walk), not only a reached one — else a malformed literal there
+; would pass `check` while `compile` rejects it on a reached body. And a reachable body reports the fault
+; EXACTLY ONCE (the infer + emit copies dedup). (Migrated from rcdzc
+; a_lexical_well_formedness_fault_surfaces_in_an_unreached_body.)
+(case "a malformed literal in a parameterized (unreached) body still surfaces"
+  (input  (do (def (g (: n Int64)) (+ n 0o17)) (export g)))
+  (error  CDZ0201 (message "malformed numeric literal")))
+
+(case "a non-scalar char in a parameterized (unreached) body still surfaces"
+  (input  (do (def (g (: n Int64)) (if (= n 0) #\u+D800 #\a)) (export g)))
+  (error  CDZ0002))
+
+(case "a malformed literal in a non-exported nullary def body still surfaces"
+  (input  (do (def (f) 0o17) (def (main) 1) (export main)))
+  (error  CDZ0201 (message "malformed numeric literal")))
+
+(case "a reachable malformed literal reports exactly once, not doubled"
+  (input  (do (def (main) 0o17) (export main)))
+  (error  CDZ0201 (message "malformed numeric literal") (count 1)))
+
 (case "a bad binary digit is a malformed literal, not an unbound name"
   (doc    "`0b12` is `0b`-prefixed but `2` is not a binary digit (only 0/1) — a malformed binary literal
            (CDZ0201), the binary sibling of the bad-hex `0xGG` case. A digit-led radix token with an
