@@ -18,6 +18,14 @@
 //! The taxonomy grows one variant per added check; its `str` form is the stable `CDZ####` string a
 //! tool branches on.
 
+/// The `DeclineId` catalog (the unsupported-error tracker's oracle: a stable, enumerable referent for
+/// every construct rcdzc declines to compile) is GENERATED from `data/unsupported.sexp` by
+/// `xtask-codegen-declines` (operator seq-106: sexpr source → xtask codegen → rust, no xtask→rcdzc edge).
+/// rcdzc consumes it here; `Reject::id`/`declined()` reference it via this re-export
+/// (`crate::diag::DeclineId`). Edit the sexpr + `cargo run -p xtask-codegen-declines` to regenerate.
+mod declines_generated;
+pub use declines_generated::DeclineId;
+
 /// A stable, machine-readable diagnostic code. Its `code()` string is the durable identity a
 /// consumer matches on; the enum variant is the compiler-internal handle.
 ///
@@ -685,121 +693,6 @@ impl Fix {
 /// prelude appends its nodes AFTER the program's), so an `at` on a program node IS the id the
 /// front-end's span table is keyed by. `None` = an un-anchored "no" (a synthesized node, or a
 /// producer that did not stamp one).
-/// The stable, enumerable catalog of every construct `rcdzc` declines to compile — the "oracle" half of
-/// the unsupported-error tracker (`implementation/design/DESIGN-unsupported-tracker.md`, seq-286-broad).
-/// A `DeclineId` names a REASON (a capability the compiler does not realize), NOT a call site: sites
-/// emitting the same reason share an id (~698 sites collapse to ~150-250 reasons). Minting a variant is
-/// the intended sole way to emit a decline, so `DeclineId::ALL` is a COMPLETE, by-construction list of
-/// the compiler's decline surface — the structural completeness that replaces fragile regex counting
-/// (which undercounts shared-const declines like `PRIM_AS_VALUE_DECLINE`). The generated
-/// `data/unsupported.sexp` registry iterates `ALL`; the human-authored `(blocked-on …)` routing lives
-/// there, not here. INCREMENT 1 (this): the catalog + `Reject::declined()` + the `id` field exist and are
-/// enumerable; per-site migration (switching `decline(msg)` → `declined(id, msg)`) rides the ongoing
-/// seq-280/286 coding sweep. Seeded with the reasons already coded to CDZ0900 (#6163 fusion, #6216
-/// host-boundary/closure-export, v-effects #6219 fold) plus one still-codeless (`PrimAsValueNeedsClosure`).
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
-pub enum DeclineId {
-    /// A host effect and a peer effect both composed with a resource-escaping entrypoint (#6163).
-    WasmHostPeerResourceFusion,
-    /// An export that both receives and returns a closure — a closure transformer (#6216).
-    WasmClosureTransformer,
-    /// A compound result alongside a closure (plain or round-trip) export (#6216).
-    WasmCompoundResultWithClosureExport,
-    /// A recursive-sum / runtime-collection value rendered as a host-boundary result (#6216).
-    WasmValueFormWalkerRecursive,
-    /// A bytes-crossing host op whose signature has no host-boundary form (#6216).
-    WasmBytesCrossingHostOpNoBoundaryForm,
-    /// Matching a map-pattern payload against a runtime map (#6216, select/dispatch).
-    WasmMapPatternRuntimeMap,
-    /// A built-in operation used as a runtime value (would need a synthesized runtime closure).
-    /// Coded CDZ0900 at its emit site (`lower/compute.rs`) by #6349.
-    PrimAsValueNeedsClosure,
-    /// An effect handler in a form the tail-resumptive fold does not specialize (cross-function /
-    /// non-tail resume) — v-effects #6219.
-    TailResumptiveFoldUnhandledForm,
-}
-
-impl DeclineId {
-    /// The complete catalog — the registry generator iterates this; completeness is structural (adding a
-    /// variant without listing it here is caught by the `codegen --check` gate once Increment 2 lands).
-    pub const ALL: &'static [DeclineId] = &[
-        DeclineId::WasmHostPeerResourceFusion,
-        DeclineId::WasmClosureTransformer,
-        DeclineId::WasmCompoundResultWithClosureExport,
-        DeclineId::WasmValueFormWalkerRecursive,
-        DeclineId::WasmBytesCrossingHostOpNoBoundaryForm,
-        DeclineId::WasmMapPatternRuntimeMap,
-        DeclineId::PrimAsValueNeedsClosure,
-        DeclineId::TailResumptiveFoldUnhandledForm,
-    ];
-
-    /// The stable kebab-case key used in the `data/unsupported.sexp` registry. NEVER changes once minted
-    /// (renaming the Rust variant is fine; this string is the durable referent a tool/registry pins).
-    pub fn key(self) -> &'static str {
-        match self {
-            DeclineId::WasmHostPeerResourceFusion => "wasm-host-peer-resource-fusion",
-            DeclineId::WasmClosureTransformer => "wasm-closure-transformer",
-            DeclineId::WasmCompoundResultWithClosureExport => {
-                "wasm-compound-result-with-closure-export"
-            }
-            DeclineId::WasmValueFormWalkerRecursive => "wasm-value-form-walker-recursive",
-            DeclineId::WasmBytesCrossingHostOpNoBoundaryForm => {
-                "wasm-bytes-crossing-host-op-no-boundary-form"
-            }
-            DeclineId::WasmMapPatternRuntimeMap => "wasm-map-pattern-runtime-map",
-            DeclineId::PrimAsValueNeedsClosure => "prim-as-value-needs-closure",
-            DeclineId::TailResumptiveFoldUnhandledForm => "tail-resumptive-fold-unhandled-form",
-        }
-    }
-
-    /// The umbrella code this decline carries today — `Some(CDZ0900)` once coded, `None` while a site is
-    /// still a codeless `decline()` (migration in progress). Wording-independent of the runtime message.
-    /// Every seeded reason is now coded CDZ0900 (the last codeless one, `PrimAsValueNeedsClosure` at
-    /// lower/compute.rs, was flipped by #6349); a future not-yet-coded reason returns `None` here.
-    pub fn code(self) -> Option<Code> {
-        match self {
-            DeclineId::WasmHostPeerResourceFusion
-            | DeclineId::WasmClosureTransformer
-            | DeclineId::WasmCompoundResultWithClosureExport
-            | DeclineId::WasmValueFormWalkerRecursive
-            | DeclineId::WasmBytesCrossingHostOpNoBoundaryForm
-            | DeclineId::WasmMapPatternRuntimeMap
-            | DeclineId::PrimAsValueNeedsClosure
-            | DeclineId::TailResumptiveFoldUnhandledForm => Some(Code::UnsupportedConstruct),
-        }
-    }
-
-    /// A canonical one-line reason — the capability the compiler does not realize — INDEPENDENT of the
-    /// runtime `format!` message's specifics (offending type, arity, name). This is the registry's
-    /// `(reason …)` field.
-    pub fn reason(self) -> &'static str {
-        match self {
-            DeclineId::WasmHostPeerResourceFusion => {
-                "a host effect and a peer effect composed with a resource-escaping entrypoint"
-            }
-            DeclineId::WasmClosureTransformer => {
-                "an export that both receives and returns a closure"
-            }
-            DeclineId::WasmCompoundResultWithClosureExport => {
-                "a compound result alongside a closure export"
-            }
-            DeclineId::WasmValueFormWalkerRecursive => {
-                "a recursive-sum or runtime-collection value as a host-boundary result"
-            }
-            DeclineId::WasmBytesCrossingHostOpNoBoundaryForm => {
-                "a host op whose signature has no host-boundary form"
-            }
-            DeclineId::WasmMapPatternRuntimeMap => {
-                "matching a map-pattern payload against a runtime map"
-            }
-            DeclineId::PrimAsValueNeedsClosure => "a built-in operation used as a runtime value",
-            DeclineId::TailResumptiveFoldUnhandledForm => {
-                "an effect handler in a form the tail-resumptive fold does not specialize"
-            }
-        }
-    }
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Reject {
     /// `Some(code)` = a rejection (ill-formed); `None` = a decline (not yet built).
@@ -1662,103 +1555,5 @@ mod decline_catalog_tests {
             assert!(r.is_decline(), "declined({id:?}) must be a decline");
             assert_eq!(r.message, "specifics");
         }
-    }
-}
-
-/// Increment 2 of the unsupported-error tracker (`implementation/design/DESIGN-unsupported-tracker.md`,
-/// operator seq-286-broad): generate + drift-gate the repo-root `data/unsupported.sexp` registry FROM the
-/// `DeclineId` catalog. Lives HERE in rcdzc (the crate that owns `DeclineId`) as a `#[test]` — NOT in an
-/// xtask crate — because an xtask→rcdzc edge is a fleet-wide build-cache disaster (operator seq-102). It
-/// is the same committed-derived + drift-guard + regen shape the seed-closure-cycle forced on
-/// `wasm_abi.rs` (v-xtask-decompose confirmed: build-time-nix would re-hit the cycle). `cargo test -p
-/// rcdzc` (which the local-gate runs) IS the gate; `CADENZA_REGEN=1 cargo test …` rewrites the file.
-#[cfg(test)]
-mod unsupported_registry {
-    use super::DeclineId;
-    use std::path::PathBuf;
-
-    /// The committed registry, relative to this crate (rcdzc = implementation/seed/crates/rcdzc → 4 up).
-    fn registry_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../data/unsupported.sexp")
-    }
-
-    /// Escape a reason for a double-quoted sexpr literal (reasons are compiler-authored ASCII prose).
-    fn escape(s: &str) -> String {
-        s.replace('\\', "\\\\").replace('"', "\\\"")
-    }
-
-    /// Extract the verbatim `(blocked-on …)` block for `key` from `existing`, paren-matched. `None` if the
-    /// key/block is absent. This is the MERGE-PRESERVE: the human-authored routing survives a regen that
-    /// only refreshes the DERIVED `code`/`reason` — so a regen is a field-merge, never a clobber, and a
-    /// blocked-on edit alone keeps `render(file) == file` (the drift-gate stays green on human edits;
-    /// only a DERIVED-field change reds it).
-    fn preserved_blocked_on(existing: &str, key: &str) -> Option<String> {
-        let anchor = format!("(unsupported {key}\n");
-        let form_start = existing.find(&anchor)?;
-        let bo_start = form_start + existing[form_start..].find("(blocked-on")?;
-        let bytes = existing.as_bytes();
-        let mut depth = 0usize;
-        for i in bo_start..bytes.len() {
-            match bytes[i] {
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(existing[bo_start..=i].to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    /// Render the full registry from `DeclineId::ALL` (STABLE declared order → byte-deterministic),
-    /// preserving each entry's `(blocked-on …)` from `existing`.
-    fn render(existing: &str) -> String {
-        let mut s = String::from(HEADER);
-        s.push_str("(do\n");
-        for &id in DeclineId::ALL {
-            let key = id.key();
-            let code = id.code().map(|c| c.code()).unwrap_or("none");
-            let reason = escape(id.reason());
-            let blocked_on = preserved_blocked_on(existing, key)
-                .unwrap_or_else(|| "(blocked-on (status unowned))".to_string());
-            s.push_str(&format!(
-                "  (unsupported {key}\n    (code {code})\n    (reason \"{reason}\")\n    {blocked_on})\n"
-            ));
-        }
-        s.push_str(")\n");
-        s
-    }
-
-    const HEADER: &str = "\
-; data/unsupported.sexp — the auto-generated registry of every construct rcdzc declines to compile.
-; GENERATED from the DeclineId catalog (rcdzc/src/diag.rs) by the `unsupported_registry` test
-; (`CADENZA_REGEN=1 cargo test -p rcdzc unsupported_registry` rewrites it). The (code …) and (reason …)
-; fields are DERIVED — do NOT hand-edit them (the drift-test reds). The (blocked-on …) block IS
-; hand-authored (status/owner/needs/ref) and is PRESERVED across regenerations — that is where triage +
-; routing-to-owning-lanes lives. Status: blocked | in-flight | permanent | design-gated | unowned.
-; (Unsupported-error tracker, operator seq-286-broad.)
-";
-
-    /// The drift gate: the committed registry must equal a regen from the current catalog (derived fields
-    /// refreshed, blocked-on preserved). A new/removed id or a changed code/reason reds until regenerated.
-    /// `CADENZA_REGEN=1` rewrites instead of asserting (the regen path).
-    #[test]
-    fn registry_is_current_with_the_catalog() {
-        let path = registry_path();
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        let source = render(&existing);
-        if std::env::var_os("CADENZA_REGEN").is_some() {
-            std::fs::write(&path, &source).expect("write data/unsupported.sexp");
-            return;
-        }
-        assert_eq!(
-            existing, source,
-            "data/unsupported.sexp is OUT OF DATE with the DeclineId catalog (a new/removed decline id or \
-             a changed code/reason). Regenerate: `CADENZA_REGEN=1 cargo test -p rcdzc unsupported_registry` \
-             then commit data/unsupported.sexp. (blocked-on edits are preserved and never red this gate.)"
-        );
     }
 }

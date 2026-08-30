@@ -1,0 +1,29 @@
+# xtask-codegen-declines — generate rcdzc's DeclineId catalog (`rcdzc/src/diag/declines_generated.rs`)
+# FROM the hand-authored `data/unsupported.sexp` source of truth. Increment 2 of the unsupported-error
+# tracker (implementation/design/DESIGN-unsupported-tracker.md, operator seq-286-broad + seq-106).
+#
+# Operator seq-106 dependency direction: sexpr (SOURCE) -> xtask codegen -> rust module -> rcdzc CONSUMES.
+# This bin reads the sexpr as cadenza-ast BINARY (via `cdz convert`, the codegen IR — no-json) and emits
+# the DeclineId enum + impl as rust tokens. It deps ONLY cadenza-ast (+ the rust-emit stack) — NOT rcdzc,
+# so `cargo xtask fleet …` (the fleet hot path) never rebuilds the compiler (operator seq-102 caching).
+# Mirrors xtask-codegen-wasm-abi 1:1, minus the wasm-encoder oracle (the sexpr IS the sole source of truth
+# for decline codes — there is no external oracle to cross-check). A cdzDeclines nix drift-check (v-nix)
+# regenerates + diffs the committed module (seed-closure cycle rules out a build-time overlay).
+[package]
+name = "xtask-codegen-declines"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "xtask-codegen-declines"
+path = "src/main.rs"
+
+[dependencies]
+# The AST + binary codec — the codegen IR (reads data/unsupported.sexp's cadenza-ast BINARY). No rcdzc.
+cadenza-ast = { path = "../../../implementation/seed/crates/cadenza-ast" }
+# The rust-emit stack: build the module as a token tree (`quote!`), pretty-print (prettyplease) + rustfmt.
+prettyplease = "0.2"
+syn = { version = "2", features = ["full", "parsing"] }
+quote = "1"
+proc-macro2 = "1"
