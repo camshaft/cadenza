@@ -23,7 +23,7 @@
 //! `(. m x)` projects the value and `((. m f) a)` applies the lambda — the same shapes the do-local `def`
 //! scope already realizes, now grouped under a record.
 
-use crate::ast::{Arenas, Leaf, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, Leaf, Struct, StructId};
 use crate::db::{Def, ModuleDecl};
 use crate::fxhash::{FxHashMap, FxHashSet};
 use crate::prelude::{push_atom, push_list};
@@ -57,10 +57,12 @@ fn module_record(
     module_form: StructId,
     synth_by_occ: &FxHashMap<StructId, StructId>,
 ) -> StructId {
-    // The record PRIMITIVE head is the STRING `"record"` (the bare NAME `record` is a shadowable prelude
-    // alias); a compiler-synthesized record uses the string head so it resolves structurally to
-    // `Resolved::Record` independent of any user binding of `record`, exactly as `sums`/`effects` do.
-    let head = push_atom(ast, Leaf::Str("record".into()));
+    // The record head is the NATIVE ctor-LEAF (`Leaf::Ctor(Record)`, M2/M3 — recognized by kind, not head
+    // text), so a compiler-synthesized record resolves structurally to `Resolved::Record` independent of any
+    // user binding of the shadowable prelude alias `record`. The ctor-leaf is unshadowable exactly like the
+    // legacy `"record"` STRING head it replaces (both dispatch via `compound_ctor_prim` = leaf-or-string), so
+    // this is behavior-preserving while shedding a string head ahead of the M3 reader-flip.
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let mut children = vec![head];
     // `(module NAME def…)` — the members are everything after NAME (index 0 of the tail).
     let members: Vec<StructId> = ast
@@ -118,15 +120,15 @@ fn module_record(
     // with an export and are reached by `(. m (meta capabilities))` — never as a plain field (a declared
     // effect `log` is not itself an export; projecting `(. m log)` is the closed-record CDZ0201). Only
     // added when non-empty: an empty `(list)` has no determined element type, and a module that delegates
-    // nothing carries no capability metadata to observe. Built with the `"list"`/`"record"` STRING heads
-    // (like the record itself) so it resolves structurally, independent of any user binding of those names.
+    // nothing carries no capability metadata to observe. Built with the NATIVE `Leaf::Ctor(List)` head (like
+    // the record above) so it resolves structurally, independent of any user binding of the `list` alias.
     //= spec/capabilities/core-semantics.md#a-module-carries-its-manifest-and-entry-as-metadata
     //# A module MUST carry the capabilities it declares as metadata separate from its exported fields, so that a declared capability is not itself an export.
     //= spec/capabilities/core-semantics.md#a-module-carries-its-manifest-and-entry-as-metadata
     //# A module's metadata MUST be reachable by a metadata key distinct from every export name, so that metadata access cannot collide with an export.
     let caps = module_capabilities(ast, &members);
     if !caps.is_empty() {
-        let list_head = push_atom(ast, Leaf::Str("list".into()));
+        let list_head = push_atom(ast, Leaf::Ctor(CompoundCtor::List));
         let mut list_children = vec![list_head];
         for name in caps {
             list_children.push(push_atom(ast, Leaf::Str(name.into())));
