@@ -69,6 +69,18 @@ jobs:
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true"
+      # PUSH the warmed first-party closure to the shared camshaft cachix cache (v-nix #6213 substituter;
+      # this workflow is the PRIMARY pusher — it builds the WIDEST heavy closure: cargo-artifacts + store +
+      # seed-compiler + the cad-tests check = exactly the paths agents/CI cold-rebuild). cachix-action's
+      # post-step pushes paths built during this run; DEDUPs (already-present = cheap no-op). Placed BEFORE
+      # the warm builds so it captures them. Default-branch-gate (save-on-default): cache-warm only runs on
+      # main (schedule/dispatch), but the explicit gate keeps it push-on-main-only if the trigger ever widens.
+      # Pull is already fleet-wide via accept-flake-config (#6215). Bumped to @v16 per v-nix.
+      - uses: cachix/cachix-action@v16
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          name: camshaft
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       # SAVE-ON-SUCCESS SPLIT (v-nix+v-ft 2026-08-06): cache-warm does NOT use the shared nix-store-cache
       # composite (which the 10 checks.yml jobs use for combined restore+save) — it splits restore + save so
       # the SAVE can be gated on JOB success. WHY: a cache-warm run that FAILS a later step (e.g. the 10:01
