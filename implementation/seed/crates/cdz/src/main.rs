@@ -7067,30 +7067,39 @@ fn run_sidecar_many(
     arenas: &cadenza_syntax::Arenas,
     requests: &[cadenza_compile_abi::Request],
 ) -> cadenza_compile_abi::CompileOutput {
-    // Under `!standalone` (the nix delegating build), a SINGLE query spawns `cdz-compile` instead of
-    // running the compiler in-process — the request is built as a binary-AST tree via cadenza-syntax and
-    // the single result artifact is captured off `cdz-compile`'s `-o -` stdout. A batch (`--where`, N
-    // requests) or a non-query returns `None` and falls through to the in-process path below (rcdzc is
-    // still linked; delegating the batch reader is a later slice, gated on positional result naming).
+    // Under `!standalone` (the thin dispatcher, which does NOT link `rcdzc`), a SINGLE query spawns
+    // `cdz-compile` — the request rides as a binary-AST tree and the one result artifact is captured off
+    // `cdz-compile`'s `-o -` stdout. A batch (`--where`, N requests) / non-query DECLINES: the delegate
+    // protocol is single-result today (positional result naming for a batch is a later slice), and this
+    // build cannot run the batch in-process without `rcdzc`. Under `standalone`, `rcdzc` is linked and the
+    // whole batch runs in one warm-`Db` compile.
     #[cfg(not(feature = "standalone"))]
     {
         if let Some(out) = delegate::run_sidecar_delegated(arenas, requests, PROG) {
             return out;
         }
+        delegate::sidecar_batch_unsupported(PROG)
     }
-    let ast = cadenza_syntax::codec::encode(arenas);
-    let sidecar = cadenza_compile_abi::sidecar::encode(requests);
-    let inputs = vec![
-        cadenza_compile_abi::Artifact::new(cadenza_compile_abi::Artifact::KIND_AST, "main", ast),
-        cadenza_compile_abi::Artifact::new(
-            cadenza_compile_abi::sidecar::KIND_SIDECAR,
-            "drive",
-            sidecar,
-        ),
-    ];
-    // No emit target: a query-only run (`DESIGN-sidecar-api.md` query-only mode). The stack guard keeps
-    // pathologically deep input a decline, not a crash.
-    rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+    #[cfg(feature = "standalone")]
+    {
+        let ast = cadenza_syntax::codec::encode(arenas);
+        let sidecar = cadenza_compile_abi::sidecar::encode(requests);
+        let inputs = vec![
+            cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::Artifact::KIND_AST,
+                "main",
+                ast,
+            ),
+            cadenza_compile_abi::Artifact::new(
+                cadenza_compile_abi::sidecar::KIND_SIDECAR,
+                "drive",
+                sidecar,
+            ),
+        ];
+        // No emit target: a query-only run (`DESIGN-sidecar-api.md` query-only mode). The stack guard keeps
+        // pathologically deep input a decline, not a crash.
+        rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+    }
 }
 
 /// Run a SINGLE-RESULT sidecar query over already-prepared `inputs` (a multi-file / package query — the
@@ -8121,7 +8130,12 @@ fn build_relational_query(
     Ok(q)
 }
 
-#[cfg(test)]
+// The cdz unit-test suite exercises the IN-PROCESS compiler path (rcdzc: manifest→compile, the sidecar
+// query readers, fix appliers, the in-process test runner), so it belongs to the `standalone` build. The
+// thin `!standalone` dispatcher (which links no rcdzc) delegates to `cdz-compile`/`cdz-run` and is covered
+// by the nix integration suite, not these unit tests — so gate the module `standalone`-only (the
+// rcdzc-optional flip: a `--no-default-features` build has no rcdzc to run them in-process).
+#[cfg(all(test, feature = "standalone"))]
 mod tests {
     use super::*;
     // Fix-engine internals the perf-regression tests drive directly (now in the `fix` module).

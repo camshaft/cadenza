@@ -34,7 +34,7 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 # type-at <node>)` tree) via the front-end's Builder, byte-identical to `rcdzc::sidecar::encode`. Same
 # `num-bigint` version cadenza-syntax's `Leaf::Int { value: BigInt }` uses (already in the workspace lock).
 num-bigint = "0.4"
-rcdzc = { path = "../rcdzc" }
+rcdzc = { path = "../rcdzc", optional = true }
 # The compile-BOUNDARY contract types (`Target`, `OptLevel`, the kinded `Artifact`, the sidecar
 # `Request`/`Query` + its `encode`/`decode` codec + `KIND_*` result kinds, `CompileOutput`) — the wire
 # vocabulary `cdz` and `rcdzc` agree on across the compiler seam (the `cadenza-ast` analogue for the
@@ -141,4 +141,4 @@ cedar = ["cadenza-syntax/cedar"]
 # run in-process in BOTH configs (so `rcdzc` stays a NON-optional dep for now). A later slice delegates those
 # too and flips `standalone = ["dep:rcdzc"]` + `rcdzc = { optional = true }`, at which point a `!standalone`
 # build drops `rcdzc` from its closure entirely (the full caching win).
-standalone = []
+standalone = ["dep:rcdzc"]
