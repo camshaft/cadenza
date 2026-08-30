@@ -331,6 +331,22 @@
   (input  (do (def (get-h r) (. r heigth)) (def (main) (get-h #record((= width 10) (= height 20)))) (export main)))
   (error  CDZ0212 (message "did you mean `height`?") (fix (kind replace) (replacement "height") (unverified))))
 
+; The CONSTRUCTION twin of the member-access field typo above: a record literal supplied to a variant
+; constructor whose payload is a `(Record …)` type, with one key a plausible typo of the expected field
+; (`yy` for `y`). The reject (CDZ0201) (a) carries the structural field-diff TAIL (which fields are
+; missing / not expected) so the reader is not left to diff two whole record renders, and (b) offers the same
+; heuristic RENAME fix on the misspelled KEY token that a `(. r yy)` access typo gets — correcting the key to
+; `y` clears the fault (the replace fix's target). An AMBIGUOUS two-field slip (`aa`/`bb`, neither a confident
+; near-miss) still guides with the field-diff but offers NO auto-fix (not one confident edit). (Migrated from
+; rcdzc a_misspelled_field_in_a_constructed_record_names_the_field_and_offers_a_rename.)
+(case "a misspelled field in a constructed record names the field-diff and offers a rename fix"
+  (input  (do (type P (Mk (Record (: x Int64) (: y Int64)))) (def (f) (P.Mk #record((= x 1) (= yy 2)))) (export f)))
+  (error  CDZ0201 (message "missing field `y`") (message "no such field `yy`") (fix (kind replace) (replacement "y") (unverified))))
+
+(case "an ambiguous two-field constructed-record slip guides with the field-diff but offers no confident fix"
+  (input  (do (type P (Mk (Record (: x Int64) (: y Int64)))) (def (f) (P.Mk #record((= aa 1) (= bb 2)))) (export f)))
+  (error  CDZ0201 (message "missing fields") (no-fix)))
+
 (case "merging two records with disjoint fields unions their fields"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint:
            `Record.merge` combines two records into one whose field set is the union, each field bound to
