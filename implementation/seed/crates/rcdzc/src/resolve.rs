@@ -539,8 +539,8 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         .and_then(|t| t.first())
                         .and_then(|&s| db.ast.as_name(s))
                         .unwrap_or("operation");
-                    Resolved::Poison(Reject::decline(format!(
-                        "built-in `{op}` is not yet realized"
+                    Resolved::Poison(Reject::unsupported(format!(
+                        "built-in `{op}` is not supported"
                     )))
                 }
                 // `(intrinsic NAME)` — a prelude built-in operation VALUE. Resolves to the operation
@@ -1846,8 +1846,8 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
                 operand: scrutinee,
                 key,
             },
-            None => Resolved::Poison(Reject::decline(
-                "a nested compound sub-pattern inside a record match pattern is not yet supported \
+            None => Resolved::Poison(Reject::unsupported(
+                "a nested compound sub-pattern inside a record match pattern is not supported \
                  (a record match binds its fields to bare names; destructure a nested field with a \
                  further `match` or `let`)",
             )),
@@ -1890,7 +1890,7 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
         // gap the coded-head discipline (Inc 39/40, the list/map/record-match coded declines) closes.
         return Some(Resolved::Poison(Reject::coded(
             Code::Malformed,
-            "a record sub-pattern nested inside a tuple/list/constructor match pattern is not yet \
+            "a record sub-pattern nested inside a tuple/list/constructor match pattern is not \
              supported (a record match binds its fields to bare names at the top level; destructure a \
              nested record with a further `match` or `let`)",
         )));
@@ -6570,7 +6570,7 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
         Some(sym) => sym,
         None => {
             return Resolved::Poison(Reject::decline(
-                "a computed member key is not yet supported",
+                "a computed member key is not supported; use a Map for dynamic keyed access",
             ));
         }
     };
