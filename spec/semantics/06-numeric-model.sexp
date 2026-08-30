@@ -14283,3 +14283,44 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 31 Int64))
   (call main (: 0 Int64)) (output (: 20 Int64)))
+
+(case "ck1 a capturing closure that ESCAPES into a sibling def's initializer AND is applied directly is materialized ONCE"
+  (doc "The #5980 acceptance face (breaker adv-closure-escape-plus-direct-use lineage): a closure f
+        capturing a list escapes into a SIBLING value-def's initializer (#list(f)) — an escape the
+        binding-use collector's do-arm previously UNCOUNTED, so the call-both-ways force-keep misfired
+        and f was beta-substituted; the residual direct (f 2) then read its closure cell from the
+        param slot — INVALID wasm ('type mismatch: expected i32, found i64'). Now force-kept: extract
+        the stored copy via List.at and apply it (xs[0]=n), plus the direct application (xs[2]=3).
+        n=7 → 7+3 = 10; n=0 → 0+3 = 3. Rust-agreed. (The hop declines this shape — captured-variable
+        resolution, a known not-yet face. The DOUBLED-in-one-literal + direct residual is the open
+        adv-closure-doubled-in-literal queue witness.)")
+  (input (do
+    (def (main (: n Int64))
+      (do
+        (def xs #list(n 2 3))
+        (def f (fn ((: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1))))
+        (do (def bag1 #list(f))
+            (+ (match (List.at bag1 0) ((Some g) (g 0)) ((None _u) -9)) (f 2)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 10 Int64))
+  (call main (: 0 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 3))
+
+(case "ck2 a closure DOUBLED inside one collection literal AND applied directly runs (dup-counted per occurrence)"
+  (doc "The #6022 acceptance face (the #5980 residual, adv-closure-doubled-in-literal lineage):
+        is_heap_type omitted Ty::Fn, so a fully-solved closure was never a Perceus retain candidate —
+        zero dups — and #list(f f) DOUBLE-FREED the rc=1 cell (call_indirect unreachable on every
+        input, while rust computed 5). Now Ty::Fn classifies as heap and mark_binder_dups emits the
+        per-occurrence dups: bag2[1]=f applied (xs[1]=2) + the residual direct (f 2) (xs[2]=3) →
+        2+3 = 5 for ANY n. Rust-agreed; live bounded (the closure+capture retention family).")
+  (input (do
+    (def (main (: n Int64))
+      (do
+        (def xs #list(n 2 3))
+        (def f (fn ((: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1))))
+        (do (def bag2 #list(f f))
+            (+ (match (List.at bag2 1) ((Some g) (g 1)) ((None _u) -9)) (f 2)))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 5 Int64))
+  (call main (: 0 Int64)) (output (: 5 Int64))
+  (live-objects known-leak 4))
