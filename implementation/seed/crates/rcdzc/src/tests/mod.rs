@@ -5693,20 +5693,9 @@ fn a_partial_application_of_a_performing_closure_under_a_handler_declines_cleanl
     );
 }
 
-/// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
-/// compiler DECLINES asking for an annotation rather than inventing a width.
-#[test]
-fn an_unannotated_exported_parameter_declines() {
-    use crate::testkit::parse;
-    let src = "(module m (def (id x) x) (export id))";
-    let msg = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("must decline")
-        .message;
-    assert!(
-        msg.contains("ambiguous") || msg.contains("annotate"),
-        "got: {msg}"
-    );
-}
+// (an_unannotated_exported_parameter_declines migrated to corpus 07-type-system: "an exported
+// function with an unannotated parameter is rejected as ambiguous" — CDZ0201 (message "ambiguous"),
+// (do (def (id x) x) (export id)). Deleted its /// doc block too to avoid an orphaned-doc clippy red.)
 
 // ── runtime integer ops, width-generic: the full operator set over boundary parameters ──────────
 //

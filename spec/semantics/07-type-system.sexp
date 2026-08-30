@@ -816,6 +816,14 @@
   (input  (do (def (main) (: (None) (Option Int64))) (export main)))
   (output (: (None unit) (Option Int64))))
 
+; An EXPORTED function with an unannotated parameter and NO grounding call site leaves the parameter
+; type unconstrained at the export boundary — a rejection naming the ambiguity / the annotate fix.
+; Contrast the polymorphic-instantiation cases (a call site grounds `id`'s param); a direct export has
+; nothing to infer from. (Migrated from rcdzc an_unannotated_exported_parameter_declines.)
+(case "an exported function with an unannotated parameter is rejected as ambiguous"
+  (input  (do (def (id x) x) (export id)))
+  (error  CDZ0201 (message "ambiguous")))
+
 (case "a USER-declared monomorphic sum's Some variant escapes to the host rendering its bare name"
   (doc    "A user `(type Option (Some Int64) None)` (monomorphic, shadowing the prelude generic Option) —
            `(Option.Some 5)` escapes as the program result, a compile-time CONSTANT whose bytes are baked, and
