@@ -10172,12 +10172,21 @@ fn parse_failing_subchecks(nix_output: &str) -> Vec<String> {
 /// [`parse_failing_subchecks`] isn't enough on its own — say whether it's a real regression or the known
 /// nix daemon flake). If the captured build output carries a nix daemon/remote-builder TRANSIENT signature
 /// (the same false-RED family dev-gate auto-retries, #4562), it's very likely infra flake → RE-RUN before
-/// treating it as a regression; otherwise there's no transient signature → treat it as a REAL sub-check
-/// failure to route/fix. Pure so the classification is unit-tested without running nix.
+/// treating it as a regression. Else if a sub-check builder was KILLED under load (exit 137/143 or signal
+/// 9/15 — a contention-kill, see [`crate::fast_gate_output_is_contention_kill`]), that's also NOT a real
+/// regression → RE-RUN when quieter (this closes the false-HOLD class where a killed sub-check carried no
+/// remote-transient signature and got mislabeled REAL). Otherwise there's no transient/kill signature →
+/// treat it as a REAL sub-check failure to route/fix. ADVISORY ONLY — never changes the RED verdict, so a
+/// genuine failure mislabeled here is at worst re-run, never merged. Pure so the classification is
+/// unit-tested without running nix.
 fn gate_local_hold_advisory(captured: &str) -> &'static str {
     if crate::fast_gate_output_is_remote_transient(captured) {
         "gate-local: NOTE — the failure output matches a known nix daemon/remote-builder TRANSIENT (same \
          family dev-gate auto-retries #4562); RE-RUN gate-local before treating this as a regression."
+    } else if crate::fast_gate_output_is_contention_kill(captured) {
+        "gate-local: NOTE — a sub-check builder was KILLED (exit 137/143 or signal 9/15 = SIGKILL/SIGTERM \
+         from the OOM-killer, a reaper, or the loop timeout under check-lease contention), NOT a test/compile \
+         failure; RE-RUN gate-local when the box is quieter before treating this as a regression."
     } else {
         "gate-local: NOTE — no nix-transient signature in the output; treat this as a REAL sub-check \
          failure (a regression to route/fix), not infra flake."
@@ -16827,10 +16836,21 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(
             gate_local_hold_advisory("Invalid BuildResult status from remote").contains("RE-RUN")
         );
-        // A genuine sub-check builder failure → advise treating it as a REAL regression.
+        // A contention-KILLED sub-check (SIGKILL 137 / signal 9 under load) → advise RE-RUN, not a
+        // regression (the false-HOLD class: no remote-transient signature, so it used to fall to REAL).
+        let killed = "error: builder for '/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-oracle.drv' \
+                      failed with exit code 137";
+        assert!(gate_local_hold_advisory(killed).contains("KILLED"));
+        assert!(gate_local_hold_advisory(killed).contains("RE-RUN"));
+        assert!(!gate_local_hold_advisory(killed).contains("REAL sub-check"));
+        // A genuine sub-check builder failure (exit 1 / a crash signal) → advise treating it as a REAL
+        // regression, NOT a contention-kill re-run.
         let real = "error: builder for '/nix/store/cccccccccccccccccccccccccccccccc-corpus-09-functions.drv' \
                     failed with exit code 1";
         assert!(gate_local_hold_advisory(real).contains("REAL sub-check"));
+        let crashed = "error: builder for '/nix/store/dddddddddddddddddddddddddddddddd-oracle.drv' \
+                       failed due to signal 11 (SIGSEGV)";
+        assert!(gate_local_hold_advisory(crashed).contains("REAL sub-check"));
     }
 
     #[test]
