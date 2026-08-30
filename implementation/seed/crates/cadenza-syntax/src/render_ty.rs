@@ -34,15 +34,16 @@
 //! - `(Nominal NAME <decl> (args…) INNER)` — identity is the NAME; the `<decl>`, `(args…)`, and `INNER`
 //!   are hidden → the declared `NAME` only.
 //! - `(Var N)` — a type-variable number → `_` in [`render_ty`], a stable letter in [`render_ty_scheme`].
-//! - `(Qty INNER (unit (base NAME EXP)… [(scale N D)]))` — increment-1 renders via the total generic
-//!   translation (structure-preserving surface node); `Unit::render` parity (`(Qty <inner> (Unit.base …))`)
-//!   is a deferred increment-2 (units are rare in export signatures).
+//! - `(Qty INNER (unit (base NAME EXP)… [(scale N D)]))` → `(Qty <inner> <unit>)` with the unit in
+//!   `Unit::render`'s canonical written form (`Unit.one` / `(Unit.base #"n")` / `(Unit.^ … k)` / left-nested
+//!   `(Unit.* …)`); the `(scale …)` item is round-trip fidelity only, not part of the name. See
+//!   [`unit_surface`].
 //!
 //! TOTAL: an unknown head or a malformed/short subtree translates to a defined fallback surface node (its
 //! raw shape recursed, else `?`), NEVER a panic — these feed editor hover on possibly-incomplete programs.
 //! A DEPTH GUARD (mirroring `render_name`'s `MAX_RENDER_DEPTH`) truncates an explosively-deep type with `…`.
 
-use crate::ast::{Arenas, Builder, Leaf, Struct, StructId};
+use crate::ast::{Arenas, Builder, Leaf, Radix, Struct, StructId};
 use std::collections::BTreeMap;
 
 /// The recursion cap — mirrors `rcdzc` `Ty::render_name`'s `MAX_RENDER_DEPTH` (24): a diagnostic never
@@ -215,9 +216,20 @@ fn transform(
             }
             _ => name(b, "_"),
         },
-        // `Qty` (increment-1: the total generic translation; `Unit::render` parity is increment-2) and any
-        // unrecognized head fall back to a total, structure-preserving surface node (honoring the var map
-        // for any inner type).
+        // A quantity: `(Qty <inner'> <unit'>)` — byte-parity with `Ty::render_name`'s `Ty::Qty` arm (which
+        // renders `(Qty <inner> <unit>)` with the unit in `Unit::render`'s canonical written form). The
+        // inner numeric type translates ordinarily; the `(unit …)` payload node translates via
+        // [`unit_surface`]. A malformed unit node falls through to the generic translation.
+        "Qty" if kids.len() == 3 => match unit_surface(a, kids[2], b) {
+            Some(unit_node) => {
+                let h = name(b, "Qty");
+                let inner = transform(a, kids[1], d, vars, b);
+                b.list(vec![h, inner, unit_node])
+            }
+            None => generic(a, &kids, depth, vars, b),
+        },
+        // Any unrecognized head falls back to a total, structure-preserving surface node (honoring the var
+        // map for any inner type).
         _ => generic(a, &kids, depth, vars, b),
     }
 }
@@ -242,6 +254,71 @@ fn generic(
         items.push(transform(a, c, depth + 1, vars, b));
     }
     b.list(items)
+}
+
+/// Translate a `(unit (base NAME EXP)… [(scale N D)])` payload node into the canonical written unit
+/// SURFACE node, byte-parity with `rcdzc`'s `Unit::render`: the dimensionless (empty) unit is the atom
+/// `Unit.one`; a base to the first power is `(Unit.base #"name")`; a base to power `k` is
+/// `(Unit.^ (Unit.base #"name") k)`; a product of several is a left-nested `(Unit.* …)`. The base factors
+/// are already in the sorted order `encode_ty` wrote (the `BTreeMap` order `Unit::render` also walks), so
+/// the factor order matches. The `(scale N D)` item (present only for a non-reference-scale unit) is NOT
+/// part of the type-NAME surface (`Unit::render` reads only the base→exponent map — a scaled base like
+/// `kilometer` carries its prefix in the NAME, not a `Unit.prefix`/quotient node, which are the VALUE
+/// surface's `render_value_form`, not this one) and is skipped. The base name is a `Sym` leaf (prints
+/// `#"name"`); `Unit.base`/`Unit.^`/`Unit.*` are bare `Name` atoms (the printer leaves the dotted word
+/// verbatim). Returns `None` if the node is not a well-formed `(unit …)` list so the caller falls back to
+/// the generic translation.
+fn unit_surface(a: &Arenas, id: StructId, b: &mut Builder) -> Option<StructId> {
+    let Struct::List(kids) = a.get(id) else {
+        return None;
+    };
+    let kids = kids.clone();
+    if kids.first().and_then(|&h| a.as_name(h)) != Some("unit") {
+        return None;
+    }
+    let mut factors: Vec<StructId> = Vec::new();
+    for &child in &kids[1..] {
+        let Struct::List(item) = a.get(child) else {
+            return None;
+        };
+        let item = item.clone();
+        match item.first().and_then(|&h| a.as_name(h)) {
+            // `(base NAME EXP)` — one dimension factor.
+            Some("base") if item.len() == 3 => {
+                let bname = a.as_name(item[1])?.to_string();
+                let exp = a.as_int(item[2])?.clone();
+                // (Unit.base #"name")
+                let ub = name(b, "Unit.base");
+                let sym = b.atom_leaf(Leaf::Sym(bname.into()));
+                let base_node = b.list(vec![ub, sym]);
+                let factor = if exp.to_decimal_string() == "1" {
+                    base_node
+                } else {
+                    // (Unit.^ (Unit.base #"name") k)
+                    let uexp = name(b, "Unit.^");
+                    let k = b.atom_leaf(Leaf::Int {
+                        value: exp,
+                        radix: Radix::Dec,
+                    });
+                    b.list(vec![uexp, base_node, k])
+                };
+                factors.push(factor);
+            }
+            // `(scale N D)` — carried for round-trip fidelity, not part of the type-name surface.
+            Some("scale") => {}
+            _ => return None,
+        }
+    }
+    // The dimensionless unit is `Unit.one`; otherwise a left-nested `(Unit.* …)` product of the factors.
+    let Some((&first, rest)) = factors.split_first() else {
+        return Some(name(b, "Unit.one"));
+    };
+    let mut acc = first;
+    for &f in rest {
+        let umul = name(b, "Unit.*");
+        acc = b.list(vec![umul, acc, f]);
+    }
+    Some(acc)
 }
 
 /// Collect DISTINCT `(Var N)` numbers in first-encounter order, visiting the SAME children `transform`
@@ -543,24 +620,120 @@ mod tests {
         assert_eq!(b.name_of(r), "(Int64)");
     }
 
+    // (base NAME EXP)
+    fn base(b: &mut B, name: &str, exp: i64) -> StructId {
+        let h = b.n("base");
+        let nm = b.n(name);
+        let e = b.i(exp);
+        b.l(vec![h, nm, e])
+    }
+
     #[test]
-    fn qty_increment_1_generic_surface_is_total() {
-        // Increment-1: a Qty payload renders via the total generic translation — no bespoke Unit
-        // formatting yet (increment-2). It must NOT panic and must preserve the structure + inner type.
-        // (Qty Float64 (unit (base meter 1))).
+    fn qty_unit_render_parity() {
+        // increment-2: Qty renders `(Qty <inner> <unit>)` with the unit in Unit::render's written form.
+        // (Qty Float64 (unit (base meter 1))) -> "(Qty Float64 (Unit.base #\"meter\"))"
         let mut b = B::new();
         let inner = b.width_ty("Float", 64);
-        let bhead = b.n("base");
-        let bname = b.n("meter");
-        let bexp = b.i(1);
-        let base = b.l(vec![bhead, bname, bexp]);
-        let uhead = b.n("unit");
-        let unit = b.l(vec![uhead, base]);
+        let m = base(&mut b, "meter", 1);
+        let uh = b.n("unit");
+        let unit = b.l(vec![uh, m]);
         let qh = b.n("Qty");
         let r = b.l(vec![qh, inner, unit]);
-        // The generic surface node: head + inner (Float64) + the recursed unit node (the width `1` prints
-        // as its literal, not a placeholder). This is the deferred form, pinned so increment-2 can flip it.
-        assert_eq!(b.name_of(r), "(Qty Float64 (unit (base meter 1)))");
+        assert_eq!(b.name_of(r), "(Qty Float64 (Unit.base #\"meter\"))");
+        // exponent > 1: (base meter 2) -> "(Unit.^ (Unit.base #\"meter\") 2)"
+        let mut b = B::new();
+        let inner = b.width_ty("Float", 64);
+        let m = base(&mut b, "meter", 2);
+        let uh = b.n("unit");
+        let unit = b.l(vec![uh, m]);
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, inner, unit]);
+        assert_eq!(
+            b.name_of(r),
+            "(Qty Float64 (Unit.^ (Unit.base #\"meter\") 2))"
+        );
+        // dimensionless: (unit) -> "Unit.one"
+        let mut b = B::new();
+        let inner = b.width_ty("Float", 64);
+        let uh = b.n("unit");
+        let unit = b.l(vec![uh]);
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, inner, unit]);
+        assert_eq!(b.name_of(r), "(Qty Float64 Unit.one)");
+        // product (left-nested): meter * second (both exp 1)
+        let mut b = B::new();
+        let inner = b.width_ty("Float", 64);
+        let m = base(&mut b, "meter", 1);
+        let s = base(&mut b, "second", 1);
+        let uh = b.n("unit");
+        let unit = b.l(vec![uh, m, s]);
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, inner, unit]);
+        assert_eq!(
+            b.name_of(r),
+            "(Qty Float64 (Unit.* (Unit.base #\"meter\") (Unit.base #\"second\")))"
+        );
+        // velocity: meter^1 * second^-1 — negative exponent uses (Unit.^ … -1) (TYPE surface, not the
+        // value surface's quotient).
+        let mut b = B::new();
+        let inner = b.width_ty("Float", 64);
+        let m = base(&mut b, "meter", 1);
+        let s = base(&mut b, "second", -1);
+        let uh = b.n("unit");
+        let unit = b.l(vec![uh, m, s]);
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, inner, unit]);
+        assert_eq!(
+            b.name_of(r),
+            "(Qty Float64 (Unit.* (Unit.base #\"meter\") (Unit.^ (Unit.base #\"second\") -1)))"
+        );
+    }
+
+    #[test]
+    fn qty_scale_item_skipped_and_inner_var_honored() {
+        // A non-reference-scale unit encodes a trailing (scale N D); it is NOT part of the type name.
+        // (Qty Int64 (unit (base kilometer 1) (scale 1000 1))) -> "(Qty Int64 (Unit.base #\"kilometer\"))"
+        let mut b = B::new();
+        let inner = b.width_ty("Int", 64);
+        let km = base(&mut b, "kilometer", 1);
+        let sh = b.n("scale");
+        let sn = b.i(1000);
+        let sd = b.i(1);
+        let scale = b.l(vec![sh, sn, sd]);
+        let uh = b.n("unit");
+        let unit = b.l(vec![uh, km, scale]);
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, inner, unit]);
+        assert_eq!(b.name_of(r), "(Qty Int64 (Unit.base #\"kilometer\"))");
+        // inner var: (Qty (Var 0) (unit (base meter 1))) — mono "_", scheme "a" (unit carries no vars).
+        let mut b = B::new();
+        let v = b.var(0);
+        let m = base(&mut b, "meter", 1);
+        let uh = b.n("unit");
+        let unit = b.l(vec![uh, m]);
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, v, unit]);
+        assert_eq!(b.name_of(r), "(Qty _ (Unit.base #\"meter\"))");
+        let mut b = B::new();
+        let v = b.var(0);
+        let m = base(&mut b, "meter", 1);
+        let uh = b.n("unit");
+        let unit = b.l(vec![uh, m]);
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, v, unit]);
+        assert_eq!(b.scheme_of(r), "(Qty a (Unit.base #\"meter\"))");
+    }
+
+    #[test]
+    fn qty_malformed_unit_falls_to_generic() {
+        // A Qty whose unit node is not a well-formed `(unit …)` renders via the generic translation
+        // (total, never panics).
+        let mut b = B::new();
+        let inner = b.width_ty("Float", 64);
+        let bogus = b.n("Bogus");
+        let qh = b.n("Qty");
+        let r = b.l(vec![qh, inner, bogus]);
+        assert_eq!(b.name_of(r), "(Qty Float64 Bogus)");
     }
 
     #[test]
