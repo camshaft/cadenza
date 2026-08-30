@@ -1776,38 +1776,15 @@ fn a_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
 /// message, deduped to ONE diagnostic. Sibling of the record-pattern fix.
 #[test]
 fn a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_binder() {
-    // `..` non-final (a further entry after the rest binder). Body references the value binder `v`.
-    let non_final = "(module m (def (f (: mp (Map Int64 Int64))) \
-                         (match mp ((map (1 v) .. rest (2 w)) v) (_ 0))) (export f))";
-    let all = diags_of(non_final);
-    assert!(
-        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-            && d.message.contains("map rest pattern is")
-            && d.message.contains("exactly one binder after")),
-        "the malformed map rest reports the clear rest-shape CDZ0201: {all:?}"
-    );
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
-        "no misleading 'unbound name' for the value/rest binder: {all:?}"
-    );
-    // The body references the value binder that appears AFTER `..` (`w` in the trailing `(2 w)` pair) —
-    // Copilot PR #440 / corpus-bugfix: `map_form_binds_name` only treated a BARE name after `..` as a
-    // binder, so a `(k v)` pair after `..` left its value `w` unrecognized → a spurious CDZ0101 layered
-    // on the malformed pattern. Now `w` is recognized inert (no unbound leak); one clean rest-shape reject.
-    let w_after = "(module m (def (f (: mp (Map Int64 Int64))) \
-                       (match mp ((map (1 v) .. rest (2 w)) w) (_ 0))) (export f))";
-    let all = diags_of(w_after);
-    assert!(
-        all.iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("map rest pattern is")),
-        "a body ref to a value binder after `..` still reports the rest-shape CDZ0201: {all:?}"
-    );
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
-        "no 'unbound name' for a `(k v)` value binder appearing AFTER `..` (PR #440): {all:?}"
-    );
-    // Two `..` markers — same clear message, no unbound leak.
+    // Corpus-covered facets CITE-DELETED to 05-compound-types: the SINGLE-`..` non-final malformed rest
+    // (top-level `(map (1 v) .. rest (2 w))` + the `w`-after-`..` body-ref twin) is :18844, and the
+    // NESTED-in-variant-payload twin `(Wrap (map … .. r (2 x)))` is :18849 — both CDZ0201 rest-shape,
+    // native `#map` form. What STAYS here as legit white-box residue: (a) the TWO-`..` classic-form
+    // no-unbound-leak pin below — its NATIVE `#map` form currently LEAKS a spurious CDZ0101 (queue repro
+    // #47, routed to v-ast-compound); keep the classic pin until that fix lands, then migrate to native
+    // corpus; (b) the well-formed "no false alarm" controls — a `(Map …)` entry parameter has no scalar
+    // boundary representation, so they DECLINE at the export path (not clean runnable value cases).
+    // Two `..` markers — clear rest-shape message, no unbound leak (classic form; native form is queue #47).
     let two_dots = "(module m (def (f (: mp (Map Int64 Int64))) \
                         (match mp ((map (1 v) .. r1 .. r2) v) (_ 0))) (export f))";
     let all = diags_of(two_dots);
@@ -1832,23 +1809,8 @@ fn a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_bind
             .all(|d| d.severity != crate::abi::Severity::Error),
         "a well-formed map rest pattern still checks clean: {ok_diags:?}"
     );
-    // NESTED: a malformed-rest map INSIDE a variant payload (`(Wrap (map … .. r (j w)))`) gets the
-    // SAME specific rest-shape message (not the vague "a malformed map pattern") and NO unbound leak —
-    // the `pattern_constraints` + Case-Mmr nested twin of the top-level fix.
-    let nested = "(module m (type W (Wrap (Map Int64 Int64))) \
-                      (def (f (: w W)) (match w ((Wrap (map (1 v) .. r (2 x))) v) (_ 0))) (export f))";
-    let all = diags_of(nested);
-    assert!(
-        all.iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("map rest pattern is")),
-        "a nested malformed-rest map gets the specific rest-shape message: {all:?}"
-    );
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
-        "no misleading 'unbound name' for a nested malformed-map binder: {all:?}"
-    );
-    // NO false alarm: a WELL-FORMED nested map (`.. r` final) still checks clean.
+    // NO false alarm: a WELL-FORMED nested map (`.. r` final) still checks clean (the nested MALFORMED
+    // twin is cite-deleted to corpus 05-compound-types:18849).
     let nested_ok = "(module m (type W (Wrap (Map Int64 Int64))) \
                          (def (f (: w W)) (match w ((Wrap (map (1 v) .. r)) v) (_ 0))) (export f))";
     // Bind once — `diags_of` recompiles the module (PR #1167 review).
