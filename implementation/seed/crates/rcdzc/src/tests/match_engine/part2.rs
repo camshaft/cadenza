@@ -2348,64 +2348,6 @@ fn a_tail_recursive_list_fold_compiles_to_a_constant_stack_loop() {
 }
 
 #[test]
-fn a_zero_leading_list_rest_binding_binds_over_a_runtime_list_leading_rest_is_rejected() {
-    // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern / §147: a list binding
-    // pattern is irrefutable ONLY in the ZERO-LEADING rest form `(list .. rest)` — that form matches
-    // EVERY list (empty included), binding `rest` (→ `SumPayload{RestFrom(0)}`) to the whole list, so it
-    // may appear in a `let` binder or a `def`/`fn` PARAMETER (desugared to a destructuring `let`). A
-    // LEADING-element rest `(list a .. rest)` is REFUTABLE (it misses the empty list) → CDZ0210 in a
-    // binding position, the same rule the fixed-arity form gets. (Earlier this bound unsoundly and would
-    // TRAP on the empty list — the operator/spec ruled it CDZ0210.)
-    // A LEADING-element rest in a def PARAM is now CDZ0210 (refutable — misses the empty list).
-    let head_err = compile_component(&crate::codec::encode(&crate::testkit::parse(
-        "(module m (def (head (list x .. rest)) x) (def (main) (head (list 7 8 9))) (export main))",
-    )))
-    .expect_err("a leading-element list rest param is refutable");
-    assert_eq!(
-        head_err.code.as_deref(),
-        Some("CDZ0210"),
-        "leading-element list-rest param rejects CDZ0210, got: {head_err:?}"
-    );
-
-    // A LEADING-element rest in a `let` binder is likewise CDZ0210.
-    let let_err = compile_component(&crate::codec::encode(&crate::testkit::parse(
-        "(module m (def (main) (let (((list a b .. rest) (list 1 2 3 4))) a)) (export main))",
-    )))
-    .expect_err("a leading-element list rest let binder is refutable");
-    assert_eq!(
-        let_err.code.as_deref(),
-        Some("CDZ0210"),
-        "leading-element list-rest let binder rejects CDZ0210, got: {let_err:?}"
-    );
-
-    // The zero-leading form is the ONE exemption; a fixed-arity `(list a b)` binding stays CDZ0210 too
-    // (the pre-existing rejection, unchanged).
-    let fixed_err = compile_component(&crate::codec::encode(&crate::testkit::parse(
-        "(module m (def (main) (let (((list a b) (list 1 2))) (+ a b))) (export main))",
-    )))
-    .expect_err("a fixed-arity list binding is refutable");
-    assert_eq!(fixed_err.code.as_deref(), Some("CDZ0210"));
-    // The suggestion must name the ZERO-LEADING `(list .. rest)` — the only rest form valid as a
-    // binding. It previously said "use `(list p… .. rest)`", but a LEADING-element rest is itself
-    // refutable here (asserted just above), so following that advice hits CDZ0210 again. The message
-    // now names the zero-leading form + notes the leading-element caveat, and that suggestion compiles.
-    let msg = &fixed_err.message;
-    assert!(
-        msg.contains("ZERO-LEADING `(list .. rest)`")
-            && msg.contains("leading-element `(list a .. rest)` is itself refutable"),
-        "the fixed-arity refutable message names the zero-leading rest, not a leading-element one: {msg}"
-    );
-    // ROUND-TRIP: the suggested zero-leading `(list .. rest)` binding checks clean.
-    assert!(
-            compile_component(&crate::codec::encode(&crate::testkit::parse(
-                "(module m (def (main) (let (((list .. rest) (list 1 2))) (List.len rest))) (export main))",
-            )))
-            .is_ok(),
-            "the suggested zero-leading `(list .. rest)` binding compiles"
-        );
-}
-
-#[test]
 fn a_non_tail_list_fold_is_accumulator_transformed_into_a_constant_stack_loop() {
     // THE USER'S EXACT PROGRAM: `(def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum
     // rest)))))`. The recursive call `(sum rest)` sits in an OPERAND of `+`, so it is NOT a tail call

@@ -4927,7 +4927,7 @@
            matches any length ≥ the leading count, earns the binding-position exemption; a length-fixed
            destructure must be a `match`. Pins the list refutability boundary.")
   (input  (do (def (main) (let ((#list(a b) #list(1 2))) (+ a b))) (export main)))
-  (error  CDZ0210))
+  (error  CDZ0210 (message "ZERO-LEADING") (message "is itself refutable")))
 
 ; Further ill-formed list bindings (migrated from rcdzc an_ill_formed_list_binding_pattern_is_rejected): an
 ; EMPTY `#list()` binder matches only the empty list (refutable, CDZ0210); a REST binding with a refutable
