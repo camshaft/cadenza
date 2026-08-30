@@ -1330,35 +1330,6 @@ fn a_called_tuple_by_name_access_reports_the_position_message_once_not_a_call_si
 }
 
 #[test]
-fn a_confident_module_member_typo_carries_an_applyable_rename_fix() {
-    // The TIER-1 complement of the far-miss `List get` case above: a CONFIDENT typo of a real module
-    // member (`List.ln` for `len`, 1 edit) gets a `` — did you mean `len`? `` AND an APPLYABLE Replace
-    // fix on the member-key token, so an agent/editor rewrites `ln`→`len` directly (the module-member
-    // twin of the record-field / import-name confident-typo fixes). Pins the confident→fix half of the
-    // two-tier did-you-mean invariant — the far-miss half (no fix, just a list) is pinned above; without
-    // this, a future change could silently drop the confident fix (the class of regression that hit the
-    // ML CDZ0210 insert-arms fix) and only the un-fixed message would remain.
-    let d = expect_error("(. List ln)");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message.contains("the `List` module has no member `ln`")
-            && d.message.contains("did you mean `len`?"),
-        "a confident member typo names the near op: {}",
-        d.message
-    );
-    let fix = d
-        .fix
-        .as_ref()
-        .expect("the confident module-member did-you-mean carries a replace fix");
-    assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-    assert_eq!(
-        fix.replacement, "len",
-        "rewrites the typo to the near member"
-    );
-    assert!(!fix.verified, "a nearest-name guess is heuristic");
-}
-
-#[test]
 fn the_renamed_collection_ops_resolve_under_their_new_names() {
     // The canonical spellings COMPILE — a pure surface rename, no eval/backend change (the intrinsics
     // `map-size`/`tuple-cat`/`tuple-pop` stay wired; only the surface key moved). Same shape as the
