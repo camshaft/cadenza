@@ -5477,10 +5477,13 @@ fn check(paths: &Paths, profile: &str) {
     // #6335, #6338 seq-92/93, #6341 seq-95) WITHOUT re-fmting the corpus, so ALL 6 domain src dirs are now
     // non-canonical again (verified `cdz fmt --check` exit 1 on every one). Enforcing a fmt gate while the
     // printer churns just reds the fleet on every printer bump. TRUE precondition = the printer is FROZEN
-    // (v-syntax signals "printer stable") AND a fresh whole-corpus fmt-all lands. Re-enable = flip this const
-    // true once BOTH hold + re-verify the 6-dir `fmt --check` exits 0. (Coordinated with concierge + v-nix,
-    // who is HOLDING the nix `cdzFmtCheck` wiring for the same reason.)
-    const CDZ_FMT_CHECK_ENFORCE: bool = false;
+    // (operator signals "printer stable") AND the corpus is canonical.
+    // RE-ENABLED 2026-08-30: concierge relayed the operator PRINTER-FREEZE signal ("no more formatting changes,
+    // everything looks great") — the full stream landed (#6329/#6335/#6338/#6341/#6352 seq-101 paren-fix/#6355
+    // seq-96/97 flush), and the trailing PRs re-fmt'd the corpus, so all 6 domain src dirs are canonical under
+    // the frozen printer (verified `cdz fmt --check` exit 0 + a fresh fmt-all is a NO-OP). v-nix un-holds + wires
+    // the merge-required nix `cdzFmtCheck` (#6323) in lockstep with this flip.
+    const CDZ_FMT_CHECK_ENFORCE: bool = true;
     if CDZ_FMT_CHECK_ENFORCE {
         log.step(
             "cdz-fmt-check",
