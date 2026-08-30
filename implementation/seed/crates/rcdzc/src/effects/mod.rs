@@ -6638,7 +6638,7 @@ fn rewrite_resume_to_refolded_context(
     // pyr3 post-resume let-binder gap: `(let ((r (resume s next))) (if (> r 35) then else))`). The generic
     // recursion below WOULD rewrite the init's resume to its refolded continuation, but the let BODY's
     // references to `x` resolve to the ORIGINAL initializer occurrence (the resume node), so after the
-    // rebuild they DANGLE at that bare resume and re-lower as "resume outside a lowered handler arm". Rewrite
+    // rebuild they DANGLE at that bare resume and re-lower as the bare-resume not-reducible decline. Rewrite
     // each resume-bearing init to its refolded continuation — PURE, every effect discharged — and INLINE it
     // into the body's binder references (sound to duplicate a pure value), so no binder ref is left pointing
     // at a bare resume. A sibling init reaching a FOREIGN perform is a two-hole SEQUENCE (its own leading
@@ -6668,7 +6668,7 @@ fn rewrite_resume_to_refolded_context(
     // s)))`). Same binder-refs dangling class as the let-init branch, one site over: a match-arm binder
     // reference resolves to the SCRUTINEE occurrence (the bare resume node), so the generic recursion below
     // rewrites the scrutinee's resume but leaves the arm-binder refs pointing at the original resume ->
-    // re-lower as "resume outside a lowered handler arm". Rewrite the scrutinee's resume to its refolded
+    // re-lower as the bare-resume not-reducible decline. Rewrite the scrutinee's resume to its refolded
     // (PURE -- every effect discharged) continuation, then beta_reduce the whole match with {scrutinee :=
     // refolded} so BOTH the scrutinee position AND every arm-binder reference splice the pure value (sound
     // to duplicate). Guarded: the scrutinee reaches a resume and NO arm body does (an arm-body resume is the
