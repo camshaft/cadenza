@@ -198,6 +198,16 @@
     (export main)))
   (error  CDZ0201))
 
+(case "same-width integers of different signedness do not promote (signedness alone is a mismatch)"
+  (doc    "`(+ (: 1 Int8) (: 2 UInt8))` adds two SAME-WIDTH (8-bit) integers differing ONLY in signedness.
+           The width matches, but Int8 and UInt8 are distinct integer instances that do not unify, so the
+           one generic operand-unification rule rejects it (CDZ0301) — signedness ALONE is a mismatch, not
+           just width. Complements the differing-WIDTH case above (which differs in both width AND
+           signedness); this isolates the signedness axis. (migrated from rcdzc
+           signed_and_unsigned_of_the_same_width_do_not_promote.)")
+  (input  (do (def (main) (+ (: 1 Int8) (: 2 UInt8))) (export main)))
+  (error  CDZ0301))
+
 (case "wrapping a non-integer source is rejected"
   (doc    "`(UInt8.wrap true)` applies the narrowing wrap `∀(w,s). Int^s_w -> UInt8` to a Bool source.
            `true` has no `(Int a)` instance, so unifying the source against the wrap's integer domain FAILS
