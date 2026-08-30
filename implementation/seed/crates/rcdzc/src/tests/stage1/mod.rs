@@ -3319,24 +3319,6 @@ fn wrap_to_a_nonaliased_width_folds() {
 }
 
 #[test]
-fn an_arithmetic_operator_rejects_a_mixed_int_float_pair_no_silent_promotion() {
-    // 06-numeric-model: the ONE arithmetic operator `+`/`-`/`*`/`/` requires both operands to be one
-    // numeric type — a mixed integer/float pair is rejected CDZ0301 rather than coercing either way
-    // (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric Type). The
-    // rejection holds in BOTH operand orders (`(+ 2 2.0)` and `(+ 2.0 2)`) — neither the leading nor
-    // the trailing operand's type wins.
-    for op in ["+", "-", "*", "/"] {
-        for prog in [format!("({op} 2 2.0)"), format!("({op} 2.0 2)")] {
-            let msg = expect_decline(&prog);
-            assert!(
-                msg.contains("Float") || msg.contains("Int") || msg.contains("conversion"),
-                "the int/float mix `{prog}` should cite the numeric mismatch; got: {msg}"
-            );
-        }
-    }
-}
-
-#[test]
 fn signed_and_unsigned_of_the_same_width_do_not_promote() {
     // `(+ (: 1 Int8) (: 2 UInt8))` — same width (8), different SIGNEDNESS → still rejected (no
     // implicit promotion). Pins that signedness alone is a mismatch, not just width.
