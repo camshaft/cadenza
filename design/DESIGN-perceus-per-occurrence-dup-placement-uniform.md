@@ -104,6 +104,17 @@ owner holds the real ref), let its occurrences be classified by 2.2. Then:
     all balanced by the owner, drops its surviving ref at its last use / scope end.
   - loop-exit — a loop-carried owned value dead on the exit arm (the ZIP/self-loop class).
 
+**⚠ Occurrences are counted PER CONTROL-FLOW PATH, not by a flat syntactic tally.** Mutually-exclusive
+branches (if-arms, match-arms) each run alone, so an occurrence in one arm and an occurrence in a sibling
+arm do NOT sum — they contribute the MAX over arms. Only occurrences simultaneously live on the SAME path
+sum. Concretely: a captured/owned value `a` escaping via BOTH arms of `(if c a a)` needs ONE dup (the
+executed arm consumes one reference), not two; a flat by-occurrence count (2) would OVER-retain on the
+taken path → a leak. Witnessed: `ifcap1` `(fn (q) (if (> q 0) a a))` over a captured tuple — under the
+current `len != 1` punt it gets ZERO dups → over-free (UAF); under a *naive* per-syntactic-occurrence fix
+it would get 2 dups → leak; the correct count is 1. `mark_binder_dups` ALREADY computes this correctly
+(its `live_after` / branch-aware model), which is the third reason it is the reference for the unified
+count — do NOT re-derive a flat tally over `collect_captured_occurrences`' by-index `Vec`.
+
 **The invariant that makes it sound and checkable** (Perceus §3.4, multiplicity 1): on every control
 path, `init + Σ dup_at(v) == Σ consume(v) + Σ drop(v)`. dups exactly cover the consuming/escaping
 out-flows the original doesn't; drops cover the survivors. Emit this as a debug balance assert per value
@@ -143,6 +154,9 @@ compile time, not by a corpus census.
 
 - **UAF flips:** `hczm1` (multi-escape tuple), `hczm2` (read+escape), a multi-escape LIST and MAP twin →
   PASS value + `live-objects 0` + no release trap.
+- **Path-awareness (the anti-over-dup control):** `ifcap1` `(fn (q) (if (> q 0) a a))` (capture escapes via
+  both if-arms) → `live-objects 0` (proves ONE dup, not two — a naive per-syntactic-occurrence fix leaks
+  here even while `hczm1` reaches 0); `ifcap2` (escape in one arm) stays PASS 0.
 - **No regression:** the single-escape family `hcz1`–`hcz5` stays PASS 0; the snowflake `lower` stays CAD
   138/0; the sum-payload boundary cases stay 0; the whole corpus fail-set is ADDITIVE-only (no
   `Todo→Fail`, no value-wrong, no flap — reference §8 tools).
