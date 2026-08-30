@@ -32,7 +32,7 @@ pub(super) fn is_heap_type_for_retain(ty: &Ty) -> bool {
 /// ([`capture_escapes_via_body`]): a capture that escapes via the closure body's return needs a `dup` at
 /// its `Core::Captured` read so the returned value owns an independent ref (else the monolithic cell-drop
 /// double-frees it — the hcz1/hcz2 UAF). `Copy` so the 96 recursive forwards move nothing.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum EscapeTarget {
     /// A `let`/param binding, matched by its binder `StructId` (the existing binding-escape query).
     Binder(StructId),
@@ -94,6 +94,38 @@ pub(crate) fn param_escapes_body(db: &mut Db, body: StructId, binder: StructId) 
 /// keeps escaping, and suppresses the drop → never a double-free. `None` reproduces the original
 /// conservative "any non-borrow use escapes" analysis for the 79 other callers unchanged.
 pub(super) fn binding_escapes_dup_aware(
+    db: &mut Db,
+    id: StructId,
+    binder: EscapeTarget,
+    tail_borrowed: bool,
+    dup_sites: Option<&HashSet<StructId>>,
+) -> bool {
+    // FRONT-3 MEMO (v-memory-safety sign-off): the escape verdict is a pure function of
+    // (id, binder, tail_borrowed) + the build-once-immutable Core graph — so memoize it, keyed by that FULL
+    // context (tail_borrowed is the position-dependence, so it MUST be in the key; the full EscapeTarget too,
+    // as Node/Binder/Capture are distinct verdicts). GATED on `dup_sites.is_none()` (the sumpayload/cont-
+    // escape blowup path; the `Some` drop-site path neither reads nor writes the memo — no cross-
+    // contamination). Linearizes the DAG-as-tree escape re-walk (db-query-diff / db-query-perfield front-3).
+    // NO in_progress/tainted-withhold: the memo writes only AFTER the recursive call returns and the walk is
+    // acyclic by spec (recursive defs refer to themselves via a static code ref, not a heap-value cycle; the
+    // `Core::Call` arm recurses only into args, not the callee body), so no cycle-artifact can ever be cached
+    // (see `Db::escape_verdict_memo`). The worker's recursion calls THIS wrapper, so nested queries memoize.
+    if dup_sites.is_none()
+        && let Some(&v) = db.escape_verdict_memo.get(&(id, binder, tail_borrowed))
+    {
+        return v;
+    }
+    let v = binding_escapes_dup_aware_inner(db, id, binder, tail_borrowed, dup_sites);
+    if dup_sites.is_none() {
+        db.escape_verdict_memo
+            .insert((id, binder, tail_borrowed), v);
+    }
+    v
+}
+
+/// The unmemoized worker of [`binding_escapes_dup_aware`]. Its recursive `binding_escapes_dup_aware(...)`
+/// calls resolve to the MEMOIZED wrapper above, so a shared subtree reached via many paths is computed once.
+fn binding_escapes_dup_aware_inner(
     db: &mut Db,
     id: StructId,
     binder: EscapeTarget,
