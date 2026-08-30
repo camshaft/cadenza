@@ -307,10 +307,21 @@ impl Gen<'_> {
             // effect program (a callee `def` performs the op, a caller's `handle` discharges it). (The
             // sub-choice here only affects this ~1/4 branch — the normal-path crafted-seed tests take
             // choice(4) != 0.)
+            // NB: keep this a `choice(3)` — the test-side `varied_seed` produces bytes correlated such
+            // that once the `choice(4)==0` gate above fixes `byte%4==0`, the adjacent sub-choice byte is
+            // nearly always `%4∈{3,0}`, which would STARVE two of four `choice(4)` sub-branches in the
+            // reach-test sweep (real fuzzing uses independent bytes, but the tests must reach every arm).
+            // So the effect-program slot splits with an inner `flip()` (well-distributed over varied_seed).
             match self.cur.choice(3) {
                 0 => self.user_sum_program(),
                 1 => self.try_program(),
-                _ => self.cross_fn_effect_program(),
+                _ => {
+                    if self.cur.flip() {
+                        self.cross_fn_effect_program();
+                    } else {
+                        self.nested_effect_program();
+                    }
+                }
             }
             return;
         }
@@ -475,6 +486,81 @@ impl Gen<'_> {
             "))) ({callee} {}))) (export main))",
             self.cur.range(0, 9)
         );
+    }
+
+    /// A NESTED-HANDLER effect program: TWO distinct effects each with its own `handle`, the inner handle
+    /// nested inside the outer handle's body — composed-effect dispatch (the classifier must route each
+    /// perform to the correct one of two live handlers), which neither the single-op `effect_handler_expr`
+    /// nor the two-op `effect_multiop_expr` (one handle, two ops) ever exercises. Two variants:
+    /// - INDEPENDENT: the innermost body performs BOTH `E1.o1` and `E2.o2`; each arm is a plain tail-resume.
+    /// - COMPOSED: the INNER arm's resume value itself performs the OUTER effect (`(E1.o1 …)`) — a perform
+    ///   from inside a handler arm, discharged by the enclosing OUTER handler (the deep cross-handler /
+    ///   xhs seam). The body performs `E2.o2`; the outer arm is a plain resume (no re-perform of E2).
+    /// Shape (`main`'s body, nested `handle`s over top-level effect decls):
+    /// `(do (effect E1 (op o1 (-> Int64 Int64))) (effect E2 (op o2 (-> Int64 Int64)))
+    ///      (def (main) (handle E1 <i1> ((o1 (p1) s1 (resume <v1> <n1>)))
+    ///                    (handle E2 <i2> ((o2 (p2) s2 (resume <v2> <n2>))) <body>))) (export main))`.
+    /// TERMINATION/SAFETY: tail-resumptive scalar-Int64 state, each arm resumes EXACTLY once, the body
+    /// performs a FIXED (non-recursive) count, and the composed variant's inner→outer perform is bounded
+    /// (a fixed single `E1.o1` per inner perform, the outer arm never re-performs). No effect/op name is a
+    /// value binding, so a generated operand can't re-perform into a loop. Int64 throughout so it types.
+    /// Operator seq-23 (2026-08-30): expand the effect-system shapes the fuzzer emits.
+    fn nested_effect_program(&mut self) {
+        let depth = 3;
+        let mk_ename = |v: &str| format!("E{}", &v[1..]); // capitalized effect name from a fresh `v{n}`
+        let e1 = mk_ename(&self.env.fresh());
+        let e2 = mk_ename(&self.env.fresh());
+        let o1 = self.env.fresh();
+        let o2 = self.env.fresh();
+        let p1 = self.env.fresh();
+        let s1 = self.env.fresh();
+        let p2 = self.env.fresh();
+        let s2 = self.env.fresh();
+        let composed = self.cur.flip();
+        let (i1, i2) = (self.cur.range(0, 9), self.cur.range(0, 9));
+        let _ = write!(
+            self.out,
+            "(do (effect {e1} (op {o1} (-> Int64 Int64))) (effect {e2} (op {o2} (-> Int64 Int64))) \
+             (def (main) (handle {e1} {i1} (({o1} ({p1}) {s1} (resume "
+        );
+        // Outer arm: a plain tail-resume with generated numeric operands over p1/s1.
+        let mark = self.env.push(p1.clone(), Kind::Num);
+        self.env.push(s1.clone(), Kind::Num);
+        self.expr(depth, Kind::Num); // outer resume VALUE
+        self.out.push(' ');
+        self.expr(depth, Kind::Num); // outer new STATE
+        self.env.truncate(mark);
+        // Close outer arm; open the inner handle (as the outer handle's body).
+        let _ = write!(
+            self.out,
+            "))) (handle {e2} {i2} (({o2} ({p2}) {s2} (resume "
+        );
+        // Inner arm resume VALUE: COMPOSED performs the OUTER effect; INDEPENDENT is a generated numeric expr.
+        let mark = self.env.push(p2.clone(), Kind::Num);
+        self.env.push(s2.clone(), Kind::Num);
+        if composed {
+            let _ = write!(self.out, "({e1}.{o1} {})", self.cur.range(0, 9));
+        } else {
+            self.expr(depth, Kind::Num);
+        }
+        self.out.push(' ');
+        self.expr(depth, Kind::Num); // inner new STATE
+        self.env.truncate(mark);
+        self.out.push_str("))) "); // close resume, inner arm, inner arm-list; keep inner handle open for body
+        // Innermost body: perform E2.o2 a FIXED 1..=2 times; the INDEPENDENT variant also performs E1.o1.
+        if composed {
+            let _ = write!(self.out, "({e2}.{o2} {})", self.cur.range(0, 9));
+        } else {
+            let op = ["+", "-", "*"][self.cur.choice(3)];
+            let _ = write!(
+                self.out,
+                "({op} ({e1}.{o1} {}) ({e2}.{o2} {}))",
+                self.cur.range(0, 9),
+                self.cur.range(0, 9)
+            );
+        }
+        // Close: inner handle, outer handle, def-main; then sibling (export main); then outer (do …).
+        self.out.push_str("))) (export main))");
     }
 
     /// Emit one expression of the requested (hint) kind, within the depth budget.
@@ -2480,24 +2566,25 @@ mod tests {
                 cadenza_syntax::sexpr::read(&src).is_ok(),
                 "generated program did not parse:\n{src}"
             );
-            // The cross-fn program is the only top-level shape starting with `(do (effect …`, and its
-            // handle lives in a param-less `(def (main) (handle …`, with the perform inside a helper def.
-            if src.starts_with("(do (effect ") && src.contains("(def (main) (handle ") {
-                assert!(
-                    src.contains("(resume "),
-                    "cross-fn effect program is missing its `(resume `:\n{src}"
-                );
-                // The op is performed inside a helper def, NOT lexically inside the handle body.
-                let handle_at = src.find("(handle ").unwrap();
-                assert!(
-                    src[..handle_at].contains(".") && src[..handle_at].contains("(def ("),
-                    "cross-fn program should perform the op in a helper def before the handle:\n{src}"
-                );
-                // Two-frame variant has THREE top-level defs (g, h, main); one-frame has two.
-                match src.matches("(def (").count() {
-                    2 => hit_one = true,
-                    3 => hit_two = true,
-                    _ => {}
+            // The cross-fn program starts with `(do (effect …` and has a HELPER `def` BEFORE `main` (the
+            // callee that performs the op) — this is what distinguishes it from the nested-handler program,
+            // which also starts with `(do (effect …` but has only effect decls (no def) before `main`.
+            // Splitting at `(def (main)` isolates the prefix from operand-emitted defs inside main's body.
+            if src.starts_with("(do (effect ")
+                && let Some(main_at) = src.find("(def (main)")
+            {
+                let prefix = &src[..main_at];
+                let helper_defs = prefix.matches("(def (").count();
+                if helper_defs >= 1 {
+                    assert!(
+                        src.contains("(resume ") && prefix.contains("."),
+                        "cross-fn program should perform the op in a helper def before main:\n{src}"
+                    );
+                    // One-frame (main→g) has ONE helper def before main; two-frame (main→h→g) has TWO.
+                    match helper_defs {
+                        1 => hit_one = true,
+                        _ => hit_two = true,
+                    }
                 }
             }
         }
@@ -2508,6 +2595,55 @@ mod tests {
         assert!(
             hit_two,
             "no seed emitted a two-frame (main→h→g) cross-function-perform program"
+        );
+    }
+
+    /// The NESTED-HANDLER effect program is reachable — some seed emits TWO `(effect …)` decls with two
+    /// nested `(handle …)`s (composed-effect dispatch), and BOTH the independent (body performs both ops)
+    /// and composed (inner arm performs the outer effect) variants are reached. Every program parses.
+    /// Guards operator seq-23 composed-effect coverage.
+    #[test]
+    fn some_seed_emits_a_nested_handler() {
+        let mut hit_independent = false;
+        let mut hit_composed = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // The nested-handler program has exactly TWO top-level effect decls and NO helper def before
+            // `main` (which distinguishes it from cross_fn, whose prefix has a helper def). Splitting at
+            // `(def (main)` isolates that prefix from any inline effects an operand emits inside the body.
+            if src.starts_with("(do (effect ")
+                && let Some(main_at) = src.find("(def (main)")
+                && {
+                    let prefix = &src[..main_at];
+                    prefix.matches("(effect ").count() == 2 && !prefix.contains("(def (")
+                }
+            {
+                assert!(
+                    src.matches("(handle ").count() >= 2 && src.matches("(resume ").count() >= 2,
+                    "nested-handler program should have two nested handles + two resuming arms:\n{src}"
+                );
+                // COMPOSED uniquely writes the inner arm's resume VALUE as a perform of the OUTER effect,
+                // i.e. `(resume (E…` — an effect op immediately inside a resume (a numeric-expr resume value
+                // never starts with `(E`). INDEPENDENT is any nested-handler program without that marker.
+                if src.contains("(resume (E") {
+                    hit_composed = true;
+                } else {
+                    hit_independent = true;
+                }
+            }
+        }
+        assert!(
+            hit_independent,
+            "no seed emitted an independent nested-handler program"
+        );
+        assert!(
+            hit_composed,
+            "no seed emitted a composed nested-handler program (inner arm performs outer)"
         );
     }
 
