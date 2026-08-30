@@ -83,8 +83,8 @@ def inst-width-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
 /// INSTANTIATE a scheme at a use site: freshen every quantified var, apply the renaming to the body, return
 /// (fresh Ty, next-counter). Two instantiations of the SAME scheme get DISJOINT vars (threading the counter) —
 /// the essence of let-polymorphism. A `mono` scheme (no quantifiers) instantiates to its body unchanged.
-def instantiate(sch: Scheme, n: Int64) = match sch with
-  | Scheme.Scheme(sids, wids, body) => (
+def instantiate(sch: Scheme, n: Int64) =
+  let Scheme.Scheme(sids, wids, body) = sch in (
       let (su1, n1) = inst-sign-ren(subst-empty(), sids, 0, n) in (
           let (su2, n2) = inst-width-ren(su1, wids, 0, n1) in (apply(su2, body), n2)))
 

@@ -25,8 +25,7 @@ def lower-of-db(db: Db, root: Int64) =
   (db1, lower-node(db-tree-of(db1), root, db-resolved-col(db1), db-ty-col(db1)))
 
 /// The Db's source tree (re-exported destructure; db-infer imports db-tree but doesn't re-export it).
-def db-tree-of(db: Db) = match db with
-  | Db.Db(t, _, _, _) => t
+def db-tree-of(db: Db) = let Db.Db(t, _, _, _) = db in t
 
 // ---- TESTS: lower reads the memoized resolve+types columns; no re-resolve/re-infer ------------------
 import { Tok, parse-tokens } from "parse-db"

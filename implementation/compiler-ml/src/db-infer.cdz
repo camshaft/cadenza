@@ -23,17 +23,14 @@ import { resolve-into-db } from "db-resolve"
 
 /// The resolved column of a Db (the whole `Map(NodeId, Resolved)`), destructured from the carrier — what
 /// `infer-node` reads to type each node.
-def db-resolved-col(db: Db) = match db with
-  | Db.Db(_, rc, _, _) => rc
+def db-resolved-col(db: Db) = let Db.Db(_, rc, _, _) = db in rc
 
 /// The RAW `Ty` types column (ARC-A2: what the column actually stores now). Internal/Ty-native readers use this.
-def db-ty-col(db: Db) = match db with
-  | Db.Db(_, _, tc, _) => tc
+def db-ty-col(db: Db) = let Db.Db(_, _, tc, _) = db in tc
 
 /// Merge a `Ty` type column into the Db's types column — infer-node produces a `Map(Int64, Ty)` directly, so
 /// this stores it with no conversion.
-def merge-typed(db: Db, tcol: Map(Int64, Ty)) = match db with
-  | Db.Db(t, rc, _, cc) => Db.Db(t, rc, tcol, cc)
+def merge-typed(db: Db, tcol: Map(Int64, Ty)) = let Db.Db(t, rc, _, cc) = db in Db.Db(t, rc, tcol, cc)
 
 /// INFER into the Db (rcdzc `type_of` demand): resolve ONCE into the Db (P1d fill-once — a HIT if already
 /// resolved), then run `infer-node` over the Db's RESOLVED column (NOT a re-resolve) to fill the types
