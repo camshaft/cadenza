@@ -153,6 +153,16 @@
   (input  (do (def (main) (. Int64 bogus)) (export main)))
   (error  CDZ0201 (message "the `Int64` module has no member `bogus`")))
 
+(case "a plain prelude-member typo gets the ordinary unknown-member error, not a rename hint"
+  (doc    "The retired-rename hint (CDZ0603 '… was renamed …', offered on a fixed set of former member
+           names) fires ONLY on that retired set, so a name that was NEVER a member — `Map.siz`, a plain
+           typo — still takes the ordinary closed-record CDZ0201 unknown-member error ('the `Map` module
+           has no member `siz`'), and the rename hint MUST NOT fire: it never shadows a normal typo. Guards
+           the diagnostic-only, tight-retired-set invariant — the negative companion of the retired-name
+           rename cases. (migrated from rcdzc a_genuine_member_typo_still_gets_the_ordinary_unknown_member_error.)")
+  (input  (do (def (main) (Map.siz #map((= 1 2)))) (export main)))
+  (error  CDZ0201 (message "the `Map` module has no member `siz`") (not "was renamed")))
+
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
            of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record
