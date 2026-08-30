@@ -513,7 +513,6 @@ pub const MAX_SOURCE_BYTES: u64 = 512 * 1024;
 /// is split under the limit. (cdz-runtime/lib.rs is being split under seq-273.)
 pub const FILE_SIZE_ALLOWLIST: &[&str] = &[
     "implementation/seed/crates/rcdzc/src/tests.rs",
-    "implementation/seed/crates/rcdzc/src/lower.rs",
     "implementation/seed/crates/rcdzc/src/backend/wasm/select.rs",
     "implementation/seed/crates/cdz-runtime/src/lib.rs",
     "implementation/seed/crates/rcdzc/src/infer.rs",
