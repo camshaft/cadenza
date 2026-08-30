@@ -438,6 +438,41 @@
   (input  (do (def (g (: h (->))) 0) (export g)))
   (error  CDZ0203 (message "an arrow type is") (message "it needs at least a result type")))
 
+; ── Applying a MONOMORPHIC sum type to arguments (migrated from rcdzc
+; applying_a_monomorphic_sum_type_to_arguments_says_it_takes_no_type_parameters) ──
+; `(: t (T Int64))` where `(type T …)` is MONOMORPHIC (zero declared params) parses as applying `T` to
+; `Int64`; since `T` reduces to a type-value with ZERO params, the message names the exact fix — write `T`,
+; not `(T …)` — and carries a REPLACE fix stripping the spurious args (heuristic: right in annotation
+; position, so unverified). A user `(Color 5)` in value call position takes the same precise message + fix.
+(case "annotating with a monomorphic sum applied to a type argument says it takes no type parameters"
+  (input  (do (type T (Leaf Int64) (Node Int64))
+              (def (f (: t (T Int64))) (match t ((T.Leaf n) n) ((T.Node n) n)))
+              (def (main) (f (T.Leaf 5))) (export main)))
+  (error  CDZ0203 (message "is a type that takes no type parameters")
+                  (fix (kind replace) (replacement "T") (unverified))))
+
+(case "applying a monomorphic sum in value position says it takes no type parameters"
+  (input  (do (type Color R G B) (def (main) (Color 5)) (export main)))
+  (error  CDZ0203 (message "is a type that takes no type parameters")
+                  (fix (kind replace) (replacement "Color") (unverified))))
+
+; ── USER generic sum wrong-arity (migrated from rcdzc
+; a_user_generic_sum_with_the_wrong_type_arg_count_names_its_expected_arity) — the user-sum twin of the
+; prelude-ctor arity block above. A user generic sum applied to the wrong number of type args REDUCES to a
+; Ty::Sum (silently dropping/defaulting args), so it once compiled clean; the arity is now checked off the
+; sum's declared param count and names the fix, echoing the sum's own parameter names. ──
+(case "a user generic sum over-applied with two type arguments names its one-argument arity"
+  (input  (do (type Box (W a) (E)) (def (g (: b (Box Int64 Bool))) b) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Box` takes 1 type argument") (message "but 2 were supplied")))
+
+(case "a multi-parameter user generic sum under-applied names its two-argument arity"
+  (input  (do (type Pair (P a b)) (def (g (: p (Pair Int64))) p) (def (main) 0) (export main)))
+  (error  CDZ0203 (message "`Pair` takes 2 type arguments") (message "but 1 was supplied")))
+
+(case "a wrong-arity user generic sum in a VALUE annotation routes through the same arity check"
+  (input  (do (type Box (W a) (E)) (def (g) (: 5 (Box Int64 Bool))) (export g)))
+  (error  CDZ0203 (message "`Box` takes 1 type argument") (message "but 2 were supplied")))
+
 ; The single-param applied case above covers the flat one-argument face; the resolve path also handles
 ; MULTI-parameter generics and NESTED type-arguments (a user generic inside a built-in generic, or inside
 ; another user generic). Each was equally CDZ0101-unresolvable under the parenthesized-head `""`-name bug
