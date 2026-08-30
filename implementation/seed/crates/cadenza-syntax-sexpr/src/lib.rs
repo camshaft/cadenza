@@ -1775,6 +1775,32 @@ mod tests {
     }
 
     #[test]
+    fn nativize_compound_source_nativizes_compounds_inside_quote_and_leaves_strings() {
+        // A compound literal QUOTED as AST data still nativizes: the native ctor-leaf is `structurally_eq`
+        // to its name alias, so the quoted VALUE is preserved (this is the established corpus-12 norm — 185
+        // native `#ctor`, incl. `(quote #list …)`, all gated green). `unquote`/`unquote-splicing` splices are
+        // left alone (not compound heads); STRING-literal content (`(doc "…(list …)…")` prose) is never
+        // touched — the codemod operates on the parsed AST, and a string is an opaque atom.
+        let n = |s: &str| super::nativize_compound_source(s).unwrap();
+        assert_eq!(n("(quote (list 1 2))"), "(quote #list(1 2))");
+        assert_eq!(n("(quote (record (a 1)))"), "(quote #record((= a 1)))");
+        assert_eq!(
+            n("(quasiquote (list 1 (unquote x) 2))"),
+            "(quasiquote #list(1 (unquote x) 2))"
+        );
+        // Nested quote inside quasiquote: both compounds nativize, the unquote is left as-is.
+        assert_eq!(
+            n("(quasiquote (tuple (unquote x) (quote (list 1))))"),
+            "(quasiquote #tuple((unquote x) (quote #list(1))))"
+        );
+        // A `(list …)` INSIDE a string literal (doc prose) is opaque data — NOT nativized; the live sibling is.
+        assert_eq!(
+            n("(do (doc \"a (list 1 2) in prose\") (def (m) (list 3 4)) (export m))"),
+            "(do (doc \"a (list 1 2) in prose\") (def (m) #list(3 4)) (export m))"
+        );
+    }
+
+    #[test]
     fn nativize_compound_source_skip_outputs_leaves_output_expected_values_untouched() {
         // CORPUS inputs-only mode (Phase-2 seq A): nativize `(input …)` programs + `(call …)` arg values,
         // but leave every `(output …)` expected value untouched — v-corpus-harness owns the render re-pin of
