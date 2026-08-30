@@ -209,6 +209,18 @@
   (input  (Option.Ok 5))
   (error  CDZ0201 (message "closest matches:") (message "`Some`") (message "`None`") (not "`t`")))
 
+; The member-operand candidate pool drops prelude VARIANT CONSTRUCTORS (no members → a fix wouldn't resolve),
+; but that filter keys on the prelude BINDING's own shape (its `(meta variant)` channel), NOT a name-set
+; collision. A prelude name can be BOTH a member-accessible MODULE and some sum's variant — `List` is the
+; collection-operations module AND the `Ast.List` node kind — so a name-collision filter would wrongly drop
+; the `List` MODULE and suggest the equidistant `Ast` for `Lst`. The module is a real member target, so it
+; stays in the pool: `(. Lst len)` suggests `List`. (Migrated from rcdzc
+; a_member_accessible_module_sharing_a_variant_name_is_still_suggested — the diagnostic half; the internal
+; `nearest()` shared-first-char tie-break stays a rust unit residual.)
+(case "a member-operand typo suggests a member-accessible module sharing a variant name, with a rename fix"
+  (input  (do (def (main) (Lst.len #list(1 2))) (export main)))
+  (error  CDZ0101 (message "did you mean `List`?") (fix (kind replace) (replacement "List") (unverified))))
+
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
            of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record
