@@ -1001,25 +1001,37 @@
            a String to a number), so the compiler rejects it (CDZ0201). Unlike `(+ 1 \"two\")` the two
            operands are the SAME type — they unify, so this is not the cross-kind mismatch but the
            operator's numeric-operand requirement. Pins the honest 'not defined on String' rejection (the
-           `+`-means-concat reflex is a fix suggestion, not an accepted meaning).")
+           `+`-means-concat reflex is a fix suggestion, not an accepted meaning). The message NAMES the real
+           type (`arithmetic is not defined on String`), and — because String has a total concatenation op —
+           `+` carries a REPLACE fix rewriting the operator head to `(. String concat)`. (fix + message
+           migrated from rcdzc arithmetic_on_two_same_typed_non_numeric_operands_names_the_real_type_and_plus_offers_concat.)")
   (input  (+ "ab" "cd"))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "arithmetic is not defined on String")
+                  (fix (kind replace) (replacement "(. String concat)"))))
 
 (case "subtraction of two strings is rejected"
   (doc    "`(- \"ab\" \"cd\")` — a non-`+` arithmetic operator on two Strings has no concatenation reading
            at all and is rejected (CDZ0201), the same 'arithmetic is not defined on String'. Pins that the
            rejection covers the whole arithmetic family on text, not only `+` (which merely additionally
-           offers a concat fix).")
+           offers a concat fix) — so `-` names the type but carries NO (mis)concat fix.")
   (input  (- "ab" "cd"))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "arithmetic is not defined on String") (no-fix)))
+
+(case "addition of two bytes is rejected — offers the Bytes.concat rewrite"
+  (doc    "The Bytes companion of the String `+` case: `(+ a b)` on two `Bytes` is CDZ0201 and — Bytes
+           having a total concatenation — carries the `(. Bytes concat)` rewrite. From rcdzc
+           arithmetic_on_two_same_typed_non_numeric_operands_names_the_real_type_and_plus_offers_concat.")
+  (input  (do (def (f (: a Bytes) (: b Bytes)) (+ a b)) (export f)))
+  (error  CDZ0201 (fix (kind replace) (replacement "(. Bytes concat)"))))
 
 (case "addition of two lists is rejected — a list is not a number"
   (doc    "`(+ (list 1 2) (list 3 4))` adds two Lists of the same type; arithmetic is not defined on a
            List (CDZ0201). Both operands share the type `(List Int64)`, so this is the same-type path, not
            a cross-kind mismatch. Pins that a compound collection is not silently a number — the author
-           who meant concatenation is offered the `List.concat` rewrite, not an implicit `+`.")
+           who meant concatenation is offered the `List.concat` rewrite (`(. List concat)`), not an implicit `+`.")
   (input  (+ #list(1 2) #list(3 4)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "arithmetic is not defined on (List Int64)")
+                  (fix (kind replace) (replacement "(. List concat)"))))
 
 (case "addition of two records is rejected — a record is not a number"
   (doc    "`(+ r q)` on two same-typed Records is rejected (CDZ0201, 'arithmetic is not defined on
@@ -1030,7 +1042,7 @@
   (input  (do
             (def (f (: r (Record (: a Int64))) (: q (Record (: a Int64)))) (+ r q))
             (def (main) (f #record((= a 1)) #record((= a 2)))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "arithmetic is not defined on") (no-fix)))
 
 (case "addition of two sets is rejected — a set is not a number"
   (doc    "`(+ r q)` on two same-typed Sets is rejected (CDZ0201, 'arithmetic is not defined on (Set
