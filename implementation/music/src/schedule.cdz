@@ -27,22 +27,22 @@ type Note =
 def note-at(p: Pitch, chan: Int64, vel: Int64, start: Int64, dur: Int64) =
   Note.Note(p, chan, vel, start, dur)
 
-def note-pitch(n: Note) = match n with | Note.Note(p, _, _, _, _) => p
-def note-chan(n: Note) = match n with | Note.Note(_, c, _, _, _) => c
-def note-vel(n: Note) = match n with | Note.Note(_, _, v, _, _) => v
-def note-start(n: Note) = match n with | Note.Note(_, _, _, s, _) => s
-def note-dur(n: Note) = match n with | Note.Note(_, _, _, _, d) => d
+def note-pitch(n: Note) = let Note.Note(p, _, _, _, _) = n in p
+def note-chan(n: Note) = let Note.Note(_, c, _, _, _) = n in c
+def note-vel(n: Note) = let Note.Note(_, _, v, _, _) = n in v
+def note-start(n: Note) = let Note.Note(_, _, _, s, _) = n in s
+def note-dur(n: Note) = let Note.Note(_, _, _, _, d) = n in d
 
 /// A single wire-level MIDI event at a tick: `on` (true = note-on, false = note-off), channel, note
 /// number, velocity, tick. The flat form a driver emits.
 type MidiEvent =
   | MidiEvent(Bool, Int64, Int64, Int64, Int64)
 
-def ev-on(e: MidiEvent) = match e with | MidiEvent.MidiEvent(o, _, _, _, _) => o
-def ev-chan(e: MidiEvent) = match e with | MidiEvent.MidiEvent(_, c, _, _, _) => c
-def ev-note(e: MidiEvent) = match e with | MidiEvent.MidiEvent(_, _, n, _, _) => n
-def ev-vel(e: MidiEvent) = match e with | MidiEvent.MidiEvent(_, _, _, v, _) => v
-def ev-tick(e: MidiEvent) = match e with | MidiEvent.MidiEvent(_, _, _, _, t) => t
+def ev-on(e: MidiEvent) = let MidiEvent.MidiEvent(o, _, _, _, _) = e in o
+def ev-chan(e: MidiEvent) = let MidiEvent.MidiEvent(_, c, _, _, _) = e in c
+def ev-note(e: MidiEvent) = let MidiEvent.MidiEvent(_, _, n, _, _) = e in n
+def ev-vel(e: MidiEvent) = let MidiEvent.MidiEvent(_, _, _, v, _) = e in v
+def ev-tick(e: MidiEvent) = let MidiEvent.MidiEvent(_, _, _, _, t) = e in t
 
 // ---- lowering notes to paired on/off events ---------------------------------------------------------
 
