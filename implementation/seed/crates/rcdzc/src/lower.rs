@@ -593,18 +593,26 @@ fn lower_let(
     // the match's single materialized scrutinee slot. Single destructure binding → one arm (the binder
     // pattern IS the arm pattern, the let body IS the arm body); a multi-binding or bare-name let keeps the
     // ordinary path below (a bare-name binding is A-normalized/kept exactly as before — unaffected).
-    // Gated PRECISELY to a TUPLE/RECORD destructure binder (`#tuple(a b)` / `(record …)`) — the irrefutable
-    // compound destructures whose element binders are `SumPayload`/`Proj` reads of the init. An ANNOTATED
-    // binder `(: x T)`, a bare name, a `bin`/list/map binder, or a sum-ctor pattern are NOT caught (they keep
-    // the ordinary path — annotated-binder diagnostics, bin-binding reclaim, etc. are unchanged). Checks both
-    // the native ctor-leaf head (what the reader emits) and the legacy string-prim head.
+    // Gated PRECISELY to a TUPLE/RECORD destructure binder — the irrefutable compound destructures whose
+    // element binders are `SumPayload`/`Proj` reads of the init. A destructure binder appears in THREE
+    // surface forms and the gate must catch ALL of them (the reported hang was the third, missed by an
+    // earlier ctor-only gate): the native ctor-LEAF head `#tuple(a b)` (`compound_ctor_leaf`), the legacy
+    // STRING-prim head `("tuple" …)` (`compound_ctor_prim`), and — crucially — the NAME head `(tuple a b)` /
+    // `(record …)` that the ML/paren surface `let (a,b) = …` desugars to (`head_name`; `compound_ctor*`
+    // deliberately reject a name head). An ANNOTATED binder `(: x T)` (head `:`), a bare name, a `bin`/`list`/
+    // `map` binder, or a sum-ctor pattern (`(Some x)`) are NOT caught — head_name is `:`/`bin`/`Some`/… ≠
+    // tuple|record — so they keep the ordinary path (annotated-binder diagnostics, bin/list/map reclaim, the
+    // CDZ0210 refutable-sum reject all unchanged).
     if bindings.len() == 1
-        && matches!(
+        && (matches!(
             db.ast
                 .compound_ctor_prim(bindings[0].0)
                 .or_else(|| db.ast.compound_ctor_leaf(bindings[0].0)),
             Some(CompoundCtor::Tuple | CompoundCtor::Record)
-        )
+        ) || matches!(
+            db.ast.head_name(bindings[0].0),
+            Some("tuple") | Some("record")
+        ))
     {
         let (pat, init) = bindings[0];
         trace!(target: "rcdzc::lower", node = node.0, "destructure-let → single-arm match (materialize-once scrutinee + match reclaim)");
