@@ -1120,6 +1120,153 @@ fn value_encode_of_a_framed_rational_is_the_colon_framed_golden() {
     assert_eq!(live_nodes(), 0, "no leak");
 }
 
+// A bare `Char` value-codec descriptor: one shape-table entry (tag 19 = Char) at the root. A char
+// value is an immediate int codepoint at runtime; the descriptor's tag 19 is the ONLY thing that
+// distinguishes it from an `Int` at the encode/decode boundary (it selects the `KIND_CHAR` leaf).
+fn char_scalar_descriptor() -> Vec<u8> {
+    let mut d = Vec::new();
+    desc_leb(&mut d, 1); // table_len = 1
+    d.push(19); // [0] Char
+    desc_leb(&mut d, 0); // root → 0
+    d
+}
+
+// `(tuple Char Int)` — exercises Char as a non-root child (the walk reaches it through `arr-get`).
+fn char_int_tuple_descriptor() -> Vec<u8> {
+    let mut d = Vec::new();
+    desc_leb(&mut d, 3); // table_len = 3
+    d.push(19); // [0] Char
+    d.push(0); //  [1] Int
+    d.push(6); // [2] Tuple(2) → [0, 1]
+    desc_leb(&mut d, 2);
+    desc_leb(&mut d, 0);
+    desc_leb(&mut d, 1);
+    desc_leb(&mut d, 2); // root → 2
+    d
+}
+
+// The `KIND_CHAR` doc leaf op62 must emit for a codepoint `c`: tag then the scalar UTF-8-encoded
+// (LEB length + 1..4 bytes), matching `DocBuilder::char_leaf` / cadenza-ast's `KIND_CHAR` framing.
+fn kind_char_leaf_bytes(c: char) -> Vec<u8> {
+    let mut buf = [0u8; 4];
+    let s = c.encode_utf8(&mut buf);
+    let mut leaf = Vec::new();
+    leaf.push(0x0d); // doc::KIND_CHAR
+    desc_leb(&mut leaf, s.len() as u64);
+    leaf.extend_from_slice(s.as_bytes());
+    leaf
+}
+
+/// Char VALUE codec (the tag-19 `Shape::Char` path — distinct from the AST `Leaf::Char` reflection
+/// path, and the ONLY witness for it while the corpus producer is still draft): for a spread of
+/// codepoints (ASCII, 2-byte, 4-byte, NUL), op62 `value-encode` must (1) emit a `KIND_CHAR` leaf —
+/// NOT a `KIND_INT` — which is what makes a char RENDER as a char and not its integer (the round-trip
+/// alone can't catch a Char→Int render regression, since a char value IS an int); (2) agree with the
+/// recursive oracle byte-for-byte; and (3) round-trip through op90 `value-decode` back to the same
+/// codepoint. Char is an immediate int at runtime, so nothing heap-allocates and the census stays 0.
+#[test]
+fn value_encode_decode_of_char_scalar_emits_kind_char_and_round_trips() {
+    reset();
+    let desc = char_scalar_descriptor();
+    let descriptor = decode_descriptor(&desc).expect("char descriptor");
+    for c in ['A', 'λ', '🦀', '\u{0}'] {
+        let cp = c as i64;
+        let v = op_box_int(cp);
+        let got = op_value_encode_form(v, &desc).expect("encode char");
+
+        // (1) op62 took the Char arm — the document carries a KIND_CHAR leaf, not a KIND_INT.
+        let leaf = kind_char_leaf_bytes(c);
+        assert!(
+            got.windows(leaf.len()).any(|w| w == leaf.as_slice()),
+            "char {c:?} (U+{cp:04X}) must encode as a KIND_CHAR leaf {leaf:02x?}, not KIND_INT — doc {got:02x?}"
+        );
+
+        // (2) iterative production walk == recursive oracle (exercises the mirror's S::Char arm).
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0)
+            .expect("recursive encode char");
+        assert_eq!(
+            got,
+            b.finish(root),
+            "iterative/recursive disagree on char {c:?}"
+        );
+
+        // (3) decode ∘ encode == id, back to the SAME codepoint (tag-19 decode_shape + op90 KIND_CHAR).
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "char {c:?} doc must decode");
+        assert_eq!(
+            op_get_int(back),
+            cp,
+            "char {c:?} must round-trip back to its codepoint"
+        );
+        op_drop(back);
+        op_drop(v);
+    }
+    assert_eq!(
+        live_nodes(),
+        0,
+        "char values are immediates — no leak across the codepoint sweep"
+    );
+}
+
+/// Char as a compound CHILD: `(tuple #\λ 42)`. The tuple heap node is built, encoded (the char field
+/// still emits a KIND_CHAR leaf), decoded back, and the char field recovers its codepoint; dropping
+/// the decoded tuple frees clean. Guards that the Char arm fires through `arr-get`, not just at root.
+#[test]
+fn value_encode_of_char_in_a_tuple_round_trips() {
+    reset();
+    let desc = char_int_tuple_descriptor();
+    let descriptor = decode_descriptor(&desc).expect("tuple descriptor");
+    let t = op_arr_alloc(2);
+    op_arr_set(t, 0, op_box_int('λ' as i64));
+    op_arr_set(t, 1, op_box_int(42));
+    let got = op_value_encode_form(t, &desc).expect("encode (tuple Char Int)");
+
+    let leaf = kind_char_leaf_bytes('λ');
+    assert!(
+        got.windows(leaf.len()).any(|w| w == leaf.as_slice()),
+        "the tuple's Char field must emit a KIND_CHAR leaf {leaf:02x?} — doc {got:02x?}"
+    );
+
+    let mut b = DocBuilder::default();
+    let root = encode_value_recursive(&descriptor, &mut b, t, descriptor.root, 0)
+        .expect("recursive encode tuple");
+    assert_eq!(
+        got,
+        b.finish(root),
+        "iterative/recursive disagree on (tuple Char Int)"
+    );
+
+    let back = op_value_decode(&got, &desc);
+    assert_ne!(back, Handle::NULL, "(tuple Char Int) doc must decode");
+    assert_eq!(
+        op_get_int(op_arr_get(back, 0)),
+        'λ' as i64,
+        "char field round-trips"
+    );
+    assert_eq!(op_get_int(op_arr_get(back, 1)), 42, "int field round-trips");
+    op_drop(back);
+
+    op_drop(t);
+    assert_eq!(live_nodes(), 0, "tuple freed clean — no leak");
+}
+
+/// A lone surrogate (U+D800) is not a Unicode scalar, so `char::from_u32` rejects it: op62's Char arm
+/// returns `None` and `value-encode` DECLINES (returns None) rather than trapping or emitting garbage —
+/// a bad codepoint is DATA, handled totally. The immediate int leaves the census untouched.
+#[test]
+fn value_encode_of_a_surrogate_char_declines_cleanly() {
+    reset();
+    let desc = char_scalar_descriptor();
+    let bad = op_box_int(0xD800); // high-surrogate — not a scalar value
+    assert!(
+        op_value_encode_form(bad, &desc).is_none(),
+        "a surrogate codepoint must make value-encode decline, not trap or mis-emit"
+    );
+    op_drop(bad);
+    assert_eq!(live_nodes(), 0, "declined encode leaks nothing");
+}
+
 #[test]
 fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
     reset();
