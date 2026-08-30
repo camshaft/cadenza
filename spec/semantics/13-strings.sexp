@@ -5161,3 +5161,10 @@
   (call main (: 7 Int64)) (output (: 232999 Int64))
   (call main (: 0 Int64)) (output (: 96999 Int64))
   (live-objects known-leak))
+
+; `String` in type position is transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)`
+; conflicts the String value with the Int64 annotation (CDZ0203), the String counterpart of `(: 5 Bool)`.
+; (Migrated from rcdzc a_string_annotation_checks_against_a_string_value.)
+(case "a string value annotated as a non-String type is a mismatch"
+  (input  (do (def (main) (String.byte-len (: "hi" Int64))) (export main)))
+  (error  CDZ0203))
