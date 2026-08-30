@@ -6,9 +6,10 @@
 corpus + tests, landed on `spec`). The `def` parameter case is complete via a load-time rewrite (§5.2,
 approach b). REMAINING: the `fn`-lambda parameter case (declines today — the rewrite covers top-level
 `def`s, not inline lambdas) and a literal-ATOM parameter `(def (f 0) …)` (still silently accepted — a
-pre-existing malformed-param gap, out of this feature's scope). Increment B (records) is deferred; the
-**single-variant-sum** half of Increment B is now **ACTIVATED** (operator-greenlit 2026-08-30) — see
-§8.1. Owners: v-compiler-primitives leads, joint with v-inference (resolve-side).
+pre-existing malformed-param gap, out of this feature's scope). Increment B (records + single-variant
+sums in binding position) remains **DEFERRED**. NOTE (2026-08-30): the operator-greenlit "const-forwarding"
+fix that §8.1 was opened for turned out **NOT** to be Increment B at all — it was a monomorphization
+fingerprint-delimiter bug (fixed in `call_lower.rs`); see §8.1's CORRECTED root cause.
 
 This is the plan for letting a *binding position* (a function parameter, a `let` binder, a `fn` parameter,
 a `do`-block `def`) hold an **irrefutable pattern** — `(def (f (tuple a b)) …)`, `(let (((tuple a b) v)) …)`
@@ -433,51 +434,42 @@ way to bind-and-ignore a unit until `Unit`/`Tuple([])` identity is reconciled.
 on runtime data" (call_lower.rs:397-region / the `type_specialize` const-arg gate). The operator greenlit
 the real fix (not a workaround, not status-quo). It is **exactly this deferred increment**, not a new arc.
 
-**Root cause (confirmed, resolve-side).** A `let` variant-destructure binder is NOT descended by
-`find_binder_in_tuple` (tuple heads only), so `step` falls to the generic bare-name path →
-`Resolved::Ref { value: <it-occ> }`. At the inner `drive(step, …)` call, `arg_captures_runtime_binding`
-(`call_lower.rs:1478`) flags a `Resolved::Ref`/`Param` binder whose value is `is_within`-OUTSIDE the arg
-and is a param/local → so `step` is judged a runtime capture → `type_specialize` (`call_lower.rs:1709`)
-declines the `const` arg. A **`match`-arm** variant binder resolves to a `SumPayload { scrutinee, steps,
-heads }` (Case 6 `match_arm_variant_binds`), which is NEITHER `Ref` nor `Param` → NOT flagged → the const
-arg is accepted and `drive` specializes. **The entire delta is `resolved_of(step)`** — a `let` binder
-vs a match-arm binder. (The sibling TUPLE let-destructure already works because §5.1 resolves a tuple
-binder to a `SumPayload`; adapter's `let (x, s2) = p` at drive:93 compiles. This increment gives the
-single-variant SUM binder the identical treatment.) A lowering-phase `let`→`match` desugar does NOT fix
-it (verified: the spec-demand keys on the resolve-phase binder classification, fixed pre-lower).
+**⚠ CORRECTED ROOT CAUSE (2026-08-30, after the full trace — supersedes the resolve-side framing that
+followed the initial hypothesis).** The bug was **NOT** a binding-patterns / resolution gap, and this
+increment (single-variant sums in binding position) is **NOT** what fixes it. A `RUST_LOG=rcdzc::lower`
+diff (pristine vs the `match`→`let` diff) + a `resolved_of` probe established:
+- The single-variant sum LET-destructure binder **already resolves to `Resolved::SumPayload`** today —
+  IDENTICAL to the match-arm binder (v-inference's trace: both `steps:[Payload,Elem(1)]`, neither a
+  `Ref`/`Param`). So there is **no `resolved_of` let-vs-match asymmetry** and `find_binder_in_variant` /
+  Increment B is not needed for this bug. `count` is INLINED in both forms; `it` is a const `Iter.Mk`.
+- The declining callee is **`count-drive`** (a RECURSIVE def with a `const step` closure param), not
+  `fold`. The `type_specialize` const-arg gate returns `None` from the **termination backstop** for a
+  diverging self-recursive derived-closure re-pass (`call_lower.rs`, `db.last_const_closure_fp`), which
+  detects divergence by SUBSTRING containment `fp.contains(prev)`. The const-closure fingerprint appended
+  an **UN-DELIMITED** numeric lambda-lift `code` (`|clos<code>`), so a shorter code is a substring of a
+  longer one — the declining call had `fp="nstep;|clos25"`, `prev="nstep;|clos2"`, and `"clos2"` ⊂
+  `"clos25"` → the backstop FALSE-fired "diverging re-pass" → spurious `CDZ0201`. Pristine's lambda-lift
+  order happened to assign codes with no prefix relation (e.g. `clos5`/`clos12`); the `let`-destructure vs
+  `match` twin **shifts the whole-program lambda-lift ORDER** into the `2`/`25` prefix relation → collision.
+  The value was always correct — a pure spurious *decline*.
 
-**The fix.** Extend the §5.1 binder resolution to a single-variant-sum LHS: when `last_binder_named`'s
-LHS is a variant-ctor pattern `((. Sum V) a b…)` (or name-head `(V a b…)`) whose owning sum has exactly
-ONE variant (`variant_owner_decl` + `type_decl_by_occ().variants.len() == 1`), descend the sole variant's
-payload (a `find_binder_in_variant`, the binding-position twin of `match_arm_variant_binds`) and return
-`Resolved::SumPayload { scrutinee: value_occ, steps, heads }` — NO discriminant guard (single variant is
-irrefutable). A multi-variant ctor stays REFUTABLE → the §5.3 classifier faults it CDZ0210 (a `let`
-binding cannot assume one of several variants). This is resolve.rs, mirroring the tuple path and the
-match-arm path — zero new IR, the design's through-line ("a binding position holding an irrefutable
-pattern IS a single-arm destructuring match rcdzc already resolves").
+**The fix (landed).** Delimit the numeric code in the fingerprint — `fp.push(';')` after `fp.push_str(&code)`
+— so `clos2;` is not a substring of `clos25;`, while a genuinely NESTED divergent re-pass still contains the
+prior fingerprint verbatim (delimiters and all), preserving the real termination guard. One line + comment
+in `call_lower.rs` (the monomorphization fingerprint, v-compiler-primitives' lane). The fingerprint memo /
+dedup is UNCHANGED (the delimiter is added uniformly → equal fps stay equal, unequal stay unequal), so no
+specialization merges/splits differently — the only behavioral change is fewer false-positive divergence
+declines.
 
-**Not the rejected option (b).** This is NOT a syntactic `let`→`match` rewrite (the workaround the operator
-distinguished from the real fix); it is the principled resolve-side `SumPayload` binder-resolution the
-design already ships for tuples (§5.1), extended to the sole variant. The const-forwarding "backward"
-verdict is carried for free once `step` resolves as a compile-time-traceable projection of its scrutinee.
+**VERIFIED.** adapter.cdz `fold` as `let Iter.Mk(s, step) = it in …` → `cdz check` 0 errors + `cdz test`
+360/0 (fixes the bug, no miscompile). Full rcdzc lib suite 1591/0. Full in-process corpus gate IDENTICAL
+to clean main (10030 pass / 98 todo / 13 fail — the 13 are pre-existing native-gate live-objects artifacts,
+same fail-set with/without the fix) → zero corpus regression. NOT the rejected option (b) (no `let`→`match`
+rewrite) and NOT SumPayload const-folding (v-inference's (b)/(c) plan was moot — the SumPayload-not-reasoned-
+through path at `:1709` was a RED HERRING that fires in BOTH pristine and let-form; pristine still compiles).
 
-**Scope / ownership split** (operator: v-compiler-primitives leads; joint with v-inference):
-- **v-inference (resolve-side):** `find_binder_in_variant` + the `last_binder_named` single-variant case
-  (resolve.rs); the §5.3 classifier arm intercepting a ctor-head binding position (multi-variant → CDZ0210,
-  single-variant → accept, replacing the current CDZ0101-unbound / decline); co-verify `type_specialize`
-  still DECLINES a genuinely runtime-data const arg (no over-specialization — a `fold` over a runtime
-  iterator whose `step` is not compile-time-known must still decline, exactly as the match form does).
-- **v-compiler-primitives (lead):** this design; the const-arg-gate interaction (confirm the `SumPayload`
-  binder is not flagged by `arg_captures_runtime_binding` and the gate accepts); the corpus + rcdzc-test
-  witnesses (the adapter `fold` unblock + a minimal single-variant-sum-destructure-let-forwards-to-const
-  case + the runtime-`it` still-declines negative case); driving the increment green-per-commit; fleet coord.
-
-**Witnesses / done-criteria.** (1) adapter.cdz `fold` as `let Iter.Mk(s, step) = it in …` compiles (unblocks
-the v-code-cleanliness sweep). (2) a rust/corpus witness: a single-variant-sum destructure-let forwarding a
-field to a `const` param compiles and runs. (3) a NEGATIVE witness: the same over a genuinely-runtime
-scrutinee still declines (parity with the match form — v-inference's over-specialization guard). (4) a
-multi-variant destructure-let still rejects CDZ0210 (refutability preserved). Store-dependent gating waits
-for the cachix build-hold RESUME; resolve/lower work + native `cargo test -p rcdzc` proceed under the hold.
+**Increment B (single-variant sums in binding position) remains DEFERRED** for its own sake (§8): it is a
+real, separate feature, just orthogonal to this const-forwarding bug.
 
 - **Arity is preserved for a destructuring parameter.** `(def (fst (tuple a b)) a)` is a **one-argument**
   function whose argument is a pair. The parameter occupies one slot; the destructure is in how references
