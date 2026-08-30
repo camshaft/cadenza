@@ -9953,7 +9953,7 @@
               (def (main (: k Int64))
                 (let ((fs #list((mk k) (mk 2))))
                   (match (List.at fs 0)
-                    ((Some f) (let ((p (tuple f 99))) ((. p 0) 10)))
+                    ((Some f) (let ((p #tuple(f 99))) ((. p 0) 10)))
                     (None -1))))
               (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
