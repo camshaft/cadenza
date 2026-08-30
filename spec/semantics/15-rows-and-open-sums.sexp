@@ -302,6 +302,20 @@
   (input  (Record.without #record((= a 1)) (z)))
   (error  CDZ0212))
 
+; A CDZ0212 absent-field label carries the same two-tier did-you-mean a member access `(. r k)` gets — the
+; closed set is the operand record's OWN fields. A NEAR-MISS of a real field (`alpa` vs `alpha`) gets a
+; confident "did you mean `alpha`?" plus an APPLICABLE replace fix on the label occurrence (`alpa` → `alpha`);
+; a FAR label with no plausible neighbour (`zzzzzz`) gets NO fix and no confident single, but LISTS the
+; available fields ("closest matches: `alpha`") so the author sees what exists instead of dead-ending.
+; (Migrated from rcdzc record_project_narrows_to_named_fields_absent_field_is_cdz0212.)
+(case "a near-miss absent field in Record.without suggests the near field with a replace fix"
+  (input  (do (def (main) (Record.without #record((= alpha 1) (= beta 2)) (alpa))) (export main)))
+  (error  CDZ0212 (message "did you mean `alpha`?") (fix (kind replace) (replacement "alpha"))))
+
+(case "a far absent-field label in Record.without lists the available fields with no confident fix"
+  (input  (do (def (main) (Record.without #record((= alpha 1)) (zzzzzz))) (export main)))
+  (error  CDZ0212 (message "closest matches: `alpha`") (no-fix)))
+
 (case "merging two records with disjoint fields unions their fields"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint:
            `Record.merge` combines two records into one whose field set is the union, each field bound to
