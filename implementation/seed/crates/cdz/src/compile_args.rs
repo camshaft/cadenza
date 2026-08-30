@@ -1,12 +1,12 @@
 //! `cdz compile`'s argument struct — a cdz-LOCAL mirror of `rcdzc`'s CLI compile args, so the thin
-//! front-end owns arg parsing WITHOUT depending on `rcdzc::cli::CompileArgs` (whose fields are private +
+//! front-end owns arg parsing WITHOUT depending on `rcdzc_cli::CompileArgs` (whose fields are private +
 //! which a `!standalone` build must not link). The accessors project the parsed flags onto the
 //! `cadenza-compile-abi` boundary types, and BOTH dispatch paths consume those: a `standalone` build
 //! hands them to `rcdzc::cli::run_with_specs` (the parsed-values compile core), a `!standalone` build
 //! hands them to the `cdz-compile` delegate. This is the thin-`cdz` end state — `cdz` is the front door
 //! that parses; the compiler (bundled or delegated) is reached through these values, never this struct.
 //!
-//! DRIFT NOTE: this MIRRORS `rcdzc::cli::CompileArgs`'s flag surface (names/values/defaults/conflicts) so
+//! DRIFT NOTE: this MIRRORS `rcdzc_cli::CompileArgs`'s flag surface (names/values/defaults/conflicts) so
 //! `cdz compile` parses byte-identically to the standalone `rcdzc`/`cdz-compile` binary. A new compile
 //! flag must be added to BOTH (accepted per the operator thin-dispatcher direction — the abi crate is
 //! dep-light + clap-free, so the args struct can't live there). The `standalone` in-process path calls
@@ -15,7 +15,7 @@
 use cadenza_compile_abi::{OptLevel, OverflowMode, OverflowSpec, Target};
 use std::path::PathBuf;
 
-/// The parsed `cdz compile` arguments (see module docs). Mirrors `rcdzc::cli::CompileArgs`. `Parser`
+/// The parsed `cdz compile` arguments (see module docs). Mirrors `rcdzc_cli::CompileArgs`. `Parser`
 /// (not just `Args`) so it embeds as the `Compile` subcommand AND parses standalone in tests
 /// (`try_parse_from`); the embedded `cdz compile` name comes from the outer command.
 #[derive(clap::Parser)]

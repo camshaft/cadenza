@@ -30,7 +30,7 @@ a cache hit, and everything keyed on it stays warm.
 
 ## The seam is unusually clean
 
-`cdz-compile` is a thin shim over `rcdzc::cli::run` → `run_prepared` — the **exact** host-boundary
+`cdz-compile` is a thin shim over `rcdzc_cli::run` → `rcdzc::cli::run_prepared` — the **exact** host-boundary
 code the in-process `cdz compile` already calls. So delegating is not a reimplementation; it is
 moving the same call across a process boundary:
 

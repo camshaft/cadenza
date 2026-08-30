@@ -4,7 +4,7 @@
 //! in-process, and the NIX build packages `cdz` with `--no-default-features` so it delegates — then a
 //! compiler-only change need not rebuild `cdz` and `cdz` + the compiler cache/rebuild independently.
 //!
-//! Why this is behavior-identical: `cdz-compile` IS `rcdzc::cli::run` under its own name (a thin shim
+//! Why this is behavior-identical: `cdz-compile` IS `rcdzc_cli::run` under its own name (a thin shim
 //! over the same `CompileArgs` + `run` → `run_prepared`). So delegating is not a reimplementation — we
 //! hand `cdz-compile` the SAME named artifacts and flags the in-process path would, and it executes the
 //! exact host-boundary compile+report+write. In particular the diagnostics reporter runs THERE, over
