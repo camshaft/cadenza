@@ -21,19 +21,18 @@ use unicode_normalization::UnicodeNormalization;
 #[derive(Debug)]
 pub struct ReadError(pub String);
 
-/// The maximum nesting depth the recursive-descent reader accepts before returning a [`ReadError`]
-/// rather than recursing further. Recursive descent (`read_list` → `read_node` → `read_primary` →
-/// `read_list`) uses one native stack frame per nesting level, so unbounded depth overflows the stack
-/// and ABORTS the process (SIGABRT) on pathologically deep — but syntactically valid — input; the
-/// crash is worse on the guide's `cdz-wasm` (a ~1 MB stack parsing UNTRUSTED browser input, where the
-/// overflow depth is far lower than the ~25000 a native 8 MB stack reaches).
+/// The maximum nesting depth the reader accepts before returning a [`ReadError`]. The reader is
+/// ITERATIVE (an explicit worklist, see [`read`]'s `read_node`), so arbitrary nesting depth consumes
+/// O(depth) HEAP and O(1) native stack and CANNOT overflow the native stack (SIGABRT) — the former
+/// recursive descent could, worst on the guide's `cdz-wasm` (a ~1 MB stack parsing UNTRUSTED browser
+/// input). This cap is therefore a clean POLICY limit that trips far from any stack limit, not a race
+/// against the native stack.
 ///
 /// Set to the compiler's own `DESCENT_DEPTH_LIMIT` (rcdzc `db.rs` = 1024): the compiler already
 /// DECLINES a program nested past that ("expression nests too deeply to compile"), so a source the
-/// parser rejects here is one the compiler would reject anyway — no valid program is lost. Matching
-/// (not exceeding) the compiler's limit keeps the deepest margin below the smallest target stack (the
-/// ~1 MB wasm stack overflows well before 4096 native-frame-equivalents), so every source-ingesting
-/// entry point (`convert`/`check`/`fix`, `cdz-wasm`) returns a clean diagnostic instead of crashing.
+/// parser rejects here is one the compiler would reject anyway — no valid program is lost. (Dropping
+/// the cap entirely for the now-overflow-proof reader is a follow-up decision; kept for now so this
+/// refactor stays behavior-neutral.)
 pub use cadenza_syntax_core::MAX_NESTING_DEPTH;
 
 /// Parse a single s-expression from `text` into its own `Arenas` (rooted at the parsed form). This is
@@ -983,10 +982,11 @@ struct Reader<'a, 'b> {
     /// TRAILING comment on that node's line. Cleared when [`Reader::skip_ws`] crosses a newline; starts
     /// `false` (a file-leading comment is never trailing).
     after_node: bool,
-    /// The current nesting depth of the recursive descent — incremented on entry to each `read_list`
-    /// and decremented on exit, so it counts open `(` on the descent path. Past [`MAX_NESTING_DEPTH`]
-    /// the reader returns a [`ReadError`] instead of recursing, guarding the native stack against
-    /// overflow on pathologically deep input (see the constant's docs).
+    /// The current nesting depth — incremented when [`Self::read_node`]'s worklist opens a `(` or
+    /// `#word(` frame and decremented when that frame closes, so it counts open forms on the descent
+    /// path (sigils are NOT counted, matching the former recursive guard). Past [`MAX_NESTING_DEPTH`]
+    /// the reader returns a [`ReadError`]. The reader is iterative, so this is a clean policy limit —
+    /// not a race against the native stack (which arbitrary depth can no longer overflow).
     depth: u32,
     /// When `Some`, every structure occurrence pushes its source span here, in creation order, so
     /// the table stays exactly 1:1 with the arena (`spans[id]` is that occurrence's span). `None`
@@ -1159,17 +1159,345 @@ impl<'a, 'b> Reader<'a, 'b> {
         node
     }
 
+    /// The depth guard, shared by the two recursive-descent points (`(…)` and `#word(…)`): past
+    /// [`MAX_NESTING_DEPTH`] open forms return a clean [`ReadError`] rather than descend further.
+    /// Checked BEFORE consuming the opener so the error anchors at the offending byte. Since the reader
+    /// is now ITERATIVE (see [`Self::read_node`]) this is a clean policy limit, not a race against the
+    /// native stack — but the diagnostic is byte-identical to the former recursive guard.
+    fn ensure_depth(&self) -> Result<(), ReadError> {
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(ReadError(format!(
+                "expression nests too deeply to parse (more than {MAX_NESTING_DEPTH} levels) at byte {}",
+                self.pos
+            )));
+        }
+        Ok(())
+    }
+
     /// Read a node, then fold any tightly-following `.member` postfixes into member access. This is what
     /// makes `(Int 8).max` and `Int8.max` read to the SAME `(. … max)` shape — the paren form is the
     /// postfix sibling of the bare-token dotted-name sugar (`classify_token`), extended to an arbitrary
     /// preceding form (a list, string, …). Both are input-only sugar: `print` always emits the explicit
     /// `(. operand key)` list, so the round-trip stays stable.
+    ///
+    /// ITERATIVE, not native recursion: the s-expr grammar's only recursion is a form nested inside a
+    /// form — `(` … `)`, `#word(` … `)`, and the `` ` ``/`,`/`,@` sigils whose inner is itself a node —
+    /// so an explicit `Frame` worklist (one HEAP entry per open construct) replaces the former
+    /// `read_node → read_primary → read_list → read_node` native recursion. Arbitrary nesting depth
+    /// therefore consumes O(depth) HEAP and O(1) native stack: a pathologically deep but syntactically
+    /// valid source can no longer overflow the native stack (SIGABRT) regardless of the thread's stack
+    /// size. The arena + span-table build order is byte-identical to the recursive form — children are
+    /// built before their parent, and a sigil's head after its inner — because each `mk_*` fires at
+    /// exactly the point the recursion would have reached it (verified against the recursive form by the
+    /// round-trip + span suites). `self.depth` still counts only open `(`/`#word(` (never sigils,
+    /// matching the old guard), so the `MAX_NESTING_DEPTH` diagnostic is unchanged.
     fn read_node(&mut self) -> Result<StructId, ReadError> {
-        let primary = self.read_primary()?;
-        let node = self.read_postfix_members(primary)?;
-        // A node was fully read: a `;` before the next newline is now a TRAILING comment on its line.
-        self.after_node = true;
-        Ok(node)
+        // One entry per open construct on the descent path — the explicit stack that was the native call
+        // stack. `leading` holds the own-line comments staged for the element currently being read (it is
+        // attached when that element completes, mirroring the recursive loops' `wrap_leading(leading, …)`).
+        enum Frame {
+            List {
+                start: usize,
+                items: Vec<StructId>,
+                leading: Vec<PendingComment>,
+            },
+            Compound {
+                start: usize,
+                word: &'static str,
+                keyed: bool,
+                items: Vec<StructId>,
+                leading: Vec<PendingComment>,
+            },
+            // A `` ` ``/`,`/`,@` sigil awaiting its single inner node. The head name is created AFTER the
+            // inner (preserving structure-id order), spanning `sigil_span`; the wrapping list spans from
+            // `start` through the inner's end.
+            Sigil {
+                start: usize,
+                name: &'static str,
+                sigil_span: Span,
+            },
+        }
+        // The next step of the machine: OPEN a fresh primary at the current position (was `read_primary`);
+        // ADVANCE the top list/compound element loop (was the `read_list`/`read_compound_literal` loop
+        // body); or DELIVER a completed primary up the stack (was `read_node` returning to its caller).
+        enum Next {
+            Open,
+            Advance,
+            Deliver(StructId),
+        }
+        let mut stack: Vec<Frame> = Vec::new();
+        let mut next = Next::Open;
+        loop {
+            match next {
+                // === read one primary at the current position (was `read_primary`) ===
+                Next::Open => {
+                    self.skip_ws();
+                    match self.peek() {
+                        None => return Err(ReadError("unexpected end of input".into())),
+                        Some(b')') => {
+                            return Err(ReadError(format!("unexpected ')' at byte {}", self.pos)));
+                        }
+                        Some(b'(') => {
+                            self.ensure_depth()?;
+                            self.depth += 1;
+                            let start = self.pos;
+                            self.bump(); // '('
+                            stack.push(Frame::List {
+                                start,
+                                items: Vec::new(),
+                                leading: Vec::new(),
+                            });
+                            next = Next::Advance;
+                        }
+                        Some(b'"') => next = Next::Deliver(self.read_string()?),
+                        Some(b'b') if self.src.get(self.pos + 1) == Some(&b'"') => {
+                            next = Next::Deliver(self.read_byte_string()?)
+                        }
+                        Some(b'#') if self.src.get(self.pos + 1) == Some(&b'\\') => {
+                            next = Next::Deliver(self.read_char()?)
+                        }
+                        Some(b'#') if self.src.get(self.pos + 1) == Some(&b'"') => {
+                            next = Next::Deliver(self.read_symbol()?)
+                        }
+                        Some(b'#') if self.compound_literal_word().is_some() => {
+                            // Open a `#word(…)` collection literal: create the ctor-LEAF head NOW (before
+                            // any child, matching the recursive `read_compound_literal`'s order), then
+                            // descend into its body loop via the Compound frame.
+                            let word = self
+                                .compound_literal_word()
+                                .expect("guarded by compound_literal_word().is_some()");
+                            self.ensure_depth()?;
+                            self.depth += 1;
+                            let start = self.pos; // at '#'
+                            // `#` + the ctor word are ASCII, so advancing by their byte length lands on '('.
+                            self.pos += 1 + word.len();
+                            let ctor = match word {
+                                "record" => CompoundCtor::Record,
+                                "tuple" => CompoundCtor::Tuple,
+                                "list" => CompoundCtor::List,
+                                "map" => CompoundCtor::Map,
+                                "set" => CompoundCtor::Set,
+                                _ => unreachable!(
+                                    "compound_literal_word yields only the five ctor words"
+                                ),
+                            };
+                            // The native ctor LEAF KIND names the constructor; span the head over `#word`.
+                            let head =
+                                self.mk_atom_leaf(Leaf::Ctor(ctor), Span::new(start, self.pos));
+                            self.bump(); // '('
+                            // A #record/#map body's DIRECT `(= k v)` entry is a FieldPair; the others read
+                            // their elements verbatim (positional).
+                            let keyed = matches!(ctor, CompoundCtor::Record | CompoundCtor::Map);
+                            stack.push(Frame::Compound {
+                                start,
+                                word,
+                                keyed,
+                                items: vec![head],
+                                leading: Vec::new(),
+                            });
+                            next = Next::Advance;
+                        }
+                        // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display. The inner
+                        // form is read BEFORE the synthetic head (preserving structure-id order); the head
+                        // gets the sigil's own byte range, the wrapping list sigil-through-inner.
+                        Some(b'`') => {
+                            let start = self.pos;
+                            self.bump();
+                            let sigil_span = Span::new(start, self.pos);
+                            stack.push(Frame::Sigil {
+                                start,
+                                name: "quasiquote",
+                                sigil_span,
+                            });
+                            next = Next::Open;
+                        }
+                        Some(b',') => {
+                            let start = self.pos;
+                            self.bump();
+                            let name = if self.peek() == Some(b'@') {
+                                self.bump();
+                                "unquote-splicing"
+                            } else {
+                                "unquote"
+                            };
+                            let sigil_span = Span::new(start, self.pos);
+                            stack.push(Frame::Sigil {
+                                start,
+                                name,
+                                sigil_span,
+                            });
+                            next = Next::Open;
+                        }
+                        Some(_) => next = Next::Deliver(self.read_atom_or_name()?),
+                    }
+                }
+                // === advance the top list/compound element loop (was the `read_list` /
+                // `read_compound_literal` loop body) ===
+                Next::Advance => match stack.pop().expect("Advance requires an open frame") {
+                    Frame::List {
+                        start,
+                        mut items,
+                        leading: _,
+                    } => {
+                        self.skip_ws();
+                        let (trailing, leading) = self.take_pending();
+                        // A same-line comment attaches to the element it FOLLOWS as `(comment-after …)`.
+                        if !trailing.is_empty()
+                            && let Some(&last) = items.last()
+                        {
+                            let wrapped = self.wrap_trailing(trailing, last);
+                            *items.last_mut().expect("items non-empty") = wrapped;
+                        }
+                        match self.peek() {
+                            None => return Err(ReadError("unterminated list".into())),
+                            Some(b')') => {
+                                // An own-line comment before the closer attaches to the last element as a
+                                // LEADING `(comment …)` (its printed position moves above the last element,
+                                // an accepted v1 limitation — but it is PRESERVED, not dropped).
+                                if !leading.is_empty()
+                                    && let Some(&last) = items.last()
+                                {
+                                    let wrapped = self.wrap_leading(leading, last);
+                                    *items.last_mut().expect("items non-empty") = wrapped;
+                                }
+                                self.bump();
+                                // The list spans `(` through the matching `)` (now consumed). A bare-NAME
+                                // `record`/`map` alias head field-pairifies its DIRECT `(= k v)` entries;
+                                // an explicit `(. obj key)` list reads to a native `Member` head.
+                                let span = Span::new(start, self.pos);
+                                self.alias_field_pairify(&mut items);
+                                let id = self.mk_list(items, span);
+                                let result = self.memberize(id, span);
+                                self.depth -= 1;
+                                next = Next::Deliver(result);
+                            }
+                            Some(_) => {
+                                stack.push(Frame::List {
+                                    start,
+                                    items,
+                                    leading,
+                                });
+                                next = Next::Open;
+                            }
+                        }
+                    }
+                    Frame::Compound {
+                        start,
+                        word,
+                        keyed,
+                        mut items,
+                        leading: _,
+                    } => {
+                        self.skip_ws();
+                        let (trailing, leading) = self.take_pending();
+                        // A same-line comment attaches to the entry it FOLLOWS as `(comment-after …)`.
+                        if !trailing.is_empty()
+                            && items.len() > 1
+                            && let Some(&last) = items.last()
+                        {
+                            let wrapped = self.wrap_trailing(trailing, last);
+                            *items.last_mut().expect("items non-empty") = wrapped;
+                        }
+                        match self.peek() {
+                            None => {
+                                return Err(ReadError(format!(
+                                    "unterminated `#{word}( … )` at byte {}",
+                                    self.pos
+                                )));
+                            }
+                            Some(b')') => {
+                                // An own-line comment before the closer attaches to the last entry.
+                                if !leading.is_empty()
+                                    && items.len() > 1
+                                    && let Some(&last) = items.last()
+                                {
+                                    let wrapped = self.wrap_leading(leading, last);
+                                    *items.last_mut().expect("items non-empty") = wrapped;
+                                }
+                                self.bump();
+                                let result = self.mk_list(items, Span::new(start, self.pos));
+                                self.depth -= 1;
+                                next = Next::Deliver(result);
+                            }
+                            Some(_) => {
+                                stack.push(Frame::Compound {
+                                    start,
+                                    word,
+                                    keyed,
+                                    items,
+                                    leading,
+                                });
+                                next = Next::Open;
+                            }
+                        }
+                    }
+                    Frame::Sigil { .. } => {
+                        unreachable!("a Sigil frame is completed on Deliver, never Advanced")
+                    }
+                },
+                // === a primary completed: fold `.member` postfixes (== the tail of the former
+                // `read_node`), mark `after_node`, then hand it to the parent frame (or return it) ===
+                Next::Deliver(node) => {
+                    let node = self.read_postfix_members(node)?;
+                    // A node was fully read: a `;` before the next newline is now a TRAILING comment.
+                    self.after_node = true;
+                    match stack.pop() {
+                        None => return Ok(node),
+                        Some(Frame::List {
+                            start,
+                            mut items,
+                            leading,
+                        }) => {
+                            // Own-line comments above this element become leading `(comment …)` wrappers.
+                            let item = self.wrap_leading(leading, node);
+                            items.push(item);
+                            stack.push(Frame::List {
+                                start,
+                                items,
+                                leading: Vec::new(),
+                            });
+                            next = Next::Advance;
+                        }
+                        Some(Frame::Compound {
+                            start,
+                            word,
+                            keyed,
+                            mut items,
+                            leading,
+                        }) => {
+                            // A #record/#map DIRECT `(= k v)` entry field-pairifies; then leading comments.
+                            let item = if keyed {
+                                self.field_pairify(node)
+                            } else {
+                                node
+                            };
+                            let item = self.wrap_leading(leading, item);
+                            items.push(item);
+                            stack.push(Frame::Compound {
+                                start,
+                                word,
+                                keyed,
+                                items,
+                                leading: Vec::new(),
+                            });
+                            next = Next::Advance;
+                        }
+                        Some(Frame::Sigil {
+                            start,
+                            name,
+                            sigil_span,
+                        }) => {
+                            // The inner is complete; build head-AFTER-inner then the wrapping list, and
+                            // re-DELIVER it so the wrapping list itself gets postfix-folded (matching the
+                            // recursive sigil's outer `read_node`).
+                            let head = self.mk_name(name, sigil_span);
+                            let list = self.mk_list(vec![head, node], Span::new(start, self.pos));
+                            next = Next::Deliver(list);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Read ONE top-level node together with any own-line comments ABOVE it (leading `(comment …)`) and a
@@ -1185,78 +1513,6 @@ impl<'a, 'b> Reader<'a, 'b> {
         // Same-line then any own-line comments after the sole node all attach to it (re-emitted after it).
         let node = self.wrap_trailing(trailing, node);
         Ok(self.wrap_trailing(dangling, node))
-    }
-
-    /// Read one primary node (a list, string, sigil form, or atom) — WITHOUT the postfix `.member`
-    /// handling that `read_node` layers on top.
-    fn read_primary(&mut self) -> Result<StructId, ReadError> {
-        self.skip_ws();
-        match self.peek() {
-            None => Err(ReadError("unexpected end of input".into())),
-            Some(b'(') => self.read_list(),
-            Some(b')') => Err(ReadError(format!("unexpected ')' at byte {}", self.pos))),
-            Some(b'"') => self.read_string(),
-            // A byte-string literal `b"…"` — the value form of a `Bytes` (the companion of the `"…"`
-            // string literal). Only the exact `b"` prefix opens one; a bare `b` (or `b` starting a
-            // longer identifier like `byte`) reads as an ordinary name. Escapes mirror `escape_bytes`:
-            // `\n \t \r \\ \"` named, `\xNN` two-hex, else the raw byte.
-            Some(b'b') if self.src.get(self.pos + 1) == Some(&b'"') => self.read_byte_string(),
-            // A char literal `#\c` — a single Unicode scalar value. Only the exact `#\` prefix opens
-            // one; a bare `#` reads as an ordinary token. `#\a`/`#\é` (single char), `#\space`/`#\newline`
-            // (named), `#\u+HHHH` (code point). A literal naming a NON-scalar (`#\u+D800`) becomes a
-            // `BadChar` marker → CDZ0002 at the compiler.
-            Some(b'#') if self.src.get(self.pos + 1) == Some(&b'\\') => self.read_char(),
-            // A symbol literal `#"meter"` — an interned name value (`symbol-interning-direction`). Only
-            // the exact `#"` prefix opens one; a bare `#` reads as an ordinary token. Reuses string
-            // lexing/escapes, producing a `Leaf::Sym` (distinct from `Leaf::Str`). A base dimension in the
-            // units layer is named this way (`(Unit.base #"meter")`).
-            Some(b'#') if self.src.get(self.pos + 1) == Some(&b'"') => self.read_symbol(),
-            // A COLLECTION LITERAL `#word(…)` — the explicit-constructor s-expr surface for a compound
-            // (`DESIGN-native-ast-compound-data.md` §D-SURFACE), one uniform rule for all five: the body
-            // is read VERBATIM and the ctor word names the head — `#list(1 2 3)`, `#tuple(a b)`,
-            // `#set(a b c)`, and `#record((= x 1) (= y 2))` / `#map((= k v) …)` (a record field / map
-            // entry is written as its explicit `(= key value)` `FieldPair`, the same node every other
-            // surface produces, so it round-trips and comments compose around it as ordinary nodes — no
-            // implicit `=` insertion). Reads to the str-head ctor form (`("word" …)`, the `compound_ctor`
-            // tag), unambiguously distinct from an application `(list …)`. Input-only for now: the printer
-            // still emits the `(word …)` head until the corpus migrates, so no corpus round-trip is
-            // affected. Only the exact `#word(` prefix opens one; a bare `#` or `#other` reads ordinarily.
-            Some(b'#') if self.compound_literal_word().is_some() => {
-                let word = self
-                    .compound_literal_word()
-                    .expect("guarded by compound_literal_word().is_some()");
-                self.read_compound_literal(word)
-            }
-            // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display. The inner form is
-            // built BEFORE the synthetic head (preserving structure-id order — the reader is the
-            // round-trip oracle, so the arena stays byte-identical to the untracked path). The head
-            // gets the sigil's own byte range; the wrapping list spans sigil-through-inner.
-            Some(b'`') => {
-                let start = self.pos;
-                self.bump();
-                let sigil = Span::new(start, self.pos);
-                let inner = self.read_node()?;
-                let head = self.mk_name("quasiquote", sigil);
-                Ok(self.mk_list(vec![head, inner], Span::new(start, self.pos)))
-            }
-            Some(b',') => {
-                let start = self.pos;
-                self.bump();
-                if self.peek() == Some(b'@') {
-                    self.bump();
-                    let sigil = Span::new(start, self.pos);
-                    let inner = self.read_node()?;
-                    let head = self.mk_name("unquote-splicing", sigil);
-                    Ok(self.mk_list(vec![head, inner], Span::new(start, self.pos)))
-                } else {
-                    let sigil = Span::new(start, self.pos);
-                    let inner = self.read_node()?;
-                    let head = self.mk_name("unquote", sigil);
-                    Ok(self.mk_list(vec![head, inner], Span::new(start, self.pos)))
-                }
-            }
-            Some(_) => self.read_atom_or_name(),
-        }
     }
 
     /// Fold `.member` postfixes that IMMEDIATELY follow `node` (no intervening whitespace) into nested
@@ -1298,67 +1554,6 @@ impl<'a, 'b> Reader<'a, 'b> {
         Ok(node)
     }
 
-    fn read_list(&mut self) -> Result<StructId, ReadError> {
-        // DEPTH GUARD: a list is the ONE recursive-descent point (`read_list` → `read_node` →
-        // `read_primary` → `read_list`), so counting open lists bounds the native stack. Past the limit
-        // return a clean diagnostic rather than recurse into a stack overflow (SIGABRT). Checked BEFORE
-        // consuming `(` so the depth-limit error anchors at the offending open paren.
-        if self.depth >= MAX_NESTING_DEPTH {
-            return Err(ReadError(format!(
-                "expression nests too deeply to parse (more than {MAX_NESTING_DEPTH} levels) at byte {}",
-                self.pos
-            )));
-        }
-        self.depth += 1;
-        let start = self.pos;
-        self.bump(); // '('
-        let mut items = Vec::new();
-        let result = loop {
-            self.skip_ws();
-            let (trailing, leading) = self.take_pending();
-            // A same-line comment attaches to the element it FOLLOWS as `(comment-after …)`.
-            if !trailing.is_empty()
-                && let Some(&last) = items.last()
-            {
-                let wrapped = self.wrap_trailing(trailing, last);
-                *items.last_mut().expect("items non-empty") = wrapped;
-            }
-            match self.peek() {
-                None => break Err(ReadError("unterminated list".into())),
-                Some(b')') => {
-                    // An own-line comment sitting before the closer (after the last element) attaches to that
-                    // last element as a LEADING `(comment …)`; like the ML reader's closer-comment handling
-                    // its printed position moves ABOVE the last element (accepted v1 limitation) but it is
-                    // PRESERVED rather than dropped.
-                    if !leading.is_empty()
-                        && let Some(&last) = items.last()
-                    {
-                        let wrapped = self.wrap_leading(leading, last);
-                        *items.last_mut().expect("items non-empty") = wrapped;
-                    }
-                    self.bump();
-                    // The list spans from `(` through the matching `)` (now consumed, so `self.pos` is
-                    // just past). An explicit `(. obj key)` list reads to a native `Member` head.
-                    let span = Span::new(start, self.pos);
-                    // A bare-NAME `record` compound-alias head (the shadowable prelude alias the pattern
-                    // reader + corpus author, `DESIGN-native-ast-compound-data.md`) field-pairifies its
-                    // DIRECT `(= k v)` entries just like `#record(…)` — so `(record (= x a))` reads to the
-                    // SAME `Name`-head + `FieldPair`-field arena `read_ml`'s record-pattern reader emits.
-                    self.alias_field_pairify(&mut items);
-                    let id = self.mk_list(items, span);
-                    break Ok(self.memberize(id, span));
-                }
-                Some(_) => match self.read_node() {
-                    // Own-line comments above this element become leading `(comment …)` wrappers on it.
-                    Ok(item) => items.push(self.wrap_leading(leading, item)),
-                    Err(e) => break Err(e),
-                },
-            }
-        };
-        self.depth -= 1;
-        result
-    }
-
     /// At a `#`, the `#word(…)` collection-literal ctor word (`list`/`tuple`/`record`/`map`/`set`)
     /// immediately followed by `(`, if any. A bare `#`, or `#word` not followed by `(`, or `#other(`, is
     /// not a collection literal (`None`) and falls through to ordinary reading. None of the five words is
@@ -1368,90 +1563,6 @@ impl<'a, 'b> Reader<'a, 'b> {
         ["record", "tuple", "list", "map", "set"]
             .into_iter()
             .find(|word| rest.starts_with(word.as_bytes()) && rest.get(word.len()) == Some(&b'('))
-    }
-
-    /// Read a `#word(…)` collection literal into the native ctor-LEAF-KIND form `(<ctor> child…)` — the
-    /// M2 native-compound-data surface (`DESIGN-native-ast-compound-data.md`): the head is a
-    /// [`Leaf::Ctor`] recognized by kind identity, not a `Str`/`Name` head text. The body is read the
-    /// same way for all five ctors; a `#record`/`#map` DIRECT entry written `(= key value)` has its `=`
-    /// head rewritten to the [`Leaf::FieldPair`] marker (ruling A — the stored AST is native end-to-end),
-    /// while equality `=` anywhere else stays an ordinary `Name("=")`. Comments compose around a field as
-    /// ordinary nodes (a comment-wrapped field is descended, see [`field_pairify`]).
-    fn read_compound_literal(&mut self, word: &'static str) -> Result<StructId, ReadError> {
-        // Same recursion bound as `read_list`: `#word(…)` bodies descend through `read_node` too.
-        if self.depth >= MAX_NESTING_DEPTH {
-            return Err(ReadError(format!(
-                "expression nests too deeply to parse (more than {MAX_NESTING_DEPTH} levels) at byte {}",
-                self.pos
-            )));
-        }
-        self.depth += 1;
-        let start = self.pos; // at '#'
-        // `#` + the ctor word are ASCII, so advancing by their byte length lands on the '(' cleanly.
-        self.pos += 1 + word.len();
-        let ctor = match word {
-            "record" => CompoundCtor::Record,
-            "tuple" => CompoundCtor::Tuple,
-            "list" => CompoundCtor::List,
-            "map" => CompoundCtor::Map,
-            "set" => CompoundCtor::Set,
-            _ => unreachable!("compound_literal_word yields only the five ctor words"),
-        };
-        // The native ctor LEAF KIND names the constructor (recognized by kind identity); span the head
-        // over the `#word` prefix.
-        let head = self.mk_atom_leaf(Leaf::Ctor(ctor), Span::new(start, self.pos));
-        self.bump(); // '('
-        // In a #record/#map body a DIRECT `(= k v)` entry is a FieldPair; other ctors read their body
-        // verbatim (elements are positional).
-        let keyed = matches!(ctor, CompoundCtor::Record | CompoundCtor::Map);
-        let mut items = vec![head];
-        let result = loop {
-            self.skip_ws();
-            let (trailing, leading) = self.take_pending();
-            // A same-line comment attaches to the entry it FOLLOWS as `(comment-after …)`.
-            if !trailing.is_empty()
-                && items.len() > 1
-                && let Some(&last) = items.last()
-            {
-                let wrapped = self.wrap_trailing(trailing, last);
-                *items.last_mut().expect("items non-empty") = wrapped;
-            }
-            match self.peek() {
-                None => {
-                    break Err(ReadError(format!(
-                        "unterminated `#{word}( … )` at byte {}",
-                        self.pos
-                    )));
-                }
-                Some(b')') => {
-                    // An own-line comment before the closer attaches to the last entry (see `read_list`).
-                    if !leading.is_empty()
-                        && items.len() > 1
-                        && let Some(&last) = items.last()
-                    {
-                        let wrapped = self.wrap_leading(leading, last);
-                        *items.last_mut().expect("items non-empty") = wrapped;
-                    }
-                    self.bump();
-                    break Ok(self.mk_list(items, Span::new(start, self.pos)));
-                }
-                Some(_) => match self.read_node() {
-                    Ok(item) => {
-                        let item = if keyed {
-                            self.field_pairify(item)
-                        } else {
-                            item
-                        };
-                        // Own-line comments above this entry become leading `(comment …)` wrappers.
-                        let item = self.wrap_leading(leading, item);
-                        items.push(item);
-                    }
-                    Err(e) => break Err(e),
-                },
-            }
-        };
-        self.depth -= 1;
-        result
     }
 
     /// The recorded span of an already-built node (full range), or a zero-width span at `self.pos` when
@@ -2468,6 +2579,42 @@ mod tests {
         if let Err(payload) = h.join() {
             std::panic::resume_unwind(payload);
         }
+    }
+
+    #[test]
+    fn read_reaches_the_depth_cap_on_the_default_thread_stack() {
+        // The reader is ITERATIVE (an explicit worklist, O(depth) HEAP + O(1) native stack), so it
+        // DESCENDS to the depth cap on the DEFAULT `cargo test` worker stack (~2 MB) — NO big-stack
+        // thread. This is the exact property the former recursive descent lacked: reaching
+        // `MAX_NESTING_DEPTH` (1024) native frames overflowed a small worker stack (SIGABRT), which is
+        // why `deeply_nested_input_is_diagnosed_not_crashed` had to spawn a 64 MiB thread. Here we run on
+        // THIS thread's stack, proving arbitrary nesting cannot overflow it. (The cap itself is retained
+        // as a policy limit; a form AT the cap returns the clean diagnostic, a form just under it parses.)
+        let over = (MAX_NESTING_DEPTH as usize) + 50;
+        let deep = format!("{}1{}", "(+ ".repeat(over), " 1)".repeat(over));
+        let err = read(&deep).expect_err("past the cap must be a clean error, never a crash");
+        assert!(
+            err.0.contains("nests too deeply"),
+            "expected a depth-limit diagnostic, got: {}",
+            err.0
+        );
+        // A nest just under the cap parses on the default stack (a recursive reader would have needed a
+        // big-stack thread to descend even this far).
+        let ok = (MAX_NESTING_DEPTH as usize) - 1;
+        let shallow = format!("{}1{}", "(+ ".repeat(ok), " 1)".repeat(ok));
+        assert!(
+            read(&shallow).is_ok(),
+            "a nest just under the cap must parse on the default thread stack"
+        );
+        // Same guarantee for the `#word(…)` collection-literal descent path (its own recursion point):
+        // a deeply nested `#list(#list(… ))` reaches the cap on the default stack as a clean error.
+        let nested_list = format!("{}1{}", "#list(".repeat(over), ")".repeat(over));
+        let err = read(&nested_list).expect_err("deep #word( nesting must be a clean error");
+        assert!(
+            err.0.contains("nests too deeply"),
+            "expected a depth-limit diagnostic for #word( nesting, got: {}",
+            err.0
+        );
     }
 
     #[test]
