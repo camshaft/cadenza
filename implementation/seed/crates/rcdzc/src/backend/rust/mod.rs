@@ -935,8 +935,8 @@ fn emit_signature(
         && is_fn_ty(result)
         && (!fn_result_renderable(db, result) || !params.iter().all(|(_, t)| is_capture_scalar(t)))
     {
-        return Err(Reject::decline(format!(
-            "`{name}`: a closure-returning export with a non-scalar capture/arg/result is not yet rendered by the Rust backend (host-closure S2/S3)"
+        return Err(Reject::unsupported(format!(
+            "`{name}`: a closure-returning export with a non-scalar capture/arg/result is not supported by the Rust backend (host-closure S2/S3)"
         )));
     }
     // A closure PARAMETER crosses the export boundary as an `Rc<dyn Fn(…)->…>` argument (which
@@ -1076,8 +1076,8 @@ fn emit_signature(
             .iter()
             .all(|(_, t)| !is_fn_ty(t) || closure_has_factory_producer(t))
     {
-        return Err(Reject::decline(format!(
-            "`{name}`: an async closure-PARAMETER consumer whose closure has no FACTORY producer sibling is not yet driven by the Rust backend"
+        return Err(Reject::unsupported(format!(
+            "`{name}`: an async closure-PARAMETER consumer whose closure has no FACTORY producer sibling is not supported by the Rust backend"
         )));
     }
     // S4-HIGHER-ORDER: a closure param is admissible when it is shape-OK (`closure_param_is_simple`) AND
