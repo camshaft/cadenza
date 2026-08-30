@@ -5187,7 +5187,7 @@ fn resolve_quote(db: &Db, id: StructId) -> Resolved {
         ));
     }
     Resolved::Poison(Reject::decline(
-        "quote produces an AST value (not yet built)",
+        "quote produces an AST value, which is not supported",
     ))
 }
 
@@ -5255,7 +5255,7 @@ fn resolve_unquote(db: &Db, id: StructId, head: &str) -> Resolved {
         ));
     }
     Resolved::Poison(Reject::decline(
-        "an unquote inside a quasiquote builds an AST value (not yet built)",
+        "an unquote inside a quasiquote builds an AST value, which is not supported",
     ))
 }
 
@@ -5273,7 +5273,7 @@ fn resolve_quasiquote(db: &Db, id: StructId) -> Resolved {
         ));
     }
     Resolved::Poison(Reject::decline(
-        "quasiquote produces an AST value (not yet built)",
+        "quasiquote produces an AST value, which is not supported",
     ))
 }
 
