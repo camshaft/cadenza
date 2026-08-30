@@ -5066,3 +5066,28 @@ fn a_bool_match_missing_a_literal_is_still_non_exhaustive() {
         Some("CDZ0210")
     );
 }
+
+#[test]
+fn do_local_record_binding_projection_is_not_a_destructure() {
+    // A DO-BLOCK value-def binds a bare name to a record; a later projection reads a field. `compute.rs`
+    // routes the value-def through `lower_let` as a SELF-KEYED `(V, V)` binding, and the destructure-let
+    // fast-path once misfired on it — reading the record VALUE `.0` as a destructure PATTERN and routing
+    // `(def p0 #record(…))` through a single-arm match of the record against itself, which match_tree
+    // then rejected as a non-exhaustive sum match (spurious CDZ0210, corpus-15 regression). Both the
+    // top-level and the do-local forms must compile cleanly (the do-local binding is a bare name, never a
+    // destructure). Pins the `.0 != .1` guard in `lower_let`.
+    assert_eq!(
+        reject_code("(module m (def (main) (. #record((= x 1) (= y 2)) y)) (export main))")
+            .as_deref(),
+        None,
+        "top-level record projection compiles"
+    );
+    assert_eq!(
+        reject_code(
+            "(module m (def (main) (do (def p0 #record((= x 1) (= y 2))) (. p0 y))) (export main))"
+        )
+        .as_deref(),
+        None,
+        "a do-local record binding + projection is a bare-name binding, not a destructure — no CDZ0210"
+    );
+}
