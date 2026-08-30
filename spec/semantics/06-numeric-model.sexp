@@ -1712,6 +1712,19 @@
   (input  (do (def (main) (Map.len (Map.insert (Map.insert Map.empty 1 (: 5 UInt8)) 2 30))) (export main)))
   (call   main) (output (: 2 Int64)))
 
+; The FLOAT + Map face of the sibling-inferred width (operator seq-40): a bare Map.insert VALUE (or KEY)
+; adopts a sibling entry's concretely-fixed width across the insert chain, so the map is homogeneous at that
+; width on BOTH backends. Before this the bare literal kept the 64-bit default: WASM settled the column type
+; (the reflected join) and type-checked, but the RUST backend emitted a map mixing f32/f64 (error[E0308]) —
+; the Map twin of the mixed-float LIST E0308 above.
+(case "a bare Map.insert FLOAT value adopts the sibling's Float32 width (map unifies, no rust E0308)"
+  (doc    "`(Map.insert (Map.insert Map.empty 1 (: 2.0 Float32)) 2 3.0)`: the bare value `3.0` adopts the
+           sibling entry's annotated `Float32`, so the map is `(Map Int64 Float32)` and BOTH values emit at
+           f32. Formerly `3.0` stayed the Float64 default and the RUST backend emitted an f32/f64-mixed map
+           (E0308) while wasm settled the column un-demoted — a cross-backend differential.")
+  (input  (do (def (main) (Map.insert (Map.insert Map.empty 1 (: 2.0 Float32)) 2 3.0)) (export main)))
+  (call   main) (output (: #map((= 1 2.0) (= 2 3.0)) (Map Int64 Float32))))
+
 (case "an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)"
   (doc    "The passing control for the builder-chain overflow rejects above: an in-range `5` (fits Int8)
            inserted into a `(Map Int64 Int8)` compiles + runs — the width fit-check must REJECT only genuine

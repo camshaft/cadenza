@@ -285,6 +285,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // (that stays a rejectable int-vs-float mix). A constraint, so it precedes the module defaults below.
         Resolved::Int(_) => qty_magnitude_context_ty(db, id)
             .or_else(|| literal_collection_element_context_ty(db, id))
+            .or_else(|| literal_map_insert_context_ty(db, id))
             .filter(|t| matches!(t, Ty::Int(_)))
             .or_else(|| module_default_fraction_ty(db, id))
             .or_else(|| module_default_int_ty(db, id))
@@ -402,6 +403,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // constraint, so it precedes the module fraction/float defaults.
         Resolved::Float(_) => qty_magnitude_context_ty(db, id)
             .or_else(|| literal_collection_element_context_ty(db, id))
+            .or_else(|| literal_map_insert_context_ty(db, id))
             .filter(|t| matches!(t, Ty::Float(_)))
             .or_else(|| module_default_fraction_ty(db, id))
             .or_else(|| module_default_float_ty(db, id))
@@ -1048,6 +1050,112 @@ fn sibling_is_bare_literal_quantity(db: &mut Db, id: StructId) -> bool {
         return false;
     }
     matches!(resolved_ref(db, mag), Resolved::Int(_) | Resolved::Float(_))
+}
+
+/// The key/value TYPE a bare numeric LITERAL adopts from its MAP-INSERT-CHAIN context (operator seq-40:
+/// width-unification across every homogeneous collection). A bare literal written as the KEY (arg 1) or
+/// VALUE (arg 2) of a `(Map.insert m k v)` adopts a SIBLING entry's concretely-fixed key/value width from
+/// anywhere in the SAME insert chain — a map's key column and value column are each homogeneous, so one
+/// specified width fixes that whole column and a bare literal adopts it (`(Map.insert (Map.insert Map.empty
+/// 1 (: 2.0 Float32)) 2 3.0)` → the bare `3.0` adopts `Float32`). Without this the bare literal grounded to
+/// the 64-bit DEFAULT while a sibling entry was narrower: WASM settled the column type (the reflected join)
+/// so it type-checked, but the RUST backend emitted an ill-typed map mixing f32/f64 (error[E0308]) — the
+/// Map twin of the list-element E0308 the collection-element adopt fixed. The chain is walked BOTH ways —
+/// DOWN the operand links and UP the enclosing inserts — so a bare literal in ANY position adopts a fixed
+/// sibling regardless of order. A bare-literal sibling is DEFERRED and imposes nothing (skipped STRUCTURALLY
+/// to avoid a mutual-`type_of` cycle, as [`literal_collection_element_context_ty`] does); NONE fixed → the
+/// 64-bit default stands; two CONCRETE-different widths are the map-homogeneity CDZ0201 (already rejected).
+fn literal_map_insert_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
+    // `id` must be the KEY (arg 1) or VALUE (arg 2) of an enclosing `(Map.insert m k v)`. `role`: 1=key, 2=value.
+    let insert0 = db.parent_of(id)?;
+    let (head0, role) = {
+        let Resolved::Apply { head, args } = resolved_ref(db, insert0) else {
+            return None;
+        };
+        if args.len() != 3 {
+            return None;
+        }
+        let role = if args.get(1) == Some(&id) {
+            1usize
+        } else if args.get(2) == Some(&id) {
+            2usize
+        } else {
+            return None;
+        };
+        (*head, role)
+    };
+    if crate::eval::meta_apply_of(db, head0) != Some(crate::resolved::Prim::MapInsert) {
+        return None;
+    }
+    // Collect the same-role entry (key or value) of every OTHER insert in the chain.
+    let mut sibs: Vec<StructId> = Vec::new();
+    // DOWN: follow the operand (arg 0) while it is a `Map.insert`.
+    let mut cur = insert0;
+    loop {
+        let operand = {
+            let Resolved::Apply { args, .. } = resolved_ref(db, cur) else {
+                break;
+            };
+            if args.len() != 3 {
+                break;
+            }
+            args[0]
+        };
+        let (oh, ok, ov) = {
+            let Resolved::Apply { head, args } = resolved_ref(db, operand) else {
+                break;
+            };
+            if args.len() != 3 {
+                break;
+            }
+            (*head, args[1], args[2])
+        };
+        if crate::eval::meta_apply_of(db, oh) != Some(crate::resolved::Prim::MapInsert) {
+            break;
+        }
+        sibs.push(if role == 1 { ok } else { ov });
+        cur = operand;
+    }
+    // UP: while the current node is the OPERAND (arg 0) of an enclosing `Map.insert`.
+    let mut child = insert0;
+    loop {
+        let Some(parent) = db.parent_of(child) else {
+            break;
+        };
+        let (ph, p0, pk, pv) = {
+            let Resolved::Apply { head, args } = resolved_ref(db, parent) else {
+                break;
+            };
+            if args.len() != 3 {
+                break;
+            }
+            (*head, args[0], args[1], args[2])
+        };
+        if crate::eval::meta_apply_of(db, ph) != Some(crate::resolved::Prim::MapInsert)
+            || p0 != child
+        {
+            break;
+        }
+        sibs.push(if role == 1 { pk } else { pv });
+        child = parent;
+    }
+    for sib in sibs {
+        // A bare-literal sibling is deferred (imposes nothing) + is skipped structurally to avoid a
+        // mutual-`type_of` cycle; a fixed sibling (annotated/param/computed) binds the column width.
+        if is_bare_numeric_literal(db, sib) {
+            continue;
+        }
+        let t = type_of(db, sib);
+        let fixed = match &t {
+            crate::ty::Ty::Int(i) => i.width_is_fixed(),
+            crate::ty::Ty::Float(f) => matches!(f.width, crate::ty::Width::Fixed(_)),
+            _ => false,
+        };
+        if fixed {
+            return Some(t);
+        }
+    }
+    None
 }
 
 fn qty_magnitude_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
