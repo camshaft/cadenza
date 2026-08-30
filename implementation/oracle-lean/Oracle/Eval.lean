@@ -1633,10 +1633,14 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "List.concat: non-list operand")
   else if is "Rational" "of" then
-    -- `(Rational.of n d)` → the normalized exact rational `n/d`; a ZERO denominator traps div-by-zero.
+    -- `(Rational.of n d)` → the normalized exact rational `n/d`. A ZERO denominator fails the CHECKED
+    -- rational construction and traps kind `unreachable` (NOT `divide by zero`, which is for integer
+    -- `/`/`%`) — like the other checked `.of` conversions. Pinned by corpus 06-numeric-model/0080 +
+    -- 28-compiler-primitives (`List.len` over `(Rational.of 3 0)`) + 03-equality dead-let list, all
+    -- `(trap "unreachable")`, and 02-binding-and-control ("zero-denominator Rational.of" trap kind).
     some (match a1, a2 with
           | some (.value (.int n)), some (.value (.int d)) =>
-            (match mkRational n d with | some v => .value v | none => .trap "div-by-zero")
+            (match mkRational n d with | some v => .value v | none => .trap "unreachable")
           | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
