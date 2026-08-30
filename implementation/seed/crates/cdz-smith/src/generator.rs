@@ -413,7 +413,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(24) {
+        match self.cur.choice(25) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -435,6 +435,7 @@ impl Gen<'_> {
             20 => self.sum_expr(depth),
             21 => self.char_expr(depth),
             22 => self.qty_expr(depth),
+            23 => self.float32_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -897,6 +898,58 @@ impl Gen<'_> {
             self.expr(depth.saturating_sub(1), Kind::Num);
             self.out.push_str("))");
         }
+    }
+
+    /// A FLOAT32 expression — Float32-ascribed arithmetic / comparison / a Float32 tuple or list —
+    /// densely reaching the f32 WIDTH + boxing emit (the path the Qty f32/f64 findings exposed; the
+    /// text gen's bare float literals default to Float64, so Float32-in-compound + Float32 arith were
+    /// sparse). Operands are `(: <float-lit> Float32)`, so the value types + reaches codegen. Operator
+    /// directive 2026-08-30: keep expanding generated program shapes.
+    fn float32_expr(&mut self, depth: u32) {
+        match self.cur.choice(4) {
+            0 => {
+                // Float32 arithmetic.
+                let op = ["+", "-", "*", "/"][self.cur.choice(4)];
+                let _ = write!(self.out, "({op} ");
+                self.f32_operand(depth);
+                self.out.push(' ');
+                self.f32_operand(depth);
+                self.out.push(')');
+            }
+            1 => {
+                // Float32 comparison → Bool.
+                let op = ["<", ">", "<=", ">="][self.cur.choice(4)];
+                let _ = write!(self.out, "({op} ");
+                self.f32_operand(depth);
+                self.out.push(' ');
+                self.f32_operand(depth);
+                self.out.push(')');
+            }
+            2 => {
+                // A Float32 tuple, then projected — f32 in a compound element slot (boxing).
+                self.out.push_str("(. (tuple ");
+                self.f32_operand(depth);
+                self.out.push(' ');
+                self.f32_operand(depth);
+                self.out.push_str(") 0)");
+            }
+            _ => {
+                // A Float32 list, then indexed — f32 in a heap-list element (boxing).
+                self.out.push_str("(List.at (list ");
+                self.f32_operand(depth);
+                self.out.push(' ');
+                self.f32_operand(depth);
+                self.out.push_str(") 0)");
+            }
+        }
+    }
+
+    /// A `(: <float-lit> Float32)` operand for [`float32_expr`] — a Float32-ascribed float literal
+    /// (some boundary lits are out-of-range → a clean width decline, never a false finding).
+    fn f32_operand(&mut self, _depth: u32) {
+        self.out.push_str("(: ");
+        self.float_lit();
+        self.out.push_str(" Float32)");
     }
 
     /// A `Char` expression — `(Char.from-int <num>)` yields `(Option Char)` (fallible: an int may not be
@@ -1898,6 +1951,29 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a try/? program");
+    }
+
+    /// The Float32 arm is reachable — some seed emits a `(: <lit> Float32)` operand in arithmetic /
+    /// comparison / a compound — and every such program parses. Guards the f32 width/boxing emit reach
+    /// (the path the Qty f32/f64 findings exposed; operator directive 2026-08-30).
+    #[test]
+    fn some_seed_emits_a_float32() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains(" Float32)") {
+                hit = true;
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a Float32-ascribed operand"
+        );
     }
 
     /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
