@@ -24571,11 +24571,42 @@
   (input (do (def (main) (map (1))) (export main)))
   (error CDZ0201 (message "a map entry is a (key value) pair") (no-fix)))
 
+; ── seq-276: a BARE (key value) VALUE entry is no longer accepted — require the (= key value) FieldPair ──
+; DESIGN-record-type-syntax Phase B: a record field and a map entry are written `(= key value)` — the
+; canonical ascription triple the whole chapter uses (`#record((= x 1))` / `#map((= 1 10))`). The
+; transitional bare 2-element `(key value)` pair — once accepted for an un-migrated node — is DROPPED: a
+; bare `#record((x 1))` / `#map((1 10))` VALUE entry is now rejected CDZ0201 with the same coded message
+; the surplus/too-few forms above carry. Pins the drop so a future change cannot silently re-accept the
+; bare form. The reject is VALUE-scoped: a record TYPE field `(name Type)` routes through typeval_of and
+; is unaffected (07-type-system pins the type-form), and record/map PATTERN readers still accept a bare
+; `(k p)` entry (a match arm's `(record (x a))` / `(map (1 v))` is unchanged — those are pinned above).
+(case "a bare (key value) record field VALUE is no longer accepted"
+  (doc    "`#record((x 1))` writes the field with a bare 2-element `(x 1)` pair instead of the canonical
+           `(= x 1)` ascription. The transitional bare form is dropped (seq-276), so the compiler rejects
+           it CDZ0201 — a record field must be `(= key value)`. The migrated `#record((= x 1))` is the
+           accepted form (it type-checks and projects, pinned throughout this chapter, e.g. the field-key
+           immunity cases above). VALUE-scoped: this does not touch the record-TYPE field form `(name
+           Type)` nor a record match PATTERN's bare `(x a)` entry.")
+  (input  (do (def (main) #record((x 1))) (export main)))
+  (error  CDZ0201 (message "record field must be (= key value)")))
+
+(case "a bare (key value) map entry VALUE is no longer accepted"
+  (doc    "The map twin: `#map((1 10))` writes the entry with a bare 2-element `(1 10)` pair instead of the
+           canonical `(= 1 10)` FieldPair. The transitional bare form is dropped (seq-276), so the compiler
+           rejects it CDZ0201 — a map entry is a `(key value)` pair written `(= key value)`. Map entries
+           unify with record fields on the shared `(= k v)` reader, so they carry the same drop. The
+           migrated `#map((= 1 10))` is the accepted VALUE form. A `(map (1 v))` match PATTERN is
+           unaffected (pinned above).")
+  (input  (do (def (main) #map((1 10))) (export main)))
+  (error  CDZ0201 (message "a map entry is a (key value) pair")))
+
 (case "a duplicate literal map key carries a delete fix"
-  (doc "A map literal repeating a literal KEY — (map (1 10) (1 20) (2 30)) — is CDZ0201 (a map contains each key
-        at most once), carrying a DELETE fix on the redundant entry. From rcdzc
-        a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix.")
-  (input (do (def (f) (Map.len #map((1 10) (1 20) (2 30)))) (def (main) 0) (export main)))
+  (doc "A map literal repeating a literal KEY — `#map((= 1 10) (= 1 20) (= 2 30))` — is CDZ0201 (a map contains
+        each key at most once), carrying a DELETE fix on the redundant entry. From rcdzc
+        a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix. Entries use the canonical `(= key value)`
+        form so the case reaches the duplicate-key check (seq-276: a bare `(1 10)` entry is rejected 'a map
+        entry is a (key value) pair' PER-ENTRY first, which would mask the dup-key message this case pins).")
+  (input (do (def (f) (Map.len #map((= 1 10) (= 1 20) (= 2 30)))) (def (main) 0) (export main)))
   (error CDZ0201 (message "map contains each key") (fix (kind delete))))
 
 (case "ijs1 an if-join binder CONCAT-shared into both arms reclaims clean — the #5382 dup-skip exclusion"

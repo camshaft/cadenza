@@ -1213,10 +1213,10 @@ fn distinct_literal_map_keys_are_not_a_duplicate() {
     // The negative direction the O(N) scan must preserve: distinct written literals are NOT a
     // duplicate, so the map literal compiles clean (no CDZ0201). Distinct ints (incl. one dec + one
     // hex that are DIFFERENT values), distinct strings, distinct bools.
-    assert!(compiles_ok("(map (1 10) (2 20))"));
-    assert!(compiles_ok("(map (1 10) (0x2 20) (3 30))"));
-    assert!(compiles_ok("(map (\"a\" 1) (\"b\" 2))"));
-    assert!(compiles_ok("(map (true 1) (false 2))"));
+    assert!(compiles_ok("(map (= 1 10) (= 2 20))"));
+    assert!(compiles_ok("(map (= 1 10) (= 0x2 20) (= 3 30))"));
+    assert!(compiles_ok("(map (= \"a\" 1) (= \"b\" 2))"));
+    assert!(compiles_ok("(map (= true 1) (= false 2))"));
 }
 
 #[test]
@@ -1227,7 +1227,9 @@ fn two_distinct_names_bound_to_the_same_value_are_a_runtime_overwrite_not_a_dupl
     // key THROUGH its binding — as a pairwise `const_compound_eq` on the folded values would —
     // conflates the two; the direct-literal gate keeps them apart, so the program COMPILES (the
     // overwrite is a runtime fact, checked by the 05-compound-types §2510 corpus case's `Map.len`).
-    assert!(compiles_ok("(let ((a 5)) (let ((b 5)) (map (a 1) (b 2))))"));
+    assert!(compiles_ok(
+        "(let ((a 5)) (let ((b 5)) (map (= a 1) (= b 2))))"
+    ));
 }
 
 #[test]
@@ -1361,7 +1363,7 @@ fn a_misspelled_field_on_a_visible_record_suggests_the_nearest_field() {
     // The record analogue of the unbound-name "did you mean?" — a field typo (`height` → `heigth`)
     // on a compile-time-visible record names the near field AND carries a heuristic fix on the KEY
     // token (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
-    let d = expect_error("(. (record (width 10) (height 20)) heigth)");
+    let d = expect_error("(. (record (= width 10) (= height 20)) heigth)");
     assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
     assert!(
         d.message.contains("did you mean `height`?"),
@@ -1379,7 +1381,7 @@ fn a_misspelled_field_on_a_runtime_record_type_suggests_the_nearest_field() {
     // record TYPE; the field typo is caught on that type and suggested the same way. `get-h`'s body
     // `(. r heigth)` faults once `r`'s record argument flows in.
     let src = "(module m (def (get-h r) (. r heigth)) \
-                   (def (main) (get-h (record (width 10) (height 20)))) (export main))";
+                   (def (main) (get-h (record (= width 10) (= height 20)))) (export main))";
     let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
     assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
     assert_eq!(
@@ -1399,7 +1401,7 @@ fn a_misspelled_field_in_a_constructed_record_names_the_field_and_offers_a_renam
     // offers a heuristic RENAME fix on the misspelled KEY token — the same repair a `(. r yy)` typo
     // gets. Previously it rendered both record types verbatim with no hint and no fix.
     let src = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                   (def (f) (P.Mk (record (x 1) (yy 2)))) (export f))";
+                   (def (f) (P.Mk (record (= x 1) (= yy 2)))) (export f))";
     let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
     assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
     assert!(
@@ -1416,7 +1418,7 @@ fn a_misspelled_field_in_a_constructed_record_names_the_field_and_offers_a_renam
     // The fix TARGETS the key token: applying `yy`→`y` clears the fault (the value now has the right
     // field set). Demonstrated by construction — the corrected program compiles.
     let fixed = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                     (def (f) (P.Mk (record (x 1) (y 2)))) (export f))";
+                     (def (f) (P.Mk (record (= x 1) (= y 2)))) (export f))";
     assert!(
         compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
         "the renamed record compiles"
@@ -1424,7 +1426,7 @@ fn a_misspelled_field_in_a_constructed_record_names_the_field_and_offers_a_renam
     // AMBIGUOUS: two wrong fields is not a single mechanical rename → the field-diff hint still guides,
     // but NO auto-fix (an ambiguous multi-field slip is not one confident edit).
     let ambiguous = "(module m (type P (Mk (Record (x Int64) (y Int64)))) \
-                         (def (f) (P.Mk (record (aa 1) (bb 2)))) (export f))";
+                         (def (f) (P.Mk (record (= aa 1) (= bb 2)))) (export f))";
     let d2 = compile_component(&crate::codec::encode(&parse(ambiguous))).expect_err("must reject");
     assert!(
         d2.message.contains("missing fields") && d2.fix.is_none(),
@@ -1442,7 +1444,7 @@ fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
     // names the field-set difference AND offers the RENAME fix on the misspelled key. Previously the
     // argument site named the difference but declined the fix the variant-ctor site already gave.
     let src = "(module m (def (g (: r (Record (foo Int64)))) (. r foo)) \
-                   (def (main) (g (record (fooo 1)))) (export main))";
+                   (def (main) (g (record (= fooo 1)))) (export main))";
     let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
     assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
     assert!(
@@ -1458,7 +1460,7 @@ fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
     );
     // The renamed argument compiles.
     let fixed = "(module m (def (g (: r (Record (foo Int64)))) (. r foo)) \
-                     (def (main) (g (record (foo 1)))) (export main))";
+                     (def (main) (g (record (= foo 1)))) (export main))";
     assert!(
         compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
         "the renamed record argument compiles"
@@ -1467,7 +1469,7 @@ fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
     // message names the missing field AND carries an insert fix appending `(y (trap "TODO"))` to the
     // record literal (a `trap` placeholder inhabits any field type, so it clears the fault in one shot).
     let missing = "(module m (def (g (: r (Record (x Int64) (y Int64)))) (. r x)) \
-                       (def (main) (g (record (x 1)))) (export main))";
+                       (def (main) (g (record (= x 1)))) (export main))";
     let dm = compile_component(&crate::codec::encode(&parse(missing))).expect_err("must reject");
     assert!(
         dm.message.contains("missing field `y`"),
@@ -1490,7 +1492,7 @@ fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
     // binder gets the SAME rename on the primary binding-mismatch reject (previously it declined the
     // fix the argument + value-annotation sites gave).
     let binder = "(module m (def (main) \
-                       (let (((: r (Record (foo Int64))) (record (fooo 1)))) 0)) (export main))";
+                       (let (((: r (Record (foo Int64))) (record (= fooo 1)))) 0)) (export main))";
     let db_ = compile_component(&crate::codec::encode(&parse(binder))).expect_err("must reject");
     assert_eq!(db_.code.as_deref(), Some("CDZ0203"), "got: {}", db_.message);
     assert!(
@@ -1506,7 +1508,7 @@ fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
     // the numeric-leaf drill.
     let nested = "(module m \
                       (def (g (: r (Record (inner (Record (foo Int64)))))) (. r inner)) \
-                      (def (main) (g (record (inner (record (fooo 1)))))) (export main))";
+                      (def (main) (g (record (= inner (record (= fooo 1)))))) (export main))";
     let dn = compile_component(&crate::codec::encode(&parse(nested))).expect_err("must reject");
     let nfix = dn.fix.as_ref().expect("a nested rename fix is carried");
     assert!(
@@ -1518,7 +1520,7 @@ fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
     // The renamed nested record compiles.
     let nested_fixed = "(module m \
                             (def (g (: r (Record (inner (Record (foo Int64)))))) (. r inner)) \
-                            (def (main) (g (record (inner (record (foo 1)))))) (export main))";
+                            (def (main) (g (record (= inner (record (= foo 1)))))) (export main))";
     assert!(
         compile_component(&crate::codec::encode(&parse(nested_fixed))).is_ok(),
         "the renamed nested record compiles"
@@ -1526,7 +1528,7 @@ fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
     // NO false rename: a genuinely-missing NESTED field (not a typo) gets no fix.
     let nested_missing = "(module m \
                               (def (g (: r (Record (inner (Record (a Int64) (b Int64)))))) (. r inner)) \
-                              (def (main) (g (record (inner (record (a 1)))))) (export main))";
+                              (def (main) (g (record (= inner (record (= a 1)))))) (export main))";
     let dnm =
         compile_component(&crate::codec::encode(&parse(nested_missing))).expect_err("must reject");
     assert!(
@@ -1547,7 +1549,7 @@ fn a_record_field_set_mismatch_offers_add_missing_or_delete_extra_fields() {
     // MISSING fields → an INSERT fix appending `(field (trap "TODO"))` per missing field. `trap` (∀a.
     // String → a) inhabits any field type, so applying it clears the fault in one shot (verifiable).
     let miss = "(module m (def (f (: r (Record (x Int64) (y Int64) (z Int64)))) r) \
-                    (def (main) (f (record (x 1)))) (export main))";
+                    (def (main) (f (record (= x 1)))) (export main))";
     let dm = compile_component(&crate::codec::encode(&parse(miss))).expect_err("must reject");
     assert_eq!(dm.code.as_deref(), Some("CDZ0203"), "got: {}", dm.message);
     assert!(
@@ -1575,7 +1577,7 @@ fn a_record_field_set_mismatch_offers_add_missing_or_delete_extra_fields() {
 
     // A lone SURPLUS field → a DELETE fix removing the `(field value)` entry.
     let extra = "(module m (def (f (: r (Record (x Int64)))) r) \
-                     (def (main) (f (record (x 1) (y 2)))) (export main))";
+                     (def (main) (f (record (= x 1) (= y 2)))) (export main))";
     let de = compile_component(&crate::codec::encode(&parse(extra))).expect_err("must reject");
     assert!(
         de.message.contains("no such field `y`"),
@@ -1591,7 +1593,7 @@ fn a_record_field_set_mismatch_offers_add_missing_or_delete_extra_fields() {
     );
     // The delete resolves the fault (removing `(y 2)` leaves the expected shape).
     let extra_fixed = "(module m (def (f (: r (Record (x Int64)))) r) \
-                           (def (main) (f (record (x 1)))) (export main))";
+                           (def (main) (f (record (= x 1)))) (export main))";
     assert!(
         compile_component(&crate::codec::encode(&parse(extra_fixed))).is_ok(),
         "the record with the surplus field removed compiles"
@@ -1599,7 +1601,7 @@ fn a_record_field_set_mismatch_offers_add_missing_or_delete_extra_fields() {
 
     // The DIRECT value-annotation site carries the same fixes.
     let annot_miss = "(module m (def (main) \
-                          (: (record (x 1)) (Record (x Int64) (y Int64)))) (export main))";
+                          (: (record (= x 1)) (Record (x Int64) (y Int64)))) (export main))";
     let da = compile_component(&crate::codec::encode(&parse(annot_miss))).expect_err("must reject");
     assert!(
         da.fix
@@ -1614,7 +1616,7 @@ fn a_record_field_set_mismatch_offers_add_missing_or_delete_extra_fields() {
     // NO false fix — BOTH a missing AND an extra field that is NOT a typo of the missing one is
     // ambiguous (neither a clean add nor a clean delete nor a rename), so the message guides, no fix.
     let ambig = "(module m (def (f (: r (Record (x Int64) (y Int64)))) r) \
-                     (def (main) (f (record (x 1) (zzzzzz 2)))) (export main))";
+                     (def (main) (f (record (= x 1) (= zzzzzz 2)))) (export main))";
     let dz = compile_component(&crate::codec::encode(&parse(ambig))).expect_err("must reject");
     assert!(
         dz.fix.is_none(),
@@ -1726,7 +1728,7 @@ fn a_field_with_no_close_match_lists_the_available_fields() {
     // fields are: …". A record/module is a CLOSED, small field set, so listing them is signal an agent
     // acts on (it no longer has to read the type/prelude to learn what exists), not noise. No FIX (a
     // list of options is not one mechanical edit) and no false "did you mean" (there is no near typo).
-    let d = expect_error("(. (record (width 10) (height 20)) zzzzzz)");
+    let d = expect_error("(. (record (= width 10) (= height 20)) zzzzzz)");
     assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
     assert!(
         !d.message.contains("did you mean"),
@@ -1961,7 +1963,7 @@ fn a_misspelled_field_call_head_reports_one_error_not_a_dup() {
             crate::abi::Artifact::KIND_AST,
             "m",
             crate::codec::encode(&parse(
-                "(module m (def (main) ((. (record (compute 1)) computee) 5)) (export main))",
+                "(module m (def (main) ((. (record (= compute 1)) computee) 5)) (export main))",
             )),
         )],
         &[crate::backend::Target::Wasm],
@@ -1995,7 +1997,7 @@ fn returning_a_constant_record_compiles_via_the_resource_escape() {
     // `spec/semantics/05-compound-types.sexp`.) A record
     // consumed INTERNALLY still folds/declines per its use; this pins that a constant record RESULT
     // compiles to a component.
-    let src = "(module m (def (main) (record (x 1))) (export main))";
+    let src = "(module m (def (main) (record (= x 1))) (export main))";
     assert!(
         compile_component(&crate::codec::encode(&parse(src))).is_ok(),
         "a constant record return must compile via the resource escape"
@@ -2083,7 +2085,7 @@ fn a_recursive_sum_carrying_a_map_renders_via_the_value_encode_walker() {
     use crate::testkit::parse;
     let src = "(module m (type MapList (Cons (Tuple (Map String Int64) MapList)) Nil) \
                      (def (build (: n Int64)) (if (< n 1) (MapList.Nil ()) \
-                        (MapList.Cons (tuple (map (\"k\" n)) (build (- n 1)))))) \
+                        (MapList.Cons (tuple (map (= \"k\" n)) (build (- n 1)))))) \
                      (def (main) (build 2)) (export main))";
     compile_component(&crate::codec::encode(&parse(src)))
         .expect("a recursive sum carrying a Map compiles via the value-encode walker");
@@ -2877,7 +2879,7 @@ fn a_wide_record_argument_unifies_across_many_calls_in_bounded_time() {
     // compile, and RETURN the projected field (k0 = 0), in bounded time.
     let w = 200;
     let fields = (0..w)
-        .map(|i| format!("(k{i} {i})"))
+        .map(|i| format!("(= k{i} {i})"))
         .collect::<Vec<_>>()
         .join(" ");
     let mut calls = String::from("0");
@@ -2926,13 +2928,13 @@ fn an_annotated_let_binder_structural_mismatch_names_the_delta() {
             .message
     };
     // A record FIELD-SET difference.
-    let rec = msg("(let (((: r (Record (x Int64))) (record (y 2)))) r)");
+    let rec = msg("(let (((: r (Record (x Int64))) (record (= y 2)))) r)");
     assert!(
         rec.contains("a binder annotated") && rec.contains("missing field `x`"),
         "the record field-set delta is named on the binder: {rec}"
     );
     // A record FIELD-TYPE difference (same field set).
-    let field_ty = msg("(let (((: r (Record (x Int64))) (record (x true)))) r)");
+    let field_ty = msg("(let (((: r (Record (x Int64))) (record (= x true)))) r)");
     assert!(
         field_ty.contains("field `x` should be Int64, but this one is Bool"),
         "the field-type delta is named: {field_ty}"
@@ -3701,7 +3703,7 @@ fn a_perform_arg_structural_mismatch_names_the_delta_not_just_the_types() {
     // field is wrong. A SCALAR mismatch (Int64 vs Bool — no structural delta) keeps the bare message.
     let src = "(do (effect Log (op put (-> (Record (x Int64)) Unit))) \
                    (def (main) (handle Log unit ((put (r) s (resume unit s))) \
-                   ((. Log put) (record (y 2))))) (export main))";
+                   ((. Log put) (record (= y 2))))) (export main))";
     let err = compile_component(&crate::codec::encode(&parse(src)))
         .expect_err("a structurally-mismatched perform argument must be rejected");
     assert!(

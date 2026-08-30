@@ -582,17 +582,29 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let mut key_ty = Ty::Any;
         let mut val_ty = Ty::Any;
         for &entry in args {
-            // Read the entry's RAW `(key value)` children — a map entry is structure, not an application
-            // (`(a 1)` is the pair a↦1, not `a` applied to `1`), so read the AST list directly.
-            if let crate::ast::Struct::List(items) = db.ast.get(entry)
-                && items.len() == 2
+            // Read the entry's `(key, value)` children — a map entry is structure, not an application
+            // (`(a 1)` is the pair a↦1, not `a` applied to `1`). Read via the shared field-pair readers so
+            // the canonical `(= key value)` FieldPair (native leaf, `=`-headed list) types its key/value
+            // like the legacy bare `(key value)` 2-element pair — seq-276: the `(map (= k v))` name-alias
+            // must type identically to `#map((= k v))` (this apply_type arm is the raw map-type consumer;
+            // without the `field_pair` read a `(= k v)` entry was skipped → `(Map Any Any)` → a spurious
+            // CDZ0203 "not fully determined"). Mirrors `map_entry_nodes` / `resolve_map`.
+            if let Some((k, v)) = db
+                .ast
+                .field_pair_parts(entry)
+                .or_else(|| db.ast.field_pair(entry))
+                .or_else(|| match db.ast.get(entry) {
+                    crate::ast::Struct::List(items) if items.len() == 2 => {
+                        Some((items[0], items[1]))
+                    }
+                    _ => None,
+                })
             {
-                let (k, v) = (items[0], items[1]);
                 key_ty = key_ty.join(&type_of(db, k));
                 val_ty = val_ty.join(&type_of(db, v));
             }
-            // A malformed entry (not a 2-element list) — the fault is reported elsewhere; the map's
-            // key/value stay whatever the well-formed entries determined.
+            // A malformed entry (not a pair) — the fault is reported elsewhere; the map's key/value stay
+            // whatever the well-formed entries determined.
         }
         return Ty::Map(Box::new(key_ty), Box::new(val_ty));
     }

@@ -7054,7 +7054,7 @@ mod tests {
         // A record's fields must be NAME-SORTED (the canonical order all 3 producers agree on). rcdzc's
         // Ty::Record is a name-sorted BTreeMap, so iterating it in natural order already emits sorted fields
         // — the sort is free. Declared here in NON-sorted order (`z` before `a`) to prove the emit sorts.
-        match desc_wit("(record (z 1) (a true))") {
+        match desc_wit("(record (= z 1) (= a true))") {
             Some(W::Record(fields)) => {
                 let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
                 assert_eq!(names, vec!["a", "z"], "record fields emit name-sorted");

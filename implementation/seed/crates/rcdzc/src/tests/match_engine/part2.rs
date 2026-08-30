@@ -1199,7 +1199,7 @@ fn applying_an_applyable_head_is_not_flagged_as_a_non_function() {
         None
     );
     assert_eq!(
-        reject_code("(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))"),
+        reject_code("(module m (def (main) (. (record (= x 1) (= y 2)) x)) (export main))"),
         None
     );
 }
@@ -2036,7 +2036,7 @@ fn a_map_list_element_dispatches_by_key_presence() {
         reject_code(
             "(module m (def (f (: xs (List (Map Int64 Int64)))) \
                    (match xs ((list (map (1 a)) .. rest) a) (_ (- 0 1)))) \
-                 (def (main) (f (list (map (1 77))))) (export main))"
+                 (def (main) (f (list (map (= 1 77))))) (export main))"
         )
         .is_none(),
         "a map list element now compiles (dispatches by key presence)"
@@ -4531,7 +4531,7 @@ fn a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary()
         "a generic sum with a type param in a TUPLE payload must compile — not reject B as nullary"
     );
     let rec = "(module m (type Box (B (Record (val a))) N) \
-                     (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0))) \
+                     (def (main) (match (Box.B (record (= val 7))) ((Box.B r) (. r val)) (Box.N 0))) \
                    (export main))";
     assert!(
         compile_component(&crate::codec::encode(&parse(rec))).is_ok(),

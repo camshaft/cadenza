@@ -1595,11 +1595,11 @@ fn native_compound_recognition_matches_the_alias_across_lingering_behavior_paths
     for (label, src) in [
         (
             "native #record field key is β-immune (not substituted → corrupted)",
-            "(module m (def (f (: x Int64)) #record((x 5))) (def (main) (f 7)) (export main))",
+            "(module m (def (f (: x Int64)) #record((= x 5))) (def (main) (f 7)) (export main))",
         ),
         (
             "name-alias record field key β-immune (control)",
-            "(module m (def (f (: x Int64)) (record (x 5))) (def (main) (f 7)) (export main))",
+            "(module m (def (f (: x Int64)) (record (= x 5))) (def (main) (f 7)) (export main))",
         ),
         (
             "native #tuple ctor-payload is an irrefutable match binder",
@@ -1771,7 +1771,7 @@ fn a_native_compound_equality_compiles_like_the_alias() {
         ),
         (
             "name-alias record equality (control)",
-            "(module m (def (main) (= (record (x 1) (y 2)) (record (y 2) (x 1)))) (export main))",
+            "(module m (def (main) (= (record (= x 1) (= y 2)) (record (= y 2) (= x 1)))) (export main))",
         ),
         (
             "native #map equality",
@@ -2517,7 +2517,7 @@ fn an_annotated_let_binder_mismatch_does_not_cascade_a_contradictory_body_diagno
     let rec = crate::host::run_with_compiler_stack(|| {
         crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (main) \
-                   (let (((: r (Record (foo Int64))) (record (fooo 1)))) (. r foo))) (export main))",
+                   (let (((: r (Record (foo Int64))) (record (= fooo 1)))) (. r foo))) (export main))",
         )))
     });
     let errs: Vec<_> = rec
@@ -2563,7 +2563,7 @@ fn an_annotated_let_binder_mismatch_does_not_cascade_a_contradictory_body_diagno
     let genuine = crate::host::run_with_compiler_stack(|| {
         crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (main) \
-                   (let (((: r (Record (foo Int64))) (record (foo 1)))) (. r bar))) (export main))",
+                   (let (((: r (Record (foo Int64))) (record (= foo 1)))) (. r bar))) (export main))",
         )))
     });
     assert!(
@@ -2660,7 +2660,7 @@ fn over_applying_a_prelude_member_op_dedupes_the_emit_path_decline() {
             crate::abi::Artifact::KIND_AST,
             "m",
             crate::codec::encode(&parse(
-                "(module m (def (main) ((. Map len) (map (1 2)) 99)) (export main))",
+                "(module m (def (main) ((. Map len) (map (= 1 2)) 99)) (export main))",
             )),
         )],
         &[crate::backend::Target::Wasm],
@@ -4289,14 +4289,14 @@ fn record_without_and_merge_reshape_records_with_field_set_checks() {
     // `without` of a PRESENT field is well-formed.
     assert_eq!(
         reject_code(
-            "(module m (def (main) (Record.without (record (a 1) (b 2) (c 3)) (b))) (export main))"
+            "(module m (def (main) (Record.without (record (= a 1) (= b 2) (= c 3)) (b))) (export main))"
         ),
         None,
         "dropping a present field is well-formed"
     );
     // `without` of an ABSENT field → CDZ0212 (a drop of a field never held is a static error).
     assert_eq!(
-        reject_code("(module m (def (main) (Record.without (record (a 1)) (z))) (export main))")
+        reject_code("(module m (def (main) (Record.without (record (= a 1)) (z))) (export main))")
             .as_deref(),
         Some("CDZ0212"),
         "dropping an absent field is CDZ0212"
@@ -4304,7 +4304,7 @@ fn record_without_and_merge_reshape_records_with_field_set_checks() {
     // `merge` of DISJOINT field sets is well-formed.
     assert_eq!(
         reject_code(
-            "(module m (def (main) (Record.merge (record (a 1)) (record (b 2)))) (export main))"
+            "(module m (def (main) (Record.merge (record (= a 1)) (record (= b 2)))) (export main))"
         ),
         None,
         "merging disjoint records is well-formed"
@@ -4313,7 +4313,7 @@ fn record_without_and_merge_reshape_records_with_field_set_checks() {
     // choose which operand's value the shared field takes).
     assert_eq!(
         reject_code(
-            "(module m (def (main) (Record.merge (record (a 1)) (record (a 2)))) (export main))"
+            "(module m (def (main) (Record.merge (record (= a 1)) (record (= a 2)))) (export main))"
         )
         .as_deref(),
         Some("CDZ0211"),
@@ -4338,7 +4338,7 @@ fn a_record_row_op_over_a_non_record_names_the_kind() {
     for (op, arg2) in [
         ("project", "(x)"),
         ("without", "(x)"),
-        ("merge", "(record (y 1))"),
+        ("merge", "(record (= y 1))"),
         ("extend", "(x 5)"),
         ("with", "(x 5)"),
     ] {
@@ -4408,14 +4408,14 @@ fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
     // extend adds an ABSENT field (well-formed); a PRESENT field is CDZ0211.
     assert_eq!(
         reject_code(
-            "(module m (def (main) (Record.extend (record (a 1)) #\"b\" 2)) (export main))"
+            "(module m (def (main) (Record.extend (record (= a 1)) #\"b\" 2)) (export main))"
         ),
         None,
         "extend of an absent field is well-formed"
     );
     assert_eq!(
         reject_code(
-            "(module m (def (main) (Record.extend (record (a 1)) #\"a\" 2)) (export main))"
+            "(module m (def (main) (Record.extend (record (= a 1)) #\"a\" 2)) (export main))"
         )
         .as_deref(),
         Some("CDZ0211"),
@@ -4424,25 +4424,29 @@ fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
     // with replaces a PRESENT field (well-formed, may retype); an ABSENT field is CDZ0212.
     assert_eq!(
         reject_code(
-            "(module m (def (main) (Record.with (record (a 1) (b 2)) #\"b\" true)) (export main))"
+            "(module m (def (main) (Record.with (record (= a 1) (= b 2)) #\"b\" true)) (export main))"
         ),
         None,
         "with of a present field (even retyping) is well-formed"
     );
     assert_eq!(
-        reject_code("(module m (def (main) (Record.with (record (a 1)) #\"z\" 5)) (export main))")
-            .as_deref(),
+        reject_code(
+            "(module m (def (main) (Record.with (record (= a 1)) #\"z\" 5)) (export main))"
+        )
+        .as_deref(),
         Some("CDZ0212"),
         "with of an absent field is CDZ0212 (use extend)"
     );
     // pop of a PRESENT field is well-formed; an ABSENT field is CDZ0212.
     assert_eq!(
-        reject_code("(module m (def (main) (Record.pop (record (a 1) (b 2)) a)) (export main))"),
+        reject_code(
+            "(module m (def (main) (Record.pop (record (= a 1) (= b 2)) a)) (export main))"
+        ),
         None,
         "pop of a present field is well-formed"
     );
     assert_eq!(
-        reject_code("(module m (def (main) (Record.pop (record (a 1)) z)) (export main))")
+        reject_code("(module m (def (main) (Record.pop (record (= a 1)) z)) (export main))")
             .as_deref(),
         Some("CDZ0212"),
         "pop of an absent field is CDZ0212"
@@ -4450,7 +4454,7 @@ fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
     // A mistyped `pop`/`with` field near a real one carries a did-you-mean — the closed-set
     // suggestion `without`/`project` already give, over the operand record's fields.
     let dp = reject_full(
-        "(module m (def (main) (Record.pop (record (alpha 1) (beta 2)) alpa)) (export main))",
+        "(module m (def (main) (Record.pop (record (= alpha 1) (= beta 2)) alpa)) (export main))",
     )
     .expect("pop of an absent field is CDZ0212");
     assert!(
@@ -4459,7 +4463,7 @@ fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
         dp.message
     );
     let dw = reject_full(
-            "(module m (def (main) (Record.with (record (alpha 1) (beta 2)) #\"alpa\" 9)) (export main))",
+            "(module m (def (main) (Record.with (record (= alpha 1) (= beta 2)) #\"alpa\" 9)) (export main))",
         )
         .expect("with of an absent field is CDZ0212");
     assert!(
@@ -4482,9 +4486,10 @@ fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
         dw.fix
     );
     // NO OVERREACH: a far-miss field keeps the message but carries no fix.
-    let far =
-        reject_full("(module m (def (main) (Record.pop (record (alpha 1)) zzzzzz)) (export main))")
-            .expect("pop of an absent field is CDZ0212");
+    let far = reject_full(
+        "(module m (def (main) (Record.pop (record (= alpha 1)) zzzzzz)) (export main))",
+    )
+    .expect("pop of an absent field is CDZ0212");
     assert!(
         far.fix.is_none(),
         "no fix without a plausible near field: {:?}",
@@ -4503,7 +4508,7 @@ fn a_wrong_record_row_op_carries_the_operator_swap_fix_the_message_names() {
 
     // extend a PRESENT field → CDZ0211 + a VERIFIED swap `extend`→`with`.
     let de = reject_full(
-        "(module m (def (main) (Record.extend (record (a 1)) #\"a\" 2)) (export main))",
+        "(module m (def (main) (Record.extend (record (= a 1)) #\"a\" 2)) (export main))",
     )
     .expect("extend of a present field is CDZ0211");
     assert_eq!(de.code.as_deref(), Some("CDZ0211"), "got: {}", de.message);
@@ -4521,14 +4526,16 @@ fn a_wrong_record_row_op_carries_the_operator_swap_fix_the_message_names() {
     // ROUND TRIP: applying the swap (`extend`→`with` on a PRESENT field) recompiles clean — updating
     // an existing field is exactly `with`'s precondition, so the applied form type-checks.
     assert_eq!(
-        reject_code("(module m (def (main) (Record.with (record (a 1)) #\"a\" 2)) (export main))"),
+        reject_code(
+            "(module m (def (main) (Record.with (record (= a 1)) #\"a\" 2)) (export main))"
+        ),
         None,
         "applying the verified `extend`→`with` swap must recompile clean"
     );
 
     // with an ABSENT field that is NOT a near typo → CDZ0212 + a VERIFIED swap `with`→`extend`.
     let dw = reject_full(
-        "(module m (def (main) (Record.with (record (alpha 1)) #\"zzzzz\" 5)) (export main))",
+        "(module m (def (main) (Record.with (record (= alpha 1)) #\"zzzzz\" 5)) (export main))",
     )
     .expect("with of an absent field is CDZ0212");
     assert_eq!(dw.code.as_deref(), Some("CDZ0212"), "got: {}", dw.message);
@@ -4546,7 +4553,7 @@ fn a_wrong_record_row_op_carries_the_operator_swap_fix_the_message_names() {
     // new field is exactly `extend`'s precondition, so the applied form type-checks.
     assert_eq!(
         reject_code(
-            "(module m (def (main) (Record.extend (record (alpha 1)) #\"zzzzz\" 5)) (export main))"
+            "(module m (def (main) (Record.extend (record (= alpha 1)) #\"zzzzz\" 5)) (export main))"
         ),
         None,
         "applying the verified `with`→`extend` swap must recompile clean"
@@ -4554,7 +4561,7 @@ fn a_wrong_record_row_op_carries_the_operator_swap_fix_the_message_names() {
 
     // A NEAR-miss field still prefers the label typo-fix (the likelier intent), NOT the op swap.
     let dn = reject_full(
-        "(module m (def (main) (Record.with (record (alpha 1)) #\"alpXa\" 5)) (export main))",
+        "(module m (def (main) (Record.with (record (= alpha 1)) #\"alpXa\" 5)) (export main))",
     )
     .expect("with of a near-miss field is CDZ0212");
     let fn_ = dn
@@ -4675,7 +4682,7 @@ fn a_map_or_set_heterogeneity_structural_delta_hint_names_the_differing_subpart(
     // the NEGATIVE that a scalar clash gets NO delta tail — a message-ABSENCE the corpus cannot assert.)
     // A set of records differing in one field TYPE.
     let sr = reject_full(
-        "(module m (def x (Set.of (list (record (x 1)) (record (x true))))) (export x))",
+        "(module m (def x (Set.of (list (record (= x 1)) (record (= x true))))) (export x))",
     )
     .expect("reject");
     assert!(
@@ -4685,16 +4692,17 @@ fn a_map_or_set_heterogeneity_structural_delta_hint_names_the_differing_subpart(
         sr.message
     );
     // A map KEY delta (records differing in a field) and a map VALUE delta (sum payload axis).
-    let mkd =
-        reject_full("(module m (def x (map ((record (x 1)) 0) ((record (x true)) 1))) (export x))")
-            .expect("reject");
+    let mkd = reject_full(
+        "(module m (def x (map (= (record (= x 1)) 0) (= (record (= x true)) 1))) (export x))",
+    )
+    .expect("reject");
     assert!(
         mkd.message
             .contains("field `x` should be Int64, but this one is Bool"),
         "map key names the differing record field: {}",
         mkd.message
     );
-    let mvd = reject_full("(module m (def x (map (0 (Some 5)) (1 (Some 2.0)))) (export x))")
+    let mvd = reject_full("(module m (def x (map (= 0 (Some 5)) (= 1 (Some 2.0)))) (export x))")
         .expect("reject");
     assert!(
         mvd.message
@@ -4822,7 +4830,7 @@ fn a_map_insert_type_clash_names_the_map_and_operand_types() {
     // inserted key's type differs from the map's"), and offers the int-literal→float retype where it
     // bridges the clash.
     let key = reject_full(
-        "(module m (def (main) (Map.len ((. Map insert) (map (1 2)) \"k\" 3))) (export main))",
+        "(module m (def (main) (Map.len ((. Map insert) (map (= 1 2)) \"k\" 3))) (export main))",
     )
     .expect("a Map.insert key-type clash must reject");
     assert_eq!(key.code.as_deref(), Some("CDZ0201"), "got: {}", key.message);
@@ -4832,7 +4840,7 @@ fn a_map_insert_type_clash_names_the_map_and_operand_types() {
         key.message
     );
     let val = reject_full(
-        "(module m (def (main) (Map.len ((. Map insert) (map (1 2)) 9 \"v\"))) (export main))",
+        "(module m (def (main) (Map.len ((. Map insert) (map (= 1 2)) 9 \"v\"))) (export main))",
     )
     .expect("a Map.insert value-type clash must reject");
     assert!(
@@ -4842,7 +4850,7 @@ fn a_map_insert_type_clash_names_the_map_and_operand_types() {
     );
     // Inserting an int VALUE into a map whose values are Float → the `n.0` retype fix (int-lit→float).
     let f = reject_full(
-        "(module m (def (main) (Map.len ((. Map insert) (map (1 1.0)) 9 3))) (export main))",
+        "(module m (def (main) (Map.len ((. Map insert) (map (= 1 1.0)) 9 3))) (export main))",
     )
     .expect("reject");
     assert_eq!(
@@ -4857,7 +4865,7 @@ fn a_map_insert_type_clash_names_the_map_and_operand_types() {
     // reader to diff `(Record (x Int64))` against `(Record (y Int64))`.
     let cd = reject_full(
         "(module m (def (f (: mm (Map String (Record (x Int64))))) \
-             ((. Map insert) mm \"k\" (record (y 2)))) (export f))",
+             ((. Map insert) mm \"k\" (record (= y 2)))) (export f))",
     )
     .expect("a Map.insert compound value-type clash must reject");
     assert!(
@@ -4892,7 +4900,7 @@ fn a_map_homogeneity_reject_anchors_at_the_offending_entry_or_argument() {
     // Map LITERAL — the outlier value `"bad"` (a String among Int64 values) is the locus.
     assert_eq!(
         anchor_of(
-            "(module m (def (main) ((. Map len) (map (\"a\" 1) (\"b\" \"bad\")))) (export main))"
+            "(module m (def (main) ((. Map len) (map (= \"a\" 1) (= \"b\" \"bad\")))) (export main))"
         )
         .as_deref(),
         Some("bad"),

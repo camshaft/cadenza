@@ -266,18 +266,27 @@ fn type_form_payloads(ast: &mut Arenas, name: &str, variants: &[(&str, &[StructI
 
 /// The occurrence of the variant-constructor field named `vname` inside a synthesized sum `record` —
 /// so the prelude map can bind a BARE variant name (`Some`) to its constructor. The record is `(record
-/// ((meta t) …) [(meta apply) …] [(meta sum-decl) …] (Some <ctor>) (None <ctor>)…)`; a variant field is
-/// a 2-element `(name <ctor>)` list whose name matches `vname`. `None` if not found (e.g. a meta field).
+/// ((meta t) …) [(meta apply) …] [(meta sum-decl) …] (= Some <ctor>) (= None <ctor>)…)`; a variant field
+/// is the canonical `(= name <ctor>)` FieldPair (seq-276) — or the legacy bare `(name <ctor>)` 2-element
+/// pair — whose name matches `vname`. `None` if not found (e.g. a meta field).
 pub fn variant_ctor_field(ast: &Arenas, record: StructId, vname: &str) -> Option<StructId> {
     let Struct::List(children) = ast.get(record) else {
         return None;
     };
     for &field in children.iter().skip(1) {
-        if let Struct::List(pair) = ast.get(field)
+        // seq-276: `sum_record` now emits each variant field as the canonical `(= name <ctor>)` FieldPair;
+        // read that shape via `field_pair`, still accepting the legacy bare `(name <ctor>)` 2-element pair.
+        let (name_id, ctor_id) = if let Some(kv) = ast.field_pair(field) {
+            kv
+        } else if let Struct::List(pair) = ast.get(field)
             && pair.len() == 2
-            && ast.as_name(pair[0]) == Some(vname)
         {
-            return Some(pair[1]);
+            (pair[0], pair[1])
+        } else {
+            continue;
+        };
+        if ast.as_name(name_id) == Some(vname) {
+            return Some(ctor_id);
         }
     }
     None
@@ -352,7 +361,10 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         let ctor = variant_ctor(ast, decl, variant, disc as u32);
         ctors.push(ctor);
         let k = push_atom(ast, Leaf::Name(variant.name.clone().into()));
-        children.push(push_list(ast, vec![k, ctor]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, k, ctor])
+        });
     }
 
     // The `expect` ACCESSOR field — the unwrap-or-trap `∀params. (Sum params) → String → <payload0>`
@@ -368,7 +380,10 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         let expect_ty = expect_type_scheme(ast, decl, present.payloads[0]);
         let expect_op = expect_op_record(ast, expect_ty);
         let ek = push_atom(ast, Leaf::Name("expect".into()));
-        children.push(push_list(ast, vec![ek, expect_op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, ek, expect_op])
+        });
     }
 
     // The `encode`/`decode` ACCESSOR fields — the binary bijection (`ast-encoding.md` §The Encoding Is A
@@ -387,14 +402,20 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         };
         let encode_op = intrinsic_op_record(ast, encode_ty, "ast-encode");
         let ek = push_atom(ast, Leaf::Name("encode".into()));
-        children.push(push_list(ast, vec![ek, encode_op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, ek, encode_op])
+        });
 
         // `decode : Bytes → (Result Sum e)` — total; `e` is a free error type (a fresh lambda param so the
         // caller unifies it), the sum reference re-built fresh so it does not share the encode occurrence.
         let decode_ty = decode_type_scheme(ast, decl);
         let decode_op = intrinsic_op_record(ast, decode_ty, "ast-decode");
         let dk = push_atom(ast, Leaf::Name("decode".into()));
-        children.push(push_list(ast, vec![dk, decode_op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, dk, decode_op])
+        });
     }
 
     // ASSOCIATED FUNCTIONS the decl declares (`TypeDecl.associated`) — prelude-defined non-ctor member
