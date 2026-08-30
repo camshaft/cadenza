@@ -9027,6 +9027,24 @@
   (input  (do (def (h (: m (Map Float64 Int64))) m) (def (g) (h (map (1 5)))) (export g)))
   (error  CDZ0203 (fix (kind replace) (replacement "1.0"))))
 
+; The SUM twin of the compound-leaf retype: a variant-constructed value whose payload's inner numeric
+; differs from the annotated sum's payload NAMES the payload axis ("its payload should be Float64, but this
+; one is Int64") and offers the same inner retype (`5` -> `5.0`), anchored at the ctor's payload argument.
+; A Result names/fixes the differing FIRST type param; a non-numeric payload names the axis but has no
+; coercion, so no fix. (Migrated from rcdzc a_sum_payload_numeric_mismatch_names_the_payload_axis_and_offers_the_retype_fix.)
+(case "a sum payload numeric mismatch names the payload axis and offers the retype fix"
+  (input  (do (def (h (: o (Option Float64))) o) (def (g) (h (Some 5))) (export g)))
+  (error  CDZ0203 (message "its payload should be Float64, but this one is Int64")
+                  (fix (kind replace) (replacement "5.0"))))
+
+(case "a Result payload numeric mismatch retypes the differing first type param"
+  (input  (do (def (h (: r (Result Float64 String))) r) (def (g) (h (Ok 5))) (export g)))
+  (error  CDZ0203 (fix (kind replace) (replacement "5.0"))))
+
+(case "a non-numeric sum payload names the axis but offers no fix"
+  (input  (do (def (h (: o (Option Int64))) o) (def (g) (h (Some true))) (export g)))
+  (error  CDZ0203 (message "its payload should be Int64, but this one is Bool") (no-fix)))
+
 ; Homogeneity is a property of the LIST VALUE, so it must hold under `List.push` too, not only for a
 ; list LITERAL. collections-and-text.md #A List Is Grown By Functional Construction: `List.push`
 ; "MUST produce a NEW LIST VALUE" — and a list value's elements share one type (#A List Is An Ordered

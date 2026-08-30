@@ -10647,57 +10647,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_sum_payload_numeric_mismatch_names_the_payload_axis_and_offers_the_retype_fix() {
-        // A variant-constructed value whose payload's inner numeric differs from the annotated sum's
-        // payload — `(Some 5)` vs `(Option Float64)`, `(Ok 5)` vs `(Result Float64 String)` — got the bare
-        // "this argument is (Option Int64)…" with NO hint and NO fix. Now it names the payload axis ("its
-        // payload should be Float64, but this one is Int64") AND offers the same retype the leaf gets
-        // everywhere else (`5`→`5.0`), anchored at the ctor's payload argument. The sum twin of the
-        // collection-axis / record-field fix-parity family (M116-M118).
-        let some = reject_full(
-            "(module m (def (h (: o (Option Float64))) o) (def (g) (h (Some 5))) (export g))",
-        )
-        .expect("a (Some Int) where (Option Float64) wanted rejects");
-        assert!(
-            some.message
-                .contains("its payload should be Float64, but this one is Int64"),
-            "names the sum payload axis: {}",
-            some.message
-        );
-        assert_eq!(
-            some.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("5.0"),
-            "retypes the payload leaf: {}",
-            some.message
-        );
-        // `Result` (two type params) — the differing FIRST param is named + fixed.
-        let ok = reject_full(
-            "(module m (def (h (: r (Result Float64 String))) r) (def (g) (h (Ok 5))) (export g))",
-        )
-        .expect("an (Ok Int) where (Result Float64 …) wanted rejects");
-        assert_eq!(
-            ok.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("5.0"),
-            "retypes the Result payload leaf: {}",
-            ok.message
-        );
-        // A NON-numeric payload (Bool vs Int) — the axis is named but there is no coercion, so no fix.
-        let boolish = reject_full(
-            "(module m (def (h (: o (Option Int64))) o) (def (g) (h (Some true))) (export g))",
-        )
-        .expect("a (Some Bool) where (Option Int64) wanted rejects");
-        assert!(
-            boolish
-                .message
-                .contains("its payload should be Int64, but this one is Bool")
-                && boolish.fix.is_none(),
-            "names the axis but offers no fix for a non-numeric payload: {} / {:?}",
-            boolish.message,
-            boolish.fix
-        );
-    }
-
-    #[test]
     fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
         // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
         // named the operation + its expected argument type instead of the generic unify mismatch ("Int64
