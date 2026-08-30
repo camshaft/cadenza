@@ -55,8 +55,7 @@ def add-children(state: Int64, len: Rational, depth: Int64, n: Int64, i: Int64, 
     let s1 = lcg-next(state) in
     let offset = (len * r(roll(s1, (30 : Int64), (70 : Int64)))) / (100 / 1) in   // 30%..70% along the bar
     let s2 = lcg-next(s1) in
-    match branch(s2, len * (3 / 5), depth - (1 : Int64)) with        // each generation 3/5 shorter
-      | (child, s3) =>
+    let (child, s3) = branch(s2, len * (3 / 5), depth - (1 : Int64)) in    // each generation 3/5 shorter
         let placed = move-x(offset, rotate-z(ang, child)) in
         add-children(s3, len, depth, n, i + (1 : Int64),             // add the child AND its bilateral mirror
                      fuse(acc, fuse(placed, mirror-x(placed))))
@@ -68,8 +67,7 @@ def six-fold(arm: Solid(Rational), i: Int64, acc: Solid(Rational)) =
 
 // THE SNOWFLAKE: build one seeded arm (from primitives above), then 6-fold it.
 def snowflake(seed0: Int64, len: Rational, depth: Int64) =
-  match branch(seed-state(seed0), len, depth) with
-    | (arm, _) => six-fold(arm, (0 : Int64), Solid.Empty)
+  let (arm, _) = branch(seed-state(seed0), len, depth) in six-fold(arm, (0 : Int64), Solid.Empty)
 
 // ── the @param entry: read the seed + config sliders → lower for the mesh driver ──────────────────────
 def main() = host Param in
