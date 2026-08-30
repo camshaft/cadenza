@@ -3832,3 +3832,27 @@
   (call main (: 1 Int64))
   (output (: 42 Int64))
   (live-objects 0))
+
+; Two SAME-dimension quantities at DIFFERENT units (km vs m) are distinct `(Qty T u)` types (the unit carries
+; the scale), so an if-join (CDZ0203) or a list-element join (CDZ0201 homogeneity) rejects them — but BOTH
+; render to `(Qty … (Unit.base #"meter"))` (reference-unit name, scale dropped), so the bare message reads as
+; a contradiction / would wrongly blame "a declaration shadows a built-in". The quantity-scale hint fires
+; first and names the REAL cause: "SAME dimension at DIFFERENT units" (convert with in/as). A cross-DIMENSION
+; clash (meter vs second) is a plain distinguishable mismatch — no scale tail. (Migrated from rcdzc
+; an_if_join_over_different_unit_quantities_names_the_scale_not_a_shadowed_declaration +
+; a_list_of_different_unit_quantities_names_the_scale_not_two_identical_looking_types.)
+(case "an if-join over different-unit same-dimension quantities names the scale, not a shadowed declaration"
+  (input  (do (def (main (: b Bool)) ((. Qty value) (if b ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #"meter"))) ((. Qty of) 500 ((. Unit base) #"meter"))))) (export main)))
+  (error  CDZ0203 (message "SAME dimension at DIFFERENT units") (not "shadows a built-in")))
+
+(case "a list-element join over different-unit same-dimension quantities names the scale"
+  (input  (do (def (main) ((. Qty value) ((. List at) #list(((. Qty of) 5.0 ((. Unit prefix) kilo ((. Unit base) #"meter"))) ((. Qty of) 2.0 ((. Unit base) #"meter"))) 0))) (export main)))
+  (error  CDZ0201 (message "SAME dimension at DIFFERENT units")))
+
+(case "a cross-dimension if-join clash stays a plain mismatch (no same-dimension scale tail)"
+  (input  (do (def (main (: b Bool)) ((. Qty value) (if b ((. Qty of) 1 ((. Unit base) #"meter")) ((. Qty of) 2 ((. Unit base) #"second"))))) (export main)))
+  (error  CDZ0203 (message "meter") (not "SAME dimension at DIFFERENT units")))
+
+(case "a cross-dimension list-join clash stays a plain mismatch (no same-dimension scale tail)"
+  (input  (do (def (main) ((. Qty value) ((. List at) #list(((. Qty of) 5.0 ((. Unit base) #"meter")) ((. Qty of) 2.0 ((. Unit base) #"second"))) 0))) (export main)))
+  (error  CDZ0201 (message "meter") (not "SAME dimension at DIFFERENT units")))
