@@ -4248,33 +4248,6 @@ fn a_list_of_different_unit_quantities_names_the_scale_not_two_identical_looking
 }
 
 #[test]
-fn adding_a_quantity_to_a_non_numeric_operand_is_cdz0203_not_the_plain_number_cdz0501() {
-    // WHITE-BOX RESIDUAL. The positives are now the corpus 18-units-of-measure cases "adding a quantity
-    // to a non-numeric Option operand is a plain CDZ0203 type mismatch, not a dimension slip" and "with
-    // the Option operand on the LEFT, the quantity-add clash names the (Option (Qty …)) type" (the
-    // PRIMARY grading as CDZ0203 is itself the guard against the CDZ0501 mislabel regressing); the
-    // bare-number CDZ0501 control is the existing wrap-fix cases. This keeps ONLY the inexpressible
-    // remainder: NO diagnostic (not just the primary) may mislabel the non-numeric operand "a plain
-    // number" (CDZ0501) — a message-ABSENCE-across-ALL-diags negative the corpus grade has no clause for.
-    let src = "(module m \
-                     (def (main) ((. Qty value) \
-                       (+ ((. Qty of) 5 ((. Unit base) #\"meter\")) \
-                          ((. List at) (list ((. Qty of) 1 ((. Unit base) #\"meter\"))) 0)))) \
-                     (export main))";
-    let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-    assert!(
-        !diags
-            .iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0501") && d.message.contains("a plain number")),
-        "a non-numeric operand must NOT be mislabeled 'a plain number' (CDZ0501) by ANY diagnostic: {:?}",
-        diags
-            .iter()
-            .map(|d| (&d.code, &d.message))
-            .collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn a_nominal_over_float32_qty_stored_as_a_map_value_emits_valid_wasm() {
     // MISCOMPILE REGRESSION (v-rust-backend flagged the wasm twin of their rust float_width_of fix): a
     // NOMINAL newtype over a Float32 quantity — `(type Len (Q (Qty Float32 meter)))` — stored as a map

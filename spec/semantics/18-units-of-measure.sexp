@@ -561,8 +561,13 @@
 ; adding_a_quantity_to_a_non_numeric_operand_is_cdz0203_not_the_plain_number_cdz0501; the not-among-any-diag
 ; CDZ0501-"a plain number" message-ABSENCE negative is the inexpressible remainder kept white-box.)
 (case "adding a quantity to a non-numeric Option operand is a plain CDZ0203 type mismatch, not a dimension slip"
+  (doc    "A quantity added to a non-numeric `(Option (Qty …))` (a `List.at`/`Map.get` result) is the plain
+           type mismatch CDZ0203, NOT the CDZ0501 'a plain number' dimension-slip (that arm is gated on the
+           non-quantity operand being NUMERIC). `(no-other-errors)` pins that CDZ0203 is the SOLE error — so
+           no CDZ0501 'a plain number' mislabel leaks alongside it, the guard the source test made across
+           ALL diagnostics.")
   (input  (do (def (main) (Qty.value (+ (Qty.of 5 (Unit.base #"meter")) (List.at #list((Qty.of 1 (Unit.base #"meter"))) 0)))) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203) (no-other-errors))
 
 (case "with the Option operand on the LEFT, the quantity-add clash names the (Option (Qty …)) type"
   (input  (do (def (main) (Qty.value (+ (List.at #list((Qty.of 1 (Unit.base #"meter"))) 0) (Qty.of 5 (Unit.base #"meter"))))) (export main)))
