@@ -122,9 +122,16 @@
   (doc    "`0o17` is digit-led, so it is a numeric token — but octal is not a supported radix (only
            `0x`/`0b`), so it fails to parse and is a MALFORMED literal (CDZ0201), never `unbound name`
            (CDZ0101). A digit-led token is a number; the reader classifying it as a name does not make
-           it an identifier.")
+           it an identifier. The reject message says `malformed numeric literal`, not `unbound name`.")
   (input  0o17)
-  (error  CDZ0201))
+  (error  CDZ0201 (message "malformed numeric literal")))
+
+(case "a bad binary digit is a malformed literal, not an unbound name"
+  (doc    "`0b12` is `0b`-prefixed but `2` is not a binary digit (only 0/1) — a malformed binary literal
+           (CDZ0201), the binary sibling of the bad-hex `0xGG` case. A digit-led radix token with an
+           out-of-alphabet digit is a malformed number, never an identifier.")
+  (input  0b12)
+  (error  CDZ0201 (message "malformed numeric literal")))
 
 (case "a radix literal with an empty body is a malformed literal, not an unbound name"
   (doc    "`0x` has the hexadecimal prefix but no digits — a malformed radix literal (CDZ0201), not an
@@ -146,6 +153,27 @@
            `unbound name` (CDZ0101) is the misleading diagnostic this boundary forbids.")
   (input  123abc)
   (error  CDZ0201))
+
+; The `N` suffix means BigInt (a whole number), so it is malformed on a FLOAT-form literal — a common
+; suffix slip. Rather than the bare "malformed numeric literal", the reject explains the cause (`N` = BigInt,
+; spelled as a plain integer) and suggests the `R` Rational suffix, carried as a structural replace fix
+; (`0.5N` → `0.5R`) so `cdz fix` applies it. Covers the decimal-fraction and exponent float forms. (Migrated
+; from rcdzc a_malformed_digit_led_token_is_a_malformed_literal_not_an_unbound_name — the N-suffix-slip tail.)
+(case "a float-form literal with an N (BigInt) suffix explains the slip and suggests the R suffix"
+  (input  0.5N)
+  (error  CDZ0201 (message "the `N` suffix means BigInt") (fix (kind replace) (replacement "0.5R"))))
+
+(case "an integer-valued float with an N suffix also gets the R-suffix fix"
+  (input  2.0N)
+  (error  CDZ0201 (message "the `N` suffix means BigInt") (fix (kind replace) (replacement "2.0R"))))
+
+(case "an exponent-form float with an N suffix gets the R-suffix fix"
+  (input  1e3N)
+  (error  CDZ0201 (message "the `N` suffix means BigInt") (fix (kind replace) (replacement "1e3R"))))
+
+(case "an N-suffixed token with a NON-numeric body gets the generic malformed message, not the N-suffix explanation"
+  (input  12xN)
+  (error  CDZ0201 (message "malformed numeric literal") (not "the `N` suffix means BigInt")))
 
 (case "an underscore-prefixed function parameter binds its argument"
   (doc    "A parameter named `_1` is an identifier, so `(def (f _1) (+ _1 1))` binds the argument to
