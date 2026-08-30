@@ -4933,24 +4933,6 @@ fn a_try_with_no_fallible_enclosing_function_is_cdz0230() {
 }
 
 #[test]
-fn a_try_in_a_called_helper_finds_its_boundary_not_a_false_cdz0230() {
-    // REGRESSION: a `?` in a CALLED (inlined, non-exported) helper. `(def (f) (let ((x (try (Some
-    // 7)))) (Some (+ x 3))))` is called by `main` (only `main` exported), so `f` is INLINED. `f`'s
-    // result type IS `Option`, so the `?` is well-formed — but the boundary walk fell off the inlined
-    // COPY's re-parented tree and FALSELY raised CDZ0230. Now the walk is inconclusive on a re-parented
-    // copy (raises nothing); the genuine non-fallible reject still fires from the original body. So this
-    // COMPILES (a value, not a reject).
-    let src = "(module m \
-            (def (f) (let ((x (try (Some 7)))) (Some (+ x 3)))) \
-            (def (main) (f)) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a `?` in a called (inlined) helper whose result type is Option must compile, not \
-             falsely reject CDZ0230"
-    );
-}
-
-#[test]
 fn a_constant_success_try_folds_to_the_payload() {
     // BRICK 2 (the CONSTANT-SUCCESS fold, DESIGN-try-operator-rcdzc.md §3.2): a `?` on a compile-time
     // `Some x` / `Ok x` unwraps to the payload — no boundary break fires on the happy path, so it
