@@ -152,6 +152,20 @@
   (output (: #record((= items #list(#record((= a 7) (= b 14))))) (record (items (List (record (a Int64) (b Int64)))))))
   (live-objects known-leak))
 
+(case "a FLOAT-KEYED map result round-trips via the run/encode envelope, rendering its float keys (float map-key render, #6211 key-adopt/use + #6274 render)"
+  (doc    "The float-KEYED map RESULT: a `(Map Float32 Int64)` crosses via the run/encode value-form escape
+           (crosses_as_resource_escape) and renders `#map((= <key> <value>) …)` in canonical key order. The
+           keys are Float32 — a bare `2.0` ADOPTS the annotated `(: 1.0 Float32)` sibling's width (seq-40),
+           and each float key is stored in the total-order `__CdzF32` Ord wrapper on the rust backend. Pins
+           that BOTH backends render the float keys correctly: the wasm value-form render_val (v-rb) and the
+           rust boundary value-form render (which must UNWRAP the `__CdzF{N}` shell before the float render —
+           the E0605/E0624/private-interface chain #6274 closed). Both keys 1.0/2.0 are f32-exact, so the
+           render shows `1.0`/`2.0`. Guards the float-keyed-collection RENDER path against regression.")
+  (input (do (def (main) (Map.insert (Map.insert Map.empty (: 1.0 Float32) 5) 2.0 6)) (export main)))
+  (call main)
+  (output (: #map((= 1.0 5) (= 2.0 6)) (Map Float32 Int64)))
+  (live-objects known-leak))
+
 (case "a none-only option<s64> record field resolves its element type from an imposed WIT world"
   (doc    "SHAPE 8 — the general WIT-ABI shape where the export boundary is DECLARED by an explicit WIT
            world, not synthesized from the guest. The guest's field d is STATICALLY Option.None (no Some
