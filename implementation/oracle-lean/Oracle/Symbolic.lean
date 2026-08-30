@@ -140,11 +140,20 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
   let isB := fun (e : SymExpr) (b : Bool) => e == SymExpr.const (Value.bool b)
   match op, args' with
   | "+", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
-  | "-", #[a, b] => if isI b 0 then a else .app op args'
+  -- `x-0→x` PRESERVES the operand; `x-x→0` (two's-complement `x-x=0` is representable at EVERY width, so
+  -- it never overflows/traps) DROPS both operands → `!mayTrap` guard, like `x*0→0`.
+  | "-", #[a, b] => if isI b 0 then a
+                    else if a == b && !mayTrap a then SymExpr.const (Value.int 0)
+                    else .app op args'
   | "*", #[a, b] => if isI b 1 then a else if isI a 1 then b
                     else if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
                     else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
                     else .app op args'
+  -- DIVISION/MODULO by the literal 1 — divisor 1 is never 0 and never the INT_MIN/-1 overflow case, so
+  -- these never trap. `x/1=x` PRESERVES the operand (no guard); `x%1=0` for all x DROPS the dividend →
+  -- `!mayTrap` guard. Only the literal-1 divisor is folded (general `/`,`%` stay deferred: trap-conditional).
+  | "/", #[a, b] => if isI b 1 then a else .app op args'
+  | "%", #[a, b] => if isI b 1 && !mayTrap a then SymExpr.const (Value.int 0) else .app op args'
   | "or", #[a, b] =>
     if isB a true then SymExpr.const (Value.bool true)
     else if isB a false then b
