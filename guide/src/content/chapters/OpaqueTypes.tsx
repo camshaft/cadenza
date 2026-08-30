@@ -19,7 +19,7 @@ export default function OpaqueTypes() {
   (percent (: n Int64))
   (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
 
-(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+(def (rate (: p Percent)) (let ((((. Percent Pct) v) p)) v))
 
 (def (main) (rate (percent 150)))`}
       />
@@ -31,7 +31,7 @@ export default function OpaqueTypes() {
   (percent (: n Int64))
   (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
 
-(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+(def (rate (: p Percent)) (let ((((. Percent Pct) v) p)) v))
 
 (def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
 
@@ -45,7 +45,7 @@ export default function OpaqueTypes() {
   (percent (: n Int64))
   (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
 
-(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+(def (rate (: p Percent)) (let ((((. Percent Pct) v) p)) v))
 
 (def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
 
@@ -67,7 +67,7 @@ export default function OpaqueTypes() {
   (percent (: n Int64))
   (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
 
-(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+(def (rate (: p Percent)) (let ((((. Percent Pct) v) p)) v))
 
 (def (main) (rate (percent ?)))`}
         solution={`(type Percent (Pct Int64))
@@ -76,7 +76,7 @@ export default function OpaqueTypes() {
   (percent (: n Int64))
   (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
 
-(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+(def (rate (: p Percent)) (let ((((. Percent Pct) v) p)) v))
 
 (def (main) (rate (percent 250)))`}
         expected="100"
@@ -91,7 +91,7 @@ export default function OpaqueTypes() {
   (percent (: n Int64))
   (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
 
-(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+(def (rate (: p Percent)) (let ((((. Percent Pct) v) p)) v))
 
 (def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
 
@@ -102,7 +102,7 @@ export default function OpaqueTypes() {
   (percent (: n Int64))
   (if (< n 0) ((. Percent Pct) 0) (if (> n 100) ((. Percent Pct) 100) ((. Percent Pct) n))))
 
-(def (rate (: p Percent)) (match p (((. Percent Pct) v) v)))
+(def (rate (: p Percent)) (let ((((. Percent Pct) v) p)) v))
 
 (def (apply-discount (: price Int64) (: p Percent)) (- price (/ (* price (rate p)) 100)))
 
