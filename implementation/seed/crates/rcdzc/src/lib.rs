@@ -162,7 +162,7 @@ pub mod cli;
 
 pub use abi::{
     Artifact, CompileOutput, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE,
-    wrap_prefix_suffix,
+    decode_diagnostics, wrap_prefix_suffix,
 };
 pub use backend::Target;
 pub use compile::{

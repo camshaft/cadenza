@@ -21,5 +21,6 @@
 // outside the emit path; `rcdzc`'s CSE regression test reads it unchanged.
 pub use cadenza_compile_abi::abi::Artifact;
 pub use cadenza_compile_abi::{
-    CompileOutput, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE, wrap_prefix_suffix,
+    CompileOutput, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE, decode_diagnostics,
+    wrap_prefix_suffix,
 };
