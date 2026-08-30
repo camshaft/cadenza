@@ -7630,6 +7630,32 @@
   (call   main (: 5 Int64)) (output (: 211 Int64))
   (call   main (: 1 Int64)) (output (: 123 Int64)))
 
+(case "ti1h the HEAP-state twin of ti1 — two DIFFERENT effects, BOTH threading a TUPLE (heap) state, interleaved A-B-A draws with values crossing"
+  (doc    "ti1 threads SCALAR state per effect; this pins the HEAP (#seed/#st) dimension of the same
+           two-different-effect interleave — the merged_nested_ctx multi-slot path where each effect carries
+           its own TUPLE state, read+advanced by projection. A.ta reads s, resumes it, advances s[1]+=v;
+           B.tb reads s, resumes it, advances s[0]+=v; body draws (A.ta 1),(B.tb 4),(A.ta 2) and sums their
+           projections. main = 2n+101 (3->107, 10->121, 0->101). Guards the two-slot heap-state THREADING +
+           per-slot reclaim (the multi-slot resume-seam OccTable path, design note §2/§5.1): each effect's
+           heap state must thread on its OWN slot without the interleave bleeding one into the other, and
+           neither is over-freed across the crossing draws. WITNESSED trap-CLEAN (v-effects a52) on both the
+           release runtime (rc-underflow OOB) and the debug #4635 getter-guard (read-through). Complements
+           ti1 (scalar) + the same-effect straddle heap twin (#5883).")
+  (input  (do
+            (effect A (op ta (-> Int64 (Tuple Int64 Int64))))
+            (effect B (op tb (-> Int64 (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle A #tuple(n 0)
+                ((ta (v) s (resume s #tuple((. s 0) (+ (. s 1) v)))))
+                (handle B #tuple(100 0)
+                  ((tb (v) s (resume s #tuple((+ (. s 0) v) (. s 1)))))
+                  (let ((p (A.ta 1)) (q (B.tb 4)) (r (A.ta 2)))
+                    (+ (. p 0) (+ (. q 0) (+ (. r 0) (. r 1))))))))
+            (export main)))
+  (call   main (: 3 Int64))  (output (: 107 Int64))
+  (call   main (: 10 Int64)) (output (: 121 Int64))
+  (call   main (: 0 Int64))  (output (: 101 Int64)))
+
 (case "ti2b the inner arm's resume-VALUE performs the outer effect on EVERY dispatch — three dispatches, both states advancing"
   (input  (do
             (effect A (op a (-> Int64)))
