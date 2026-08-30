@@ -20,21 +20,23 @@
 /// the native `Int64`/`UInt64` identity case the caller handles separately (no truncation needed); an
 /// out-of-scope width DECLINES (`fits-width` → false; `wrap-to` returns `v` unchanged) rather than
 /// fabricating an answer.
-
 /// Floored modulus into `0..m-1`. Int64 `%` is SIGN-FOLLOWING (a negative dividend gives a negative
 /// remainder), so a negative result is lifted by one modulus — the same normalization `emit-db`'s SLEB
 /// encoder uses. Assumes `m > 0`.
-def mod-floor(n: Int64, m: Int64) = let r = n % m in (if r < 0 then r + m else r)
+def mod-floor(n: Int64, m: Int64) =
+  let r = n % m in
+    if r < 0 then r + m else r
 
 /// `2^k` for `0 <= k <= 62` (a fuel-free bounded doubling — `k` itself bounds the recursion). `2^63`
 /// overflows Int64, so `k` outside `0..=62` returns `0`, a sentinel the callers guard against BEFORE
 /// using it as a bound/modulus (they range-check the width first).
-def pow2(k: Int64) = if k < 0 then 0 else (if k > 62 then 0 else pow2-go(k, 1))
+def pow2(k: Int64) = if k < 0 then 0 else if k > 62 then 0 else pow2-go(k, 1)
+
 def pow2-go(k: Int64, acc: Int64) = if k <= 0 then acc else pow2-go(k - 1, acc * 2)
 
 /// Whether `width` is one this slice can reason about with exact Int64 arithmetic (1..=62). Out of that
 /// range, `fits-width`/`wrap-to` decline rather than overflow.
-def width-ok(width: Int64) = (width >= 1) and (width <= 62)
+def width-ok(width: Int64) = width >= 1 and width <= 62
 
 /// Does `v` fit a `(signed, width)` integer? Mirrors `rcdzc::ast::IntValue::fits_width`:
 ///   signed   : -2^(width-1) <= v <= 2^(width-1) - 1   (two's-complement range)
@@ -42,13 +44,14 @@ def width-ok(width: Int64) = (width >= 1) and (width <= 62)
 /// An out-of-scope width (see `width-ok`) is not a fit — returns false.
 def fits-width(v: Int64, signed: Bool, width: Int64) =
   if width-ok(width) then
-    (if signed then
-       let half = pow2(width - 1) in                 // 2^(width-1)
-       ((0 - half) <= v) and (v <= (half - 1))
-     else
-       let cap = pow2(width) in                       // 2^width
-       (0 <= v) and (v <= (cap - 1)))
-  else false
+    if signed then
+      let half = pow2(width - 1) in // 2^(width-1)
+        0 - half <= v and v <= half - 1
+    else
+      let cap = pow2(width) in // 2^width
+        0 <= v and v <= cap - 1
+  else
+    false
 
 /// TRUNCATE `v` to a `(signed, width)` integer, keeping the low `width` bits of its two's-complement
 /// representation. Mirrors `rcdzc::ast::IntValue::wrap_to`:
@@ -58,13 +61,15 @@ def fits-width(v: Int64, signed: Bool, width: Int64) =
 /// An out-of-scope width returns `v` unchanged (the identity — no truncation the slice can perform).
 def wrap-to(v: Int64, signed: Bool, width: Int64) =
   if width-ok(width) then
-    let m = pow2(width) in                            // 2^width, the modulus
-    let low = mod-floor(v, m) in                      // v mod 2^width in 0..2^width-1
-    (if signed then
-       let half = pow2(width - 1) in                  // 2^(width-1)
-       (if low >= half then low - m else low)         // high bit set → the negative twin
-     else low)
-  else v
+    let m = pow2(width) in // 2^width, the modulus
+    let low = mod-floor(v, m) in // v mod 2^width in 0..2^width-1
+      if signed then
+      let half = pow2(width - 1) in // 2^(width-1)
+        if low >= half then low - m else low // high bit set → the negative twin
+    else
+      low
+  else
+    v
 
 /// Two's-complement WRAPPING arithmetic at a `(signed, width)` type — the `T.wrapping-add/-sub/-mul` ops
 /// (`rcdzc::resolved.rs` WrappingAdd/Sub/Mul): compute the exact result, then TRUNCATE to the width. NEVER
@@ -75,7 +80,9 @@ def wrap-to(v: Int64, signed: Bool, width: Int64) =
 /// Int64) — the widths this slice's `width-ok` admits; a width-64 wrapping op is the native-Int64 identity
 /// the caller handles separately (not via this helper).
 def wrapping-add(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a + b, signed, width)
+
 def wrapping-sub(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a - b, signed, width)
+
 def wrapping-mul(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a * b, signed, width)
 
 /// Does the EXACT result `v` OVERFLOW a `(signed, width)` integer type? — the negation of `fits-width`, the
@@ -87,7 +94,7 @@ def wrapping-mul(a: Int64, b: Int64, signed: Bool, width: Int64) = wrap-to(a * b
 /// `width-ok`) is treated as NON-overflowing here (the caller handles width-64 natively); `fits-width`
 /// returns false for it, so `overflows` guards on `width-ok` to avoid a spurious "overflow" on Int64.
 def overflows(v: Int64, signed: Bool, width: Int64) =
-  (if width-ok(width) then (if fits-width(v, signed, width) then false else true) else false)
+  if width-ok(width) then if fits-width(v, signed, width) then false else true else false
 
 /// TRAPPING (checked) arithmetic at a `(signed, width)` type — the model for the UNQUALIFIED `+`/`-`/`*` on
 /// a narrow integer. Compute the exact result; `Option.Some(result)` when it FITS the width, `Option.None`
@@ -98,31 +105,38 @@ def overflows(v: Int64, signed: Bool, width: Int64) =
 /// two values under 2^62 sum/subtract within Int64, and a product of two ≤2^31 values fits — the standard
 /// narrow widths 8/16/32 are comfortably in range).
 def checked-add(a: Int64, b: Int64, signed: Bool, width: Int64) =
-  (let r = a + b in (if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)))
+  let r = a + b in
+    if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
+
 def checked-sub(a: Int64, b: Int64, signed: Bool, width: Int64) =
-  (let r = a - b in (if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)))
+  let r = a - b in
+    if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
+
 def checked-mul(a: Int64, b: Int64, signed: Bool, width: Int64) =
-  (let r = a * b in (if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)))
+  let r = a * b in
+    if overflows(r, signed, width) then Option.None(unit) else Option.Some(r)
 
 // ---- pow2 / mod-floor ----
-
 @test
-def iw-pow2-small() = if (pow2(0) == 1) and (pow2(1) == 2) and (pow2(8) == 256) then unit else trap("2^0=1, 2^1=2, 2^8=256")
+def iw-pow2-small() =
+  if pow2(0) == 1 and pow2(1) == 2 and pow2(8) == 256 then unit else trap("2^0=1, 2^1=2, 2^8=256")
 
 @test
 def iw-pow2-w32() = if pow2(32) == 4294967296 then unit else trap("2^32 = 4294967296")
 
 @test
-def iw-pow2-out-of-range-is-zero() = if (pow2(63) == 0) and (pow2(-1) == 0) then unit else trap("2^63 / 2^-1 → 0 sentinel")
+def iw-pow2-out-of-range-is-zero() =
+  if pow2(63) == 0 and pow2(-1) == 0 then unit else trap("2^63 / 2^-1 → 0 sentinel")
 
 @test
 def iw-mod-floor-lifts-negatives() =
   // -1 mod 256 = 255 (floored), 200 mod 256 = 200, 256 mod 256 = 0.
-  if (mod-floor(-1, 256) == 255) and (mod-floor(200, 256) == 200) and (mod-floor(256, 256) == 0) then unit
-  else trap("floored mod normalizes into 0..m-1")
+  if mod-floor(-1, 256) == 255 and mod-floor(200, 256) == 200 and mod-floor(256, 256) == 0 then
+    unit
+  else
+    trap("floored mod normalizes into 0..m-1")
 
 // ---- fits-width: unsigned ----
-
 @test
 def iw-fits-u8-in-range() = if fits-width(200, false, 8) then unit else trap("200 fits UInt8")
 
@@ -133,10 +147,10 @@ def iw-fits-u8-max() = if fits-width(255, false, 8) then unit else trap("255 = U
 def iw-fits-u8-over() = if fits-width(256, false, 8) then trap("256 does NOT fit UInt8") else unit
 
 @test
-def iw-fits-u8-rejects-negative() = if fits-width(-1, false, 8) then trap("-1 does NOT fit UInt8 (no negatives)") else unit
+def iw-fits-u8-rejects-negative() =
+  if fits-width(-1, false, 8) then trap("-1 does NOT fit UInt8 (no negatives)") else unit
 
 // ---- fits-width: signed ----
-
 @test
 def iw-fits-i8-max() = if fits-width(127, true, 8) then unit else trap("127 = Int8.max fits")
 
@@ -156,23 +170,31 @@ def iw-fits-i8-two-hundred-declines() =
   // reject the constant arg (rather than laundering 200 through the body). Distinct from `iw-fits-i8-over`
   // (128, one-past): 200 is the specific corpus arg, and it ALSO fits UInt8 — pinning both proves the SIGN
   // matters (200 fits unsigned-8 but not signed-8), the crux of the fit-check the enforcement slice will call.
-  if fits-width(200, true, 8) then trap("200 does NOT fit signed Int8 (max 127) — the CDZ0302 arg")
-  else (if fits-width(200, false, 8) then unit else trap("200 DOES fit UInt8 (max 255) — sign is what rejects it"))
+  if fits-width(200, true, 8) then
+    trap("200 does NOT fit signed Int8 (max 127) — the CDZ0302 arg")
+  else if fits-width(200, false, 8) then
+    unit
+  else
+    trap("200 DOES fit UInt8 (max 255) — sign is what rejects it")
 
 @test
 def iw-fits-i16-i32-boundaries() =
   // Int16.max=32767, Int32.max=2147483647 fit at their widths; one past does not.
   if fits-width(32767, true, 16) and (if fits-width(32768, true, 16) then false else true)
-     and fits-width(2147483647, true, 32) and (if fits-width(2147483648, true, 32) then false else true)
-  then unit else trap("Int16/Int32 signed boundaries")
+      and fits-width(2147483647, true, 32)
+      and (if fits-width(2147483648, true, 32) then false else true) then
+    unit
+  else
+    trap("Int16/Int32 signed boundaries")
 
 // ---- fits-width: out-of-scope width declines ----
+@test
+def iw-fits-width-zero-declines() =
+  if fits-width(0, false, 0) then trap("width 0 is not a fit") else unit
 
 @test
-def iw-fits-width-zero-declines() = if fits-width(0, false, 0) then trap("width 0 is not a fit") else unit
-
-@test
-def iw-fits-width-w64-declines() = if fits-width(5, true, 64) then trap("width 64 is out of this slice → declines") else unit
+def iw-fits-width-w64-declines() =
+  if fits-width(5, true, 64) then trap("width 64 is out of this slice → declines") else unit
 
 @test
 def iw-width-w62-w63-scope-boundary() =
@@ -181,126 +203,189 @@ def iw-width-w62-w63-scope-boundary() =
   // fits and 2^62 does not; width 63 (where 2^63 would overflow Int64) DECLINES (fits-width false), and
   // `overflows` treats it as non-overflowing (caller handles it natively) rather than fabricating a verdict.
   if width-ok(62) and (if width-ok(63) then false else true)
-     and fits-width(4611686018427387903, false, 62)                        // UInt62.max = 2^62 - 1 fits
-     and (if fits-width(4611686018427387904, false, 62) then false else true)  // 2^62 does NOT fit UInt62
-     and (if fits-width(5, false, 63) then false else true)                // width 63 out of scope → declines
-     and (if overflows(5, false, 63) then false else true)                 // and overflows → false (not a trap)
-  then unit else trap("62 is the last in-scope width; 63 declines")
+            and fits-width(4611686018427387903, false, 62) // UInt62.max = 2^62 - 1 fits
+          and (if fits-width(4611686018427387904, false, 62) then false else true) // 2^62 does NOT fit UInt62
+        and (if fits-width(5, false, 63) then false else true) // width 63 out of scope → declines
+      and (if overflows(5, false, 63) then false else true) then
+    // and overflows → false (not a trap)
+    unit
+  else
+    trap("62 is the last in-scope width; 63 declines")
 
 // ---- wrap-to: unsigned ----
+@test
+def iw-wrap-u8-unchanged-in-range() =
+  if wrap-to(200, false, 8) == 200 then unit else trap("200 in-range unchanged")
 
 @test
-def iw-wrap-u8-unchanged-in-range() = if wrap-to(200, false, 8) == 200 then unit else trap("200 in-range unchanged")
+def iw-wrap-u8-overflow() =
+  if wrap-to(256, false, 8) == 0 and wrap-to(257, false, 8) == 1 then
+    unit
+  else
+    trap("256→0, 257→1 (mod 256)")
 
 @test
-def iw-wrap-u8-overflow() = if (wrap-to(256, false, 8) == 0) and (wrap-to(257, false, 8) == 1) then unit else trap("256→0, 257→1 (mod 256)")
-
-@test
-def iw-wrap-u8-negative-to-max() = if wrap-to(-1, false, 8) == 255 then unit else trap("-1 → UInt8.max 255")
+def iw-wrap-u8-negative-to-max() =
+  if wrap-to(-1, false, 8) == 255 then unit else trap("-1 → UInt8.max 255")
 
 // ---- wrap-to: signed (two's-complement) ----
+@test
+def iw-wrap-i8-high-bit-negative() =
+  if wrap-to(200, true, 8) == -56 then unit else trap("200 → -56 at Int8 (bit 7 set)")
 
 @test
-def iw-wrap-i8-high-bit-negative() = if wrap-to(200, true, 8) == (-56) then unit else trap("200 → -56 at Int8 (bit 7 set)")
+def iw-wrap-i8-all-ones() = if wrap-to(255, true, 8) == -1 then unit else trap("255 → -1 at Int8")
 
 @test
-def iw-wrap-i8-all-ones() = if wrap-to(255, true, 8) == (-1) then unit else trap("255 → -1 at Int8")
+def iw-wrap-i8-min-boundary() =
+  if wrap-to(128, true, 8) == -128 then unit else trap("128 → Int8.min -128")
 
 @test
-def iw-wrap-i8-min-boundary() = if wrap-to(128, true, 8) == (-128) then unit else trap("128 → Int8.min -128")
-
-@test
-def iw-wrap-i8-in-range-unchanged() = if (wrap-to(127, true, 8) == 127) and (wrap-to(-128, true, 8) == (-128)) then unit else trap("Int8 in-range values unchanged")
+def iw-wrap-i8-in-range-unchanged() =
+  if wrap-to(127, true, 8) == 127 and wrap-to(-128, true, 8) == -128 then
+    unit
+  else
+    trap("Int8 in-range values unchanged")
 
 // ---- wrap-to: out-of-scope width is identity ----
-
 @test
-def iw-wrap-out-of-scope-identity() = if (wrap-to(12345, true, 64) == 12345) and (wrap-to(7, false, 0) == 7) then unit else trap("out-of-scope width → v unchanged")
+def iw-wrap-out-of-scope-identity() =
+  if wrap-to(12345, true, 64) == 12345 and wrap-to(7, false, 0) == 7 then
+    unit
+  else
+    trap("out-of-scope width → v unchanged")
 
 // ---- fit ⟹ wrap is a no-op (the cross-property tying the two together) ----
-
 @test
 def iw-fit-implies-wrap-noop() =
   // If a value FITS, wrapping must leave it unchanged — the invariant an in-range annotation relies on.
-  if (wrap-to(100, false, 8) == 100) and (wrap-to(-50, true, 8) == (-50)) and (wrap-to(1000, false, 16) == 1000)
-  then unit else trap("a value that fits wraps to itself")
+  if wrap-to(100, false, 8) == 100 and wrap-to(-50, true, 8) == -50
+      and wrap-to(1000, false, 16) == 1000 then
+    unit
+  else
+    trap("a value that fits wraps to itself")
 
 // ---- wrapping arithmetic (T.wrapping-add / -sub / -mul) ----
-
 @test
 def iw-wrapping-add-in-range() =
   // in-range sums are unchanged: 100 + 27 = 127 fits UInt8; 3 + 4 = 7 fits Int8.
-  if (wrapping-add(100, 27, false, 8) == 127) and (wrapping-add(3, 4, true, 8) == 7) then unit else trap("in-range wrapping-add unchanged")
+  if wrapping-add(100, 27, false, 8) == 127 and wrapping-add(3, 4, true, 8) == 7 then
+    unit
+  else
+    trap("in-range wrapping-add unchanged")
 
 @test
 def iw-wrapping-add-overflows-unsigned() =
   // 200 + 100 = 300 wraps mod 256 → 44 at UInt8; 255 + 1 → 0.
-  if (wrapping-add(200, 100, false, 8) == 44) and (wrapping-add(255, 1, false, 8) == 0) then unit else trap("UInt8 wrapping-add: 300→44, 256→0")
+  if wrapping-add(200, 100, false, 8) == 44 and wrapping-add(255, 1, false, 8) == 0 then
+    unit
+  else
+    trap("UInt8 wrapping-add: 300→44, 256→0")
 
 @test
 def iw-wrapping-add-overflows-signed() =
   // 127 + 1 = 128 wraps to Int8.min -128 (signed overflow is DEFINED here, not UB).
-  if wrapping-add(127, 1, true, 8) == (-128) then unit else trap("Int8 wrapping-add 127+1 → -128")
+  if wrapping-add(127, 1, true, 8) == -128 then unit else trap("Int8 wrapping-add 127+1 → -128")
 
 @test
 def iw-wrapping-sub-underflows() =
   // 0 - 1 = -1 wraps to UInt8.max 255; Int8.min - 1 = -128 - 1 wraps to Int8.max 127.
-  if (wrapping-sub(0, 1, false, 8) == 255) and (wrapping-sub(-128, 1, true, 8) == 127) then unit else trap("wrapping-sub: 0-1→255(u8), -128-1→127(i8)")
+  if wrapping-sub(0, 1, false, 8) == 255 and wrapping-sub(-128, 1, true, 8) == 127 then
+    unit
+  else
+    trap("wrapping-sub: 0-1→255(u8), -128-1→127(i8)")
 
 @test
 def iw-wrapping-mul-overflows() =
   // 16 * 16 = 256 wraps mod 256 → 0 at UInt8; 20 * 20 = 400 → 400-256 = 144 at UInt8.
-  if (wrapping-mul(16, 16, false, 8) == 0) and (wrapping-mul(20, 20, false, 8) == 144) then unit else trap("UInt8 wrapping-mul: 256→0, 400→144")
+  if wrapping-mul(16, 16, false, 8) == 0 and wrapping-mul(20, 20, false, 8) == 144 then
+    unit
+  else
+    trap("UInt8 wrapping-mul: 256→0, 400→144")
 
 @test
 def iw-wrapping-mul-width16() =
   // a wider width: 256 * 256 = 65536 wraps mod 2^16 → 0 at UInt16; in-range 100*100=10000 unchanged.
-  if (wrapping-mul(256, 256, false, 16) == 0) and (wrapping-mul(100, 100, false, 16) == 10000) then unit else trap("UInt16 wrapping-mul: 65536→0, 10000 unchanged")
+  if wrapping-mul(256, 256, false, 16) == 0 and wrapping-mul(100, 100, false, 16) == 10000 then
+    unit
+  else
+    trap("UInt16 wrapping-mul: 65536→0, 10000 unchanged")
 
 // ---- overflows / checked (TRAPPING) arithmetic — the UNQUALIFIED-operator model (reference: CDZ0304) ----
-
 @test
 def iw-overflows-is-fits-negated() =
   // overflows ⟺ NOT fits-width, for an in-scope width: 255 fits UInt8 (no overflow), 256 overflows;
   // 127 fits Int8, 128 overflows; a negative under Int8.min overflows.
   if (if overflows(255, false, 8) then false else true) and overflows(256, false, 8)
-     and (if overflows(127, true, 8) then false else true) and overflows(128, true, 8)
-     and overflows(-129, true, 8)
-  then unit else trap("overflows = !fits-width in-scope")
+      and (if overflows(127, true, 8) then false else true) and overflows(128, true, 8)
+      and overflows(-129, true, 8) then
+    unit
+  else
+    trap("overflows = !fits-width in-scope")
 
 @test
 def iw-overflows-out-of-scope-is-false() =
   // width 64 (out of this slice) is handled natively by the caller → overflows returns false (no spurious
   // trap on Int64), matching fits-width's out-of-scope decline being routed around.
-  if (if overflows(12345, true, 64) then false else true) then unit else trap("width 64 → overflows false")
+  if (if overflows(12345, true, 64) then false else true) then
+    unit
+  else
+    trap("width 64 → overflows false")
 
 @test
 def iw-checked-add-in-range-is-some() =
   // in-range sums compute: 100 + 20 = 120 fits Int8 → Some 120; 100 + 27 = 127 fits UInt8 → Some 127.
-  (match checked-add(100, 20, true, 8) with
-    | Option.Some(v) => (if v == 120 then (match checked-add(100, 27, false, 8) with | Option.Some(w) => (if w == 127 then unit else trap("u8 100+27=127")) | Option.None(_) => trap("u8 in-range Some")) else trap("i8 100+20=120"))
-    | Option.None(_) => trap("i8 in-range → Some"))
+  match checked-add(100, 20, true, 8) with
+    | Option.Some(v) => if v == 120 then
+      match checked-add(100, 27, false, 8) with
+        | Option.Some(w) => if w == 127 then unit else trap("u8 100+27=127")
+        | Option.None(_) => trap("u8 in-range Some")
+    else
+      trap("i8 100+20=120")
+    | Option.None(_) => trap("i8 in-range → Some")
 
 @test
 def iw-checked-add-overflow-is-none() =
   // 100 + 100 = 200 overflows Int8 (max 127) → None (the TRAP condition, matching CDZ0304); 200 + 100 = 300
   // overflows UInt8 (max 255) → None. This is the checked/trapping default, DISTINCT from wrapping-add's -56/44.
-  (match checked-add(100, 100, true, 8) with
-    | Option.None(_) => (match checked-add(200, 100, false, 8) with | Option.None(_) => unit | Option.Some(_) => trap("u8 300 overflows → None"))
-    | Option.Some(_) => trap("i8 200 overflows → None"))
+  match checked-add(100, 100, true, 8) with
+    | Option.None(_) => (match checked-add(200, 100, false, 8) with
+      | Option.None(_) => unit
+      | Option.Some(_) => trap("u8 300 overflows → None")
+    )
+    | Option.Some(_) => trap("i8 200 overflows → None")
 
 @test
 def iw-checked-sub-underflow-is-none() =
   // 0 - 1 = -1 underflows UInt8 (min 0) → None; an in-range signed sub computes: 5 - 8 = -3 fits Int8 → Some.
-  (match checked-sub(0, 1, false, 8) with
-    | Option.None(_) => (match checked-sub(5, 8, true, 8) with | Option.Some(v) => (if v == (-3) then unit else trap("i8 5-8=-3")) | Option.None(_) => trap("i8 5-8 in range → Some"))
-    | Option.Some(_) => trap("u8 0-1 underflows → None"))
+  match checked-sub(0, 1, false, 8) with
+    | Option.None(_) => (match checked-sub(5, 8, true, 8) with
+      | Option.Some(v) => if v == -3 then unit else trap("i8 5-8=-3")
+      | Option.None(_) => trap("i8 5-8 in range → Some")
+    )
+    | Option.Some(_) => trap("u8 0-1 underflows → None")
 
 @test
 def iw-checked-mul-overflow-is-none() =
   // 20 * 20 = 400 overflows UInt8 → None; 10 * 12 = 120 fits Int8 → Some 120.
-  (match checked-mul(20, 20, false, 8) with
-    | Option.None(_) => (match checked-mul(10, 12, true, 8) with | Option.Some(v) => (if v == 120 then unit else trap("i8 10*12=120")) | Option.None(_) => trap("i8 10*12 in range → Some"))
-    | Option.Some(_) => trap("u8 400 overflows → None"))
+  match checked-mul(20, 20, false, 8) with
+    | Option.None(_) => (match checked-mul(10, 12, true, 8) with
+      | Option.Some(v) => if v == 120 then unit else trap("i8 10*12=120")
+      | Option.None(_) => trap("i8 10*12 in range → Some")
+    )
+    | Option.Some(_) => trap("u8 400 overflows → None")
 
-export { fits-width, wrap-to, wrapping-add, wrapping-sub, wrapping-mul, pow2, mod-floor, width-ok, overflows, checked-add, checked-sub, checked-mul }
+export {
+  fits-width,
+  wrap-to,
+  wrapping-add,
+  wrapping-sub,
+  wrapping-mul,
+  pow2,
+  mod-floor,
+  width-ok,
+  overflows,
+  checked-add,
+  checked-sub,
+  checked-mul
+}

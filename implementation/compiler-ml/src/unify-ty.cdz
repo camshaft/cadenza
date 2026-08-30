@@ -22,7 +22,7 @@ def unify-sign(a: Sign, b: Sign) = match a with
   | Sign.SVar(_) => Option.Some(b)
   | Sign.Signed => (match b with
     | Sign.SignDef => Option.Some(Sign.Signed)
-    | Sign.SVar(_) => Option.Some(Sign.Signed)   // ARC-A1: b is an un-bound var → takes `a` (Signed)
+    | Sign.SVar(_) => Option.Some(Sign.Signed) // ARC-A1: b is an un-bound var → takes `a` (Signed)
     | Sign.Signed => Option.Some(Sign.Signed)
     | Sign.Unsigned => Option.None(unit)
   )
@@ -36,10 +36,10 @@ def unify-sign(a: Sign, b: Sign) = match a with
 /// else conflict. INDEPENDENT of sign (the orthogonal-axis rule).
 def unify-width(a: Width, b: Width) = match a with
   | Width.WidthDef => Option.Some(b) // deferred ~ anything → the other
-  | Width.WVar(_) => Option.Some(b)  // ARC-A1: un-bound var ~ anything → the other (INERT until B3's Subst)
+  | Width.WVar(_) => Option.Some(b) // ARC-A1: un-bound var ~ anything → the other (INERT until B3's Subst)
   | Width.WFixed(n) => match b with
     | Width.WidthDef => Option.Some(Width.WFixed(n))
-    | Width.WVar(_) => Option.Some(Width.WFixed(n))  // ARC-A1: b un-bound var → takes `a`
+    | Width.WVar(_) => Option.Some(Width.WFixed(n)) // ARC-A1: b un-bound var → takes `a`
     | Width.WFixed(m) => if n == m then Option.Some(Width.WFixed(n)) else Option.None(unit)
 
 /// Unify two integer types: unify SIGN and WIDTH independently; both must combine (a Fixed mismatch on
@@ -48,12 +48,12 @@ def unify-width(a: Width, b: Width) = match a with
 def unify-int(a: IntType, b: IntType) =
   let IntType.IntType(sa, wa) = a in
   let IntType.IntType(sb, wb) = b in
-  match unify-sign(sa, sb) with
-      | Option.Some(s) => (match unify-width(wa, wb) with
-        | Option.Some(w) => Option.Some(IntType.IntType(s, w))
-        | Option.None(_) => Option.None(unit)
-      )
+    match unify-sign(sa, sb) with
+    | Option.Some(s) => (match unify-width(wa, wb) with
+      | Option.Some(w) => Option.Some(IntType.IntType(s, w))
       | Option.None(_) => Option.None(unit)
+    )
+    | Option.None(_) => Option.None(unit)
 
 /// UNIFY two `Ty`: two integers unify per unify-int (orthogonal sign+width); Bool~Bool → Bool; anything with
 /// TyErr, or a cross-kind (int~Bool), → None. The combining primitive infer's arith-result + if-join use.
@@ -71,7 +71,8 @@ def unify-ty(a: Ty, b: Ty) = match a with
   )
   | Ty.TyChar => (match b with
     | Ty.TyChar => Option.Some(Ty.TyChar)
-    | _ => Option.None(unit))
+    | _ => Option.None(unit)
+  )
   | Ty.TyString => (match b with
     | Ty.TyString => Option.Some(Ty.TyString)
     | _ => Option.None(unit)
@@ -81,36 +82,44 @@ def unify-ty(a: Ty, b: Ty) = match a with
   // unify.rs:209 `(Fn(pa,ra),Fn(pb,rb)) => unify(pa,pb); unify(ra,rb)`, generalized to N-ary). Any arity/param/
   // result conflict → None (poison propagates). A TyFn never unifies with an int/bool/err (cross-kind → None).
   | Ty.TyFn(psa, ra) => (match b with
-    | Ty.TyFn(psb, rb) => (if List.len(psa) == List.len(psb)
-        then (match unify-ty-list(psa, psb, 0) with
-          | Option.Some(ps) => (match unify-ty(ra, rb) with
-            | Option.Some(r) => Option.Some(Ty.TyFn(ps, r))
-            | Option.None(_) => Option.None(unit))
-          | Option.None(_) => Option.None(unit))
-        else Option.None(unit))                                 // arity mismatch → conflict
-    | _ => Option.None(unit))                                    // fn ~ non-fn → conflict
+    | Ty.TyFn(psb, rb) => if List.len(psa) == List.len(psb) then
+      match unify-ty-list(psa, psb, 0) with
+        | Option.Some(ps) => (match unify-ty(ra, rb) with
+          | Option.Some(r) => Option.Some(Ty.TyFn(ps, r))
+          | Option.None(_) => Option.None(unit)
+        )
+        | Option.None(_) => Option.None(unit)
+    else
+      Option.None(unit) // arity mismatch → conflict
+    | _ => Option.None(unit)
+  ) // fn ~ non-fn → conflict
   // M2-b-2b-ii-c2 USER SUM: DECL-IDENTITY unify — two sum types unify (to themselves) iff SAME decl name-id,
   // never structural inner (closes recursive sums; a cross-type ctor pattern → different decl → None → reject).
   | Ty.TySum(na) => (match b with
-    | Ty.TySum(nb) => (if na == nb then Option.Some(Ty.TySum(na)) else Option.None(unit))
-    | _ => Option.None(unit))                                    // sum ~ non-sum → conflict
+    | Ty.TySum(nb) => if na == nb then Option.Some(Ty.TySum(na)) else Option.None(unit)
+    | _ => Option.None(unit)
+  ) // sum ~ non-sum → conflict
   // COMPOUND TUPLE: two tuple types unify iff SAME arity and elements unify PAIRWISE (mirrors the TyFn param
   // arm, minus a result). Any arity/element conflict → None; a tuple ~ non-tuple → conflict.
   | Ty.TyTuple(esa) => (match b with
-    | Ty.TyTuple(esb) => (if List.len(esa) == List.len(esb)
-        then (match unify-ty-list(esa, esb, 0) with
-          | Option.Some(es) => Option.Some(Ty.TyTuple(es))
-          | Option.None(_) => Option.None(unit))
-        else Option.None(unit))                                 // arity mismatch → conflict
-    | _ => Option.None(unit))                                    // tuple ~ non-tuple → conflict
+    | Ty.TyTuple(esb) => if List.len(esa) == List.len(esb) then
+      match unify-ty-list(esa, esb, 0) with
+        | Option.Some(es) => Option.Some(Ty.TyTuple(es))
+        | Option.None(_) => Option.None(unit)
+    else
+      Option.None(unit) // arity mismatch → conflict
+    | _ => Option.None(unit)
+  ) // tuple ~ non-tuple → conflict
   // COMPOUND RECORD: unify iff SAME field names AND paired types unify pairwise (mirrors TyTuple + a name check).
   | Ty.TyRecord(na, ta) => (match b with
-    | Ty.TyRecord(nb, tb) => (if ((List.len(na) == List.len(nb)) and int-list-eq(na, nb, 0))
-        then (match unify-ty-list(ta, tb, 0) with
-          | Option.Some(ts) => Option.Some(Ty.TyRecord(na, ts))
-          | Option.None(_) => Option.None(unit))
-        else Option.None(unit))                                 // field-name/arity mismatch → conflict
-    | _ => Option.None(unit))                                    // record ~ non-record → conflict
+    | Ty.TyRecord(nb, tb) => if List.len(na) == List.len(nb) and int-list-eq(na, nb, 0) then
+      match unify-ty-list(ta, tb, 0) with
+        | Option.Some(ts) => Option.Some(Ty.TyRecord(na, ts))
+        | Option.None(_) => Option.None(unit)
+    else
+      Option.None(unit) // field-name/arity mismatch → conflict
+    | _ => Option.None(unit)
+  ) // record ~ non-record → conflict
   // ARC-B5 B1: this STATELESS combiner (the pre-HM live-infer primitive) has no Subst to bind a var into, so a
   // TyVar declines here — the real var-binding unify is unify-subst.cdz's unify-ty-su (Subst-threading, B3). A
   // TyVar never reaches this stateless path in the current live pipeline; the arm is for exhaustiveness.
@@ -119,16 +128,18 @@ def unify-ty(a: Ty, b: Ty) = match a with
 /// Unify two same-length param-type lists PAIRWISE (index recursion). `Some(list)` = every pair unified (the
 /// combined param types, in order); `None` = any pair conflicted. Callers guarantee equal length.
 def unify-ty-list(a: List(Ty), b: List(Ty), i: Int64) =
-  (if i == List.len(a) then Option.Some(([] : List(Ty)))
-   else (match List.at(a, i) with
-     | Option.None(_) => Option.None(unit)
-     | Option.Some(ta) => (match List.at(b, i) with
-       | Option.None(_) => Option.None(unit)
-       | Option.Some(tb) => (match unify-ty(ta, tb) with
-         | Option.None(_) => Option.None(unit)
-         | Option.Some(t) => (match unify-ty-list(a, b, i + 1) with
-           | Option.None(_) => Option.None(unit)
-           | Option.Some(rest) => Option.Some(List.concat(List.push([], t), rest)))))))
+  if i == List.len(a) then
+    Option.Some([] : List(Ty))
+  else
+    match List.at(a, i) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(ta) => match List.at(b, i) with
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(tb) => match unify-ty(ta, tb) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(t) => match unify-ty-list(a, b, i + 1) with
+            | Option.None(_) => Option.None(unit)
+            | Option.Some(rest) => Option.Some(List.concat(List.push([], t), rest))
 
 // ---- TESTS: orthogonal sign/width unification over the shared Ty ------------------------------------
 import { ty-int64, ty-fixed-int, ty-deferred-int } from "ty"
@@ -240,61 +251,88 @@ def ut-bool-unifies() =
     trap("Bool~Bool")
 
 // ---- HIGHER-ORDER: arrow (TyFn) unification -------------------------------------------------------
-
 /// A 1-param fn type `(a) -> r`.
 def fn1(a: Ty, r: Ty) = Ty.TyFn(List.push([], a), r)
 
 @test
 def ut-fn-same-unifies() =
   // (Int64) -> Int64  ~  (Int64) -> Int64  →  (Int64) -> Int64.
-  if unifies-to(unify-ty(fn1(ty-int64(), ty-int64()), fn1(ty-int64(), ty-int64())), fn1(ty-int64(), ty-int64())) then
-    unit else trap("(Int64)->Int64 self-unify")
+  if unifies-to(
+      unify-ty(fn1(ty-int64(), ty-int64()), fn1(ty-int64(), ty-int64())),
+      fn1(ty-int64(), ty-int64())
+    ) then
+    unit
+  else
+    trap("(Int64)->Int64 self-unify")
 
 @test
 def ut-fn-param-grounds() =
   // (deferred) -> Int64  ~  (Int8) -> Int64  →  (Int8) -> Int64 (the param arg grounds pairwise).
-  if unifies-to(unify-ty(fn1(ty-deferred-int(), ty-int64()), fn1(ty-fixed-int(true, 8), ty-int64())), fn1(ty-fixed-int(true, 8), ty-int64())) then
-    unit else trap("fn param grounds via pairwise unify")
+  if unifies-to(
+      unify-ty(fn1(ty-deferred-int(), ty-int64()), fn1(ty-fixed-int(true, 8), ty-int64())),
+      fn1(ty-fixed-int(true, 8), ty-int64())
+    ) then
+    unit
+  else
+    trap("fn param grounds via pairwise unify")
 
 @test
 def ut-fn-result-conflict() =
   // (Int64) -> Int8  ~  (Int64) -> Int16  →  conflict (results differ).
-  if conflicts(unify-ty(fn1(ty-int64(), ty-fixed-int(true, 8)), fn1(ty-int64(), ty-fixed-int(true, 16)))) then
-    unit else trap("fn result conflict")
+  if conflicts(
+      unify-ty(fn1(ty-int64(), ty-fixed-int(true, 8)), fn1(ty-int64(), ty-fixed-int(true, 16)))
+    ) then
+    unit
+  else
+    trap("fn result conflict")
 
 @test
 def ut-fn-arity-conflict() =
   // (Int64) -> Int64  ~  (Int64, Int64) -> Int64  →  conflict (arity differs).
-  if conflicts(unify-ty(fn1(ty-int64(), ty-int64()), Ty.TyFn(List.push(List.push([], ty-int64()), ty-int64()), ty-int64()))) then
-    unit else trap("fn arity conflict")
+  if conflicts(
+      unify-ty(
+        fn1(ty-int64(), ty-int64()),
+        Ty.TyFn(List.push(List.push([], ty-int64()), ty-int64()), ty-int64())
+      )
+    ) then
+    unit
+  else
+    trap("fn arity conflict")
 
 @test
 def ut-fn-vs-int-conflict() =
   // a fn type never unifies with an int (cross-kind) — nor with Bool/Err.
   if conflicts(unify-ty(fn1(ty-int64(), ty-int64()), ty-int64())) then
-    (if conflicts(unify-ty(ty-int64(), fn1(ty-int64(), ty-int64()))) then unit else trap("int~fn conflict (sym)"))
-  else trap("fn~int conflict")
+    if conflicts(unify-ty(ty-int64(), fn1(ty-int64(), ty-int64()))) then
+      unit
+    else
+      trap("int~fn conflict (sym)")
+  else
+    trap("fn~int conflict")
 
 @test
 def ut-sum-same-decl() =
   // M2-b-2b-ii-c2 DECL-IDENTITY: two sum types with the SAME decl name-id unify to that sum (never structural
   // inner). TySum(7) ~ TySum(7) → Some(TySum(7)).
-  if unifies-to(unify-ty(Ty.TySum(7), Ty.TySum(7)), Ty.TySum(7)) then unit
-  else trap("TySum(7)~TySum(7) → TySum(7)")
+  if unifies-to(unify-ty(Ty.TySum(7), Ty.TySum(7)), Ty.TySum(7)) then
+    unit
+  else
+    trap("TySum(7)~TySum(7) → TySum(7)")
 
 @test
 def ut-sum-diff-decl-conflict() =
   // two DIFFERENT sum decls never unify (a Color vs a Bit scrutinee is a cross-type reject).
-  if conflicts(unify-ty(Ty.TySum(7), Ty.TySum(8))) then unit
-  else trap("TySum(7)~TySum(8) conflict")
+  if conflicts(unify-ty(Ty.TySum(7), Ty.TySum(8))) then unit else trap("TySum(7)~TySum(8) conflict")
 
 @test
 def ut-sum-vs-non-sum-conflict() =
   // a sum type never unifies with a non-sum (int / bool / fn) — nor symmetrically.
   if conflicts(unify-ty(Ty.TySum(7), ty-int64())) then
-    (if conflicts(unify-ty(ty-int64(), Ty.TySum(7))) then
-       (if conflicts(unify-ty(Ty.TySum(7), Ty.TyBool)) then unit else trap("sum~bool conflict"))
-     else trap("int~sum conflict (sym)"))
-  else trap("sum~int conflict")
+    if conflicts(unify-ty(ty-int64(), Ty.TySum(7))) then
+      if conflicts(unify-ty(Ty.TySum(7), Ty.TyBool)) then unit else trap("sum~bool conflict")
+    else
+      trap("int~sum conflict (sym)")
+  else
+    trap("sum~int conflict")
 
 export { unify-sign, unify-width, unify-int, unify-ty, unify-ty-list }

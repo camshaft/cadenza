@@ -1,102 +1,102 @@
 /// ty.cdz — Tier-1 of the rcdzc port: the SOLVED-TYPE UNIVERSE, ported from rcdzc `ty.rs`. rcdzc has ONE
-  /// `Ty` (Int/Bool/Unit/Record/Tuple/List/Sum/Fn/Var/…) that every phase shares; compiler-ml had TWO
-  /// divergent type representations — infer-db's monomorphic `Typed = TIntW|TBool|TErr` and unify.cdz's HM
-  /// `Ty = Var|Con|Arrow|IntW`. This module is the single universe they CONVERGE onto (the operator's
-  /// divergence #3), scoped to the int/bool subset the pipeline covers (rcdzc's Record/Tuple/List/Sum/Fn are
-  /// breadth, hard-blocked). It mirrors rcdzc's `IntType { sign, width }` with the 3-state Sign/Width axes (the
-  /// orthogonal-unification model already ported into unify.cdz) as first-class data, not a hard-coded case.
-  ///
-  /// This is the "tested foundation, wired later" shape (like db.cdz/unify.cdz): infer + unify converge onto
-  /// `Ty` in a later slice; here it is the standalone, tested type universe + its constructors/predicates.
-  /// SIGN — a 3-state axis (rcdzc `Sign {Fixed(bool)|Deferred|Var}`, minus Var for the literal-polymorphism
-  /// subset): `Signed`/`Unsigned` are the fixed signs; `SignDef` is a bare literal's sign before a constraint
-  /// fixes it (grounds to signed). (A unification `Var` sign — for an intrinsic generic `+:(Int w)->(Int w)`
-  /// — is a later slice, as in unify.cdz.)
-  type Sign =
+/// `Ty` (Int/Bool/Unit/Record/Tuple/List/Sum/Fn/Var/…) that every phase shares; compiler-ml had TWO
+/// divergent type representations — infer-db's monomorphic `Typed = TIntW|TBool|TErr` and unify.cdz's HM
+/// `Ty = Var|Con|Arrow|IntW`. This module is the single universe they CONVERGE onto (the operator's
+/// divergence #3), scoped to the int/bool subset the pipeline covers (rcdzc's Record/Tuple/List/Sum/Fn are
+/// breadth, hard-blocked). It mirrors rcdzc's `IntType { sign, width }` with the 3-state Sign/Width axes (the
+/// orthogonal-unification model already ported into unify.cdz) as first-class data, not a hard-coded case.
+///
+/// This is the "tested foundation, wired later" shape (like db.cdz/unify.cdz): infer + unify converge onto
+/// `Ty` in a later slice; here it is the standalone, tested type universe + its constructors/predicates.
+/// SIGN — a 3-state axis (rcdzc `Sign {Fixed(bool)|Deferred|Var}`, minus Var for the literal-polymorphism
+/// subset): `Signed`/`Unsigned` are the fixed signs; `SignDef` is a bare literal's sign before a constraint
+/// fixes it (grounds to signed). (A unification `Var` sign — for an intrinsic generic `+:(Int w)->(Int w)`
+/// — is a later slice, as in unify.cdz.)
+type Sign =
   | Signed
   | Unsigned
   | SignDef
-  | SVar(Int64)                    // ARC-A1: a UNIFICATION VARIABLE sign (rcdzc `Sign::Var(u32)`), identified by
-                                   // a fresh var-id. Distinct from `SignDef` (a bare literal's deferred sign that
-                                   // grounds to Signed): a `SVar` is an UNKNOWN to be SOLVED by unification —
-                                   // it BINDS to whatever the other side is (see unify-ty's `unify-sign`, extended
-                                   // in ARC-B3). Until B wires the Subst, an un-bound SVar is INERT: it grounds to
-                                   // the default like SignDef (so A1 changes no observable behavior), and `sign-eq`
-                                   // treats two SVars as equal iff SAME id. This is the substrate HM vars live in.
+  | SVar(Int64) // ARC-A1: a UNIFICATION VARIABLE sign (rcdzc `Sign::Var(u32)`), identified by
 
+// a fresh var-id. Distinct from `SignDef` (a bare literal's deferred sign that
+// grounds to Signed): a `SVar` is an UNKNOWN to be SOLVED by unification —
+// it BINDS to whatever the other side is (see unify-ty's `unify-sign`, extended
+// in ARC-B3). Until B wires the Subst, an un-bound SVar is INERT: it grounds to
+// the default like SignDef (so A1 changes no observable behavior), and `sign-eq`
+// treats two SVars as equal iff SAME id. This is the substrate HM vars live in.
 /// WIDTH — the same 3-state shape as Sign, mirroring rcdzc `Width { Fixed(u32) | Deferred | Var(u32) }`:
-  /// `WFixed(n)` a concrete bit width (8/16/32/64), `WidthDef` a bare literal's deferred width (grounds to the
-  /// default 64), `WVar(id)` a UNIFICATION VARIABLE width solved by unification (ARC-A1 substrate for HM).
-  type Width =
+/// `WFixed(n)` a concrete bit width (8/16/32/64), `WidthDef` a bare literal's deferred width (grounds to the
+/// default 64), `WVar(id)` a UNIFICATION VARIABLE width solved by unification (ARC-A1 substrate for HM).
+type Width =
   | WFixed(Int64)
   | WidthDef
-  | WVar(Int64)                    // ARC-A1: a UNIFICATION VARIABLE width (rcdzc `Width::Var(u32)`). Like `SVar`:
-                                   // an unknown that BINDS on unify; inert (grounds to default 64) until B wires
-                                   // the Subst; `width-eq` treats two WVars as equal iff SAME id.
+  | WVar(Int64) // ARC-A1: a UNIFICATION VARIABLE width (rcdzc `Width::Var(u32)`). Like `SVar`:
 
+// an unknown that BINDS on unify; inert (grounds to default 64) until B wires
+// the Subst; `width-eq` treats two WVars as equal iff SAME id.
 /// An integer type: a `(Sign, Width)` pair (rcdzc `IntType { sign, width }`). Both axes unify INDEPENDENTLY
-  /// (see unify.cdz's orthogonal sign-agrees/width-agrees) and both can be deferred (a bare literal) — so a
-  /// width AND a signedness are DATA the compiler unifies, never a hard-coded case.
-  type IntType =
+/// (see unify.cdz's orthogonal sign-agrees/width-agrees) and both can be deferred (a bare literal) — so a
+/// width AND a signedness are DATA the compiler unifies, never a hard-coded case.
+type IntType =
   | IntType(Sign, Width)
 
 /// The solved-type universe (int/bool subset of rcdzc `ty.rs` `Ty`). `TyInt(IntType)` = a fixed/deferred
-  /// integer; `TyBool` = the boolean; `TyErr` = the type-level poison (a decline carried as a filled value —
-  /// the poison-as-filled-value discipline, distinct from "unanswered"). Breadth constructors (Record/Tuple/
-  /// List/Sum/Fn) are deferred — hard-blocked until the subset is rock-solid.
-  type Ty =
+/// integer; `TyBool` = the boolean; `TyErr` = the type-level poison (a decline carried as a filled value —
+/// the poison-as-filled-value discipline, distinct from "unanswered"). Breadth constructors (Record/Tuple/
+/// List/Sum/Fn) are deferred — hard-blocked until the subset is rock-solid.
+type Ty =
   | TyInt(IntType)
   | TyBool
-  | TyString                       // STRINGS frontier (S1): the string type — a payload-free nominal like
-                                   // TyBool. A string LITERAL's infer fact; unifies/eq only with TyString (no
-                                   // sub-structure). The type-algorithm walkers mirror the TyBool arm. Nothing
-                                   // constructs it until the reader NStr + infer land (stage 1b).
+  | TyString // STRINGS frontier (S1): the string type — a payload-free nominal like
+  // TyBool. A string LITERAL's infer fact; unifies/eq only with TyString (no
+  // sub-structure). The type-algorithm walkers mirror the TyBool arm. Nothing
+  // constructs it until the reader NStr + infer land (stage 1b).
   | TyErr
-  | TyFn(List(Ty), Ty)             // HIGHER-ORDER (fn-value slice): a FUNCTION type `(a, b, …) -> r`. N-ARY
-                                   // (params list + result) to mirror compiler-ml's N-ary NApp arity model
-                                   // (vs rcdzc's curried `Ty::Fn(Box,Box)` — an N-ary Fn maps the lower's
-                                   // multi-CLet call shape 1:1). Two TyFns unify iff their param lists unify
-                                   // pairwise (same arity) AND their results unify (unify-ty arrow arm).
-                                   // Used to type a fn-valued PARAM (`f` in `apply f x = f x`) and a bare
-                                   // def-name used as a VALUE (`inc` in `apply inc 41`).
-  | TySum(Int64)                   // M2-b-2b-ii-c2 USER SUM TYPE: `TySum(declNameId)` — a user sum type,
-                                   // identified by its DECL NAME-id (the `(type Name …)` name). TRAP DECL-IDENTITY:
-                                   // two TySums unify iff SAME declName (never structural inner) — per v-inference,
-                                   // this closes recursive sums (a Tree/List back-edge is the same decl) with no
-                                   // infinite descent, and makes ctor-app + ctor-pattern share a sum's identity so
-                                   // a cross-type ctor pattern (Color.Red vs a Bit scrutinee) is REJECTED. Carrying
-                                   // only the declName (not the ctor list) suffices for unify (decl-identity) —
-                                   // the ctors/arg-types live in the parse-db ct + a decl table, read where needed.
-  | TyVar(Int64)                   // ARC-B5 (port of rcdzc ty.rs:943 `Ty::Var(u32)`): a WHOLE-TYPE unification
-                                   // variable — an as-yet-unsolved type the inferencer introduces (a fresh var per
-                                   // node before it is constrained). Resolved to a concrete Ty by the HM solve
-                                   // (unify binds it via the Subst `tys` map); a var that survives to the boundary
-                                   // is an UNDETERMINED type (a rejection, not a default), exactly as rcdzc. Distinct
-                                   // from the int-axis Sign.SVar / Width.WVar (those vary only an int's sign/width);
-                                   // TyVar ranges over ANY Ty (int/bool/fn/sum), so a node whose type isn't known to
-                                   // be an int (a param used only as a match scrutinee, a fn-typed param) gets a
-                                   // TyVar and unifies toward whatever concrete type its uses force. Enables the
-                                   // recursive-descent type_of to seed every node a fresh TyVar and unify inline.
-  | TyTuple(List(Ty))              // COMPOUND-VALUE slice: a positional tuple type `tuple<T0, T1, …>` (the
-                                   // `(tuple e0 e1 …)` literal's type, NTuple's infer fact). N-ary element
-                                   // list, structurally analogous to TyFn's param list — the type-algorithm
-                                   // walkers (unify/subst/free-vars) handle it by MIRRORING their TyFn arm
-                                   // element-wise. Two TyTuples unify iff same arity + elements unify pairwise.
-  | TyRecord(List(Int64), List(Ty))  // COMPOUND-VALUE slice: a named-field record type — PARALLEL lists of the
-                                   // field NAME-ids and their types, positionally paired (NRecord's infer fact).
-                                   // Like TyTuple but the type-algorithm walkers ALSO compare the name lists:
-                                   // two TyRecords are equal/unify iff SAME field names AND the paired types
-                                   // are equal/unify pairwise. subst/occurs walk the TYPES only (names are
-                                   // literals). Field order is the source order in the type stage (dormant); the
-                                   // CONSTRUCT stage canonicalizes to sorted-by-name so field access maps a name
-                                   // to a positional slot.
-  | TyChar                         // STRINGS frontier (S-w2a): the CHARACTER type — a payload-free nominal like
-                                   // TyBool/TyString. `String.at` yields a Char; its runtime VALUE is the
-                                   // Unicode codepoint carried as an Int (no VChar Value variant needed — like
-                                   // Bool rides as Int 0/1), and TyChar is the TYPE fact that drives the char
-                                   // verdict render. The type-algorithm walkers mirror the TyBool arm. Placed
-                                   // LAST so this new variant does not shift existing discriminant tags.
+  | TyFn(List(Ty), Ty) // HIGHER-ORDER (fn-value slice): a FUNCTION type `(a, b, …) -> r`. N-ARY
+  // (params list + result) to mirror compiler-ml's N-ary NApp arity model
+  // (vs rcdzc's curried `Ty::Fn(Box,Box)` — an N-ary Fn maps the lower's
+  // multi-CLet call shape 1:1). Two TyFns unify iff their param lists unify
+  // pairwise (same arity) AND their results unify (unify-ty arrow arm).
+  // Used to type a fn-valued PARAM (`f` in `apply f x = f x`) and a bare
+  // def-name used as a VALUE (`inc` in `apply inc 41`).
+  | TySum(Int64) // M2-b-2b-ii-c2 USER SUM TYPE: `TySum(declNameId)` — a user sum type,
+  // identified by its DECL NAME-id (the `(type Name …)` name). TRAP DECL-IDENTITY:
+  // two TySums unify iff SAME declName (never structural inner) — per v-inference,
+  // this closes recursive sums (a Tree/List back-edge is the same decl) with no
+  // infinite descent, and makes ctor-app + ctor-pattern share a sum's identity so
+  // a cross-type ctor pattern (Color.Red vs a Bit scrutinee) is REJECTED. Carrying
+  // only the declName (not the ctor list) suffices for unify (decl-identity) —
+  // the ctors/arg-types live in the parse-db ct + a decl table, read where needed.
+  | TyVar(Int64) // ARC-B5 (port of rcdzc ty.rs:943 `Ty::Var(u32)`): a WHOLE-TYPE unification
+  // variable — an as-yet-unsolved type the inferencer introduces (a fresh var per
+  // node before it is constrained). Resolved to a concrete Ty by the HM solve
+  // (unify binds it via the Subst `tys` map); a var that survives to the boundary
+  // is an UNDETERMINED type (a rejection, not a default), exactly as rcdzc. Distinct
+  // from the int-axis Sign.SVar / Width.WVar (those vary only an int's sign/width);
+  // TyVar ranges over ANY Ty (int/bool/fn/sum), so a node whose type isn't known to
+  // be an int (a param used only as a match scrutinee, a fn-typed param) gets a
+  // TyVar and unifies toward whatever concrete type its uses force. Enables the
+  // recursive-descent type_of to seed every node a fresh TyVar and unify inline.
+  | TyTuple(List(Ty)) // COMPOUND-VALUE slice: a positional tuple type `tuple<T0, T1, …>` (the
+  // `(tuple e0 e1 …)` literal's type, NTuple's infer fact). N-ary element
+  // list, structurally analogous to TyFn's param list — the type-algorithm
+  // walkers (unify/subst/free-vars) handle it by MIRRORING their TyFn arm
+  // element-wise. Two TyTuples unify iff same arity + elements unify pairwise.
+  | TyRecord(List(Int64), List(Ty)) // COMPOUND-VALUE slice: a named-field record type — PARALLEL lists of the
+  // field NAME-ids and their types, positionally paired (NRecord's infer fact).
+  // Like TyTuple but the type-algorithm walkers ALSO compare the name lists:
+  // two TyRecords are equal/unify iff SAME field names AND the paired types
+  // are equal/unify pairwise. subst/occurs walk the TYPES only (names are
+  // literals). Field order is the source order in the type stage (dormant); the
+  // CONSTRUCT stage canonicalizes to sorted-by-name so field access maps a name
+  // to a positional slot.
+  | TyChar // STRINGS frontier (S-w2a): the CHARACTER type — a payload-free nominal like
 
+// TyBool/TyString. `String.at` yields a Char; its runtime VALUE is the
+// Unicode codepoint carried as an Int (no VChar Value variant needed — like
+// Bool rides as Int 0/1), and TyChar is the TYPE fact that drives the char
+// verdict render. The type-algorithm walkers mirror the TyBool arm. Placed
+// LAST so this new variant does not shift existing discriminant tags.
 /// A bare integer literal's type: BOTH axes deferred (rcdzc `IntType::deferred`) — grounds to the default via
 /// unification/root-defaulting. This is the type a literal STARTS as; an annotation or operator fixes it.
 def ty-deferred-int() = Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WidthDef))
@@ -132,21 +132,17 @@ def width-deferred(w: Width) = match w with
 /// still-deferred type must be defaulted at the root first. Binds sign/width one level, then tests each
 /// (avoids the deep-nested-pattern compiler limitation).
 def is-ground-int(t: Ty) = match t with
-  | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in if sign-deferred(s) then
-      false
-    else
-      if width-deferred(w) then false else true
-  )
+  | Ty.TyInt(it) => let IntType.IntType(s, w) = it in
+    if sign-deferred(s) then false else if width-deferred(w) then false else true
   | _ => false
 
 /// GROUND a (possibly-deferred) type to its default (rcdzc's backend grounding of an unresolved sign/width):
 /// a deferred sign → Signed, a deferred width → 64. A fixed axis is unchanged; a non-int type is unchanged.
 def ground-default(t: Ty) = match t with
-  | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in
-    let s2 = if sign-deferred(s) then Sign.Signed else s in
-    let w2 = if width-deferred(w) then Width.WFixed(64) else w in
+  | Ty.TyInt(it) => let IntType.IntType(s, w) = it in
+  let s2 = if sign-deferred(s) then Sign.Signed else s in
+  let w2 = if width-deferred(w) then Width.WFixed(64) else w in
     Ty.TyInt(IntType.IntType(s2, w2))
-  )
   | _ => t
 
 /// SIGN equality — two signs are equal iff the SAME state (Signed=Signed, Unsigned=Unsigned,
@@ -192,8 +188,9 @@ def width-eq(a: Width, b: Width) = match a with
 /// `Ty` (replacing infer-db's monomorphic `type-eq`). Bind-per-level (deep-nested-match limitation).
 def ty-eq(a: Ty, b: Ty) = match a with
   | Ty.TyInt(ita) => (match b with
-    | Ty.TyInt(itb) => (let IntType.IntType(sa, wa) = ita in let IntType.IntType(sb, wb) = itb in if sign-eq(sa, sb) then width-eq(wa, wb) else false
-    )
+    | Ty.TyInt(itb) => let IntType.IntType(sa, wa) = ita in
+    let IntType.IntType(sb, wb) = itb in
+      if sign-eq(sa, sb) then width-eq(wa, wb) else false
     | _ => false
   )
   | Ty.TyBool => (match b with
@@ -211,9 +208,10 @@ def ty-eq(a: Ty, b: Ty) = match a with
   | Ty.TyErr => false
   // HIGHER-ORDER: two function types are equal iff same arity, params pairwise-equal, and results equal.
   | Ty.TyFn(psa, ra) => (match b with
-    | Ty.TyFn(psb, rb) => (if List.len(psa) == List.len(psb)
-        then (if ty-eq-list(psa, psb, 0) then ty-eq(ra, rb) else false)
-        else false)
+    | Ty.TyFn(psb, rb) => if List.len(psa) == List.len(psb) then
+      if ty-eq-list(psa, psb, 0) then ty-eq(ra, rb) else false
+    else
+      false
     | _ => false
   )
   // M2-b-2b-ii-c2 USER SUM: DECL-IDENTITY — two sum types are equal iff SAME decl name-id (never structural
@@ -225,39 +223,43 @@ def ty-eq(a: Ty, b: Ty) = match a with
   // ARC-B5 (rcdzc ty.rs:1025 `(Ty::Var(a), Ty::Var(b)) => a == b`): two type variables are equal iff the SAME
   // id. A TyVar is never equal to a concrete type (it's unsolved) — that's unify's job, not equality's.
   | Ty.TyTuple(esa) => (match b with
-    | Ty.TyTuple(esb) => (if List.len(esa) == List.len(esb) then ty-eq-list(esa, esb, 0) else false)
+    | Ty.TyTuple(esb) => if List.len(esa) == List.len(esb) then ty-eq-list(esa, esb, 0) else false
     | _ => false
   )
   // COMPOUND RECORD: equal iff SAME field names (in order) AND the paired types are pairwise equal.
   | Ty.TyRecord(na, ta) => (match b with
-    | Ty.TyRecord(nb, tb) => (if List.len(na) == List.len(nb)
-        then (if int-list-eq(na, nb, 0) then ty-eq-list(ta, tb, 0) else false)
-        else false)
+    | Ty.TyRecord(nb, tb) => if List.len(na) == List.len(nb) then
+      if int-list-eq(na, nb, 0) then ty-eq-list(ta, tb, 0) else false
+    else
+      false
     | _ => false
   )
-  | Ty.TyVar(va) => (match b with
+  | Ty.TyVar(va) => match b with
     | Ty.TyVar(vb) => va == vb
     | _ => false
-  )
 
 /// Pairwise `==` over two same-length Int64 lists (index recursion) — the field-NAME-list equality a
 /// `TyRecord` ty-eq/unify needs (two records match iff the same field names in order). True iff every pair equal.
 def int-list-eq(a: List(Int64), b: List(Int64), i: Int64) =
-  (if i == List.len(a) then true
-   else (match List.at(a, i) with
-     | Option.None(_) => false
-     | Option.Some(x) => (match List.at(b, i) with
-       | Option.None(_) => false
-       | Option.Some(y) => (if x == y then int-list-eq(a, b, i + 1) else false))))
+  if i == List.len(a) then
+    true
+  else
+    match List.at(a, i) with
+      | Option.None(_) => false
+      | Option.Some(x) => match List.at(b, i) with
+        | Option.None(_) => false
+        | Option.Some(y) => if x == y then int-list-eq(a, b, i + 1) else false
 
 /// Pairwise `ty-eq` over two same-length type lists (index recursion). True iff every pair is equal.
 def ty-eq-list(a: List(Ty), b: List(Ty), i: Int64) =
-  (if i == List.len(a) then true
-   else (match List.at(a, i) with
-     | Option.None(_) => false
-     | Option.Some(ta) => (match List.at(b, i) with
-       | Option.None(_) => false
-       | Option.Some(tb) => (if ty-eq(ta, tb) then ty-eq-list(a, b, i + 1) else false))))
+  if i == List.len(a) then
+    true
+  else
+    match List.at(a, i) with
+      | Option.None(_) => false
+      | Option.Some(ta) => match List.at(b, i) with
+        | Option.None(_) => false
+        | Option.Some(tb) => if ty-eq(ta, tb) then ty-eq-list(a, b, i + 1) else false
 
 // ---- TESTS -----------------------------------------------------------------------------------------
 @test
@@ -283,8 +285,10 @@ def ty-bool-not-int() =
   // TyBool is not an integer type, not ground-int.
   if is-int-ty(Ty.TyBool) then
     trap("Bool is not an int")
+  else if is-ground-int(Ty.TyBool) then
+    trap("Bool not ground-int")
   else
-    if is-ground-int(Ty.TyBool) then trap("Bool not ground-int") else unit
+    unit
 
 /// Test helper: extract a FIXED-WIDTH int type's `(Sign, width)`, or `None` for a non-int or width-deferred
 /// type. WIDTH-ground only — the SIGN axis is returned as-is (the `Sign` SUM directly, not a 1|0|-1 int), so a
@@ -292,31 +296,41 @@ def ty-bool-not-int() =
 /// output, which resolves `SignDef`→`Signed`, so a fully-ground int is the norm at the call sites. Models
 /// "not a fixed-width int" as typed absence (`WidthDef` / non-int → `None`) — no in-band `-1` sentinel.
 def int-parts(t: Ty) = match t with
-  | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in (match w with
-      | Width.WFixed(n) => Option.Some((s, n))
-      | Width.WidthDef => Option.None(unit)
-      | Width.WVar(_) => Option.None(unit)))   // ARC-A1: an un-bound var width is NOT a fixed width → None (same as WidthDef)
+  | Ty.TyInt(it) => (let IntType.IntType(s, w) = it in
+    match w with
+    | Width.WFixed(n) => Option.Some((s, n))
+    | Width.WidthDef => Option.None(unit)
+    | Width.WVar(_) => Option.None(unit)) // ARC-A1: an un-bound var width is NOT a fixed width → None (same as WidthDef)
   | _ => Option.None(unit)
 
 @test
 def ty-ground-default-deferred-to-int64() =
   // grounding a fully-deferred literal → Int64 (signed, 64) — the default.
   match int-parts(ground-default(ty-deferred-int())) with
-    | Option.Some((sg, w)) => (match sg with | Sign.Signed => (if w == 64 then unit else trap("deferred grounds to Int64 width 64")) | _ => trap("deferred grounds to SIGNED"))
+    | Option.Some((sg, w)) => (match sg with
+      | Sign.Signed => if w == 64 then unit else trap("deferred grounds to Int64 width 64")
+      | _ => trap("deferred grounds to SIGNED")
+    )
     | Option.None(_) => trap("deferred did NOT ground to a fixed-width int (int-parts = None)")
 
 @test
 def ty-ground-default-keeps-fixed() =
   // grounding a fixed type is the identity: UInt8 stays (unsigned, 8).
   match int-parts(ground-default(ty-fixed-int(false, 8))) with
-    | Option.Some((sg, w)) => (match sg with | Sign.Unsigned => (if w == 8 then unit else trap("fixed UInt8 width 8")) | _ => trap("fixed UInt8 stays UNSIGNED"))
+    | Option.Some((sg, w)) => (match sg with
+      | Sign.Unsigned => if w == 8 then unit else trap("fixed UInt8 width 8")
+      | _ => trap("fixed UInt8 stays UNSIGNED")
+    )
     | Option.None(_) => trap("a fixed int has int-parts")
 
 @test
 def ty-ground-default-partial-deferred-sign() =
   // a deferred SIGN with a fixed width grounds the sign to Signed, keeps the width (orthogonal axes).
   match int-parts(ground-default(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(16))))) with
-    | Option.Some((sg, w)) => (match sg with | Sign.Signed => (if w == 16 then unit else trap("deferred-sign keeps width 16")) | _ => trap("deferred-sign→Signed"))
+    | Option.Some((sg, w)) => (match sg with
+      | Sign.Signed => if w == 16 then unit else trap("deferred-sign keeps width 16")
+      | _ => trap("deferred-sign→Signed")
+    )
     | Option.None(_) => trap("a fixed-width int has int-parts")
 
 // ---- ty-eq tests (structural type equality — the convergence primitive) ----
@@ -353,8 +367,10 @@ def ty-eq-err-never-equal() =
   // TyErr is never equal to anything, including itself (poison never makes an if well-typed).
   if ty-eq(Ty.TyErr, Ty.TyErr) then
     trap("TyErr != TyErr (poison never equal)")
+  else if ty-eq(Ty.TyErr, ty-int64()) then
+    trap("TyErr != Int64")
   else
-    if ty-eq(Ty.TyErr, ty-int64()) then trap("TyErr != Int64") else unit
+    unit
 
 @test
 def ty-eq-deferred-matches-deferred() =
@@ -368,41 +384,56 @@ def ty-eq-deferred-matches-deferred() =
 @test
 def ty-eq-fn-structural() =
   // HIGHER-ORDER: (Int64)->Int64 equals itself; differs from (Int64)->Bool (result) and from a plain Int64.
-  (let f = Ty.TyFn(List.push([], ty-int64()), ty-int64()) in
-   (let g = Ty.TyFn(List.push([], ty-int64()), Ty.TyBool) in
-    (if ty-eq(f, f) then
-      (if ty-eq(f, g) then trap("fn result differs → not equal")
-       else (if ty-eq(f, ty-int64()) then trap("fn != int") else unit))
-     else trap("fn == itself"))))
+  let f = Ty.TyFn(List.push([], ty-int64()), ty-int64()) in
+  let g = Ty.TyFn(List.push([], ty-int64()), Ty.TyBool) in
+    if ty-eq(f, f) then
+    if ty-eq(f, g) then
+      trap("fn result differs → not equal")
+    else if ty-eq(f, ty-int64()) then
+      trap("fn != int")
+    else
+      unit
+  else
+    trap("fn == itself")
 
 @test
 def ty-eq-fn-arity-differs() =
   // HIGHER-ORDER arity: a 2-param arrow (Int64,Int64)->Int64 is NOT equal to a 1-param (Int64)->Int64 — ty-eq
   // gates on List.len(params) first. The fn-structural test only covered same-arity-different-result; this pins
   // the arity mismatch → false (a 2-arg fn value never unifies with a 1-arg arrow).
-  (let f2 = Ty.TyFn(List.push(List.push([], ty-int64()), ty-int64()), ty-int64()) in
-   (let f1 = Ty.TyFn(List.push([], ty-int64()), ty-int64()) in
-    (if ty-eq(f2, f1) then trap("2-param arrow must NOT equal 1-param arrow (arity)") else unit)))
+  let f2 = Ty.TyFn(List.push(List.push([], ty-int64()), ty-int64()), ty-int64()) in
+  let f1 = Ty.TyFn(List.push([], ty-int64()), ty-int64()) in
+    if ty-eq(f2, f1) then trap("2-param arrow must NOT equal 1-param arrow (arity)") else unit
 
 @test
 def ty-eq-sum-decl-identity() =
   // USER SUM decl-identity: two TySums are equal iff SAME declNameId — never structural. TySum(1)==TySum(1),
   // TySum(1) != TySum(2). This is the cross-type-reject foundation (ctor-app/pattern must share a sum's identity;
   // tags restart per decl so a different-decl pattern would tag-collide). A TySum is also != a TyInt.
-  (if ty-eq(Ty.TySum(1), Ty.TySum(1)) then
-    (if ty-eq(Ty.TySum(1), Ty.TySum(2)) then trap("different-decl sums must NOT be equal")
-     else (if ty-eq(Ty.TySum(1), ty-int64()) then trap("sum != int") else unit))
-   else trap("same-decl sums must be equal"))
+  if ty-eq(Ty.TySum(1), Ty.TySum(1)) then
+    if ty-eq(Ty.TySum(1), Ty.TySum(2)) then
+      trap("different-decl sums must NOT be equal")
+    else if ty-eq(Ty.TySum(1), ty-int64()) then
+      trap("sum != int")
+    else
+      unit
+  else
+    trap("same-decl sums must be equal")
 
 @test
 def ty-eq-var-identity() =
   // TyVar equality (rcdzc ty.rs:1025): two TyVars are equal iff SAME id; a TyVar is NEVER equal to a concrete
   // type (it's unsolved — reconciling a var with a concrete is unify's job, not equality's). TyVar(3)==TyVar(3),
   // TyVar(3) != TyVar(4), TyVar(3) != Int64.
-  (if ty-eq(Ty.TyVar(3), Ty.TyVar(3)) then
-    (if ty-eq(Ty.TyVar(3), Ty.TyVar(4)) then trap("different-id TyVars must NOT be equal")
-     else (if ty-eq(Ty.TyVar(3), ty-int64()) then trap("TyVar != concrete Int64") else unit))
-   else trap("same-id TyVars must be equal"))
+  if ty-eq(Ty.TyVar(3), Ty.TyVar(3)) then
+    if ty-eq(Ty.TyVar(3), Ty.TyVar(4)) then
+      trap("different-id TyVars must NOT be equal")
+    else if ty-eq(Ty.TyVar(3), ty-int64()) then
+      trap("TyVar != concrete Int64")
+    else
+      unit
+  else
+    trap("same-id TyVars must be equal")
 
 // ---- ARC-A1 tests: the 3rd axis state — unification VARIABLE signs/widths (substrate for HM in ARC-B) ----
 @test
@@ -427,7 +458,10 @@ def ty-a1-var-grounds-to-default() =
   // ARC-A1 INERT invariant: an un-bound var grounds to the DEFAULT exactly like deferred (SVar→Signed,
   // WVar→64) — so A1 changes NO observable grounded behavior (nothing binds a var until ARC-B's Subst).
   match ground-default(Ty.TyInt(IntType.IntType(Sign.SVar(7), Width.WVar(9)))) with
-    | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 64 then unit else trap("var width grounds to 64"))
+    | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 64 then
+      unit
+    else
+      trap("var width grounds to 64")
     | _ => trap("un-bound (SVar,WVar) grounds to (Signed, WFixed 64) — the inert default")
 
 @test
@@ -435,8 +469,12 @@ def ty-a1-var-eq-by-id() =
   // structural equality: two SVars equal iff SAME id; different ids unequal; an SVar is not equal to a concrete
   // sign. (unify BINDS vars — separate op, ARC-B3; ty-eq is pure structural state-equality.)
   if sign-eq(Sign.SVar(3), Sign.SVar(3)) then
-    (if sign-eq(Sign.SVar(3), Sign.SVar(4)) then trap("distinct var-ids are NOT equal")
-     else (if sign-eq(Sign.SVar(3), Sign.Signed) then trap("a var is not equal to a concrete sign") else unit))
+    if sign-eq(Sign.SVar(3), Sign.SVar(4)) then
+      trap("distinct var-ids are NOT equal")
+    else if sign-eq(Sign.SVar(3), Sign.Signed) then
+      trap("a var is not equal to a concrete sign")
+    else
+      unit
   else
     trap("same var-id signs are structurally equal")
 
@@ -444,7 +482,10 @@ def ty-a1-var-eq-by-id() =
 def ty-a1-width-var-eq-by-id() =
   // same for widths: WVar equal iff same id; not equal to WFixed.
   if width-eq(Width.WVar(1), Width.WVar(1)) then
-    (if width-eq(Width.WVar(1), Width.WFixed(64)) then trap("a WVar is not equal to WFixed") else unit)
+    if width-eq(Width.WVar(1), Width.WFixed(64)) then
+      trap("a WVar is not equal to WFixed")
+    else
+      unit
   else
     trap("same var-id widths are structurally equal")
 

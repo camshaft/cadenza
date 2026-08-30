@@ -23,9 +23,13 @@
 /// op-result is not threaded to a nested body re-demand — filed).
 /// The live-pipeline flip (route run-of-db / ty-of-db through this) is a later differential-guarded slice.
 import { Node, Tree, node-at, def-body-of, call-is-recursive, param-of } from "parse-db"
+
 import { Db, db-of, db-tree, require-ty, fill-ty, require-resolved, fill-resolved } from "db"
+
 import { Ty } from "ty"
+
 import { Resolved } from "resolve-db"
+
 import { bin-type, if-type, let-type, match-type, var-type, t-int-deferred, mk-int, int-parts-of } from "infer-db"
 
 /// The DbState effect FAMILY — ONE group, per-field ops over the shared column state (operator-confirmed).
@@ -33,16 +37,16 @@ import { bin-type, if-type, let-type, match-type, var-type, t-int-deferred, mk-i
 /// node-of is a read-only ast op; def-body-of/is-recursive are read-only ast-derived ops (SCALAR: NodeId in,
 /// Option(NodeId)/Bool out) so the callee-body demand + recursive-call fixpoint never thread the wide Tree.
 /// The handler (below) carries the whole Db and serves every op.
-  effect DbState =
+effect DbState =
   | get-ty : Int64 -> Option(Ty)
   | set-ty : Tuple(Int64, Ty) -> Unit
   | get-resolved : Int64 -> Option(Resolved)
   | node-of : Int64 -> Option(Node)
-  | def-body-node : Int64 -> Option(Int64)     // callee NAME -> its def-body NodeId (rcdzc def-body-of)
-  | param-node : Int64 -> Option(Int64)        // callee NAME -> its 1st param NodeId (rcdzc param-of), for arg-passing
-  | call-recursive : Int64 -> Bool             // callee NAME -> body transitively calls back (fixpoint guard)
-  | get-tcol : -> Map(Int64, Ty)               // project the current types column (for the pure tcol-only combiners)
-  | get-tree : -> Tree                          // project the read-only ast (for bin-type's literal-operand range-check)
+  | def-body-node : Int64 -> Option(Int64) // callee NAME -> its def-body NodeId (rcdzc def-body-of)
+  | param-node : Int64 -> Option(Int64) // callee NAME -> its 1st param NodeId (rcdzc param-of), for arg-passing
+  | call-recursive : Int64 -> Bool // callee NAME -> body transitively calls back (fixpoint guard)
+  | get-tcol : -> Map(Int64, Ty) // project the current types column (for the pure tcol-only combiners)
+  | get-tree : -> Tree // project the read-only ast (for bin-type's literal-operand range-check)
 
 /// DEMAND the type at `id` (rcdzc type_of@43): per-field memo check via get-ty; HIT returns, MISS computes +
 /// caches. Performs get-ty (scalar NodeId in, Option(Ty) out). Member of the mutual performer group.
@@ -63,79 +67,87 @@ def cache-type(id: Int64, t: Ty) = match DbState.set-ty((id, t)) with
 def compute-type(id: Int64) = match DbState.node-of(id) with
   | Option.Some(Node.NLit(_)) => t-int-deferred()
   | Option.Some(Node.NBoolLit(_)) => Ty.TyBool
-  | Option.Some(Node.NAnnLit(_, sflag, w)) => mk-int((if sflag == 1 then true else false), w)
-  | Option.Some(Node.NVar(_)) =>
-      // A var reference's type is the type of what its binder BINDS — NOT type-of(binder), which would
-      // LOOP for a let-bound var: `let x = 5 in x` resolves x's binder to the enclosing NLet node, so
-      // type-of(NLet) demands type-of(body=NVar) demands type-of(binder=NLet) → infinite recursion (a real
-      // stack-exhaust at run time). Mirror infer-db's `var-type` (infer-db.cdz:422), which distinguishes:
-      //   - an NLet binder → the type of the let's VALUE node (valId), typed before the body (demand it);
-      //   - an NVar binder (a PARAMETER, slice-3c: the arg-flow NApp arm seeds set-ty(paramId, argTy) at the
-      //     param's own NVar node) → read the seeded fact at the binder id directly via get-ty (no re-demand).
-      (match DbState.get-resolved(id) with
-        | Option.Some(Resolved.RBound(binder)) =>
-            (match DbState.node-of(binder) with
-              | Option.Some(Node.NLet(_, valId, _)) => type-of(valId)
-              | Option.Some(Node.NVar(_)) =>
-                  (match DbState.get-ty(binder) with
-                    | Option.Some(t) => t
-                    | Option.None(_) => Ty.TyErr)
-              | _ => Ty.TyErr)
-        | _ => Ty.TyErr)
-  | Option.Some(Node.NBin(op, l, r)) =>
-      // FAITHFUL: demand both operands (memoizing them into the column), then call the REAL infer-db bin-type
-      // over the current column (get-tcol) + the read-only ast (get-tree, for its literal-operand range-check).
-      // bin-type unifies the operand types (arith → that int type / relational → Bool; mixed width/sign → TErr,
-      // the CDZ0301 reject) and range-checks a bare-literal operand against a narrow result (CDZ0201/0302) — all
-      // of which the old combine-bin stand-in did not enforce. Same demands-first-then-tail-perform shape (the
-      // get-tree wide-Tree return emits valid wasm as of the boundary-name-dedup fix).
-      (let _lt = type-of(l) in (let _rt = type-of(r) in bin-type(DbState.get-tree(), op, DbState.get-tcol(), l, r)))
-  | Option.Some(Node.NLet(_, valId, bodyId)) =>
-      // FAITHFUL: demand val + body (memoizing each into the types column), then call the REAL infer-db let-type
-      // over the current column (get-tcol). let-type declines TErr if the value is TErr, else the let's type IS
-      // the body's type. All demands come FIRST, then one tail get-tcol perform + pure combiner (the demands-
-      // then-perform shape the fold handles — NOT a perform sandwiched between two demands).
-      (let _v = type-of(valId) in (let _b = type-of(bodyId) in let-type(DbState.get-tcol(), valId, bodyId)))
-  | Option.Some(Node.NIf(c, t, e)) =>
-      // FAITHFUL: demand cond + then + else, then the REAL infer-db if-type over the column. if-type requires a
-      // Bool cond and JOINS the branches width-aware (join-branch-types) — so mismatched-width branches decline
-      // TErr, which the old stand-in combine-if did not enforce.
-      (let _c = type-of(c) in (let _t = type-of(t) in (let _e = type-of(e) in if-type(DbState.get-tcol(), c, t, e))))
-  | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
-      // FAITHFUL: demand all four children (memoizing each into the types column), then call the REAL infer-db
-      // match-type over the current column (get-tcol). match-type requires scrut and the literal pattern to
-      // share a type (they are compared) AND the then/else arms to join width-aware (join-branch-types) — so a
-      // Bool-pattern over an Int scrutinee, or mismatched-width arms, decline TErr, which the old combine-match
-      // stand-in did not enforce. Same demands-first-then-tail-perform shape as the NIf/NLet arms (folds).
-      (let _s = type-of(scrutId) in (let _l = type-of(litId) in
-        (let _t = type-of(thenId) in (let _e = type-of(elseId) in
-          match-type(DbState.get-tcol(), scrutId, litId, thenId, elseId)))))
-  | Option.Some(Node.NApp(calleeName, argId)) =>
-      // slice-2 NULLARY call `(mk)` = NApp(name, -1): its type is the callee BODY's type (beta-reduction over
-      // zero args). A RECURSIVE call must NOT descend the body (the demand would loop) — stamp Int64 directly,
-      // the 1-step fixpoint (mirror rcdzc infer.rs:157 / infer-db's recursive-nullary slice). A call WITH an
-      // arg (argId != -1) is the param slice — not yet covered here → TErr. This is the minimal-correct nullary
-      // NApp; the arg-passing + HO-param + ctor-use cases are follow-on increments.
-      (if argId == -1 then
-         (if DbState.call-recursive(calleeName) then mk-int(true, 64)
-          else (match DbState.def-body-node(calleeName) with
-            | Option.Some(bodyId) => type-of(bodyId)
-            | Option.None(_) => Ty.TyErr))
-       else
-         (if DbState.call-recursive(calleeName) then mk-int(true, 64)
-          else (match DbState.param-node(calleeName) with
-            | Option.Some(paramId) =>
-                (let at = type-of(argId) in
-                 (match DbState.set-ty((paramId, at)) with
-                   | _ => (match DbState.def-body-node(calleeName) with
-                             | Option.Some(bodyId) => type-of(bodyId)
-                             | Option.None(_) => Ty.TyErr)))
-            | Option.None(_) => Ty.TyErr)))
+  | Option.Some(Node.NAnnLit(_, sflag, w)) => mk-int(if sflag == 1 then true else false, w)
+  | Option.Some(Node.NVar(_)) => // A var reference's type is the type of what its binder BINDS — NOT type-of(binder), which would
+  // LOOP for a let-bound var: `let x = 5 in x` resolves x's binder to the enclosing NLet node, so
+  // type-of(NLet) demands type-of(body=NVar) demands type-of(binder=NLet) → infinite recursion (a real
+  // stack-exhaust at run time). Mirror infer-db's `var-type` (infer-db.cdz:422), which distinguishes:
+  //   - an NLet binder → the type of the let's VALUE node (valId), typed before the body (demand it);
+  //   - an NVar binder (a PARAMETER, slice-3c: the arg-flow NApp arm seeds set-ty(paramId, argTy) at the
+  //     param's own NVar node) → read the seeded fact at the binder id directly via get-ty (no re-demand).
+  (match DbState.get-resolved(id) with
+    | Option.Some(Resolved.RBound(binder)) => (match DbState.node-of(binder) with
+      | Option.Some(Node.NLet(_, valId, _)) => type-of(valId)
+      | Option.Some(Node.NVar(_)) => (match DbState.get-ty(binder) with
+        | Option.Some(t) => t
+        | Option.None(_) => Ty.TyErr
+      )
+      | _ => Ty.TyErr
+    )
+    | _ => Ty.TyErr
+  )
+  | Option.Some(Node.NBin(op, l, r)) => // FAITHFUL: demand both operands (memoizing them into the column), then call the REAL infer-db bin-type
+  // over the current column (get-tcol) + the read-only ast (get-tree, for its literal-operand range-check).
+  // bin-type unifies the operand types (arith → that int type / relational → Bool; mixed width/sign → TErr,
+  // the CDZ0301 reject) and range-checks a bare-literal operand against a narrow result (CDZ0201/0302) — all
+  // of which the old combine-bin stand-in did not enforce. Same demands-first-then-tail-perform shape (the
+  // get-tree wide-Tree return emits valid wasm as of the boundary-name-dedup fix).
+  let _lt = type-of(l) in
+  let _rt = type-of(r) in
+    bin-type(DbState.get-tree(), op, DbState.get-tcol(), l, r)
+  | Option.Some(Node.NLet(_, valId, bodyId)) => // FAITHFUL: demand val + body (memoizing each into the types column), then call the REAL infer-db let-type
+  // over the current column (get-tcol). let-type declines TErr if the value is TErr, else the let's type IS
+  // the body's type. All demands come FIRST, then one tail get-tcol perform + pure combiner (the demands-
+  // then-perform shape the fold handles — NOT a perform sandwiched between two demands).
+  let _v = type-of(valId) in
+  let _b = type-of(bodyId) in
+    let-type(DbState.get-tcol(), valId, bodyId)
+  | Option.Some(Node.NIf(c, t, e)) => // FAITHFUL: demand cond + then + else, then the REAL infer-db if-type over the column. if-type requires a
+  // Bool cond and JOINS the branches width-aware (join-branch-types) — so mismatched-width branches decline
+  // TErr, which the old stand-in combine-if did not enforce.
+  let _c = type-of(c) in
+  let _t = type-of(t) in
+  let _e = type-of(e) in
+    if-type(DbState.get-tcol(), c, t, e)
+  | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) => // FAITHFUL: demand all four children (memoizing each into the types column), then call the REAL infer-db
+  // match-type over the current column (get-tcol). match-type requires scrut and the literal pattern to
+  // share a type (they are compared) AND the then/else arms to join width-aware (join-branch-types) — so a
+  // Bool-pattern over an Int scrutinee, or mismatched-width arms, decline TErr, which the old combine-match
+  // stand-in did not enforce. Same demands-first-then-tail-perform shape as the NIf/NLet arms (folds).
+  let _s = type-of(scrutId) in
+  let _l = type-of(litId) in
+  let _t = type-of(thenId) in
+  let _e = type-of(elseId) in
+    match-type(DbState.get-tcol(), scrutId, litId, thenId, elseId)
+  | Option.Some(Node.NApp(calleeName, argId)) => // slice-2 NULLARY call `(mk)` = NApp(name, -1): its type is the callee BODY's type (beta-reduction over
+  // zero args). A RECURSIVE call must NOT descend the body (the demand would loop) — stamp Int64 directly,
+  // the 1-step fixpoint (mirror rcdzc infer.rs:157 / infer-db's recursive-nullary slice). A call WITH an
+  // arg (argId != -1) is the param slice — not yet covered here → TErr. This is the minimal-correct nullary
+  // NApp; the arg-passing + HO-param + ctor-use cases are follow-on increments.
+  (if argId == -1 then
+    if DbState.call-recursive(calleeName) then
+      mk-int(true, 64)
+    else
+      match DbState.def-body-node(calleeName) with
+        | Option.Some(bodyId) => type-of(bodyId)
+        | Option.None(_) => Ty.TyErr
+  else if DbState.call-recursive(calleeName) then
+    mk-int(true, 64)
+  else
+    match DbState.param-node(calleeName) with
+      | Option.Some(paramId) => (let at = type-of(argId) in
+        match DbState.set-ty((paramId, at)) with
+        | _ => match DbState.def-body-node(calleeName) with
+          | Option.Some(bodyId) => type-of(bodyId)
+          | Option.None(_) => Ty.TyErr)
+      | Option.None(_) => Ty.TyErr)
   | Option.Some(_) => Ty.TyErr
   | Option.None(_) => Ty.TyErr
 
 /// Project the types column out of the Db (for get-tcol — the pure tcol-only combiners read child facts here).
-def types-col(db: Db) = let Db.Db(_, _, tc, _) = db in tc
+def types-col(db: Db) =
+  let Db.Db(_, _, tc, _) = db in
+    tc
 
 /// Driver: install ONE handler for the DbState family carrying the whole Db as shared state. Each per-field op
 /// reads/writes ONLY its column slice via the existing db.cdz accessors, then resumes threading the (updated)
@@ -144,7 +156,8 @@ def types-col(db: Db) = let Db.Db(_, _, tc, _) = db in tc
 def run-type-of(db0: Db, root: Int64) =
   handle DbState(db0) with
     | get-ty(id, db) => resume(require-ty(db, id), db)
-    | set-ty(pair, db) => (let (id, t) = pair in resume(unit, fill-ty(db, id, t)))
+    | set-ty(pair, db) => (let (id, t) = pair in
+      resume(unit, fill-ty(db, id, t)))
     | get-resolved(id, db) => resume(require-resolved(db, id), db)
     | node-of(id, db) => resume(node-at(db-tree(db), id), db)
     | def-body-node(name, db) => resume(def-body-of(db-tree(db), name), db)
@@ -159,24 +172,29 @@ export { run-type-of }
 
 // ---- acceptance test exercising the mutual-performer group over the per-field family ----
 import { Tok, parse-tokens, empty-tree, add-node, record-def, record-param } from "parse-db"
+
 import { is-int-ty } from "ty"
+
 import { resolve-into-db } from "db-resolve"
+
 @test
 def pfq-arith() =
-  let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) in (let db = resolve-into-db(db-of(tree), root) in (if is-int-ty(run-type-of(db, root)) then unit else trap("int")))
+  let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) in
+  let db = resolve-into-db(db-of(tree), root) in
+    if is-int-ty(run-type-of(db, root)) then unit else trap("int")
 
 @test
 def pfq-match() =
   // NMatch arm: hand-built `match 1 (0 => 10) (_ => 20)` (parse-tokens doesn't build NMatch; hand-build the
   // arena). Exercises the 4-child demand arm under the group fold → an int type. This was the shape that
   // tripped the invalid-wasm emit bug (now fixed by the boundary-name dedup 6431b69a4).
-  (let (scrutId, t1) = add-node(empty-tree(), Node.NLit(1)) in
-    (let (litId, t2) = add-node(t1, Node.NLit(0)) in
-      (let (thenId, t3) = add-node(t2, Node.NLit(10)) in
-        (let (elseId, t4) = add-node(t3, Node.NLit(20)) in
-          (let (root, tree) = add-node(t4, Node.NMatch(scrutId, litId, thenId, elseId)) in
-            (let db = resolve-into-db(db-of(tree), root) in
-              (if is-int-ty(run-type-of(db, root)) then unit else trap("integer match is int"))))))))
+  let (scrutId, t1) = add-node(empty-tree(), Node.NLit(1)) in
+  let (litId, t2) = add-node(t1, Node.NLit(0)) in
+  let (thenId, t3) = add-node(t2, Node.NLit(10)) in
+  let (elseId, t4) = add-node(t3, Node.NLit(20)) in
+  let (root, tree) = add-node(t4, Node.NMatch(scrutId, litId, thenId, elseId)) in
+  let db = resolve-into-db(db-of(tree), root) in
+    if is-int-ty(run-type-of(db, root)) then unit else trap("integer match is int")
 
 @test
 def pfq-napp-recursive-nullary() =
@@ -184,23 +202,23 @@ def pfq-napp-recursive-nullary() =
   // that node so call-recursive(900) fires → the spine stamps Int64 WITHOUT descending (the 1-step fixpoint;
   // descending would loop the demand). Mirrors infer-db's recursive-nullary slice. Hand-built (parse-tokens
   // doesn't read def-forms).
-  (let (callId, t1) = add-node(empty-tree(), Node.NApp(900, -1)) in
-    (let tree = record-def(t1, 900, callId) in
-     (let db = resolve-into-db(db-of(tree), callId) in
-       (if is-int-ty(run-type-of(db, callId)) then unit else trap("recursive nullary call types Int64")))))
+  let (callId, t1) = add-node(empty-tree(), Node.NApp(900, -1)) in
+  let tree = record-def(t1, 900, callId) in
+  let db = resolve-into-db(db-of(tree), callId) in
+    if is-int-ty(run-type-of(db, callId)) then unit else trap("recursive nullary call types Int64")
 
 @test
 def pfq-if-faithful-carries-width() =
   // FAITHFUL if-type upgrade: `if true then (: 5 Int8) else (: 9 Int8)` — both branches Int8, so the real
   // if-type JOINS them to Int8 (width 8), carrying the narrow width. The old combine-if stand-in returned the
   // then-branch type without a width-aware join; this pins that the faithful join preserves the narrow width.
-  (let (condId, t1) = add-node(empty-tree(), Node.NBoolLit(1)) in
-    (let (thenId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
-      (let (elseId, t3) = add-node(t2, Node.NAnnLit(9, 1, 8)) in
-        (let (root, tree) = add-node(t3, Node.NIf(condId, thenId, elseId)) in
-          (let db = resolve-into-db(db-of(tree), root) in
-            (
-              let (s, w) = int-parts-of(run-type-of(db, root)) in (if s and (w == 8) then unit else trap("if with two Int8 branches joins to Int8 width 8"))))))))
+  let (condId, t1) = add-node(empty-tree(), Node.NBoolLit(1)) in
+  let (thenId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+  let (elseId, t3) = add-node(t2, Node.NAnnLit(9, 1, 8)) in
+  let (root, tree) = add-node(t3, Node.NIf(condId, thenId, elseId)) in
+  let db = resolve-into-db(db-of(tree), root) in
+  let (s, w) = int-parts-of(run-type-of(db, root)) in
+    if s and w == 8 then unit else trap("if with two Int8 branches joins to Int8 width 8")
 
 @test
 def pfq-if-faithful-mismatched-width-declines() =
@@ -208,40 +226,40 @@ def pfq-if-faithful-mismatched-width-declines() =
   // branches don't share a ground type, so join-branch-types → TyErr → the if is TyErr. The OLD combine-if
   // stand-in WRONGLY accepted this (returned the then-branch Int8, masking the mismatch). This is the concrete
   // correctness the faithful combiner buys over the stand-in.
-  (let (condId, t1) = add-node(empty-tree(), Node.NBoolLit(1)) in
-    (let (thenId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
-      (let (elseId, t3) = add-node(t2, Node.NAnnLit(9, 1, 16)) in
-        (let (root, tree) = add-node(t3, Node.NIf(condId, thenId, elseId)) in
-          (let db = resolve-into-db(db-of(tree), root) in
-            (match run-type-of(db, root) with
-              | Ty.TyErr => unit
-              | _ => trap("if with mismatched-width branches Int8 Int16 must decline TyErr")))))))
+  let (condId, t1) = add-node(empty-tree(), Node.NBoolLit(1)) in
+  let (thenId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+  let (elseId, t3) = add-node(t2, Node.NAnnLit(9, 1, 16)) in
+  let (root, tree) = add-node(t3, Node.NIf(condId, thenId, elseId)) in
+  let db = resolve-into-db(db-of(tree), root) in
+    match run-type-of(db, root) with
+    | Ty.TyErr => unit
+    | _ => trap("if with mismatched-width branches Int8 Int16 must decline TyErr")
 
 @test
 def pfq-bin-faithful-same-width-runs() =
   // FAITHFUL bin-type: `(: 5 Int8) + (: 5 Int8)` → Int8 (width 8). Same-type arith yields that int type; the
   // old combine-bin stand-in returned the left operand type (coincidentally right here) — this pins the width.
-  (let (l, t1) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
-    (let (r, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
-      (let (root, tree) = add-node(t2, Node.NBin(43, l, r)) in
-        (let db = resolve-into-db(db-of(tree), root) in
-          (
-            let (s, w) = int-parts-of(run-type-of(db, root)) in (if s and (w == 8) then unit else trap("Int8 + Int8 should be Int8 width 8")))))))
+  let (l, t1) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
+  let (r, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+  let (root, tree) = add-node(t2, Node.NBin(43, l, r)) in
+  let db = resolve-into-db(db-of(tree), root) in
+  let (s, w) = int-parts-of(run-type-of(db, root)) in
+    if s and w == 8 then unit else trap("Int8 + Int8 should be Int8 width 8")
 
 @test
 def pfq-napp-arg-flows-to-param() =
   // ARG-PASSING NApp: `f p = p` (identity) applied to an Int8 arg — the arg's type FLOWS to the param use.
   // The arg arm demands type-of(arg), seeds set-ty(paramId, argTy), then demands type-of(body); the body IS
   // the param node, so type-of hits the seeded memo and the call types int (was TErr before this arm).
-  (let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
-    (let (argId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
-      (let (callId, t3) = add-node(t2, Node.NApp(900, argId)) in
-        (let t4 = record-param(t3, 900, paramId) in
-         (let tree = record-def(t4, 900, paramId) in
-          (let db = resolve-into-db(db-of(tree), callId) in
-            (match run-type-of(db, callId) with
-              | Ty.TyInt(_) => unit
-              | _ => trap("f p = p applied to an int arg must type int (arg flows to param)"))))))))
+  let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in
+  let (argId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+  let (callId, t3) = add-node(t2, Node.NApp(900, argId)) in
+  let t4 = record-param(t3, 900, paramId) in
+  let tree = record-def(t4, 900, paramId) in
+  let db = resolve-into-db(db-of(tree), callId) in
+    match run-type-of(db, callId) with
+    | Ty.TyInt(_) => unit
+    | _ => trap("f p = p applied to an int arg must type int (arg flows to param)")
 
 @test
 def pfq-let-var-body-is-int() =
@@ -249,8 +267,8 @@ def pfq-let-var-body-is-int() =
   // resolves (RBound) to the enclosing NLet binder. The NVar arm must type it via the let's VALUE (valId), NOT
   // type-of(binder=NLet) — the latter loops (type-of(NLet)->type-of(NVar)->type-of(NLet)->...) to a run-time
   // stack-exhaust. This pins the fix (mirror infer-db var-type) + guards the class on the cad-test-compiler-ml gate.
-  (let (valId, t1) = add-node(empty-tree(), Node.NLit(5)) in
-    (let (bodyId, t2) = add-node(t1, Node.NVar(1)) in
-      (let (root, tree) = add-node(t2, Node.NLet(1, valId, bodyId)) in
-        (let db = resolve-into-db(db-of(tree), root) in
-          (if is-int-ty(run-type-of(db, root)) then unit else trap("let x = 5 in x should type int"))))))
+  let (valId, t1) = add-node(empty-tree(), Node.NLit(5)) in
+  let (bodyId, t2) = add-node(t1, Node.NVar(1)) in
+  let (root, tree) = add-node(t2, Node.NLet(1, valId, bodyId)) in
+  let db = resolve-into-db(db-of(tree), root) in
+    if is-int-ty(run-type-of(db, root)) then unit else trap("let x = 5 in x should type int")

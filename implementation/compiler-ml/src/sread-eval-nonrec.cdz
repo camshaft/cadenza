@@ -10,38 +10,41 @@
 /// M cross-def Bool→if-cond→111, L param→if-cond+negative-arg→0, B multi-binding let→5.
 ///
 /// run-src form: `(do (def (main) ...) (export main))`. `let` = `(let ((x V) ...) body)`.
-
 import { run-src } from "sread-eval"
 
 /// M — a helper that RETURNS a Bool, consumed by main's if-condition. Exercises cross-def Bool-type flow
 /// through a param call feeding a branch: `(pos 7)` types Bool, flows into `if`. → 111.
 @test
-def se-nonrec-bool-helper-in-if-cond() =
-  (match run-src("(do (def (pos x) (< 0 x)) (def (main) (if (pos 7) 111 222)) (export main))") with
-    | Option.Some(v) => (if v == 111 then unit else trap("M: bool-helper-in-if-cond expected 111"))
-    | Option.None(_) => trap("M: declined, expected 111"))
+def se-nonrec-bool-helper-in-if-cond() = match run-src(
+    "(do (def (pos x) (< 0 x)) (def (main) (if (pos 7) 111 222)) (export main))"
+  ) with
+  | Option.Some(v) => if v == 111 then unit else trap("M: bool-helper-in-if-cond expected 111")
+  | Option.None(_) => trap("M: declined, expected 111")
 
 /// L — a param compared in the callee's OWN if-condition, arg is a negative computed literal.
 /// `(clamp (- 0 5))` → clamp's `(if (< x 0) 0 x)` → 0. Pins param→if-cond typing + negative arg.
 @test
-def se-nonrec-param-in-if-cond-negative-arg() =
-  (match run-src("(do (def (clamp x) (if (< x 0) 0 x)) (def (main) (clamp (- 0 5))) (export main))") with
-    | Option.Some(v) => (if v == 0 then unit else trap("L: param-in-if-cond expected 0"))
-    | Option.None(_) => trap("L: declined, expected 0"))
+def se-nonrec-param-in-if-cond-negative-arg() = match run-src(
+    "(do (def (clamp x) (if (< x 0) 0 x)) (def (main) (clamp (- 0 5))) (export main))"
+  ) with
+  | Option.Some(v) => if v == 0 then unit else trap("L: param-in-if-cond expected 0")
+  | Option.None(_) => trap("L: declined, expected 0")
 
 /// B — multi-binding let `(let ((x 2) (y 3)) ...)`. Widens coverage if the suite only pins single-binding lets.
 /// → 5.
 @test
-def se-nonrec-multi-binding-let() =
-  (match run-src("(do (def (main) (let ((x 2) (y 3)) (+ x y))) (export main))") with
-    | Option.Some(v) => (if v == 5 then unit else trap("B: multi-binding let expected 5"))
-    | Option.None(_) => trap("B: declined, expected 5"))
+def se-nonrec-multi-binding-let() = match run-src(
+    "(do (def (main) (let ((x 2) (y 3)) (+ x y))) (export main))"
+  ) with
+  | Option.Some(v) => if v == 5 then unit else trap("B: multi-binding let expected 5")
+  | Option.None(_) => trap("B: declined, expected 5")
 
 /// NESTED LET — an OUTER let-binding is in scope inside an INNER let's binding VALUE:
 /// `(let ((x 2)) (let ((y (+ x 3))) (+ x y)))` → x=2, y=2+3=5, x+y = 7. Pins lexical scope across nested lets
 /// (the outer binder resolves inside the inner binding expression); prior let tests were single-level.
 @test
-def se-nonrec-nested-let-inner-uses-outer() =
-  (match run-src("(do (def (main) (let ((x 2)) (let ((y (+ x 3))) (+ x y)))) (export main))") with
-    | Option.Some(v) => (if v == 7 then unit else trap("nested let inner-uses-outer expected 7"))
-    | Option.None(_) => trap("nested let declined, expected 7"))
+def se-nonrec-nested-let-inner-uses-outer() = match run-src(
+    "(do (def (main) (let ((x 2)) (let ((y (+ x 3))) (+ x y)))) (export main))"
+  ) with
+  | Option.Some(v) => if v == 7 then unit else trap("nested let inner-uses-outer expected 7")
+  | Option.None(_) => trap("nested let declined, expected 7")

@@ -77,7 +77,7 @@ def demand-typed-leaf(db: Db, id: Int64) = match require-ty(db, id) with
   | Option.Some(fact) => (db, fact) // memo HIT — no recompute
   | Option.None(_) => // MISS — compute from source, fill, thread
   let ty = compute-leaf-type(db-tree(db), id) in
-  (fill-ty(db, id, ty), ty)
+    (fill-ty(db, id, ty), ty)
 
 /// P1c COMPOSITE producer (recursive slice): a demand that COMPUTES a node's type by first DEMANDING its
 /// children off the SAME threaded Db (each child fills+memoizes its own column slot), then combining the child
@@ -96,7 +96,7 @@ def demand-bin(db: Db, id: Int64, op: Int64, l: Int64, r: Int64) =
   let (db1, _tl) = demand-typed-node(db, l) in
   let (db2, _tr) = demand-typed-node(db1, r) in
   let ty = bin-type(db-tree(db2), op, db-ty-col(db2), l, r) in
-  (fill-ty(db2, id, ty), ty)
+    (fill-ty(db2, id, ty), ty)
 
 /// NIf composite: demand cond/then/else (threading db), combine via if-type over the threaded typed column.
 def demand-if(db: Db, id: Int64, c: Int64, t: Int64, e: Int64) =
@@ -104,7 +104,7 @@ def demand-if(db: Db, id: Int64, c: Int64, t: Int64, e: Int64) =
   let (db2, _tt) = demand-typed-node(db1, t) in
   let (db3, _te) = demand-typed-node(db2, e) in
   let ty = if-type(db-ty-col(db3), c, t, e) in
-  (fill-ty(db3, id, ty), ty)
+    (fill-ty(db3, id, ty), ty)
 
 /// NLet composite: demand value + body (threading db), combine via let-type (the let's type is the body's,
 /// gated on value+body both well-typed). Like NBin/NIf, its OWN type rule is typed-column-only (no resolve).
@@ -115,7 +115,7 @@ def demand-let(db: Db, id: Int64, valId: Int64, bodyId: Int64) =
   let (db1, _tv) = demand-typed-node(db, valId) in
   let (db2, _tb) = demand-typed-node(db1, bodyId) in
   let ty = let-type(db-ty-col(db2), valId, bodyId) in
-  (fill-ty(db2, id, ty), ty)
+    (fill-ty(db2, id, ty), ty)
 
 /// NVar producer (CROSS-COLUMN: resolve → type): a var's type is the type of the VALUE its binder binds. Reads
 /// the RESOLVED column (must be filled first — see demand-typed-root) for the var's resolution:
@@ -132,16 +132,16 @@ def demand-let(db: Db, id: Int64, valId: Int64, bodyId: Int64) =
 /// Chains resolve→type exactly as rcdzc's type_of demands resolved_of. Reuses infer-db's var-type/def-arrow-type.
 def demand-var(db: Db, id: Int64) = match Map.lookup(db-resolved-col(db), id) with
   | Option.Some(Resolved.RBound(binder)) => let ty = var-type(db-tree(db), binder, db-ty-col(db)) in
-  (fill-ty(db, id, ty), ty)
+    (fill-ty(db, id, ty), ty)
   | Option.Some(Resolved.RDef(defName)) => let ty = def-arrow-type(
       db-tree(db),
       defName,
       db-resolved-col(db),
       db-ty-col(db)
     ) in
-  (fill-ty(db, id, ty), ty)
+    (fill-ty(db, id, ty), ty)
   | _ => let ty = Ty.TyErr in
-  (fill-ty(db, id, ty), ty)
+    (fill-ty(db, id, ty), ty)
 
 def demand-typed-node(db: Db, id: Int64) = match require-ty(db, id) with
   | Option.Some(fact) => (db, fact) // memo HIT — no recompute
@@ -157,7 +157,7 @@ def demand-typed-node(db: Db, id: Int64) = match require-ty(db, id) with
     // = add an explicit arm above, moving that shape off this fallback.
     | Option.Some(_) => demand-typed-leaf(db, id)
     | Option.None(_) => let ty = Ty.TyErr in
-    (fill-ty(db, id, ty), ty)
+      (fill-ty(db, id, ty), ty)
 
 /// Resolve-first driver: fill the RESOLVED column once (resolve-into-db, memoized whole-tree), THEN demand the
 /// type at `root`. This is the entry point that makes the NVar arm sound — a type demand that may reach an NVar
@@ -171,15 +171,15 @@ import { db-of, typed-filled } from "db"
 
 def sample-db() =
   let (_, tree) = parse-tokens([Tok.TNum(5)]) in
-  db-of(tree)
+    db-of(tree)
 
 @test
 def dd-miss-fills-and-returns() =
   // a demand on an ABSENT slot computes the fact, fills the column (memo now 1), and returns the fact.
   let (db1, fact) = demand-typed(sample-db(), 0, mk-int(true, 64)) in
-  if is-int-ty(fact) then
+    if is-int-ty(fact) then
     let (s, w) = int-parts-of(fact) in
-    if s and w == 64 then
+      if s and w == 64 then
       if typed-filled(db1) == 1 then unit else trap("filled 1")
     else
       trap("Int64")
@@ -192,28 +192,28 @@ def dd-second-demand-hits-memo() =
   // the fact matches. This is the caching essential: a fact is computed ONCE, then read from the column.
   let (db1, _f1) = demand-typed(sample-db(), 0, mk-int(true, 64)) in
   let (db2, _f2) = demand-typed(db1, 0, mk-int(true, 64)) in
-  if typed-filled(db2) == 1 then unit else trap("second demand HITS memo — still 1 fact")
+    if typed-filled(db2) == 1 then unit else trap("second demand HITS memo — still 1 fact")
 
 @test
 def dd-distinct-ids-accumulate() =
   // demand@0 then demand@1 (threading) → two facts memoized (column grows to 2). Columns key by id.
   let (db1, _) = demand-typed(sample-db(), 0, Ty.TyBool) in
   let (db2, _) = demand-typed(db1, 1, Ty.TyBool) in
-  if typed-filled(db2) == 2 then unit else trap("distinct ids accumulate to 2")
+    if typed-filled(db2) == 2 then unit else trap("distinct ids accumulate to 2")
 
 @test
 def dd-hit-does-not-recompute-poison() =
   // a FILLED poison (TyErr) is a memo HIT too — a decline is a determined fact, returned as-is, not recomputed
   // to a different value. Fill TyErr, then demand with a DIFFERENT default → the HIT returns the memoized TyErr.
   let (_db, fact) = demand-typed(fill-ty(sample-db(), 0, Ty.TyErr), 0, mk-int(true, 64)) in
-  match fact with
+    match fact with
     | Ty.TyErr => unit
     | _ => trap("memo HIT returns the filled TyErr, not the new default")
 
 // ---- TESTS: the REAL leaf producer (computes from source, not a supplied default) -------------------
 def bool-db() =
   let (_, tree) = parse-tokens([Tok.TBoolTok(1)]) in
-  db-of(tree)
+    db-of(tree)
 
 @test
 def dd-leaf-computes-nlit-deferred-from-source() =
@@ -221,7 +221,7 @@ def dd-leaf-computes-nlit-deferred-from-source() =
   // a bare literal is the DEFERRED int (item-3 HM: TyInt(SignDef, WidthDef)), NOT a supplied default. Memo
   // fills to 1. Checks the deferred axis via is-deferred-int (not a retired width-0 sentinel).
   let (db1, fact) = demand-typed-leaf(sample-db(), 0) in
-  if is-deferred-int(fact) then
+    if is-deferred-int(fact) then
     if typed-filled(db1) == 1 then unit else trap("leaf demand fills the memo (1)")
   else
     trap("NLit computes to a deferred int")
@@ -230,7 +230,7 @@ def dd-leaf-computes-nlit-deferred-from-source() =
 def dd-leaf-computes-nboollit-tbool-from-source() =
   // a bool-literal node (TBoolTok 1 → NBoolLit) COMPUTES to TyBool from source.
   let (_db, fact) = demand-typed-leaf(bool-db(), 0) in
-  match fact with
+    match fact with
     | Ty.TyBool => unit
     | _ => trap("NBoolLit computes to TyBool")
 
@@ -239,16 +239,16 @@ def dd-leaf-second-demand-hits-memo() =
   // the real producer memoizes exactly like the demo: 2nd demand HITS (column stays 1, no recompute).
   let (db1, _f1) = demand-typed-leaf(sample-db(), 0) in
   let (db2, _f2) = demand-typed-leaf(db1, 0) in
-  if typed-filled(db2) == 1 then unit else trap("2nd leaf demand hits memo — still 1 fact")
+    if typed-filled(db2) == 1 then unit else trap("2nd leaf demand hits memo — still 1 fact")
 
 // ---- TESTS: the COMPOSITE producer (demands children, combines via bin-type/if-type) ---------------
 def bin-db() =
   let (root, tree) = parse-tokens([Tok.TNum(2), Tok.TOp(43), Tok.TNum(3)]) in
-  (root, db-of(tree))
+    (root, db-of(tree))
 
 def cmp-db() =
   let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) in
-  (root, db-of(tree))
+    (root, db-of(tree))
 
 @test
 def dd-node-nbin-arith-computes-int-and-memoizes-children() =
@@ -256,7 +256,7 @@ def dd-node-nbin-arith-computes-int-and-memoizes-children() =
   // bin-type → an int type. The column memoizes ALL THREE nodes (root + 2 leaves) = 3 facts.
   let (root, d0) = bin-db() in
   let (db1, fact) = demand-typed-node(d0, root) in
-  if is-int-ty(fact) then
+    if is-int-ty(fact) then
     if typed-filled(db1) == 3 then unit else trap("root + 2 leaves memoized = 3 facts")
   else
     trap("(+ 2 3) computes to an int type via bin-type over demanded children")
@@ -266,7 +266,7 @@ def dd-node-comparison-computes-bool() =
   // (1 < 2): NBin op 60 (comparison) → bin-type yields TyBool over two demanded int leaves.
   let (root, d0) = cmp-db() in
   let (_db, fact) = demand-typed-node(d0, root) in
-  match fact with
+    match fact with
     | Ty.TyBool => unit
     | _ => trap("(1 < 2) computes to TyBool")
 
@@ -276,13 +276,13 @@ def dd-node-second-demand-hits-memo() =
   let (root, d0) = bin-db() in
   let (db1, _f1) = demand-typed-node(d0, root) in
   let (db2, _f2) = demand-typed-node(db1, root) in
-  if typed-filled(db2) == 3 then unit else trap("2nd root demand hits memo — still 3 facts")
+    if typed-filled(db2) == 3 then unit else trap("2nd root demand hits memo — still 3 facts")
 
 def let-db() =
   let (root, tree) = parse-tokens(
       [Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TNum(3)]
     ) in
-  (root, db-of(tree))
+    (root, db-of(tree))
 
 @test
 def dd-node-nlet-nonvar-body-computes-body-type() =
@@ -290,7 +290,7 @@ def dd-node-nlet-nonvar-body-computes-body-type() =
   // let-type = the BODY's type (deferred int, both well-typed). Memoizes root + value + body = 3 facts.
   let (root, d0) = let-db() in
   let (db1, fact) = demand-typed-node(d0, root) in
-  if is-int-ty(fact) then
+    if is-int-ty(fact) then
     if typed-filled(db1) == 3 then unit else trap("let: root + value + body memoized = 3")
   else
     trap("let x=2 in 3 computes to the body's int type via let-type")
@@ -299,7 +299,7 @@ def let-var-db() =
   let (root, tree) = parse-tokens(
       [Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]
     ) in
-  (root, db-of(tree))
+    (root, db-of(tree))
 
 @test
 def dd-root-let-var-body-resolves-and-types() =
@@ -309,7 +309,7 @@ def dd-root-let-var-body-resolves-and-types() =
   // cross-column resolve→type chain (the whole point of the NVar producer); without resolve-first it'd be TyErr.
   let (root, d0) = let-var-db() in
   let (_db, fact) = demand-typed-root(d0, root) in
-  if is-int-ty(fact) then
+    if is-int-ty(fact) then
     unit
   else
     trap("let x=2 in x: the body var x types to the bound value's int type (resolve→type chain)")
@@ -320,7 +320,7 @@ def dd-root-unbound-var-declines() =
   // the NVar arm's poison path (an unbound var is a determined TyErr decline, not a wrong value).
   let (root, tree) = parse-tokens([Tok.TName(9)]) in
   let (_db, fact) = demand-typed-root(db-of(tree), root) in
-  match fact with
+    match fact with
     | Ty.TyErr => unit
     | _ => trap("an unbound var declines (TyErr) via the resolve-poison path")
 
@@ -336,7 +336,7 @@ def dd-root-unbound-var-declines() =
 /// side too so both compare in ground form.
 def agree(db: Db, root: Int64) =
   let (_d1, demandFact) = demand-typed-root(db, root) in
-  match ty-of-db(db, root, root) with
+    match ty-of-db(db, root, root) with
     | (_d2, Option.Some(walkFact)) => ty-eq(ground-deferred(demandFact), walkFact)
     | (_d2, Option.None(_)) => false
 
@@ -344,13 +344,13 @@ def agree(db: Db, root: Int64) =
 def dd-diff-arith-agrees-with-walk() =
   // (+ 2 3): demand producer root type == whole-tree walk root type (both int).
   let (root, tree) = parse-tokens([Tok.TNum(2), Tok.TOp(43), Tok.TNum(3)]) in
-  if agree(db-of(tree), root) then unit else trap("(+ 2 3): demand ≡ walk root type")
+    if agree(db-of(tree), root) then unit else trap("(+ 2 3): demand ≡ walk root type")
 
 @test
 def dd-diff-comparison-agrees-with-walk() =
   // (1 < 2): both TyBool.
   let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) in
-  if agree(db-of(tree), root) then unit else trap("(1 < 2): demand ≡ walk root type")
+    if agree(db-of(tree), root) then unit else trap("(1 < 2): demand ≡ walk root type")
 
 @test
 def dd-diff-let-var-agrees-with-walk() =
@@ -358,7 +358,7 @@ def dd-diff-let-var-agrees-with-walk() =
   let (root, tree) = parse-tokens(
       [Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]
     ) in
-  if agree(db-of(tree), root) then unit else trap("let x=2 in x: demand ≡ walk root type")
+    if agree(db-of(tree), root) then unit else trap("let x=2 in x: demand ≡ walk root type")
 
 export {
   demand-typed,

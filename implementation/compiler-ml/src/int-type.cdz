@@ -18,7 +18,6 @@
 /// (8/16/32 fit its 1..=62 scope; 64 is the native identity width) are named here — the standard set, no
 /// arbitrary `(Int N)`. Arbitrary-width `(Int N)` is a later slice (it needs the applied type-ctor form
 /// in the grammar); this covers the fixed-width surface the corpus needs first.
-
 /// An integer type recognized from a name: signed/unsigned + bit width, or `NotInt` when the name is not
 /// an integer type. `IntKind(signed, width)` — the pair `int-width`'s fit/wrap functions consume.
 type IntTy =
@@ -41,9 +40,9 @@ def recognize(name: String) = match split-sign(name) with
 /// testing the longer/unsigned prefix first keeps the two disjoint and explicit.)
 def split-sign(name: String) = match after-prefix(name, "UInt") with
   | Option.Some(suffix) => Option.Some((false, suffix))
-  | Option.None(_) => (match after-prefix(name, "Int") with
-      | Option.Some(suffix) => Option.Some((true, suffix))
-      | Option.None(_) => Option.None(unit))
+  | Option.None(_) => match after-prefix(name, "Int") with
+    | Option.Some(suffix) => Option.Some((true, suffix))
+    | Option.None(_) => Option.None(unit)
 
 /// The text of `name` AFTER a literal `prefix`, or `None` if `name` doesn't start with `prefix`. Structural
 /// (slice + compare the prefix region), so callers dispatch on the SHAPE of the name, not the whole string.
@@ -51,14 +50,15 @@ def after-prefix(name: String, prefix: String) =
   // byte-len (NOT scalar-len): `name` is a RUNTIME string (the type-name atom the reader scanned), and
   // scalar-len needs a UTF-8 decode walk not built for runtime strings — sread walks runtime strings by
   // byte-len for the same reason. Type names are ASCII, so byte-len == scalar-len here.
-  (let p = String.byte-len(prefix) in
-   (match String.slice(name, 0, p) with
-     | Option.Some(head) => (if head == prefix
-         then (match String.slice(name, p, String.byte-len(name)) with
-                | Option.Some(rest) => Option.Some(rest)
-                | Option.None(_) => Option.Some(""))            // prefix IS the whole name → empty suffix
-         else Option.None(unit))
-     | Option.None(_) => Option.None(unit)))
+  let p = String.byte-len(prefix) in
+    match String.slice(name, 0, p) with
+    | Option.Some(head) => if head == prefix then
+      match String.slice(name, p, String.byte-len(name)) with
+        | Option.Some(rest) => Option.Some(rest)
+        | Option.None(_) => Option.Some("") // prefix IS the whole name → empty suffix
+    else
+      Option.None(unit)
+    | Option.None(_) => Option.None(unit)
 
 /// A `(signed, width-suffix-string)` → the `IntTy` for a STANDARD width, matching the suffix STRUCTURALLY
 /// (one arm per width). A non-standard suffix (`""`, `7`, `128`, junk) is `NotInt`.
@@ -70,86 +70,146 @@ def width-of(signed: Bool, suffix: String) = match suffix with
   | _ => IntTy.NotInt
 
 /// Whether `name` is any integer type name (the boolean face of `recognize`, for a parser's quick guard).
-def is-int-type(name: String) = match recognize(name) with | IntTy.IntKind(_, _) => true | IntTy.NotInt => false
+def is-int-type(name: String) = match recognize(name) with
+  | IntTy.IntKind(_, _) => true
+  | IntTy.NotInt => false
 
 /// The signedness of a recognized integer type name (defaults to `true`/signed for a non-int name — callers
 /// gate on `is-int-type` first; the default just keeps the accessor total).
-def ty-signed(name: String) = match recognize(name) with | IntTy.IntKind(s, _) => s | IntTy.NotInt => true
+def ty-signed(name: String) = match recognize(name) with
+  | IntTy.IntKind(s, _) => s
+  | IntTy.NotInt => true
 
 /// The bit width of a recognized integer type name (`0` for a non-int name — a sentinel the caller guards,
 /// mirroring `int-width`'s out-of-scope `0`).
-def ty-width(name: String) = match recognize(name) with | IntTy.IntKind(_, w) => w | IntTy.NotInt => 0
+def ty-width(name: String) = match recognize(name) with
+  | IntTy.IntKind(_, w) => w
+  | IntTy.NotInt => 0
 
 // ---- signed names ----
+@test
+def it-int8() = match recognize("Int8") with
+  | IntTy.IntKind(s, w) => if s and w == 8 then unit else trap("Int8 = (signed, 8)")
+  | IntTy.NotInt => trap("Int8 is an int type")
 
 @test
-def it-int8() = match recognize("Int8") with | IntTy.IntKind(s, w) => (if s and (w == 8) then unit else trap("Int8 = (signed, 8)")) | IntTy.NotInt => trap("Int8 is an int type")
+def it-int16() = match recognize("Int16") with
+  | IntTy.IntKind(s, w) => if s and w == 16 then unit else trap("Int16 = (signed, 16)")
+  | IntTy.NotInt => trap("Int16 is an int type")
 
 @test
-def it-int16() = match recognize("Int16") with | IntTy.IntKind(s, w) => (if s and (w == 16) then unit else trap("Int16 = (signed, 16)")) | IntTy.NotInt => trap("Int16 is an int type")
+def it-int32() = match recognize("Int32") with
+  | IntTy.IntKind(s, w) => if s and w == 32 then unit else trap("Int32 = (signed, 32)")
+  | IntTy.NotInt => trap("Int32 is an int type")
 
 @test
-def it-int32() = match recognize("Int32") with | IntTy.IntKind(s, w) => (if s and (w == 32) then unit else trap("Int32 = (signed, 32)")) | IntTy.NotInt => trap("Int32 is an int type")
-
-@test
-def it-int64() = match recognize("Int64") with | IntTy.IntKind(s, w) => (if s and (w == 64) then unit else trap("Int64 = (signed, 64)")) | IntTy.NotInt => trap("Int64 is an int type")
+def it-int64() = match recognize("Int64") with
+  | IntTy.IntKind(s, w) => if s and w == 64 then unit else trap("Int64 = (signed, 64)")
+  | IntTy.NotInt => trap("Int64 is an int type")
 
 // ---- unsigned names ----
+@test
+def it-uint8() = match recognize("UInt8") with
+  | IntTy.IntKind(s, w) => if (if s then false else true) and w == 8 then
+    unit
+  else
+    trap("UInt8 = (unsigned, 8)")
+  | IntTy.NotInt => trap("UInt8 is an int type")
 
 @test
-def it-uint8() = match recognize("UInt8") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 8) then unit else trap("UInt8 = (unsigned, 8)")) | IntTy.NotInt => trap("UInt8 is an int type")
+def it-uint32() = match recognize("UInt32") with
+  | IntTy.IntKind(s, w) => if (if s then false else true) and w == 32 then
+    unit
+  else
+    trap("UInt32 = (unsigned, 32)")
+  | IntTy.NotInt => trap("UInt32 is an int type")
 
 @test
-def it-uint32() = match recognize("UInt32") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 32) then unit else trap("UInt32 = (unsigned, 32)")) | IntTy.NotInt => trap("UInt32 is an int type")
-
-@test
-def it-uint64() = match recognize("UInt64") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 64) then unit else trap("UInt64 = (unsigned, 64)")) | IntTy.NotInt => trap("UInt64 is an int type")
+def it-uint64() = match recognize("UInt64") with
+  | IntTy.IntKind(s, w) => if (if s then false else true) and w == 64 then
+    unit
+  else
+    trap("UInt64 = (unsigned, 64)")
+  | IntTy.NotInt => trap("UInt64 is an int type")
 
 // ---- non-int names → NotInt ----
+@test
+def it-bool-not-int() = match recognize("Bool") with
+  | IntTy.NotInt => unit
+  | IntTy.IntKind(_, _) => trap("Bool is NOT an integer type")
 
 @test
-def it-bool-not-int() = match recognize("Bool") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Bool is NOT an integer type")
+def it-empty-not-int() = match recognize("") with
+  | IntTy.NotInt => unit
+  | IntTy.IntKind(_, _) => trap("empty name is NOT an integer type")
 
 @test
-def it-empty-not-int() = match recognize("") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("empty name is NOT an integer type")
+def it-bare-int-not-int() = match recognize("Int") with
+  | IntTy.NotInt => unit
+  | IntTy.IntKind(_, _) => trap("bare `Int` (no width) is NOT a fixed-width int type here")
 
 @test
-def it-bare-int-not-int() = match recognize("Int") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("bare `Int` (no width) is NOT a fixed-width int type here")
-
-@test
-def it-unknown-width-not-int() = match recognize("Int7") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Int7 is not a standard width")
+def it-unknown-width-not-int() = match recognize("Int7") with
+  | IntTy.NotInt => unit
+  | IntTy.IntKind(_, _) => trap("Int7 is not a standard width")
 
 // ---- structural-decompose edge cases (the `if name==` → prefix+suffix rewrite) ----
+@test
+def it-bare-uint-not-int() = match recognize("UInt") with
+  | IntTy.NotInt => unit
+  | IntTy.IntKind(_, _) => trap("bare `UInt` (no width) is NOT a fixed-width int type")
 
 @test
-def it-bare-uint-not-int() = match recognize("UInt") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("bare `UInt` (no width) is NOT a fixed-width int type")
-
-@test
-def it-nonstandard-wide-not-int() = match recognize("Int128") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Int128 is not a standard width here (only 8/16/32/64)")
+def it-nonstandard-wide-not-int() = match recognize("Int128") with
+  | IntTy.NotInt => unit
+  | IntTy.IntKind(_, _) => trap("Int128 is not a standard width here (only 8/16/32/64)")
 
 @test
 def it-prefix-only-lookalike-not-int() =
   // a name that merely CONTAINS a digit run but isn't Int/UInt-prefixed → NotInt (structural prefix check).
-  match recognize("Float32") with | IntTy.NotInt => unit | IntTy.IntKind(_, _) => trap("Float32 is not an integer type")
+  match recognize("Float32") with
+    | IntTy.NotInt => unit
+    | IntTy.IntKind(_, _) => trap("Float32 is not an integer type")
 
 @test
 def it-uint-not-misread-as-int() =
   // `UInt8` must be UNSIGNED — the UInt prefix is tried first, so it isn't misread as `Int`-prefix + `8`
   // via the shorter `Int` (which `UInt8` does NOT start with anyway). Pins the sign-prefix disjointness.
-  match recognize("UInt8") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 8) then unit else trap("UInt8 unsigned 8")) | IntTy.NotInt => trap("UInt8 is an int type")
+  match recognize("UInt8") with
+    | IntTy.IntKind(s, w) => if (if s then false else true) and w == 8 then
+      unit
+    else
+      trap("UInt8 unsigned 8")
+    | IntTy.NotInt => trap("UInt8 is an int type")
 
 @test
-def it-uint16-structural() = match recognize("UInt16") with | IntTy.IntKind(s, w) => (if (if s then false else true) and (w == 16) then unit else trap("UInt16 = (unsigned, 16)")) | IntTy.NotInt => trap("UInt16 is an int type")
+def it-uint16-structural() = match recognize("UInt16") with
+  | IntTy.IntKind(s, w) => if (if s then false else true) and w == 16 then
+    unit
+  else
+    trap("UInt16 = (unsigned, 16)")
+  | IntTy.NotInt => trap("UInt16 is an int type")
 
 // ---- accessor / guard faces ----
+@test
+def it-is-int-type-yes-no() =
+  if is-int-type("UInt16") and (if is-int-type("Bool") then false else true) then
+    unit
+  else
+    trap("is-int-type: yes for UInt16, no for Bool")
 
 @test
-def it-is-int-type-yes-no() = if is-int-type("UInt16") and (if is-int-type("Bool") then false else true) then unit else trap("is-int-type: yes for UInt16, no for Bool")
+def it-ty-signed() =
+  if ty-signed("Int32") and (if ty-signed("UInt32") then false else true) then
+    unit
+  else
+    trap("ty-signed: Int32 signed, UInt32 unsigned")
 
 @test
-def it-ty-signed() = if ty-signed("Int32") and (if ty-signed("UInt32") then false else true) then unit else trap("ty-signed: Int32 signed, UInt32 unsigned")
-
-@test
-def it-ty-width() = if (ty-width("Int16") == 16) and (ty-width("UInt64") == 64) and (ty-width("Bool") == 0) then unit else trap("ty-width: 16, 64, 0(non-int)")
+def it-ty-width() =
+  if ty-width("Int16") == 16 and ty-width("UInt64") == 64 and ty-width("Bool") == 0 then
+    unit
+  else
+    trap("ty-width: 16, 64, 0(non-int)")
 
 export { IntTy.*, recognize, is-int-type, ty-signed, ty-width }

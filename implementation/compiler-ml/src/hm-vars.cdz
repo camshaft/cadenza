@@ -16,6 +16,7 @@
 /// result the SAME var-id? If so, binding would self-cycle → reject (the solver keeps the type finite). This is
 /// what guarantees the chain `apply` follows in B1 is ACYCLIC (B1's fuel bound is the belt; this is the braces).
 import { Sign, Width, IntType, Ty } from "ty"
+
 import { Subst, apply-sign, apply-width, subst-tys } from "subst"
 
 // ---- FRESH VARIABLE SUPPLY (explicit-counter form of rcdzc `Fresh`) ---------------------------------
@@ -28,8 +29,7 @@ def fresh-width(n: Int64) = (Width.WVar(n), n + 1)
 /// A FULLY-fresh integer type from counter `n`: both axes get their own fresh var → `(TyInt(SVar(n), WVar(n+1)),
 /// n+2)`. What `instantiate` (B4) hands a generalized int scheme at each use site so distinct uses get distinct
 /// (independently-solvable) vars — the essence of let-polymorphism over the int subset.
-def fresh-int-ty(n: Int64) =
-  (Ty.TyInt(IntType.IntType(Sign.SVar(n), Width.WVar(n + 1))), n + 2)
+def fresh-int-ty(n: Int64) = (Ty.TyInt(IntType.IntType(Sign.SVar(n), Width.WVar(n + 1))), n + 2)
 
 // ---- OCCURS-CHECK (scalar-axis form of rcdzc `occurs`) ----------------------------------------------
 /// Does sign var-id `a` OCCUR in sign `s`, resolved through Subst `su`? Fully resolve `s` (follow its chain via
@@ -52,28 +52,40 @@ def width-occurs(su: Subst, b: Int64, w: Width) = match apply-width(su, w) with
 /// sign/width VARs are a different axis — a TyVar never occurs inside a TyInt). Fuel-bounded on the var chain
 /// (mirrors apply's cap) so a cycle that slipped in can't loop the check forever.
 def ty-occurs(su: Subst, v: Int64, t: Ty) = ty-occurs-go(su, v, t, 64)
+
 def ty-occurs-go(su: Subst, v: Int64, t: Ty, fuel: Int64) =
-  (if fuel == 0 then false
-   else (match t with
-     | Ty.TyVar(w) => (match Map.lookup(subst-tys(su), w) with
-         | Option.Some(sol) => ty-occurs-go(su, v, sol, fuel - 1)   // bound → continue into its solution
-         | Option.None(_) => v == w)                                // unbound → occurs iff same id
-     | Ty.TyFn(ps, r) => (if ty-occurs-list(su, v, ps, 0, fuel) then true else ty-occurs-go(su, v, r, fuel))
-     | Ty.TyTuple(es) => ty-occurs-list(su, v, es, 0, fuel)         // COMPOUND: occurs in any element (mirrors TyFn params)
-     | Ty.TyRecord(_, ts) => ty-occurs-list(su, v, ts, 0, fuel)     // COMPOUND: occurs in any field type (names are literals)
-     | Ty.TyInt(_) => false                                         // int's sign/width vars are a different axis
-     | Ty.TyBool => false
-     | Ty.TyString => false                                         // a string holds no whole-type var (like TyBool)
-     | Ty.TyChar => false                                           // a char holds no whole-type var (like TyBool)
-     | Ty.TyErr => false
-     | Ty.TySum(_) => false))
+  if fuel == 0 then
+    false
+  else
+    match t with
+      | Ty.TyVar(w) => (match Map.lookup(subst-tys(su), w) with
+        | Option.Some(sol) => ty-occurs-go(su, v, sol, fuel - 1) // bound → continue into its solution
+        | Option.None(_) => v == w
+      ) // unbound → occurs iff same id
+      | Ty.TyFn(ps, r) => if ty-occurs-list(su, v, ps, 0, fuel) then
+        true
+      else
+        ty-occurs-go(su, v, r, fuel)
+      | Ty.TyTuple(es) => ty-occurs-list(su, v, es, 0, fuel) // COMPOUND: occurs in any element (mirrors TyFn params)
+      | Ty.TyRecord(_, ts) => ty-occurs-list(su, v, ts, 0, fuel) // COMPOUND: occurs in any field type (names are literals)
+      | Ty.TyInt(_) => false // int's sign/width vars are a different axis
+      | Ty.TyBool => false
+      | Ty.TyString => false // a string holds no whole-type var (like TyBool)
+      | Ty.TyChar => false // a char holds no whole-type var (like TyBool)
+      | Ty.TyErr => false
+      | Ty.TySum(_) => false
 
 /// Does whole-type var `v` occur in ANY element of param-type list `ps` (from index `i`)? (TyFn occurs helper.)
 def ty-occurs-list(su: Subst, v: Int64, ps: List(Ty), i: Int64, fuel: Int64) =
-  (if i == List.len(ps) then false
-   else (match List.at(ps, i) with
-     | Option.Some(p) => (if ty-occurs-go(su, v, p, fuel) then true else ty-occurs-list(su, v, ps, i + 1, fuel))
-     | Option.None(_) => false))
+  if i == List.len(ps) then
+    false
+  else
+    match List.at(ps, i) with
+      | Option.Some(p) => if ty-occurs-go(su, v, p, fuel) then
+        true
+      else
+        ty-occurs-list(su, v, ps, i + 1, fuel)
+      | Option.None(_) => false
 
 // ---- TESTS: fresh supply threads a counter; occurs-check catches self-cycles --------------------------
 import { subst-empty, subst-bind-sign, subst-bind-width, subst-bind-ty } from "subst"
@@ -82,40 +94,53 @@ import { subst-empty, subst-bind-sign, subst-bind-width, subst-bind-ty } from "s
 def hv-fresh-sign-advances-counter() =
   // fresh-sign(0) = (SVar 0, 1); the next call from 1 gives SVar 1 — distinct ids, counter threaded.
   match fresh-sign(0) with
-    | (Sign.SVar(id0), n1) => (if (id0 == 0) and (n1 == 1) then
-        (match fresh-sign(n1) with
-          | (Sign.SVar(id1), n2) => (if (id1 == 1) and (n2 == 2) then unit else trap("second fresh sign is SVar 1, counter 2"))
-          | _ => trap("fresh-sign yields an SVar"))
-      else trap("first fresh sign is SVar 0, counter 1"))
+    | (Sign.SVar(id0), n1) => if id0 == 0 and n1 == 1 then
+      match fresh-sign(n1) with
+        | (Sign.SVar(id1), n2) => if id1 == 1 and n2 == 2 then
+          unit
+        else
+          trap("second fresh sign is SVar 1, counter 2")
+        | _ => trap("fresh-sign yields an SVar")
+    else
+      trap("first fresh sign is SVar 0, counter 1")
     | _ => trap("fresh-sign yields an SVar")
 
 @test
-def hv-fresh-width-advances-counter() =
-  match fresh-width(5) with
-    | (Width.WVar(id), n) => (if (id == 5) and (n == 6) then unit else trap("fresh-width(5) = (WVar 5, 6)"))
-    | _ => trap("fresh-width yields a WVar")
+def hv-fresh-width-advances-counter() = match fresh-width(5) with
+  | (Width.WVar(id), n) => if id == 5 and n == 6 then unit else trap("fresh-width(5) = (WVar 5, 6)")
+  | _ => trap("fresh-width yields a WVar")
 
 @test
 def hv-fresh-int-ty-both-axes-fresh() =
   // a fully-fresh int uses TWO ids (sign n, width n+1) and advances the counter by 2 — distinct axes get
   // distinct vars so they solve independently (the point of freshening for polymorphism).
   match fresh-int-ty(10) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n) =>
-        (if (sa == 10) and (wa == 11) and (n == 12) then unit else trap("fresh int = (SVar 10, WVar 11), counter 12"))
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n) => if sa == 10 and wa == 11
+        and n == 12 then
+      unit
+    else
+      trap("fresh int = (SVar 10, WVar 11), counter 12")
     | _ => trap("fresh-int-ty yields an int with both axes fresh")
 
 @test
 def hv-fresh-two-ints-are-distinct() =
   // two consecutive fresh ints share NO var-ids (threading the counter): first (10,11), second (12,13).
-  let (_t1, n1) = fresh-int-ty(10) in (match fresh-int-ty(n1) with
-        | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n2) =>
-            (if (sa == 12) and (wa == 13) and (n2 == 14) then unit else trap("second fresh int is (SVar 12, WVar 13)"))
-        | _ => trap("second fresh int"))
+  let (_t1, n1) = fresh-int-ty(10) in
+    match fresh-int-ty(n1) with
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n2) => if sa == 12 and wa == 13
+        and n2 == 14 then
+      unit
+    else
+      trap("second fresh int is (SVar 12, WVar 13)")
+    | _ => trap("second fresh int")
 
 @test
 def hv-occurs-direct-self-cycle() =
   // sign var 0 occurs in the sign SVar(0) directly (under empty subst) → binding 0 := SVar(0) would self-cycle.
-  if sign-occurs(subst-empty(), 0, Sign.SVar(0)) then unit else trap("var 0 occurs in SVar(0) — self-cycle")
+  if sign-occurs(subst-empty(), 0, Sign.SVar(0)) then
+    unit
+  else
+    trap("var 0 occurs in SVar(0) — self-cycle")
 
 @test
 def hv-occurs-through-chain() =
@@ -123,28 +148,39 @@ def hv-occurs-through-chain() =
   // 0 := SVar(1) would create the cycle 0→1→0 → the occurs-check catches it through the chain (rcdzc's "follows
   // the subst chain"). Pins the transitive case, not just the direct one.
   let su = subst-bind-sign(subst-empty(), 1, Sign.SVar(0)) in
-  if sign-occurs(su, 0, Sign.SVar(1)) then unit else trap("var 0 occurs in SVar(1) through the chain 1→0")
+    if sign-occurs(su, 0, Sign.SVar(1)) then
+    unit
+  else
+    trap("var 0 occurs in SVar(1) through the chain 1→0")
 
 @test
 def hv-no-occurs-distinct-var() =
   // var 0 does NOT occur in a DIFFERENT unbound var SVar(9) → safe to bind 0 := SVar(9) (points elsewhere, no cycle).
-  if sign-occurs(subst-empty(), 0, Sign.SVar(9)) then trap("var 0 does not occur in a distinct var SVar(9)") else unit
+  if sign-occurs(subst-empty(), 0, Sign.SVar(9)) then
+    trap("var 0 does not occur in a distinct var SVar(9)")
+  else
+    unit
 
 @test
 def hv-no-occurs-in-concrete() =
   // var 0 does NOT occur in a concrete sign (Signed) → binding 0 := Signed is safe (the normal solve step).
-  if sign-occurs(subst-empty(), 0, Sign.Signed) then trap("a var never occurs in a concrete sign") else unit
+  if sign-occurs(subst-empty(), 0, Sign.Signed) then
+    trap("a var never occurs in a concrete sign")
+  else
+    unit
 
 @test
 def hv-width-occurs-self-and-chain() =
   // width occurs: direct (WVar 0 in WVar 0) and NOT in a distinct/concrete width.
   if width-occurs(subst-empty(), 0, Width.WVar(0)) then
-    (if width-occurs(subst-empty(), 0, Width.WFixed(64)) then trap("var never occurs in WFixed") else unit)
+    if width-occurs(subst-empty(), 0, Width.WFixed(64)) then
+      trap("var never occurs in WFixed")
+    else
+      unit
   else
     trap("width var 0 occurs in WVar(0)")
 
 // ---- B2: ty-occurs (whole-type occurs-check, rcdzc occurs@unify.rs:548) ----
-
 @test
 def hv-ty-occurs-self() =
   // TyVar 0 occurs in TyVar 0 (direct self) → binding 0 := TyVar(0) would self-cycle (reject).
@@ -153,21 +189,28 @@ def hv-ty-occurs-self() =
 @test
 def hv-ty-no-occurs-in-distinct-or-concrete() =
   // TyVar 0 does NOT occur in a distinct var (TyVar 1) nor a concrete type (TyBool) → binding is safe.
-  if ty-occurs(subst-empty(), 0, Ty.TyVar(1)) then trap("distinct var does not occur")
-  else (if ty-occurs(subst-empty(), 0, Ty.TyBool) then trap("var never occurs in a concrete type") else unit)
+  if ty-occurs(subst-empty(), 0, Ty.TyVar(1)) then
+    trap("distinct var does not occur")
+  else if ty-occurs(subst-empty(), 0, Ty.TyBool) then
+    trap("var never occurs in a concrete type")
+  else
+    unit
 
 @test
 def hv-ty-occurs-under-tyfn() =
   // TyVar 0 occurs INSIDE a TyFn param `(TyVar0) -> TyBool` → binding 0 := that fn would make an infinite type.
   let f = Ty.TyFn(List.push([], Ty.TyVar(0)), Ty.TyBool) in
-  if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn param")
+    if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn param")
 
 @test
 def hv-ty-occurs-through-chain() =
   // occurs FOLLOWS the tys chain: TyVar 1 := (TyFn (TyVar0) -> Bool); does 0 occur in TyVar 1? Resolve 1 to the fn,
   // then 0 occurs in its param → true. Pins the resolve-through-subst that rcdzc occurs does.
   let su = subst-bind-ty(subst-empty(), 1, Ty.TyFn(List.push([], Ty.TyVar(0)), Ty.TyBool)) in
-  if ty-occurs(su, 0, Ty.TyVar(1)) then unit else trap("occurs resolves TyVar 1 through the chain, finds 0 in the fn")
+    if ty-occurs(su, 0, Ty.TyVar(1)) then
+    unit
+  else
+    trap("occurs resolves TyVar 1 through the chain, finds 0 in the fn")
 
 @test
 def hv-ty-no-occurs-in-sum() =
@@ -180,27 +223,23 @@ def hv-ty-occurs-in-tyfn-result() =
   // occurs finds a var in the RESULT of a TyFn, not just the params: `(Bool) -> TyVar0` — 0 occurs. Prior
   // under-tyfn test only checked a param; this pins the ty-occurs-go recursion into the result arm.
   let f = Ty.TyFn(List.push([], Ty.TyBool), Ty.TyVar(0)) in
-  if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn result")
+    if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn result")
 
 @test
 def hv-ty-occurs-in-second-param() =
   // ty-occurs-list scans EVERY param: `(Bool, TyVar0) -> Bool` — 0 occurs in the 2nd param. Pins the list
   // recursion past index 0 (prior tests had the var in the 1st/only param).
   let f = Ty.TyFn(List.push(List.push([], Ty.TyBool), Ty.TyVar(0)), Ty.TyBool) in
-  if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in the 2nd TyFn param")
+    if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in the 2nd TyFn param")
 
 @test
 def hv-ty-occurs-fuel-terminates-on-cycle() =
   // SAFETY: a cyclic tys binding (TyVar 0 := TyVar 0) makes ty-occurs FOLLOW 0→0→…; the fuel guard stops it and
   // returns false rather than looping. Pins the fuel==0 arm of ty-occurs-go (occurs must always terminate).
   let su = subst-bind-ty(subst-empty(), 9, Ty.TyVar(9)) in
-  if ty-occurs(su, 0, Ty.TyVar(9)) then trap("cyclic-binding occurs must terminate false, not loop") else unit
+    if ty-occurs(su, 0, Ty.TyVar(9)) then
+    trap("cyclic-binding occurs must terminate false, not loop")
+  else
+    unit
 
-export {
-  fresh-sign,
-  fresh-width,
-  fresh-int-ty,
-  sign-occurs,
-  width-occurs,
-  ty-occurs
-}
+export { fresh-sign, fresh-width, fresh-int-ty, sign-occurs, width-occurs, ty-occurs }

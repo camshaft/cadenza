@@ -15,7 +15,7 @@ def se-let-in-def-body() =
   // a def BODY that is a nested `let`: `(def (f x) (let ((y 10)) (+ x y)))` `(f 5)` → 15. Pins that a call's
   // inlined body can itself introduce a binder (the param `x` and the let's `y` coexist in the body scope).
   match run-src("(do (def (f x) (let ((y 10)) (+ x y))) (def (main) (f 5)) (export main))") with
-    | Option.Some(v) => (if v == 15 then unit else trap("(def (f x) (let y=10 in x+y)) (f 5) → 15"))
+    | Option.Some(v) => if v == 15 then unit else trap("(def (f x) (let y=10 in x+y)) (f 5) → 15")
     | Option.None(_) => trap("a let-bodied def call runs")
 
 @test
@@ -23,10 +23,10 @@ def se-if-in-def-body() =
   // a def body with CONTROL FLOW: `(def (f x) (if (< x 10) x 0))` `(f 5)` → 5. Pins an `if` inside a called
   // body (the param flows into the condition + a branch).
   match run-src("(do (def (f x) (if (< x 10) x 0)) (def (main) (f 5)) (export main))") with
-    | Option.Some(v) => (if v == 5 then
+    | Option.Some(v) => if v == 5 then
       unit
     else
-      trap("(def (f x) (if x<10 then x else 0)) (f 5) → 5"))
+      trap("(def (f x) (if x<10 then x else 0)) (f 5) → 5")
     | Option.None(_) => trap("an if-bodied def call runs")
 
 @test
@@ -34,7 +34,7 @@ def se-param-used-twice-in-body() =
   // the param referenced MORE THAN ONCE: `(def (sq x) (* x x))` `(sq 7)` → 49. Pins that a single CLet binder
   // is read by multiple uses of the param (the arg is bound once, both `x` occurrences resolve to it).
   match run-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
-    | Option.Some(v) => (if v == 49 then unit else trap("(def (sq x) (* x x)) (sq 7) → 49"))
+    | Option.Some(v) => if v == 49 then unit else trap("(def (sq x) (* x x)) (sq 7) → 49")
     | Option.None(_) => trap("a param used twice runs")
 
 @test
@@ -44,7 +44,7 @@ def se-two-distinct-helpers-in-main() =
   match run-src(
       "(do (def (g x) (* x 2)) (def (h x) (+ x 1)) (def (main) (+ (g 3) (h 4))) (export main))"
     ) with
-    | Option.Some(v) => (if v == 11 then unit else trap("(g 3)+(h 4) = 6+5 = 11"))
+    | Option.Some(v) => if v == 11 then unit else trap("(g 3)+(h 4) = 6+5 = 11")
     | Option.None(_) => trap("two distinct helpers run")
 
 @test
@@ -52,7 +52,7 @@ def se-call-results-as-arith-operands() =
   // call RESULTS as operands: `(+ (dbl 5) (dbl 3))` where dbl(x)=x*2 → 10+6 = 16. Pins that the SAME def
   // applied at two sites (with different args) composes under an arith op.
   match run-src("(do (def (dbl x) (* x 2)) (def (main) (+ (dbl 5) (dbl 3))) (export main))") with
-    | Option.Some(v) => (if v == 16 then unit else trap("(dbl 5)+(dbl 3) = 10+6 = 16"))
+    | Option.Some(v) => if v == 16 then unit else trap("(dbl 5)+(dbl 3) = 10+6 = 16")
     | Option.None(_) => trap("call results as arith operands run")
 
 @test
@@ -60,7 +60,7 @@ def se-nested-two-arg-calls() =
   // NESTED 2-arg calls: `(add (add 1 2) (add 3 4))` where add(a,b)=a+b → add(3,7) = 10. Pins that a 2-arg
   // call's args can themselves be 2-arg calls (the nested-CLet wiring composes recursively at the call sites).
   match run-src("(do (def (add a b) (+ a b)) (def (main) (add (add 1 2) (add 3 4))) (export main))") with
-    | Option.Some(v) => (if v == 10 then unit else trap("add(add(1,2), add(3,4)) = add(3,7) = 10"))
+    | Option.Some(v) => if v == 10 then unit else trap("add(add(1,2), add(3,4)) = add(3,7) = 10")
     | Option.None(_) => trap("nested 2-arg calls run")
 
 @test
@@ -70,7 +70,7 @@ def se-two-param-if-selects-a-param() =
   // through a conditional AND each branch can be a distinct param reference — max(7,4) takes the else (a=7,
   // since 7<4 is false) → 7. Matches the reference (max 7 4 → 7).
   match run-src("(do (def (max a b) (if (< a b) b a)) (def (main) (max 7 4)) (export main))") with
-    | Option.Some(v) => (if v == 7 then unit else trap("max(7,4) = 7 (else branch, a)"))
+    | Option.Some(v) => if v == 7 then unit else trap("max(7,4) = 7 (else branch, a)")
     | Option.None(_) => trap("2-param if-selecting-a-param runs")
 
 @test
@@ -78,7 +78,7 @@ def se-two-param-if-selects-other-param() =
   // the THEN direction of the same shape: max(3,9) takes the then-branch (b=9, since 3<9 is true) → 9.
   // Pins both branches of the param-selecting conditional (guards a branch-swap regression).
   match run-src("(do (def (max a b) (if (< a b) b a)) (def (main) (max 3 9)) (export main))") with
-    | Option.Some(v) => (if v == 9 then unit else trap("max(3,9) = 9 (then branch, b)"))
+    | Option.Some(v) => if v == 9 then unit else trap("max(3,9) = 9 (then branch, b)")
     | Option.None(_) => trap("2-param if then-branch runs")
 
 @test
@@ -90,7 +90,7 @@ def se-two-typed-narrow-params-run() =
   // typed FIRST param made the whole def fast-decline (the reader only read a single typed param), AND the
   // 2-param infer bound param2 to Int64 → mixed-width. Matches the reference.
   match run-src("(do (def (f (: a Int8) (: b Int8)) (+ a b)) (def (main) (f 5 20)) (export main))") with
-    | Option.Some(v) => (if v == 25 then unit else trap("f(5,20) Int8+Int8 = 25"))
+    | Option.Some(v) => if v == 25 then unit else trap("f(5,20) Int8+Int8 = 25")
     | Option.None(_) => trap("both-typed-narrow 2-param def runs")
 
 @test
@@ -121,7 +121,7 @@ def se-narrow-param-plus-literal-runs() =
   // decline. The corpus doc: "the check does NOT over-reject." Before this the ML compiler wrongly DECLINED
   // (a declined-when-should-run miscompile). Differential-verified vs rcdzc (110, in Int8 range).
   match run-src("(do (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))") with
-    | Option.Some(v) => (if v == 110 then unit else trap("(+ a 10) on Int8 param (f 100) → 110"))
+    | Option.Some(v) => if v == 110 then unit else trap("(+ a 10) on Int8 param (f 100) → 110")
     | Option.None(_) => trap(
       "(+ a 10) must RUN (110 fits Int8) — literal adapts, not spurious mixed-width decline"
     )
@@ -142,14 +142,14 @@ def se-logical-and-of-comparisons() =
   // LOGICAL `and` over two Bool comparisons: `(and (< 1 2) (< 3 4))` → 1 (both true). Pins the logical-op
   // subset end-to-end (and-node → Bool operands → Bool result, encoded 0/1). Differential-verified vs rcdzc.
   match run-src("(and (< 1 2) (< 3 4))") with
-    | Option.Some(v) => (if v == 1 then unit else trap("(and true true) → 1"))
+    | Option.Some(v) => if v == 1 then unit else trap("(and true true) → 1")
     | Option.None(_) => trap("logical and of comparisons runs")
 
 @test
 def se-logical-and-short-false() =
   // `and` with a false operand → 0: `(and (< 1 2) (< 5 4))` → 0 (second is false). Pins the false path.
   match run-src("(and (< 1 2) (< 5 4))") with
-    | Option.Some(v) => (if v == 0 then unit else trap("(and true false) → 0"))
+    | Option.Some(v) => if v == 0 then unit else trap("(and true false) → 0")
     | Option.None(_) => trap("logical and with a false operand runs")
 
 @test
@@ -168,7 +168,7 @@ def se-three-param-def-runs() =
   // and lower builds the 3-deep CLet(p1,a1,CLet(p2,a2,CLet(p3,a3,body))). Matches the reference. Before this,
   // any >2-param def fast-declined.
   match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3)) (export main))") with
-    | Option.Some(v) => (if v == 6 then unit else trap("f(1,2,3) = 6"))
+    | Option.Some(v) => if v == 6 then unit else trap("f(1,2,3) = 6")
     | Option.None(_) => trap("3-param def runs")
 
 @test
@@ -176,7 +176,7 @@ def se-three-param-with-if-and-mul() =
   // a 3-param body using an if comparing two params + arith on the third: `(g x y z) = (if (< x y) z (* y z))`,
   // g(1,2,5) takes the then (1<2) → z = 5. Pins all three params flow through a conditional + arith.
   match run-src("(do (def (g x y z) (if (< x y) z (* y z))) (def (main) (g 1 2 5)) (export main))") with
-    | Option.Some(v) => (if v == 5 then unit else trap("g(1,2,5) = 5 (then branch, z)"))
+    | Option.Some(v) => if v == 5 then unit else trap("g(1,2,5) = 5 (then branch, z)")
     | Option.None(_) => trap("3-param if/arith body runs")
 
 @test
@@ -227,7 +227,9 @@ def se-recursive-under-application-body-ignores-missing-param-declines() =
   // `(f 3)`. The recursive path (CCall) used to run it ragged to `value 0`; ref/run-rust declines (arity).
   match run-src("(do (def (f a b) (if (< a 1) 0 (f (- a 1)))) (def (main) (f 3)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("recursive (f 3) under-applies a 2-param def whose body ignores b → declines")
+    | Option.Some(_) => trap(
+      "recursive (f 3) under-applies a 2-param def whose body ignores b → declines"
+    )
 
 @test
 def se-recursive-over-application-declines() =
@@ -248,8 +250,10 @@ def se-recursive-nullary-def-over-applied-declines() =
 @test
 def se-recursive-saturated-still-runs() =
   // control: a SATURATED recursive call must still lower + run unchanged (the gate fires only on mismatch).
-  match run-src("(do (def (f a b) (if (< a 1) b (f (- a 1) b))) (def (main) (f 3 7)) (export main))") with
-    | Option.Some(v) => (if v == 7 then unit else trap("recursive saturated (f 3 7) → 7"))
+  match run-src(
+      "(do (def (f a b) (if (< a 1) b (f (- a 1) b))) (def (main) (f 3 7)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 7 then unit else trap("recursive saturated (f 3 7) → 7")
     | Option.None(_) => trap("recursive saturated (f 3 7) must lower and run, not decline")
 
 @test
@@ -262,7 +266,7 @@ def se-helper-calls-earlier-helper() =
   match run-src(
       "(do (def (inc x) (+ x 1)) (def (inc2 x) (inc (inc x))) (def (main) (inc2 5)) (export main))"
     ) with
-    | Option.Some(v) => (if v == 7 then unit else trap("inc2(5) = inc(inc(5)) = 7"))
+    | Option.Some(v) => if v == 7 then unit else trap("inc2(5) = inc(inc(5)) = 7")
     | Option.None(_) => trap("a helper calling an earlier helper runs")
 
 @test
@@ -272,7 +276,7 @@ def se-helper-chain-nested-calls() =
   match run-src(
       "(do (def (dbl x) (* x 2)) (def (quad x) (dbl (dbl x))) (def (main) (quad 3)) (export main))"
     ) with
-    | Option.Some(v) => (if v == 12 then unit else trap("quad(3) = dbl(dbl(3)) = 12"))
+    | Option.Some(v) => if v == 12 then unit else trap("quad(3) = dbl(dbl(3)) = 12")
     | Option.None(_) => trap("a nested backward helper chain runs")
 
 @test
@@ -284,7 +288,7 @@ def se-three-typed-params-run() =
   match run-src(
       "(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) (f 5 10 15)) (export main))"
     ) with
-    | Option.Some(v) => (if v == 30 then unit else trap("f(5,10,15) Int8 sum = 30"))
+    | Option.Some(v) => if v == 30 then unit else trap("f(5,10,15) Int8 sum = 30")
     | Option.None(_) => trap("all-typed 3-param def runs")
 
 @test
@@ -303,7 +307,7 @@ def se-three-param-typed-third-only() =
   // untyped-params → typed-3rd path (read-second-param untyped → read-third-param → read-typed-third-param)
   // composes. (A body mixing the untyped-Int64 params with the Int8 3rd would be mixed-width — Gap A/item-3.)
   match run-src("(do (def (f a b (: c Int8)) c) (def (main) (f 1 2 3)) (export main))") with
-    | Option.Some(v) => (if v == 3 then unit else trap("f(1,2,3) returns c = 3"))
+    | Option.Some(v) => if v == 3 then unit else trap("f(1,2,3) returns c = 3")
     | Option.None(_) => trap("untyped-1st-2nd + typed-3rd def runs")
 
 @test
@@ -316,7 +320,7 @@ def se-four-param-def-runs() =
   match run-src(
       "(do (def (f a b c d) (+ (+ a b) (+ c d))) (def (main) (f 10 20 30 40)) (export main))"
     ) with
-    | Option.Some(v) => (if v == 100 then unit else trap("f(10,20,30,40) = 100"))
+    | Option.Some(v) => if v == 100 then unit else trap("f(10,20,30,40) = 100")
     | Option.None(_) => trap("4-param def runs")
 
 @test
@@ -327,7 +331,7 @@ def se-four-param-with-if-and-arith() =
   match run-src(
       "(do (def (g w x y z) (if (< w x) (+ y z) (* y z))) (def (main) (g 1 2 3 4)) (export main))"
     ) with
-    | Option.Some(v) => (if v == 7 then unit else trap("g(1,2,3,4) = 7 (then branch, y+z)"))
+    | Option.Some(v) => if v == 7 then unit else trap("g(1,2,3,4) = 7 (then branch, y+z)")
     | Option.None(_) => trap("4-param if/arith body runs")
 
 @test
@@ -349,7 +353,7 @@ def se-four-typed-params-run() =
   match run-src(
       "(do (def (f (: a Int8) (: b Int8) (: c Int8) (: d Int8)) (+ (+ a b) (+ c d))) (def (main) (f 1 2 3 4)) (export main))"
     ) with
-    | Option.Some(v) => (if v == 10 then unit else trap("f(1,2,3,4) Int8 sum = 10"))
+    | Option.Some(v) => if v == 10 then unit else trap("f(1,2,3,4) Int8 sum = 10")
     | Option.None(_) => trap("all-typed 4-param def runs")
 
 @test
@@ -369,7 +373,7 @@ def se-forward-ref-runs() =
   // forward callee wasn't yet in the def-table → the call read as NBin(-1) → declined. Now the NApp keys by
   // the callee NAME, resolved LATE (def-body-of after the whole do-block is recorded), so forward refs RUN.
   match run-src("(do (def (a x) (b x)) (def (b x) (+ x 1)) (def (main) (a 5)) (export main))") with
-    | Option.Some(v) => (if v == 6 then unit else trap("forward-ref a(5)=b(5)=6"))
+    | Option.Some(v) => if v == 6 then unit else trap("forward-ref a(5)=b(5)=6")
     | Option.None(_) => trap("a forward reference (def calls a later def) runs")
 
 @test
@@ -377,8 +381,10 @@ def se-self-recursion-runs-slice-boneb() =
   // SLICE-B (B1a CCall + B1b lower-def-env + B3 eval def-env dispatch, all landed): SELF-RECURSION now RUNS.
   // `fac`'s body self-call lowers to a non-inlining CCall LEAF; lower-def-env keys fac's body in the def-env;
   // run-of-db threads that def-env into eval-core-d, which dispatches the CCall by name. (fac 5) = 120.
-  match run-src("(do (def (fac n) (if (< n 2) 1 (* n (fac (- n 1))))) (def (main) (fac 5)) (export main))") with
-    | Option.Some(v) => (if v == 120 then unit else trap("(fac 5) → 120 via CCall def-env dispatch"))
+  match run-src(
+      "(do (def (fac n) (if (< n 2) 1 (* n (fac (- n 1))))) (def (main) (fac 5)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 120 then unit else trap("(fac 5) → 120 via CCall def-env dispatch")
     | Option.None(_) => trap("self-recursion RUNS now (Slice-B) — must not decline")
 
 @test
@@ -387,9 +393,13 @@ def se-threearg-self-recursion-runs-pr785() =
   // scanned only arg1/arg2, so a self-call whose recursion rides in a 3rd arg was MISSED → the def was
   // excluded from the def-env → self-recursion wrongly DECLINED. Now subtree-calls-self scans arg2/arg3/arg4.
   // f(a,b,c) = if a<1 then c else f(a-1, b, c+b); f(3,5,0) = 15 (0+5+5+5).
-  match run-src("(do (def (f a b c) (if (< a 1) c (f (- a 1) b (+ c b)))) (def (main) (f 3 5 0)) (export main))") with
-    | Option.Some(v) => (if v == 15 then unit else trap("f(3,5,0) → 15 (3-arg self-recursion)"))
-    | Option.None(_) => trap("3-arg self-recursion must RUN (PR#785 — arg3/arg4 self-call detection)")
+  match run-src(
+      "(do (def (f a b c) (if (< a 1) c (f (- a 1) b (+ c b)))) (def (main) (f 3 5 0)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 15 then unit else trap("f(3,5,0) → 15 (3-arg self-recursion)")
+    | Option.None(_) => trap(
+      "3-arg self-recursion must RUN (PR#785 — arg3/arg4 self-call detection)"
+    )
 
 @test
 def se-mutual-recursion-runs() =
@@ -398,16 +408,22 @@ def se-mutual-recursion-runs() =
   // apply-def-by-name dispatches BY NAME at runtime, terminating on the base-case CIf guard. ev(4): 4→od(3)→
   // ev(2)→od(1)→ev(0)→1. Was `se-mutual-recursion-declines-not-hangs` (the pre-Slice-B decline boundary), now
   // lifted — mutual recursion is a first-class runtime cycle, exactly like self-recursive fac.
-  match run-src("(do (def (ev n) (if (< n 1) 1 (od (- n 1)))) (def (od n) (if (< n 1) 0 (ev (- n 1)))) (def (main) (ev 4)) (export main))") with
-    | Option.Some(v) => (if v == 1 then unit else trap("mutual ev(4) → 1"))
-    | Option.None(_) => trap("mutual recursion must RUN (ev↔od via def-env name dispatch), not decline")
+  match run-src(
+      "(do (def (ev n) (if (< n 1) 1 (od (- n 1)))) (def (od n) (if (< n 1) 0 (ev (- n 1)))) (def (main) (ev 4)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 1 then unit else trap("mutual ev(4) → 1")
+    | Option.None(_) => trap(
+      "mutual recursion must RUN (ev↔od via def-env name dispatch), not decline"
+    )
 
 @test
 def se-backward-ref-still-runs() =
   // REGRESSION GUARD: a BACKWARD reference (a def calls an EARLIER def) still works after the NApp-carries-name
   // change. `(def (inc x) (+ x 1))` then `(def (inc2 x) (inc (inc x)))` → inc2(5) = inc(inc(5)) = 7.
-  match run-src("(do (def (inc x) (+ x 1)) (def (inc2 x) (inc (inc x))) (def (main) (inc2 5)) (export main))") with
-    | Option.Some(v) => (if v == 7 then unit else trap("backward-ref inc2(5)=7"))
+  match run-src(
+      "(do (def (inc x) (+ x 1)) (def (inc2 x) (inc (inc x))) (def (main) (inc2 5)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 7 then unit else trap("backward-ref inc2(5)=7")
     | Option.None(_) => trap("a backward reference still runs (no regression)")
 
 @test
@@ -417,7 +433,7 @@ def se-main-first-forward-ref-runs() =
   // then `(def (helper x) (+ x 5))` → main = helper(10) = 15. Completes definition-order independence: main is
   // just another recorded def, the module root is threaded (not "found by stopping at main"). Matches rcdzc.
   match run-src("(do (def (main) (helper 10)) (def (helper x) (+ x 5)) (export main))") with
-    | Option.Some(v) => (if v == 15 then unit else trap("main-first forward call helper(10)=15"))
+    | Option.Some(v) => if v == 15 then unit else trap("main-first forward call helper(10)=15")
     | Option.None(_) => trap("main defined before the helper it calls runs (main-anywhere)")
 
 @test
@@ -425,5 +441,5 @@ def se-main-last-still-runs() =
   // REGRESSION GUARD for the main-anywhere change: the CANONICAL order (helper first, main LAST) still works —
   // the root threading returns main's body whether main is first, middle, or last. helper(10)=15.
   match run-src("(do (def (helper x) (+ x 5)) (def (main) (helper 10)) (export main))") with
-    | Option.Some(v) => (if v == 15 then unit else trap("main-last helper(10)=15"))
+    | Option.Some(v) => if v == 15 then unit else trap("main-last helper(10)=15")
     | Option.None(_) => trap("canonical helper-first/main-last order still runs")

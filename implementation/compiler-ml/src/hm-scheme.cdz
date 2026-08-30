@@ -12,7 +12,9 @@
 /// "freshen the bound vars per use." `generalize` quantifies the body's free vars MINUS the environment's free
 /// vars (the standard HM side-condition: never generalize a var still referenced by the surrounding context).
 import { Sign, Width, IntType, Ty } from "ty"
+
 import { Subst, subst-empty, subst-bind-sign, subst-bind-width, apply } from "subst"
+
 import { fresh-sign, fresh-width } from "hm-vars"
 
 /// A type scheme: `Scheme(quantified-sign-ids, quantified-width-ids, body)`. The empty-quantifier case is a
@@ -21,90 +23,112 @@ type Scheme =
   | Scheme(List(Int64), List(Int64), Ty)
 
 /// A monomorphic type as a trivial scheme (rcdzc `Scheme::mono` / a plain `Ty` used where a scheme is expected).
-def mono(t: Ty) = Scheme.Scheme(([] : List(Int64)), ([] : List(Int64)), t)
+def mono(t: Ty) = Scheme.Scheme([] : List(Int64), [] : List(Int64), t)
 
 // ---- FREE VARIABLES (rcdzc `free_vars` — which unification vars appear in a Ty, per axis) ------------
 /// Is id `x` a member of the id list? (linear membership, for dedup + the env side-condition.)
 def id-mem(x: Int64, ids: List(Int64), i: Int64) =
-  (if i == List.len(ids) then false
-   else (match List.at(ids, i) with
-     | Option.Some(y) => (if x == y then true else id-mem(x, ids, i + 1))
-     | Option.None(_) => false))
+  if i == List.len(ids) then
+    false
+  else
+    match List.at(ids, i) with
+      | Option.Some(y) => if x == y then true else id-mem(x, ids, i + 1)
+      | Option.None(_) => false
 
 /// Push `x` onto `acc` only if not already present (dedup).
-def id-push-uniq(acc: List(Int64), x: Int64) =
-  (if id-mem(x, acc, 0) then acc else List.push(acc, x))
+def id-push-uniq(acc: List(Int64), x: Int64) = if id-mem(x, acc, 0) then acc else List.push(acc, x)
 
 /// Collect the free SIGN-var-ids of a Ty into `acc` (deduped). Ints contribute their sign var (if SVar); TyFn
 /// recurses into params + result; Bool/Err/Sum contribute none.
 def free-sign-ids(t: Ty, acc: List(Int64)) = match t with
-  | Ty.TyInt(it) => (let IntType.IntType(s, _) = it in (match s with
-      | Sign.SVar(id) => id-push-uniq(acc, id)
-      | _ => acc))
+  | Ty.TyInt(it) => (let IntType.IntType(s, _) = it in
+    match s with
+    | Sign.SVar(id) => id-push-uniq(acc, id)
+    | _ => acc)
   | Ty.TyFn(ps, r) => free-sign-ids(r, free-sign-list(ps, 0, acc))
   | _ => acc
+
 def free-sign-list(ps: List(Ty), i: Int64, acc: List(Int64)) =
-  (if i == List.len(ps) then acc
-   else (match List.at(ps, i) with
-     | Option.Some(p) => free-sign-list(ps, i + 1, free-sign-ids(p, acc))
-     | Option.None(_) => acc))
+  if i == List.len(ps) then
+    acc
+  else
+    match List.at(ps, i) with
+      | Option.Some(p) => free-sign-list(ps, i + 1, free-sign-ids(p, acc))
+      | Option.None(_) => acc
 
 /// Collect the free WIDTH-var-ids of a Ty (the orthogonal twin).
 def free-width-ids(t: Ty, acc: List(Int64)) = match t with
-  | Ty.TyInt(it) => (let IntType.IntType(_, w) = it in (match w with
-      | Width.WVar(id) => id-push-uniq(acc, id)
-      | _ => acc))
+  | Ty.TyInt(it) => (let IntType.IntType(_, w) = it in
+    match w with
+    | Width.WVar(id) => id-push-uniq(acc, id)
+    | _ => acc)
   | Ty.TyFn(ps, r) => free-width-ids(r, free-width-list(ps, 0, acc))
   | _ => acc
+
 def free-width-list(ps: List(Ty), i: Int64, acc: List(Int64)) =
-  (if i == List.len(ps) then acc
-   else (match List.at(ps, i) with
-     | Option.Some(p) => free-width-list(ps, i + 1, free-width-ids(p, acc))
-     | Option.None(_) => acc))
+  if i == List.len(ps) then
+    acc
+  else
+    match List.at(ps, i) with
+      | Option.Some(p) => free-width-list(ps, i + 1, free-width-ids(p, acc))
+      | Option.None(_) => acc
 
 // ---- INSTANTIATE (rcdzc `instantiate` — freshen the bound vars per use) ------------------------------
 /// Build the renaming for the quantified SIGN ids: for each, allocate a fresh SVar and bind qid -> fresh in the
 /// Subst, threading the fresh-counter. Returns (subst, next-counter).
 def inst-sign-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
-  (if i == List.len(ids) then (su, n)
-   else (match List.at(ids, i) with
-     | Option.Some(qid) => (
-         let (fv, n1) = fresh-sign(n) in inst-sign-ren(subst-bind-sign(su, qid, fv), ids, i + 1, n1))
-     | Option.None(_) => (su, n)))
+  if i == List.len(ids) then
+    (su, n)
+  else
+    match List.at(ids, i) with
+      | Option.Some(qid) => let (fv, n1) = fresh-sign(n) in
+        inst-sign-ren(subst-bind-sign(su, qid, fv), ids, i + 1, n1)
+      | Option.None(_) => (su, n)
 
 /// The width twin.
 def inst-width-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
-  (if i == List.len(ids) then (su, n)
-   else (match List.at(ids, i) with
-     | Option.Some(qid) => (
-         let (fv, n1) = fresh-width(n) in inst-width-ren(subst-bind-width(su, qid, fv), ids, i + 1, n1))
-     | Option.None(_) => (su, n)))
+  if i == List.len(ids) then
+    (su, n)
+  else
+    match List.at(ids, i) with
+      | Option.Some(qid) => let (fv, n1) = fresh-width(n) in
+        inst-width-ren(subst-bind-width(su, qid, fv), ids, i + 1, n1)
+      | Option.None(_) => (su, n)
 
 /// INSTANTIATE a scheme at a use site: freshen every quantified var, apply the renaming to the body, return
 /// (fresh Ty, next-counter). Two instantiations of the SAME scheme get DISJOINT vars (threading the counter) —
 /// the essence of let-polymorphism. A `mono` scheme (no quantifiers) instantiates to its body unchanged.
 def instantiate(sch: Scheme, n: Int64) =
-  let Scheme.Scheme(sids, wids, body) = sch in (
-      let (su1, n1) = inst-sign-ren(subst-empty(), sids, 0, n) in (
-          let (su2, n2) = inst-width-ren(su1, wids, 0, n1) in (apply(su2, body), n2)))
+  let Scheme.Scheme(sids, wids, body) = sch in
+  let (su1, n1) = inst-sign-ren(subst-empty(), sids, 0, n) in
+  let (su2, n2) = inst-width-ren(su1, wids, 0, n1) in
+    (apply(su2, body), n2)
 
 // ---- GENERALIZE (rcdzc `generalize` — quantify free vars not free in the environment) ----------------
 /// Ids in `xs` that are NOT in `env` (the HM side-condition: quantify only vars the environment doesn't still
 /// reference). Order-preserving.
 def ids-minus(xs: List(Int64), env: List(Int64), i: Int64, acc: List(Int64)) =
-  (if i == List.len(xs) then acc
-   else (match List.at(xs, i) with
-     | Option.Some(x) => ids-minus(xs, env, i + 1, (if id-mem(x, env, 0) then acc else List.push(acc, x)))
-     | Option.None(_) => acc))
+  if i == List.len(xs) then
+    acc
+  else
+    match List.at(xs, i) with
+      | Option.Some(x) => ids-minus(
+        xs,
+        env,
+        i + 1,
+        if id-mem(x, env, 0) then acc else List.push(acc, x)
+      )
+      | Option.None(_) => acc
 
 /// GENERALIZE a type over an environment: quantify the body's free (sign+width) vars EXCEPT those free in the
 /// env. `envSign`/`envWidth` = the env's free var-ids per axis. Returns the Scheme. (mono when nothing to
 /// quantify — e.g. a fully-ground type, or every free var pinned by the env.)
 def generalize(t: Ty, envSign: List(Int64), envWidth: List(Int64)) =
   Scheme.Scheme(
-    ids-minus(free-sign-ids(t, ([] : List(Int64))), envSign, 0, ([] : List(Int64))),
-    ids-minus(free-width-ids(t, ([] : List(Int64))), envWidth, 0, ([] : List(Int64))),
-    t)
+    ids-minus(free-sign-ids(t, [] : List(Int64)), envSign, 0, [] : List(Int64)),
+    ids-minus(free-width-ids(t, [] : List(Int64)), envWidth, 0, [] : List(Int64)),
+    t
+  )
 
 // ---- TESTS (≤5 heavy closures — emit-slot ceiling, see queue/mlrepro-emit-slot-*) --------------------
 import { apply-sign, apply-width } from "subst"
@@ -113,7 +137,10 @@ import { apply-sign, apply-width } from "subst"
 def hs-mono-instantiates-to-itself() =
   // a monomorphic scheme (no quantifiers) instantiates to its body unchanged; counter untouched.
   match instantiate(mono(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(64)))), 0) with
-    | (Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))), n) => (if (w == 64) and (n == 0) then unit else trap("mono is identity, counter 0"))
+    | (Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))), n) => if w == 64 and n == 0 then
+      unit
+    else
+      trap("mono is identity, counter 0")
     | _ => trap("mono(Int64) instantiates to Int64")
 
 @test
@@ -121,21 +148,32 @@ def hs-generalize-then-instantiate-is-fresh() =
   // generalize an int whose sign is SVar(0) over an EMPTY env → quantifies id 0; instantiating from counter 5
   // renames it to a FRESH SVar(5) (not 0). This is the freshen-per-use that gives let-polymorphism.
   let body = Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(32))) in
-  let sch = generalize(body, ([] : List(Int64)), ([] : List(Int64))) in
-  match instantiate(sch, 5) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(fid), Width.WFixed(w))), n) =>
-        (if (fid == 5) and (w == 32) and (n == 6) then unit else trap("quantified sign var freshens to SVar(5), counter 6"))
+  let sch = generalize(body, [] : List(Int64), [] : List(Int64)) in
+    match instantiate(sch, 5) with
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(fid), Width.WFixed(w))), n) => if fid == 5 and w == 32
+        and n == 6 then
+      unit
+    else
+      trap("quantified sign var freshens to SVar(5), counter 6")
     | _ => trap("generalized-then-instantiated body has a FRESH sign var")
 
 @test
 def hs-two-instantiations-are-disjoint() =
   // TWO instantiations of the same polymorphic scheme get DISJOINT fresh vars (thread the counter): first from 0
   // → SVar(0)/WVar(1), second from that counter → SVar(2)/WVar(3). Independent solving per use — the point.
-  let sch = generalize(Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1))), ([] : List(Int64)), ([] : List(Int64))) in
-  let (_t1, n1) = instantiate(sch, 0) in (match instantiate(sch, n1) with
-        | (Ty.TyInt(IntType.IntType(Sign.SVar(s2), Width.WVar(w2))), n2) =>
-            (if (s2 == 2) and (w2 == 3) and (n2 == 4) then unit else trap("second instantiation is SVar(2)/WVar(3)"))
-        | _ => trap("second instantiation has fresh vars"))
+  let sch = generalize(
+      Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1))),
+      [] : List(Int64),
+      [] : List(Int64)
+    ) in
+  let (_t1, n1) = instantiate(sch, 0) in
+    match instantiate(sch, n1) with
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(s2), Width.WVar(w2))), n2) => if s2 == 2 and w2 == 3
+        and n2 == 4 then
+      unit
+    else
+      trap("second instantiation is SVar(2)/WVar(3)")
+    | _ => trap("second instantiation has fresh vars")
 
 @test
 def hs-env-var-is-not-generalized() =
@@ -143,25 +181,27 @@ def hs-env-var-is-not-generalized() =
   // generalize quantifies NOTHING → the scheme is effectively mono → instantiate leaves SVar(0) as-is (still
   // the env's var, shared — must NOT be freshened, else we'd wrongly break the link to the environment).
   let body = Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(8))) in
-  let sch = generalize(body, List.push([], 0), ([] : List(Int64))) in
-  match instantiate(sch, 9) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(id), Width.WFixed(_))), n) => (if (id == 0) and (n == 9) then unit else trap("env-pinned var 0 stays 0, counter untouched"))
+  let sch = generalize(body, List.push([], 0), [] : List(Int64)) in
+    match instantiate(sch, 9) with
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(id), Width.WFixed(_))), n) => if id == 0 and n == 9 then
+      unit
+    else
+      trap("env-pinned var 0 stays 0, counter untouched")
     | _ => trap("an env-free var is not generalized → instantiate keeps it")
 
 @test
 def hs-free-vars-collects-both-axes-deduped() =
   // free-vars over (SVar0, WVar1) -> (SVar0, WVar2): sign ids dedup to [0], width ids [1,2] (0 appears twice,
   // collected once). Pins the dedup + both-axis collection generalize relies on.
-  let f = Ty.TyFn(List.push([], Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1)))), Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(2)))) in
-  let sids = free-sign-ids(f, ([] : List(Int64))) in
-  let wids = free-width-ids(f, ([] : List(Int64))) in
-  if (List.len(sids) == 1) and (List.len(wids) == 2) then unit else trap("sign ids dedup to [0], width ids [1,2]")
+  let f = Ty.TyFn(
+      List.push([], Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1)))),
+      Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(2)))
+    ) in
+  let sids = free-sign-ids(f, [] : List(Int64)) in
+  let wids = free-width-ids(f, [] : List(Int64)) in
+    if List.len(sids) == 1 and List.len(wids) == 2 then
+    unit
+  else
+    trap("sign ids dedup to [0], width ids [1,2]")
 
-export {
-  Scheme.*,
-  mono,
-  free-sign-ids,
-  free-width-ids,
-  instantiate,
-  generalize
-}
+export { Scheme.*, mono, free-sign-ids, free-width-ids, instantiate, generalize }
