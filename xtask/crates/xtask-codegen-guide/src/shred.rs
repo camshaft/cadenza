@@ -391,8 +391,9 @@ pub fn run_shred(out_dir: &str, cdz: &str, cdzb_paths: &[String]) {
                 cases.push(case);
             }
         } else {
-            // Playground doc: each `(example …)` is a whole-program module, rendered in both surfaces.
-            let examples = crate::playground::read_playground(&a)
+            // Playground: a per-example `(example …)` .cdzb (seq-279 file-per-example) or a legacy
+            // `(playground …)` doc. Each example is a whole-program module rendered in both surfaces.
+            let examples = crate::playground::read_playground_any(&a)
                 .unwrap_or_else(|e| die(&format!("{path}: {e}")));
             for pe in &examples {
                 idx += 1;
