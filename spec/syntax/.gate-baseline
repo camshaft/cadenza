@@ -24,5 +24,8 @@ pass	sexp/14-doc-node
 pass	sexp/15-multi-comment
 pass	sexp/16-comment-in-list
 todo	ml/08-incomplete-binding
+todo	ml/10-unterminated-call
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
+todo	sexp/19-unterminated-string
+todo	sexp/20-unexpected-close
