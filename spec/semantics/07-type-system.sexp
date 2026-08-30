@@ -1775,6 +1775,20 @@
   (error  CDZ0210 (message "zero-arm match is exhaustive only")
                   (fix (kind insert-into) (replacement "(_ (trap \"TODO\"))"))))
 
+; A zero-arm scalar match in a CALLED def must report the CDZ0210 EXACTLY ONCE, not twice: the reduced
+; (inlined) body re-runs the exhaustiveness check at a SYNTHESIZED match node, so the reject once leaked a
+; second copy re-anchored to the call site. `dedup_faults` drops the copy whose add-a-wildcard fix targets a
+; non-user (synthesized) node, keeping only the def-body copy that edits the real match. Two DISTINCT called
+; zero-arm matches still report BOTH (each fix edits its own user node — neither is the dropped non-user
+; copy). (Migrated from rcdzc a_called_defs_zero_arm_scalar_match_reports_cdz0210_once_not_at_the_call_site_too.)
+(case "a called def's zero-arm scalar match reports the non-exhaustive reject exactly once, not at the call site too"
+  (input (do (def (f (: x Int64)) (match x)) (def (main) (f 1)) (export main)))
+  (error CDZ0210 (message "zero-arm match is exhaustive") (count 1)))
+
+(case "two distinct called zero-arm scalar matches each report (no false-merge to one)"
+  (input (do (def (f (: x Int64)) (match x)) (def (g (: y Int64)) (match y)) (def (main) (+ (f 1) (g 2))) (export main)))
+  (error CDZ0210 (message "zero-arm match is exhaustive") (count 2)))
+
 ; TYPE REFLECTION — `(Type.of e)` reduces at compile time to the type-VALUE of `e`'s inferred type,
 ; realizing type-system.md #Inference And First-Class Types Meet At A Bidirectional Boundary (a type is
 ; a first-class value the compiler can compute). It is a COMPILE-TIME operation: a `Type` value is
