@@ -98,7 +98,7 @@ fall back to `cdz-compile` on `$PATH`. Add one override for the packaged/nix cas
 content-addressed `cdz-compile` from the `cdz-compile` derivation's `bin/` — no `$PATH`/CWD
 ambiguity, and the two derivations stay independently cached. Resolution order:
 `$CDZ_COMPILE_BIN` → sibling → `$PATH`. A NotFound spawn gets an actionable error (`build it with
-cargo build -p rcdzc --bin cdz-compile`, mirroring `passthrough_status`).
+cargo build -p rcdzc-cli --bin cdz-compile`, mirroring `passthrough_status`).
 
 ## The scope decision — RESOLVED by the operator (2026-08-25)
 
