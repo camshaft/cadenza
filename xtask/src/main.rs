@@ -119,6 +119,17 @@ enum Cmd {
         /// baseline with a partial snapshot).
         #[arg(long, conflicts_with_all = ["save", "opt_sweep"])]
         shard: Option<String>,
+        /// GUARDED-ALL: route EVERY case through the debug-counters runtime (not just the
+        /// `(live-objects …)`-clause cases) so its generation guard fires corpus-wide — the deterministic
+        /// under-retain / use-after-free witness for verifying a global escape-analysis / RC change. On
+        /// free the debug runtime bumps the node generation odd + retains the freed shell, so a later
+        /// access of a freed cell TRAPS (→ a fail); the shipped/release runtime deallocates with no guard
+        /// (a UAF there is silent UB, and the release live-objects census reports 0 vacuously = a
+        /// false-clean). Forces the IN-PROCESS path (like `--check`) and FAIL-FASTs at entry if the store's
+        /// debug runtime is missing or stale (never a silent false-clean). Combine with `--check` for a
+        /// guarded regression run. Prefer this over any "release-trap" run for memory-safety verification.
+        #[arg(long)]
+        guarded_all: bool,
     },
     /// The parser/printer golden-corpus grader (DESIGN-parser-test-corpus.md §4): grade each
     /// `spec/syntax/<surface>/<case>/` directory against the reference `cdz` tool — the case's structural
@@ -220,6 +231,7 @@ fn main() {
             target,
             opt_sweep,
             shard,
+            guarded_all,
         } => {
             let shard = shard
                 .as_deref()
@@ -241,6 +253,7 @@ fn main() {
                     GateTargetArg::RustAsync => GateTarget::RustAsync,
                 },
                 shard,
+                guarded_all,
             };
             if opt_sweep {
                 gate_opt_sweep(&paths, profile, &gate_opts);
@@ -1407,8 +1420,20 @@ fn run_program_wasm(
     // (with a loud stderr note) rather than mass-declining every heap case — the value/trap grade still
     // runs. (A stale/missing debug runtime is separately caught by the DEBUG_RUNTIME_HASH parity check and
     // the freshness protocol; #3753's stale-runtime detection is kept here to drive the skip.)
+    // GUARDED-ALL (`gate --guarded-all`, memory-safety escape verification): route EVERY case through the
+    // debug-counters runtime — not just the live-objects-clause cases — so the runtime's generation guard
+    // (`assert_node_live`, cdz-runtime/src/rc.rs) fires corpus-wide. That guard is the deterministic
+    // under-retain / use-after-free WITNESS: on free the debug runtime bumps the node generation odd +
+    // retains the freed shell, so a later dup/drop/access of a freed cell TRAPS (→ a fail against the
+    // expected value/trap). The shipped/release runtime deallocates with NO guard, so a UAF there is
+    // silent UB — which is why a global escape change must be verified on the debug runtime, not release
+    // (and the release live-objects census reports 0 vacuously = a false-clean; see grade.rs). The gate
+    // ENTRY has already fail-fast-verified the debug runtime is present + fresh under `--guarded-all`, so
+    // here a stale/missing runtime only affects the (independent) census cases.
+    let guarded_all = std::env::var_os("CDZ_GATE_GUARDED_ALL").is_some();
+    let want_census = !matches!(live_objects, LiveObjectsCheck::Off);
     let mut report_live = false;
-    if !matches!(live_objects, LiveObjectsCheck::Off) {
+    if want_census || guarded_all {
         match resolve_debug_runtime(store) {
             Some(path) => {
                 let stale = tools
@@ -1418,10 +1443,14 @@ fn run_program_wasm(
                     .map(|(committed, store_hash)| store_hash != committed)
                     .unwrap_or(false);
                 if stale {
-                    eprintln!(
-                        "xtask gate: SKIPPING heap-balance check — STALE debug runtime in store \
-                         (!= committed DEBUG_RUNTIME_HASH); run `cargo xtask build`"
-                    );
+                    // `--guarded-all` already exited at entry on a stale runtime; this note is for the
+                    // census path only (a stale runtime skips the heap-balance count, not the value grade).
+                    if want_census {
+                        eprintln!(
+                            "xtask gate: SKIPPING heap-balance check — STALE debug runtime in store \
+                             (!= committed DEBUG_RUNTIME_HASH); run `cargo xtask build`"
+                        );
+                    }
                 } else {
                     // NFC (the runtime's inline dependency) resolves from the store; if the gate passed no
                     // `--store`, point it at the debug runtime's own store dir so NFC + the debug runtime
@@ -1431,16 +1460,22 @@ fn run_program_wasm(
                     {
                         run.arg("--store").arg(parent);
                     }
+                    // The debug runtime activates the generation guards (guarded-all's whole point);
+                    // `--report-live-objects` + the count assertion stay gated on an actual census clause.
                     run.arg("--runtime").arg(&path);
-                    run.arg("--report-live-objects");
-                    report_live = true;
+                    if want_census {
+                        run.arg("--report-live-objects");
+                        report_live = true;
+                    }
                 }
             }
             None => {
-                eprintln!(
-                    "xtask gate: SKIPPING heap-balance check — debug-counters runtime not in store \
-                     (run `cargo xtask build`)"
-                );
+                if want_census {
+                    eprintln!(
+                        "xtask gate: SKIPPING heap-balance check — debug-counters runtime not in store \
+                         (run `cargo xtask build`)"
+                    );
+                }
             }
         }
     }
@@ -3585,6 +3620,10 @@ struct GateOpts {
     /// of the flat CASE list (every `n`-th case), so shards balance regardless of per-file case counts.
     /// `None` runs the whole (default or given) set.
     shard: Option<(usize, usize)>,
+    /// GUARDED-ALL: run every case on the debug-counters runtime (generation guard fires corpus-wide) for
+    /// deterministic under-retain/UAF verification of a global escape/RC change. Forces the in-process
+    /// path and fail-fasts if the store's debug runtime is missing/stale.
+    guarded_all: bool,
 }
 
 /// Run one or more corpus files through the pipeline and grade each case against its recorded
@@ -3742,6 +3781,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
             opts.target,
             GateTarget::Wasm | GateTarget::Rust | GateTarget::RustAsync
         )
+        && !opts.guarded_all
         && std::env::var_os("CDZ_GATE_INPROCESS").is_none()
         && let Some(code) = gate_via_nix_cache(paths, &opts.files, opts.target)
     {
@@ -3789,6 +3829,44 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     }
 
     let tools = build_tools(paths, profile);
+    // `--guarded-all`: verify the debug-counters runtime is present + fresh BEFORE running, then export the
+    // mode so `run_program_wasm` routes every case through it. A missing/stale debug runtime would silently
+    // degrade to the release runtime (no generation guard → a false-clean UAF verification), so FAIL FAST
+    // rather than mislead — this flag exists precisely to avoid that false-clean trap.
+    if opts.guarded_all {
+        match resolve_debug_runtime(&opts.store) {
+            Some(path) => {
+                let stale = tools
+                    .debug_runtime_hash
+                    .as_deref()
+                    .zip(path.file_stem().and_then(|s| s.to_str()))
+                    .map(|(committed, store_hash)| store_hash != committed)
+                    .unwrap_or(false);
+                if stale {
+                    eprintln!(
+                        "xtask gate --guarded-all: ABORT — STALE debug runtime in store \
+                         (!= committed DEBUG_RUNTIME_HASH). A stale runtime would false-clean the UAF \
+                         guard; run `cargo xtask build` first."
+                    );
+                    std::process::exit(2);
+                }
+            }
+            None => {
+                eprintln!(
+                    "xtask gate --guarded-all: ABORT — debug-counters runtime not in store. The guarded \
+                     verification needs it; run `cargo xtask build` first."
+                );
+                std::process::exit(2);
+            }
+        }
+        // SAFETY: set once at gate entry, before the parallel grade fan-out spawns; the worker threads only
+        // READ it (via `run_program_wasm`) and never write, so there is no concurrent-writer data race.
+        unsafe { std::env::set_var("CDZ_GATE_GUARDED_ALL", "1") };
+        eprintln!(
+            "xtask gate --guarded-all: every case runs on the debug-counters runtime — its generation \
+             guard (assert_node_live) is the corpus-wide under-retain/UAF witness."
+        );
+    }
     let files = if opts.files.is_empty() {
         default_corpus_files(&paths.repo)
     } else {
