@@ -53,9 +53,7 @@ pub use cadenza_syntax_core::MAX_NESTING_DEPTH;
 pub fn read(text: &str) -> Result<Arenas, ReadError> {
     let mut b = Builder::new();
     let mut p = Reader::new(text, &mut b, false);
-    p.skip_ws();
-    let root = p.read_node()?;
-    p.skip_ws();
+    let root = p.read_document()?;
     if p.peek().is_some() {
         return Err(ReadError(format!("trailing input at byte {}", p.pos)));
     }
@@ -72,9 +70,7 @@ pub fn read(text: &str) -> Result<Arenas, ReadError> {
 pub fn read_spanned(text: &str) -> Result<(Arenas, SpanTable), ReadError> {
     let mut b = Builder::new();
     let mut p = Reader::new(text, &mut b, true);
-    p.skip_ws();
-    let root = p.read_node()?;
-    p.skip_ws();
+    let root = p.read_document()?;
     if p.peek().is_some() {
         return Err(ReadError(format!("trailing input at byte {}", p.pos)));
     }
@@ -104,10 +100,28 @@ fn read_all_impl(text: &str, track: bool) -> Result<(Arenas, Option<SpanTable>),
         let mut p = Reader::new(text, &mut b, track);
         loop {
             p.skip_ws();
+            let (trailing, leading) = p.take_pending();
+            // A same-line comment attaches to the PREVIOUS top-level form as `(comment-after …)`.
+            if !trailing.is_empty()
+                && let Some(&last) = roots.last()
+            {
+                let wrapped = p.wrap_trailing(trailing, last);
+                *roots.last_mut().expect("roots non-empty") = wrapped;
+            }
             if p.peek().is_none() {
+                // Own-line comments after the final form (file-trailing) attach to it so they survive.
+                if !leading.is_empty()
+                    && let Some(&last) = roots.last()
+                {
+                    let wrapped = p.wrap_trailing(leading, last);
+                    *roots.last_mut().expect("roots non-empty") = wrapped;
+                }
                 break;
             }
-            roots.push(p.read_node()?);
+            // Own-line comments above this form become leading `(comment …)` wrappers on it.
+            let node = p.read_node()?;
+            let node = p.wrap_leading(leading, node);
+            roots.push(node);
         }
         spans = p.spans.take();
     }
@@ -355,6 +369,9 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
         // (`(module m`) even though the surrounding box is force-broken by the definition list below it.
         OpenAttach,
         CloseParen, // emits `word(")")` then `end()` — the box closer paired with each `cbox`+`(`.
+        CloseBox,   // emits `end()` only — the closer for a comment wrapper's `cbox` (no `)`).
+        // A TRAILING `(comment-after "text" node)` re-emitted SAME-LINE after its node: ` ;text`.
+        TrailComment(StructId),
     }
     let mut stack: Vec<Work> = vec![Work::Node(root, root_top)];
     while let Some(w) = stack.pop() {
@@ -366,6 +383,14 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
             Work::CloseParen => {
                 doc.word(")");
                 doc.end();
+            }
+            Work::CloseBox => doc.end(),
+            Work::TrailComment(text) => {
+                // ` ;text` runs to end of line, so FORCE a break after it — otherwise a following sibling
+                // or the enclosing `)` on the same line would be swallowed into the comment (`#list(1 ;m 2)`
+                // → `2)` eaten). The hardbreak lands the next token on its own line, where it re-reads.
+                doc.word(format!(" ;{}", comment_body_text(a, text)));
+                doc.hardbreak();
             }
             Work::Node(id, top) => match a.get(id) {
                 Struct::Atom(l) => {
@@ -414,6 +439,34 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
                         print_node(a, num, &mut ns);
                         print_node(a, den, &mut ds);
                         doc.word(format!("{ns}/{ds}"));
+                        continue;
+                    }
+                    // A reader COMMENT wrapper re-emits as `;`-syntax (comment-preservation, seq-285) so a
+                    // commented .sexp round-trips byte-for-byte through the PRETTY (fmt) surface. (The single-
+                    // line `print_node` keeps the generic `(comment …)` list — no newline is possible on one
+                    // line — and stays the structural round-trip oracle.) A LEADING `(comment "text" node)`
+                    // prints `; text` on its own line ABOVE the node; a TRAILING `(comment-after "text" node)`
+                    // prints ` ; text` SAME-LINE after it. Both peel via `strip_comments`, so consumers are
+                    // unaffected. Grouped in a `cbox(0)` so the node stays at the comment's indent level.
+                    if let Some(tail) = a.as_form(id, "comment")
+                        && tail.len() == 2
+                        && is_string_leaf(a, tail[0])
+                    {
+                        doc.cbox(0);
+                        doc.word(format!(";{}", comment_body_text(a, tail[0])));
+                        doc.hardbreak();
+                        stack.push(Work::CloseBox);
+                        stack.push(Work::Node(tail[1], top));
+                        continue;
+                    }
+                    if let Some(tail) = a.as_form(id, "comment-after")
+                        && tail.len() == 2
+                        && is_string_leaf(a, tail[0])
+                    {
+                        doc.cbox(0);
+                        stack.push(Work::CloseBox);
+                        stack.push(Work::TrailComment(tail[0]));
+                        stack.push(Work::Node(tail[1], top));
                         continue;
                     }
                     // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
@@ -471,6 +524,25 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
 fn blank_line(doc: &mut Doc) {
     doc.space();
     doc.zerobreak();
+}
+
+/// True if `id` is an `Atom` holding a `Str` leaf — the shape of a comment wrapper's text child.
+fn is_string_leaf(a: &Arenas, id: StructId) -> bool {
+    matches!(a.get(id), Struct::Atom(l) if matches!(a.leaf(*l), Leaf::Str(_)))
+}
+
+/// The body text of a comment wrapper's string leaf, prefixed with a space when non-empty so it renders
+/// as `; text` (and the reader re-reads it with the leading `;`-run + one space stripped). An empty
+/// comment renders as a bare `;`. Mirrors the ML printer's `doc_line_text` for `//`.
+fn comment_body_text(a: &Arenas, text: StructId) -> String {
+    match a.get(text) {
+        Struct::Atom(l) => match a.leaf(*l) {
+            Leaf::Str(s) if s.is_empty() => String::new(),
+            Leaf::Str(s) => format!(" {s}"),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
 }
 
 fn print_leaf(leaf: &Leaf, out: &mut String) {
@@ -887,10 +959,30 @@ fn nativize_compound_impl(src: &str, skip_outputs: bool) -> Result<String, ReadE
     Ok(out)
 }
 
+/// A `;` line-comment captured by [`Reader::skip_ws`] awaiting attachment to the form it annotates
+/// (comment-preservation, seq-285). `text` is the comment body with the leading `;` run and one
+/// following space stripped (mirroring the ML `strip_comment`); `trailing` distinguishes a SAME-LINE
+/// comment (`(export f) ; note` → `(comment-after …)`) from an OWN-LINE one above the next form
+/// (`; note\n(export f)` → leading `(comment …)`), decided by whether a newline preceded it since the
+/// last grammar node was read.
+struct PendingComment {
+    text: String,
+    span: Span,
+    trailing: bool,
+}
+
 struct Reader<'a, 'b> {
     src: &'a [u8],
     pos: usize,
     b: &'b mut Builder,
+    /// Comments consumed by [`Reader::skip_ws`] but not yet attached to a form — drained at each
+    /// sequence boundary (the top-level / list / `#word(…)` element loops and the single-node
+    /// document read). See [`PendingComment`].
+    comments: Vec<PendingComment>,
+    /// True immediately after a grammar node was fully read — so a `;` seen before the next newline is a
+    /// TRAILING comment on that node's line. Cleared when [`Reader::skip_ws`] crosses a newline; starts
+    /// `false` (a file-leading comment is never trailing).
+    after_node: bool,
     /// The current nesting depth of the recursive descent — incremented on entry to each `read_list`
     /// and decremented on exit, so it counts open `(` on the descent path. Past [`MAX_NESTING_DEPTH`]
     /// the reader returns a [`ReadError`] instead of recursing, guarding the native stack against
@@ -908,6 +1000,8 @@ impl<'a, 'b> Reader<'a, 'b> {
             src: text.as_bytes(),
             pos: 0,
             b,
+            comments: Vec::new(),
+            after_node: false,
             depth: 0,
             spans: track.then(|| SpanTable::new(FileId::default())),
         }
@@ -982,22 +1076,87 @@ impl<'a, 'b> Reader<'a, 'b> {
         c
     }
 
-    /// Skip whitespace and `; line comments`.
+    /// Skip whitespace, CAPTURING each `; line comment` as a [`PendingComment`] (rather than discarding it
+    /// as lexical trivia) so it can be attached to the form it annotates — comment-preservation, seq-285.
+    /// A comment is tagged TRAILING when it sits on the same line as the just-read node ([`Self::after_node`]
+    /// still set, no intervening newline); crossing a newline clears that so a following own-line comment is
+    /// LEADING. The comment text has its leading `;`-run and one following space stripped (mirroring the ML
+    /// `strip_comment`); the terminating newline is left for the next loop turn to consume (which clears
+    /// `after_node`), so at most one comment per source line is trailing.
     fn skip_ws(&mut self) {
         loop {
             match self.peek() {
-                Some(b) if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' => self.pos += 1,
+                Some(b' ') | Some(b'\t') | Some(b'\r') => self.pos += 1,
+                Some(b'\n') => {
+                    self.pos += 1;
+                    self.after_node = false;
+                }
                 Some(b';') => {
-                    while let Some(c) = self.peek() {
+                    let start = self.pos;
+                    while self.peek() == Some(b';') {
                         self.pos += 1;
+                    }
+                    // Strip a single following space, mirroring the ML `strip_comment` (`// text` → `text`).
+                    if self.peek() == Some(b' ') {
+                        self.pos += 1;
+                    }
+                    let body_start = self.pos;
+                    while let Some(c) = self.peek() {
                         if c == b'\n' {
                             break;
                         }
+                        self.pos += 1;
                     }
+                    // `body_start..pos` lies between an ASCII `;`/space run and the ASCII `\n`, so it is a
+                    // whole-char UTF-8 slice of the (valid-UTF-8) source.
+                    let text =
+                        String::from_utf8_lossy(&self.src[body_start..self.pos]).into_owned();
+                    let trailing = self.after_node;
+                    self.comments.push(PendingComment {
+                        text,
+                        span: Span::new(start, self.pos),
+                        trailing,
+                    });
                 }
                 _ => break,
             }
         }
+    }
+
+    /// Take the pending comments, split into `(trailing, leading)`: the leading PREFIX of same-line
+    /// (`trailing`) comments belongs to the PREVIOUS node (re-emitted `(comment-after …)`), the remaining
+    /// own-line comments belong to the NEXT node / the enclosing closer (leading `(comment …)`).
+    fn take_pending(&mut self) -> (Vec<PendingComment>, Vec<PendingComment>) {
+        let all = core::mem::take(&mut self.comments);
+        let n = all.iter().take_while(|c| c.trailing).count();
+        let mut it = all.into_iter();
+        let trailing: Vec<PendingComment> = it.by_ref().take(n).collect();
+        let leading: Vec<PendingComment> = it.collect();
+        (trailing, leading)
+    }
+
+    /// Wrap `node` in a leading `(comment "text" node)` for each own-line comment, OUTERMOST = first in
+    /// source order (so stacked `; a` / `; b` above a form nest `(comment "a" (comment "b" form))`, matching
+    /// the ML reader + the compiler's peel-to-innermost). A no-op for an empty run.
+    fn wrap_leading(&mut self, comments: Vec<PendingComment>, mut node: StructId) -> StructId {
+        for c in comments.into_iter().rev() {
+            let head = self.mk_name("comment", c.span);
+            let text = self.mk_atom_leaf(Leaf::Str(c.text.into()), c.span);
+            node = self.mk_list(vec![head, text, node], c.span);
+        }
+        node
+    }
+
+    /// Wrap `node` in a trailing `(comment-after "text" node)` for each same-line comment (in source order).
+    /// Distinct head from the leading wrapper so the printer re-emits it SAME-LINE and `strip_comments`
+    /// peels it identically. A no-op for an empty run.
+    fn wrap_trailing(&mut self, comments: Vec<PendingComment>, mut node: StructId) -> StructId {
+        for c in comments.into_iter() {
+            let head = self.mk_name("comment-after", c.span);
+            let text = self.mk_atom_leaf(Leaf::Str(c.text.into()), c.span);
+            node = self.mk_list(vec![head, text, node], c.span);
+        }
+        node
     }
 
     /// Read a node, then fold any tightly-following `.member` postfixes into member access. This is what
@@ -1007,7 +1166,25 @@ impl<'a, 'b> Reader<'a, 'b> {
     /// `(. operand key)` list, so the round-trip stays stable.
     fn read_node(&mut self) -> Result<StructId, ReadError> {
         let primary = self.read_primary()?;
-        self.read_postfix_members(primary)
+        let node = self.read_postfix_members(primary)?;
+        // A node was fully read: a `;` before the next newline is now a TRAILING comment on its line.
+        self.after_node = true;
+        Ok(node)
+    }
+
+    /// Read ONE top-level node together with any own-line comments ABOVE it (leading `(comment …)`) and a
+    /// same-line comment AFTER it (trailing `(comment-after …)`), so a single commented program round-trips.
+    /// Used by [`read`]/[`read_spanned`]; [`read_all_impl`] applies the equivalent per top-level form.
+    fn read_document(&mut self) -> Result<StructId, ReadError> {
+        self.skip_ws();
+        let (_, leading) = self.take_pending(); // no prior sibling → nothing trailing
+        let node = self.read_node()?;
+        let node = self.wrap_leading(leading, node);
+        self.skip_ws();
+        let (trailing, dangling) = self.take_pending();
+        // Same-line then any own-line comments after the sole node all attach to it (re-emitted after it).
+        let node = self.wrap_trailing(trailing, node);
+        Ok(self.wrap_trailing(dangling, node))
     }
 
     /// Read one primary node (a list, string, sigil form, or atom) — WITHOUT the postfix `.member`
@@ -1138,9 +1315,27 @@ impl<'a, 'b> Reader<'a, 'b> {
         let mut items = Vec::new();
         let result = loop {
             self.skip_ws();
+            let (trailing, leading) = self.take_pending();
+            // A same-line comment attaches to the element it FOLLOWS as `(comment-after …)`.
+            if !trailing.is_empty()
+                && let Some(&last) = items.last()
+            {
+                let wrapped = self.wrap_trailing(trailing, last);
+                *items.last_mut().expect("items non-empty") = wrapped;
+            }
             match self.peek() {
                 None => break Err(ReadError("unterminated list".into())),
                 Some(b')') => {
+                    // An own-line comment sitting before the closer (after the last element) attaches to that
+                    // last element as a LEADING `(comment …)`; like the ML reader's closer-comment handling
+                    // its printed position moves ABOVE the last element (accepted v1 limitation) but it is
+                    // PRESERVED rather than dropped.
+                    if !leading.is_empty()
+                        && let Some(&last) = items.last()
+                    {
+                        let wrapped = self.wrap_leading(leading, last);
+                        *items.last_mut().expect("items non-empty") = wrapped;
+                    }
                     self.bump();
                     // The list spans from `(` through the matching `)` (now consumed, so `self.pos` is
                     // just past). An explicit `(. obj key)` list reads to a native `Member` head.
@@ -1154,7 +1349,8 @@ impl<'a, 'b> Reader<'a, 'b> {
                     break Ok(self.memberize(id, span));
                 }
                 Some(_) => match self.read_node() {
-                    Ok(item) => items.push(item),
+                    // Own-line comments above this element become leading `(comment …)` wrappers on it.
+                    Ok(item) => items.push(self.wrap_leading(leading, item)),
                     Err(e) => break Err(e),
                 },
             }
@@ -1211,6 +1407,15 @@ impl<'a, 'b> Reader<'a, 'b> {
         let mut items = vec![head];
         let result = loop {
             self.skip_ws();
+            let (trailing, leading) = self.take_pending();
+            // A same-line comment attaches to the entry it FOLLOWS as `(comment-after …)`.
+            if !trailing.is_empty()
+                && items.len() > 1
+                && let Some(&last) = items.last()
+            {
+                let wrapped = self.wrap_trailing(trailing, last);
+                *items.last_mut().expect("items non-empty") = wrapped;
+            }
             match self.peek() {
                 None => {
                     break Err(ReadError(format!(
@@ -1219,6 +1424,14 @@ impl<'a, 'b> Reader<'a, 'b> {
                     )));
                 }
                 Some(b')') => {
+                    // An own-line comment before the closer attaches to the last entry (see `read_list`).
+                    if !leading.is_empty()
+                        && items.len() > 1
+                        && let Some(&last) = items.last()
+                    {
+                        let wrapped = self.wrap_leading(leading, last);
+                        *items.last_mut().expect("items non-empty") = wrapped;
+                    }
                     self.bump();
                     break Ok(self.mk_list(items, Span::new(start, self.pos)));
                 }
@@ -1229,6 +1442,8 @@ impl<'a, 'b> Reader<'a, 'b> {
                         } else {
                             item
                         };
+                        // Own-line comments above this entry become leading `(comment …)` wrappers.
+                        let item = self.wrap_leading(leading, item);
                         items.push(item);
                     }
                     Err(e) => break Err(e),
@@ -2544,6 +2759,51 @@ mod tests {
                 print(&b),
                 printed,
                 "print∘read stable for {src:?} (printed {printed:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn line_comments_are_preserved_and_round_trip() {
+        // The reader captures `;` comments as `(comment …)` (own-line, leading) / `(comment-after …)`
+        // (same-line, trailing) nodes rather than dropping them as trivia (comment-preservation, seq-285);
+        // the PRETTY printer re-emits them as `;` lines, and both the pretty and compact surfaces round-trip.
+        for src in [
+            "; a header\n(def (f) 1)",     // leading own-line, top level
+            "(def (f) 1) ; trailing note", // trailing same-line, top level
+            "(do\n  ; lead one\n  (def (f) 1)\n  ; lead two\n  (def (g) 2))", // stacked leading in a list
+            "(match e\n  ; arm note\n  ((Some n) n)\n  ((None _) 0))", // comment before a list element
+            "#list(1 ; mid\n  2)", // comment inside a `#word(…)` compound literal
+        ] {
+            let a = read(src).unwrap();
+            // The comment survived as a node (not dropped as lexical trivia).
+            assert!(
+                (0..a.structure.len() as u32)
+                    .map(StructId)
+                    .any(|id| matches!(a.head_name(id), Some("comment") | Some("comment-after"))),
+                "a comment node is present for {src:?}"
+            );
+            // The PRETTY surface re-emits `;` (not the generic `(comment …)` list) and re-reads to a
+            // structurally-equal arena, and is a formatting fixed point (idempotent).
+            let pretty = print_pretty(&a);
+            assert!(
+                pretty.contains(';'),
+                "pretty re-emits a `;` comment for {src:?}: {pretty:?}"
+            );
+            let b = read(&pretty).unwrap();
+            assert!(
+                a.structurally_eq(&b),
+                "pretty round-trips structurally for {src:?}\n  a:      {}\n  pretty: {pretty}\n  b:      {}",
+                print(&a),
+                print(&b)
+            );
+            assert_eq!(print_pretty(&b), pretty, "pretty is idempotent for {src:?}");
+            // The single-line printer keeps the generic `(comment …)` list (the round-trip oracle) and
+            // also re-reads structurally equal.
+            let compact = print(&a);
+            assert!(
+                a.structurally_eq(&read(&compact).unwrap()),
+                "compact round-trips for {src:?} (printed {compact:?})"
             );
         }
     }

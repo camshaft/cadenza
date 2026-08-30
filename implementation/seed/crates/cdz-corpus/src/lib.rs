@@ -492,7 +492,11 @@ pub fn read(text: &str) -> Result<Vec<Record>, String> {
         _ => return Ok(Vec::new()),
     };
     let mut records = Vec::new();
-    for &case_id in top {
+    for &top_id in top {
+        // A leading `;`/`//` comment above a top-level `(case …)` reifies to a `(comment "…" (case …))`
+        // wrapper (comment-preservation, seq-285); peel it so the case head is found. Read-only — the
+        // comment stays in the tree for the fmt/round-trip path, it just does not hide the case here.
+        let case_id = arenas.peel_comments(top_id);
         if arenas.head_name(case_id) == Some("case") {
             match parse_case(&arenas, case_id) {
                 Ok(r) => records.push(r),
@@ -515,7 +519,9 @@ pub fn read_platform(text: &str) -> Result<Vec<PlatformRecord>, String> {
         _ => return Ok(Vec::new()),
     };
     let mut records = Vec::new();
-    for &case_id in top {
+    for &top_id in top {
+        // Peel a leading comment wrapper (see [`read`]) so a `;`/`//`-commented platform case is found.
+        let case_id = arenas.peel_comments(top_id);
         if arenas.head_name(case_id) == Some("platform-case") {
             records.push(parse_platform_case(&arenas, case_id)?);
         }
@@ -903,10 +909,11 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         cadenza_syntax::ast::Struct::List(items) => items,
         _ => return Err("case is not a list".into()),
     };
-    // `(case "<desc>" <clause>…)` — the description is the first string child.
+    // `(case "<desc>" <clause>…)` — the description is the first string child (peel a comment wrapper
+    // that a `;`/`//` above it would introduce under comment-preservation).
     let description = items
         .get(1)
-        .and_then(|&id| string_leaf(a, id))
+        .and_then(|&id| string_leaf(a, a.peel_comments(id)))
         .ok_or("case has no description string")?;
 
     let mut input: Option<StructId> = None;
@@ -932,6 +939,10 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut pending_call: Option<Call> = None;
 
     for &clause in &items[2..] {
+        // Peel a leading `;`/`//` comment wrapper around a case clause so it dispatches on the clause head
+        // (comment-preservation). The comment stays in the tree for printing; only clause CONTENTS (an
+        // `(input …)` program) keep their internal comments — those are handed to the compiler, which peels.
+        let clause = a.peel_comments(clause);
         match a.head_name(clause) {
             Some("input") => {
                 input = a.as_form(clause, "input").and_then(|t| t.first().copied());
@@ -1306,7 +1317,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
     };
     let title = items
         .get(1)
-        .and_then(|&id| string_leaf(a, id))
+        .and_then(|&id| string_leaf(a, a.peel_comments(id)))
         .ok_or("platform-case has no title string")?;
 
     let mut doc: Option<String> = None;
@@ -1324,6 +1335,8 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
     let mut recover_checks: Vec<String> = Vec::new();
 
     for &clause in &items[2..] {
+        // Peel a leading `;`/`//` comment wrapper around a platform-case clause (see [`parse_case`]).
+        let clause = a.peel_comments(clause);
         match a.head_name(clause) {
             Some("doc") => {
                 doc = a

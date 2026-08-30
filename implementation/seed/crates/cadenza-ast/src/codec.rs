@@ -691,6 +691,88 @@ mod tests {
         assert_eq!(bytes, encode(&back));
     }
 
+    /// Build `(comment "text" node)` around `node`.
+    fn comment(b: &mut Builder, text: &str, node: StructId) -> StructId {
+        let head = b.name("comment");
+        let t = b.atom_leaf(Leaf::Str(text.into()));
+        b.list(vec![head, t, node])
+    }
+
+    /// Build `(comment-after "text" node)` around `node`.
+    fn comment_after(b: &mut Builder, text: &str, node: StructId) -> StructId {
+        let head = b.name("comment-after");
+        let t = b.atom_leaf(Leaf::Str(text.into()));
+        b.list(vec![head, t, node])
+    }
+
+    #[test]
+    fn comment_wrappers_survive_the_codec_as_ordinary_nodes() {
+        // Comment-preservation (seq-285) OPTION C: a comment rides the binary AST as an ORDINARY Name-head
+        // `(comment …)` / `(comment-after …)` list node — no dedicated leaf kind — so it survives
+        // read→encode→decode→print unchanged. This pins the invariant the whole feature rests on: a future
+        // codec change cannot silently drop comment nodes.
+        let mut b = Builder::new();
+        let one = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(1),
+            radix: Radix::Dec,
+        });
+        let x = b.name("x");
+        // Stacked leading comments + a trailing comment, mixed around real forms.
+        let inner_b = comment(&mut b, "b", x);
+        let commented = comment(&mut b, "a", inner_b);
+        let trailed = comment_after(&mut b, "trailing note", one);
+        let root = b.list(vec![commented, trailed]);
+        let a = b.finish(root);
+
+        let bytes = encode(&a);
+        let back = decode(&bytes).expect("decode");
+        // The decoded tree is structurally equal (the codec canonicalizes leaf-pool order, so compare by
+        // structure, not the raw `==` that also pins pool order).
+        assert!(
+            a.structurally_eq(&back),
+            "comment nodes survive encode→decode structurally"
+        );
+        // Byte-identity of the canonical encoding (the codec is a deterministic fixed point).
+        assert_eq!(bytes, encode(&back), "re-encoding is byte-identical");
+        // The comment wrappers are still present + peelable after the round-trip.
+        assert!(
+            (0..back.structure.len() as u32)
+                .map(StructId)
+                .any(|id| back.comment_wrapped_form(id).is_some()),
+            "comment wrappers present after decode"
+        );
+    }
+
+    #[test]
+    fn peel_comments_follows_the_wrapper_chain_to_the_annotated_form() {
+        let mut b = Builder::new();
+        let head = b.name("case");
+        let inner = b.list(vec![head]); // a `(case)` form
+        // A stacked leading + trailing wrapper chain around it.
+        let trailed = comment_after(&mut b, "trail", inner);
+        let wrapped = comment(&mut b, "hdr", trailed);
+        let plain = b.name("bare");
+        let root = b.list(vec![wrapped, plain]);
+        let a = b.finish(root);
+
+        // The wrapper chain peels to the inner `(case)` form; the head is then found.
+        assert_eq!(a.peel_comments(wrapped), inner);
+        assert_eq!(a.head_name(a.peel_comments(wrapped)), Some("case"));
+        // One-layer accessor unwraps exactly one level (to the `(comment-after …)` node), which itself
+        // peels the rest of the way to the inner form.
+        let one = a
+            .comment_wrapped_form(wrapped)
+            .expect("outer comment unwraps one level");
+        assert_ne!(
+            one, inner,
+            "one layer is the comment-after node, not yet the inner form"
+        );
+        assert_eq!(a.peel_comments(one), inner);
+        // A non-comment node peels to itself; `comment_wrapped_form` is `None`.
+        assert_eq!(a.peel_comments(plain), plain);
+        assert_eq!(a.comment_wrapped_form(plain), None);
+    }
+
     #[test]
     fn value_encode_of_a_framed_int_tuple_is_the_colon_framed_golden() {
         // CROSS-BACKEND byte-identity pin (mirror of cdz-runtime's
