@@ -1185,6 +1185,10 @@ impl<'a> Parser<'a> {
     fn prefix(&mut self) -> StructId {
         let span = self.cur_span();
         match self.kind() {
+            // NOTE (seq-204): there is NO ML rational LITERAL — the operator dropped the `r` glyph and
+            // unspaced `3/2` is Int64 division, so the lexer never emits a rational token. A native rational
+            // VALUE node `(RationalTag <num> <den>)` is built by the compiler (const-fold / `(/ n d)`
+            // grounding), never parsed from a scalar literal; the printer still renders such a node `num/den`.
             Kind::Int | Kind::Float => {
                 let t = self.bump().unwrap();
                 let text = self.text(t).to_string();

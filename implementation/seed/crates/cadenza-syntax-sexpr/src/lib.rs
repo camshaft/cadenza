@@ -219,6 +219,18 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
                         stack.push(Work::Node(obj));
                         continue;
                     }
+                    // A native RATIONAL node `(RationalTag <num> <den>)` (seq-204) → the scalar literal
+                    // `<num>/<den>` (`3/2`, slash no space; operator seq-204 dropped the `r` glyph). The
+                    // sexpr surface CAN spell it with `/` because sexpr division is the PREFIX `(/ a b)`, so
+                    // a bare `3/2` atom never collides (unlike the ML surface). Re-reads STRAIGHT back to the
+                    // tag via `split_rational_literal`. NO `#rational` wrapper (that is only the bare-atom
+                    // fallback marker). Push reverse: den, "/", num → pops num, "/", den.
+                    if let Some((num, den)) = a.rational_parts(id) {
+                        stack.push(Work::Node(den));
+                        stack.push(Work::Str("/"));
+                        stack.push(Work::Node(num));
+                        continue;
+                    }
                     out.push('(');
                     // Push in reverse: closing paren first (popped last), then children interleaved with
                     // single-space separators so they pop child_0, " ", child_1, …, ")".
@@ -392,6 +404,18 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool) {
                         }
                         continue;
                     }
+                    // A native rational `(RationalTag num den)` (seq-204) → the FLAT scalar literal
+                    // `<num>/<den>` (`3/2`, slash no space; operator seq-204 dropped `r`). Safe in sexpr
+                    // (division is prefix `(/ a b)`, so a bare `3/2` atom never collides); re-reads straight
+                    // to the tag. Always short (two int leaves), so emit it as one word, never broken —
+                    // mirrors `print_node`'s rational arm.
+                    if let Some((num, den)) = a.rational_parts(id) {
+                        let (mut ns, mut ds) = (String::new(), String::new());
+                        print_node(a, num, &mut ns);
+                        print_node(a, den, &mut ds);
+                        doc.word(format!("{ns}/{ds}"));
+                        continue;
+                    }
                     // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
                     // child break fires, so each child lands on its own line indented one level under the
                     // head. The head hugs the `(`; the closing `)` hugs the last child (no dangling paren).
@@ -510,6 +534,11 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         Leaf::Ctor(c) => out.push_str(compound_ctor_word(*c)),
         Leaf::FieldPair => out.push('='),
         Leaf::Member => out.push('.'),
+        // A native rational TAG leaf (seq-204) appearing as a BARE atom — i.e. NOT as the head of a
+        // well-formed `(RationalTag <num> <den>)` node (that list form is resugared to `num/den` at the
+        // list level, in `print_node` / the pretty printer). A stray tag alone has no operands to render,
+        // so it falls back to the marker word `#rational` (mirrors the `#ctor`-style bare-head fallbacks).
+        Leaf::Rational => out.push_str("#rational"),
     }
 }
 
@@ -1528,6 +1557,18 @@ impl<'a, 'b> Reader<'a, 'b> {
             return node;
         }
         let span = Span::new(start, start + tok.len());
+        // A native RATIONAL literal `<int>/<int>` (`3/2`; seq-204) — a sexpr-only value literal (the ML
+        // surface has none: unspaced `3/2` is Int64 division there). Recognized BEFORE `classify_word`
+        // (which would classify `3/2` as a Name). Split on the `/` marker → an integer numerator (optional
+        // leading `-`) + integer denominator → the node `(RationalTag <num-int> <den-int>)` (two Int
+        // leaves). Safe because sexpr division is the PREFIX `(/ a b)`, so a bare `3/2` atom is never a
+        // division. The operator dropped the `r` glyph in seq-204 ("stick with 3/2 with no space").
+        if let Some((num_s, den_s)) = split_rational_literal(tok) {
+            let num = self.mk_atom_leaf(cadenza_syntax_core::literal::classify_word(num_s), span);
+            let den = self.mk_atom_leaf(cadenza_syntax_core::literal::classify_word(den_s), span);
+            let tag = self.mk_atom_leaf(Leaf::Rational, span);
+            return self.mk_list(vec![tag, num, den], span);
+        }
         // Classify the word. A NUMBER/BOOL is a non-Name leaf (interned by value); a NAME is interned
         // by its `&str` slice via `leaf_name` — allocating an owned `String` only on a dedup MISS, not
         // for every occurrence (`classify_word` would `to_string()` the name eagerly and discard it on
@@ -1557,6 +1598,20 @@ impl<'a, 'b> Reader<'a, 'b> {
 /// True for an `a.b`(`.c…`) segmented identifier: at least one dot, every segment non-empty and
 /// starting with a letter or `_` (so a float like `3.5` never reaches here — its segments are
 /// digit-led).
+/// Split a native rational literal token `<int>/<int>` (`3/2`, `-3/2`; seq-204) into its
+/// `(numerator, denominator)` decimal strings, or `None` if `tok` is not exactly that shape. The
+/// numerator may carry a leading `-` (the sign rides the numerator, per the normalized value form);
+/// both sides must be NON-EMPTY, all-decimal digits (so `Unit./`, `a/b`, `1/2/3` are NOT rationals).
+/// The `/` glyph is unambiguous ON THE SEXPR SURFACE ONLY — sexpr division is the prefix `(/ a b)`, so
+/// a bare `3/2` atom never collides. (The ML surface has NO rational literal: unspaced `3/2` is Int64
+/// division there.) The operator dropped the `r` glyph in seq-204 ("stick with 3/2, no space").
+fn split_rational_literal(tok: &str) -> Option<(&str, &str)> {
+    let (num, den) = tok.split_once('/')?;
+    let num_digits = num.strip_prefix('-').unwrap_or(num);
+    let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (all_digits(num_digits) && all_digits(den)).then_some((num, den))
+}
+
 fn is_dotted_name(tok: &str) -> bool {
     if !tok.contains('.') {
         return false;
@@ -2851,6 +2906,33 @@ mod tests {
         assert_eq!(leaf_of("#\\u+D800"), Leaf::BadChar("u+D800".into()));
         // A code point past U+10FFFF is likewise a BadChar.
         assert_eq!(leaf_of("#\\u+110000"), Leaf::BadChar("u+110000".into()));
+    }
+
+    #[test]
+    fn native_rational_literal_round_trips_and_recognizes() {
+        // seq-204: a native rational is the scalar literal `<num>/<den>` (`3/2`, slash no space; the operator
+        // dropped the `r` glyph) — reads to the `(RationalTag <num-int> <den-int>)` node (NOT a Name) and
+        // prints back byte-exact. Safe ON THE SEXPR SURFACE because division is the prefix `(/ a b)`, so a
+        // bare `3/2` atom never collides (the ML surface has NO such literal — there `3/2` is division).
+        for src in ["3/2", "-3/2", "22/7", "1/3"] {
+            let a = read(src).unwrap();
+            let (num, den) = a
+                .rational_parts(a.root)
+                .expect("reads to a native rational node");
+            // children are ordinary Int leaves
+            assert!(matches!(a.get(num), Struct::Atom(_)));
+            assert!(matches!(a.get(den), Struct::Atom(_)));
+            assert_eq!(print(&a), src, "rational prints back byte-exact");
+            assert_eq!(print_pretty(&a), src, "pretty printer agrees");
+            // codec round-trip
+            let bytes = cadenza_ast::codec::encode(&a);
+            let b = cadenza_ast::codec::decode(&bytes).expect("decode");
+            assert!(a.structurally_eq(&b), "codec round-trip changed {src}");
+        }
+        // A token that is NOT a strict `<digits>/<digits>` is NOT a rational — these stay plain names.
+        for name in ["err", "foo-bar", "list"] {
+            assert_eq!(print(&read(name).unwrap()), name, "{name} stays a name");
+        }
     }
 
     #[test]

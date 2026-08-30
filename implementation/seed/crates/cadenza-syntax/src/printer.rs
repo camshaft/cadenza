@@ -286,6 +286,25 @@ impl<'a> Printer<'a> {
                 self.leaf(&leaf);
             }
             Struct::List(items) => {
+                // A native RATIONAL value `(RationalTag <num-int> <den-int>)` (seq-204) renders as the
+                // mathematical `num/den` (slash, NO space) — the operator's seq-204 ruling ("stick with 3/2
+                // with no space", dropped the `r` glyph, which collided with the unit-suffix). DISPLAY mode
+                // drops an integral `/1` (`8/1` → `8`, the REPL/notebook value surface); CANONICAL keeps it.
+                // The sign stays on the numerator. There is NO ML rational LITERAL (unspaced `3/2` is Int64
+                // division), so `3/2` is a value-render form only, not a source round-trip — a rational
+                // reaches ML source via `(/ n d)`-style construction. NO `Rational.of` resugar, NO `(: …
+                // Rational)` ascription (operator's "native value, no sugar/desugar"). Rendered here at the
+                // list level because the tag is a payloadless head (FieldPair/Member); children are Int atoms.
+                if let Some((num, den)) = self.a.rational_parts(id) {
+                    if self.display && self.a.as_int_usize(den) == Some(1) {
+                        self.expr(num, 0);
+                        return;
+                    }
+                    self.expr(num, 0);
+                    self.doc.word("/");
+                    self.expr(den, 0);
+                    return;
+                }
                 // Depth guard: `expr` is the printer's single recursion hub (every mutually-recursive
                 // shape helper reaches a child through it). Only a `List` descends, so guard HERE. Past
                 // MAX_PRINT_DEPTH (far above any reader-parseable nesting) emit an elision instead of
@@ -320,18 +339,6 @@ impl<'a> Printer<'a> {
             // `Leaf::Sym`, so the round-trip is preserved either way.
             Leaf::Sym(s) if sym_is_bare_safe(s) => self.doc.word(format!("#{s}")),
             Leaf::Sym(s) => self.doc.word(format!("#\"{}\"", literal::escape_string(s))),
-            // A `Rational` value is a `Name` leaf spelled `num/den` (there is no rational reader
-            // literal; the canonical printer must backtick-quote it, since bare `1/4` re-lexes as the
-            // division `1 / 4`). In DISPLAY mode that round-trip constraint does not apply, so it prints
-            // bare — and an integral rational drops its `/1` denominator (`8/1` → `8`).
-            Leaf::Name(n) if self.display && rational_name(n).is_some() => {
-                let (num, den) = rational_name(n).unwrap();
-                if den == "1" {
-                    self.doc.word(num.to_string());
-                } else {
-                    self.doc.word(format!("{num}/{den}"));
-                }
-            }
             Leaf::Name(n) => self.doc.word(emit_name(n)),
             // A bad-escape MARKER round-trips back to `"\<c>"` so the printed form re-reads to the same
             // marker (the defect survives the round-trip rather than being silently lost).
@@ -349,6 +356,10 @@ impl<'a> Printer<'a> {
             Leaf::Ctor(c) => self.doc.word(crate::sexpr::compound_ctor_word(*c)),
             Leaf::FieldPair => self.doc.word("="),
             Leaf::Member => self.doc.word("."),
+            // A BARE native-rational TAG leaf (not the head of a well-formed `(RationalTag num den)` node —
+            // that list form renders `num/den` in `expr`). A stray tag has no operands, so it falls back to
+            // the marker word `#rational`.
+            Leaf::Rational => self.doc.word("#rational"),
         }
     }
 
@@ -479,31 +490,10 @@ impl<'a> Printer<'a> {
             {
                 return self.expr(args[0], parent_prec);
             }
-            // ---- rational VALUE resugar: `(: <n/d> Rational)` -> `Rational.of(n, d)` ----
-            // A rational VALUE form carries its magnitude as a `Name` leaf of the shape `n/d` (the
-            // canonical s-expr value form `(: 1/3 Rational)`). On the ML surface a bare `n/d` is NOT a
-            // rational — it lexes as the DIVISION `(/ n d)` — so `emit_name` would have to backtick-quote
-            // it (`` `1/3` ``) to round-trip, which reads as an ugly operator-name. Instead resugar the
-            // whole value form to the constructor `Rational.of(n, d)`, which IS re-readable ML for the
-            // same rational (`(. Rational of) n d`) and reads cleanly. Only a value form (a `Name` of
-            // exactly `[-]digits/digits`) annotated `Rational` matches; a source rational is written
-            // `Rational.of`/`1R`/`(: 5 Rational)` and is unaffected. (The s-expr surface keeps the pinned
-            // `(: n/d Rational)` value form — this resugar is ML-only, and the rational value form appears
-            // only in value OUTPUT, never a corpus INPUT, so the ML round-trip contract is untouched.)
-            if head == ":"
-                && args.len() == 2
-                && self.head_name(args[1]) == Some("Rational".to_string())
-                && let Struct::Atom(l) = self.a.get(args[0])
-                && let Leaf::Name(n) = self.a.leaf(*l)
-                && let Some((num, den)) = split_rational_name(n)
-            {
-                // Render as `Rational.of(num, den)` — the member-access call the ML reader parses back to
-                // `((. Rational of) num den)`, an admissible rational construction.
-                self.doc.ibox(0);
-                self.doc.word(format!("Rational.of({num}, {den})"));
-                self.doc.end();
-                return;
-            }
+            // NOTE (seq-204): NO legacy `(: <n/d> Rational)` → `Rational.of(n, d)` resugar. A rational is
+            // now the native `(RationalTag num den)` node, rendered `num/den` at the list level (see `expr`);
+            // there is no `Name("n/d")` value form to resugar. (The operator's "native value, no
+            // sugar/desugar" — the `Rational.of` resugar was the pre-native workaround for a Name-leaf.)
             // ---- function type `(-> A B)` -> `A -> B` (right-associative) ----
             if head == "->" && args.len() == 2 {
                 return self.arrow(args[0], args[1], parent_prec);
@@ -4414,49 +4404,11 @@ impl<'a> Printer<'a> {
     }
 }
 
-/// If `n` is the canonical spelling of a `Rational` value — an optional leading `-` then
-/// `<digits>/<digits>` with a non-empty, all-decimal numerator and denominator — return its
-/// `(numerator, denominator)` halves (the sign staying on the numerator). This is the `num/den`
-/// NAME leaf the compiler renders a rational value as; there is no rational reader literal, so it is
-/// carried as a `Leaf::Name`. Used only by the DISPLAY surface to print it bare (`1/4`) and to elide
-/// an integral denominator (`8/1` → `8`). Returns `None` for any other name (a plain identifier,
-/// `a/b` over non-digits, a bare integer with no slash), which prints as an ordinary name.
-fn rational_name(n: &str) -> Option<(&str, &str)> {
-    let (num, den) = n.split_once('/')?;
-    // The numerator may carry a leading sign; the digits after it, and all of the denominator, must
-    // be decimal digits (and each half non-empty). A `+` sign is not part of the canonical form.
-    let num_digits = num.strip_prefix('-').unwrap_or(num);
-    let digits_ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    if digits_ok(num_digits) && digits_ok(den) {
-        Some((num, den))
-    } else {
-        None
-    }
-}
-
 /// True iff `head` is a unit-EXPONENTIATION head (arena `^` or the qualified `Unit.^`) — the one unit
 /// composition whose right operand is an integer exponent, not a nested unit. The display unit renderer
 /// prints that operand as a plain expression while recursing into the unit operands of `*`/`/`.
 fn head_glyph_is_pow(head: &str) -> bool {
     infix_glyph(head) == "^"
-}
-
-/// A name prints bare when it re-lexes to exactly itself as a single `Ident`/operator token AND is
-/// not a reserved word; otherwise it is backtick-quoted. This is the lossless escape for symbolic
-/// heads (`|`, `+`, `->`), keyword-shaped names (`let`, `in`), and anything that would otherwise
-/// lex as something else.
-/// Split a rational VALUE-form name `[-]num/den` into its `(num, den)` decimal-digit strings, or `None`
-/// if `s` is not exactly that shape. Used to resugar `(: <n/d> Rational)` → `Rational.of(n, d)` on the
-/// ML surface. STRICT: a single `/`, non-empty all-ASCII-digit numerator (optionally a leading `-`) and
-/// denominator — so an ordinary name with a slash, or a partial/garbage form, is left to `emit_name`.
-fn split_rational_name(s: &str) -> Option<(&str, &str)> {
-    let (num, den) = s.split_once('/')?;
-    if den.contains('/') {
-        return None; // more than one `/` — not a rational value form
-    }
-    let num_digits = num.strip_prefix('-').unwrap_or(num);
-    let ok = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
-    (ok(num_digits) && ok(den)).then_some((num, den))
 }
 
 /// Escape a tagged-template literal CHUNK for re-emission between the quotes of `tag"…"`: apply the
@@ -6203,15 +6155,13 @@ mod tests {
             let a = sexpr::read(src).unwrap();
             print_display(&a, 80)
         };
-        // A rational value is a `Name("1/4")` leaf. The canonical printer keeps it re-readable — a
-        // resugar to the ML constructor `Rational.of(n, d)` (the round-trip surface can't spell a bare
-        // `1/3`, which re-lexes as division); display prints just the bare number.
+        // A rational value is the native `(RationalTag num den)` node (seq-204). DISPLAY renders the
+        // mathematical `num/den` (bare), dropping an integral `/1`. The sexpr surface spells the literal
+        // `num/den` (slash) and reads it straight back to the node — safe because sexpr division is the
+        // prefix `(/ a b)`.
         assert_eq!(disp("(: 1/3 Rational)"), "1/3");
-        assert_eq!(
-            print(&sexpr::read("(: 1/3 Rational)").unwrap(), 80),
-            "Rational.of(1, 3)"
-        );
-        // An integral rational drops its `/1` denominator.
+        assert_eq!(print(&sexpr::read("1/3").unwrap(), 80), "1/3");
+        // An integral rational drops its `/1` denominator in display.
         assert_eq!(disp("(: 8/1 Rational)"), "8");
         // A negative rational keeps its sign on the numerator.
         assert_eq!(disp("(: -1/2 Rational)"), "-1/2");
@@ -9160,39 +9110,6 @@ mod tests {
     }
 
     #[test]
-    fn rational_value_form_resugars_to_constructor_not_backtick() {
-        // A rational VALUE form `(: n/d Rational)` carries its magnitude as a `Name("n/d")`. On the ML
-        // surface a bare `n/d` is division, so `emit_name` would backtick-quote it (`` `1/3` ``) — a bug
-        // the resugar replaces with the re-readable constructor `Rational.of(n, d)`.
-        for (sexpr_form, want) in [
-            ("(: 1/3 Rational)", "Rational.of(1, 3)"),
-            ("(: 5/1 Rational)", "Rational.of(5, 1)"),
-            ("(: -3/4 Rational)", "Rational.of(-3, 4)"),
-        ] {
-            let a = sexpr::read(sexpr_form).unwrap();
-            let printed = print(&a, 80);
-            assert_eq!(printed.trim(), want, "{sexpr_form} should resugar");
-            assert!(!printed.contains('`'), "no backticks: {printed}");
-            // Re-readable: the ML parses back + re-prints identically (idempotent).
-            let reparsed = parser::read_ml(&printed);
-            assert!(reparsed.ok(), "{want} re-reads");
-            assert_eq!(
-                print(&reparsed.arenas, 80).trim(),
-                want,
-                "{want} is idempotent"
-            );
-        }
-        // A NON-rational name with a slash is NOT resugared (still backtick-escaped as a name) — the
-        // resugar is strict (annotated `Rational` + a `digits/digits` name only).
-        let a = sexpr::read("(: a/b Rational)").unwrap();
-        let printed = print(&a, 80);
-        assert!(
-            !printed.contains("Rational.of"),
-            "a/b is not a rational value: {printed}"
-        );
-    }
-
-    #[test]
     fn reserved_name_backtick_escaped() {
         // A name literally "let" must print backtick-escaped so it round-trips as a name.
         let a = sexpr::read("(f let)").unwrap(); // s-expr: `let` is an ordinary atom here
@@ -9458,6 +9375,21 @@ mod tests {
         assert_eq!(assert_roundtrip("1.5", 80), "1.5");
         assert_eq!(assert_roundtrip("1000000", 80), "1000000");
         assert_eq!(assert_roundtrip("0b1010", 80), "0b1010");
+    }
+
+    #[test]
+    fn ml_has_no_rational_literal_slash_is_int64_division() {
+        // seq-204: the operator DROPPED the `r` rational glyph, and there is NO bare `<num>/<den>` rational
+        // literal on the ML surface — unspaced `3/2` is Int64 integer division `(/ 3 2)`, identical to the
+        // spaced `3 / 2`. (A rational VALUE node still renders `num/den` — see the sexpr-sourced
+        // `display_surface_renders_values_readably`; ML SOURCE reaches a rational via `(/ n d)`-style
+        // construction, never a scalar literal, per the operator's "native value, no sugar/desugar".)
+        let spaced = assert_roundtrip("3 / 2", 80);
+        let unspaced = assert_roundtrip("3/2", 80);
+        assert_eq!(
+            spaced, unspaced,
+            "unspaced `3/2` is the same Int64 division as `3 / 2`, not a rational literal"
+        );
     }
 
     #[test]

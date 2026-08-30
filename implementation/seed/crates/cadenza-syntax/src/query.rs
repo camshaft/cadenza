@@ -3925,6 +3925,7 @@ pub mod hash {
     const TAG_CTOR: u8 = 0x0e;
     const TAG_FIELD_PAIR: u8 = 0x0f;
     const TAG_MEMBER: u8 = 0x10;
+    const TAG_RATIONAL: u8 = 0x11;
 
     /// The 64-bit content hash of `t` (first 8 bytes of the SHA-256 Merkle digest, big-endian).
     pub fn hash_tree(t: &Tree) -> u64 {
@@ -4016,6 +4017,7 @@ pub mod hash {
             Leaf::Ctor(c) => h.update([TAG_CTOR, *c as u8]),
             Leaf::FieldPair => h.update([TAG_FIELD_PAIR]),
             Leaf::Member => h.update([TAG_MEMBER]),
+            Leaf::Rational => h.update([TAG_RATIONAL]),
         }
     }
 

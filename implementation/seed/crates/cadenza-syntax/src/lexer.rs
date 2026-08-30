@@ -470,6 +470,11 @@ impl<'a> Lexer<'a> {
         while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '_') {
             end = self.bump().unwrap().span;
         }
+        // There is NO native rational LITERAL on the ML surface (seq-204): the operator dropped the `r`
+        // glyph (`3r2`), and unspaced `3/2` is Int64 integer division, so a bare literal cannot spell a
+        // rational unambiguously. A rational reaches ML source via `(/ n d)`-style construction (which the
+        // compiler grounds to a normalized `Rational`), never a scalar literal; the printer still RENDERS a
+        // native rational VALUE node as `num/den` (a value surface, not a source round-trip).
         // fractional part: `.` followed by a digit.
         if self.peek() == Some('.') && self.peek2().is_some_and(|c| c.is_ascii_digit()) {
             is_float = true;
