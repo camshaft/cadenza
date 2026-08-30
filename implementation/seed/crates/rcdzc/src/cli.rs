@@ -741,11 +741,15 @@ pub fn run_prepared_with_overflow(
     // output — it does not count toward the "single artifact ⇒ exact file" / `-o -` decisions (else a
     // plain `-o app.wasm` component build would flip to directory mode the moment a package emits one).
     // It is written only in DIRECTORY mode (as `link-map.txt`); a `-o FILE` / `-o -` build, which names
-    // one output, skips it.
+    // one output, skips it. The bytes-second `result-types` map (`KIND_RESULT_TYPES`) is the SAME kind of
+    // metadata companion (it rides IN the component as a custom section; the standalone artifact is an
+    // in-process convenience) — exclude it too, else EVERY wit-export build flips to directory mode the
+    // moment the export result-type map is emitted (which broke `-o FILE` component builds → a compile
+    // decline across the wit-world/typed-export family).
     let primary: Vec<&Artifact> = out
         .artifacts
         .iter()
-        .filter(|a| a.kind != crate::link::KIND_LINK_MAP)
+        .filter(|a| a.kind != crate::link::KIND_LINK_MAP && a.kind != Artifact::KIND_RESULT_TYPES)
         .collect();
 
     // `-o -`: write the single produced artifact's bytes to stdout (so the bin composes in a pipe:
@@ -797,6 +801,14 @@ pub fn run_prepared_with_overflow(
     // write everything (the `link-map` lands as `link-map.txt` beside the outputs).
     for art in &out.artifacts {
         if single_file_out.is_some() && art.kind == crate::link::KIND_LINK_MAP {
+            continue;
+        }
+        // The bytes-second `result-types` map is NEVER a file output: it rides IN the component (a
+        // `cdz-result-type` custom section) + the standalone artifact is an in-process convenience. Skip it
+        // in BOTH modes — in single-file mode it would OVERWRITE the component (same `-o FILE` path, written
+        // after it); in directory mode a `<name>.result-types` file is a redundant stray. (Consumers read it
+        // from `out.artifact` in-process or byte-scan the component section — never from a file.)
+        if art.kind == Artifact::KIND_RESULT_TYPES {
             continue;
         }
         let path = match single_file_out {

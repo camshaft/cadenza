@@ -38,6 +38,11 @@ impl Artifact {
 
     /// The canonical-binary-AST input artifact kind.
     pub const KIND_AST: &'static str = "ast";
+
+    /// The GUEST export RESULT-TYPE map artifact kind (bytes-second run-wiring): `<name>\t<Ty::render_name>`
+    /// lines an IN-PROCESS consumer reads to disambiguate a WIT-erased leaf at render (`render_val_typed`).
+    /// ALSO embedded as a `cdz-result-type` component custom section for the multi-process (piped) run path.
+    pub const KIND_RESULT_TYPES: &'static str = "result-types";
 }
 
 /// A diagnostic's severity. An error denies the artifact; a warning rides alongside a produced one —

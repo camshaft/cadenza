@@ -51589,3 +51589,39 @@ fn collect_static_compounds_gathers_markable_roots_only() {
         "a runtime tuple must not be collected"
     );
 }
+
+/// bytes-second run-wiring (compiler side): `compile` surfaces the GUEST export result-type map as a
+/// `KIND_RESULT_TYPES` artifact (`<name>\t<Ty::render_name>`) AND embeds it as a `cdz-result-type`
+/// component custom section (the piped-run path byte-scans it for `render_val_typed`'s leaf disambiguation).
+#[test]
+fn compile_emits_the_result_type_map_artifact_and_component_custom_section() {
+    use crate::testkit::parse;
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(
+                "(module m (def (g) (Bytes.of (list 65 66))) (export g))",
+            )),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    // The KIND_RESULT_TYPES artifact carries the export→Ty map (g → Bytes).
+    let map = out
+        .artifact(crate::abi::Artifact::KIND_RESULT_TYPES)
+        .expect("a result-types artifact");
+    let map_s = String::from_utf8_lossy(map);
+    assert!(
+        map_s.contains("g\t") && map_s.contains("Bytes"),
+        "the result-type map records g → Bytes: {map_s:?}"
+    );
+    // The component bytes embed the `cdz-result-type` custom section (the piped-run byte-scan target).
+    let comp = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("a component artifact");
+    let needle = b"cdz-result-type";
+    assert!(
+        comp.windows(needle.len()).any(|w| w == needle),
+        "the component embeds the cdz-result-type custom section"
+    );
+}
