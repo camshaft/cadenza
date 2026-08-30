@@ -1100,12 +1100,21 @@ fn compile_with_opt_inner(
             .iter()
             .map(|e| (e.name.clone(), crate::infer::type_of(&mut db, e.body)))
             .collect();
-        let ncx = db.name_ctx();
-        let map_lines: Vec<String> = export_tys
+        // seq-284/307 (operator ruling B: "full type AST, no render-name strings across boundaries"): the
+        // guest RESULT-TYPE map carries each export's FULL structured `Ty` as a cadenza-ast payload
+        // (`encode_ty_payload`), NOT a `<name>\t<render_name>` line — so `cdz-run`/v-rust-backend render
+        // from the DECODED `Ty` (`render_val_typed`) rather than parsing a string. Build a standalone
+        // `Arenas` per export (extract the `encode_ty_payload` subtree out of `db.ast`, exactly as the
+        // `KIND_EXPORT_TYPES` producer does) + frame them via the shared codec `encode_result_types`
+        // (mirrors `export_types_wire`; total-decode). One `Ty→AST` encoding, one canonical wire.
+        let entries: Vec<(String, crate::ast::Arenas)> = export_tys
             .iter()
-            .map(|(name, ty)| format!("{}\t{}", name, ty.render_name(&ncx)))
+            .map(|(name, ty)| {
+                let root = crate::eval::encode_ty_payload(&mut db, ty);
+                (name.clone(), crate::sidecar::extract_subtree(&db.ast, root))
+            })
             .collect();
-        let map_bytes = map_lines.join("\n").into_bytes();
+        let map_bytes = cadenza_compile_abi::encode_result_types(&entries);
         // Surface the map as a standalone artifact (an IN-PROCESS consumer reads it via `out.artifact`).
         artifacts.push(Artifact::new(
             Artifact::KIND_RESULT_TYPES,

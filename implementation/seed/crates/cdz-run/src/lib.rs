@@ -1072,13 +1072,14 @@ pub struct CompiledComponent {
     /// `cdz-result-type` custom section at compile time (rides IN the component, so it reaches every run).
     /// Consulted by [`run_capturing_compiled`] via [`Self::result_ty_for`] so a WIT-erased leaf renders its
     /// value-form (`render::render_val_typed`). Empty when absent → the type-blind render.
-    result_types: std::collections::HashMap<String, String>,
+    result_types: std::collections::HashMap<String, cadenza_syntax::ast::Arenas>,
 }
 
 impl CompiledComponent {
-    /// The result-Ty (`Ty::render_name` s-expr) for the export being run — `[lookup_result_ty]` over the
-    /// scanned map. `None` (empty map / no match) → the type-blind render.
-    fn result_ty_for(&self, export: Option<&str>) -> Option<&str> {
+    /// The result-Ty arena (the structured `Ty` payload, decoded from the `cdz-result-type` section) for
+    /// the export being run — `[lookup_result_ty]` over the scanned map. `None` (empty map / no match) →
+    /// the type-blind render.
+    fn result_ty_for(&self, export: Option<&str>) -> Option<&cadenza_syntax::ast::Arenas> {
         lookup_result_ty(&self.result_types, export)
     }
 }
@@ -2282,43 +2283,41 @@ fn read_uleb(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
 
 /// Parse rcdzc's `KIND_RESULT_TYPES` payload — newline-separated `<export-name>\t<Ty::render_name>` lines —
 /// into the export->result-Ty map. A missing/empty/non-UTF-8 payload yields an empty map (type-blind).
-fn parse_result_types(map_bytes: Option<&[u8]>) -> std::collections::HashMap<String, String> {
+fn parse_result_types(
+    map_bytes: Option<&[u8]>,
+) -> std::collections::HashMap<String, cadenza_syntax::ast::Arenas> {
     let mut map = std::collections::HashMap::new();
-    if let Some(bytes) = map_bytes
-        && let Ok(text) = std::str::from_utf8(bytes)
-    {
-        for line in text.lines() {
-            if let Some((name, ty)) = line.split_once('\t') {
-                map.insert(name.to_string(), ty.to_string());
-            }
+    if let Some(bytes) = map_bytes {
+        // seq-284 binary-AST wire: the `cdz-result-type` section is ONE canonical binary AST value; the
+        // codec decodes each boundary export's structured `Ty` payload into a standalone `Arenas` (rooted
+        // at the type). render.rs WALKS it. TOTAL decode — a malformed section yields no entries and the
+        // render falls back to type-blind.
+        for (name, ty_arena) in cadenza_compile_abi::decode_result_types(bytes) {
+            map.insert(name, ty_arena);
         }
     }
     map
 }
 
-/// Look up the result-Ty for the export being run. Keyed by the requested export name (or its kebab-
+/// Look up the result-Ty arena for the export being run. Keyed by the requested export name (or its kebab-
 /// normalized extern form, or an interface-qualified `iface#member`'s member tail); a nullary run (no
 /// `--call`) with a SOLE export uses that one entry. `None` -> the type-blind render.
 fn lookup_result_ty<'a>(
-    map: &'a std::collections::HashMap<String, String>,
+    map: &'a std::collections::HashMap<String, cadenza_syntax::ast::Arenas>,
     export: Option<&str>,
-) -> Option<&'a str> {
+) -> Option<&'a cadenza_syntax::ast::Arenas> {
     if map.is_empty() {
         return None;
     }
     if let Some(name) = export {
         let member = name.rsplit('#').next().unwrap_or(name);
-        return map
-            .get(name)
-            .or_else(|| map.get(member))
-            .or_else(|| {
-                let kebab = cadenza_syntax::extern_name::kebab_extern_name(member);
-                map.get(&kebab)
-            })
-            .map(String::as_str);
+        return map.get(name).or_else(|| map.get(member)).or_else(|| {
+            let kebab = cadenza_syntax::extern_name::kebab_extern_name(member);
+            map.get(&kebab)
+        });
     }
     if map.len() == 1 {
-        return map.values().next().map(String::as_str);
+        return map.values().next();
     }
     None
 }
@@ -2338,11 +2337,11 @@ fn run_export(
     second_call: Option<&[String]>,
     drop_handle: bool,
     call_member: Option<&str>,
-    // The GUEST result-Ty (`Ty::render_name` s-expr) for the export being run, from the component's
-    // `cdz-result-type` section (bytes-second run-wiring). `Some` → the render sites disambiguate a
+    // The GUEST result-Ty arena (the structured `Ty` payload, decoded from the component's
+    // `cdz-result-type` section — seq-284 binary-AST wire). `Some` → the render sites disambiguate a
     // WIT-erased leaf via `render::render_val_typed` (Bytes `b"…"` vs `list<u8>` `#list`, Symbol `#"…"`);
     // `None` → the type-blind `render_val` (unchanged behavior).
-    result_ty: Option<&str>,
+    result_ty: Option<&cadenza_syntax::ast::Arenas>,
 ) -> Result<Outcome> {
     let instance = linker
         .instantiate(&mut *store, component)
@@ -4174,8 +4173,10 @@ mod tests {
     /// running export's Ty. A component with no such section → None (type-blind).
     #[test]
     fn scan_and_lookup_result_type_section() {
+        use cadenza_syntax::ast::{Builder, IntValue, Leaf, Radix};
+        use wasmtime::component::Val;
         // A minimal component-shaped blob: 8-byte preamble, then ONE custom section (id 0) named
-        // `cdz-result-type` with a `<name>\t<Ty>` payload. `custom_section` framing mirrors the emit side.
+        // `cdz-result-type` with the binary-AST result-types payload. `custom_section` framing mirrors emit.
         fn uleb(mut v: u32, out: &mut Vec<u8>) {
             loop {
                 let b = (v & 0x7f) as u8;
@@ -4197,16 +4198,54 @@ mod tests {
             sec.extend_from_slice(&contents);
             sec
         }
+        // Build the seq-284 binary-AST payload via the shared codec: g : Bytes (leaf), f : (List (Int 64)).
+        // Assert BEHAVIORALLY through the real consumer (render_val_typed): g disambiguates a list<u8> to
+        // b"…"; f (List, not Bytes) renders #list. Decode correctness itself is covered by
+        // cadenza_compile_abi's round-trip tests; here we prove the scan + parse + lookup + render wiring.
+        let g_arena = {
+            let mut b = Builder::new();
+            let r = b.name("Bytes");
+            b.finish(r)
+        };
+        let f_arena = {
+            let mut b = Builder::new();
+            let head = b.name("List");
+            let ih = b.name("Int");
+            let w = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(64),
+                radix: Radix::Dec,
+            });
+            let elem = b.list(vec![ih, w]);
+            let r = b.list(vec![head, elem]);
+            b.finish(r)
+        };
+        let payload = cadenza_compile_abi::encode_result_types(&[
+            ("g".to_string(), g_arena),
+            ("f".to_string(), f_arena),
+        ]);
         let mut comp = vec![0, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00]; // preamble
         comp.extend_from_slice(&custom("some-other", b"ignored"));
-        comp.extend_from_slice(&custom("cdz-result-type", b"g\tBytes\nf\t(List Int64)"));
+        comp.extend_from_slice(&custom("cdz-result-type", &payload));
 
-        let payload = scan_result_type_section(&comp).expect("finds cdz-result-type");
-        assert_eq!(payload, b"g\tBytes\nf\t(List Int64)");
-        let map = parse_result_types(Some(&payload));
-        assert_eq!(lookup_result_ty(&map, Some("g")), Some("Bytes"));
-        assert_eq!(lookup_result_ty(&map, Some("f")), Some("(List Int64)"));
-        assert_eq!(lookup_result_ty(&map, Some("absent")), None);
+        let scanned = scan_result_type_section(&comp).expect("finds cdz-result-type");
+        assert_eq!(scanned, payload);
+        let map = parse_result_types(Some(&scanned));
+        let u8s = vec![Val::U8(1), Val::U8(2)];
+        assert_eq!(
+            crate::render::render_val_typed(
+                &Val::List(u8s.clone()),
+                lookup_result_ty(&map, Some("g")).expect("g present")
+            ),
+            format!("b\"{}\"", cadenza_syntax::literal::escape_bytes(&[1, 2]))
+        );
+        assert_eq!(
+            crate::render::render_val_typed(
+                &Val::List(u8s),
+                lookup_result_ty(&map, Some("f")).expect("f present")
+            ),
+            "#list(1 2)"
+        );
+        assert!(lookup_result_ty(&map, Some("absent")).is_none());
         // No section → None (type-blind).
         let bare = vec![0, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00];
         assert!(scan_result_type_section(&bare).is_none());

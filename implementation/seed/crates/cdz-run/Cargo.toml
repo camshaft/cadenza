@@ -54,6 +54,12 @@ cadenza-syntax = { path = "../cadenza-syntax" }
 # The shared corpus grade compare (`--grade` mode) — decode a test-run.ast + grade an outcome, identical
 # to the rust backend's `cdz-rust-run`, so the compare lives in one crate both exec bins depend on.
 cdz-corpus-grade = { path = "../cdz-corpus-grade" }
+# The compile-boundary codec (seq-284 binary-AST): `decode_result_types` reads the component's
+# `cdz-result-type` section into a full-fidelity type `Arenas` per boundary export, which render.rs WALKS
+# to disambiguate a WIT-erased leaf's value-form (Bytes `b"…"` vs `list<u8>` `#list`, Symbol `#"…"`, Set vs
+# List, …). The `Arenas`/`Builder`/`Struct` types are `cadenza_syntax::ast::*` (a re-export of `cadenza_ast`),
+# so no direct cadenza-ast dep is needed — only the codec entry point.
+cadenza-compile-abi = { path = "../cadenza-compile-abi" }
 
 [dev-dependencies]
 # TEST-ONLY: assemble a tiny hand-written `.wat` module (e.g. an infinite `(loop br 0)`) to bytes, to
