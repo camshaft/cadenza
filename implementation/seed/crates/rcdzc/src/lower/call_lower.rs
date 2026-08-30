@@ -1815,6 +1815,17 @@ pub(super) fn type_specialize(
             {
                 fp.push_str("|clos");
                 fp.push_str(&code.to_string());
+                // DELIMIT the numeric code with a non-digit terminator: the termination backstop below
+                // detects a diverging re-pass by SUBSTRING containment (`fp.contains(prev)`), and an
+                // UN-delimited code lets a shorter code be a substring of a longer one — `clos2` ⊂ `clos25`
+                // — so a lower-numbered lambda-lift `code` FALSE-fires the backstop against a higher-numbered
+                // one whenever the whole-program lambda-lift ORDER assigns codes with that prefix relation
+                // (e.g. a `let`-destructure vs `match` twin shifts the lift order 2/25 → the fold const-arg
+                // was spuriously declined CDZ0201 — §8.1 DESIGN-binding-patterns-rcdzc). The `;` cannot occur
+                // in a decimal code, so `clos2;` is not a substring of `clos25;`, while a GENUINELY nested
+                // re-pass fp still contains the prior verbatim (delimiters and all) — the real divergence
+                // guard is preserved.
+                fp.push(';');
                 for &cap in captures.iter() {
                     fp.push(':');
                     subtree_fingerprint(db, cap, &mut fp);
