@@ -3577,11 +3577,8 @@
   (call   main (: 0 Int64)) (output (: 51 Int64))
   (call   main (: -3 Int64)) (output (: -759 Int64))
   (call   main (: 1 Int64)) (output (: 41 Int64))
-  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn retain candidacy dups closures the emit DROP
-  ; set does not yet cover (dup ⊇ drop margin, select.rs:1628) → LEAK-side over-retention. Real fix =
-  ; extend the emit drop set (v-rust-backend + v-mem, in flight); #5766 tolerate-fewer auto-passes the
-  ; collapse back. Was (live-objects 0).
-  (live-objects known-leak))
+  ; tightened back to 0 (#6209 borrowed-env + #6307 fold-reclaim collapses, breaker census 2026-08-30, v-core-opt sign-off)
+  (live-objects 0))
 
 (case "TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list"
   (doc    "The runtime digit decomposition (the RADIX pins read literal forms; this DERIVES digits):
@@ -3617,11 +3614,8 @@
   (call   main (: 907 Int64)) (output (: 31601 Int64))
   (call   main (: 1000 Int64)) (output (: 40101 Int64))
   (call   main (: 999999 Int64)) (output (: 65401 Int64))
-  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn retain candidacy dups closures the emit DROP
-  ; set does not yet cover (dup ⊇ drop margin, select.rs:1628) → LEAK-side over-retention. Real fix =
-  ; extend the emit drop set (v-rust-backend + v-mem, in flight); #5766 tolerate-fewer auto-passes the
-  ; collapse back. Was (live-objects 0).
-  (live-objects known-leak))
+  ; tightened back to 0 (#6209 borrowed-env + #6307 fold-reclaim collapses, breaker census 2026-08-30, v-core-opt sign-off)
+  (live-objects 0))
 
 (case "a BASE-N conversion round-trips one value through three runtime radices"
   (doc    "The digits pin above fixes base 10; here the RADIX is the runtime parameter — the same
@@ -3655,11 +3649,8 @@
   (call   main (: 2 Int64)) (output (: 10100000100001 Int64))
   (call   main (: 7 Int64)) (output (: 200021 Int64))
   (call   main (: 16 Int64)) (output (: 6041 Int64))
-  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn retain candidacy dups closures the emit DROP
-  ; set does not yet cover (dup ⊇ drop margin, select.rs:1628) → LEAK-side over-retention. Real fix =
-  ; extend the emit drop set (v-rust-backend + v-mem, in flight); #5766 tolerate-fewer auto-passes the
-  ; collapse back. Was (live-objects 0).
-  (live-objects known-leak))
+  ; tightened back to 0 (#6209 borrowed-env + #6307 fold-reclaim collapses, breaker census 2026-08-30, v-core-opt sign-off)
+  (live-objects 0))
 
 (case "BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries"
   (doc    "The spreadsheet-column numbering: BIJECTIVE base 26 has NO zero digit (A=1 … Z=26), so the
@@ -13969,11 +13960,8 @@
     (export main)))
   (call main (: 7 Int64)) (output (: 8 Int64))
   (call main (: -1 Int64)) (output (: -2 Int64))
-  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn retain candidacy dups closures the emit DROP
-  ; set does not yet cover (dup ⊇ drop margin, select.rs:1628) → LEAK-side over-retention. Real fix =
-  ; extend the emit drop set (v-rust-backend + v-mem, in flight); #5766 tolerate-fewer auto-passes the
-  ; collapse back. Was (live-objects 0).
-  (live-objects known-leak))
+  ; tightened back to 0 (#6209 borrowed-env + #6307 fold-reclaim collapses, breaker census 2026-08-30, v-core-opt sign-off)
+  (live-objects 0))
 
 (case "unp2 native #list and #record patterns over UNTYPED scrutinees — the #5436 kind-completion of unp1"
   (doc "Completes the untyped-scrutinee inference family: an unannotated param whose #list pattern shapes
