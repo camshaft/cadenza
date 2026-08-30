@@ -33472,57 +33472,32 @@ mod stage1 {
 
     #[test]
     fn a_try_with_no_fallible_enclosing_function_is_cdz0230() {
-        // T0b boundary check (DESIGN-try-operator-rcdzc.md §6): a `?` short-circuits the enclosing
-        // function's fallible result type. `(def (main) (try (Ok 1)))` — main's body IS the `?`, whose
-        // type is the unwrapped `Int64`, so main returns `Int64`, NOT a `Result`/`Option`. There is no
-        // boundary the `?` can exit to → CDZ0230.
+        // WHITE-BOX RESIDUAL. The CDZ0230 code + the "boundary"/concrete-`(Result Int64 …)` hint are now the
+        // corpus 23-try-operator case "a `?` with no fallible enclosing function boundary is rejected", and
+        // the GENERIC fallback naming both `(Result _ e)` / `(Option _)` forms is "a `?` whose operand kind
+        // is not yet definite names both fallible forms in the boundary hint". This keeps ONLY the
+        // inexpressible remainder: the hint's backticks must be BALANCED (Copilot PR #453 — the generic
+        // fallback used to smuggle its own backticks through a template-wrapped `{suggested}`, rendering the
+        // code spans oddly), a backtick-COUNT-parity property the corpus grade has no clause for. Checked on
+        // both the concrete (`(try (Ok 1))`) and the generic-fallback (`(+ 1 (try x))`) hints.
         let d = expect_error("(try (Ok 1))");
-        assert_eq!(
-            d.code.as_deref(),
-            Some("CDZ0230"),
-            "a `?` in a non-fallible function is CDZ0230, got: {}",
-            d.message
-        );
-        assert!(
-            d.message.contains("boundary"),
-            "message names the missing fallible boundary: {}",
-            d.message
-        );
-        // The hint names the CONCRETE fallible type the `?`'d value requires — `(try (Ok 1))` is a
-        // `Result Int64 _`, so the suggested annotation is `(Result Int64 _)`, not a generic `_`.
-        assert!(
-            d.message.contains("(Result Int64"),
-            "the hint names the concrete Result type to annotate: {}",
-            d.message
-        );
-        // The backticks in the hint must be BALANCED (Copilot PR #453: the generic fallback used to smuggle
-        // its own backticks through a template-wrapped `{suggested}`, so the code spans could render oddly).
-        // Every arm — the concrete Result/Option forms AND the generic fallback — is now self-wrapped, so
-        // the message always has an even number of backticks.
+        assert_eq!(d.code.as_deref(), Some("CDZ0230"));
         assert_eq!(
             d.message.matches('`').count() % 2,
             0,
-            "the ?-boundary hint has balanced backticks: {}",
+            "the concrete ?-boundary hint has balanced backticks: {}",
             d.message
         );
-        // The GENERIC fallback (operand kind not yet definite) names BOTH forms, each its own balanced code
-        // span — `(Result _ e)` or `(Option _)` — not a backtick-smuggling single string.
         let fallback = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (f x) (+ 1 (try x))) (export f))",
         )))
         .into_iter()
         .find(|d| d.code.as_deref() == Some("CDZ0230"))
         .expect("the ?-boundary fallback is CDZ0230");
-        assert!(
-            fallback.message.contains("`(Result _ e)`")
-                && fallback.message.contains("`(Option _)`"),
-            "the generic ?-boundary fallback names both forms as balanced spans: {}",
-            fallback.message
-        );
         assert_eq!(
             fallback.message.matches('`').count() % 2,
             0,
-            "the fallback hint has balanced backticks too: {}",
+            "the generic fallback hint has balanced backticks too: {}",
             fallback.message
         );
     }
