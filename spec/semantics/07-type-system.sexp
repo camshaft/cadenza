@@ -35,6 +35,14 @@
   (input  (: 42 Bool))
   (error  CDZ0203))
 
+(case "an annotation that contradicts the value is rejected — the mirror direction"
+  (doc    "The mirror of the `(: 42 Bool)` case: `(: true Int64)` annotates a BOOL value with Int64. Unifying
+           the annotation type against the value's type fails either direction, so the contradiction rejects
+           CDZ0203 the same way — the disambiguation force turned against a genuine conflict. (Migrated from
+           rcdzc an_annotation_conflicting_with_the_value_rejects.)")
+  (input  (: true Int64))
+  (error  CDZ0203))
+
 (case "a contradictory ARROW annotation on a function value is rejected"
   (doc    "The function-value facet of #Annotations Constrain, Never Contradict: `h x = x + 1` has type
            `(-> Int64 Int64)` (the `+` body-solves the domain to `Int64`), so annotating it `(: h (-> Bool
