@@ -6706,7 +6706,11 @@ fn decode_arenas_to_ast(
                 // so fail cleanly.
                 crate::ast::Leaf::Ctor(_)
                 | crate::ast::Leaf::FieldPair
-                | crate::ast::Leaf::Member => return None,
+                | crate::ast::Leaf::Member
+                // The rational-literal HEAD leaf (seq-204) is the same shape — a LIST head, never a bare
+                // atom; its `(RationalTag num den)` node rebuilds in the List arm (the Ast-reflection of a
+                // rational is the deferred fast-follow). A stray bare tag is likewise malformed → None.
+                | crate::ast::Leaf::Rational => return None,
                 crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
                 // A type-suffixed numeric literal (`100N`/`0.5R`) is decoded to a plain Int/Float by the
                 // codec, so it never appears in a decoded document; a stray occurrence fails cleanly
