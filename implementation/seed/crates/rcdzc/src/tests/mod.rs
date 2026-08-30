@@ -5110,24 +5110,10 @@ fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
 
 // ── exported parameterized functions: runtime operands, end-to-end (compile → run with args) ─────
 
-/// The UNSOUND TWIN of discharge-then-capture MUST stay rejected: a closure whose BODY performs the handled
-/// effect and ESCAPES the handle — `(handle St k (arm) (fn (x) (+ x (St.get))))` applied outside — runs the
-/// perform on OUTSIDE-application (out of the handler's dynamic extent), so it has no home → CDZ0401. Pins
-/// that the `lambda_of` discharge fix (which admits the pure-capture sibling above) does NOT accidentally
-/// home an escaping closure-BODY perform (a soundness regression the parked note warned about).
-#[test]
-fn an_escaping_closure_whose_body_performs_still_declines() {
-    use crate::testkit::parse;
-    let src = "(do (effect St (op get (-> Unit Int64))) \
-               (def (main (: k Int64)) \
-                 ((handle St k ((get (u) s (resume s s))) \
-                    (fn ((: x Int64)) (+ x (St.get)))) \
-                  10)) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_err(),
-        "an escaping closure whose BODY performs runs out-of-extent → must stay CDZ0401 (soundness)"
-    );
-}
+// (an_escaping_closure_whose_body_performs_still_declines, an_escaping_captured_continuation_is_refused_not_miscompiled,
+//  a_partial_application_of_a_performing_closure_under_a_handler_declines_cleanly — the escaping/captured-continuation/
+//  partial-application effect safe-rejects — migrated to corpus 14b-effects-and-handlers (error CDZ0401 / (declines) /
+//  error CDZ0201), 2026-08-30 delanguaging handoff from v-rcdzc-test-shrink.)
 
 /// APPLY-SITE HOMING (root-caused from v-cad's passed-closure-under-handler codegen issue): a performing
 /// lambda passed as a fn-PARAM to a function that APPLIES it UNDER a handler — the `handler runs a passed-in
@@ -5469,23 +5455,6 @@ fn a_mutual_group_demand_perform_demand_in_a_let_wrapped_dispatch_folds() {
 //  as (declines (message "not reducible by the tail-resumptive fold")) cases, 2026-08-30 delanguaging handoff
 //  from v-rcdzc-test-shrink. They now emit CDZ0900; the corpus message-pin preserves the clean-decline guarantee.)
 
-/// A handler arm that RETURNS its continuation as an escaping value (`k` reified and applied OUTSIDE the
-/// handle) must be REFUSED, never run to a value. `(flip (u) s (fn (x) (resume x s)))` yields the resume
-/// as a lambda; the handle value is that lambda, applied as `(k 5)` after the handle closes. This is the
-/// genuine captured-`k` frontier (§4.4) — it needs a reified `Ty::Cont` heap value the seed does not build
-/// yet — so it must be rejected up front (here: the handle value is a function with no machine
-/// representation at the boundary), not compiled to a trapping or wrong-valued artifact.
-#[test]
-fn an_escaping_captured_continuation_is_refused_not_miscompiled() {
-    use crate::testkit::parse;
-    let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-               (def (main) \
-                 (let ((k (handle Amb 0 ((flip (u) s (fn (x) (resume x s)))) (+ 100 (Amb.flip))))) \
-                   (k 5))) (export main))";
-    compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("an escaping captured continuation must be refused, not miscompiled");
-}
-
 #[test]
 fn a_bin_build_operand_referencing_a_do_def_under_a_handle_binds_it_not_unbound() {
     use crate::testkit::parse;
@@ -5531,41 +5500,6 @@ fn a_bin_build_operand_referencing_a_do_def_under_a_handle_binds_it_not_unbound(
     assert!(
         wasmparser::validate(&pf).is_ok(),
         "the perform-free twin must also emit a valid module"
-    );
-}
-
-/// A PARTIAL application of a boxed closure whose body PERFORMS a discharged effect, under a handler, DECLINES
-/// cleanly — the effects×partial-closure intersection. `mk` boxes a 2-param curried closure `(fn a (fn b (+ a
-/// (+ b (E.tick)))))`; `main` handles `E` and applies the projected closure to ONE of its two args (`(f 3)` —
-/// a genuine 1-of-2 partial), RETURNING the residual closure as the handle body's value. The partial now
-/// builds a RESIDUAL CLOSURE (eta-abstract the missing param, lift it), but that residual closure PERFORMS
-/// `E.tick` and ESCAPES its handler (it is returned out of the `handle`), so lifting it out to a standalone
-/// function correctly hits the EFFECT-ESCAPE decline ("this effect operation is performed with no enclosing
-/// handler here") — a performing closure may not escape its handler (CDZ0406 family). So it STILL DECLINES
-/// cleanly (never a miscompile / invalid wasm); the residual-closure lift composes with effect-escape
-/// detection. Pins the effects×partial intersection: a performing closure partially applied + escaping a
-/// handler declines via the effect-escape guard, not a mis-emit. (A NON-performing partial now lifts + runs
-/// — see 09-functions "a let-bound partial application of a runtime closure builds a residual closure".)
-#[test]
-fn a_partial_application_of_a_performing_closure_under_a_handler_declines_cleanly() {
-    use crate::testkit::parse;
-    let src = "(module m \
-        (effect E (op tick (-> Unit Int64))) \
-        (type Box (C (-> Int64 (-> Int64 Int64)))) \
-        (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a (+ b (E.tick))))))) \
-        (def (main) (handle E 0 ((tick (u) s (resume s (+ s 1)))) (match (mk) ((Box.C f) (f 3))))) \
-        (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-        "a partial application of a performing runtime closure that escapes its handler must DECLINE, not emit invalid wasm",
-    );
-    assert!(
-        err.message.contains("no enclosing handler")
-            || err
-                .message
-                .contains("partial application of a runtime closure"),
-        "the decline names either the effect-escape (residual closure performs + escapes) or the \
-         partial-application limitation — a clean decline, not a mis-emit / handler fold error, got: {}",
-        err.message
     );
 }
 
