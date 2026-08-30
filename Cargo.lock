@@ -3479,6 +3479,7 @@ name = "xtask-mandates"
 version = "0.0.0"
 dependencies = [
  "syn 2.0.119",
+ "xtask-support",
 ]
 
 [[package]]
