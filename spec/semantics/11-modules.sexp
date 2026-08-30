@@ -190,6 +190,16 @@
   (input  (. List get))
   (error  CDZ0201 (message "the `List` module has no member `get`") (message "closest matches:") (message "`at`") (not "did you mean")))
 
+; The TIER-1 (confident) complement of the far-miss `List get` above: a CONFIDENT typo of a real module
+; member — `List.ln` for `len`, one edit — gets a "did you mean `len`?" AND an APPLYABLE Replace fix on the
+; member-key token, so an editor rewrites `ln`→`len` directly (the module-member twin of the record-field
+; confident-typo rename). The rename guess is heuristic → the fix is UNVERIFIED. Pins the confident→fix half
+; of the two-tier did-you-mean invariant (the far-miss no-fix half is pinned above). (Migrated from rcdzc
+; a_confident_module_member_typo_carries_an_applyable_rename_fix.)
+(case "a confident prelude-module member typo carries an applyable rename fix"
+  (input  (. List ln))
+  (error  CDZ0201 (message "the `List` module has no member `ln`") (message "did you mean `len`?") (fix (kind replace) (replacement "len") (unverified))))
+
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
            of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record
