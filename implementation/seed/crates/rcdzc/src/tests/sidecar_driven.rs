@@ -2983,6 +2983,91 @@ fn an_exports_query_lists_each_export_with_its_type() {
 }
 
 #[test]
+fn render_ty_joins_the_encode_and_render_halves_end_to_end() {
+    // END-TO-END DRIFT GUARD (v-syntax-render-ty). rcdzc's `encode_ty` (the KIND_TYPE_INFO / KIND_EXPORTS
+    // binary-AST payload) and `cadenza_syntax::render_ty` (the type-NAME string) are otherwise tested on
+    // OPPOSITE sides of the wire — the sidecar tests above assert the STRUCTURED payload head, and the
+    // render_ty unit tests assert strings over HAND-BUILT arenas — so nothing catches a DRIFT between them
+    // (an `encode_ty` shape change, or a `render_ty` regression, that breaks their agreement). This joins
+    // them: feed a REAL compiled program's payload THROUGH render_ty[_scheme] and assert the exact type-name
+    // string, so such a drift fails HERE. (`cadenza-syntax` is a dev-dependency — test-only; the rcdzc lib
+    // stays copy-don't-depend.)
+    use cadenza_syntax::render_ty::{render_ty, render_ty_scheme};
+
+    // TYPE_INFO, monomorphic scalar: main : Int64.
+    let src = "(module m (def (main) (: 42 Int64)) (export main))";
+    let out = compile(
+        &inputs(
+            src,
+            &[Request::Query(Query::TypeOf {
+                name: "main".into(),
+            })],
+        ),
+        &[],
+    );
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            assert_eq!(render_ty(&ty, ty.root), "Int64");
+            assert_eq!(render_ty_scheme(&ty, ty.root), "Int64");
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
+
+    // TYPE_INFO, function arrow: f : (-> Int64 Int64).
+    let src = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
+    let out = compile(
+        &inputs(src, &[Request::Query(Query::TypeOf { name: "f".into() })]),
+        &[],
+    );
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            assert_eq!(render_ty(&ty, ty.root), "(-> Int64 Int64)");
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
+
+    // TYPE_INFO, GENERIC scheme: from-list renders with stable var lettering (the tie — the SAME `a` on
+    // both sides — is exactly what render_ty_scheme exists to show, vs render_ty collapsing to `_`).
+    let src = "(module m (type Iter (Nil) (Cons a (Iter a))) \
+                    (def (from-list xs) (match xs ((list) (Iter.Nil)) ((list h .. t) (Iter.Cons h (from-list t))))) \
+                    (def (main) 0) (export main))";
+    let out = compile(
+        &inputs(
+            src,
+            &[Request::Query(Query::TypeOf {
+                name: "from-list".into(),
+            })],
+        ),
+        &[],
+    );
+    match cadenza_compile_abi::decode_type_info(
+        artifact_bytes(&out, KIND_TYPE_INFO).expect("a type-info artifact"),
+    ) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            let scheme = render_ty_scheme(&ty, ty.root);
+            assert_eq!(scheme, "(-> (List a) (Iter a))", "generic scheme lettering");
+        }
+        other => panic!("expected Found, got {other:?}"),
+    }
+
+    // EXPORTS: each export's payload renders to its type name (inc : arrow, v : scalar), in order.
+    let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (v) (: 5 Int64)) \
+                   (export inc) (export v))";
+    let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
+    let exports = cadenza_compile_abi::decode_exports(
+        artifact_bytes(&out, KIND_EXPORTS).expect("an exports artifact"),
+    );
+    let inc_ty = exports[0].ty.as_ref().expect("inc's type resolved");
+    assert_eq!(render_ty(inc_ty, inc_ty.root), "(-> Int64 Int64)");
+    let v_ty = exports[1].ty.as_ref().expect("v's type resolved");
+    assert_eq!(render_ty(v_ty, v_ty.root), "Int64");
+}
+
+#[test]
 fn an_exports_query_with_no_exports_is_empty() {
     // A module with no `(export …)` yields the empty interface (total, not an error). The binary-AST
     // value decodes to zero entries (the wire is `(exports)` — a non-empty byte string, but an empty list).
