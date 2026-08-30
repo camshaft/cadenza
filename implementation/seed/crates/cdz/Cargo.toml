@@ -49,7 +49,7 @@ cadenza-compile-abi = { path = "../cadenza-compile-abi" }
 cdz-rust-render = { path = "../cdz-rust-render" }
 # The wasm-component runner, mounted as `cdz run` — one binary on the PATH instead of a separate
 # `cdz-run`. Pulls in wasmtime + the runtime store; that weight is the price of the one-binary story.
-cdz-run = { path = "../cdz-run" }
+cdz-run = { path = "../cdz-run", optional = true }
 # The corpus reader/migrator, mounted as `cdz corpus <records|migrate|check>` — the maintenance tool
 # for the executable-semantics corpus, folded in so it needn't be a separate binary on the PATH. OPTIONAL
 # behind the `corpus` feature (in `default`): the `cdz test` runner path is corpus-INDEPENDENT (cdz_corpus
@@ -141,4 +141,4 @@ cedar = ["cadenza-syntax/cedar"]
 # run in-process in BOTH configs (so `rcdzc` stays a NON-optional dep for now). A later slice delegates those
 # too and flips `standalone = ["dep:rcdzc"]` + `rcdzc = { optional = true }`, at which point a `!standalone`
 # build drops `rcdzc` from its closure entirely (the full caching win).
-standalone = ["dep:rcdzc"]
+standalone = ["dep:rcdzc", "dep:cdz-run"]
