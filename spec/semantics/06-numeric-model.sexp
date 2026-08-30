@@ -6631,6 +6631,15 @@
   (input  (<< (: 18446744073709551615 UInt64) (: 1 UInt64)))
   (error  CDZ0304))
 
+(case "a CONSTANT bare-Int64 left shift whose result overflows Int64 is rejected"
+  (doc    "The default-Int64 twin of the wide-UInt64 shift-overflow above: `(<< 4611686018427387904 1)` =
+           2^62 << 1 = 2^63, one past Int64.max (2^63-1), so the shift RESULT overflows the checked Int64
+           width. The compiler proves it via constant folding and rejects at compile time (CDZ0304), never
+           silently truncating — the signed-width face of the shift-result-overflow rule. (migrated from
+           rcdzc left_shift_that_overflows_fails_the_build.)")
+  (input  (<< 4611686018427387904 1))
+  (error  CDZ0304))
+
 (case "a CONSTANT shift by a count at or beyond the UInt64 bit width is rejected"
   (doc    "The out-of-range-count face: a shift whose count is >= the bit width rejects CDZ0304 (an
            out-of-range shift count), on the wide-operand fold path as on the narrow one. `(>> UInt64.max 200)`
