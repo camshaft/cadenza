@@ -316,6 +316,21 @@
   (input  (do (def (main) (Record.without #record((= alpha 1)) (zzzzzz))) (export main)))
   (error  CDZ0212 (message "closest matches: `alpha`") (no-fix)))
 
+; The MEMBER-ACCESS companions of the near-miss field-typo above: a `(. r k)` where `k` is a near-miss of a
+; real field carries the SAME confident "did you mean `<near>`?" + a HEURISTIC replace fix on the key token
+; (diagnostics.md §A Diagnostic Carries A Route To A Fix) — the record analogue of the unbound-name did-you-
+; mean. It fires on a COMPILE-TIME-VISIBLE record literal AND on a RUNTIME record reached through an untyped
+; def parameter (the field typo is caught on the inferred record type). The rename guess is heuristic, so its
+; fix is UNVERIFIED. (Migrated from rcdzc a_misspelled_field_on_a_visible_record_suggests_the_nearest_field +
+; a_misspelled_field_on_a_runtime_record_type_suggests_the_nearest_field.)
+(case "a misspelled field on a visible record literal suggests the nearest field with a heuristic rename fix"
+  (input  (. #record((= width 10) (= height 20)) heigth))
+  (error  CDZ0212 (message "did you mean `height`?") (fix (kind replace) (replacement "height") (unverified))))
+
+(case "a misspelled field on a runtime record reached through a parameter suggests the nearest field the same way"
+  (input  (do (def (get-h r) (. r heigth)) (def (main) (get-h #record((= width 10) (= height 20)))) (export main)))
+  (error  CDZ0212 (message "did you mean `height`?") (fix (kind replace) (replacement "height") (unverified))))
+
 (case "merging two records with disjoint fields unions their fields"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint:
            `Record.merge` combines two records into one whose field set is the union, each field bound to
