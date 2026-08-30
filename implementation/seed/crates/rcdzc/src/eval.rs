@@ -4289,12 +4289,17 @@ pub fn int_bounds(signed: bool, width: u32) -> Option<(IntValue, IntValue)> {
     }
 }
 
-/// A `((meta KEY) VALUE)` meta field (appended). Mirrors the prelude's `meta_field` but on `&mut Db`.
+/// A `(= (meta KEY) VALUE)` meta field (appended). Mirrors the prelude's `meta_field` but on `&mut Db`.
+/// seq-276: emitted in the canonical FieldPair `(= key value)` form (not a bare `((meta k) v)` pair), so
+/// the compiler's own synthesized module/sum/float records satisfy the value-entry reader's require-`=`
+/// rule — `read_record_fields` reads it via `field_pair` into the identical fields map, so every consumer
+/// (`project_field`/`member_value`, which read that map) is unaffected.
 fn meta_field(db: &mut Db, key: &str, value: StructId) -> StructId {
+    let eq = db.push_name("=");
     let meta_head = db.push_name("meta");
     let key_name = db.push_name(key);
     let meta_key = db.push_list(vec![meta_head, key_name]);
-    db.push_list(vec![meta_key, value])
+    db.push_list(vec![eq, meta_key, value])
 }
 
 /// An `(intrinsic NAME)` node (appended) — the arena form a native primitive value takes, mirroring

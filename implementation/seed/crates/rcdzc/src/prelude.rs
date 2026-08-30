@@ -434,10 +434,14 @@ fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
 /// so the program-driven sum-record synthesis (`sum_synth`) writes its `(meta t)`/`(meta variant)`
 /// channels the same way the prelude writes its built-in records.
 pub(crate) fn meta_field(ast: &mut Arenas, key: &str, value: StructId) -> StructId {
+    // seq-276: canonical FieldPair `(= (meta key) value)` form (not a bare `((meta k) v)` pair), so the
+    // prelude's synthesized module records satisfy the value-entry require-`=` rule. `read_record_fields`
+    // reads it via `field_pair` into the identical fields map — consumers (`project_field`) are unaffected.
+    let eq = push_atom(ast, Leaf::Name("=".into()));
     let meta_head = push_atom(ast, Leaf::Name("meta".into()));
     let key_name = push_atom(ast, Leaf::Name(key.into()));
     let meta_key = push_list(ast, vec![meta_head, key_name]);
-    push_list(ast, vec![meta_key, value])
+    push_list(ast, vec![eq, meta_key, value])
 }
 
 /// A ground-type record `(record ((meta t) (intrinsic PRIM)))` — `Bool`/`Unit`. Its `(meta t)` holds
