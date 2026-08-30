@@ -14053,49 +14053,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_int_literal_vs_float_offers_a_float_literal_retype_fix() {
-        // A list-homogeneity clash between an INTEGER LITERAL and a FLOAT type has the SAME one-shot repair
-        // the annotation site's `(: 3 Float64)` gives: rewrite the integer literal `n` as a float literal
-        // `n.0`, so the list unifies at the float type rather than staying a no-silent-promotion reject
-        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). The literal may be on
-        // EITHER side — the first element (`(list 1 2.0)`) or a later one (`(list 1.0 2)`).
-        let d = reject_full("(module m (def (main) (list 1 2.0)) (export main))")
-            .expect("a list-homogeneity violation must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("1.0"),
-            "retypes the first element's int literal as a float: {}",
-            d.message
-        );
-        // Symmetric: the mismatched literal is a LATER element → `2` becomes `2.0`.
-        let d2 = reject_full("(module m (def (main) (list 1.0 2)) (export main))").expect("reject");
-        assert_eq!(
-            d2.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("2.0"),
-            "retypes the later element's int literal: {}",
-            d2.message
-        );
-        // A negative int literal keeps its sign (`-1` → `-1.0`).
-        let d3 =
-            reject_full("(module m (def (main) (list -1 2.0)) (export main))").expect("reject");
-        assert_eq!(
-            d3.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("-1.0"),
-            "message: {}",
-            d3.message
-        );
-        // A cross-KIND clash (Int64 vs Bool) is NOT coercible — no float-retype fix is offered.
-        let d4 =
-            reject_full("(module m (def (main) (list 1 true)) (export main))").expect("reject");
-        assert!(
-            d4.fix.is_none(),
-            "an int-vs-bool clash has no literal-retype fix: {:?}",
-            d4.fix
-        );
-    }
-
-    #[test]
     fn a_map_or_set_heterogeneity_names_the_types_and_offers_the_retype_fix() {
         // The map/set twins of the list-homogeneity message+fix: a map's key/value or a set's element
         // clash now NAMES the two differing types (was a generic "do not share a type") and, for an

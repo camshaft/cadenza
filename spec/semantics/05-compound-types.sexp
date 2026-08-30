@@ -8868,18 +8868,35 @@
            UNIFORMLY across list/map/set (literal and functional-construction ops alike) — the collection
            itself is ill-formed, regardless of HOW its element types differ; CDZ0203 is reserved for a
            two-types-must-AGREE unification conflict (an `if`'s branches, an annotation, a cross-shape
-           comparison), NOT a collection's internal heterogeneity.")
+           comparison), NOT a collection's internal heterogeneity.
+           A cross-KIND clash (Int64 vs Bool) is NOT coercible, so it carries NO retype fix — `(no-fix)`
+           pins that (contrast the int-vs-float numeric companion below, which DOES offer one).")
   (input     #list(1 true))
-  (error     CDZ0201))
+  (error     CDZ0201 (no-fix)))
 
 (case "a list mixing integer and float elements is a type error"
   (doc    "The numeric companion: Int64 and Float64 are distinct types that do not silently unify
            (numeric-model.md #Numeric Types Do Not Silently Promote), so `(list 1 2.5)` mixes two
            element types and is not homogeneous — the compiler rejects it (CDZ0201). Pins that
            homogeneity holds across the numeric types too, not only across obviously unrelated kinds
-           like Int64 and Bool.")
+           like Int64 and Bool. Unlike the int/bool cross-kind clash, an int-vs-float clash IS coercible:
+           it carries the one-shot REPLACE fix that rewrites the INTEGER literal as a float literal (`1` →
+           `1.0`), so the list unifies at the float type. (fix migrated from rcdzc
+           a_list_int_literal_vs_float_offers_a_float_literal_retype_fix.)")
   (input     #list(1 2.5))
-  (error     CDZ0201))
+  (error     CDZ0201 (fix (kind replace) (replacement "1.0") (unverified))))
+
+(case "a list int/float clash retypes a LATER integer element"
+  (doc    "The mismatched integer literal may be a later element, not the first: `#list(1.0 2)` unifies at
+           Float64 from the leading `1.0`, so the later `2` is the int that retypes → `2.0`.")
+  (input     #list(1.0 2))
+  (error     CDZ0201 (fix (kind replace) (replacement "2.0") (unverified))))
+
+(case "a list int/float retype fix preserves a negative literal's sign"
+  (doc    "The retype rewrites the integer literal keeping its sign: `#list(-1 2.0)` → the `-1` becomes
+           `-1.0`, not `1.0`.")
+  (input     #list(-1 2.0))
+  (error     CDZ0201 (fix (kind replace) (replacement "-1.0") (unverified))))
 
 ; Homogeneity is a property of the LIST VALUE, so it must hold under `List.push` too, not only for a
 ; list LITERAL. collections-and-text.md #A List Is Grown By Functional Construction: `List.push`
