@@ -85,6 +85,22 @@ variable/constant condition, `or a true → true` when `a` is a leaf). -/
 theorem mayTrap_const (v : Value) : mayTrap (.const v) = false := by simp [mayTrap]
 theorem mayTrap_var (n : Nat) : mayTrap (.var n) = false := by simp [mayTrap]
 
+/-- `mayTrap` propagates through an `ite` structurally (a conditional traps iff its condition or either
+branch can trap) — the recursion the equal-branch collapse guard reads: `if c a a → a` is sound only
+when `mayTrap c = false`, which by this fact is subsumed by `mayTrap (.ite c a a) = false`. -/
+theorem mayTrap_ite (c t e : SymExpr) :
+    mayTrap (.ite c t e) = (mayTrap c || mayTrap t || mayTrap e) := by simp [mayTrap]
+
+/-- `mayTrap` on a projection is exactly the base's trap-ness. -/
+theorem mayTrap_proj (b : SymExpr) (sel : ByteArray) : mayTrap (.proj b sel) = mayTrap b := by
+  simp [mayTrap]
+
+/-- `mayTrap` on a symbolic `case` traps iff the scrutinee or any arm body can — the recursion a
+symbolic-match's trap analysis reads. -/
+theorem mayTrap_case (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
+    mayTrap (.case s arms) = (mayTrap s || arms.attach.any (fun x => mayTrap x.val.2)) := by
+  simp [mayTrap]
+
 /-! ## `normalize` is the identity on a symbolic input.
 `normalize` is a total (`termination_by sizeOf`) def; its `.var` arm is literally `.var n`, so `simp`
 discharges this via the equation lemma. A symbolic input has no sound rewrite — the canonicalizer
