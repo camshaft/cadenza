@@ -2011,6 +2011,36 @@
             (export main)))
   (output (: 4022 Int64)))
 
+(case "same-effect shadowing with ADVANCING states, HEAP (tuple) state — the outer heap seed survives the inner handle and threads correctly across the straddle"
+  (doc    "The HEAP-state (`#seed`) twin of the scalar `same-effect shadowing with ADVANCING states` case
+           above. Both handlers of `M` carry a TUPLE state read via `(. s 0)` / `(. s 1)` projection (a heap
+           seed, threaded via the fold's `#seed` let-lift — unlike the scalar counter, which is a shareable
+           constant with no `#seed`). The OUTER handler is dispatched at `(M.step 1)` BEFORE and `(M.step 2)`
+           AFTER the inner `(handle M (tuple 100 0) …)`, so the outer arm is re-applied at a site straddling
+           the nested same-effect handle — the exact shape whose sum-state variant-matched cousin DECLINES
+           (`su6d`, an unbound-`#seed` scoping gap). Here the state is READ by projection (not variant-matched),
+           so it COMPILES, and pins that the outer heap seed threads correctly across the straddle: outer
+           `(M.step 1)` reads `(. (tuple n 0) 0)`=n (state→`(tuple n 1)`); the inner region discharges its own
+           `(tuple 100 0)` seed independently (`(M.step 4)`→100 state→`(tuple 101 0)`, `(M.step 0)`→101) = 201;
+           the post-inner outer `(M.step 2)` must read the OUTER state advanced by step 1 (`(. (tuple n 1) 0)`=n)
+           — UNTOUCHED by the inner region. Total 2·n+201 (n=3→207, n=10→221, n=0→201). A shadow sharing one
+           heap-seed slot, or re-seeding the outer on inner-exit, breaks the value; an unbound-`#seed` regression
+           would decline. Guards the heap-`#seed` threading the su6d fold-gap probing (v-effects a45) exercised.")
+  (input  (do
+            (effect M (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle M (tuple n 0)
+                ((step (v) s (resume (. s 0) (tuple (. s 0) (+ (. s 1) v)))))
+                (+ (M.step 1)
+                   (+ (handle M (tuple 100 0)
+                        ((step (v) s (resume (. s 0) (tuple (+ (. s 0) 1) (. s 1)))))
+                        (+ (M.step 4) (M.step 0)))
+                      (M.step 2)))))
+            (export main)))
+  (call   main (: 3 Int64))  (output (: 207 Int64))
+  (call   main (: 10 Int64)) (output (: 221 Int64))
+  (call   main (: 0 Int64))  (output (: 201 Int64)))
+
 (case "a nested handle's INIT expression performs against the OUTER handler before installing"
   (doc    "The install boundary itself performing: the inner seed (Out.tick) evaluates in the
            OUTER's scope, its resume value becomes the inner seed, and the outer state advance
