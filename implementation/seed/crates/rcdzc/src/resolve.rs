@@ -432,10 +432,12 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // only ever occupies the HEAD position of a compound `List` node, where the List-level dispatch
             // (`compound_ctor` etc.) reads it. In a bare ATOM (non-head) position it is not a value, so —
             // like a non-finite float leaf above — a stray occurrence is a malformed node.
-            Leaf::Ctor(_) | Leaf::FieldPair | Leaf::Member => Resolved::Poison(Reject::coded(
-                Code::Malformed,
-                "a compound-constructor head leaf is not a value on its own".to_string(),
-            )),
+            Leaf::Ctor(_) | Leaf::FieldPair | Leaf::Member | Leaf::Rational => {
+                Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a compound-constructor head leaf is not a value on its own".to_string(),
+                ))
+            }
             // A type-suffixed numeric literal (`100N`/`0.5R`) is a SYNTAX-side leaf: the reader desugars a
             // suffixed atom to a `(: <leaf> BigInt|Rational)` annotation and the codec decodes the leaf kind
             // straight to `Int`/`Float`, so a bare `Suffixed` leaf never reaches the decoded compiler AST. A

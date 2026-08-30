@@ -1323,7 +1323,7 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
         crate::ast::Leaf::BadEscape(_) => return Some(HighlightKind::Str),
         // A native-compound-data CTOR-HEAD leaf (a `#list`/`#record`/… collection head, the `=` field-pair,
         // the `.` member) is a reserved structural constructor head — paint it as a keyword.
-        crate::ast::Leaf::Ctor(_) | crate::ast::Leaf::FieldPair | crate::ast::Leaf::Member => {
+        crate::ast::Leaf::Ctor(_) | crate::ast::Leaf::FieldPair | crate::ast::Leaf::Member | crate::ast::Leaf::Rational => {
             return Some(HighlightKind::Keyword);
         }
         // A name leaf — classified below by what it denotes.

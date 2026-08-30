@@ -1825,7 +1825,10 @@ pub(super) fn resolve_leaf_offsets(
             // one kind byte, no body and no runtime hole (it is a fixed structural head, never a patched
             // value leaf; the runtime holes are the Int/Bool value leaves elsewhere in the template). Skip
             // its single byte, mirroring how the old Str/Name head was skipped (just one byte now).
-            crate::ast::Leaf::Ctor(_) | crate::ast::Leaf::FieldPair | crate::ast::Leaf::Member => {
+            crate::ast::Leaf::Ctor(_)
+            | crate::ast::Leaf::FieldPair
+            | crate::ast::Leaf::Member
+            | crate::ast::Leaf::Rational => {
                 off += 1;
             }
         }
