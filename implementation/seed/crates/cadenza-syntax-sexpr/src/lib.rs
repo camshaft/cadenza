@@ -1386,6 +1386,18 @@ impl<'a, 'b> Reader<'a, 'b> {
                                 // an explicit `(. obj key)` list reads to a native `Member` head.
                                 let span = Span::new(start, self.pos);
                                 self.alias_field_pairify(&mut items);
+                                // Wrap a collection rest/spread `..` (list/map/set/record/tuple alias +
+                                // patterns) to the canonical `(.. v)` node — but NOT the open-sum row
+                                // variable `(type … .. r)`, a distinct construct the ML surface keeps flat
+                                // (its `rest_marker` flip is collection-only), so gate on a collection head.
+                                if items.first().is_some_and(|&h| {
+                                    matches!(
+                                        self.b.as_name(h),
+                                        Some("list" | "map" | "set" | "record" | "tuple")
+                                    )
+                                }) {
+                                    self.normalize_rest_markers(&mut items);
+                                }
                                 let id = self.mk_list(items, span);
                                 let result = self.memberize(id, span);
                                 next = Next::Deliver(result);
@@ -1434,6 +1446,7 @@ impl<'a, 'b> Reader<'a, 'b> {
                                     *items.last_mut().expect("items non-empty") = wrapped;
                                 }
                                 self.bump();
+                                self.normalize_rest_markers(&mut items);
                                 let result = self.mk_list(items, Span::new(start, self.pos));
                                 next = Next::Deliver(result);
                             }
@@ -1640,6 +1653,28 @@ impl<'a, 'b> Reader<'a, 'b> {
     /// operator ruling: full symmetry). A non-`record` head (or entries that are not `(= k v)`) is left
     /// untouched — `map` alias entries stay bare `(k v)` pairs (its pattern surface), and equality `=`
     /// elsewhere stays `Name("=")`.
+    /// Normalize a legacy FLAT rest/spread marker in a collection's elements — a bare `Name("..")`
+    /// element immediately followed by its operand — into the canonical WRAPPED `(.. operand)` node (a
+    /// list headed by `..`), so the s-expr surface produces the SAME shape the ML parser now emits
+    /// (operator's `(.. v)`-everywhere migration; the compiler + `Arenas::rest_marker` accept both). An
+    /// already-wrapped `(.. operand)` is left untouched (`as_name` matches only the bare-name flat form),
+    /// as is a trailing bare `..` with no operand (malformed — left for the existing shape validation).
+    /// The wrapped node spans the `..` head through its operand; built here (after both children exist)
+    /// so the SpanTable stays 1:1 and in structure-id order (children before parent).
+    fn normalize_rest_markers(&mut self, items: &mut Vec<StructId>) {
+        let mut i = 0;
+        while i < items.len() {
+            if self.b.as_name(items[i]) == Some("..") && i + 1 < items.len() {
+                let head = items[i];
+                let operand = items[i + 1];
+                let span = self.span_of(head).merge(self.span_of(operand));
+                items[i] = self.mk_list(vec![head, operand], span);
+                items.remove(i + 1);
+            }
+            i += 1;
+        }
+    }
+
     fn alias_field_pairify(&mut self, items: &mut [StructId]) {
         // A `record` OR `map` compound-alias head — the shadowable NAME alias (`(record …)`) OR the
         // unshadowable STRING primitive (`("record" …)`, which Ast-metaprogramming / value-reification
@@ -2154,27 +2189,35 @@ mod tests {
 
     #[test]
     fn a_construction_spread_round_trips_through_the_sexpr_surface() {
-        // The construction spread `.. s` (seq-204 GO, all four collection ctors) reaches the corpus/harness
-        // through the SEXPR surface, so the reader + printer must round-trip it as the flat `.. <operand>`
-        // marker at ANY position (multiple/interior — a CONSTRUCTION spread, unlike a trailing-only PATTERN
-        // rest). Read -> compact print -> byte-identical, and encode->decode->print stays stable. (The
-        // LOWERING of a construction spread is v-inference's slice — this pins the surface the corpus writes.)
-        for form in [
-            "#list(0 .. c 9)",
-            "#list(.. a .. b)",
-            "#set(.. a x)",
-            "#set(1 .. a 2 .. b)",
-            "#map(.. m (= 1 2))",
-            "#map((= 1 2) .. m (= 3 4))",
-            "#record(.. base (= a 1))",
-            "#record((= a 1) .. b (= c 2) .. d)",
+        // The construction spread reaches the corpus/harness through the SEXPR surface at ANY position
+        // (multiple/interior — a CONSTRUCTION spread, unlike a trailing-only PATTERN rest), across all four
+        // collection ctors. Per the operator's `(.. v)`-everywhere migration the CANONICAL shape is the
+        // WRAPPED `(.. operand)` node: the reader NORMALIZES a legacy flat `.. <operand>` marker to it, so a
+        // flat input prints as the wrapped canonical form, and the wrapped form round-trips idempotently
+        // (read -> compact print -> byte-identical, and encode -> decode -> print stable). (The LOWERING of a
+        // construction spread is v-inference's slice; the compiler + `Arenas::rest_marker` read both shapes.)
+        for (flat, wrapped) in [
+            ("#list(0 .. c 9)", "#list(0 (.. c) 9)"),
+            ("#list(.. a .. b)", "#list((.. a) (.. b))"),
+            ("#set(.. a x)", "#set((.. a) x)"),
+            ("#set(1 .. a 2 .. b)", "#set(1 (.. a) 2 (.. b))"),
+            ("#map(.. m (= 1 2))", "#map((.. m) (= 1 2))"),
+            ("#map((= 1 2) .. m (= 3 4))", "#map((= 1 2) (.. m) (= 3 4))"),
+            ("#record(.. base (= a 1))", "#record((.. base) (= a 1))"),
+            (
+                "#record((= a 1) .. b (= c 2) .. d)",
+                "#record((= a 1) (.. b) (= c 2) (.. d))",
+            ),
         ] {
-            let a = read(form).unwrap();
-            assert_eq!(print(&a), form, "sexpr round-trip of {form}");
-            // encode -> decode -> print stays the same flat spread form.
-            let bytes = cadenza_ast::codec::encode(&a);
+            // A legacy flat `.. <operand>` input normalizes to the wrapped canonical form.
+            let a = read(flat).unwrap();
+            assert_eq!(print(&a), wrapped, "flat->wrapped normalize of {flat}");
+            // The wrapped canonical form round-trips idempotently, through text and binary.
+            let w = read(wrapped).unwrap();
+            assert_eq!(print(&w), wrapped, "sexpr round-trip of {wrapped}");
+            let bytes = cadenza_ast::codec::encode(&w);
             let back = cadenza_ast::codec::decode(&bytes).expect("spread construction decodes");
-            assert_eq!(print(&back), form, "binary round-trip of {form}");
+            assert_eq!(print(&back), wrapped, "binary round-trip of {wrapped}");
         }
     }
 
