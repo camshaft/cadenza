@@ -495,11 +495,11 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
         Query::FuncLayout => {
-            let text = func_layout_text(db);
+            let fl = func_layout_value(db);
             QueryResult {
                 kind: KIND_FUNC_LAYOUT,
                 name: "func-layout".to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::func_layout_wire::encode(&fl),
             }
         }
         Query::ClosureHash => {
@@ -592,36 +592,47 @@ pub(crate) fn extract_subtree(src: &crate::ast::Arenas, root: StructId) -> crate
 /// with NO export falls back to the `@test`-rooted layout (`compute_tests`) so a pure-`@test` file — the
 /// witness's target — lays out the same func-index set `cdz test` emits. TOTAL: only when BOTH decline (no
 /// export AND no `@test`) is the result empty; an empty program yields just the marker.
-fn func_layout_text(db: &mut Db) -> String {
+fn func_layout_value(db: &mut Db) -> cadenza_compile_abi::func_layout_wire::FuncLayout {
+    use cadenza_compile_abi::func_layout_wire::{FuncLayout, FuncLayoutRow};
     // Force monomorphization so the reachable set is complete + stable regardless of what a query-only run
     // would otherwise lower (mirrors `Instantiations`); then lay out the boundary to get the func-index
-    // order. Both layouts declining (no export AND no `@test`, see the fallback below) yields the empty
-    // result — the query is total.
+    // order. Both layouts declining (no export AND no `@test`, see the fallback below) yields a DECLINE
+    // (`laid_out: false`) — the query is total.
     crate::layout::force_monomorphize(db);
     // Root on `(export …)` when the program has any (a normal library/export build); otherwise fall back to
     // the `@test`-rooted layout (`compute_tests`), which lays out the SAME func-index set `cdz test` emits.
     // A pure-`@test` file (no export) is exactly the compile-reuse witness's target (sread-eval-fns / -ho),
-    // so without this fallback the query would decline (empty) on the files it most needs to observe. Both
-    // declining (no export AND no `@test`) yields the empty result — the query stays total.
+    // so without this fallback the query would decline on the files it most needs to observe. Both
+    // declining (no export AND no `@test`) yields a DECLINE — the query stays total.
     let layout = match crate::layout::compute(db) {
         Ok(l) => l,
         Err(_) => match crate::layout::compute_tests(db) {
             Ok(l) => l,
-            Err(_) => return String::new(),
+            Err(_) => {
+                return FuncLayout {
+                    import_base: 0,
+                    laid_out: false,
+                    rows: Vec::new(),
+                };
+            }
         },
     };
-    let mut text = format!("defs-begin\t{}\t-\n", layout.import_base);
     // `layout.order` is the defined-function emission sequence; def at position `k` is wasm func
     // `import_base + k` (== `layout.abs(def)`). Emit in that order so the rows are func-index-ascending.
-    for &def in &layout.order {
-        let idx = layout
-            .abs(def)
-            .map_or_else(|| "-".to_string(), |i| i.to_string());
-        let name = db.defs[def].name.clone();
-        let hash = def_content_hash(db, def);
-        text.push_str(&format!("{idx}\t{hash:016x}\t{name}\n"));
+    let rows: Vec<FuncLayoutRow> = layout
+        .order
+        .iter()
+        .map(|&def| FuncLayoutRow {
+            name: db.defs[def].name.clone(),
+            hash: def_content_hash(db, def),
+            idx: layout.abs(def),
+        })
+        .collect();
+    FuncLayout {
+        import_base: layout.import_base,
+        laid_out: true,
+        rows,
     }
-    text
 }
 
 /// The Option-C shared-closure CONTENT-HASH for the program's `@test` dir (the [`Query::ClosureHash`] read) —

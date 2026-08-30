@@ -14,6 +14,7 @@
 pub mod abi;
 pub mod closure_hash_wire;
 pub mod diagnostics_wire;
+pub mod func_layout_wire;
 pub mod link_map;
 pub mod opt;
 pub mod overflow;

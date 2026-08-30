@@ -36205,6 +36205,21 @@ mod sidecar_driven {
             .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
     }
 
+    // The func-layout artifact is now canonical binary AST (operator P0 seq-284) rather than TAB text, so
+    // decode it via the shared codec and render the historical TAB rows — the SAME `render_text` the `cdz
+    // func-layout` CLI prints, so these assertions still pin the byte-stable text form.
+    fn func_layout_text(out: &crate::abi::CompileOutput) -> Option<String> {
+        out.artifacts
+            .iter()
+            .find(|a| a.kind == KIND_FUNC_LAYOUT)
+            .map(|a| {
+                cadenza_compile_abi::func_layout_wire::render_text(
+                    &cadenza_compile_abi::func_layout_wire::decode(&a.bytes)
+                        .expect("func-layout artifact decodes as binary AST"),
+                )
+            })
+    }
+
     #[test]
     fn a_type_of_query_reads_the_type_column() {
         // A `TypeOf` request for a nullary def answers with its rendered type — the same canonical text
@@ -39227,7 +39242,7 @@ mod sidecar_driven {
             "a query does not fail: {:?}",
             out.diagnostics
         );
-        let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("a func-layout artifact");
+        let text = func_layout_text(&out).expect("a func-layout artifact");
         let mut lines = text.lines();
         assert_eq!(
             lines.next(),
@@ -39263,7 +39278,7 @@ mod sidecar_driven {
         let hash_of = |src: &str, name: &str| -> String {
             let out = compile(&inputs(src, &[Request::Query(Query::FuncLayout)]), &[]);
             assert!(!out.has_error(), "{:?}", out.diagnostics);
-            let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("func-layout");
+            let text = func_layout_text(&out).expect("func-layout");
             text.lines()
                 .find(|l| l.split('\t').nth(2).is_some_and(|n| n.starts_with(name)))
                 .and_then(|l| l.split('\t').nth(1))
@@ -39302,7 +39317,7 @@ mod sidecar_driven {
             "a query does not fail: {:?}",
             out.diagnostics
         );
-        let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("a func-layout artifact");
+        let text = func_layout_text(&out).expect("a func-layout artifact");
         assert!(
             text.starts_with("defs-begin\t"),
             "a pure-@test program still lays out (rooted on @tests), not an empty decline:\n{text:?}"

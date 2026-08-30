@@ -7004,39 +7004,20 @@ fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    // Validate each row's shape loudly rather than silently passing a format-skewed line through (the
-    // silent-skip class other query readers guard against). The marker is `defs-begin<TAB>N<TAB>-`; every
-    // other row is `<idx>\t<hash>\t<name>`. A layout decline is the empty string — a valid (rc 0) result.
-    let mut malformed = false;
-    for (n, line) in text.lines().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
-        let cols: Vec<&str> = line.split('\t').collect();
-        let ok = if n == 0 {
-            cols.len() == 3 && cols[0] == "defs-begin" && cols[1].parse::<u32>().is_ok()
-        } else {
-            // idx is a func-index number or `-` (an emitted def with no assigned slot is reported `-`);
-            // hash is 16 hex digits; name is non-empty.
-            cols.len() == 3
-                && (cols[0] == "-" || cols[0].parse::<u32>().is_ok())
-                && cols[1].len() == 16
-                && cols[1].chars().all(|c| c.is_ascii_hexdigit())
-                && !cols[2].is_empty()
-        };
-        if !ok {
-            report_malformed_query_row("func-layout", line);
-            malformed = true;
-            continue;
-        }
-        println!("{line}");
-    }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    // The func-layout artifact is canonical binary AST (operator P0 seq-284); decode via the shared codec
+    // (zero string parsing) then RENDER the historical TAB rows verbatim — a `defs-begin<TAB>N<TAB>-` marker
+    // then one `<idx-or-"-">\t<hash16>\t<name>` row per def, byte-stable stdout the compile-reuse witness
+    // diffs. A malformed / wrong-shape artifact fails loudly (the silent-skip class other readers guard
+    // against); a layout DECLINE renders the empty string — a valid (rc 0) result.
+    let Some(fl) = cadenza_compile_abi::func_layout_wire::decode(bytes) else {
+        eprintln!("{PROG}: func-layout artifact did not decode as binary AST");
+        return ExitCode::FAILURE;
+    };
+    print!(
+        "{}",
+        cadenza_compile_abi::func_layout_wire::render_text(&fl)
+    );
+    ExitCode::SUCCESS
 }
 
 /// `cdz highlight FILE` — semantic syntax highlighting: every classified token as `file:line:col: kind`.
