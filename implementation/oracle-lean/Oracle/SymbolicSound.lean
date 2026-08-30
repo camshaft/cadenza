@@ -180,6 +180,50 @@ theorem mayTrap_case (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
     mayTrap (.case s arms) = (mayTrap s || arms.attach.any (fun x => mayTrap x.val.2)) := by
   simp [mayTrap]
 
+/-! ### `denote` trap-freedom building blocks (toward `mayTrap` soundness).
+These pin the operand-combiners' trap behavior — the crux of the eventual `mayTrap`-soundness theorem
+(`mayTrap e = false → denote never traps e`, the justification for every trap-guarded rewrite like
+`x*0 → 0`, `if c a a → a`, `or a true → true`) and reusable for the `denote (normalize e) = denote e`
+capstone. The only way `denote` produces a trap on an `.app` is `evalArithOp` inside `denoteBinary`;
+these lemmas show that path is unreachable when the op is non-arithmetic and the operands don't trap. -/
+
+/-- `denoteUnary` never traps when its operand outcome does not (`foldConst?` yields a `.value`; a
+non-`.value` operand is passed through). -/
+theorem denoteUnary_ne_trap (op : String) (oa : Outcome) (k : String)
+    (ha : ∀ t, oa ≠ .trap t) : denoteUnary op oa ≠ .trap k := by
+  intro h
+  cases oa with
+  | value va => simp only [denoteUnary] at h; split at h <;> simp_all
+  | trap t => exact ha t rfl
+  | diverges => simp [denoteUnary] at h
+  | unsupported r => simp [denoteUnary] at h
+  | errReturn v => simp [denoteUnary] at h
+
+/-- `denoteBinary` never traps when its op is NOT arithmetic and neither operand outcome traps: value
+operands fold via `foldConst?` (a `.value`) or, since `op ∉ arithOps`, fall to `.unsupported` (the
+`evalArithOp` trap path is guarded out); non-value operands are non-traps by hypothesis. -/
+theorem denoteBinary_ne_trap (op : String) (w : IntTy) (oa ob : Outcome) (k : String)
+    (hop : arithOps.contains op = false)
+    (ha : ∀ t, oa ≠ .trap t) (hb : ∀ t, ob ≠ .trap t) :
+    denoteBinary op w oa ob ≠ .trap k := by
+  intro h
+  cases oa with
+  | value va =>
+    cases ob with
+    | value vb =>
+      simp only [denoteBinary] at h
+      split at h
+      · simp_all
+      · split at h <;> simp_all [hop]
+    | trap t => exact hb t rfl
+    | diverges => simp [denoteBinary] at h
+    | unsupported r => simp [denoteBinary] at h
+    | errReturn v => simp [denoteBinary] at h
+  | trap t => exact ha t rfl
+  | diverges => cases ob <;> first | exact hb _ rfl | simp_all [denoteBinary]
+  | unsupported r => cases ob <;> first | exact hb _ rfl | simp_all [denoteBinary]
+  | errReturn v => cases ob <;> first | exact hb _ rfl | simp_all [denoteBinary]
+
 /-! ## `normalize` is the identity on a symbolic input.
 `normalize` is a total (`termination_by sizeOf`) def; its `.var` arm is literally `.var n`, so `simp`
 discharges this via the equation lemma. A symbolic input has no sound rewrite — the canonicalizer
