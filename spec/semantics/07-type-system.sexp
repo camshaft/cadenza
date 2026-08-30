@@ -2422,6 +2422,35 @@
   (input (do (def (f (: t Type)) (if t 1 2)) (def (main) (f Int64)) (export main)))
   (error CDZ0203 (message "found Type")) (no-other-errors))
 
+; A position that binds a type-valued parameter `(: t Type)` is a bidirectional-CHECKING boundary
+; (type-system.md #Generics Are Type-Valued Parameters, line 60: "a type is CHECKED against an explicit
+; annotation, RATHER THAN SOLVED BY UNIFICATION"). So passing a type VALUE for `t` CONSTRAINS a sibling
+; `(: x t)`: a value arg of a DIFFERENT type is checked against the passed witness and REJECTED (CDZ0203),
+; not silently unification-solved (which would leave the passed type DEAD — the over-accept the spec forbids,
+; surfaced by the `forall a. a` sugar that desugars to `(: a Type) (: x a)`). The boundary CHECKS, it does
+; NOT over-constrain: an arg whose type AGREES with the witness compiles and runs. The check fires whether or
+; not the body references the param. (Migrated from rcdzc
+; a_type_valued_param_is_a_checking_boundary_a_wrong_typed_sibling_arg_is_rejected.)
+(case "a wrong-typed sibling arg against a type-valued parameter is rejected at the checking boundary"
+  (input  (do (def (f (: t Type) (: x t)) x) (def (main) (f Bool 41)) (export main)))
+  (error  CDZ0203))
+
+(case "the type-valued-param checking boundary fires even when the param is unreferenced in the body"
+  (input  (do (def (f (: t Type) (: x t)) 0) (def (main) (f Bool 41)) (export main)))
+  (error  CDZ0203))
+
+(case "a different type witness (String) still checks its sibling arg against it"
+  (input  (do (def (f (: t Type) (: x t)) x) (def (main) (f String 7)) (export main)))
+  (error  CDZ0203))
+
+(case "a sibling arg agreeing with an Int64 type witness compiles and runs"
+  (input  (do (def (f (: t Type) (: x t)) x) (def (main) (f Int64 41)) (export main)))
+  (call main) (output (: 41 Int64)))
+
+(case "a sibling arg agreeing with a Bool type witness compiles and runs"
+  (input  (do (def (f (: t Type) (: x t)) x) (def (main) (f Bool true)) (export main)))
+  (call main) (output (: true Bool)))
+
 (case "a type-value nested in a compound result is one coded error, no cascade"
   (input (do (def (main) #tuple(Int64 5)) (export main)))
   (error CDZ0201 (message "is a TYPE, not a runtime value")) (no-other-errors))

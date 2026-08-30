@@ -29256,58 +29256,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_type_valued_param_is_a_checking_boundary_a_wrong_typed_sibling_arg_is_rejected() {
-        // SPEC (type-system.md #Generics Are Type-Valued Parameters, line 60): "A position that binds a
-        // type-valued parameter MUST be a bidirectional-checking boundary, at which a type is ... CHECKED
-        // against an explicit annotation, RATHER THAN SOLVED BY UNIFICATION." So passing a type VALUE for a
-        // `(: t Type)` param CONSTRAINS a sibling `(: x t)` — a value arg of a DIFFERENT type must reject.
-        // Before this, `f(Bool, 41)` for `(f (: t Type) (: x t))` ACCEPTED (41's Int64 solved the sibling
-        // var by unification; the passed `Bool` was DEAD), an over-accept the spec forbids — surfaced
-        // user-facing by the forall sugar (`def id(x: forall a. a)` desugars to `(: a Type) (: x a)`, so
-        // `id(Bool, 41)` read as if the type arg meant something yet ran). Fixed by binding the reflected
-        // type value into the boundary var at the call (the step-1 arg-check), and ALWAYS-flushing the
-        // resulting sibling mismatch (β-reduction erases the `(: x t)` annotation, so the reduced-body
-        // check can't re-detect it — it is the sole report even for a referenced param).
-        for (src, why) in [
-            // Direct explicit-`Type`-param form: `Bool` binds `t`, `41` (Int64) violates it.
-            (
-                "(module m (def (f (: t Type) (: x t)) x) (def (main) (f Bool 41)) (export main))",
-                "f(Bool, 41): the value 41 is checked against t := Bool",
-            ),
-            // Same, param UNREFERENCED in the body — the boundary check fires regardless of use.
-            (
-                "(module m (def (f (: t Type) (: x t)) 0) (def (main) (f Bool 41)) (export main))",
-                "f(Bool, 41) with an unused x still rejects",
-            ),
-            // A DIFFERENT concrete type witness: `String` binds `t`, an Int64 arg violates it.
-            (
-                "(module m (def (f (: t Type) (: x t)) x) (def (main) (f String 7)) (export main))",
-                "f(String, 7): 7 is checked against t := String",
-            ),
-        ] {
-            let err = compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err(&format!("a type-valued-param boundary must reject: {why}"));
-            assert_eq!(
-                err.code.as_deref(),
-                Some("CDZ0203"),
-                "{why} → {}",
-                err.message
-            );
-        }
-        // NO false reject when the value arg's type AGREES with the passed type witness — the boundary
-        // CHECKS, it does not over-constrain. `f(Int64, 41)` and `f(Bool, true)` both compile.
-        for ok in [
-            "(module m (def (f (: t Type) (: x t)) x) (def (main) (f Int64 41)) (export main))",
-            "(module m (def (f (: t Type) (: x t)) x) (def (main) (f Bool true)) (export main))",
-        ] {
-            assert!(
-                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
-                "a correct type witness must compile: {ok}"
-            );
-        }
-    }
-
-    #[test]
     fn the_kind_type_under_a_compound_annotation_round_trips_not_collapses_to_unit() {
         // The `Ty::Type` twin of the `Ty::Var` round-trip fix above: the KIND-OF-TYPES `Type` used INSIDE a
         // compound annotation — an arrow domain/result `(-> Type Int64)` / `(-> Int64 Type)`, a `(Tuple Type
