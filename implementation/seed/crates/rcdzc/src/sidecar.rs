@@ -155,18 +155,16 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
         Query::UsesOf { name } => {
-            let uses = uses_of(db, name);
-            // One node index per line, in ascending id order — the deterministic order the columns
-            // model requires (a query answer is a function of the program, not of traversal order).
-            let mut text = String::new();
-            for id in uses {
-                text.push_str(&id.0.to_string());
-                text.push('\n');
-            }
+            // The reference node ids, ascending — the deterministic order the columns model requires
+            // (a query answer is a function of the program, not of traversal order). The wire is
+            // canonical BINARY AST (`uses_wire`, operator P0 seq-284/307-308: no bespoke TAB/newline
+            // text), a root list of `Ast.Int` node-id leaves the `cdz` consumers decode via the shared
+            // codec — never a string split.
+            let ids: Vec<u32> = uses_of(db, name).into_iter().map(|id| id.0).collect();
             QueryResult {
                 kind: KIND_USES,
                 name: name.clone(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_uses(&ids),
             }
         }
         Query::TypeAt { node } => {

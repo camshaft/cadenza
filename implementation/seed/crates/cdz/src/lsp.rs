@@ -1664,8 +1664,8 @@ fn run_query_text(
 }
 
 /// The RAW artifact bytes of a single sidecar query (the binary-AST variant of [`run_query_text`]) — for a
-/// result whose wire is canonical binary AST (e.g. `KIND_DIAGNOSTICS` → `decode_diagnostics`), not text.
-/// Same `run_sidecar` chokepoint (delegates under `!standalone`).
+/// result whose wire is canonical binary AST (e.g. `KIND_DIAGNOSTICS` → `decode_diagnostics`,
+/// `KIND_USES` → `decode_uses`), not text. Same `run_sidecar` chokepoint (delegates under `!standalone`).
 fn run_query_bytes(
     arenas: &cadenza_syntax::Arenas,
     query: cadenza_compile_abi::sidecar::Query,
@@ -2043,15 +2043,13 @@ fn references_at(
     }
 
     let mut locations: Vec<Location> = Vec::new();
-    if let Some(answer) = run_query_text(
+    if let Some(bytes) = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::UsesOf { name: name.clone() },
         cadenza_compile_abi::sidecar::KIND_USES,
     ) {
-        for line in answer.lines() {
-            if let Ok(id) = line.trim().parse::<u32>()
-                && let Some(loc) = node_location(text, &spans, uri, id)
-            {
+        for id in cadenza_compile_abi::decode_uses(&bytes) {
+            if let Some(loc) = node_location(text, &spans, uri, id) {
                 locations.push(loc);
             }
         }
@@ -2201,7 +2199,7 @@ fn incoming_calls_for(
         .map(|(n, k, _)| (n, k))
         .collect();
     // Each reference's range, from `UsesOf` (node-id-keyed → source range).
-    let Some(answer) = run_query_text(
+    let Some(bytes) = run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::UsesOf {
             name: name.to_string(),
@@ -2214,10 +2212,7 @@ fn incoming_calls_for(
     let mut order: Vec<String> = Vec::new();
     let mut by_caller: std::collections::HashMap<String, Vec<Range>> =
         std::collections::HashMap::new();
-    for line in answer.lines() {
-        let Ok(id) = line.trim().parse::<u32>() else {
-            continue;
-        };
+    for id in cadenza_compile_abi::decode_uses(&bytes) {
         let Some(span) = spans.get(cadenza_syntax::StructId(id)) else {
             continue;
         };
@@ -2529,10 +2524,8 @@ fn package_references_at(
         })
     };
     if let Some(bytes) = compiled.artifact(cadenza_compile_abi::sidecar::KIND_USES) {
-        for line in String::from_utf8_lossy(bytes).lines() {
-            if let Ok(global) = line.trim().parse::<u32>()
-                && let Some(loc) = loc_of_global(global)
-            {
+        for global in cadenza_compile_abi::decode_uses(bytes) {
+            if let Some(loc) = loc_of_global(global) {
                 out.push(loc);
             }
         }

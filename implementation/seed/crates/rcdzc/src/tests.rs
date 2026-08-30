@@ -35831,6 +35831,15 @@ mod sidecar_driven {
             })
     }
 
+    /// The RAW bytes of the first artifact of `kind` — for the query answers whose wire is canonical
+    /// binary AST (`KIND_USES`, …), which the test decodes via the shared `cadenza-compile-abi` codec.
+    fn artifact_bytes<'a>(out: &'a crate::abi::CompileOutput, kind: &str) -> Option<&'a [u8]> {
+        out.artifacts
+            .iter()
+            .find(|a| a.kind == kind)
+            .map(|a| a.bytes.as_slice())
+    }
+
     #[test]
     fn a_type_of_query_reads_the_type_column() {
         // A `TypeOf` request for a nullary def answers with its rendered type — the same canonical text
@@ -38056,8 +38065,8 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let text = artifact_text(&out, KIND_USES).expect("a uses artifact");
-        let ids: Vec<u32> = text.lines().map(|l| l.parse().unwrap()).collect();
+        let bytes = artifact_bytes(&out, KIND_USES).expect("a uses artifact");
+        let ids: Vec<u32> = cadenza_compile_abi::decode_uses(bytes);
         // Three references to `helper`, none of them the def's body.
         assert_eq!(ids.len(), 3, "uses = {ids:?}");
         assert!(
@@ -38102,8 +38111,8 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let text = artifact_text(&out, KIND_USES).expect("a uses artifact");
-        let ids: Vec<u32> = text.lines().map(|l| l.parse().unwrap()).collect();
+        let bytes = artifact_bytes(&out, KIND_USES).expect("a uses artifact");
+        let ids: Vec<u32> = cadenza_compile_abi::decode_uses(bytes);
         // Exactly N references (one bare `helper` per `d{i}`) — no declaration-site name (helper's own, or
         // any of the N `d{i}` / `main` sig names) leaked in, and none of the N uses was missed. Ascending.
         assert_eq!(ids.len(), n, "one use per referencing def: {ids:?}");
@@ -38136,7 +38145,8 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        assert_eq!(artifact_text(&out, KIND_USES).as_deref(), Some(""));
+        let bytes = artifact_bytes(&out, KIND_USES).expect("a uses artifact");
+        assert!(cadenza_compile_abi::decode_uses(bytes).is_empty());
     }
 
     #[test]

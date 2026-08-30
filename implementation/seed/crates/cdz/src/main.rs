@@ -5483,26 +5483,10 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    // Each line is a bare reference node-id. A non-empty line that is NOT an integer is a sidecar
-    // format skew — flag it (fail at the end) rather than silently dropping the reference (PR #525's
-    // silent-drop class); a blank line is skipped.
-    let mut malformed = false;
-    let mut ids: Vec<u32> = Vec::new();
-    for line in text.lines() {
-        let t = line.trim();
-        if t.is_empty() {
-            continue;
-        }
-        match t.parse::<u32>() {
-            Ok(id) => ids.push(id),
-            Err(_) => {
-                report_malformed_query_row("uses", line);
-                malformed = true;
-            }
-        }
-    }
-    if ids.is_empty() && !malformed {
+    // The reference node ids, decoded from the canonical binary-AST wire (`uses_wire`) — the consumer
+    // does ZERO string parsing; a malformed/wrong-shape entry is dropped by the total codec.
+    let ids = cadenza_compile_abi::decode_uses(bytes);
+    if ids.is_empty() {
         eprintln!("{PROG}: no references to `{}` in {}", args.name, args.file);
         return ExitCode::SUCCESS;
     }
@@ -5537,11 +5521,7 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
             }
         }
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 /// Whether an error diagnostic with code `code` is ABSENT from `text` when parsed as `is_ml` (else
