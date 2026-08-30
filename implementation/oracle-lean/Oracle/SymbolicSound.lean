@@ -316,6 +316,36 @@ theorem mayTrap_sound (ρ : Nat → Value) (w : IntTy) (e : SymExpr) :
          have hmt : mayTrap y.val = false := by have := hany i hi; rw [hval] at this; simpa using this
          exact ih y hmt)
 
+/-! ### Fold-alignment lemmas: `denote`'s app-combiner agrees with `normalize`'s const-fold.
+These are the reusable ENGINE the eventual capstone `.app` fold-subcase invokes. `normalize` folds a
+binary app of two constants to `.const v` exactly when `foldConst? op #[.const a, .const b] = some v`
+(comparison/boolean/float/equality) or, for the deferred integer arithmetic `foldConst?` leaves alone,
+to the real `evalArithOp` result. Here we show `denote`'s combiner (`denoteBinary`/`denoteApp`) produces
+that SAME outcome — so once a `normalize`-app equation lemma is available, the capstone `.app` case
+reduces to these. They are value-conditioned in spirit (they speak only about `.value` operands, so the
+ill-typed-`e` typing subtlety never arises) and gate green independently of that design point. -/
+theorem denoteBinary_fold (op : String) (w : IntTy) (va vb v : Value)
+    (h : foldConst? op #[.const va, .const vb] = some v) :
+    denoteBinary op w (.value va) (.value vb) = .value v := by
+  simp only [denoteBinary, h]
+
+theorem denoteApp_fold (op : String) (w : IntTy) (va vb v : Value)
+    (h : foldConst? op #[.const va, .const vb] = some v) :
+    denoteApp op w #[.value va, .value vb] = .value v := by
+  have hred : denoteApp op w #[.value va, .value vb]
+      = denoteBinary op w (.value va) (.value vb) := rfl
+  rw [hred]; exact denoteBinary_fold op w va vb v h
+
+/-- The deferred integer-arithmetic path: when `foldConst?` declines (int `+ - * / %` are not folded —
+their overflow-trap conditions are width-dependent) and the op is arithmetic, `denote`'s combiner falls
+through to the REAL width-`w` `evalArithOp` (byte-identical to `evalNode`), so its trap/overflow
+semantics are the oracle's, not a re-implementation. -/
+theorem denoteBinary_arith (op : String) (w : IntTy) (x y : Int)
+    (hf : foldConst? op #[.const (.int x), .const (.int y)] = none)
+    (hop : arithOps.contains op = true) :
+    denoteBinary op w (.value (.int x)) (.value (.int y)) = evalArithOp op x y w := by
+  simp only [denoteBinary, hf, hop, if_true]
+
 /-! ### Capstone base cases: `denote (normalize e) = denote e` on the leaves.
 The normalizer preserves meaning on `var` (it is the identity) and `const` (float canonicalization is
 now aligned in `denote`, so the equality is structural). These are the base cases of the full
