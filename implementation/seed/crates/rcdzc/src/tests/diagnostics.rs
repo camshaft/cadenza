@@ -1,0 +1,3374 @@
+use crate::abi::Artifact;
+use crate::ast::StructId;
+use crate::backend::Target;
+use crate::compile::compile;
+use crate::db::Db;
+use crate::testkit::parse;
+
+/// Compile a program and return its first error diagnostic.
+fn first_error(src: &str) -> crate::abi::Diagnostic {
+    let ast = parse(src);
+    let bytes = crate::codec::encode(&ast);
+    let out = compile(
+        &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+        &[Target::Wasm],
+    );
+    out.diagnostics
+        .into_iter()
+        .find(|d| d.severity == crate::abi::Severity::Error)
+        .expect("an error")
+}
+
+/// seq-286: the umbrella `CDZ0900` unsupported-construct decline. `Reject::unsupported` carries the
+/// code, STILL grades as a decline (`is_decline`), and renders on the wire exactly like any coded
+/// error (`error [CDZ0900]: …`) so the corpus decline-code grader parses it with no special-casing.
+#[test]
+fn unsupported_construct_decline_carries_cdz0900_and_is_still_a_decline() {
+    use crate::diag::{Code, Reject};
+    assert_eq!(Code::UnsupportedConstruct.code(), "CDZ0900");
+
+    let r = Reject::unsupported("a widget of this shape is not supported");
+    assert_eq!(r.code, Some(Code::UnsupportedConstruct));
+    assert!(
+        r.is_decline(),
+        "a CDZ0900 unsupported-construct is a DECLINE (safe not-yet), not a program-is-wrong reject"
+    );
+    // A codeless decline is still a decline; a program-is-wrong coded reject is NOT.
+    assert!(Reject::decline("x").is_decline());
+    assert!(!Reject::coded(Code::TypeMismatch, "y").is_decline());
+
+    // Wire shape: severity Error, code Some("CDZ0900") — same shape as any error diagnostic.
+    let d = crate::abi_bridge::diagnostic_from_reject(&r);
+    assert_eq!(d.severity, crate::abi::Severity::Error);
+    assert_eq!(d.code.as_deref(), Some("CDZ0900"));
+    assert_eq!(d.message, "a widget of this shape is not supported");
+}
+
+fn all_errors(src: &str) -> Vec<crate::abi::Diagnostic> {
+    let ast = parse(src);
+    let bytes = crate::codec::encode(&ast);
+    let out = compile(
+        &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+        &[Target::Wasm],
+    );
+    out.diagnostics
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect()
+}
+
+// (a_duplicate_record_field_carries_a_delete_the_duplicate_fix migrated to corpus 05-compound-types
+//  "a record with a duplicate field name is a type error" — enhanced with (fix (kind delete) (unverified))
+//  now that the corpus (error ...) form grades fix-quality (C1 #5255).)
+
+// (a_wrong_arity_record_or_map_entry_offers_a_delete_the_surplus_fix migrated to corpus 05-compound-types:
+//  surplus record-field + map-entry (name-alias + primitive) → (fix (kind delete)); too-few record + map
+//  → (no-fix). All CDZ0201 with the entry-shape message.)
+
+#[test]
+fn a_wrong_arity_type_annotation_names_the_operand_count_at_every_arity() {
+    // A type annotation is `(: <expression> <type>)` — exactly two operands. A malformed arity (`(: 5)`,
+    // `(: 5 Int64 foo)`, `(:)`) now names the actual count instead of the flat "takes an expression and
+    // a type". TRAP: REGRESSION GUARD: the message must NOT contain the substring "takes exactly" — that is
+    // `diag::EMIT_OPERAND_ARITY_MARKER`, and `dedup_faults` DROPS a `Code::Malformed` fault matching it
+    // (+ "operand") as a redundant emit-path operator-arity decline. An earlier wording ("takes exactly 2
+    // operands") collided with that filter and was SILENTLY DROPPED for the 0- and 3-operand cases (the
+    // 1-operand case slipped through by fault ordering) — so this test asserts EVERY arity surfaces.
+    let find = |src: &str| {
+        crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+            .into_iter()
+            .find(|d| d.message.contains("a type annotation is written"))
+            .unwrap_or_else(|| panic!("the annotation-arity fault must surface for {src}"))
+    };
+    for (src, count) in [
+        ("(module m (def x (: 5)) (export x))", "1 part is"),
+        (
+            "(module m (def x (: 5 Int64 foo)) (export x))",
+            "3 parts are",
+        ),
+        ("(module m (def x (:)) (export x))", "0 parts are"),
+    ] {
+        let d = find(src);
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("(: <expression> <type>)") && d.message.contains(count),
+            "names the canonical form + the operand count `{count}`: {}",
+            d.message
+        );
+        // The regression that motivated this test: the message must never contain the marker that
+        // makes `dedup_faults` drop it.
+        assert!(
+            !d.message.contains("takes exactly"),
+            "the message must avoid the EMIT_OPERAND_ARITY_MARKER collision: {}",
+            d.message
+        );
+    }
+    // NO false change: a well-formed 2-operand annotation is transparent (no fault).
+    assert!(
+        crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def x (: 5 Int64)) (export x))"
+        )))
+        .iter()
+        .all(|d| d.severity != crate::abi::Severity::Error),
+        "a well-formed `(: 5 Int64)` annotation is clean"
+    );
+}
+
+// (a_duplicate_field_in_a_record_type_is_rejected_like_the_value_form — its record-TYPE dup-field rejects
+// were already pinned in corpus 05-compound-types ("a record TYPE with a duplicate field name is a type
+// error" [annotation] + "a duplicate field in a variant's record-type payload is a type error" [payload],
+// both CDZ0201); this batch ENHANCED those two cases with the message + fix facets the rust test added:
+// (message "record type names field `x` more than once")(fix (kind delete)). --case grades the message;
+// the delete fix is source+sibling-proven. The distinct-fields no-regression control is covered broadly.)
+
+// (a_duplicate_export_carries_a_delete_the_duplicate_fix migrated to corpus 11-modules "a duplicate export
+//  clause for the same name is rejected" — enhanced with (fix (kind delete)) now that the corpus (error ...)
+//  form grades fix-quality (C1 #5255).)
+
+#[test]
+fn a_multi_name_export_clause_exports_every_name() {
+    // `(export a b)` — the multi-name surface the ML reader writes `export { a, b }` and the printer
+    // round-trips — exports EVERY name. The scanner used to read only `tail.first()`, SILENTLY dropping
+    // every name past the first, so `(export main helper)` published only `main` (a correctness bug: a
+    // valid public name vanished from the component). Now both defs are exported and reachable.
+    let clean = crate::diagnostics(&mut Db::load(parse(
+        "(module m (def (main) 1) (def (helper) 2) (export main helper))",
+    )));
+    assert!(
+        clean
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a valid multi-name export compiles: {:?}",
+        clean.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    // Both names resolve to a def (neither is silently dropped) — `helper` is no longer reported as an
+    // unused definition either, because the export references it.
+    assert!(
+        !clean.iter().any(|d| d.message.contains("`helper`")),
+        "the second export name `helper` is not dropped/unused: {:?}",
+        clean.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // A DIAGNOSTIC on the 2nd+ name anchors to THAT name, not the clause's first. An undefined 2nd
+    // name gets its own coded "names no definition" + did-you-mean over the defined names (the `check`
+    // path — the fast path an agent runs, which carries the suggestion + fix).
+    let d = crate::diagnostics(&mut Db::load(parse(
+        "(module m (def (main) 1) (def (helper) 2) (export main helpr))",
+    )))
+    .into_iter()
+    .find(|d| d.code.as_deref() == Some("CDZ0101"))
+    .expect("the undefined 2nd export name is a CDZ0101");
+    assert!(
+        d.message.contains("`helpr`") && d.message.contains("did you mean `helper`?"),
+        "the 2nd export name's typo is caught with a suggestion: {}",
+        d.message
+    );
+
+    // A duplicate WITHIN a multi-name clause `(export main main)` reports once, anchored+deleting the
+    // redundant name (not the whole clause — the first `main` must survive).
+    let dup = crate::diagnostics(&mut Db::load(parse(
+        "(module m (def (main) 1) (export main main))",
+    )))
+    .into_iter()
+    .find(|d| d.message.contains("exported more than once"))
+    .expect("a duplicate name in one clause is caught");
+    assert_eq!(dup.code.as_deref(), Some("CDZ0201"), "got: {}", dup.message);
+    assert_eq!(
+        dup.fix.as_ref().map(|f| f.kind),
+        Some(crate::abi::FixKind::Delete),
+        "the duplicate name carries a delete fix: {:?}",
+        dup.fix
+    );
+}
+
+// (a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix migrated to corpus: dup variant + dup op
+//  → 11-modules "a duplicate sum variant declaration carries a delete fix" / "…effect operation…";
+//  dup map key → 05-compound-types "a duplicate literal map key carries a delete fix". All CDZ0201 (fix (kind delete)).)
+
+// (a_duplicate_type_declaration_is_rejected_and_carries_a_delete_fix migrated to corpus 11-modules
+//  "a duplicate type declaration is rejected with a delete fix" (CDZ0201 + (fix (kind delete))) + the
+//  no-overreach twin "two distinct type names are not a duplicate" — fix-quality graded via C1 #5255.)
+// (an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix migrated to corpus 06-numeric-model
+//  "an integer operand to a float operator offers an of-int coercion fix" — CDZ0301 with the multi-substring
+//  message (no implicit conversion / Float64 / Int64) + (fix (kind wrap) (replacement "(Float64.of-int …)")
+//  (unverified)); the multi-message form landed via C1 #5277.)
+
+// (a_non_integer_float_annotated_int_names_the_fix_path_not_a_bare_mismatch migrated to corpus
+// 06-numeric-model by ENHANCING the two existing drop-fraction cases with the message facets it
+// protected: "a non-integer float literal annotated an integer type carries NO drop-fraction fix"
+// ((: 2.5 Int64) → CDZ0203 (message "fractional part")(message "annotate a float type")
+// (message "round/truncate")(no-fix) — names WHY + the two real paths, not a bare mismatch) + "an
+// integer-valued float literal annotated an integer type offers a drop-the-fraction fix (Int64)"
+// ((: 3.0 Int64) → CDZ0203 (message "drop the fractional form")(fix (kind replace)(replacement "3"))
+// — the guard that the clean literal-retype path survives). --case grades the message facets.)
+
+#[test]
+fn a_partial_application_of_a_builtin_operation_declines_honestly_naming_the_op() {
+    // A built-in operation applied to too FEW arguments — `(. List at) (list 1)`, missing the index —
+    // is a partial application: a genuine not-yet-built construct (it would need a runtime closure). It
+    // used to leak the INTERNAL `reduce_ctor` sentinel `error: not a type constructor` (the op fell
+    // through lower's full-arity arms into the constructor catch-all). Now it declines HONESTLY, naming
+    // the operation from its `Operand.key` surface spelling and stating the real limitation.
+    let d = first_error("(module m (def (main) ((. List at) (list 1))) (export main))");
+    assert!(
+        !d.message.contains("not a type constructor"),
+        "the internal reduce_ctor sentinel must not surface: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("`List.at`")
+            && d.message.contains("wrong arity")
+            && d.message.contains("runtime closure"),
+        "names the op + the real limitation: {}",
+        d.message
+    );
+    // A FULL application of the same op still compiles (the honest decline did not over-fire).
+    let full = all_errors("(module m (def (main) ((. List at) (list 1) 0)) (export main))");
+    assert!(
+        full.is_empty(),
+        "a fully-applied operation is not declined: {:?}",
+        full.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// (a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening migrated to corpus 06-numeric-model:
+// "a NARROWER integer operand to a float operator nests the Int64 widening in the of-int wrap"
+// ((+ 2.0 x), x:Int32 → CDZ0301 (message "no implicit conversion")(fix (kind wrap)
+// (replacement "(Float64.of-int (Int64.of …))")) — a bare (Float64.of-int x) would itself fail since
+// of-int takes Int64, so the one-shot fix widens first). --case grades code+message; the nested
+// replacement facet is graded by nix corpus-grade (identical to the landed annotation-position sibling
+// "a non-literal NARROWER integer annotated a float nests the Int64 widening in the of-int wrap").)
+
+// (a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix migrated to corpus 06-numeric-model
+//  "a non-numeric operand mixed with a float operator carries NO coercion fix" (CDZ0203 (no-fix)).)
+// (an_integer_width_mismatch_offers_an_of_conversion_fix migrated to corpus 06-numeric-model:
+// "an integer-width mismatch under an operator offers an of-conversion wrap fix" ((+ a b), a:Int32
+// b:Int64 → CDZ0301 (fix (kind wrap)(replacement-contains "(Int32.of ")(unverified))) + the ROUND-TRIP
+// "applying the integer-width of-conversion wrap clears the mismatch and runs" ((+ a (Int32.of b)),
+// f(5,3) → 8 : Int32). NOTE: the applied form now COMPILES AND RUNS — the "declines at emit" the old
+// rust comment described (checked int `.of` narrowing of a runtime operand) has since been fixed, so
+// the corpus pins a real run value, a stronger pin than the old "CDZ0301 is cleared" type-level assert.
+// --case grades the reject code + the run value; the (Int32.of …) wrap facet by nix corpus-grade
+// (replacement-contains precedent: the "(Int64.of "/"(Int8.of " annotation-position siblings are landed).)
+
+// (a_float_precision_mismatch_names_floats_and_offers_an_of_conversion_fix migrated to corpus
+// 06-numeric-model: "a float precision mismatch under an operator names floats and offers an
+// of-conversion wrap fix" (CDZ0301, (message "floating-point precisions differ")(message "a float")
+// (fix (kind wrap)(replacement "(Float32.of …)")(unverified))) + "a float annotation to a wider
+// precision offers an of-conversion wrap fix" (CDZ0203, (Float64.of …) wrap) + the two ROUND-TRIP
+// value cases "applying the {operator,annotation} float coercion wrap recompiles and runs" (float
+// `.of` is total, so the applied wrap RUNS: 4.0 and 1.5 — a stronger pin than the rust compiles-clean
+// assert). The "not integer" negative + the not-"checked" label are the corpus-inexpressible remainder
+// covered by the positive float-domain (message …) substrings.)
+
+#[test]
+fn over_application_offers_a_delete_the_extra_argument_fix() {
+    // Applying MORE arguments than a function/ctor/operator accepts (CDZ0203/CDZ0201) carries a
+    // `delete` fix removing the FIRST surplus argument. The SIMPLE ctor + user-fn over-application
+    // delete-fix migrated to corpus 09-functions ("over-applying a constructor is a type error" +
+    // "over-applying a named function by an extra argument is a type error", each now carrying
+    // (fix (kind delete) (unverified))). What REMAINS here is corpus-inexpressible: the DEDUP /
+    // no-secondary sub-cases (exactly-ONE error after a sibling reject is dropped), the 1-of-2 curry
+    // no-false-positive, and the member-op multi-substring message — none expressible in the corpus
+    // (error …) form (single (message …), no total-count / no-other-code).
+    // A fixed-arity OPERATOR `(+ 1 2 3)` produces TWO faults (the grammar CDZ0201 "+ takes exactly 2
+    // operands" + the generic CDZ0203 over-application). They are the same defect — dedup keeps ONE,
+    // the authoritative CDZ0201, carrying the delete fix on the surplus operand.
+    let over = crate::diagnostics(&mut crate::db::Db::load(parse(
+        "(module m (def (f) (+ 1 2 3)) (export f))",
+    )));
+    let errs: Vec<_> = over
+        .iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+    assert_eq!(
+        errs.len(),
+        1,
+        "operator over-application reports ONCE (dedup drops the CDZ0203 sibling): {errs:?}"
+    );
+    assert_eq!(
+        errs[0].code.as_deref(),
+        Some("CDZ0201"),
+        "the authoritative arity reject"
+    );
+    assert_eq!(
+        errs[0].fix.as_ref().map(|f| f.kind),
+        Some(crate::abi::FixKind::Delete),
+        "the surviving CDZ0201 carries the delete fix"
+    );
+    // A ONE-of-two `(+ 1)` now CURRIES (operator ruling: "operators should curry") into `\b. 1 + b` — it
+    // is no longer an arity error, so it reports NO CDZ0201 "takes exactly 2 operands". (The former
+    // too-few reject is retired for the 1-of-2 case; the ZERO-operand `(+)` and the over-applications
+    // still fault.)
+    let few = crate::diagnostics(&mut crate::db::Db::load(parse(
+        "(module m (def (f) (+ 1)) (export f))",
+    )));
+    assert!(
+        few.iter().all(|d| !(d.code.as_deref() == Some("CDZ0201")
+            && d.message.contains("takes exactly 2 operands"))),
+        "a 1-of-2 partial operator curries into a closure, no arity reject: {few:?}"
+    );
+    // The COMPARISON `(< 1 2 3)` and float arithmetic `(+ 1.0 2.0 3.0)` (the ONE `+` over float
+    // operands) share the exact shape — they route through `lower_comparison`/`lower_float_arith`,
+    // which previously lacked the delete fix (so they DOUBLE-reported: CDZ0201 + an un-deduped
+    // CDZ0203). Via the shared `binop_arity_reject` they now report ONCE with the fix, exactly like
+    // integer `+`.
+    for src in [
+        "(module m (def (f) (< 1 2 3)) (export f))",
+        "(module m (def (f) (+ 1.0 2.0 3.0)) (export f))",
+    ] {
+        let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "a comparison/float operator over-application reports ONCE: {errs:?} for {src}"
+        );
+        assert_eq!(errs[0].code.as_deref(), Some("CDZ0201"), "for {src}");
+        assert_eq!(
+            errs[0].fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "the surviving reject carries the delete fix for {src}"
+        );
+    }
+    // A NAMED-MEMBER CONVERSION op over-applied — `(Int64.of 5 6)` / `(Float64.of 1.0 2.0)` — routes
+    // through `lower`'s `lower_conversion`/`lower_float_of`, which emit a coded CDZ0201 "of takes
+    // exactly 1 operand" ALONGSIDE `infer`'s member over-application CDZ0203 "`Int64.of` takes 1
+    // argument, but 2 were given" (with the delete fix). They are the same defect — dedup keeps ONE,
+    // the op-NAMING CDZ0203 with its fix, dropping the bare emit-path arity reject.
+    for (src, op) in [
+        (
+            "(module m (def (main) (Int64.of 5 6)) (export main))",
+            "Int64.of",
+        ),
+        (
+            "(module m (def (main) (Float64.of 1.0 2.0)) (export main))",
+            "Float64.of",
+        ),
+    ] {
+        let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "a member-op conversion over-application reports ONCE (emit arity reject deduped): {errs:?} for {src}"
+        );
+        assert_eq!(errs[0].code.as_deref(), Some("CDZ0203"), "for {src}");
+        assert!(
+            errs[0].message.contains(op) && errs[0].message.contains("were given"),
+            "the surviving reject NAMES the op `{op}`: {}",
+            errs[0].message
+        );
+        assert_eq!(
+            errs[0].fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "the surviving CDZ0203 carries the delete fix for {src}"
+        );
+    }
+}
+
+#[test]
+fn a_wrong_type_constructor_payload_offers_the_same_coercion_fix_as_an_argument() {
+    // A VARIANT-CONSTRUCTOR payload mismatch (CDZ0201) now offers the SAME numeric/text coercion fix the
+    // argument position does (the D33 lesson, consolidated via `numeric_text_coercion_fix`): an int-width
+    // `(Mk a)` a:Int8 payload Int64 → `(Int64.of a)`; an int-valued-float `(Mk 3.0)` payload Int64 → `3`;
+    // a `String` payload `Bytes` → `(String.to-bytes s)`. Each is CDZ0201 (the ctor-payload code) + a fix.
+    let intw = first_error("(module m (type P (Mk Int64)) (def (f (: a Int8)) (Mk a)) (export f))");
+    assert_eq!(
+        intw.code.as_deref(),
+        Some("CDZ0201"),
+        "got: {}",
+        intw.message
+    );
+    assert_eq!(
+        intw.fix.as_ref().map(|f| f.replacement.as_str()),
+        Some(format!("(Int64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
+        "ctor payload int-width coercion: {}",
+        intw.message
+    );
+    let flt = first_error("(module m (type P (Mk Int64)) (def (f) (Mk 3.0)) (export f))");
+    assert_eq!(
+        flt.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+        Some((crate::abi::FixKind::Replace, "3")),
+        "ctor payload int-valued-float drop: {}",
+        flt.message
+    );
+    let byt =
+        first_error("(module m (type P (Mk Bytes)) (def (f (: s String)) (Mk s)) (export f))");
+    assert_eq!(
+        byt.fix.as_ref().map(|f| f.replacement.as_str()),
+        Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE)).as_deref(),
+        "ctor payload String→Bytes coercion: {}",
+        byt.message
+    );
+    // NO coercion (a Bool payload where Int64 is declared) → the bare CDZ0201, no fix.
+    let no = first_error("(module m (type P (Mk Int64)) (def (f) (Mk true)) (export f))");
+    assert_eq!(no.code.as_deref(), Some("CDZ0201"), "got: {}", no.message);
+    assert!(
+        no.fix.is_none(),
+        "no coercion Bool→Int64 payload: {:?}",
+        no.fix
+    );
+}
+
+#[test]
+fn a_bare_literal_over_int64_that_fits_uint64_offers_an_annotate_uint64_fix() {
+    // A bare integer literal overflowing the signed-Int64 default (`18446744073709551615` = 2^64-1)
+    // still has a concrete fixed type — `UInt64` — so it is malformed only as a bare (signed-default)
+    // literal. Offer the ANNOTATE fix: `(: <lit> UInt64)` (whose range holds the value). Just past
+    // i64.max (2^63) is the boundary case; a value past 2^64-1 has NO fixed type → no fix.
+    for src in [
+        "(module m (def (main) 18446744073709551615) (export main))",
+        "(module m (def (main) 9223372036854775808) (export main))",
+    ] {
+        let d = first_error(src);
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        let fix = d.fix.expect("an annotate-UInt64 fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(: {} UInt64)", crate::abi::WRAP_HOLE),
+            "annotates the literal UInt64: {src}"
+        );
+        assert!(
+            !fix.verified,
+            "the author may want a different width → heuristic"
+        );
+    }
+    // Past UInt64.max → no FIXED width holds it, but `BigInt` holds an integer literal of any
+    // magnitude, so it offers the total "annotate `BigInt`" fix (a one-shot repair, not a guess).
+    let past = first_error("(module m (def (main) 99999999999999999999) (export main))");
+    let fix = past
+        .fix
+        .expect("an annotate-BigInt fix is carried past UInt64.max");
+    assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+    assert_eq!(
+        fix.replacement,
+        format!("(: {} BigInt)", crate::abi::WRAP_HOLE),
+        "annotates the past-fixed literal BigInt: {}",
+        past.message
+    );
+    // But INSIDE `(BigInt.of …)` the annotate-BigInt wrap would CASCADE — `BigInt.of` widens a FIXED
+    // integer, so `(BigInt.of (: … BigInt))` is a BigInt where a fixed int is wanted. So a too-big
+    // literal as `BigInt.of`'s argument carries NO wrap fix (honest — it would not clear the fault) and
+    // the message names the real repair: drop the redundant `BigInt.of`, write `(: … BigInt)` directly.
+    let in_of = first_error(
+        "(module m (def (g) ((. BigInt of) 999999999999999999999999999999)) (export g))",
+    );
+    assert!(
+        in_of.message.contains("BigInt.of")
+            && in_of
+                .message
+                .contains("write the literal directly as a `BigInt`"),
+        "names the drop-the-wrapper repair inside BigInt.of: {}",
+        in_of.message
+    );
+    assert!(
+        in_of.fix.is_none(),
+        "no cascading annotate-BigInt wrap inside BigInt.of: {:?}",
+        in_of.fix
+    );
+}
+
+// (a_non_aliased_int_width_target_carries_no_conversion_fix migrated to corpus 06-numeric-model
+//  "a mixed-int-width operator with a non-aliased target width carries NO conversion fix" (CDZ0301 (no-fix)).)
+
+// (an_int_annotation_mismatch_offers_an_of_conversion_fix migrated to corpus 06-numeric-model:
+//  "an int annotation to a wider/narrower type offers an of-conversion wrap fix" ((fix (kind wrap)
+//  (replacement-contains "(Int64.of "/"(Int8.of ")) + "a bool value annotated an integer type carries
+//  NO coercion fix" ((no-fix)).)
+
+// (an_integer_valued_float_literal_annotated_int_offers_a_drop_the_fraction_fix migrated to corpus
+//  06-numeric-model: the drop-fraction Replace cases (Int64 "3" / Int8 "100") + the no-fix halves
+//  (non-integer 2.5 / out-of-range 500.0 → CDZ0203 (no-fix)).)
+
+// (an_integer_literal_annotated_a_float_offers_an_add_the_fraction_fix migrated to corpus 06-numeric-model:
+//  the add-fraction Replace cases (Float64 "3.0" / Float32 "5.0") + the no-fix half (Bool annotated
+//  Float → CDZ0203 (no-fix)).)
+
+// (a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap migrated to corpus 06-numeric-model:
+//  Int64→Float64 (replacement "(Float64.of-int …)"), Int32→Float64 nested "(Float64.of-int (Int64.of …))",
+//  and the literal control (: 3 Float64) → (replacement "3.0"). All CDZ0203.)
+#[test]
+fn a_record_type_renders_capitalized_matching_its_annotation_spelling() {
+    // `Ty::render_name` spells a RECORD type `(Record (: a Int64))` — CAPITALIZED, the type-constructor
+    // head the author writes in an annotation (`(: r (Record (: a Int64)))`), consistent with
+    // `Tuple`/`List`/`Map`/`Set`; each field is the canonical `(: name T)` ASCRIPTION node (RT3,
+    // DESIGN-record-type-syntax). It used to render lowercase `(record …)` — the VALUE constructor
+    // spelling, which a type annotation REJECTS ("not a type"), so a mismatch message named a type the
+    // reader could not have written. The rendered type must round-trip as a valid annotation.
+    let d = first_error("(module m (def y (: (record (a 1)) (Record (: a Bool)))) (export y))");
+    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+    assert!(
+        d.message.contains("(Record (: a Bool))") && d.message.contains("(Record (: a Int64))"),
+        "record TYPE renders capitalized with ascription fields, matching the annotation spelling: {}",
+        d.message
+    );
+    assert!(
+        !d.message.contains("(record ("),
+        "no lowercase value-constructor spelling in a TYPE message: {}",
+        d.message
+    );
+    // The rendered type is a VALID annotation (round-trips) — a reader can copy `(Record (: a Bool))`
+    // straight into an annotation; a compile of exactly that spelling never says "not a type".
+    let round_trip =
+        all_errors("(module m (def (f (: r (Record (: a Bool)))) r) (def (main) 0) (export main))");
+    assert!(
+        !round_trip.iter().any(|e| e.message.contains("not a type")),
+        "the rendered `(Record …)` spelling is accepted in type position: {:?}",
+        round_trip.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_cross_kind_operator_clash_uses_the_correct_indefinite_article() {
+    use crate::ty::{FloatTy, IntTy, Ty};
+    // `Ty::render_with_article` prefixes the correct indefinite article for a message that reads
+    // "<this> and <that> are different types". The article keys off the type's SOUND: the signed
+    // integers (`Int…`, "eye-nt") take `an`; `UInt…` ("yoo") and every other name take `a`. A naive
+    // first-letter rule would wrongly say "an UInt8", so this must be sound-based.
+    assert_eq!(
+        Ty::Int(IntTy::fixed(true, 64)).render_with_article(&crate::ty::NameCtx::new(&[])),
+        "an Int64"
+    );
+    assert_eq!(
+        Ty::Int(IntTy::fixed(true, 32)).render_with_article(&crate::ty::NameCtx::new(&[])),
+        "an Int32"
+    );
+    assert_eq!(
+        Ty::Int(IntTy::fixed(false, 8)).render_with_article(&crate::ty::NameCtx::new(&[])),
+        "a UInt8"
+    );
+    assert_eq!(
+        Ty::Float(FloatTy::f64()).render_with_article(&crate::ty::NameCtx::new(&[])),
+        "a Float64"
+    );
+    assert_eq!(
+        Ty::Bool.render_with_article(&crate::ty::NameCtx::new(&[])),
+        "a Bool"
+    );
+    assert_eq!(
+        Ty::String.render_with_article(&crate::ty::NameCtx::new(&[])),
+        "a String"
+    );
+    // Other VOWEL-initial names also take `an` (was the bug: only `Int…` did, so `Ast`/`Any`/`Option`
+    // wrongly read "a Ast"). `Bytes`/`Char` stay `a`; `Unit`/`UInt…` keep `a` (the "yoo" exception).
+    assert_eq!(
+        Ty::Bytes.render_with_article(&crate::ty::NameCtx::new(&[])),
+        "a Bytes"
+    );
+    assert_eq!(
+        Ty::Unit.render_with_article(&crate::ty::NameCtx::new(&[])),
+        "a Unit"
+    );
+
+    // The cross-kind operator clash message uses it — `(< 1 "x")` reads "an Int64 and a String …",
+    // NOT the old ungrammatical "a Int64 and a String …".
+    let d = first_error("(module m (def (main) (< 1 \"x\")) (export main))");
+    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+    assert!(
+        d.message
+            .contains("an Int64 and a String are different types"),
+        "cross-kind clash names both operands with correct articles: {}",
+        d.message
+    );
+    assert!(
+        !d.message.contains("a Int64"),
+        "no ungrammatical `a Int64`: {}",
+        d.message
+    );
+    // A UInt8 operand keeps `a` (the "yoo" sound), confirming the rule is sound-based not letter-based.
+    let du = first_error("(module m (def (g (: n UInt8)) (< n \"x\")) (export g))");
+    assert!(
+        du.message.contains("a UInt8 and a String"),
+        "UInt8 keeps `a` (yoo sound): {}",
+        du.message
+    );
+}
+
+/// A mismatched-type comparison — `(< 1 "x")` (Int64 vs String) — reports the coded "… are different
+/// types" reject (CDZ0201, naming the kind boundary). Because one operand is a compound/text the emit
+/// path cannot fold to a scalar, `lower` ALSO returned the uncoded "comparison of a compound value
+/// needs a heap walk (not yet built)" decline — a CONSEQUENCE of the mismatch that MISDIRECTS (reads as
+/// an unbuilt feature). `dedup_faults` now drops that decline when a comparison type-mismatch reject is
+/// present, so it is ONE primary error. A WELL-TYPED compound comparison (no mismatch reject) keeps its
+/// honest not-yet-built decline.
+#[test]
+fn a_mismatched_comparison_drops_the_misleading_heap_walk_decline() {
+    use crate::testkit::parse;
+    for src in [
+        // compound/text-vs-scalar cross-kind (M111)
+        "(module m (def (main) (if (< 1 \"x\") 1 2)) (export main))",
+        "(module m (def (main) (if (< true \"x\") 1 2)) (export main))",
+        // two compounds of DIFFERENT structural kinds — tuple vs list, record vs map (this increment).
+        // These formerly took the generic "must be the same type here" unify path (so the M111 dedup,
+        // keyed on "are different types", did NOT fire and the heap-walk secondary leaked); the
+        // cross-kind reject now covers different-kind compounds too, giving the clear message + the dedup.
+        "(module m (def (main) (if (< (tuple 1 2) (list 3)) 1 2)) (export main))",
+        "(module m (def (main) (if (= (tuple 1 2) (list 3)) 1 2)) (export main))",
+    ] {
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("are different types")),
+            "the coded kind-boundary reject is present: {src} -> {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("needs a heap walk")),
+            "the misleading heap-walk decline is dropped: {src} -> {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+    // A GENUINELY well-typed compound comparison (same-type tuples) is NOT mismatched, and — since the
+    // blessed compound ORDERING landed (`value-cmp`, slice 2) — it now COMPILES to the lexicographic heap
+    // walk rather than declining. The "needs a heap walk (not yet built)" decline is GONE: a compound `<`
+    // over orderable leaves is built, not refused. (Build the tuples internally so the export is a scalar
+    // bool-as-int — a compound PARAMETER still can't cross the boundary, an orthogonal boundary limit.)
+    let ok = "(module m (def (mk (: n Int64)) (tuple 1 n)) \
+                   (def (main) (if (< (mk 2) (mk 3)) 1 2)) (export main))";
+    crate::compile::compile_component(&crate::codec::encode(&parse(ok))).expect(
+        "a well-typed compound comparison now COMPILES (compound ordering is built, not declined)",
+    );
+    // NO OVER-REACH: two SAME-kind compounds that differ internally (two records, two tuples of
+    // different arity) are NOT relabeled a "kind boundary" (that guard fires only across DISTINCT
+    // kinds). The comparison-arg check now names the readable structural DELTA (the tuple arity), not
+    // the raw "must be the same type here" unify lead nor the kind-boundary message.
+    let same_kind = crate::diagnostics(&mut crate::db::Db::load(parse(
+        "(module m (def (g (: a (Tuple Int64)) (: b (Tuple Int64 Int64))) (if (< a b) 1 2)) (export g))",
+    )));
+    assert!(
+        same_kind.iter().any(|d| d
+            .message
+            .contains("expected a tuple with 1 element, but this one has 2"))
+            && !same_kind
+                .iter()
+                .any(|d| d.message.contains("across that kind boundary")),
+        "two same-kind (tuple) compounds name the arity delta, not the kind-boundary message: {:?}",
+        same_kind.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_match_pattern_head_naming_a_non_variant_suggests_the_nearest_variant() {
+    // A qualified match-pattern head `(. Sum Q)` where `Q` is not a variant of the scrutinee sum —
+    // `((C.Alph) …)` on `(type C (Alpha) (Beta))` — is CDZ0201 "record has no field `Alph`" (a sum's
+    // variants ARE its record fields). It now also carries a "did you mean `Alpha`?" over the sum's
+    // VARIANT names + a replace fix on the mistyped key — the pattern-position twin of the value-
+    // position suggestion (`infer::no_field_reject`). Reached via a `main`-reachable match (the
+    // pattern-constraint check runs on the emit path).
+    let d = first_error(
+        "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Alph) 1) (_ 2))) (export main))",
+    );
+    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+    assert!(
+        d.message.contains("`Alph`") && d.message.contains("did you mean `Alpha`?"),
+        "names the mistyped key AND the nearest variant: {}",
+        d.message
+    );
+    let fix = d
+        .fix
+        .as_ref()
+        .expect("carries a replace-with-the-variant fix");
+    assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+    assert_eq!(
+        fix.replacement, "Alpha",
+        "replaces the mistyped key with the variant"
+    );
+
+    // A FAR typo (no near variant) → no CONFIDENT "did you mean" (that would be a baseless guess), but
+    // the diagnostic now LISTS the sum's variants ("— closest matches: `Alpha`, `Beta`") so a far
+    // pattern-head typo tells the author what variants exist instead of a dead-end "no field". A sum is
+    // a CLOSED variant set, so listing is signal (the pattern-position twin of the member two-tier).
+    let far = first_error(
+        "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Zzz) 1) (_ 2))) (export main))",
+    );
+    assert_eq!(far.code.as_deref(), Some("CDZ0201"), "got: {}", far.message);
+    assert!(
+        !far.message.contains("did you mean"),
+        "no confident single suggestion for a far typo: {}",
+        far.message
+    );
+    assert!(
+        far.message.contains("closest matches:")
+            && far.message.contains("`Alpha`")
+            && far.message.contains("`Beta`"),
+        "lists the sum's variants on a far typo: {}",
+        far.message
+    );
+    assert!(
+        far.fix.is_none(),
+        "a tier-2 list of variants carries no single fix: {:?}",
+        far.fix
+    );
+
+    // A BARE (unqualified) pattern head `((Alph) …)` where `Alph` is not a variant resolves as an
+    // UNBOUND NAME (CDZ0101), not a member "no field" — but the scrutinee's sum still gives the
+    // candidate set, so it ALSO suggests the nearest variant + carries the replace fix (the bare twin
+    // of the qualified case above). A far bare typo keeps the plain "unbound name" with no suggestion.
+    let bare = first_error(
+        "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((Alph) 1) (_ 2))) (export main))",
+    );
+    assert_eq!(
+        bare.code.as_deref(),
+        Some("CDZ0101"),
+        "got: {}",
+        bare.message
+    );
+    assert!(
+        bare.message.contains("`Alph`") && bare.message.contains("did you mean `Alpha`?"),
+        "a bare non-variant pattern head suggests the nearest variant: {}",
+        bare.message
+    );
+    assert_eq!(
+        bare.fix.as_ref().map(|f| f.replacement.as_str()),
+        Some("Alpha"),
+        "the bare-head suggestion carries the replace fix: {}",
+        bare.message
+    );
+    let bare_far = first_error(
+        "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((Zzz) 1) (_ 2))) (export main))",
+    );
+    assert!(
+        !bare_far.message.contains("did you mean"),
+        "no spurious suggestion for a far bare typo: {}",
+        bare_far.message
+    );
+    // A ctor that IS a valid variant, but of a DIFFERENT sum (`D.Gamma` matched against a `C`
+    // scrutinee) — the wrong-sum case (CDZ0203, "not a variant of the matched type C"). It now ALSO
+    // lists C's variants (a far miss) / suggests the nearest (a near miss), the wrong-sum twin of the
+    // typo enrichment — the author reached for one of the MATCHED type's variants.
+    let wrong_sum = first_error(
+        "(module m (type C (Alpha) (Beta)) (type D (Gamma)) \
+               (def (main) (match (C.Alpha) ((D.Gamma) 1) (_ 2))) (export main))",
+    );
+    assert_eq!(
+        wrong_sum.code.as_deref(),
+        Some("CDZ0203"),
+        "got: {}",
+        wrong_sum.message
+    );
+    assert!(
+        wrong_sum
+            .message
+            .contains("not a variant of the matched type C")
+            && wrong_sum.message.contains("closest matches:")
+            && wrong_sum.message.contains("`Alpha`")
+            && wrong_sum.message.contains("`Beta`"),
+        "the wrong-sum ctor lists the matched type's variants: {}",
+        wrong_sum.message
+    );
+    // A wrong-sum ctor that is a NEAR miss of a real variant of the matched sum (`D.Alph` vs C's
+    // `Alpha`) → a confident "did you mean" + replace fix.
+    let wrong_near = first_error(
+        "(module m (type C (Alpha) (Beta)) (type D (Alph Int64)) \
+               (def (main) (match (C.Alpha) ((D.Alph x) x) (_ 2))) (export main))",
+    );
+    assert_eq!(
+        wrong_near.fix.as_ref().map(|f| f.replacement.as_str()),
+        Some("Alpha"),
+        "a near-miss wrong-sum ctor suggests + fixes to the matched sum's variant: {}",
+        wrong_near.message
+    );
+}
+
+#[test]
+fn a_wrong_ctor_over_a_single_variant_newtype_scrutinee_is_enriched_too() {
+    // A single-variant `(type T (Mk …))` erases to a `Ty::Nominal` newtype, whose wrong-ctor pattern
+    // took a SEPARATE reject path from the boxed `Ty::Sum` — it named "not the constructor of the
+    // matched type T" with NO suggestion and NO fix, while the multi-variant path already carried the
+    // "did you mean?" / closest-variants enrichment. Both now share `enrich_pattern_head_suggestion`
+    // (which reads the `decl`'s variants for either kind), so a newtype scrutinee gets the same route.
+
+    // NEAR miss → a confident "did you mean" + a replace fix to the newtype's sole variant.
+    let near = first_error(
+        "(module m (type A (Xyz)) (type B (Xyw)) (def (f (: a A)) (match a ((Xyw) 1))) (export f))",
+    );
+    assert_eq!(
+        near.code.as_deref(),
+        Some("CDZ0203"),
+        "got: {}",
+        near.message
+    );
+    assert!(
+        near.message.contains("not a variant of the matched type A"),
+        "the newtype wrong-ctor uses the variant wording: {}",
+        near.message
+    );
+    assert!(
+        near.message.contains("did you mean `Xyz`?")
+            && near
+                .fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("Xyz")),
+        "a near-miss ctor over a newtype suggests + fixes to its sole variant: {} fix={:?}",
+        near.message,
+        near.fix
+    );
+    // FAR miss → lists the newtype's variant (no baseless fix), the same two-tier the sum path gives.
+    let far = first_error(
+        "(module m (type A (Xyz)) (type B (Y)) (def (f (: a A)) (match a ((Y) 1))) (export f))",
+    );
+    assert!(
+        far.message.contains("closest matches:") && far.message.contains("`Xyz`"),
+        "a far-miss ctor over a newtype lists its variant: {}",
+        far.message
+    );
+    // NO false reject: the newtype's REAL ctor still matches and binds.
+    assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (match u ((Mk n) n))) (export f))"
+            )))
+            .is_ok(),
+            "the newtype's own ctor pattern still matches"
+        );
+}
+
+#[test]
+fn many_match_patterns_typoing_one_variant_suggest_the_memoized_winner() {
+    // The nearest-variant suggestion for a mistyped match-pattern head is MEMOIZED per (sum-decl,
+    // mistyped-key), so a WIDE sum matched with a stale variant name from N sites (a renamed variant
+    // still named at N match arms) shares one edit-distance scan instead of re-running it each — the
+    // O(N²) fix. N defs each match `(T.V0x)` (a typo of `V0`) on an 8-variant sum. The identical
+    // (code, message) faults dedup in the surfaced set, but every one exercises the memoized lookup
+    // during lowering; this locks in that the memo yields the CORRECT winner `V0` (not a stale/empty
+    // answer) — a wrong memo key or a mis-combined result would surface a different variant or none.
+    let n = 15;
+    let variants = (0..8)
+        .map(|i| format!("V{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let defs = (0..n)
+        .map(|i| format!("(def (d{i} (: t T)) (match t ((T.V0x) {i}) (_ -1)))"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let src =
+        format!("(module m (type T {variants}) {defs} (def (main) (d0 (T.V0))) (export main))");
+    let mut db = crate::db::Db::load(parse(&src));
+    let sugg: Vec<String> = crate::diagnostics(&mut db)
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+        .filter_map(|d| d.fix.map(|f| f.replacement))
+        .collect();
+    assert!(
+        !sugg.is_empty(),
+        "the typo'd `V0x` pattern is reported: {sugg:?}"
+    );
+    assert!(
+        sugg.iter().all(|s| s == "V0"),
+        "every surfaced suggestion is the memoized winner `V0`: {sugg:?}"
+    );
+}
+
+#[test]
+fn many_wrong_sum_ctor_arms_list_the_matched_variants_in_bounded_time() {
+    // REGRESSION (perf): a match-arm ctor that is a valid variant of a DIFFERENT sum (`(B.Wrong)`
+    // against an `A` scrutinee) is a FAR miss, so `lower::enrich_pattern_head_suggestion` lists the
+    // scrutinee sum's closest variants via `suggest::closest_matches` — which SORTS all N variants by
+    // edit distance (O(N log N)). fix-26 memoized only the TIER-1 nearest WINNER; the TIER-2 far-miss
+    // LIST re-ran per site, so N wrong-sum arms against a wide N-variant sum were O(N² log N) (cdz
+    // check 400/800/1600 = 264/944/3780ms, ~3.5×/doubling). FIX: memoize the closest-matches list per
+    // `(decl, key)` in `db.variant_closest_matches` (the far-miss twin of `variant_suggest_winner`) +
+    // build the variant-names list only on a memo MISS.
+    //
+    // Correctness: the far-miss enrichment still LISTS the matched type's variants (the diagnostic the
+    // author needs), just computed once per distinct query.
+    fn wrong_sum_src(n: usize) -> String {
+        let variants: String = (0..n)
+            .map(|i| format!("(V{i})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let defs: String = (0..n)
+            .map(|i| format!("(def (f{i} (: a A)) (match a ((B.Wrong) {i}) (_ 0)))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let binds: String = (0..n)
+            .map(|i| format!("(r{i} (f{i} (V0)))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "(module m (type A {variants}) (type B (Wrong)) {defs} \
+                   (def (main) (let ({binds}) r0)) (export main))"
+        )
+    }
+    // The far-miss enrichment still lists the matched type's variants (a `— closest matches:` message).
+    let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wrong_sum_src(8))));
+    assert!(
+        diags.iter().any(|d| {
+            d.code.as_deref() == Some("CDZ0203") && d.message.contains("closest matches:")
+        }),
+        "a wrong-sum ctor arm lists the matched type's variants: {diags:?}"
+    );
+    // Growth guard at N vs 2N wrong-sum arms against an N-variant sum. The NOISE-FREE signal is
+    // `VARIANT_CLOSEST_MATCHES_MISSES` — the far-miss "closest matches" sorts actually COMPUTED, NOT
+    // wall-clock. A wall-clock ratio false-fails under fleet load (a narrow run in a quiet slice vs a
+    // wide run hitting a scheduling stall inflates the ratio past threshold — the flake). The per-site
+    // sort re-ran once per wrong arm → O(N) misses (and O(N² log N) work); the per-`(decl, key)` memo
+    // collapses them: all N arms here share the ONE key `(B, "Wrong")`, so misses stay CONSTANT (1)
+    // regardless of N. Assert the miss count does NOT grow with N (a revert to the per-site sort makes
+    // it grow ~linearly with the arm count).
+    fn closest_misses(src: &str) -> u64 {
+        crate::db::VARIANT_CLOSEST_MATCHES_MISSES.with(|c| c.set(0));
+        let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        crate::db::VARIANT_CLOSEST_MATCHES_MISSES.with(|c| c.get())
+    }
+    let m400 = closest_misses(&wrong_sum_src(400));
+    let m800 = closest_misses(&wrong_sum_src(800));
+    assert!(
+        m400 > 0 && m800 <= m400 + 1,
+        "N wrong-sum-ctor arms sharing one wrong head must sort closest-matches ONCE (memoized per \
+             (decl, key)), not per site: 400→800 arms grew the closest-matches sorts from {m400} to {m800} \
+             (memoized is constant ≈1; the per-site sort grew ~linearly with the arm count)"
+    );
+}
+
+#[test]
+fn many_typod_field_accesses_of_one_wide_record_suggest_in_bounded_time() {
+    // REGRESSION (perf): a `(. r k)` on a field `k` the record lacks reports "no field `k` — did you
+    // mean?" via `infer::no_field_reject`, which builds the record's O(fields) name list and
+    // edit-distance-scans it TWICE (`nearest` for the fix + `did_you_mean` for the message). A WIDE
+    // record (N fields) with a typo'd field accessed from N sites re-ran that per access → O(N²)
+    // (cdz check 400/800/1600 = 111/402/1135ms, ~3.4×/doubling). This is the record-field twin of the
+    // variant did-you-mean (fix-26/45), which was memoized but this site was not. FIX: memoize the
+    // (winner, hint) pair per `(reduced-record occ, key)` in `db.no_field_suggestion` — N accesses over
+    // ONE record share its reduced occurrence, so the suggestion computes once.
+    //
+    // Correctness: the enrichment still names the nearest field (`— did you mean` / `— closest
+    // matches:`), just computed once per distinct query.
+    fn wide_record_typos(n: usize) -> String {
+        let rec: String = format!(
+            "(record {})",
+            (0..n)
+                .map(|i| format!("(k{i} {i})"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let accesses: String = (0..n)
+            .map(|i| format!("(v{i} (. rr k0x))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("(module m (def (main) (let ((rr {rec}) {accesses}) v0)) (export main))")
+    }
+    // The enrichment still suggests the nearest field for the typo'd `k0x` access.
+    let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_record_typos(8))));
+    assert!(
+        diags.iter().any(|d| {
+            d.code.as_deref() == Some("CDZ0212")
+                && d.message.contains("no field")
+                && (d.message.contains("did you mean") || d.message.contains("closest matches"))
+        }),
+        "a typo'd field access is enriched with a suggestion: {diags:?}"
+    );
+    // Growth guard at N vs 2N typo'd accesses of an N-field record. The NOISE-FREE signal is
+    // `NO_FIELD_SUGGESTION_MISSES` — the field-name-list builds + edit-distance scans actually
+    // COMPUTED, NOT wall-clock. A wall-clock ratio false-fails under fleet load (a narrow run in a
+    // quiet slice vs a wide run hitting a scheduling stall inflates the ratio past threshold — the
+    // flake). The per-access build+double-scan re-ran once per access → O(N) misses (and O(N²) work);
+    // the per-`(record occ, key)` memo collapses them: all N accesses here share the ONE key
+    // `(rr, "k0x")`, so misses stay CONSTANT (1) regardless of N. Assert the miss count does NOT grow
+    // with N (a revert to the per-access scan makes it grow ~linearly with the access count).
+    fn field_misses(src: &str) -> u64 {
+        crate::db::NO_FIELD_SUGGESTION_MISSES.with(|c| c.set(0));
+        let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        crate::db::NO_FIELD_SUGGESTION_MISSES.with(|c| c.get())
+    }
+    let m400 = field_misses(&wide_record_typos(400));
+    let m800 = field_misses(&wide_record_typos(800));
+    assert!(
+        m400 > 0 && m800 <= m400 + 1,
+        "N typo'd accesses of one wide record sharing one missing key must build+scan the field-name \
+             list ONCE (memoized per (record occ, key)), not per access: 400→800 accesses grew the \
+             `no_field_suggestion` computes from {m400} to {m800} (memoized is constant ≈1; the per-access \
+             scan grew ~linearly with the access count)"
+    );
+}
+
+#[test]
+fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
+    // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
+    // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
+    // `n : Int8` — is CDZ0203, repaired by wrapping the INIT in `(Int64.of n)`. Shares `int_coercion_wrap`
+    // with the other two sites (the D33 lesson: the same repair fires wherever the same mismatch surfaces).
+    let d = first_error("(module m (def (f (: n Int8)) (let (((: x Int64) n)) x)) (export f))");
+    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+    let fix = d.fix.expect("a let-binder coercion fix is carried");
+    assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+    assert_eq!(
+        fix.replacement,
+        format!("(Int64.of {})", crate::abi::WRAP_HOLE),
+        "wraps the INIT value in the annotation type's `.of`"
+    );
+    assert!(!fix.verified, "`.of` is checked → heuristic");
+    // NO over-reach: a Bool init annotated Int64 has no coercion.
+    let d = first_error("(module m (def (f) (let (((: x Int64) true)) x)) (export f))");
+    assert!(
+        d.fix.is_none(),
+        "no coercion fix Bool→Int64 let-binder: {:?}",
+        d.fix
+    );
+
+    // The let-binder now offers the SAME coercions the value annotation `(: value T)` does — not just
+    // the int-width `.of` above. Each covering fix must resolve in ONE shot (helper `fix_text`).
+    fn fix_text(src: &str) -> Option<String> {
+        let d = first_error(src);
+        d.fix.map(|f| f.replacement)
+    }
+    // int LITERAL annotated Float → retype `3` → `3.0` (the clean literal form, not an `of-int` wrap).
+    assert_eq!(
+        fix_text("(module m (def (f) (let (((: x Float64) 3)) x)) (export f))").as_deref(),
+        Some("3.0"),
+        "int-literal→Float let-binder retypes to a float literal"
+    );
+    // A NON-literal int init annotated Float → wrap in `(Float64.of-int …)` (no float literal spelling).
+    assert_eq!(
+        fix_text("(module m (def (f (: n Int64)) (let (((: x Float64) n)) x)) (export f))"),
+        Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE)),
+        "non-literal int→Float let-binder wraps in of-int"
+    );
+    // integer-valued float LITERAL annotated Int → drop the `.0`.
+    assert_eq!(
+        fix_text("(module m (def (f) (let (((: x Int64) 3.0)) x)) (export f))").as_deref(),
+        Some("3"),
+        "float-literal→Int let-binder drops the fractional form"
+    );
+    // String init annotated Bytes → wrap in `(String.to-bytes …)` (total prelude conversion).
+    assert_eq!(
+        fix_text("(module m (def (f (: s String)) (let (((: x Bytes) s)) x)) (export f))"),
+        Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE)),
+        "String→Bytes let-binder wraps in to-bytes"
+    );
+    // A payload-type value annotated its SUM → wrap in the matching variant constructor `(Some …)`.
+    assert_eq!(
+        fix_text("(module m (def (f) (let (((: x (Option Int64)) 5)) x)) (export f))"),
+        Some(format!("(Some {})", crate::abi::WRAP_HOLE)),
+        "Int→(Option Int64) let-binder wraps in Some"
+    );
+}
+
+#[test]
+fn a_known_type_let_binder_mismatch_keeps_its_coercion_fix() {
+    // WHITE-BOX pin (corpus-inexpressible — asserts a STRUCTURED `.fix`, which the corpus `(error …)`
+    // form has no field for): a let-binder annotation whose KNOWN type mismatches the value keeps its
+    // M63 coercion fix, NOT a spurious unknown-type reject. `(let (((: x Float64) 3)) x)` → CDZ0203
+    // "bound to a value" WITH a fix. The backend-agnostic halves of the let-binder annotation
+    // VALIDATION — unknown-type → CDZ0101 (incl. nested `(List Nonesuch)`), non-type → CDZ0203,
+    // known-type → compiles + runs — migrated to corpus `spec/semantics/07-type-system.sexp`
+    // ("…let-binder annotation…" cases). Only this fix-quality assertion is inexpressible there.
+    let m63 = first_error("(module m (def (main) (let (((: x Float64) 3)) x)) (export main))");
+    assert_eq!(m63.code.as_deref(), Some("CDZ0203"), "got: {}", m63.message);
+    assert!(
+        m63.message.contains("bound to a value") && m63.fix.is_some(),
+        "a KNOWN-type mismatch keeps its coercion fix, not the unknown-type reject: {}",
+        m63.message
+    );
+}
+
+#[test]
+fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
+    // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
+    // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
+    let unbound: Vec<_> = crate::diagnostics(&mut Db::load(parse(
+        "(module m (def (main) nope) (export main))",
+    )))
+    .into_iter()
+    .filter(|d| d.code.as_deref() == Some("CDZ0101"))
+    .collect();
+    assert_eq!(
+        unbound.len(),
+        1,
+        "one unbound-name fault, not two: {unbound:?}"
+    );
+
+    // But two DISTINCT occurrences of the same unbound name (different nodes) are NOT duplicates —
+    // both survive (each has its own source location).
+    let two: Vec<_> = crate::diagnostics(&mut Db::load(parse(
+        "(module m (def (main) (+ nope nope)) (export main))",
+    )))
+    .into_iter()
+    .filter(|d| d.code.as_deref() == Some("CDZ0101"))
+    .collect();
+    assert_eq!(
+        two.len(),
+        2,
+        "two distinct `nope` uses each reported once: {two:?}"
+    );
+    assert_ne!(two[0].node, two[1].node, "at different nodes");
+}
+
+#[test]
+fn a_non_exhaustive_match_on_a_function_param_surfaces_in_the_diagnostics_query() {
+    // The `diagnostics()` query (what `cdz check`/`--json`/`fix` run) checks well-formedness over
+    // EVERY def body, but the reached-poison (lowering) walk runs only on nullary EXPORTED bodies — so
+    // a non-exhaustive match on a function PARAMETER (the common case) was silently missed by `check`.
+    // Now `collect_node`'s match arm surfaces the CDZ0210 (with its "add the missing arm" fix), whether
+    // the def is exported or not, so an agent using `check` sees the actionable fix.
+    let src_exported = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2))) (export f))";
+    let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(src_exported)))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0210"))
+        .collect();
+    assert_eq!(d.len(), 1, "one non-exhaustive fault: {d:?}");
+    assert!(
+        d[0].message.contains("`D`") && d[0].message.contains("not covered"),
+        "names the missing variant: {}",
+        d[0].message
+    );
+    let fix = d[0].fix.as_ref().expect("carries the add-arm fix");
+    assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+    assert_eq!(fix.replacement, "(D (trap \"TODO: D\"))");
+
+    // A NON-exported function's non-exhaustive match is caught too — it escapes emission entirely
+    // (dead, never laid out), so this is the only place it is reported.
+    let src_unexported = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2))) (def (main) 0) (export main))";
+    assert!(
+        crate::diagnostics(&mut Db::load(parse(src_unexported)))
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0210")),
+        "a non-exhaustive match in an uncalled function is still flagged"
+    );
+
+    // An EXHAUSTIVE match stays clean — no false positive.
+    let src_ok = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2) ((D) 3))) (export f))";
+    assert!(
+        crate::diagnostics(&mut Db::load(parse(src_ok)))
+            .iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0210")),
+        "an exhaustive match produces no non-exhaustive fault"
+    );
+}
+
+#[test]
+fn a_mistyped_variant_pattern_on_a_function_param_surfaces_in_the_diagnostics_query() {
+    // The pattern-fault TWIN of the non-exhaustiveness case above. A MISTYPED variant pattern head
+    // (`((C.Gren) …)` on `(type C Red Green)`) is a CODED CDZ0201 carrying a "did you mean `Green`?"
+    // REPLACE fix — but it was produced ONLY by the emit-path lowering walk, which runs on nullary
+    // EXPORTED bodies alone. So a variant typo in ANY parameterized function's match silently PASSED
+    // `cdz check` (exit 0, no diagnostic) while `compile` rejected it — hiding the very fix from the
+    // fast check path. `collect`'s match arm now surfaces it whether the def takes parameters or not.
+    let src = "(module m (type C Red Green) \
+             (def (g (: c C)) (match c ((C.Red) 1) ((C.Gren) 2))) (export g))";
+    let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+        .collect();
+    assert_eq!(
+        d.len(),
+        1,
+        "one mistyped-variant fault on the parameterized body, reported exactly once: {d:?}"
+    );
+    assert!(
+        d[0].message.contains("`Gren`") && d[0].message.contains("did you mean `Green`?"),
+        "names the mistyped variant AND the near one: {}",
+        d[0].message
+    );
+    let fix = d[0]
+        .fix
+        .as_ref()
+        .expect("carries the did-you-mean replace fix");
+    assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+    assert_eq!(fix.replacement, "Green");
+
+    // The nullary-EXPORTED case (already reached by the lowering walk) still reports EXACTLY ONE — the
+    // infer-side and emit-side copies anchor at the same key node and `dedup_faults` collapses them.
+    let src_nullary = "(module m (type C Red Green) \
+             (def (g) (match (C.Red) ((C.Red) 1) ((C.Gren) 2))) (export g))";
+    let dn: Vec<_> = crate::diagnostics(&mut Db::load(parse(src_nullary)))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+        .collect();
+    assert_eq!(dn.len(), 1, "nullary body: one fault, not a double: {dn:?}");
+
+    // A CORRECT variant pattern on a parameterized body stays clean — no false positive.
+    let src_ok = "(module m (type C Red Green) \
+             (def (g (: c C)) (match c ((C.Red) 1) ((C.Green) 2))) (export g))";
+    assert!(
+        crate::diagnostics(&mut Db::load(parse(src_ok)))
+            .iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0201")),
+        "a correct variant match produces no field fault"
+    );
+}
+
+#[test]
+fn a_binary_operator_over_or_under_application_on_a_function_param_surfaces_in_the_query() {
+    // The binop-ARITY twin of the mistyped-variant case above. A fixed-arity operator applied to a
+    // count other than 2 has a CLEAR operator-specific CDZ0201 "+ takes exactly 2 operands" (with a
+    // delete-surplus fix on an over-application) — but it was produced ONLY by the emit-path lowering
+    // walk (nullary-EXPORTED bodies). So in a PARAMETERIZED body, `cdz check` reported only the GENERIC
+    // CDZ0203 "applied N arguments to a function of arity M …" for the over-application and NOTHING for
+    // the under-application, while `compile` rejected both with the operator message. `collect`'s Apply
+    // arm now surfaces the operator CDZ0201 whether the def takes parameters or not.
+
+    // OVER-application `(+ n 1 2)` on a parameter: one CDZ0201 with the operator message + delete fix,
+    // and the generic CDZ0203 is deduped away (reported exactly once, not twice).
+    let over = "(module m (def (g (: n Int64)) (+ n 1 2)) (export g))";
+    let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(over)))
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+    assert_eq!(
+        d.len(),
+        1,
+        "one arity fault, generic CDZ0203 deduped: {d:?}"
+    );
+    assert_eq!(d[0].code.as_deref(), Some("CDZ0201"));
+    assert!(
+        d[0].message.contains("takes exactly 2 operands"),
+        "the clear operator message, not the generic arity phrasing: {}",
+        d[0].message
+    );
+    let fix = d[0].fix.as_ref().expect("carries the delete-surplus fix");
+    assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+
+    // ONE-of-two `(+ n)` on a parameter now CURRIES (operator ruling: "operators should curry") — it is
+    // the first-class partial `\b. n + b`, NOT an arity error, so `check` reports NO CDZ0201 arity fault
+    // for it. (The former "takes exactly 2 operands" under-application report is retired for the 1-of-2
+    // case; a ZERO-operand `(+)` and an OVER-application still fault — covered above/below.)
+    let under = "(module m (def (g (: n Int64)) (+ n)) (export g))";
+    let du: Vec<_> = crate::diagnostics(&mut Db::load(parse(under)))
+        .into_iter()
+        .filter(|d| {
+            d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
+        })
+        .collect();
+    assert!(
+        du.is_empty(),
+        "a 1-of-2 partial operator curries into a closure, so no arity fault: {du:?}"
+    );
+
+    // A comparison and the arithmetic operator over FLOAT operands take the same path (the message
+    // names the operator). Float arithmetic reuses the ONE `+` — over-applying it (`(+ x 1.0 2.0)`,
+    // `x : Float64`) is the same arity fault, named `+`, not a distinct `+.`.
+    for (src, op) in [
+        ("(module m (def (g (: n Int64)) (< n 1 2)) (export g))", "<"),
+        (
+            "(module m (def (g (: x Float64)) (+ x 1.0 2.0)) (export g))",
+            "+",
+        ),
+    ] {
+        let dc: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(dc.len(), 1, "{op}: one arity fault: {dc:?}");
+        assert_eq!(dc[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            dc[0]
+                .message
+                .contains(&format!("{op} takes exactly 2 operands")),
+            "{op}: names the operator: {}",
+            dc[0].message
+        );
+    }
+
+    // A WELL-FORMED 2-operand application on a parameter stays clean — no false positive.
+    let ok = "(module m (def (g (: n Int64)) (+ n 1)) (export g))";
+    assert!(
+        crate::diagnostics(&mut Db::load(parse(ok)))
+            .iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0201")),
+        "a correct 2-operand application produces no arity fault"
+    );
+
+    // A USER-function over-application keeps its OWN generic CDZ0203 (no operator CDZ0201 is minted for
+    // a non-operator head) — the accessor is scoped to the fixed-arity binary operators.
+    let userfn = "(module m (def (f (: x Int64)) x) (def (g (: n Int64)) (f n 1 2)) (export g))";
+    let df: Vec<_> = crate::diagnostics(&mut Db::load(parse(userfn)))
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+    assert_eq!(df.len(), 1, "user-fn over-app reports once: {df:?}");
+    assert_eq!(df[0].code.as_deref(), Some("CDZ0203"), "{}", df[0].message);
+}
+
+#[test]
+fn an_unbound_name_anchors_to_a_user_node() {
+    // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
+    // the program's node count) — the front-end can map it to the `nope` occurrence.
+    let d = first_error("(module m (def (main) nope) (export main))");
+    assert_eq!(d.code.as_deref(), Some("CDZ0101"));
+    let node = d.node.expect("unbound-name diagnostic must carry a node");
+    // It resolves to a real user node — the same identity the span table is keyed by.
+    let ast = parse("(module m (def (main) nope) (export main))");
+    let db = Db::load(ast);
+    assert!(
+        db.is_user_node(StructId(node)),
+        "node {node} must be a user node"
+    );
+}
+
+#[test]
+fn a_wrong_type_arg_to_a_user_function_anchors_to_the_call_site() {
+    // Calling a user function with a wrong-type argument — `(helper true)` where `helper`'s body is
+    // `(+ x 1)` — β-reduces to `(+ true 1)` on SYNTHESIZED nodes, whose CDZ0203 once reported with
+    // NO node (an unanchored `cdz:`/`file:` prefix, no line:col). The reduced-body fault is now
+    // re-anchored to the CALL SITE when it landed on a non-user node, so the error carries a real
+    // user node the front-end maps to `file:line:col`.
+    let src = "(module m (def (helper x) (+ x 1)) (def (main) (helper true)) (export main))";
+    let d = first_error(src);
+    assert_eq!(d.code.as_deref(), Some("CDZ0203"));
+    let node = d
+        .node
+        .expect("the mismatch must carry a node, not be unanchored");
+    let db = Db::load(parse(src));
+    assert!(
+        db.is_user_node(StructId(node)),
+        "node {node} must be a user node so it maps to a source location"
+    );
+}
+
+#[test]
+fn a_fault_inside_an_argument_keeps_its_own_precise_anchor() {
+    // The call-site re-anchor fires ONLY when the reduced-body fault landed on a synthesized node. A
+    // fault genuinely inside an ARGUMENT sub-expression — `(id (+ 1 true))` — is on a real user node,
+    // so it keeps its OWN anchor and never regresses to unanchored.
+    let src = "(module m (def (id x) x) (def (main) (id (+ 1 true))) (export main))";
+    let d = first_error(src);
+    assert_eq!(d.code.as_deref(), Some("CDZ0203"));
+    let node = d.node.expect("the mismatch carries a node");
+    let db = Db::load(parse(src));
+    assert!(
+        db.is_user_node(StructId(node)),
+        "node {node} must be a real user node the front-end can map"
+    );
+}
+
+#[test]
+fn a_provable_overflow_does_not_leak_a_synthesized_node() {
+    // `(+ Int64.max 1)` proves an overflow (CDZ0304). The fold runs over evaluator-SYNTHESIZED
+    // nodes (the built `Int64` module / reduced operands), but the reported origin must be either a
+    // real user node or unanchored — NEVER a synthesized/prelude id that would mis-map. This is the
+    // boundary invariant the operator flagged.
+    let d = first_error("(module m (def (main) (+ (. Int64 max) 1)) (export main))");
+    assert_eq!(d.code.as_deref(), Some("CDZ0304"));
+    if let Some(node) = d.node {
+        let ast = parse("(module m (def (main) (+ (. Int64 max) 1)) (export main))");
+        let db = Db::load(ast);
+        assert!(
+            db.is_user_node(StructId(node)),
+            "reported node {node} must be a user node, not a prelude/synthesized id"
+        );
+    }
+    // (An unanchored `None` is acceptable — the fault came from synthesized nodes with no source.)
+}
+
+#[test]
+fn a_type_mismatch_anchors_within_the_program() {
+    // An `if` with a non-Bool condition (CDZ0203) anchors to a user node in the program.
+    let d = first_error("(module m (def (main) (if 5 1 2)) (export main))");
+    assert_eq!(d.code.as_deref(), Some("CDZ0203"));
+    if let Some(node) = d.node {
+        let ast = parse("(module m (def (main) (if 5 1 2)) (export main))");
+        let db = Db::load(ast);
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a user node"
+        );
+    }
+}
+
+// ── Dead-trap warning (CDZ0305) — a non-error diagnostic riding alongside a produced artifact.
+// A computation that PROVABLY traps but whose value is unobserved (an unprojected element, an
+// unreferenced binding, an unused argument) is eliminated (`core-semantics.md` §A Trap Occurs Only
+// Where Its Computation Is Observed) — conformant, so the build SUCCEEDS, but a warning is emitted.
+
+/// Compile a program and return its warning diagnostics (severity `Warning`) — asserting the
+/// component WAS produced (a warning must ride alongside a success, never a denial).
+fn warnings_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+    let bytes = crate::codec::encode(&parse(src));
+    // Through the SAME host-stack guard the bin uses (`host.rs`) — a dead NON-NORMALIZING binding
+    // (`((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))`) recurses deep during the fold before the reduction
+    // work-budget declines, and would SIGABRT a default `cargo test` worker's ≈2 MB stack. Sizing the
+    // stack from `DESCENT_DEPTH_LIMIT` lets the budget guard — not the native stack — bound it.
+    let out = crate::host::run_with_compiler_stack(|| {
+        compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+            &[Target::Wasm],
+        )
+    });
+    assert!(
+        out.artifact(Target::Wasm.artifact_kind()).is_some(),
+        "a warning must accompany a PRODUCED component, but compilation failed: {:?}",
+        out.diagnostics
+    );
+    out.diagnostics
+        .into_iter()
+        .filter(|d| d.severity == crate::abi::Severity::Warning)
+        .collect()
+}
+
+#[test]
+fn an_eliminated_provable_trap_warns_but_still_compiles() {
+    // Each shape drops a computation that PROVABLY traps because its value is unobserved: an
+    // unprojected tuple element, an unread record field, an unreferenced let binding, an argument
+    // bound to an unused parameter. All compile (the value is not observed) AND warn CDZ0305.
+    for src in [
+        "(module m (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main))",
+        "(module m (def (main) (. (record (a 42) (b (/ 100 0))) a)) (export main))",
+        "(module m (def (main) (let ((t (/ 100 0))) 5)) (export main))",
+        "(module m (def (f x y) x) (def (main) (f 7 (/ 100 0))) (export main))",
+    ] {
+        // Exactly one DEAD-TRAP warning (CDZ0305). Some shapes also carry an unused-binding warning
+        // (CDZ0306 — the dropped `let t`, the unused param `y`), which is a separate, correct signal;
+        // filter to the dead-trap code so this test pins the dead-trap behavior specifically.
+        let dead: Vec<_> = warnings_of(src)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0305"))
+            .collect();
+        assert_eq!(
+            dead.len(),
+            1,
+            "expected exactly one dead-trap (CDZ0305) warning for `{src}`, got {dead:?}"
+        );
+    }
+    // The dead-trap warning fires for EVERY provably-trapping constant, not only integer ÷0 — pin the
+    // full trap-kind axis `core-semantics.md §285` names, so a future change that breaks the fold's
+    // trap-proof for one kind (e.g. modulo, the rational zero-denominator, or overflow) is caught. Each
+    // is a 0-use `let` binding whose init provably traps at compile time; all compile (value unobserved)
+    // AND warn CDZ0305 exactly once. (Integer ÷0 is covered by the position sweep above; these add %0,
+    // the zero-denominator `Rational.of`, and a constant overflow past the Int64 default.)
+    for trap_init in [
+        "(% 100 0)",                 // integer modulo by zero (CDZ0304-class trap)
+        "(Rational.of 1 0)",         // a rational with a zero denominator
+        "(+ 9223372036854775807 1)", // a constant Int64 overflow (max + 1)
+    ] {
+        let src = format!("(module m (def (main) (let ((t {trap_init})) 5)) (export main))");
+        let dead: Vec<_> = warnings_of(&src)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0305"))
+            .collect();
+        assert_eq!(
+            dead.len(),
+            1,
+            "a 0-use let binding whose init is `{trap_init}` must warn CDZ0305 (dead trap) exactly \
+                 once and still compile, got {dead:?}"
+        );
+    }
+}
+
+#[test]
+fn a_reachable_const_trap_warning_names_the_specific_trap_kind() {
+    // CDZ0309 (potentially-reachable const trap) must say WHICH trap kind the demoted operation will
+    // raise (operator 2026-08-27: "we want to say what kind of trap it is"). Each of these puts a
+    // compile-provable trap of a distinct kind in a RUNTIME-guarded `if` else branch; the warning names
+    // the kind (parenthesized) while keeping the "potentially reachable trap" wording the corpus grades on.
+    for (trap_expr, kind) in [
+        ("(/ 1 0)", "divide by zero"),
+        (
+            "(* 9223372036854775807 9223372036854775807)",
+            "overflows Int64",
+        ),
+        ("(<< 1 100)", "out of range"),
+    ] {
+        let src =
+            format!("(module m (def (main (: n Int64)) (if (> n 0) 7 {trap_expr})) (export main))");
+        let warns: Vec<_> = warnings_of(&src)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0309"))
+            .collect();
+        assert_eq!(
+            warns.len(),
+            1,
+            "exactly one CDZ0309 for `{trap_expr}`, got {warns:?}"
+        );
+        let msg = &warns[0].message;
+        assert!(
+            msg.contains("potentially reachable trap"),
+            "keeps the corpus-graded wording: {msg}"
+        );
+        assert!(
+            msg.contains(kind),
+            "names the specific trap kind `{kind}` for `{trap_expr}`: {msg}"
+        );
+    }
+}
+
+#[test]
+fn an_unused_non_normalizing_let_init_warns_but_still_compiles() {
+    // The dead-computation warning (CDZ0305) covers a computation with NO VALUE, not only a trapping
+    // one: a non-normalizing self-application `((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))` (no normal
+    // form) bound to an UNUSED let-binder is dead code — the fold eliminates it, the program compiles
+    // (`main => 0`), and a CDZ0305 warning flags the likely bug. This is DCE consistency: an
+    // un-observed non-normalizing binding is elided exactly as an un-observed trap is (rather than
+    // reducing dead code), while the SAME term USED is the hard CDZ0999 error.
+    // `warnings_of` asserts the component WAS produced (dead code elided → it compiles) and returns
+    // the warnings; exactly one CDZ0305 dead-computation warning (CDZ0306 unused-`y` rides alongside).
+    let src = "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0)) (export main))";
+    let dead: Vec<_> = warnings_of(src)
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0305"))
+        .collect();
+    assert_eq!(
+        dead.len(),
+        1,
+        "expected one CDZ0305 warning for the dead non-normalizing binding, got {dead:?}"
+    );
+    assert!(
+        dead[0].message.contains("does not reduce to a value"),
+        "the warning names the non-normalizing reason: {}",
+        dead[0].message
+    );
+    // The SAME term USED is a hard CDZ0999 error (the component is DENIED, not merely warned).
+    let used = "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) y)) (export main))";
+    // Same host-stack guard as `warnings_of` above — the USED non-normalizing term recurses just as
+    // deep during the fold, so this direct `compile` must not run on the default test stack either.
+    let out = crate::host::run_with_compiler_stack(|| {
+        compile(
+            &[Artifact::new(
+                Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(used)),
+            )],
+            &[Target::Wasm],
+        )
+    });
+    assert!(
+        out.artifact(Target::Wasm.artifact_kind()).is_none()
+            && out
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0999")),
+        "a USED non-normalizing binding is rejected CDZ0999, not just warned: {:?}",
+        out.diagnostics
+    );
+    // NO FALSE POSITIVE: a NORMAL unused let-init gets no dead-computation warning.
+    let normal = "(module m (def (main) (let ((y (+ 1 2))) 0)) (export main))";
+    assert!(
+        warnings_of(normal)
+            .into_iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0305")),
+        "a normal unused let-init must not get a dead-computation warning"
+    );
+}
+
+#[test]
+fn a_dead_trap_warning_anchors_to_a_user_node() {
+    // The warning carries a node index that resolves to a real user node — the front-end maps it to
+    // the trapping computation's span, never a prelude/synthesized id.
+    let src = "(module m (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main))";
+    let ws = warnings_of(src);
+    assert_eq!(ws.len(), 1);
+    let node = ws[0].node.expect("a dead-trap warning must carry a node");
+    let db = Db::load(parse(src));
+    assert!(
+        db.is_user_node(StructId(node)),
+        "node {node} must be a user node"
+    );
+}
+
+// (an_observed_provable_trap_is_an_error_not_a_warning migrated to corpus: the provable-trap →
+//  CDZ0304 compile-deny rule is covered by 28-compiler-primitives "(error CDZ0304 (message
+//  \"division by zero\"))"; the observed-tuple-element instance exercised no distinct path.)
+
+#[test]
+fn a_clean_program_and_an_unprovable_trap_do_not_warn() {
+    // A clean projection warns not at all; a RUNTIME (unprovable) trap in a dropped position is not
+    // flagged either — the warning fires only on a PROVABLE trap, so no false positive on code the
+    // compiler cannot prove traps.
+    assert!(warnings_of("(module m (def (main) (. (tuple 42 7) 0)) (export main))").is_empty());
+    assert!(
+        warnings_of("(module m (def (main (: x Int64)) (. (tuple 42 (/ 100 x)) 0)) (export main))")
+            .is_empty(),
+        "a runtime (unprovable) trap in a dropped position must NOT warn"
+    );
+}
+
+/// The CDZ0306 unused-binding warning messages from `src`. Uses `diagnostics()` directly (the
+/// export-independent fault+warning set `cdz check` drives) rather than `warnings_of` — a program
+/// exporting a parameterized function does not emit a component, but its diagnostics are still
+/// defined (that is the point of the export-independent query).
+fn unused_of(src: &str) -> Vec<String> {
+    let mut db = Db::load(parse(src));
+    crate::diagnostics(&mut db)
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0306"))
+        .map(|d| d.message)
+        .collect()
+}
+
+/// The CDZ0306 unused-binding DIAGNOSTICS (full records, so a test can read the carried fix).
+fn unused_diags(src: &str) -> Vec<crate::abi::Diagnostic> {
+    let mut db = Db::load(parse(src));
+    crate::diagnostics(&mut db)
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0306"))
+        .collect()
+}
+
+/// EVERY diagnostic (faults + warnings) the `cdz check`/LSP path reports — so a test can assert on the
+/// FULL set (e.g. that a consequent warning is NOT emitted alongside a primary fault).
+fn diags_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+    let mut db = Db::load(parse(src));
+    crate::diagnostics(&mut db)
+}
+
+/// A RECORD sub-pattern NESTED inside a tuple/list/constructor match pattern whose field value is itself
+/// a further COMPOUND — `(tuple (record (x (tuple a b))) c)` — is not yet wired (a record field projects
+/// by NAME and there is no name-keyed `PathStep` to compose a FURTHER descent below the field). It must
+/// NAME that unimplemented feature, NOT leak a misleading CDZ0101 "unbound name `a`" for the deeper
+/// binder (the deeper-nesting twin of the now-wired bare-binder case, Case 6rec-nested-decline). `cdz
+/// check` on a PARAMETERIZED body (via match_pattern_fault, not only the emit walk) must surface the
+/// feature decline and NO CDZ0101 cascade. Found by v-patterns probing (Inc-76). The BARE-binder cases
+/// (`(tuple (record (x a)) c)`, `(list (record (x a)))`) now WIRE (a `Resolved::RecordField` read) — see
+/// `a_nested_record_match_binder_resolves_to_the_field`; only the deeper compound-field-value declines.
+#[test]
+fn a_nested_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
+    // Body references the deeper binder `a` below a nested-record field's own compound value. `f` is
+    // parameterized (non-nullary), so this exercises the check≡compile path — the diagnostic must NAME
+    // the feature, no CDZ0101.
+    let src = "(module m (def (f (: t (Tuple (Record (x (Tuple Int64 Int64))) Int64))) \
+               (match t ((tuple (record (x (tuple a b))) c) (+ (+ a b) c)))) (export f))";
+    let all = diags_of(src);
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no misleading 'unbound name' for a deeper nested-record binder: {all:?}"
+    );
+    assert!(
+        all.iter().any(|d| d
+            .message
+            .contains("record sub-pattern nested inside a tuple/list/constructor match pattern")),
+        "check names the unimplemented deeper-nesting feature: {all:?}"
+    );
+}
+
+#[test]
+fn two_bare_none_record_fields_do_not_cross_contaminate_via_a_let_bound_record() {
+    // REGRESSION (v-agent-harness report): TWO bare `None()` fields in one LET-BOUND record literal used
+    // to cross-contaminate their `Option` element vars. Each `None()` types as `Option(?0)` (the
+    // nullary-variant scheme var, memoized per node), so both fields SHARED `?0`; when the record's type
+    // (built by the `Resolved::Record` field loop) unified against the expected param type in one
+    // `Subst`, one field borrowed its sibling's element type — `resumes : Option Bytes` was inferred
+    // `Option Outcome`, a spurious CDZ0203. FIX: each record field's free vars are freshened into a
+    // DISJOINT block, so sibling `None()` fields solve independently against their own expected field
+    // type. `apply` takes a record with two DIFFERENTLY-typed Option fields, both bound `None` via a
+    // `let`, then applied — must type-check with NO CDZ0203 field-mismatch (the cross-contamination
+    // fault). Asserts the diagnostics are clean rather than running it (a `Bytes`-bearing record needs
+    // the value-heap runtime the lib-test linker doesn't stage).
+    let src = "(module m \
+           (type Outcome (Ok Int64) (Err Int64)) \
+           (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
+           (def (main) (let ((evt (record (= a (None)) (= b (None)) (= c 9)))) (apply evt))) \
+           (export main))";
+    let all = diags_of(src);
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
+        "two bare None() record fields must not cross-contaminate (no CDZ0203 field mismatch): {all:?}"
+    );
+}
+
+#[test]
+fn two_bare_none_record_fields_passed_as_a_direct_arg_do_not_cross_contaminate() {
+    // REGRESSION (residual of the let-bound fix above): the SAME two-bare-`None()` record, passed as a
+    // DIRECT call argument instead of `let`-bound, took a DIFFERENT type-building path — the call's
+    // synthesized `(: arg paramtype)` check reflects a compound-literal arg via `reflected_ty`, whose
+    // RecordNew arm rebuilt field types WITHOUT the disjoint-freshening the `compound_ctor_type` /
+    // `Resolved::Record` paths got. So both `None()` fields reflected `Option(?0)` sharing var 0 and
+    // the record unify hit `Bytes` vs `Outcome` on the shared var — a spurious CDZ0203, even though the
+    // let-bound twin type-checked. FIX: freshen each field/element into a disjoint block in
+    // `reflected_ty`'s RecordNew + TupleNew arms too. Same shape as the let-bound test, arg inlined.
+    let src = "(module m \
+           (type Outcome (Ok Int64) (Err Int64)) \
+           (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
+           (def (main) (apply (record (= a (None)) (= b (None)) (= c 9)))) \
+           (export main))";
+    let all = diags_of(src);
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
+        "two bare None() record fields passed as a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
+    );
+}
+
+// (a_wrong_typed_option_field_in_a_direct_record_arg_still_rejects migrated to corpus
+//  07-type-system "a wrong-typed Option field in a direct record arg still rejects" — CDZ0203, backend-agnostic.)
+
+#[test]
+fn nested_and_sibling_bare_none_compounds_in_a_direct_arg_do_not_cross_contaminate() {
+    // COVERAGE hardening for the direct-arg `reflected_ty` freshening: the fix freshens RECURSIVELY
+    // (each RecordNew/TupleNew arm freshens its already-reflected element), so a bare `None()` nested
+    // inside a compound-inside-a-compound must also solve independently of its siblings. The flat
+    // regression above only exercises one record level; this locks the RECURSIVE path. A record arg
+    // carries: a `(tuple (None) (None))` field (two Option siblings inside a nested TUPLE), a sibling
+    // top-level `(None)` field of a THIRD Option type, and a plain field — every `None` must ground to
+    // its own expected element type with NO CDZ0203 cross-contamination. Diagnostics-only (a
+    // `Bytes`-bearing record needs the value-heap runtime the lib-test linker doesn't stage).
+    let src = "(module m \
+           (type Outcome (Ok Int64) (Err Int64)) \
+           (def (apply (: e (Record (: pair (Tuple (Option Bytes) (Option Outcome))) (: d (Option Int64)) (: c Int64)))) (. e c)) \
+           (def (main) (apply (record (= pair (tuple (None) (None))) (= d (None)) (= c 9)))) \
+           (export main))";
+    let all = diags_of(src);
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
+        "nested + sibling bare None() compounds in a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
+    );
+}
+
+#[test]
+fn a_def_named_quote_binds_its_parameter_and_is_not_hijacked_by_reification() {
+    // `quote`/`quasiquote` are grammar heads recognized STRUCTURALLY only when they head an
+    // EXPRESSION — like `if`/`match`/`bin`, all freely definable as ordinary function names because
+    // a definition's SIGNATURE is never resolved as an expression. Quote reification, however, is a
+    // shape-driven PRE-PASS over every `(quote …)`/`(quasiquote …)` node, and it wrongly rewrote the
+    // def signature `(quote x)` into `(Ast.Name "x")`, ERASING the parameter binder — the body's `x`
+    // then resolved CDZ0101 "unbound name". `quote::binder_position_nodes` now excludes a
+    // def-signature / fn-params list from reification, so a user function named `quote` scans as
+    // ordinary and its parameter binds. No diagnostic at all (no CDZ0101, no CDZ0306-unused).
+    for name in ["quote", "quasiquote"] {
+        let src = format!("(module m (def ({name} (: x Int64)) (+ x 2)) (export {name}))");
+        let diags = diags_of(&src);
+        assert!(
+            diags.is_empty(),
+            "a def named `{name}` must bind its parameter (no CDZ0101/CDZ0306): {:?}",
+            diags
+                .iter()
+                .map(|d| (d.code.clone(), d.message.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+    // Regression guard on the OTHER direction: a genuine `(quote …)` in EXPRESSION position still
+    // reifies to an `Ast` value (it is NOT left as a bare quote/decline). `(quote 1)` == `(Ast.Int 1)`.
+    let genuine = "(module m (def (main) (= (quote 1) (Ast.Int 1))) (export main))";
+    assert!(
+        diags_of(genuine)
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a genuine quote expression must still reify: {:?}",
+        diags_of(genuine)
+    );
+}
+
+#[test]
+fn a_recursive_functions_used_parameter_is_not_flagged_unused() {
+    // A RECURSIVE function freshens its parameter binder when its body is resolved (and the
+    // accumulator transform may rewrite the body entirely), so a reference resolves to a
+    // SYNTHESIZED param copy, not the original occurrence. The usage check keys on the resolution
+    // KIND (does a body reference resolve to a `Param`?), not the target occ, so it is not fooled:
+    // `n` here is used three times → it must NOT warn (the reported false positive).
+    let src = "(module m (def (sm n) (if (= n 0) 0 (+ n (sm (- n 1))))) (export sm))";
+    assert!(
+        unused_of(src).is_empty(),
+        "a used recursive param must not warn: {:?}",
+        unused_of(src)
+    );
+    // A genuinely-unused parameter still warns (the check is real, not just disabled for
+    // functions): `z` is never referenced.
+    let with_unused = "(module m (def (f p z) (+ p 1)) (export f))";
+    let u = unused_of(with_unused);
+    assert_eq!(u.len(), 1, "the truly-unused param z warns: {u:?}");
+    assert!(u[0].contains("`z`"), "{u:?}");
+}
+
+/// A MATCH-ARM pattern binder its arm body never references is unused — the match-arm analogue of an
+/// unused `let` binding / parameter, warned CDZ0306 with a `_`-prefix fix. A reference to a match
+/// binder resolves to a `SumPayload`/scrutinee-`Ref` (not the binder's own occ), so the `used`-occ set
+/// misses it; a scope-correct NAME check (`used_match_binder_names`) decides usage. Shadowing is
+/// honored (the arm binder resolution wins over an outer same-named param).
+#[test]
+fn an_unused_match_arm_binder_warns_with_an_underscore_fix() {
+    // A variant-payload binder never used in its arm → CDZ0306 + a `_x` fix.
+    let d = unused_diags(
+        "(module m (def (main) (match (Some 5) ((Some x) 0) ((None) 1))) (export main))",
+    );
+    assert_eq!(d.len(), 1, "the unused variant binder x warns: {d:?}");
+    assert!(d[0].message.contains("`x`"), "{d:?}");
+    assert_eq!(
+        d[0].fix.as_ref().map(|f| f.replacement.as_str()),
+        Some("_x"),
+        "carries the `_`-prefix fix: {d:?}"
+    );
+    // A tuple-pattern binder unused (b), the other (a) used → only b warns.
+    let tup = unused_of(
+        "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((tuple a b) a))) (export g))",
+    );
+    assert_eq!(
+        tup.len(),
+        1,
+        "only the unused tuple binder b warns: {tup:?}"
+    );
+    assert!(tup[0].contains("`b`"), "{tup:?}");
+    // NO false positive: a USED binder (bare, nested, tuple), a `_`-prefixed binder, and a binder used
+    // in a nested payload are all clean.
+    for ok in [
+        "(module m (def (main) (match (Some 5) ((Some x) x) ((None) 1))) (export main))",
+        "(module m (def (main) (match (Some 5) ((Some _x) 0) ((None) 1))) (export main))",
+        "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((tuple a b) (+ a b)))) (export g))",
+        "(module m (def (g (: o (Option (Option Int64)))) (match o ((Some (Some y)) y) (_ 0))) (export g))",
+        // A GUARDED binder used only in the guard COND (not the body) is used — the usage scan must
+        // cover the cond subtree, not just the arm body. (Regression: the resolution-kind heuristic
+        // mis-classified the cond's `Ref`-to-scrutinee occurrence and false-flagged this binder.)
+        "(module m (def (f (: n Int64)) (match n ((guard x (> x 0)) 5) (_ 0))) (export f))",
+        // A guarded scalar binder used in BOTH cond and body.
+        "(module m (def (f (: n Int64)) (match n ((guard x (> x 0)) x) (_ 0))) (export f))",
+    ] {
+        assert!(
+            unused_of(ok).is_empty(),
+            "a used/underscored match binder must not warn: {ok} -> {:?}",
+            unused_of(ok)
+        );
+    }
+    // A genuinely-unused GUARDED binder (bound but referenced in NEITHER the cond nor the body) still
+    // warns — the guard-cond scan widens usage, it does not blanket-suppress. Here the cond tests `n`,
+    // the body is a constant, so `x` is dead.
+    let dead_guard = unused_of(
+        "(module m (def (f (: n Int64)) (match n ((guard x (> n 0)) 5) (_ 0))) (export f))",
+    );
+    assert_eq!(
+        dead_guard.len(),
+        1,
+        "a guard binder used in neither cond nor body still warns: {dead_guard:?}"
+    );
+    assert!(dead_guard[0].contains("`x`"), "{dead_guard:?}");
+}
+
+#[test]
+fn a_bin_pattern_byte_order_modifier_is_not_an_unused_match_binding() {
+    // adv-59 (breaker): the unused-binding lint walked a `(bin <seg>…)` pattern's raw AST and collected
+    // a segment's TRAILING atoms as match binders — so the byte-order MODIFIER `le` in `(bin (u16 n le))`
+    // false-flagged `warning [CDZ0306] unused match binding: le`. Worse, the suggested `_le` fix
+    // HARD-ERRORS (the segment stops parsing as a modifier → CDZ0201 "the only integer bin-segment
+    // modifier is `le`" + CDZ0101 unbound `n`), so following the lint BREAKS a working program — and it
+    // fired on the corpus's own pinned `le` idiom (16-binary-matching:165). A corpus pin can't guard
+    // this (the gate ignores warnings), so this lint unit test is the guard. FIX: `arm_pattern_binders`
+    // descends only a bin segment's SLOT (`seg[1]`), never the kind head / modifier / width / size atoms.
+    // `le` must NOT warn; the used binder `n` must NOT warn.
+    assert!(
+        unused_of(
+            "(module m (def (f (: b Bytes)) (match b ((bin (u16 n le)) n) (_ -1))) (export f))"
+        )
+        .is_empty(),
+        "a bin-pattern `le` modifier + a used slot binder must not warn CDZ0306: {:?}",
+        unused_of(
+            "(module m (def (f (: b Bytes)) (match b ((bin (u16 n le)) n) (_ -1))) (export f))"
+        )
+    );
+    // Every int-segment face with `le` is clean (u16/u32/i16 all parse `le` as a modifier, not a binder).
+    for src in [
+        "(module m (def (f (: b Bytes)) (match b ((bin (u32 n le)) n) (_ -1))) (export f))",
+        "(module m (def (f (: b Bytes)) (match b ((bin (i16 n le)) n) (_ -1))) (export f))",
+    ] {
+        assert!(
+            unused_of(src).is_empty(),
+            "no int-segment `le` face may warn CDZ0306: {src} -> {:?}",
+            unused_of(src)
+        );
+    }
+    // NOT over-suppressed: a bin SLOT binder that is genuinely UNUSED (body ignores it) STILL warns —
+    // only the modifier is excluded, not the slot. Here `n` is bound (with `le`) but the body returns 0.
+    let dead = unused_of(
+        "(module m (def (f (: b Bytes)) (match b ((bin (u16 n le)) 0) (_ -1))) (export f))",
+    );
+    assert_eq!(
+        dead.len(),
+        1,
+        "an unused bin slot binder still warns: {dead:?}"
+    );
+    assert!(
+        dead[0].contains("`n`"),
+        "the warning is on the slot binder n, not le: {dead:?}"
+    );
+    // A `bytes` segment's dependent-SIZE reference (`len`) is not a new binder either; the slot `body`
+    // is used, so this arm is clean (no false CDZ0306 on `len`).
+    assert!(
+            unused_of("(module m (def (f (: b Bytes)) (match b ((bin (u8 len) (bytes body len)) (Bytes.len body)) (_ -1))) (export f))")
+                .is_empty(),
+            "a bytes-segment dependent-size ref must not warn, and a used slot is clean: {:?}",
+            unused_of("(module m (def (f (: b Bytes)) (match b ((bin (u8 len) (bytes body len)) (Bytes.len body)) (_ -1))) (export f))")
+        );
+}
+
+#[test]
+fn a_bin_segment_size_operand_name_is_counted_used_not_flagged_cdz0306() {
+    // REGRESSION (v-lsp: red squiggles in the guide binary-matching chapter): a name bound by an int
+    // segment `(u8 n)` and used as the dependent SIZE of a later segment `(bytes body n)` was NOT
+    // counted as used — CDZ0306 false-flagged `n` "never used". The size use lives IN THE PATTERN (not
+    // the arm body), so `used_match_binder_names(body)` missed it; and the syntactic binder walk even
+    // collected the size `n` as a bogus SECOND binder. Fix: `bin_pattern_size_occs` marks each segment
+    // size operand a use + excludes it from the binder candidates. `n` used as `(bytes body n)`'s size
+    // → NO CDZ0306 on `n`.
+    let u = unused_of(
+        "(module m (def (main) (match (Bytes.of (list 2 10 20)) \
+               ((bin (u8 n) (bytes body n)) (Bytes.len body)) (_ 0))) (export main))",
+    );
+    assert!(
+        !u.iter().any(|m| m.contains("`n`")),
+        "a bin-segment SIZE operand `n` is a use of the earlier binder, not an unused binding: {u:?}"
+    );
+    // NO false positive AT ALL here: `body` is read (Bytes.len body) and `n` is the size use.
+    assert!(
+        u.is_empty(),
+        "both bin binders are used (body read, n as size) — no CDZ0306: {u:?}"
+    );
+    // The utf8 dependent-size operand is likewise a use (not flagged); `k` sizes the utf8 segment.
+    let uk = unused_of(
+        "(module m (def (main) (match (Bytes.of (list 2 104 105)) \
+               ((bin (u8 k) (utf8 s k)) (Bytes.len (Bytes.of (list 1)))) (_ 0))) (export main))",
+    );
+    assert!(
+        !uk.iter().any(|m| m.contains("`k`")),
+        "a utf8 dependent-size operand `k` is a use, not unused: {uk:?}"
+    );
+    assert!(
+        uk.iter().any(|m| m.contains("`s`")),
+        "a genuinely-unused segment binder `s` STILL warns (no over-suppression): {uk:?}"
+    );
+    // CONTROL — over-suppression guard: two genuinely-unused int-segment binders (neither used as a
+    // body ref nor a size operand) BOTH still warn.
+    let unused = unused_of(
+        "(module m (def (main) (match (Bytes.of (list 10 20)) \
+               ((bin (u8 x) (u8 y)) 5) (_ 0))) (export main))",
+    );
+    assert!(
+        unused.iter().any(|m| m.contains("`x`")) && unused.iter().any(|m| m.contains("`y`")),
+        "genuinely-unused segment binders still warn: {unused:?}"
+    );
+}
+
+/// A `.`-MEMBER pattern `C.R` (a NULLARY variant used as a whole arm pattern, printed `(. C R)`) binds
+/// NOTHING — its segments are the TYPE and VARIANT names, not binders. The unused-binding pass must not
+/// treat the first segment (`C`) as a spuriously-unused binder. (Regression: `collect_arm_binder_leaves`
+/// recursed a compound's args generically, collecting `C` from `(. C R)` → a bogus CDZ0306 "unused
+/// binding `C`" with a nonsense `_C` rename on every nullary-variant match arm.)
+#[test]
+fn a_dotted_nullary_variant_arm_pattern_binds_nothing_and_never_warns_unused() {
+    // A total match over a three-nullary-variant sum, each arm a bare `C.x` member — no binders, so
+    // NO CDZ0306 at all.
+    let clean =
+        "(module m (type C R G B) (def (f (: c C)) (match c (C.R 1) (C.G 2) (C.B 3))) (export f))";
+    assert!(
+        unused_of(clean).is_empty(),
+        "a dotted nullary-variant arm binds nothing — no spurious `C` warning: {:?}",
+        unused_of(clean)
+    );
+    // The suppression is SURGICAL — it silences only the member HEAD, not real binders. A genuinely
+    // unused payload binder alongside a dotted arm still warns (only `n`, never `C`).
+    let mixed = "(module m (type C R G B) (def (f (: c C) (: o (Option Int64))) (match o ((Some n) (match c (C.R 1) (C.G 2) (C.B 3))) ((None) 0))) (export f))";
+    let u = unused_of(mixed);
+    assert_eq!(u.len(), 1, "only the unused payload binder n warns: {u:?}");
+    assert!(u[0].contains("`n`"), "warns n, not C: {u:?}");
+}
+
+/// A BARE (un-dotted) nullary-variant arm pattern (`TInt` in `(match a (TInt …) (TBool …))`) is the
+/// CONSTRUCTOR, not a binder — even when the match is NESTED inside another match's arm. `match_arm_binds`
+/// treated a bare-name arm pattern as introducing a binding of that name; scope resolution is
+/// scope-FIRST, so a NESTED `(match b (TInt 1) (TBool 2))` under an outer `(TInt …)` arm had its inner
+/// `TInt` resolve to the "binder" the outer arm appeared to introduce instead of to the variant ctor.
+/// That mis-resolution drew spurious CDZ0306 "unused binding `TInt`" + CDZ0213 "unreachable arm" on the
+/// inner arms — though the program compiled and ran correctly (the runtime value was the ctor's). A bare
+/// variant name never binds, so `match_arm_binds` now returns `None` for one (via `variant_ctor_by_name`,
+/// the same index `resolve_name`'s bare-variant step consults), at every nesting depth.
+#[test]
+fn a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns() {
+    // The queue repro (mlrepro-false-warning-nested-nullary-match-unused-binding): the INNER bare
+    // nullary match drew CDZ0306 + CDZ0213. Now CLEAN — no warnings, exit 0.
+    let nested = "(module m (type Ty TInt TBool) \
+            (def (classify (: a Ty) (: b Ty)) \
+              (match a (TInt (match b (TInt 1) (TBool 2))) (TBool 3))) \
+            (export classify))";
+    let all = diags_of(nested);
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
+        "no spurious 'unused binding' on a bare nested nullary-variant arm: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0213")),
+        "no spurious 'unreachable arm' on a bare nested nullary-variant arm: {all:?}"
+    );
+    // BEHAVIOR PRESERVED: the inner `TInt` is a CTOR, so `classify(TInt, TBool)` selects the `TBool => 2`
+    // arm (a catch-all binder would have matched `TBool` at the FIRST inner arm and returned 1). The
+    // dispatch VALUE (=2) is ordinary nested nullary-variant match, covered by the corpus; here we only
+    // need the program to COMPILE (the warning regression must not block it).
+    let prog = "(module m (type Ty TInt TBool) \
+            (def (classify (: a Ty) (: b Ty)) \
+              (match a (TInt (match b (TInt 1) (TBool 2))) (TBool 3))) \
+            (def (main) (classify TInt TBool)) (export main))";
+    crate::compile::compile_component(&crate::codec::encode(&parse(prog)))
+        .expect("the nested nullary-variant program compiles");
+    // The SAME inner match at TOP LEVEL was always clean — pin it stays clean (no regression the other way).
+    let top = "(module m (type Ty TInt TBool) \
+            (def (classify2 (: b Ty)) (match b (TInt 1) (TBool 2))) (export classify2))";
+    assert!(
+        diags_of(top)
+            .iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0306") && d.code.as_deref() != Some("CDZ0213")),
+        "a top-level bare nullary-variant match stays clean: {:?}",
+        diags_of(top)
+    );
+}
+
+/// A BARE (un-dotted) arm pattern name that is a TYPO of a scrutinee-sum variant — `Rd` over `(type
+/// Color Red Green)` — is almost certainly a misspelled nullary-variant pattern, NOT a catch-all
+/// binder. Treating it as a binder silently turns the arm into a wildcard (a later real-variant arm
+/// reads "unreachable" CDZ0213) and draws a misleading CDZ0306 "unused binding `Rd`". Now it gets the
+/// SAME did-you-mean the DOTTED form (`Color.Rd`) already gives: CDZ0201 "not a variant of the matched
+/// type Color — did you mean `Red`?" + a replace fix on the name, and the consequent CDZ0213/CDZ0306
+/// are suppressed (the match's `core_of` poisons, so the redundant-arm + unused-binding passes skip it).
+#[test]
+fn a_bare_variant_typo_arm_suggests_the_variant_not_a_binder() {
+    let src =
+        "(module m (type Color Red Green) (def (f (: c Color)) (match c (Rd 1) (_ 2))) (export f))";
+    let d = first_error(src);
+    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+    assert!(
+        d.message.contains("`Rd`")
+            && d.message.contains("Color")
+            && d.message.contains("did you mean `Red`?"),
+        "names the typo + the near variant: {}",
+        d.message
+    );
+    assert_eq!(
+        d.fix.as_ref().map(|f| f.replacement.as_str()),
+        Some("Red"),
+        "carries the replace-with-`Red` fix: {}",
+        d.message
+    );
+    // The consequent CDZ0213 "unreachable" (the typo'd arm was mis-read as a catch-all) and CDZ0306
+    // "unused binding `Rd`" are SUPPRESSED — one clean primary error, not a pile of consequent noise.
+    let all = diags_of(src);
+    assert!(
+        all.iter()
+            .all(|x| x.code.as_deref() != Some("CDZ0213") && x.code.as_deref() != Some("CDZ0306")),
+        "no consequent unreachable/unused-binding noise on a typo arm: {all:?}"
+    );
+    // NO false positive on a GENUINE binder: a bare name UNLIKE any variant (`zzzptql`) stays a
+    // catch-all binder — the usual CDZ0306 unused-binding warning, never the typo CDZ0201.
+    let far = "(module m (type Color Red Green) (def (f (: c Color)) (match c (Red 1) (zzzptql 2))) (export f))";
+    let fd = diags_of(far);
+    assert!(
+        fd.iter().all(|x| x.code.as_deref() != Some("CDZ0201")),
+        "a far-miss bare name is a genuine binder, not a typo reject: {fd:?}"
+    );
+    // A lowercase binder near a variant is still a binder — the typo heuristic is edit-distance-gated,
+    // and an intentional catch-all `x` is nowhere near `Red`/`Green`, so it binds cleanly (no reject).
+    let bind = "(module m (type Color Red Green) (def (f (: c Color)) (match c (Red 1) (x 2))) (export f))";
+    assert!(
+        diags_of(bind)
+            .iter()
+            .all(|x| x.severity != crate::abi::Severity::Error),
+        "an intentional catch-all binder still compiles: {:?}",
+        diags_of(bind)
+    );
+}
+
+/// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r
+/// b)` with a binder after the rest) must NOT also emit consequent CDZ0306 "unused binding" warnings
+/// for the binders inside that rejected pattern: those binders never bind, so their "unusedness" is a
+/// CONSEQUENCE of the pattern fault, not an INDEPENDENT problem. This was a check≡compile discrepancy —
+/// `cdz compile` bails at the first fault set (only the CDZ0201 shows), but `cdz check`/`diagnostics()`
+/// collects faults AND warnings, and without the poison guard it appended spurious CDZ0306s. The
+/// match-arm binder pass now skips a match whose `core_of` POISONS (the same lowering the CDZ0201 comes
+/// from — they can never disagree).
+#[test]
+fn a_malformed_match_pattern_does_not_also_warn_its_binders_unused() {
+    // A too-wide tuple pattern → CDZ0201 ONLY; no CDZ0306 for `b`/`c` (inside the rejected pattern).
+    let tup =
+        "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b c) a))) (export f))";
+    let all = diags_of(tup);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")),
+        "the malformed tuple pattern is rejected CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
+        "no consequent CDZ0306 for a binder inside the rejected pattern: {all:?}"
+    );
+    // A malformed list-rest pattern (a binder after `..`) → same: CDZ0201 only, no CDZ0306.
+    let lst = "(module m (def (f (: xs (List Int64))) (match xs ((list a .. rest b) a) (_ 0))) (export f))";
+    let all = diags_of(lst);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")),
+        "the malformed list-rest pattern is rejected CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
+        "no consequent CDZ0306 for a binder inside the rejected list pattern: {all:?}"
+    );
+    // NOT over-suppressed: a WELL-FORMED pattern whose body TRAPS (a poison in the BODY, not the
+    // pattern — the match's `core_of` is NOT a poison) still warns its genuinely-unused binders.
+    let trap_body = "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b) (trap \"x\")))) (export f))";
+    let u = unused_of(trap_body);
+    assert_eq!(
+        u.len(),
+        2,
+        "a well-formed pattern with a trapping body still warns its 2 unused binders: {u:?}"
+    );
+    // NOT over-suppressed: an ordinary well-formed match still warns a genuinely-unused binder.
+    assert_eq!(
+        unused_of(
+            "(module m (def (f (: o (Option Int64))) (match o ((Some x) 0) ((None) 1))) (export f))"
+        )
+        .len(),
+        1,
+        "a well-formed match's unused binder still warns"
+    );
+}
+
+/// A LIST-scrutinee match arm whose head is a NAME used as a pattern constructor — `(Zorp x)` (unbound)
+/// or `(List.Cons h t)` (`List` has no such member) — is a CODED fault surfaced by `cdz check` in EVERY
+/// body, including a PARAMETERIZED / self-RECURSIVE one. A list scrutinee has no user constructors, so
+/// such a head can never be a valid list pattern; it used to reach `lower_match_list`'s generic UNCODED
+/// "a list match arm that is not an element pattern or a binder is not yet supported" decline. That
+/// uncoded decline is produced ONLY by the emit-path lowering walk (`collect_reached_poisons`), which
+/// runs on nullary-EXPORTED bodies alone (a recursive function is emitted once, never inlined into an
+/// exported body's reduction), so `cdz check` was SILENT (exit 0) while `cdz compile` declined — a
+/// check≡compile discrepancy, and the very "did you mean?" message hidden from the fast path. The list
+/// matcher now propagates the head's OWN coded poison (CDZ0101 unbound / CDZ0201 non-member) — the LIST
+/// twin of the sum matcher's `variant_disc_of`-miss path — so `type_errors`' `match_pattern_fault`
+/// accessor surfaces it. `diags_of` runs the exact `crate::diagnostics` (check) path.
+#[test]
+fn a_list_arm_ctor_head_over_a_recursive_body_is_a_coded_fault_in_check() {
+    // Self-recursive `go` over a `(List Int64)` scrutinee, arm head `Zorp` — an unbound name. `check`
+    // (diagnostics) must report the CDZ0101, not pass clean.
+    let unbound = "(module m (def (go (: rest (List Int64))) \
+                       (match rest ((Zorp x) (go (list x))) (_ 0))) (export go))";
+    let all = diags_of(unbound);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Zorp")),
+        "check reports the unbound arm-head as CDZ0101 (was silent, exit 0): {all:?}"
+    );
+    // `List.Cons`/`List.Nil` arm heads over a recursive body — `List` is an intrinsic MODULE, not a sum
+    // type, so these are non-members → CDZ0201, again surfaced by `check`.
+    let member = "(module m (def (go (: rest (List Int64))) \
+                      (match rest (((. List Nil) _) 0) (((. List Cons) h t) (go rest)))) (export go))";
+    let all = diags_of(member);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+            && d.message.contains("List")
+            && d.message.contains("member")),
+        "check reports the non-member list arm head as CDZ0201: {all:?}"
+    );
+    // NO false alarm: a WELL-FORMED recursive list fold (element + rest binder patterns) stays clean —
+    // this path fires only on a ctor-shaped head, never a legitimate `(list …)` pattern or a binder.
+    let ok = "(module m (def (go (: acc Int64) (: rest (List Int64))) \
+                  (match rest ((list) acc) ((list h .. t) (go (+ acc h) t)))) (export go))";
+    // Bind once — `diags_of` recompiles the module, so evaluating it in both the predicate and the
+    // failure message would double the compile cost (PR #1167 review).
+    let ok_diags = diags_of(ok);
+    assert!(
+        ok_diags
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a well-formed recursive list fold still checks clean: {ok_diags:?}"
+    );
+}
+
+/// The MAP + SCALAR-path twins of the list gap above: a match arm whose head is a name-as-constructor
+/// over a MAP scrutinee, or over a scrutinee that ROUTED TO THE SCALAR PATH (a Map/List with no
+/// structural `(map …)`/`(list …)` arm falls through there), was an UNCODED lowering-only decline that
+/// `cdz check` missed on a parameterized / recursive body. Both now propagate the arm head's own coded
+/// poison (CDZ0101 unbound / CDZ0201 non-member) so `match_pattern_fault` surfaces it in check —
+/// completing the coverage across all three matcher paths (list, map, scalar-fallthrough).
+#[test]
+fn a_bogus_map_or_scalar_path_arm_head_over_a_recursive_body_is_a_coded_fault_in_check() {
+    // MAP matcher: a real `(map …)` arm routes to `lower_match_map`, and the sibling `(Zorp …)` arm
+    // head — unbound — is reported by check (was silent). `go` is self-recursive.
+    let map_arm = "(module m (def (go (: mp (Map Int64 Int64))) \
+                       (match mp ((map (1 v)) v) ((Zorp x) (go mp)) (_ 0))) (export go))";
+    let all = diags_of(map_arm);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Zorp")),
+        "check reports the unbound map-arm head as CDZ0101 (was silent): {all:?}"
+    );
+    // SCALAR-FALLTHROUGH: a Map scrutinee with NO structural `(map …)` arm routes to the scalar path;
+    // the `(Zorp x)` compound head there is likewise surfaced (was the scalar path's uncoded
+    // "not a scalar literal or `_`" decline).
+    let scalar_path = "(module m (def (go (: mp (Map Int64 Int64))) \
+                          (match mp ((Zorp x) (go mp)) (_ 0))) (export go))";
+    let all = diags_of(scalar_path);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Zorp")),
+        "check reports the scalar-path compound arm head as CDZ0101 (was silent): {all:?}"
+    );
+    // NO false alarm: a WELL-FORMED runtime map match (a `(map …)` arm + catch-all) stays clean — the
+    // coded-head propagation fires only on an unbound/non-member ctor head, never a real pattern.
+    let ok = "(module m (def (go (: mp (Map Int64 Int64))) \
+                  (match mp ((map (1 v)) v) (_ 0))) (export go))";
+    // Bind once — `diags_of` recompiles the module (PR #1167 review).
+    let ok_diags = diags_of(ok);
+    assert!(
+        ok_diags
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a well-formed runtime map match still checks clean: {ok_diags:?}"
+    );
+}
+
+/// A RECORD match pattern is now IMPLEMENTED (record match landed — the match twin of the record
+/// binding pattern). A field-binder reference in the body must CHECK CLEAN (resolve to a scrutinee
+/// projection, Case 6rec), NOT leak the old misleading "unbound name" CDZ0101 nor the superseded "not
+/// yet supported" CDZ0201. This test was the v-diagnostics regression pin for the UNIMPLEMENTED era
+/// (2026-07-16); it now pins that the field binder resolves and the arm type-checks. (The whole-binder
+/// + projection form — the old workaround — remains valid too.)
+#[test]
+fn a_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
+    // Body references the field binder `a`. `f` is a parameterized (non-nullary) body, so this
+    // exercises the check≡compile path — it must be CLEAN now that record match resolves the binder.
+    let uses_binder = "(module m (def (f (: r (Record (x Int64)))) \
+                           (match r ((record (x a)) a))) (export f))";
+    let all = diags_of(uses_binder);
+    assert!(
+        all.iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a record match binding a field checks clean now that record match is implemented: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")
+            && !d
+                .message
+                .contains("record match pattern is not yet supported")),
+        "no misleading unbound-name and no superseded 'not yet supported' decline: {all:?}"
+    );
+    // The WHOLE-value binder + field projection form (the former workaround) still checks clean.
+    let workaround = "(module m (def (f (: r (Record (x Int64)))) \
+                          (match r (whole (. whole x)))) (export f))";
+    assert!(
+        diags_of(workaround)
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "the whole-binder + projection form still checks clean: {:?}",
+        diags_of(workaround)
+    );
+}
+
+/// A MAP match pattern with a MALFORMED `..` rest (a `..` not followed by exactly one binder) reports
+/// the clear rest-shape CDZ0201 — the map twin of the list's "a list rest pattern is `(list p… .. rest)`
+/// — exactly one binder after `..`" — NOT a misleading "unbound name" for a value/rest binder. Before,
+/// `map_pattern_of` collapsed a malformed `..` to `None`, so the arm's binders failed the inert-binder
+/// classifier and the body reference resolved UNBOUND (masking the real fault, v-diagnostics note). Now
+/// the resolver keeps those binders inert (`map_form_is_malformed_rest`) and both the map matcher and a
+/// body-reference (resolve Case Mmr, co-anchored at the pattern) surface the SAME coded rest-shape
+/// message, deduped to ONE diagnostic. Sibling of the record-pattern fix.
+#[test]
+fn a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_binder() {
+    // `..` non-final (a further entry after the rest binder). Body references the value binder `v`.
+    let non_final = "(module m (def (f (: mp (Map Int64 Int64))) \
+                         (match mp ((map (1 v) .. rest (2 w)) v) (_ 0))) (export f))";
+    let all = diags_of(non_final);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+            && d.message.contains("map rest pattern is")
+            && d.message.contains("exactly one binder after")),
+        "the malformed map rest reports the clear rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no misleading 'unbound name' for the value/rest binder: {all:?}"
+    );
+    // The body references the value binder that appears AFTER `..` (`w` in the trailing `(2 w)` pair) —
+    // Copilot PR #440 / corpus-bugfix: `map_form_binds_name` only treated a BARE name after `..` as a
+    // binder, so a `(k v)` pair after `..` left its value `w` unrecognized → a spurious CDZ0101 layered
+    // on the malformed pattern. Now `w` is recognized inert (no unbound leak); one clean rest-shape reject.
+    let w_after = "(module m (def (f (: mp (Map Int64 Int64))) \
+                       (match mp ((map (1 v) .. rest (2 w)) w) (_ 0))) (export f))";
+    let all = diags_of(w_after);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+        "a body ref to a value binder after `..` still reports the rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no 'unbound name' for a `(k v)` value binder appearing AFTER `..` (PR #440): {all:?}"
+    );
+    // Two `..` markers — same clear message, no unbound leak.
+    let two_dots = "(module m (def (f (: mp (Map Int64 Int64))) \
+                        (match mp ((map (1 v) .. r1 .. r2) v) (_ 0))) (export f))";
+    let all = diags_of(two_dots);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+        "two `..` markers report the rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no unbound-name leak for the two-`..` case: {all:?}"
+    );
+    // NO false alarm: a WELL-FORMED map rest pattern (`.. rest` final, one binder) checks clean.
+    let ok = "(module m (def (f (: mp (Map Int64 Int64))) \
+                  (match mp ((map (1 v) .. rest) v) (_ 0))) (export f))";
+    // Bind once — `diags_of` recompiles the module (PR #1167 review).
+    let ok_diags = diags_of(ok);
+    assert!(
+        ok_diags
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a well-formed map rest pattern still checks clean: {ok_diags:?}"
+    );
+    // NESTED: a malformed-rest map INSIDE a variant payload (`(Wrap (map … .. r (j w)))`) gets the
+    // SAME specific rest-shape message (not the vague "a malformed map pattern") and NO unbound leak —
+    // the `pattern_constraints` + Case-Mmr nested twin of the top-level fix.
+    let nested = "(module m (type W (Wrap (Map Int64 Int64))) \
+                      (def (f (: w W)) (match w ((Wrap (map (1 v) .. r (2 x))) v) (_ 0))) (export f))";
+    let all = diags_of(nested);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("map rest pattern is")),
+        "a nested malformed-rest map gets the specific rest-shape message: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no misleading 'unbound name' for a nested malformed-map binder: {all:?}"
+    );
+    // NO false alarm: a WELL-FORMED nested map (`.. r` final) still checks clean.
+    let nested_ok = "(module m (type W (Wrap (Map Int64 Int64))) \
+                         (def (f (: w W)) (match w ((Wrap (map (1 v) .. r)) v) (_ 0))) (export f))";
+    // Bind once — `diags_of` recompiles the module (PR #1167 review).
+    let nested_ok_diags = diags_of(nested_ok);
+    assert!(
+        nested_ok_diags
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a well-formed nested map rest pattern still checks clean: {nested_ok_diags:?}"
+    );
+}
+
+/// The LIST twin of the map malformed-rest case above: a `(list …)` pattern whose `..` is followed by
+/// MORE than one binder (`(list a .. b c)`) reports the clear rest-shape CDZ0201 and — when the body
+/// references one of the SURPLUS post-`..` binders (`c`) — does NOT also leak a misleading CDZ0101
+/// "unbound name". `lower_match_list` always faulted the shape, but `find_rest_binder_in_list_pattern`
+/// recognizes ONLY the single `dd + 1` rest binder, so a body ref to `c` fell through to `resolve_name`
+/// → a spurious unbound cascade on top of the real fault (the same class the map twin fixed,
+/// v-diagnostics note 2026-07-16). The resolver now resolves such a reference to the SAME coded
+/// rest-shape decline (Case Lmr / `match_arm_malformed_list_binds`), co-anchored at the list pattern so
+/// the same-node dedup collapses it into ONE primary diagnostic.
+#[test]
+fn a_malformed_list_rest_pattern_names_the_shape_not_an_unbound_surplus_binder() {
+    // Body references the SURPLUS binder `c` (the extra after the legitimate rest binder `b`).
+    let surplus = "(module m (def (f (: xs (List Int64))) \
+                        (match xs ((list a .. b c) c) (_ 0))) (export f))";
+    let all = diags_of(surplus);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+            && d.message.contains("list rest pattern is")
+            && d.message.contains("exactly one binder after")),
+        "the malformed list rest reports the clear rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no misleading 'unbound name' for a surplus binder after `..`: {all:?}"
+    );
+    // TWO surplus binders both referenced (`c` and `d`) — neither leaks; still one clean rest-shape reject.
+    let two_surplus = "(module m (def (f (: xs (List Int64))) \
+                            (match xs ((list a .. b c d) (+ c d)) (_ 0))) (export f))";
+    let all = diags_of(two_surplus);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("list rest pattern is")),
+        "two surplus binders report the rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no unbound-name leak for either surplus binder: {all:?}"
+    );
+    // NO false alarm: a WELL-FORMED list rest pattern (one binder after `..`, body reads it) checks clean.
+    let ok = "(module m (def (f (: xs (List Int64))) \
+                  (match xs ((list x .. rest) (List.len rest)) (_ 0))) (export f))";
+    // Bind once — `diags_of` recompiles the module, so evaluating it in both the predicate and the
+    // failure message would double the compile cost (PR #1167 review).
+    let ok_diags = diags_of(ok);
+    assert!(
+        ok_diags
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a well-formed list rest pattern still checks clean: {ok_diags:?}"
+    );
+    // NESTED: a malformed-rest list INSIDE a variant payload (`(Wrap (list a .. b c))`) whose body reads
+    // the surplus `c` is a CODED rest-shape CDZ0201 (the nested `pattern_constraints` path phrases it as
+    // "`.. rest` must be the final element") with NO unbound leak — the surplus binder does not surface a
+    // spurious CDZ0101 through the nested payload either.
+    let nested = "(module m (type W (Wrap (List Int64))) \
+                      (def (f (: w W)) (match w ((Wrap (list a .. b c)) c) (_ 0))) (export f))";
+    let all = diags_of(nested);
+    assert!(
+        all.iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201") && d.message.contains("rest")),
+        "a nested malformed-rest list gets a coded rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no misleading 'unbound name' for a nested malformed-list surplus binder: {all:?}"
+    );
+}
+
+/// A LIST match pattern whose REST slot (after `..`) holds a NESTED pattern — `(list a .. (list b .. r))`
+/// — reports the clear rest-shape CDZ0201 naming the rest form, NOT a misleading "unbound name" for the
+/// nested pattern's inner binders. RULED (v-inference 2026-08-02, breaker adv-49): a list rest binder
+/// admits only a name or wildcard (core-semantics.md:149 grants nested patterns to ELEMENT positions
+/// only; :135 a binding position holds an irrefutable pattern, and a nested list pattern is refutable on
+/// empty rest — the same name-only rule the map rest binder has). Before, resolve treated the rest slot
+/// as a single name-binder and the nested pattern's inner names (`b`/`r`) fell through to scoping →
+/// CDZ0101 'unbound name'. Now the resolver co-anchors those body references at the offending `(list …)`
+/// (Case 6mr, `match_arm_nested_list_rest_binds`), collapsing to ONE coded rest-shape reject. The list
+/// twin of `a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_binder`.
+#[test]
+fn a_nested_pattern_in_list_rest_position_names_the_shape_not_an_unbound_binder() {
+    // The breaker adv-49 reproducer: a nested list pattern in the rest slot; body references `b`/`r`.
+    let nested_list = "(module m (def (f (: xs (List Int64))) \
+                            (match xs ((list a .. (list b .. r)) (+ (* 100 a) (+ (* 10 b) (List.len r)))) \
+                             ((list a) (* a 1000)) ((list) 0))) (export f))";
+    let all = diags_of(nested_list);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+            && d.message
+                .contains("rest binder of a list pattern must be a name or `_`")
+            && d.message
+                .contains("a nested pattern or literal is not allowed here")),
+        "a nested list-rest pattern reports the clear rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no misleading 'unbound name' for the nested pattern's inner binders (`b`/`r`): {all:?}"
+    );
+    // A nested TUPLE in the rest slot is the SAME shape error (the rest binder must be a NAME/`_`, and a
+    // tuple is a nested pattern just like a list) — same message, no unbound leak for its element binder.
+    let nested_tuple = "(module m (def (f (: xs (List Int64))) \
+                            (match xs ((list a .. (tuple b c)) (+ a b)) ((list) 0))) (export f))";
+    let all = diags_of(nested_tuple);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+            && d.message
+                .contains("rest binder of a list pattern must be a name or `_`")),
+        "a nested tuple in list-rest position reports the same rest-shape CDZ0201: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no 'unbound name' for the nested tuple's element binder `b`: {all:?}"
+    );
+    // NESTED: the offending list-rest pattern INSIDE a variant payload (`(Wrap (list a .. (list b .. r)))`)
+    // gets the SAME message via the nested descent (`find_nested_list_rest_binding_name`), no unbound leak.
+    let in_variant = "(module m (type W (Wrap (List Int64))) \
+                          (def (f (: w W)) (match w ((Wrap (list a .. (list b .. r))) (+ a b)) (_ 0))) \
+                          (export f))";
+    let all = diags_of(in_variant);
+    assert!(
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+            && d.message
+                .contains("rest binder of a list pattern must be a name or `_`")),
+        "a nested-rest list inside a variant payload gets the specific rest-shape message: {all:?}"
+    );
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+        "no misleading 'unbound name' for a nested-rest binder inside a variant payload: {all:?}"
+    );
+    // NO false alarm: a WELL-FORMED name rest (`.. rest`) and a wildcard rest (`.. _`) still check clean.
+    let name_rest = "(module m (def (f (: xs (List Int64))) \
+                         (match xs ((list a .. rest) (+ a (List.len rest))) ((list) 0))) (export f))";
+    let name_rest_diags = diags_of(name_rest);
+    assert!(
+        name_rest_diags
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a well-formed name rest pattern still checks clean: {name_rest_diags:?}"
+    );
+    let wildcard_rest = "(module m (def (f (: xs (List Int64))) \
+                             (match xs ((list a .. _) a) ((list) 0))) (export f))";
+    let wildcard_rest_diags = diags_of(wildcard_rest);
+    assert!(
+        wildcard_rest_diags
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "a wildcard rest pattern still checks clean: {wildcard_rest_diags:?}"
+    );
+    // A LEADING nested pattern (a nested list/tuple in an ELEMENT position, NOT the rest slot) is VALID
+    // (core-semantics.md:149 grants nested patterns to element positions) — it must NOT trip this reject.
+    let leading_nested = "(module m (def (f (: xs (List (List Int64)))) \
+                              (match xs ((list (list a b) .. rest) (+ a b)) ((list) 0))) (export f))";
+    let leading_nested_diags = diags_of(leading_nested);
+    assert!(
+        leading_nested_diags
+            .iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0201")
+                || !d.message.contains("rest binder of a list pattern")),
+        "a nested pattern in a LEADING element position is valid, not a rest-shape error: {leading_nested_diags:?}"
+    );
+}
+
+/// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,
+/// `(list … .. …)`), not the enclosing `(match …)`. The pattern-shape rejects in `pattern_constraints`
+/// / `lower_match_list` carry the faulting `pat` node explicitly (`.at(pat)`); without it,
+/// `collect_reached_poisons` stamped the coarse whole-match node, so the editor squiggle covered the
+/// entire match instead of the one wrong pattern.
+#[test]
+fn a_malformed_match_pattern_anchors_at_the_pattern_not_the_whole_match() {
+    // The reported node's HEAD is the pattern constructor, not `match` — the precise-anchor signal.
+    fn anchor_head(src: &str) -> Option<String> {
+        let ast = parse(src);
+        let bytes = crate::codec::encode(&ast);
+        let out = compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+            &[Target::Wasm],
+        );
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("a CDZ0201");
+        let node = d.node.expect("the CDZ0201 carries an anchor node");
+        let db = Db::load(parse(src));
+        db.ast.head_name(StructId(node)).map(str::to_string)
+    }
+    // A too-wide tuple pattern anchors at the `(tuple …)` pattern, NOT the `(match …)`.
+    assert_eq!(
+        anchor_head(
+            "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b c) a))) (export f))"
+        )
+        .as_deref(),
+        Some("tuple"),
+        "the tuple-arity CDZ0201 anchors at the tuple pattern, not the match"
+    );
+    // A malformed list-rest pattern anchors at the `(list …)` pattern, NOT the `(match …)`.
+    assert_eq!(
+            anchor_head("(module m (def (f (: xs (List Int64))) (match xs ((list a .. rest b) a) (_ 0))) (export f))")
+                .as_deref(),
+            Some("list"),
+            "the list-rest CDZ0201 anchors at the list pattern, not the match"
+        );
+}
+
+/// The SCALAR-match well-formedness rejects (a pattern-type mismatch, a malformed guard) anchor at the
+/// offending ARM PATTERN, not the enclosing `(match …)`. These fire in the scalar-probe path
+/// (`lower_match_scalar` / the list-arm classifier), a DIFFERENT code path from the sum decision-tree
+/// `pattern_constraints`, so they need their own `.at(pat)`. The anchor node must NOT be the match.
+#[test]
+fn a_scalar_match_pattern_fault_anchors_at_the_pattern_not_the_match() {
+    // Whether the CDZ0201's anchor node is NOT the enclosing `(match …)` (its head is not `match`).
+    fn anchors_off_the_match(src: &str) -> bool {
+        let ast = parse(src);
+        let bytes = crate::codec::encode(&ast);
+        let out = compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+            &[Target::Wasm],
+        );
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("a CDZ0201");
+        let node = d.node.expect("the CDZ0201 carries an anchor node");
+        let db = Db::load(parse(src));
+        db.ast.head_name(StructId(node)) != Some("match")
+    }
+    // A Bool literal pattern against an Int64 scrutinee → the reject anchors at the `true` pattern.
+    assert!(
+        anchors_off_the_match(
+            "(module m (def (f (: n Int64)) (match n (true 1) (_ 0))) (export f))"
+        ),
+        "the pattern-type-mismatch CDZ0201 anchors at the literal pattern, not the match"
+    );
+    // A malformed guard `(guard <pat> <cond> extra)` in a SCALAR match → anchors at the guard pattern.
+    assert!(
+        anchors_off_the_match(
+            "(module m (def (f (: n Int64)) (match n ((guard 0 (> n 1) extra) 1) (_ 0))) (export f))"
+        ),
+        "the scalar-path malformed-guard CDZ0201 anchors at the guard pattern, not the match"
+    );
+    // A malformed guard in a LIST match (the list-arm classifier path) → anchors at the guard pattern.
+    assert!(
+        anchors_off_the_match(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list a) (> a 1) extra) a) (_ 0))) (export f))"
+        ),
+        "the list-path malformed-guard CDZ0201 anchors at the guard pattern, not the match"
+    );
+}
+
+/// A value-position type fault anchors at the offending SUB-EXPRESSION, not the enclosing form: an
+/// `if` with a non-Bool condition points at the CONDITION (`5` in `(if 5 …)`); an `and`/`or`/`not` with
+/// a non-Bool operand points at the OPERAND; a variant constructor applied to a wrong-type payload
+/// points at the ARGUMENT. Each reject carries its faulting sub-node explicitly (`.at(cond)` /
+/// `.at(operand)` / `.at(arg)`); without it, the `collect` walk stamped the coarse enclosing-form node.
+#[test]
+fn a_value_position_type_fault_anchors_at_the_sub_expression() {
+    // The reported node is a LEAF ATOM (the `5`/`7`/`"hi"` sub-expression), not the enclosing List form.
+    fn anchor_is_atom(src: &str) -> bool {
+        let ast = parse(src);
+        let bytes = crate::codec::encode(&ast);
+        let out = compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+            &[Target::Wasm],
+        );
+        let d = out
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .expect("an error");
+        let node = d.node.expect("the fault carries an anchor node");
+        let db = Db::load(parse(src));
+        matches!(db.ast.get(StructId(node)), crate::ast::Struct::Atom(_))
+    }
+    // `if` condition, `and`/`or`/`not` operand, and a ctor payload all anchor at the offending atom.
+    for (src, what) in [
+        ("(module m (def (f) (if 5 1 2)) (export f))", "if condition"),
+        (
+            "(module m (def (f (: p Bool)) (and p 5)) (export f))",
+            "and operand",
+        ),
+        ("(module m (def (f) (not 7)) (export f))", "not operand"),
+        (
+            "(module m (type P (Mk Int64)) (def (f) (P.Mk \"hi\")) (export f))",
+            "ctor payload",
+        ),
+    ] {
+        assert!(
+            anchor_is_atom(src),
+            "the {what} fault anchors at the offending atom, not the enclosing form"
+        );
+    }
+}
+
+/// An ANONYMOUS-lambda `(fn (x) …)` parameter never referenced in the body is unused — like an unused
+/// DEF parameter (CDZ0306 + `_`-prefix fix). A lambda is not in `db.defs`, so the def-param loop missed
+/// it; a dedicated `head_name == "fn"` pass (using the same name-based `used_param_names` check) covers
+/// it, without double-reporting a DEF's own signature-lambda params.
+#[test]
+fn an_unused_anonymous_lambda_parameter_warns() {
+    // An unused lambda param → one CDZ0306 with a `_x` fix.
+    let d = unused_diags(
+        "(module m (def (main) (let ((f (fn ((: x Int64)) 5))) (f 3))) (export main))",
+    );
+    assert_eq!(d.len(), 1, "the unused lambda param x warns: {d:?}");
+    assert!(
+        d[0].message.contains("`x`") && d[0].message.contains("parameter"),
+        "{d:?}"
+    );
+    assert_eq!(
+        d[0].fix.as_ref().map(|f| f.replacement.as_str()),
+        Some("_x"),
+        "carries the `_`-prefix fix: {d:?}"
+    );
+    // An exported closure's unused param warns too.
+    assert!(
+        unused_of("(module m (def (main) (fn ((: x Int64)) 5)) (export main))")
+            .iter()
+            .any(|m| m.contains("`x`")),
+        "an exported closure's unused param warns"
+    );
+    // NO false positive: a used lambda param, an `_`-prefixed one, and a def-with-params (whose
+    // signature-lambda params are covered by the def-param loop, NOT double-reported here) are clean.
+    for ok in [
+        "(module m (def (main) (let ((f (fn ((: x Int64)) x))) (f 3))) (export main))",
+        "(module m (def (main) (let ((f (fn ((: _x Int64)) 5))) (f 3))) (export main))",
+    ] {
+        assert!(
+            unused_of(ok).is_empty(),
+            "a used/underscored lambda param must not warn: {ok} -> {:?}",
+            unused_of(ok)
+        );
+    }
+    // A def-with-unused-param warns EXACTLY once (the lambda pass does not also fire on its signature).
+    assert_eq!(
+        unused_of("(module m (def (g (: x Int64) (: y Int64)) x) (export g))").len(),
+        1,
+        "a def's unused param warns once, not doubled by the lambda pass"
+    );
+}
+
+#[test]
+fn a_wide_parameter_list_flags_exactly_the_unused_parameters() {
+    // The unused-parameter check collects the SET of body-referenced parameter names in ONE walk (was
+    // one full-body walk PER parameter → O(params × body) = O(N²) for a wide signature). This locks in
+    // the set-membership verdict at width: a 12-param def whose body references only the EVEN-indexed
+    // params must warn for EXACTLY the 6 odd-indexed ones — no false positives on the used ones, no
+    // misses on the unused ones. Guards that the O(N)→set rewrite preserves the per-parameter verdict.
+    let params = (0..12)
+        .map(|i| format!("x{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Body sums the even-indexed params (x0 + x2 + … + x10) — a balanced-ish chain of references.
+    let body = (0..12)
+        .filter(|i| i % 2 == 0)
+        .map(|i| format!("x{i}"))
+        .reduce(|a, b| format!("(+ {a} {b})"))
+        .unwrap();
+    let src = format!("(module m (def (f {params}) {body}) (export f))");
+    let u = unused_of(&src);
+    assert_eq!(
+        u.len(),
+        6,
+        "exactly the 6 odd-indexed params are unused: {u:?}"
+    );
+    for odd in [1, 3, 5, 7, 9, 11] {
+        assert!(
+            u.iter().any(|m| m.contains(&format!("`x{odd}`"))),
+            "x{odd} (never referenced) must warn: {u:?}"
+        );
+    }
+    for even in [0, 2, 4, 6, 8, 10] {
+        assert!(
+            !u.iter().any(|m| m.contains(&format!("`x{even}`"))),
+            "x{even} (referenced) must NOT warn: {u:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unused_let_binding_and_parameter_warn() {
+    // `b` (a let binding) and `q` (a parameter) are declared but never referenced → CDZ0306; `a`
+    // and `p` are used, so they do not warn.
+    let src = "(module m (def (f p q) (let ((a (: 1 Int64)) (b (: 2 Int64))) (+ a p))) \
+                   (export f))";
+    let u = unused_of(src);
+    assert_eq!(u.len(), 2, "exactly b and q are unused: {u:?}");
+    assert!(
+        u.iter().any(|m| m.contains("`b`") && m.contains("binding")),
+        "{u:?}"
+    );
+    assert!(
+        u.iter()
+            .any(|m| m.contains("`q`") && m.contains("parameter")),
+        "{u:?}"
+    );
+}
+
+#[test]
+fn an_underscore_prefix_silences_the_unused_warning() {
+    // Rust's convention: a name beginning with `_` is intentionally unused — no warning.
+    let src = "(module m (def (f p _q) (let ((a (: 1 Int64)) (_b (: 2 Int64))) (+ a p))) \
+                   (export f))";
+    assert!(
+        unused_of(src).is_empty(),
+        "`_q`/`_b` are silenced: {:?}",
+        unused_of(src)
+    );
+}
+
+#[test]
+fn an_unused_nonexported_definition_warns_but_a_used_or_exported_one_does_not() {
+    // A nullary def nothing references (and not exported) is unused.
+    let unused = "(module m (def (helper) (: 9 Int64)) (def (main) 42) (export main))";
+    let u = unused_of(unused);
+    assert_eq!(u.len(), 1, "helper is unused: {u:?}");
+    assert!(
+        u[0].contains("`helper`") && u[0].contains("definition"),
+        "{u:?}"
+    );
+    // A def that IS referenced does not warn.
+    assert!(
+        unused_of("(module m (def (helper) (: 9 Int64)) (def (main) helper) (export main))")
+            .is_empty(),
+        "a used def must not warn"
+    );
+    // An EXPORTED def is part of the interface — never flagged.
+    assert!(
+        unused_of("(module m (def (helper) (: 9 Int64)) (export helper))").is_empty(),
+        "an exported def must not warn"
+    );
+}
+
+// ── Redundant-arm warning (CDZ0213) — a match arm an earlier arm already covers. A WARNING that
+// rides alongside a produced component (the program is well-formed; first-match-wins makes the
+// shadowed arm dead), the pattern dual of the non-exhaustiveness rejection.
+
+/// The CDZ0213 redundant-arm warnings from `src` (asserting a component WAS produced — a warning
+/// must accompany a success, never a denial).
+fn redundant_arms_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+    warnings_of(src)
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0213"))
+        .collect()
+}
+
+#[test]
+fn a_duplicate_or_shadowed_match_arm_warns_but_still_compiles() {
+    // Each shape has an arm an earlier arm already fully covers: a repeated variant, a repeated
+    // literal, an arm after a catch-all, a repeated Option variant. All COMPILE (first-match wins)
+    // and emit exactly one CDZ0213.
+    for src in [
+        "(module m (type C Red Green) (def (f (: c C)) (match c ((C.Red) 1) ((C.Red) 2) ((C.Green) 0))) (def (main) (f (C.Red))) (export main))",
+        "(module m (def (f (: n Int64)) (match n (0 1) (0 2) (_ 3))) (def (main) (f 0)) (export main))",
+        "(module m (def (f (: n Int64)) (match n (_ 1) (0 2))) (def (main) (f 5)) (export main))",
+        "(module m (def (f (: o (Option Int64))) (match o ((Some n) n) ((Some m) m) ((None) 0))) (def (main) (f (Some 5))) (export main))",
+    ] {
+        let redundant = redundant_arms_of(src);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "expected exactly one redundant-arm (CDZ0213) warning for `{src}`, got {redundant:?}"
+        );
+    }
+}
+
+#[test]
+fn a_well_formed_match_with_distinct_or_refining_or_guarded_arms_does_not_warn() {
+    // Negatives: distinct variants, distinct literals, a payload-REFINING arm (`(Some 0)` before
+    // `(Some n)` — covers only the value 0, not the whole variant), and GUARDED same-variant arms
+    // (the guard is conditional, so neither arm subsumes the other) must NOT warn.
+    for src in [
+        "(module m (type C Red Green Blue) (def (f (: c C)) (match c ((C.Red) 1) ((C.Green) 2) ((C.Blue) 3))) (def (main) (f (C.Red))) (export main))",
+        "(module m (def (f (: n Int64)) (match n (0 1) (1 2) (_ 3))) (def (main) (f 0)) (export main))",
+        "(module m (def (f (: o (Option Int64))) (match o ((Some 0) 100) ((Some n) n) ((None) 0))) (def (main) (f (Some 5))) (export main))",
+        "(module m (type B (V Int64)) (def (f (: x B)) (match x ((guard (B.V n) (> n 0)) 1) ((B.V n) 0))) (def (main) (f (B.V 5))) (export main))",
+    ] {
+        assert!(
+            redundant_arms_of(src).is_empty(),
+            "a well-formed match must not warn CDZ0213: `{src}` got {:?}",
+            redundant_arms_of(src)
+        );
+    }
+}
+
+#[test]
+fn a_catch_all_after_the_specific_arms_saturate_a_finite_type_is_redundant() {
+    // The DUAL of the exhaustiveness check: a catch-all (or any arm) is unreachable when the SPECIFIC
+    // arms before it already cover EVERY value of a FINITE scrutinee type — all variants of a sum, or
+    // both booleans. `(match c (R 1) (G 2) (B 3) (_ 4))` on `(type C R G B)`: R/G/B exhaust `C`, so the
+    // `_` can never match → CDZ0213. Before, the pass flagged only a catch-all-then-arm or a duplicate;
+    // a trailing catch-all after a complete specific cover slipped through (it looked "reachable"
+    // because no earlier CATCH-ALL preceded it). Each of these emits exactly one CDZ0213.
+    for src in [
+        // A wildcard after all three sum variants.
+        "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3) (_ 4))) (def (main) (f (C.R))) (export main))",
+        // A wildcard after both booleans.
+        "(module m (def (f (: b Bool)) (match b (true 1) (false 2) (_ 3))) (def (main) (f true)) (export main))",
+        // A duplicate VARIANT arm after the type is saturated (not just a wildcard).
+        "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3) ((C.R) 5))) (def (main) (f (C.R))) (export main))",
+        // Option: both variants covered, then a wildcard.
+        "(module m (def (f (: o (Option Int64))) (match o ((Some n) n) ((None) 0) (_ -1))) (def (main) (f (Some 5))) (export main))",
+        // A SINGLE-VARIANT sum (an erased newtype `Ty::Nominal`): its sole constructor saturates it, so
+        // a trailing `_` is dead. `finite_cover_size` reads the variant count off the nominal's decl.
+        "(module m (type Id (Mk Int64)) (def (f (: x Id)) (match x ((Id.Mk n) n) (_ 0))) (def (main) (f (Id.Mk 5))) (export main))",
+    ] {
+        let redundant = redundant_arms_of(src);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "a catch-all after a finite type is fully covered is redundant (CDZ0213): `{src}`, got {redundant:?}"
+        );
+    }
+}
+
+// (an_open_sum_match_requires_an_open_tail_wildcard_arm migrated to corpus 15-rows-and-open-sums:
+//  "an open sum match without an open-tail wildcard arm is non-exhaustive" (CDZ0210), "a closed sum
+//  match covering every named variant is exhaustive without a wildcard", and "an open sum match WITH
+//  an open-tail wildcard arm is exhaustive and compiles" — all three arms, backend-agnostic.)
+
+#[test]
+fn a_wildcard_arm_over_an_open_sum_is_never_redundant() {
+    // OS1 — the redundant-arm dual: over a CLOSED sum, a `_` after every variant is covered is
+    // CDZ0213 (the finite type is saturated). Over an OPEN sum the `_` is the ONLY cover for the
+    // row-variable tail, so it is NEVER redundant — `finite_cover_size` returns `None` for an open
+    // sum, so its `_` never closes finite coverage. No CDZ0213 even with every named variant covered.
+    let open_wildcard = redundant_arms_of(
+        "(module m (type V (Known Int64) (Unknown Int64) .. r) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n) (_ 0))) \
+             (def (main) (f (Known 1))) (export main))",
+    );
+    assert!(
+        open_wildcard.is_empty(),
+        "a `_` over an open sum is never redundant (it covers the open tail): {open_wildcard:?}"
+    );
+
+    // CONTRAST — the SAME arms over a CLOSED sum DO saturate it, so the trailing `_` is CDZ0213.
+    let closed_wildcard = redundant_arms_of(
+        "(module m (type V (Known Int64) (Unknown Int64)) \
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n) (_ 0))) \
+             (def (main) (f (Known 1))) (export main))",
+    );
+    assert_eq!(
+        closed_wildcard.len(),
+        1,
+        "a `_` after a CLOSED sum is fully covered IS redundant (CDZ0213): {closed_wildcard:?}"
+    );
+}
+
+#[test]
+fn a_single_variant_open_sum_is_not_erased_to_an_irrefutable_newtype() {
+    // OS1 soundness edge — a CLOSED single-variant sum `(type Box (Wrap Int64))` erases to a newtype
+    // whose sole constructor pattern `(Wrap n)` is IRREFUTABLE (no `_` needed). But the SAME sum
+    // declared OPEN `(type Box (Wrap Int64) .. r)` is NOT a newtype: the row variable means a value's
+    // discriminant is not statically `Wrap`, so `(Wrap n)` does NOT cover it and a `_` arm is
+    // required (`type-system.md §206`). Without suppressing the erasure, the open sum wrongly compiled
+    // (the newtype pattern was irrefutable → the exhaustiveness check never ran).
+
+    // (a) The OPEN single-variant sum, sole-ctor arm only, NO `_` → non-exhaustive (CDZ0210).
+    let open_missing = all_errors(
+        "(module m (type Box (Wrap Int64) .. r) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+    );
+    assert!(
+        open_missing
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0210")),
+        "an open single-variant sum without a `_` arm is non-exhaustive: {open_missing:?}"
+    );
+
+    // (b) The CLOSED single-variant sum (no `.. r`) with the SAME sole-ctor arm is exhaustive — its
+    // newtype erasure makes the ctor irrefutable, no `_` required. Isolates open-ness as the cause.
+    let closed_ok = all_errors(
+        "(module m (type Box (Wrap Int64)) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+    );
+    assert!(
+        !closed_ok
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0210")),
+        "a CLOSED single-variant sum's sole-ctor pattern is irrefutable (no `_` needed): {closed_ok:?}"
+    );
+
+    // (c) The OPEN single-variant sum WITH the `_` arm compiles clean AND still reads the named
+    // variant's payload (the erasure suppression must not break the `Wrap` payload binder).
+    let open_ok = all_errors(
+        "(module m (type Box (Wrap Int64) .. r) \
+             (def (unwrap (: b Box)) (match b ((Wrap n) n) (_ 0))) \
+             (def (main) (unwrap (Wrap 42))) (export main))",
+    );
+    assert!(
+        open_ok.is_empty(),
+        "an open single-variant sum with a `_` arm compiles clean: {open_ok:?}"
+    );
+}
+
+#[test]
+fn a_duplicate_or_shadowed_list_length_arm_is_redundant() {
+    // LIST-match redundancy — the list-length analogue of the variant/literal duplicate & shadowing
+    // checks. A list arm covers a length (exact `(list a)` = len 1, or a `≥ k` ray `(list a .. r)`); a
+    // later arm whose lengths are all already covered is unreachable (`ArmCover::ListExact`/`ListFrom`
+    // + the `min_list_from` subsumption). Each emits exactly one CDZ0213.
+    for src in [
+        // A duplicate exact length (both match length-1 lists).
+        "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) ((list b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+        // A duplicate empty-list arm.
+        "(module m (def (f (: xs (List Int64))) (match xs ((list) 0) ((list) 9) (_ 1))) (def (main) (f (list))) (export main))",
+        // A rest arm `(list a .. r)` [len ≥ 1] shadows a later exact `(list a b)` [len 2 ≥ 1].
+        "(module m (def (f (: xs (List Int64))) (match xs ((list a .. r) a) ((list a b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+        // A zero-lead rest `(list .. r)` [every length] shadows a later `(list a)`.
+        "(module m (def (f (: xs (List Int64))) (match xs ((list .. r) 0) ((list a) 9))) (def (main) (f (list))) (export main))",
+    ] {
+        let redundant = redundant_arms_of(src);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "a duplicate/shadowed list-length arm is redundant (CDZ0213): `{src}`, got {redundant:?}"
+        );
+    }
+}
+
+#[test]
+fn distinct_or_partly_covered_list_length_arms_do_not_warn() {
+    // Negatives — no list arm's lengths are fully covered by an earlier one, so none is flagged.
+    for src in [
+        // Distinct lengths + a rest for the remainder: 0, 1, then ≥ 1 — the rest is NOT redundant (it
+        // covers ≥ 2, which no earlier arm did) and neither exact arm shadows another.
+        "(module m (def (f (: xs (List Int64))) (match xs ((list) 0) ((list a) a) ((list a .. r) 9))) (def (main) (f (list))) (export main))",
+        // Distinct exact lengths.
+        "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) ((list a b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+        // A rest of lead 2 [len ≥ 2] does NOT cover a later exact len-1 `(list a)` — length 1 ∉ [2, ∞).
+        "(module m (def (f (: xs (List Int64))) (match xs ((list a b .. r) a) ((list a) 7) (_ 0))) (def (main) (f (list 1))) (export main))",
+    ] {
+        assert!(
+            redundant_arms_of(src).is_empty(),
+            "a match whose list arms cover distinct lengths must not warn CDZ0213: `{src}` got {:?}",
+            redundant_arms_of(src)
+        );
+    }
+}
+
+#[test]
+fn a_structurally_duplicate_tuple_or_nested_ctor_arm_is_redundant() {
+    // EXACT-DUPLICATE detection for TUPLE / REFINING-CONSTRUCTOR arms (`ArmCover::Shape`) — two arms of
+    // the same structural shape (binders normalized to `_`, literals by value) match the same region, so
+    // the later is unreachable. The tuple/nested analogue of the variant/literal/list duplicate check.
+    for src in [
+        // A duplicate tuple arm (`(tuple true a)` vs `(tuple true b)` — same shape `(t b:true _)`).
+        "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple true b) b) ((tuple false c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+        // A duplicate NESTED-ctor arm (`(Some (Some x))` vs `(Some (Some y))`).
+        "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (Some y)) y) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        // A duplicate tuple arm with a refining element + literal (`(tuple (Some x) 0)` twice).
+        "(module m (def (f (: t (Tuple (Option Int64) Int64))) \
+               (match t ((tuple (Some x) 0) x) ((tuple (Some y) 0) y) (_ 9))) \
+             (def (main) (f (tuple (None) 1))) (export main))",
+    ] {
+        let redundant = redundant_arms_of(src);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "a structurally-duplicate tuple/nested-ctor arm is redundant (CDZ0213): `{src}`, got {redundant:?}"
+        );
+    }
+}
+
+#[test]
+fn distinct_tuple_or_nested_ctor_arms_do_not_warn() {
+    // Negatives — no arm structurally repeats an earlier one, so none is flagged. Critically, a set of
+    // REFINING arms that jointly EXHAUST a nested sum (`(Some (Some x)) + (Some (None)) + (None)`) must
+    // NOT be mis-saturated: a `Shape` cover is PARTIAL (covers only part of the `Some` variant), so it
+    // does not count toward the 2-variant `Option` saturation and no arm is wrongly flagged.
+    for src in [
+        // Exhaustive nested-Option refinement — three distinct shapes, no duplicate, no over-saturation.
+        "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        // Distinct tuple first-column values.
+        "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple false b) b))) \
+             (def (main) (f (tuple true 1))) (export main))",
+        // Distinct refining-element LITERALS in the same tuple shape.
+        "(module m (def (f (: t (Tuple (Option Int64) Int64))) \
+               (match t ((tuple (Some x) 0) x) ((tuple (Some x) 1) x) (_ 9))) \
+             (def (main) (f (tuple (None) 2))) (export main))",
+    ] {
+        assert!(
+            redundant_arms_of(src).is_empty(),
+            "a match whose tuple/nested arms are structurally distinct must not warn CDZ0213: `{src}` got {:?}",
+            redundant_arms_of(src)
+        );
+    }
+}
+
+#[test]
+fn a_refining_arm_shadowed_by_an_earlier_full_variant_cover_is_redundant() {
+    // VARIANT-REFINEMENT SUBSUMPTION: a FULL-variant cover `(Some _)` matches every value of the `Some`
+    // variant, so a LATER refining arm of the SAME variant (`(Some (Some x))`, an `ArmCover::Shape`) is
+    // unreachable. Beyond the exact-duplicate `Shape` check (Inc 28) — this is a BROADER earlier arm
+    // shadowing a NARROWER same-variant later one. Each source emits exactly one CDZ0213 on the later arm.
+    for src in [
+        // `(Some _)` [full Some] then `(Some (Some x))` [refining Some] — the refinement is dead.
+        "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some _) 0) ((Some (Some x)) x) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        // A bare binder payload `(Some p)` is also a full cover; a later `(Some (None))` is shadowed.
+        "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some p) 1) ((Some (None)) 2) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        // A refining TUPLE payload after a full tuple-payload cover (`(Some (tuple _ _))` covers whole Some).
+        "(module m (def (f (: o (Option (Tuple Bool Int64)))) \
+               (match o ((Some (tuple _ _)) 0) ((Some (tuple true c)) c) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+    ] {
+        let redundant = redundant_arms_of(src);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "a refining arm shadowed by an earlier full-variant cover is redundant (CDZ0213): `{src}`, got {redundant:?}"
+        );
+    }
+    // FALSE-POSITIVE guards: a refining arm is NOT shadowed when NO earlier arm covered its variant in
+    // FULL — a refinement BEFORE the full cover is reachable, and refinements of a variant never covered
+    // in full (`(Some (Some x))` + `(Some (None))`, jointly exhausting Some but neither a full cover) do
+    // not shadow each other.
+    for src in [
+        // The refinement comes FIRST — reachable; the later full `(Some _)` is broader, not shadowed.
+        "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some _) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+        // Two refinements of Some, no full-Some cover — jointly exhaustive, neither shadows the other.
+        "(module m (def (f (: o (Option (Option Int64)))) \
+               (match o ((Some (Some x)) x) ((Some (None)) 0) ((None) -1))) \
+             (def (main) (f (None))) (export main))",
+    ] {
+        assert!(
+            redundant_arms_of(src).is_empty(),
+            "a refinement not shadowed by an earlier full cover must not warn CDZ0213: `{src}` got {:?}",
+            redundant_arms_of(src)
+        );
+    }
+}
+
+#[test]
+fn an_all_wildcard_tuple_arm_is_a_catch_all_that_shadows_later_arms() {
+    // An ALL-IRREFUTABLE tuple `(tuple x y)` / `(tuple _ _)` matches EVERY value of its tuple type — it
+    // is a whole-type CatchAll (`is_irrefutable_cover`), so any arm after it is unreachable. The
+    // product-subsumption whole-tuple case; before, only a BARE `_`/binder was a catch-all and a broader
+    // tuple arm silently shadowed with no warning. Composes through nesting (`(tuple _ (tuple a b))`) and
+    // a ctor payload (`(Some (tuple _ _))` covers the whole `Some` variant). Each emits exactly one CDZ0213.
+    for src in [
+        // A binder-only tuple arm shadows a later refining tuple arm.
+        "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple x y) y) ((tuple true c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+        // `(tuple _ _)` before a literal arm.
+        "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple _ _) 0) ((tuple true c) c))) \
+             (def (main) (f (tuple true 1))) (export main))",
+        // NESTED all-wildcard tuple is still a whole cover.
+        "(module m (def (f (: t (Tuple Bool (Tuple Int64 Int64)))) \
+               (match t ((tuple x (tuple a b)) a) ((tuple true (tuple c d)) c))) \
+             (def (main) (f (tuple true (tuple 1 2)))) (export main))",
+    ] {
+        let redundant = redundant_arms_of(src);
+        assert_eq!(
+            redundant.len(),
+            1,
+            "an all-wildcard tuple catch-all shadows the later arm (CDZ0213): `{src}`, got {redundant:?}"
+        );
+    }
+    // FALSE-POSITIVE guard: an all-wildcard tuple as the SOLE arm is exhaustive, not self-redundant; and
+    // a REFINING tuple arm BEFORE a wildcard tuple arm does not shadow it (the refinement covers less).
+    for src in [
+        "(module m (def (f (: t (Tuple Bool Int64))) (match t ((tuple x y) y))) \
+             (def (main) (f (tuple true 1))) (export main))",
+        "(module m (def (f (: t (Tuple Bool Int64))) \
+               (match t ((tuple true a) a) ((tuple x y) y))) \
+             (def (main) (f (tuple true 1))) (export main))",
+    ] {
+        assert!(
+            redundant_arms_of(src).is_empty(),
+            "an exhaustive / refining-before-wildcard tuple match must not warn CDZ0213: `{src}` got {:?}",
+            redundant_arms_of(src)
+        );
+    }
+}
+
+#[test]
+fn an_exhaustive_finite_match_without_a_trailing_catch_all_does_not_warn() {
+    // The boundary: coverage closes AFTER the last covering arm, so an EXHAUSTIVE finite match with no
+    // trailing arm has nothing to flag (no false positive). A wildcard that is REACHABLE (the specific
+    // arms do NOT yet saturate the type) also must not warn, and an OPEN scalar type is never saturated
+    // by literals, so its wildcard stays reachable.
+    for src in [
+        // Exhaustive sum, NO wildcard — the last arm closes coverage but nothing follows it.
+        "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3))) (def (main) (f (C.R))) (export main))",
+        // Exhaustive bool, no wildcard.
+        "(module m (def (f (: b Bool)) (match b (true 1) (false 2))) (def (main) (f true)) (export main))",
+        // Missing a variant, so the wildcard is REACHABLE — not redundant.
+        "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) (_ 4))) (def (main) (f (C.R))) (export main))",
+        // Open Int scalar — a finite set of literals never saturates it, so the wildcard is reachable.
+        "(module m (def (f (: n Int64)) (match n (0 1) (1 2) (_ 3))) (def (main) (f 0)) (export main))",
+    ] {
+        assert!(
+            redundant_arms_of(src).is_empty(),
+            "no false positive: `{src}` got {:?}",
+            redundant_arms_of(src)
+        );
+    }
+}
+
+#[test]
+fn a_redundant_arm_warning_carries_a_delete_fix_for_the_whole_arm() {
+    // The rustc-gold repair for an unreachable arm: DELETE it. The warning now carries a `delete` fix
+    // targeting the ARM node (the `(pattern body)` list, the pattern's PARENT) — not the pattern alone
+    // — so applying it removes pattern AND body together. Heuristic: a redundant arm is often a pattern
+    // bug (the author meant a different, reachable pattern), so an agent confirms rather than applies blind.
+    let src = "(module m (def (f (: n Int64)) (match n (0 1) (0 2) (_ 3))) (def (main) (f 0)) (export main))";
+    let ws = redundant_arms_of(src);
+    assert_eq!(ws.len(), 1);
+    let fix = ws[0]
+        .fix
+        .as_ref()
+        .expect("a redundant-arm warning carries a delete fix");
+    assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+    assert!(
+        !fix.verified,
+        "a redundant arm is often a pattern bug — confirm, don't apply blind"
+    );
+    // The fix targets the ARM (`(pattern body)`), which is the PARENT of the warning's pattern node.
+    let db = Db::load(parse(src));
+    let pat = StructId(ws[0].node.expect("the warning carries the dead pattern"));
+    let arm = db
+        .parent_of(pat)
+        .expect("the pattern has an enclosing arm node");
+    assert_eq!(
+        fix.node, arm.0,
+        "the delete targets the whole arm, not just the pattern"
+    );
+}
+
+#[test]
+fn a_redundant_arm_warning_anchors_to_the_dead_arms_pattern() {
+    // The warning carries the DEAD arm's PATTERN node — a real user node the front-end maps to the
+    // redundant arm's span (not a prelude/synthesized id).
+    let src = "(module m (type C Red Green) (def (f (: c C)) (match c ((C.Red) 1) ((C.Red) 2) ((C.Green) 0))) (def (main) (f (C.Red))) (export main))";
+    let ws = redundant_arms_of(src);
+    assert_eq!(ws.len(), 1);
+    let node = ws[0]
+        .node
+        .expect("a redundant-arm warning must carry a node");
+    let db = Db::load(parse(src));
+    assert!(
+        db.is_user_node(StructId(node)),
+        "node {node} must be a user node"
+    );
+}
+
+#[test]
+fn compare_on_a_float_names_the_relational_operators_as_the_fix() {
+    // `compare` reports a total order (a three-way Less/Equal/Greater), but a floating-point type offers
+    // only the IEEE PARTIAL order (a NaN is unordered) — a permanent CARVE-OUT, not a not-yet. The
+    // decline must not dead-end at "no total order"; it names the concrete route the reader takes
+    // instead: the boolean relational operators `<`/`<=`/`>`/`>=`, which DO work on floats. This pins
+    // that actionable redirect (lower.rs float-`compare` arm) so a refactor can't quietly degrade it to
+    // a terse "no total order" decline. Runtime float params so it reaches lowering (a constant `compare`
+    // would fold, not decline).
+    let d = first_error(
+        "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of x y)) (export f))",
+    );
+    // An uncoded DECLINE (a carve-out the compiler will never realize), not a coded rejection.
+    assert_eq!(
+        d.code, None,
+        "a permanent carve-out is an uncoded decline: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("IEEE partial order")
+                && d.message.contains("no three-way comparison")
+                // the actionable redirect — the operators that DO order floats
+                && d.message.contains("`<`, `<=`, `>`, `>=`"),
+        "the decline names the IEEE-partial-order reason AND the relational-operator fix: {}",
+        d.message
+    );
+    // ROUND-TRIP witness: the named repair (a relational operator on the same float operands) compiles
+    // clean — the redirect points at a form that actually type-checks.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: x Float64) (: y Float64)) (< x y)) (export f))",
+    );
+    let out = compile(
+        &[Artifact::new(
+            Artifact::KIND_AST,
+            "m",
+            crate::codec::encode(&ast),
+        )],
+        &[Target::Wasm],
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.severity == crate::abi::Severity::Error),
+        "the suggested relational-operator repair compiles clean: {:?}",
+        out.diagnostics
+    );
+}
+
+#[test]
+fn compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route() {
+    // A COMPOUND (tuple/record/list/sum) is ordered lexicographically ONLY when every leaf offers a
+    // total order. A float (or bytes/set/map) leaf INSIDE a compound makes the whole compound
+    // un-orderable (a float offers only the IEEE partial order; §319 / core-semantics.md
+    // #compound-ordering-is-lexicographic), so `compare` over it declines — but the message must not
+    // dead-end: it names the actionable route, comparing the orderable components individually. This
+    // pins that redirect (lower.rs compound-`compare` arm) so a refactor can't degrade it. Runtime
+    // float params inside a tuple so it reaches lowering (a constant compound would fold).
+    let d = first_error(
+        "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of (tuple x 1) (tuple y 2))) (export f))",
+    );
+    // An uncoded DECLINE (the un-orderable-leaf carve-out), not a coded rejection.
+    assert_eq!(
+        d.code, None,
+        "an un-orderable-leaf compound compare is an uncoded decline: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("no total order the compiler can walk yet")
+                // names WHY (the offending leaf kinds) AND the component-wise route
+                && d.message.contains("float/bytes/set/map leaf")
+                && d.message.contains("compare its orderable components individually"),
+        "the decline names the un-orderable-leaf reason AND the component-wise route: {}",
+        d.message
+    );
+    // ROUND-TRIP witness: the named route — comparing the orderable component (the Int field) on its
+    // own — compiles clean, so the redirect points at a form that type-checks.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of 1 2)) (export f))",
+    );
+    let out = compile(
+        &[Artifact::new(
+            Artifact::KIND_AST,
+            "m",
+            crate::codec::encode(&ast),
+        )],
+        &[Target::Wasm],
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.severity == crate::abi::Severity::Error),
+        "the component-wise route (compare the orderable Int component) compiles clean: {:?}",
+        out.diagnostics
+    );
+}
+
+#[test]
+fn ordering_a_compound_with_an_unorderable_leaf_is_a_carve_out_not_a_not_yet_built_decline() {
+    // The RELATIONAL-operator (`<`/`<=`/`>`/`>=`) sibling of the compound-`compare` carve-out. A
+    // relational op reaching the compound decline ALWAYS has an un-orderable leaf: an all-orderable
+    // compound already took the runtime `ValueCmp` ordering arm. So a `<` over a float-leaf tuple is a
+    // PERMANENT carve-out (a float has only the IEEE partial order), NOT the "needs a heap walk (not yet
+    // built)" the equality path names — that message MISLED (read as a temporary limit a later slice
+    // lifts). The message now mirrors `compare`: names the un-orderable leaf + the component-wise route.
+    let d = first_error(
+        "(module m (def (f (: x Float64) (: y Float64)) (< (tuple x 1) (tuple y 2))) (export f))",
+    );
+    assert_eq!(
+        d.code, None,
+        "an un-orderable-leaf compound ordering is an uncoded decline: {}",
+        d.message
+    );
+    assert!(
+        d.message
+            .contains("has no total order, so it cannot be ordered")
+            && d.message.contains("float, set, or map leaf")
+            && d.message
+                .contains("order its orderable components individually"),
+        "the ordering decline names the un-orderable-leaf reason + the component-wise route (NOT a \
+             'not yet built' heap walk): {}",
+        d.message
+    );
+    // It must NOT claim the misleading "not yet built" the equality path uses — this is permanent.
+    assert!(
+        !d.message.contains("not yet built"),
+        "an ordering carve-out must not read as a temporary limitation: {}",
+        d.message
+    );
+    // EQUALITY (`=`) over a float-leaf compound is SUPPORTED (the ValueEqShaped path) — no decline; so the
+    // "needs a heap walk (not yet built)" message stays reachable only for genuinely-unbuilt cases.
+    // ROUND-TRIP witness: the named route — ordering the orderable Int component alone — compiles clean.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: x Float64) (: y Float64)) (< 1 2)) (export f))",
+    );
+    let out = compile(
+        &[Artifact::new(
+            Artifact::KIND_AST,
+            "m",
+            crate::codec::encode(&ast),
+        )],
+        &[Target::Wasm],
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.severity == crate::abi::Severity::Error),
+        "the component-wise route (order the Int component) compiles clean: {:?}",
+        out.diagnostics
+    );
+}
+
+#[test]
+fn a_mismatched_type_ordering_stays_a_single_coded_error_not_a_double_with_the_ordering_decline() {
+    // Dedup guard: `(< 1 "x")` is a type mismatch — `infer` reports the coded CDZ0201 "different types",
+    // and the emit path ALSO declines the ordering carve-out. `dedup_faults` must drop the consequent
+    // decline (it recognizes BOTH the equality heap-walk marker AND the new ordering carve-out message),
+    // so the reader sees ONE primary fault, not a coded reject plus a misleading second decline. This
+    // pins that the message split did not regress the dedup.
+    let errs = all_errors("(module m (def (main) (if (< 1 \"x\") 1 0)) (export main))");
+    assert_eq!(
+        errs.len(),
+        1,
+        "a mismatched-type ordering is a SINGLE coded error, not a double with the ordering decline: {:?}",
+        errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        errs[0].code.as_deref(),
+        Some("CDZ0201"),
+        "the one primary is the coded type-mismatch: {}",
+        errs[0].message
+    );
+}
