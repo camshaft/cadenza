@@ -23,9 +23,10 @@
            fallible `Result`/`Option`; anything else is the ordinary type mismatch CDZ0203, anchored at
            the operand. Pins the operand-shape half of the `?` type rule
            (DESIGN-try-operator-rcdzc.md §5): `?` unwraps a fallible sum, so a non-sum operand has no
-           well-typed result and is rejected rather than run.")
+           well-typed result and is rejected rather than run. The diagnostic says the operand must be
+           `fallible`. (Enhanced from rcdzc try_on_a_non_fallible_operand_is_a_type_mismatch.)")
   (input  (do (def (main) (try 5)) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203 (message "fallible")))
 
 (case "a `?` on a String operand is a type error"
   (doc    "`(try \"hi\")` — the String companion of the `(try 5)` case: a `?` on any definite
