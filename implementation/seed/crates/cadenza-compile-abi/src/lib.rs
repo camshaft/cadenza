@@ -37,6 +37,7 @@ pub mod sidecar;
 pub mod spans;
 pub mod symbols_wire;
 pub mod target;
+pub mod type_at_wire;
 pub mod type_info_wire;
 pub mod uses_wire;
 
@@ -60,5 +61,6 @@ pub use scope_wire::{ScopeBinding, decode_scope, encode_scope};
 pub use sidecar::{Query, Request, decode, encode};
 pub use symbols_wire::{decode_symbols, encode_symbols};
 pub use target::Target;
+pub use type_at_wire::{TypeAt, decode_type_at, encode_type_at};
 pub use type_info_wire::{TypeInfo, decode_type_info, encode_type_info};
 pub use uses_wire::{decode_uses, encode_uses};
