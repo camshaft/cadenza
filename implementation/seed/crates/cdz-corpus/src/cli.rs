@@ -42,6 +42,19 @@ enum CorpusCmd {
         /// `manifest`), instead of writing the concatenated record stream to stdout.
         #[arg(long)]
         out_dir: Option<String>,
+        /// QUOTE-WRAP the shred (requires `--out-dir`): instead of the ordinary per-case program, emit — per
+        /// eligible case — ONE two-export round-trip COMPONENT (`program.ast`) with `encodeQuoted() ->
+        /// list<u8>` (= `Ast.encode (quote E)`) and `decodeCheck(list<u8>) -> bool` (= `Ast.decode b ==
+        /// quote E`), plus its imposed `wit-world.ast` + `component-name` (the operator-mandated §2 shape,
+        /// 2026-08-30). A bespoke exec (later increment) is the caller: runs `encodeQuoted()`, threads the
+        /// bytes into `decodeCheck(bytes)` ACROSS the caller boundary, defeating const-fold. `E` is each
+        /// case's RAW `(input …)` form (`input_ast`). This shape currently DECLINES (a bare `list<u8>`
+        /// result as one of MULTIPLE exports is not yet emittable, CDZ0900) → cases grade Todo until the
+        /// operator-mandated WIT-boundary fix lands in the compiler (the pass IS that fix's acceptance
+        /// gate). Eligibility: single-component cases only (multi-form wrapping is a later increment). See
+        /// `design/DESIGN-quote-corpus-roundtrip-pass.md`.
+        #[arg(long, requires = "out_dir")]
+        quote_wrap: bool,
     },
     /// Check a committed `.gate-baseline` for TITLE DRIFT against the corpus — FAST, no compile/run.
     ///
@@ -104,8 +117,12 @@ enum CorpusCmd {
 /// diagnostics (`cdz-corpus` for the standalone bin, `cdz` for the unified one).
 pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
     let result = match &args.command {
-        CorpusCmd::Records { files, out_dir } => match out_dir {
-            Some(dir) => shred_records(files, dir),
+        CorpusCmd::Records {
+            files,
+            out_dir,
+            quote_wrap,
+        } => match out_dir {
+            Some(dir) => shred_records(files, dir, *quote_wrap),
             None => run_records(files),
         },
         CorpusCmd::BaselineDrift {
@@ -366,7 +383,7 @@ fn baseline_drift(
 ///
 /// Compiler-genre only: platform-genre files (`spec/platform`) are not part of this pipeline and are a
 /// hard error under `--out-dir`.
-fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
+fn shred_records(files: &[String], out_dir: &str, quote_wrap: bool) -> Result<(), String> {
     for path in files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
         if crate::is_platform_genre(&text) {
@@ -381,6 +398,10 @@ fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
         let dir = std::path::Path::new(out_dir).join(stem);
         std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
         let records = crate::read(&text).map_err(|e| format!("{path}: {e}"))?;
+        if quote_wrap {
+            shred_quote_wrap(&dir, &records).map_err(|e| format!("{path}: {e}"))?;
+            continue;
+        }
         let mut manifest = String::new();
         for (i, rec) in records.iter().enumerate() {
             let case = format!("{i:04}-{}", slug(&rec.description));
@@ -443,6 +464,218 @@ fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
             .map_err(|e| format!("writing {}/manifest: {e}", dir.display()))?;
     }
     Ok(())
+}
+
+/// The QUOTE-WRAP shred (`records --out-dir --quote-wrap`): for each ELIGIBLE case, emit TWO single-export
+/// program artifacts — `encode.ast` (`(do (def (enc) (Ast.encode (quote E))) (export enc))`) and
+/// `check.ast` (`(do (def (chk (: b Bytes)) (match (Ast.decode b) ((Ok a) (= a (quote E))) ((Err _)
+/// false))) (export chk))`) — plus a plain-text `description` and a `manifest` listing the eligible case
+/// dirs in order. The bespoke exec (later increment) is the CALLER: it runs `encode.enc()` → binary-AST
+/// bytes, threads them into `check.chk(bytes)` (assert true), then `check.chk(corrupt(bytes))` (assert
+/// false) — the round-trip across the component boundary, anti-const-fold by construction (the two are
+/// SEPARATE components, so `check` decodes bytes it cannot see through, forcing runtime `Ast.decode`).
+///
+/// TWO SEPARATE single-export components — the operator-chosen "B" shape (2026-08-30) — NOT one two-export
+/// program: a bare `list<u8>`/`Bytes` result as one of MULTIPLE exports is not emittable (CDZ0900 "cannot
+/// emit that typed export"), and a record-wrapped two-export program hits the multi-member typed-interface
+/// gap; whereas each of these crosses a heap boundary as its program's SOLE export (the supported path).
+/// Keeps the base-corpus `NNNN-slug` index so a case cross-references its sibling; INELIGIBLE cases
+/// (sibling-module / peer package cases) are skipped. See `design/DESIGN-quote-corpus-roundtrip-pass.md` §6.
+fn shred_quote_wrap(dir: &std::path::Path, records: &[Record]) -> Result<(), String> {
+    let mut manifest = String::new();
+    let world = quote_wrap_wit_world();
+    for (i, rec) in records.iter().enumerate() {
+        if !quote_wrap_eligible(rec) {
+            continue;
+        }
+        let program = quote_wrap_program(&rec.input_ast)
+            .ok_or_else(|| format!("case {i} {:?}: input_ast did not decode", rec.description))?;
+        let case = format!("{i:04}-{}", slug(&rec.description));
+        let cdir = dir.join(&case);
+        std::fs::create_dir_all(&cdir).map_err(|e| format!("creating {}: {e}", cdir.display()))?;
+        write_bytes(&cdir.join("program.ast"), &program)
+            .map_err(|e| format!("case {i} program: {e}"))?;
+        // The imposed WIT world declaring the two typed exports (`encode-quoted`/`decode-check`), + the
+        // interface the guest exports under. FIXED per case (independent of E). Needed because a heap
+        // value crosses as one of MULTIPLE exports only under a DECLARED world (a synthesized world caps
+        // at a single heap export).
+        write_bytes(&cdir.join("wit-world.ast"), &world)
+            .map_err(|e| format!("case {i} wit-world: {e}"))?;
+        std::fs::write(cdir.join("component-name"), QUOTE_WRAP_COMPONENT_NAME)
+            .map_err(|e| format!("case {i} component-name: {e}"))?;
+        std::fs::write(cdir.join("description"), &rec.description)
+            .map_err(|e| format!("case {i} description: {e}"))?;
+        manifest.push_str(&case);
+        manifest.push('\n');
+    }
+    std::fs::write(dir.join("manifest"), &manifest)
+        .map_err(|e| format!("writing {}/manifest: {e}", dir.display()))?;
+    Ok(())
+}
+
+/// Whether a case is eligible for the quote-wrap pass. v1 covers a SINGLE-component case: its `(input …)`
+/// is one quotable form (always true — a parsed input is one AST node) with NO sibling library modules and
+/// NO cross-component peers (a multi-file / multi-component case is not a single quotable form; wrapping it
+/// as one enclosing form is a later increment, doc §3 clause 3 / §6 increment 5). `expect-kind` is
+/// irrelevant — the pass quotes E's SYNTAX and never evaluates it, so value / trap / error / declines
+/// inputs are all eligible (doc §3).
+fn quote_wrap_eligible(rec: &Record) -> bool {
+    rec.modules.is_empty() && rec.peers.is_empty()
+}
+
+/// The interface the quote-wrap guest exports under (the `component-name`), qualifying the two exports as
+/// `cadenza:quote/roundtrip#encode-quoted` / `#decode-check`.
+const QUOTE_WRAP_COMPONENT_NAME: &str = "cadenza:quote/roundtrip";
+
+/// Synthesize the QUOTE-WRAP round-trip program for a raw input form `E` (binary AST `input_ast`): ONE
+/// component with TWO exports (the operator-mandated §2 shape, 2026-08-30), as binary AST. `None` iff `E`
+/// does not decode.
+///
+/// ```text
+/// (do
+///   (def (encodeQuoted) ((. Ast encode) (quote E)))
+///   (def (decodeCheck (: bytes Bytes))
+///     (match ((. Ast decode) bytes)
+///       ((Ok a)  (= a (quote E)))
+///       ((Err _) false)))
+///   (export encodeQuoted)
+///   (export decodeCheck))
+/// ```
+/// `encodeQuoted` returns the binary-AST bytes of `quote E`; `decodeCheck` decodes the bytes the CALLER
+/// passes back and asserts the decoded AST equals `quote E`. Splitting encode + decode across two exports
+/// (the caller threads the bytes back in) is what keeps the codec round-trip from being a single
+/// const-foldable expression — the anti-const-fold goal (§2). The exports map to the wit-world members
+/// `encode-quoted`/`decode-check` (camelCase → kebab, like the `onMessage`→`on-message` precedent).
+///
+/// This shape currently DECLINES to compile: a bare `list<u8>`/`Bytes` result as one of MULTIPLE exports
+/// is not yet emittable (CDZ0900 "cannot emit that typed export") — an operator-mandated WIT-boundary fix
+/// routed to v-rust-backend (the operator: "do not work around compiler bugs; this is how things get
+/// fixed"). Until it lands, each case grades Todo — the pass IS the acceptance gate for that fix.
+///
+/// The scaffolding is built in the PARSER's shapes so it name-resolves once the WIT gap is closed:
+/// `Ast.encode`/`Ast.decode` as member-access `(. Ast …)` (a `Name("Ast.encode")` leaf resolves UNBOUND),
+/// `false` as a `Leaf::Bool` (not `Name("false")`); both print identically to the wrong forms, so the
+/// tests check the member-access spelling + the Bool leaf structurally. `E` is grafted VERBATIM.
+fn quote_wrap_program(input_ast: &[u8]) -> Option<Vec<u8>> {
+    let e_arena = codec::decode(input_ast)?;
+    let mut b = Builder::new();
+
+    // (def (encodeQuoted) ((. Ast encode) (quote E)))
+    let quoted_e1 = {
+        let e = graft_value(&mut b, &e_arena, e_arena.root);
+        form(&mut b, "quote", vec![e])
+    };
+    let enc_body = {
+        let member = ast_member(&mut b, "encode");
+        b.list(vec![member, quoted_e1])
+    };
+    let enc_sig = {
+        let n = b.name("encodeQuoted");
+        b.list(vec![n])
+    };
+    let enc_def = form(&mut b, "def", vec![enc_sig, enc_body]);
+
+    // (def (decodeCheck (: bytes Bytes)) (match ((. Ast decode) bytes) ((Ok a) (= a (quote E))) ((Err _) false)))
+    let dec_sig = {
+        let name = b.name("decodeCheck");
+        let param = {
+            let bytes = b.name("bytes");
+            let ty = b.name("Bytes");
+            form(&mut b, ":", vec![bytes, ty])
+        };
+        b.list(vec![name, param])
+    };
+    let scrut = {
+        let member = ast_member(&mut b, "decode");
+        let bytes = b.name("bytes");
+        b.list(vec![member, bytes])
+    };
+    let ok_arm = {
+        let pat = {
+            let a = b.name("a");
+            form(&mut b, "Ok", vec![a])
+        };
+        let quoted_e2 = {
+            let e = graft_value(&mut b, &e_arena, e_arena.root);
+            form(&mut b, "quote", vec![e])
+        };
+        let a_ref = b.name("a");
+        let eq = form(&mut b, "=", vec![a_ref, quoted_e2]);
+        b.list(vec![pat, eq])
+    };
+    let err_arm = {
+        let pat = {
+            let wild = b.name("_");
+            form(&mut b, "Err", vec![wild])
+        };
+        let f = b.atom_leaf(Leaf::Bool(false));
+        b.list(vec![pat, f])
+    };
+    let dec_body = form(&mut b, "match", vec![scrut, ok_arm, err_arm]);
+    let dec_def = form(&mut b, "def", vec![dec_sig, dec_body]);
+
+    let exp_enc = {
+        let n = b.name("encodeQuoted");
+        form(&mut b, "export", vec![n])
+    };
+    let exp_dec = {
+        let n = b.name("decodeCheck");
+        form(&mut b, "export", vec![n])
+    };
+
+    let root = form(&mut b, "do", vec![enc_def, dec_def, exp_enc, exp_dec]);
+    Some(codec::encode(&b.finish(root)))
+}
+
+/// The imposed WIT world for the two-export round-trip component (FIXED — independent of `E`), as binary
+/// AST: one interface `roundtrip` exporting two typed members with a bare `list<u8>` boundary —
+/// ```text
+/// (world w (export roundtrip
+///   (member encode-quoted (func (result (list (u8)))))
+///   (member decode-check  (func (param bytes (list (u8))) (result (bool))))))
+/// ```
+/// The guest's `encodeQuoted`/`decodeCheck` exports cross under this world (component-name
+/// `cadenza:quote/roundtrip`). The `wit-world.ast` artifact's root IS the `(world …)` subtree verbatim —
+/// the compiler's native `wit-world:<name>=` input (no wrapper), exactly like the corpus reader's world
+/// shred. The bare `list<u8>` member types are the operator-mandated §2 shape (the WIT-gap fix v-rust-
+/// backend is closing lets this cross; until then the compile declines → Todo).
+fn quote_wrap_wit_world() -> Vec<u8> {
+    let mut b = Builder::new();
+    // (list (u8)) / (bool)
+    let list_u8 = |b: &mut Builder| {
+        let u8t = form(b, "u8", vec![]);
+        form(b, "list", vec![u8t])
+    };
+    // (member encode-quoted (func (result (list (u8)))))
+    let enc_member = {
+        let lu8 = list_u8(&mut b);
+        let result = form(&mut b, "result", vec![lu8]);
+        let func = form(&mut b, "func", vec![result]);
+        let name = b.name("encode-quoted");
+        form(&mut b, "member", vec![name, func])
+    };
+    // (member decode-check (func (param bytes (list (u8))) (result (bool))))
+    let dec_member = {
+        let lu8 = list_u8(&mut b);
+        let bytes = b.name("bytes");
+        let param = form(&mut b, "param", vec![bytes, lu8]);
+        let bool_ty = form(&mut b, "bool", vec![]);
+        let result = form(&mut b, "result", vec![bool_ty]);
+        let func = form(&mut b, "func", vec![param, result]);
+        let name = b.name("decode-check");
+        form(&mut b, "member", vec![name, func])
+    };
+    // (export roundtrip <enc_member> <dec_member>)
+    let export = {
+        let iface = b.name("roundtrip");
+        form(&mut b, "export", vec![iface, enc_member, dec_member])
+    };
+    // (world w <export>)
+    let root = {
+        let w = b.name("w");
+        form(&mut b, "world", vec![w, export])
+    };
+    codec::encode(&b.finish(root))
 }
 
 /// The ORACLE-TRIAL artifact — a case's trials as BINARY AST for the Lean oracle. Unlike `test_run_ast`
@@ -794,6 +1027,15 @@ fn push_diag_forms(b: &mut Builder, tk: &mut Vec<StructId>, d: &DiagQuality) {
         let nl = str_leaf(b, &n.to_string());
         tk.push(form(b, "count", vec![nl]));
     }
+}
+
+/// A member-access `(. Ast <member>)` node — the shape the parser produces for a dotted reference like
+/// `Ast.encode` / `Ast.decode` (a bare `Name("Ast.encode")` leaf would resolve UNBOUND). Applied to an
+/// argument by wrapping in a list: `((. Ast encode) x)`.
+fn ast_member(b: &mut Builder, member: &str) -> StructId {
+    let ast = b.name("Ast");
+    let m = b.name(member);
+    form(b, ".", vec![ast, m])
 }
 
 /// A `(head child…)` form node built directly in the arena.
@@ -1228,5 +1470,236 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
             "no wrapper node around the world: {world_text}"
         );
         assert_eq!(rec.component_name.as_deref(), Some("cadenza:demo/iface"));
+    }
+
+    /// `input_ast` carries the RAW `(input …)` form VERBATIM — NOT the normalized `(do (def (main) …)
+    /// (export main))` program. A bare scalar input `42` shreds `input_ast` as the lone `42` leaf (the
+    /// form `--quote-wrap` reifies), while `program_ast` is the wrapped runnable program.
+    #[test]
+    fn input_ast_is_the_raw_input_form_not_the_normalized_program() {
+        let recs = crate::read(r#"(case "scalar" (input 42) (output (: 42 Int64)))"#).unwrap();
+        let raw = sexpr::print(&codec::decode(&recs[0].input_ast).expect("input_ast decodes"));
+        assert_eq!(raw.trim(), "42", "input_ast is the raw input form: {raw}");
+        // The normalized program is the wrapped runnable form — DISTINCT from the raw input.
+        let prog = sexpr::print(&codec::decode(&recs[0].program_ast).unwrap());
+        assert!(
+            prog.contains("(def (main)") && prog.contains("(export main)"),
+            "program_ast is the normalized runnable program: {prog}"
+        );
+    }
+
+    /// Whether the AST rooted at `id` in `a` contains a `Leaf::Bool(false)` atom — the STRUCTURAL check
+    /// that the `((Err _) false)` arm carries a real boolean leaf, NOT a `Name("false")` (which resolves
+    /// UNBOUND at compile). Both PRINT as `false`, so a text assertion cannot tell them apart.
+    fn contains_bool_false(a: &Arenas, id: StructId) -> bool {
+        match a.get(id) {
+            cadenza_syntax::ast::Struct::Atom(lid) => {
+                matches!(a.leaf(*lid), Leaf::Bool(false))
+            }
+            cadenza_syntax::ast::Struct::List(kids) => {
+                kids.iter().any(|&k| contains_bool_false(a, k))
+            }
+        }
+    }
+
+    /// `quote_wrap_program` synthesizes the §2 ONE-component TWO-export round-trip program for a SCALAR
+    /// input: exports `encodeQuoted`/`decodeCheck`, quotes the raw input TWICE (encode side + the
+    /// equality check), and builds the scaffolding in the PARSER's shapes so it name-resolves once the WIT
+    /// gap is closed: `Ast.encode`/`Ast.decode` as member-access `(. Ast …)` (a `Name("Ast.encode")` leaf
+    /// resolves unbound), `false` as a `Leaf::Bool` (not `Name("false")`). Both wrong forms print
+    /// identically, so these check the member-access SPELLING + the Bool leaf STRUCTURALLY.
+    #[test]
+    fn quote_wrap_program_synthesizes_two_export_round_trip() {
+        let recs = crate::read(r#"(case "scalar" (input 42) (output (: 42 Int64)))"#).unwrap();
+        let prog = quote_wrap_program(&recs[0].input_ast).expect("synthesizes");
+        let arena = codec::decode(&prog).expect("program.ast decodes");
+        let text = sexpr::print(&arena);
+        // Two exports in ONE program.
+        assert!(
+            text.contains("(export encodeQuoted)") && text.contains("(export decodeCheck)"),
+            "both exports present in one program: {text}"
+        );
+        // MEMBER-ACCESS spelling `(. Ast encode)` / `(. Ast decode)`.
+        assert!(
+            text.contains("((. Ast encode) (quote 42))"),
+            "encode is a member-access applied to (quote E): {text}"
+        );
+        assert!(
+            text.contains("((. Ast decode) bytes)"),
+            "decode is a member-access applied to the Bytes param: {text}"
+        );
+        assert!(
+            text.contains("(: bytes Bytes)"),
+            "decodeCheck takes a Bytes param: {text}"
+        );
+        // Quoted TWICE (encode side + equality check).
+        assert_eq!(
+            text.matches("(quote 42)").count(),
+            2,
+            "quotes the raw input on both the encode and equality sides: {text}"
+        );
+        // The `((Err _) false)` arm carries a genuine Bool leaf, not a `Name("false")`.
+        assert!(
+            contains_bool_false(&arena, arena.root),
+            "the Err arm's `false` is a Leaf::Bool, not a Name: {text}"
+        );
+    }
+
+    /// `quote_wrap_wit_world` synthesizes the imposed world declaring the two typed exports with a bare
+    /// `list<u8>` boundary: interface `roundtrip` with members `encode-quoted` (`func() -> list<u8>`) and
+    /// `decode-check` (`func(list<u8>) -> bool`). Root IS the `(world …)` subtree verbatim (no wrapper),
+    /// the compiler's native `wit-world:` input shape. FIXED — independent of E.
+    #[test]
+    fn quote_wrap_wit_world_declares_the_two_typed_exports() {
+        let world = quote_wrap_wit_world();
+        let text = sexpr::print(&codec::decode(&world).expect("wit-world.ast decodes"));
+        assert!(
+            text.starts_with("(world w ") && text.contains("(export roundtrip"),
+            "root is the (world …) subtree, exporting the roundtrip interface: {text}"
+        );
+        assert!(
+            text.contains("(member encode-quoted (func (result (list (u8)))))"),
+            "encode-quoted member: () -> list<u8>: {text}"
+        );
+        assert!(
+            text.contains("(member decode-check (func (param bytes (list (u8))) (result (bool))))"),
+            "decode-check member: (list<u8>) -> bool: {text}"
+        );
+    }
+
+    /// An ARITHMETIC form input quotes as a COMPOUND `(quote (+ 1 2))` (twice) — the reifier's compound
+    /// path (synthesized front-end; whether `quote` reifies it is a downstream compile property).
+    #[test]
+    fn quote_wrap_synthesizes_for_an_arithmetic_form() {
+        let recs = crate::read(r#"(case "arith" (input (+ 1 2)) (output (: 3 Int64)))"#).unwrap();
+        let text =
+            sexpr::print(&codec::decode(&quote_wrap_program(&recs[0].input_ast).unwrap()).unwrap());
+        assert_eq!(
+            text.matches("(quote (+ 1 2))").count(),
+            2,
+            "quotes the compound arithmetic form on both sides: {text}"
+        );
+    }
+
+    /// A COLLECTION-LITERAL input is STILL synthesized (eligibility is syntactic — the program emits
+    /// `(quote #list(…))`); `quote` currently DECLINES on a collection literal, so at compile the case
+    /// grades Todo, NOT Fail (doc §3 clause 2 / §5). The synthesis itself never declines — it just wraps.
+    #[test]
+    fn quote_wrap_synthesizes_for_a_collection_literal_that_will_decline() {
+        let recs = crate::read(
+            r#"(case "coll" (input #list(1 2 3)) (output (: #list(1 2 3) (List Int64))))"#,
+        )
+        .unwrap();
+        let text =
+            sexpr::print(&codec::decode(&quote_wrap_program(&recs[0].input_ast).unwrap()).unwrap());
+        assert!(
+            text.contains("(quote #list(1 2 3))"),
+            "the collection literal is quoted verbatim (declines downstream, graded Todo): {text}"
+        );
+    }
+
+    /// A FULL-PROGRAM input `(do (def (main) …) (export main))` is quoted AS A WHOLE — the raw input form,
+    /// exports and all, is what `E` is (the pass quotes the syntax, not a normalized wrapper).
+    #[test]
+    fn quote_wrap_quotes_a_full_program_input_verbatim() {
+        let recs = crate::read(
+            r#"(case "prog" (input (do (def (main (: x Int64)) (+ x 1)) (export main)))
+                 (call main 41) (output (: 42 Int64)))"#,
+        )
+        .unwrap();
+        let text =
+            sexpr::print(&codec::decode(&quote_wrap_program(&recs[0].input_ast).unwrap()).unwrap());
+        assert!(
+            text.contains("(quote (do (def (main (: x Int64)) (+ x 1)) (export main)))"),
+            "the full program input is quoted verbatim: {text}"
+        );
+    }
+
+    /// Eligibility: a single-component case is eligible regardless of its expect-kind (value / error /
+    /// trap), while a sibling-MODULE package case and a cross-component PEER case are NOT (multi-form
+    /// wrapping is a later increment).
+    #[test]
+    fn quote_wrap_eligibility_covers_single_component_cases_only() {
+        let single = crate::read(
+            r#"(case "val" (input 42) (output (: 42 Int64)))
+               (case "err" (input 1_) (error CDZ0201 (message "separator")))"#,
+        )
+        .unwrap();
+        assert!(
+            single.iter().all(quote_wrap_eligible),
+            "value + error single-component cases are eligible"
+        );
+        // A multi-file PACKAGE case (sibling module) — NOT eligible in v1.
+        let pkg = crate::read(
+            r#"(case "pkg" (module "lib" (do (def (answer) 42) (export answer)))
+                 (input (do (import "lib" (answer)) (def (main) (answer)) (export main)))
+                 (call main) (output (: 42 Int64)))"#,
+        )
+        .unwrap();
+        assert!(
+            !quote_wrap_eligible(&pkg[0]),
+            "a sibling-module package case is ineligible in v1 (multi-form)"
+        );
+    }
+
+    /// The end-to-end shred: `shred_quote_wrap` writes one dir PER ELIGIBLE case (`program.ast` +
+    /// `wit-world.ast` + `component-name` + `description`) and a `manifest` listing them in order, KEEPING
+    /// the base-corpus `NNNN-slug` index and SKIPPING an ineligible package case (a gap where it sat).
+    #[test]
+    fn shred_quote_wrap_emits_eligible_dirs_and_manifest() {
+        let recs = crate::read(
+            r#"(case "scalar" (input 42) (output (: 42 Int64)))
+               (case "pkg" (module "lib" (do (def (answer) 42) (export answer)))
+                 (input (do (import "lib" (answer)) (def (main) (answer)) (export main)))
+                 (call main) (output (: 42 Int64)))
+               (case "arith" (input (+ 1 2)) (output (: 3 Int64)))"#,
+        )
+        .unwrap();
+        let tmp = std::env::temp_dir().join(format!("qwshred-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        shred_quote_wrap(&tmp, &recs).expect("shred");
+        let manifest = std::fs::read_to_string(tmp.join("manifest")).unwrap();
+        let cases: Vec<&str> = manifest.lines().collect();
+        // Two eligible cases (scalar #0, arith #2); the package case #1 is skipped.
+        assert_eq!(cases.len(), 2, "manifest: {manifest:?}");
+        assert!(
+            cases[0].starts_with("0000-"),
+            "scalar keeps index 0: {cases:?}"
+        );
+        assert!(
+            cases[1].starts_with("0002-"),
+            "arith keeps its base index 2 (package #1 skipped): {cases:?}"
+        );
+        // The emitted program.ast decodes and is the two-export round-trip program.
+        let prog = sexpr::print(
+            &codec::decode(&std::fs::read(tmp.join(cases[0]).join("program.ast")).unwrap())
+                .unwrap(),
+        );
+        assert!(
+            prog.contains("(export encodeQuoted)")
+                && prog.contains("(export decodeCheck)")
+                && prog.contains("((. Ast encode) (quote 42))")
+                && prog.contains("((. Ast decode) bytes)"),
+            "case 0 program.ast is the two-export round-trip program: {prog}"
+        );
+        // The imposed wit-world + component-name are emitted alongside.
+        let world = sexpr::print(
+            &codec::decode(&std::fs::read(tmp.join(cases[0]).join("wit-world.ast")).unwrap())
+                .unwrap(),
+        );
+        assert!(
+            world.contains("(export roundtrip") && world.contains("(member encode-quoted"),
+            "case 0 wit-world.ast declares the roundtrip interface: {world}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.join(cases[0]).join("component-name")).unwrap(),
+            "cadenza:quote/roundtrip"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.join(cases[0]).join("description")).unwrap(),
+            "scalar"
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 }
