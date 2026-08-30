@@ -60,16 +60,16 @@ import { Tok, parse-tokens } from "parse-db"
 import { db-of, resolved-filled } from "db"
 
 /// `let x = 2 in x` as (root, db).
-def let-db() = match parse-tokens(
+def let-db() =
+  let (root, tree) = parse-tokens(
     [Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]
-  ) with
-  | (root, tree) => (root, db-of(tree))
+  ) in
+  (root, db-of(tree))
 
 @test
 def di-infer-fills-both-columns() =
   // inferring `let x = 2 in x` fills BOTH the resolved column (via resolve-into-db) AND the types column.
-  match let-db() with
-    | (root, d0) => let db1 = infer-into-db(d0, root) in
+  let (root, d0) = let-db() in let db1 = infer-into-db(d0, root) in
     if resolved-filled(db1) > 0 then
       if typed-filled(db1) > 0 then unit else trap("types filled")
     else
@@ -78,18 +78,16 @@ def di-infer-fills-both-columns() =
 @test
 def di-root-is-int64() =
   // the root of `let x = 2 in x` types to Int64 (TyInt signed width 64).
-  match let-db() with
-    | (root, d0) => match ty-of-db(d0, root, root) with
-      | (_, Option.Some(t)) => (if is-int-ty(t) then (match int-parts-of(t) with
-          | (s, w) => (if s then (if w == 64 then unit else trap("width 64")) else trap("signed")))
+  let (root, d0) = let-db() in match ty-of-db(d0, root, root) with
+      | (_, Option.Some(t)) => (if is-int-ty(t) then (
+          let (s, w) = int-parts-of(t) in (if s then (if w == 64 then unit else trap("width 64")) else trap("signed")))
         else trap("root has an int type fact"))
       | _ => trap("root has an Int64 type fact")
 
 @test
 def di-unbound-is-terr() =
   // a bare unbound var `y` types to a FILLED TyErr (poison-as-filled — a determined ill-typed decline).
-  match parse-tokens([Tok.TName(9)]) with
-    | (root, tree) => match ty-of-db(db-of(tree), root, root) with
+  let (root, tree) = parse-tokens([Tok.TName(9)]) in match ty-of-db(db-of(tree), root, root) with
       | (_, Option.Some(Ty.TyErr)) => unit
       | _ => trap("unbound var types to a filled TyErr")
 
@@ -97,8 +95,7 @@ def di-unbound-is-terr() =
 def di-infer-reuses-resolved-not-reresolve() =
   // infer demands resolve ONCE: a 2nd infer-into-db on the returned Db is a resolve HIT (resolved-filled
   // unchanged) — infer read the memoized column, didn't re-resolve.
-  match let-db() with
-    | (root, d0) => let db1 = infer-into-db(d0, root) in
+  let (root, d0) = let-db() in let db1 = infer-into-db(d0, root) in
     let r1 = resolved-filled(db1) in
     let db2 = infer-into-db(db1, root) in
     if resolved-filled(db2) == r1 then unit else trap("second infer is a resolve HIT")
@@ -106,8 +103,7 @@ def di-infer-reuses-resolved-not-reresolve() =
 @test
 def di-comparison-is-bool() =
   // `(1 < 2)` types to TyBool at the root.
-  match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with
-    | (root, tree) => match ty-of-db(db-of(tree), root, root) with
+  let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) in match ty-of-db(db-of(tree), root, root) with
       | (_, Option.Some(Ty.TyBool)) => unit
       | _ => trap("1 < 2 types to TyBool")
 
