@@ -713,3 +713,34 @@ NOT break), plus **32 native≡alias PARITY controls** whose whole point is asse
   their own embedded test programs (+ any expected-render output strings that assert the old `(list …)`
   render → now `#list(…)`) in-window, coordinated by the concierge. This is the largest single Phase-2
   surface after the corpus — plan it as such.
+
+### 13.6 Corpus-input nativization is INCREMENTAL, not window-only — CORRECTS §13.2/§13.4 "entangled → not piecemeal" (2026-08-30)
+§13.2/§13.4 said the corpus INPUT nativization is "entangled with the output re-pin (same files) → do it
+in/after the window, not piecemeal." **That is too conservative — falsified in practice.** The input↔output
+entanglement only exists for cases where the INPUT value ROUND-TRIPS to the output (the input literal is
+echoed/encoded back out and rendered). For the overwhelming majority of corpus cases the `(input …)` program
+and the `(output …)` expected value are INDEPENDENT, so nativizing the input is behavior-preserving under the
+live dual-read (native ctor-leaf `structurally_eq` its name alias) and lands cleanly on its own. So:
+- **Do it incrementally, piecemeal is PREFERRED.** Landed so far (direct-to-main, gated per-file via the
+  cached `nix build .#checks.<sys>.corpus-NN` check): **#5882** (09-functions tuple), **#5889** (14b/14c
+  effects handle-state/resume tuples). Each was a new classic-form input a peer added post the corpus-wide
+  rehearsal; caught by the per-tick drift-check (`cdz-nativize --skip-outputs` idempotence over all files).
+- **The ONLY output-render-coupled file is `28-wit-abi-boundary.sexp`:** it mixes WIT type descriptors
+  (independently nativizable — `wit_world.rs` reads the type spelling via `head_name().or_else(head_ctor)`, so
+  it accepts native `#record`/`#list` heads) with VALUE-ROUND-TRIP cases (no `wit-world` clause) whose input
+  literal is rendered back as the output. Nativizing 28's inputs BEFORE the output re-pin regresses one such
+  case (expected classic `(record …)`, got native `#record(…)`; class-(a) render-drift, gate-confirmed
+  2026-08-30). So **28-wit is the one file deferred to the bytes-second output re-pin co-land** (v-rb + v-corpus-
+  harness), then nativized as a follow-up. Not a permanent exemption.
+- **Drift-guard (durable):** v-corpus-harness accepted (2026-08-30) a `cdz corpus` hygiene LINT asserting
+  `nativize_compound_source_skip_outputs(file) == file` per `spec/semantics/*.sexp` (idempotence ⇒ inputs
+  already native); lands bundled with their live-objects-edit guard right after their bytes-second co-land,
+  with 28-wit on a temporary exemption list (dropped when its inputs are nativized). This replaces the by-hand
+  per-tick drift-check.
+- **Net effect on the atomic window:** the corpus-INPUT surface is nearly fully pre-migrated by window time
+  (only 28-wit remains, folded into the bytes-second co-land), so §13.2's corpus-input bullet shrinks to "confirm
+  drift-check clean + 28-wit folded", NOT a bulk in-window pass.
+- 🪤 **Codemod hardening (#5904, 2026-08-30):** `cdz-nativize` field-pairified a construction SPREAD `(.. v)`
+  inside a record/map (2-element list → wrongly `(= .. v)`), corrupting it — fixed to skip `..`-headed entries
+  (regression-tested). Relevant now that #5826/#5890 made construction-spreads live inside record/set/all four
+  collections; the codemod must preserve them.
