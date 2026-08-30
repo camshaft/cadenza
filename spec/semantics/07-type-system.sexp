@@ -43,6 +43,29 @@
   (input  (: true Int64))
   (error  CDZ0203))
 
+; The `(: <expression> <type>)` annotation FORM is exactly two operands; a MALFORMED arity — too few `(: 5)`,
+; too many `(: 5 Int64 foo)`, empty `(:)` — is CDZ0201 naming the canonical form AND the actual part count
+; (rustc-style) so the author sees exactly what is wrong. The `(not "takes exactly")` pins a regression guard:
+; an earlier wording collided with the emit-path operator-arity dedup filter (EMIT_OPERAND_ARITY_MARKER) and
+; was SILENTLY DROPPED for the 0- and 3-operand cases. (Migrated from rcdzc
+; a_wrong_arity_type_annotation_names_the_operand_count_at_every_arity.)
+(case "a type annotation with too few operands names the one part present"
+  (input  (do (def x (: 5)) (export x)))
+  (error  CDZ0201 (message "a type annotation is written") (message "1 part is here") (not "takes exactly")))
+
+(case "a type annotation with too many operands names the three parts present"
+  (input  (do (def x (: 5 Int64 foo)) (export x)))
+  (error  CDZ0201 (message "3 parts are here") (not "takes exactly")))
+
+(case "an empty type annotation names the zero parts present"
+  (input  (do (def x (:)) (export x)))
+  (error  CDZ0201 (message "0 parts are here") (not "takes exactly")))
+
+(case "a well-formed two-operand annotation does not false-positive as a malformed-arity reject"
+  (input  (do (def (main) (: 5 Int64)) (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
 (case "a contradictory ARROW annotation on a function value is rejected"
   (doc    "The function-value facet of #Annotations Constrain, Never Contradict: `h x = x + 1` has type
            `(-> Int64 Int64)` (the `+` body-solves the domain to `Int64`), so annotating it `(: h (-> Bool

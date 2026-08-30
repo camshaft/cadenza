@@ -65,54 +65,10 @@ fn all_errors(src: &str) -> Vec<crate::abi::Diagnostic> {
 //  surplus record-field + map-entry (name-alias + primitive) → (fix (kind delete)); too-few record + map
 //  → (no-fix). All CDZ0201 with the entry-shape message.)
 
-#[test]
-fn a_wrong_arity_type_annotation_names_the_operand_count_at_every_arity() {
-    // A type annotation is `(: <expression> <type>)` — exactly two operands. A malformed arity (`(: 5)`,
-    // `(: 5 Int64 foo)`, `(:)`) now names the actual count instead of the flat "takes an expression and
-    // a type". TRAP: REGRESSION GUARD: the message must NOT contain the substring "takes exactly" — that is
-    // `diag::EMIT_OPERAND_ARITY_MARKER`, and `dedup_faults` DROPS a `Code::Malformed` fault matching it
-    // (+ "operand") as a redundant emit-path operator-arity decline. An earlier wording ("takes exactly 2
-    // operands") collided with that filter and was SILENTLY DROPPED for the 0- and 3-operand cases (the
-    // 1-operand case slipped through by fault ordering) — so this test asserts EVERY arity surfaces.
-    let find = |src: &str| {
-        crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.message.contains("a type annotation is written"))
-            .unwrap_or_else(|| panic!("the annotation-arity fault must surface for {src}"))
-    };
-    for (src, count) in [
-        ("(module m (def x (: 5)) (export x))", "1 part is"),
-        (
-            "(module m (def x (: 5 Int64 foo)) (export x))",
-            "3 parts are",
-        ),
-        ("(module m (def x (:)) (export x))", "0 parts are"),
-    ] {
-        let d = find(src);
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("(: <expression> <type>)") && d.message.contains(count),
-            "names the canonical form + the operand count `{count}`: {}",
-            d.message
-        );
-        // The regression that motivated this test: the message must never contain the marker that
-        // makes `dedup_faults` drop it.
-        assert!(
-            !d.message.contains("takes exactly"),
-            "the message must avoid the EMIT_OPERAND_ARITY_MARKER collision: {}",
-            d.message
-        );
-    }
-    // NO false change: a well-formed 2-operand annotation is transparent (no fault).
-    assert!(
-        crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def x (: 5 Int64)) (export x))"
-        )))
-        .iter()
-        .all(|d| d.severity != crate::abi::Severity::Error),
-        "a well-formed `(: 5 Int64)` annotation is clean"
-    );
-}
+// (a_wrong_arity_type_annotation_names_the_operand_count_at_every_arity migrated to corpus 07-type-system:
+//  malformed `(: …)` annotation arity → CDZ0201 naming the form + actual part count ("0/1/3 part(s) … here"),
+//  each with (not "takes exactly") guarding the emit-path dedup-filter regression; + a well-formed
+//  two-operand control that runs clean.)
 
 // (a_duplicate_field_in_a_record_type_is_rejected_like_the_value_form — its record-TYPE dup-field rejects
 // were already pinned in corpus 05-compound-types ("a record TYPE with a duplicate field name is a type
