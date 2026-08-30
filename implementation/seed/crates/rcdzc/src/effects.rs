@@ -277,7 +277,10 @@ fn effect_record(ast: &mut Arenas, decl: &EffectDecl) -> StructId {
     for (index, op) in decl.ops.iter().enumerate() {
         let value = op_value(ast, decl, op, index as u32);
         let k = push_atom(ast, Leaf::Name(op.name.clone().into()));
-        children.push(push_list(ast, vec![k, value]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, k, value])
+        });
     }
     push_list(ast, children)
 }

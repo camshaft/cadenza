@@ -999,7 +999,10 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let at_ty = str_at_type(ast);
     let at_op = list_op_record(ast, "str-at", at_ty);
     let at_key = push_atom(ast, Leaf::Name("at".into()));
-    children.push(push_list(ast, vec![at_key, at_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, at_key, at_op])
+    });
     // `scalar-at : String → Int64 → (Option Char)` — the fallible read of the CHAR (single Unicode scalar)
     // at a scalar position (the char-typed companion of `at`, which yields a one-scalar String). In range
     // → `(Some #\c)`, out → `None`. Addresses SCALAR values, not bytes. A constant string FOLDS.
@@ -1008,27 +1011,39 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let scalar_at_ty = str_scalar_at_type(ast);
     let scalar_at_op = list_op_record(ast, "str-scalar-at", scalar_at_ty);
     let scalar_at_key = push_atom(ast, Leaf::Name("scalar-at".into()));
-    children.push(push_list(ast, vec![scalar_at_key, scalar_at_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, scalar_at_key, scalar_at_op])
+    });
     // `concat : String → String → String` — the total binary join (the compiler builds error messages
     // and export names this way). On two constant strings it FOLDS to their concatenation.
     let concat_ty = string_concat_type(ast);
     let concat_op = list_op_record(ast, "str-concat", concat_ty);
     let concat_key = push_atom(ast, Leaf::Name("concat".into()));
-    children.push(push_list(ast, vec![concat_key, concat_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, concat_key, concat_op])
+    });
     // `slice : String → Int64 → Int64 → (Option String)` — the fallible sub-range read by SCALAR offsets
     // (`start`, `end`, half-open). In range (`0 <= start <= end <= scalar-len`) → `Some substring`, else
     // `None`. A constant string + constant bounds FOLD.
     let slice_ty = string_slice_type(ast);
     let slice_op = list_op_record(ast, "str-slice", slice_ty);
     let slice_key = push_atom(ast, Leaf::Name("slice".into()));
-    children.push(push_list(ast, vec![slice_key, slice_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, slice_key, slice_op])
+    });
     // `to-bytes : String → Bytes` — the UTF-8 encoding of the string's scalars (the compiler encodes
     // export names as UTF-8 for wasm sections). A constant string FOLDS to a constant `Bytes` of its
     // UTF-8 bytes; consumed by `Bytes.len`/`Bytes.at`. Monomorphic (no type param).
     let to_bytes_ty = string_to_bytes_type(ast);
     let to_bytes_op = list_op_record(ast, "str-to-bytes", to_bytes_ty);
     let to_bytes_key = push_atom(ast, Leaf::Name("to-bytes".into()));
-    children.push(push_list(ast, vec![to_bytes_key, to_bytes_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, to_bytes_key, to_bytes_op])
+    });
     // `from-bytes : Bytes → (Option String)` — the TOTAL UTF-8 DECODE (the inverse of `to-bytes`): a
     // well-formed byte sequence → `Some string`, ill-formed (invalid/overlong/surrogate) → `None`, never
     // a trap. A constant `Bytes` FOLDS via strict UTF-8 validation. `Some`/`None` distinguishes a
@@ -1041,7 +1056,10 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let from_bytes_ty = string_from_bytes_type(ast);
     let from_bytes_op = list_op_record(ast, "str-from-bytes", from_bytes_ty);
     let from_bytes_key = push_atom(ast, Leaf::Name("from-bytes".into()));
-    children.push(push_list(ast, vec![from_bytes_key, from_bytes_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, from_bytes_key, from_bytes_op])
+    });
     push_list(ast, children)
 }
 
@@ -1063,12 +1081,18 @@ fn char_module(ast: &mut Arenas) -> StructId {
     let to_int_ty = char_to_int_type(ast);
     let to_int_op = list_op_record(ast, "char-to-int", to_int_ty);
     let to_int_key = push_atom(ast, Leaf::Name("to-int".into()));
-    children.push(push_list(ast, vec![to_int_key, to_int_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, to_int_key, to_int_op])
+    });
     // `from-int : Int64 → (Option Char)` — the fallible integer→char conversion.
     let from_int_ty = char_from_int_type(ast);
     let from_int_op = list_op_record(ast, "char-from-int", from_int_ty);
     let from_int_key = push_atom(ast, Leaf::Name("from-int".into()));
-    children.push(push_list(ast, vec![from_int_key, from_int_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, from_int_key, from_int_op])
+    });
     push_list(ast, children)
 }
 
@@ -1089,12 +1113,18 @@ fn value_module(ast: &mut Arenas) -> StructId {
     let encode_ty = value_encode_type_lambda(ast);
     let encode_op = list_op_record(ast, "value-encode", encode_ty);
     let encode_key = push_atom(ast, Leaf::Name("encode".into()));
-    children.push(push_list(ast, vec![encode_key, encode_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, encode_key, encode_op])
+    });
     // `decode : ∀a. Bytes → (Option a)` — partial; `a` grounded at the call site.
     let decode_ty = value_decode_type_lambda(ast);
     let decode_op = list_op_record(ast, "value-decode", decode_ty);
     let decode_key = push_atom(ast, Leaf::Name("decode".into()));
-    children.push(push_list(ast, vec![decode_key, decode_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, decode_key, decode_op])
+    });
     push_list(ast, children)
 }
 
@@ -1134,12 +1164,18 @@ fn symbol_module(ast: &mut Arenas) -> StructId {
     let of_ty = symbol_of_type(ast);
     let of_op = list_op_record(ast, "symbol-of", of_ty);
     let of_key = push_atom(ast, Leaf::Name("of".into()));
-    children.push(push_list(ast, vec![of_key, of_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, of_key, of_op])
+    });
     // `to-string : Symbol → String` — recover a Symbol's content String.
     let to_string_ty = symbol_to_string_type(ast);
     let to_string_op = list_op_record(ast, "symbol-to-string", to_string_ty);
     let to_string_key = push_atom(ast, Leaf::Name("to-string".into()));
-    children.push(push_list(ast, vec![to_string_key, to_string_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, to_string_key, to_string_op])
+    });
     push_list(ast, children)
 }
 
@@ -1170,7 +1206,10 @@ fn bigint_module(ast: &mut Arenas) -> StructId {
     let of_ty = bigint_of_type(ast);
     let of_op = list_op_record(ast, "bigint-of", of_ty);
     let of_key = push_atom(ast, Leaf::Name("of".into()));
-    children.push(push_list(ast, vec![of_key, of_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, of_key, of_op])
+    });
     push_list(ast, children)
 }
 
@@ -1191,28 +1230,43 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     let of_ty = rational_of_type(ast);
     let of_op = list_op_record(ast, "rational-of", of_ty);
     let of_key = push_atom(ast, Leaf::Name("of".into()));
-    children.push(push_list(ast, vec![of_key, of_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, of_key, of_op])
+    });
     // `of-int : ∀a. (Int a) → Rational`.
     let of_int_ty = rational_of_int_type(ast);
     let of_int_op = list_op_record(ast, "rational-of-int", of_int_ty);
     let of_int_key = push_atom(ast, Leaf::Name("of-int".into()));
-    children.push(push_list(ast, vec![of_int_key, of_int_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, of_int_key, of_int_op])
+    });
     // `value : Rational → Rational` (identity).
     let value_ty = rational_value_type(ast);
     let value_op = list_op_record(ast, "rational-value", value_ty);
     let value_key = push_atom(ast, Leaf::Name("value".into()));
-    children.push(push_list(ast, vec![value_key, value_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, value_key, value_op])
+    });
     // `numerator : Rational → BigInt` / `denominator : Rational → BigInt` — read the components of the
     // normalized (lowest-terms, denominator > 0) pair. BigInt-valued (either can exceed i64); floor/round/
     // integer-projection compose in Cadenza on top.
     let numerator_ty = rational_to_bigint_type(ast);
     let numerator_op = list_op_record(ast, "rational-num", numerator_ty);
     let numerator_key = push_atom(ast, Leaf::Name("numerator".into()));
-    children.push(push_list(ast, vec![numerator_key, numerator_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, numerator_key, numerator_op])
+    });
     let denominator_ty = rational_to_bigint_type(ast);
     let denominator_op = list_op_record(ast, "rational-den", denominator_ty);
     let denominator_key = push_atom(ast, Leaf::Name("denominator".into()));
-    children.push(push_list(ast, vec![denominator_key, denominator_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, denominator_key, denominator_op])
+    });
     // `truncate : Rational → Int64` — the exact integer part TOWARD ZERO (`7/2 → 3`, `-7/2 → -3`). Unlike
     // `numerator`/`denominator` (BigInt-valued, since either component can exceed i64), the integer part of
     // a rational is a single value that MUST land in a fixed width to be useful (MIDI ticks, indices), so
@@ -1223,7 +1277,10 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     let truncate_ty = rational_to_int64_type(ast);
     let truncate_op = list_op_record(ast, "rational-truncate", truncate_ty);
     let truncate_key = push_atom(ast, Leaf::Name("truncate".into()));
-    children.push(push_list(ast, vec![truncate_key, truncate_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, truncate_key, truncate_op])
+    });
     // `floor : Rational → Int64` (toward −∞) and `ceil : Rational → Int64` (toward +∞) — the other two
     // exact integer projections, each `truncate` adjusted by ±1 off the remainder sign. Like `truncate`,
     // NOT new runtime ops: they lower as DERIVATIONS over numerator/denominator + BigInt divmod + a
@@ -1232,11 +1289,17 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     let floor_ty = rational_to_int64_type(ast);
     let floor_op = list_op_record(ast, "rational-floor", floor_ty);
     let floor_key = push_atom(ast, Leaf::Name("floor".into()));
-    children.push(push_list(ast, vec![floor_key, floor_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, floor_key, floor_op])
+    });
     let ceil_ty = rational_to_int64_type(ast);
     let ceil_op = list_op_record(ast, "rational-ceil", ceil_ty);
     let ceil_key = push_atom(ast, Leaf::Name("ceil".into()));
-    children.push(push_list(ast, vec![ceil_key, ceil_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, ceil_key, ceil_op])
+    });
     // `round : Rational → Int64` — round to the NEAREST integer, ties HALF-AWAY-FROM-ZERO (`1/2 → 1`,
     // `-1/2 → -1`, `3/2 → 2`, `5/2 → 3`). The last of the exact integer projections. Like the others, NOT a
     // new runtime op: a DERIVATION over numerator/denominator + BigInt divmod + a `2·|rem| ≥ denominator`
@@ -1245,7 +1308,10 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     let round_ty = rational_to_int64_type(ast);
     let round_op = list_op_record(ast, "rational-round", round_ty);
     let round_key = push_atom(ast, Leaf::Name("round".into()));
-    children.push(push_list(ast, vec![round_key, round_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, round_key, round_op])
+    });
     push_list(ast, children)
 }
 
@@ -1376,32 +1442,50 @@ fn unit_module(ast: &mut Arenas) -> StructId {
     // `one` — the dimensionless unit (applying it, or using it bare, yields the group identity).
     let one_field = push_atom(ast, Leaf::Name("one".into()));
     let one_op = unit_op_ctor(ast, "unit-one");
-    children.push(push_list(ast, vec![one_field, one_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, one_field, one_op])
+    });
     // `base` — a base dimension named by a symbol: `(Unit.base #"meter")`.
     let base_field = push_atom(ast, Leaf::Name("base".into()));
     let base_op = unit_op_ctor(ast, "unit-base");
-    children.push(push_list(ast, vec![base_field, base_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, base_field, base_op])
+    });
     // `prefix` — scale a unit by a prefix's factor: `(Unit.prefix kilo (Unit.base #"meter"))`. Member
     // access (`prefix` is alphabetic → `(. Unit prefix)`), so a field, not a top-level name (unlike
     // `Unit.*`/`^`).
     let prefix_field = push_atom(ast, Leaf::Name("prefix".into()));
     let prefix_op = unit_op_ctor(ast, "unit-prefix");
-    children.push(push_list(ast, vec![prefix_field, prefix_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, prefix_field, prefix_op])
+    });
     // `of` — name a FAMILY unit from the registry: `(Unit.of #"foot")` = length at foot's scale to
     // meter. Member access (`(. Unit of)`), a field. Consults `Db::unit_families`.
     let of_field = push_atom(ast, Leaf::Name("of".into()));
     let of_op = unit_op_ctor(ast, "unit-of");
-    children.push(push_list(ast, vec![of_field, of_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, of_field, of_op])
+    });
     // `in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in meter (Qty.of 3.0 km))`.
     // Member access (`(. Unit in)`), a field. Takes a target unit + a quantity.
     let in_field = push_atom(ast, Leaf::Name("in".into()));
     let in_op = unit_op_ctor(ast, "unit-in");
-    children.push(push_list(ast, vec![in_field, in_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, in_field, in_op])
+    });
     // `define` — DECLARE a family unit: `(Unit.define #"furlong" (Unit.of #"foot") 660 1)`. As a value it
     // reduces to the defined unit (`base` scaled by num/den); its registration is a load-time scan.
     let define_field = push_atom(ast, Leaf::Name("define".into()));
     let define_op = unit_op_ctor(ast, "unit-define");
-    children.push(push_list(ast, vec![define_field, define_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, define_field, define_op])
+    });
     push_list(ast, children)
 }
 
@@ -1697,22 +1781,34 @@ fn qty_module(ast: &mut Arenas) -> StructId {
     let mut children = vec![head, apply_field];
     let of_field = push_atom(ast, Leaf::Name("of".into()));
     let of_op = ctor_record(ast, "qty-of");
-    children.push(push_list(ast, vec![of_field, of_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, of_field, of_op])
+    });
     let value_field = push_atom(ast, Leaf::Name("value".into()));
     let value_op = ctor_record(ast, "qty-value");
-    children.push(push_list(ast, vec![value_field, value_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, value_field, value_op])
+    });
     // `pow` — raise a quantity to a compile-time non-negative integer power, composing the unit like
     // `Unit.^`: `(Qty.pow (Qty.of 3.0 meter) 2)` = `9.0 : (Qty Float64 meter²)`. The exponent is read
     // off the second argument at type/lower time (not an HM variable), so `pow` is a plain field op.
     let pow_field = push_atom(ast, Leaf::Name("pow".into()));
     let pow_op = ctor_record(ast, "qty-pow");
-    children.push(push_list(ast, vec![pow_field, pow_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, pow_field, pow_op])
+    });
     // `unit` — extract a quantity's UNIT as a compile-time unit value: `(Qty.of new (Qty.unit y))` makes
     // a new quantity in `y`'s unit without re-spelling it. It IS a unit expression (reduces via
     // `unit_of`, reading `y`'s solved type), so it is used in unit position like `(Unit.base …)`.
     let unit_field = push_atom(ast, Leaf::Name("unit".into()));
     let unit_op = ctor_record(ast, "qty-unit");
-    children.push(push_list(ast, vec![unit_field, unit_op]));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, unit_field, unit_op])
+    });
     push_list(ast, children)
 }
 
@@ -1749,7 +1845,10 @@ fn blake3_module(ast: &mut Arenas) -> StructId {
     let of_type = blake3_of_type(ast);
     let of_op = list_op_record(ast, "blake3-of", of_type);
     let of_field = push_atom(ast, Leaf::Name("of".into()));
-    let of = push_list(ast, vec![of_field, of_op]);
+    let of = {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, of_field, of_op])
+    };
     push_list(ast, vec![head, of])
 }
 
@@ -1757,10 +1856,16 @@ fn type_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".into()));
     let of_field = push_atom(ast, Leaf::Name("of".into()));
     let of_op = ctor_record(ast, "type-of");
-    let of = push_list(ast, vec![of_field, of_op]);
+    let of = {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, of_field, of_op])
+    };
     let eq_field = push_atom(ast, Leaf::Name("eq".into()));
     let eq_op = ctor_record(ast, "type-eq");
-    let eq = push_list(ast, vec![eq_field, eq_op]);
+    let eq = {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, eq_field, eq_op])
+    };
     push_list(ast, vec![head, of, eq])
 }
 

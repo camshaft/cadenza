@@ -352,7 +352,10 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         let ctor = variant_ctor(ast, decl, variant, disc as u32);
         ctors.push(ctor);
         let k = push_atom(ast, Leaf::Name(variant.name.clone().into()));
-        children.push(push_list(ast, vec![k, ctor]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, k, ctor])
+        });
     }
 
     // The `expect` ACCESSOR field — the unwrap-or-trap `∀params. (Sum params) → String → <payload0>`
@@ -368,7 +371,10 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         let expect_ty = expect_type_scheme(ast, decl, present.payloads[0]);
         let expect_op = expect_op_record(ast, expect_ty);
         let ek = push_atom(ast, Leaf::Name("expect".into()));
-        children.push(push_list(ast, vec![ek, expect_op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, ek, expect_op])
+        });
     }
 
     // The `encode`/`decode` ACCESSOR fields — the binary bijection (`ast-encoding.md` §The Encoding Is A
@@ -387,14 +393,20 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         };
         let encode_op = intrinsic_op_record(ast, encode_ty, "ast-encode");
         let ek = push_atom(ast, Leaf::Name("encode".into()));
-        children.push(push_list(ast, vec![ek, encode_op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, ek, encode_op])
+        });
 
         // `decode : Bytes → (Result Sum e)` — total; `e` is a free error type (a fresh lambda param so the
         // caller unifies it), the sum reference re-built fresh so it does not share the encode occurrence.
         let decode_ty = decode_type_scheme(ast, decl);
         let decode_op = intrinsic_op_record(ast, decode_ty, "ast-decode");
         let dk = push_atom(ast, Leaf::Name("decode".into()));
-        children.push(push_list(ast, vec![dk, decode_op]));
+        children.push({
+            let eq = push_atom(ast, Leaf::Name("=".into()));
+            push_list(ast, vec![eq, dk, decode_op])
+        });
     }
 
     // ASSOCIATED FUNCTIONS the decl declares (`TypeDecl.associated`) — prelude-defined non-ctor member
