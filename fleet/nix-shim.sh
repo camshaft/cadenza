@@ -8,11 +8,21 @@
 # wasteful from-source rebuild that monopolizes build-slots. The check-lease (cap 2) can't see either. This
 # shim surfaces both at the call site so the leased gate-local becomes the sanctioned heavy-nix entry.
 #
+# ROUTING (v-fleet-tooling 2026-08-30, concierge-nod — the gate-local STORM fix): the ONE case the shim does
+# more than warn is a BARE `nix build .#checks.<sys>.local-gate` (the authoritative merge gate) run OUTSIDE
+# the lease — it is ROUTED to `cargo xtask fleet gate-local`, which builds the SAME attr but takes the
+# weighted check-lease (#6004). WHY: a raw local-gate build bypasses `run_gate_local`'s lease entirely, so N
+# agents can run it CONCURRENTLY and self-induce a load storm (observed: 21 concurrent local-gates, load 103,
+# builds starved to 0-byte). Routing it to the leased command closes that escape at the call site. ONLY
+# `local-gate` is routed (it is the aggregate gate + has a leased equivalent); every OTHER heavy attr stays
+# WARN-only (they are distinct builds with no gate-local equivalent). Mirrors the cargo-shim's route pattern.
+#
 # SAFETY — this shadows `nix` for the WHOLE fleet (the cargo-shim's `nix run .#test/.#build` routes, gate-
 # local's own `nix build`, refresh-tools, every `apps` invocation flow through it), so a bug is a fleet-wide
-# wedge. Therefore it is WARN-ONLY + FAIL-OPEN + heavily guarded:
+# wedge. Therefore it is FAIL-OPEN + heavily guarded:
 #   • The DEFAULT for EVERY invocation is to exec the REAL nix unchanged. The shim only ever adds a stderr
-#     WARNING; it NEVER blocks, routes, or alters the nix command.
+#     WARNING or (for a bare local-gate ONLY) routes to the leased gate-local; it NEVER blocks, and never
+#     touches the CDZ_LEASED_NIX-exempt sanctioned builds (so gate-local's OWN inner build is never routed).
 #   • CDZ_LEASED_NIX=1 EXEMPT: the sanctioned leased builds (run_gate_local / run_gate_local_bounded /
 #     with_lease / the cargo-shim `nix run` routes) set this before exec-ing nix — the shim passes them
 #     through SILENTLY. Without this, the shim would warn on gate-local's OWN inner `nix build` of local-gate.
@@ -74,6 +84,16 @@ if [ "${1:-}" = "build" ] && [ -f "$_hints" ]; then
     esac
   done
   if [ -n "$_attr" ]; then
+    # ROUTE a BARE (unleased — we are past the CDZ_LEASED_NIX exempt at line 46) local-gate build through the
+    # LEASED `cargo xtask fleet gate-local`: same attr, but it takes the weighted check-lease so a raw build
+    # can no longer escape the concurrency cap (the 21-concurrent storm root). Only `local-gate`; other heavy
+    # attrs fall through to the WARN below (no gate-local equivalent). FAIL-OPEN: if cargo is unavailable, do
+    # NOT route — fall through to the warn + real nix. `cargo xtask fleet …` is control-plane (cargo-shim
+    # exempts it) and gate-local's inner `nix build` sets CDZ_LEASED_NIX=1 → exempt here → no recursion.
+    if [ "$_attr" = "local-gate" ] && command -v cargo >/dev/null 2>&1; then
+      echo "⚠ nix-shim: routing a bare 'nix build .#checks.*.local-gate' → 'cargo xtask fleet gate-local' (the LEASED authoritative gate — a raw build ESCAPES the check-lease + fed the gate-local storm; bypass: CDZ_NO_NIX_SHIM=1)." >&2
+      exec cargo xtask fleet gate-local
+    fi
     _hit=0
     while IFS="$(printf '\t')" read -r _k _v; do
       [ "$_k" = "heavy-attr" ] || continue
