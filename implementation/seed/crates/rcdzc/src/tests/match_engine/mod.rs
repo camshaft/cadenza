@@ -2921,48 +2921,10 @@ fn over_applying_a_prelude_member_op_names_the_operation_and_arity() {
     );
 }
 
-#[test]
-fn over_applying_a_bare_variant_constructor_names_it() {
-    // The variant-constructor companion of the member-op over-application message: a BARE ctor `(Mk 1
-    // 2 3)` (Mk takes 2) named the constructor + its arity ("`Mk` takes 2 arguments, but 3 were
-    // given") instead of the anonymous "applied 3 arguments to a function of arity 2" — reading as well
-    // as the member-access spelling `(. P Mk)` already did. Carries the delete-surplus fix.
-    let d = reject_full("(module m (type P (Mk Int64 Int64) (Z)) (def (g) (Mk 1 2 3)) (export g))")
-        .expect("over-applying a bare ctor Mk rejects");
-    assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
-    assert!(
-        d.message
-            .contains("`Mk` takes 2 arguments, but 3 were given"),
-        "names the bare constructor + arity: {}",
-        d.message
-    );
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Delete),
-        "carries the delete-surplus fix: {:?}",
-        d.fix
-    );
-    // The member-access spelling of the SAME ctor names it dotted (`P.Mk`) — the shared phrasing.
-    let member = reject_full(
-        "(module m (type P (Mk Int64 Int64) (Z)) (def (g) ((. P Mk) 1 2 3)) (export g))",
-    )
-    .expect("over-applying (. P Mk) rejects");
-    assert!(
-        member
-            .message
-            .contains("`P.Mk` takes 2 arguments, but 3 were given"),
-        "the member spelling names it dotted: {}",
-        member.message
-    );
-    // NO regression: an ordinary over-applied function keeps the anonymous arity message (not a ctor).
-    let fun = reject_full("(module m (def (h (: a Int64)) a) (def (g) (h 1 2)) (export g))")
-        .expect("over-applying a user fn rejects");
-    assert!(
-        fun.message.contains("function of arity 1") && !fun.message.contains("were given"),
-        "an ordinary function keeps the anonymous over-application message: {}",
-        fun.message
-    );
-}
+// (over_applying_a_bare_variant_constructor_names_it migrated to corpus 07-type-system: a bare ctor `(Mk 1 2 3)`
+// → "`Mk` takes 2 arguments, but 3 were given" + delete-surplus fix; the member spelling `((. P Mk) 1 2 3)` →
+// "`P.Mk` takes 2 arguments, but 3 were given"; an ordinary over-applied fn keeps the anonymous "function of
+// arity 1" message (not "were given"). All 3 PASS wasm.)
 
 #[test]
 fn an_unapplied_function_value_names_the_forgotten_call() {

@@ -3493,3 +3493,20 @@
 (case "a list literal of tuples of different arity names the arity delta at the join"
   (input  (do (def (g) #list(#tuple(1 2) #tuple(1 2 3))) (export g)))
   (error  CDZ0201 (message "expected a tuple with 2 elements, but this one has 3")))
+
+; Over-applying a bare variant CONSTRUCTOR names it + its arity (like the prelude-member-op over-application),
+; not an anonymous "applied N arguments to a function of arity M". The constructor is named bare (`Mk`) or
+; dotted at the member-access spelling (`P.Mk`), and the reject carries a delete-surplus fix. An ordinary
+; over-applied user function keeps the anonymous arity message (it is not a constructor). (Migrated from rcdzc
+; over_applying_a_bare_variant_constructor_names_it.)
+(case "over-applying a bare variant constructor names the constructor and its arity"
+  (input  (do (type P (Mk Int64 Int64) (Z)) (def (g) (Mk 1 2 3)) (export g)))
+  (error  CDZ0203 (message "`Mk` takes 2 arguments, but 3 were given") (fix (kind delete))))
+
+(case "the member-access spelling of an over-applied constructor names it dotted"
+  (input  (do (type P (Mk Int64 Int64) (Z)) (def (g) ((. P Mk) 1 2 3)) (export g)))
+  (error  CDZ0203 (message "`P.Mk` takes 2 arguments, but 3 were given")))
+
+(case "an ordinary over-applied user function keeps the anonymous arity message, not a constructor phrasing"
+  (input  (do (def (h (: a Int64)) a) (def (g) (h 1 2)) (export g)))
+  (error  CDZ0203 (message "function of arity 1") (not "were given")))
