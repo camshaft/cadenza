@@ -1800,6 +1800,30 @@
             (def (main) 1) (export main)))
   (error  CDZ0201))
 
+; The DIAGNOSTIC-QUALITY half of the (spec-sanctioned, NOT rejected) two-same-named-effects situation: an
+; effect's identity is its DECLARATION, not its name (14-effects:3129), so two `(effect E …)` are DISTINCT
+; and a bare `E` resolves the FIRST. Naming an op declared only on a LATER same-named `E` fails "no operation
+; `b`", but the ordinary "closest matches" list is baffling (the author sees `b`'s declaration a few lines
+; up), so the message EXPLAINS the shadowing (`b` is on a later `(effect E …)`; a bare `E` resolves/discharges
+; the first) instead of a typo list. A GENUINE typo (no later `E` declares it) keeps the ordinary did-you-mean.
+; The hint fires at BOTH loci: the call site (CDZ0201) and a handler arm (CDZ0403). No confident-typo fix (the
+; op is real, just in another declaration). (Migrated from rcdzc
+; an_op_on_a_later_same_named_effect_gets_the_shadowed_declaration_hint.)
+(case "an op declared only on a LATER same-named effect explains the shadowing, not a typo list"
+  (input  (do (effect E (op a (-> Int64 Int64))) (effect E (op b (-> Int64 Int64)))
+              (def (main) (host (E) (E.b 5))) (export main)))
+  (error  CDZ0201 (message "effect `E` has no operation `b`") (message "declared on a LATER") (message "resolves the FIRST") (not "closest matches") (not "did you mean")))
+
+(case "a genuine effect-op typo (no shadowing) keeps the ordinary did-you-mean"
+  (input  (do (effect E (op emit (-> Int64 Int64)))
+              (def (main) (host (E) (E.emt 5))) (export main)))
+  (error  CDZ0201 (message "effect `E` has no operation `emt`") (message "did you mean `emit`?") (not "declared on a LATER")))
+
+(case "a handler arm naming a later-effect op explains the shadowing on its CDZ0403"
+  (input  (do (effect E (op a (-> Int64 Int64))) (effect E (op b (-> Int64 Int64)))
+              (def (main) (handle E 0 ((b (n) s (resume n s))) (E.a 5))) (export main)))
+  (error  CDZ0403 (message "this handler arm names an operation its effect does not declare") (message "declared on a LATER") (message "discharges the FIRST")))
+
 ; --- Handler resolution is dynamic in extent, across function boundaries ------------------------
 ; capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically Determined. The cases
 ; above perform and handle inside one `main`, where dynamic and lexical resolution coincide. These cases

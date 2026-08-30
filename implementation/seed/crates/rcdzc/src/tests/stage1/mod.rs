@@ -1805,64 +1805,6 @@ fn a_confident_module_member_typo_carries_an_applyable_rename_fix() {
 }
 
 #[test]
-fn an_op_on_a_later_same_named_effect_gets_the_shadowed_declaration_hint() {
-    // Two same-named `(effect E …)` are DISTINCT effects (an effect's identity is its declaration, not
-    // its name — pinned by `14-effects:3129`), so a bare `E` resolves the FIRST and `E.b` where `b` is
-    // declared only on a LATER same-named `E` fails "no operation `b`". The ordinary "closest matches"
-    // list is baffling (the author sees `b`'s declaration three lines up), so the message instead
-    // EXPLAINS the shadowing: `b` is on a later `(effect E …)`, a bare `E` resolves the first, so it's
-    // out of reach. (The diagnostic-quality half of the works-as-specified duplicate-effect finding —
-    // NOT a rejection of the duplicate declaration, which is spec-sanctioned.) No confident-typo fix
-    // fires (the op is real, just in another declaration).
-    let err =
-        |src: &str| compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    let d = err(
-        "(module m (effect E (op a (-> Int64 Int64))) (effect E (op b (-> Int64 Int64))) \
-             (def (main) (host (E) (E.b 5))) (export main))",
-    );
-    assert!(
-        d.message.contains("effect `E` has no operation `b`")
-            && d.message.contains("declared on a LATER `(effect E …)`")
-            && d.message.contains("resolves the FIRST"),
-        "a shadowed op names the later same-named declaration, not a typo hint: {}",
-        d.message
-    );
-    assert!(
-        !d.message.contains("closest matches") && !d.message.contains("did you mean"),
-        "the shadow hint supersedes the generic did-you-mean: {}",
-        d.message
-    );
-    // A GENUINE typo (no later same-named E declares it) keeps the ordinary did-you-mean.
-    let typo = err("(module m (effect E (op emit (-> Int64 Int64))) \
-             (def (main) (host (E) (E.emt 5))) (export main))");
-    assert!(
-        typo.message.contains("effect `E` has no operation `emt`")
-            && typo.message.contains("did you mean `emit`?")
-            && !typo.message.contains("declared on a LATER"),
-        "a genuine typo (no shadowing) keeps the did-you-mean hint: {}",
-        typo.message
-    );
-    // The SECOND locus: a HANDLER ARM naming a later-effect op gets the shadow hint on its CDZ0403
-    // (`handle E … ((b …))` where `b` is on the later `E`), not the baffling "closest matches: a".
-    let arm_shadow = compile_component(&crate::codec::encode(&parse(
-        "(module m (effect E (op a (-> Int64 Int64))) (effect E (op b (-> Int64 Int64))) \
-             (def (main) (handle E 0 ((b (n) s (resume n s))) (E.a 5))) (export main))",
-    )))
-    .expect_err("must reject");
-    assert!(
-        arm_shadow
-            .message
-            .contains("this handler arm names an operation its effect does not declare")
-            && arm_shadow
-                .message
-                .contains("declared on a LATER `(effect E …)`")
-            && arm_shadow.message.contains("discharges the FIRST"),
-        "a handler arm naming a later-effect op explains the shadowing, not a typo list: {}",
-        arm_shadow.message
-    );
-}
-
-#[test]
 fn the_renamed_collection_ops_resolve_under_their_new_names() {
     // The canonical spellings COMPILE — a pure surface rename, no eval/backend change (the intrinsics
     // `map-size`/`tuple-cat`/`tuple-pop` stay wired; only the surface key moved). Same shape as the
