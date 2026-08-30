@@ -8993,6 +8993,40 @@
               (def (g) (h #record((= x 1) (= y true) (= z 3)))) (export g)))
   (error  CDZ0203 (message "field `y` should be Int64, but this one is Bool")))
 
+; A directly-written compound whose single differing leaf is a numeric LITERAL gets the SAME one-shot
+; coercion fix a bare `(: 5 Float64)` gets — retype the inner literal (`5` -> `5.0`), anchored at the inner
+; value node — across record field / tuple position / list element / nested record leaf / map value / map
+; key. A NON-numeric leaf (Bool vs Int) has no coercion, so no fix. (Migrated from rcdzc
+; a_numeric_leaf_inside_a_compound_offers_the_bare_literal_retype_fix.)
+(case "a numeric record-field leaf offers the inner bare-literal retype fix"
+  (input  (do (def (h (: r (Record (: x Float64)))) (. r x)) (def (g) (h #record((= x 5)))) (export g)))
+  (error  CDZ0203 (fix (kind replace) (replacement "5.0"))))
+
+(case "a numeric tuple-position leaf offers the inner bare-literal retype fix"
+  (input  (do (def (h (: t (Tuple Int64 Float64))) (. t 0)) (def (g) (h #tuple(1 2))) (export g)))
+  (error  CDZ0203 (fix (kind replace) (replacement "2.0"))))
+
+(case "a numeric list-element leaf offers the inner bare-literal retype fix"
+  (input  (do (def (h (: xs (List Float64))) xs) (def (g) (h #list(5))) (export g)))
+  (error  CDZ0203 (fix (kind replace) (replacement "5.0"))))
+
+(case "a numeric NESTED-record leaf offers the inner bare-literal retype fix"
+  (input  (do (def (h (: r (Record (: a (Record (: b Float64)))))) (. r a))
+              (def (g) (h #record((= a #record((= b 5)))))) (export g)))
+  (error  CDZ0203 (fix (kind replace) (replacement "5.0"))))
+
+(case "a non-numeric compound leaf (Bool vs Int) offers no coercion fix"
+  (input  (do (def (h (: r (Record (: x Int64)))) (. r x)) (def (g) (h #record((= x true)))) (export g)))
+  (error  CDZ0203 (no-fix)))
+
+(case "a numeric map-VALUE leaf offers the inner bare-literal retype fix"
+  (input  (do (def (h (: m (Map Int64 Float64))) m) (def (g) (h (map (1 5)))) (export g)))
+  (error  CDZ0203 (fix (kind replace) (replacement "5.0"))))
+
+(case "a numeric map-KEY leaf offers the inner bare-literal retype fix"
+  (input  (do (def (h (: m (Map Float64 Int64))) m) (def (g) (h (map (1 5)))) (export g)))
+  (error  CDZ0203 (fix (kind replace) (replacement "1.0"))))
+
 ; Homogeneity is a property of the LIST VALUE, so it must hold under `List.push` too, not only for a
 ; list LITERAL. collections-and-text.md #A List Is Grown By Functional Construction: `List.push`
 ; "MUST produce a NEW LIST VALUE" — and a list value's elements share one type (#A List Is An Ordered
