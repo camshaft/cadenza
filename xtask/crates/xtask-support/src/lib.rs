@@ -526,7 +526,7 @@ pub const MAX_SOURCE_BYTES: u64 = 512 * 1024;
 /// an entry that no longer exists OR has dropped back under the limit is STALE and FAILS the lint, forcing
 /// its removal — so this list can only SHRINK as files are split, never rot. REMOVE an entry once its file
 /// is split under the limit. (cdz-runtime/lib.rs is being split under seq-273.)
-pub const FILE_SIZE_ALLOWLIST: &[&str] = &["implementation/seed/crates/cdz-runtime/src/lib.rs"];
+pub const FILE_SIZE_ALLOWLIST: &[&str] = &[];
 
 /// FILE-SIZE lint (operator directive seq-274): FAIL if any `implementation/**/*.rs` source file exceeds
 /// [`MAX_SOURCE_BYTES`], EXCEPT the grandfathered [`FILE_SIZE_ALLOWLIST`]. Also FAILS on a STALE allowlist
