@@ -468,6 +468,31 @@
               (export main)))
   (call   main) (output (: 8 Int64)))
 
+; `*`/`/` on a quantity is dimensionally always well-formed, but the INNER numeric types must still agree
+; (no silent promotion): a Float64 quantity scaled by a bare Int64 (`(* (Qty.of 5.0 …) 1)`) is CDZ0301 with
+; the `1` -> `1.0` widening fix — matching the quantity's Float inner (without the check the mismatch reached
+; lowering and emitted an i64 into an f64 multiply = invalid wasm). Likewise two same-dimension quantities
+; whose INNER numerics differ (`(Qty.of 5 m) + (Qty.of 3.0 m)`) offer the SAME retype on the offending inner
+; value (`5` -> `5.0`). Same-inner-type operations are clean. (Migrated from rcdzc
+; scaling_a_float_quantity_by_a_bare_integer_is_a_numeric_mismatch_not_a_miscompile +
+; a_numeric_inner_mismatch_under_a_unit_offers_the_same_coercion_fix_as_a_bare_number.)
+(case "a Float64 quantity scaled by a bare Int64 is a numeric mismatch with the widening fix"
+  (input  (do (def (g) (* (Qty.of 5.0 (Unit.base #"meter")) 1)) (export g)))
+  (error  CDZ0301 (fix (kind replace) (replacement "1.0"))))
+
+(case "a Float64 quantity scaled by a bare Float64 is well-formed and runs"
+  (input  (do (def (main) (Qty.value (* (Qty.of 5.0 (Unit.base #"meter")) 2.0))) (export main)))
+  (call   main) (output (: 10.0 Float64)))
+
+(case "two same-dimension quantities with differing inner numerics retype the inner literal"
+  (input  (do (def (g) (+ (Qty.of 5 (Unit.of #"meter")) (Qty.of 3.0 (Unit.of #"meter")))) (export g)))
+  (error  CDZ0301 (fix (kind replace) (replacement "5.0"))))
+
+(case "same-inner-type quantities of one dimension add cleanly and run"
+  (input  (do (def (main) (Qty.value (+ (Qty.of 5 (Unit.of #"meter")) (Qty.of 3 (Unit.of #"meter")))))
+              (export main)))
+  (call   main) (output (: 8 Int64)))
+
 (case "a prefixed unit of a different dimension still rejects CDZ0501 (prefix scales within a dimension, never across)"
   (doc    "A PREFIX scales WITHIN a dimension, never across: `km + second` is still CDZ0501. Pins that the
            family/prefix relaxation (auto-convert within a dimension) does not weaken the dimensional
