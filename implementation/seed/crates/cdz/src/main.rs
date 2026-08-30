@@ -2118,6 +2118,17 @@ fn dispatch_compile_prepared(
     }
 }
 
+/// Map a decoded [`cadenza_compile_abi::FixKind`] to the kind string the shared fix engine
+/// (`apply_fix_to_source`/`fix::fix_edits`/`code_action_title`) matches on (`InsertInto` → `insert`).
+fn abi_fix_kind_str(kind: cadenza_compile_abi::FixKind) -> &'static str {
+    match kind {
+        cadenza_compile_abi::FixKind::Replace => "replace",
+        cadenza_compile_abi::FixKind::InsertInto => "insert",
+        cadenza_compile_abi::FixKind::Wrap => "wrap",
+        cadenza_compile_abi::FixKind::Delete => "delete",
+    }
+}
+
 fn run_compile(args: compile_args::CompileArgs) -> ExitCode {
     // Expand any DIRECTORY input into the source files under it (recursively), so
     // `cdz compile src/ --entry app` compiles a whole package tree without naming each file. A plain
@@ -5566,25 +5577,25 @@ fn program_diagnostic_keys(text: &str, is_ml: bool) -> Option<Vec<(String, Strin
         cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Diagnostics),
     );
     let bytes = out.artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS)?; // no artifact → failed at entry
-    let text_out = String::from_utf8_lossy(bytes);
-    // The wire is one fault per line: `severity<TAB>code<TAB>node<TAB>fix-kind<TAB>fix-node<TAB>
-    // fix-repl<TAB>fix-verified<TAB>message` (8 cols). Key each fault by `(SEVERITY, code, MESSAGE)` — NOT
-    // the node id. A fix that RENUMBERS nodes (a wrap/insert shifts every following node's id) would make
-    // an untouched, still-present fault land at a different id and look "new", failing the no-regression
-    // check spuriously (`cdz fix --all` would then decline a valid fix when a SECOND independent fault
-    // survives). The message text is invariant under renumbering, so it identifies "the same fault"
-    // faithfully; two genuinely-distinct faults of one code differ in their message (they name different
-    // variants / spots), so they stay distinct keys.
-    let mut keys: Vec<(String, String, String)> = text_out
-        .lines()
-        .filter_map(|line| {
-            let cols: Vec<&str> = line.splitn(8, '\t').collect();
-            match (cols.first(), cols.get(1), cols.get(7)) {
-                (Some(sev), Some(code), Some(msg)) => {
-                    Some((sev.to_string(), code.to_string(), msg.to_string()))
-                }
-                _ => None,
-            }
+    // The wire is canonical binary AST — decode to fault STRUCTS. Key each fault by `(SEVERITY, code,
+    // MESSAGE)` — NOT the node id. A fix that RENUMBERS nodes (a wrap/insert shifts every following node's
+    // id) would make an untouched, still-present fault land at a different id and look "new", failing the
+    // no-regression check spuriously (`cdz fix --all` would then decline a valid fix when a SECOND
+    // independent fault survives). The message text is invariant under renumbering, so it identifies "the
+    // same fault" faithfully; two genuinely-distinct faults of one code differ in their message (they name
+    // different variants / spots), so they stay distinct keys. (`code` absent → `-`, matching the prior key.)
+    let mut keys: Vec<(String, String, String)> = cadenza_compile_abi::decode_diagnostics(bytes)
+        .into_iter()
+        .map(|d| {
+            let sev = match d.severity {
+                cadenza_compile_abi::Severity::Error => "error",
+                cadenza_compile_abi::Severity::Warning => "warning",
+            };
+            (
+                sev.to_string(),
+                d.code.unwrap_or_else(|| "-".to_string()),
+                d.message,
+            )
         })
         .collect();
     keys.sort();
@@ -5910,7 +5921,6 @@ fn check_one(
         let _ = std::io::stdout().write_all(bytes);
         return (false, files.into_iter().map(|f| f.path).collect());
     }
-    let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
     // The package demux table (`link-map`) — absent for a single file, so every node belongs to the
     // entry with its local id == the global id.
@@ -6023,37 +6033,37 @@ fn check_one(
     // sorts LAST via the STABLE sort, keeping the sidecar's relative order — so the sequence stays a
     // deterministic function of the source (`diagnostics.md` §Diagnostics Are Emitted In A Deterministic
     // Order), now also legible top-to-bottom. The node id is column 3 (index 2) of each TAB line.
-    let line_start = |line: &str| -> Option<usize> {
-        let node = line.split('\t').nth(2)?;
-        span_of(node).map(|(_, _, from, _)| from)
+    let node_span_start = |d: &cadenza_compile_abi::Diagnostic| -> Option<usize> {
+        d.node
+            .and_then(|n| span_of(&n.to_string()))
+            .map(|(_, _, from, _)| from)
     };
-    let mut lines: Vec<&str> = text.lines().collect();
-    lines.sort_by(|a, b| match (line_start(a), line_start(b)) {
+    // The KIND_DIAGNOSTICS wire is canonical binary AST — decode to fault STRUCTS, sort by node
+    // source-start (a spanless node sorts LAST via the stable sort, keeping collection order).
+    let mut diags = cadenza_compile_abi::decode_diagnostics(bytes);
+    diags.sort_by(|a, b| match (node_span_start(a), node_span_start(b)) {
         (Some(fa), Some(fb)) => fa.cmp(&fb),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     });
-    // Each line is `severity<TAB>code<TAB>node-id<TAB>fix-kind<TAB>fix-node<TAB>fix-replacement<TAB>
-    // fix-verified<TAB>message` — the first seven columns split on the first seven tabs, message is the
-    // free-text remainder. `code`/`node-id`/the four fix columns may be `-` (absent).
-    for line in lines {
-        let mut cols = line.splitn(8, '\t');
-        let (severity, code, node, fix_kind, fix_node, fix_repl, fix_verified, message) = match (
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-            cols.next(),
-        ) {
-            (Some(s), Some(c), Some(n), Some(fk), Some(fn_), Some(fr), Some(fv), Some(m)) => {
-                (s, c, n, fk, fn_, fr, fv, m)
-            }
-            _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
+    for d in &diags {
+        // Project the decoded fault onto the `&str`/String shape the shared fix helpers (`do_fix_apply`/
+        // `do_fix_edits`/`span_of`/`file_of_node`) + the render below consume (`-` for an absent code /
+        // node / fix, exactly as the prior tab wire) — a field projection, NOT a wire re-parse.
+        let severity = match d.severity {
+            cadenza_compile_abi::Severity::Error => "error",
+            cadenza_compile_abi::Severity::Warning => "warning",
         };
+        let code = d.code.as_deref().unwrap_or("-");
+        let node_string = d.node.map(|n| n.to_string());
+        let node: &str = node_string.as_deref().unwrap_or("-");
+        let fix_node_string = d.fix.as_ref().map(|f| f.node.to_string());
+        let fix_node: &str = fix_node_string.as_deref().unwrap_or("-");
+        let fix_kind = d.fix.as_ref().map_or("-", |f| abi_fix_kind_str(f.kind));
+        let fix_repl = d.fix.as_ref().map_or("", |f| f.replacement.as_str());
+        let fix_is_verified = d.fix.as_ref().is_some_and(|f| f.verified);
+        let message = d.message.as_str();
         // Suppress the parse-recovery `<error>`-placeholder cascade — ANY fault whose subject is the
         // synthetic `<error>` node the ML reader left where a production failed. A failed production leaves
         // the placeholder in whatever position it was parsing, so it surfaces in DIFFERENT downstream checks
@@ -6089,7 +6099,7 @@ fn check_one(
         // Is Marked Verified). Only heuristic fixes with a real target span are candidates. A PACKAGE
         // check leaves `baseline_errors` `None` (see above), so a package fix stays heuristic — verifying
         // it against a single re-parsed file would miss the cross-file context.
-        let verified_flag = if fix_verified == "verified" {
+        let verified_flag = if fix_is_verified {
             true
         } else if verify_fixes && !is_package && fix_node != "-" {
             let is_ml = is_ml_source(&files[0].path);
@@ -6267,35 +6277,33 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             report_errors(&out);
             return ExitCode::FAILURE;
         };
-        let diag_text = String::from_utf8_lossy(bytes).into_owned();
         // Rebuild the span table for the CURRENT text (node ids shift after each structural edit).
         let Some(spans) = reparse_spans(&current, surface) else {
             break;
         };
 
-        // Find the first applicable fix in this pass.
+        // Find the first applicable fix in this pass. The wire is canonical binary AST — decode to structs.
         let mut applied_this_pass = false;
-        for line in diag_text.lines() {
-            let cols: Vec<&str> = line.splitn(8, '\t').collect();
-            if cols.len() < 8 {
-                continue;
-            }
-            let (severity, code, fix_kind, fix_node, fix_repl, fix_verified, message) = (
-                cols[0], cols[1], cols[3], cols[4], cols[5], cols[6], cols[7],
-            );
+        for d in cadenza_compile_abi::decode_diagnostics(bytes) {
             // A fix is a candidate when it has a real TARGET node. A CODED fault is the common case; a
             // code-less DECLINE that nonetheless carries a targeted fix (a top-level keyword typo —
             // `(exprot …)` declines "unbound name … did you mean `export`?" with a replace fix) is ALSO
-            // applicable, so gate on the fix node, not the code. `fix_verifies` (below, keyed on
+            // applicable, so gate on the presence of a fix, not the code. `fix_verifies` (below, keyed on
             // severity+code+the cleared count) still proves the edit clears the fault before `--all`
             // applies it, so admitting a code-less fix cannot apply an unverified edit.
-            if fix_node == "-" {
-                continue;
-            }
-            considered_any = true;
-            let Some(target) = fix_node.parse::<u32>().ok().map(cadenza_syntax::StructId) else {
+            let Some(fix) = &d.fix else {
                 continue;
             };
+            let severity = match d.severity {
+                cadenza_compile_abi::Severity::Error => "error",
+                cadenza_compile_abi::Severity::Warning => "warning",
+            };
+            let code = d.code.as_deref().unwrap_or("-");
+            let fix_kind = abi_fix_kind_str(fix.kind);
+            let fix_repl = fix.replacement.as_str();
+            let message = d.message.as_str();
+            considered_any = true;
+            let target = cadenza_syntax::StructId(fix.node);
             // Build the edited text structurally. This apply loop re-parses `current` each iteration (the
             // tree CHANGES as fixes accumulate), so build its `Tree` here — no cross-fix caching applies.
             let current_tree = cadenza_syntax::query::Tree::of(&current_arenas);
@@ -6312,7 +6320,7 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             };
             // Apply a compiler-verified fix always; a heuristic one only under `--all` AND only if it
             // verifies (clears its fault, introduces no new error).
-            let apply = fix_verified == "verified"
+            let apply = fix.verified
                 || (args.all
                     && fix_verifies(&edited, is_ml, severity, code, baseline_errors.as_deref()));
             if !apply {
@@ -8889,20 +8897,17 @@ mod tests {
         let bytes = out
             .artifact(cadenza_compile_abi::sidecar::KIND_DIAGNOSTICS)
             .expect("a diagnostics artifact");
-        let text = String::from_utf8_lossy(bytes);
-        // Find the CDZ0306 line; its fix-node (column 5) span must cover exactly the binder `y`.
+        // The KIND_DIAGNOSTICS wire is canonical binary AST — decode + find the CDZ0306 fault's fix node;
+        // its span must cover exactly the binder `y`.
         let mut checked = false;
-        for line in text.lines() {
-            let cols: Vec<&str> = line.splitn(8, '\t').collect();
-            if cols.get(1) == Some(&"CDZ0306") {
-                let fix_node = cols[4];
-                assert_ne!(
-                    fix_node, "-",
-                    "the unused-binding fix carries a target node"
-                );
-                let n: u32 = fix_node.parse().expect("a node id");
+        for d in cadenza_compile_abi::decode_diagnostics(bytes) {
+            if d.code.as_deref() == Some("CDZ0306") {
+                let fix = d
+                    .fix
+                    .as_ref()
+                    .expect("the unused-binding fix carries a target node");
                 let span = spans
-                    .get(cadenza_syntax::StructId(n))
+                    .get(cadenza_syntax::StructId(fix.node))
                     .expect("the fix node has a span");
                 assert_eq!(
                     &source[span.start..span.end],
@@ -8912,7 +8917,7 @@ mod tests {
                 checked = true;
             }
         }
-        assert!(checked, "expected a CDZ0306 unused-binding warning: {text}");
+        assert!(checked, "expected a CDZ0306 unused-binding warning");
         std::fs::remove_dir_all(&dir).ok();
     }
 
