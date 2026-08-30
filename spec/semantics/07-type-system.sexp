@@ -3538,3 +3538,34 @@
 (case "no forgotten-call hint when the expected type is itself a function (fn-vs-fn mismatch)"
   (input  (do (def (apply1 (: f (-> Int64 Int64)) (: x Int64)) (f x)) (def (h (: a Int64) (: b Int64)) (+ a b)) (def (g) (apply1 h 5)) (export g)))
   (error  CDZ0203 (message "expected a function taking 1 argument, but this one takes 2") (not "hasn't been fully applied")))
+
+; A wrong-type argument to a named prelude MEMBER OP names the OPERATION + its expected/actual types (like the
+; effect-op perform message), not the generic symmetric unify clash. A List op's element disagreement is a
+; malformed collection (CDZ0201) but keeps the same phrasing; a conversion op (`Int64.of`) is CDZ0203. A bare
+; operator (`+`) is not a `.`-member head, so it keeps the generic message. A same-kind compound arg that
+; differs structurally appends the field/element delta. Over-applying a member op names the op + its arity +
+; a delete-surplus fix. (Migrated from rcdzc a_wrong_type_argument_to_a_prelude_member_op_names_the_operation
+; + over_applying_a_prelude_member_op_names_the_operation_and_arity.)
+(case "a wrong-element-type List.push names the operation and its expected/actual types"
+  (input  (do (def (g (: xs (List Int64))) ((. List push) xs true)) (export g)))
+  (error  CDZ0201 (message "`List.push` expects an argument of type Int64") (message "Bool")))
+
+(case "a wrong-type argument to a conversion op names the operation"
+  (input  (do (def (g (: s String)) ((. Int64 of) s)) (export g)))
+  (error  CDZ0203 (message "`Int64.of` expects an argument of type Int64")))
+
+(case "a bare operator keeps the generic mismatch message, not a member-op phrasing"
+  (input  (do (def (g) (+ 1 true)) (export g)))
+  (error  CDZ0203 (message "Bool") (not "expects an argument of type")))
+
+(case "a structurally-mismatched List.push element names the operation and the field-level delta"
+  (input  (do (def (g (: xs (List (Record (: x Int64))))) ((. List push) xs #record((= y 2)))) (export g)))
+  (error  CDZ0201 (message "`List.push` expects an argument of type") (message "field `x`")))
+
+(case "over-applying a member op names the operation and its arity with a delete-surplus fix"
+  (input  (do (def (g (: xs (List Int64))) ((. List push) xs 1 2)) (export g)))
+  (error  CDZ0203 (message "`List.push` takes 2 arguments, but 3 were given") (fix (kind delete))))
+
+(case "over-applying an arity-1 member op uses the singular argument"
+  (input  (do (def (main) ((. Map len) #map((= 1 2)) 99)) (export main)))
+  (error  CDZ0203 (message "`Map.len` takes 1 argument, but 2 were given")))
