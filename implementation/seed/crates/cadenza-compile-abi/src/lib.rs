@@ -29,6 +29,7 @@ pub mod result_types_wire;
 pub mod runtime_hash;
 pub mod sidecar;
 pub mod spans;
+pub mod symbols_wire;
 pub mod target;
 pub mod uses_wire;
 
@@ -46,5 +47,6 @@ pub use overflow::{OverflowMode, OverflowSpec};
 pub use resolve_wire::{decode_resolve, encode_resolve};
 pub use result_types_wire::{decode_result_types, encode_result_types};
 pub use sidecar::{Query, Request, decode, encode};
+pub use symbols_wire::{decode_symbols, encode_symbols};
 pub use target::Target;
 pub use uses_wire::{decode_uses, encode_uses};

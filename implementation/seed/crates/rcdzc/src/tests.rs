@@ -38694,18 +38694,17 @@ mod sidecar_driven {
         assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
     }
 
-    /// The `Symbols` outline as `(name, kind)` rows, in the artifact's emit order.
+    /// The `Symbols` outline as `(name, kind)` rows, in the artifact's emit order — decoded from the
+    /// binary-AST wire.
     fn symbol_rows(src: &str) -> Vec<(String, String)> {
         let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        artifact_text(&out, KIND_SYMBOLS)
-            .expect("a symbols artifact")
-            .lines()
-            .map(|l| {
-                let mut c = l.split('\t');
-                (c.next().unwrap().to_string(), c.next().unwrap().to_string())
-            })
-            .collect()
+        cadenza_compile_abi::decode_symbols(
+            artifact_bytes(&out, KIND_SYMBOLS).expect("a symbols artifact"),
+        )
+        .into_iter()
+        .map(|(name, kind, _)| (name, kind))
+        .collect()
     }
 
     #[test]
@@ -38771,27 +38770,29 @@ mod sidecar_driven {
         let src = "42";
         let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        assert_eq!(artifact_text(&out, KIND_SYMBOLS).as_deref(), Some(""));
+        let bytes = artifact_bytes(&out, KIND_SYMBOLS).expect("a symbols artifact");
+        assert!(cadenza_compile_abi::decode_symbols(bytes).is_empty());
     }
 
     #[test]
     fn a_symbols_query_carries_a_jumpable_name_node() {
-        // The node id on each line is the declaration's NAME occurrence (a user node), so a consumer can
-        // resolve it to a source range and jump — the go-to affordance the outline rides on.
+        // The node id in each record is the declaration's NAME occurrence (a user node), so a consumer
+        // can resolve it to a source range and jump — the go-to affordance the outline rides on.
         let src = "(do (type Color Red Green Blue) (def (f x) x) (export f))";
         let out = compile(&inputs(src, &[Request::Query(Query::Symbols)]), &[]);
         assert!(!out.has_error(), "{:?}", out.diagnostics);
-        let text = artifact_text(&out, KIND_SYMBOLS).expect("a symbols artifact");
-        for line in text.lines() {
-            let node: u32 = line
-                .rsplit('\t')
-                .next()
-                .unwrap()
-                .parse()
-                .expect("a node id");
-            // Every reported node id is a real user node (mappable to a span), never a `-` sentinel.
-            assert_ne!(line.rsplit('\t').next().unwrap(), "-", "line: {line}");
-            let _ = node;
+        let symbols = cadenza_compile_abi::decode_symbols(
+            artifact_bytes(&out, KIND_SYMBOLS).expect("a symbols artifact"),
+        );
+        assert!(!symbols.is_empty(), "the outline has declarations");
+        // Every reported node id is a real in-range arena node (the binary-AST wire carries a `u32` per
+        // record, so a `-` sentinel is structurally impossible — a consumer can always resolve + jump).
+        let arenas = parse(src);
+        for (name, _kind, node) in &symbols {
+            assert!(
+                (*node as usize) < arenas.structure.len(),
+                "name {name} node {node} out of range"
+            );
         }
     }
 

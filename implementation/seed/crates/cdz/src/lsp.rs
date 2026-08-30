@@ -1686,6 +1686,19 @@ fn fix_kind_str(kind: cadenza_compile_abi::FixKind) -> &'static str {
     }
 }
 
+/// The decoded `Symbols` outline records `(name, kind, name-node-id)` for `arenas` — the `Symbols` query
+/// answer on the canonical binary-AST wire (`symbols_wire`) run through the shared codec, for the LSP
+/// handlers that read the document outline. ZERO string parsing.
+fn query_symbols(arenas: &cadenza_syntax::Arenas) -> Vec<(String, String, u32)> {
+    run_query_bytes(
+        arenas,
+        cadenza_compile_abi::sidecar::Query::Symbols,
+        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
+    )
+    .map(|b| cadenza_compile_abi::decode_symbols(&b))
+    .unwrap_or_default()
+}
+
 /// The `Location` (in `uri`) of a node id in `spans`, or `None` if the node has no recorded span (a
 /// prelude/built-in/synthesized node — nothing to navigate to).
 fn node_location(
@@ -2368,22 +2381,11 @@ fn range_contains(range: &Range, pos: Position) -> bool {
 /// the same authority `Symbols`/`Exports` use, so a name that names no top-level declaration (a purely
 /// local binder) yields `None`, which is exactly what the shadowing guard needs.
 fn top_level_symbol_node(arenas: &cadenza_syntax::Arenas, name: &str) -> Option<u32> {
-    let answer = run_query_text(
-        arenas,
-        cadenza_compile_abi::sidecar::Query::Symbols,
-        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-    )?;
-    for line in answer.lines() {
-        // `name<TAB>kind<TAB>name-node-id`
-        let mut cols = line.splitn(3, '\t');
-        if let (Some(n), Some(_kind), Some(node)) = (cols.next(), cols.next(), cols.next())
-            && n == name
-            && let Ok(id) = node.trim().parse::<u32>()
-        {
-            return Some(id);
-        }
-    }
-    None
+    // The name-node-id of the top-level declaration named `name`, from the binary-AST `Symbols` outline.
+    query_symbols(arenas)
+        .into_iter()
+        .find(|(n, _, _)| n == name)
+        .map(|(_, _, node)| node)
 }
 
 /// Cross-file find-references: every occurrence of the TOP-LEVEL name under the cursor, ACROSS the
@@ -2448,13 +2450,8 @@ fn package_references_at(
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
     let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    let artifact_text = |kind: &str| -> Option<String> {
-        compiled
-            .artifact(kind)
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-    };
-    // The binary-AST sibling of `artifact_text`, for the query answers whose wire is canonical binary
-    // AST (`KIND_RESOLVE`, …) — the caller decodes via the shared codec rather than splitting text.
+    // Read a query answer's RAW artifact bytes off the package compile, decoded via the shared
+    // binary-AST codec (`KIND_SYMBOLS`/`KIND_RESOLVE`) — ZERO string parsing.
     let artifact_bytes = |kind: &str| -> Option<&[u8]> { compiled.artifact(kind) };
 
     // SHADOWING GUARD (package flavor). `UsesOf` is NAME-keyed, so a LOCAL binder shadowing a top-level
@@ -2471,16 +2468,13 @@ fn package_references_at(
     // the top-level's uses. Requiring the resolve TARGET to be a `Symbols` node is what distinguishes a
     // genuine top-level from a shadowing local. `symbols_lines` is parsed once and reused for the
     // declaration-node lookup below (avoiding a separate entry-only `Symbols` compile).
-    let symbols_answer =
-        artifact_text(cadenza_compile_abi::sidecar::KIND_SYMBOLS).unwrap_or_default();
-    let symbol_nodes: std::collections::HashSet<u32> = symbols_answer
-        .lines()
-        .filter_map(|line| {
-            line.rsplit('\t')
-                .next()
-                .and_then(|c| c.trim().parse::<u32>().ok())
-        })
-        .collect();
+    // Decode the package `Symbols` outline ONCE (reused for the symbol-node set AND the declaration-node
+    // lookup below — no extra compile).
+    let symbols = artifact_bytes(cadenza_compile_abi::sidecar::KIND_SYMBOLS)
+        .map(cadenza_compile_abi::decode_symbols)
+        .unwrap_or_default();
+    let symbol_nodes: std::collections::HashSet<u32> =
+        symbols.iter().map(|(_, _, node)| *node).collect();
     let resolves_to = artifact_bytes(cadenza_compile_abi::sidecar::KIND_RESOLVE)
         .and_then(cadenza_compile_abi::decode_resolve);
     // The cursor belongs to a top-level symbol iff it IS a `Symbols` name-node (a declaration occurrence,
@@ -2493,13 +2487,10 @@ fn package_references_at(
     // The declaration node named `name` for the include-declaration fallback below — read from the SAME
     // package `Symbols` answer (its GLOBAL id, whichever file the def lives in), so no extra compile.
     // `None` when `name` names no top-level declaration (then `resolves_to` carries the target).
-    let top_node = symbols_answer.lines().find_map(|line| {
-        let mut cols = line.splitn(3, '\t');
-        match (cols.next(), cols.next(), cols.next()) {
-            (Some(n), Some(_kind), Some(node)) if n == name => node.trim().parse::<u32>().ok(),
-            _ => None,
-        }
-    });
+    let top_node = symbols
+        .iter()
+        .find(|(n, _, _)| n == &name)
+        .map(|(_, _, node)| *node);
 
     let files_ref = &files;
     let mut out: Vec<Location> = Vec::new();
@@ -2584,26 +2575,17 @@ fn fill_completions_from(
         return;
     };
 
-    // Top-level declarations (name<TAB>kind<TAB>node) — kind ∈ value/function/type/effect/module.
-    if let Some(answer) = run_query_text(
-        &arenas,
-        cadenza_compile_abi::sidecar::Query::Symbols,
-        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-    ) {
-        for line in answer.lines() {
-            let mut cols = line.splitn(3, '\t');
-            if let (Some(name), Some(kind)) = (cols.next(), cols.next()) {
-                items.insert(
-                    name.to_string(),
-                    CompletionItem {
-                        label: name.to_string(),
-                        kind: Some(symbol_kind_to_completion_kind(kind)),
-                        detail: Some(kind.to_string()),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
+    // Top-level declarations — kind ∈ value/function/type/effect/module (from the binary-AST outline).
+    for (name, kind, _) in query_symbols(&arenas) {
+        items.insert(
+            name.clone(),
+            CompletionItem {
+                label: name.clone(),
+                kind: Some(symbol_kind_to_completion_kind(&kind)),
+                detail: Some(kind),
+                ..Default::default()
+            },
+        );
     }
 
     // Local bindings in scope at the cursor (name<TAB>type<TAB>binder) — overwrite to shadow a top-level.
@@ -2668,11 +2650,10 @@ fn package_completions_at(
             cadenza_compile_abi::sidecar::Query::Exports,
             cadenza_compile_abi::sidecar::KIND_EXPORTS,
         );
-        let kinds = query_columns(
-            &lib.arenas,
-            cadenza_compile_abi::sidecar::Query::Symbols,
-            cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-        );
+        let kinds: std::collections::HashMap<String, String> = query_symbols(&lib.arenas)
+            .into_iter()
+            .map(|(n, k, _)| (n, k))
+            .collect();
         for name in imported {
             // A local binder of the same spelling already won — don't shadow it with the import.
             if items.contains_key(&name) {
@@ -2790,21 +2771,11 @@ fn code_lenses_for(text: &str, is_ml: bool) -> Vec<CodeLens> {
     let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return Vec::new();
     };
-    // The top-level declaration names + their name-node ids (for lens placement) — the `Symbols` query.
-    let Some(symbols) = run_query_text(
-        &arenas,
-        cadenza_compile_abi::sidecar::Query::Symbols,
-        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-    ) else {
-        return Vec::new();
-    };
-    let names: Vec<(String, u32)> = symbols
-        .lines()
-        .filter_map(|line| {
-            let mut cols = line.splitn(3, '\t');
-            let (name, _kind, node) = (cols.next()?, cols.next()?, cols.next()?);
-            Some((name.to_string(), node.trim().parse::<u32>().ok()?))
-        })
+    // The top-level declaration names + their name-node ids (for lens placement) — the `Symbols` query,
+    // decoded from the binary-AST outline.
+    let names: Vec<(String, u32)> = query_symbols(&arenas)
+        .into_iter()
+        .map(|(name, _kind, node)| (name, node))
         .collect();
     if names.is_empty() {
         return Vec::new();
@@ -2940,30 +2911,16 @@ fn top_level_symbols_of(text: &str, is_ml: bool) -> Vec<(String, String, Range)>
     let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return Vec::new();
     };
-    let Some(answer) = run_query_text(
-        &arenas,
-        cadenza_compile_abi::sidecar::Query::Symbols,
-        cadenza_compile_abi::sidecar::KIND_SYMBOLS,
-    ) else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for line in answer.lines() {
-        // `name<TAB>kind<TAB>name-node-id`
-        let mut cols = line.splitn(3, '\t');
-        let (Some(name), Some(kind), Some(node)) = (cols.next(), cols.next(), cols.next()) else {
-            continue;
-        };
-        let Some(range) = node
-            .trim()
-            .parse::<u32>()
-            .ok()
-            .and_then(|id| spans.get(cadenza_syntax::StructId(id)))
+    for (name, kind, node) in query_symbols(&arenas) {
+        // Map the name-node id to its source range; a row whose node has no span contributes nothing.
+        let Some(range) = spans
+            .get(cadenza_syntax::StructId(node))
             .map(|s| byte_range_to_range(text, s.start, s.end))
         else {
             continue;
         };
-        out.push((name.to_string(), kind.to_string(), range));
+        out.push((name, kind, range));
     }
     out
 }

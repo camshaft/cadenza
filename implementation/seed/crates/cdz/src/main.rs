@@ -6604,38 +6604,22 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    if text.trim().is_empty() {
+    // The outline records `(name, kind, name-node-id)`, decoded from the canonical binary-AST wire
+    // (`symbols_wire`) — the consumer does ZERO string parsing.
+    let symbols = cadenza_compile_abi::decode_symbols(bytes);
+    if symbols.is_empty() {
         eprintln!("{PROG}: {} declares nothing", args.file);
         return ExitCode::SUCCESS;
     }
-    // Each line is `name<TAB>kind<TAB>name-node-id`. One line-start index (binary-searched line:col) so a
-    // wide declaration list stays linear (the same swap `exports`/`highlight` carry). Both output shapes —
-    // the human `file:line:col: kind name` and the `--json` object — are computed from the SAME resolved
-    // `(name, kind, line, col)` so they can't drift.
+    // One line-start index (binary-searched line:col) so a wide declaration list stays linear (the same
+    // swap `exports`/`highlight` carry). Both output shapes — the human `file:line:col: kind name` and the
+    // `--json` object — are computed from the SAME resolved `(name, kind, line, col)` so they can't drift.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    let mut malformed = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut cols = line.splitn(3, '\t');
-        let (name, kind, node) = match (cols.next(), cols.next(), cols.next()) {
-            (Some(n), Some(k), Some(d)) => (n, k, d),
-            // A row that isn't the expected `name<TAB>kind<TAB>node` shape is a sidecar format skew — fail
-            // loudly rather than silently drop the symbol (PR #525's silent-drop class).
-            _ => {
-                report_malformed_query_row("symbols", line);
-                malformed = true;
-                continue;
-            }
-        };
+    for (name, kind, node) in symbols {
         // Resolve the name-node id to a `line:col` (or `None` if the span table has no entry — then the
         // human form prints just the file and the JSON omits line/col).
-        let line_col = node
-            .parse::<u32>()
-            .ok()
-            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+        let line_col = spans
+            .get(cadenza_syntax::StructId(node))
             .map(|span| index.line_col(&source, span.start));
         if args.json {
             use cadenza_syntax::query::json;
@@ -6645,8 +6629,8 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
                 obj.raw("line", &l.to_string());
                 obj.raw("col", &c.to_string());
             }
-            obj.string("kind", kind);
-            obj.string("name", name);
+            obj.string("kind", &kind);
+            obj.string("name", &name);
             println!("{}", obj.finish());
         } else {
             let loc = match line_col {
@@ -6656,11 +6640,7 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
             println!("{loc}: {kind} {name}");
         }
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 /// `cdz param-manifest FILE` — the `@param` WIDGET MANIFEST: one record per `@param(widget: …) name : Type`

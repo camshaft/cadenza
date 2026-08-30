@@ -477,16 +477,22 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         }
         Query::Symbols => {
             // The DOCUMENT OUTLINE: every top-level declaration classified by kind, one
-            // `name<TAB>kind<TAB>name-node-id` line. Reads the declaration columns `scan_top_level` filled
-            // — no new pass. Columns grouped (defs → types → effects → modules), declaration order within
+            // `(name, kind, name-node-id)` record. Reads the declaration columns `scan_top_level` filled
+            // — no new pass. Records grouped (defs → types → effects → modules), declaration order within
             // each, so the answer is a deterministic function of the program. INTERNAL defs (the do-local /
             // module-member callables `modules::register_callable` registers) are not top-level source
-            // declarations, so they are skipped.
-            let text = symbols_text(db);
+            // declarations, so they are skipped. The wire is canonical BINARY AST (`symbols_wire`,
+            // operator P0 seq-284/307-308: no bespoke TAB/newline text), a root list of `(Str Str Int)`
+            // forms the `cdz` consumers decode via the shared codec, never a string split.
+            let entries = symbols_entries(db);
+            let borrowed: Vec<(&str, &str, u32)> = entries
+                .iter()
+                .map(|(name, kind, node)| (name.as_str(), *kind, *node))
+                .collect();
             QueryResult {
                 kind: KIND_SYMBOLS,
                 name: "symbols".to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_symbols(&borrowed),
             }
         }
         Query::ParamManifest => {
@@ -865,10 +871,10 @@ impl SymbolKind {
 /// child (a function's `(NAME param…)` head) or the bare value-def name, matching `Exports`. Skips INTERNAL
 /// defs (do-local / module-member callables) — they are not source-level top-level declarations. Total: an
 /// empty program yields the empty string.
-fn symbols_text(db: &Db) -> String {
-    let mut text = String::new();
+fn symbols_entries(db: &Db) -> Vec<(String, &'static str, u32)> {
+    let mut entries: Vec<(String, &'static str, u32)> = Vec::new();
     let mut emit = |name: &str, kind: SymbolKind, node: StructId| {
-        text.push_str(&format!("{name}\t{}\t{}\n", kind.as_str(), node.0));
+        entries.push((name.to_string(), kind.as_str(), node.0));
     };
     for def in &db.defs {
         // A synthesized callable (a recursive do-local / module member) is not a top-level source
@@ -929,7 +935,7 @@ fn symbols_text(db: &Db) -> String {
             decl_name_node(db, md.occ, "module"),
         );
     }
-    text
+    entries
 }
 
 /// The NAME occurrence of a `(head NAME …)` declaration FORM at `occ` — the first tail element (the name
