@@ -120,6 +120,26 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["save", "opt_sweep"])]
         shard: Option<String>,
     },
+    /// The parser/printer golden-corpus grader (DESIGN-parser-test-corpus.md §4): grade each
+    /// `spec/syntax/<surface>/<case>/` directory against the reference `cdz` tool — the case's structural
+    /// parse tree (`cdz convert --to sexpr --structural`) vs `tree.sexp`, and its canonical format
+    /// (`cdz fmt --stdout`) vs `format.<ext>`-or-`input`. Additive `pass`/`todo`/`fail` verdicts compared
+    /// against `spec/syntax/.gate-baseline` (only pass→not-pass regresses; a full run also reds a vanished
+    /// case). This is the syntax sibling of `gate`; a `--files`/`--case` run is a subset (skips vanished).
+    GateSyntax {
+        /// Case directories to grade (relative to `spec/syntax/` or absolute). [default: the whole corpus]
+        files: Vec<PathBuf>,
+        /// Grade only cases whose title (`<surface>/<name>`) contains this substring.
+        #[arg(long)]
+        case: Option<String>,
+        /// Save the current per-case verdicts as `spec/syntax/.gate-baseline`, then exit.
+        #[arg(long, conflicts_with = "check")]
+        save: bool,
+        /// Compare to the baseline; fail on a regression (pass→not-pass), a vanished case, or a fail
+        /// not covered by the baseline.
+        #[arg(long)]
+        check: bool,
+    },
     /// The omnibus health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
     /// the wasm runtime build, and the behavior gate. Each step's output is captured to a log file
     /// (`target/xtask-logs/`); the console shows one ✓ per step, and the first failing step prints
@@ -228,6 +248,20 @@ fn main() {
                 gate(&paths, profile, gate_opts);
             }
         }
+        Cmd::GateSyntax {
+            files,
+            case,
+            save,
+            check,
+        } => {
+            let opts = gate_syntax::GateSyntaxOpts {
+                files,
+                case,
+                save,
+                check,
+            };
+            std::process::exit(gate_syntax::gate_syntax(&paths, &opts));
+        }
         Cmd::Check => check(&paths, profile),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
         Cmd::Codegen { check } => codegen::run(&paths, check),
@@ -284,6 +318,7 @@ fn run_external_subcommand(args: &[String]) -> ! {
 
 mod codegen;
 mod fleet;
+mod gate_syntax;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
 /// at `<repo>/xtask`, so the repo root is the manifest's parent and the seed workspace is the fixed

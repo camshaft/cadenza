@@ -1,0 +1,9 @@
+# gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	ml/01-integer
+pass	ml/02-arith-precedence
+pass	ml/03-let
+pass	sexp/01-integer
+pass	sexp/02-arith-precedence
+pass	sexp/03-let
+pass	sexp/04-comment-leading
+pass	sexp/05-messy-format
