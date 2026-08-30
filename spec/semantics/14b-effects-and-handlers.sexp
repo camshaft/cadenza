@@ -3440,6 +3440,16 @@
               (+ (Ask.ask) 1)) (export main)))
   (error  CDZ0401))
 
+(case "a host delegation of an effect the body never reaches is latent authority and is rejected"
+  (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
+           `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised
+           capability — latent authority, rejected at compile time (CDZ0404, capabilities-and-effects.md
+           #Host Delegation Is An Entrypoint's Prerogative). Contrast the no-home CDZ0401 above (an effect
+           PERFORMED with no home); here the effect is DELEGATED but never reached. (migrated from rcdzc
+           a_delegation_of_an_unreached_effect_is_cdz0404.)")
+  (input  (do (effect log (op emit (-> String Unit))) (def (main) (host (log) 42)) (export main)))
+  (error  CDZ0404))
+
 (case "the same declared effect is handled in-program by one entrypoint and delegated by another"
   (doc    "Host-binding is a ROUTING decision made at the entrypoint, not a declaration-time property
            (capabilities-and-effects.md #Host-Binding Is A Routing Decision Made At The Entrypoint): an
