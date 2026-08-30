@@ -10070,51 +10070,12 @@ mod match_engine {
     }
 
     #[test]
-    fn a_record_field_set_mismatch_names_the_specific_missing_or_extra_fields() {
-        // Two records that differ in their FIELD SET — the value is missing a field the type requires, or
-        // carries one it has no place for. Naming both full record types buries the difference; the
-        // message names the specific fields (rustc's "missing field `y`" / "no field `z`").
-        let missing = reject_full(
-            "(module m (def (h (: p (Record (x Int64) (y Int64)))) (. p x)) \
-               (def (g) (h (record (x 1)))) (export g))",
-        )
-        .expect("a record missing a field rejects");
-        assert_eq!(
-            missing.code.as_deref(),
-            Some("CDZ0203"),
-            "got: {}",
-            missing.message
-        );
-        assert!(
-            missing.message.contains("missing field `y`"),
-            "names the missing field: {}",
-            missing.message
-        );
-        // An EXTRA field the expected record has no place for.
-        let extra = reject_full(
-            "(module m (def (h (: p (Record (x Int64) (y Int64)))) (. p x)) \
-               (def (g) (h (record (x 1) (y 2) (z 3)))) (export g))",
-        )
-        .expect("a record with an extra field rejects");
-        assert!(
-            extra.message.contains("no such field `z`"),
-            "names the extra field: {}",
-            extra.message
-        );
-        // Two missing fields → plural, sorted (deterministic, order-independent).
-        let two = reject_full(
-            "(module m (def (h (: p (Record (x Int64) (y Int64) (w Int64)))) (. p x)) \
-               (def (g) (h (record (x 1)))) (export g))",
-        )
-        .expect("a record missing two fields rejects");
-        assert!(
-            two.message.contains("missing fields `w`, `y`"),
-            "names both missing fields, sorted: {}",
-            two.message
-        );
-        // When the field NAMES match but a field's TYPE differs, name the SPECIFIC field and its expected
-        // vs actual type (rustc's "expected `Int64`, found `Bool`" anchored on the field) — NOT a field-SET
-        // message (nothing is missing/extra), and not just two full record renders the reader must diff.
+    fn a_record_type_mismatch_is_not_reported_as_a_field_set_difference() {
+        // WHITE-BOX RESIDUAL of the record-field-set-mismatch diagnostic (its positive half — "missing
+        // field `y`" / "no such field `z`" / plural-sorted / "field `x` should be Int64, but this one is
+        // Bool" — is now the corpus 05 record-field-set cases). This keeps the NEGATIVE the corpus cannot
+        // assert: a same-field-set record whose field TYPE differs must NOT be reported as a field-SET
+        // difference (nothing is missing/extra) — a message-ABSENCE.
         let type_diff = reject_full(
             "(module m (def (h (: p (Record (x Int64)))) (. p x)) \
                (def (g) (h (record (x true)))) (export g))",
@@ -10125,26 +10086,6 @@ mod match_engine {
                 && !type_diff.message.contains("no such field"),
             "a same-field-set type mismatch is not a set difference: {}",
             type_diff.message
-        );
-        assert!(
-            type_diff
-                .message
-                .contains("field `x` should be Int64, but this one is Bool"),
-            "names the specific differing field + its types: {}",
-            type_diff.message
-        );
-        // In a WIDE record (many fields agree, one differs), the hint pinpoints the culprit (`y`) instead of
-        // burying it in a full-render diff.
-        let wide = reject_full(
-            "(module m (def (h (: p (Record (x Int64) (y Int64) (z Int64)))) (. p x)) \
-               (def (g) (h (record (x 1) (y true) (z 3)))) (export g))",
-        )
-        .expect("a wide record with one wrong field rejects");
-        assert!(
-            wide.message
-                .contains("field `y` should be Int64, but this one is Bool"),
-            "pinpoints the one differing field among many: {}",
-            wide.message
         );
     }
 
