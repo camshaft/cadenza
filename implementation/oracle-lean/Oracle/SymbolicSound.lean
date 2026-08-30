@@ -330,4 +330,22 @@ theorem denote_normalize_const (ρ : Nat → Value) (w : IntTy) (v : Value) :
   simp only [normalize, denote]
   cases h : Value.asF64? v <;> simp [h, hf]
 
+/-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
+`normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
+normalized — the structural equations above), and `denote` currently maps every compound to the SAME
+`.unsupported` (they are a later `denote` increment), so both sides are that identical `.unsupported`.
+These discharge the compound cases of the eventual `denote (normalize e) = denote e` induction; the
+`.app`/`.ite` inductive cases remain (⚠ the `.app` algebraic identities like `x+0 → x` make the full
+theorem hold only for WELL-TYPED `e` — `denote (+ bool 0)` is `.unsupported` while `normalize (+ bool 0)`
+= `bool`; a typing predicate/hypothesis is the design point for that increment, not an oracle bug since
+ill-typed programs never reach the differential). -/
+theorem denote_normalize_tuple (ρ : Nat → Value) (w : IntTy) (es : Array SymExpr) :
+    denote ρ w (normalize (.tuple es)) = denote ρ w (.tuple es) := by simp only [normalize, denote]
+theorem denote_normalize_ctor (ρ : Nat → Value) (w : IntTy) (tag : ByteArray) (args : Array SymExpr) :
+    denote ρ w (normalize (.ctor tag args)) = denote ρ w (.ctor tag args) := by simp only [normalize, denote]
+theorem denote_normalize_proj (ρ : Nat → Value) (w : IntTy) (b : SymExpr) (s : ByteArray) :
+    denote ρ w (normalize (.proj b s)) = denote ρ w (.proj b s) := by simp only [normalize, denote]
+theorem denote_normalize_case (ρ : Nat → Value) (w : IntTy) (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
+    denote ρ w (normalize (.case s arms)) = denote ρ w (.case s arms) := by simp only [normalize, denote]
+
 end Oracle
