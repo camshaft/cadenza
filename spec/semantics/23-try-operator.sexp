@@ -56,7 +56,17 @@
            from CDZ0203 (a `?` on a non-fallible OPERAND); here the operand IS fallible but the BOUNDARY
            is not.")
   (input  (do (def (main) (try (Ok 1))) (export main)))
-  (error  CDZ0230))
+  (error  CDZ0230 (message "boundary") (message "(Result Int64")))
+
+; The CDZ0230 boundary hint names the CONCRETE fallible type the `?`'d operand requires when the operand kind
+; is definite (a `(try (Ok 1))` is a `Result Int64 _`, so it suggests `(Result Int64 _)` above). When the
+; operand's kind is NOT yet definite — a bare unannotated param `x` in `(try x)` — the hint names BOTH forms,
+; `(Result _ e)` and `(Option _)`, so either annotation is offered. (Migrated from rcdzc
+; a_try_with_no_fallible_enclosing_function_is_cdz0230; the balanced-backtick message-shape check is the
+; inexpressible remainder kept as a white-box residual.)
+(case "a `?` whose operand kind is not yet definite names both fallible forms in the boundary hint"
+  (input  (do (def (f x) (+ 1 (try x))) (export f)))
+  (error  CDZ0230 (message "(Result _ e)") (message "(Option _)")))
 
 (case "a `?` mid-body under a provably non-fallible boundary is rejected"
   (doc    "`(def (main) (+ 1 (try (Some 2))))` — the `?` unwraps to `Int64` and is added to `1`, so main's
