@@ -3939,46 +3939,10 @@ fn a_rational_type_round_trips_through_encode_and_decode() {
     }
 }
 
-#[test]
-fn a_bigint_fixed_int_mix_is_the_numeric_no_promotion_error_cdz0301() {
-    // `(+ (BigInt.of n) 1)` mixes a BigInt with a fixed Int64 — the numeric model's no-silent-
-    // promotion rule, so CDZ0301 "no implicit conversion between numeric types", NOT the generic
-    // CDZ0203 "type mismatch". `BigInt` must count as numeric in `unify::mismatch` (the `unify`
-    // BigInt arm's own comment says it "falls to mismatch … CDZ0301"). This is the 15-rows/BigInt
-    // corpus case `(+ (BigInt.of 1) 1)` → CDZ0301.
-    assert_eq!(
-        reject_code("(module m (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f))").as_deref(),
-        Some("CDZ0301"),
-        "a BigInt/fixed-int mix is the numeric no-promotion error"
-    );
-    // A non-numeric conflict is still the generic CDZ0203 (BigInt did not widen the numeric net).
-    assert_eq!(
-        reject_code("(module m (def (f (: b Bool)) (+ b 1)) (export f))").as_deref(),
-        Some("CDZ0203"),
-        "a Bool/Int mix stays the generic type mismatch"
-    );
-    // The mix now carries a total-conversion fix on the FIXED-int operand: `(BigInt.of …)` wraps it so
-    // both sides are BigInt in one shot — the BigInt twin of the int-width `.of` coercion. `Rational`
-    // mirrors it with `(Rational.of-int …)`.
-    let big = reject_full("(module m (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f))")
-        .expect("the BigInt/int mix rejects");
-    assert!(
-        big.fix
-            .as_ref()
-            .is_some_and(|f| f.replacement.contains("BigInt.of")),
-        "the BigInt mix offers a `BigInt.of` wrap fix: {:?}",
-        big.fix
-    );
-    let rat = reject_full("(module m (def (f (: r Rational)) (+ r 1)) (export f))")
-        .expect("the Rational/int mix rejects");
-    assert!(
-        rat.fix
-            .as_ref()
-            .is_some_and(|f| f.replacement.contains("Rational.of-int")),
-        "the Rational mix offers a `Rational.of-int` wrap fix: {:?}",
-        rat.fix
-    );
-}
+// (a_bigint_fixed_int_mix_is_the_numeric_no_promotion_error_cdz0301 migrated to corpus 06-numeric-model: a
+// BigInt/fixed-int mix → CDZ0301 + a `BigInt.of` coercion fix (new case); the Rational/int mix + `Rational.of-int`
+// fix enriches the existing "a rational operation does not silently promote an integer operand" case; the Bool/int
+// control (stays generic CDZ0203) is the existing non-numeric-operand case. All PASS wasm.)
 
 #[test]
 fn a_recursive_bigint_result_from_a_match_binder_propagates_to_a_two_self_call_arith_arm() {
