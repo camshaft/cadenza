@@ -148,7 +148,7 @@ def detail(segments: Int64, child: Solid(Rational)) = Solid.Detail(segments, chi
 def path-start() = Path.Segs(List.push([], PathSeg.MoveToAbs(v2(rzero(), rzero()))))
 /// Append a segment (the shared spine of the chainable builders below).
 def path-append(p: Path(Rational), s: PathSeg(Rational)) =
-  match p with | Path.Segs(xs) => Path.Segs(List.push(xs, s))
+  let Path.Segs(xs) = p in Path.Segs(List.push(xs, s))
 /// Move the cursor to an absolute point (starts a new subpath, no line) — rsolid `move_to`.
 def move-to(p: Path(Rational), pt: Vec2(Rational)) = path-append(p, PathSeg.MoveToAbs(pt))
 /// Draw a straight line to an absolute point — rsolid `line_to`. Fully exact.
@@ -167,15 +167,15 @@ def cubic-by(p: Path(Rational), end: Vec2(Rational), c0: Vec2(Rational), c1: Vec
 
 /// Component-wise ABS of a 2-D vector (each coord's distance from 0).
 def v2abs(v: Vec2(Rational)) =
-  match v with | Vec2.V2(x, y) => Vec2.V2(rmax(x, rzero() - x), rmax(y, rzero() - y))
+  let Vec2.V2(x, y) = v in Vec2.V2(rmax(x, rzero() - x), rmax(y, rzero() - y))
 
 /// Component-wise max of two 2-D vectors.
 def v2max(a: Vec2(Rational), b: Vec2(Rational)) =
-  match a with | Vec2.V2(ax, ay) => (match b with | Vec2.V2(bx, by) => Vec2.V2(rmax(ax, bx), rmax(ay, by)))
+  let Vec2.V2(ax, ay) = a in (let Vec2.V2(bx, by) = b in Vec2.V2(rmax(ax, bx), rmax(ay, by)))
 
 /// Component-wise sum (for resolving a RELATIVE segment's absolute point = cursor + delta).
 def v2add(a: Vec2(Rational), b: Vec2(Rational)) =
-  match a with | Vec2.V2(ax, ay) => (match b with | Vec2.V2(bx, by) => Vec2.V2(ax + bx, ay + by))
+  let Vec2.V2(ax, ay) = a in (let Vec2.V2(bx, by) = b in Vec2.V2(ax + bx, ay + by))
 
 /// A path's ±x/±y half-extent — the max abs over every point the path REACHES. 🔑 A RELATIVE segment's Vec2
 /// is a DELTA from the current cursor, NOT an absolute point, so the walk THREADS the cursor: an Abs segment's
@@ -184,7 +184,7 @@ def v2add(a: Vec2(Rational), b: Vec2(Rational)) =
 /// bounds the curve, over-approximating safely) gives a sound enclosing box. (Bug fix: the prior version
 /// abs'd a Rel delta directly, UNDER-approximating a relative path — two `LineToRel(10,0)` reach x=20, not 10.)
 def path-half-extent(p: Path(Rational)) =
-  match p with | Path.Segs(xs) => path-extent-go(xs, Vec2.V2(rzero(), rzero()), Vec2.V2(rzero(), rzero()))
+  let Path.Segs(xs) = p in path-extent-go(xs, Vec2.V2(rzero(), rzero()), Vec2.V2(rzero(), rzero()))
 /// Fold: `cur` = the running cursor (absolute), `acc` = the max-abs extent so far. Each segment advances the
 /// cursor (`path-seg-cursor`) and folds its resolved reach (`path-seg-reach`) into the extent. Structural
 /// recursion over the segment list (head/tail), not an index loop — the empty list is the base case.
@@ -216,28 +216,28 @@ def path-seg-reach(s: PathSeg(Rational), cur: Vec2(Rational)) = match s with
 /// enclosing 2-D bound — over-approximates a curve via its control hull). `bounding-box`'s extrude/revolve
 /// arms lift this into 3-D.
 def profile-half-extent(p: Profile(Rational)) = match p with
-  | Profile.Rect(sz) => (match sz with | Vec2.V2(w, h) => Vec2.V2(rhalf(w), rhalf(h)))
+  | Profile.Rect(sz) => (let Vec2.V2(w, h) = sz in Vec2.V2(rhalf(w), rhalf(h)))
   | Profile.Circle(r) => Vec2.V2(r, r)
   | Profile.PathProfile(pth) => path-half-extent(pth)
 
-def v3-x(v: Vec3(Rational)) = match v with | Vec3.V3(x, _, _) => x
-def v3-y(v: Vec3(Rational)) = match v with | Vec3.V3(_, y, _) => y
-def v3-z(v: Vec3(Rational)) = match v with | Vec3.V3(_, _, z) => z
+def v3-x(v: Vec3(Rational)) = let Vec3.V3(x, _, _) = v in x
+def v3-y(v: Vec3(Rational)) = let Vec3.V3(_, y, _) = v in y
+def v3-z(v: Vec3(Rational)) = let Vec3.V3(_, _, z) = v in z
 
 /// Component-wise exact vector addition (composing translations).
 def v3-add(a: Vec3(Rational), b: Vec3(Rational)) =
-  match a with | Vec3.V3(ax, ay, az) =>
-    (match b with | Vec3.V3(bx, by, bz) =>
+  let Vec3.V3(ax, ay, az) = a in
+    (let Vec3.V3(bx, by, bz) = b in
       Vec3.V3(ax + bx, ay + by, az + bz))
 
 /// Component-wise exact min / max.
 def v3-min(a: Vec3(Rational), b: Vec3(Rational)) =
-  match a with | Vec3.V3(ax, ay, az) =>
-    (match b with | Vec3.V3(bx, by, bz) =>
+  let Vec3.V3(ax, ay, az) = a in
+    (let Vec3.V3(bx, by, bz) = b in
       Vec3.V3(rmin(ax, bx), rmin(ay, by), rmin(az, bz)))
 def v3-max(a: Vec3(Rational), b: Vec3(Rational)) =
-  match a with | Vec3.V3(ax, ay, az) =>
-    (match b with | Vec3.V3(bx, by, bz) =>
+  let Vec3.V3(ax, ay, az) = a in
+    (let Vec3.V3(bx, by, bz) = b in
       Vec3.V3(rmax(ax, bx), rmax(ay, by), rmax(az, bz)))
 
 /// Exact vector equality — a direct whole-compound `==`. The `ty_heap_walkable` heap-walk now admits
@@ -249,22 +249,22 @@ def v3-eq(a: Vec3(Rational), b: Vec3(Rational)) = a == b
 
 /// The union of two exact boxes — the enclosing box (min of the mins, max of the maxes).
 def aabbr-union(p: Aabb, q: Aabb) =
-  match p with | Aabb.Box(plo, phi) =>
-    (match q with | Aabb.Box(qlo, qhi) =>
+  let Aabb.Box(plo, phi) = p in
+    (let Aabb.Box(qlo, qhi) = q in
       Aabb.Box(v3-min(plo, qlo), v3-max(phi, qhi)))
 
 /// The box of an INTERSECTION — the overlap of the two boxes (max of the mins, min of the maxes). The
 /// result may be "inverted" (lo > hi) if the boxes don't overlap; that denotes an empty intersection, which
 /// a mesh driver treats as no geometry. Exact.
 def aabbr-intersect(p: Aabb, q: Aabb) =
-  match p with | Aabb.Box(plo, phi) =>
-    (match q with | Aabb.Box(qlo, qhi) =>
+  let Aabb.Box(plo, phi) = p in
+    (let Aabb.Box(qlo, qhi) = q in
       Aabb.Box(v3-max(plo, qlo), v3-min(phi, qhi)))
 
 /// Component-wise exact vector multiply (for per-axis scale).
 def v3-mul(a: Vec3(Rational), b: Vec3(Rational)) =
-  match a with | Vec3.V3(ax, ay, az) =>
-    (match b with | Vec3.V3(bx, by, bz) =>
+  let Vec3.V3(ax, ay, az) = a in
+    (let Vec3.V3(bx, by, bz) = b in
       Vec3.V3(ax * bx, ay * by, az * bz))
 
 /// A degenerate zero box at the origin — the bound of an empty solid (no geometry).
@@ -281,8 +281,8 @@ def aabbr-of-corners(p: Vec3(Rational), q: Vec3(Rational)) = Aabb.Box(v3-min(p, 
 /// flips x; `mirror([0,1,0])` flips y; etc. (For a general non-axis normal a true reflection would combine
 /// axes; this component-wise flip matches the axis-aligned mirrors real assemblies use — the common case.)
 def v3-mirror(p: Vec3(Rational), normal: Vec3(Rational)) =
-  match p with | Vec3.V3(px, py, pz) =>
-    (match normal with | Vec3.V3(nx, ny, nz) =>
+  let Vec3.V3(px, py, pz) = p in
+    (let Vec3.V3(nx, ny, nz) = normal in
       Vec3.V3((if nx == rzero() then px else rzero() - px),
               (if ny == rzero() then py else rzero() - py),
               (if nz == rzero() then pz else rzero() - pz)))
@@ -295,8 +295,8 @@ def v3-mirror(p: Vec3(Rational), normal: Vec3(Rational)) =
 ///   (An earlier `max(mx,my,mz)` was UNSOUND: a corner at (1,1,1) can rotate onto one axis at distance
 ///    sqrt(3) > 1, escaping `[-1,1]^3` — the reviewer-flagged under-approximation. The L1 sum fixes it.)
 def aabbr-rotate-radius(lo: Vec3(Rational), hi: Vec3(Rational)) =
-  match lo with | Vec3.V3(lx, ly, lz) =>
-    (match hi with | Vec3.V3(hx, hy, hz) =>
+  let Vec3.V3(lx, ly, lz) = lo in
+    (let Vec3.V3(hx, hy, hz) = hi in
       let mx = rmax(rabs(lx), rabs(hx)) in
       let my = rmax(rabs(ly), rabs(hy)) in
       let mz = rmax(rabs(lz), rabs(hz)) in
@@ -314,7 +314,7 @@ def bounding-box(s: Solid(Rational)) = match s with
   // Each primitive builds its box from ±half-extent corners, normalized via `aabbr-of-corners` so a NEGATIVE
   // dimension/radius yields a well-formed box (absolute extent) rather than an inverted one.
   | Solid.Cube(sz) =>
-    (match sz with | Vec3.V3(w, d, h) =>
+    (let Vec3.V3(w, d, h) = sz in
       aabbr-of-corners(Vec3.V3(rzero() - rhalf(w), rzero() - rhalf(d), rzero() - rhalf(h)),
                        Vec3.V3(rhalf(w), rhalf(d), rhalf(h))))
   | Solid.Sphere(r) =>
@@ -372,9 +372,9 @@ def bounding-box(s: Solid(Rational)) = match s with
 
 /// The exact size (max − min) of a bounding box — the "how big" answer, exact.
 def aabbr-size(b: Aabb) =
-  match b with | Aabb.Box(lo, hi) =>
-    (match lo with | Vec3.V3(lx, ly, lz) =>
-      (match hi with | Vec3.V3(hx, hy, hz) =>
+  let Aabb.Box(lo, hi) = b in
+    (let Vec3.V3(lx, ly, lz) = lo in
+      (let Vec3.V3(hx, hy, hz) = hi in
         Vec3.V3(hx - lx, hy - ly, hz - lz)))
 
 /// Is this exact solid the empty node? A direct top-node test (NOT a full leaf-count) — `simplify-r` collapses
@@ -501,7 +501,7 @@ def bounding-box-of-a-cube-is-symmetric() =
   let two = 2 / 1 in
   let one = 1 / 1 in
   let b = bounding-box(Solid.Cube(v3(two, two, two))) in
-  match b with | Aabb.Box(lo, hi) =>
+  let Aabb.Box(lo, hi) = b in
     (if v3-eq(lo, v3(rzero() - one, rzero() - one, rzero() - one)) then
       (if v3-eq(hi, v3(one, one, one)) then unit else trap("hi corner")) else trap("lo corner"))
 
@@ -537,7 +537,7 @@ def exact_arithmetic_has_no_rounding() =
 def empty-has-a-degenerate-box() =
   // an Empty solid bounds to a zero box at the origin.
   let b = bounding-box(Solid.Empty) in
-  match b with | Aabb.Box(lo, hi) =>
+  let Aabb.Box(lo, hi) = b in
     (if v3-eq(lo, v3(rzero(), rzero(), rzero())) then
       (if v3-eq(hi, v3(rzero(), rzero(), rzero())) then unit else trap("hi zero")) else trap("lo zero"))
 
@@ -669,7 +669,7 @@ def lower-maps-extrude-and-revolve-to-the-monomorphic-render-form() =
     | SolidR.ExtrudeLinear(rp, h) =>
       (match rp with
         | ProfileR.Rect(rv) =>
-          (match rv with | Vec2R.V2(w, hh) =>
+          (let Vec2R.V2(w, hh) = rv in
             (if w == 4 / 1 and hh == 2 / 1 and h == 6 / 1 then
               (match lower(rev) with
                 | SolidR.Revolve(cp, deg) =>
@@ -688,12 +688,12 @@ def path-builders-accumulate-segments-in-order() =
   // path-start seeds a MoveToAbs(0,0); each line-to/cubic-to appends one segment. A square outline
   // (3 line-to after the start) has 4 segments; the fluent chain (nested) preserves order.
   let square = line-to(line-to(line-to(path-start(), v2(4 / 1, rzero())), v2(4 / 1, 2 / 1)), v2(rzero(), 2 / 1)) in
-  match square with | Path.Segs(xs) =>
+  let Path.Segs(xs) = square in
     (if List.len(xs) == (4 : Int64) then
       // the 2nd segment (index 1) is the first line-to → LineToAbs(4, 0).
       (match List.at(xs, (1 : Int64)) with
         | Option.Some(s) => (match s with
-            | PathSeg.LineToAbs(p) => (match p with | Vec2.V2(x, y) =>
+            | PathSeg.LineToAbs(p) => (let Vec2.V2(x, y) = p in
                 (if x == 4 / 1 and y == rzero() then unit else trap("first line-to is (4,0)")))
             | _ => trap("segment 1 is a LineToAbs"))
         | Option.None => trap("segment 1 exists"))
@@ -790,7 +790,7 @@ def lower-maps-a-path-profile-to-the-render-form() =
     | SolidR.ExtrudeLinear(rp, _) =>
       (match rp with
         | ProfileR.PathProfile(rpath) =>
-          (match rpath with | PathR.Segs(rxs) =>
+          (let PathR.Segs(rxs) = rpath in
             (if List.len(rxs) == (2 : Int64) then unit
              else trap("lowered path should have 2 segments")))
         | _ => trap("lowered profile should be a PathProfile"))
@@ -1030,11 +1030,11 @@ type SolidR =
 
 /// Lower one exact vector into the monomorphic mirror (identity on the three Rational coordinates).
 def lower-vec3(v: Vec3(Rational)) =
-  match v with | Vec3.V3(x, y, z) => Vec3R.V3(x, y, z)
+  let Vec3.V3(x, y, z) = v in Vec3R.V3(x, y, z)
 
 /// Lower a 2-D vector / profile into its monomorphic mirror (identity on the Rational coordinates).
 def lower-vec2(v: Vec2(Rational)) =
-  match v with | Vec2.V2(x, y) => Vec2R.V2(x, y)
+  let Vec2.V2(x, y) = v in Vec2R.V2(x, y)
 /// Lower one path segment (map each Vec2 to its monomorphic mirror).
 def lower-pathseg(s: PathSeg(Rational)) = match s with
   | PathSeg.MoveToAbs(p) => PathSegR.MoveToAbs(lower-vec2(p))
@@ -1045,7 +1045,7 @@ def lower-pathseg(s: PathSeg(Rational)) = match s with
   | PathSeg.CubicToRel(e, c0, c1) => PathSegR.CubicToRel(lower-vec2(e), lower-vec2(c0), lower-vec2(c1))
 /// Lower a path — recursively lower each segment into a fresh list (`List` has no map).
 def lower-path(p: Path(Rational)) =
-  match p with | Path.Segs(xs) => PathR.Segs(lower-path-go(xs, []))
+  let Path.Segs(xs) = p in PathR.Segs(lower-path-go(xs, []))
 /// Lower each segment — structural recursion over the input (head/tail), accumulating the lowered segments in
 /// order into `acc` (the fleet-standard `[h, .. t]`-destructure + `List.push` fold; no index counter).
 def lower-path-go(xs: List(PathSeg(Rational)), acc: List(PathSegR)) =
@@ -1094,7 +1094,7 @@ def lower-preserves-every-constructor-and-coordinate() =
     | SolidR.Union(left, right) =>
       (match left with
         | SolidR.Translate(lv, lc) =>
-          (match lv with | Vec3R.V3(lx, _, _) =>
+          (let Vec3R.V3(lx, _, _) = lv in
             (match lc with
               | SolidR.Cylinder(ch, cr) =>
                 (if lx == 1 / 1 and ch == 3 / 1 and cr == 1 / 1 then
@@ -1104,7 +1104,7 @@ def lower-preserves-every-constructor-and-coordinate() =
                         | SolidR.Difference(box, tools) =>
                           (match box with
                             | SolidR.Cube(bv) =>
-                              (match bv with | Vec3R.V3(bx, _, _) =>
+                              (let Vec3R.V3(bx, _, _) = bv in
                                 (if bx == 4 / 1 then
                                   (match tools with
                                     | SolidR.Intersection(ball, hole) =>
@@ -1132,11 +1132,11 @@ def lower-maps-rotate-and-mirror-to-the-render-form() =
               Solid.Mirror(v3(1 / 1, rzero(), rzero()), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1)))) in
   match lower(tree) with
     | SolidR.Rotate(rv, rc) =>
-      (match rv with | Vec3R.V3(_, _, rz) =>
+      (let Vec3R.V3(_, _, rz) = rv in
         (if rz == 60 / 1 then
           (match rc with
             | SolidR.Mirror(nv, mc) =>
-              (match nv with | Vec3R.V3(nx, _, _) =>
+              (let Vec3R.V3(nx, _, _) = nv in
                 (if nx == 1 / 1 then
                   (match mc with | SolidR.Cube(_) => unit | _ => trap("mirror child (Cube) lost"))
                  else trap("mirror normal x lost")))
@@ -1207,7 +1207,7 @@ def mirror-across-x-bounds-exactly() =
   // shifted box: x in [9, 11]. Mirror across x (normal [1,0,0]) → x in [-11, -9]. Size stays 2×2×2; centre x = -10.
   match bounding-box(Solid.Mirror(v3(1 / 1, rzero(), rzero()), shifted)) with
     | Aabb.Box(lo, hi) =>
-      (match lo with | Vec3.V3(lx, _, _) => (match hi with | Vec3.V3(hx, _, _) =>
+      (let Vec3.V3(lx, _, _) = lo in (let Vec3.V3(hx, _, _) = hi in
         if lx == (rzero() - (11 / 1)) and hx == (rzero() - (9 / 1)) then unit
         else trap("mirror-x of [9,11] should be [-11,-9]")))
 
@@ -1220,13 +1220,13 @@ def mirror-across-y-and-z-bounds-exactly() =
   // shifted-y box: y in [9, 11], x/z in [-1, 1]. Mirror across y → y in [-11, -9]; x/z unchanged.
   (match bounding-box(Solid.Mirror(v3(rzero(), 1 / 1, rzero()), shifted-y)) with
     | Aabb.Box(lo, hi) =>
-      (match lo with | Vec3.V3(lx, ly, _) => (match hi with | Vec3.V3(hx, hy, _) =>
+      (let Vec3.V3(lx, ly, _) = lo in (let Vec3.V3(hx, hy, _) = hi in
         if ly == (rzero() - (11 / 1)) and hy == (rzero() - (9 / 1))
            and lx == (rzero() - (1 / 1)) and hx == (1 / 1)
         then (let shifted-z = Solid.Translate(v3(rzero(), rzero(), 10 / 1), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
               (match bounding-box(Solid.Mirror(v3(rzero(), rzero(), 1 / 1), shifted-z)) with
                 | Aabb.Box(lo2, hi2) =>
-                  (match lo2 with | Vec3.V3(_, _, lz) => (match hi2 with | Vec3.V3(_, _, hz) =>
+                  (let Vec3.V3(_, _, lz) = lo2 in (let Vec3.V3(_, _, hz) = hi2 in
                     if lz == (rzero() - (11 / 1)) and hz == (rzero() - (9 / 1)) then unit
                     else trap("mirror-z of [9,11] should be [-11,-9]")))))
         else trap("mirror-y of [9,11] should be [-11,-9] with x untouched"))))
@@ -1241,7 +1241,7 @@ def mirror-is-an-involution() =
                 Solid.Mirror(v3(1 / 1, rzero(), rzero()), shifted)) in
   (match bounding-box(twice) with
     | Aabb.Box(lo, hi) =>
-      (match lo with | Vec3.V3(lx, _, _) => (match hi with | Vec3.V3(hx, _, _) =>
+      (let Vec3.V3(lx, _, _) = lo in (let Vec3.V3(hx, _, _) = hi in
         if lx == (9 / 1) and hx == (11 / 1) then unit
         else trap("mirror-x applied twice must restore [9,11]"))))
 
