@@ -8037,9 +8037,9 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                 }
                 // Split at a `..` marker: `lead` leading element sub-patterns, then (for a rest pattern) the
                 // rest binder. A rest pattern needs EXACTLY one binder after `..`.
-                match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-                    Some(i) => {
-                        if i + 2 != es.len() {
+                match db.ast.rest_marker(&es) {
+                    Some((i, operand, trailing_start)) => {
+                        if trailing_start != es.len() {
                             // Anchor at the offending list PATTERN, not the enclosing match, so the
                             // squiggle lands on `(list … .. …)` rather than the whole `(match …)`.
                             return Core::Poison(
@@ -8058,7 +8058,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                         // via v-guide). Byte-identical to the resolve `Case 6mr` message + anchored at the
                         // same `pat`, so when the body DOES reference an inner binder both fire at this node
                         // and same-node dedup collapses them into ONE diagnostic.
-                        if db.ast.as_name(es[i + 1]).is_none() {
+                        if db.ast.as_name(operand).is_none() {
                             return Core::Poison(
                                 Reject::coded(
                                     Code::Malformed,
@@ -9914,8 +9914,7 @@ pub(crate) fn check_binding_pattern(
     {
         // Linearity across the WHOLE list pattern (CDZ0102) — the same check the tuple case runs.
         check_pattern_linear(db, pat)?;
-        let dd = elems.iter().position(|&e| db.ast.as_name(e) == Some(".."));
-        let Some(dd) = dd else {
+        let Some((dd, operand, trailing_start)) = db.ast.rest_marker(&elems) else {
             // No `..` — a FIXED-ARITY list pattern, refutable (matches only its exact length). CDZ0210.
             return Err(Reject::coded(
                 Code::NonExhaustive,
@@ -9928,14 +9927,14 @@ pub(crate) fn check_binding_pattern(
         };
         // A rest pattern needs EXACTLY one binder after `..`, and that binder must be a bare name / `_`
         // (it binds the tail SUBLIST — a nested rest pattern is a later increment).
-        if dd + 2 != elems.len() {
+        if trailing_start != elems.len() {
             return Err(Reject::coded(
                 Code::Malformed,
                 "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
             )
             .at(pat));
         }
-        if db.ast.as_name(elems[dd + 1]).is_none() {
+        if db.ast.as_name(operand).is_none() {
             return Err(
                 Reject::coded(Code::Malformed, crate::diag::LIST_REST_BINDER_NAME_ONLY).at(pat),
             );
@@ -10589,9 +10588,8 @@ fn pattern_constraints(
             .to_vec();
         // Split off a trailing `.. rest`: a `..` MARKER followed by exactly one binder as the final two
         // elements. `lead` = the fixed leading element patterns; `has_rest` = a tail-binding rest pattern.
-        let dotdot = raw.iter().position(|&e| db.ast.as_name(e) == Some(".."));
-        let (leads, has_rest): (&[StructId], bool) = match dotdot {
-            Some(k) if k + 2 == raw.len() => (&raw[..k], true), // `(list p… .. rest)` — well-formed
+        let (leads, has_rest): (&[StructId], bool) = match db.ast.rest_marker(&raw) {
+            Some((k, _, trailing_start)) if trailing_start == raw.len() => (&raw[..k], true), // `(list p… .. rest)` — well-formed
             Some(_) => {
                 // A `..` that is not the second-to-last element is malformed (a rest binds the whole tail,
                 // so it must be final). CDZ0201 — the same shape rule a top-level list pattern enforces.
