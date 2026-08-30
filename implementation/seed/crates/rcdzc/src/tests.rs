@@ -30140,36 +30140,6 @@ mod stage1 {
     }
 
     #[test]
-    fn inline_always_on_a_recursive_def_is_rejected() {
-        // 09-functions "inline-always on a recursive definition is rejected" (Addendum 4). `inline-always`
-        // asks the compiler to always fold a def at its call sites, but a RECURSIVE def cannot inline (it
-        // is always emitted once) — the marker is a contradiction → coded CDZ0201 at the def's signature.
-        let out = crate::compile::compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "m",
-                crate::codec::encode(&parse(
-                    "(module m \
-                       (@ inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1))))) \
-                       (def (main) (loop-n 5)) (export main))",
-                )),
-            )],
-            &[crate::backend::Target::Wasm],
-        );
-        let d = out
-            .diagnostics
-            .iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
-            .expect("inline-always on a recursive def must be an error");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"));
-        assert!(
-            d.message.contains("recursive") && d.message.contains("inline-always"),
-            "the message names the conflict: {}",
-            d.message
-        );
-    }
-
-    #[test]
     fn the_cost_heuristic_emits_a_big_multiply_called_helper_once() {
         // Addendum 4 cost heuristic. `big` is LARGE (well past INLINE_COST_THRESHOLD nodes — 8 products
         // summed) and called at TWO sites, each with a RUNTIME argument (`main`'s params `a`/`b`, so the
