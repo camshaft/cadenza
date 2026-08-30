@@ -6570,6 +6570,35 @@
             (def (main) (f #list(#list(7 8 8) #list(9) #list(1)))) (export main)))
   (output (: 11 Int64)))
 
+; The rest binder of a list pattern (the slot after `..`) must be a NAME or `_` — it captures the WHOLE tail
+; as a list. A NON-name in that slot — a nested `#list(…)` sub-pattern, or a literal — is a malformed rest
+; shape, rejected CDZ0201 "rest binder of a list pattern must be a name or `_`". This is a SHAPE check: it
+; fires whether or not the body references any inner binder, and even when the nested sub-pattern binds
+; nothing. Contrast the VALID `#list(#list(a .. r1) .. r2)` above, where the nested list is in ELEMENT
+; position and `r1`/`r2` ARE names. (Migrated from rcdzc
+; a_nested_list_rest_shape_rejects_regardless_of_whether_the_body_uses_the_inner_binders.)
+(case "an invalid nested-list-rest shape (a sub-pattern in the rest slot) is rejected even when the body ignores the inner binders"
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. #list(b .. r)) a) (_ 0))) (export f)))
+  (error  CDZ0201 (message "rest binder of a list pattern must be a name")))
+
+(case "a nested-rest sub-pattern binding nothing still rejects the list rest shape"
+  (doc    "Even a nested `#list()` (binding nothing) in the rest slot is a non-name rest binder → CDZ0201; no
+           inner binder need exist for the shape reject to fire.")
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. #list()) a) (_ 0))) (export f)))
+  (error  CDZ0201 (message "rest binder of a list pattern must be a name")))
+
+(case "a literal in the list rest slot is rejected as a non-name rest binder"
+  (doc    "A literal `5` in the rest slot `#list(a .. 5)` binds nothing and is not a name/`_`, so it is the
+           same non-name rest-shape reject, CDZ0201.")
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. 5) a) (_ 0))) (export f)))
+  (error  CDZ0201 (message "rest binder of a list pattern must be a name")))
+
+(case "an invalid nested-list-rest shape reports EXACTLY ONE rest-shape reject when the body uses the inner binders"
+  (doc    "When the body DOES reference the inner binders, two paths (resolve Case 6mr + the lowering check)
+           both fire at the SAME `#list(…)` node — same-node dedup collapses them to ONE CDZ0201, not two.")
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. #list(b .. r)) (+ b (List.len r))) (_ 0))) (export f)))
+  (error  CDZ0201 (message "rest binder of a list pattern must be a name") (count 1)))
+
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
            arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's
