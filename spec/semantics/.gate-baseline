@@ -9390,3 +9390,11 @@ todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly,
 todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	an escaping captured continuation is refused, not miscompiled
+pass	a string value annotated as a non-String type is a mismatch
+pass	a type-position typo does not suggest a nearer VALUE def
+pass	a type-position typo still suggests a prelude type with a rename fix
+pass	a type-position typo still suggests a real user type with a rename fix
+pass	a typo'd handle effect name does not suggest a prelude variant constructor with no members
+pass	a typo'd handle effect name prefers a member-accessible effect over an equidistant variant
+pass	an internal meta channel is not offered as a member suggestion
+pass	applying an effect name names the category, not the leaked synthesized record type
