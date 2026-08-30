@@ -312,15 +312,15 @@ fn a_multishot_arm_folds_flat_but_declines_inside_recursion_never_miscompiles() 
     // declines cleanly (a recursive 2^n-path refold is a later increment). If a future increment folds
     // it, the value MUST equal the flat cross-product 25 (`(loop 2)` = `(* flipA (* flipB 1))`, the `* 1`
     // collapsing to `(* flipA flipB)`) — pinned by the corpus flat case above; here we only guard the
-    // current CLEAN (uncoded) decline, never a coded rejection or crash.
+    // current CLEAN CDZ0900 (deferred) decline, never a hard coded rejection or crash.
     let rec = "(do (effect Amb (op flip (-> Unit Int64))) \
              (def (loop (: n Int64)) (if (= n 0) 1 (* (Amb.flip) (loop (- n 1))))) \
              (def (main) (handle Amb 0 ((flip (u) s (+ (resume 2 s) (resume 3 s)))) (loop 2))) (export main))";
     let e = compile_component(&crate::codec::encode(&parse(rec)))
         .expect_err("the recursive multi-shot face declines cleanly (not yet reducible)");
     assert!(
-        e.code.is_none(),
-        "the recursive multi-shot face must decline CLEANLY (uncoded) — a coded rejection is a different regression: {:?}",
+        e.code.as_deref() == Some("CDZ0900"),
+        "the recursive multi-shot face must decline as CDZ0900 (deferred) — a hard coded rejection is a different regression: {:?}",
         e.code
     );
 }
