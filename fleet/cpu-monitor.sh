@@ -26,6 +26,10 @@ TOP_N="${CDZ_CPU_MONITOR_TOP_N:-25}"               # per sample: log the N heavi
 MIN_PCPU="${CDZ_CPU_MONITOR_MIN_PCPU:-10}"         # ignore processes below this %CPU (noise floor)
 CMD_CAP="${CDZ_CPU_MONITOR_CMD_CAP:-500}"          # cap each logged cmdline to N chars (bound line size)
 
+REAP_MIN="${CDZ_ORPHAN_CDZ_REAP_MIN:-30}"          # reap ORPHANED (PPID 1) `cdz` procs older than this (min)
+REAP_LOG="$LOG_DIR/reap.log"                        # bounded audit of reaped orphans (mtime = last-fired proof)
+REAP_LOG_MAX="${CDZ_REAP_LOG_MAX:-2000}"
+
 mkdir -p "$LOG_DIR" 2>/dev/null || exit 0
 
 # Light per-LOG-TIME normalization: collapse nix-store hashes + /tmp scratch (huge variance, low value),
@@ -36,7 +40,59 @@ log_normalize() {
     -e 's#/tmp/[A-Za-z0-9._-]+#/tmp/X#g'
 }
 
+# Reap ORPHANED (PPID 1) `cdz` front-end procs older than REAP_MIN (concierge fleet-health ask 2026-08-30).
+# WHY: a leaked warm-compile whose owning window/agent DIED gets reparented to init (PPID 1) — no agent
+# owns it, so nothing reaps it; it pegs a core for HOURS and starves the gate check-lease (observed: an
+# orphaned cdz at 99.7% for 1h34m starved gates ~1.5h before a hand-reap). PPID 1 + own-user makes it
+# UNAMBIGUOUS: the owner is gone, there is no one to coordinate a graceful stop with, so a leaked hung
+# front-end is safe to kill outright. Deliberately SCOPED to comm == exactly `cdz` (the front-end binary),
+# NEVER cdz-run / cdz-compile / rcdzc, and NEVER an OWNED (live-parent) hung cdz — that latter class is
+# escalate-to-owner policy, not this reaper's to kill. arg1: apply (1 = SIGKILL, 0 = dry-run report only).
+# FAIL-OPEN: any hiccup just returns (a monitor tick must never error out or spam cron mail).
+reap_orphaned_cdz() {
+  local apply="${1:-0}" me min_secs reaped=0 seen=0 pid ppid euid et comm n
+  me="$(id -u 2>/dev/null || echo -1)"
+  min_secs=$(( REAP_MIN * 60 ))
+  # pid ppid euid etimes comm — comm is the executable basename (holds `cdz` untruncated). `read` word-splits.
+  while read -r pid ppid euid et comm; do
+    [ -n "$pid" ] || continue
+    [ "$ppid" = "1" ] || continue          # ORPHANED — reparented to init (owning window/agent died)
+    [ "$euid" = "$me" ] || continue        # own-user only (never touch a peer uid's proc)
+    [ "$comm" = "cdz" ] || continue        # exactly the front-end binary (not cdz-run/cdz-compile/rcdzc)
+    [ "${et:-0}" -ge "$min_secs" ] 2>/dev/null || continue
+    seen=$((seen + 1))
+    if [ "$apply" = 1 ]; then
+      if kill -KILL "$pid" 2>/dev/null; then
+        reaped=$((reaped + 1))
+        printf '%s reaped orphaned cdz pid=%s ppid=1 etimes=%ss (>=%smin, own-user)\n' \
+          "$(date -Is 2>/dev/null || echo now)" "$pid" "$et" "$REAP_MIN" >> "$REAP_LOG" 2>/dev/null || true
+      fi
+    else
+      printf 'cpu-monitor: WOULD reap orphaned cdz pid=%s ppid=1 etimes=%ss (>=%smin, own-user)\n' \
+        "$pid" "$et" "$REAP_MIN" >&2
+    fi
+  done < <(ps -eo pid=,ppid=,euid=,etimes=,comm= 2>/dev/null)
+  # Bound the audit log (tail-rotate) so it can never become its own disk hog.
+  if [ "$apply" = 1 ] && [ -f "$REAP_LOG" ]; then
+    n="$(wc -l < "$REAP_LOG" 2>/dev/null || echo 0)"
+    if [ "${n:-0}" -gt "$REAP_LOG_MAX" ]; then
+      tail -n "$REAP_LOG_MAX" "$REAP_LOG" > "$REAP_LOG.rot" 2>/dev/null && mv "$REAP_LOG.rot" "$REAP_LOG" 2>/dev/null || true
+    fi
+    [ "$reaped" -gt 0 ] && printf 'cpu-monitor: reaped %s orphaned cdz proc(s) (>=%smin, own-user)\n' "$reaped" "$REAP_MIN" >&2
+  else
+    printf 'cpu-monitor: %s orphaned cdz candidate(s) (dry-run; pass --apply to reap)\n' "$seen" >&2
+  fi
+  return 0
+}
+
 case "${1:-sample}" in
+  --reap-orphans | reap-orphans)
+    # Manual inspection / operator drive. DRY-RUN by default (lists candidates); `--apply` actually reaps.
+    _apply=0
+    [ "${2:-}" = "--apply" ] && _apply=1
+    reap_orphaned_cdz "$_apply"
+    exit 0
+    ;;
   --report | report)
     REPORT_N="${2:-25}"   # `cpu-monitor.sh --report [N]` — N top tasks (default 25)
     if [ ! -s "$LOG" ]; then
@@ -76,6 +132,12 @@ case "${1:-sample}" in
     exit 0
     ;;
   *)
+    # First, reap any ORPHANED (PPID 1) hung `cdz` front-end (leaked warm-compile whose owner died). This
+    # runs on every 2-min sampler tick — no separate cron needed — and is fail-open, so a monitor tick both
+    # OBSERVES the hotspots and CLEARS the owner-less ones that starve the gate lease. Set
+    # CDZ_ORPHAN_CDZ_REAP_MIN=0 to widen or a huge value to effectively disable.
+    reap_orphaned_cdz 1
+
     # ONE snapshot: the TOP_N heaviest processes above MIN_PCPU, appended as ts<TAB>pcpu<TAB>etimes<TAB>cmd.
     ts="$(date +%s 2>/dev/null || echo 0)"
     ps -eo pcpu=,etimes=,args= --sort=-pcpu 2>/dev/null \
