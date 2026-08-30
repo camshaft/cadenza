@@ -89,16 +89,24 @@ current reference impl:
    facts:
    - Comments are already first-class arena nodes (`cadenza-syntax/src/parser.rs:112-115` "Comments no
      longer vanish"): `(comment "text" form)` (leading own-line), `(comment-after "text" form)`
-     (trailing same-line), `(doc "text")` (`///` item), `(module-doc "text")` (file header). Verified —
-     the `convert --to debug` view of `// start value\nlet x = 10 in x  // in scope` shows the arena as
-     `(comment "in scope" (comment "start value" (let ((x 10)) x)))`.
+     (trailing same-line), and `(doc "text")` (a `///` item-doc the def/module parser splices as a body
+     form). Verified — the `convert --to debug` view of `// start value\nlet x = 10 in x  // in scope`
+     shows the arena as `(comment "in scope" (comment "start value" (let ((x 10)) x)))`.
+     - **NOTE (corrected 2026-08-30, v-syntax the `cadenza-syntax` owner): there is NO `(module-doc …)`
+       node and NO `//!` handling in the reference ML reader.** The lexer recognizes exactly two comment
+       kinds — `//` (→ `comment`) and `///` (→ item-`doc`); a `//!` lexes as an ordinary `//` comment
+       whose body starts with `!` (e.g. `//! header` → `(comment "! header" …)`, pinned by
+       `spec/syntax/ml/09-bang-comment`). A file/module-level `(module-doc …)` (the natural `//!`
+       parallel to `///` item-doc) would be a SEPARATE, operator-gated syntax feature — not implemented,
+       not queued. (An earlier draft of this doc claimed `//!` → `(module-doc "text")` "verified"; that
+       was inaccurate and is retracted here.)
    - **But the current s-expression *printer* collapses those comment nodes back to `;` line-comments**
      (verified: `convert --to sexpr` of the same input prints `; in scope` / `; start value` lines above
      `(let ((x 10)) x)`, and even feeding an explicit `(comment "…" …)` list *back* through the printer
      re-collapses it to `;`). A golden written with `;` lines is no good: `;` is **trivia** the reader
      could drop, so those comments would not be part of the compared structure.
    - The golden must therefore be the **structural** form — comment nodes printed as ordinary
-     `(comment "text" form)` / `(comment-after "text" form)` / `(doc …)` / `(module-doc …)` lists:
+     `(comment "text" form)` / `(comment-after "text" form)` / `(doc …)` lists:
 
      ```
      ;; input.cdz
