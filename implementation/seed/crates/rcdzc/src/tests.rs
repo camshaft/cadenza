@@ -19813,6 +19813,31 @@ mod diagnostics {
             .expect("an error")
     }
 
+    /// seq-286: the umbrella `CDZ0900` unsupported-construct decline. `Reject::unsupported` carries the
+    /// code, STILL grades as a decline (`is_decline`), and renders on the wire exactly like any coded
+    /// error (`error [CDZ0900]: …`) so the corpus decline-code grader parses it with no special-casing.
+    #[test]
+    fn unsupported_construct_decline_carries_cdz0900_and_is_still_a_decline() {
+        use crate::diag::{Code, Reject};
+        assert_eq!(Code::UnsupportedConstruct.code(), "CDZ0900");
+
+        let r = Reject::unsupported("a widget of this shape is not supported");
+        assert_eq!(r.code, Some(Code::UnsupportedConstruct));
+        assert!(
+            r.is_decline(),
+            "a CDZ0900 unsupported-construct is a DECLINE (safe not-yet), not a program-is-wrong reject"
+        );
+        // A codeless decline is still a decline; a program-is-wrong coded reject is NOT.
+        assert!(Reject::decline("x").is_decline());
+        assert!(!Reject::coded(Code::TypeMismatch, "y").is_decline());
+
+        // Wire shape: severity Error, code Some("CDZ0900") — same shape as any error diagnostic.
+        let d = crate::abi_bridge::diagnostic_from_reject(&r);
+        assert_eq!(d.severity, crate::abi::Severity::Error);
+        assert_eq!(d.code.as_deref(), Some("CDZ0900"));
+        assert_eq!(d.message, "a widget of this shape is not supported");
+    }
+
     fn all_errors(src: &str) -> Vec<crate::abi::Diagnostic> {
         let ast = parse(src);
         let bytes = crate::codec::encode(&ast);

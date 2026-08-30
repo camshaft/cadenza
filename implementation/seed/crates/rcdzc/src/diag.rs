@@ -373,6 +373,18 @@ pub enum Code {
     /// decline (a not-yet-built construct): this names the specific "cannot reduce, must not crash" case
     /// the robustness corpus pins.
     RecursionBound,
+
+    /// An UNSUPPORTED CONSTRUCT: a well-formed program the compiler cannot yet derive a component for
+    /// because it uses a construct this generation does not build (the "not-yet-built construct" the
+    /// `decline` doc names). Historically these were CODELESS declines; operator seq-286 requires every
+    /// user-facing decline to carry a code, so this is the ONE umbrella code for that whole class
+    /// (v-corpus-harness / C1 registry ruling: one code, granularity in the message — a clean drive-to-0
+    /// metric as constructs get built). In the CDZ09xx "declined, not crashed" band with `RecursionBound`
+    /// (CDZ0999), but a DISTINCT reason: unimplemented, not a resource wall. Emitted via
+    /// `Reject::unsupported`; it is still a DECLINE (a safe reject, not a "the program is wrong"
+    /// rejection — see `is_decline`), it just now carries an identity. Does NOT cover PERMANENT design
+    /// rejections (those keep their own coded semantics) nor the recursion/resource bound (CDZ0999).
+    UnsupportedConstruct,
 }
 
 impl Code {
@@ -428,6 +440,7 @@ impl Code {
             Code::MalformedDirective => "CDZ0602",
             Code::RenamedOp => "CDZ0603",
             Code::RecursionBound => "CDZ0999",
+            Code::UnsupportedConstruct => "CDZ0900",
         }
     }
 }
@@ -718,6 +731,23 @@ impl Reject {
         }
     }
 
+    /// A CODED decline — the same "the compiler does not yet realize this construct" outcome as
+    /// [`decline`], but carrying the umbrella [`Code::UnsupportedConstruct`] (`CDZ0900`) that operator
+    /// seq-286 requires on every user-facing decline. Semantically STILL a decline ([`is_decline`]
+    /// returns true for it), so the safety-ordering / dedup logic that branches on `is_decline` is
+    /// unaffected; the code just gives the "not-yet-built construct" class a stable identity a tool and
+    /// the corpus can pin (`(declines CDZ0900 …)`). Use this for a construct the compiler does not yet
+    /// build; keep [`decline`] only where a code is not yet assigned, and use [`coded`] for a rejection
+    /// that says the program is WRONG.
+    pub fn unsupported(message: impl Into<String>) -> Reject {
+        Reject {
+            code: Some(Code::UnsupportedConstruct),
+            message: message.into(),
+            at: None,
+            fix: None,
+        }
+    }
+
     /// Attach a proposed structural fix — the fluent form a producer uses when, alongside the "no", it
     /// can name the repair: `Reject::coded(..).at(id).with_fix(Fix::replace_heuristic(id, "foo"))`.
     pub fn with_fix(mut self, fix: Fix) -> Reject {
@@ -741,9 +771,14 @@ impl Reject {
         }
     }
 
-    /// Whether this "no" is a decline (uncoded) rather than a coded rejection.
+    /// Whether this "no" is a DECLINE (a safe "the compiler does not yet build this construct" outcome)
+    /// rather than a coded rejection that says the PROGRAM is wrong. A decline is either a codeless
+    /// [`decline`] or the umbrella-coded [`unsupported`] (`CDZ0900`) — both are the same "not-yet-built"
+    /// class (operator seq-286 gave the class a code without changing what it MEANS), so the safety-
+    /// ordering / dedup logic that branches on `is_decline` treats them identically. A `CDZ0999`
+    /// recursion/resource bound and any permanent design rejection are NOT declines here.
     pub fn is_decline(&self) -> bool {
-        self.code.is_none()
+        self.code.is_none() || self.code == Some(Code::UnsupportedConstruct)
     }
 }
 
