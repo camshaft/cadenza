@@ -3423,3 +3423,51 @@
 (case "two IDENTICAL function types produce no fault (function argument type-checks clean)"
   (input  (do (def (k (: f (-> Int64 Int64))) (f 1)) (def (good (: x Int64)) x) (def (g) (k good)) (export g)))
   (output (: 1 Int64)))
+
+; --- Value-vs-sum / operator-arg mismatch: readable lead + wrap fix + "match it" hint --------------
+; When a value appears where a SUM (Option/user sum) is expected, or two same-kind compounds are compared in
+; an OPERATOR-argument position, the diagnostic reads at the argument site (naming the expected type / the
+; structural delta) rather than leaking the raw naive-HM "type mismatch: A and B must be the same type here".
+; A value that IS a sum's payload carries a "wrap in `(Ctor …)`" fix (the ctor derived from the DECLARATION,
+; no-keys-outside-the-prelude); a sum with no fitting variant carries none. The INVERSE — an `(Option T)` used
+; where the bare payload `T` is expected — has no total unwrap, so no mechanical fix, but the message says to
+; MATCH it. (Migrated from rcdzc an_operator_arg_wrap_in_variant_uses_the_readable_lead_not_the_raw_unify_message
+; + an_operator_arg_structural_mismatch_names_the_delta_not_the_raw_unify_message +
+; the_wrap_variant_is_derived_generically_from_the_user_sum_not_hardcoded +
+; an_annotation_mismatch_with_no_fitting_variant_carries_no_wrap + using_an_option_where_its_payload_is_expected_says_to_match_it.)
+(case "comparing an Option to its payload reads at the argument site and carries a wrap-in-Some fix"
+  (input  (do (def (f (: o (Option Int64))) (= o 5)) (def (main) (f (Some 1))) (export main)))
+  (error  CDZ0203 (message "this argument is an Int64, but a value of type (Option Int64) is expected here")
+                  (not "must be the same type here") (fix (kind wrap) (replacement "(Some …)"))))
+
+(case "an operator-arg record field-SET mismatch names the delta, not the raw unify message"
+  (input  (do (def (main) (= #record((= x 1)) #record((= y 2)))) (export main)))
+  (error  CDZ0203 (message "missing field `x`") (not "must be the same type here")))
+
+(case "an operator-arg record field-TYPE mismatch names the differing field's types"
+  (input  (do (def (main) (= #record((= x 1)) #record((= x true)))) (export main)))
+  (error  CDZ0203 (message "field `x` should be Int64, but this one is Bool")))
+
+(case "an operator-arg tuple ARITY mismatch names the element counts"
+  (input  (do (def (main) (= #tuple(1 2) #tuple(1 2 3))) (export main)))
+  (error  CDZ0203 (message "expected a tuple with 2 elements, but this one has 3")))
+
+(case "the wrap-in-variant fix's constructor is derived generically from the user sum, not hardcoded"
+  (input  (do (type Box (Wrap Int64)) (def (f (: n Int64)) (: n Box)) (export f)))
+  (error  CDZ0203 (fix (kind wrap) (replacement "(Wrap …)"))))
+
+(case "a mismatch against a sum with no fitting variant carries no wrap suggestion"
+  (input  (do (type Flag On Off) (def (f (: n Int64)) (: n Flag)) (export f)))
+  (error  CDZ0203 (message "Flag") (not "wrap") (no-fix)))
+
+(case "using an Option where its bare payload is expected says to match it, with no mechanical fix"
+  (input  (do (def (h (: n Int64)) n) (def (g (: o (Option Int64))) (h o)) (export g)))
+  (error  CDZ0203 (message "the value is optional") (message "match it") (message "(Some x)") (no-fix)))
+
+(case "the match-it hint also fires at a binop unify site over an optional read"
+  (input  (do (def (g (: xs (List Int64))) (+ ((. List at) xs 0) 1)) (export g)))
+  (error  CDZ0203 (message "the value is optional") (message "match it")))
+
+(case "an unrelated-payload Option mismatch gets no match-it hint"
+  (input  (do (def (h (: b Bool)) b) (def (g (: o (Option Int64))) (h o)) (export g)))
+  (error  CDZ0203 (message "this argument") (message "expected here") (not "the value is optional")))
