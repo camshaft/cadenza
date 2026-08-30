@@ -20,14 +20,13 @@ export default function Iterators() {
   (match
     it
     (((. Iter Range) r)
-      (match
-        r
-        (#tuple(lo hi)
-          (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit)))))))
+      (let
+        ((#tuple(lo hi) r))
+        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))))
 
 (def
   (sum-it it)
-  (match (next it) ((None _) 0) ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+  (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it ((. Iter Range) #tuple(1 5))))`}
       />
@@ -42,26 +41,24 @@ export default function Iterators() {
   (match
     it
     (((. Iter Range) r)
-      (match
-        r
-        (#tuple(lo hi)
-          (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit)))))
+      (let
+        ((#tuple(lo hi) r))
+        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))
     (((. Iter Take) nf)
-      (match
-        nf
-        (#tuple(n src)
-          (if
-            (<= n 0)
-            (None unit)
-            (match
-              (next src)
-              ((None _) (None unit))
-              ((Some p)
-                (match p (#tuple(v rest) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))))
+      (let
+        ((#tuple(n src) nf))
+        (if
+          (<= n 0)
+          (None unit)
+          (match
+            (next src)
+            ((None _) (None unit))
+            ((Some p)
+              (let ((#tuple(v rest) p)) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))
 
 (def
   (sum-it it)
-  (match (next it) ((None _) 0) ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+  (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it ((. Iter Take) #tuple(3 ((. Iter Range) #tuple(0 1000000))))))`}
       />
@@ -76,31 +73,29 @@ export default function Iterators() {
   (match
     it
     (((. Iter Range) r)
-      (match
-        r
-        (#tuple(lo hi)
-          (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit)))))
+      (let
+        ((#tuple(lo hi) r))
+        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))
     (((. Iter Take) nf)
-      (match
-        nf
-        (#tuple(n src)
-          (if
-            (<= n 0)
-            (None unit)
-            (match
-              (next src)
-              ((None _) (None unit))
-              ((Some p)
-                (match p (#tuple(v rest) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))
+      (let
+        ((#tuple(n src) nf))
+        (if
+          (<= n 0)
+          (None unit)
+          (match
+            (next src)
+            ((None _) (None unit))
+            ((Some p)
+              (let ((#tuple(v rest) p)) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))
     (((. Iter Double) src)
       (match
         (next src)
         ((None _) (None unit))
-        ((Some p) (match p (#tuple(v rest) (Some #tuple((* 2 v) ((. Iter Double) rest))))))))))
+        ((Some p) (let ((#tuple(v rest) p)) (Some #tuple((* 2 v) ((. Iter Double) rest)))))))))
 
 (def
   (sum-it it)
-  (match (next it) ((None _) 0) ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+  (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it ((. Iter Double) ((. Iter Take) #tuple(3 ((. Iter Range) #tuple(0 1000000)))))))`}
       />
@@ -119,14 +114,13 @@ export default function Iterators() {
   (match
     it
     (((. Iter Range) r)
-      (match
-        r
-        (#tuple(lo hi)
-          (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit)))))))
+      (let
+        ((#tuple(lo hi) r))
+        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))))
 
 (def
   (sum-it it)
-  (match (next it) ((None _) 0) ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+  (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it ((. Iter Range) #tuple(2 ?))))`}
         solution={`(type Iter (Range (Tuple Int64 Int64)))
@@ -136,14 +130,13 @@ export default function Iterators() {
   (match
     it
     (((. Iter Range) r)
-      (match
-        r
-        (#tuple(lo hi)
-          (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit)))))))
+      (let
+        ((#tuple(lo hi) r))
+        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))))
 
 (def
   (sum-it it)
-  (match (next it) ((None _) 0) ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+  (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it ((. Iter Range) #tuple(2 5))))`}
         expected="9"
@@ -159,26 +152,24 @@ export default function Iterators() {
   (match
     it
     (((. Iter Range) r)
-      (match
-        r
-        (#tuple(lo hi)
-          (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit)))))
+      (let
+        ((#tuple(lo hi) r))
+        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))
     (((. Iter Take) nf)
-      (match
-        nf
-        (#tuple(n src)
-          (if
-            (<= n 0)
-            (None unit)
-            (match
-              (next src)
-              ((None _) (None unit))
-              ((Some p)
-                (match p (#tuple(v rest) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))))
+      (let
+        ((#tuple(n src) nf))
+        (if
+          (<= n 0)
+          (None unit)
+          (match
+            (next src)
+            ((None _) (None unit))
+            ((Some p)
+              (let ((#tuple(v rest) p)) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))
 
 (def
   (sum-it it)
-  (match (next it) ((None _) 0) ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+  (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it ((. Iter Take) #tuple(? ((. Iter Range) #tuple(0 1000000))))))`}
         solution={`(type Iter (Range (Tuple Int64 Int64)) (Take (Tuple Int64 Iter)))
@@ -188,26 +179,24 @@ export default function Iterators() {
   (match
     it
     (((. Iter Range) r)
-      (match
-        r
-        (#tuple(lo hi)
-          (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit)))))
+      (let
+        ((#tuple(lo hi) r))
+        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))
     (((. Iter Take) nf)
-      (match
-        nf
-        (#tuple(n src)
-          (if
-            (<= n 0)
-            (None unit)
-            (match
-              (next src)
-              ((None _) (None unit))
-              ((Some p)
-                (match p (#tuple(v rest) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))))
+      (let
+        ((#tuple(n src) nf))
+        (if
+          (<= n 0)
+          (None unit)
+          (match
+            (next src)
+            ((None _) (None unit))
+            ((Some p)
+              (let ((#tuple(v rest) p)) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))
 
 (def
   (sum-it it)
-  (match (next it) ((None _) 0) ((Some p) (match p (#tuple(v rest) (+ v (sum-it rest)))))))
+  (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
 (def (main) (sum-it ((. Iter Take) #tuple(4 ((. Iter Range) #tuple(0 1000000))))))`}
         expected="6"
