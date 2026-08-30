@@ -10,9 +10,10 @@
 /// no-op HIT. `resolved-of-db(db, id)` is the producer read (rcdzc `resolved_of`): demand triggers the fill
 /// if absent, then reads the column. Downstream columns (infer) read the SAME Db's resolved column rather
 /// than re-resolving — the memoization essential, now over a real fact.
-
 import { Tree, Node, node-at } from "parse-db"
+
 import { Resolved, resolve-tree } from "resolve-db"
+
 import { Db, db-tree, require-resolved, resolved-filled } from "db"
 
 /// Populate the Db's resolved column by running the whole-tree resolve walk over the Db's tree, from `root`.
@@ -20,73 +21,82 @@ import { Db, db-tree, require-resolved, resolved-filled } from "db"
 /// no re-resolve); else run `resolve-tree` and merge its column into the Db. Mirrors rcdzc filling the
 /// resolved column once; downstream reads hit the memo.
 def resolve-into-db(db: Db, root: Int64) =
-  (if (resolved-filled(db) > 0) then db                        // already resolved — memo HIT, no rework
-   else merge-resolved(db, resolve-tree(db-tree(db), root)))
+  if resolved-filled(db) > 0 then
+    db // already resolved — memo HIT, no rework
+  else
+    merge-resolved(db, resolve-tree(db-tree(db), root))
 
 /// Merge a resolved column (a `Map(NodeId, Resolved)` from `resolve-tree`) into the Db's resolved column.
 /// Reconstructs the Db carrying the filled column (the whole-tree walk produced every fact in one pass, so
 /// this is a single column-swap, not per-node fills).
 def merge-resolved(db: Db, rcol: Map(Int64, Resolved)) =
-  let Db.Db(t, _, tc, cc) = db in Db.Db(t, rcol, tc, cc)
+  let Db.Db(t, _, tc, cc) = db in
+    Db.Db(t, rcol, tc, cc)
 
 /// The RESOLVE producer read (rcdzc `resolved_of(db, id)`): demand the resolved fact at `id`, filling the
 /// column first if absent. Returns `(db', Option(Resolved))` — the (possibly-updated) Db + the fact
 /// (`None` = a node that needs no resolution, e.g. a literal; a filled `RPoison` = an unbound-name decline).
 def resolved-of-db(db: Db, root: Int64, id: Int64) =
-  (let db1 = resolve-into-db(db, root) in (db1, require-resolved(db1, id)))
+  let db1 = resolve-into-db(db, root) in
+    (db1, require-resolved(db1, id))
 
 // ---- TESTS: resolve fills the Db column once; reads hit the memo -------------------------------------
-
 import { Tok, parse-tokens } from "parse-db"
+
 import { db-of } from "db"
 
 /// `let x = 2 in x` as a Db — the body var (id) binds to the let. Returns (root, db).
 def let-db() =
-  let (root, tree) = parse-tokens([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]) in
-  (root, db-of(tree))
+  let (root, tree) = parse-tokens(
+      [Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]
+    ) in
+    (root, db-of(tree))
 
 @test
 def dr-resolve-fills-column() =
   // resolving `let x = 2 in x` fills the resolved column (the body var gets an RBound fact) → filled > 0.
-  (let (root, d0) = let-db() in
-    (let db1 = resolve-into-db(d0, root) in
-     (if (resolved-filled(db1) > 0) then unit else trap("resolve fills the column"))))
+  let (root, d0) = let-db() in
+  let db1 = resolve-into-db(d0, root) in
+    if resolved-filled(db1) > 0 then unit else trap("resolve fills the column")
 
 @test
 def dr-bound-var-is-rbound() =
   // the body var (a NAME node) resolves to RBound(binder). Find it via resolved-of-db; expect Some(RBound).
-  (let (root, d0) = let-db() in
-    (match node-var-id(db-tree(d0), root) with
-      | Option.Some(varId) => (match resolved-of-db(d0, root, varId) with
-          | (_, Option.Some(Resolved.RBound(_))) => unit
-          | (_, Option.Some(Resolved.RPoison)) => trap("bound var should be RBound, not RPoison")
-          | (_, Option.Some(Resolved.RDef(_))) => trap("bound var should be RBound, not RDef")
-          | (_, Option.None(_)) => trap("bound var has a resolved fact"))
-      | Option.None(_) => trap("the let body is a var")))
+  let (root, d0) = let-db() in
+    match node-var-id(db-tree(d0), root) with
+    | Option.Some(varId) => (match resolved-of-db(d0, root, varId) with
+      | (_, Option.Some(Resolved.RBound(_))) => unit
+      | (_, Option.Some(Resolved.RPoison)) => trap("bound var should be RBound, not RPoison")
+      | (_, Option.Some(Resolved.RDef(_))) => trap("bound var should be RBound, not RDef")
+      | (_, Option.None(_)) => trap("bound var has a resolved fact")
+    )
+    | Option.None(_) => trap("the let body is a var")
 
 @test
 def dr-second-resolve-is-memo-hit() =
   // resolve twice: the 2nd is a HIT (column already filled) → same filled count, Db unchanged shape. Proves
   // fill-once — no re-resolve. (Compares filled counts: equal after the 2nd call.)
-  (let (root, d0) = let-db() in
-    (let db1 = resolve-into-db(d0, root) in
-     (let n1 = resolved-filled(db1) in
-      (let db2 = resolve-into-db(db1, root) in
-       (if (resolved-filled(db2) == n1) then unit else trap("second resolve is a memo HIT, count unchanged"))))))
+  let (root, d0) = let-db() in
+  let db1 = resolve-into-db(d0, root) in
+  let n1 = resolved-filled(db1) in
+  let db2 = resolve-into-db(db1, root) in
+    if resolved-filled(db2) == n1 then
+    unit
+  else
+    trap("second resolve is a memo HIT, count unchanged")
 
 @test
 def dr-unbound-is-poison() =
   // a bare unbound var `y` resolves to a FILLED RPoison (a decline is a determined fact, not Absent).
-  (let (root, tree) = parse-tokens([Tok.TName(9)]) in
-    (match resolved-of-db(db-of(tree), root, root) with
-      | (_, Option.Some(Resolved.RPoison)) => unit
-      | _ => trap("unbound var is a filled RPoison")))
+  let (root, tree) = parse-tokens([Tok.TName(9)]) in
+    match resolved-of-db(db-of(tree), root, root) with
+    | (_, Option.Some(Resolved.RPoison)) => unit
+    | _ => trap("unbound var is a filled RPoison")
 
 /// Find the NodeId of the let-BODY var (the last NAME node) — a tiny tree helper for the test. Walks the
 /// arena for a NVar node id > 0 (the body var, not the binder name which is stored in the NLet).
 def node-var-id(tree: Tree, root: Int64) = match node-at(tree, root) with
   | Option.Some(Node.NLet(_, _, bodyId)) => Option.Some(bodyId)
   | _ => Option.None(unit)
-
 
 export { resolve-into-db, resolved-of-db }

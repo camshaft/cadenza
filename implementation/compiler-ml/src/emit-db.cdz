@@ -20,9 +20,10 @@
 ///   export  section (id 7): export "main" as func 0        = 07 <size> 01 04 6d 61 69 6e 00 00
 ///   code    section (id 10): one body, no locals, const+end = 0a <size> 01 <bodysize> 00 42 <sleb v> 0b
 /// Sizes/counts are ULEB128; the `i64.const` value is SLEB128.
-
 import { Core, lower-tree, lower-def-env, cnum64 } from "lower-db"
+
 import { read-source } from "sread"
+
 import { Value, eval-core } from "eval-db"
 
 /// A one-byte `Bytes` holding the low 8 bits of `x` (mirrors `encode.cdz`'s `b1`).
@@ -32,52 +33,74 @@ def b1(x: Int64) = Bytes.of([UInt8.wrap(x)])
 /// Used for section sizes, vector counts, function/type indices — all small + non-negative here. Total via
 /// a fuel-bounded worker (an Int64 needs ≤10 groups of 7 bits; 10 is a safe ceiling).
 def uleb(n: Int64) = uleb-go(n, 10)
+
 def uleb-go(n: Int64, fuel: Int64) =
-  (if fuel <= 0 then Bytes.of([])
-   else (let low = n % 128 in
-         (let rest = n / 128 in
-          (if rest == 0 then b1(low)
-           else Bytes.concat(b1(low + 128), uleb-go(rest, fuel - 1))))))
+  if fuel <= 0 then
+    Bytes.of([])
+  else
+    let low = n % 128 in
+    let rest = n / 128 in
+      if rest == 0 then b1(low) else Bytes.concat(b1(low + 128), uleb-go(rest, fuel - 1))
 
 /// SLEB128-encode a (possibly-negative) `Int64` — the `i64.const` operand encoding. Standard signed LEB:
 /// 7 bits per byte; stop when the remaining value is 0 (and the sign bit of the last byte is clear) or -1
 /// (and the sign bit is set). Fuel-bounded (≤10 groups).
 def sleb(n: Int64) = sleb-go(n, 10)
+
 def sleb-go(n: Int64, fuel: Int64) =
-  if fuel <= 0 then Bytes.of([])
+  if fuel <= 0 then
+    Bytes.of([])
   else
-    let byte = n % 128 in            // low 7 bits; Int64 % is sign-following, normalized to 0..127 below
-    let low = (if byte < 0 then byte + 128 else byte) in
-    let rest = (n - low) / 128 in    // arithmetic shift right by 7 (the subtract floors toward -inf)
-    let sign-bit = low / 64 in       // bit 6 of the 7-bit group (0 or 1)
-    // done when: rest==0 and sign bit clear (non-neg fits), OR rest==-1 and sign bit set (neg fits).
-    let done = (if rest == 0 then sign-bit == 0
-                else (if rest == -1 then sign-bit == 1 else false)) in
-    (if done then b1(low)
-     else Bytes.concat(b1(low + 128), sleb-go(rest, fuel - 1)))
+    let byte = n % 128 in // low 7 bits; Int64 % is sign-following, normalized to 0..127 below
+    let low = if byte < 0 then byte + 128 else byte in
+    let rest = (n - low) / 128 in // arithmetic shift right by 7 (the subtract floors toward -inf)
+    let sign-bit = low / 64 in // bit 6 of the 7-bit group (0 or 1)
+      // done when: rest==0 and sign bit clear (non-neg fits), OR rest==-1 and sign bit set (neg fits).
+    let done = if rest == 0 then sign-bit == 0 else if rest == -1 then sign-bit == 1 else false in
+      if done then b1(low) else Bytes.concat(b1(low + 128), sleb-go(rest, fuel - 1))
 
 /// Wrap a section BODY in its `<id> <uleb byte-length> <body>` framing.
-def section(id: Int64, body: Bytes) = Bytes.concat(b1(id), Bytes.concat(uleb(Bytes.len(body)), body))
+def section(id: Int64, body: Bytes) =
+  Bytes.concat(b1(id), Bytes.concat(uleb(Bytes.len(body)), body))
 
 /// The wasm module PREAMBLE: magic `\0asm` + version 1.
-def preamble() = Bytes.of([UInt8.wrap(0), UInt8.wrap(97), UInt8.wrap(115), UInt8.wrap(109),
-                           UInt8.wrap(1), UInt8.wrap(0), UInt8.wrap(0), UInt8.wrap(0)])
+def preamble() =
+  Bytes.of(
+    [
+      UInt8.wrap(0),
+      UInt8.wrap(97),
+      UInt8.wrap(115),
+      UInt8.wrap(109),
+      UInt8.wrap(1),
+      UInt8.wrap(0),
+      UInt8.wrap(0),
+      UInt8.wrap(0)
+    ]
+  )
 
 /// Type section: one function type `() -> i64`. `01`=one type, `60`=functype, `00`=zero params,
 /// `01 7e`=one result of type i64 (`0x7e`).
-def type-section() = section(1, Bytes.of([UInt8.wrap(1), UInt8.wrap(96), UInt8.wrap(0), UInt8.wrap(1), UInt8.wrap(126)]))
+def type-section() =
+  section(
+    1,
+    Bytes.of([UInt8.wrap(1), UInt8.wrap(96), UInt8.wrap(0), UInt8.wrap(1), UInt8.wrap(126)])
+  )
 
 /// slice-B'(Bp1): the FUNCTYPE bytes for an N-i64-param, 1-i64-result function: `60 <uleb N> 7e{N} 01 7e`
 /// (0x60 functype tag, N params each i64=0x7e, one result i64). `functype-bytes(0)` = `60 00 01 7e` (the
 /// nullary `() -> i64` main type); `functype-bytes(1)` = `60 01 7e 01 7e` (a 1-param recursive def like fac).
 /// Foundation for emitting a wasm function PER recursive def (Slice B'): each distinct arity gets one type.
 def functype-bytes(n: Int64) =
-  Bytes.concat(b1(96), Bytes.concat(uleb(n), Bytes.concat(i64-params(n), Bytes.of([UInt8.wrap(1), UInt8.wrap(126)]))))
+  Bytes.concat(
+    b1(96),
+    Bytes.concat(uleb(n), Bytes.concat(i64-params(n), Bytes.of([UInt8.wrap(1), UInt8.wrap(126)])))
+  )
 
 /// N repetitions of the i64 valtype byte (0x7e) — the param-vector body for `functype-bytes`.
 def i64-params(n: Int64) = i64-params-go(n, Bytes.of([]))
+
 def i64-params-go(n: Int64, acc: Bytes) =
-  (if n <= 0 then acc else i64-params-go(n - 1, Bytes.concat(acc, b1(126))))
+  if n <= 0 then acc else i64-params-go(n - 1, Bytes.concat(acc, b1(126)))
 
 /// slice-B'(Bp1): a TYPE SECTION carrying `types` functypes (each already `functype-bytes`-encoded): a `<uleb
 /// count>` then the concatenated functype bodies, wrapped as section 1. `type-section-multi([functype-bytes(1),
@@ -88,11 +111,14 @@ def type-section-multi(types: List(Bytes)) =
 
 /// Concatenate a list of Bytes in order (the emit idiom for a vector body). Index recursion, scalar-safe.
 def concat-bytes(bs: List(Bytes)) = concat-bytes-go(bs, 0, Bytes.of([]))
+
 def concat-bytes-go(bs: List(Bytes), i: Int64, acc: Bytes) =
-  (if i == List.len(bs) then acc
-   else (match List.at(bs, i) with
-     | Option.Some(b) => concat-bytes-go(bs, i + 1, Bytes.concat(acc, b))
-     | Option.None(_) => acc))
+  if i == List.len(bs) then
+    acc
+  else
+    match List.at(bs, i) with
+      | Option.Some(b) => concat-bytes-go(bs, i + 1, Bytes.concat(acc, b))
+      | Option.None(_) => acc
 
 /// Function section: one function declared to use type index 0. `01`=one func, `00`=type index 0.
 def func-section() = section(3, Bytes.of([UInt8.wrap(1), UInt8.wrap(0)]))
@@ -106,11 +132,14 @@ def func-section-multi(typeidxs: List(Int64)) =
 
 /// `<uleb x>` for each x in the list, concatenated (a uleb vector body). Index recursion, scalar-safe.
 def uleb-each(xs: List(Int64)) = uleb-each-go(xs, 0, Bytes.of([]))
+
 def uleb-each-go(xs: List(Int64), i: Int64, acc: Bytes) =
-  (if i == List.len(xs) then acc
-   else (match List.at(xs, i) with
-     | Option.Some(x) => uleb-each-go(xs, i + 1, Bytes.concat(acc, uleb(x)))
-     | Option.None(_) => acc))
+  if i == List.len(xs) then
+    acc
+  else
+    match List.at(xs, i) with
+      | Option.Some(x) => uleb-each-go(xs, i + 1, Bytes.concat(acc, uleb(x)))
+      | Option.None(_) => acc
 
 /// slice-B'(Bp4a): a CODE SECTION over a list of already-`body-of`-wrapped function bodies (in func-index
 /// order): `<uleb count>` then a `<uleb bodylen> <body>` per function, wrapped as section 10. Parallels the
@@ -120,17 +149,37 @@ def code-section-multi(bodies: List(Bytes)) =
 
 /// `<uleb len(body)> <body>` for each body, concatenated — the code-section entry vector.
 def code-entries(bodies: List(Bytes)) = code-entries-go(bodies, 0, Bytes.of([]))
+
 def code-entries-go(bodies: List(Bytes), i: Int64, acc: Bytes) =
-  (if i == List.len(bodies) then acc
-   else (match List.at(bodies, i) with
-     | Option.Some(b) => code-entries-go(bodies, i + 1, Bytes.concat(acc, Bytes.concat(uleb(Bytes.len(b)), b)))
-     | Option.None(_) => acc))
+  if i == List.len(bodies) then
+    acc
+  else
+    match List.at(bodies, i) with
+      | Option.Some(b) => code-entries-go(
+        bodies,
+        i + 1,
+        Bytes.concat(acc, Bytes.concat(uleb(Bytes.len(b)), b))
+      )
+      | Option.None(_) => acc
 
 /// Export section: export the single function as `main`. `01`=one export, `04`=name length,
 /// `6d 61 69 6e`="main", `00`=export kind func, `00`=func index 0.
 def export-section() =
-  section(7, Bytes.of([UInt8.wrap(1), UInt8.wrap(4), UInt8.wrap(109), UInt8.wrap(97), UInt8.wrap(105), UInt8.wrap(110),
-                       UInt8.wrap(0), UInt8.wrap(0)]))
+  section(
+    7,
+    Bytes.of(
+      [
+        UInt8.wrap(1),
+        UInt8.wrap(4),
+        UInt8.wrap(109),
+        UInt8.wrap(97),
+        UInt8.wrap(105),
+        UInt8.wrap(110),
+        UInt8.wrap(0),
+        UInt8.wrap(0)
+      ]
+    )
+  )
 
 /// W-compound: a MEMORY section declaring ONE memory with min 1 page (64KiB), no max — the SumStore heap a
 /// compound value (tuple/record/sum payload) lives in. `05`=section id, body `01 00 01`: 1 memory, limits
@@ -140,7 +189,13 @@ def memory-section() = section(5, Bytes.of([UInt8.wrap(1), UInt8.wrap(0), UInt8.
 /// W-compound: a GLOBAL section declaring ONE mutable i32 global initialized to 0 — the BUMP POINTER (next
 /// free heap byte offset). `06`=section id, body `01 7f 01 41 00 0b`: 1 global, type i32(0x7f) MUTABLE(0x01),
 /// init expr `i32.const 0`(0x41 0x00) `end`(0x0b). CCtor reads/advances it; the handle is the pre-bump offset.
-def global-section() = section(6, Bytes.of([UInt8.wrap(1), UInt8.wrap(127), UInt8.wrap(1), UInt8.wrap(65), UInt8.wrap(0), UInt8.wrap(11)]))
+def global-section() =
+  section(
+    6,
+    Bytes.of(
+      [UInt8.wrap(1), UInt8.wrap(127), UInt8.wrap(1), UInt8.wrap(65), UInt8.wrap(0), UInt8.wrap(11)]
+    )
+  )
 
 /// W-compound: does `c` CONSTRUCT a compound (contain a CCtor)? Gates whether the module needs the memory +
 /// global (bump-pointer) sections and an i32 scratch local. Recurses every child so a CCtor anywhere counts.
@@ -171,13 +226,16 @@ def has-fnref(c: Core) = match c with
   | Core.CCall(_, args) => has-fnref-list(args, 0)
   | Core.CCtor(_, args) => has-fnref-list(args, 0)
   | _ => false
-def has-fnref-list(args: List(Core), i: Int64) =
-  (if i == List.len(args) then false
-   else (match List.at(args, i) with
-     | Option.Some(a) => (if has-fnref(a) then true else has-fnref-list(args, i + 1))
-     | Option.None(_) => false))
 
-def imax(a: Int64, b: Int64) = (if a > b then a else b)
+def has-fnref-list(args: List(Core), i: Int64) =
+  if i == List.len(args) then
+    false
+  else
+    match List.at(args, i) with
+      | Option.Some(a) => if has-fnref(a) then true else has-fnref-list(args, i + 1)
+      | Option.None(_) => false
+
+def imax(a: Int64, b: Int64) = if a > b then a else b
 
 /// W-compound nested: how many i32 SCRATCH locals a body needs. A CCtor keeps its alloc base in a scratch local
 /// ACROSS its arg emission, so a CCtor arg that is itself a CCtor (or a CMatchSum, which also uses a scratch for
@@ -187,20 +245,32 @@ def imax(a: Int64, b: Int64) = (if a > b then a else b)
 /// `depth`. `emit-instrs-d` uses the SAME depth arithmetic (scratch = #binders + depth), so this count matches.
 def scratch-need(c: Core, depth: Int64) = match c with
   | Core.CCtor(_, args) => imax(depth + 1, scratch-need-list(args, depth + 1, 0))
-  | Core.CMatchSum(s, _, _, t, e) => imax(depth + 1, imax(scratch-need(s, depth), imax(scratch-need(t, depth), scratch-need(e, depth))))
+  | Core.CMatchSum(s, _, _, t, e) => imax(
+    depth + 1,
+    imax(scratch-need(s, depth), imax(scratch-need(t, depth), scratch-need(e, depth)))
+  )
   | Core.CBin(_, _, _, l, r) => imax(scratch-need(l, depth), scratch-need(r, depth))
   | Core.CLet(_, v, b) => imax(scratch-need(v, depth), scratch-need(b, depth))
-  | Core.CIf(cc, t, e) => imax(scratch-need(cc, depth), imax(scratch-need(t, depth), scratch-need(e, depth)))
+  | Core.CIf(cc, t, e) => imax(
+    scratch-need(cc, depth),
+    imax(scratch-need(t, depth), scratch-need(e, depth))
+  )
   | Core.CProj(op, _) => scratch-need(op, depth)
-  | Core.CMatchEnum(s, _, t, e) => imax(scratch-need(s, depth), imax(scratch-need(t, depth), scratch-need(e, depth)))
+  | Core.CMatchEnum(s, _, t, e) => imax(
+    scratch-need(s, depth),
+    imax(scratch-need(t, depth), scratch-need(e, depth))
+  )
   | Core.CCall(_, args) => scratch-need-list(args, depth, 0)
   | Core.CFnRefVar(_, args) => scratch-need-list(args, depth, 0)
   | _ => 0
+
 def scratch-need-list(args: List(Core), depth: Int64, i: Int64) =
-  (if i == List.len(args) then 0
-   else (match List.at(args, i) with
-     | Option.Some(a) => imax(scratch-need(a, depth), scratch-need-list(args, depth, i + 1))
-     | Option.None(_) => scratch-need-list(args, depth, i + 1)))
+  if i == List.len(args) then
+    0
+  else
+    match List.at(args, i) with
+      | Option.Some(a) => imax(scratch-need(a, depth), scratch-need-list(args, depth, i + 1))
+      | Option.None(_) => scratch-need-list(args, depth, i + 1)
 
 /// W-compound: are a CCtor's payload args each EMITTABLE and FLAT (no nested CCtor)? A single i32 scratch
 /// local holds the alloc base, so SEQUENTIAL ctors reuse it safely (base is dead once the handle is pushed),
@@ -208,50 +278,67 @@ def scratch-need-list(args: List(Core), depth: Int64, i: Int64) =
 /// nested compound declines — coverage-not-yet, safe; a later slice adds a scratch-per-nesting-level). Index
 /// recursion; part of can-emit's SCC (calls can-emit on each arg).
 def ctor-args-emittable(args: List(Core), i: Int64) =
-  (if i == List.len(args) then true
-   else (match List.at(args, i) with
-     // NESTED compounds now emit: depth-distinct scratch (scratch-need + the `depth` thread in emit-instrs-d)
-     // gives each nesting level its own alloc-base local, so a CCtor arg no longer clobbers the outer base.
-     | Option.Some(a) => (if can-emit(a) then ctor-args-emittable(args, i + 1) else false)
-     | Option.None(_) => false))
+  if i == List.len(args) then
+    true
+  else
+    match List.at(args, i) with
+      // NESTED compounds now emit: depth-distinct scratch (scratch-need + the `depth` thread in emit-instrs-d)
+      // gives each nesting level its own alloc-base local, so a CCtor arg no longer clobbers the outer base.
+      | Option.Some(a) => if can-emit(a) then ctor-args-emittable(args, i + 1) else false
+      | Option.None(_) => false
 
 /// slice-B'(Bp4b-ii): export section exporting "main" as the function at INDEX `funcidx` — the recursive-module
 /// generalization of `export-section()` (which hard-codes index 0). `01`=one export, `04 6d 61 69 6e`="main",
 /// `00`=kind func, `<uleb funcidx>`. In a recursive module the recursive defs take funcidxs 0..k-1 and main is
 /// LAST (idx k), so the export must name k — not 0. `export-section-idx(0)` byte-matches the legacy `export-section()`.
 def export-section-idx(funcidx: Int64) =
-  section(7, Bytes.concat(Bytes.of([UInt8.wrap(1), UInt8.wrap(4), UInt8.wrap(109), UInt8.wrap(97), UInt8.wrap(105), UInt8.wrap(110), UInt8.wrap(0)]),
-                          uleb(funcidx)))
+  section(
+    7,
+    Bytes.concat(
+      Bytes.of(
+        [
+          UInt8.wrap(1),
+          UInt8.wrap(4),
+          UInt8.wrap(109),
+          UInt8.wrap(97),
+          UInt8.wrap(105),
+          UInt8.wrap(110),
+          UInt8.wrap(0)
+        ]
+      ),
+      uleb(funcidx)
+    )
+  )
 
 /// The wasm i64 ARITHMETIC opcode for a Core arith op-code (43 `+`, 45 `-`, 42 `*`, 47 `/`, 37 `%`):
 /// i64.add=0x7c, sub=0x7d, mul=0x7e, div_s=0x7f, rem_s=0x81. div_s/rem_s TRAP on /0 (matches eval-db None).
 /// A non-arith op TRAPS (unreachable; arith is gated by `is-arith-op`).
 def wasm-op(op: Int64) = match op with
-  | 43 => 124        // i64.add   0x7c
-  | 45 => 125        // i64.sub   0x7d
-  | 42 => 126        // i64.mul   0x7e
-  | 47 => 127        // i64.div_s 0x7f
-  | 37 => 129        // i64.rem_s 0x81
-  | _ => trap("wasm-op: non-arith op reached opcode mapping (corrupt lowering)")   // gated by is-arith-op; a miss would emit the WRONG opcode (0x00 = unreachable) in place of the arith instruction
+  | 43 => 124 // i64.add   0x7c
+  | 45 => 125 // i64.sub   0x7d
+  | 42 => 126 // i64.mul   0x7e
+  | 47 => 127 // i64.div_s 0x7f
+  | 37 => 129 // i64.rem_s 0x81
+  | _ => trap("wasm-op: non-arith op reached opcode mapping (corrupt lowering)") // gated by is-arith-op; a miss would emit the WRONG opcode (0x00 = unreachable) in place of the arith instruction
 
 /// The wasm i64 RELATIONAL opcode for a Core comparison op-code (W3). i64.eq=0x51, ne=0x52, lt_s=0x53,
 /// gt_s=0x55, le_s=0x57, ge_s=0x59. Each yields an i32 0/1; the emitter appends `i64.extend_i32_u` (0xad)
 /// so the result is an i64 0/1 — matching eval-db's Bool-as-Int64 convention. Core ops: 60 `<`, 61 `==`,
 /// 62 `>`, 63 `<=`, 64 `>=`, 65 `!=`.
 def cmp-op(op: Int64) = match op with
-  | 60 => 83         // <  i64.lt_s 0x53
-  | 61 => 81         // == i64.eq   0x51
-  | 62 => 85         // >  i64.gt_s 0x55
-  | 63 => 87         // <= i64.le_s 0x57
-  | 64 => 89         // >= i64.ge_s 0x59
-  | 65 => 82         // != i64.ne   0x52
-  | _ => trap("cmp-op: non-comparison op reached relational-opcode mapping (corrupt lowering)")   // gated by is-cmp-op; a miss would emit the WRONG opcode (0x00 = unreachable) in place of the relational instruction
+  | 60 => 83 // <  i64.lt_s 0x53
+  | 61 => 81 // == i64.eq   0x51
+  | 62 => 85 // >  i64.gt_s 0x55
+  | 63 => 87 // <= i64.le_s 0x57
+  | 64 => 89 // >= i64.ge_s 0x59
+  | 65 => 82 // != i64.ne   0x52
+  | _ => trap("cmp-op: non-comparison op reached relational-opcode mapping (corrupt lowering)") // gated by is-cmp-op; a miss would emit the WRONG opcode (0x00 = unreachable) in place of the relational instruction
 
 /// Whether `op` is an ARITHMETIC op (result already i64, no extend needed).
-def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47) or (op == 37)
+def is-arith-op(op: Int64) = op == 43 or op == 45 or op == 42 or op == 47 or op == 37
 
 /// Whether `op` is a COMPARISON op (result is i32 → needs `i64.extend_i32_u` to become an i64 0/1).
-def is-cmp-op(op: Int64) = (op == 60) or (op == 61) or (op == 62) or (op == 63) or (op == 64) or (op == 65)
+def is-cmp-op(op: Int64) = op == 60 or op == 61 or op == 62 or op == 63 or op == 64 or op == 65
 
 /// Is `c` in the current emit SUBSET (so `emit-module` should emit rather than decline)? W2: `CNum` +
 /// `CBin` over arithmetic; W2b: + `CVar`/`CLet` (wasm locals). `CIf`/comparison = W3. A SEPARATE predicate
@@ -266,13 +353,13 @@ def can-emit(c: Core) = match c with
   | Core.CLet(_, v, body) => can-emit(v) and can-emit(body)
   | Core.CIf(cond, thn, els) => can-emit(cond) and can-emit(thn) and can-emit(els)
   | Core.CCall(_, _) => false
-      // slice-B1a: a recursive call's CCall is OUT of the emit subset — emitting a real wasm function + call
-      // opcode is slice B' (function table, param locals, call encoding). Until then a CCall program declines
-      // to emit (emit-module gates on can-emit); the interpreter (eval-db, B1b) runs recursion first.
+  // slice-B1a: a recursive call's CCall is OUT of the emit subset — emitting a real wasm function + call
+  // opcode is slice B' (function table, param locals, call encoding). Until then a CCall program declines
+  // to emit (emit-module gates on can-emit); the interpreter (eval-db, B1b) runs recursion first.
   | Core.CFnRef(_) => false
-      // higher-order fn-value slice: a def-name-as-value is EVAL-ONLY for now (emit(B'') = a funcidx const).
+  // higher-order fn-value slice: a def-name-as-value is EVAL-ONLY for now (emit(B'') = a funcidx const).
   | Core.CFnRefVar(_, _) => false
-      // higher-order apply (call a fn-value param) is EVAL-ONLY for now (emit(B'') = call_indirect via a table).
+  // higher-order apply (call a fn-value param) is EVAL-ONLY for now (emit(B'') = call_indirect via a table).
   // W-compound: a PAYLOAD ctor (tuple/record/sum-payload) EMITS to a linear-memory heap block (bump-alloc +
   // i64.store tag+elems). Gated to FLAT emittable args (nested ctor args clobber the single scratch → decline).
   | Core.CCtor(_, args) => ctor-args-emittable(args, 0)
@@ -298,9 +385,10 @@ def can-emit(c: Core) = match c with
 /// comes from the SAME `collect-binders` walk that built `binders`, so an absent `x` = corrupt lowering, a
 /// compiler bug → `trap` (a checked-get that cannot legitimately fail), never an in-band `-1` sentinel.
 def index-of(xs: List(Int64), x: Int64) = index-of-go(xs, x, 0)
+
 def index-of-go(xs: List(Int64), x: Int64, i: Int64) = match xs with
   | [] => trap("index-of: binder absent from the collect-binders list (corrupt lowering)")
-  | [h, .. t] => (if h == x then i else index-of-go(t, x, i + 1))
+  | [h, .. t] => if h == x then i else index-of-go(t, x, i + 1)
 
 /// Collect every `CLet` binder node-id in `c` — this list's positions ARE the wasm local indices (the i-th
 /// binder in the list gets local `i`). The traversal is POST-ORDER for a CLet: `List.push` APPENDS the CLet's
@@ -311,34 +399,48 @@ def index-of-go(xs: List(Int64), x: Int64, i: Int64) = match xs with
 def collect-binders(c: Core) = match c with
   | Core.CLet(b, v, body) => List.push(List.concat(collect-binders(v), collect-binders(body)), b)
   | Core.CBin(_, _, _, l, r) => List.concat(collect-binders(l), collect-binders(r))
-  | Core.CIf(cond, thn, els) => List.concat(collect-binders(cond), List.concat(collect-binders(thn), collect-binders(els)))
+  | Core.CIf(cond, thn, els) => List.concat(
+    collect-binders(cond),
+    List.concat(collect-binders(thn), collect-binders(els))
+  )
   // W-enum: a CMatchEnum introduces NO binders (nullary enum-disc, no payload), but its scrutinee + branches
   // may contain CLets — recurse so their locals are counted (else a let inside a match arm gets no slot).
-  | Core.CMatchEnum(scrut, _, thn, els) => List.concat(collect-binders(scrut), List.concat(collect-binders(thn), collect-binders(els)))
+  | Core.CMatchEnum(scrut, _, thn, els) => List.concat(
+    collect-binders(scrut),
+    List.concat(collect-binders(thn), collect-binders(els))
+  )
   // W-compound: CCtor/CProj bind nothing themselves but their payload args / operand may hold CLets — recurse.
-  | Core.CCtor(_, args) => collect-binders-args(args, 0, ([] : List(Int64)))
+  | Core.CCtor(_, args) => collect-binders-args(args, 0, [] : List(Int64))
   | Core.CProj(operand, _) => collect-binders(operand)
   // W-compound: a CMatchSum BINDS its payload elements (the non-(-1) binder-ids get local slots, like CLet),
   // plus its scrutinee + branches may hold CLets — collect all. A -1 binder is a wildcard (no local).
-  | Core.CMatchSum(scrut, _, bs, thn, els) =>
-      List.concat(real-binders(bs, 0, ([] : List(Int64))),
-        List.concat(collect-binders(scrut), List.concat(collect-binders(thn), collect-binders(els))))
+  | Core.CMatchSum(scrut, _, bs, thn, els) => List.concat(
+    real-binders(bs, 0, [] : List(Int64)),
+    List.concat(collect-binders(scrut), List.concat(collect-binders(thn), collect-binders(els)))
+  )
   | _ => []
 
 /// W-compound: the NON-wildcard payload binder-ids of a CMatchSum (a -1 binder is a `_` wildcard — no local).
 /// Index recursion; these ids get local slots (index-of resolves each payload's set/get to the same slot).
 def real-binders(bs: List(Int64), i: Int64, acc: List(Int64)) =
-  (if i == List.len(bs) then acc
-   else (match List.at(bs, i) with
-     | Option.Some(b) => (if b == -1 then real-binders(bs, i + 1, acc) else real-binders(bs, i + 1, List.concat(acc, List.push([], b))))
-     | Option.None(_) => acc))
+  if i == List.len(bs) then
+    acc
+  else
+    match List.at(bs, i) with
+      | Option.Some(b) => if b == -1 then
+        real-binders(bs, i + 1, acc)
+      else
+        real-binders(bs, i + 1, List.concat(acc, List.push([], b)))
+      | Option.None(_) => acc
 
 /// W-compound: collect CLet binders across a CCtor's payload arg list (index recursion, concatenated).
 def collect-binders-args(args: List(Core), i: Int64, acc: List(Int64)) =
-  (if i == List.len(args) then acc
-   else (match List.at(args, i) with
-     | Option.Some(a) => collect-binders-args(args, i + 1, List.concat(acc, collect-binders(a)))
-     | Option.None(_) => acc))
+  if i == List.len(args) then
+    acc
+  else
+    match List.at(args, i) with
+      | Option.Some(a) => collect-binders-args(args, i + 1, List.concat(acc, collect-binders(a)))
+      | Option.None(_) => acc
 
 /// Emit the INSTRUCTION bytes for a Core term onto the i64 operand stack — TOTAL (`Bytes`, never `Option`).
 /// `binders` is the `collect-binders` CLet-binder list (index = local slot). `CNum` → i64.const; `CBin` → postfix
@@ -350,173 +452,315 @@ def collect-binders-args(args: List(Core), i: Int64, acc: List(Int64)) =
 /// (the single-main / W1-W3 path: no CCall, so no funcidx lookups needed). Every existing caller is unchanged;
 /// the recursion path (Bp4) threads a real `defidx` through `emit-instrs-d`. Mirrors eval-db's eval-core/-d split.
 def emit-instrs(c: Core, binders: List(Int64)) =
-  emit-instrs-d(c, binders, (Map.empty : Map(Int64, Int64)), 0)
+  emit-instrs-d(c, binders, Map.empty : Map(Int64, Int64), 0)
 
 /// slice-B'(Bp3): emit instruction bytes, threading a `defidx` map (recursive-def NAME → wasm FUNCTION INDEX)
 /// so a `CCall(name, args)` emits `<args> ; call <funcidx>` (0x10). All other arms are the W1-W3 emitter,
 /// unchanged except they forward `defidx` to recursive calls. A CCall to an unknown name (empty/missing) emits
 /// nothing usable — but `can-emit` gates a CCall program on the def being present, so this is unreached there.
 def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64), depth: Int64) = match c with
-  | Core.CNum(v, _, _) => Bytes.concat(b1(66), sleb(v))                 // 0x42 i64.const <sleb v> (width read in 2b-ii for i32)
-  | Core.CVar(b) => Bytes.concat(b1(32), uleb(index-of(binders, b)))    // 0x20 local.get <idx>
-  | Core.CBin(op, _, _, l, r) =>
-      // arith: left, right, i64-op (result already i64). comparison: left, right, i64-relational (→ i32),
-      // then i64.extend_i32_u (0xad) so the Bool is an i64 0/1 (eval-db's Bool-as-Int64 convention).
-      (let operands = Bytes.concat(emit-instrs-d(l, binders, defidx, depth), emit-instrs-d(r, binders, defidx, depth)) in
-       (if is-cmp-op(op)
-        then Bytes.concat(operands, Bytes.concat(b1(cmp-op(op)), b1(173)))    // <cmp> ; 0xad extend_i32_u
-        else Bytes.concat(operands, b1(wasm-op(op)))))
-  | Core.CLet(b, v, body) =>
-      // eval `v`, store into the binder's local, then eval `body` (which reads the local via CVar).
-      Bytes.concat(emit-instrs-d(v, binders, defidx, depth),
-        Bytes.concat(b1(33), Bytes.concat(uleb(index-of(binders, b)), emit-instrs-d(body, binders, defidx, depth))))  // 0x21 local.set
-  | Core.CIf(cond, thn, els) =>
-      // Core cond is an i64 0/1; wasm `if` consumes an i32, so convert via `i64.const 0 ; i64.ne` (→ i32:
-      // 1 iff cond ≠ 0). Then `if (result i64) <then> else <else> end` — the taken branch's i64 is the value.
-      // Opcodes: i64.const 0x42, i64.ne 0x52, if 0x04, blocktype i64 0x7e, else 0x05, end 0x0b.
-      Bytes.concat(emit-instrs-d(cond, binders, defidx, depth),
-        Bytes.concat(Bytes.concat(b1(66), Bytes.concat(sleb(0), b1(82))),      // i64.const 0 ; i64.ne → i32
-          Bytes.concat(b1(4), Bytes.concat(b1(126),                            // if (result i64)
-            Bytes.concat(emit-instrs-d(thn, binders, defidx, depth),
-              Bytes.concat(b1(5),                                              // else
-                Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))))))))  // <else> ; end
-  | Core.CCall(name, args) =>
-      // slice-B'(Bp3): a recursive call. Emit each arg onto the stack (left→right, wasm call convention), then
-      // `call <funcidx>` (0x10). funcidx from the def-index map; can-emit gates a CCall program on the callee
-      // being an emitted recursive def, so lookup-idx always hits here (a miss traps — corrupt lowering).
-      Bytes.concat(emit-call-args(args, 0, binders, defidx, depth),
-        Bytes.concat(b1(16), uleb(lookup-idx(defidx, name))))              // 0x10 call <funcidx>
-  | Core.CMatchEnum(scrut, tag, thn, els) =>
-      // W-enum: an ENUM-DISC (all-nullary sum) match. The scrutinee is a BARE i64 tag (a CNum, no heap cell),
-      // so the arm is a tag-EQUALITY branch — the SAME shape as CIf but the i32 predicate is `scrut == tag`
-      // (i64.eq 0xad→no, 0x51) instead of CIf's `cond != 0`. Emit `scrut ; i64.const <tag> ; i64.eq` (→ i32
-      // 1/0) then `if (result i64) <then> else <else> end`. Mirrors eval-db's CMatchEnum (v == tag → thn : els).
-      // A nested N-arm enum match lives in `els` (recursed). Opcodes: i64.const 0x42, i64.eq 0x51, if 0x04,
-      // blocktype i64 0x7e, else 0x05, end 0x0b.
-      Bytes.concat(emit-instrs-d(scrut, binders, defidx, depth),
-        Bytes.concat(Bytes.concat(b1(66), Bytes.concat(sleb(tag), b1(81))),      // i64.const <tag> ; i64.eq → i32
-          Bytes.concat(b1(4), Bytes.concat(b1(126),                             // if (result i64)
-            Bytes.concat(emit-instrs-d(thn, binders, defidx, depth),
-              Bytes.concat(b1(5),                                               // else
-                Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))))))))  // <else> ; end
-  | Core.CProj(operand, index) =>
-      // W-compound: read element `index` from the operand's heap block. operand → i64 HANDLE (a byte offset) ;
-      // i32.wrap_i64 (0xa7) → i32 addr ; i64.load (0x29) align=3 (0x03) offset=8*(index+1) (tag at handle+0,
-      // element i at handle+8*(i+1)). Mirrors eval's store-payload(handle, index).
-      Bytes.concat(emit-instrs-d(operand, binders, defidx, depth),
-        Bytes.concat(b1(167),                                                  // i32.wrap_i64
-          Bytes.concat(b1(41), Bytes.concat(b1(3), uleb(8 * (index + 1))))))   // i64.load align=3 offset
-  | Core.CCtor(tag, args) =>
-      // W-compound: bump-allocate a heap block [tag, elem0, elem1, …] (each i64, 8 bytes) and return its byte
-      // offset as the i64 HANDLE. scratch = an i32 local (index = #binders, declared by body-of when has-ctor)
-      // holding the alloc base. save (global.get 0 ; local.set scratch) ; store tag (local.get scratch ;
-      // i64.const tag ; i64.store 0) ; store each elem (local.get scratch ; <elem> ; i64.store 8*(i+1)) ; bump
-      // (local.get scratch ; i32.const blocksize ; i32.add ; global.set 0) ; push handle (local.get scratch ;
-      // i64.extend_i32_u). Args are FLAT (can-emit gate) so no nested ctor clobbers the single scratch.
-      (let scratch = List.len(binders) + depth in
-       (let blocksize = 8 * (1 + List.len(args)) in
-        (let save = Bytes.concat(b1(35), Bytes.concat(uleb(0), Bytes.concat(b1(33), uleb(scratch)))) in
-         (let store-tag = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(66), Bytes.concat(sleb(tag), Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(0))))))) in
-          (let store-elems = emit-ctor-stores(args, 0, scratch, binders, defidx, depth + 1) in
-           (let bump = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(65), Bytes.concat(sleb(blocksize), Bytes.concat(b1(106), Bytes.concat(b1(36), uleb(0))))))) in
-            (let push-handle = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), b1(173))) in
-             // BUMP EARLY (before storing elems): a NESTED CCtor arg allocates from `global 0`, so `global` must
-             // already point PAST this block or the inner alloc lands on this block's base. save→scratch, bump
-             // global, THEN store tag+elems into [scratch..], push scratch as the handle. (Depth-distinct scratch
-             // keeps the base LOCAL from being clobbered; bumping early keeps the ADDRESS from being reused.)
-             Bytes.concat(save, Bytes.concat(bump, Bytes.concat(store-tag, Bytes.concat(store-elems, push-handle)))))))))))
-  | Core.CMatchSum(scrut, tag, bs, thn, els) =>
-      // W-compound: PAYLOAD-sum deconstruct. Save the scrut handle's wrapped addr in the i32 scratch, load its
-      // tag (heap+0), compare to this arm's `tag`, and `if (result i64)`: THEN bind each payload elem (heap+
-      // 8*(i+1)) into its local + eval `then`; ELSE eval `else` (the next arm — nested CMatchSum). Scrut is
-      // always a boxed handle so the tag-load is sound. Opcodes: i32.wrap_i64 0xa7, local.set 0x21, local.get
-      // 0x20, i64.load 0x29, i64.const 0x42, i64.eq 0x51, if 0x04, i64 0x7e, else 0x05, end 0x0b.
-      (let scratch = List.len(binders) + depth in
-       (let setup = Bytes.concat(emit-instrs-d(scrut, binders, defidx, depth), Bytes.concat(b1(167), Bytes.concat(b1(33), uleb(scratch)))) in  // scrut ; i32.wrap_i64 ; local.set scratch
-        (let load-tag = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(41), Bytes.concat(b1(3), uleb(0))))) in         // local.get scratch ; i64.load 0
-         (let cmp = Bytes.concat(b1(66), Bytes.concat(sleb(tag), b1(81))) in                                                            // i64.const tag ; i64.eq
-          (let then-part = Bytes.concat(emit-payload-binds(bs, 0, scratch, binders, defidx), emit-instrs-d(thn, binders, defidx, depth)) in    // <bind payloads> ; <then>
-           Bytes.concat(setup, Bytes.concat(load-tag, Bytes.concat(cmp,
-             Bytes.concat(b1(4), Bytes.concat(b1(126),                                                                                  // if (result i64)
-               Bytes.concat(then-part, Bytes.concat(b1(5),                                                                             // else
-                 Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))))))))))))))
-  | Core.CFnRef(name) =>
-      // W-HO: a def-name used as a first-class fn VALUE → its FUNCIDX as an i64 const (0x42 i64.const <funcidx>).
-      // The identity elem segment maps table[funcidx] = funcidx, so this value doubles as the call_indirect index.
-      Bytes.concat(b1(66), sleb(lookup-idx(defidx, name)))
-  | Core.CFnRefVar(fb, args) =>
-      // W-HO: apply the fn-value in local `fb` to `args`. Emit args (call convention), then the fn-value
-      // (local.get fb = an i64 funcidx) ; i32.wrap_i64 (→ i32 table index) ; call_indirect <typeidx> <table 0>.
-      // typeidx is COMPUTED, no threading: emit-recursive-module appends functype-bytes(1..4) after main (which
-      // is at typeidx k = Map.len(defidx)), so the functype for arity A sits at typeidx k+A → Map.len(defidx)+len(args).
-      Bytes.concat(emit-call-args(args, 0, binders, defidx, depth),
-        Bytes.concat(b1(32), Bytes.concat(uleb(index-of(binders, fb)),
-          Bytes.concat(b1(167),                                                                    // i32.wrap_i64
-            Bytes.concat(b1(17), Bytes.concat(uleb(Map.len(defidx) + List.len(args)), b1(0)))))))  // 0x11 call_indirect <typeidx> <table 0>
+  | Core.CNum(v, _, _) => Bytes.concat(b1(66), sleb(v)) // 0x42 i64.const <sleb v> (width read in 2b-ii for i32)
+  | Core.CVar(b) => Bytes.concat(b1(32), uleb(index-of(binders, b))) // 0x20 local.get <idx>
+  | Core.CBin(op, _, _, l, r) => // arith: left, right, i64-op (result already i64). comparison: left, right, i64-relational (→ i32),
+  // then i64.extend_i32_u (0xad) so the Bool is an i64 0/1 (eval-db's Bool-as-Int64 convention).
+  let operands = Bytes.concat(
+      emit-instrs-d(l, binders, defidx, depth),
+      emit-instrs-d(r, binders, defidx, depth)
+    ) in
+    if is-cmp-op(op) then
+    Bytes.concat(operands, Bytes.concat(b1(cmp-op(op)), b1(173))) // <cmp> ; 0xad extend_i32_u
+  else
+    Bytes.concat(operands, b1(wasm-op(op)))
+  | Core.CLet(b, v, body) => // eval `v`, store into the binder's local, then eval `body` (which reads the local via CVar).
+  Bytes.concat(
+    emit-instrs-d(v, binders, defidx, depth),
+    Bytes.concat(
+      b1(33),
+      Bytes.concat(uleb(index-of(binders, b)), emit-instrs-d(body, binders, defidx, depth))
+    )
+  ) // 0x21 local.set
+  | Core.CIf(cond, thn, els) => // Core cond is an i64 0/1; wasm `if` consumes an i32, so convert via `i64.const 0 ; i64.ne` (→ i32:
+  // 1 iff cond ≠ 0). Then `if (result i64) <then> else <else> end` — the taken branch's i64 is the value.
+  // Opcodes: i64.const 0x42, i64.ne 0x52, if 0x04, blocktype i64 0x7e, else 0x05, end 0x0b.
+  Bytes.concat(
+    emit-instrs-d(cond, binders, defidx, depth),
+    Bytes.concat(
+      Bytes.concat(b1(66), Bytes.concat(sleb(0), b1(82))),
+      // i64.const 0 ; i64.ne → i32
+      Bytes.concat(
+        b1(4),
+        Bytes.concat(
+          b1(126),
+          // if (result i64)
+          Bytes.concat(
+            emit-instrs-d(thn, binders, defidx, depth),
+            Bytes.concat(
+              b1(5),
+              // else
+              Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))
+            )
+          )
+        )
+      )
+    )
+  ) // <else> ; end
+  | Core.CCall(name, args) => // slice-B'(Bp3): a recursive call. Emit each arg onto the stack (left→right, wasm call convention), then
+  // `call <funcidx>` (0x10). funcidx from the def-index map; can-emit gates a CCall program on the callee
+  // being an emitted recursive def, so lookup-idx always hits here (a miss traps — corrupt lowering).
+  Bytes.concat(
+    emit-call-args(args, 0, binders, defidx, depth),
+    Bytes.concat(b1(16), uleb(lookup-idx(defidx, name)))
+  ) // 0x10 call <funcidx>
+  | Core.CMatchEnum(scrut, tag, thn, els) => // W-enum: an ENUM-DISC (all-nullary sum) match. The scrutinee is a BARE i64 tag (a CNum, no heap cell),
+  // so the arm is a tag-EQUALITY branch — the SAME shape as CIf but the i32 predicate is `scrut == tag`
+  // (i64.eq 0xad→no, 0x51) instead of CIf's `cond != 0`. Emit `scrut ; i64.const <tag> ; i64.eq` (→ i32
+  // 1/0) then `if (result i64) <then> else <else> end`. Mirrors eval-db's CMatchEnum (v == tag → thn : els).
+  // A nested N-arm enum match lives in `els` (recursed). Opcodes: i64.const 0x42, i64.eq 0x51, if 0x04,
+  // blocktype i64 0x7e, else 0x05, end 0x0b.
+  Bytes.concat(
+    emit-instrs-d(scrut, binders, defidx, depth),
+    Bytes.concat(
+      Bytes.concat(b1(66), Bytes.concat(sleb(tag), b1(81))),
+      // i64.const <tag> ; i64.eq → i32
+      Bytes.concat(
+        b1(4),
+        Bytes.concat(
+          b1(126),
+          // if (result i64)
+          Bytes.concat(
+            emit-instrs-d(thn, binders, defidx, depth),
+            Bytes.concat(
+              b1(5),
+              // else
+              Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))
+            )
+          )
+        )
+      )
+    )
+  ) // <else> ; end
+  | Core.CProj(operand, index) => // W-compound: read element `index` from the operand's heap block. operand → i64 HANDLE (a byte offset) ;
+  // i32.wrap_i64 (0xa7) → i32 addr ; i64.load (0x29) align=3 (0x03) offset=8*(index+1) (tag at handle+0,
+  // element i at handle+8*(i+1)). Mirrors eval's store-payload(handle, index).
+  Bytes.concat(
+    emit-instrs-d(operand, binders, defidx, depth),
+    Bytes.concat(
+      b1(167),
+      // i32.wrap_i64
+      Bytes.concat(b1(41), Bytes.concat(b1(3), uleb(8 * (index + 1))))
+    )
+  ) // i64.load align=3 offset
+  | Core.CCtor(tag, args) => // W-compound: bump-allocate a heap block [tag, elem0, elem1, …] (each i64, 8 bytes) and return its byte
+  // offset as the i64 HANDLE. scratch = an i32 local (index = #binders, declared by body-of when has-ctor)
+  // holding the alloc base. save (global.get 0 ; local.set scratch) ; store tag (local.get scratch ;
+  // i64.const tag ; i64.store 0) ; store each elem (local.get scratch ; <elem> ; i64.store 8*(i+1)) ; bump
+  // (local.get scratch ; i32.const blocksize ; i32.add ; global.set 0) ; push handle (local.get scratch ;
+  // i64.extend_i32_u). Args are FLAT (can-emit gate) so no nested ctor clobbers the single scratch.
+  let scratch = List.len(binders) + depth in
+  let blocksize = 8 * (1 + List.len(args)) in
+  let save = Bytes.concat(b1(35), Bytes.concat(uleb(0), Bytes.concat(b1(33), uleb(scratch)))) in
+  let store-tag = Bytes.concat(
+      b1(32),
+      Bytes.concat(
+        uleb(scratch),
+        Bytes.concat(
+          b1(66),
+          Bytes.concat(sleb(tag), Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(0))))
+        )
+      )
+    ) in
+  let store-elems = emit-ctor-stores(args, 0, scratch, binders, defidx, depth + 1) in
+  let bump = Bytes.concat(
+      b1(32),
+      Bytes.concat(
+        uleb(scratch),
+        Bytes.concat(
+          b1(65),
+          Bytes.concat(sleb(blocksize), Bytes.concat(b1(106), Bytes.concat(b1(36), uleb(0))))
+        )
+      )
+    ) in
+  let push-handle = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), b1(173))) in
+    // BUMP EARLY (before storing elems): a NESTED CCtor arg allocates from `global 0`, so `global` must
+  // already point PAST this block or the inner alloc lands on this block's base. save→scratch, bump
+  // global, THEN store tag+elems into [scratch..], push scratch as the handle. (Depth-distinct scratch
+  // keeps the base LOCAL from being clobbered; bumping early keeps the ADDRESS from being reused.)
+  Bytes.concat(
+    save,
+    Bytes.concat(bump, Bytes.concat(store-tag, Bytes.concat(store-elems, push-handle)))
+  )
+  | Core.CMatchSum(scrut, tag, bs, thn, els) => // W-compound: PAYLOAD-sum deconstruct. Save the scrut handle's wrapped addr in the i32 scratch, load its
+  // tag (heap+0), compare to this arm's `tag`, and `if (result i64)`: THEN bind each payload elem (heap+
+  // 8*(i+1)) into its local + eval `then`; ELSE eval `else` (the next arm — nested CMatchSum). Scrut is
+  // always a boxed handle so the tag-load is sound. Opcodes: i32.wrap_i64 0xa7, local.set 0x21, local.get
+  // 0x20, i64.load 0x29, i64.const 0x42, i64.eq 0x51, if 0x04, i64 0x7e, else 0x05, end 0x0b.
+  let scratch = List.len(binders) + depth in
+  let setup = Bytes.concat(
+      emit-instrs-d(scrut, binders, defidx, depth),
+      Bytes.concat(b1(167), Bytes.concat(b1(33), uleb(scratch)))
+    ) in // scrut ; i32.wrap_i64 ; local.set scratch
+  let load-tag = Bytes.concat(
+      b1(32),
+      Bytes.concat(uleb(scratch), Bytes.concat(b1(41), Bytes.concat(b1(3), uleb(0))))
+    ) in // local.get scratch ; i64.load 0
+  let cmp = Bytes.concat(b1(66), Bytes.concat(sleb(tag), b1(81))) in // i64.const tag ; i64.eq
+  let then-part = Bytes.concat(
+      emit-payload-binds(bs, 0, scratch, binders, defidx),
+      emit-instrs-d(thn, binders, defidx, depth)
+    ) in // <bind payloads> ; <then>
+    Bytes.concat(
+    setup,
+    Bytes.concat(
+      load-tag,
+      Bytes.concat(
+        cmp,
+        Bytes.concat(
+          b1(4),
+          Bytes.concat(
+            b1(126),
+            // if (result i64)
+            Bytes.concat(
+              then-part,
+              Bytes.concat(
+                b1(5),
+                // else
+                Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  | Core.CFnRef(name) => // W-HO: a def-name used as a first-class fn VALUE → its FUNCIDX as an i64 const (0x42 i64.const <funcidx>).
+  // The identity elem segment maps table[funcidx] = funcidx, so this value doubles as the call_indirect index.
+  Bytes.concat(b1(66), sleb(lookup-idx(defidx, name)))
+  | Core.CFnRefVar(fb, args) => // W-HO: apply the fn-value in local `fb` to `args`. Emit args (call convention), then the fn-value
+  // (local.get fb = an i64 funcidx) ; i32.wrap_i64 (→ i32 table index) ; call_indirect <typeidx> <table 0>.
+  // typeidx is COMPUTED, no threading: emit-recursive-module appends functype-bytes(1..4) after main (which
+  // is at typeidx k = Map.len(defidx)), so the functype for arity A sits at typeidx k+A → Map.len(defidx)+len(args).
+  Bytes.concat(
+    emit-call-args(args, 0, binders, defidx, depth),
+    Bytes.concat(
+      b1(32),
+      Bytes.concat(
+        uleb(index-of(binders, fb)),
+        Bytes.concat(
+          b1(167),
+          // i32.wrap_i64
+          Bytes.concat(b1(17), Bytes.concat(uleb(Map.len(defidx) + List.len(args)), b1(0)))
+        )
+      )
+    )
+  ) // 0x11 call_indirect <typeidx> <table 0>
 
 /// W-compound: emit a CCtor's payload-store sequence — for each arg i: `local.get scratch ; <emit arg> ;
 /// i64.store align=3 offset=8*(i+1)` (element i after the tag). Index recursion; scratch (i32 local) holds the
 /// alloc base. Args are flat (can-emit gate), so emitting an arg never touches the scratch local.
-def emit-ctor-stores(args: List(Core), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(Int64, Int64), depth: Int64) =
-  (if i == List.len(args) then Bytes.of([])
-   else (match List.at(args, i) with
-     | Option.Some(a) => Bytes.concat(
-         Bytes.concat(b1(32), Bytes.concat(uleb(scratch),
-           Bytes.concat(emit-instrs-d(a, binders, defidx, depth),
-             Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(8 * (i + 1))))))),
-         emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth))
-     | Option.None(_) => emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth)))
+def emit-ctor-stores(args: List(Core), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(
+  Int64,
+  Int64
+), depth: Int64) =
+  if i == List.len(args) then
+    Bytes.of([])
+  else
+    match List.at(args, i) with
+      | Option.Some(a) => Bytes.concat(
+        Bytes.concat(
+          b1(32),
+          Bytes.concat(
+            uleb(scratch),
+            Bytes.concat(
+              emit-instrs-d(a, binders, defidx, depth),
+              Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(8 * (i + 1))))
+            )
+          )
+        ),
+        emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth)
+      )
+      | Option.None(_) => emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth)
 
 /// W-compound: bind a CMatchSum's payload elements into their locals — for each binder bs[i] that is not the
 /// -1 wildcard: `local.get scratch ; i64.load align=3 offset=8*(i+1) ; local.set (index-of binders bs[i])`
 /// (element i sits after the tag; scratch holds the wrapped handle addr). A -1 binder is a `_` wildcard — skip
 /// the bind but the FIELD position i still advances (so field 0 as `_` does not shift field 1's offset),
 /// mirroring eval's bind-payload. Index recursion; emits nothing for the empty-binder (nullary boxed) case.
-def emit-payload-binds(bs: List(Int64), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(Int64, Int64)) =
-  (if i == List.len(bs) then Bytes.of([])
-   else (match List.at(bs, i) with
-     | Option.Some(b) => (if b == -1
-         then emit-payload-binds(bs, i + 1, scratch, binders, defidx)                                 // wildcard: no bind, advance field
-         else Bytes.concat(
-           Bytes.concat(b1(32), Bytes.concat(uleb(scratch),
-             Bytes.concat(b1(41), Bytes.concat(b1(3), Bytes.concat(uleb(8 * (i + 1)),
-               Bytes.concat(b1(33), uleb(index-of(binders, b)))))))),                                 // local.get scratch ; i64.load off ; local.set slot
-           emit-payload-binds(bs, i + 1, scratch, binders, defidx)))
-     | Option.None(_) => emit-payload-binds(bs, i + 1, scratch, binders, defidx)))
+def emit-payload-binds(bs: List(Int64), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(
+  Int64,
+  Int64
+)) =
+  if i == List.len(bs) then
+    Bytes.of([])
+  else
+    match List.at(bs, i) with
+      | Option.Some(b) => if b == -1 then
+        emit-payload-binds(bs, i + 1, scratch, binders, defidx) // wildcard: no bind, advance field
+      else
+        Bytes.concat(
+          Bytes.concat(
+            b1(32),
+            Bytes.concat(
+              uleb(scratch),
+              Bytes.concat(
+                b1(41),
+                Bytes.concat(
+                  b1(3),
+                  Bytes.concat(uleb(8 * (i + 1)), Bytes.concat(b1(33), uleb(index-of(binders, b))))
+                )
+              )
+            )
+          ),
+          // local.get scratch ; i64.load off ; local.set slot
+          emit-payload-binds(bs, i + 1, scratch, binders, defidx)
+        )
+      | Option.None(_) => emit-payload-binds(bs, i + 1, scratch, binders, defidx)
 
 /// slice-B'(Bp3): emit a CCall's arg terms left-to-right (index recursion, the emit idiom), each onto the i64
 /// stack, concatenated — the wasm call convention (args pushed in order before `call`).
 def emit-call-args(args: List(Core), i: Int64, binders: List(Int64), defidx: Map(Int64, Int64), depth: Int64) =
-  (if i == List.len(args) then Bytes.of([])
-   else (match List.at(args, i) with
-     | Option.Some(a) => Bytes.concat(emit-instrs-d(a, binders, defidx, depth), emit-call-args(args, i + 1, binders, defidx, depth))
-     | Option.None(_) => emit-call-args(args, i + 1, binders, defidx, depth)))
+  if i == List.len(args) then
+    Bytes.of([])
+  else
+    match List.at(args, i) with
+      | Option.Some(a) => Bytes.concat(
+        emit-instrs-d(a, binders, defidx, depth),
+        emit-call-args(args, i + 1, binders, defidx, depth)
+      )
+      | Option.None(_) => emit-call-args(args, i + 1, binders, defidx, depth)
 
 /// slice-B'(Bp3): a def-name's wasm function index from the def-index map; TRAPS on a missing name (a
 /// checked-get, not a `-1`). A MISS cannot legitimately happen — `can-emit` gates a `CCall` program on the callee
 /// being a present emitted recursive def, so the name is always in `defidx` by the time we emit. A miss = a
 /// funcidx we'd `uleb`-encode into a bogus `call <garbage>`, i.e. corrupt lowering → `trap` (a checked-get
 /// that can't miss), never an in-band `-1` sentinel. Mirrors `index-of`/`byte-of`.
-def lookup-idx(defidx: Map(Int64, Int64), name: Int64) =
-  (match Map.lookup(defidx, name) with | Option.Some(ix) => ix | Option.None(_) => trap("lookup-idx: CCall to a name absent from the def-index map (corrupt lowering)"))
+def lookup-idx(defidx: Map(Int64, Int64), name: Int64) = match Map.lookup(defidx, name) with
+  | Option.Some(ix) => ix
+  | Option.None(_) => trap(
+    "lookup-idx: CCall to a name absent from the def-index map (corrupt lowering)"
+  )
 
 /// Wrap emitted instructions into a function body: the LOCALS vector then the instructions then `0b` end.
 /// `nlocals` i64 locals declare as ONE group `<uleb nlocals> 7e` (all locals are i64); `nlocals == 0` is the
 /// empty-vector `00` (W2 constant/arith case). Each CLet binder occupies one local (see `collect-binders`).
 def body-of(instrs: Bytes, nlocals: Int64) =
-  (let locals = (if nlocals == 0 then b1(0)                              // 00: zero local groups
-                 else Bytes.concat(b1(1), Bytes.concat(uleb(nlocals), b1(126)))) in  // 1 group: <n> i64(0x7e)
-   Bytes.concat(locals, Bytes.concat(instrs, b1(11))))
+  let locals = if nlocals == 0 then
+      b1(0) // 00: zero local groups
+    else
+      Bytes.concat(b1(1), Bytes.concat(uleb(nlocals), b1(126))) in // 1 group: <n> i64(0x7e)
+    Bytes.concat(locals, Bytes.concat(instrs, b1(11)))
 
 /// W-compound: like `body-of` but declares `nscratch` i32 scratch locals (0x7f) AFTER the `nlocals` i64
 /// locals (the CCtor alloc-base scratch, index = nlocals). Local-group vector: `<ngroups>` then a `<n> 0x7e`
 /// i64 group (if nlocals>0) then a `<nscratch> 0x7f` i32 group (if nscratch>0). ngroups=0 → `00`. body-of is
 /// the nscratch=0 special case (kept for the recursive-def caller, which has no compounds yet).
 def body-of-scratch(instrs: Bytes, nlocals: Int64, nscratch: Int64) =
-  (let i64grp = (if nlocals > 0 then Bytes.concat(uleb(nlocals), b1(126)) else Bytes.of([])) in
-   (let i32grp = (if nscratch > 0 then Bytes.concat(uleb(nscratch), b1(127)) else Bytes.of([])) in
-    (let ngroups = (if nlocals > 0 then 1 else 0) + (if nscratch > 0 then 1 else 0) in
-     Bytes.concat(Bytes.concat(uleb(ngroups), Bytes.concat(i64grp, i32grp)), Bytes.concat(instrs, b1(11))))))
+  let i64grp = if nlocals > 0 then Bytes.concat(uleb(nlocals), b1(126)) else Bytes.of([]) in
+  let i32grp = if nscratch > 0 then Bytes.concat(uleb(nscratch), b1(127)) else Bytes.of([]) in
+  let ngroups = (if nlocals > 0 then 1 else 0) + (if nscratch > 0 then 1 else 0) in
+    Bytes.concat(
+    Bytes.concat(uleb(ngroups), Bytes.concat(i64grp, i32grp)),
+    Bytes.concat(instrs, b1(11))
+  )
 
 /// slice-B'(Bp4b-ii): assign a wasm FUNCTION INDEX to each recursive def in the def-env, by its position in
 /// the (canonically-ordered) entry list: the i-th def-env entry → funcidx i. Returns a `Map(name, funcidx)`
@@ -524,12 +768,19 @@ def body-of-scratch(instrs: Bytes, nlocals: Int64, nscratch: Int64) =
 /// the def-env, so it takes the NEXT index (len entries) — assigned by the module assembler, not here.
 /// `entries` = `Map.to-list(lower-def-env(tree))` : `List(Tuple(name, (params, body)))`.
 def defenv-funcidx-map(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
-  defenv-funcidx-map-go(entries, 0, (Map.empty : Map(Int64, Int64)))
-def defenv-funcidx-map-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: Map(Int64, Int64)) =
-  (if i == List.len(entries) then acc
-   else (match List.at(entries, i) with
-     | Option.Some(e) => (let (name, _) = e in defenv-funcidx-map-go(entries, i + 1, Map.insert(acc, name, i)))
-     | Option.None(_) => acc))
+  defenv-funcidx-map-go(entries, 0, Map.empty : Map(Int64, Int64))
+
+def defenv-funcidx-map-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: Map(
+  Int64,
+  Int64
+)) =
+  if i == List.len(entries) then
+    acc
+  else
+    match List.at(entries, i) with
+      | Option.Some(e) => let (name, _) = e in
+        defenv-funcidx-map-go(entries, i + 1, Map.insert(acc, name, i))
+      | Option.None(_) => acc
 
 /// slice-B'(Bp2): emit ONE recursive def's FUNCTION BODY. A def with param binder-ids `params` and lowered
 /// body `bodyCore` (from lower-def-env's lower-one-def) emits as a wasm function body where the params are the
@@ -539,19 +790,23 @@ def defenv-funcidx-map-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))),
 /// <param-index>` for free, and CLet binders index past the params automatically. The locals VECTOR declares
 /// only the CLet-binder count (params are NOT re-declared as locals). Mirrors rcdzc wasm fn-body emission.
 def emit-def-body(params: List(Int64), bodyCore: Core) =
-  emit-def-body-d(params, bodyCore, (Map.empty : Map(Int64, Int64)))
+  emit-def-body-d(params, bodyCore, Map.empty : Map(Int64, Int64))
 
 /// slice-B'(Bp4b-i): emit a def's function body threading a `defidx` map, so a body containing a `CCall` to a
 /// (self/sibling) recursive def emits a real `call <funcidx>` — the recursion case. Same locals model as
 /// `emit-def-body` (params = leading locals, CLet binders follow), just via the def-index-aware `emit-instrs-d`.
 /// The 2-arg `emit-def-body` above is the empty-def-env wrapper (a non-recursive body, no CCall).
 def emit-def-body-d(params: List(Int64), bodyCore: Core, defidx: Map(Int64, Int64)) =
-  (let clets = collect-binders(bodyCore) in
-   (let binders = List.concat(params, clets) in
+  let clets = collect-binders(bodyCore) in
+  let binders = List.concat(params, clets) in
     // W-compound: a body that constructs a compound (has-ctor) needs one i32 scratch local (the CCtor alloc
-    // base), declared AFTER the params + i64 clet-locals — index List.len(binders), which emit-instrs-d's CCtor
-    // uses. A scalar/recursive body declares no scratch (body-of-scratch with nscratch 0 == the old body-of).
-    body-of-scratch(emit-instrs-d(bodyCore, binders, defidx, 0), List.len(clets), scratch-need(bodyCore, 0))))
+  // base), declared AFTER the params + i64 clet-locals — index List.len(binders), which emit-instrs-d's CCtor
+  // uses. A scalar/recursive body declares no scratch (body-of-scratch with nscratch 0 == the old body-of).
+  body-of-scratch(
+    emit-instrs-d(bodyCore, binders, defidx, 0),
+    List.len(clets),
+    scratch-need(bodyCore, 0)
+  )
 
 /// Code section wrapping a single function body: `01`=one body, `<uleb bodylen>`, `<body>`.
 def code-section(body: Bytes) =
@@ -563,20 +818,23 @@ def code-section(body: Bytes) =
 /// and prepends its char, recursing on `n / 10` until 0.
 def digit-char(d: Int64) = match String.at("0123456789", d) with
   | Option.Some(c) => c
-  | Option.None(_) => ""      // unreachable: d is always 0..9 (`n % 10`), but String.at is total-by-Option
+  | Option.None(_) => "" // unreachable: d is always 0..9 (`n % 10`), but String.at is total-by-Option
 
 /// Extract digits keeping the working value `n` ≤ 0 THROUGHOUT — so `Int64.min` (whose positive magnitude is
 /// NOT i64-representable) never needs negating. For `n ≤ 0`, `n % 10` is ≤ 0, so `0 - (n % 10)` is the digit
 /// (0..9), and `n / 10` stays ≤ 0. Terminates when `n` reaches 0. (`int-to-decimal` seeds it with `-|n|`.)
 def int-to-decimal-go(n: Int64, acc: String) =
-  if n == 0 then acc
-  else int-to-decimal-go(n / 10, String.concat(digit-char(0 - (n % 10)), acc))
+  if n == 0 then acc else int-to-decimal-go(n / 10, String.concat(digit-char(0 - n % 10), acc))
 
 def int-to-decimal(n: Int64) =
   // Work in the NEGATIVE domain to stay Int64.min-safe: negating a positive to ≤ 0 never overflows, but
   // negating Int64.min to a positive would. So map n → its ≤ 0 twin, extract there, prefix "-" if n < 0.
-  if n == 0 then "0"
-  else (if n < 0 then String.concat("-", int-to-decimal-go(n, "")) else int-to-decimal-go(0 - n, ""))
+  if n == 0 then
+    "0"
+  else if n < 0 then
+    String.concat("-", int-to-decimal-go(n, ""))
+  else
+    int-to-decimal-go(0 - n, "")
 
 /// TARGET.TEXT backend: render a Core term to a readable S-expr-ish STRING. The SECOND backend behind the
 /// seam — its job is to PROVE the seam generalizes (a target that truly reads the neutral `Core`, not the
@@ -584,18 +842,117 @@ def int-to-decimal(n: Int64) =
 /// `List(Core)` (call/ctor args) renders space-joined via `render-core-list`. This is the Text ARM behind
 /// `target-emit` — it NEVER declines (every well-formed Core renders), unlike the Wasm arm's emit-subset gate.
 def render-core(c: Core) = match c with
-  | Core.CNum(v, s, w) => String.concat("(num ", String.concat(int-to-decimal(v), String.concat(" ", String.concat(if s then "s" else "u", String.concat(int-to-decimal(w), ")")))))
+  | Core.CNum(v, s, w) => String.concat(
+    "(num ",
+    String.concat(
+      int-to-decimal(v),
+      String.concat(
+        " ",
+        String.concat(if s then "s" else "u", String.concat(int-to-decimal(w), ")"))
+      )
+    )
+  )
   | Core.CVar(b) => String.concat("(var ", String.concat(int-to-decimal(b), ")"))
-  | Core.CBin(op, s, w, l, r) => String.concat("(bin ", String.concat(int-to-decimal(op), String.concat(" ", String.concat(if s then "s" else "u", String.concat(int-to-decimal(w), String.concat(" ", String.concat(render-core(l), String.concat(" ", String.concat(render-core(r), ")")))))))))
-  | Core.CLet(b, v, body) => String.concat("(let ", String.concat(int-to-decimal(b), String.concat(" ", String.concat(render-core(v), String.concat(" ", String.concat(render-core(body), ")"))))))
-  | Core.CIf(cond, t, e) => String.concat("(if ", String.concat(render-core(cond), String.concat(" ", String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")"))))))
-  | Core.CCall(name, args) => String.concat("(call ", String.concat(int-to-decimal(name), String.concat(render-core-list(args), ")")))
+  | Core.CBin(op, s, w, l, r) => String.concat(
+    "(bin ",
+    String.concat(
+      int-to-decimal(op),
+      String.concat(
+        " ",
+        String.concat(
+          if s then "s" else "u",
+          String.concat(
+            int-to-decimal(w),
+            String.concat(
+              " ",
+              String.concat(render-core(l), String.concat(" ", String.concat(render-core(r), ")")))
+            )
+          )
+        )
+      )
+    )
+  )
+  | Core.CLet(b, v, body) => String.concat(
+    "(let ",
+    String.concat(
+      int-to-decimal(b),
+      String.concat(
+        " ",
+        String.concat(render-core(v), String.concat(" ", String.concat(render-core(body), ")")))
+      )
+    )
+  )
+  | Core.CIf(cond, t, e) => String.concat(
+    "(if ",
+    String.concat(
+      render-core(cond),
+      String.concat(
+        " ",
+        String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")")))
+      )
+    )
+  )
+  | Core.CCall(name, args) => String.concat(
+    "(call ",
+    String.concat(int-to-decimal(name), String.concat(render-core-list(args), ")"))
+  )
   | Core.CFnRef(name) => String.concat("(fnref ", String.concat(int-to-decimal(name), ")"))
-  | Core.CFnRefVar(b, args) => String.concat("(fnrefvar ", String.concat(int-to-decimal(b), String.concat(render-core-list(args), ")")))
-  | Core.CCtor(tag, args) => String.concat("(ctor ", String.concat(int-to-decimal(tag), String.concat(render-core-list(args), ")")))
-  | Core.CMatchSum(scrut, tag, binders, t, e) => String.concat("(matchsum ", String.concat(render-core(scrut), String.concat(" ", String.concat(int-to-decimal(tag), String.concat(" nbinders=", String.concat(int-to-decimal(List.len(binders)), String.concat(" ", String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")"))))))))))
-  | Core.CMatchEnum(scrut, tag, t, e) => String.concat("(matchenum ", String.concat(render-core(scrut), String.concat(" ", String.concat(int-to-decimal(tag), String.concat(" ", String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")"))))))))
-  | Core.CProj(operand, index) => String.concat("(proj ", String.concat(render-core(operand), String.concat(" ", String.concat(int-to-decimal(index), ")"))))
+  | Core.CFnRefVar(b, args) => String.concat(
+    "(fnrefvar ",
+    String.concat(int-to-decimal(b), String.concat(render-core-list(args), ")"))
+  )
+  | Core.CCtor(tag, args) => String.concat(
+    "(ctor ",
+    String.concat(int-to-decimal(tag), String.concat(render-core-list(args), ")"))
+  )
+  | Core.CMatchSum(scrut, tag, binders, t, e) => String.concat(
+    "(matchsum ",
+    String.concat(
+      render-core(scrut),
+      String.concat(
+        " ",
+        String.concat(
+          int-to-decimal(tag),
+          String.concat(
+            " nbinders=",
+            String.concat(
+              int-to-decimal(List.len(binders)),
+              String.concat(
+                " ",
+                String.concat(
+                  render-core(t),
+                  String.concat(" ", String.concat(render-core(e), ")"))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  | Core.CMatchEnum(scrut, tag, t, e) => String.concat(
+    "(matchenum ",
+    String.concat(
+      render-core(scrut),
+      String.concat(
+        " ",
+        String.concat(
+          int-to-decimal(tag),
+          String.concat(
+            " ",
+            String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")")))
+          )
+        )
+      )
+    )
+  )
+  | Core.CProj(operand, index) => String.concat(
+    "(proj ",
+    String.concat(
+      render-core(operand),
+      String.concat(" ", String.concat(int-to-decimal(index), ")"))
+    )
+  )
 
 /// Render a `List(Core)` (call/ctor/fnrefvar args) as space-prefixed renders: `""` for empty, else
 /// ` <arg0> <arg1> …`. Each arg is preceded by a space so it appends cleanly after the head token.
@@ -612,11 +969,11 @@ def render-core-list(args: List(Core)) = match args with
 /// start). The seam takes the shared structured `Core` (never a flat/linear IR — that stays private to a
 /// linearizing backend, as in rcdzc where `Lir` lives inside the wasm backend only).
 type Target =
-  | Wasm       // a WebAssembly core module (the Stage-0 backend; what compiler-ml emits today)
-  | Text       // a readable S-expr-ish render of the Core (the SECOND backend — proves the seam generalizes
-               // to a non-wasm target + a debug artifact; `render-core`). Bytes = the UTF-8 of the render.
-  // Rust — a Rust-source arm — is the next backend to add behind this seam (mirrors rcdzc backend/rust).
+  | Wasm // a WebAssembly core module (the Stage-0 backend; what compiler-ml emits today)
+  | Text // a readable S-expr-ish render of the Core (the SECOND backend — proves the seam generalizes
 
+// to a non-wasm target + a debug artifact; `render-core`). Bytes = the UTF-8 of the render.
+// Rust — a Rust-source arm — is the next backend to add behind this seam (mirrors rcdzc backend/rust).
 /// Emit a `main` Core term for a chosen `Target` — the seam dispatch (rcdzc's `backend::emit(db, target)`
 /// match). `Some(bytes)` = the artifact for that target; `None` = out-of-subset (declines). Selecting a
 /// backend is a branch on `Target`; the caller names it. Adding a backend = adding an arm here + its
@@ -642,26 +999,40 @@ def target-emit(target: Target, c: Core) = match target with
 /// logic in the emitter): a program the interpreter declines does not emit a wrong module. An in-range
 /// program is unaffected (a fitting result equals its i64 computation, so it still emits the full instrs).
 def emit-wasm-module(c: Core) =
-  (if can-emit(c) and has-value(c)
-   then (let binders = collect-binders(c) in
-         (let hc = has-ctor(c) in
-          // W-compound: a program that CONSTRUCTS a compound needs the linear-memory heap + the bump-pointer
-          // global (inserted after func-section, before export-section per wasm section order) and one i32
-          // scratch local. A scalar program emits the lean module UNCHANGED (byte-identical, no mem/global).
-          (let mem = (if hc then Bytes.concat(memory-section(), global-section()) else Bytes.of([])) in
-           (let nscratch = (if hc then 1 else 0) in
-            Option.Some(Bytes.concat(preamble(),
-              Bytes.concat(type-section(),
-                Bytes.concat(func-section(),
-                  Bytes.concat(mem,
-                    Bytes.concat(export-section(), code-section(body-of-scratch(emit-instrs(c, binders), List.len(binders), nscratch))))))))))))
-   else Option.None(unit))
+  if can-emit(c) and has-value(c) then
+    let binders = collect-binders(c) in
+    let hc = has-ctor(c) in
+      // W-compound: a program that CONSTRUCTS a compound needs the linear-memory heap + the bump-pointer
+    // global (inserted after func-section, before export-section per wasm section order) and one i32
+    // scratch local. A scalar program emits the lean module UNCHANGED (byte-identical, no mem/global).
+    let mem = if hc then Bytes.concat(memory-section(), global-section()) else Bytes.of([]) in
+    let nscratch = if hc then 1 else 0 in
+      Option.Some(
+      Bytes.concat(
+        preamble(),
+        Bytes.concat(
+          type-section(),
+          Bytes.concat(
+            func-section(),
+            Bytes.concat(
+              mem,
+              Bytes.concat(
+                export-section(),
+                code-section(body-of-scratch(emit-instrs(c, binders), List.len(binders), nscratch))
+              )
+            )
+          )
+        )
+      )
+    )
+  else
+    Option.None(unit)
 
 /// Does the (nullary, compile-time-constant) subset program `c` have a DEFINED interpreted value? A scalar
 /// `Bool` off the heap-`Bytes` path (mirrors `can-emit`) — `eval-core` under the empty env is the oracle's
 /// own decline decision (overflow / divide-by-zero / mod-by-zero → `None`), so gating emit on it makes emit
 /// decline EXACTLY the programs the interpreter declines.
-def has-value(c: Core) = match eval-core(c, (Map.empty : Map(Int64, Value))) with
+def has-value(c: Core) = match eval-core(c, Map.empty : Map(Int64, Value)) with
   | Option.Some(_) => true
   | Option.None(_) => false
 
@@ -684,9 +1055,10 @@ def emit-text(s: String) = emit-src-for(Target.Text, s)
 /// specialization (the W4 host harness's call point). A Rust backend would be `emit-src-for(Target.Rust, s)`
 /// with the pipeline above unchanged — the whole point of the seam.
 def emit-src-for(target: Target, s: String) =
-  let (root, tree) = read-source(s) in (match lower-tree(tree, root) with
-      | Option.Some(core) => target-emit(target, core)
-      | Option.None(_) => Option.None(unit))
+  let (root, tree) = read-source(s) in
+    match lower-tree(tree, root) with
+    | Option.Some(core) => target-emit(target, core)
+    | Option.None(_) => Option.None(unit)
 
 /// Back-compat alias: `emit-module` = the Wasm arm via the seam. Existing callers/tests keep working while
 /// routing through `target-emit` (so the seam is exercised, not bypassed).
@@ -697,11 +1069,14 @@ def emit-module(c: Core) = target-emit(Target.Wasm, c)
 /// canonical TEXT (lossy for arbitrary module bytes), but a `List(UInt8)`-returning `main` crosses as a raw
 /// `list<u8>` the host reads element-by-element — so the driver returns the module as this list.
 def bytes-to-list(b: Bytes) = bytes-to-list-go(b, 0, Bytes.len(b), [])
+
 def bytes-to-list-go(b: Bytes, i: Int64, n: Int64, acc: List(UInt8)) =
-  (if i == n then acc
-   else match Bytes.at(b, i) with
-     | Option.Some(x) => bytes-to-list-go(b, i + 1, n, List.push(acc, UInt8.wrap(x)))   // append in order
-     | Option.None(_) => acc)
+  if i == n then
+    acc
+  else
+    match Bytes.at(b, i) with
+      | Option.Some(x) => bytes-to-list-go(b, i + 1, n, List.push(acc, UInt8.wrap(x))) // append in order
+      | Option.None(_) => acc
 
 /// `emit-src-bytes(s)` — the DRIVER-FACING W4 entry: `emit-src` but returning the module as a
 /// `List(UInt8)` instead of `Bytes`, so `cdz run-emitted`'s `main` hands the host a RAW `list<u8>` (crosses
@@ -714,26 +1089,35 @@ def emit-src-bytes(s: String) = match emit-src(s) with
 
 /// TESTS ----------------------------------------------------------------------------------------------
 /// W1 verifies the emitted bytes STRUCTURALLY in-Cadenza (no host wasmtime yet — that gate is W4).
-
 /// Byte `i` of `b`. Every caller reads a KNOWN-in-bounds offset of a module the compiler JUST emitted (the
 /// structural byte-asserts + `contains-byte-go`, which guards `i == len` before calling), so an out-of-range
 /// read = a compiler bug → `trap`, never an in-band `-1` sentinel (a checked-get that cannot legitimately miss).
-def byte-of(b: Bytes, i: Int64) = match Bytes.at(b, i) with | Option.Some(x) => x | Option.None(_) => trap("byte-of: index out of range (compiler bug)")
+def byte-of(b: Bytes, i: Int64) = match Bytes.at(b, i) with
+  | Option.Some(x) => x
+  | Option.None(_) => trap("byte-of: index out of range (compiler bug)")
 
 /// Does `b` contain the byte `x` anywhere? (a test helper for opcode-presence checks). Fuel = the buffer
 /// length, walked by index.
 def contains-byte(b: Bytes, x: Int64) = contains-byte-go(b, x, 0)
+
 def contains-byte-go(b: Bytes, x: Int64, i: Int64) =
-  (if i == Bytes.len(b) then false
-   else (if byte-of(b, i) == x then true else contains-byte-go(b, x, i + 1)))
+  if i == Bytes.len(b) then
+    false
+  else if byte-of(b, i) == x then
+    true
+  else
+    contains-byte-go(b, x, i + 1)
 
 @test
 def em-cnum-emits-a-module() =
   // a CNum emits Some(bytes); an out-of-subset shape (a CBin over an UNKNOWN op-code, neither arith nor
   // comparison) emits None — the subset boundary stays honest.
-  (match emit-module(cnum64(42)) with
-    | Option.Some(_) => (match emit-module(Core.CBin(0, true, 64, cnum64(1), cnum64(2))) with | Option.None(_) => unit | _ => trap("unknown-op CBin out of subset"))
-    | Option.None(_) => trap("CNum emits a module"))
+  match emit-module(cnum64(42)) with
+    | Option.Some(_) => (match emit-module(Core.CBin(0, true, 64, cnum64(1), cnum64(2))) with
+      | Option.None(_) => unit
+      | _ => trap("unknown-op CBin out of subset")
+    )
+    | Option.None(_) => trap("CNum emits a module")
 
 @test
 def em-cmatchenum-emits-a-module() =
@@ -743,10 +1127,16 @@ def em-cmatchenum-emits-a-module() =
   // tag 0 → 100, else CMatchEnum(scrut=1, tag 1 → 200, else 300)); scrut==1 ≠ 0 → inner, ==1 → 200. can-emit
   // + has-value (eval-db oracle → Some 200) both hold → emit-module returns Some. run-emitted matches run-ml
   // on this shape end-to-end (verified: 100/200/300 for the three arms).
-  (match emit-module(Core.CMatchEnum(cnum64(1), 0, cnum64(100),
-                       Core.CMatchEnum(cnum64(1), 1, cnum64(200), cnum64(300)))) with
+  match emit-module(
+      Core.CMatchEnum(
+        cnum64(1),
+        0,
+        cnum64(100),
+        Core.CMatchEnum(cnum64(1), 1, cnum64(200), cnum64(300))
+      )
+    ) with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("a bare-tag enum-disc CMatchEnum emits a module"))
+    | Option.None(_) => trap("a bare-tag enum-disc CMatchEnum emits a module")
 
 @test
 def em-compound-construct-project-emits-a-module() =
@@ -754,16 +1144,29 @@ def em-compound-construct-project-emits-a-module() =
   // Direct-Core mirror of `(let ((p (tuple 10 20))) (. p 1))`: CLet(p, CCtor(0, [10, 20]), CProj(CVar p, 1)).
   // can-emit (flat ctor args) + has-value (eval-db oracle → Some 20) hold → emit-module Some. run-emitted
   // matches run-ml end-to-end (verified: element 0/1/2 of tuples + record field access → the right scalar).
-  (match emit-module(Core.CLet(100, Core.CCtor(0, List.concat(List.push([], cnum64(10)), List.push([], cnum64(20)))),
-                       Core.CProj(Core.CVar(100), 1))) with
-    | Option.Some(_) =>
-        // a NESTED ctor arg now EMITS too: depth-distinct scratch (scratch-need + the `depth` thread) gives each
-        // nesting level its own alloc-base local, and bumping the global BEFORE storing elems keeps the inner
-        // alloc from landing on the outer base. So a ctor-in-ctor assembles a module (was a decline pre-fix).
-        (match emit-module(Core.CCtor(0, List.concat(List.push([], Core.CCtor(0, List.push([], cnum64(1)))), List.push([], cnum64(3))))) with
-          | Option.Some(_) => unit
-          | Option.None(_) => trap("a nested compound ctor must now EMIT (depth-scratch + bump-early)"))
-    | Option.None(_) => trap("a flat tuple construct+project emits a module"))
+  match emit-module(
+      Core.CLet(
+        100,
+        Core.CCtor(0, List.concat(List.push([], cnum64(10)), List.push([], cnum64(20)))),
+        Core.CProj(Core.CVar(100), 1)
+      )
+    ) with
+    | Option.Some(_) => // a NESTED ctor arg now EMITS too: depth-distinct scratch (scratch-need + the `depth` thread) gives each
+    // nesting level its own alloc-base local, and bumping the global BEFORE storing elems keeps the inner
+    // alloc from landing on the outer base. So a ctor-in-ctor assembles a module (was a decline pre-fix).
+    (match emit-module(
+        Core.CCtor(
+          0,
+          List.concat(
+            List.push([], Core.CCtor(0, List.push([], cnum64(1)))),
+            List.push([], cnum64(3))
+          )
+        )
+      ) with
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("a nested compound ctor must now EMIT (depth-scratch + bump-early)")
+    )
+    | Option.None(_) => trap("a flat tuple construct+project emits a module")
 
 @test
 def em-cmatchsum-payload-deconstruct-emits-a-module() =
@@ -772,90 +1175,135 @@ def em-cmatchsum-payload-deconstruct-emits-a-module() =
   // CNum 0) — scrut is a boxed handle, tag 1 == 1 → bind payload[0]=5 to binder 100 → CVar 100. can-emit +
   // has-value (eval-db oracle → Some 5) hold → emit-module Some. run-emitted matches run-ml end-to-end
   // (verified: Some/Pair bind + None→wildcard → 5/21/99/7).
-  (match emit-module(Core.CMatchSum(Core.CCtor(1, List.push([], cnum64(5))), 1, List.push([], 100),
-                       Core.CVar(100), cnum64(0))) with
+  match emit-module(
+      Core.CMatchSum(
+        Core.CCtor(1, List.push([], cnum64(5))),
+        1,
+        List.push([], 100),
+        Core.CVar(100),
+        cnum64(0)
+      )
+    ) with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("a payload-sum CMatchSum deconstruct emits a module"))
+    | Option.None(_) => trap("a payload-sum CMatchSum deconstruct emits a module")
 
 @test
 def em-module-has-wasm-magic-and-version() =
   // the first 8 bytes are the wasm magic `\0asm` + version 1.
-  (match emit-module(cnum64(7)) with
-    | Option.Some(m) =>
-      (if (byte-of(m, 0) == 0) then
-        (if (byte-of(m, 1) == 97) then
-          (if (byte-of(m, 2) == 115) then
-            (if (byte-of(m, 3) == 109) then
-              (if (byte-of(m, 4) == 1) then
-                (if (byte-of(m, 5) == 0) then unit else trap("version byte 5"))
-               else trap("version byte 4")) else trap("magic 'm'")) else trap("magic 's'")) else trap("magic 'a'")) else trap("magic NUL"))
-    | Option.None(_) => trap("emits a module"))
+  match emit-module(cnum64(7)) with
+    | Option.Some(m) => if byte-of(m, 0) == 0 then
+      if byte-of(m, 1) == 97 then
+        if byte-of(m, 2) == 115 then
+          if byte-of(m, 3) == 109 then
+            if byte-of(m, 4) == 1 then
+              if byte-of(m, 5) == 0 then unit else trap("version byte 5")
+            else
+              trap("version byte 4")
+          else
+            trap("magic 'm'")
+        else
+          trap("magic 's'")
+      else
+        trap("magic 'a'")
+    else
+      trap("magic NUL")
+    | Option.None(_) => trap("emits a module")
 
 @test
 def em-uleb-small-is-one-byte() =
   // a value < 128 ulebs to exactly one byte equal to itself.
-  (if (byte-of(uleb(5), 0) == 5) then
-    (if (Bytes.len(uleb(5)) == 1) then unit else trap("uleb 5 is one byte")) else trap("uleb 5 == 5"))
+  if byte-of(uleb(5), 0) == 5 then
+    if Bytes.len(uleb(5)) == 1 then unit else trap("uleb 5 is one byte")
+  else
+    trap("uleb 5 == 5")
 
 @test
 def em-uleb-onetwentyeight-is-two-bytes() =
   // 128 = 0x80 → ULEB `80 01` (low group 0 with more-bit, then 1).
-  (if (byte-of(uleb(128), 0) == 128) then
-    (if (byte-of(uleb(128), 1) == 1) then
-      (if (Bytes.len(uleb(128)) == 2) then unit else trap("uleb 128 is two bytes")) else trap("uleb 128 high byte 1")) else trap("uleb 128 low byte 0x80"))
+  if byte-of(uleb(128), 0) == 128 then
+    if byte-of(uleb(128), 1) == 1 then
+      if Bytes.len(uleb(128)) == 2 then unit else trap("uleb 128 is two bytes")
+    else
+      trap("uleb 128 high byte 1")
+  else
+    trap("uleb 128 low byte 0x80")
 
 @test
 def em-sleb-small-nonneg-is-one-byte() =
   // a small non-negative value (< 64) slebs to one byte equal to itself (sign bit clear).
-  (if (byte-of(sleb(7), 0) == 7) then
-    (if (Bytes.len(sleb(7)) == 1) then unit else trap("sleb 7 is one byte")) else trap("sleb 7 == 7"))
+  if byte-of(sleb(7), 0) == 7 then
+    if Bytes.len(sleb(7)) == 1 then unit else trap("sleb 7 is one byte")
+  else
+    trap("sleb 7 == 7")
 
 @test
 def em-sleb-negative-one-is-hex7f() =
   // -1 slebs to a single byte 0x7f (7 one-bits; sign bit set, rest == -1 → stop).
-  (if (byte-of(sleb(-1), 0) == 127) then
-    (if (Bytes.len(sleb(-1)) == 1) then unit else trap("sleb -1 is one byte")) else trap("sleb -1 == 0x7f"))
+  if byte-of(sleb(-1), 0) == 127 then
+    if Bytes.len(sleb(-1)) == 1 then unit else trap("sleb -1 is one byte")
+  else
+    trap("sleb -1 == 0x7f")
 
 @test
 def em-code-section-tag-and-body-ends-with-const-and-end() =
   // the module ends with the code section: … 0a <size> 01 <bodylen> 00 42 <sleb v> 0b. For v=3 the tail is
   // 00 42 03 0b (no locals, i64.const 3, end). Check the last 4 bytes.
-  (match emit-module(cnum64(3)) with
-    | Option.Some(m) =>
-      (let n = Bytes.len(m) in
-       (if (byte-of(m, n - 4) == 0) then          // zero local groups
-         (if (byte-of(m, n - 3) == 66) then        // i64.const opcode 0x42
-           (if (byte-of(m, n - 2) == 3) then        // sleb of 3
-             (if (byte-of(m, n - 1) == 11) then unit else trap("body ends with 0x0b end")) else trap("i64.const 3")) else trap("0x42 i64.const")) else trap("zero locals")))
-    | Option.None(_) => trap("emits a module"))
+  match emit-module(cnum64(3)) with
+    | Option.Some(m) => let n = Bytes.len(m) in
+      if byte-of(m, n - 4) == 0 then
+      // zero local groups
+      if byte-of(m, n - 3) == 66 then
+        // i64.const opcode 0x42
+        if byte-of(m, n - 2) == 3 then
+          // sleb of 3
+          if byte-of(m, n - 1) == 11 then unit else trap("body ends with 0x0b end")
+        else
+          trap("i64.const 3")
+      else
+        trap("0x42 i64.const")
+    else
+      trap("zero locals")
+    | Option.None(_) => trap("emits a module")
 
 /// W2 --------------------------------------------------------------------------------------------------
-
 @test
 def em-cbin-add-emits-a-module() =
   // `1 + 2` (CBin 43 (CNum 1) (CNum 2)) is in the W2 subset → emits Some. The tail is …42 01 42 02 7c 0b
   // (i64.const 1, i64.const 2, i64.add, end).
-  (match emit-module(Core.CBin(43, true, 64, cnum64(1), cnum64(2))) with
-    | Option.Some(m) =>
-      (let n = Bytes.len(m) in
-       (if (byte-of(m, n - 2) == 124) then          // i64.add opcode 0x7c right before end
-         (if (byte-of(m, n - 1) == 11) then unit else trap("ends with end")) else trap("i64.add 0x7c")))
-    | Option.None(_) => trap("CBin add emits a module"))
+  match emit-module(Core.CBin(43, true, 64, cnum64(1), cnum64(2))) with
+    | Option.Some(m) => let n = Bytes.len(m) in
+      if byte-of(m, n - 2) == 124 then
+      // i64.add opcode 0x7c right before end
+      if byte-of(m, n - 1) == 11 then unit else trap("ends with end")
+    else
+      trap("i64.add 0x7c")
+    | Option.None(_) => trap("CBin add emits a module")
 
 @test
 def em-cbin-postfix-order() =
   // postfix: left operand bytes, then right, then op. For (CNum 5) op (CNum 6): … 42 05 42 06 <op> 0b.
   // Check the const operands appear in source order before the op.
-  (match emit-module(Core.CBin(42, true, 64, cnum64(5), cnum64(6))) with
-    | Option.Some(m) =>
-      (let n = Bytes.len(m) in
-       // tail: 42 05 42 06 7e 0b → bytes n-6..n-1
-       (if (byte-of(m, n - 6) == 66) then           // 0x42 i64.const (left)
-         (if (byte-of(m, n - 5) == 5) then            // 5
-           (if (byte-of(m, n - 4) == 66) then          // 0x42 i64.const (right)
-             (if (byte-of(m, n - 3) == 6) then           // 6
-               (if (byte-of(m, n - 2) == 126) then unit else trap("i64.mul 0x7e")) else trap("right operand 6")) else trap("right i64.const")) else trap("left operand 5")) else trap("left i64.const")))
-    | Option.None(_) => trap("CBin mul emits a module"))
+  match emit-module(Core.CBin(42, true, 64, cnum64(5), cnum64(6))) with
+    | Option.Some(m) => let n = Bytes.len(m) in
+      // tail: 42 05 42 06 7e 0b → bytes n-6..n-1
+    if byte-of(m, n - 6) == 66 then
+      // 0x42 i64.const (left)
+      if byte-of(m, n - 5) == 5 then
+        // 5
+        if byte-of(m, n - 4) == 66 then
+          // 0x42 i64.const (right)
+          if byte-of(m, n - 3) == 6 then
+            // 6
+            if byte-of(m, n - 2) == 126 then unit else trap("i64.mul 0x7e")
+          else
+            trap("right operand 6")
+        else
+          trap("right i64.const")
+      else
+        trap("left operand 5")
+    else
+      trap("left i64.const")
+    | Option.None(_) => trap("CBin mul emits a module")
 
 @test
 def em-narrow-overflow-declines() =
@@ -863,134 +1311,187 @@ def em-narrow-overflow-declines() =
   // interpreter oracle declines it (eval-db ev-narrow-cbin-overflow-is-none); emit must ALSO decline (not
   // emit a module that runs to 200) — otherwise run-emitted (200) would DISAGREE with run-ml (declined).
   // has-value gates it off. (This pins the fix for the emit-side width-agnostic-arith miscompile.)
-  (match emit-module(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(100, true, 8))) with
+  match emit-module(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(100, true, 8))) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("Int8 100+100 = 200 overflows → declines emit (not a wrong module)"))
+    | Option.Some(_) => trap("Int8 100+100 = 200 overflows → declines emit (not a wrong module)")
 
 @test
 def em-narrow-unsigned-overflow-declines() =
   // unsigned twin: `(: 200 UInt8) + (: 100 UInt8)` = 300 overflows UInt8 (max 255) → declines emit.
-  (match emit-module(Core.CBin(43, false, 8, Core.CNum(200, false, 8), Core.CNum(100, false, 8))) with
+  match emit-module(Core.CBin(43, false, 8, Core.CNum(200, false, 8), Core.CNum(100, false, 8))) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("UInt8 200+100 = 300 overflows → declines emit"))
+    | Option.Some(_) => trap("UInt8 200+100 = 300 overflows → declines emit")
 
 @test
 def em-narrow-in-range-still-emits() =
   // the no-regression guard: an IN-RANGE narrow op still emits the full instruction tree. `(: 100 Int8) +
   // (: 20 Int8)` = 120 fits Int8 → emits (tail … 42 <100> 42 <20> 7c 0b, an i64.add — a fitting result
   // equals its i64 computation, so run-emitted 120 == run-ml 120). has-value(c) is Some 120 here.
-  (match emit-module(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(20, true, 8))) with
-    | Option.Some(m) =>
-      (let n = Bytes.len(m) in
-       (if (byte-of(m, n - 2) == 124) then           // i64.add 0x7c before end
-         (if (byte-of(m, n - 1) == 11) then unit else trap("ends with end")) else trap("i64.add 0x7c")))
-    | Option.None(_) => trap("in-range Int8 120 still emits a module"))
+  match emit-module(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(20, true, 8))) with
+    | Option.Some(m) => let n = Bytes.len(m) in
+      if byte-of(m, n - 2) == 124 then
+      // i64.add 0x7c before end
+      if byte-of(m, n - 1) == 11 then unit else trap("ends with end")
+    else
+      trap("i64.add 0x7c")
+    | Option.None(_) => trap("in-range Int8 120 still emits a module")
 
 @test
 def em-int64-overflow-not-declined() =
   // width-64 arith is NOT overflow-checked (only narrow width<64 is) — Int64 100+100 = 200 fits Int64 and
   // emits, matching eval-db ev-int64-overflow-is-some. Guards has-value from over-declining the wide subset.
-  (match emit-module(Core.CBin(43, true, 64, cnum64(100), cnum64(100))) with
+  match emit-module(Core.CBin(43, true, 64, cnum64(100), cnum64(100))) with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("Int64 100+100 fits → emits (width 64 not overflow-checked)"))
+    | Option.None(_) => trap("Int64 100+100 fits → emits (width 64 not overflow-checked)")
 
 @test
 def em-narrow-mul-overflow-declines() =
   // the has-value decline generalizes past ADD to any op: `(* (: 20 Int8) (: 10 Int8))` = 200 overflows Int8
   // → eval-core None → emit declines (matching eval-db ev-narrow-cbin-mul-overflow-is-none + the CLI probe).
-  (match emit-module(Core.CBin(42, true, 8, Core.CNum(20, true, 8), Core.CNum(10, true, 8))) with
+  match emit-module(Core.CBin(42, true, 8, Core.CNum(20, true, 8), Core.CNum(10, true, 8))) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("Int8 20*10 = 200 overflows → declines emit"))
+    | Option.Some(_) => trap("Int8 20*10 = 200 overflows → declines emit")
 
 @test
 def em-narrow-nested-overflow-declines() =
   // and past a single level: a nested narrow arith whose OUTER result overflows declines even when both
   // leaves fit. `(+ (: 100 Int8) (+ (: 100 Int8) (: 0 Int8)))` = 100 + 100 = 200 overflows Int8 → declines
   // (the inner `100+0` fits, the outer sum doesn't — has-value walks the whole tree via eval-core).
-  (match emit-module(Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(0, true, 8)))) with
+  match emit-module(
+      Core.CBin(
+        43,
+        true,
+        8,
+        Core.CNum(100, true, 8),
+        Core.CBin(43, true, 8, Core.CNum(100, true, 8), Core.CNum(0, true, 8))
+      )
+    ) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("nested Int8 100+(100+0) = 200 overflows → declines emit"))
+    | Option.Some(_) => trap("nested Int8 100+(100+0) = 200 overflows → declines emit")
 
 @test
 def em-narrow-in-let-overflow-declines() =
   // and through a CLet binding: `let x = (: 100 Int8) in x + (: 100 Int8)` = 200 overflows Int8 → declines
   // (has-value evaluates the let body under the bound env, so a narrow overflow in the body still declines).
-  (match emit-module(Core.CLet(7, Core.CNum(100, true, 8), Core.CBin(43, true, 8, Core.CVar(7), Core.CNum(100, true, 8)))) with
+  match emit-module(
+      Core.CLet(
+        7,
+        Core.CNum(100, true, 8),
+        Core.CBin(43, true, 8, Core.CVar(7), Core.CNum(100, true, 8))
+      )
+    ) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("let-bound Int8 100+100 = 200 overflows → declines emit"))
+    | Option.Some(_) => trap("let-bound Int8 100+100 = 200 overflows → declines emit")
 
 /// The op-byte of an emitted `CBin op 1 1` module — the byte right before the trailing `0x0b` end. A test
 /// helper so the op-mapping check stays flat (no deep nested matches). TRAPS if the module declined to emit:
 /// every op these tests pass IS in the emit subset, so a decline is a broken test premise, not an in-band -1.
 def emitted-op-byte(op: Int64) = match emit-module(Core.CBin(op, true, 64, cnum64(1), cnum64(1))) with
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 2)
-  | Option.None(_) => trap(String.concat("emitted-op-byte: CBin op ", String.concat(int-to-decimal(op), " did not emit (out of subset?)")))
+  | Option.None(_) => trap(
+    String.concat(
+      "emitted-op-byte: CBin op ",
+      String.concat(int-to-decimal(op), " did not emit (out of subset?)")
+    )
+  )
 
 /// The RELATIONAL opcode of an emitted `CBin cmp 1 1` module — for a comparison the tail is `<cmp> ad 0b`,
 /// so the opcode is 3 bytes before the end (the 0xad extend + 0x0b end follow it). TRAPS on a decline (same
 /// reason as emitted-op-byte: the comparison ops these tests use are all in the emit subset).
 def cmp-byte(op: Int64) = match emit-module(Core.CBin(op, true, 64, cnum64(1), cnum64(1))) with
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 3)
-  | Option.None(_) => trap(String.concat("cmp-byte: CBin comparison op ", String.concat(int-to-decimal(op), " did not emit (out of subset?)")))
+  | Option.None(_) => trap(
+    String.concat(
+      "cmp-byte: CBin comparison op ",
+      String.concat(int-to-decimal(op), " did not emit (out of subset?)")
+    )
+  )
 
 @test
 def em-cbin-op-mapping() =
   // each Core arith op-code maps to its i64 wasm opcode (add 0x7c, sub 0x7d, mul 0x7e, div_s 0x7f, rem_s 0x81).
-  (if (emitted-op-byte(43) == 124) then
-    (if (emitted-op-byte(45) == 125) then
-      (if (emitted-op-byte(42) == 126) then
-        (if (emitted-op-byte(47) == 127) then
-          (if (emitted-op-byte(37) == 129) then unit else trap("37 % → i64.rem_s 0x81"))
-         else trap("47 / → i64.div_s 0x7f")) else trap("42 * → i64.mul 0x7e")) else trap("45 - → i64.sub 0x7d")) else trap("43 + → i64.add 0x7c"))
+  if emitted-op-byte(43) == 124 then
+    if emitted-op-byte(45) == 125 then
+      if emitted-op-byte(42) == 126 then
+        if emitted-op-byte(47) == 127 then
+          if emitted-op-byte(37) == 129 then unit else trap("37 % → i64.rem_s 0x81")
+        else
+          trap("47 / → i64.div_s 0x7f")
+      else
+        trap("42 * → i64.mul 0x7e")
+    else
+      trap("45 - → i64.sub 0x7d")
+  else
+    trap("43 + → i64.add 0x7c")
 
 @test
 def em-nested-cbin-emits() =
   // `1 + 2 * 3` (CBin 43 (CNum 1) (CBin 42 (CNum 2) (CNum 3))) — nested arith stays in-subset → emits.
-  (match emit-module(Core.CBin(43, true, 64, cnum64(1), Core.CBin(42, true, 64, cnum64(2), cnum64(3)))) with
+  match emit-module(
+      Core.CBin(43, true, 64, cnum64(1), Core.CBin(42, true, 64, cnum64(2), cnum64(3)))
+    ) with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("nested arith emits a module"))
+    | Option.None(_) => trap("nested arith emits a module")
 
 /// W2b -------------------------------------------------------------------------------------------------
-
 @test
 def em-clet-emits-a-module() =
   // `let x = 2 in x * 3` = CLet(7, CNum 2, CBin(*, CVar 7, CNum 3)) is in the W2b subset → emits Some.
-  (match emit-module(Core.CLet(7, cnum64(2), Core.CBin(42, true, 64, Core.CVar(7), cnum64(3)))) with
+  match emit-module(Core.CLet(7, cnum64(2), Core.CBin(42, true, 64, Core.CVar(7), cnum64(3)))) with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("CLet emits a module"))
+    | Option.None(_) => trap("CLet emits a module")
 
 @test
 def em-clet-declares-one-local() =
   // one CLet → the code-section body starts (after the bodylen) with a locals vector `01 01 7e` (1 group,
   // 1 i64). Verify the module contains the local.set (0x21) and local.get (0x20) opcodes for the binding.
-  (match emit-module(Core.CLet(7, cnum64(2), Core.CVar(7))) with
-    | Option.Some(m) =>
-      (if contains-byte(m, 33) then                       // 0x21 local.set present
-        (if contains-byte(m, 32) then unit else trap("local.get 0x20 present")) else trap("local.set 0x21 present"))
-    | Option.None(_) => trap("CLet emits"))
+  match emit-module(Core.CLet(7, cnum64(2), Core.CVar(7))) with
+    | Option.Some(m) => if contains-byte(m, 33) then
+      // 0x21 local.set present
+      if contains-byte(m, 32) then unit else trap("local.get 0x20 present")
+    else
+      trap("local.set 0x21 present")
+    | Option.None(_) => trap("CLet emits")
 
 @test
 def em-cvar-is-local-get-index() =
   // in `let x = 5 in x`, binder x gets local index 0, so the body's tail is: 42 05 21 00 20 00 0b
   // (i64.const 5, local.set 0, local.get 0, end). Check the last 5 bytes: 21 00 20 00 0b.
-  (match emit-module(Core.CLet(9, cnum64(5), Core.CVar(9))) with
-    | Option.Some(m) =>
-      (let n = Bytes.len(m) in
-       (if (byte-of(m, n - 5) == 33) then                 // 0x21 local.set
-         (if (byte-of(m, n - 4) == 0) then                 // set index 0
-           (if (byte-of(m, n - 3) == 32) then               // 0x20 local.get
-             (if (byte-of(m, n - 2) == 0) then               // get index 0
-               (if (byte-of(m, n - 1) == 11) then unit else trap("ends with end")) else trap("get index 0")) else trap("local.get 0x20")) else trap("set index 0")) else trap("local.set 0x21")))
-    | Option.None(_) => trap("CLet emits"))
+  match emit-module(Core.CLet(9, cnum64(5), Core.CVar(9))) with
+    | Option.Some(m) => let n = Bytes.len(m) in
+      if byte-of(m, n - 5) == 33 then
+      // 0x21 local.set
+      if byte-of(m, n - 4) == 0 then
+        // set index 0
+        if byte-of(m, n - 3) == 32 then
+          // 0x20 local.get
+          if byte-of(m, n - 2) == 0 then
+            // get index 0
+            if byte-of(m, n - 1) == 11 then unit else trap("ends with end")
+          else
+            trap("get index 0")
+        else
+          trap("local.get 0x20")
+      else
+        trap("set index 0")
+    else
+      trap("local.set 0x21")
+    | Option.None(_) => trap("CLet emits")
 
 @test
 def em-nested-clet-two-locals() =
   // `let x = 1 in let y = 2 in x + y` → two CLet binders → two locals; module emits. collect-binders puts
   // both binder ids in the list (post-order: `[y, x]` = y at index 0, x at index 1), each CVar reading its
   // binder's slot via index-of on that same list.
-  (match emit-module(Core.CLet(1, cnum64(1), Core.CLet(2, cnum64(2), Core.CBin(43, true, 64, Core.CVar(1), Core.CVar(2))))) with
+  match emit-module(
+      Core.CLet(
+        1,
+        cnum64(1),
+        Core.CLet(2, cnum64(2), Core.CBin(43, true, 64, Core.CVar(1), Core.CVar(2)))
+      )
+    ) with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("nested CLet emits a module"))
+    | Option.None(_) => trap("nested CLet emits a module")
 
 @test
 def em-index-of-maps-binder-to-position() =
@@ -998,78 +1499,105 @@ def em-index-of-maps-binder-to-position() =
   // order-sensitively (the i-th binder gets local i), so a CVar for the 2nd binder emits `local.get 1`. A
   // miss is impossible by construction (a binder always comes from the same collect-binders list) → the `[]`
   // arm traps rather than returning an in-band -1; this witnesses only the legitimate present-lookup path.
-  (let binders = List.push(List.push([], 7), 8) in       // [7, 8]: binder 7 at index 0, binder 8 at index 1
-   (if (index-of(binders, 7) == 0) then
-     (if (index-of(binders, 8) == 1) then unit else trap("binder 8 is local index 1"))
-    else trap("binder 7 is local index 0")))
+  let binders = List.push(List.push([], 7), 8) in // [7, 8]: binder 7 at index 0, binder 8 at index 1
+    if index-of(binders, 7) == 0 then
+    if index-of(binders, 8) == 1 then unit else trap("binder 8 is local index 1")
+  else
+    trap("binder 7 is local index 0")
 
 /// W3 -------------------------------------------------------------------------------------------------
-
 @test
 def em-cif-emits-a-module() =
   // `if (1 < 2) then 10 else 20` = CIf(CBin(<, 1, 2), 10, 20) is in the W3 subset → emits Some, and the
   // module ends with `end end` (the if's end 0x0b then the func body's end 0x0b).
-  (match emit-module(Core.CIf(Core.CBin(60, true, 64, cnum64(1), cnum64(2)), cnum64(10), cnum64(20))) with
-    | Option.Some(m) => (let n = Bytes.len(m) in
-      (if (byte-of(m, n - 1) == 11) then                  // func body end
-        (if (byte-of(m, n - 2) == 11) then unit else trap("if-block end 0x0b before func end")) else trap("func end 0x0b")))
-    | Option.None(_) => trap("CIf emits a module"))
+  match emit-module(Core.CIf(Core.CBin(60, true, 64, cnum64(1), cnum64(2)), cnum64(10), cnum64(20))) with
+    | Option.Some(m) => let n = Bytes.len(m) in
+      if byte-of(m, n - 1) == 11 then
+      // func body end
+      if byte-of(m, n - 2) == 11 then unit else trap("if-block end 0x0b before func end")
+    else
+      trap("func end 0x0b")
+    | Option.None(_) => trap("CIf emits a module")
 
 @test
 def em-cif-has-if-opcode-and-blocktype() =
   // the emitted module contains the `if` opcode 0x04 immediately followed by blocktype i64 0x7e, and an
   // `else` 0x05 — the structural shape of a value-producing wasm if/else.
-  (match emit-module(Core.CIf(cnum64(1), cnum64(10), cnum64(20))) with
-    | Option.Some(m) =>
-      (if contains-byte(m, 4) then                        // if opcode present
-        (if contains-byte(m, 5) then unit else trap("else 0x05 present")) else trap("if 0x04 present"))
-    | Option.None(_) => trap("CIf emits"))
+  match emit-module(Core.CIf(cnum64(1), cnum64(10), cnum64(20))) with
+    | Option.Some(m) => if contains-byte(m, 4) then
+      // if opcode present
+      if contains-byte(m, 5) then unit else trap("else 0x05 present")
+    else
+      trap("if 0x04 present")
+    | Option.None(_) => trap("CIf emits")
 
 @test
 def em-comparison-extends-to-i64() =
   // a comparison `1 < 2` (CBin 60) emits i64.lt_s (0x53) then i64.extend_i32_u (0xad) — the Bool result is
   // widened from i32 to an i64 0/1. As a bare main body the tail is: 42 01 42 02 53 ad 0b.
-  (match emit-module(Core.CBin(60, true, 64, cnum64(1), cnum64(2))) with
-    | Option.Some(m) => (let n = Bytes.len(m) in
-      (if (byte-of(m, n - 3) == 83) then                  // 0x53 i64.lt_s
-        (if (byte-of(m, n - 2) == 173) then                // 0xad i64.extend_i32_u
-          (if (byte-of(m, n - 1) == 11) then unit else trap("ends with end")) else trap("extend_i32_u 0xad")) else trap("i64.lt_s 0x53")))
-    | Option.None(_) => trap("comparison emits"))
+  match emit-module(Core.CBin(60, true, 64, cnum64(1), cnum64(2))) with
+    | Option.Some(m) => let n = Bytes.len(m) in
+      if byte-of(m, n - 3) == 83 then
+      // 0x53 i64.lt_s
+      if byte-of(m, n - 2) == 173 then
+        // 0xad i64.extend_i32_u
+        if byte-of(m, n - 1) == 11 then unit else trap("ends with end")
+      else
+        trap("extend_i32_u 0xad")
+    else
+      trap("i64.lt_s 0x53")
+    | Option.None(_) => trap("comparison emits")
 
 @test
 def em-comparison-op-mapping() =
   // each comparison op maps to its i64 relational opcode (the byte 2 before the trailing end, before the
   // 0xad extend). < lt_s 0x53, == eq 0x51, > gt_s 0x55, <= le_s 0x57, >= ge_s 0x59, != ne 0x52.
-  (if (cmp-byte(60) == 83) then
-    (if (cmp-byte(61) == 81) then
-      (if (cmp-byte(62) == 85) then
-        (if (cmp-byte(63) == 87) then
-          (if (cmp-byte(64) == 89) then
-            (if (cmp-byte(65) == 82) then unit else trap("!= ne 0x52")) else trap(">= ge_s 0x59")) else trap("<= le_s 0x57")) else trap("> gt_s 0x55")) else trap("== eq 0x51")) else trap("< lt_s 0x53"))
+  if cmp-byte(60) == 83 then
+    if cmp-byte(61) == 81 then
+      if cmp-byte(62) == 85 then
+        if cmp-byte(63) == 87 then
+          if cmp-byte(64) == 89 then
+            if cmp-byte(65) == 82 then unit else trap("!= ne 0x52")
+          else
+            trap(">= ge_s 0x59")
+        else
+          trap("<= le_s 0x57")
+      else
+        trap("> gt_s 0x55")
+    else
+      trap("== eq 0x51")
+  else
+    trap("< lt_s 0x53")
 
 /// backend SEAM (Target dispatch) --------------------------------------------------------------------
-
 @test
 def em-seam-target-wasm-emits() =
   // the seam `target-emit(Target.Wasm, core)` emits the same wasm module the direct Wasm arm does — the
   // dispatch is transparent for the one shipped backend, and `emit-module` (back-compat) routes through it.
-  (match target-emit(Target.Wasm, cnum64(7)) with
+  match target-emit(Target.Wasm, cnum64(7)) with
     | Option.Some(m) => (match emit-wasm-module(cnum64(7)) with
-        | Option.Some(m2) => (if (Bytes.len(m) == Bytes.len(m2)) then (if (byte-of(m, 0) == 0) then unit else trap("wasm magic via seam")) else trap("seam == direct wasm arm"))
-        | Option.None(_) => trap("wasm arm emits"))
-    | Option.None(_) => trap("seam Target.Wasm emits"))
+      | Option.Some(m2) => if Bytes.len(m) == Bytes.len(m2) then
+        if byte-of(m, 0) == 0 then unit else trap("wasm magic via seam")
+      else
+        trap("seam == direct wasm arm")
+      | Option.None(_) => trap("wasm arm emits")
+    )
+    | Option.None(_) => trap("seam Target.Wasm emits")
 
 @test
 def em-seam-src-for-wasm-matches-emit-src() =
   // `emit-src-for(Target.Wasm, s)` == `emit-src(s)` (emit-src is the Wasm specialization of the seam entry).
-  (match emit-src-for(Target.Wasm, "(+ 1 2)") with
+  match emit-src-for(Target.Wasm, "(+ 1 2)") with
     | Option.Some(m) => (match emit-src("(+ 1 2)") with
-        | Option.Some(m2) => (if Bytes.len(m) == Bytes.len(m2) then unit else trap("emit-src-for Wasm == emit-src"))
-        | Option.None(_) => trap("emit-src emits"))
-    | Option.None(_) => trap("emit-src-for Wasm emits"))
+      | Option.Some(m2) => if Bytes.len(m) == Bytes.len(m2) then
+        unit
+      else
+        trap("emit-src-for Wasm == emit-src")
+      | Option.None(_) => trap("emit-src emits")
+    )
+    | Option.None(_) => trap("emit-src-for Wasm emits")
 
 /// Target.Text backend (Core→String render) ---------------------------------------------------------
-
 @test
 def em-int-to-decimal-zero() =
   if int-to-decimal(0) == "0" then unit else trap("int-to-decimal 0 = \"0\"")
@@ -1086,71 +1614,88 @@ def em-int-to-decimal-negative() =
 def em-int-to-decimal-int64-min() =
   // Int64.min (-9223372036854775808) is the corner: its POSITIVE magnitude is NOT i64-representable, so a
   // negate-to-positive render would overflow (trap/wrong). int-to-decimal works in the ≤0 domain, so it renders.
-  if int-to-decimal(-9223372036854775808) == "-9223372036854775808" then unit
-  else trap("int-to-decimal Int64.min renders (no negate-to-positive overflow)")
+  if int-to-decimal(-9223372036854775808) == "-9223372036854775808" then
+    unit
+  else
+    trap("int-to-decimal Int64.min renders (no negate-to-positive overflow)")
 
 @test
 def em-int-to-decimal-int64-max() =
-  if int-to-decimal(9223372036854775807) == "9223372036854775807" then unit
-  else trap("int-to-decimal Int64.max = \"9223372036854775807\"")
+  if int-to-decimal(9223372036854775807) == "9223372036854775807" then
+    unit
+  else
+    trap("int-to-decimal Int64.max = \"9223372036854775807\"")
 
 @test
 def em-render-core-num() =
   // a plain Int64 constant renders as (num <value> s<width>).
-  if render-core(cnum64(42)) == "(num 42 s64)" then unit else trap("render CNum(42,true,64) = (num 42 s64)")
+  if render-core(cnum64(42)) == "(num 42 s64)" then
+    unit
+  else
+    trap("render CNum(42,true,64) = (num 42 s64)")
 
 @test
 def em-render-core-bin() =
   // (+ 1 2) as Core: CBin(43, s, 64, CNum 1, CNum 2) → (bin 43 s64 (num 1 s64) (num 2 s64)).
-  (let c = Core.CBin(43, true, 64, cnum64(1), cnum64(2)) in
-   if render-core(c) == "(bin 43 s64 (num 1 s64) (num 2 s64))" then unit else trap("render CBin"))
+  let c = Core.CBin(43, true, 64, cnum64(1), cnum64(2)) in
+    if render-core(c) == "(bin 43 s64 (num 1 s64) (num 2 s64))" then unit else trap("render CBin")
 
 @test
 def em-render-core-var-and-let() =
   // CLet(7, CNum 5, CVar 7) → (let 7 (num 5 s64) (var 7)).
-  (let c = Core.CLet(7, cnum64(5), Core.CVar(7)) in
-   if render-core(c) == "(let 7 (num 5 s64) (var 7))" then unit else trap("render CLet/CVar"))
+  let c = Core.CLet(7, cnum64(5), Core.CVar(7)) in
+    if render-core(c) == "(let 7 (num 5 s64) (var 7))" then unit else trap("render CLet/CVar")
 
 @test
 def em-seam-target-text-renders() =
   // the seam `target-emit(Target.Text, core)` returns the UTF-8 of `render-core` — a NON-wasm backend behind
   // the SAME seam, proving the seam is target-neutral (not wasm-shaped). Bytes = String.to-bytes(render).
-  (match target-emit(Target.Text, cnum64(7)) with
-    | Option.Some(b) => (if Bytes.len(b) == String.byte-len("(num 7 s64)") then unit else trap("Text seam renders (num 7 s64)"))
-    | Option.None(_) => trap("Text arm renders (never declines)"))
+  match target-emit(Target.Text, cnum64(7)) with
+    | Option.Some(b) => if Bytes.len(b) == String.byte-len("(num 7 s64)") then
+      unit
+    else
+      trap("Text seam renders (num 7 s64)")
+    | Option.None(_) => trap("Text arm renders (never declines)")
 
 @test
 def em-emit-text-source-to-render() =
   // `emit-text(s)` = SOURCE → Text render through the seam: (+ 1 2) lowers to a CBin and renders. A well-typed
   // program never declines on the Text backend (unlike Wasm's emit-subset gate). Assert it produces bytes.
-  (match emit-text("(+ 1 2)") with
-    | Option.Some(b) => (if Bytes.len(b) > 0 then unit else trap("emit-text (+ 1 2) produces a render"))
-    | Option.None(_) => trap("emit-text (+ 1 2) renders (well-typed)"))
+  match emit-text("(+ 1 2)") with
+    | Option.Some(b) => if Bytes.len(b) > 0 then
+      unit
+    else
+      trap("emit-text (+ 1 2) produces a render")
+    | Option.None(_) => trap("emit-text (+ 1 2) renders (well-typed)")
 
 /// emit-src (SOURCE → wasm) --------------------------------------------------------------------------
-
 @test
 def em-src-literal-emits() =
   // a bare literal source emits a valid module (the whole source→wasm chain: read-source, lower-tree,
   // emit-module). Starts with the wasm magic 0x00 0x61 0x73 0x6d.
-  (match emit-src("42") with
-    | Option.Some(m) => (if (byte-of(m, 0) == 0) then (if (byte-of(m, 1) == 97) then unit else trap("magic a")) else trap("magic NUL"))
-    | Option.None(_) => trap("literal emits"))
+  match emit-src("42") with
+    | Option.Some(m) => if byte-of(m, 0) == 0 then
+      if byte-of(m, 1) == 97 then unit else trap("magic a")
+    else
+      trap("magic NUL")
+    | Option.None(_) => trap("literal emits")
 
 @test
 def em-src-arith-emits() =
   // `(+ 1 (* 2 3))` (an s-expr arith program) lowers + emits — proving emit-src threads a multi-node tree.
-  (match emit-src("(+ 1 (* 2 3))") with
+  match emit-src("(+ 1 (* 2 3))") with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("arith source emits"))
+    | Option.None(_) => trap("arith source emits")
 
 @test
 def em-src-let-and-if-emit() =
   // a let program and an if program both emit (W2b locals + W3 control flow reached through emit-src).
-  (match emit-src("(let ((x 2)) (* x 3))") with
+  match emit-src("(let ((x 2)) (* x 3))") with
     | Option.Some(_) => (match emit-src("(if (< 1 2) 10 20)") with
-        | Option.Some(_) => unit | Option.None(_) => trap("if source emits"))
-    | Option.None(_) => trap("let source emits"))
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("if source emits")
+    )
+    | Option.None(_) => trap("let source emits")
 
 @test
 def em-src-multi-binding-let-emits() =
@@ -1158,16 +1703,19 @@ def em-src-multi-binding-let-emits() =
   // so emit sees a nested-CLet tree it already handles (each binding → a wasm local). Pins the desugar→emit
   // path for the multi-binding form (the emit-src let tests were single-binding before). run-emitted runs it
   // to 15 (W4-checked). A 3-binding form also emits.
-  (match emit-src("(let ((x 5) (y 10)) (+ x y))") with
+  match emit-src("(let ((x 5) (y 10)) (+ x y))") with
     | Option.Some(_) => (match emit-src("(let ((a 1) (b 2) (c 3)) (+ a (+ b c)))") with
-        | Option.Some(_) => unit | Option.None(_) => trap("3-binding let source emits"))
-    | Option.None(_) => trap("2-binding let source emits"))
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("3-binding let source emits")
+    )
+    | Option.None(_) => trap("2-binding let source emits")
 
 @test
 def em-src-ill-typed-declines() =
   // an unbound name is ill-typed → lower-tree declines → emit-src returns None (no wrong module).
-  (match emit-src("x") with
-    | Option.None(_) => unit | Option.Some(_) => trap("unbound x declines"))
+  match emit-src("x") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("unbound x declines")
 
 @test
 def em-src-corpus-module-wrapper-emits() =
@@ -1175,17 +1723,22 @@ def em-src-corpus-module-wrapper-emits() =
   // `read-source` peels that nullary-main wrapper to its body — so emit-src must emit a real module for the
   // module-wrapped form (not just a bare expr). This is exactly what `cdz run-emitted` feeds emit-src-bytes
   // per corpus case; a gap here would break the W4 emit≡interpret gate on real corpus programs.
-  (match emit-src("(do (def (main) (+ 1 2)) (export main))") with
-    | Option.Some(m) => (if (byte-of(m, 0) == 0) then unit else trap("module-wrapper emits a wasm module"))
-    | Option.None(_) => trap("corpus module-wrapper (do (def (main) …)) must emit"))
+  match emit-src("(do (def (main) (+ 1 2)) (export main))") with
+    | Option.Some(m) => if byte-of(m, 0) == 0 then
+      unit
+    else
+      trap("module-wrapper emits a wasm module")
+    | Option.None(_) => trap("corpus module-wrapper (do (def (main) …)) must emit")
 
 @test
 def em-src-corpus-module-with-let-and-if() =
   // a module-wrapped let and a module-wrapped if both emit — the corpus feeds these module-normalized.
-  (match emit-src("(do (def (main) (let ((x 2)) (* x 3))) (export main))") with
+  match emit-src("(do (def (main) (let ((x 2)) (* x 3))) (export main))") with
     | Option.Some(_) => (match emit-src("(do (def (main) (if (< 1 2) 10 20)) (export main))") with
-        | Option.Some(_) => unit | Option.None(_) => trap("module-wrapped if emits"))
-    | Option.None(_) => trap("module-wrapped let emits"))
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("module-wrapped if emits")
+    )
+    | Option.None(_) => trap("module-wrapped let emits")
 
 @test
 def em-src-user-function-module-emits() =
@@ -1193,37 +1746,45 @@ def em-src-user-function-module-emits() =
   // (β-reduction to a CLet), so emit sees a single self-contained expression tree — no real wasm call needed.
   // Pins the source→emit path for functions (the emit-src tests were all bare/nullary-main before). A nullary
   // helper `(g)` and a single-param helper `(sq x)` both emit; run-emitted runs them to 12 / 49 (W4-checked).
-  (match emit-src("(do (def (g) 7) (def (main) (+ (g) 5)) (export main))") with
-    | Option.Some(_) => (match emit-src("(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))") with
-        | Option.Some(_) => unit | Option.None(_) => trap("single-param helper module emits"))
-    | Option.None(_) => trap("nullary helper module emits"))
+  match emit-src("(do (def (g) 7) (def (main) (+ (g) 5)) (export main))") with
+    | Option.Some(_) => (match emit-src(
+        "(do (def (sq x) (* x x)) (def (main) (sq 7)) (export main))"
+      ) with
+      | Option.Some(_) => unit
+      | Option.None(_) => trap("single-param helper module emits")
+    )
+    | Option.None(_) => trap("nullary helper module emits")
 
 @test
 def em-src-two-param-function-module-emits() =
   // a TWO-param helper module also emits (the 2-arg call inlines to a nested CLet): `(add a b)` called from
   // main → run-emitted 7. Pins that the 2-param inline path reaches emit as a valid module.
-  (match emit-src("(do (def (add a b) (+ a b)) (def (main) (add 3 4)) (export main))") with
+  match emit-src("(do (def (add a b) (+ a b)) (def (main) (add 3 4)) (export main))") with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("two-param helper module emits"))
+    | Option.None(_) => trap("two-param helper module emits")
 
 @test
 def em-src-three-param-function-module-emits() =
   // a THREE-param helper module emits (slice-3e): a 3-arg call inlines to a 3-deep nested CLet
   // CLet(p1,a1,CLet(p2,a2,CLet(p3,a3,body))), which emit handles as locals. `(f a b c)=(+ a (+ b c))` called
   // from main → run-emitted 6 (W4-checked). Pins the 3-param inline→emit path reaches a valid module.
-  (match emit-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3)) (export main))") with
+  match emit-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3)) (export main))") with
     | Option.Some(_) => unit
-    | Option.None(_) => trap("three-param helper module emits"))
+    | Option.None(_) => trap("three-param helper module emits")
 
 @test
 def em-src-bytes-matches-emit-src-len() =
   // emit-src-bytes is emit-src with Bytes→List(UInt8): Some when emit-src is Some, and the list length
   // equals the module's byte length (the conversion preserves every byte, in order).
-  (match emit-src("42") with
+  match emit-src("42") with
     | Option.Some(b) => (match emit-src-bytes("42") with
-        | Option.Some(lst) => (if List.len(lst) == Bytes.len(b) then unit else trap("list len == bytes len"))
-        | Option.None(_) => trap("emit-src-bytes Some when emit-src Some"))
-    | Option.None(_) => trap("42 emits"))
+      | Option.Some(lst) => if List.len(lst) == Bytes.len(b) then
+        unit
+      else
+        trap("list len == bytes len")
+      | Option.None(_) => trap("emit-src-bytes Some when emit-src Some")
+    )
+    | Option.None(_) => trap("42 emits")
 
 @test
 def em-src-bytes-len-matches-arith-module() =
@@ -1231,61 +1792,100 @@ def em-src-bytes-len-matches-arith-module() =
   // carried across (bytes-to-list walks all Bytes.len(b) bytes). (Order is guaranteed by the append-in-
   // order accumulator in bytes-to-list-go; a UInt8→Int cast to check values isn't available, and Bytes.of
   // rejects a runtime list, so we pin length-preservation here + rely on the accumulator for order.)
-  (match emit-src("(+ 1 2)") with
+  match emit-src("(+ 1 2)") with
     | Option.Some(b) => (match emit-src-bytes("(+ 1 2)") with
-        | Option.Some(lst) => (if List.len(lst) == Bytes.len(b) then unit else trap("arith list len == bytes len"))
-        | Option.None(_) => trap("emit-src-bytes Some"))
-    | Option.None(_) => trap("arith emits"))
+      | Option.Some(lst) => if List.len(lst) == Bytes.len(b) then
+        unit
+      else
+        trap("arith list len == bytes len")
+      | Option.None(_) => trap("emit-src-bytes Some")
+    )
+    | Option.None(_) => trap("arith emits")
 
 @test
 def em-src-bytes-ill-typed-declines() =
   // an ill-typed program declines through emit-src-bytes too (None), matching emit-src.
-  (match emit-src-bytes("x") with | Option.None(_) => unit | Option.Some(_) => trap("unbound x declines"))
+  match emit-src-bytes("x") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("unbound x declines")
 
 // ---- Slice B' (Bp1): multi-arity functype foundation --------------------------------------------------
 @test
 def em-functype-nullary-is-main-type() =
   // functype-bytes(0) = `60 00 01 7e` — the nullary `() -> i64` main type (4 bytes).
-  (let ft = functype-bytes(0) in
-   (if Bytes.len(ft) == 4 then
-    (if (byte-of(ft, 0) == 96) then                                  // 0x60 functype
-     (if (byte-of(ft, 1) == 0) then                                  // 0 params
-      (if (byte-of(ft, 2) == 1) then                                 // 1 result
-       (if (byte-of(ft, 3) == 126) then unit else trap("result i64 0x7e")) else trap("1 result"))
-       else trap("0 params")) else trap("functype tag 0x60")) else trap("nullary functype is 4 bytes")))
+  let ft = functype-bytes(0) in
+    if Bytes.len(ft) == 4 then
+    if byte-of(ft, 0) == 96 then
+      // 0x60 functype
+      if byte-of(ft, 1) == 0 then
+        // 0 params
+        if byte-of(ft, 2) == 1 then
+          // 1 result
+          if byte-of(ft, 3) == 126 then unit else trap("result i64 0x7e")
+        else
+          trap("1 result")
+      else
+        trap("0 params")
+    else
+      trap("functype tag 0x60")
+  else
+    trap("nullary functype is 4 bytes")
 
 @test
 def em-functype-oneparam-is-fac-type() =
   // functype-bytes(1) = `60 01 7e 01 7e` — a 1-param recursive def type `(i64) -> i64` (5 bytes).
-  (let ft = functype-bytes(1) in
-   (if Bytes.len(ft) == 5 then
-    (if (byte-of(ft, 0) == 96) then
-     (if (byte-of(ft, 1) == 1) then                                  // 1 param
-      (if (byte-of(ft, 2) == 126) then                               // param i64 0x7e
-       (if (byte-of(ft, 3) == 1) then                                // 1 result
-        (if (byte-of(ft, 4) == 126) then unit else trap("result i64")) else trap("1 result"))
-        else trap("param i64")) else trap("1 param")) else trap("functype tag")) else trap("1-param functype is 5 bytes")))
+  let ft = functype-bytes(1) in
+    if Bytes.len(ft) == 5 then
+    if byte-of(ft, 0) == 96 then
+      if byte-of(ft, 1) == 1 then
+        // 1 param
+        if byte-of(ft, 2) == 126 then
+          // param i64 0x7e
+          if byte-of(ft, 3) == 1 then
+            // 1 result
+            if byte-of(ft, 4) == 126 then unit else trap("result i64")
+          else
+            trap("1 result")
+        else
+          trap("param i64")
+      else
+        trap("1 param")
+    else
+      trap("functype tag")
+  else
+    trap("1-param functype is 5 bytes")
 
 @test
 def em-functype-threeparam-len() =
   // functype-bytes(3) = `60 03 7e 7e 7e 01 7e` — 3 i64 params + 1 i64 result (7 bytes).
-  (let ft = functype-bytes(3) in
-   (if Bytes.len(ft) == 7 then
-    (if (byte-of(ft, 1) == 3) then
-     (if (byte-of(ft, 5) == 1) then unit else trap("3-param: 1 result")) else trap("3 params")) else trap("3-param functype is 7 bytes")))
+  let ft = functype-bytes(3) in
+    if Bytes.len(ft) == 7 then
+    if byte-of(ft, 1) == 3 then
+      if byte-of(ft, 5) == 1 then unit else trap("3-param: 1 result")
+    else
+      trap("3 params")
+  else
+    trap("3-param functype is 7 bytes")
 
 @test
 def em-type-section-multi-matches-single-for-nullary() =
   // type-section-multi([functype-bytes(0)]) must byte-match the legacy single type-section() — the nullary
   // main path is unchanged; the multi form just generalizes it. Both are `01 05 01 60 00 01 7e` (sec 1, len 5,
   // 1 type, `60 00 01 7e`).
-  (let a = type-section-multi(List.push([], functype-bytes(0))) in
-   (let b = type-section() in
-    (if Bytes.len(a) == Bytes.len(b) then
-     (if (byte-of(a, 0) == byte-of(b, 0)) then                       // section id 1
-      (if (byte-of(a, 2) == 1) then                                  // 1 type in the vector
-       (if (byte-of(a, 3) == 96) then unit else trap("functype tag in multi")) else trap("multi 1 type"))
-       else trap("section id")) else trap("multi nullary == legacy type-section len"))))
+  let a = type-section-multi(List.push([], functype-bytes(0))) in
+  let b = type-section() in
+    if Bytes.len(a) == Bytes.len(b) then
+    if byte-of(a, 0) == byte-of(b, 0) then
+      // section id 1
+      if byte-of(a, 2) == 1 then
+        // 1 type in the vector
+        if byte-of(a, 3) == 96 then unit else trap("functype tag in multi")
+      else
+        trap("multi 1 type")
+    else
+      trap("section id")
+  else
+    trap("multi nullary == legacy type-section len")
 
 // ---- Slice B' (Bp2): emit a recursive def's function body (params as leading locals) ------------------
 @test
@@ -1293,129 +1893,226 @@ def em-def-body-oneparam-uses-param-local() =
   // f(x) = x + 1: params=[7] (px=7), body = CBin(+, CVar 7, CNum 1). Params are the leading locals, so
   // CVar(7) → local.get 0. Expected body bytes: `00` (0 CLet locals) `20 00` (local.get 0) `42 01`
   // (i64.const 1) `7c` (i64.add) `0b` (end) = 7 bytes.
-  (let body = emit-def-body(List.push([], 7), Core.CBin(43, true, 64, Core.CVar(7), Core.CNum(1, true, 64))) in
-   (if Bytes.len(body) == 7 then
-    (if (byte-of(body, 0) == 0) then                                 // 0 local groups (params aren't locals)
-     (if (byte-of(body, 1) == 32) then                               // 0x20 local.get
-      (if (byte-of(body, 2) == 0) then                               // index 0 = first param
-       (if (byte-of(body, 3) == 66) then                             // 0x42 i64.const
-        (if (byte-of(body, 5) == 124) then                           // 0x7c i64.add
-         (if (byte-of(body, 6) == 11) then unit else trap("end 0x0b")) else trap("i64.add 0x7c"))
-         else trap("i64.const")) else trap("param index 0")) else trap("local.get")) else trap("0 local groups"))
-    else trap("f(x)=x+1 body is 7 bytes")))
+  let body = emit-def-body(
+      List.push([], 7),
+      Core.CBin(43, true, 64, Core.CVar(7), Core.CNum(1, true, 64))
+    ) in
+    if Bytes.len(body) == 7 then
+    if byte-of(body, 0) == 0 then
+      // 0 local groups (params aren't locals)
+      if byte-of(body, 1) == 32 then
+        // 0x20 local.get
+        if byte-of(body, 2) == 0 then
+          // index 0 = first param
+          if byte-of(body, 3) == 66 then
+            // 0x42 i64.const
+            if byte-of(body, 5) == 124 then
+              // 0x7c i64.add
+              if byte-of(body, 6) == 11 then unit else trap("end 0x0b")
+            else
+              trap("i64.add 0x7c")
+          else
+            trap("i64.const")
+        else
+          trap("param index 0")
+      else
+        trap("local.get")
+    else
+      trap("0 local groups")
+  else
+    trap("f(x)=x+1 body is 7 bytes")
 
 @test
 def em-def-body-clet-locals-shift-past-params() =
   // f(x) = let y = x in y: params=[7], one CLet binder (8). The CLet binder is local index 1 (past the 1
   // param at index 0). Body declares 1 i64 local group. CVar(7)→local.get 0; CLet(8,...)→ local.set 1;
   // CVar(8)→local.get 1. Pins that CLet locals index PAST the params + the locals vec counts only CLets.
-  (let body = emit-def-body(List.push([], 7), Core.CLet(8, Core.CVar(7), Core.CVar(8))) in
-   (if (byte-of(body, 0) == 1) then                                  // 1 local group (the CLet)
-    (if (byte-of(body, 1) == 1) then                                 // count 1
-     (if (byte-of(body, 2) == 126) then unit else trap("i64 local 0x7e")) else trap("1 local")) else trap("1 local group (CLet past params)")))
+  let body = emit-def-body(List.push([], 7), Core.CLet(8, Core.CVar(7), Core.CVar(8))) in
+    if byte-of(body, 0) == 1 then
+    // 1 local group (the CLet)
+    if byte-of(body, 1) == 1 then
+      // count 1
+      if byte-of(body, 2) == 126 then unit else trap("i64 local 0x7e")
+    else
+      trap("1 local")
+  else
+    trap("1 local group (CLet past params)")
 
 // ---- Slice B' (Bp3): CCall → `call <funcidx>` in emit-instrs-d ----------------------------------------
 @test
 def em-ccall-emits-args-then-call() =
   // CCall(900, [CNum 5]) under defidx {900→0}: emit the arg (`42 05` i64.const 5) then `10 00` (call funcidx 0).
   // Expected: 42 05 10 00 (4 bytes).
-  (let defidx = Map.insert((Map.empty : Map(Int64, Int64)), 900, 0) in
-   (let bs = emit-instrs-d(Core.CCall(900, List.push([], Core.CNum(5, true, 64))), [], defidx, 0) in
-    (if Bytes.len(bs) == 4 then
-     (if (byte-of(bs, 0) == 66) then                                 // 0x42 i64.const
-      (if (byte-of(bs, 1) == 5) then                                 // value 5
-       (if (byte-of(bs, 2) == 16) then                               // 0x10 call
-        (if (byte-of(bs, 3) == 0) then unit else trap("funcidx 0")) else trap("call opcode 0x10"))
-        else trap("arg value 5")) else trap("i64.const")) else trap("CCall emits arg then call = 4 bytes"))))
+  let defidx = Map.insert(Map.empty : Map(Int64, Int64), 900, 0) in
+  let bs = emit-instrs-d(Core.CCall(900, List.push([], Core.CNum(5, true, 64))), [], defidx, 0) in
+    if Bytes.len(bs) == 4 then
+    if byte-of(bs, 0) == 66 then
+      // 0x42 i64.const
+      if byte-of(bs, 1) == 5 then
+        // value 5
+        if byte-of(bs, 2) == 16 then
+          // 0x10 call
+          if byte-of(bs, 3) == 0 then unit else trap("funcidx 0")
+        else
+          trap("call opcode 0x10")
+      else
+        trap("arg value 5")
+    else
+      trap("i64.const")
+  else
+    trap("CCall emits arg then call = 4 bytes")
 
 @test
 def em-ccall-funcidx-from-map() =
   // the funcidx comes from the def-index map: CCall(900,[]) under {900→3} → `10 03` (call funcidx 3). Nullary
   // recursive call (no args) — just the call opcode + index.
-  (let defidx = Map.insert((Map.empty : Map(Int64, Int64)), 900, 3) in
-   (let bs = emit-instrs-d(Core.CCall(900, ([] : List(Core))), [], defidx, 0) in
-    (if Bytes.len(bs) == 2 then
-     (if (byte-of(bs, 0) == 16) then
-      (if (byte-of(bs, 1) == 3) then unit else trap("funcidx 3")) else trap("call opcode")) else trap("nullary CCall = 2 bytes"))))
+  let defidx = Map.insert(Map.empty : Map(Int64, Int64), 900, 3) in
+  let bs = emit-instrs-d(Core.CCall(900, [] : List(Core)), [], defidx, 0) in
+    if Bytes.len(bs) == 2 then
+    if byte-of(bs, 0) == 16 then
+      if byte-of(bs, 1) == 3 then unit else trap("funcidx 3")
+    else
+      trap("call opcode")
+  else
+    trap("nullary CCall = 2 bytes")
 
 @test
 def em-instrs-twoarg-wrapper-unchanged() =
   // the 2-arg emit-instrs wrapper still emits the W1-W3 path identically (empty def-env): CNum 7 → `42 07`.
-  (let bs = emit-instrs(Core.CNum(7, true, 64), []) in
-   (if Bytes.len(bs) == 2 then (if (byte-of(bs, 0) == 66) then (if (byte-of(bs, 1) == 7) then unit else trap("7")) else trap("i64.const")) else trap("CNum 7 = 2 bytes")))
+  let bs = emit-instrs(Core.CNum(7, true, 64), []) in
+    if Bytes.len(bs) == 2 then
+    if byte-of(bs, 0) == 66 then
+      if byte-of(bs, 1) == 7 then unit else trap("7")
+    else
+      trap("i64.const")
+  else
+    trap("CNum 7 = 2 bytes")
 
 // ---- Slice B' (Bp4a): multi-function func-section + code-section --------------------------------------
 @test
 def em-func-section-multi-matches-single() =
   // func-section-multi([0]) must byte-match the legacy func-section() (one func using type 0):
   // `03 02 01 00` (sec 3, len 2, count 1, typeidx 0).
-  (let a = func-section-multi(List.push([], 0)) in
-   (let b = func-section() in
-    (if Bytes.len(a) == Bytes.len(b) then
-     (if (byte-of(a, 0) == 3) then (if (byte-of(a, 2) == 1) then unit else trap("1 func")) else trap("sec 3")) else trap("multi single == legacy func-section"))))
+  let a = func-section-multi(List.push([], 0)) in
+  let b = func-section() in
+    if Bytes.len(a) == Bytes.len(b) then
+    if byte-of(a, 0) == 3 then
+      if byte-of(a, 2) == 1 then unit else trap("1 func")
+    else
+      trap("sec 3")
+  else
+    trap("multi single == legacy func-section")
 
 @test
 def em-func-section-multi-two-funcs() =
   // func-section-multi([1, 0]) = 2 funcs, types 1 then 0: `03 03 02 01 00` (sec 3, len 3, count 2, type 1, type 0).
-  (let s = func-section-multi(List.push(List.push([], 1), 0)) in
-   (if (byte-of(s, 0) == 3) then                                     // section 3
-    (if (byte-of(s, 2) == 2) then                                    // 2 funcs
-     (if (byte-of(s, 3) == 1) then                                   // func0 type 1
-      (if (byte-of(s, 4) == 0) then unit else trap("func1 type 0")) else trap("func0 type 1")) else trap("2 funcs")) else trap("sec 3")))
+  let s = func-section-multi(List.push(List.push([], 1), 0)) in
+    if byte-of(s, 0) == 3 then
+    // section 3
+    if byte-of(s, 2) == 2 then
+      // 2 funcs
+      if byte-of(s, 3) == 1 then
+        // func0 type 1
+        if byte-of(s, 4) == 0 then unit else trap("func1 type 0")
+      else
+        trap("func0 type 1")
+    else
+      trap("2 funcs")
+  else
+    trap("sec 3")
 
 @test
 def em-code-section-multi-two-bodies() =
   // code-section-multi([b1,b2]) frames each body as `<uleb len> <body>` after a count. Use two tiny bodies
   // (each = emit-def-body([], CNum) — `00 42 v 0b`, 4 bytes). Section: `0a <len> 02 04 <b1> 04 <b2>`.
-  (let bd = emit-def-body([], Core.CNum(9, true, 64)) in                // 4-byte body: 00 42 09 0b
-   (let s = code-section-multi(List.push(List.push([], bd), bd)) in
-    (if (byte-of(s, 0) == 10) then                                   // section 10
-     (if (byte-of(s, 2) == 2) then                                   // 2 bodies
-      (if (byte-of(s, 3) == Bytes.len(bd)) then unit else trap("body0 len prefix")) else trap("2 bodies")) else trap("sec 10"))))
+  let bd = emit-def-body([], Core.CNum(9, true, 64)) in // 4-byte body: 00 42 09 0b
+  let s = code-section-multi(List.push(List.push([], bd), bd)) in
+    if byte-of(s, 0) == 10 then
+    // section 10
+    if byte-of(s, 2) == 2 then
+      // 2 bodies
+      if byte-of(s, 3) == Bytes.len(bd) then unit else trap("body0 len prefix")
+    else
+      trap("2 bodies")
+  else
+    trap("sec 10")
 
 // ---- Slice B' (Bp4b-i): emit a recursive def body with a CCall (def-index-aware) ---------------------
 @test
 def em-def-body-d-emits-recursive-call() =
   // f(n) = f(n): params=[7], body = CCall(900, [CVar 7]) under defidx {900→0}. The body should be:
   // `00` (0 CLet locals) `20 00` (local.get 0 = param n, the arg) `10 00` (call funcidx 0) `0b` (end) = 6 bytes.
-  (let defidx = Map.insert((Map.empty : Map(Int64, Int64)), 900, 0) in
-   (let body = emit-def-body-d(List.push([], 7), Core.CCall(900, List.push([], Core.CVar(7))), defidx) in
-    (if Bytes.len(body) == 6 then
-     (if (byte-of(body, 0) == 0) then                                // 0 CLet locals
-      (if (byte-of(body, 1) == 32) then                              // local.get
-       (if (byte-of(body, 2) == 0) then                              // param 0 (the arg n)
-        (if (byte-of(body, 3) == 16) then                            // 0x10 call
-         (if (byte-of(body, 4) == 0) then                            // funcidx 0
-          (if (byte-of(body, 5) == 11) then unit else trap("end")) else trap("funcidx 0")) else trap("call"))
-          else trap("param 0")) else trap("local.get")) else trap("0 locals")) else trap("f(n)=f(n) body is 6 bytes"))))
+  let defidx = Map.insert(Map.empty : Map(Int64, Int64), 900, 0) in
+  let body = emit-def-body-d(List.push([], 7), Core.CCall(900, List.push([], Core.CVar(7))), defidx) in
+    if Bytes.len(body) == 6 then
+    if byte-of(body, 0) == 0 then
+      // 0 CLet locals
+      if byte-of(body, 1) == 32 then
+        // local.get
+        if byte-of(body, 2) == 0 then
+          // param 0 (the arg n)
+          if byte-of(body, 3) == 16 then
+            // 0x10 call
+            if byte-of(body, 4) == 0 then
+              // funcidx 0
+              if byte-of(body, 5) == 11 then unit else trap("end")
+            else
+              trap("funcidx 0")
+          else
+            trap("call")
+        else
+          trap("param 0")
+      else
+        trap("local.get")
+    else
+      trap("0 locals")
+  else
+    trap("f(n)=f(n) body is 6 bytes")
 
 // ---- Slice B' (Bp4b-ii): funcidx map + parameterized export section ----------------------------------
 @test
 def em-export-section-idx-zero-matches-legacy() =
   // export-section-idx(0) must byte-match the legacy export-section() (export "main" as func 0).
-  (let a = export-section-idx(0) in
-   (let b = export-section() in
-    (if Bytes.len(a) == Bytes.len(b) then
-     (if (byte-of(a, (Bytes.len(a) - 1)) == 0) then unit else trap("func idx 0")) else trap("export-section-idx(0) == legacy"))))
+  let a = export-section-idx(0) in
+  let b = export-section() in
+    if Bytes.len(a) == Bytes.len(b) then
+    if byte-of(a, Bytes.len(a) - 1) == 0 then unit else trap("func idx 0")
+  else
+    trap("export-section-idx(0) == legacy")
 
 @test
 def em-export-section-idx-one-names-func-one() =
   // export-section-idx(1): last byte is the funcidx = 1 (main is func 1 in a [fac, main] module).
-  (let s = export-section-idx(1) in
-   (if (byte-of(s, 0) == 7) then                                     // section 7
-    (if (byte-of(s, (Bytes.len(s) - 1)) == 1) then unit else trap("main func idx 1")) else trap("export sec 7")))
+  let s = export-section-idx(1) in
+    if byte-of(s, 0) == 7 then
+    // section 7
+    if byte-of(s, Bytes.len(s) - 1) == 1 then unit else trap("main func idx 1")
+  else
+    trap("export sec 7")
 
 @test
 def em-defenv-funcidx-map-assigns-positions() =
   // two def-env entries (names 900, 901) → funcidx 0 and 1 by position. Build entries as Map.to-list of a
   // 2-entry def-env (params [], body CNum — shape doesn't matter for the index assignment).
-  (let de = Map.insert(Map.insert((Map.empty : Map(Int64, Tuple(List(Int64), Core))), 900, ([], Core.CNum(0, true, 64))), 901, ([], Core.CNum(0, true, 64))) in
-   (let m = defenv-funcidx-map(Map.to-list(de)) in
-    (match Map.lookup(m, 900) with
-      | Option.Some(i0) => (match Map.lookup(m, 901) with
-          | Option.Some(i1) => (if (i0 + i1 == 1) then unit else trap("two defs get funcidx 0 and 1 (sum 1)"))
-          | Option.None(_) => trap("901 in map"))
-      | Option.None(_) => trap("900 in map"))))
+  let de = Map.insert(
+      Map.insert(
+        Map.empty : Map(Int64, Tuple(List(Int64), Core)),
+        900,
+        ([], Core.CNum(0, true, 64))
+      ),
+      901,
+      ([], Core.CNum(0, true, 64))
+    ) in
+  let m = defenv-funcidx-map(Map.to-list(de)) in
+    match Map.lookup(m, 900) with
+    | Option.Some(i0) => (match Map.lookup(m, 901) with
+      | Option.Some(i1) => if i0 + i1 == 1 then
+        unit
+      else
+        trap("two defs get funcidx 0 and 1 (sum 1)")
+      | Option.None(_) => trap("901 in map")
+    )
+    | Option.None(_) => trap("900 in map")
 
 @test
 def em-lookup-idx-resolves-present-funcidx() =
@@ -1423,26 +2120,95 @@ def em-lookup-idx-resolves-present-funcidx() =
   // reaches emit when can-emit has gated its callee into `defidx`, so a miss is impossible by construction —
   // the None arm traps (corrupt lowering) rather than returning a -1 that would `uleb` into a bogus `call`.
   // This witnesses only the legitimate present-lookup path.
-  (let m = defenv-funcidx-map(Map.to-list(Map.insert((Map.empty : Map(Int64, Tuple(List(Int64), Core))), 42, ([], Core.CNum(0, true, 64))))) in
-   (if (lookup-idx(m, 42) == 0) then unit else trap("lookup-idx resolves a present name to its funcidx 0")))
+  let m = defenv-funcidx-map(
+      Map.to-list(
+        Map.insert(
+          Map.empty : Map(Int64, Tuple(List(Int64), Core)),
+          42,
+          ([], Core.CNum(0, true, 64))
+        )
+      )
+    ) in
+    if lookup-idx(m, 42) == 0 then
+    unit
+  else
+    trap("lookup-idx resolves a present name to its funcidx 0")
 
 @test
 def em-scratch-need-counts-ctor-nesting() =
   // W-compound nested: scratch-need = # simultaneously-live alloc-base locals. A scalar → 0; a FLAT ctor → 1;
   // a ctor whose arg is a ctor → 2 (outer base must persist while the inner allocates its own base).
-  (let flat = Core.CCtor(0, List.concat(List.push([], Core.CNum(1, true, 64)), List.push([], Core.CNum(2, true, 64)))) in
-   (let nested = Core.CCtor(0, List.concat(List.push([], flat), List.push([], Core.CNum(3, true, 64)))) in
-    (if (scratch-need(Core.CNum(5, true, 64), 0) == 0) then
-      (if (scratch-need(flat, 0) == 1) then
-        (if (scratch-need(nested, 0) == 2) then unit else trap("nested ctor-in-ctor needs 2 scratch locals"))
-       else trap("a flat ctor needs 1 scratch local"))
-     else trap("a scalar needs 0 scratch locals"))))
+  let flat = Core.CCtor(
+      0,
+      List.concat(List.push([], Core.CNum(1, true, 64)), List.push([], Core.CNum(2, true, 64)))
+    ) in
+  let nested = Core.CCtor(
+      0,
+      List.concat(List.push([], flat), List.push([], Core.CNum(3, true, 64)))
+    ) in
+    if scratch-need(Core.CNum(5, true, 64), 0) == 0 then
+    if scratch-need(flat, 0) == 1 then
+      if scratch-need(nested, 0) == 2 then
+        unit
+      else
+        trap("nested ctor-in-ctor needs 2 scratch locals")
+    else
+      trap("a flat ctor needs 1 scratch local")
+  else
+    trap("a scalar needs 0 scratch locals")
 
 @test
 def em-ctor-args-emittable-allows-nested() =
   // the flat-args gate was RELAXED (depth-distinct scratch + bump-early make nested compounds emit): a CCtor
   // arg that is itself a CCtor is now emittable, not declined.
-  (let nested = Core.CCtor(0, List.concat(List.push([], Core.CCtor(0, List.push([], Core.CNum(1, true, 64)))), List.push([], Core.CNum(2, true, 64)))) in
-   (if can-emit(nested) then unit else trap("a nested-compound CCtor must now be emittable")))
+  let nested = Core.CCtor(
+      0,
+      List.concat(
+        List.push([], Core.CCtor(0, List.push([], Core.CNum(1, true, 64)))),
+        List.push([], Core.CNum(2, true, 64))
+      )
+    ) in
+    if can-emit(nested) then unit else trap("a nested-compound CCtor must now be emittable")
 
-export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, is-arith-op, is-cmp-op, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble, has-ctor, has-fnref, section, b1, memory-section, global-section }
+export {
+  Target.*,
+  target-emit,
+  emit-wasm-module,
+  emit-src-for,
+  emit-module,
+  emit-src,
+  emit-text,
+  render-core,
+  render-core-list,
+  int-to-decimal,
+  emit-src-bytes,
+  bytes-to-list,
+  emit-instrs,
+  emit-instrs-d,
+  emit-call-args,
+  lookup-idx,
+  emit-def-body,
+  emit-def-body-d,
+  defenv-funcidx-map,
+  export-section-idx,
+  can-emit,
+  collect-binders,
+  is-arith-op,
+  is-cmp-op,
+  wasm-op,
+  cmp-op,
+  uleb,
+  sleb,
+  functype-bytes,
+  type-section-multi,
+  func-section-multi,
+  code-section-multi,
+  uleb-each,
+  preamble,
+  has-ctor,
+  has-fnref,
+  section,
+  b1,
+  memory-section,
+  global-section
+}

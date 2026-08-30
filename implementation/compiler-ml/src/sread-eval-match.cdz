@@ -4,74 +4,86 @@
 /// Core, so eval/emit need no new handling. General N-arm + sum-ctor patterns are later slices.
 ///
 /// A small SIBLING (not folded into the fat sread-eval-fns.cdz) to stay under the per-file gate budget.
-
 import { run-src } from "sread-eval"
 
 @test
 def sm-match-literal-arm() =
   // scrut == the literal → the matched arm. match 5 (5 111) (_ 222) → 111.
-  (match run-src("(do (def (main) (match 5 (5 111) (_ 222))) (export main))") with
-    | Option.Some(v) => (if v == 111 then unit else trap("match 5 hits the 5-arm → 111"))
-    | Option.None(_) => trap("integer match runs (literal arm)"))
+  match run-src("(do (def (main) (match 5 (5 111) (_ 222))) (export main))") with
+    | Option.Some(v) => if v == 111 then unit else trap("match 5 hits the 5-arm → 111")
+    | Option.None(_) => trap("integer match runs (literal arm)")
 
 @test
 def sm-match-wildcard-arm() =
   // scrut != the literal → the wildcard arm. match 3 (5 111) (_ 222) → 222.
-  (match run-src("(do (def (main) (match 3 (5 111) (_ 222))) (export main))") with
-    | Option.Some(v) => (if v == 222 then unit else trap("match 3 falls to _ → 222"))
-    | Option.None(_) => trap("integer match runs (wildcard arm)"))
+  match run-src("(do (def (main) (match 3 (5 111) (_ 222))) (export main))") with
+    | Option.Some(v) => if v == 222 then unit else trap("match 3 falls to _ → 222")
+    | Option.None(_) => trap("integer match runs (wildcard arm)")
 
 @test
 def sm-match-in-def-body() =
   // a match in a HELPER def body, called from main. classify 0 → 100.
-  (match run-src("(do (def (classify n) (match n (0 100) (_ 200))) (def (main) (classify 0)) (export main))") with
-    | Option.Some(v) => (if v == 100 then unit else trap("classify 0 → match n 0-arm → 100"))
-    | Option.None(_) => trap("match in a def body runs"))
+  match run-src(
+      "(do (def (classify n) (match n (0 100) (_ 200))) (def (main) (classify 0)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 100 then unit else trap("classify 0 → match n 0-arm → 100")
+    | Option.None(_) => trap("match in a def body runs")
 
 @test
 def sm-match-scrutinee-is-expr() =
   // the scrutinee can be an arith expr: match (+ 2 3) (5 111) (_ 222) → 111.
-  (match run-src("(do (def (main) (match (+ 2 3) (5 111) (_ 222))) (export main))") with
-    | Option.Some(v) => (if v == 111 then unit else trap("match (+ 2 3) hits 5-arm → 111"))
-    | Option.None(_) => trap("match over an expr scrutinee runs"))
+  match run-src("(do (def (main) (match (+ 2 3) (5 111) (_ 222))) (export main))") with
+    | Option.Some(v) => if v == 111 then unit else trap("match (+ 2 3) hits 5-arm → 111")
+    | Option.None(_) => trap("match over an expr scrutinee runs")
 
 @test
 def sm-match-in-self-recursive-def() =
   // MATCH + RECURSION: a self-recursive def whose SELF-CALL is inside a match arm. The recursion detector must
   // traverse NMatch children to see the self-call (else the def isn't recognized recursive → declines). f n
   // counts down via `(f (- n 1))` in the wildcard arm to the 0-arm base → 100. f 2 → 100.
-  (match run-src("(do (def (f n) (match n (0 100) (_ (f (- n 1))))) (def (main) (f 2)) (export main))") with
-    | Option.Some(v) => (if v == 100 then unit else trap("match+selfrec f 2 counts down to the 0-arm → 100"))
-    | Option.None(_) => trap("a self-call inside a match arm is recognized recursive + runs"))
+  match run-src(
+      "(do (def (f n) (match n (0 100) (_ (f (- n 1))))) (def (main) (f 2)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 100 then
+      unit
+    else
+      trap("match+selfrec f 2 counts down to the 0-arm → 100")
+    | Option.None(_) => trap("a self-call inside a match arm is recognized recursive + runs")
 
 @test
 def sm-match-three-arm() =
   // M1-b N-ARM: a 3-arm match (match n (0 10) (1 20) (_ 30)) — desugars to nested 2-arm NMatch. f 1 → 20.
-  (match run-src("(do (def (f n) (match n (0 10) (1 20) (_ 30))) (def (main) (f 1)) (export main))") with
-    | Option.Some(v) => (if v == 20 then unit else trap("3-arm match f 1 hits the 1-arm → 20"))
-    | Option.None(_) => trap("N-arm (3) match runs"))
+  match run-src("(do (def (f n) (match n (0 10) (1 20) (_ 30))) (def (main) (f 1)) (export main))") with
+    | Option.Some(v) => if v == 20 then unit else trap("3-arm match f 1 hits the 1-arm → 20")
+    | Option.None(_) => trap("N-arm (3) match runs")
 
 @test
 def sm-match-four-arm-last-lit() =
   // M1-b: a 4-arm match, hitting the 3rd literal arm. match n (0 10)(1 20)(2 25)(_ 30), f 2 → 25.
-  (match run-src("(do (def (f n) (match n (0 10) (1 20) (2 25) (_ 30))) (def (main) (f 2)) (export main))") with
-    | Option.Some(v) => (if v == 25 then unit else trap("4-arm match f 2 hits the 2-arm → 25"))
-    | Option.None(_) => trap("N-arm (4) match runs"))
+  match run-src(
+      "(do (def (f n) (match n (0 10) (1 20) (2 25) (_ 30))) (def (main) (f 2)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 25 then unit else trap("4-arm match f 2 hits the 2-arm → 25")
+    | Option.None(_) => trap("N-arm (4) match runs")
 
 @test
 def sm-match-n-arm-falls-to-wildcard() =
   // M1-b: N-arm match where no literal matches → the wildcard arm. match 9 (0 10)(1 20)(2 25)(_ 30) → 30.
-  (match run-src("(do (def (f n) (match n (0 10) (1 20) (2 25) (_ 30))) (def (main) (f 9)) (export main))") with
-    | Option.Some(v) => (if v == 30 then unit else trap("N-arm match f 9 falls to _ → 30"))
-    | Option.None(_) => trap("N-arm match wildcard fallthrough runs"))
+  match run-src(
+      "(do (def (f n) (match n (0 10) (1 20) (2 25) (_ 30))) (def (main) (f 9)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 30 then unit else trap("N-arm match f 9 falls to _ → 30")
+    | Option.None(_) => trap("N-arm match wildcard fallthrough runs")
 
 @test
 def sm-fib-via-match() =
   // fib with a match base-arm + recursive default: match n (0 0) (_ (if (< n 2) 1 (+ (fib (n-1)) (fib (n-2))))).
   // fib 6 → 8. Exercises match+recursion+if together (the recursion detector reaching self-calls under NMatch).
-  (match run-src("(do (def (fib n) (match n (0 0) (_ (if (< n 2) 1 (+ (fib (- n 1)) (fib (- n 2))))))) (def (main) (fib 6)) (export main))") with
-    | Option.Some(v) => (if v == 8 then unit else trap("fib 6 via match → 8"))
-    | Option.None(_) => trap("fib-via-match runs (match+recursion)"))
+  match run-src(
+      "(do (def (fib n) (match n (0 0) (_ (if (< n 2) 1 (+ (fib (- n 1)) (fib (- n 2))))))) (def (main) (fib 6)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 8 then unit else trap("fib 6 via match → 8")
+    | Option.None(_) => trap("fib-via-match runs (match+recursion)")
 
 @test
 def sm-first-matching-arm-wins() =
@@ -79,9 +91,9 @@ def sm-first-matching-arm-wins() =
   // arm matching the scrutinee wins → 111, NOT the second arm's 222 (and not the wildcard). Pins that arm
   // dispatch is top-to-bottom first-match, the reference semantics; a reordering or fall-through bug would
   // return 222/333. (No existing test had two arms sharing a literal, so first-match-wins was unpinned.)
-  (match run-src("(do (def (main) (match 1 (1 111) (1 222) (_ 333))) (export main))") with
-    | Option.Some(v) => (if v == 111 then unit else trap("first matching arm wins → 111"))
-    | Option.None(_) => trap("first-matching-arm-wins runs"))
+  match run-src("(do (def (main) (match 1 (1 111) (1 222) (_ 333))) (export main))") with
+    | Option.Some(v) => if v == 111 then unit else trap("first matching arm wins → 111")
+    | Option.None(_) => trap("first-matching-arm-wins runs")
 
 @test
 def sm-negative-literal-pattern() =
@@ -89,6 +101,6 @@ def sm-negative-literal-pattern() =
   // pattern literal is -5; the match compares the negative scrutinee against the negative pattern literal and
   // takes the arm. Pins that a negative integer literal is a valid, correctly-compared pattern (all prior
   // match tests used non-negative pattern literals, so the negative-pattern path was unpinned).
-  (match run-src("(do (def (main) (match (- 0 5) (-5 111) (_ 222))) (export main))") with
-    | Option.Some(v) => (if v == 111 then unit else trap("negative literal pattern matches → 111"))
-    | Option.None(_) => trap("negative-literal-pattern runs"))
+  match run-src("(do (def (main) (match (- 0 5) (-5 111) (_ 222))) (export main))") with
+    | Option.Some(v) => if v == 111 then unit else trap("negative literal pattern matches → 111")
+    | Option.None(_) => trap("negative-literal-pattern runs")

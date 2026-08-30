@@ -12,7 +12,7 @@ def se-single-param-call() =
   // the param node → infer types the param as the arg's type → lower builds CLet(param, argCore, bodyCore) →
   // eval binds arg to param + evals the body. Differential-verified vs rcdzc (`def f(n)=n+1; f(41)` → 42).
   match run-src("(do (def (f n) (+ n 1)) (def (main) (f 41)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("(f 41) where f(n)=n+1 → 42"))
+    | Option.Some(v) => if v == 42 then unit else trap("(f 41) where f(n)=n+1 → 42")
     | Option.None(_) => trap("a single-param call runs end-to-end")
 
 @test
@@ -20,7 +20,7 @@ def se-single-param-call-uses-arg() =
   // the arg FLOWS: `(def (double n) (+ n n))` called `(double 21)` → 42 (proves the arg binds the param, not a
   // constant). A different arg → a different result: pins the param is genuinely substituted, not ignored.
   match run-src("(do (def (double n) (+ n n)) (def (main) (double 21)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("(double 21) → 42 (arg flows to param)"))
+    | Option.Some(v) => if v == 42 then unit else trap("(double 21) → 42 (arg flows to param)")
     | Option.None(_) => trap("a param call substitutes its arg")
 
 @test
@@ -30,7 +30,7 @@ def se-typed-param-call() =
   // then the SAME param-call wiring as the untyped case. This is the canonical corpus param shape
   // `(def (main (: x Int64)) x)`. Differential: rcdzc `def f(n: Int64) = n+1; f(41)` → 42.
   match run-src("(do (def (f (: n Int64)) (+ n 1)) (def (main) (f 41)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("typed param (f 41) → 42"))
+    | Option.Some(v) => if v == 42 then unit else trap("typed param (f 41) → 42")
     | Option.None(_) => trap("a typed-param call runs end-to-end")
 
 @test
@@ -52,7 +52,7 @@ def se-narrow-param-in-range-runs() =
   // 100 (100 fits Int8). Pins that the enforcement rejects ONLY the out-of-range constant, not every narrow
   // param — the companion to the decline case (differential: rcdzc `f(100)` → 100).
   match run-src("(do (def (f (: a Int8)) a) (def (main) (f 100)) (export main))") with
-    | Option.Some(v) => (if v == 100 then unit else trap("(f 100) Int8 → 100"))
+    | Option.Some(v) => if v == 100 then unit else trap("(f 100) Int8 → 100")
     | Option.None(_) => trap("an in-range constant to a narrow param runs")
 
 @test
@@ -74,7 +74,7 @@ def se-narrow-body-arith-in-range-runs() =
   // the sharp companion: an in-range body result RUNS. `(f 50)` → `(+ a a)` = 100, which FITS Int8 → 100.
   // Pins the overflow trap fires ONLY on the actual overflow, not on every narrow-body arith.
   match run-src("(do (def (f (: a Int8)) (+ a a)) (def (main) (f 50)) (export main))") with
-    | Option.Some(v) => (if v == 100 then unit else trap("(f 50) → (+ a a) = 100 fits Int8 → 100"))
+    | Option.Some(v) => if v == 100 then unit else trap("(f 50) → (+ a a) = 100 fits Int8 → 100")
     | Option.None(_) => trap("an in-range narrow-body arith runs")
 
 @test
@@ -83,10 +83,10 @@ def se-wide-body-arith-no-false-overflow() =
   // 100)` → 200 (width 64 never overflow-checks — the CDZ0304 trap is narrow-only). Pins the enforcement
   // doesn't leak into the wide default (the param-bind-type width-64 path stays plain Int64 arith).
   match run-src("(do (def (f (: n Int64)) (+ n n)) (def (main) (f 100)) (export main))") with
-    | Option.Some(v) => (if v == 200 then
+    | Option.Some(v) => if v == 200 then
       unit
     else
-      trap("(f 100) Int64 → (+ n n) = 200 (no overflow at width 64)"))
+      trap("(f 100) Int64 → (+ n n) = 200 (no overflow at width 64)")
     | Option.None(_) => trap("a wide (Int64) body arith must not false-decline")
 
 @test
@@ -114,7 +114,7 @@ def se-param-passed-as-arg() =
   // the callee body resolves lexically. Before the resolve-arg fix, the NApp arm resolved only the callee body,
   // NOT the arg, so the arg's `n` was left unresolved → infer TErr → decline. Differential-verified vs rcdzc.
   match run-src("(do (def (g m) (* m 2)) (def (f n) (g n)) (def (main) (f 21)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("(def (f n) (g n)) (f 21) → 42"))
+    | Option.Some(v) => if v == 42 then unit else trap("(def (f n) (g n)) (f 21) → 42")
     | Option.None(_) => trap("a param passed as an arg to another call runs")
 
 @test
@@ -124,7 +124,7 @@ def se-nested-call-as-arg() =
   match run-src(
       "(do (def (g m) (+ m 1)) (def (f n) (* n 2)) (def (main) (f (g 20))) (export main))"
     ) with
-    | Option.Some(v) => (if v == 42 then unit else trap("(f (g 20)) → 42 (nested call as arg)"))
+    | Option.Some(v) => if v == 42 then unit else trap("(f (g 20)) → 42 (nested call as arg)")
     | Option.None(_) => trap("a call whose arg is a call runs")
 
 @test
@@ -134,10 +134,10 @@ def se-corpus-underscore-param-call() =
   // call wiring — the two compose for the real corpus shape. Differential-verified vs rcdzc. This is the
   // headline conformance case for user functions with an argument, byte-for-byte from the corpus.
   match run-src("(do (def (f _1) (+ _1 1)) (def (main) (f 41)) (export main))") with
-    | Option.Some(v) => (if v == 42 then
+    | Option.Some(v) => if v == 42 then
       unit
     else
-      trap("corpus (def (f _1) (+ _1 1)) called (f 41) → 42"))
+      trap("corpus (def (f _1) (+ _1 1)) called (f 41) → 42")
     | Option.None(_) => trap("the corpus _1-param function call runs end-to-end")
 
 @test
@@ -147,7 +147,7 @@ def se-two-param-call() =
   // in the body scope + resolves both args in the caller scope → infer types both params from the args → lower
   // builds the NESTED CLet(param1, arg1, CLet(param2, arg2, body)) → eval binds both, evals. Differential vs rcdzc.
   match run-src("(do (def (add a b) (+ a b)) (def (main) (add 40 2)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("(add 40 2) where add(a,b)=a+b → 42"))
+    | Option.Some(v) => if v == 42 then unit else trap("(add 40 2) where add(a,b)=a+b → 42")
     | Option.None(_) => trap("a two-argument call runs end-to-end")
 
 @test
@@ -155,7 +155,7 @@ def se-two-param-call-both-used() =
   // both args FLOW to distinct params: `(def (sub a b) (- a b))` called `(sub 50 8)` → 42 (order matters —
   // proves arg1→param1, arg2→param2, not swapped/duplicated). Differential-verified vs rcdzc.
   match run-src("(do (def (sub a b) (- a b)) (def (main) (sub 50 8)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("(sub 50 8) → 42 (arg order preserved)"))
+    | Option.Some(v) => if v == 42 then unit else trap("(sub 50 8) → 42 (arg order preserved)")
     | Option.None(_) => trap("a two-arg call binds args to params in order")
 
 @test
@@ -164,7 +164,7 @@ def se-bool-param-call() =
   // param flows through the whole pipeline with a Bool type (infer types the param as the arg's type = Bool,
   // resolve binds it, lower/eval the if). Differential-verified vs rcdzc. Complements the arithmetic param tests.
   match run-src("(do (def (f b) (if b 1 0)) (def (main) (f true)) (export main))") with
-    | Option.Some(v) => (if v == 1 then unit else trap("(f true) where f(b)=if b 1 0 → 1"))
+    | Option.Some(v) => if v == 1 then unit else trap("(f true) where f(b)=if b 1 0 → 1")
     | Option.None(_) => trap("a bool-typed param call runs end-to-end")
 
 @test
@@ -172,7 +172,7 @@ def se-param-in-comparison-call() =
   // a param feeding a COMPARISON (a Bool-RESULT body): `(def (f n) (< n 10))` called `(f 5)` → true (1). The
   // call's result type is Bool (the body's comparison type), not the param's Int — pins the body-type flow.
   match run-src("(do (def (f n) (< n 10)) (def (main) (f 5)) (export main))") with
-    | Option.Some(v) => (if v == 1 then unit else trap("(f 5) where f(n)=(< n 10) → true"))
+    | Option.Some(v) => if v == 1 then unit else trap("(f 5) where f(n)=(< n 10) → true")
     | Option.None(_) => trap("a param-in-comparison call runs end-to-end")
 
 @test
@@ -215,21 +215,21 @@ def se-trailing-junk-declines() =
 def se-typed-int-flag() =
   // an INT-valued program tags isBool=0 (renders as a bare scalar).
   match run-src-typed("42") with
-    | Option.Some((v, b)) => (if v == 42 and b == 0 then unit else trap("42 int flag=0"))
+    | Option.Some((v, b)) => if v == 42 and b == 0 then unit else trap("42 int flag=0")
     | Option.None(_) => trap("typed int runs")
 
 @test
 def se-typed-bool-flag() =
   // a COMPARISON program is Bool-typed → isBool=1, value 1 (so the caller renders `true`, not `1`).
   match run-src-typed("(< 1 2)") with
-    | Option.Some((v, b)) => (if v == 1 and b == 1 then unit else trap("1<2 bool flag=1"))
+    | Option.Some((v, b)) => if v == 1 and b == 1 then unit else trap("1<2 bool flag=1")
     | Option.None(_) => trap("typed bool runs")
 
 @test
 def se-typed-bool-false-flag() =
   // a false comparison → isBool=1, value 0 (caller renders `false`).
   match run-src-typed("(< 5 2)") with
-    | Option.Some((v, b)) => (if v == 0 and b == 1 then unit else trap("5<2 bool flag=1 val=0"))
+    | Option.Some((v, b)) => if v == 0 and b == 1 then unit else trap("5<2 bool flag=1 val=0")
     | Option.None(_) => trap("typed bool false runs")
 
 @test

@@ -12,14 +12,14 @@ def se-ann-in-range-runs-to-value() =
   // `(: 200 UInt8)` threads through sread(NAnnLit)→infer(TIntW(false,8))→lower(CNum(200,false,8))→eval → 200.
   // (eval reads the value; the narrow type flowed but the value is unchanged in range.)
   match run-src("(: 200 UInt8)") with
-    | Option.Some(v) => (if v == 200 then unit else trap("(: 200 UInt8) → 200"))
+    | Option.Some(v) => if v == 200 then unit else trap("(: 200 UInt8) → 200")
     | Option.None(_) => trap("in-range annotation runs")
 
 @test
 def se-ann-negative-runs-to-value() =
   // `(: -5 Int8)` → -5 (signed narrow, in range).
   match run-src("(: -5 Int8)") with
-    | Option.Some(v) => (if v == 0 - 5 then unit else trap("(: -5 Int8) → -5"))
+    | Option.Some(v) => if v == 0 - 5 then unit else trap("(: -5 Int8) → -5")
     | Option.None(_) => trap("in-range signed annotation runs")
 
 @test
@@ -36,7 +36,7 @@ def se-ann-out-of-range-declines() =
 def se-ann-int8-max-fits() =
   // `(: 127 Int8)` → 127: Int8's MAX (2^7 - 1) fits exactly (matches reference).
   match run-src("(: 127 Int8)") with
-    | Option.Some(v) => (if v == 127 then unit else trap("(: 127 Int8) → 127"))
+    | Option.Some(v) => if v == 127 then unit else trap("(: 127 Int8) → 127")
     | Option.None(_) => trap("Int8 max 127 fits")
 
 @test
@@ -50,7 +50,7 @@ def se-ann-int8-just-over-declines() =
 def se-ann-int8-min-fits() =
   // `(: -128 Int8)` → -128: Int8's MIN (-2^7) fits exactly (signed lower bound — matches reference).
   match run-src("(: -128 Int8)") with
-    | Option.Some(v) => (if v == -128 then unit else trap("(: -128 Int8) → -128"))
+    | Option.Some(v) => if v == -128 then unit else trap("(: -128 Int8) → -128")
     | Option.None(_) => trap("Int8 min -128 fits")
 
 @test
@@ -64,7 +64,7 @@ def se-ann-int8-just-under-declines() =
 def se-ann-uint8-max-fits() =
   // `(: 255 UInt8)` → 255: UInt8's MAX (2^8 - 1) fits exactly (matches reference).
   match run-src("(: 255 UInt8)") with
-    | Option.Some(v) => (if v == 255 then unit else trap("(: 255 UInt8) → 255"))
+    | Option.Some(v) => if v == 255 then unit else trap("(: 255 UInt8) → 255")
     | Option.None(_) => trap("UInt8 max 255 fits")
 
 @test
@@ -80,48 +80,48 @@ def se-ann-uint8-just-over-declines() =
 def se-ann-int16-max-and-just-over() =
   // Int16 max 2^15-1 = 32767 fits; 32768 = max+1 declines. (reference: 32767 runs / 32768 rejects.)
   match run-src("(: 32767 Int16)") with
-    | Option.Some(v) => (if v == 32767 then
+    | Option.Some(v) => if v == 32767 then
       match run-src("(: 32768 Int16)") with
         | Option.None(_) => unit
         | Option.Some(_) => trap("(: 32768 Int16) declines")
     else
-      trap("(: 32767 Int16) → 32767"))
+      trap("(: 32767 Int16) → 32767")
     | Option.None(_) => trap("Int16 max 32767 fits")
 
 @test
 def se-ann-int16-min-and-just-under() =
   // Int16 min -2^15 = -32768 fits; -32769 = min-1 declines (signed lower bound).
   match run-src("(: -32768 Int16)") with
-    | Option.Some(v) => (if v == 0 - 32768 then
+    | Option.Some(v) => if v == 0 - 32768 then
       match run-src("(: -32769 Int16)") with
         | Option.None(_) => unit
         | Option.Some(_) => trap("(: -32769 Int16) declines")
     else
-      trap("(: -32768 Int16) → -32768"))
+      trap("(: -32768 Int16) → -32768")
     | Option.None(_) => trap("Int16 min -32768 fits")
 
 @test
 def se-ann-uint16-max-and-just-over() =
   // UInt16 max 2^16-1 = 65535 fits; 65536 = max+1 declines.
   match run-src("(: 65535 UInt16)") with
-    | Option.Some(v) => (if v == 65535 then
+    | Option.Some(v) => if v == 65535 then
       match run-src("(: 65536 UInt16)") with
         | Option.None(_) => unit
         | Option.Some(_) => trap("(: 65536 UInt16) declines")
     else
-      trap("(: 65535 UInt16) → 65535"))
+      trap("(: 65535 UInt16) → 65535")
     | Option.None(_) => trap("UInt16 max 65535 fits")
 
 @test
 def se-ann-int32-max-and-just-over() =
   // Int32 max 2^31-1 = 2147483647 fits; 2147483648 = max+1 declines.
   match run-src("(: 2147483647 Int32)") with
-    | Option.Some(v) => (if v == 2147483647 then
+    | Option.Some(v) => if v == 2147483647 then
       match run-src("(: 2147483648 Int32)") with
         | Option.None(_) => unit
         | Option.Some(_) => trap("(: 2147483648 Int32) declines")
     else
-      trap("(: 2147483647 Int32) → 2147483647"))
+      trap("(: 2147483647 Int32) → 2147483647")
     | Option.None(_) => trap("Int32 max 2147483647 fits")
 
 @test
@@ -129,12 +129,12 @@ def se-ann-int32-min-and-just-under() =
   // Int32 min -2^31 = -2147483648 fits (signed lower bound); -2147483649 = min-1 declines. The signed-min twin
   // of the max pin above — pins the lower boundary of the 32-bit signed range.
   match run-src("(: -2147483648 Int32)") with
-    | Option.Some(v) => (if v == -2147483648 then
+    | Option.Some(v) => if v == -2147483648 then
       match run-src("(: -2147483649 Int32)") with
         | Option.None(_) => unit
         | Option.Some(_) => trap("(: -2147483649 Int32) declines")
     else
-      trap("(: -2147483648 Int32) → -2147483648"))
+      trap("(: -2147483648 Int32) → -2147483648")
     | Option.None(_) => trap("Int32 min -2147483648 fits")
 
 @test
@@ -142,12 +142,12 @@ def se-ann-uint32-max-and-just-over() =
   // UInt32 max 2^32-1 = 4294967295 fits; 4294967296 = max+1 declines. The 32-bit unsigned boundary (was
   // unpinned — UInt8/16 had boundary pins, UInt32 did not).
   match run-src("(: 4294967295 UInt32)") with
-    | Option.Some(v) => (if v == 4294967295 then
+    | Option.Some(v) => if v == 4294967295 then
       match run-src("(: 4294967296 UInt32)") with
         | Option.None(_) => unit
         | Option.Some(_) => trap("(: 4294967296 UInt32) declines")
     else
-      trap("(: 4294967295 UInt32) → 4294967295"))
+      trap("(: 4294967295 UInt32) → 4294967295")
     | Option.None(_) => trap("UInt32 max 4294967295 fits")
 
 @test
@@ -159,17 +159,14 @@ def se-ann-narrow-plus-bare-literal-adapts() =
   // annotated operand. A NON-fitting literal, or two annotated narrows of different widths, still declines —
   // see se-ann-mixed-width-arith-declines / the overflow cases.)
   match run-src("(+ (: 100 Int8) 20)") with
-    | Option.Some(v) => (if v == 120 then
-      unit
-    else
-      trap("Int8 + fitting bare literal adapts → 120"))
+    | Option.Some(v) => if v == 120 then unit else trap("Int8 + fitting bare literal adapts → 120")
     | Option.None(_) => trap("bare literal that fits ADAPTS to Int8 (does not decline)")
 
 @test
 def se-ann-same-width-narrow-arith-runs() =
   // corrected-2b: SAME-width narrow arith RUNS — `(+ (: 100 Int8) (: 20 Int8))` = 120 (fits Int8, both Int8).
   match run-src("(+ (: 100 Int8) (: 20 Int8))") with
-    | Option.Some(v) => (if v == 120 then unit else trap("Int8 100+20 = 120"))
+    | Option.Some(v) => if v == 120 then unit else trap("Int8 100+20 = 120")
     | Option.None(_) => trap("same-width Int8 arith runs")
 
 @test
@@ -193,7 +190,7 @@ def se-ann-narrow-sub-in-range-runs() =
   // corrected-2b extends to ALL arith ops, not just `+`: same-width narrow SUBTRACTION in range RUNS.
   // `(- (: 5 Int8) (: 3 Int8))` = 2 fits Int8 → 2. (run-ml differential confirmed vs rcdzc.)
   match run-src("(- (: 5 Int8) (: 3 Int8))") with
-    | Option.Some(v) => (if v == 2 then unit else trap("Int8 5-3 = 2"))
+    | Option.Some(v) => if v == 2 then unit else trap("Int8 5-3 = 2")
     | Option.None(_) => trap("same-width Int8 sub runs")
 
 @test
@@ -209,7 +206,7 @@ def se-ann-unsigned-narrow-underflow-declines() =
 def se-ann-narrow-mul-in-range-runs() =
   // same-width narrow MULTIPLICATION in range RUNS: `(* (: 10 Int8) (: 12 Int8))` = 120 fits Int8 → 120.
   match run-src("(* (: 10 Int8) (: 12 Int8))") with
-    | Option.Some(v) => (if v == 120 then unit else trap("Int8 10*12 = 120"))
+    | Option.Some(v) => if v == 120 then unit else trap("Int8 10*12 = 120")
     | Option.None(_) => trap("same-width Int8 mul runs")
 
 @test
@@ -250,7 +247,7 @@ def se-ann-same-sign-same-width-arith-runs() =
   // control for the two decline pins above: `(+ (: 5 Int8) (: 5 Int8))` → 10 (SAME type runs), so the
   // declines are genuinely sign/width-specific, not a blanket annotated-arith reject.
   match run-src("(+ (: 5 Int8) (: 5 Int8))") with
-    | Option.Some(v) => (if v == 10 then unit else trap("Int8 + Int8 = 10"))
+    | Option.Some(v) => if v == 10 then unit else trap("Int8 + Int8 = 10")
     | Option.None(_) => trap("same-sign same-width arith runs")
 
 @test
@@ -258,7 +255,7 @@ def se-ann-narrow-comparison-runs() =
   // narrow COMPARISON does NOT wrap (comparing in-range integers is width-agnostic), so it stays permissive:
   // `(< (: 5 Int8) (: 10 Int8))` → true (value 1). Only arithmetic is gated pending the wrap slice.
   match run-src-typed("(< (: 5 Int8) (: 10 Int8))") with
-    | Option.Some((v, b)) => (if v == 1 and b == 1 then unit else trap("narrow < → bool true"))
+    | Option.Some((v, b)) => if v == 1 and b == 1 then unit else trap("narrow < → bool true")
     | Option.None(_) => trap("narrow comparison runs")
 
 // ---- narrow annotations in the CANONICAL MODULE-WRAPPER form `(do (def (main) <body>) (export main))` ----
@@ -273,14 +270,14 @@ def se-ann-narrow-comparison-runs() =
 def se-ann-wrapper-bare-runs() =
   // `(do (def (main) (: 100 Int8)) (export main))` → 100 (the wrapper-peeled body is a bare narrow annotation).
   match run-src("(do (def (main) (: 100 Int8)) (export main))") with
-    | Option.Some(v) => (if v == 100 then unit else trap("wrapper (: 100 Int8) → 100"))
+    | Option.Some(v) => if v == 100 then unit else trap("wrapper (: 100 Int8) → 100")
     | Option.None(_) => trap("module-wrapper narrow annotation runs in-guest")
 
 @test
 def se-ann-wrapper-same-width-arith-runs() =
   // `(do (def (main) (+ (: 100 Int8) (: 20 Int8))) (export main))` → 120 (same-width narrow arith, in range).
   match run-src("(do (def (main) (+ (: 100 Int8) (: 20 Int8))) (export main))") with
-    | Option.Some(v) => (if v == 120 then unit else trap("wrapper Int8 100+20 → 120"))
+    | Option.Some(v) => if v == 120 then unit else trap("wrapper Int8 100+20 → 120")
     | Option.None(_) => trap("module-wrapper narrow arith runs in-guest")
 
 @test

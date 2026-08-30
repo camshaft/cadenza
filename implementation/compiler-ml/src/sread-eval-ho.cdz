@@ -9,54 +9,65 @@
 /// NOTE (HO-3): the eval-db CFnRefVar arm INLINES the def-env dispatch rather than sharing a factored
 /// `apply-def-by-name` fn — factoring it into eval-core-d's mutual-recursion SCC trips a compiler-ml
 /// monomorphization bug (spurious CDZ0101; see queue/mlrepro-new-fn-in-eval-core-mutual-recursion-cycle-...).
-
 import { run-src } from "sread-eval"
 
 @test
 def ho-apply-inc-fortyone() =
   // (apply f x) = (f x); apply inc to 41 → 42. A def used as a fn-VALUE (inc), applied via a fn-PARAM (f).
-  (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (main) (apply inc 41)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("apply inc 41 = 42"))
-    | Option.None(_) => trap("apply inc 41 runs (higher-order)"))
+  match run-src(
+      "(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (main) (apply inc 41)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 42 then unit else trap("apply inc 41 = 42")
+    | Option.None(_) => trap("apply inc 41 runs (higher-order)")
 
 @test
 def ho-twice-inc-forty() =
   // (twice f x) = (f (f x)); the fn-param f applied TWICE. twice inc 40 → 42.
-  (match run-src("(do (def (twice f x) (f (f x))) (def (inc n) (+ n 1)) (def (main) (twice inc 40)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("twice inc 40 = 42"))
-    | Option.None(_) => trap("twice inc 40 runs (higher-order, fn-param applied twice)"))
+  match run-src(
+      "(do (def (twice f x) (f (f x))) (def (inc n) (+ n 1)) (def (main) (twice inc 40)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 42 then unit else trap("twice inc 40 = 42")
+    | Option.None(_) => trap("twice inc 40 runs (higher-order, fn-param applied twice)")
 
 @test
 def ho-apply-dbl-twentyone() =
   // a different fn-value (dbl) through apply: (apply dbl 21) → 42. Pins it's not inc-specific.
-  (match run-src("(do (def (apply f x) (f x)) (def (dbl n) (+ n n)) (def (main) (apply dbl 21)) (export main))") with
-    | Option.Some(v) => (if v == 42 then unit else trap("apply dbl 21 = 42"))
-    | Option.None(_) => trap("apply dbl 21 runs"))
+  match run-src(
+      "(do (def (apply f x) (f x)) (def (dbl n) (+ n n)) (def (main) (apply dbl 21)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 42 then unit else trap("apply dbl 21 = 42")
+    | Option.None(_) => trap("apply dbl 21 runs")
 
 @test
 def ho-two-different-fns-through-one-apply() =
   // the SAME apply used with TWO different fn-values in one program: (+ (apply inc 10) (apply dbl 10)) =
   // 11 + 20 = 31. Pins that a single fn-param callee resolves per-call-site to the passed fn (not fixed to
   // the first), and that two distinct RDef fn-values flow through one arrow-typed param.
-  (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (dbl n) (+ n n)) (def (main) (+ (apply inc 10) (apply dbl 10))) (export main))") with
-    | Option.Some(v) => (if v == 31 then unit else trap("(apply inc 10) + (apply dbl 10) = 31"))
-    | Option.None(_) => trap("two different fns through one apply runs"))
+  match run-src(
+      "(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (dbl n) (+ n n)) (def (main) (+ (apply inc 10) (apply dbl 10))) (export main))"
+    ) with
+    | Option.Some(v) => if v == 31 then unit else trap("(apply inc 10) + (apply dbl 10) = 31")
+    | Option.None(_) => trap("two different fns through one apply runs")
 
 @test
 def ho-fn-through-two-param-hops() =
   // a fn-value threaded through TWO fn-param hops: outer passes its f to app2, which applies it. outer inc 5 =
   // 6. Pins the fn-param callee-fact propagates across a nested HO call (f → g), not just one hop.
-  (match run-src("(do (def (app2 g y) (g y)) (def (outer f x) (app2 f x)) (def (inc n) (+ n 1)) (def (main) (outer inc 5)) (export main))") with
-    | Option.Some(v) => (if v == 6 then unit else trap("outer inc 5 through two hops = 6"))
-    | Option.None(_) => trap("fn threaded through two param hops runs"))
+  match run-src(
+      "(do (def (app2 g y) (g y)) (def (outer f x) (app2 f x)) (def (inc n) (+ n 1)) (def (main) (outer inc 5)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 6 then unit else trap("outer inc 5 through two hops = 6")
+    | Option.None(_) => trap("fn threaded through two param hops runs")
 
 @test
 def ho-apply-result-in-if-cond() =
   // an HO call result feeding an if-condition: (if (< (apply inc 0) 5) 100 200) → 1 < 5 → 100. Pins the
   // arrow-result type grounds to Int so the comparison + branch type-check (HO result is an ordinary value).
-  (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (main) (if (< (apply inc 0) 5) 100 200)) (export main))") with
-    | Option.Some(v) => (if v == 100 then unit else trap("(if (< (apply inc 0) 5) 100 200) = 100"))
-    | Option.None(_) => trap("HO result in if-cond runs"))
+  match run-src(
+      "(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (main) (if (< (apply inc 0) 5) 100 200)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 100 then unit else trap("(if (< (apply inc 0) 5) 100 200) = 100")
+    | Option.None(_) => trap("HO result in if-cond runs")
 
 @test
 def ho-arg-is-nested-apply() =
@@ -64,14 +75,18 @@ def ho-arg-is-nested-apply() =
   // inc(20) = 21. All prior HO tests passed a plain value or var as the fn-param's argument; this pins that an
   // HO application composes as the ARGUMENT of another HO application (the inner apply's arrow-result flows in
   // as the outer apply's arg).
-  (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (dbl n) (+ n n)) (def (main) (apply inc (apply dbl 10))) (export main))") with
-    | Option.Some(v) => (if v == 21 then unit else trap("apply inc (apply dbl 10) = 21"))
-    | Option.None(_) => trap("nested HO application (apply as an arg) runs"))
+  match run-src(
+      "(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (dbl n) (+ n n)) (def (main) (apply inc (apply dbl 10))) (export main))"
+    ) with
+    | Option.Some(v) => if v == 21 then unit else trap("apply inc (apply dbl 10) = 21")
+    | Option.None(_) => trap("nested HO application (apply as an arg) runs")
 
 @test
 def ho-twice-dbl-composes() =
   // twice with a NON-inc fn: (twice dbl 3) = dbl(dbl 3) = dbl 6 = 12. All prior twice tests used inc; this pins
   // that the f(f x) double-application composes for a different fn-param body (dbl doubles, so 3 → 6 → 12).
-  (match run-src("(do (def (twice f x) (f (f x))) (def (dbl n) (+ n n)) (def (main) (twice dbl 3)) (export main))") with
-    | Option.Some(v) => (if v == 12 then unit else trap("twice dbl 3 = 12"))
-    | Option.None(_) => trap("twice with dbl (non-inc fn) runs"))
+  match run-src(
+      "(do (def (twice f x) (f (f x))) (def (dbl n) (+ n n)) (def (main) (twice dbl 3)) (export main))"
+    ) with
+    | Option.Some(v) => if v == 12 then unit else trap("twice dbl 3 = 12")
+    | Option.None(_) => trap("twice with dbl (non-inc fn) runs")

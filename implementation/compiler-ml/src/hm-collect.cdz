@@ -19,7 +19,9 @@
 /// total, `node-ty` looks the node's OWN id up in the env — the caller seeds every node's id it cares about;
 /// an unseeded node reads as TyErr (a gap the caller must fill), never a silent default.
 import { Ty, is-int-ty } from "ty"
+
 import { Node, Tree, node-at } from "parse-db"
+
 import { Resolved } from "resolve-db"
 
 /// The Bool type, named for the cond/scrutinee constraints (an `if`/`match` cond must be Bool).
@@ -47,10 +49,17 @@ def push-cs(acc: List(Tuple(Ty, Ty)), cs: List(Tuple(Ty, Ty))) = List.concat(acc
 
 /// Fold `collect` over a list of child node-ids, threading the accumulator left-to-right (replaces the 4-deep
 /// nested `collect(.. collect(.. collect(..)))` — this is the idiomatic accumulator fold, one child per step).
-def collect-children(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), ids: List(Int64), acc: List(Tuple(Ty, Ty))) =
-  match ids with
-    | [] => acc
-    | [child, .. rest] => collect-children(tree, rcol, env, rest, collect(tree, rcol, env, child, acc))
+def collect-children(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), ids: List(Int64), acc: List(
+  Tuple(Ty, Ty)
+)) = match ids with
+  | [] => acc
+  | [child, .. rest] => collect-children(
+    tree,
+    rcol,
+    env,
+    rest,
+    collect(tree, rcol, env, child, acc)
+  )
 
 /// COLLECT the type-equality constraints imposed by the subtree at `id`, over env `env`, appending to `acc`.
 /// The generation rules (the equalities HM inference imposes on the covered node subset):
@@ -72,59 +81,66 @@ def collect-children(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty)
 ///   other composites (NApp/NMatchCtor): NOT generated here yet (NApp arg~param / ct-decl identity — S1c) —
 ///     no emit, no recursion (the caller handles them until then).
 /// THREADS the resolve column `rcol` (S1b): NVar needs its binder resolution. Every recursion passes it through.
-def collect(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), id: Int64, acc: List(Tuple(Ty, Ty))) =
-  match node-at(tree, id) with
-    | Option.Some(Node.NBin(op, l, r)) =>
-        (if (op >= 60)
-         then (if (op <= 65)
-               // relational: operands share a type (left ~ right); node is Bool (no nodeTy constraint here)
-               then (let a1 = push-cs(acc, [(node-ty(env, l), node-ty(env, r))]) in
-                     collect-children(tree, rcol, env, [l, r], a1))
-               else acc)                                              // unknown op ≥ 66 → no constraint
-         // arithmetic: node ~ left, node ~ right (so left ~ right transitively), then recurse operands
-         else (let nt = node-ty(env, id) in
-               (let cs = [(nt, node-ty(env, l)), (nt, node-ty(env, r))] in
-                (let a1 = push-cs(acc, cs) in
-                 collect-children(tree, rcol, env, [l, r], a1)))))
-    | Option.Some(Node.NIf(c, t, e)) =>
-        // cond is Bool (cond ~ Bool); branches join (then ~ else); the if IS that type (node ~ then); recurse all three
-        (let nt = node-ty(env, id) in
-         (let cs = [(node-ty(env, c), ty-bool()), (node-ty(env, t), node-ty(env, e)), (nt, node-ty(env, t))] in
-          (let a1 = push-cs(acc, cs) in
-           collect-children(tree, rcol, env, [c, t, e], a1))))
-    | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
-        // S1a integer match: scrutinee ~ literal-pattern (they are compared), arms join (then ~ else), the match
-        // IS that type (node ~ then). Recurse into all four children.
-        (let nt = node-ty(env, id) in
-         (let cs = [(node-ty(env, scrutId), node-ty(env, litId)), (node-ty(env, thenId), node-ty(env, elseId)), (nt, node-ty(env, thenId))] in
-          (let a1 = push-cs(acc, cs) in
-           collect-children(tree, rcol, env, [scrutId, litId, thenId, elseId], a1))))
-    | Option.Some(Node.NLet(_, valId, bodyId)) =>
-        // the let's type is the body's; recurse value + body
-        (let a1 = push-cs(acc, [(node-ty(env, id), node-ty(env, bodyId))]) in
-         collect-children(tree, rcol, env, [valId, bodyId], a1))
-    | Option.Some(Node.NVar(_)) =>
-        // S1b: a var USE shares its binder's value type. Look up the binder via the resolve column; emit
-        // useTy ~ binderValueTy. Unbound (RPoison) / RDef / no-fact → no constraint (leaf). A leaf: no recursion.
-        (match Map.lookup(rcol, id) with
-          | Option.Some(Resolved.RBound(binder)) =>
-              (match binder-value-ty(tree, env, binder) with
-                | Option.Some(bvt) => List.push(acc, (node-ty(env, id), bvt))
-                | Option.None(_) => acc)
-          | _ => acc)
-    | Option.Some(_) => acc                                          // leaf or not-covered composite → no constraint
-    | Option.None(_) => acc
+def collect(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), id: Int64, acc: List(
+  Tuple(Ty, Ty)
+)) = match node-at(tree, id) with
+  | Option.Some(Node.NBin(op, l, r)) => if op >= 60 then
+    if op <= 65 then
+      // relational: operands share a type (left ~ right); node is Bool (no nodeTy constraint here)
+      let a1 = push-cs(acc, [(node-ty(env, l), node-ty(env, r))]) in
+        collect-children(tree, rcol, env, [l, r], a1)
+    else
+      acc // unknown op ≥ 66 → no constraint
+  else
+    // arithmetic: node ~ left, node ~ right (so left ~ right transitively), then recurse operands
+    let nt = node-ty(env, id) in
+    let cs = [(nt, node-ty(env, l)), (nt, node-ty(env, r))] in
+    let a1 = push-cs(acc, cs) in
+      collect-children(tree, rcol, env, [l, r], a1)
+  | Option.Some(Node.NIf(c, t, e)) => // cond is Bool (cond ~ Bool); branches join (then ~ else); the if IS that type (node ~ then); recurse all three
+  let nt = node-ty(env, id) in
+  let cs = [(node-ty(env, c), ty-bool()), (node-ty(env, t), node-ty(env, e)), (nt, node-ty(env, t))] in
+  let a1 = push-cs(acc, cs) in
+    collect-children(tree, rcol, env, [c, t, e], a1)
+  | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) => // S1a integer match: scrutinee ~ literal-pattern (they are compared), arms join (then ~ else), the match
+  // IS that type (node ~ then). Recurse into all four children.
+  let nt = node-ty(env, id) in
+  let cs = [
+      (node-ty(env, scrutId), node-ty(env, litId)),
+      (node-ty(env, thenId), node-ty(env, elseId)),
+      (nt, node-ty(env, thenId))
+    ] in
+  let a1 = push-cs(acc, cs) in
+    collect-children(tree, rcol, env, [scrutId, litId, thenId, elseId], a1)
+  | Option.Some(Node.NLet(_, valId, bodyId)) => // the let's type is the body's; recurse value + body
+  let a1 = push-cs(acc, [(node-ty(env, id), node-ty(env, bodyId))]) in
+    collect-children(tree, rcol, env, [valId, bodyId], a1)
+  | Option.Some(Node.NVar(_)) => // S1b: a var USE shares its binder's value type. Look up the binder via the resolve column; emit
+  // useTy ~ binderValueTy. Unbound (RPoison) / RDef / no-fact → no constraint (leaf). A leaf: no recursion.
+  (match Map.lookup(rcol, id) with
+    | Option.Some(Resolved.RBound(binder)) => (match binder-value-ty(tree, env, binder) with
+      | Option.Some(bvt) => List.push(acc, (node-ty(env, id), bvt))
+      | Option.None(_) => acc
+    )
+    | _ => acc
+  )
+  | Option.Some(_) => acc // leaf or not-covered composite → no constraint
+  | Option.None(_) => acc
 
 /// COLLECT from an empty accumulator — the entry point. `collect-all(tree, rcol, env, root)` = the full
 /// constraint set of the subtree at `root`, ready to hand to `hm-solve.solve`.
 def collect-all(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), root: Int64) =
-  collect(tree, rcol, env, root, ([] : List(Tuple(Ty, Ty))))
+  collect(tree, rcol, env, root, [] : List(Tuple(Ty, Ty)))
 
 // ---- TESTS: constraint generation over hand-built trees; solve propagates the fresh vars -------------
 import { add-node, empty-tree } from "parse-db"
+
 import { IntType, Sign, Width, ty-fixed-int, ty-int64 } from "ty"
+
 import { fresh-int-ty } from "hm-vars"
+
 import { solve, solve-apply } from "hm-solve"
+
 import { apply } from "subst"
 
 /// A fresh int-var Ty at counter `n` (sign-var n, width-var n+1); returns (ty, next-counter).
@@ -132,7 +148,7 @@ def fv(n: Int64) = fresh-int-ty(n)
 
 /// An empty resolve column — for tests with no variables (arith/if/match over literals). S1b's NVar rule reads
 /// rcol, but a var-free tree hits no NVar arm so the empty column is inert.
-def re() = (Map.empty : Map(Int64, Resolved))
+def re() -> Map(Int64, Resolved) = Map.empty
 
 @test
 def hc-arith-emits-two-constraints() =
@@ -144,8 +160,15 @@ def hc-arith-emits-two-constraints() =
   let (va, n1) = fv(0) in
   let (vb, n2) = fv(n1) in
   let (vn, _n3) = fv(n2) in
-  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, va), bId, vb), binId, vn) in
-  (if List.len(collect-all(tree, re(), env, binId)) == 2 then unit else trap("arith (+ a b) emits 2 constraints (node~a, node~b)"))
+  let env = Map.insert(
+      Map.insert(Map.insert(Map.empty : Map(Int64, Ty), aId, va), bId, vb),
+      binId,
+      vn
+    ) in
+    if List.len(collect-all(tree, re(), env, binId)) == 2 then
+    unit
+  else
+    trap("arith (+ a b) emits 2 constraints (node~a, node~b)")
 
 @test
 def hc-arith-propagates-fixed-width-to-both-operands() =
@@ -153,17 +176,25 @@ def hc-arith-propagates-fixed-width-to-both-operands() =
   // solving binds node~a and node~b → a unifies with b=Int8, so a's fresh var RESOLVES to Int8. This is a
   // param `a` getting its type FROM USE (added to an Int8) instead of defaulting. Apply the solution to varA → Int8.
   let (aId, t1) = add-node(empty-tree(), Node.NLit(1)) in
-  let (bId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in                     // b : Int8 (signed, width 8)
+  let (bId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in // b : Int8 (signed, width 8)
   let (binId, tree) = add-node(t2, Node.NBin(43, aId, bId)) in
   let (va, n1) = fv(0) in
   let (vn, _n2) = fv(n1) in
-  // env: a -> fresh var (the "param"), b -> fixed Int8, node -> fresh result var
-  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, va), bId, ty-fixed-int(true, 8)), binId, vn) in
-  (match solve(collect-all(tree, re(), env, binId)) with
+    // env: a -> fresh var (the "param"), b -> fixed Int8, node -> fresh result var
+  let env = Map.insert(
+      Map.insert(Map.insert(Map.empty : Map(Int64, Ty), aId, va), bId, ty-fixed-int(true, 8)),
+      binId,
+      vn
+    ) in
+    match solve(collect-all(tree, re(), env, binId)) with
     | Option.Some(su) => (match apply(su, va) with
-        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 8 then unit else trap("param a inferred Int8 from use"))
-        | _ => trap("param a's fresh var resolves to Int8 via the shared arith constraint"))
-    | Option.None(_) => trap("(+ a b) with b:Int8 is solvable"))
+      | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
+        unit
+      else
+        trap("param a inferred Int8 from use")
+      | _ => trap("param a's fresh var resolves to Int8 via the shared arith constraint")
+    )
+    | Option.None(_) => trap("(+ a b) with b:Int8 is solvable")
 
 @test
 def hc-mixed-width-arith-conflicts() =
@@ -174,10 +205,18 @@ def hc-mixed-width-arith-conflicts() =
   let (bId, t2) = add-node(t1, Node.NAnnLit(5, 1, 16)) in
   let (binId, tree) = add-node(t2, Node.NBin(43, aId, bId)) in
   let (vn, _n1) = fv(0) in
-  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, ty-fixed-int(true, 8)), bId, ty-fixed-int(true, 16)), binId, vn) in
-  (match solve(collect-all(tree, re(), env, binId)) with
+  let env = Map.insert(
+      Map.insert(
+        Map.insert(Map.empty : Map(Int64, Ty), aId, ty-fixed-int(true, 8)),
+        bId,
+        ty-fixed-int(true, 16)
+      ),
+      binId,
+      vn
+    ) in
+    match solve(collect-all(tree, re(), env, binId)) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("Int8 + Int16 must CONFLICT via the shared-type constraint"))
+    | Option.Some(_) => trap("Int8 + Int16 must CONFLICT via the shared-type constraint")
 
 @test
 def hc-relational-shares-operand-type-node-is-bool() =
@@ -187,13 +226,21 @@ def hc-relational-shares-operand-type-node-is-bool() =
   let (bId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
   let (cmpId, tree) = add-node(t2, Node.NBin(60, aId, bId)) in
   let (va, _n1) = fv(0) in
-  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, va), bId, ty-fixed-int(true, 8)), cmpId, Ty.TyBool) in
+  let env = Map.insert(
+      Map.insert(Map.insert(Map.empty : Map(Int64, Ty), aId, va), bId, ty-fixed-int(true, 8)),
+      cmpId,
+      Ty.TyBool
+    ) in
   let cs = collect-all(tree, re(), env, cmpId) in
-  (if List.len(cs) == 1
-   then (match solve-apply(cs, va) with
-          | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 8 then unit else trap("compared operand a infers Int8"))
-          | _ => trap("relational operand a shares b's Int8 type"))
-   else trap("relational emits exactly ONE operand-share constraint"))
+    if List.len(cs) == 1 then
+    match solve-apply(cs, va) with
+      | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
+        unit
+      else
+        trap("compared operand a infers Int8")
+      | _ => trap("relational operand a shares b's Int8 type")
+  else
+    trap("relational emits exactly ONE operand-share constraint")
 
 @test
 def hc-nested-arith-propagates-through-chain() =
@@ -209,13 +256,27 @@ def hc-nested-arith-propagates-through-chain() =
   let (vb, n2) = fv(n1) in
   let (vinner, n3) = fv(n2) in
   let (vouter, _n4) = fv(n3) in
-  let env = Map.insert(Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, va), bId, vb), cId, ty-fixed-int(true, 8)), innerId, vinner), outerId, vouter) in
-  (match solve-apply(collect-all(tree, re(), env, outerId), va) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 8 then unit else trap("a infers Int8 through the nested chain"))
-    | _ => trap("nested arith propagates Int8 to the deep fresh var a"))
+  let env = Map.insert(
+      Map.insert(
+        Map.insert(
+          Map.insert(Map.insert(Map.empty : Map(Int64, Ty), aId, va), bId, vb),
+          cId,
+          ty-fixed-int(true, 8)
+        ),
+        innerId,
+        vinner
+      ),
+      outerId,
+      vouter
+    ) in
+    match solve-apply(collect-all(tree, re(), env, outerId), va) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
+      unit
+    else
+      trap("a infers Int8 through the nested chain")
+    | _ => trap("nested arith propagates Int8 to the deep fresh var a")
 
 // ---- S1a: NIf cond-is-Bool + NMatch coverage ------------------------------------------------------
-
 @test
 def hc-if-branches-join-and-node-is-branch-type() =
   // `(if c t e)` with c=Bool, t=fresh var, e=Int8, node=fresh var → the branch-join (t~e) forces t to Int8,
@@ -227,10 +288,21 @@ def hc-if-branches-join-and-node-is-branch-type() =
   let (ifId, tree) = add-node(t3, Node.NIf(cId, tId, eId)) in
   let (vt, n1) = fv(0) in
   let (vn, _n2) = fv(n1) in
-  let env = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), cId, Ty.TyBool), tId, vt), eId, ty-fixed-int(true, 8)), ifId, vn) in
-  (match solve-apply(collect-all(tree, re(), env, ifId), vn) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 8 then unit else trap("if type joins to Int8"))
-    | _ => trap("if branches join + node is the branch type"))
+  let env = Map.insert(
+      Map.insert(
+        Map.insert(Map.insert(Map.empty : Map(Int64, Ty), cId, Ty.TyBool), tId, vt),
+        eId,
+        ty-fixed-int(true, 8)
+      ),
+      ifId,
+      vn
+    ) in
+    match solve-apply(collect-all(tree, re(), env, ifId), vn) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
+      unit
+    else
+      trap("if type joins to Int8")
+    | _ => trap("if branches join + node is the branch type")
 
 @test
 def hc-if-non-bool-cond-conflicts() =
@@ -243,10 +315,18 @@ def hc-if-non-bool-cond-conflicts() =
   let (vt, n1) = fv(0) in
   let (ve, n2) = fv(n1) in
   let (vn, _n3) = fv(n2) in
-  let env = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), cId, ty-fixed-int(true, 8)), tId, vt), eId, ve), ifId, vn) in
-  (match solve(collect-all(tree, re(), env, ifId)) with
+  let env = Map.insert(
+      Map.insert(
+        Map.insert(Map.insert(Map.empty : Map(Int64, Ty), cId, ty-fixed-int(true, 8)), tId, vt),
+        eId,
+        ve
+      ),
+      ifId,
+      vn
+    ) in
+    match solve(collect-all(tree, re(), env, ifId)) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("a non-Bool if-cond must conflict (cond ~ Bool)"))
+    | Option.Some(_) => trap("a non-Bool if-cond must conflict (cond ~ Bool)")
 
 @test
 def hc-match-scrut-shares-lit-and-arms-join() =
@@ -260,12 +340,28 @@ def hc-match-scrut-shares-lit-and-arms-join() =
   let (vs, n1) = fv(0) in
   let (vt, n2) = fv(n1) in
   let (vn, _n3) = fv(n2) in
-  let env = Map.insert(Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), sId, vs), litId, ty-fixed-int(true, 8)), thenId, vt), elseId, ty-fixed-int(true, 8)), mId, vn) in
-  (match solve(collect-all(tree, re(), env, mId)) with
+  let env = Map.insert(
+      Map.insert(
+        Map.insert(
+          Map.insert(Map.insert(Map.empty : Map(Int64, Ty), sId, vs), litId, ty-fixed-int(true, 8)),
+          thenId,
+          vt
+        ),
+        elseId,
+        ty-fixed-int(true, 8)
+      ),
+      mId,
+      vn
+    ) in
+    match solve(collect-all(tree, re(), env, mId)) with
     | Option.Some(su) => (match apply(su, vs) with
-        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 8 then unit else trap("scrut infers Int8 from lit"))
-        | _ => trap("match scrut shares the literal-pattern's Int8 type"))
-    | Option.None(_) => trap("consistent match is solvable"))
+      | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
+        unit
+      else
+        trap("scrut infers Int8 from lit")
+      | _ => trap("match scrut shares the literal-pattern's Int8 type")
+    )
+    | Option.None(_) => trap("consistent match is solvable")
 
 @test
 def hc-match-mismatched-arms-conflict() =
@@ -278,13 +374,24 @@ def hc-match-mismatched-arms-conflict() =
   let (vs, n1) = fv(0) in
   let (vl, n2) = fv(n1) in
   let (vn, _n3) = fv(n2) in
-  let env = Map.insert(Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), sId, vs), litId, vl), thenId, ty-fixed-int(true, 8)), elseId, ty-fixed-int(true, 16)), mId, vn) in
-  (match solve(collect-all(tree, re(), env, mId)) with
+  let env = Map.insert(
+      Map.insert(
+        Map.insert(
+          Map.insert(Map.insert(Map.empty : Map(Int64, Ty), sId, vs), litId, vl),
+          thenId,
+          ty-fixed-int(true, 8)
+        ),
+        elseId,
+        ty-fixed-int(true, 16)
+      ),
+      mId,
+      vn
+    ) in
+    match solve(collect-all(tree, re(), env, mId)) with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("Int8-then vs Int16-else must conflict (arm join)"))
+    | Option.Some(_) => trap("Int8-then vs Int16-else must conflict (arm join)")
 
 // ---- S1b: NVar coverage (a var use shares its binder's value type, via the resolve column) ----------
-
 @test
 def hc-var-use-shares-let-value-type() =
   // `let x = (: 5 Int8) in x` — the body var x's use shares the let VALUE's type. Build: val=NAnnLit Int8,
@@ -295,13 +402,21 @@ def hc-var-use-shares-let-value-type() =
   let (letId, tree) = add-node(t2, Node.NLet(1, valId, useId)) in
   let (vuse, n1) = fv(0) in
   let (vlet, _n2) = fv(n1) in
-  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), valId, ty-fixed-int(true, 8)), useId, vuse), letId, vlet) in
-  let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), useId, Resolved.RBound(letId)) in
-  (match solve(collect-all(tree, rcol, env, letId)) with
+  let env = Map.insert(
+      Map.insert(Map.insert(Map.empty : Map(Int64, Ty), valId, ty-fixed-int(true, 8)), useId, vuse),
+      letId,
+      vlet
+    ) in
+  let rcol = Map.insert(Map.empty : Map(Int64, Resolved), useId, Resolved.RBound(letId)) in
+    match solve(collect-all(tree, rcol, env, letId)) with
     | Option.Some(su) => (match apply(su, vuse) with
-        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 8 then unit else trap("var use infers Int8 from let value"))
-        | _ => trap("the body var shares the let value's Int8 type"))
-    | Option.None(_) => trap("let x=Int8 in x is solvable"))
+      | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
+        unit
+      else
+        trap("var use infers Int8 from let value")
+      | _ => trap("the body var shares the let value's Int8 type")
+    )
+    | Option.None(_) => trap("let x=Int8 in x is solvable")
 
 @test
 def hc-param-use-shares-param-var() =
@@ -309,20 +424,32 @@ def hc-param-use-shares-param-var() =
   // used in the body. paramNode=NVar (the binder), useNode=NVar (the use), both resolve the use → RBound(paramNode).
   // Seed the param node + use node as the SAME... no: seed each its own var, the NVar rule constrains use~param.
   // Then arith constrains use~Int8. So param infers Int8 (its use is added to an Int8). Apply to the PARAM's var → Int8.
-  let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in                 // the param binder node
-  let (useId, t2) = add-node(t1, Node.NVar(1)) in                             // a use of the param
+  let (paramId, t1) = add-node(empty-tree(), Node.NVar(1)) in // the param binder node
+  let (useId, t2) = add-node(t1, Node.NVar(1)) in // a use of the param
   let (litId, t3) = add-node(t2, Node.NAnnLit(1, 1, 8)) in
   let (binId, tree) = add-node(t3, Node.NBin(43, useId, litId)) in
   let (vparam, n1) = fv(0) in
   let (vuse, n2) = fv(n1) in
   let (vbin, _n3) = fv(n2) in
-  let env = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), paramId, vparam), useId, vuse), litId, ty-fixed-int(true, 8)), binId, vbin) in
-  let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), useId, Resolved.RBound(paramId)) in
-  (match solve(collect-all(tree, rcol, env, binId)) with
+  let env = Map.insert(
+      Map.insert(
+        Map.insert(Map.insert(Map.empty : Map(Int64, Ty), paramId, vparam), useId, vuse),
+        litId,
+        ty-fixed-int(true, 8)
+      ),
+      binId,
+      vbin
+    ) in
+  let rcol = Map.insert(Map.empty : Map(Int64, Resolved), useId, Resolved.RBound(paramId)) in
+    match solve(collect-all(tree, rcol, env, binId)) with
     | Option.Some(su) => (match apply(su, vparam) with
-        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 8 then unit else trap("param infers Int8 from its use in Int8 arith"))
-        | _ => trap("param var shares its use's type, which arith fixes to Int8"))
-    | Option.None(_) => trap("param used in Int8 arith is solvable"))
+      | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
+        unit
+      else
+        trap("param infers Int8 from its use in Int8 arith")
+      | _ => trap("param var shares its use's type, which arith fixes to Int8")
+    )
+    | Option.None(_) => trap("param used in Int8 arith is solvable")
 
 @test
 def hc-unbound-var-emits-no-constraint() =
@@ -335,8 +462,15 @@ def hc-unbound-var-emits-no-constraint() =
   let (vx, n1) = fv(0) in
   let (vl, n2) = fv(n1) in
   let (vb, _n3) = fv(n2) in
-  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), xId, vx), litId, vl), binId, vb) in
-  // rcol has NO fact for xId (unbound) → the NVar arm emits nothing; only the 2 arith constraints remain.
-  (if List.len(collect-all(tree, re(), env, binId)) == 2 then unit else trap("an unbound var adds no constraint — only the 2 arith constraints"))
+  let env = Map.insert(
+      Map.insert(Map.insert(Map.empty : Map(Int64, Ty), xId, vx), litId, vl),
+      binId,
+      vb
+    ) in
+    // rcol has NO fact for xId (unbound) → the NVar arm emits nothing; only the 2 arith constraints remain.
+  if List.len(collect-all(tree, re(), env, binId)) == 2 then
+    unit
+  else
+    trap("an unbound var adds no constraint — only the 2 arith constraints")
 
 export { collect, collect-all, node-ty }
