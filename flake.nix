@@ -1180,6 +1180,33 @@
               echo "ok: non-optional wasmtime confined to cdz-run" > $out
             '';
 
+        # COMPILER-IS-A-PURE-LIBRARY assert (v-cdz-crate-split, operator 2026-08-30: "the compiler should
+        # not be pulling clap in as a dependency … the compiler should be a pure library"). The clap CLI
+        # surface + trace SINK were extracted to `rcdzc-cli` (PR #6305); `rcdzc` itself must stay free of
+        # BOTH `clap` (arg parsing) and `tracing-subscriber` (the sink — the lib only EMITS `tracing`
+        # events). Pure-eval RATCHET, mirroring wasmtimeSingleHolderAssert: read rcdzc's Cargo.toml and
+        # throw LOUD at eval if either creeps back into `[dependencies]`/`[dev-dependencies]`. crateClosureAssert
+        # can't catch this — it tracks only FIRST-PARTY path crates, and clap/tracing-subscriber are EXTERNAL,
+        # so without this guard a convenience re-add would slip through green + silently re-fatten the compiler
+        # (and every crate that links it as a lib). A NEW arg/trace-sink concern belongs in `rcdzc-cli`.
+        compilerPureLibraryAssert =
+          let
+            manifest = builtins.fromTOML
+              (builtins.readFile (./. + "/${rootWorkspaceCrates.rcdzc}/Cargo.toml"));
+            forbidden = [ "clap" "tracing-subscriber" ];
+            deps = (manifest.dependencies or { }) // (manifest.dev-dependencies or { });
+            present = builtins.filter (d: (deps.${d} or null) != null) forbidden;
+          in
+          if present != [ ] then
+            throw ("flake.nix compiler-pure-library-assert: rcdzc (the compiler) declares forbidden host-CLI "
+              + "dep(s) " + builtins.toString present + " — it must stay a PURE LIBRARY (operator 2026-08-30). "
+              + "clap (arg parsing) + tracing-subscriber (the trace sink) live in the `rcdzc-cli` crate; move "
+              + "the new concern there and depend on rcdzc-the-library instead.")
+          else
+            pkgs.runCommand "compiler-pure-library-assert" { } ''
+              echo "ok: rcdzc is a pure library (no clap / tracing-subscriber)" > $out
+            '';
+
         # ── S2: build a CADENZA PROJECT through nix ───────────────────────────────────────────────
         #
         # Operator arc (2026-08-03): "then we can have it building cadenza projects." A reusable function
@@ -5155,7 +5182,7 @@
                   guideExamplesShredded
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
                   mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
-                  wasmtimeSingleHolderAssert
+                  wasmtimeSingleHolderAssert compilerPureLibraryAssert
                   # corpus-hygiene lints FOLDED IN (v-fleet-tooling 2026-08-30, v-corpus-harness green +
                   # concierge exempt-first-then-fold): corpusNativizeCheck (M3 input #ctor form; #6025 escaped
                   # the ADVISORY checks.yml job because --admin bypasses required GHA) + corpusVanishedCheck
@@ -5260,6 +5287,7 @@
             crate-closure-assert = crateClosureAssert;
             cdz-run-dependents-assert = cdzRunDependentsAssert;
             wasmtime-single-holder-assert = wasmtimeSingleHolderAssert;
+            compiler-pure-library-assert = compilerPureLibraryAssert;
             standalone-wasm-workspace-assert = standaloneWasmWorkspaceAssert;
             # cdz = WORKSPACE-SRC (concierge-confirmed 1a), NOT closure/tests-dir-scoped like the other 10.
             # WHY cdz differs: its run_rust_cli tests are WORKSPACE-INTEGRATION — they rustc-compile emitted
