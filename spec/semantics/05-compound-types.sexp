@@ -44,6 +44,35 @@
   (input  (do (def (f (: r (Record (: x Int64)))) (. r x)) (def (main) (f #record((= x 5)))) (export main)))
   (call   main) (output (: 5 Int64)))
 
+; A nullary variant applied to a payload is CDZ0201 — the message names the variant `None`, states it
+; cannot be applied, and gives the construct-it-as-`None` fix. Qualified `Option.None` reads the variant
+; name from the member key, not the module segment. (Migrated from rcdzc
+; a_nullary_variant_applied_to_a_payload_names_the_variant_and_the_fix.)
+(case "a nullary variant applied to a payload names the variant and that it cannot be applied"
+  (input  (do (def (main) (match (None 5) ((Some x) x) ((None _) 0))) (export main)))
+  (error  CDZ0201 (message "`None` is nullary") (message "cannot be applied")
+                  (message "construct it as `None`")))
+
+(case "a qualified nullary variant applied to a payload names the bare variant"
+  (input  (do (def (main) (match (Option.None 5) ((Some x) x) ((None _) 0))) (export main)))
+  (error  CDZ0201 (message "`None` is nullary")))
+
+; A record MATCH-PATTERN naming a near-miss field is a typo — CDZ0201 names the field, says the record
+; does not have it, suggests the nearest actual field, and carries a heuristic (unverified) rename fix:
+; the record-pattern twin of the member-access `(. r fooo)` did-you-mean. A FAR-miss (beyond the cutoff)
+; gets NO baseless suggestion and NO fix — the plain message stands. (Migrated from rcdzc
+; a_record_match_pattern_typo_field_suggests_the_nearest_field.)
+(case "a record match pattern typo field suggests the nearest field with a rename fix"
+  (input  (do (def (f (: r (Record (: helper Int64)))) (match r ((record (helpr y)) y)))
+              (def (main) (f (record (helper 1)))) (export main)))
+  (error  CDZ0201 (message "field `helpr`") (message "does not have") (message "did you mean `helper`?")
+                  (fix (kind replace) (replacement "helper") (unverified))))
+
+(case "a far-miss record match pattern field carries no baseless suggestion or fix"
+  (input  (do (def (f (: r (Record (: helper Int64)))) (match r ((record (zzz y)) y)))
+              (def (main) (f (record (helper 1)))) (export main)))
+  (error  CDZ0201 (message "field `zzz`") (not "did you mean") (no-fix)))
+
 (case "a record field holding a sum is projected then matched"
   (doc    "The record-carrying-a-sum idiom a self-hosted compiler's node records take: a record whose
            field is an `Option`, projected out with `(. r tag)` and then matched. `f (Some 7)` builds
