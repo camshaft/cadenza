@@ -3241,7 +3241,10 @@
             (def (main)
               (handle Diag #list() ((emit (code) s (resume unit (List.push s code))))
                 (do (Diag.emit 1) 0))) (export main)))
-  (error  CDZ0405))
+  (error  CDZ0405
+          (message "`collect`")
+          (message "add (collect () s (resume")
+          (fix (replacement-contains "(collect ()") (unverified))))
 
 (case "a resume outside any handler arm is rejected"
   (doc    "A `resume` hands a value back to the point that performed a handler arm's operation, so it is

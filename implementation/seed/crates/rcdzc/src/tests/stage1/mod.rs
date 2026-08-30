@@ -3922,48 +3922,11 @@ fn an_undeclared_handler_op_close_to_a_declared_one_suggests_it() {
     assert!(!fix.verified, "a nearest-name guess is heuristic");
 }
 
-#[test]
-fn a_non_exhaustive_handler_is_cdz0405() {
-    // A `handle E` names ONE effect and its arms ARE that effect's operations; an effect's operations
-    // are a closed set, so a handler must discharge the WHOLE set (CDZ0405 —
-    // `capabilities-and-effects.md` §A Handler Discharges Its Effect, the effect analogue of match
-    // exhaustiveness). `Diag` declares `emit` + `collect`; a `handle Diag` binding only `emit` leaves
-    // `collect` undischarged — rejected. Written in the CANONICAL shape so the load-time desugar
-    // (effect + seed promoted, bare arm op) is exercised on the way to the check.
-    let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
-                   (def (main) (handle Diag (list) ((emit (code) s (resume unit (List.push s code)))) \
-                                 (do (Diag.emit 1) 0))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a handler missing an operation must be rejected");
-    assert_eq!(
-        err.code.as_deref(),
-        Some("CDZ0405"),
-        "expected CDZ0405 (non-exhaustive handler), got: {}",
-        err.message
-    );
-    // The message NAMES the omitted operation AND spells the arm to add inline; AND a machine-
-    // applicable "add the missing arm" fix carries the same template arm (`collect` is nullary → empty
-    // params, a `(resume (trap "TODO: collect") s)` placeholder body the author fills). The resume
-    // VALUE is a diverging `trap`, NOT `unit`: `collect`'s result type is `(List Int64)`, so a bare
-    // `unit` resume value would cascade to a CDZ0201 "a handler resumes with a value of type Unit but
-    // the operation's result type is (List Int64)"; `trap : ∀a. String → a` type-checks whatever the
-    // op returns, so the fix resolves in ONE shot. The structural fix is possible because the in-place
-    // desugar preserved the arms-list's source span.
-    assert!(
-        err.message.contains("`collect`")
-            && err
-                .message
-                .contains("add (collect () s (resume (trap \"TODO: collect\") s))"),
-        "names the omitted op AND spells the arm to add: {}",
-        err.message
-    );
-    let fix = err.fix.expect("a missing-arm fix is carried");
-    assert_eq!(
-        fix.replacement, "(collect () s (resume (trap \"TODO: collect\") s))",
-        "the fix appends a template arm for the missing op"
-    );
-    assert!(!fix.verified, "a template-body arm is heuristic");
-}
+// a_non_exhaustive_handler_is_cdz0405 migrated (code + message + fix, in full) to corpus
+// 14b-effects-and-handlers "a handler that does not discharge every operation of its effect is rejected":
+// enriched that case with (message "`collect`") (message "add (collect () s (resume") (fix
+// (replacement-contains "(collect ()") (unverified)) — the omitted-op name, the spelled template arm, and
+// the machine-applicable add-the-arm fix. rcdzc test deleted (fully corpus-covered).
 
 #[test]
 fn the_handler_add_arm_fix_resume_value_type_checks_in_one_shot() {
