@@ -11005,6 +11005,38 @@
                 (export main)))
   (error    CDZ0201 (message "closest matches")))
 
+; The pattern-head variant-typo ENRICHMENT (migrated from rcdzc
+; a_match_pattern_head_naming_a_non_variant_suggests_the_nearest_variant): the base non-variant reject above
+; is enriched — a NEAR typo (edit-distance-gated) carries a "did you mean" + a replace fix on the mistyped
+; key; a FAR typo LISTS the sum's variants ("closest matches") with NO fix (a baseless guess is worse than
+; none). This holds across QUALIFIED `(C.Alph)` (CDZ0201, a sum's variants are its record fields), BARE
+; `(Alph)` (CDZ0101 unbound name — the scrutinee's sum still gives the candidate set), and WRONG-SUM
+; `(D.Gamma)` (CDZ0203, a real variant of a different sum) pattern heads — each listing/suggesting the
+; MATCHED type's variants (the author reached for one of the scrutinee's variants).
+(case "a near-typo qualified variant pattern head suggests the nearest variant with a replace fix"
+  (input (do (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Alph) 1) (_ 2))) (export main)))
+  (error CDZ0201 (message "did you mean") (fix (kind replace) (replacement "Alpha"))))
+
+(case "a far-typo qualified variant pattern head lists the sum's variants and offers no confident fix"
+  (input (do (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Zzz) 1) (_ 2))) (export main)))
+  (error CDZ0201 (message "closest matches") (not "did you mean") (no-fix)))
+
+(case "a near-typo BARE variant pattern head is an unbound name that still suggests the nearest variant"
+  (input (do (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((Alph) 1) (_ 2))) (export main)))
+  (error CDZ0101 (message "did you mean") (fix (kind replace) (replacement "Alpha"))))
+
+(case "a far-typo BARE variant pattern head is an unbound name with no confident suggestion"
+  (input (do (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((Zzz) 1) (_ 2))) (export main)))
+  (error CDZ0101 (message "closest matches") (not "did you mean") (no-fix)))
+
+(case "a wrong-sum variant pattern head lists the MATCHED type's variants"
+  (input (do (type C (Alpha) (Beta)) (type D (Gamma)) (def (main) (match (C.Alpha) ((D.Gamma) 1) (_ 2))) (export main)))
+  (error CDZ0203 (message "not a variant of the matched type C") (message "closest matches")))
+
+(case "a near-miss wrong-sum variant pattern head suggests the matched sum's variant with a fix"
+  (input (do (type C (Alpha) (Beta)) (type D (Alph Int64)) (def (main) (match (C.Alpha) ((D.Alph x) x) (_ 2))) (export main)))
+  (error CDZ0203 (message "did you mean") (fix (kind replace) (replacement "Alpha"))))
+
 ; --- A redundant match arm — the DUAL of non-exhaustiveness -----------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected has a dual: where a NON-exhaustive match leaves a
 ; value no arm covers (CDZ0210, a rejection), a REDUNDANT arm is one no value reaches — an EARLIER arm
