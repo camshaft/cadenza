@@ -3637,18 +3637,13 @@ fn clean_output_stems(entry_file: Option<&str>) -> Vec<String> {
     let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_EXPORTS) else {
         return Vec::new();
     };
-    // Each line is `name<TAB>type<TAB>def-node`. The output component is named after the export; collect
-    // EVERY export name (deduped) so a multi-export entry's output — whichever the compiler picks — is
-    // covered. A blank/`-` name is skipped.
-    let text = String::from_utf8_lossy(bytes);
+    // The binary-AST exports value (`cadenza_compile_abi::exports_wire`). The output component is named
+    // after the export; collect EVERY export name (deduped) so a multi-export entry's output — whichever
+    // the compiler picks — is covered. A blank name is skipped.
     let mut stems: Vec<String> = Vec::new();
-    for line in text.lines() {
-        if let Some(name) = line.split('\t').next()
-            && !name.is_empty()
-            && name != "-"
-            && !stems.contains(&name.to_string())
-        {
-            stems.push(name.to_string());
+    for e in cadenza_compile_abi::decode_exports(bytes) {
+        if !e.name.is_empty() && !stems.contains(&e.name) {
+            stems.push(e.name);
         }
     }
     stems
@@ -6465,33 +6460,25 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let text = String::from_utf8_lossy(bytes);
-    if text.trim().is_empty() {
+    let exports = cadenza_compile_abi::decode_exports(bytes);
+    if exports.is_empty() {
         eprintln!("{PROG}: {} exports nothing", args.file);
         return ExitCode::SUCCESS;
     }
-    // Each line is `name<TAB>type<TAB>def-name-node-id` (`-` when the export names no def).
     // One line-start index (binary-searched line:col) so a wide export list stays linear. Both output
     // shapes — the human `file:line:col: name : type` and the `--json` object — are computed from the
-    // SAME resolved `(name, type, line, col)` so they can't drift (mirrors `cdz symbols`).
+    // SAME resolved `(name, type, line, col)` so they can't drift (mirrors `cdz symbols`). The type NAME
+    // is rendered from the decoded FULL structured Ty payload via the shared cadenza-syntax renderer
+    // (`render_ty_scheme` — an export signature may be polymorphic, so it gets stable Var-lettering); an
+    // export whose type did not resolve renders "unknown". No render_name string crosses the wire.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
-    let mut malformed = false;
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut cols = line.splitn(3, '\t');
-        let (name, ty, node) = match (cols.next(), cols.next(), cols.next()) {
-            (Some(n), Some(t), Some(d)) => (n, t, d),
-            _ => {
-                report_malformed_query_row("exports", line);
-                malformed = true;
-                continue;
-            }
+    for e in exports {
+        let ty = match &e.ty {
+            Some(a) => cadenza_syntax::render_ty::render_ty_scheme(a, a.root),
+            None => "unknown".to_string(),
         };
-        let line_col = node
-            .parse::<u32>()
-            .ok()
+        let line_col = e
+            .node
             .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
             .map(|span| index.line_col(&source, span.start));
         if args.json {
@@ -6502,22 +6489,18 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
                 obj.raw("line", &l.to_string());
                 obj.raw("col", &c.to_string());
             }
-            obj.string("name", name);
-            obj.string("type", ty);
+            obj.string("name", &e.name);
+            obj.string("type", &ty);
             println!("{}", obj.finish());
         } else {
             let loc = match line_col {
                 Some((l, c)) => format!("{}:{l}:{c}", args.file),
                 None => args.file.clone(),
             };
-            println!("{loc}: {name} : {ty}");
+            println!("{loc}: {} : {ty}", e.name);
         }
     }
-    if malformed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::SUCCESS
 }
 
 /// `cdz symbols FILE` — the document OUTLINE: every top-level declaration classified by kind, as
