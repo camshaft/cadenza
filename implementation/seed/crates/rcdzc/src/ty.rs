@@ -1240,22 +1240,22 @@ impl Ty {
     /// demand re-grounds the width against the now-concrete sibling. An arrow is NOT descended (a closure
     /// domain/result hole is not the return-position data numeric), matching `has_any_in_data_element`.
     pub fn has_ungrounded_width(&self) -> bool {
-        match self {
-            Ty::Int(it) => {
-                !matches!(it.width, Width::Fixed(_)) || !matches!(it.sign, Sign::Fixed(_))
-            }
-            Ty::Float(ft) => !matches!(ft.width, Width::Fixed(_)),
-            Ty::Fn(_, _) => false,
-            Ty::Tuple(elems) => elems.iter().any(Ty::has_ungrounded_width),
-            Ty::List(elem) | Ty::Set(elem) => elem.has_ungrounded_width(),
-            Ty::Map(k, v) => k.has_ungrounded_width() || v.has_ungrounded_width(),
-            Ty::Record(fields) => fields.values().any(Ty::has_ungrounded_width),
-            Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
-                args.iter().any(Ty::has_ungrounded_width)
-            }
-            Ty::Qty { inner, .. } => inner.has_ungrounded_width(),
-            _ => false,
-        }
+        // TOP-LEVEL numeric ONLY — deliberately NOT recursing into ANY compound. This predicate scopes the
+        // mutual-recursion NUMERIC-width defer (#6049): a bare-literal recursive-group RETURN whose width
+        // must adopt a concrete sibling. #6049's witness is a TOP-LEVEL bare `Int` return. Descending into a
+        // compound made a nested deferred-default `Int64` leaf (e.g. `(GIter Int64)`, `(List Int64)`) look
+        // ungrounded, so the reentrant skip-cache DEFERRED a COMPOUND node during a multi-def SCC solve; the
+        // deferred node then re-derives against a not-yet-grounded polymorphic state and picks up an EXTRA
+        // type-constructor layer (`b` → `GIter b`) or mis-grounds a leaf to `Unit` — the `zip`/`interleave`/
+        // `int-list-eq` iterators regression from #6366 (CDZ0203 "`(GIter (GIter Int64))` expected" / "`(List
+        // Unit)` vs `(List Int64)`"). A compound's element widths are a DIFFERENT fixpoint (its own inference
+        // + generic monomorphization), NOT the mutual-recursion return-width case, so the defer must not fire
+        // for a compound. A top-level bare numeric re-derives to the same numeric (safe); #6049's top-level
+        // `Int{Deferred}` return still fires + defers as intended.
+        matches!(
+            self,
+            Ty::Int(it) if !matches!(it.width, Width::Fixed(_)) || !matches!(it.sign, Sign::Fixed(_))
+        ) || matches!(self, Ty::Float(ft) if !matches!(ft.width, Width::Fixed(_)))
     }
 
     /// Whether this type contains a TYPE-VALUE (`Ty::Type`, the kind of types) anywhere — itself, or
