@@ -20,6 +20,21 @@ increment (the "later increment" the specializer-floor declines cite) — NOT th
 
 ---
 
+## 0.5 CURRENT FILE LOCATIONS (post effects-split + lower→select move, verified 2026-08-30)
+
+⚠️ The monolithic `effects.rs` was SPLIT into `effects/{mod,reduce,thread}.rs`, and the §5 loop-reclaim
+predicates live in `backend/wasm/select.rs` (NOT `lower.rs`). Every `effects.rs:NNNN` / `lower.rs:NNNN`
+line ref BELOW (§0–§6) is PRE-SPLIT and stale — use this map when wiring the impl once Increment B lands:
+
+- `reduce_handle` → **effects/reduce.rs:14** (pub) · its None-decline path → effects/thread.rs:628
+- escaping-continuation reify `k = (fn (#kv) C)` → **effects/reduce.rs:549-554** (was effects.rs:2701)
+- `splice_context` → **effects/mod.rs:6818** (was :11762) · `rewrite_resume_to_context` → **effects/mod.rs:6511** (was :11455)
+- `build_value_state_tuple` → **effects/mod.rs:2476** (was :5588) · `peel_tuple_value_state` → **effects/mod.rs:5556** (was :10500)
+- `param_apply_extra_handled` → **effects/mod.rs:1272** · `thread` → **effects/thread.rs:167** · `thread_bounded` → **effects/thread.rs:492** · `thread_returning_tuple` → thread.rs:19
+- §5 predicates (all `backend/wasm/select.rs`): `looped_owned_param_drops` → **:831** · `param_only_borrowed_or_backedge` call → **:901** · `invalidate_varying_params` → **:880**
+- the `base#eff<n>` bodyless-spec decline (the cross-fn/non-tail-resume "later increment" this slice unblocks) → **resolve.rs:619-632** (was :622)
+- Increment A (hczm capture-escape) LANDED #5926 (rcdzc/core-opt per-occurrence capture escape-dup); Increment B (dup_at repr) STILL NOT landed as of 2026-08-30 (recent reclaim = perf memoization #6140/#6168, not the repr) → this slice stays gated.
+
 ## 0. The framing: `resume` is spliced away BEFORE Core
 
 `resume` is SPLICED AWAY in `reduce_handle`/`splice_context` (effects.rs:11762) before Core — there
