@@ -505,4 +505,23 @@ theorem denote_normalize_proj (ρ : Nat → Value) (w : IntTy) (b : SymExpr) (s 
 theorem denote_normalize_case (ρ : Nat → Value) (w : IntTy) (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
     denote ρ w (normalize (.case s arms)) = denote ρ w (.case s arms) := by simp only [normalize, denote]
 
+/-! ### Capstone `.ite` building blocks: denote-soundness of the boolean-materialization identities.
+`normalize` rewrites `if c then true else false → c` and `if c then false else true → not c` (#6450).
+These pin the denote-soundness of that rewrite in VALUE-CONDITIONED form: when the condition denotes to
+a boolean `b`, the materializing `ite` denotes to exactly `b` (resp. `!b`) — i.e. `denote` agrees with
+the rewritten `c` (resp. `not c`). The `.value (.bool b)` hypothesis is what the capstone `.ite` case
+supplies from the IH on the condition; a non-bool `c` never reaches this branch (the rewrite fires only
+when both branches are bool literals, and an ill-typed `c` never compiles into the differential). -/
+theorem denote_ite_materialize_true (ρ : Nat → Value) (w : IntTy) (c : SymExpr) (b : Bool)
+    (h : denote ρ w c = .value (.bool b)) :
+    denote ρ w (.ite c (.const (.bool true)) (.const (.bool false))) = .value (.bool b) := by
+  simp only [denote, h, Value.asF64?]
+  cases b <;> rfl
+
+theorem denote_ite_materialize_false (ρ : Nat → Value) (w : IntTy) (c : SymExpr) (b : Bool)
+    (h : denote ρ w c = .value (.bool b)) :
+    denote ρ w (.ite c (.const (.bool false)) (.const (.bool true))) = .value (.bool (!b)) := by
+  simp only [denote, h, Value.asF64?]
+  cases b <;> rfl
+
 end Oracle
