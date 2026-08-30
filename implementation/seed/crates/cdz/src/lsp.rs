@@ -1651,26 +1651,12 @@ fn hover_contents(ty: &str, doc: Option<&str>) -> HoverContents {
 
 // ── the analysis: cursor → definition / references, via the `ResolveOf` / `UsesOf` queries ───────────
 
-/// Run a single sidecar `query` over `arenas` and return its answer artifact of `kind` as text, or
-/// `None` if the compile produced no such artifact. Shared by the query-backed analyses.
-fn run_query_text(
-    arenas: &cadenza_syntax::Arenas,
-    query: cadenza_compile_abi::sidecar::Query,
-    kind: &str,
-) -> Option<String> {
-    // Route through the shared `run_sidecar` chokepoint (which builds the same `[ast "main", sidecar
-    // "drive"]` inputs) so a `!standalone` build DELEGATES this single query to `cdz-compile` — this one
-    // refactor delegates every LSP single-query handler (~14 call sites) that funnels through here. Under
-    // `standalone` it is the in-process compile, byte-for-byte as before.
-    let compiled = crate::run_sidecar(arenas, cadenza_compile_abi::Request::Query(query));
-    compiled
-        .artifact(kind)
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-}
-
-/// The RAW artifact bytes of a single sidecar query (the binary-AST variant of [`run_query_text`]) — for a
-/// result whose wire is canonical binary AST (e.g. `KIND_DIAGNOSTICS` → `decode_diagnostics`,
-/// `KIND_USES` → `decode_uses`), not text. Same `run_sidecar` chokepoint (delegates under `!standalone`).
+/// The RAW artifact bytes of a single sidecar `query` over `arenas` — every LSP single-query answer wire
+/// is canonical binary AST now (e.g. `KIND_DIAGNOSTICS` → `decode_diagnostics`, `KIND_USES` →
+/// `decode_uses`, `KIND_TYPE_INFO` → `decode_type_info`), so the caller decodes the structured payload
+/// rather than reading text. Routes through the shared `run_sidecar` chokepoint (which builds the same
+/// `[ast "main", sidecar "drive"]` inputs) so a `!standalone` build DELEGATES the query to `cdz-compile`;
+/// under `standalone` it is the in-process compile. `None` if the compile produced no such artifact.
 fn run_query_bytes(
     arenas: &cadenza_syntax::Arenas,
     query: cadenza_compile_abi::sidecar::Query,
@@ -3112,19 +3098,32 @@ fn signature_help_at(text: &str, is_ml: bool, pos: Position) -> Option<Signature
     let (_call, _w, children) = best?;
     // The callee name (head), and its type via `TypeOf` (the arrow the def resolves to).
     let callee = arenas.as_name(children[0])?.to_string();
-    let arrow = run_query_text(
+    // The callee's type comes back as a STRUCTURED binary-AST verdict — `KIND_TYPE_INFO` is canonical
+    // binary AST since the sidecar-wire conversion (a raw `String::from_utf8_lossy` would hand back the
+    // undecoded `cdzast…` payload, which merely HAPPENS to contain `->` bytes). Decode it and render via
+    // the shared cadenza-syntax type renderer (`render_ty_scheme`) — the SAME path `cdz type` uses.
+    let arrow = match cadenza_compile_abi::decode_type_info(&run_query_bytes(
         &arenas,
         cadenza_compile_abi::sidecar::Query::TypeOf {
             name: callee.clone(),
         },
         cadenza_compile_abi::sidecar::KIND_TYPE_INFO,
-    )
-    .map(|s| s.trim().to_string())
-    // A signature must be a FUNCTION type — an arrow `(-> …)`. This is also the guard that keeps signature
-    // help from firing on a SPECIAL FORM head (`def`/`if`/`let`/`do`/…): those are not defs, so `TypeOf`
-    // answers with an error string ("no such definition `def` …") or a non-arrow, both rejected here. A
-    // nullary value (`answer : Int64`, no arrow) is likewise not a callable signature.
-    .filter(|s| s.contains("->"))?;
+    )?) {
+        cadenza_compile_abi::TypeInfo::Found(ty) => {
+            cadenza_syntax::render_ty::render_ty_scheme(&ty, ty.root)
+        }
+        // `NoDef` (a SPECIAL FORM head `def`/`if`/`let`/`do`/… or a typo) and `Unknown` (a real but
+        // unsolved type) are not callable arrows — no signature. The `NoDef` arm is also the guard that
+        // keeps signature help from firing on a special-form head.
+        cadenza_compile_abi::TypeInfo::NoDef(_) | cadenza_compile_abi::TypeInfo::Unknown => {
+            return None;
+        }
+    };
+    // A signature must be a FUNCTION type — an arrow `(-> …)`. A nullary value (`answer : Int64`, no arrow)
+    // is not a callable signature.
+    if !arrow.contains("->") {
+        return None;
+    }
     // Active parameter: how many ARGUMENT forms (children past the head) end at/before the cursor — the
     // args already typed. The current (in-progress) arg is that count (0-based index of the arg being
     // typed). Clamp so a cursor past the last arg still points at the last parameter slot.
@@ -6622,15 +6621,14 @@ mod tests {
         let sh = signature_help_at(text, false, byte_to_position(text, first_arg))
             .expect("a signature inside the call");
         assert_eq!(sh.signatures.len(), 1, "one signature for the callee");
-        assert!(
-            sh.signatures[0].label.starts_with("add : "),
-            "label names the callee + its type: {}",
-            sh.signatures[0].label
-        );
-        assert!(
-            sh.signatures[0].label.contains("->"),
-            "the type is an arrow: {}",
-            sh.signatures[0].label
+        // The label is the callee + its type RENDERED from the structured `KIND_TYPE_INFO` payload — a
+        // CLEAN arrow, not the undecoded binary-AST wire bytes. Pin the exact spelling: the sidecar wire is
+        // binary AST now, and reading it as raw text yielded a `add : cdzast\0…` label that still contained
+        // `->` bytes (so a weaker `contains("->")` check passed while the user saw garbage). This exact
+        // match is what catches a future rewire that skips `decode_type_info` + `render_ty_scheme`.
+        assert_eq!(
+            sh.signatures[0].label, "add : (-> Int64 (-> Int64 Int64))",
+            "label is the callee + its cleanly-rendered curried arrow type"
         );
         // On the first arg (none fully typed-and-past yet), active parameter is 0.
         assert_eq!(sh.active_parameter, Some(0), "first arg active");
