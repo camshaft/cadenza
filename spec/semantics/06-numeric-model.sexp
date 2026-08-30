@@ -4463,6 +4463,23 @@
   (input  (+ 2.0 2))
   (error  CDZ0301))
 
+; The float-first mixed-operand rejection holds for EVERY arithmetic operator, not only `+` — `-`/`*`/`/`
+; each reject a Float64-first / Int64-second pair (CDZ0301), the operand-order duals of the integer-first
+; `(- 5 2.0)`/`(* 5 2.0)`/`(/ 5 2.0)` cases above. Neither operand's type wins in either order. (Migrated
+; from rcdzc an_arithmetic_operator_rejects_a_mixed_int_float_pair_no_silent_promotion, which pinned all four
+; operators in both orders; the `+` and the four integer-first forms were already corpus cases.)
+(case "float-first subtraction of a mixed int/float pair does not silently promote"
+  (input  (- 2.0 2))
+  (error  CDZ0301))
+
+(case "float-first multiplication of a mixed int/float pair does not silently promote"
+  (input  (* 2.0 2))
+  (error  CDZ0301))
+
+(case "float-first division of a mixed int/float pair does not silently promote"
+  (input  (/ 2.0 2))
+  (error  CDZ0301))
+
 ; --- Runtime float operands: the EMITTED machine op, not the constant fold -----------------------
 ; The float-arithmetic cases above use CONSTANT operands, so the compiler folds them at build time. A
 ; value that arrives at RUN TIME (an argument to the exported entry) cannot be folded, so the arithmetic
