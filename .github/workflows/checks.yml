@@ -312,8 +312,15 @@ jobs:
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
-      - name: cadenza @test suites — cdz test on cad/compiler-ml/choreography/iterators (via nix)
-        run: nix build .#checks.aarch64-linux.cad-tests --print-build-logs
+      - name: cadenza @test suites — cdz test on iterators/cad/choreography/music (via nix, per-suite shred)
+        # v-nix #6084 + v-gha-green: build the FOUR standalone per-suite test-shred attrs instead of the old
+        # `cad-tests` aggregate. This DROPS compiler-ml from the hourly-forced set (operator 2026-08-30:
+        # compiler-ml is optional — not actively changing, only an effective rust-compiler stress test; #5992
+        # already removed it from local-gate). compiler-ml has NO test-shred-* attr (opt-out by construction),
+        # so it is excluded here and stays advisory-only (checks.<sys>.cad-test-compiler-ml). Dropping the heavy
+        # self-hosted-compiler suite from the hourly job also removes the likely nix-starvation root cause that
+        # was hanging this job (complements the #5963 timeout guard above). All 4 attrs verified to resolve.
+        run: nix build .#checks.aarch64-linux.test-shred-iterators .#checks.aarch64-linux.test-shred-cad .#checks.aarch64-linux.test-shred-choreography .#checks.aarch64-linux.test-shred-music --print-build-logs
 
   cdz-cad:
     # The NATIVE CAD mesh driver crate (implementation/seed/crates/cdz-cad, GH #400 increment G2). It is
