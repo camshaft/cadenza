@@ -1838,35 +1838,116 @@ impl Gen<'_> {
         self.out.push(')');
     }
 
+    /// A NESTED-PATTERN match — a sum scrutinee whose payload is ITSELF a sum or tuple, destructured TWO
+    /// levels deep in the pattern (binding the inner names into the arm body). Reaches the recursive
+    /// tag-dispatch + nested payload-extraction lowering (match a `(Some (Some n))`, a `(tuple a (Some b))`,
+    /// or an `(Ok (tuple a b))`) that the flat literal/tuple matches never produce. Every shape is
+    /// exhaustive (all constructors covered) and numeric-payloaded so it type-checks + reaches codegen; the
+    /// arm bodies produce `want`. Operator directive 2026-08-30: keep expanding generated program shapes.
+    fn nested_match_expr(&mut self, depth: u32, want: Kind) {
+        match self.cur.choice(3) {
+            0 => {
+                // Nested Option: match `(Some (Some <n>))`; arms Some(Some x) / Some(None) / None.
+                self.out.push_str("(match (Some (Some ");
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push_str(")) ((Some (Some ");
+                let x = self.env.fresh();
+                self.out.push_str(&x);
+                self.out.push_str(")) ");
+                let mark = self.env.push(x, Kind::Num);
+                self.expr(depth.saturating_sub(1), want);
+                self.env.truncate(mark);
+                self.out.push_str(") ((Some (None)) ");
+                self.expr(depth.saturating_sub(1), want);
+                self.out.push_str(") ((None) ");
+                self.expr(depth.saturating_sub(1), want);
+                self.out.push_str("))");
+            }
+            1 => {
+                // Tuple with a nested Option in its 2nd slot; arms (tuple a (Some b)) / (tuple a (None)).
+                self.out.push_str("(match (tuple ");
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push_str(" (Some ");
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push_str(")) ((tuple ");
+                let a = self.env.fresh();
+                let b = self.env.fresh();
+                let _ = write!(self.out, "{a} (Some {b})) ");
+                let mark = self.env.push(a, Kind::Num);
+                self.env.push(b, Kind::Num);
+                self.expr(depth.saturating_sub(1), want);
+                self.env.truncate(mark);
+                self.out.push_str(") ((tuple ");
+                let a2 = self.env.fresh();
+                let _ = write!(self.out, "{a2} (None)) ");
+                let mark2 = self.env.push(a2, Kind::Num);
+                self.expr(depth.saturating_sub(1), want);
+                self.env.truncate(mark2);
+                self.out.push_str("))");
+            }
+            _ => {
+                // Result of a tuple: match `(Ok (tuple <a> <b>))`; arms Ok(tuple a b) / Err e.
+                self.out.push_str("(match (Ok (tuple ");
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push_str(")) ((Ok (tuple ");
+                let a = self.env.fresh();
+                let b = self.env.fresh();
+                let _ = write!(self.out, "{a} {b})) ");
+                let mark = self.env.push(a, Kind::Num);
+                self.env.push(b, Kind::Num);
+                self.expr(depth.saturating_sub(1), want);
+                self.env.truncate(mark);
+                self.out.push_str(") ((Err ");
+                let e = self.env.fresh();
+                let _ = write!(self.out, "{e}) ");
+                let mark2 = self.env.push(e, Kind::Num);
+                self.expr(depth.saturating_sub(1), want);
+                self.env.truncate(mark2);
+                self.out.push_str("))");
+            }
+        }
+    }
+
     fn match_expr(&mut self, depth: u32, want: Kind) {
-        // About a third of the time (with depth to spare), emit a STRUCTURED tuple match: a tuple
-        // scrutinee of known arity paired with a binding tuple PATTERN that destructures it. Unlike
-        // the literal-pattern arms below, this reaches product-destructuring lowering AND binds fresh
-        // names into the arm body (deepening data flow) — a match shape the generator otherwise never
-        // produces. Arity-matched scrutinee+pattern guarantee it types and reaches codegen; a trailing
-        // wildcard keeps it exhaustive.
-        if depth > 1 && self.cur.choice(3) == 0 {
-            let arity = 2 + self.cur.choice(2); // 2 or 3 elements
-            self.out.push_str("(match (tuple");
-            for _ in 0..arity {
-                self.out.push(' ');
-                self.expr(depth.saturating_sub(1), Kind::Any);
+        // With depth to spare, emit a STRUCTURED match (a shape the literal-pattern arms below never
+        // produce): a NESTED-pattern match (a sum whose payload is itself a sum/tuple, destructured two
+        // levels deep — the recursive tag-dispatch + nested payload-extraction path), or a flat tuple
+        // destructuring. Both bind fresh names into the arm body (deepening data flow) and stay
+        // exhaustive so they reach codegen.
+        if depth > 1 {
+            match self.cur.choice(4) {
+                0 => {
+                    self.nested_match_expr(depth, want);
+                    return;
+                }
+                1 => {
+                    // Flat tuple destructuring: an arity-matched tuple scrutinee + binding tuple pattern.
+                    let arity = 2 + self.cur.choice(2); // 2 or 3 elements
+                    self.out.push_str("(match (tuple");
+                    for _ in 0..arity {
+                        self.out.push(' ');
+                        self.expr(depth.saturating_sub(1), Kind::Any);
+                    }
+                    self.out.push_str(") ((tuple");
+                    let mark = self.env.scope.len();
+                    for _ in 0..arity {
+                        let name = self.env.fresh();
+                        self.out.push(' ');
+                        self.out.push_str(&name);
+                        self.env.push(name, Kind::Any);
+                    }
+                    self.out.push_str(") ");
+                    self.expr(depth.saturating_sub(1), want);
+                    self.env.truncate(mark);
+                    self.out.push_str(") (_ ");
+                    self.expr(depth.saturating_sub(1), want);
+                    self.out.push_str("))");
+                    return;
+                }
+                _ => {}
             }
-            self.out.push_str(") ((tuple");
-            let mark = self.env.scope.len();
-            for _ in 0..arity {
-                let name = self.env.fresh();
-                self.out.push(' ');
-                self.out.push_str(&name);
-                self.env.push(name, Kind::Any);
-            }
-            self.out.push_str(") ");
-            self.expr(depth.saturating_sub(1), want);
-            self.env.truncate(mark);
-            self.out.push_str(") (_ ");
-            self.expr(depth.saturating_sub(1), want);
-            self.out.push_str("))");
-            return;
         }
         self.out.push_str("(match ");
         self.expr(depth.saturating_sub(1), Kind::Any);
@@ -2097,6 +2178,38 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a tuple-destructuring match"
+        );
+    }
+
+    /// The NESTED-pattern match arm is reachable — some seed emits a two-level destructuring pattern
+    /// (`(match (Some (Some …)) …)` and `(match (Ok (tuple …)) …)`), reaching the recursive tag-dispatch +
+    /// nested payload-extraction lowering. Both distinctive variants are hit, and every program parses.
+    /// Guards operator seq-23 nested-pattern-match coverage.
+    #[test]
+    fn some_seed_emits_a_nested_match() {
+        let mut saw_nested_option = false;
+        let mut saw_result_tuple = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(match (Some (Some ") {
+                saw_nested_option = true;
+            }
+            if src.contains("(match (Ok (tuple ") {
+                saw_result_tuple = true;
+            }
+        }
+        assert!(
+            saw_nested_option,
+            "no seed emitted a nested-Option match (Some (Some …))"
+        );
+        assert!(
+            saw_result_tuple,
+            "no seed emitted a Result-of-tuple nested match (Ok (tuple …))"
         );
     }
 
