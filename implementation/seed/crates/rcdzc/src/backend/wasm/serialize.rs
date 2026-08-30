@@ -2494,11 +2494,28 @@ pub fn runtime_resource_core_module_form_ex2(
     // ops (`arr-alloc`/`arr-set`/`box-*`/`mark-immortal[-deep]`/`vec-of-arr`/`map-*`/`set-*`) through the same
     // `import_index` the bodies use. `static_compound_init` `global.set`s each once-built immortal to `0..n`.
     if n_init == 1 {
+        // The static-compound init is stack-threaded EXCEPT a hoisted Map/Set whose key/element emit stashes
+        // scratch in i32 locals — a nested map/set-in-key or a list-key canonicalize (`emit`/`emit_key_
+        // canonicalize` allocate `local.set`/`local.tee` slots). Declare EXACTLY the scratch the init
+        // references (`1 + max local index used`, 0 if none), or those `local.*` reference undeclared locals =
+        // invalid wasm ("unknown local N: local index out of bounds"). This is the component/resource-escape
+        // twin of the ikc1/itf2 bug the OTHER three start-assembly sites already guard with
+        // `layout.static_compound_init_locals`; recomputed here since this assembler takes only the init `Lir`,
+        // not the layout — the SAME max+1 scan `Layout::with_static_compounds` uses. The old `Vec::new()`
+        // (a "no locals — buffers thread on the stack" assumption) was false for a hoisted Map/Set key.
+        let init_locals = static_compound_init
+            .iter()
+            .filter_map(|op| match op {
+                Lir::LocalGet(i) | Lir::LocalSet(i) | Lir::LocalTee(i) => Some(*i),
+                _ => None,
+            })
+            .max()
+            .map_or(0, |m| m + 1);
         let init = SelectedFunc {
             params: Vec::new(),
             ret: crate::ty::Ty::Unit,
             code: static_compound_init.to_vec(),
-            declared: Vec::new(),
+            declared: vec![ValType::I32; init_locals as usize],
             src_body: None,
             locals: Vec::new(),
             scopes: Vec::new(),
