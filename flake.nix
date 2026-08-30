@@ -3951,6 +3951,9 @@
               # prebuilt xtaskCodegenGuideBin is on PATH (+ CDZ_XTASK_CODEGEN_GUIDE). cwd is guide/ (the
               # `cd guide` above), so the path is guide-relative. (v-nix pre-approved this line.)
               xtask-codegen-guide --playground-registry --check src/playground/examples.ts
+              # seq-248 fork1b: assert the committed @generated HomePageExamples.ts == regen from HomePage.sexp
+              # (direct xtask, no JS shim — same style as the playground-registry gate). Guards the .sexp→.ts drift.
+              xtask-codegen-guide --homepage --check src/content/HomePage.sexp
               npm run check:diagnostics
               npm run check:examples
               npm run check:calculator
