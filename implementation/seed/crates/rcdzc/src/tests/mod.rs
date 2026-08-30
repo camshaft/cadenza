@@ -5498,100 +5498,10 @@ fn a_mutual_group_demand_perform_demand_in_a_let_wrapped_dispatch_folds() {
 // outer-handler op twice per resume) with nothing to catch it. The multi-shot fold is repeatedly
 // miscompile-prone; these lock the boundary as a clean decline until the E5 frame machinery lands. ---
 
-/// A MULTI-shot handler arm whose continuation SPANS A HOST CALL must DECLINE, not fold. The body
-/// `(+ (Amb.flip) (Ask.ask))` gives the leading `Amb.flip` the continuation `C = (+ [] (Ask.ask))`, and
-/// the multi-shot arm `(+ (resume 1 s) (resume 2 s))` would splice `C` TWICE — running the host-delegated
-/// `Ask.ask` once per resume. That violates the host-composition invariant (§4.4: "a reified continuation
-/// must not span a host call" — a re-deriving host cannot reconstruct a chain of run-local heap handles),
-/// so it stays a clean decline. A single-shot arm over the same body is likewise not yet reducible; the
-/// PIN here is that the multi-shot host-spanning shape never runs to a value (a doubled host call).
-#[test]
-fn a_multishot_continuation_spanning_a_host_call_declines_not_doubles_the_call() {
-    use crate::testkit::parse;
-    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Ask (op ask (-> Unit Int64))) \
-               (def (main) (host (Ask) \
-                 (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
-                   (+ (Amb.flip) (Ask.ask))))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-        "a multi-shot continuation spanning a host call must decline (host-composition invariant)",
-    );
-    assert!(
-        !err.message.contains("#eff") && !err.message.contains("$s"),
-        "the decline must not leak an internal state-param name, got: {}",
-        err.message
-    );
-}
-
-/// A MULTI-shot handler arm whose continuation reaches an OUTER handler's effect must DECLINE, not fold.
-/// The body `(+ (Ctr.tick) (Amb.flip))` under an inner multi-shot `Amb` handler nested in an outer `Ctr`
-/// handler: the `Amb.flip` continuation is spliced twice by `(+ (resume 1 s) (resume 2 s))`, which would
-/// re-issue the OUTER-handler-discharged `Ctr.tick` per resume — advancing the outer state more than once
-/// for a single perform. The re-reducing fold is sound only when every performed op in the continuation is
-/// discharged BY THIS handler (folded away to pure code); an effect that escapes to an outer handler stays
-/// a clean decline until the frame machinery reifies the continuation.
-#[test]
-fn a_multishot_continuation_reaching_an_outer_handler_effect_declines_not_doubles_it() {
-    use crate::testkit::parse;
-    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Ctr (op tick (-> Unit Int64))) \
-               (def (main) \
-                 (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) \
-                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
-                     (+ (Ctr.tick) (Amb.flip))))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a multi-shot continuation reaching an outer handler's effect must decline");
-    assert!(
-        !err.message.contains("#eff") && !err.message.contains("$s"),
-        "the decline must not leak an internal state-param name, got: {}",
-        err.message
-    );
-}
-
-/// The CONDITIONAL-path companion of the outer-handler test above: a multi-shot arm whose re-run
-/// continuation reaches an outer-handler effect through an `if` BRANCH (not a strict operand) must also
-/// decline. `(if (< (Amb.flip) 5) (Ctr.tick) 99)` — re-running the continuation per `Amb.flip` resume would
-/// re-issue the outer `Ctr.tick` in the taken branch, advancing the outer state more than once. Exercises a
-/// DIFFERENT fold path (the `if`/branch threading) than the strict-operand shape, so it is a distinct
-/// regression guard on the host-composition invariant — the multi-shot fold is miscompile-prone here.
-#[test]
-fn a_multishot_continuation_reaching_an_outer_effect_via_an_if_branch_declines() {
-    use crate::testkit::parse;
-    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Ctr (op tick (-> Unit Int64))) \
-               (def (main) \
-                 (handle Ctr 0 ((tick (u) c (resume c (+ c 1)))) \
-                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
-                     (if (< (Amb.flip) 5) (Ctr.tick) 99)))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-        "a multi-shot continuation reaching an outer effect via an if branch must decline",
-    );
-    assert!(
-        !err.message.contains("#eff") && !err.message.contains("$s"),
-        "the decline must not leak an internal state-param name, got: {}",
-        err.message
-    );
-}
-
-/// The DO-SEQUENCE companion: a multi-shot arm whose continuation spans a HOST call inside a `(do …)` must
-/// decline. `(do (Log.emit (Amb.flip)) 7)` under a multi-shot `flip` arm — re-running the continuation per
-/// resume would emit the delegated `Log.emit` host call more than once, violating the host-composition
-/// invariant (§4.4: a re-run/reified continuation must not span a boundary call — a re-deriving host cannot
-/// reconstruct run-local state). Exercises the `Core::Seq`/do path, distinct from the strict-operand host
-/// test, so a separate guard against a doubled host call.
-#[test]
-fn a_multishot_continuation_spanning_a_host_call_in_a_do_declines() {
-    use crate::testkit::parse;
-    let src = "(do (effect Amb (op flip (-> Unit Int64))) (effect Log (op emit (-> Int64 Unit))) \
-               (def (main) \
-                 (host (Log) \
-                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) \
-                     (do (Log.emit (Amb.flip)) 7)))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a multi-shot continuation spanning a host call in a do must decline");
-    assert!(
-        !err.message.contains("#eff") && !err.message.contains("$s"),
-        "the decline must not leak an internal state-param name, got: {}",
-        err.message
-    );
-}
+// (4 multi-shot continuation safe-reject tests — spanning-a-host-call, reaching-an-outer-handler-effect,
+//  outer-effect-via-an-if-branch, spanning-a-host-call-in-a-do — migrated to corpus 14b-effects-and-handlers
+//  as (declines (message "not reducible by the tail-resumptive fold")) cases, 2026-08-30 delanguaging handoff
+//  from v-rcdzc-test-shrink. They now emit CDZ0900; the corpus message-pin preserves the clean-decline guarantee.)
 
 /// A handler arm that RETURNS its continuation as an escaping value (`k` reified and applied OUTSIDE the
 /// handle) must be REFUSED, never run to a value. `(flip (u) s (fn (x) (resume x s)))` yields the resume
