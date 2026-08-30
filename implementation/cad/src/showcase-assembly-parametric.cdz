@@ -60,9 +60,8 @@ def the-lowered-parametric-render-form-is-non-empty() =
   // lower/empty-fold regression could still ship a blank slider preview. Pin the lowered form is not
   // SolidR.Empty (bracket's top node is a fuse → lowered top is a SolidR.Union).
   match lower(bracket(40 / 1, 30 / 1, 4 / 1, 25 / 1, 3 / 1)) with
-    | SolidR.Empty => trap(
-      "the lowered parametric bracket (what the driver meshes) must NOT be empty"
-    )
+    | SolidR.Empty =>
+      trap("the lowered parametric bracket (what the driver meshes) must NOT be empty")
     | _ => unit
 
 @test
@@ -81,7 +80,8 @@ def the-base-plate-part-has-the-right-envelope() =
 def the-standing-arm-part-rises-above-the-base() =
   // The arm PART (small tree — reliable bbox) rises above the base's top face after the 90° rotate + lift.
   match bounding-box(standing-arm(30 / 1, 25 / 1, 4 / 1, 3 / 1)) with
-    | Aabb.Box(_, hi) => match hi with
-      | Vec3.V3(_, _, hz) => if hz > 4 / 1 then unit else trap("the arm rises above the base top")
+    | Aabb.Box(_, hi) =>
+      match hi with
+        | Vec3.V3(_, _, hz) => if hz > 4 / 1 then unit else trap("the arm rises above the base top")
 
 export { base-plate, arm-flat, standing-arm, bracket, main }

@@ -116,7 +116,8 @@ def count-on-chan(notes: List(Note), c: Int64) = match notes with
 /// Is every note on channel 0 or channel 1 (the two voices)? Recursive, annotated.
 def all-on-chan-0-or-1(notes: List(Note)) = match notes with
   | [] => true
-  | [h, .. rest] => let c = note-chan(h) in
+  | [h, .. rest] =>
+    let c = note-chan(h) in
     if c == 0 then all-on-chan-0-or-1(rest) else if c == 1 then all-on-chan-0-or-1(rest) else false
 
 /// The note number of a note — via the exported accessors, NOT a nested `Note.Note(Pitch.Pitch(k),…)`
@@ -127,10 +128,11 @@ def note-num(n: Note) = note(note-pitch(n))
 /// note starts there (recursive search, annotated). Typed absence — no sentinel note number flows in-band.
 def bass-note-at(notes: List(Note), t: Int64) = match notes with
   | [] => Option.None(unit)
-  | [h, .. rest] => if note-chan(h) == 1 then
-    if note-start(h) == t then Option.Some(note-num(h)) else bass-note-at(rest, t)
-  else
-    bass-note-at(rest, t)
+  | [h, .. rest] =>
+    if note-chan(h) == 1 then
+      if note-start(h) == t then Option.Some(note-num(h)) else bass-note-at(rest, t)
+    else
+      bass-note-at(rest, t)
 
 /// Test helper: the bass note number at tick `t`, trapping if none is found (the tests below assert a bass
 /// note IS present at each bar downbeat, so absence is a real failure, not an in-band value).

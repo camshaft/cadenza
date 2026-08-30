@@ -30,14 +30,15 @@ def chord-block-go(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur
   Note
 )) = match nums with
   | [] => out
-  | [h, .. t] => chord-block-go(
-    t,
-    chan,
-    vel,
-    start,
-    dur,
-    List.push(out, note-at(pitch-of(h), chan, vel, start, dur))
-  )
+  | [h, .. t] =>
+    chord-block-go(
+      t,
+      chan,
+      vel,
+      start,
+      dur,
+      List.push(out, note-at(pitch-of(h), chan, vel, start, dur))
+    )
 
 /// Sound a whole chord at once, starting at `start` for `dur` ticks.
 def chord-block(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur: Int64) =
@@ -49,15 +50,16 @@ def arpeggiate-go(nums: List(Int64), chan: Int64, vel: Int64, at: Int64, step: I
   Note
 )) = match nums with
   | [] => out
-  | [h, .. t] => arpeggiate-go(
-    t,
-    chan,
-    vel,
-    at + step,
-    step,
-    dur,
-    List.push(out, note-at(pitch-of(h), chan, vel, at, dur))
-  )
+  | [h, .. t] =>
+    arpeggiate-go(
+      t,
+      chan,
+      vel,
+      at + step,
+      step,
+      dur,
+      List.push(out, note-at(pitch-of(h), chan, vel, at, dur))
+    )
 
 /// Spread a chord's notes into a broken chord: note `i` starts at `start + i*step`, lasts `dur` ticks.
 def arpeggiate(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, step: Int64, dur: Int64) =
@@ -71,14 +73,15 @@ def melody-note(num: Int64, chan: Int64, vel: Int64, start: Int64, dur: Int64) =
 /// melody line at a fixed note length). Recursive driver, `at` threads the position (annotated).
 def sequence-go(nums: List(Int64), chan: Int64, vel: Int64, at: Int64, dur: Int64, out: List(Note)) = match nums with
   | [] => out
-  | [h, .. t] => sequence-go(
-    t,
-    chan,
-    vel,
-    at + dur,
-    dur,
-    List.push(out, note-at(pitch-of(h), chan, vel, at, dur))
-  )
+  | [h, .. t] =>
+    sequence-go(
+      t,
+      chan,
+      vel,
+      at + dur,
+      dur,
+      List.push(out, note-at(pitch-of(h), chan, vel, at, dur))
+    )
 
 /// Play a list of note numbers back to back, each `dur` ticks, from `start`.
 def sequence(nums: List(Int64), chan: Int64, vel: Int64, start: Int64, dur: Int64) =
@@ -99,13 +102,14 @@ def an-arpeggio-spreads-the-notes-in-time() =
   // The same triad arpeggiated with step 240: notes start at 0, 240, 480 — ascending in time.
   let arp = arpeggiate([60, 64, 67], 0, 100, 0, 240, 240) in
   match arp with
-    | [a, b, c] => if start-of(a) == 0 then
-      if start-of(b) == 240 then
-        if start-of(c) == 480 then unit else trap("third at 480")
+    | [a, b, c] =>
+      if start-of(a) == 0 then
+        if start-of(b) == 240 then
+          if start-of(c) == 480 then unit else trap("third at 480")
+        else
+          trap("second at 240")
       else
-        trap("second at 240")
-    else
-      trap("first at 0")
+        trap("first at 0")
     | _ => trap("three notes")
 
 @test
@@ -113,10 +117,11 @@ def a-sequence-plays-notes-back-to-back() =
   // A four-note run, each a quarter (960): starts at 0, 960, 1920, 2880 — no gaps, no overlaps.
   let seq = sequence([60, 62, 64, 65], 0, 100, 0, 960) in
   match seq with
-    | [_, b, _, d] => if start-of(b) == 960 then
-      if start-of(d) == 2880 then unit else trap("fourth start")
-    else
-      trap("second start")
+    | [_, b, _, d] =>
+      if start-of(b) == 960 then
+        if start-of(d) == 2880 then unit else trap("fourth start")
+      else
+        trap("second start")
     | _ => trap("four notes")
 
 @test
@@ -159,10 +164,11 @@ def a-sequence-is-gapless-each-note-ends-where-the-next-begins() =
   // begins — no gaps, no overlaps — regardless of the fixed note length.
   let seq = sequence([60, 62, 64], 0, 100, 0, 960) in
   match seq with
-    | [a, b, c] => if start-of(a) + dur-of(a) == start-of(b) then
-      if start-of(b) + dur-of(b) == start-of(c) then unit else trap("b ends where c begins")
-    else
-      trap("a ends where b begins")
+    | [a, b, c] =>
+      if start-of(a) + dur-of(a) == start-of(b) then
+        if start-of(b) + dur-of(b) == start-of(c) then unit else trap("b ends where c begins")
+      else
+        trap("a ends where b begins")
     | _ => trap("three notes")
 
 // ---- test helpers -----------------------------------------------------------------------------------

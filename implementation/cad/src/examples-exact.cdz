@@ -124,10 +124,8 @@ def foot-dimensioned-box-is-exact() =
   // a 1-foot cube → 304.8 mm = 1524/5 per axis, exact.
   let c = box(foot(ri(1)), foot(ri(1)), foot(ri(1))) in
   match bounding-box(c) with
-    | Aabb.Box(_, hi) => if v3-x(hi) == 762 / 5 then
-      unit
-    else
-      trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
+    | Aabb.Box(_, hi) =>
+      if v3-x(hi) == 762 / 5 then unit else trap("1-foot cube half-extent = 762/5 mm (full 1524/5)")
 
 @test
 def bolt-flange-box-is-its-diameter-by-thickness() =
@@ -158,15 +156,16 @@ def bolt-flange-hole-centres-sit-on-the-bolt-circle() =
   let east-hole = move(bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
   match bounding-box(east-hole) with
     | Aabb.Box(lo, hi) => // centre-x = (lo.x + hi.x)/2 must equal bcr = 45; and the west hole (−bcr) mirrors to −45.
-    if (v3-x(lo) + v3-x(hi)) / ri(2) == ri(45) then
-      let west-hole = move(ri(0) - bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
-      match bounding-box(west-hole) with
-        | Aabb.Box(wlo, whi) => if (v3-x(wlo) + v3-x(whi)) / ri(2) == ri(0) - ri(45) then
-          unit
-        else
-          trap("west hole centre = -45")
-    else
-      trap("east hole centre = +45 (on the 45mm bolt circle)")
+      if (v3-x(lo) + v3-x(hi)) / ri(2) == ri(45) then
+        let west-hole = move(ri(0) - bcr, ri(0), ri(0), cyl(mm(ri(8)), hole-r)) in
+        match bounding-box(west-hole) with
+          | Aabb.Box(wlo, whi) =>
+            if (v3-x(wlo) + v3-x(whi)) / ri(2) == ri(0) - ri(45) then
+              unit
+            else
+              trap("west hole centre = -45")
+      else
+        trap("east hole centre = +45 (on the 45mm bolt circle)")
 
 @test
 def l-bracket-box-is-its-envelope-in-mm() =

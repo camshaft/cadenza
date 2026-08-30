@@ -80,48 +80,52 @@ def se-ann-uint8-just-over-declines() =
 def se-ann-int16-max-and-just-over() =
   // Int16 max 2^15-1 = 32767 fits; 32768 = max+1 declines. (reference: 32767 runs / 32768 rejects.)
   match run-src("(: 32767 Int16)") with
-    | Option.Some(v) => if v == 32767 then
-      match run-src("(: 32768 Int16)") with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("(: 32768 Int16) declines")
-    else
-      trap("(: 32767 Int16) → 32767")
+    | Option.Some(v) =>
+      if v == 32767 then
+        match run-src("(: 32768 Int16)") with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("(: 32768 Int16) declines")
+      else
+        trap("(: 32767 Int16) → 32767")
     | Option.None(_) => trap("Int16 max 32767 fits")
 
 @test
 def se-ann-int16-min-and-just-under() =
   // Int16 min -2^15 = -32768 fits; -32769 = min-1 declines (signed lower bound).
   match run-src("(: -32768 Int16)") with
-    | Option.Some(v) => if v == 0 - 32768 then
-      match run-src("(: -32769 Int16)") with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("(: -32769 Int16) declines")
-    else
-      trap("(: -32768 Int16) → -32768")
+    | Option.Some(v) =>
+      if v == 0 - 32768 then
+        match run-src("(: -32769 Int16)") with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("(: -32769 Int16) declines")
+      else
+        trap("(: -32768 Int16) → -32768")
     | Option.None(_) => trap("Int16 min -32768 fits")
 
 @test
 def se-ann-uint16-max-and-just-over() =
   // UInt16 max 2^16-1 = 65535 fits; 65536 = max+1 declines.
   match run-src("(: 65535 UInt16)") with
-    | Option.Some(v) => if v == 65535 then
-      match run-src("(: 65536 UInt16)") with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("(: 65536 UInt16) declines")
-    else
-      trap("(: 65535 UInt16) → 65535")
+    | Option.Some(v) =>
+      if v == 65535 then
+        match run-src("(: 65536 UInt16)") with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("(: 65536 UInt16) declines")
+      else
+        trap("(: 65535 UInt16) → 65535")
     | Option.None(_) => trap("UInt16 max 65535 fits")
 
 @test
 def se-ann-int32-max-and-just-over() =
   // Int32 max 2^31-1 = 2147483647 fits; 2147483648 = max+1 declines.
   match run-src("(: 2147483647 Int32)") with
-    | Option.Some(v) => if v == 2147483647 then
-      match run-src("(: 2147483648 Int32)") with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("(: 2147483648 Int32) declines")
-    else
-      trap("(: 2147483647 Int32) → 2147483647")
+    | Option.Some(v) =>
+      if v == 2147483647 then
+        match run-src("(: 2147483648 Int32)") with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("(: 2147483648 Int32) declines")
+      else
+        trap("(: 2147483647 Int32) → 2147483647")
     | Option.None(_) => trap("Int32 max 2147483647 fits")
 
 @test
@@ -129,12 +133,13 @@ def se-ann-int32-min-and-just-under() =
   // Int32 min -2^31 = -2147483648 fits (signed lower bound); -2147483649 = min-1 declines. The signed-min twin
   // of the max pin above — pins the lower boundary of the 32-bit signed range.
   match run-src("(: -2147483648 Int32)") with
-    | Option.Some(v) => if v == -2147483648 then
-      match run-src("(: -2147483649 Int32)") with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("(: -2147483649 Int32) declines")
-    else
-      trap("(: -2147483648 Int32) → -2147483648")
+    | Option.Some(v) =>
+      if v == -2147483648 then
+        match run-src("(: -2147483649 Int32)") with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("(: -2147483649 Int32) declines")
+      else
+        trap("(: -2147483648 Int32) → -2147483648")
     | Option.None(_) => trap("Int32 min -2147483648 fits")
 
 @test
@@ -142,12 +147,13 @@ def se-ann-uint32-max-and-just-over() =
   // UInt32 max 2^32-1 = 4294967295 fits; 4294967296 = max+1 declines. The 32-bit unsigned boundary (was
   // unpinned — UInt8/16 had boundary pins, UInt32 did not).
   match run-src("(: 4294967295 UInt32)") with
-    | Option.Some(v) => if v == 4294967295 then
-      match run-src("(: 4294967296 UInt32)") with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("(: 4294967296 UInt32) declines")
-    else
-      trap("(: 4294967295 UInt32) → 4294967295")
+    | Option.Some(v) =>
+      if v == 4294967295 then
+        match run-src("(: 4294967296 UInt32)") with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("(: 4294967296 UInt32) declines")
+      else
+        trap("(: 4294967295 UInt32) → 4294967295")
     | Option.None(_) => trap("UInt32 max 4294967295 fits")
 
 @test

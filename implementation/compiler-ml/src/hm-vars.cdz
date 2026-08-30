@@ -58,14 +58,13 @@ def ty-occurs-go(su: Subst, v: Int64, t: Ty, fuel: Int64) =
     false
   else
     match t with
-      | Ty.TyVar(w) => (match Map.lookup(subst-tys(su), w) with
-        | Option.Some(sol) => ty-occurs-go(su, v, sol, fuel - 1) // bound → continue into its solution
-        | Option.None(_) => v == w
-      ) // unbound → occurs iff same id
-      | Ty.TyFn(ps, r) => if ty-occurs-list(su, v, ps, 0, fuel) then
-        true
-      else
-        ty-occurs-go(su, v, r, fuel)
+      | Ty.TyVar(w) =>
+        (match Map.lookup(subst-tys(su), w) with
+          | Option.Some(sol) => ty-occurs-go(su, v, sol, fuel - 1) // bound → continue into its solution
+          | Option.None(_) => v == w
+        ) // unbound → occurs iff same id
+      | Ty.TyFn(ps, r) =>
+        if ty-occurs-list(su, v, ps, 0, fuel) then true else ty-occurs-go(su, v, r, fuel)
       | Ty.TyTuple(es) => ty-occurs-list(su, v, es, 0, fuel) // COMPOUND: occurs in any element (mirrors TyFn params)
       | Ty.TyRecord(_, ts) => ty-occurs-list(su, v, ts, 0, fuel) // COMPOUND: occurs in any field type (names are literals)
       | Ty.TyInt(_) => false // int's sign/width vars are a different axis
@@ -81,10 +80,8 @@ def ty-occurs-list(su: Subst, v: Int64, ps: List(Ty), i: Int64, fuel: Int64) =
     false
   else
     match List.at(ps, i) with
-      | Option.Some(p) => if ty-occurs-go(su, v, p, fuel) then
-        true
-      else
-        ty-occurs-list(su, v, ps, i + 1, fuel)
+      | Option.Some(p) =>
+        if ty-occurs-go(su, v, p, fuel) then true else ty-occurs-list(su, v, ps, i + 1, fuel)
       | Option.None(_) => false
 
 // ---- TESTS: fresh supply threads a counter; occurs-check catches self-cycles --------------------------
@@ -94,15 +91,14 @@ import { subst-empty, subst-bind-sign, subst-bind-width, subst-bind-ty } from "s
 def hv-fresh-sign-advances-counter() =
   // fresh-sign(0) = (SVar 0, 1); the next call from 1 gives SVar 1 — distinct ids, counter threaded.
   match fresh-sign(0) with
-    | (Sign.SVar(id0), n1) => if id0 == 0 and n1 == 1 then
-      match fresh-sign(n1) with
-        | (Sign.SVar(id1), n2) => if id1 == 1 and n2 == 2 then
-          unit
-        else
-          trap("second fresh sign is SVar 1, counter 2")
-        | _ => trap("fresh-sign yields an SVar")
-    else
-      trap("first fresh sign is SVar 0, counter 1")
+    | (Sign.SVar(id0), n1) =>
+      if id0 == 0 and n1 == 1 then
+        match fresh-sign(n1) with
+          | (Sign.SVar(id1), n2) =>
+            if id1 == 1 and n2 == 2 then unit else trap("second fresh sign is SVar 1, counter 2")
+          | _ => trap("fresh-sign yields an SVar")
+      else
+        trap("first fresh sign is SVar 0, counter 1")
     | _ => trap("fresh-sign yields an SVar")
 
 @test
@@ -115,11 +111,11 @@ def hv-fresh-int-ty-both-axes-fresh() =
   // a fully-fresh int uses TWO ids (sign n, width n+1) and advances the counter by 2 — distinct axes get
   // distinct vars so they solve independently (the point of freshening for polymorphism).
   match fresh-int-ty(10) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n) => if sa == 10 and wa == 11
-        and n == 12 then
-      unit
-    else
-      trap("fresh int = (SVar 10, WVar 11), counter 12")
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n) =>
+      if sa == 10 and wa == 11 and n == 12 then
+        unit
+      else
+        trap("fresh int = (SVar 10, WVar 11), counter 12")
     | _ => trap("fresh-int-ty yields an int with both axes fresh")
 
 @test
@@ -127,11 +123,11 @@ def hv-fresh-two-ints-are-distinct() =
   // two consecutive fresh ints share NO var-ids (threading the counter): first (10,11), second (12,13).
   let (_t1, n1) = fresh-int-ty(10) in
   match fresh-int-ty(n1) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n2) => if sa == 12 and wa == 13
-        and n2 == 14 then
-      unit
-    else
-      trap("second fresh int is (SVar 12, WVar 13)")
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n2) =>
+      if sa == 12 and wa == 13 and n2 == 14 then
+        unit
+      else
+        trap("second fresh int is (SVar 12, WVar 13)")
     | _ => trap("second fresh int")
 
 @test

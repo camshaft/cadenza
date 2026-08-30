@@ -89,10 +89,11 @@ def the-tonic-triad-of-c-major-is-c-e-g() =
   let i = diatonic-triad(major-c, 0) in
   let Chord.Chord(_, stack) = i in
   match stack with
-    | [a, b, c] => if a == 0 then
-      if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
-    else
-      trap("root")
+    | [a, b, c] =>
+      if a == 0 then
+        if b == 4 then if c == 7 then unit else trap("fifth") else trap("third")
+      else
+        trap("root")
     | _ => trap("triad has three intervals")
 
 @test
@@ -111,10 +112,8 @@ def the-leading-tone-triad-of-c-major-is-diminished() =
   let vii = diatonic-triad(major-c, 6) in
   let Chord.Chord(_, stack) = vii in
   match stack with
-    | [_, b, c] => if b == 3 then
-      if c == 6 then unit else trap("diminished fifth")
-    else
-      trap("minor third")
+    | [_, b, c] =>
+      if b == 3 then if c == 6 then unit else trap("diminished fifth") else trap("minor third")
     | _ => trap("three intervals")
 
 @test
@@ -123,10 +122,11 @@ def the-dominant-seventh-of-c-major-is-g-b-d-f() =
   let v7 = diatonic-seventh(major-c, 4) in
   let Chord.Chord(_, stack) = v7 in
   match stack with
-    | [_, b, c, d] => if b == 4 then
-      if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
-    else
-      trap("major third")
+    | [_, b, c, d] =>
+      if b == 4 then
+        if c == 7 then if d == 10 then unit else trap("minor seventh") else trap("fifth")
+      else
+        trap("major third")
     | _ => trap("seventh has four intervals")
 
 @test
@@ -155,13 +155,14 @@ def a-one-four-five-progression-has-three-chords() =
   // (root pc 5, F), the third is V (root pc 7, G). Pins the progression builder + the roots.
   let prog = progression(major-c, [0, 3, 4]) in
   match prog with
-    | [i, iv, v] => if triad-root-pc(i) == 0 then
-      if triad-root-pc(iv) == 5 then
-        if triad-root-pc(v) == 7 then unit else trap("V root is G")
+    | [i, iv, v] =>
+      if triad-root-pc(i) == 0 then
+        if triad-root-pc(iv) == 5 then
+          if triad-root-pc(v) == 7 then unit else trap("V root is G")
+        else
+          trap("IV root is F")
       else
-        trap("IV root is F")
-    else
-      trap("I root is C")
+        trap("I root is C")
     | _ => trap("I-IV-V is three chords")
 
 /// Local helper: the root pitch class of a chord (test-only; through its root pitch).

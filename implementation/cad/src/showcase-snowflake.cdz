@@ -113,9 +113,10 @@ def the-lowered-snowflake-render-form-is-non-empty() =
   // that the lowered form is not SolidR.Empty so a "renders blank while the model looks fine" regression can't
   // recur silently. (The snowflake folds from an Empty base via Union, so the lowered top is a SolidR.Union.)
   match lower(snowflake(42 : Int64, 20 / 1, 2 : Int64)) with
-    | SolidR.Empty => trap(
-      "the lowered snowflake (what the driver meshes) must NOT be empty — it shipped blank once"
-    )
+    | SolidR.Empty =>
+      trap(
+        "the lowered snowflake (what the driver meshes) must NOT be empty — it shipped blank once"
+      )
     | _ => unit
 
 @test
@@ -124,10 +125,11 @@ def the-same-seed-builds-the-same-snowflake() =
   let a = snowflake(7 : Int64, 20 / 1, 1 : Int64) in
   let b = snowflake(7 : Int64, 20 / 1, 1 : Int64) in
   match a with
-    | Solid.Union(_, _) => (match b with
-      | Solid.Union(_, _) => unit
-      | _ => trap("b shape")
-    )
+    | Solid.Union(_, _) =>
+      (match b with
+        | Solid.Union(_, _) => unit
+        | _ => trap("b shape")
+      )
     | _ => trap("a shape")
 
 @test

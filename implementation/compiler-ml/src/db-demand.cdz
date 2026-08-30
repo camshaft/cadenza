@@ -131,33 +131,33 @@ def demand-let(db: Db, id: Int64, valId: Int64, bodyId: Int64) =
 ///   RPoison / absent → TyErr (unbound name declines).
 /// Chains resolve→type exactly as rcdzc's type_of demands resolved_of. Reuses infer-db's var-type/def-arrow-type.
 def demand-var(db: Db, id: Int64) = match Map.lookup(db-resolved-col(db), id) with
-  | Option.Some(Resolved.RBound(binder)) => let ty = var-type(db-tree(db), binder, db-ty-col(db)) in
+  | Option.Some(Resolved.RBound(binder)) =>
+    let ty = var-type(db-tree(db), binder, db-ty-col(db)) in
     (fill-ty(db, id, ty), ty)
-  | Option.Some(Resolved.RDef(defName)) => let ty = def-arrow-type(
-        db-tree(db),
-        defName,
-        db-resolved-col(db),
-        db-ty-col(db)
-      ) in
+  | Option.Some(Resolved.RDef(defName)) =>
+    let ty = def-arrow-type(db-tree(db), defName, db-resolved-col(db), db-ty-col(db)) in
     (fill-ty(db, id, ty), ty)
-  | _ => let ty = Ty.TyErr in
+  | _ =>
+    let ty = Ty.TyErr in
     (fill-ty(db, id, ty), ty)
 
 def demand-typed-node(db: Db, id: Int64) = match require-ty(db, id) with
   | Option.Some(fact) => (db, fact) // memo HIT — no recompute
-  | Option.None(_) => match node-at(db-tree(db), id) with
-    | Option.Some(Node.NBin(op, l, r)) => demand-bin(db, id, op, l, r)
-    | Option.Some(Node.NIf(c, t, e)) => demand-if(db, id, c, t, e)
-    | Option.Some(Node.NLet(_, valId, bodyId)) => demand-let(db, id, valId, bodyId)
-    | Option.Some(Node.NVar(_)) => demand-var(db, id) // cross-column: resolve → binder type
-    // CATCH-ALL fallback (not just genuine leaves): every node kind WITHOUT an explicit arm above routes here
-    // — a genuine leaf (NLit/NBoolLit/NAnnLit) computes its type from source, while any UNHANDLED composite
-    // (e.g. NApp/NMatch, not yet given a producer) falls through demand-typed-leaf's `Option.Some(_) => TyErr`
-    // and declines. So this is the fallback arm, not a leaf-only arm; adding a composite producer (NApp/NMatch)
-    // = add an explicit arm above, moving that shape off this fallback.
-    | Option.Some(_) => demand-typed-leaf(db, id)
-    | Option.None(_) => let ty = Ty.TyErr in
-      (fill-ty(db, id, ty), ty)
+  | Option.None(_) =>
+    match node-at(db-tree(db), id) with
+      | Option.Some(Node.NBin(op, l, r)) => demand-bin(db, id, op, l, r)
+      | Option.Some(Node.NIf(c, t, e)) => demand-if(db, id, c, t, e)
+      | Option.Some(Node.NLet(_, valId, bodyId)) => demand-let(db, id, valId, bodyId)
+      | Option.Some(Node.NVar(_)) => demand-var(db, id) // cross-column: resolve → binder type
+      // CATCH-ALL fallback (not just genuine leaves): every node kind WITHOUT an explicit arm above routes here
+      // — a genuine leaf (NLit/NBoolLit/NAnnLit) computes its type from source, while any UNHANDLED composite
+      // (e.g. NApp/NMatch, not yet given a producer) falls through demand-typed-leaf's `Option.Some(_) => TyErr`
+      // and declines. So this is the fallback arm, not a leaf-only arm; adding a composite producer (NApp/NMatch)
+      // = add an explicit arm above, moving that shape off this fallback.
+      | Option.Some(_) => demand-typed-leaf(db, id)
+      | Option.None(_) =>
+        let ty = Ty.TyErr in
+        (fill-ty(db, id, ty), ty)
 
 /// Resolve-first driver: fill the RESOLVED column once (resolve-into-db, memoized whole-tree), THEN demand the
 /// type at `root`. This is the entry point that makes the NVar arm sound — a type demand that may reach an NVar

@@ -53,13 +53,8 @@ def collect-children(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty)
   Tuple(Ty, Ty)
 )) = match ids with
   | [] => acc
-  | [child, .. rest] => collect-children(
-    tree,
-    rcol,
-    env,
-    rest,
-    collect(tree, rcol, env, child, acc)
-  )
+  | [child, .. rest] =>
+    collect-children(tree, rcol, env, rest, collect(tree, rcol, env, child, acc))
 
 /// COLLECT the type-equality constraints imposed by the subtree at `id`, over env `env`, appending to `acc`.
 /// The generation rules (the equalities HM inference imposes on the covered node subset):
@@ -84,19 +79,20 @@ def collect-children(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty)
 def collect(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), id: Int64, acc: List(
   Tuple(Ty, Ty)
 )) = match node-at(tree, id) with
-  | Option.Some(Node.NBin(op, l, r)) => if op >= 60 then
-    if op <= 65 then
-      // relational: operands share a type (left ~ right); node is Bool (no nodeTy constraint here)
-      let a1 = push-cs(acc, [(node-ty(env, l), node-ty(env, r))]) in
-      collect-children(tree, rcol, env, [l, r], a1)
+  | Option.Some(Node.NBin(op, l, r)) =>
+    if op >= 60 then
+      if op <= 65 then
+        // relational: operands share a type (left ~ right); node is Bool (no nodeTy constraint here)
+        let a1 = push-cs(acc, [(node-ty(env, l), node-ty(env, r))]) in
+        collect-children(tree, rcol, env, [l, r], a1)
+      else
+        acc // unknown op ≥ 66 → no constraint
     else
-      acc // unknown op ≥ 66 → no constraint
-  else
-    // arithmetic: node ~ left, node ~ right (so left ~ right transitively), then recurse operands
-    let nt = node-ty(env, id) in
-    let cs = [(nt, node-ty(env, l)), (nt, node-ty(env, r))] in
-    let a1 = push-cs(acc, cs) in
-    collect-children(tree, rcol, env, [l, r], a1)
+      // arithmetic: node ~ left, node ~ right (so left ~ right transitively), then recurse operands
+      let nt = node-ty(env, id) in
+      let cs = [(nt, node-ty(env, l)), (nt, node-ty(env, r))] in
+      let a1 = push-cs(acc, cs) in
+      collect-children(tree, rcol, env, [l, r], a1)
   | Option.Some(Node.NIf(c, t, e)) => // cond is Bool (cond ~ Bool); branches join (then ~ else); the if IS that type (node ~ then); recurse all three
     let nt = node-ty(env, id) in
     let cs = [
@@ -120,14 +116,15 @@ def collect(tree: Tree, rcol: Map(Int64, Resolved), env: Map(Int64, Ty), id: Int
     let a1 = push-cs(acc, [(node-ty(env, id), node-ty(env, bodyId))]) in
     collect-children(tree, rcol, env, [valId, bodyId], a1)
   | Option.Some(Node.NVar(_)) => // S1b: a var USE shares its binder's value type. Look up the binder via the resolve column; emit
-  // useTy ~ binderValueTy. Unbound (RPoison) / RDef / no-fact → no constraint (leaf). A leaf: no recursion.
-  (match Map.lookup(rcol, id) with
-    | Option.Some(Resolved.RBound(binder)) => (match binder-value-ty(tree, env, binder) with
-      | Option.Some(bvt) => List.push(acc, (node-ty(env, id), bvt))
-      | Option.None(_) => acc
+    // useTy ~ binderValueTy. Unbound (RPoison) / RDef / no-fact → no constraint (leaf). A leaf: no recursion.
+    (match Map.lookup(rcol, id) with
+      | Option.Some(Resolved.RBound(binder)) =>
+        (match binder-value-ty(tree, env, binder) with
+          | Option.Some(bvt) => List.push(acc, (node-ty(env, id), bvt))
+          | Option.None(_) => acc
+        )
+      | _ => acc
     )
-    | _ => acc
-  )
   | Option.Some(_) => acc // leaf or not-covered composite → no constraint
   | Option.None(_) => acc
 
@@ -191,13 +188,12 @@ def hc-arith-propagates-fixed-width-to-both-operands() =
       vn
     ) in
   match solve(collect-all(tree, re(), env, binId)) with
-    | Option.Some(su) => (match apply(su, va) with
-      | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
-        unit
-      else
-        trap("param a inferred Int8 from use")
-      | _ => trap("param a's fresh var resolves to Int8 via the shared arith constraint")
-    )
+    | Option.Some(su) =>
+      (match apply(su, va) with
+        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) =>
+          if w == 8 then unit else trap("param a inferred Int8 from use")
+        | _ => trap("param a's fresh var resolves to Int8 via the shared arith constraint")
+      )
     | Option.None(_) => trap("(+ a b) with b:Int8 is solvable")
 
 @test
@@ -238,10 +234,8 @@ def hc-relational-shares-operand-type-node-is-bool() =
   let cs = collect-all(tree, re(), env, cmpId) in
   if List.len(cs) == 1 then
     match solve-apply(cs, va) with
-      | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
-        unit
-      else
-        trap("compared operand a infers Int8")
+      | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) =>
+        if w == 8 then unit else trap("compared operand a infers Int8")
       | _ => trap("relational operand a shares b's Int8 type")
   else
     trap("relational emits exactly ONE operand-share constraint")
@@ -274,10 +268,8 @@ def hc-nested-arith-propagates-through-chain() =
       vouter
     ) in
   match solve-apply(collect-all(tree, re(), env, outerId), va) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
-      unit
-    else
-      trap("a infers Int8 through the nested chain")
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) =>
+      if w == 8 then unit else trap("a infers Int8 through the nested chain")
     | _ => trap("nested arith propagates Int8 to the deep fresh var a")
 
 // ---- S1a: NIf cond-is-Bool + NMatch coverage ------------------------------------------------------
@@ -302,10 +294,8 @@ def hc-if-branches-join-and-node-is-branch-type() =
       vn
     ) in
   match solve-apply(collect-all(tree, re(), env, ifId), vn) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 8 then
-      unit
-    else
-      trap("if type joins to Int8")
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) =>
+      if w == 8 then unit else trap("if type joins to Int8")
     | _ => trap("if branches join + node is the branch type")
 
 @test
@@ -358,13 +348,12 @@ def hc-match-scrut-shares-lit-and-arms-join() =
       vn
     ) in
   match solve(collect-all(tree, re(), env, mId)) with
-    | Option.Some(su) => (match apply(su, vs) with
-      | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
-        unit
-      else
-        trap("scrut infers Int8 from lit")
-      | _ => trap("match scrut shares the literal-pattern's Int8 type")
-    )
+    | Option.Some(su) =>
+      (match apply(su, vs) with
+        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) =>
+          if w == 8 then unit else trap("scrut infers Int8 from lit")
+        | _ => trap("match scrut shares the literal-pattern's Int8 type")
+      )
     | Option.None(_) => trap("consistent match is solvable")
 
 @test
@@ -413,13 +402,12 @@ def hc-var-use-shares-let-value-type() =
     ) in
   let rcol = Map.insert(Map.empty : Map(Int64, Resolved), useId, Resolved.RBound(letId)) in
   match solve(collect-all(tree, rcol, env, letId)) with
-    | Option.Some(su) => (match apply(su, vuse) with
-      | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
-        unit
-      else
-        trap("var use infers Int8 from let value")
-      | _ => trap("the body var shares the let value's Int8 type")
-    )
+    | Option.Some(su) =>
+      (match apply(su, vuse) with
+        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) =>
+          if w == 8 then unit else trap("var use infers Int8 from let value")
+        | _ => trap("the body var shares the let value's Int8 type")
+      )
     | Option.None(_) => trap("let x=Int8 in x is solvable")
 
 @test
@@ -446,13 +434,12 @@ def hc-param-use-shares-param-var() =
     ) in
   let rcol = Map.insert(Map.empty : Map(Int64, Resolved), useId, Resolved.RBound(paramId)) in
   match solve(collect-all(tree, rcol, env, binId)) with
-    | Option.Some(su) => (match apply(su, vparam) with
-      | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => if w == 8 then
-        unit
-      else
-        trap("param infers Int8 from its use in Int8 arith")
-      | _ => trap("param var shares its use's type, which arith fixes to Int8")
-    )
+    | Option.Some(su) =>
+      (match apply(su, vparam) with
+        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) =>
+          if w == 8 then unit else trap("param infers Int8 from its use in Int8 arith")
+        | _ => trap("param var shares its use's type, which arith fixes to Int8")
+      )
     | Option.None(_) => trap("param used in Int8 arith is solvable")
 
 @test

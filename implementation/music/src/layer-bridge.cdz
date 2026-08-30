@@ -50,9 +50,8 @@ import { major-triad-stack, dominant-seventh-stack } from "chord"
 /// Int64 interval `ii` carries. Returns unit on agreement, traps on mismatch or an off-grid rational.
 def agree(ri: RInterval, ii: Interval) = match to-semitones-exact(ri) with
   | Option.Some(s) => if s == semitones(ii) then unit else trap("rational/Int64 semitone mismatch")
-  | Option.None(_) => trap(
-    "rational interval is off the 12-TET grid — cannot bridge to Int64 semitones"
-  )
+  | Option.None(_) =>
+    trap("rational interval is off the 12-TET grid — cannot bridge to Int64 semitones")
 
 /// ============================ @test suite (cross-layer 12-TET agreement) ============================
 @test
@@ -116,18 +115,19 @@ def the-whole-twelve-tet-grid-round-trips() =
 /// Assert a rational chord's STACK (list of RInterval offsets) projects, entry-by-entry, to the Int64
 /// semitone stack `ints` — the chord-level twin of `agree`. Traps on any mismatch or off-grid entry.
 def chord-agree(rstack: List(RInterval), ints: List(Int64)) = match rstack with
-  | [] => (match ints with
-    | [] => unit
-    | [_, .. _] => trap("rational chord has fewer intervals")
-  )
-  | [rh, .. rt] => match ints with
-    | [] => trap("rational chord has more intervals")
-    | [ih, .. it] => match to-semitones-exact(rh) with
-      | Option.Some(s) => if s == ih then
-        chord-agree(rt, it)
-      else
-        trap("chord stack semitone mismatch")
-      | Option.None(_) => trap("rational chord interval off the 12-TET grid")
+  | [] =>
+    (match ints with
+      | [] => unit
+      | [_, .. _] => trap("rational chord has fewer intervals")
+    )
+  | [rh, .. rt] =>
+    match ints with
+      | [] => trap("rational chord has more intervals")
+      | [ih, .. it] =>
+        match to-semitones-exact(rh) with
+          | Option.Some(s) =>
+            if s == ih then chord-agree(rt, it) else trap("chord stack semitone mismatch")
+          | Option.None(_) => trap("rational chord interval off the 12-TET grid")
 
 @test
 def rational-and-int64-chords-agree-on-twelve-tet() =

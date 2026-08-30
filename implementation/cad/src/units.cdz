@@ -112,10 +112,11 @@ def v3-mm-builds-a-millimetre-vector() =
   // component-wise scalar checks (a whole-Vec3 `==` now walks over Rational since the ty_heap_walkable fix,
   // but this file doesn't import v3-eq; a per-component scalar compare is equally exact and self-contained).
   match v with
-    | Vec3.V3(x, y, z) => if x == ri(10) then
-      if y == ri(20) then if z == ri(30) then unit else trap("z") else trap("y")
-    else
-      trap("x")
+    | Vec3.V3(x, y, z) =>
+      if x == ri(10) then
+        if y == ri(20) then if z == ri(30) then unit else trap("z") else trap("y")
+      else
+        trap("x")
 
 @test
 def display-in-cm-and-foot-is-exact() =

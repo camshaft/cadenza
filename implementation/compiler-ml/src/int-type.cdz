@@ -40,9 +40,10 @@ def recognize(name: String) = match split-sign(name) with
 /// testing the longer/unsigned prefix first keeps the two disjoint and explicit.)
 def split-sign(name: String) = match after-prefix(name, "UInt") with
   | Option.Some(suffix) => Option.Some((false, suffix))
-  | Option.None(_) => match after-prefix(name, "Int") with
-    | Option.Some(suffix) => Option.Some((true, suffix))
-    | Option.None(_) => Option.None(unit)
+  | Option.None(_) =>
+    match after-prefix(name, "Int") with
+      | Option.Some(suffix) => Option.Some((true, suffix))
+      | Option.None(_) => Option.None(unit)
 
 /// The text of `name` AFTER a literal `prefix`, or `None` if `name` doesn't start with `prefix`. Structural
 /// (slice + compare the prefix region), so callers dispatch on the SHAPE of the name, not the whole string.
@@ -52,12 +53,13 @@ def after-prefix(name: String, prefix: String) =
   // byte-len for the same reason. Type names are ASCII, so byte-len == scalar-len here.
   let p = String.byte-len(prefix) in
   match String.slice(name, 0, p) with
-    | Option.Some(head) => if head == prefix then
-      match String.slice(name, p, String.byte-len(name)) with
-        | Option.Some(rest) => Option.Some(rest)
-        | Option.None(_) => Option.Some("") // prefix IS the whole name → empty suffix
-    else
-      Option.None(unit)
+    | Option.Some(head) =>
+      if head == prefix then
+        match String.slice(name, p, String.byte-len(name)) with
+          | Option.Some(rest) => Option.Some(rest)
+          | Option.None(_) => Option.Some("") // prefix IS the whole name → empty suffix
+      else
+        Option.None(unit)
     | Option.None(_) => Option.None(unit)
 
 /// A `(signed, width-suffix-string)` → the `IntTy` for a STANDARD width, matching the suffix STRUCTURALLY
@@ -110,26 +112,20 @@ def it-int64() = match recognize("Int64") with
 // ---- unsigned names ----
 @test
 def it-uint8() = match recognize("UInt8") with
-  | IntTy.IntKind(s, w) => if (if s then false else true) and w == 8 then
-    unit
-  else
-    trap("UInt8 = (unsigned, 8)")
+  | IntTy.IntKind(s, w) =>
+    if (if s then false else true) and w == 8 then unit else trap("UInt8 = (unsigned, 8)")
   | IntTy.NotInt => trap("UInt8 is an int type")
 
 @test
 def it-uint32() = match recognize("UInt32") with
-  | IntTy.IntKind(s, w) => if (if s then false else true) and w == 32 then
-    unit
-  else
-    trap("UInt32 = (unsigned, 32)")
+  | IntTy.IntKind(s, w) =>
+    if (if s then false else true) and w == 32 then unit else trap("UInt32 = (unsigned, 32)")
   | IntTy.NotInt => trap("UInt32 is an int type")
 
 @test
 def it-uint64() = match recognize("UInt64") with
-  | IntTy.IntKind(s, w) => if (if s then false else true) and w == 64 then
-    unit
-  else
-    trap("UInt64 = (unsigned, 64)")
+  | IntTy.IntKind(s, w) =>
+    if (if s then false else true) and w == 64 then unit else trap("UInt64 = (unsigned, 64)")
   | IntTy.NotInt => trap("UInt64 is an int type")
 
 // ---- non-int names → NotInt ----
@@ -176,18 +172,14 @@ def it-uint-not-misread-as-int() =
   // `UInt8` must be UNSIGNED — the UInt prefix is tried first, so it isn't misread as `Int`-prefix + `8`
   // via the shorter `Int` (which `UInt8` does NOT start with anyway). Pins the sign-prefix disjointness.
   match recognize("UInt8") with
-    | IntTy.IntKind(s, w) => if (if s then false else true) and w == 8 then
-      unit
-    else
-      trap("UInt8 unsigned 8")
+    | IntTy.IntKind(s, w) =>
+      if (if s then false else true) and w == 8 then unit else trap("UInt8 unsigned 8")
     | IntTy.NotInt => trap("UInt8 is an int type")
 
 @test
 def it-uint16-structural() = match recognize("UInt16") with
-  | IntTy.IntKind(s, w) => if (if s then false else true) and w == 16 then
-    unit
-  else
-    trap("UInt16 = (unsigned, 16)")
+  | IntTy.IntKind(s, w) =>
+    if (if s then false else true) and w == 16 then unit else trap("UInt16 = (unsigned, 16)")
   | IntTy.NotInt => trap("UInt16 is an int type")
 
 // ---- accessor / guard faces ----

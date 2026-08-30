@@ -48,10 +48,11 @@ def dl-lowers-to-clet() =
   // `let x = 2 in x` lowers to a CLet (via the Db's memoized columns) — Some(Core).
   let (root, d0) = let-db() in
   match lower-of-db(d0, root) with
-    | (_, Option.Some(Core.CLet(_, cv, cb))) => if is-cnum(cv, 2) then
-      if is-cvar(cb, root) then unit else trap("body CVar(root)")
-    else
-      trap("value CNum 2")
+    | (_, Option.Some(Core.CLet(_, cv, cb))) =>
+      if is-cnum(cv, 2) then
+        if is-cvar(cb, root) then unit else trap("body CVar(root)")
+      else
+        trap("value CNum 2")
     | (_, _) => trap("let lowers to CLet via Db")
 
 @test
@@ -86,10 +87,11 @@ def dl-add-lowers-to-cbin() =
   // `1 + 2` lowers to a CBin (op 43) via the Db's memoized columns.
   let (root, tree) = parse-tokens([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) in
   match lower-of-db(db-of(tree), root) with
-    | (_, Option.Some(Core.CBin(op, _, _, l, r))) => if op == 43 then
-      if is-cnum(l, 1) then if is-cnum(r, 2) then unit else trap("r CNum 2") else trap("l CNum 1")
-    else
-      trap("+ op")
+    | (_, Option.Some(Core.CBin(op, _, _, l, r))) =>
+      if op == 43 then
+        if is-cnum(l, 1) then if is-cnum(r, 2) then unit else trap("r CNum 2") else trap("l CNum 1")
+      else
+        trap("+ op")
     | (_, _) => trap("1 + 2 lowers to CBin")
 
 export { lower-of-db, db-tree-of }

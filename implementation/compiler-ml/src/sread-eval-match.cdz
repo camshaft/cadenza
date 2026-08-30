@@ -44,10 +44,8 @@ def sm-match-in-self-recursive-def() =
   match run-src(
       "(do (def (f n) (match n (0 100) (_ (f (- n 1))))) (def (main) (f 2)) (export main))"
     ) with
-    | Option.Some(v) => if v == 100 then
-      unit
-    else
-      trap("match+selfrec f 2 counts down to the 0-arm → 100")
+    | Option.Some(v) =>
+      if v == 100 then unit else trap("match+selfrec f 2 counts down to the 0-arm → 100")
     | Option.None(_) => trap("a self-call inside a match arm is recognized recursive + runs")
 
 @test

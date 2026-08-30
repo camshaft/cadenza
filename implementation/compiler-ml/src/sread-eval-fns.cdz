@@ -23,10 +23,8 @@ def se-if-in-def-body() =
   // a def body with CONTROL FLOW: `(def (f x) (if (< x 10) x 0))` `(f 5)` → 5. Pins an `if` inside a called
   // body (the param flows into the condition + a branch).
   match run-src("(do (def (f x) (if (< x 10) x 0)) (def (main) (f 5)) (export main))") with
-    | Option.Some(v) => if v == 5 then
-      unit
-    else
-      trap("(def (f x) (if x<10 then x else 0)) (f 5) → 5")
+    | Option.Some(v) =>
+      if v == 5 then unit else trap("(def (f x) (if x<10 then x else 0)) (f 5) → 5")
     | Option.None(_) => trap("an if-bodied def call runs")
 
 @test
@@ -122,9 +120,8 @@ def se-narrow-param-plus-literal-runs() =
   // (a declined-when-should-run miscompile). Differential-verified vs rcdzc (110, in Int8 range).
   match run-src("(do (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))") with
     | Option.Some(v) => if v == 110 then unit else trap("(+ a 10) on Int8 param (f 100) → 110")
-    | Option.None(_) => trap(
-      "(+ a 10) must RUN (110 fits Int8) — literal adapts, not spurious mixed-width decline"
-    )
+    | Option.None(_) =>
+      trap("(+ a 10) must RUN (110 fits Int8) — literal adapts, not spurious mixed-width decline")
 
 @test
 def se-narrow-param-plus-overflowing-literal-declines() =
@@ -133,9 +130,8 @@ def se-narrow-param-plus-overflowing-literal-declines() =
   // with the overflow trap — the literal adapts to Int8, then the Int8 arith overflows.
   match run-src("(do (def (f (: a Int8)) (+ a 100)) (def (main) (f 100)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap(
-      "(+ a 100) on Int8 param = 200 OVERFLOWS Int8 → must decline (CDZ0304)"
-    )
+    | Option.Some(_) =>
+      trap("(+ a 100) on Int8 param = 200 OVERFLOWS Int8 → must decline (CDZ0304)")
 
 @test
 def se-logical-and-of-comparisons() =
@@ -227,9 +223,8 @@ def se-recursive-under-application-body-ignores-missing-param-declines() =
   // `(f 3)`. The recursive path (CCall) used to run it ragged to `value 0`; ref/run-rust declines (arity).
   match run-src("(do (def (f a b) (if (< a 1) 0 (f (- a 1)))) (def (main) (f 3)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap(
-      "recursive (f 3) under-applies a 2-param def whose body ignores b → declines"
-    )
+    | Option.Some(_) =>
+      trap("recursive (f 3) under-applies a 2-param def whose body ignores b → declines")
 
 @test
 def se-recursive-over-application-declines() =
@@ -397,9 +392,8 @@ def se-threearg-self-recursion-runs-pr785() =
       "(do (def (f a b c) (if (< a 1) c (f (- a 1) b (+ c b)))) (def (main) (f 3 5 0)) (export main))"
     ) with
     | Option.Some(v) => if v == 15 then unit else trap("f(3,5,0) → 15 (3-arg self-recursion)")
-    | Option.None(_) => trap(
-      "3-arg self-recursion must RUN (PR#785 — arg3/arg4 self-call detection)"
-    )
+    | Option.None(_) =>
+      trap("3-arg self-recursion must RUN (PR#785 — arg3/arg4 self-call detection)")
 
 @test
 def se-mutual-recursion-runs() =
@@ -412,9 +406,8 @@ def se-mutual-recursion-runs() =
       "(do (def (ev n) (if (< n 1) 1 (od (- n 1)))) (def (od n) (if (< n 1) 0 (ev (- n 1)))) (def (main) (ev 4)) (export main))"
     ) with
     | Option.Some(v) => if v == 1 then unit else trap("mutual ev(4) → 1")
-    | Option.None(_) => trap(
-      "mutual recursion must RUN (ev↔od via def-env name dispatch), not decline"
-    )
+    | Option.None(_) =>
+      trap("mutual recursion must RUN (ev↔od via def-env name dispatch), not decline")
 
 @test
 def se-backward-ref-still-runs() =

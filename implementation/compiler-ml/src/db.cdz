@@ -119,13 +119,15 @@ def db-empty-columns-absent() =
   // a fresh Db has every derived column Absent: require → None (absent ≠ a value).
   let db = sample-db() in
   match require-resolved(db, 0) with
-    | Option.None(_) => (match require-ty(db, 0) with
-      | Option.None(_) => (match require-core(db, 0) with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("core absent")
+    | Option.None(_) =>
+      (match require-ty(db, 0) with
+        | Option.None(_) =>
+          (match require-core(db, 0) with
+            | Option.None(_) => unit
+            | Option.Some(_) => trap("core absent")
+          )
+        | Option.Some(_) => trap("types absent")
       )
-      | Option.Some(_) => trap("types absent")
-    )
     | Option.Some(_) => trap("resolved absent on a fresh Db")
 
 @test
@@ -133,10 +135,8 @@ def db-fill-then-require-typed() =
   // fill the types column at id 0 with Int64, require it back → Some(TyInt signed width 64).
   let db = fill-ty(sample-db(), 0, ty-int64()) in
   match require-ty(db, 0) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 64 then
-      unit
-    else
-      trap("Int64 fact")
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) =>
+      if w == 64 then unit else trap("Int64 fact")
     | _ => trap("filled type fact requires Some(TyInt)")
 
 @test
@@ -164,13 +164,15 @@ def db-fill-once-monotone-columns-independent() =
   let db1 = fill-resolved(sample-db(), 0, Resolved.RPoison) in
   let db2 = fill-core(db1, 0, Core.CNum(5, true, 64)) in
   match require-resolved(db2, 0) with
-    | Option.Some(_) => (match require-core(db2, 0) with
-      | Option.Some(_) => (match require-ty(db2, 0) with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("types still Absent")
+    | Option.Some(_) =>
+      (match require-core(db2, 0) with
+        | Option.Some(_) =>
+          (match require-ty(db2, 0) with
+            | Option.None(_) => unit
+            | Option.Some(_) => trap("types still Absent")
+          )
+        | Option.None(_) => trap("core filled")
       )
-      | Option.None(_) => trap("core filled")
-    )
     | Option.None(_) => trap("resolved filled")
 
 @test
@@ -192,10 +194,11 @@ def db-fill-is-a-raw-overwrite-not-fill-once() =
   let db1 = fill-ty(sample-db(), 0, Ty.TyBool) in
   let db2 = fill-ty(db1, 0, ty-int64()) in
   match require-ty(db2, 0) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => if w == 64 then
-      if typed-filled(db2) == 1 then unit else trap("overwrite keeps count 1, not 2")
-    else
-      trap("overwritten to Int64")
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) =>
+      if w == 64 then
+        if typed-filled(db2) == 1 then unit else trap("overwrite keeps count 1, not 2")
+      else
+        trap("overwritten to Int64")
     | _ => trap("fill-ty OVERWROTE @0 to Int64 (raw insert, not fill-once)")
 
 // ---- ARC-A2 tests: the column stores the canonical `Ty`; the Ty-native accessors --------------------
@@ -206,10 +209,8 @@ def db-a2-ty-native-fill-require() =
   // the column is Ty-native: fill-ty a canonical Ty (UInt8 = TyInt(Unsigned, WFixed 8)), require-ty it back.
   let db = fill-ty(sample-db(), 0, Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(8)))) in
   match require-ty(db, 0) with
-    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w)))) => if w == 8 then
-      unit
-    else
-      trap("UInt8 stored/read as Ty")
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w)))) =>
+      if w == 8 then unit else trap("UInt8 stored/read as Ty")
     | _ => trap("fill-ty/require-ty round-trips a canonical Ty")
 
 @test

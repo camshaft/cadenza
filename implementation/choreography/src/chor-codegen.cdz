@@ -35,25 +35,26 @@ import { Ast } from "ast"
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def codegen(l: Local) -> Ast = match l with
   | Local.LEnd => Ast.List([Ast.Name("done")])
-  | Local.LSend(to, label, k) => Ast.List(
-    [
-      Ast.Name("seq"),
-      Ast.List([Ast.Name("perform"), Ast.List([Ast.Name("send"), Ast.Name(to), Ast.Name(label)])]),
-      codegen(k)
-    ]
-  )
-  | Local.LRecv(from, label, k) => Ast.List(
-    [
-      Ast.Name("let"),
-      Ast.Name(label),
-      Ast.List([Ast.Name("perform"), Ast.List([Ast.Name("recv"), Ast.Name(from)])]),
-      codegen(k)
-    ]
-  )
+  | Local.LSend(to, label, k) =>
+    Ast.List(
+      [
+        Ast.Name("seq"),
+        Ast.List([Ast.Name("perform"), Ast.List([Ast.Name("send"), Ast.Name(to), Ast.Name(label)])]),
+        codegen(k)
+      ]
+    )
+  | Local.LRecv(from, label, k) =>
+    Ast.List(
+      [
+        Ast.Name("let"),
+        Ast.Name(label),
+        Ast.List([Ast.Name("perform"), Ast.List([Ast.Name("recv"), Ast.Name(from)])]),
+        codegen(k)
+      ]
+    )
   | Local.LIntC(brs) => Ast.List(List.concat([Ast.Name("ichoice")], codegen-branches(brs)))
-  | Local.LExtC(from, brs) => Ast.List(
-    List.concat([Ast.Name("ematch"), Ast.Name(from)], codegen-branches(brs))
-  )
+  | Local.LExtC(from, brs) =>
+    Ast.List(List.concat([Ast.Name("ematch"), Ast.Name(from)], codegen-branches(brs)))
   | Local.LBranch(label, k) => Ast.List([Ast.Name("branch"), Ast.Name(label), codegen(k)])
   | Local.LRecT(v, body) => Ast.List([Ast.Name("rec"), Ast.Name(v), codegen(body)])
   | Local.LVarT(v) => Ast.List([Ast.Name("var"), Ast.Name(v)])
@@ -70,34 +71,41 @@ def gen-role(g: Chor, r: String) -> Ast = codegen(project(g, r))
 // Structural Ast equality (for golden tests). `ast-eq.cdz` exists but keep this file self-contained.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def a-eq(a: Ast, b: Ast) -> Bool = match a with
-  | Ast.Int(x) => (match b with
-    | Ast.Int(y) => x == y
-    | _ => false
-  )
-  | Ast.Str(x) => (match b with
-    | Ast.Str(y) => x == y
-    | _ => false
-  )
-  | Ast.Bool(x) => (match b with
-    | Ast.Bool(y) => if x then y else if y then false else true
-    | _ => false
-  )
-  | Ast.Name(x) => (match b with
-    | Ast.Name(y) => x == y
-    | _ => false
-  )
-  | Ast.List(xs) => match b with
-    | Ast.List(ys) => a-list-eq(xs, ys)
-    | _ => false
+  | Ast.Int(x) =>
+    (match b with
+      | Ast.Int(y) => x == y
+      | _ => false
+    )
+  | Ast.Str(x) =>
+    (match b with
+      | Ast.Str(y) => x == y
+      | _ => false
+    )
+  | Ast.Bool(x) =>
+    (match b with
+      | Ast.Bool(y) => if x then y else if y then false else true
+      | _ => false
+    )
+  | Ast.Name(x) =>
+    (match b with
+      | Ast.Name(y) => x == y
+      | _ => false
+    )
+  | Ast.List(xs) =>
+    match b with
+      | Ast.List(ys) => a-list-eq(xs, ys)
+      | _ => false
 
 def a-list-eq(xs: List(Ast), ys: List(Ast)) -> Bool = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if a-eq(x, y) then a-list-eq(xr, yr) else false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] => if a-eq(x, y) then a-list-eq(xr, yr) else false
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Fixtures + tests — the Inc-3a gate: golden generated programs per role.

@@ -17,12 +17,13 @@ def pc-of(n: Int64) =
 /// is what makes a pitch-class list a canonical SET. Recursive, annotated params.
 def insert-sorted(xs: List(Int64), x: Int64) = match xs with
   | [] => [x]
-  | [h, .. t] => if x == h then
-    xs
-  else if x < h then
-    List.prepend(xs, x)
-  else
-    List.prepend(insert-sorted(t, x), h)
+  | [h, .. t] =>
+    if x == h then
+      xs
+    else if x < h then
+      List.prepend(xs, x)
+    else
+      List.prepend(insert-sorted(t, x), h)
 
 /// Fold a note list into its sorted, deduped pitch-class SET. Recursive driver threading the sorted set.
 def pc-set-go(notes: List(Int64), acc: List(Int64)) = match notes with
@@ -49,10 +50,11 @@ def a-pc-set-is-sorted-deduped-and-octave-folded() =
   // Notes given out of order, spread across octaves, with an octave-doubling (60 and 72 are both C):
   // fold to the sorted deduped set {0,4,7}.
   match pc-set([67, 60, 64, 72]) with
-    | [a, b, c] => if a == 0 then
-      if b == 4 then if c == 7 then unit else trap("third is 7") else trap("second is 4")
-    else
-      trap("first is 0")
+    | [a, b, c] =>
+      if a == 0 then
+        if b == 4 then if c == 7 then unit else trap("third is 7") else trap("second is 4")
+      else
+        trap("first is 0")
     | _ => trap("three distinct pitch classes")
 
 @test
@@ -64,18 +66,19 @@ def the-empty-note-list-is-the-empty-set() = match pc-set([]) with
 def insert-sorted-drops-a-duplicate-and-orders() =
   // Inserting 4 into [0,7] gives [0,4,7]; inserting an existing 7 is a no-op.
   match insert-sorted([0, 7], 4) with
-    | [a, b, c] => if a == 0 then
-      if b == 4 then
-        if c == 7 then
-          match insert-sorted([0, 4, 7], 7) with
-            | [_, _, _] => unit
-            | _ => trap("dup dropped, still three")
+    | [a, b, c] =>
+      if a == 0 then
+        if b == 4 then
+          if c == 7 then
+            match insert-sorted([0, 4, 7], 7) with
+              | [_, _, _] => unit
+              | _ => trap("dup dropped, still three")
+          else
+            trap("7 last")
         else
-          trap("7 last")
+          trap("4 middle")
       else
-        trap("4 middle")
-    else
-      trap("0 first")
+        trap("0 first")
     | _ => trap("three after insert")
 
 export { pc-of, insert-sorted, pc-set }

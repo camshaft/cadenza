@@ -44,42 +44,51 @@ type Chor =
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 /// Structural equality of two choreographies.
 def chor-eq(a: Chor, b: Chor) = match a with
-  | Chor.Done => (match b with
-    | Chor.Done => true
-    | _ => false
-  )
-  | Chor.Comm(f, t, l) => (match b with
-    | Chor.Comm(f2, t2, l2) => if f == f2 then if t == t2 then l == l2 else false else false
-    | _ => false
-  )
-  | Chor.Seq(x, y) => (match b with
-    | Chor.Seq(x2, y2) => if chor-eq(x, x2) then chor-eq(y, y2) else false
-    | _ => false
-  )
-  | Chor.Choice(c, brs) => (match b with
-    | Chor.Choice(c2, brs2) => if c == c2 then chor-list-eq(brs, brs2) else false
-    | _ => false
-  )
-  | Chor.Branch(l, k) => (match b with
-    | Chor.Branch(l2, k2) => if l == l2 then chor-eq(k, k2) else false
-    | _ => false
-  )
-  | Chor.Rec(v, body) => (match b with
-    | Chor.Rec(v2, body2) => if v == v2 then chor-eq(body, body2) else false
-    | _ => false
-  )
-  | Chor.Var(v) => match b with
-    | Chor.Var(v2) => v == v2
-    | _ => false
+  | Chor.Done =>
+    (match b with
+      | Chor.Done => true
+      | _ => false
+    )
+  | Chor.Comm(f, t, l) =>
+    (match b with
+      | Chor.Comm(f2, t2, l2) => if f == f2 then if t == t2 then l == l2 else false else false
+      | _ => false
+    )
+  | Chor.Seq(x, y) =>
+    (match b with
+      | Chor.Seq(x2, y2) => if chor-eq(x, x2) then chor-eq(y, y2) else false
+      | _ => false
+    )
+  | Chor.Choice(c, brs) =>
+    (match b with
+      | Chor.Choice(c2, brs2) => if c == c2 then chor-list-eq(brs, brs2) else false
+      | _ => false
+    )
+  | Chor.Branch(l, k) =>
+    (match b with
+      | Chor.Branch(l2, k2) => if l == l2 then chor-eq(k, k2) else false
+      | _ => false
+    )
+  | Chor.Rec(v, body) =>
+    (match b with
+      | Chor.Rec(v2, body2) => if v == v2 then chor-eq(body, body2) else false
+      | _ => false
+    )
+  | Chor.Var(v) =>
+    match b with
+      | Chor.Var(v2) => v == v2
+      | _ => false
 
 def chor-list-eq(xs: List(Chor), ys: List(Chor)) = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if chor-eq(x, y) then chor-list-eq(xr, yr) else false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] => if chor-eq(x, y) then chor-list-eq(xr, yr) else false
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // The canonical node: `Chor` ⇄ homoiconic s-expr `Ast`. Round-trip is a structural identity.
@@ -89,9 +98,8 @@ def to-ast(c: Chor) = match c with
   | Chor.Done => Ast.List([Ast.Name("done")])
   | Chor.Comm(f, t, l) => Ast.List([Ast.Name("comm"), Ast.Name(f), Ast.Name(t), Ast.Name(l)])
   | Chor.Seq(a, b) => Ast.List([Ast.Name("seq"), to-ast(a), to-ast(b)])
-  | Chor.Choice(chooser, brs) => Ast.List(
-    List.concat([Ast.Name("choice"), Ast.Name(chooser)], to-ast-list(brs))
-  )
+  | Chor.Choice(chooser, brs) =>
+    Ast.List(List.concat([Ast.Name("choice"), Ast.Name(chooser)], to-ast-list(brs)))
   | Chor.Branch(l, k) => Ast.List([Ast.Name("branch"), Ast.Name(l), to-ast(k)])
   | Chor.Rec(v, body) => Ast.List([Ast.Name("rec"), Ast.Name(v), to-ast(body)])
   | Chor.Var(v) => Ast.List([Ast.Name("var"), Ast.Name(v)])
@@ -109,9 +117,10 @@ def from-ast(a: Ast) = match a with
 
 def from-form(es: List(Ast)) = match es with
   | [] => Option.None(unit)
-  | [head, .. rest] => match head with
-    | Ast.Name(op) => from-op(op, rest)
-    | _ => Option.None(unit)
+  | [head, .. rest] =>
+    match head with
+      | Ast.Name(op) => from-op(op, rest)
+      | _ => Option.None(unit)
 
 def from-op(op: String, rest: List(Ast)) =
   if op == "done" then
@@ -135,78 +144,92 @@ def from-op(op: String, rest: List(Ast)) =
 
 /// `(comm from to label)` — three names.
 def from-comm(rest: List(Ast)) = match rest with
-  | [f, t, l] => (match name-of(f) with
-    | Option.Some(fs) => (match name-of(t) with
-      | Option.Some(ts) => (match name-of(l) with
-        | Option.Some(ls) => Option.Some(Chor.Comm(fs, ts, ls))
-        | Option.None(_) => Option.None(unit)
-      )
+  | [f, t, l] =>
+    (match name-of(f) with
+      | Option.Some(fs) =>
+        (match name-of(t) with
+          | Option.Some(ts) =>
+            (match name-of(l) with
+              | Option.Some(ls) => Option.Some(Chor.Comm(fs, ts, ls))
+              | Option.None(_) => Option.None(unit)
+            )
+          | Option.None(_) => Option.None(unit)
+        )
       | Option.None(_) => Option.None(unit)
     )
-    | Option.None(_) => Option.None(unit)
-  )
   | _ => Option.None(unit)
 
 /// `(seq a b)` — two choreographies.
 def from-seq(rest: List(Ast)) = match rest with
-  | [a, b] => (match from-ast(a) with
-    | Option.Some(ca) => (match from-ast(b) with
-      | Option.Some(cb) => Option.Some(Chor.Seq(ca, cb))
+  | [a, b] =>
+    (match from-ast(a) with
+      | Option.Some(ca) =>
+        (match from-ast(b) with
+          | Option.Some(cb) => Option.Some(Chor.Seq(ca, cb))
+          | Option.None(_) => Option.None(unit)
+        )
       | Option.None(_) => Option.None(unit)
     )
-    | Option.None(_) => Option.None(unit)
-  )
   | _ => Option.None(unit)
 
 /// `(choice chooser br…)` — a chooser name then zero-or-more branch nodes.
 def from-choice(rest: List(Ast)) = match rest with
   | [] => Option.None(unit)
-  | [chooser, .. brs] => match name-of(chooser) with
-    | Option.Some(cs) => (match from-ast-list(brs) with
-      | Option.Some(cbrs) => Option.Some(Chor.Choice(cs, cbrs))
+  | [chooser, .. brs] =>
+    match name-of(chooser) with
+      | Option.Some(cs) =>
+        (match from-ast-list(brs) with
+          | Option.Some(cbrs) => Option.Some(Chor.Choice(cs, cbrs))
+          | Option.None(_) => Option.None(unit)
+        )
       | Option.None(_) => Option.None(unit)
-    )
-    | Option.None(_) => Option.None(unit)
 
 /// `(branch label cont)` — a label name then a continuation choreography.
 def from-branch(rest: List(Ast)) = match rest with
-  | [l, k] => (match name-of(l) with
-    | Option.Some(ls) => (match from-ast(k) with
-      | Option.Some(ck) => Option.Some(Chor.Branch(ls, ck))
+  | [l, k] =>
+    (match name-of(l) with
+      | Option.Some(ls) =>
+        (match from-ast(k) with
+          | Option.Some(ck) => Option.Some(Chor.Branch(ls, ck))
+          | Option.None(_) => Option.None(unit)
+        )
       | Option.None(_) => Option.None(unit)
     )
-    | Option.None(_) => Option.None(unit)
-  )
   | _ => Option.None(unit)
 
 /// `(rec var body)` — a rec-var name then a body choreography.
 def from-rec(rest: List(Ast)) = match rest with
-  | [v, body] => (match name-of(v) with
-    | Option.Some(vs) => (match from-ast(body) with
-      | Option.Some(cb) => Option.Some(Chor.Rec(vs, cb))
+  | [v, body] =>
+    (match name-of(v) with
+      | Option.Some(vs) =>
+        (match from-ast(body) with
+          | Option.Some(cb) => Option.Some(Chor.Rec(vs, cb))
+          | Option.None(_) => Option.None(unit)
+        )
       | Option.None(_) => Option.None(unit)
     )
-    | Option.None(_) => Option.None(unit)
-  )
   | _ => Option.None(unit)
 
 /// `(var v)` — one rec-var name.
 def from-var(rest: List(Ast)) = match rest with
-  | [v] => (match name-of(v) with
-    | Option.Some(vs) => Option.Some(Chor.Var(vs))
-    | Option.None(_) => Option.None(unit)
-  )
+  | [v] =>
+    (match name-of(v) with
+      | Option.Some(vs) => Option.Some(Chor.Var(vs))
+      | Option.None(_) => Option.None(unit)
+    )
   | _ => Option.None(unit)
 
 /// Parse a list of `Ast` nodes into a list of `Chor`, failing the whole list if any element is malformed.
 def from-ast-list(es: List(Ast)) = match es with
   | [] => Option.Some([])
-  | [h, .. r] => match from-ast(h) with
-    | Option.Some(ch) => (match from-ast-list(r) with
-      | Option.Some(cr) => Option.Some(List.concat([ch], cr))
+  | [h, .. r] =>
+    match from-ast(h) with
+      | Option.Some(ch) =>
+        (match from-ast-list(r) with
+          | Option.Some(cr) => Option.Some(List.concat([ch], cr))
+          | Option.None(_) => Option.None(unit)
+        )
       | Option.None(_) => Option.None(unit)
-    )
-    | Option.None(_) => Option.None(unit)
 
 /// The `String` of a `Name` node, else `None`.
 def name-of(a: Ast) = match a with
@@ -228,15 +251,17 @@ def role-declared(roles: List(String), x: String) = match roles with
 /// of rec-var names in scope.
 def wf-in(roles: List(String), bound: List(String), c: Chor) = match c with
   | Chor.Done => true
-  | Chor.Comm(f, t, _l) => if role-declared(roles, f) then
-    if role-declared(roles, t) then if f == t then false else true else false
-  else
-    false
+  | Chor.Comm(f, t, _l) =>
+    if role-declared(roles, f) then
+      if role-declared(roles, t) then if f == t then false else true else false
+    else
+      false
   | Chor.Seq(a, b) => if wf-in(roles, bound, a) then wf-in(roles, bound, b) else false
-  | Chor.Choice(chooser, brs) => if role-declared(roles, chooser) then
-    if all-branches(brs) then wf-branches(roles, bound, brs) else false
-  else
-    false
+  | Chor.Choice(chooser, brs) =>
+    if role-declared(roles, chooser) then
+      if all-branches(brs) then wf-branches(roles, bound, brs) else false
+    else
+      false
   | Chor.Branch(_, k) => wf-in(roles, bound, k)
   | Chor.Rec(v, body) => wf-in(roles, List.concat([v], bound), body)
   | Chor.Var(v) => role-declared(bound, v)
@@ -248,9 +273,10 @@ def wf-branches(roles: List(String), bound: List(String), brs: List(Chor)) = mat
 /// Every element is a `Branch` (a `Choice`'s children must all be labelled arms).
 def all-branches(brs: List(Chor)) = match brs with
   | [] => true
-  | [b, .. r] => match b with
-    | Chor.Branch(_, _) => all-branches(r)
-    | _ => false
+  | [b, .. r] =>
+    match b with
+      | Chor.Branch(_, _) => all-branches(r)
+      | _ => false
 
 /// Well-formed at top level (no rec-vars in scope yet).
 def wf(roles: List(String), c: Chor) = wf-in(roles, [], c)
@@ -288,10 +314,8 @@ def purchase() =
 /// `Chor` → `Ast` → `Chor` is the identity on `Purchase` (the flagship round-trip).
 @test
 def rt-purchase() = match from-ast(to-ast(purchase())) with
-  | Option.Some(c) => if chor-eq(c, purchase()) then
-    unit
-  else
-    trap("Purchase Chor→Ast→Chor must be identity")
+  | Option.Some(c) =>
+    if chor-eq(c, purchase()) then unit else trap("Purchase Chor→Ast→Chor must be identity")
   | Option.None(_) => trap("Purchase must parse back from its canonical node")
 
 /// The dual direction: `Ast` → `Chor` → `Ast` is the identity on Purchase's canonical node.
@@ -299,10 +323,8 @@ def rt-purchase() = match from-ast(to-ast(purchase())) with
 def rt-purchase-ast() =
   let node = to-ast(purchase()) in
   match from-ast(node) with
-    | Option.Some(c) => if ast-eq(to-ast(c), node) then
-      unit
-    else
-      trap("Purchase Ast→Chor→Ast must be identity")
+    | Option.Some(c) =>
+      if ast-eq(to-ast(c), node) then unit else trap("Purchase Ast→Chor→Ast must be identity")
     | Option.None(_) => trap("Purchase canonical node must parse")
 
 /// Round-trip of each leaf/spine shape.

@@ -236,52 +236,62 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
     (true, 0) // out of fuel → conservatively treat as recursive (decline, never hang)
   else
     match node-at(tree, id) with
-      | Option.Some(Node.NApp(calleeName, argId)) => (if calleeName == target then
-        (true, fuel - 1) // a direct call to target → recursive
-      else
-        // else recurse into: this call's ARG(s) + the CALLED def's body (transitive/mutual). arg2/3/4 keyed
-        // by this NApp node-id `id`.
-        match subtree-calls-name-arg(tree, argId, target, fuel - 1) with
+      | Option.Some(Node.NApp(calleeName, argId)) =>
+        (if calleeName == target then
+          (true, fuel - 1) // a direct call to target → recursive
+        else
+          // else recurse into: this call's ARG(s) + the CALLED def's body (transitive/mutual). arg2/3/4 keyed
+          // by this NApp node-id `id`.
+          match subtree-calls-name-arg(tree, argId, target, fuel - 1) with
+            | (true, fl) => (true, fl)
+            | (false, fl) => // scan arg2/arg3/arg4 (PR#785: arg3/arg4 were missed) in sequence, THEN descend the callee
+              // body (transitive/mutual). Any arg or the callee body reaching `target` → recursive.
+              match subtree-calls-name-opt(tree, arg2-of(tree, id), target, fl) with
+                | (true, f2) => (true, f2)
+                | (false, f2) =>
+                  match subtree-calls-name-opt(tree, arg3-of(tree, id), target, f2) with
+                    | (true, f3) => (true, f3)
+                    | (false, f3) =>
+                      match subtree-calls-name-opt(tree, arg4-of(tree, id), target, f3) with
+                        | (true, f4) => (true, f4)
+                        | (false, f4) => subtree-calls-callee(tree, calleeName, target, f4))
+      | Option.Some(Node.NBin(_, l, r)) =>
+        (match subtree-calls-name(tree, l, target, fuel - 1) with
           | (true, fl) => (true, fl)
-          | (false, fl) => // scan arg2/arg3/arg4 (PR#785: arg3/arg4 were missed) in sequence, THEN descend the callee
-          // body (transitive/mutual). Any arg or the callee body reaching `target` → recursive.
-          match subtree-calls-name-opt(tree, arg2-of(tree, id), target, fl) with
-            | (true, f2) => (true, f2)
-            | (false, f2) => match subtree-calls-name-opt(tree, arg3-of(tree, id), target, f2) with
-              | (true, f3) => (true, f3)
-              | (false, f3) => match subtree-calls-name-opt(tree, arg4-of(tree, id), target, f3) with
-                | (true, f4) => (true, f4)
-                | (false, f4) => subtree-calls-callee(tree, calleeName, target, f4))
-      | Option.Some(Node.NBin(_, l, r)) => (match subtree-calls-name(tree, l, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => subtree-calls-name(tree, r, target, fl)
-      )
-      | Option.Some(Node.NLet(_, v, b)) => (match subtree-calls-name(tree, v, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => subtree-calls-name(tree, b, target, fl)
-      )
-      | Option.Some(Node.NIf(c, t, e)) => (match subtree-calls-name(tree, c, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => match subtree-calls-name(tree, t, target, fl) with
-          | (true, f2) => (true, f2)
-          | (false, f2) => subtree-calls-name(tree, e, target, f2)
-      )
+          | (false, fl) => subtree-calls-name(tree, r, target, fl)
+        )
+      | Option.Some(Node.NLet(_, v, b)) =>
+        (match subtree-calls-name(tree, v, target, fuel - 1) with
+          | (true, fl) => (true, fl)
+          | (false, fl) => subtree-calls-name(tree, b, target, fl)
+        )
+      | Option.Some(Node.NIf(c, t, e)) =>
+        (match subtree-calls-name(tree, c, target, fuel - 1) with
+          | (true, fl) => (true, fl)
+          | (false, fl) =>
+            match subtree-calls-name(tree, t, target, fl) with
+              | (true, f2) => (true, f2)
+              | (false, f2) => subtree-calls-name(tree, e, target, f2)
+        )
       | Option.Some(Node.NMatch(sc, li, th, el)) => // M1-a: scan all 4 match children for a transitive call
-      (match subtree-calls-name(tree, sc, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => match subtree-calls-name(tree, li, target, fl) with
-          | (true, f2) => (true, f2)
-          | (false, f2) => match subtree-calls-name(tree, th, target, f2) with
-            | (true, f3) => (true, f3)
-            | (false, f3) => subtree-calls-name(tree, el, target, f3)
-      )
+        (match subtree-calls-name(tree, sc, target, fuel - 1) with
+          | (true, fl) => (true, fl)
+          | (false, fl) =>
+            match subtree-calls-name(tree, li, target, fl) with
+              | (true, f2) => (true, f2)
+              | (false, f2) =>
+                match subtree-calls-name(tree, th, target, f2) with
+                  | (true, f3) => (true, f3)
+                  | (false, f3) => subtree-calls-name(tree, el, target, f3)
+        )
       | Option.Some(Node.NMatchCtor(sc, _pcn, _bn, bd, rst)) => // M2-b-2b-ii-c: scan scrut/body/rest (patName+binder = no call)
-      (match subtree-calls-name(tree, sc, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => match subtree-calls-name(tree, bd, target, fl) with
-          | (true, f2) => (true, f2)
-          | (false, f2) => subtree-calls-name(tree, rst, target, f2)
-      )
+        (match subtree-calls-name(tree, sc, target, fuel - 1) with
+          | (true, fl) => (true, fl)
+          | (false, fl) =>
+            match subtree-calls-name(tree, bd, target, fl) with
+              | (true, f2) => (true, f2)
+              | (false, f2) => subtree-calls-name(tree, rst, target, f2)
+        )
       | _ => (false, fuel - 1)
 
 // NLit/NBoolLit/NVar/NAnnLit — no call
@@ -309,7 +319,8 @@ def subtree-calls-callee(tree: Tree, calleeName: Int64, target: Int64, fuel: Int
 /// resolve/infer/lower use to DECLINE a recursive call rather than inline-hang. `def-body-of` miss → not a call
 /// to a known def → not recursive (the unknown-name decline path handles it).
 def call-is-recursive(tree: Tree, calleeName: Int64) = match def-body-of(tree, calleeName) with
-  | Option.Some(b) => let (found, _) = subtree-calls-name(tree, b, calleeName, 4000) in
+  | Option.Some(b) =>
+    let (found, _) = subtree-calls-name(tree, b, calleeName, 4000) in
     found
   | Option.None(_) => false
 
@@ -325,50 +336,60 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
     (false, 0) // out of fuel → NOT self-recursive (conservative for INCLUSION: leave it out)
   else
     match node-at(tree, id) with
-      | Option.Some(Node.NApp(calleeName, argId)) => (if calleeName == target then
-        (true, fuel - 1) // a DIRECT call to target → self-recursive
-      else
-        // else scan ALL the ARG subtrees (a nested self-call can hide in any arg) — NEVER descend the callee
-        // body. arg1 (argId) + arg2/arg3/arg4 keyed by this NApp node-id `id`. arg3/arg4 were originally
-        // MISSED (PR#785) → a 3-/4-arg self-recursive call was not detected → decl excluded from def-env →
-        // self-recursion wrongly declined. Now each higher arg is scanned in sequence, threading the fuel.
-        match subtree-calls-self-arg(tree, argId, target, fuel - 1) with
+      | Option.Some(Node.NApp(calleeName, argId)) =>
+        (if calleeName == target then
+          (true, fuel - 1) // a DIRECT call to target → self-recursive
+        else
+          // else scan ALL the ARG subtrees (a nested self-call can hide in any arg) — NEVER descend the callee
+          // body. arg1 (argId) + arg2/arg3/arg4 keyed by this NApp node-id `id`. arg3/arg4 were originally
+          // MISSED (PR#785) → a 3-/4-arg self-recursive call was not detected → decl excluded from def-env →
+          // self-recursion wrongly declined. Now each higher arg is scanned in sequence, threading the fuel.
+          match subtree-calls-self-arg(tree, argId, target, fuel - 1) with
+            | (true, fl) => (true, fl)
+            | (false, fl) =>
+              match subtree-calls-self-opt(tree, arg2-of(tree, id), target, fl) with
+                | (true, f2) => (true, f2)
+                | (false, f2) =>
+                  match subtree-calls-self-opt(tree, arg3-of(tree, id), target, f2) with
+                    | (true, f3) => (true, f3)
+                    | (false, f3) => subtree-calls-self-opt(tree, arg4-of(tree, id), target, f3))
+      | Option.Some(Node.NBin(_, l, r)) =>
+        (match subtree-calls-self(tree, l, target, fuel - 1) with
           | (true, fl) => (true, fl)
-          | (false, fl) => match subtree-calls-self-opt(tree, arg2-of(tree, id), target, fl) with
-            | (true, f2) => (true, f2)
-            | (false, f2) => match subtree-calls-self-opt(tree, arg3-of(tree, id), target, f2) with
-              | (true, f3) => (true, f3)
-              | (false, f3) => subtree-calls-self-opt(tree, arg4-of(tree, id), target, f3))
-      | Option.Some(Node.NBin(_, l, r)) => (match subtree-calls-self(tree, l, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => subtree-calls-self(tree, r, target, fl)
-      )
-      | Option.Some(Node.NLet(_, v, b)) => (match subtree-calls-self(tree, v, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => subtree-calls-self(tree, b, target, fl)
-      )
-      | Option.Some(Node.NIf(c, t, e)) => (match subtree-calls-self(tree, c, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => match subtree-calls-self(tree, t, target, fl) with
-          | (true, f2) => (true, f2)
-          | (false, f2) => subtree-calls-self(tree, e, target, f2)
-      )
+          | (false, fl) => subtree-calls-self(tree, r, target, fl)
+        )
+      | Option.Some(Node.NLet(_, v, b)) =>
+        (match subtree-calls-self(tree, v, target, fuel - 1) with
+          | (true, fl) => (true, fl)
+          | (false, fl) => subtree-calls-self(tree, b, target, fl)
+        )
+      | Option.Some(Node.NIf(c, t, e)) =>
+        (match subtree-calls-self(tree, c, target, fuel - 1) with
+          | (true, fl) => (true, fl)
+          | (false, fl) =>
+            match subtree-calls-self(tree, t, target, fl) with
+              | (true, f2) => (true, f2)
+              | (false, f2) => subtree-calls-self(tree, e, target, f2)
+        )
       | Option.Some(Node.NMatch(sc, li, th, el)) => // M1-a: scan all 4 match children for a DIRECT self-call
-      (match subtree-calls-self(tree, sc, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => match subtree-calls-self(tree, li, target, fl) with
-          | (true, f2) => (true, f2)
-          | (false, f2) => match subtree-calls-self(tree, th, target, f2) with
-            | (true, f3) => (true, f3)
-            | (false, f3) => subtree-calls-self(tree, el, target, f3)
-      )
+        (match subtree-calls-self(tree, sc, target, fuel - 1) with
+          | (true, fl) => (true, fl)
+          | (false, fl) =>
+            match subtree-calls-self(tree, li, target, fl) with
+              | (true, f2) => (true, f2)
+              | (false, f2) =>
+                match subtree-calls-self(tree, th, target, f2) with
+                  | (true, f3) => (true, f3)
+                  | (false, f3) => subtree-calls-self(tree, el, target, f3)
+        )
       | Option.Some(Node.NMatchCtor(sc, _pcn, _bn, bd, rst)) => // M2-b-2b-ii-c: scan scrut/body/rest for a self-call
-      (match subtree-calls-self(tree, sc, target, fuel - 1) with
-        | (true, fl) => (true, fl)
-        | (false, fl) => match subtree-calls-self(tree, bd, target, fl) with
-          | (true, f2) => (true, f2)
-          | (false, f2) => subtree-calls-self(tree, rst, target, f2)
-      )
+        (match subtree-calls-self(tree, sc, target, fuel - 1) with
+          | (true, fl) => (true, fl)
+          | (false, fl) =>
+            match subtree-calls-self(tree, bd, target, fl) with
+              | (true, f2) => (true, f2)
+              | (false, f2) => subtree-calls-self(tree, rst, target, f2)
+        )
       | _ => (false, fuel - 1)
 
 /// Helper: an NApp arg is -1 (nullary) or a node-id to scan for a DIRECT self-call.
@@ -385,7 +406,8 @@ def subtree-calls-self-opt(tree: Tree, argOpt: Option(Int64), target: Int64, fue
 /// recursive? The def-env inclusion predicate for B1b-p3: only directly-self-recursive defs eval via the
 /// def-env; mutual pairs stay out and decline. `def-body-of` miss → not a known def → not self-recursive.
 def call-is-self-recursive(tree: Tree, calleeName: Int64) = match def-body-of(tree, calleeName) with
-  | Option.Some(b) => let (found, _) = subtree-calls-self(tree, b, calleeName, 4000) in
+  | Option.Some(b) =>
+    let (found, _) = subtree-calls-self(tree, b, calleeName, 4000) in
     found
   | Option.None(_) => false
 
@@ -546,7 +568,8 @@ def ctor-tag-of(tree: Tree, ctorName: Int64) =
   let Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) = tree in
   match Map.lookup(ct, ctorName) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(dt2) => let (_declName, tag, _argTypes) = dt2 in
+    | Option.Some(dt2) =>
+      let (_declName, tag, _argTypes) = dt2 in
       Option.Some(tag)
 
 /// M2-b-2b-ii-c2b: the DECL NAME-id of the sum type a ctor belongs to, or `None` (not a recorded ctor). infer
@@ -556,7 +579,8 @@ def ctor-decl-of(tree: Tree, ctorName: Int64) =
   let Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) = tree in
   match Map.lookup(ct, ctorName) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(dt2) => let (declName, _tag, _argTypes) = dt2 in
+    | Option.Some(dt2) =>
+      let (declName, _tag, _argTypes) = dt2 in
       Option.Some(declName)
 
 /// M2-b-2b-ii-c2b payload-argType accessor (SINGLE-FIELD fast path, v-inference t443 refinement): the ENCODED
@@ -572,7 +596,8 @@ def ctor-argtype-of(tree: Tree, ctorName: Int64) =
   let Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) = tree in
   match Map.lookup(ct, ctorName) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(dt2) => let (_declName, _tag, argTypes) = dt2 in
+    | Option.Some(dt2) =>
+      let (_declName, _tag, argTypes) = dt2 in
       match List.at(argTypes, 0) with
         | Option.Some(a0) => Option.Some(a0)
         | Option.None(_) => Option.Some(0)
@@ -584,7 +609,8 @@ def ctor-argtypes-of(tree: Tree, ctorName: Int64) =
   let Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) = tree in
   match Map.lookup(ct, ctorName) with
     | Option.None(_) => Option.None(unit)
-    | Option.Some(dt2) => let (_declName, _tag, argTypes) = dt2 in
+    | Option.Some(dt2) =>
+      let (_declName, _tag, argTypes) = dt2 in
       Option.Some(argTypes)
 
 /// M2-b-2b-ii-c2 ENUM-DISC REPRESENTATION predicate (ii-c2b-2, v-inference-confirmed against rcdzc db.rs:2789):
@@ -611,27 +637,16 @@ def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64,
   else
     match List.at(entries, i) with
       | Option.None(_) => if payload == 0 then nullary >= 2 else false
-      | Option.Some(e) => let (ctorName, dt) = e in
+      | Option.Some(e) =>
+        let (ctorName, dt) = e in
         let (dn, _tag, _argTypes) = dt in
         if dn == declName then
           match def-body-of(tree, ctorName) with
             // nullary ctor has a def-body; payload doesn't
-            | Option.Some(_) => decl-enum-disc-go(
-              tree,
-              entries,
-              declName,
-              i + 1,
-              nullary + 1,
-              payload
-            )
-            | Option.None(_) => decl-enum-disc-go(
-              tree,
-              entries,
-              declName,
-              i + 1,
-              nullary,
-              payload + 1
-            )
+            | Option.Some(_) =>
+              decl-enum-disc-go(tree, entries, declName, i + 1, nullary + 1, payload)
+            | Option.None(_) =>
+              decl-enum-disc-go(tree, entries, declName, i + 1, nullary, payload + 1)
         else
           decl-enum-disc-go(tree, entries, declName, i + 1, nullary, payload)
 
@@ -649,7 +664,8 @@ def decl-ctor-count-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64
   else
     match List.at(entries, i) with
       | Option.None(_) => n
-      | Option.Some(e) => let (_ctorName, dt) = e in
+      | Option.Some(e) =>
+        let (_ctorName, dt) = e in
         let (dn, _tag, _argTypes) = dt in
         if dn == declName then
           decl-ctor-count-go(tree, entries, declName, i + 1, n + 1)
@@ -673,7 +689,8 @@ def decl-name-registered-go(entries: List(Tuple(Int64, Tuple(Int64, Int64, List(
   else
     match List.at(entries, i) with
       | Option.None(_) => false
-      | Option.Some(e) => let (_ctorName, dt) = e in
+      | Option.Some(e) =>
+        let (_ctorName, dt) = e in
         let (dn, _tag, _argTypes) = dt in
         if dn == nameId then true else decl-name-registered-go(entries, nameId, i + 1)
 
@@ -714,9 +731,11 @@ def op-code(t: Tok) = match t with
 /// parse-factor: an Int literal, a boolean literal, a variable reference, or a parenthesized expression. A
 /// paren nests the FULL grammar (`parse-any`, so `(let x = 1 in x)` parses). Returns `(nodeId, nextIndex, tree')`.
 def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
-  | Tok.TNum(v) => let (id, t1) = add-node(tree, Node.NLit(v)) in
+  | Tok.TNum(v) =>
+    let (id, t1) = add-node(tree, Node.NLit(v)) in
     (id, i + 1, t1)
-  | Tok.TBoolTok(b) => let (id, t1) = add-node(tree, Node.NBoolLit(b)) in
+  | Tok.TBoolTok(b) =>
+    let (id, t1) = add-node(tree, Node.NBoolLit(b)) in
     (id, i + 1, t1)
   | Tok.TNeg => // prefix unary minus `-x`, DESUGARED at parse time into `0 - x` = NBin(45, NLit 0, x). No new node type,
     // so resolve/infer/lower/eval need no `NNeg` arm — it is exactly a subtraction. Binds tight (a factor):
@@ -725,14 +744,17 @@ def parse-factor(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
     let (opnd, j, t1) = parse-factor(ts, i + 1, t0) in
     let (id, t2) = add-node(t1, Node.NBin(45, zeroId, opnd)) in
     (id, j, t2)
-  | Tok.TName(nm) => let (id, t1) = add-node(tree, Node.NVar(nm)) in
+  | Tok.TName(nm) =>
+    let (id, t1) = add-node(tree, Node.NVar(nm)) in
     (id, i + 1, t1)
-  | Tok.TLParen => (let (inner, j, t1) = parse-any(ts, i + 1, tree) in
+  | Tok.TLParen =>
+    (let (inner, j, t1) = parse-any(ts, i + 1, tree) in
     // consume the matching ')' if present (j points at it); tolerate a missing one.
     match tok-at(ts, j) with
       | Tok.TRParen => (inner, j + 1, t1)
       | _ => (inner, j, t1))
-  | _ => let (id, t1) = add-node(tree, Node.NLit(0)) in
+  | _ =>
+    let (id, t1) = add-node(tree, Node.NLit(0)) in
     (id, i + 1, t1) // error recovery: 0
 
 /// parse-term: factor ((`*`|`/`|`%`) factor)* — the multiplicative tier, tighter than `+`/`-` and
@@ -744,14 +766,15 @@ def parse-term(ts: List(Tok), i: Int64, tree: Tree) =
 
 def parse-term-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) = match op-code(tok-at(ts, i)) with
   | Option.None(_) => (lhs, i, tree)
-  | Option.Some(op) => if op == 42 then
-    mul-tail-add(ts, i, lhs, tree, 42)
-  else if op == 47 then
-    mul-tail-add(ts, i, lhs, tree, 47)
-  else if op == 37 then
-    mul-tail-add(ts, i, lhs, tree, 37)
-  else
-    (lhs, i, tree)
+  | Option.Some(op) =>
+    if op == 42 then
+      mul-tail-add(ts, i, lhs, tree, 42)
+    else if op == 47 then
+      mul-tail-add(ts, i, lhs, tree, 47)
+    else if op == 37 then
+      mul-tail-add(ts, i, lhs, tree, 37)
+    else
+      (lhs, i, tree)
 
 def mul-tail-add(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
   let (rhs, j, t1) = parse-factor(ts, i + 1, tree) in
@@ -765,12 +788,13 @@ def parse-expr(ts: List(Tok), i: Int64, tree: Tree) =
 
 def parse-expr-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) = match op-code(tok-at(ts, i)) with
   | Option.None(_) => (lhs, i, tree)
-  | Option.Some(op) => if op == 43 then
-    add-tail(ts, i, lhs, tree, 43)
-  else if op == 45 then
-    add-tail(ts, i, lhs, tree, 45)
-  else
-    (lhs, i, tree)
+  | Option.Some(op) =>
+    if op == 43 then
+      add-tail(ts, i, lhs, tree, 43)
+    else if op == 45 then
+      add-tail(ts, i, lhs, tree, 45)
+    else
+      (lhs, i, tree)
 
 def add-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
   let (rhs, j, t1) = parse-term(ts, i + 1, tree) in
@@ -811,10 +835,11 @@ def parse-cmp(ts: List(Tok), i: Int64, tree: Tree) =
   let (lhs, j, t1) = parse-expr(ts, i, tree) in
   match op-code(tok-at(ts, j)) with
     | Option.None(_) => (lhs, j, t1)
-    | Option.Some(op) => if op >= 60 then
-      if op <= 65 then cmp-tail(ts, j, lhs, t1, op) else (lhs, j, t1)
-    else
-      (lhs, j, t1)
+    | Option.Some(op) =>
+      if op >= 60 then
+        if op <= 65 then cmp-tail(ts, j, lhs, t1, op) else (lhs, j, t1)
+      else
+        (lhs, j, t1)
 
 def cmp-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
   let (rhs, j, t1) = parse-expr(ts, i + 1, tree) in
@@ -825,7 +850,8 @@ def cmp-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
 /// Tolerates a missing `=`/`in` (error recovery: parse straight through). The value and body are children BY
 /// ID, matching the arena shape.
 def parse-let(ts: List(Tok), i: Int64, tree: Tree) = match tok-at(ts, i) with
-  | Tok.TName(nm) => let j = match tok-at(ts, i + 1) with
+  | Tok.TName(nm) =>
+    let j = match tok-at(ts, i + 1) with
         | Tok.TEq => i + 2
         | _ => i + 1 in
     let (valId, k, t1) = parse-any(ts, j, tree) in
@@ -967,10 +993,11 @@ def pd-precedence-mul-tighter() =
   // "1 + 2 * 3" → root is + , whose RIGHT child is a * Bin (mul binds tighter). Verify the shape by ids.
   let (root, tree) = parse-tokens([n(1), plus(), n(2), times(), n(3)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, _, r)) => if op == 43 then
-      if is-bin-op(tree, r, 42) then unit else trap("+ 's right child is * ")
-    else
-      trap("root is +")
+    | Option.Some(Node.NBin(op, _, r)) =>
+      if op == 43 then
+        if is-bin-op(tree, r, 42) then unit else trap("+ 's right child is * ")
+      else
+        trap("root is +")
     | _ => trap("root is a Bin")
 
 @test
@@ -978,10 +1005,11 @@ def pd-parens-override() =
   // "(1 + 2) * 3" → root is * , whose LEFT child is a + Bin (parens grouped the add under the mul).
   let (root, tree) = parse-tokens([Tok.TLParen, n(1), plus(), n(2), Tok.TRParen, times(), n(3)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, l, _)) => if op == 42 then
-      if is-bin-op(tree, l, 43) then unit else trap("* 's left child is + ")
-    else
-      trap("root is * ")
+    | Option.Some(Node.NBin(op, l, _)) =>
+      if op == 42 then
+        if is-bin-op(tree, l, 43) then unit else trap("* 's left child is + ")
+      else
+        trap("root is * ")
     | _ => trap("root is a Bin")
 
 @test
@@ -989,10 +1017,11 @@ def pd-left-assoc-subtraction() =
   // "10 - 3 - 2" → left-associative: ((10 - 3) - 2), so root is - whose LEFT child is also a - Bin.
   let (root, tree) = parse-tokens([n(10), minus(), n(3), minus(), n(2)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, l, _)) => if op == 45 then
-      if is-bin-op(tree, l, 45) then unit else trap("left child is the inner - ")
-    else
-      trap("root is - ")
+    | Option.Some(Node.NBin(op, l, _)) =>
+      if op == 45 then
+        if is-bin-op(tree, l, 45) then unit else trap("left child is the inner - ")
+      else
+        trap("root is - ")
     | _ => trap("root is a Bin")
 
 @test
@@ -1000,16 +1029,19 @@ def pd-node-ids-stable-and-dense() =
   // node ids are dense 0..n-1: "1 + 2" has 3 nodes at ids 0,1,2 — every id in range resolves to a node.
   let (_, tree) = parse-tokens([n(1), plus(), n(2)]) in
   match node-at(tree, 0) with
-    | Option.Some(_) => (match node-at(tree, 1) with
-      | Option.Some(_) => (match node-at(tree, 2) with
-        | Option.Some(_) => (match node-at(tree, 3) with
-          | Option.None(_) => unit
-          | Option.Some(_) => trap("no node at 3")
-        )
-        | Option.None(_) => trap("node at 2")
+    | Option.Some(_) =>
+      (match node-at(tree, 1) with
+        | Option.Some(_) =>
+          (match node-at(tree, 2) with
+            | Option.Some(_) =>
+              (match node-at(tree, 3) with
+                | Option.None(_) => unit
+                | Option.Some(_) => trap("no node at 3")
+              )
+            | Option.None(_) => trap("node at 2")
+          )
+        | Option.None(_) => trap("node at 1")
       )
-      | Option.None(_) => trap("node at 1")
-    )
     | Option.None(_) => trap("node at 0")
 
 @test
@@ -1026,10 +1058,11 @@ def pd-children-by-id-not-inline() =
   // the arena shape: a Bin's children are ID references into the same arena, resolvable via node-at.
   let (root, tree) = parse-tokens([n(7), times(), n(8)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(_, l, r)) => if is-lit(tree, l, 7) then
-      if is-lit(tree, r, 8) then unit else trap("right child id → Lit 8")
-    else
-      trap("left child id → Lit 7")
+    | Option.Some(Node.NBin(_, l, r)) =>
+      if is-lit(tree, l, 7) then
+        if is-lit(tree, r, 8) then unit else trap("right child id → Lit 8")
+      else
+        trap("left child id → Lit 7")
     | _ => trap("root is a Bin")
 
 @test
@@ -1046,13 +1079,14 @@ def pd-let-binding-shape() =
   // "let x = 2 in x" → root is a NLet naming x(=1); its value is NLit 2, its body is NVar x.
   let (root, tree) = parse-tokens([letkw(), var(1), eq(), n(2), inkw(), var(1)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(nm, valId, bodyId)) => if nm == 1 then
-      if is-lit(tree, valId, 2) then
-        if is-var(tree, bodyId, 1) then unit else trap("body is Var x")
+    | Option.Some(Node.NLet(nm, valId, bodyId)) =>
+      if nm == 1 then
+        if is-lit(tree, valId, 2) then
+          if is-var(tree, bodyId, 1) then unit else trap("body is Var x")
+        else
+          trap("value is Lit 2")
       else
-        trap("value is Lit 2")
-    else
-      trap("let binds name-id 1")
+        trap("let binds name-id 1")
     | _ => trap("root is a Let")
 
 @test
@@ -1063,21 +1097,23 @@ def pd-let-milestone-program() =
       [letkw(), var(1), eq(), n(2), inkw(), var(1), times(), n(3), plus(), n(1)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(nm, valId, bodyId)) => if nm == 1 then
-      if is-lit(tree, valId, 2) then
-        match node-at(tree, bodyId) with
-          | Option.Some(Node.NBin(op, l, r)) => if op == 43 then
-            if is-bin-op(tree, l, 42) then
-              if is-lit(tree, r, 1) then unit else trap("+ 's right is Lit 1")
-            else
-              trap("+ 's left is a * Bin")
-          else
-            trap("body root is +")
-          | _ => trap("body is a Bin")
+    | Option.Some(Node.NLet(nm, valId, bodyId)) =>
+      if nm == 1 then
+        if is-lit(tree, valId, 2) then
+          match node-at(tree, bodyId) with
+            | Option.Some(Node.NBin(op, l, r)) =>
+              if op == 43 then
+                if is-bin-op(tree, l, 42) then
+                  if is-lit(tree, r, 1) then unit else trap("+ 's right is Lit 1")
+                else
+                  trap("+ 's left is a * Bin")
+              else
+                trap("body root is +")
+            | _ => trap("body is a Bin")
+        else
+          trap("value is Lit 2")
       else
-        trap("value is Lit 2")
-    else
-      trap("let binds x")
+        trap("let binds x")
     | _ => trap("root is a Let")
 
 @test
@@ -1101,10 +1137,11 @@ def pd-nested-let-scopes() =
       ]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NLet(nm, _, bodyId)) => if nm == 1 then
-      if is-let(tree, bodyId, 2) then unit else trap("outer let's body is the inner let (b)")
-    else
-      trap("outer binds a")
+    | Option.Some(Node.NLet(nm, _, bodyId)) =>
+      if nm == 1 then
+        if is-let(tree, bodyId, 2) then unit else trap("outer let's body is the inner let (b)")
+      else
+        trap("outer binds a")
     | _ => trap("root is a Let")
 
 @test
@@ -1115,10 +1152,11 @@ def pd-let-in-parens() =
       [Tok.TLParen, letkw(), var(1), eq(), n(5), inkw(), var(1), Tok.TRParen, times(), n(2)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, l, _)) => if op == 42 then
-      if is-let(tree, l, 1) then unit else trap("* 's left child is a let")
-    else
-      trap("root is * ")
+    | Option.Some(Node.NBin(op, l, _)) =>
+      if op == 42 then
+        if is-let(tree, l, 1) then unit else trap("* 's left child is a let")
+      else
+        trap("root is * ")
     | _ => trap("root is a Bin")
 
 @test
@@ -1132,10 +1170,11 @@ def pd-comparison-looser-than-arith() =
   // "1 + 2 < 3" → root is `<` (op 60) whose LEFT child is a `+` Bin (comparison is looser than additive).
   let (root, tree) = parse-tokens([n(1), plus(), n(2), lt(), n(3)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, l, _)) => if op == 60 then
-      if is-bin-op(tree, l, 43) then unit else trap("< 's left is a + Bin")
-    else
-      trap("root is <")
+    | Option.Some(Node.NBin(op, l, _)) =>
+      if op == 60 then
+        if is-bin-op(tree, l, 43) then unit else trap("< 's left is a + Bin")
+      else
+        trap("root is <")
     | _ => trap("root is a Bin")
 
 @test
@@ -1149,13 +1188,14 @@ def pd-if-shape() =
   // "if 1 < 2 then 10 else 20" → root is an NIf; cond is a < Bin, then/else are the literals.
   let (root, tree) = parse-tokens([ifkw(), n(1), lt(), n(2), thenkw(), n(10), elsekw(), n(20)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NIf(cond, thn, els)) => if is-bin-op(tree, cond, 60) then
-      if is-lit(tree, thn, 10) then
-        if is-lit(tree, els, 20) then unit else trap("else is Lit 20")
+    | Option.Some(Node.NIf(cond, thn, els)) =>
+      if is-bin-op(tree, cond, 60) then
+        if is-lit(tree, thn, 10) then
+          if is-lit(tree, els, 20) then unit else trap("else is Lit 20")
+        else
+          trap("then is Lit 10")
       else
-        trap("then is Lit 10")
-    else
-      trap("cond is a < Bin")
+        trap("cond is a < Bin")
     | _ => trap("root is an NIf")
 
 @test
@@ -1165,10 +1205,8 @@ def pd-if-branches-nest-full-grammar() =
       [ifkw(), n(1), thenkw(), letkw(), var(1), eq(), n(5), inkw(), var(1), elsekw(), n(0)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NIf(_, thn, _)) => if is-let(tree, thn, 1) then
-      unit
-    else
-      trap("then branch is a let")
+    | Option.Some(Node.NIf(_, thn, _)) =>
+      if is-let(tree, thn, 1) then unit else trap("then branch is a let")
     | _ => trap("root is an NIf")
 
 @test
@@ -1178,10 +1216,8 @@ def pd-nested-if-in-else() =
       [ifkw(), n(1), thenkw(), n(2), elsekw(), ifkw(), n(3), thenkw(), n(4), elsekw(), n(5)]
     ) in
   match node-at(tree, root) with
-    | Option.Some(Node.NIf(_, _, els)) => if is-if(tree, els) then
-      unit
-    else
-      trap("else branch is a nested if")
+    | Option.Some(Node.NIf(_, _, els)) =>
+      if is-if(tree, els) then unit else trap("else branch is a nested if")
     | _ => trap("root is an NIf")
 
 @test
@@ -1201,10 +1237,8 @@ def pd-bool-in-if-cond() =
   // "if true then 1 else 2" → cond is a bool literal (proves a bool literal parses as a factor in cond pos).
   let (root, tree) = parse-tokens([ifkw(), truelit(), thenkw(), n(1), elsekw(), n(2)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NIf(cond, _, _)) => if is-bool-lit(tree, cond, 1) then
-      unit
-    else
-      trap("cond is bool literal true")
+    | Option.Some(Node.NIf(cond, _, _)) =>
+      if is-bool-lit(tree, cond, 1) then unit else trap("cond is bool literal true")
     | _ => trap("root is an NIf")
 
 @test
@@ -1212,13 +1246,14 @@ def pd-unary-minus-desugars-to-sub() =
   // "-5" → NBin(45, NLit 0, NLit 5): unary minus desugars to `0 - 5` (no new node type).
   let (root, tree) = parse-tokens([neg(), n(5)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, l, r)) => if op == 45 then
-      if is-lit(tree, l, 0) then
-        if is-lit(tree, r, 5) then unit else trap("right is Lit 5")
+    | Option.Some(Node.NBin(op, l, r)) =>
+      if op == 45 then
+        if is-lit(tree, l, 0) then
+          if is-lit(tree, r, 5) then unit else trap("right is Lit 5")
+        else
+          trap("left is Lit 0")
       else
-        trap("left is Lit 0")
-    else
-      trap("op is - (45)")
+        trap("op is - (45)")
     | _ => trap("root is a - Bin")
 
 @test
@@ -1226,10 +1261,11 @@ def pd-unary-minus-binds-tight() =
   // "-x * 2" → `(-x) * 2` = NBin(*, NBin(-, 0, x), 2): unary minus is a factor, so it binds tighter than *.
   let (root, tree) = parse-tokens([neg(), var(1), times(), n(2)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, l, _)) => if op == 42 then
-      if is-bin-op(tree, l, 45) then unit else trap("* 's left is the unary-minus Bin")
-    else
-      trap("root is *")
+    | Option.Some(Node.NBin(op, l, _)) =>
+      if op == 42 then
+        if is-bin-op(tree, l, 45) then unit else trap("* 's left is the unary-minus Bin")
+      else
+        trap("root is *")
     | _ => trap("root is a Bin")
 
 @test
@@ -1249,10 +1285,11 @@ def pd-ne-looser-than-arith() =
   // "1 + 1 != 3" → root is `!=` (65) whose left is a `+` Bin (relational looser than additive).
   let (root, tree) = parse-tokens([n(1), plus(), n(1), ne(), n(3)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, l, _)) => if op == 65 then
-      if is-bin-op(tree, l, 43) then unit else trap("!= 's left is a + Bin")
-    else
-      trap("root is !=")
+    | Option.Some(Node.NBin(op, l, _)) =>
+      if op == 65 then
+        if is-bin-op(tree, l, 43) then unit else trap("!= 's left is a + Bin")
+      else
+        trap("root is !=")
     | _ => trap("root is a Bin")
 
 @test
@@ -1267,17 +1304,19 @@ def pd-op-code-is-option() =
   // any non-operator token yields None — never an in-band -1. Guards the parse-tail dispatch against a future
   // change re-introducing a magic miss value that would be compared as if it were a real op code.
   match op-code(plus()) with
-    | Option.Some(c) => if c == 43 then
-      match op-code(n(7)) with
-        // a number token is not an operator
-        | Option.None(_) => (match op-code(var(99)) with
-          // nor is a name token
-          | Option.None(_) => unit
-          | Option.Some(_) => trap("a TName token has no op-code (None)")
-        )
-        | Option.Some(_) => trap("a TNum token has no op-code (None)")
-    else
-      trap("op-code(TOp 43) = Some(43)")
+    | Option.Some(c) =>
+      if c == 43 then
+        match op-code(n(7)) with
+          // a number token is not an operator
+          | Option.None(_) =>
+            (match op-code(var(99)) with
+              // nor is a name token
+              | Option.None(_) => unit
+              | Option.Some(_) => trap("a TName token has no op-code (None)")
+            )
+          | Option.Some(_) => trap("a TNum token has no op-code (None)")
+      else
+        trap("op-code(TOp 43) = Some(43)")
     | Option.None(_) => trap("op-code of a TOp token is Some(code)")
 
 @test
@@ -1285,10 +1324,11 @@ def pd-mod-same-precedence-as-mul() =
   // "1 + 6 % 4" → root is `+` whose RIGHT is a `%` Bin (% binds tighter than +, same tier as *).
   let (root, tree) = parse-tokens([n(1), plus(), n(6), modop(), n(4)]) in
   match node-at(tree, root) with
-    | Option.Some(Node.NBin(op, _, r)) => if op == 43 then
-      if is-bin-op(tree, r, 37) then unit else trap("+ 's right is a % Bin")
-    else
-      trap("root is +")
+    | Option.Some(Node.NBin(op, _, r)) =>
+      if op == 43 then
+        if is-bin-op(tree, r, 37) then unit else trap("+ 's right is a % Bin")
+      else
+        trap("root is +")
     | _ => trap("root is a Bin")
 
 // ---- NApp: the function-application node (SLICE-1 foundation for USER FUNCTIONS) ----
@@ -1343,12 +1383,13 @@ def pd-record-def-then-lookup() =
   let (b, t1) = add-node(empty-tree(), Node.NLit(42)) in
   let t2 = record-def(t1, 1, b) in
   match def-body-of(t2, 1) with
-    | Option.Some(x) => if x == b then
-      match def-body-of(t2, 2) with
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("unrecorded name → None")
-    else
-      trap("def-body-of returns the recorded body")
+    | Option.Some(x) =>
+      if x == b then
+        match def-body-of(t2, 2) with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("unrecorded name → None")
+      else
+        trap("def-body-of returns the recorded body")
     | Option.None(_) => trap("a recorded def is found")
 
 @test
@@ -1362,19 +1403,20 @@ def pd-record-param-then-lookup() =
   let t3 = record-def(t2, 1, bodyId) in // name 1 = a NULLARY def (body only, no param)
   let t4 = record-param(t3, 2, paramId) in // name 2 = a def with a param (param recorded)
   match param-of(t4, 2) with
-    | Option.Some(p) => if p == paramId then
-      match param-of(t4, 1) with
-        // name 1 is nullary → NO param entry
-        | Option.None(_) => (match def-body-of(t4, 2) with
-          // name 2 recorded a param, NOT a def-body
-          | Option.None(_) => unit
-          | Option.Some(_) => trap(
-            "param-table is orthogonal to def-table (name 2 has no def-body)"
-          )
-        )
-        | Option.Some(_) => trap("a nullary def has NO param entry (param-of → None)")
-    else
-      trap("param-of returns the recorded param node")
+    | Option.Some(p) =>
+      if p == paramId then
+        match param-of(t4, 1) with
+          // name 1 is nullary → NO param entry
+          | Option.None(_) =>
+            (match def-body-of(t4, 2) with
+              // name 2 recorded a param, NOT a def-body
+              | Option.None(_) => unit
+              | Option.Some(_) =>
+                trap("param-table is orthogonal to def-table (name 2 has no def-body)")
+            )
+          | Option.Some(_) => trap("a nullary def has NO param entry (param-of → None)")
+      else
+        trap("param-of returns the recorded param node")
     | Option.None(_) => trap("a recorded param is found")
 
 @test
@@ -1387,19 +1429,21 @@ def pd-record-param2-then-lookup() =
   let ta = record-param(t2, 5, p1) in // name 5 = a def; record its 1st param
   let tb = record-param2(ta, 5, p2) in // + its 2nd param → a 2-param def
   match param2-of(tb, 5) with
-    | Option.Some(x) => if x == p2 then
-      match param-of(tb, 5) with
-        // param1 still there (both recorded)
-        | Option.Some(y) => if y == p1 then
-          match param2-of(tb, 99) with
-            // an unrecorded name → None
-            | Option.None(_) => unit
-            | Option.Some(_) => trap("unrecorded name has no param2")
-        else
-          trap("param-of still returns param1 for a 2-param def")
-        | Option.None(_) => trap("a 2-param def keeps its param1")
-    else
-      trap("param2-of returns the recorded 2nd param")
+    | Option.Some(x) =>
+      if x == p2 then
+        match param-of(tb, 5) with
+          // param1 still there (both recorded)
+          | Option.Some(y) =>
+            if y == p1 then
+              match param2-of(tb, 99) with
+                // an unrecorded name → None
+                | Option.None(_) => unit
+                | Option.Some(_) => trap("unrecorded name has no param2")
+            else
+              trap("param-of still returns param1 for a 2-param def")
+          | Option.None(_) => trap("a 2-param def keeps its param1")
+      else
+        trap("param2-of returns the recorded 2nd param")
     | Option.None(_) => trap("a recorded param2 is found")
 
 @test
@@ -1411,13 +1455,14 @@ def pd-record-arg2-then-lookup() =
   let (callId, t2) = add-node(t1, Node.NApp(7, 5)) in // a call node NApp(body=7, arg1=5)
   let t3 = record-arg2(t2, callId, arg2Id) in
   match arg2-of(t3, callId) with
-    | Option.Some(x) => if x == arg2Id then
-      match arg2-of(t3, 999) with
-        // an unrecorded call node → None
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("unrecorded call node has no arg2")
-    else
-      trap("arg2-of returns the recorded 2nd arg")
+    | Option.Some(x) =>
+      if x == arg2Id then
+        match arg2-of(t3, 999) with
+          // an unrecorded call node → None
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("unrecorded call node has no arg2")
+      else
+        trap("arg2-of returns the recorded 2nd arg")
     | Option.None(_) => trap("a recorded arg2 is found")
 
 @test
@@ -1431,22 +1476,25 @@ def pd-record-param3-and-arg3-then-lookup() =
   let t3 = record-param3(t2, 5, p3) in // name 5 = a def; record its 3rd param
   let t4 = record-arg3(t3, 42, arg3Id) in // NApp node 42 = a call; record its 3rd arg
   match param3-of(t4, 5) with
-    | Option.Some(x) => if x == p3 then
-      match arg3-of(t4, 42) with
-        | Option.Some(y) => if y == arg3Id then
-          match param3-of(t4, 99) with
-            // an unrecorded name → None
-            | Option.None(_) => (match arg3-of(t4, 999) with
-              // an unrecorded call node → None
-              | Option.None(_) => unit
-              | Option.Some(_) => trap("unrecorded call node has no arg3")
-            )
-            | Option.Some(_) => trap("unrecorded name has no param3")
-        else
-          trap("arg3-of returns the recorded 3rd arg")
-        | Option.None(_) => trap("a recorded arg3 is found")
-    else
-      trap("param3-of returns the recorded 3rd param")
+    | Option.Some(x) =>
+      if x == p3 then
+        match arg3-of(t4, 42) with
+          | Option.Some(y) =>
+            if y == arg3Id then
+              match param3-of(t4, 99) with
+                // an unrecorded name → None
+                | Option.None(_) =>
+                  (match arg3-of(t4, 999) with
+                    // an unrecorded call node → None
+                    | Option.None(_) => unit
+                    | Option.Some(_) => trap("unrecorded call node has no arg3")
+                  )
+                | Option.Some(_) => trap("unrecorded name has no param3")
+            else
+              trap("arg3-of returns the recorded 3rd arg")
+          | Option.None(_) => trap("a recorded arg3 is found")
+      else
+        trap("param3-of returns the recorded 3rd param")
     | Option.None(_) => trap("a recorded param3 is found")
 
 @test
@@ -1454,10 +1502,11 @@ def pd-param3-arg3-none-when-unrecorded() =
   // a fresh tree (no defs/calls) has NO param3/arg3 for any key → both None (the ≤2-param/arg default, so a
   // 1-/2-param def or call reads None here exactly as before this foundation).
   match param3-of(empty-tree(), 1) with
-    | Option.None(_) => (match arg3-of(empty-tree(), 1) with
-      | Option.None(_) => unit
-      | Option.Some(_) => trap("empty tree has no arg3")
-    )
+    | Option.None(_) =>
+      (match arg3-of(empty-tree(), 1) with
+        | Option.None(_) => unit
+        | Option.Some(_) => trap("empty tree has no arg3")
+      )
     | Option.Some(_) => trap("empty tree has no param3")
 
 @test
@@ -1471,32 +1520,36 @@ def pd-record-param4-and-arg4-then-lookup() =
   let t3 = record-param4(t2, 5, p4) in // name 5 = a def; record its 4th param
   let t4 = record-arg4(t3, 42, arg4Id) in // NApp node 42 = a call; record its 4th arg
   match param4-of(t4, 5) with
-    | Option.Some(x) => if x == p4 then
-      match arg4-of(t4, 42) with
-        | Option.Some(y) => if y == arg4Id then
-          match param4-of(t4, 99) with
-            // an unrecorded name → None
-            | Option.None(_) => (match arg4-of(t4, 999) with
-              // an unrecorded call node → None
-              | Option.None(_) => unit
-              | Option.Some(_) => trap("unrecorded call node has no arg4")
-            )
-            | Option.Some(_) => trap("unrecorded name has no param4")
-        else
-          trap("arg4-of returns the recorded 4th arg")
-        | Option.None(_) => trap("a recorded arg4 is found")
-    else
-      trap("param4-of returns the recorded 4th param")
+    | Option.Some(x) =>
+      if x == p4 then
+        match arg4-of(t4, 42) with
+          | Option.Some(y) =>
+            if y == arg4Id then
+              match param4-of(t4, 99) with
+                // an unrecorded name → None
+                | Option.None(_) =>
+                  (match arg4-of(t4, 999) with
+                    // an unrecorded call node → None
+                    | Option.None(_) => unit
+                    | Option.Some(_) => trap("unrecorded call node has no arg4")
+                  )
+                | Option.Some(_) => trap("unrecorded name has no param4")
+            else
+              trap("arg4-of returns the recorded 4th arg")
+          | Option.None(_) => trap("a recorded arg4 is found")
+      else
+        trap("param4-of returns the recorded 4th param")
     | Option.None(_) => trap("a recorded param4 is found")
 
 @test
 def pd-param4-arg4-none-when-unrecorded() =
   // a fresh tree has NO param4/arg4 → both None (the ≤3-param/arg default).
   match param4-of(empty-tree(), 1) with
-    | Option.None(_) => (match arg4-of(empty-tree(), 1) with
-      | Option.None(_) => unit
-      | Option.Some(_) => trap("empty tree has no arg4")
-    )
+    | Option.None(_) =>
+      (match arg4-of(empty-tree(), 1) with
+        | Option.None(_) => unit
+        | Option.Some(_) => trap("empty tree has no arg4")
+      )
     | Option.Some(_) => trap("empty tree has no param4")
 
 @test
@@ -1545,18 +1598,21 @@ def pd-multi-field-ctor-argtypes-list() =
   let ints = List.push(List.push([], encode-param-type(true, 64)), encode-bool-type()) in // [129, 1]
   let tree = record-ctor-tag-typed-list(empty-tree(), 870, 800, 0, ints) in
   match ctor-argtypes-of(tree, 870) with
-    | Option.Some(lst) => if List.len(lst) == 2 then
-      match List.at(lst, 0) with
-        | Option.Some(f0) => (match List.at(lst, 1) with
-          | Option.Some(f1) => if f0 == encode-param-type(true, 64) and f1 == encode-bool-type() then
-            unit
-          else
-            trap("argTypes = [Int64-enc, Bool-enc]")
-          | Option.None(_) => trap("field 1 present")
-        )
-        | Option.None(_) => trap("field 0 present")
-    else
-      trap("a 2-field ctor records a 2-element argTypes list")
+    | Option.Some(lst) =>
+      if List.len(lst) == 2 then
+        match List.at(lst, 0) with
+          | Option.Some(f0) =>
+            (match List.at(lst, 1) with
+              | Option.Some(f1) =>
+                if f0 == encode-param-type(true, 64) and f1 == encode-bool-type() then
+                  unit
+                else
+                  trap("argTypes = [Int64-enc, Bool-enc]")
+              | Option.None(_) => trap("field 1 present")
+            )
+          | Option.None(_) => trap("field 0 present")
+      else
+        trap("a 2-field ctor records a 2-element argTypes list")
     | Option.None(_) => trap("a recorded multi-field ctor has an argTypes list")
 
 @test
@@ -1566,10 +1622,11 @@ def pd-multi-field-ctor-argtype-of-returns-head() =
   let ints = List.push(List.push([], encode-param-type(true, 64)), encode-bool-type()) in // [129, 1]
   let tree = record-ctor-tag-typed-list(empty-tree(), 871, 800, 0, ints) in
   match ctor-argtype-of(tree, 871) with
-    | Option.Some(a0) => if a0 == encode-param-type(true, 64) then
-      unit
-    else
-      trap("ctor-argtype-of returns field 0 (head) of a multi-field ctor")
+    | Option.Some(a0) =>
+      if a0 == encode-param-type(true, 64) then
+        unit
+      else
+        trap("ctor-argtype-of returns field 0 (head) of a multi-field ctor")
     | Option.None(_) => trap("a recorded multi-field ctor has a head argType")
 
 @test
@@ -1578,15 +1635,14 @@ def pd-single-field-shim-wraps-as-one-element-list() =
   // is a 1-element list AND ctor-argtype-of returns enc — the exact pre-slice-1a single-field behavior, now via the list.
   let tree = record-ctor-tag-typed(empty-tree(), 872, 800, 0, encode-bool-type()) in // 1-field Bool, shim
   match ctor-argtypes-of(tree, 872) with
-    | Option.Some(lst) => if List.len(lst) == 1 then
-      match ctor-argtype-of(tree, 872) with
-        | Option.Some(a0) => if a0 == encode-bool-type() then
-          unit
-        else
-          trap("head = the Bool sentinel")
-        | Option.None(_) => trap("single-field head present")
-    else
-      trap("the single-field shim stores a 1-element list")
+    | Option.Some(lst) =>
+      if List.len(lst) == 1 then
+        match ctor-argtype-of(tree, 872) with
+          | Option.Some(a0) =>
+            if a0 == encode-bool-type() then unit else trap("head = the Bool sentinel")
+          | Option.None(_) => trap("single-field head present")
+      else
+        trap("the single-field shim stores a 1-element list")
     | Option.None(_) => trap("shim-recorded ctor has an argTypes list")
 
 @test
@@ -1607,13 +1663,14 @@ def pd-record-param-type-then-lookup() =
   let enc = encode-param-type(true, 8) in // Int8 = signed, width 8
   let t2 = record-param-type(t1, paramId, enc) in
   match param-type-of(t2, paramId) with
-    | Option.Some(e) => if pt-width(e) == 8 and pt-signed(e) then
-      match param-type-of(t2, 999) with
-        // an unrecorded param node → None
-        | Option.None(_) => unit
-        | Option.Some(_) => trap("an unrecorded param has no declared type")
-    else
-      trap("param-type round-trips to (signed, width=8)")
+    | Option.Some(e) =>
+      if pt-width(e) == 8 and pt-signed(e) then
+        match param-type-of(t2, 999) with
+          // an unrecorded param node → None
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("an unrecorded param has no declared type")
+      else
+        trap("param-type round-trips to (signed, width=8)")
     | Option.None(_) => trap("a recorded param type is found")
 
 @test
@@ -1705,17 +1762,19 @@ def pd-ctor-argtype-default-zero() =
   // no declared type). The tag + decl accessors still project correctly from the 3-tuple. Behavior-neutral default.
   let t1 = record-ctor-tag(empty-tree(), 7, 400, 2) in
   match ctor-argtype-of(t1, 7) with
-    | Option.Some(a) => if a == 0 then
-      match ctor-tag-of(t1, 7) with
-        | Option.Some(tg) => if tg == 2 then
-          match ctor-decl-of(t1, 7) with
-            | Option.Some(dn) => if dn == 400 then unit else trap("decl 400")
-            | Option.None(_) => trap("decl present")
-        else
-          trap("tag 2")
-        | Option.None(_) => trap("tag present")
-    else
-      trap("record-ctor-tag records argType 0 (placeholder)")
+    | Option.Some(a) =>
+      if a == 0 then
+        match ctor-tag-of(t1, 7) with
+          | Option.Some(tg) =>
+            if tg == 2 then
+              match ctor-decl-of(t1, 7) with
+                | Option.Some(dn) => if dn == 400 then unit else trap("decl 400")
+                | Option.None(_) => trap("decl present")
+            else
+              trap("tag 2")
+          | Option.None(_) => trap("tag present")
+      else
+        trap("record-ctor-tag records argType 0 (placeholder)")
     | Option.None(_) => trap("a recorded ctor has an argType slot")
 
 @test
@@ -1725,12 +1784,13 @@ def pd-ctor-argtype-typed-records() =
   let enc = encode-param-type(false, 8) in // an encoded UInt8 (non-zero) as a stand-in payload type
   let t1 = record-ctor-tag-typed(empty-tree(), 8, 500, 0, enc) in
   match ctor-argtype-of(t1, 8) with
-    | Option.Some(a) => if a == enc then
-      match ctor-tag-of(t1, 8) with
-        | Option.Some(tg) => if tg == 0 then unit else trap("tag 0")
-        | Option.None(_) => trap("tag present")
-    else
-      trap("record-ctor-tag-typed records the given argType")
+    | Option.Some(a) =>
+      if a == enc then
+        match ctor-tag-of(t1, 8) with
+          | Option.Some(tg) => if tg == 0 then unit else trap("tag 0")
+          | Option.None(_) => trap("tag present")
+      else
+        trap("record-ctor-tag-typed records the given argType")
     | Option.None(_) => trap("a typed ctor has its argType")
 
 @test

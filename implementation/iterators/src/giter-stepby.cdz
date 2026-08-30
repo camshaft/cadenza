@@ -36,10 +36,8 @@ def from-list(xs) = match xs with
 /// `i` to `n - 1`), otherwise skip it and decrement `i`. The unit under test (via `step-by`).
 def step-from(it, n, i) = match it with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(h, rest) => if i <= 0 then
-    GIter.Cons(h, step-from(rest, n, n - 1))
-  else
-    step-from(rest, n, i - 1)
+  | GIter.Cons(h, rest) =>
+    if i <= 0 then GIter.Cons(h, step-from(rest, n, n - 1)) else step-from(rest, n, i - 1)
 
 /// `step-by(it, n)` — keep index 0 then every n-th element.
 def step-by(it, n) = step-from(it, n, 0)
@@ -68,13 +66,15 @@ def collect(it) = match it with
 
 /// `int-list-eq(xs, ys)` — structural equality on `List(Int64)` for the sequence assertions.
 def int-list-eq(xs, ys) = match xs with
-  | [] => (match ys with
-    | [] => true
-    | _ => false
-  )
-  | [x, .. xr] => match ys with
-    | [] => false
-    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
+  | [] =>
+    (match ys with
+      | [] => true
+      | _ => false
+    )
+  | [x, .. xr] =>
+    match ys with
+      | [] => false
+      | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
 
 /// TESTS ----------------------------------------------------------------------------------------------
 /// empty input: the top Nil arm yields nothing regardless of the stride.

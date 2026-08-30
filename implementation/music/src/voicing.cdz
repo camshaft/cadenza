@@ -25,9 +25,10 @@ def iabs(x: Int64) = if x < 0 then 0 - x else x
 /// prefix). Recursive driver, annotated params (CDZ0201).
 def voice-distance-go(a: List(Int64), b: List(Int64), acc: Int64) = match a with
   | [] => acc
-  | [ha, .. ta] => match b with
-    | [] => acc
-    | [hb, .. tb] => voice-distance-go(ta, tb, acc + iabs(ha - hb))
+  | [ha, .. ta] =>
+    match b with
+      | [] => acc
+      | [hb, .. tb] => voice-distance-go(ta, tb, acc + iabs(ha - hb))
 
 /// The total absolute semitone motion to move the voices of `from` to `to`, paired in order.
 def voice-distance(from: List(Int64), to: List(Int64)) = voice-distance-go(from, to, 0)

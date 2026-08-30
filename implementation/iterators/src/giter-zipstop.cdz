@@ -32,25 +32,29 @@ def from-list(xs) = match xs with
 /// `zip(a, b)` — pair elements positionally, stopping at the shorter operand. The unit under test.
 def zip(a, b) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => match b with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb))
+  | GIter.Cons(ha, ra) =>
+    match b with
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb))
 
 /// `zip-with(a, b, f)` — like `zip` but fuse each pair through `f`. Threads `f`.
 def zip-with(a, b, f) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => match b with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => GIter.Cons(f(ha, hb), zip-with(ra, rb, f))
+  | GIter.Cons(ha, ra) =>
+    match b with
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(hb, rb) => GIter.Cons(f(ha, hb), zip-with(ra, rb, f))
 
 /// `zip3(a, b, c)` — positional triples, stopping at the shortest of the three operands.
 def zip3(a, b, c) = match a with
   | GIter.Nil(_) => GIter.Nil(unit)
-  | GIter.Cons(ha, ra) => match b with
-    | GIter.Nil(_) => GIter.Nil(unit)
-    | GIter.Cons(hb, rb) => match c with
+  | GIter.Cons(ha, ra) =>
+    match b with
       | GIter.Nil(_) => GIter.Nil(unit)
-      | GIter.Cons(hc, rc) => GIter.Cons((ha, hb, hc), zip3(ra, rb, rc))
+      | GIter.Cons(hb, rb) =>
+        match c with
+          | GIter.Nil(_) => GIter.Nil(unit)
+          | GIter.Cons(hc, rc) => GIter.Cons((ha, hb, hc), zip3(ra, rb, rc))
 
 /// `count(it)` — number of emitted values, driving the pull to exhaustion.
 def count(it) = match it with

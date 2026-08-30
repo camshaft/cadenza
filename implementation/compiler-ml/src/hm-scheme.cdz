@@ -41,7 +41,8 @@ def id-push-uniq(acc: List(Int64), x: Int64) = if id-mem(x, acc, 0) then acc els
 /// Collect the free SIGN-var-ids of a Ty into `acc` (deduped). Ints contribute their sign var (if SVar); TyFn
 /// recurses into params + result; Bool/Err/Sum contribute none.
 def free-sign-ids(t: Ty, acc: List(Int64)) = match t with
-  | Ty.TyInt(it) => (let IntType.IntType(s, _) = it in
+  | Ty.TyInt(it) =>
+    (let IntType.IntType(s, _) = it in
     match s with
       | Sign.SVar(id) => id-push-uniq(acc, id)
       | _ => acc)
@@ -58,7 +59,8 @@ def free-sign-list(ps: List(Ty), i: Int64, acc: List(Int64)) =
 
 /// Collect the free WIDTH-var-ids of a Ty (the orthogonal twin).
 def free-width-ids(t: Ty, acc: List(Int64)) = match t with
-  | Ty.TyInt(it) => (let IntType.IntType(_, w) = it in
+  | Ty.TyInt(it) =>
+    (let IntType.IntType(_, w) = it in
     match w with
       | Width.WVar(id) => id-push-uniq(acc, id)
       | _ => acc)
@@ -81,7 +83,8 @@ def inst-sign-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
     (su, n)
   else
     match List.at(ids, i) with
-      | Option.Some(qid) => let (fv, n1) = fresh-sign(n) in
+      | Option.Some(qid) =>
+        let (fv, n1) = fresh-sign(n) in
         inst-sign-ren(subst-bind-sign(su, qid, fv), ids, i + 1, n1)
       | Option.None(_) => (su, n)
 
@@ -91,7 +94,8 @@ def inst-width-ren(su: Subst, ids: List(Int64), i: Int64, n: Int64) =
     (su, n)
   else
     match List.at(ids, i) with
-      | Option.Some(qid) => let (fv, n1) = fresh-width(n) in
+      | Option.Some(qid) =>
+        let (fv, n1) = fresh-width(n) in
         inst-width-ren(subst-bind-width(su, qid, fv), ids, i + 1, n1)
       | Option.None(_) => (su, n)
 
@@ -112,12 +116,8 @@ def ids-minus(xs: List(Int64), env: List(Int64), i: Int64, acc: List(Int64)) =
     acc
   else
     match List.at(xs, i) with
-      | Option.Some(x) => ids-minus(
-        xs,
-        env,
-        i + 1,
-        if id-mem(x, env, 0) then acc else List.push(acc, x)
-      )
+      | Option.Some(x) =>
+        ids-minus(xs, env, i + 1, if id-mem(x, env, 0) then acc else List.push(acc, x))
       | Option.None(_) => acc
 
 /// GENERALIZE a type over an environment: quantify the body's free (sign+width) vars EXCEPT those free in the
@@ -137,10 +137,8 @@ import { apply-sign, apply-width } from "subst"
 def hs-mono-instantiates-to-itself() =
   // a monomorphic scheme (no quantifiers) instantiates to its body unchanged; counter untouched.
   match instantiate(mono(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(64)))), 0) with
-    | (Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))), n) => if w == 64 and n == 0 then
-      unit
-    else
-      trap("mono is identity, counter 0")
+    | (Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))), n) =>
+      if w == 64 and n == 0 then unit else trap("mono is identity, counter 0")
     | _ => trap("mono(Int64) instantiates to Int64")
 
 @test
@@ -150,11 +148,11 @@ def hs-generalize-then-instantiate-is-fresh() =
   let body = Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(32))) in
   let sch = generalize(body, [] : List(Int64), [] : List(Int64)) in
   match instantiate(sch, 5) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(fid), Width.WFixed(w))), n) => if fid == 5 and w == 32
-        and n == 6 then
-      unit
-    else
-      trap("quantified sign var freshens to SVar(5), counter 6")
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(fid), Width.WFixed(w))), n) =>
+      if fid == 5 and w == 32 and n == 6 then
+        unit
+      else
+        trap("quantified sign var freshens to SVar(5), counter 6")
     | _ => trap("generalized-then-instantiated body has a FRESH sign var")
 
 @test
@@ -168,11 +166,11 @@ def hs-two-instantiations-are-disjoint() =
     ) in
   let (_t1, n1) = instantiate(sch, 0) in
   match instantiate(sch, n1) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(s2), Width.WVar(w2))), n2) => if s2 == 2 and w2 == 3
-        and n2 == 4 then
-      unit
-    else
-      trap("second instantiation is SVar(2)/WVar(3)")
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(s2), Width.WVar(w2))), n2) =>
+      if s2 == 2 and w2 == 3 and n2 == 4 then
+        unit
+      else
+        trap("second instantiation is SVar(2)/WVar(3)")
     | _ => trap("second instantiation has fresh vars")
 
 @test
@@ -183,10 +181,8 @@ def hs-env-var-is-not-generalized() =
   let body = Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(8))) in
   let sch = generalize(body, List.push([], 0), [] : List(Int64)) in
   match instantiate(sch, 9) with
-    | (Ty.TyInt(IntType.IntType(Sign.SVar(id), Width.WFixed(_))), n) => if id == 0 and n == 9 then
-      unit
-    else
-      trap("env-pinned var 0 stays 0, counter untouched")
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(id), Width.WFixed(_))), n) =>
+      if id == 0 and n == 9 then unit else trap("env-pinned var 0 stays 0, counter untouched")
     | _ => trap("an env-free var is not generalized → instantiate keeps it")
 
 @test
