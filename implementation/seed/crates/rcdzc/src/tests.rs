@@ -38906,7 +38906,7 @@ mod sidecar_driven {
     fn a_diagnostics_query_reports_faults_without_an_export() {
         // The "diagnostics as you type" primitive: an ill-typed program with NO export still yields its
         // faults (the query is not gated on layout/export). `(if 5 1 2)` — a non-Bool condition — is a
-        // CDZ0203, reported as `severity<TAB>code<TAB>node-id<TAB>message`.
+        // CDZ0203, carried in the canonical binary-AST `KIND_DIAGNOSTICS` wire (seq-254).
         let src = "(module m (def (main) (if 5 1 2)))"; // note: NO (export …)
         let out = compile(&inputs(src, &[Request::Query(Query::Diagnostics)]), &[]);
         // A query never fails the compile; the diagnostics ride in the artifact, not the error channel.
@@ -38915,20 +38915,25 @@ mod sidecar_driven {
             "a query does not fail: {:?}",
             out.diagnostics
         );
-        let text = artifact_text(&out, KIND_DIAGNOSTICS).expect("a diagnostics artifact");
-        let line = text
-            .lines()
-            .find(|l| l.contains("CDZ0203"))
-            .unwrap_or_else(|| panic!("expected a CDZ0203 fault, got:\n{text}"));
-        let cols: Vec<&str> = line.split('\t').collect();
-        assert_eq!(cols[0], "error", "severity column");
-        assert_eq!(cols[1], "CDZ0203", "code column");
+        let bytes = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == KIND_DIAGNOSTICS)
+            .map(|a| a.bytes.clone())
+            .expect("a diagnostics artifact");
+        // Binary-AST wire — decode with the shared codec, don't parse text/columns.
+        let diags = crate::decode_diagnostics(&bytes);
+        let d = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0203"))
+            .unwrap_or_else(|| panic!("expected a CDZ0203 fault, got:\n{diags:?}"));
+        assert_eq!(d.severity, crate::Severity::Error, "severity");
         assert!(
-            cols[2].parse::<u32>().is_ok(),
-            "node-id column is a number: {:?}",
-            cols[2]
+            d.node.is_some(),
+            "the fault anchors to a node: {:?}",
+            d.node
         );
-        assert!(!cols[3].is_empty(), "message column is non-empty");
+        assert!(!d.message.is_empty(), "message is non-empty");
     }
 
     #[test]
@@ -38937,7 +38942,18 @@ mod sidecar_driven {
         let src = "(module m (def (main) (: 42 Int64)) (export main))";
         let out = compile(&inputs(src, &[Request::Query(Query::Diagnostics)]), &[]);
         assert!(!out.has_error());
-        assert_eq!(artifact_text(&out, KIND_DIAGNOSTICS).as_deref(), Some(""));
+        // The KIND_DIAGNOSTICS wire is binary AST; a clean program decodes to zero faults (whether the
+        // artifact is absent or an encoded empty list).
+        let faults = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == KIND_DIAGNOSTICS)
+            .map(|a| crate::decode_diagnostics(&a.bytes))
+            .unwrap_or_default();
+        assert!(
+            faults.is_empty(),
+            "a clean program has no faults: {faults:?}"
+        );
     }
 
     #[test]
