@@ -699,38 +699,6 @@ fn many_typod_field_accesses_of_one_wide_record_suggest_in_bounded_time() {
 //  of type U" + the same coercion fixes as a value annotation — Int64.of wrap, "3.0"/"3" literal retype (replace),
 //  Float64.of-int wrap, String.to-bytes wrap, (Some …) sum-wrap, and Bool->Int64 no-fix.)
 #[test]
-fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
-    // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
-    // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
-    let unbound: Vec<_> = crate::diagnostics(&mut Db::load(parse(
-        "(module m (def (main) nope) (export main))",
-    )))
-    .into_iter()
-    .filter(|d| d.code.as_deref() == Some("CDZ0101"))
-    .collect();
-    assert_eq!(
-        unbound.len(),
-        1,
-        "one unbound-name fault, not two: {unbound:?}"
-    );
-
-    // But two DISTINCT occurrences of the same unbound name (different nodes) are NOT duplicates —
-    // both survive (each has its own source location).
-    let two: Vec<_> = crate::diagnostics(&mut Db::load(parse(
-        "(module m (def (main) (+ nope nope)) (export main))",
-    )))
-    .into_iter()
-    .filter(|d| d.code.as_deref() == Some("CDZ0101"))
-    .collect();
-    assert_eq!(
-        two.len(),
-        2,
-        "two distinct `nope` uses each reported once: {two:?}"
-    );
-    assert_ne!(two[0].node, two[1].node, "at different nodes");
-}
-
-#[test]
 fn a_non_exhaustive_match_on_a_function_param_surfaces_in_the_diagnostics_query() {
     // The `diagnostics()` query (what `cdz check`/`--json`/`fix` run) checks well-formedness over
     // EVERY def body, but the reached-poison (lowering) walk runs only on nullary EXPORTED bodies — so

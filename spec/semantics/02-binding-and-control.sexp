@@ -1421,6 +1421,19 @@
   (input  y)
   (error  CDZ0101))
 
+; A REACHABLE unbound name is found by BOTH the type-check walk AND the reached-poison walk, so it must be
+; reported ONCE (deduped by code+node), not twice — `(def (main) nope)` yields exactly one CDZ0101. But TWO
+; DISTINCT occurrences of the same unbound name (`(+ nope nope)`, at different source nodes) are NOT
+; duplicates: each has its own source location, so both are reported. (Migrated from rcdzc
+; the_same_fault_is_reported_once_even_when_two_passes_find_it.)
+(case "a reachable unbound name found by two passes is reported exactly once"
+  (input  (do (def (main) nope) (export main)))
+  (error  CDZ0101 (count 1)))
+
+(case "two distinct occurrences of the same unbound name are each reported, not merged to one"
+  (input  (do (def (main) (+ nope nope)) (export main)))
+  (error  CDZ0101 (count 2)))
+
 ; The unbound-name check (and well-formedness generally) applies to EVERY definition in a module, not
 ; only the ones reachable from `main`. core-semantics.md #Binding Is Lexical: "A reference to a name with
 ; no enclosing binding MUST be a compile-time error" — unconditionally, with no reachability qualifier.
