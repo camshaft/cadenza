@@ -24789,3 +24789,22 @@
             (def (main) (let (((tuple x y) (slow 33))) (+ x y)))
             (export main)))
   (output (: 9227465 Int64)))
+
+; A `#list(…)` pattern against a value that is NOT a list (a record, a tuple) is a SHAPE error (CDZ0201): the
+; message names the value's type and says a list pattern needs a list, without leaking the internal "payload
+; type" term. And the `..` rest MARKER is a syntactic token, not a binder — two rest patterns across sibling
+; sub-patterns are linear — but the rest BINDER after `..` is a real name, so reusing it across siblings is
+; non-linear (CDZ0102). (Migrated from rcdzc a_list_pattern_on_a_non_list_value_names_the_type_not_the_payload
+; + two_rest_markers_in_one_arm_are_linear; the valid-list-pattern + well-formed-two-rest positives are the
+; existing 05 list-pattern / "a tuple of two rest-lists binds each leading head" cases.)
+(case "a list pattern on a record value is a shape error naming the type, not the payload"
+  (input  (do (def (g (: r (Record (: x Int64)))) (match r (#list(a) a))) (export g)))
+  (error  CDZ0201 (message "this list pattern cannot destructure a value of type (Record (: x Int64))") (not "payload")))
+
+(case "a list pattern on a tuple value says a list pattern matches only a list"
+  (input  (do (def (g (: t (Tuple Int64 Int64))) (match t (#list(a b) a))) (export g)))
+  (error  CDZ0201 (message "a `(list …)` pattern matches only a list value")))
+
+(case "a reused rest binder across sibling rest-lists is non-linear"
+  (input  (do (def (f (: p (Tuple (List Int64) (List Int64)))) (match p (#tuple(#list(a .. r) #list(b .. r)) a) (_ 0))) (def (main) (f #tuple(#list(1) #list(2)))) (export main)))
+  (error  CDZ0102))
