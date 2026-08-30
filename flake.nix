@@ -3921,6 +3921,15 @@
                 target/wasm32-unknown-unknown/release/cdz_wasm.wasm
               # wasm-pack's --release runs wasm-opt; the crate profile is opt-level="s" → -Os.
               wasm-opt -Os pkg/cdz_wasm_bg.wasm -o pkg/cdz_wasm_bg.wasm
+              # STRIP the target_features custom section. rustc/LLVM 22 EMITS 8 wasm features (incl
+              # bulk-memory-opt + call-indirect-overlong); wasm-pack's OLDER bundled binaryen lowers those 2
+              # away, but pkgs.binaryen 130/131 PRESERVES them → the guide's jco/wasm loader REJECTS the module
+              # on the SECTION DECLARATION alone (the underlying memory.copy/fill + overlong call_indirect
+              # RUN FINE — v-guide-infra proved section-stripped bytes pass guide test:unit 675/675, 0 OOB;
+              # the declaration is a metadata-rejection, not an instruction-support gap). A separate strip pass
+              # AFTER -Os guarantees the final module carries no target_features section, matching the verified
+              # artifact. Fixes guideExamplesCheck's 25 memory-access-out-of-bounds (localGate-red on main).
+              wasm-opt --strip-target-features pkg/cdz_wasm_bg.wasm -o pkg/cdz_wasm_bg.wasm
             )
             runHook postBuild
           '';
