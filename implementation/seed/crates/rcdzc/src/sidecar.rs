@@ -429,22 +429,24 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // but carries no doc → "no documentation for `X`"; a name that refers to NOTHING → "no such
             // definition `X`". A cdz-side pre-check can't draw this line (it also documents built-ins that
             // aren't in the file's `Symbols`), but the query knows the `Db` + prelude + keyword tables.
-            let text = match doc_of_name(db, name) {
-                Some(doc) => doc,
-                None if name_is_known(db, name) => format!("no documentation for `{name}`"),
-                // Unresolvable — a typo. Offer a "did you mean?" over the DOCUMENTABLE names the query
-                // knows (user defs + built-in prelude bindings), so the answer is actionable like the
-                // compiler's own unbound-name diagnostics (`suggest::nearest`, its edit-distance +
-                // 1-char/empty guards). No suggestion when nothing is close enough.
-                None => match nearest_known_name(db, name) {
-                    Some(near) => format!("no such definition `{name}` — did you mean `{near}`?"),
-                    None => format!("no such definition `{name}`"),
+            // A STRUCTURED tagged answer (`doc_wire::DocAnswer`), NOT prose the consumer must string-match
+            // (operator P0 seq-284/307-308: no discriminator carried in text). The user-facing wording
+            // (`no documentation for `X``, `no such definition `X` — did you mean `Y`?`) lives on the
+            // consumer, which holds the queried name; here we carry only the outcome + the optional
+            // suggestion (over the DOCUMENTABLE names the query knows — user defs + built-in prelude
+            // bindings, via `suggest::nearest`'s edit-distance + 1-char/empty guards; `None` when nothing
+            // is close enough).
+            let answer = match doc_of_name(db, name) {
+                Some(doc) => cadenza_compile_abi::DocAnswer::Doc(doc),
+                None if name_is_known(db, name) => cadenza_compile_abi::DocAnswer::Undocumented,
+                None => cadenza_compile_abi::DocAnswer::NoSuchDef {
+                    suggestion: nearest_known_name(db, name),
                 },
             };
             QueryResult {
                 kind: KIND_DOC,
                 name: name.clone(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_doc(&answer),
             }
         }
         Query::DocAt { node } => {
@@ -453,11 +455,16 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // signature occurrence; its `(doc "…")` text is read from the doc column. TOTAL: a node that
             // does not reach a documented definition yields the empty result (no line).
             let id = StructId(*node);
-            let text = doc_at_node(db, id).unwrap_or_default();
+            // Structured (`doc_wire::DocAnswer`): the doc text when the node reaches a documented
+            // definition, else `Undocumented` (the total "no answer"). The consumer renders the message.
+            let answer = match doc_at_node(db, id) {
+                Some(doc) => cadenza_compile_abi::DocAnswer::Doc(doc),
+                None => cadenza_compile_abi::DocAnswer::Undocumented,
+            };
             QueryResult {
                 kind: KIND_DOC,
                 name: node.to_string(),
-                bytes: text.into_bytes(),
+                bytes: cadenza_compile_abi::encode_doc(&answer),
             }
         }
         Query::Instantiations { name } => {

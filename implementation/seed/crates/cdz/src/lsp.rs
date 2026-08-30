@@ -1617,9 +1617,14 @@ fn hover_at(text: &str, is_ml: bool, pos: Position) -> Option<Hover> {
     if ty.is_empty() || ty == "unknown" {
         return None;
     }
+    // The hovered node's documentation, decoded from the structured binary-AST wire — only a `Doc`
+    // outcome yields hover prose (a no-answer verdict → no doc section); ZERO string parsing.
     let doc = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_DOC)
-        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .and_then(|b| match cadenza_compile_abi::decode_doc(b) {
+            cadenza_compile_abi::DocAnswer::Doc(text) => Some(text.trim().to_string()),
+            _ => None,
+        })
         .filter(|d| !d.is_empty());
     // The hovered node's source range, so the editor underlines exactly the sub-expression it typed.
     let range = spans
@@ -1948,9 +1953,14 @@ fn package_hover_at(
     if ty.is_empty() || ty == "unknown" {
         return None; // let the single-buffer path try (or show nothing)
     }
+    // The hovered node's documentation, decoded from the structured binary-AST wire — only a `Doc`
+    // outcome yields hover prose (a no-answer verdict → no doc section); ZERO string parsing.
     let doc = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_DOC)
-        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .and_then(|b| match cadenza_compile_abi::decode_doc(b) {
+            cadenza_compile_abi::DocAnswer::Doc(text) => Some(text.trim().to_string()),
+            _ => None,
+        })
         .filter(|d| !d.is_empty());
     // Hover range = the cursor node's span in the ENTRY file (base 0, so the entry spans apply directly).
     let range = entry_spans

@@ -5317,55 +5317,51 @@ fn run_doc(args: &DocArgs) -> ExitCode {
             name: args.name.clone(),
         }),
     );
-    match out.artifact(cadenza_compile_abi::sidecar::KIND_DOC) {
-        Some(bytes) => {
-            let text = String::from_utf8_lossy(bytes);
-            // The `DocOf` query is TOTAL — it returns a doc artifact for THREE outcomes: the doc text, a
-            // "no documentation for `X`" line (a REAL definition that carries no doc), and a "no such
-            // definition `X`" line (the name resolves to NOTHING — a typo). The first two are a SUCCESS
-            // (`X` exists; asking for its doc is a legitimate answer), but an unresolvable name is a
-            // FAILURE — a caller/script should tell "you misspelled the name" from "this exists but is
-            // undocumented". `is_no_such_definition` matches the exact sentinel for the queried name (not a
-            // loose prefix on the doc prose — the pr467 brittleness fix, shared with `cdz type`).
-            let no_such = is_no_such_definition(&text, &args.name);
-            // The undocumented-but-real sentinel is the compiler's exact `no documentation for `X`` line
-            // (rcdzc `DocOf`), matched precisely (not a loose prefix) so a real doc that happens to start
-            // with those words isn't misread.
-            let undocumented = text.trim() == format!("no documentation for `{}`", args.name);
-            if args.json {
-                use cadenza_syntax::query::json;
-                let mut obj = json::Object::new();
-                obj.string("name", &args.name);
-                obj.raw("exists", if no_such { "false" } else { "true" });
-                obj.raw(
-                    "documented",
-                    if !no_such && !undocumented {
-                        "true"
-                    } else {
-                        "false"
-                    },
-                );
-                // `doc` is the actual doc text only when documented; null for the two "no doc" outcomes,
-                // so a consumer never mistakes a sentinel line for real documentation.
-                if !no_such && !undocumented {
-                    obj.string("doc", text.trim_end());
-                } else {
-                    obj.raw("doc", "null");
-                }
-                println!("{}", obj.finish());
-            } else {
-                println!("{text}");
-            }
-            if no_such {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
+    let Some(bytes) = out.artifact(cadenza_compile_abi::sidecar::KIND_DOC) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    use cadenza_compile_abi::DocAnswer;
+    // The `DocOf` query is TOTAL, answering with a STRUCTURED outcome (`DocAnswer`) — the doc text, an
+    // `Undocumented` verdict (a REAL definition that carries no doc), or a `NoSuchDef` verdict (the name
+    // resolves to NOTHING — a typo, with an optional suggestion). The first two are a SUCCESS (`X` exists;
+    // asking for its doc is a legitimate answer), but an unresolvable name is a FAILURE — a caller/script
+    // tells "you misspelled the name" from "this exists but is undocumented" off the VARIANT, not a
+    // sentinel string. The user-facing message wording lives HERE (the consumer holds the queried name),
+    // so no post-decode parsing (operator P0 seq-284/307-308).
+    let answer = cadenza_compile_abi::decode_doc(bytes);
+    let name = &args.name;
+    let no_such = matches!(answer, DocAnswer::NoSuchDef { .. });
+    let documented = matches!(answer, DocAnswer::Doc(_));
+    let human = match &answer {
+        DocAnswer::Doc(text) => text.clone(),
+        DocAnswer::Undocumented => format!("no documentation for `{name}`"),
+        DocAnswer::NoSuchDef {
+            suggestion: Some(near),
+        } => format!("no such definition `{name}` — did you mean `{near}`?"),
+        DocAnswer::NoSuchDef { suggestion: None } => format!("no such definition `{name}`"),
+    };
+    if args.json {
+        use cadenza_syntax::query::json;
+        let mut obj = json::Object::new();
+        obj.string("name", name);
+        obj.raw("exists", if no_such { "false" } else { "true" });
+        obj.raw("documented", if documented { "true" } else { "false" });
+        // `doc` is the actual doc text only when documented; null for the two "no doc" outcomes, so a
+        // consumer never mistakes a sentinel for real documentation.
+        if let DocAnswer::Doc(text) = &answer {
+            obj.string("doc", text.trim_end());
+        } else {
+            obj.raw("doc", "null");
         }
-        None => {
-            report_errors(&out);
-            ExitCode::FAILURE
-        }
+        println!("{}", obj.finish());
+    } else {
+        println!("{human}");
+    }
+    if no_such {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -5458,12 +5454,11 @@ fn run_doc_at(args: &DocAtOffsetArgs) -> ExitCode {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
-    let doc = String::from_utf8_lossy(bytes);
-    // A total query: an empty answer means the node documents nothing — say so rather than print a blank.
-    if doc.trim().is_empty() {
-        println!("no documentation at byte offset {}", args.offset);
-    } else {
-        println!("{doc}");
+    // A total query: `Doc(text)` prints the documentation; any no-answer verdict (the node documents
+    // nothing) says so rather than print a blank — off the STRUCTURED outcome, no string-matching.
+    match cadenza_compile_abi::decode_doc(bytes) {
+        cadenza_compile_abi::DocAnswer::Doc(text) if !text.trim().is_empty() => println!("{text}"),
+        _ => println!("no documentation at byte offset {}", args.offset),
     }
     ExitCode::SUCCESS
 }

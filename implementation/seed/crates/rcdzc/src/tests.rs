@@ -35847,6 +35847,15 @@ mod sidecar_driven {
         )
     }
 
+    /// Every `KIND_DOC` answer decoded from the binary-AST wire, in artifact (request) order.
+    fn doc_answers(out: &crate::abi::CompileOutput) -> Vec<cadenza_compile_abi::DocAnswer> {
+        out.artifacts
+            .iter()
+            .filter(|a| a.kind == KIND_DOC)
+            .map(|a| cadenza_compile_abi::decode_doc(&a.bytes))
+            .collect()
+    }
+
     #[test]
     fn a_type_of_query_reads_the_type_column() {
         // A `TypeOf` request for a nullary def answers with its rendered type — the same canonical text
@@ -38986,15 +38995,13 @@ mod sidecar_driven {
             out.diagnostics
         );
         // The FIRST DocOf artifact is `answer`'s doc, the SECOND is `dbl`'s (request order preserved).
-        let docs: Vec<String> = out
-            .artifacts
-            .iter()
-            .filter(|a| a.kind == KIND_DOC)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
-            .collect();
+        use cadenza_compile_abi::DocAnswer;
         assert_eq!(
-            docs,
-            vec!["the answer".to_string(), "doubles x".to_string()]
+            doc_answers(&out),
+            vec![
+                DocAnswer::Doc("the answer".to_string()),
+                DocAnswer::Doc("doubles x".to_string())
+            ]
         );
     }
 
@@ -39024,18 +39031,18 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let docs: Vec<String> = out
-            .artifacts
-            .iter()
-            .filter(|a| a.kind == KIND_DOC)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
-            .collect();
+        // DISTINCT structured verdicts (not sentinel strings): a real-but-undocumented def, a typo naming
+        // nothing, and a near-miss typo carrying a suggestion. The user-facing wording lives on the `cdz`
+        // consumer now — the wire carries only the variant + the optional suggestion.
+        use cadenza_compile_abi::DocAnswer;
         assert_eq!(
-            docs,
+            doc_answers(&out),
             vec![
-                "no documentation for `main`".to_string(),
-                "no such definition `ghost`".to_string(),
-                "no such definition `mian` — did you mean `main`?".to_string(),
+                DocAnswer::Undocumented,
+                DocAnswer::NoSuchDef { suggestion: None },
+                DocAnswer::NoSuchDef {
+                    suggestion: Some("main".to_string())
+                },
             ]
         );
     }
@@ -39059,22 +39066,19 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        let docs: Vec<String> = out
-            .artifacts
-            .iter()
-            .filter(|a| a.kind == KIND_DOC)
-            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
-            .collect();
+        use cadenza_compile_abi::DocAnswer;
+        let answers = doc_answers(&out);
+        let doc_text = |a: &DocAnswer| match a {
+            DocAnswer::Doc(t) => t.clone(),
+            other => panic!("expected a Doc answer, got {other:?}"),
+        };
+        let d0 = doc_text(&answers[0]);
+        let d1 = doc_text(&answers[1]);
         assert!(
-            docs[0].contains("persistent") && docs[0].contains("sequence"),
-            "List's built-in doc: {:?}",
-            docs[0]
+            d0.contains("persistent") && d0.contains("sequence"),
+            "List's built-in doc: {d0:?}"
         );
-        assert!(
-            docs[1].starts_with("Conditional"),
-            "if's keyword doc: {:?}",
-            docs[1]
-        );
+        assert!(d1.starts_with("Conditional"), "if's keyword doc: {d1:?}");
     }
 
     #[test]
@@ -39093,8 +39097,10 @@ mod sidecar_driven {
             let out = compile(&inputs(src, &[Request::Query(Query::DocAt { node })]), &[]);
             assert!(!out.has_error(), "{:?}", out.diagnostics);
             assert_eq!(
-                artifact_text(&out, KIND_DOC).as_deref(),
-                Some("a helper value"),
+                cadenza_compile_abi::decode_doc(
+                    artifact_bytes(&out, KIND_DOC).expect("a doc artifact")
+                ),
+                cadenza_compile_abi::DocAnswer::Doc("a helper value".to_string()),
                 "node {node} should surface the doc"
             );
         }
@@ -39120,7 +39126,12 @@ mod sidecar_driven {
             &[],
         );
         assert!(!out.has_error());
-        assert_eq!(artifact_text(&out, KIND_DOC).as_deref(), Some(""));
+        assert_eq!(
+            cadenza_compile_abi::decode_doc(
+                artifact_bytes(&out, KIND_DOC).expect("a doc artifact")
+            ),
+            cadenza_compile_abi::DocAnswer::Undocumented
+        );
     }
 
     /// Run the `Highlight` query over `src` and collect the SET of `kind` strings assigned to the leaf
