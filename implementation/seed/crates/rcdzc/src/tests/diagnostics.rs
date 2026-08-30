@@ -1731,6 +1731,22 @@ fn a_set_match_pattern_is_a_coded_check_surfaced_rejection_not_silent() {
         "the two-`..` `{pat}` set match pattern surfaces the coded CDZ0201 rejection in check \
          (was a silent uncoded decline; bare + single-`..` forms migrated to corpus 05): {all:?}"
     );
+    // DUAL-READ PIN (M3 reader-flip guard): the LEGACY name-alias spelling `(set …)` reaches the SAME
+    // coded CDZ0201 as the native `#set(…)` leaf — `compound_form_of(_, Set)` recognizes both the native
+    // ctor-leaf head AND the `as_name`/`as_str` alias, so the scalar-path set branch fires for either.
+    // Pinned EVEN THOUGH it passes: the reader-flip drops legacy head recognition, and this locks the
+    // current alias→CDZ0201 behavior so that transition can't silently turn the alias form back into a
+    // silent/uncoded decline. (Cannot live in corpus — the drift-guard nativizes any `(set …)` input.)
+    let alias =
+        "(module m (def (f (: s (Set Int64))) (match s ((set 1 .. r) 0) (_ 9))) (export f))";
+    let alias_diags = diags_of(alias);
+    assert!(
+        alias_diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("set match pattern is not supported")),
+        "the legacy alias `(set …)` set match pattern also surfaces the coded CDZ0201 (dual-read): {alias_diags:?}"
+    );
     // NO false alarm: a scalar-only match over a Set scrutinee (a whole-value binder + wildcard, NO
     // `#set(…)` pattern) routes to the scalar path with a valid binder probe — it must stay clean.
     let ok = "(module m (def (f (: s (Set Int64))) (match s (whole 0) (_ 9))) (export f))";
