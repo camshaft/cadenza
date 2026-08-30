@@ -6594,9 +6594,9 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
         let name = site.name.as_str();
         let widget = site.widget.as_deref();
         // The declared TYPE: the full structured `Ty` sub-AST rendered back to its display string —
-        // byte-identical to the compiler's `Ty::render_name` (`render_ty_name`), so no render-name string
+        // byte-identical to the compiler's `Ty::render_name` (`render_ty`), so no render-name string
         // rode the wire yet the CLI output is unchanged.
-        let ty = cadenza_syntax::render_ty::render_ty_name(&site.ty, site.ty.root);
+        let ty = cadenza_syntax::render_ty::render_ty(&site.ty, site.ty.root);
         // A range is the two element nodes rendered as `[lo, hi]` (both present or neither).
         let range = site.range.map(|(lo, hi)| (render_id(lo), render_id(hi)));
         let options = site.options.map(render_id);

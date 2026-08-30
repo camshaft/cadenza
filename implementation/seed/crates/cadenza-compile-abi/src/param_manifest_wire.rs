@@ -5,7 +5,7 @@
 //! `Query::ParamManifest`) builds each site's declared type as a FULL structured `Ty` sub-AST via
 //! `rcdzc::eval::encode_ty_payload` (NOT a `Ty::render_name` string) and calls [`encode`]; the consumer
 //! (`cdz param-manifest`) calls [`decode`] and renders each type back to its display string via
-//! `cadenza_syntax::render_ty::render_ty_name` (byte-identical to `Ty::render_name`), doing zero string
+//! `cadenza_syntax::render_ty::render_ty` (byte-identical to `Ty::render_name`), doing zero string
 //! parsing.
 //!
 //! Shape: a root `(param-manifest <site>…)` list, one site form per `@param`, in scan order:
@@ -23,7 +23,7 @@ use cadenza_ast::ast::{Arenas, Builder, IntValue, Leaf, Radix, Struct, StructId}
 
 /// One `@param` site the manifest describes. `ty` is a STANDALONE arena rooted at the site's resolved-type
 /// payload sub-AST (as the producer extracts it via `encode_ty_payload`); a consumer renders it with
-/// `cadenza_syntax::render_ty::render_ty_name(&site.ty, site.ty.root)`. `widget`/`range`/`options`/`default`
+/// `cadenza_syntax::render_ty::render_ty(&site.ty, site.ty.root)`. `widget`/`range`/`options`/`default`
 /// are `None` when the `@param` kv is absent; `range`/`options`/`default`/`name_node` are arena node ids the
 /// consumer maps to source via the shared `StructId` space + span table.
 #[derive(Clone, PartialEq, Debug)]

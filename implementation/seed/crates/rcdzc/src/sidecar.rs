@@ -812,7 +812,7 @@ fn hash_subtree(db: &Db, id: StructId, h: &mut crate::fxhash::FxHasher) {
 /// (`param_sidecar::scan_manifest` over `db.ast`), then, for each, resolves the DECLARED TYPE and carries it
 /// as a FULL structured `Ty` sub-AST (`eval::encode_ty_payload`) — NOT a `Ty::render_name` string (operator
 /// P0 seq-254/284: "I want the full type ast!"); the consumer renders it back to a display string via
-/// `cadenza_syntax::render_ty::render_ty_name`. The value fields (range elements, options list, default
+/// `cadenza_syntax::render_ty::render_ty`. The value fields (range elements, options list, default
 /// value) ride as ARENA NODE IDS (absent when the kv is absent), which the consumer renders via the
 /// shared-`StructId` arena; `widget` is the bare atom or absent; `name_node` is the param name occurrence
 /// the consumer maps to `file:line:col`. Order is scan order (ascending site id), a deterministic function
