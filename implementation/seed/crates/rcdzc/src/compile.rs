@@ -5026,6 +5026,25 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
 }
 
 fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    // A bare `resume` node lowered STANDALONE (out of its handler-fold context) yields the
+    // `Resolved::Resume` CDZ0900 poison ("this `resume` is not reducible by the tail-resumptive fold …",
+    // lower/compute.rs). But the reached-poison walk must NEVER independently fault a resume node — its
+    // real diagnostic is always reported elsewhere: (a) when the enclosing handle FOLDS, the actual emit
+    // splices the resume and SUCCEEDS, so this standalone poison is SPURIOUS (it would wrongly block a
+    // working artifact — the mutual-group `…_folds` case, v-inference-triaged); (b) when the handle
+    // cannot fold, the whole-handle `HANDLER_NOT_REDUCIBLE_DECLINE` poison is reported at the handle
+    // (this per-resume copy is redundant); (c) a truly STRAY resume (no enclosing arm) is already
+    // rejected upstream by the `STRAY_RESUME_MESSAGE` CDZ0201 check in `collect_faults`. So skip the
+    // resume node here — its value/next-state faults, if the handle folds, surface through the folded
+    // core; if it does not fold, the program is already declined at the handle. (v-effects, routed by
+    // v-deferral-declines fault-hygiene, root-caused by v-inference: the speculative CDZ0900 lingered in
+    // the pre-dedup fault list and would surface — wrongly — once dedup self-suppression is fixed.)
+    if matches!(
+        crate::resolve::resolved_of(db, id),
+        crate::resolved::Resolved::Resume { .. }
+    ) {
+        return;
+    }
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form, so `core_of` follows only that. But
     // every INTERMEDIATE form is UNCONDITIONALLY evaluated (its value discarded), so a provable trap in
     // one is a build failure — descend into every form here (the raw AST head, since the core collapsed
