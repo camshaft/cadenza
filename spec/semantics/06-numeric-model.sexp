@@ -286,6 +286,44 @@
   (input  (do (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main)))
   (error  CDZ0302))
 
+; An out-of-range integer literal (a value that overflows its annotated width) is CDZ0302, and carries a
+; rustc-style "value doesn't fit; use a wider type" REPLACE fix: retype the annotation to the SMALLEST
+; aliased width of the SAME SIGNEDNESS the literal fits (heuristic → unverified). A magnitude past every
+; fixed width (beyond Int64/UInt64) retypes to the unbounded `BigInt`. A NEGATIVE literal in an UNSIGNED
+; type has no unsigned reading, so the fit is forced to the smallest SIGNED width that holds it. Applying
+; the offered width recompiles clean (the width is chosen BECAUSE it holds the value) — the round-trip PASS
+; case below pins the fix is actionable. (Migrated from rcdzc
+; an_out_of_range_literal_carries_a_widen_the_annotation_fix / a_negative_into_unsigned_offers_the_smallest_signed_type.)
+(case "an out-of-range integer literal widens to the smallest fitting width of the same signedness"
+  (input  (do (def (main) (: 999 Int8)) (export main)))
+  (error  CDZ0302 (fix (kind replace) (replacement "Int16") (unverified))))
+
+(case "an out-of-range integer literal widens straight to the widest fitting width, not an intermediate"
+  (input  (do (def (main) (: 5000000000 Int8)) (export main)))
+  (error  CDZ0302 (fix (kind replace) (replacement "Int64") (unverified))))
+
+(case "an out-of-range UNSIGNED integer literal widens within the unsigned family"
+  (input  (do (def (main) (: 300 UInt8)) (export main)))
+  (error  CDZ0302 (fix (kind replace) (replacement "UInt16") (unverified))))
+
+(case "an out-of-range integer literal past every fixed width retypes to BigInt"
+  (input  (do (def (main) (: 99999999999999999999999 Int8)) (export main)))
+  (error  CDZ0302 (fix (kind replace) (replacement "BigInt") (unverified))))
+
+(case "a negative out-of-range integer literal in an unsigned type retypes to the smallest signed width"
+  (input  (do (def (main) (: -5 UInt8)) (export main)))
+  (error  CDZ0302 (fix (kind replace) (replacement "Int8") (unverified))))
+
+(case "a negative out-of-range integer literal too large for Int8 escalates to the next signed width"
+  (input  (do (def (main) (: -200 UInt8)) (export main)))
+  (error  CDZ0302 (fix (kind replace) (replacement "Int16") (unverified))))
+
+(case "applying the out-of-range integer literal widen fix recompiles clean"
+  (doc    "The round-trip that makes the widen fix actionable: retyping `(: 999 Int8)`'s annotation to the
+           offered `Int16` type-checks (Int16 holds 999), so the CDZ0302 is gone and the program runs.")
+  (input  (do (def (main) (: 999 Int16)) (export main)))
+  (call   main) (output (: 999 Int16)))
+
 (case "a checked integer conversion at the signed boundary fits and converts unchanged"
   (doc    "`(Int8.of (: 127 Int32))` = 127 — the largest value that fits Int8 (Int8.max) converts unchanged.
            Pins the inclusive upper boundary of the checked conversion.")
