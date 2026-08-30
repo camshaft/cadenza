@@ -18,6 +18,15 @@
   (input  (+ 2 2.0))
   (error  CDZ0301))
 
+; A NON-NUMERIC operand to an arithmetic operator is a DIFFERENT fault from the Int/Float no-promotion mix
+; above: `+` types at `∀a. (Int a) → (Int a) → (Int a)`, so a `Bool` operand fails to UNIFY against `(Int a)`
+; — the generic operator-scheme unification catches it (no arithmetic-specific check), reported as the plain
+; type mismatch CDZ0203 naming the offending type, not the numeric no-promotion CDZ0301 (which is a clash of
+; TWO numeric types). (Migrated from rcdzc a_non_integer_operand_rejects_via_unification.)
+(case "a non-numeric operand to an arithmetic operator fails the operator-scheme unification (CDZ0203, not the numeric no-promotion)"
+  (input  (do (def (main) (+ true 1)) (export main)))
+  (error  CDZ0203 (message "Bool")))
+
 ; --- No silent promotion holds for EVERY Int64-operand operator, not only `+` --------------
 ; numeric-model.md #Numeric Types Do Not Silently Promote applies to any operation on two numeric
 ; values of different types — "The type of an arithmetic result MUST be determined by the operand

@@ -25425,19 +25425,6 @@ mod stage1 {
         assert!(msg.contains("overflow"), "got: {msg}");
     }
 
-    #[test]
-    fn a_non_integer_operand_rejects_via_unification() {
-        // `(+ true 1)` — `+` types at `∀a. (Int a) → (Int a) → (Int a)`; unifying the operand `true`
-        // (Bool) against `(Int a)` FAILS, so the application is rejected. This is the one generic rule
-        // (instantiate the operator's Meta.t scheme, unify each arg) catching the fault — no
-        // arithmetic-specific check.
-        let msg = expect_decline("(+ true 1)");
-        assert!(
-            msg.contains("unify") || msg.contains("Bool") || msg.contains("Int"),
-            "expected a unification mismatch naming the types, got: {msg}"
-        );
-    }
-
     // ── type annotations `(: e T)`: transparent to the value, constrains the type ────────────────
 
     // The two positive transparency RUN cases — `(: 5 (Int 64))` = 5 (the reduced `(Int 64)` type-ctor
