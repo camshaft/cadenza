@@ -3709,10 +3709,29 @@ fn render_closure_call_result(v: Option<&Val>) -> String {
                     _ => None,
                 })
                 .collect();
-            if let Some(bytes) = bytes
-                && let Some(arenas) = cadenza_syntax::codec::decode(&bytes)
-            {
-                return cadenza_syntax::sexpr::print(&arenas).trim().to_string();
+            if let Some(bytes) = bytes {
+                match cadenza_syntax::codec::decode_detailed(&bytes) {
+                    Ok(arenas) => {
+                        return cadenza_syntax::sexpr::print(&arenas).trim().to_string();
+                    }
+                    // DIAGNOSTIC (value-encode<->codec skew hunt): a buffer carrying the `cdzast` header
+                    // that DECLINES to decode means a compound VALUE doc the codec can't parse — we then
+                    // fall through to the raw byte-rope render (the "renders as raw bytes" bug). `decode`
+                    // is total, so surface WHY: the `DecodeError` class + a hex dump so the offending
+                    // kind/offset is inspectable in a composed-runtime gate log. Gated on the header so a
+                    // GENUINE byte-rope value (not a value doc — the intended fall-through) stays quiet.
+                    Err(e) => {
+                        if bytes.len() >= 8 && &bytes[..6] == b"cdzast" {
+                            eprintln!(
+                                "cdz-run: a cdzast value-encode doc was DECLINED by codec::decode \
+                                 ({e:?}) — falling back to the raw byte render (value-encode<->codec \
+                                 skew). buffer[{}] = {:02x?}",
+                                bytes.len(),
+                                bytes
+                            );
+                        }
+                    }
+                }
             }
             render_val(v.unwrap())
         }
