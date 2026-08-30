@@ -5039,6 +5039,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
     // core; if it does not fold, the program is already declined at the handle. (v-effects, routed by
     // v-deferral-declines fault-hygiene, root-caused by v-inference: the speculative CDZ0900 lingered in
     // the pre-dedup fault list and would surface — wrongly — once dedup self-suppression is fixed.)
+    // This guard catches a resume at the walk ROOT; a resume NESTED inside a node whose `core_of` reduces
+    // to the resume poison is caught by the `Core::Poison` arm below (keyed on the same message const).
     if matches!(
         crate::resolve::resolved_of(db, id),
         crate::resolved::Resolved::Resume { .. }
@@ -5081,6 +5083,16 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // precise anchor is at least attributed to the node it was reached at. (`sanitize_origin` at
         // the ABI edge later drops it if this node turns out to be prelude/synthesized.)
         Core::Poison(mut r) => {
+            // A RESUME-not-reducible poison reached HERE — `core_of` of a node CONTAINING a resume,
+            // lowered out of its handler-fold context (the mutual-group `…_folds` resume is NESTED, not
+            // the walk root, so the `Resolved::Resume` guard at the top of this fn misses it) — is the
+            // same spurious/redundant decline as that guard covers: skip it (see that guard's (a)/(b)/(c)
+            // rationale — a resume's real diagnostic is always reported elsewhere). Keyed on the shared
+            // const so it does NOT match the sibling `HANDLER_NOT_REDUCIBLE_DECLINE` ("this handler…"),
+            // which is a genuine handle-level decline that MUST still surface.
+            if r.message == crate::diag::RESUME_NOT_REDUCIBLE_DECLINE {
+                return;
+            }
             r.set_origin_if_absent(id);
             out.push(r);
         }
