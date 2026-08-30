@@ -450,6 +450,24 @@
             (+ (Qty.of 1.0 (Qty.unit y)) (Qty.of 2.0 (Unit.base #"second")))))
   (error  CDZ0501))
 
+; Adding a quantity and a plain number — `(+ (Qty.of 5 (Unit.of #"meter")) 3)` — is CDZ0501 (no implicit
+; dimensionless coercion), and carries a same-unit WRAP fix: give the bare number the SAME unit as the
+; quantity operand, `(Qty.of <n> (Unit.base #"meter"))` (the unit is recoverable from the quantity operand),
+; on whichever side is the plain number. The wrapped sum then type-checks. (Migrated from rcdzc
+; adding_a_quantity_and_a_bare_number_offers_the_same_unit_wrap_fix.)
+(case "adding a quantity and a bare number offers the same-unit Qty.of wrap fix"
+  (input  (do (def (g) (+ (Qty.of 5 (Unit.of #"meter")) 3)) (export g)))
+  (error  CDZ0501 (fix (kind wrap) (replacement "(Qty.of … (Unit.base #\"meter\"))"))))
+
+(case "a bare number on the LEFT of a quantity add is wrapped in the quantity's unit"
+  (input  (do (def (g) (+ 3 (Qty.of 5 (Unit.of #"meter")))) (export g)))
+  (error  CDZ0501 (fix (kind wrap) (replacement "(Qty.of … (Unit.base #\"meter\"))"))))
+
+(case "the same-unit wrap resolves the dimension fault — the wrapped quantity sum runs"
+  (input  (do (def (main) (Qty.value (+ (Qty.of 5 (Unit.of #"meter")) (Qty.of 3 (Unit.base #"meter")))))
+              (export main)))
+  (call   main) (output (: 8 Int64)))
+
 (case "a prefixed unit of a different dimension still rejects CDZ0501 (prefix scales within a dimension, never across)"
   (doc    "A PREFIX scales WITHIN a dimension, never across: `km + second` is still CDZ0501. Pins that the
            family/prefix relaxation (auto-convert within a dimension) does not weaken the dimensional
