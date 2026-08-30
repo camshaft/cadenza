@@ -1265,6 +1265,14 @@
         # unchanged → no ruleset edit); the 4 per-project derivations are ALSO exposed individually as
         # checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators} so a candidate touching one project
         # can build just that one, and cache-warm roots them the same way.
+        # Wall-clock cap (secs) on a single project's `cdz test`. A COMPILE-phase hang (e.g. the match->let
+        # non-termination v-compiler-perf RCA'd) is otherwise UNBOUNDED inside the nix build sandbox:
+        # CDZ_RUN_TIMEOUT caps the test RUN not the COMPILE, and #5963's timeout-minutes is GHA/CI-only — so a
+        # hanging compile pegs a core to OOM (an observed pid ran 39min). This fail-fast cap bounds it. Set to
+        # 30min = parity with the #5963 CI budget, and ~8x the heaviest legit suite closure (compiler-ml ~215s)
+        # so it never false-fails a slow-but-progressing build even under fleet nix contention. Defense-in-depth
+        # for ANY future compile hang (concierge seq-271 interim mitigation; permanent fix = v-cp #6000).
+        cadTestTimeoutSecs = 1800;
         mkCadProjectTest = { name, dir }: pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-cad-test-${name}";
           version = "0.0.0";
@@ -1281,10 +1289,18 @@
             set -o pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             export CDZ_STORE="${componentStore}"
-            # Run this project's @test suite, resolving the runtime from the nix store. A non-zero
-            # `cdz test` propagates (pipefail) and fails the build.
-            echo "== cdz test ${name} =="
-            cdz test "implementation/${name}" | tee "$TMPDIR/cad-test.out"
+            # Run this project's @test suite, resolving the runtime from the nix store, under a wall-clock cap
+            # (see cadTestTimeoutSecs) so a compile-phase hang fails-fast instead of running to OOM. A non-zero
+            # `cdz test` propagates (PIPESTATUS[0] past the tee) and fails the build.
+            echo "== cdz test ${name} (wall-clock cap ${toString cadTestTimeoutSecs}s) =="
+            timeout --kill-after=30s ${toString cadTestTimeoutSecs} \
+              cdz test "implementation/${name}" | tee "$TMPDIR/cad-test.out"
+            st=''${PIPESTATUS[0]}
+            if [ "$st" = 124 ] || [ "$st" = 137 ]; then
+              echo "TIMEOUT: 'cdz test ${name}' exceeded the ${toString cadTestTimeoutSecs}s wall-clock cap — treating as a compile/run HANG (fail-fast, not an OOM core-peg)." >&2
+              exit 1
+            fi
+            [ "$st" = 0 ] || exit "$st"
             runHook postBuild
           '';
           installPhase = ''
