@@ -3050,7 +3050,23 @@ pub(super) fn emit(
             // through `emit_heap_read_tail` as usual. `dup` POPS its arg and returns nothing, so tee the child,
             // dup the copy, leave the original for the consumer.
             let unit_leaf = matches!(type_of(db, id).strip_nominal(), Ty::Unit);
-            if unboxed.is_none() && !unit_leaf && out.dup_sites.contains(&id) {
+            // A path ending in `RestFrom` is a list-tail slice lowered to `vec-drop` (`op_vec_drop_tail`),
+            // which CONSUMES the scrutinee (`op_drop(v)`) and returns the tail ALREADY OWNED (rc1 — the kept
+            // subtrees were dup'd internally by `vec_take_tail`). So the child-retain dup below MUST NOT fire
+            // for it: dup'ing an already-owned tail over-retains it (rc2) with only ONE consumer (the next
+            // loop iteration's `vec-drop`, which decrements once → rc1), leaking one spine node per iteration
+            // — the self-loop-tail fold leak (v-runtime rc-traced: `sum-l` over an N-list leaks the N-1
+            // intermediate tails; foldonly 4→0). The retain is only for a BORROWING leaf (`sum-payload`/
+            // `arr-get`, rc1 aliased by the still-live scrutinee); a `vec-drop` result is owned + the
+            // scrutinee is consumed (no alias). Mirrors `mark_binder_dups`' `ends_in_rest` exclusion.
+            // Co-verified: v-memory-safety (invariant: reclaim-once-across-the-back-edge; the fix is
+            // dup-suppression, NOT an added drop) + v-runtime (rc-trace: op_vec_drop_tail returns owned).
+            let ends_in_rest = matches!(
+                core_of(db, id),
+                Core::SumPayload { ref path, .. }
+                    if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+            );
+            if unboxed.is_none() && !unit_leaf && !ends_in_rest && out.dup_sites.contains(&id) {
                 // Float the retain slot ABOVE `*high` (NOT `base`) — the scrutinee walk above may have spent
                 // scratch at/above `base` (a `let`/materialize of a different width), and a wasm local has
                 // ONE type function-wide, so reusing `base` re-types that slot → invalid module at module
