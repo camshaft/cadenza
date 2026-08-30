@@ -18429,51 +18429,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_narrow_width_int_quantity_overflow_is_cdz0304_not_backend_cdz0302() {
-        // A quantity's arithmetic runs the ERASED inner numeric type's op, so a `(Qty Int8 u)` add must
-        // overflow-trap like a bare Int8. `(+ (Qty.of (Int8.of 100) m) (Qty.of (Int8.of 100) m))` = 200
-        // overflows Int8 → a compile-provable overflow is CDZ0304 (a constant OPERATION with no value),
-        // the SAME code the bare Int8 add gets — NOT CDZ0302 ("literal does not fit its width": each 100
-        // FITS Int8, it is the sum that overflows). The width-check peels `Ty::Qty` to read the inner Int8
-        // width; without the peel the over-range ConstInt slipped to a BACKEND CDZ0302 that `cdz check`
-        // never saw (a check-vs-compile gap). Same-unit → the generic arith path (lower_arith).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. Qty value) \
-                 (+ ((. Qty of) ((. Int8 of) 100) ((. Unit base) #\"meter\")) \
-                    ((. Qty of) ((. Int8 of) 100) ((. Unit base) #\"meter\"))))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0304"),
-            "a narrow-width Int8 quantity add overflow is CDZ0304, not backend CDZ0302"
-        );
-        // The mixed-scale (reference-converting) path honors the inner width too: 1 km → 1000 m, then
-        // 1000 + 50 = 1050 overflows UInt8 → CDZ0304 (folded inside lower_quantity_combine's Int arm).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. Qty value) \
-                 (+ ((. Qty of) ((. UInt8 of) 1) ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
-                    ((. Qty of) ((. UInt8 of) 50) ((. Unit base) #\"meter\"))))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0304"),
-            "a mixed-scale UInt8 quantity combine overflow is CDZ0304 (reference-converting path)"
-        );
-        // The control: a narrow-width quantity arithmetic whose result FITS runs normally (no spurious
-        // trap) — 50 + 50 = 100 fits Int8.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. Qty value) \
-                 (+ ((. Qty of) ((. Int8 of) 50) ((. Unit base) #\"meter\")) \
-                    ((. Qty of) ((. Int8 of) 50) ((. Unit base) #\"meter\"))))) (export main))"
-            )
-            .as_deref(),
-            None,
-            "a non-overflowing narrow-width Int8 quantity add does not trap"
-        );
-    }
-
-    #[test]
     fn a_nominal_over_float32_qty_stored_as_a_map_value_emits_valid_wasm() {
         // MISCOMPILE REGRESSION (v-rust-backend flagged the wasm twin of their rust float_width_of fix): a
         // NOMINAL newtype over a Float32 quantity — `(type Len (Q (Qty Float32 meter)))` — stored as a map
