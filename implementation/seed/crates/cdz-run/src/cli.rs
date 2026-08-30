@@ -220,6 +220,15 @@ pub struct RunArgs {
     /// CORE-MODULE mode: the `() -> i64` export to invoke on the core module. Default `main`.
     #[arg(long = "core-export", value_name = "NAME")]
     pub core_export: Option<String>,
+
+    /// PRECOMPILE mode (seq-250 AOT corpus-exec): instead of running, compile the component `<component>`
+    /// to a serialized `.cwasm` AOT artifact at `<PATH>`, then exit. This is the compile-once half v-nix's
+    /// nix `cdz-precompile` phase-bin (cranelift-ON, built once + cached) drives; the cranelift-free
+    /// corpus-exec later `deserialize`s the artifact instead of JIT-compiling it, so `cranelift_codegen`
+    /// leaves the per-check build closure. Requires the `cranelift` feature — a compiler-free build errors.
+    /// The artifact loads only under an engine with a matching compatibility hash (the `.cwasm` cache key).
+    #[arg(long = "precompile-out", value_name = "PATH")]
+    pub precompile_out: Option<PathBuf>,
 }
 
 /// Run a component per `args`, printing the value to stdout (host calls to stderr) and returning the
@@ -254,7 +263,42 @@ fn core_module_verdict(bytes: &[u8], export: &str) -> String {
     }
 }
 
+/// PRECOMPILE mode helper (seq-250): read the component at `component_path`, compile it to a serialized
+/// `.cwasm` AOT artifact, and write it to `out`. Cranelift-gated — the compiler-free (`--no-default-features`)
+/// corpus-exec cannot compile, so it errors clearly rather than silently producing nothing.
+#[cfg(feature = "cranelift")]
+fn precompile_to(
+    component_path: &std::path::Path,
+    out: &std::path::Path,
+) -> anyhow::Result<ExitCode> {
+    let bytes = std::fs::read(component_path)
+        .map_err(|e| anyhow::anyhow!("read component {}: {e}", component_path.display()))?;
+    let artifact = crate::precompile_component_bytes(&bytes)?;
+    std::fs::write(out, &artifact)
+        .map_err(|e| anyhow::anyhow!("write precompiled artifact {}: {e}", out.display()))?;
+    Ok(ExitCode::SUCCESS)
+}
+#[cfg(not(feature = "cranelift"))]
+fn precompile_to(
+    _component_path: &std::path::Path,
+    _out: &std::path::Path,
+) -> anyhow::Result<ExitCode> {
+    anyhow::bail!(
+        "--precompile-out requires the `cranelift` feature; this compiler-free build only runs \
+         precompiled `.cwasm` artifacts via deserialize"
+    )
+}
+
 fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
+    // PRECOMPILE mode (seq-250 AOT corpus-exec): emit a serialized `.cwasm` for the component and exit —
+    // the compile-once step the cranelift-free corpus-exec later deserializes. Highest precedence (a
+    // precompile run neither instantiates nor calls an export).
+    if let Some(out) = &cli.precompile_out {
+        let component_path = cli.component.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("--precompile-out requires a <component> to precompile")
+        })?;
+        return precompile_to(component_path, out);
+    }
     // CORE-MODULE mode (thin-`cdz` seam): run a bare core wasm module + print a one-line verdict. Takes
     // precedence over the component-run / grade paths. The verdict strings are the contract `cdz`'s
     // `emit_and_run_module` maps (`value <n>`→"value <n>", `trap`→"declined", `error …` verbatim) for the

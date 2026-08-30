@@ -19,10 +19,27 @@ publish = false
 name = "cdz-run"
 path = "src/main.rs"
 
+# FEATURE TOPOLOGY (seq-250, the cranelift-recompile P0 co-drive with v-nix). `cranelift` is DEFAULT-ON, so
+# every existing consumer (the `cdz` bin, tests, the JIT gate) builds unchanged: it JIT-compiles a fresh
+# component with `Component::new` and its epoch/opt-level Config knobs. Building with `--no-default-features`
+# drops wasmtime's `cranelift` feature — and with it the whole `wasmtime-cranelift`/`cranelift-codegen`
+# COMPILE — leaving a runtime-only `deserialize`-exec: it can only RUN precompiled `.cwasm` artifacts (via
+# `Component::deserialize`), never compile. That is the AOT corpus-exec half of the split (v-nix wires the
+# nix `cdz-precompile` tool that emits the artifacts + the cranelift-free exec phase-bin). See the audit:
+# there is no standalone Pulley compiler — wasm→bytecode is compiled BY cranelift — so a compiler-free build
+# is deserialize-only by construction. `Component::new`/`Module::new` are `#[cfg(any(cranelift,winch))]` in
+# wasmtime; the `compile_component`/`compile_module` choke-points below mirror that gate.
+[features]
+default = ["cranelift"]
+cranelift = ["wasmtime/cranelift"]
+
 [dependencies]
 # The embeddable component-model runtime — instantiate a finished component in-process, compose the
 # value-heap runtime, invoke an export. (options/execution-model/; the wasmtime CLI is not used.)
-wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"] }
+# `cranelift` is pulled via cdz-run's OWN `cranelift` feature (default-on) so a `--no-default-features`
+# build is compiler-free (deserialize-only); the base always keeps the `runtime` interpreter + component
+# model. `runtime` already brings the Pulley interpreter (`pulley-interpreter/interp`).
+wasmtime = { version = "37", default-features = false, features = ["runtime", "component-model", "std"] }
 # Typed CLI with generated --help — the same parser the rest of the workspace uses.
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"

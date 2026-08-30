@@ -10,7 +10,10 @@
 use anyhow::{Result, anyhow};
 use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{Component, Linker, Type, Val};
-use wasmtime::{Config, Engine, OptLevel, Store};
+use wasmtime::{Config, Engine, Store};
+// `OptLevel` is a cranelift-only Config knob — only in scope for a compiler-enabled build.
+#[cfg(feature = "cranelift")]
+use wasmtime::OptLevel;
 
 /// The command surface (`RunArgs` + `run`), embeddable so the unified `cdz` binary can mount `cdz run`.
 pub mod cli;
@@ -34,6 +37,11 @@ fn engine() -> Engine {
     ENGINE
         .get_or_init(|| {
             let mut cfg = Config::new();
+            // Cranelift-only Config knob (the JIT's optimizer). Skipped in a compiler-free
+            // (`--no-default-features`) build, whose engine only ever `deserialize`s precompiled
+            // artifacts — there is no cranelift to configure. `epoch_interruption` below is engine-level
+            // (backend-independent), so the runaway-loop trap safety net holds for both builds.
+            #[cfg(feature = "cranelift")]
             cfg.cranelift_opt_level(OptLevel::None);
             // EPOCH INTERRUPTION: cap an in-process run's wall-clock so a MISCOMPILED runtime-looping
             // program (e.g. an emitted body that loops forever) TRAPS at a deadline instead of spinning a
@@ -50,6 +58,50 @@ fn engine() -> Engine {
             Engine::new(&cfg).unwrap_or_default()
         })
         .clone()
+}
+
+/// JIT-compile a finished component to a runnable [`Component`] — the compile choke-point (seq-250). Mirrors
+/// wasmtime's own `#[cfg(any(cranelift, winch))]` gate on `Component::new`: with the `cranelift` feature ON
+/// (default) it JIT-compiles; with it OFF (`--no-default-features`, the AOT corpus-exec build) no compiler
+/// is linked, so it errors — that build reaches components only via `Component::deserialize` of a
+/// precompiled `.cwasm`. Routing every compile through here is what lets the crate build in BOTH configs.
+/// (Named `jit_*` to avoid colliding with the higher-level `compile_component` → [`CompiledComponent`].)
+#[cfg(feature = "cranelift")]
+fn jit_component(engine: &Engine, bytes: &[u8]) -> Result<Component> {
+    Component::new(engine, bytes)
+}
+#[cfg(not(feature = "cranelift"))]
+fn jit_component(_engine: &Engine, _bytes: &[u8]) -> Result<Component> {
+    anyhow::bail!(
+        "cdz-run was built without the `cranelift` feature and cannot JIT-compile a component; \
+         this build runs only precompiled `.cwasm` artifacts via deserialize (the AOT corpus-exec path)"
+    )
+}
+
+/// Core-module compile choke-point — the `Module::new` companion of [`jit_component`], gated the same way
+/// (wasmtime's `Module::new` is `#[cfg(any(cranelift, winch))]`).
+#[cfg(feature = "cranelift")]
+fn jit_module(engine: &Engine, bytes: &[u8]) -> Result<wasmtime::Module> {
+    wasmtime::Module::new(engine, bytes)
+}
+#[cfg(not(feature = "cranelift"))]
+fn jit_module(_engine: &Engine, _bytes: &[u8]) -> Result<wasmtime::Module> {
+    anyhow::bail!(
+        "cdz-run was built without the `cranelift` feature and cannot JIT-compile a core module; \
+         this build runs only precompiled artifacts via deserialize"
+    )
+}
+
+/// Precompile a finished component to a serialized AOT artifact (the `.cwasm` the corpus-exec `deserialize`s)
+/// — seq-250's compile-once half. Requires a compiler, so it is `cranelift`-gated: v-nix's `cdz-precompile`
+/// nix phase-bin (cranelift-ON, built once + cached) invokes this to emit per-case artifacts, which the
+/// cranelift-free exec then runs. `Engine::precompile_component` validates + compiles the bytes; the output
+/// loads only under an engine with a matching compatibility hash (see [`engine_fp`]).
+#[cfg(feature = "cranelift")]
+pub fn precompile_component_bytes(component_bytes: &[u8]) -> Result<Vec<u8>> {
+    engine()
+        .precompile_component(component_bytes)
+        .map_err(|e| anyhow!("precompile component: {e}"))
 }
 
 /// The wall-clock a single in-process run may take before the epoch deadline TRAPS it. Generous — a
@@ -210,11 +262,21 @@ fn arm_epoch_ticker(engine: &Engine) {
 /// interchange), so it changes whenever a wasmtime bump or a `Config` change would make old artifacts
 /// deserialize-fail — giving those artifacts a distinct path instead of thrashing a shared one. Fed
 /// through `DefaultHasher` only to render the opaque `impl Hash` as a compact stable hex token.
+#[cfg(feature = "cranelift")]
 fn engine_fp(engine: &Engine) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     engine.precompile_compatibility_hash().hash(&mut h);
     format!("{:016x}", h.finish())
+}
+/// Compiler-free (`--no-default-features`) build: `Engine::precompile_compatibility_hash` is cranelift-gated
+/// in wasmtime, and this build never WRITES an fp-named cache artifact (it cannot compile) — the fingerprint
+/// is only ever consumed to NAME a `.cwasm` lookup path. A fixed sentinel keeps the cache-path code compiling
+/// unchanged; the AOT corpus-exec is driven by explicit artifact paths (v-nix's precompile pipeline), never
+/// by fp-named cache probing, and `Component::deserialize` still self-validates artifact compatibility.
+#[cfg(not(feature = "cranelift"))]
+fn engine_fp(_engine: &Engine) -> String {
+    "no-cranelift".to_string()
 }
 
 fn load_runtime_component(
@@ -224,7 +286,7 @@ fn load_runtime_component(
 ) -> Result<Component> {
     let Some(dir) = opts.runtime_cache_dir.as_deref() else {
         // No cache configured — compile directly.
-        return Component::new(engine, runtime_bytes)
+        return jit_component(engine, runtime_bytes)
             .map_err(|e| anyhow!("value-heap runtime component invalid: {e}"));
     };
     // `<hash>-wt<engine-fingerprint>.cwasm`: the runtime's content address pins the SOURCE, the engine
@@ -259,7 +321,7 @@ fn load_runtime_component(
 
     // Slow path: compile once, then persist the compiled artifact for next time (best-effort — a write
     // failure just means the next run recompiles, never an error).
-    let component = Component::new(engine, runtime_bytes)
+    let component = jit_component(engine, runtime_bytes)
         .map_err(|e| anyhow!("value-heap runtime component invalid: {e}"))?;
     if let Some(path) = &cache_path
         && let Ok(serialized) = component.serialize()
@@ -384,7 +446,7 @@ pub struct HostResponse {
 /// Validate `component_bytes` as a well-formed component — the cheap structural check before a run.
 pub fn validate(component_bytes: &[u8]) -> Result<()> {
     let engine = engine();
-    Component::new(&engine, component_bytes)
+    jit_component(&engine, component_bytes)
         .map(|_| ())
         .map_err(|e| anyhow!("invalid component: {e}"))
 }
@@ -406,8 +468,8 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
 /// `declined`. An invalid module / missing-or-wrong-typed export is an `Err` (a harness/build break).
 pub fn run_core_module(module_bytes: &[u8], export: &str) -> Result<Outcome> {
     let engine = engine();
-    let module = wasmtime::Module::new(&engine, module_bytes)
-        .map_err(|e| anyhow!("invalid core module: {e}"))?;
+    let module =
+        jit_module(&engine, module_bytes).map_err(|e| anyhow!("invalid core module: {e}"))?;
     let mut store: Store<()> = new_store(&engine);
     // No imports: an integer module is self-contained. An unexpected import → a clear error.
     let instance = wasmtime::Instance::new(&mut store, &module, &[])
@@ -437,7 +499,7 @@ fn compose_and_instantiate(
 ) -> Result<(Store<()>, wasmtime::component::Instance)> {
     let engine = engine();
     let component =
-        Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+        jit_component(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
     if let Some(req) = find_runtime_req(&engine, &component) {
@@ -484,7 +546,7 @@ pub fn run_with_live_objects(
     use std::sync::{Arc, Mutex};
     let engine = engine();
     let component =
-        Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+        jit_component(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
 
@@ -674,7 +736,7 @@ pub fn run_reducer_bytes_with_puts(
     use std::sync::{Arc, Mutex};
     let engine = engine();
     let component =
-        Component::new(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+        jit_component(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
     if let Some(req) = find_runtime_req(&engine, &component) {
@@ -757,7 +819,7 @@ pub fn run_reducer_bytes_with_scan(
 ) -> Result<Vec<u8>> {
     let engine = engine();
     let component =
-        Component::new(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+        jit_component(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
     if let Some(req) = find_runtime_req(&engine, &component) {
@@ -826,7 +888,7 @@ pub fn run_reducer_bytes_with_get(
 ) -> Result<Vec<u8>> {
     let engine = engine();
     let component =
-        Component::new(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+        jit_component(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
     if let Some(req) = find_runtime_req(&engine, &component) {
@@ -956,7 +1018,7 @@ pub struct CompiledComponent {
 pub fn compile_component(component_bytes: &[u8]) -> Result<CompiledComponent> {
     let engine = engine();
     let component =
-        Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+        jit_component(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     Ok(CompiledComponent { component })
 }
 
@@ -1096,12 +1158,12 @@ pub struct CompiledComposition {
 /// for a composition run repeatedly. Equivalent to the compile half of [`run_with_peers_capturing`].
 pub fn compile_composition(consumer_bytes: &[u8], peers: &[Peer]) -> Result<CompiledComposition> {
     let engine = engine();
-    let consumer = Component::new(&engine, consumer_bytes)
+    let consumer = jit_component(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
     let peer_components = peers
         .iter()
         .map(|p| {
-            Component::new(&engine, &p.bytes)
+            jit_component(&engine, &p.bytes)
                 .map(|c| (c, p.interface.clone()))
                 .map_err(|e| anyhow!("invalid peer component `{}`: {e}", p.interface))
         })
@@ -1139,7 +1201,7 @@ pub fn compile_provider(
     interface: impl Into<String>,
 ) -> Result<CompiledProvider> {
     let engine = engine();
-    let component = Component::new(&engine, provider_bytes)
+    let component = jit_component(&engine, provider_bytes)
         .map_err(|e| anyhow!("invalid provider component: {e}"))?;
     Ok(CompiledProvider {
         component,
@@ -1187,7 +1249,7 @@ pub fn compile_provider_cached(
 
     // MISS: JIT the provider, then best-effort persist its serialized cwasm (atomic temp+rename) so the next
     // gate hits. A persist failure is silently ignored — the run still has its JIT'd Component.
-    let component = Component::new(&engine, provider_bytes)
+    let component = jit_component(&engine, provider_bytes)
         .map_err(|e| anyhow!("invalid provider component: {e}"))?;
     if let Ok(serialized) = component.serialize() {
         let _ = std::fs::create_dir_all(cache_dir);
@@ -1222,7 +1284,7 @@ pub fn compile_composition_with_providers(
     providers: &[CompiledProvider],
 ) -> Result<CompiledComposition> {
     let engine = engine();
-    let consumer = Component::new(&engine, consumer_bytes)
+    let consumer = jit_component(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
     let peers = providers
         .iter()
@@ -1514,7 +1576,7 @@ where
 {
     use std::sync::Arc;
     let engine = engine();
-    let consumer = Component::new(&engine, consumer_bytes)
+    let consumer = jit_component(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -1635,7 +1697,7 @@ where
 {
     use std::sync::Arc;
     let engine = engine();
-    let consumer = Component::new(&engine, consumer_bytes)
+    let consumer = jit_component(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -1834,7 +1896,7 @@ pub fn run_agent_hosted(
     bindings: Vec<HostOpBinding>,
 ) -> Result<Outcome> {
     let engine = engine();
-    let consumer = Component::new(&engine, consumer_bytes)
+    let consumer = jit_component(&engine, consumer_bytes)
         .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -2242,7 +2304,7 @@ fn run_export(
 pub fn required_runtime(component_bytes: &[u8]) -> Result<Option<RuntimeReq>> {
     let engine = engine();
     let component =
-        Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+        jit_component(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     Ok(find_runtime_req(&engine, &component))
 }
 
@@ -2375,7 +2437,7 @@ fn compose_nfc_into_runtime_linker(
              CDZ_STORE to the store dir if it is elsewhere"
         )
     })?;
-    let nfc = Component::new(engine, &nfc_bytes).map_err(|e| anyhow!("load NFC component: {e}"))?;
+    let nfc = jit_component(engine, &nfc_bytes).map_err(|e| anyhow!("load NFC component: {e}"))?;
     // NFC is a leaf (imports nothing) → instantiate against a fresh empty linker.
     let nfc_linker: Linker<()> = Linker::new(engine);
     let nfc_instance = nfc_linker
