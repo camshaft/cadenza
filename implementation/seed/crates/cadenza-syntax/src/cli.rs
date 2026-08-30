@@ -758,6 +758,33 @@ fn emits_to_stdout(from_stdin: bool, stdout: bool, check: bool, diff: bool) -> b
     stdout || (from_stdin && !check && !diff)
 }
 
+/// Format one surface for `cdz fmt`: read + re-print canonically in the SAME surface. For a MULTI-FORM
+/// s-expr file (a corpus of top-level `(case …)` forms), the single-form `convert::read` inside
+/// `convert_with` fails with "trailing input"; fall back to reading it MULTI-form (`sexpr::read_all` → a
+/// synthetic `(do …)`) and print via `print_pretty_program` (seq-256 `(do)`-unwrap, flush-left top level)
+/// so a multi-form .sexp fmt-normalizes + round-trips. Scoped to the fmt path — `convert::read` stays
+/// single-form for its other callers. A single-form .sexp is unaffected (it takes the `convert_with`
+/// path); a genuinely malformed .sexp still errors (both paths reject it, so a broken file is never
+/// silently rewritten).
+fn fmt_surface(
+    input: &[u8],
+    format: Format,
+    opts: Options,
+) -> Result<Vec<u8>, convert::ConvertError> {
+    match convert::convert_with(input, format, format, opts) {
+        Ok(b) => Ok(b),
+        Err(e) => {
+            if format == Format::Sexpr
+                && let Ok(text) = std::str::from_utf8(input)
+                && let Ok(arenas) = crate::sexpr::read_all(text)
+            {
+                return Ok(crate::sexpr::print_pretty_program(&arenas, opts.width).into_bytes());
+            }
+            Err(e)
+        }
+    }
+}
+
 fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
     // `--check`/`--diff` inspect without writing; `--stdout` writes elsewhere. They are exclusive: a
     // single run has one output disposition, so an ambiguous combination is rejected up front rather
@@ -790,7 +817,7 @@ fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
         // Format = read the surface and re-print it canonically in the SAME surface. `convert::read`
         // (inside `convert_with`) rejects a program that only parses with recovered errors, so a broken
         // file errors here instead of being rewritten to a patched-up form.
-        let formatted = match convert::convert_with(&input, spec.format, spec.format, opts) {
+        let formatted = match fmt_surface(&input, spec.format, opts) {
             Ok(mut b) => {
                 // The printer emits no trailing newline; keep a file newline-terminated (and stable
                 // under re-formatting) by appending one, matching `rewrite --write`'s convention.
@@ -1865,6 +1892,45 @@ mod tests {
             diff,
             stdout,
         }
+    }
+
+    #[test]
+    fn fmt_surface_normalizes_a_multi_form_sexp_file() {
+        // A spec/semantics/*.sexp corpus file has MULTIPLE top-level forms; the single-form
+        // `convert::read` inside `convert_with` fails with "trailing input" on the 2nd form. `fmt_surface`
+        // falls back to the multi-form read (`sexpr::read_all` -> synthetic `(do …)`) + `print_pretty_program`
+        // (flush-left top level, no `(do)` wrapper), so a multi-form .sexp fmt-normalizes + round-trips.
+        let multi = b"(def (a) 1)\n(def (b) 2)\n";
+        let out = fmt_surface(multi, Format::Sexpr, Options::default())
+            .expect("multi-form .sexp formats");
+        let out_s = String::from_utf8(out).unwrap();
+        // Flush-left top-level forms, no `(do)` wrapper, blank-line-separated (the seq-256 program layout).
+        assert_eq!(out_s, "(def (a) 1)\n\n(def (b) 2)");
+        // Idempotent (the fmt file path re-adds the trailing newline before re-reading).
+        let out2 = fmt_surface(
+            format!("{out_s}\n").as_bytes(),
+            Format::Sexpr,
+            Options::default(),
+        )
+        .expect("re-format is idempotent");
+        assert_eq!(String::from_utf8(out2).unwrap(), out_s);
+        // A single-form .sexp is UNAFFECTED — it takes the `convert_with` path unchanged.
+        let single = fmt_surface(b"(def (a) 1)\n", Format::Sexpr, Options::default())
+            .expect("single-form .sexp");
+        assert_eq!(String::from_utf8(single).unwrap(), "(def (a) 1)");
+        // A `;` comment in a multi-form file (the corpus's section headers) is PRESERVED, not dropped —
+        // the fmt path must not silently lose comments (comment-preservation seq-285 covers the surface).
+        let commented = fmt_surface(
+            b"; header\n(def (a) 1)\n(def (b) 2)\n",
+            Format::Sexpr,
+            Options::default(),
+        )
+        .expect("commented multi-form .sexp");
+        let commented_s = String::from_utf8(commented).unwrap();
+        assert!(
+            commented_s.contains("; header"),
+            "the ; comment must survive fmt, got: {commented_s:?}"
+        );
     }
 
     #[test]
