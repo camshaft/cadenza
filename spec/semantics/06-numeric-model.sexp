@@ -368,23 +368,29 @@
 ; the integer 1..=64 (an integer width would accept it). A non-admitted `(Float N)` reduces to the sentinel
 ; width 0, which the annotation check rejects CDZ0302 naming the admitted set (numeric-model.md §A
 ; Floating-Point Type Is Indexed By A Compile-Time Width). The admitted `Float64` value runs (corpus case
-; "(: (: 1.5 (Float 64)) Float64)"). (migrated from rcdzc a_non_admitted_float_width_is_rejected_cdz0302;
-; the nearest-admitted-precision .fix stays a white-box rcdzc pin.)
+; "(: (: 1.5 (Float 64)) Float64)"). The reject carries the ACTIONABLE nearest-admitted-precision REPLACE
+; fix (the float twin of the over-ceiling-integer BigInt fix): a concrete width below 32 snaps to `Float32`,
+; any wider non-admitted width snaps to `Float64` (the widest admitted precision). Heuristic → unverified. A
+; ZERO width reads as a dropped/mistyped number — no confident target — so it carries `(no-fix)`. (migrated
+; from rcdzc a_non_admitted_float_width_is_rejected_cdz0302 + a_non_admitted_float_width_carries_a_nearest_admitted_retype_fix.)
 (case "a below-single-precision float width is rejected as a non-admitted IEEE width"
   (input  (do (def (main) (: 1.5 (Float 16))) (export main)))
-  (error  CDZ0302 (message "admitted IEEE widths")))
+  (error  CDZ0302 (message "admitted IEEE widths")
+                  (fix (kind replace) (replacement "Float32") (unverified))))
 
 (case "a between-widths float width is rejected even though it is within the integer 1..=64 range"
   (input  (do (def (main) (: 1.5 (Float 48))) (export main)))
-  (error  CDZ0302 (message "admitted IEEE widths")))
+  (error  CDZ0302 (message "admitted IEEE widths")
+                  (fix (kind replace) (replacement "Float64") (unverified))))
 
-(case "a zero float width is rejected as non-admitted"
+(case "a zero float width is rejected as non-admitted and carries no fix"
   (input  (do (def (main) (: 1.5 (Float 0))) (export main)))
-  (error  CDZ0302 (message "admitted IEEE widths")))
+  (error  CDZ0302 (message "admitted IEEE widths") (no-fix)))
 
 (case "an above-double-precision float width is rejected as non-admitted"
   (input  (do (def (main) (: 1.5 (Float 128))) (export main)))
-  (error  CDZ0302 (message "admitted IEEE widths")))
+  (error  CDZ0302 (message "admitted IEEE widths")
+                  (fix (kind replace) (replacement "Float64") (unverified))))
 
 ; `Float64.of-int` is exact only up to 2^53 — the largest integer a Float64's 52-bit mantissa (+ implicit
 ; leading 1) represents with no gap. At and beyond 2^53 the representable integers thin to every-other,

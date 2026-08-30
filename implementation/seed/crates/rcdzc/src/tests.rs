@@ -27764,53 +27764,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_admitted_float_width_carries_a_nearest_admitted_retype_fix() {
-        // The ACTIONABLE half of the non-admitted float-width CDZ0302 (`diagnostics.md` §A Diagnostic
-        // Carries A Route To A Fix), the float twin of the over-ceiling-integer BigInt fix. A concrete
-        // width outside {32,64} SNAPS to the nearest admitted precision: a below-32 width (`(Float 8)`,
-        // `(Float 16)`) → `Float32`; any wider non-admitted width (`(Float 48)`, `(Float 128)`) →
-        // `Float64`, the widest admitted precision. Heuristic (the author may have meant a specific
-        // admitted width), but the snap clears the fault in one shot.
-        for (src, target) in [
-            ("(: 1.5 (Float 8))", "Float32"),
-            ("(: 1.5 (Float 16))", "Float32"),
-            ("(: 1.5 (Float 48))", "Float64"),
-            ("(: 1.5 (Float 128))", "Float64"),
-        ] {
-            let body = format!("(module m (def (main) {src}) (export main))");
-            let d = crate::diagnostics(&mut crate::db::Db::load(parse(&body)))
-                .into_iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .expect("a non-admitted float width is rejected");
-            assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
-            let fix = d
-                .fix
-                .expect("a non-admitted float width carries a nearest-admitted retype fix");
-            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-            assert_eq!(
-                fix.replacement, target,
-                "snaps `{src}` to the nearest admitted float width"
-            );
-            assert!(
-                !fix.verified,
-                "the author may have meant a specific admitted width → heuristic"
-            );
-        }
-        // NO FIX for a ZERO width — `(Float 0)` reads as a dropped/mistyped number, no confident target
-        // (the integer-twin discipline). The reject still fires; it just carries the message alone.
-        let body = "(module m (def (main) (: 1.5 (Float 0))) (export main))";
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(body)))
-            .into_iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
-            .expect("a zero float width is still rejected");
-        assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
-        assert!(
-            d.fix.is_none(),
-            "a zero float width has no single confident repair → no fix"
-        );
-    }
-
-    #[test]
     fn an_arithmetic_operator_rejects_a_mixed_int_float_pair_no_silent_promotion() {
         // 06-numeric-model: the ONE arithmetic operator `+`/`-`/`*`/`/` requires both operands to be one
         // numeric type — a mixed integer/float pair is rejected CDZ0301 rather than coercing either way
