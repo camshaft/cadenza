@@ -1556,6 +1556,30 @@
   (input  (do (def (f (: n Int64)) (match n ((guard x) 1) (_ 0))) (export f)))
   (error  CDZ0201 (message "a guarded pattern must be") (no-fix)))
 
+; A `let`/`fn` whose bindings/params are present but whose trailing BODY is missing (`(let ((x 5)))`,
+; `(fn (x))`) is CDZ0201 ("has no body"), and carries an INSERT fix appending a `(trap "TODO")` body —
+; `trap` inhabits any type, so the completed form type-checks wherever used (the `let`/`fn` twin of the
+; missing-if-else add-fix). A DEGENERATE `(let)` (no bindings AND no body) is not a one-shot add (appending
+; a body still leaves a malformed bindings list), so it is message-only, no fix. (Migrated from rcdzc
+; a_let_or_fn_missing_its_body_offers_to_add_one.)
+(case "a let missing its body offers to add a trap-placeholder body"
+  (input  (do (def (f) (let ((x 5)))) (export f)))
+  (error  CDZ0201 (message "has no body")
+                  (fix (kind insert-into) (replacement-contains "(trap \"TODO\")"))))
+
+(case "a fn missing its body offers to add a trap-placeholder body"
+  (input  (do (def (f) ((fn (x)) 5)) (export f)))
+  (error  CDZ0201 (message "has no body")
+                  (fix (kind insert-into) (replacement-contains "(trap \"TODO\")"))))
+
+(case "a let with the added trap-placeholder body compiles and runs"
+  (input  (do (def (f) (let ((x 5)) (trap "TODO"))) (def (main) 0) (export main)))
+  (call   main) (output (: 0 Int64)))
+
+(case "a degenerate empty let (no bindings and no body) carries no fix"
+  (input  (do (def (f) (let)) (export f)))
+  (error  CDZ0201 (message "no bindings and no body") (no-fix)))
+
 (case "a let-bound variable is in scope inside a boolean connective operand"
   (doc    "The complement of the short-circuited-unbound case above, and the boundary its scope check
            must not over-reach into: a `let`-bound (or parameter) name used in an `and`/`or` operand is
