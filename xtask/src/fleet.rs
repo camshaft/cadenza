@@ -6585,16 +6585,24 @@ fn check_lease_go(
 /// granted a queue-jump? True iff `branch` is listed in the `priority-grant` marker (a newline list; blank
 /// lines + `#`-comments ignored) AND fewer than `cap` priority leases are already live (so an over-broad
 /// marker can't oversubscribe — see [`GATE_PRIORITY_GRANT_MAX`]).
-fn gate_priority_grant_decision(marker: &str, branch: &str, prio_live: usize, cap: usize) -> bool {
+fn gate_priority_grant_decision(
+    marker: &str,
+    candidates: &[&str],
+    prio_live: usize,
+    cap: usize,
+) -> bool {
     if prio_live >= cap {
         return false;
     }
-    let branch = branch.trim();
-    !branch.is_empty()
-        && marker
-            .lines()
-            .map(str::trim)
-            .any(|l| !l.is_empty() && !l.starts_with('#') && l == branch)
+    // A grant matches if the marker lists ANY of this build's identifiers (HEAD branch, agent name, or
+    // `fleet/<agent>`) — so a granter can reach for the NATURAL name (fleet/<agent>) OR the feature branch
+    // OR the bare agent, and it works either way (the #6188 footgun: a feature-branch agent silently
+    // mis-granted when the granter used fleet/<agent>). Blank lines + `#`-comments in the marker are ignored.
+    marker
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .any(|listed| candidates.iter().any(|c| !c.is_empty() && *c == listed))
 }
 
 /// Is THIS build (in `repo`) granted a priority queue-jump via the `<check-leases>/priority-grant` marker?
@@ -6602,30 +6610,49 @@ fn gate_priority_grant_decision(marker: &str, branch: &str, prio_live: usize, ca
 /// FAIL-SAFE: any missing/unreadable marker, no branch, or unresolvable lease dir → `false` = normal
 /// bounded-wait (a build is NEVER wrongly granted priority). Called by `run_gate_local` for a critical-path
 /// land that would otherwise starve; concierge/operator GRANTS by adding the branch to the marker (rebuild-free).
-fn gate_priority_granted(repo: &Path) -> bool {
-    let Some(dir) = check_lease_dir(repo) else {
+fn gate_priority_granted(fleet: &Fleet) -> bool {
+    let Some(dir) = check_lease_dir(&fleet.repo) else {
         return false;
     };
     let Ok(marker) = std::fs::read_to_string(dir.join("priority-grant")) else {
         return false; // no marker → no grants (the common case)
     };
-    let branch = Command::new("git")
-        .current_dir(repo)
+    // Read the branch from the AGENT'S WORKTREE (`fleet.src` is `<worktree>/fleet`, so its parent is the
+    // worktree root) — NOT `fleet.repo`, which is the HUB (main checkout, always on trunk). And derive the
+    // agent NAME from the worktree basename (`.claude/worktrees/<agent>`). A grant may name ANY of these.
+    let worktree = fleet.src.parent().unwrap_or(fleet.repo.as_path());
+    let head = Command::new("git")
+        .current_dir(worktree)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    if branch.is_empty() {
+    let agent = worktree
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let mut candidates: Vec<String> = Vec::new();
+    if !head.is_empty() {
+        candidates.push(head.clone());
+    }
+    if !agent.is_empty() {
+        candidates.push(agent.clone()); // bare agent name
+        candidates.push(format!("fleet/{agent}")); // the natural fleet/<agent> ref a granter reaches for
+    }
+    if candidates.is_empty() {
         return false;
     }
     let prio_live = scan_check_leases(&dir, now_unix()).0;
+    let cand_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
     let granted =
-        gate_priority_grant_decision(&marker, &branch, prio_live, GATE_PRIORITY_GRANT_MAX);
+        gate_priority_grant_decision(&marker, &cand_refs, prio_live, GATE_PRIORITY_GRANT_MAX);
     if granted {
         eprintln!(
-            "check-lease: PRIORITY-GRANT — branch '{branch}' is in the priority-grant marker ({prio_live}/{GATE_PRIORITY_GRANT_MAX} priority live) → this gate-local jumps the queue for its verdict."
+            "check-lease: PRIORITY-GRANT — this build (branch '{head}', agent '{agent}') is in the \
+             priority-grant marker ({prio_live}/{GATE_PRIORITY_GRANT_MAX} priority live) → jumps the queue."
         );
     }
     granted
@@ -10178,7 +10205,7 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // bounded to GATE_PRIORITY_GRANT_MAX so an over-broad marker can't oversubscribe. Default (no marker /
     // branch not listed) → false → normal weighted vertical acquire. Forward-compatible: a stale xtask skips
     // this entirely → normal behavior (v-nix, no flag-day).
-    let priority = gate_priority_granted(&fleet.repo);
+    let priority = gate_priority_granted(fleet);
     let _lease = acquire_check_lease_weighted(&fleet.repo, priority, GATE_LEASE_WEIGHT);
     // If the lease acquire GAVE UP (waited past CHECK_LEASE_WAIT_MAX under sustained contention), do NOT
     // build — return NoChecks so this tick ENDS (the agent's Bash call returns, the /loop re-fires, the next
@@ -21340,36 +21367,62 @@ branch refs/heads/fleet/trunk-tools
     }
 
     #[test]
-    fn gate_priority_grant_decision_needs_listed_branch_under_cap() {
+    fn gate_priority_grant_decision_matches_any_candidate_under_cap() {
         let m = "# grant these critical-path lands a queue-jump\nfleet/v-core-opt\n\nnix/seq248\n";
-        // Listed branch, priority not full → GRANTED.
-        assert!(gate_priority_grant_decision(m, "fleet/v-core-opt", 0, 2));
-        assert!(
-            gate_priority_grant_decision(m, "nix/seq248", 1, 2),
-            "1 < cap 2 → still grant"
-        );
-        // Listed but priority already at the cap → NOT granted (can't oversubscribe).
-        assert!(
-            !gate_priority_grant_decision(m, "fleet/v-core-opt", 2, 2),
-            "prio_live == cap → defer (bounds concurrent jumps)"
-        );
-        // Not listed → never granted, even with free priority slots.
-        assert!(!gate_priority_grant_decision(
+        // The FOOTGUN fix: a build's candidates are {HEAD branch, agent, fleet/<agent>}; the marker names
+        // fleet/v-core-opt, so a v-core-opt build on a FEATURE branch still matches via the fleet/<agent>
+        // candidate (the case that silently mis-granted before).
+        assert!(gate_priority_grant_decision(
             m,
-            "fleet/v-someone-else",
+            &[
+                "v-core-opt/sumcont-folded-leaf-disc",
+                "v-core-opt",
+                "fleet/v-core-opt"
+            ],
             0,
             2
         ));
-        // Comment lines + blanks are not matchable branches; empty branch never grants.
+        // The HEAD-branch candidate alone matches when the marker names the feature branch directly.
+        assert!(gate_priority_grant_decision(
+            "nix/seq248\n",
+            &["nix/seq248", "v-nix", "fleet/v-nix"],
+            1,
+            2
+        ));
+        // At the cap → deferred regardless of a match (can't oversubscribe).
         assert!(!gate_priority_grant_decision(
             m,
-            "# grant these critical-path lands a queue-jump",
+            &["fleet/v-core-opt"],
+            2,
+            2
+        ));
+        // No candidate listed → not granted, even with free priority slots.
+        assert!(!gate_priority_grant_decision(
+            m,
+            &[
+                "v-someone-else/feat",
+                "v-someone-else",
+                "fleet/v-someone-else"
+            ],
             0,
             2
         ));
-        assert!(!gate_priority_grant_decision(m, "", 0, 2));
-        // Empty marker → nothing granted.
-        assert!(!gate_priority_grant_decision("", "fleet/v-core-opt", 0, 2));
+        // Empty candidates / empty-string candidates / empty marker → never granted (comment+blank ignored).
+        assert!(!gate_priority_grant_decision(m, &[], 0, 2));
+        assert!(!gate_priority_grant_decision(m, &["", ""], 0, 2));
+        assert!(!gate_priority_grant_decision(
+            "",
+            &["fleet/v-core-opt"],
+            0,
+            2
+        ));
+        // A candidate equal to a comment line must NOT match (comments are filtered from the marker).
+        assert!(!gate_priority_grant_decision(
+            m,
+            &["# grant these critical-path lands a queue-jump"],
+            0,
+            2
+        ));
     }
 
     #[test]
