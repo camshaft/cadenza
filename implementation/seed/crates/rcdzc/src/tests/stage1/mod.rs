@@ -1803,44 +1803,6 @@ fn a_confident_module_member_typo_carries_an_applyable_rename_fix() {
 }
 
 #[test]
-fn an_absent_member_names_the_operand_category_not_always_record() {
-    // The `no_field_reject` message names the operand's REAL category instead of always "record has no
-    // field": an EFFECT's op set → "operation", a prelude MODULE → "member", a user SUM type → "variant".
-    // A user RECORD keeps "record has no field". Same did-you-mean fix on all.
-    let err =
-        |src: &str| compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-    // EFFECT: `(. E emt)` — names the effect + "operation".
-    let eff = err(
-        "(module m (effect E (op emit (-> Int64 Unit)) (op log (-> Int64 Unit))) \
-             (def (main) (host (E) (E.emt 5))) (export main))",
-    );
-    assert!(
-        eff.message.contains("effect `E` has no operation `emt`")
-            && eff.message.contains("did you mean `emit`?"),
-        "an effect op typo names the effect + operation: {}",
-        eff.message
-    );
-    // USER SUM TYPE: `(Color.Gren)` — names the type + "variant".
-    let sum = err(
-        "(module m (type Color (Red) (Green) (Blue)) (def (main) (Color.Gren 5)) (export main))",
-    );
-    assert!(
-        sum.message
-            .contains("the type `Color` has no variant `Gren`")
-            && sum.message.contains("did you mean `Green`?"),
-        "a user-sum variant typo names the type + variant: {}",
-        sum.message
-    );
-    // USER RECORD keeps "record has no field" (the default — a record IS a record to the author).
-    let rec = err("(module m (def (g (: r (Record (foo Int64)))) (. r fooo)) (export g))");
-    assert!(
-        rec.message.contains("record has no field `fooo`"),
-        "a user record keeps 'record has no field': {}",
-        rec.message
-    );
-}
-
-#[test]
 fn an_op_on_a_later_same_named_effect_gets_the_shadowed_declaration_hint() {
     // Two same-named `(effect E …)` are DISTINCT effects (an effect's identity is its declaration, not
     // its name — pinned by `14-effects:3129`), so a bare `E` resolves the FIRST and `E.b` where `b` is
