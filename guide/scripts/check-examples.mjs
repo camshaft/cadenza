@@ -42,8 +42,14 @@ import { cookTemplate, extractFilesProp, extractExamples, blockedBy } from "./ex
 const blocklist = JSON.parse(readFileSync(join(here, "example-blocklist.json"), "utf8")).blocked ?? [];
 // blockedBy(ex, blocklist) is imported from ./example-extract.mjs (shared with the sharded nix matrix).
 
+// LIB_ONLY: when this module is IMPORTED (by check-one-example.mjs, the per-example shred entry point)
+// rather than run as the monolithic script, skip the extraction + the whole-guide check loop — expose only
+// the compiler + the reusable checker functions (checkProgram/checkExample/…). The compiler still loads at
+// top-level below (the importer needs it), from CDZ_WASM_PKG if set (the shred stages the pkg per-derivation).
+const LIB_ONLY = !!process.env.CHECK_EXAMPLES_LIB_ONLY;
+
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
-const pkgDir = join(guideRoot, "src/wasm/pkg");
+const pkgDir = process.env.CDZ_WASM_PKG ?? join(guideRoot, "src/wasm/pkg");
 const { default: init, compile, compile_with_preloaded, compile_tests, param_test_signatures, render_value, render_syntax, export_types, repl_eval } = await import(join(pkgDir, "cdz_wasm.js"));
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
@@ -396,13 +402,16 @@ async function checkTestProgram(ex) {
 // cookTemplate / extractFilesProp / extractExamples now live in ./example-extract.mjs (imported above),
 // shared verbatim with scripts/shred-examples.mjs so the gate and the shred can never drift.
 
-// ---- gather every example across the content ----
+// ---- gather every example across the content (skipped under LIB_ONLY — the shred enumerates per-case) ----
+let files = [];
+let examples = [];
+if (!LIB_ONLY) {
 const chaptersDir = join(guideRoot, "src/content/chapters");
-const files = [
+files = [
   ...readdirSync(chaptersDir).filter((f) => f.endsWith(".tsx")).map((f) => join(chaptersDir, f)),
   join(guideRoot, "src/components/HomePage.tsx"),
 ];
-const examples = files.flatMap((f) => {
+examples = files.flatMap((f) => {
   try {
     return extractExamples(readFileSync(f, "utf8"), f.replace(guideRoot + "/", ""));
   } catch (e) {
@@ -426,6 +435,7 @@ if (examples.length < 100) {
   console.error(`check-examples: expected ≥100 examples across the guide, found ${examples.length} — extraction likely broke (a vacuous pass would ship an unchecked guide).`);
   process.exit(1);
 }
+} // end if (!LIB_ONLY) — extraction + vacuous-pass floor
 
 // ---- the playground's Examples-dropdown programs (src/playground/examples.ts) ----
 // These are FULL modules (the playground compiles its buffer verbatim, no wrapping) authored in the
@@ -762,6 +772,8 @@ async function checkExample(ex) {
   return null;
 }
 
+// The whole-guide check RUN (skipped under LIB_ONLY — the per-example shred drives checkExample per case).
+if (!LIB_ONLY) {
 let pass = 0;
 const failures = []; // real, unexpected failures — these FAIL the gate.
 const stillBlocked = []; // known-blocked examples that (correctly) still fail — reported, not fatal.
@@ -1035,3 +1047,9 @@ console.log(
     "known-blocked examples are tracked + routed; @annotations render attr-above (OPERATOR #16); " +
     "the multi-file <Runnable files={…}> extractor + lowering are exercised.",
 );
+} // end if (!LIB_ONLY) — the whole-guide check run
+
+// ---- exports for the per-example shred (check-one-example.mjs imports these; the compiler + helpers above
+// load at top-level on import, from CDZ_WASM_PKG). checkExample dispatches one example (files/isTest/surface/
+// authoredIn/noWrap) to checkProgram (compile via cdz-wasm + run + grade). ----
+export { checkExample, checkProgram, checkTestProgram, runComponent, wrapModule, renderToMl, stripModule };
