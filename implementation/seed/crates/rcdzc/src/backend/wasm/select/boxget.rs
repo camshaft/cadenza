@@ -41,6 +41,28 @@ pub(super) fn box_op_for(
         }
         box_op(db, node)
     } else {
+        // SOUNDNESS GUARD (fuzzer witness rcdzc-wasm-map-value-float32-proj-f32-f64-mismatch): `box_op_ty`
+        // picks a WIDTH-SPECIFIC float box op by the DECLARED slot type (`box-float` for Float64, an f64
+        // arg; `box-float32` for Float32, an f32 arg), ASSUMING `emit(node)` already pushed a value of that
+        // width. But `emit(node)` pushes the NODE's OWN float width. If the node is a Float32 value stored
+        // into a Float64-pinned slot (a mixed-width Map/Set value/key — the front-end admitted it: e.g. a
+        // Float64 Map value column pinned by a prior insert, then an f32 value), the box op would consume
+        // the wrong-width value → INVALID wasm (`expected f64, found f32`) emitted SILENTLY. Cadenza does
+        // NOT implicitly widen numerics (Float32 != Float64 in ty.rs), so a value-width-agreement REJECT at
+        // check time (v-inference) is the primary fix; this is the BACKEND soundness net — DECLINE rather
+        // than emit an invalid module for a should-never-happen front-end gap. Floats only: a narrow INT is
+        // masked into the shared i64 `box-int` slot (the extend the caller applies), so an int-width
+        // difference is not a hazard; only the distinct f32/f64 machine types are.
+        if let (Ty::Float(df), Ty::Float(nf)) = (
+            &peel_qty_ty(declared.clone()),
+            &peel_qty_ty(type_of(db, node)),
+        ) && df.ground_width() != nf.ground_width()
+        {
+            return Err(Reject::unsupported(
+                "a boxed collection value/key of a different float width than its declared slot type is \
+                 not supported (Cadenza does not implicitly widen Float32/Float64)",
+            ));
+        }
         box_op_ty(db, declared)
     }
 }
