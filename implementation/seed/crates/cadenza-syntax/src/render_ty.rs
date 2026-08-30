@@ -743,4 +743,79 @@ mod tests {
         let r = b.l(vec![]);
         assert_eq!(b.name_of(r), "?");
     }
+
+    #[test]
+    fn nested_compounds_and_scheme_lettering() {
+        // (List (Sum Option <7> (Var 0))) scheme -> "(List (Option a))" — recursion + var-lettering
+        // compose through nesting. (A fresh builder per render: `name_of`/`scheme_of` consume `self`.)
+        let mut b = B::new();
+        let v = b.var(0);
+        let sh = b.n("Sum");
+        let onm = b.n("Option");
+        let od = b.i(7);
+        let opt = b.l(vec![sh, onm, od, v]);
+        let lh = b.n("List");
+        let r = b.l(vec![lh, opt]);
+        assert_eq!(b.scheme_of(r), "(List (Option a))");
+        let mut b = B::new();
+        let v = b.var(0);
+        let sh = b.n("Sum");
+        let onm = b.n("Option");
+        let od = b.i(7);
+        let opt = b.l(vec![sh, onm, od, v]);
+        let lh = b.n("List");
+        let r = b.l(vec![lh, opt]);
+        assert_eq!(b.name_of(r), "(List (Option _))");
+        // (Map (Tuple Int64 Bool) (Set Char)) — a compound key + compound value, no vars.
+        let mut b = B::new();
+        let ti = b.width_ty("Int", 64);
+        let tb = b.n("Bool");
+        let th = b.n("Tuple");
+        let tup = b.l(vec![th, ti, tb]);
+        let ch = b.n("Char");
+        let seth = b.n("Set");
+        let set = b.l(vec![seth, ch]);
+        let mh = b.n("Map");
+        let r = b.l(vec![mh, tup, set]);
+        assert_eq!(b.name_of(r), "(Map (Tuple Int64 Bool) (Set Char))");
+        // A record whose field type is itself compound: (Record (: xs (List (Var 0)))) scheme.
+        let mut b = B::new();
+        let v = b.var(0);
+        let lh = b.n("List");
+        let list = b.l(vec![lh, v]);
+        let field = b.field("xs", list);
+        let rh = b.n("Record");
+        let r = b.l(vec![rh, field]);
+        assert_eq!(b.scheme_of(r), "(Record (: xs (List a)))");
+    }
+
+    #[test]
+    fn depth_guard_truncates_deep_type_without_panic() {
+        // A type nested deeper than MAX_RENDER_DEPTH (24) must TRUNCATE with `…` rather than panic or
+        // recurse unbounded — the totality guard that protects editor hover on a pathological arena.
+        // Build (List (List (… 40 deep … Int64 …))).
+        let mut b = B::new();
+        let mut node = b.width_ty("Int", 64);
+        for _ in 0..40 {
+            let lh = b.n("List");
+            node = b.l(vec![lh, node]);
+        }
+        let out = b.name_of(node);
+        assert!(
+            out.contains('…'),
+            "a >MAX_RENDER_DEPTH type must truncate with `…`, got: {out}"
+        );
+        // And the guard must fire at the SAME depth in scheme mode (via collect_vars + transform).
+        let mut b = B::new();
+        let mut node = b.var(0);
+        for _ in 0..40 {
+            let lh = b.n("List");
+            node = b.l(vec![lh, node]);
+        }
+        let out = b.scheme_of(node);
+        assert!(
+            out.contains('…'),
+            "scheme mode must also truncate, got: {out}"
+        );
+    }
 }
