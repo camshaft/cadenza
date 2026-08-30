@@ -564,7 +564,7 @@
   (error  CDZ0210 (message "map binding pattern is refutable")))
 
 (case "a keyed map binding param rejects the same in the name-alias (map …) spelling"
-  (input  (do (def (get (map (= 1 v))) v) (def (main) (get (map (= 1 5)))) (export main)))
+  (input  (do (def (get #map((= 1 v))) v) (def (main) (get #map((= 1 5)))) (export main)))
   (error  CDZ0210 (message "map binding pattern is refutable")))
 
 (case "a map rest pattern with a keyed entry after the rest is a malformed shape, rejected CDZ0201"
@@ -572,7 +572,7 @@
   (error  CDZ0201))
 
 (case "a map rest post-entry rejects the same in the name-alias (map …) spelling"
-  (input  (do (def (f (: mp (Map Int64 Int64))) (match mp ((map (= 1 v) .. rest (= 2 w)) v) (_ 0))) (export f)))
+  (input  (do (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) .. rest (= 2 w)) v) (_ 0))) (export f)))
   (error  CDZ0201))
 
 (case "a well-formed rest-last map pattern matches the keyed entry and binds the rest"
