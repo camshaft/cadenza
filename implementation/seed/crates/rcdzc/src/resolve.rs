@@ -6424,8 +6424,18 @@ pub(crate) fn read_record_fields(
                         "record field must be (= key value)",
                     ));
                 }
-                // A legacy `(name value)` pair (an un-migrated node / hand-built AST) — head is NOT `=`.
-                Struct::List(kv) if kv.len() == 2 => (kv[0], kv[1]),
+                // seq-276: a bare `(name value)` value-record entry is NO LONGER accepted — require the
+                // canonical FieldPair `(= name value)` (operator: "prefer `=` for records/maps"). Head is
+                // NOT `=` here (the `=` spellings were caught above), so a 2-element list is a bare pair.
+                // Scoped to VALUE records only (TYPE-record fields + all pattern readers are separate).
+                Struct::List(kv) if kv.len() == 2 => {
+                    return Err(Reject::coded(
+                        Code::Malformed,
+                        "a record value entry is written `(= key value)` — a bare `(key value)` entry is \
+                         no longer accepted (add the leading `=`)",
+                    )
+                    .at(field));
+                }
                 Struct::List(kv) => {
                     // A wrong-arity non-`=` field entry `(x 1 2)` / `(x)`. A SURPLUS element gets the shared
                     // delete-the-surplus fix; too few is message-only. Anchored at the offending entry.
@@ -6676,7 +6686,18 @@ fn resolve_map(db: &Db, id: StructId) -> Resolved {
             continue;
         }
         match db.ast.get(entry) {
-            Struct::List(items) if items.len() == 2 => entries.push((items[0], items[1])),
+            // seq-276: a bare `(key value)` map entry is NO LONGER accepted — require the canonical
+            // FieldPair `(= key value)` (the `=` spellings were caught above). Scoped to VALUE maps.
+            Struct::List(items) if items.len() == 2 => {
+                return Resolved::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a map entry is written `(= key value)` — a bare `(key value)` entry is no \
+                         longer accepted (add the leading `=`)",
+                    )
+                    .at(entry),
+                );
+            }
             Struct::List(items) => {
                 // A wrong-arity entry `(1 2 3)` / `(1)` — a fixed-arity shape (want 2). A SURPLUS element
                 // gets the shared delete fix (`(1 2 3)` → `(1 2)`); too few is message-only. Anchored at
