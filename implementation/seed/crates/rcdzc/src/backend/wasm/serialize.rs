@@ -865,11 +865,51 @@ pub struct WrapperDesc {
     /// wrapper — its owner — must `drop` it after the call (the same borrowed-owned-operand reclaim as a
     /// mem-leaf param; a consuming def would set this false so the wrapper does not double-free).
     pub sum_params: Vec<Option<(SumArgRebuild, bool)>>,
+    /// Parallel to `params`: for a TOP-LEVEL payloadless-ENUM param (a `Ty::Sum` `db.is_enum_disc`, crossing
+    /// the boundary as a WIT `enum{…}` whose canonical flatten is a single `i32` case index) whose WIT case
+    /// order ≠ the guest decl order, `Some(inv_perm)` remaps the boundary disc to the guest disc BY NAME
+    /// (`inv_perm[wit_disc] = guest_disc`) via a nested-if chain, leaving the guest disc as the def arg — the
+    /// PARAM twin of `ResultLower::EnumRemap` (#7036, SHAPE 64). An ORDER-MATCHING enum param is `None` (the
+    /// boundary `i32` disc IS the guest disc — a plain `local.get` passthrough via the `params` `None` arm);
+    /// a non-enum param is also `None`. An enum-disc value is a raw `i32` (no heap handle), so there is no
+    /// reclaim/`drop_after` — pure `i32` compare/select, no runtime op, no memory.
+    pub enum_disc_params: Vec<Option<Vec<u32>>>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
     /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
     /// or read a returned record HANDLE's fields and spill them to a return area in memory.
     pub result: ResultLower,
+}
+
+/// Emit a payloadless-enum discriminant REMAP: given a source disc in local `src_local`, leave `map[src]`
+/// on the stack via a nested-if chain (`if src == 0 { map[0] } else if src == 1 { map[1] } else … map[n-1]`).
+/// Pure wasm — i32 compare/select only, no runtime op, no memory. Shared by the enum RESULT remap
+/// (`ResultLower::EnumRemap`, `map = perm[guest] = wit`) and the enum PARAM remap
+/// (`WrapperDesc::enum_disc_params`, `map = inv_perm[wit] = guest`). `map` is only ever a genuine reorder
+/// (identity is a passthrough that never calls this), so `n ≥ 2` and the chain has a real `else`.
+fn emit_enum_disc_remap(map: &[u32], src_local: u32, inner: &mut Vec<u8>) {
+    let n = map.len();
+    for (i, &dst) in map.iter().enumerate() {
+        if i + 1 == n {
+            // The final `else` value: map[last].
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(dst as i64, inner);
+        } else {
+            // `if src == i { map[i] } else { …next… }`
+            inner.push(op::LOCAL_GET);
+            uleb128(src_local as u64, inner);
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(i as i64, inner);
+            inner.push(op::I32_EQ);
+            inner.push(op::IF);
+            inner.push(wasm_abi::CORE_I32); // block returns i32
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(dst as i64, inner);
+            inner.push(op::ELSE);
+        }
+    }
+    // Close each nested `if` (one END per arm but the last): append `n-1` END bytes.
+    inner.resize(inner.len() + n.saturating_sub(1), op::END);
 }
 
 /// The kind of a TOP-LEVEL memory-bearing leaf param (see [`WrapperDesc::mem_leaf_params`]): a `Bytes`
@@ -1465,6 +1505,16 @@ fn core_module_impl(
                     }
                     continue;
                 }
+                // A TOP-LEVEL payloadless-ENUM param whose WIT case order ≠ the guest decl order: the boundary
+                // `i32` disc (at `leaf`) is REMAPPED to the guest disc by name (`inv_perm[wit] = guest`) and
+                // left on the stack DIRECTLY as the def arg — the PARAM twin of `ResultLower::EnumRemap`. An
+                // order-MATCHING enum param carries `None` here (the disc IS the guest disc, handled by the
+                // `params` `None` passthrough below). No heap handle, so nothing to reclaim.
+                if let Some(inv_perm) = wrap.enum_disc_params.get(pi).and_then(|s| s.as_ref()) {
+                    emit_enum_disc_remap(inv_perm, leaf, &mut inner); // → [guest disc]
+                    leaf += 1;
+                    continue;
+                }
                 match pp {
                     None => {
                         inner.push(op::LOCAL_GET);
@@ -1521,28 +1571,7 @@ fn core_module_impl(
                 next_local += 1;
                 inner.push(op::LOCAL_SET);
                 uleb128(d as u64, &mut inner); // d = guest disc (consumes the def result)
-                let n = perm.len();
-                for (i, &wit) in perm.iter().enumerate() {
-                    if i + 1 == n {
-                        // The final `else` value: perm[last].
-                        inner.push(op::I32_CONST);
-                        crate::backend::wasm::encode::sleb128(wit as i64, &mut inner);
-                    } else {
-                        // `if d == i { perm[i] } else { …next… }`
-                        inner.push(op::LOCAL_GET);
-                        uleb128(d as u64, &mut inner);
-                        inner.push(op::I32_CONST);
-                        crate::backend::wasm::encode::sleb128(i as i64, &mut inner);
-                        inner.push(op::I32_EQ);
-                        inner.push(op::IF);
-                        inner.push(wasm_abi::CORE_I32); // block returns i32
-                        inner.push(op::I32_CONST);
-                        crate::backend::wasm::encode::sleb128(wit as i64, &mut inner);
-                        inner.push(op::ELSE);
-                    }
-                }
-                // Close each nested `if` (one END per arm but the last): append `n-1` END bytes.
-                inner.resize(inner.len() + n.saturating_sub(1), op::END);
+                emit_enum_disc_remap(perm, d, &mut inner); // → [wit disc]
             }
             inner.push(op::END);
             let n_locals = next_local - p;

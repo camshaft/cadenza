@@ -4206,3 +4206,45 @@ cases
       (export main)))
   (call main (: 42 Int64))
   (output (: 42 Int64)))
+
+(case
+  "a payloadless enum PARAM member (order matches) crosses as a TYPED WIT enum — Direction B (the param twin of SHAPE 60)"
+  (doc
+    "SHAPE 67 - a payloadless enum (Color = Red|Green|Blue) as a typed EXPORT-interface PARAM member under an imposed world declaring `(param c (\"enum\" red green blue))`. The PARAM twin of SHAPE 60 (enum RESULT): the guest def receives the raw i32 disc (select's enum-disc rep — no heap handle), so the typed-interface wrapper passes the boundary disc STRAIGHT THROUGH as the guest disc when the WIT/guest case orders MATCH (a `params` `None` passthrough), and the enum DEFINED type is emitted + re-exported by the `note` pass. Fix (record_interface_export Sum-param arm → is_enum_disc branch → i32 disc + any_enum_disc_param forces the typed wrapper). The harness marshals the arg BY WIT CASE NAME (`(red unit)` -> WIT disc 0), proving the typed enum boundary is emitted (a u32-handle fallback would reject a case-name arg). setColor(Red)->10, setColor(Green)->20, setColor(Blue)->30. Closes the typed enum PARAM (Direction B, order-matching) in the WIT boundary coverage matrix.")
+  (wit-world
+    (world
+      w
+      (export cadenza:demo/iface (member set-color (func (param c (enum red green blue)) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (setColor (: c Color)) (match c ((Color.Red _) 10) ((Color.Green _) 20) ((Color.Blue _) 30)))
+      (export setColor)))
+  (call set-color (: (red unit) Color))
+  (output (: 10 Int64))
+  (call set-color (: (green unit) Color))
+  (output (: 20 Int64))
+  (call set-color (: (blue unit) Color))
+  (output (: 30 Int64)))
+
+(case
+  "an enum PARAM member whose guest case order MISMATCHES the WIT remaps the disc by case NAME — the param twin of SHAPE 64"
+  (doc
+    "SHAPE 68 - the PARAM twin of SHAPE 64 (enum RESULT reorder). Guest `(type Color (Red)(Green)(Blue))` under an imposed world declaring `(param c (\"enum\" green red blue))` [red/green REVERSED]. The boundary supplies the WIT disc (green=0, red=1, blue=2); the typed-interface wrapper REMAPS it to the guest disc BY NAME (`inv_perm[wit_disc] = guest_disc`, so inv_perm=[1,0,2]: WIT `green`(0)->guest Green(1), WIT `red`(1)->guest Red(0), WIT `blue`(2)->guest Blue(2)) via a nested-if disc chain BEFORE the def call — the PARAM twin of ResultLower::EnumRemap (the emit is the shared emit_enum_disc_remap helper). SHOULD-WORK, name-keyed: supplying `(green unit)` yields the Green result (20) regardless of wire order, supplying `(red unit)` yields Red (10), `(blue unit)` yields Blue (30) — identical semantics to the order-MATCHING SHAPE 67, the enum being the degenerate name-keyed variant (same ruling as the record boundary SHAPE 20 / the enum RESULT SHAPE 64). Pure i32 compare/select, no runtime op, no memory, no reclaim (a raw i32 disc).")
+  (wit-world
+    (world
+      w
+      (export cadenza:demo/iface (member set-color (func (param c (enum green red blue)) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (setColor (: c Color)) (match c ((Color.Red _) 10) ((Color.Green _) 20) ((Color.Blue _) 30)))
+      (export setColor)))
+  (call set-color (: (green unit) Color))
+  (output (: 20 Int64))
+  (call set-color (: (red unit) Color))
+  (output (: 10 Int64))
+  (call set-color (: (blue unit) Color))
+  (output (: 30 Int64)))

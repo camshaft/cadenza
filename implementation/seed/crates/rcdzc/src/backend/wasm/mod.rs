@@ -8265,6 +8265,9 @@ fn try_bare_entry_param_component(
         params: vec![None; params.len()],
         param_slots: vec![None; params.len()],
         sum_params,
+        // The plain-export route lifts no payloadless-ENUM param (that is the typed-interface-MEMBER route);
+        // all-`None` keeps the wrapper body's disc-remap check inert (byte-neutral passthrough).
+        enum_disc_params: vec![None; params.len()],
         mem_leaf_params,
         def_abs,
         result: serialize::ResultLower::Passthrough,
@@ -8460,6 +8463,11 @@ fn record_interface_export(
     // `sum_params`): the typed-interface wrapper must take over to branch on the boundary disc and build the
     // guest sum cell even when its result is a bare scalar. The sum-param twin of `any_mem_leaf_param`.
     let mut any_sum_param = false;
+    // Set when a member has a TOP-LEVEL payloadless-ENUM param (a `Ty::Sum` `is_enum_disc` crossing as a WIT
+    // `enum{…}` = one `i32` disc): the typed-interface wrapper must take over to DECLARE + re-export the enum
+    // DEFINED type (via the `note` pass) even for an order-matching passthrough, and to REMAP the disc by name
+    // when the WIT/guest case orders differ. The enum-param twin of `any_sum_param` (the PARAM side of #7036).
+    let mut any_enum_disc_param = false;
     // Set when a member's RESULT spills to memory (a compound result-lower): the typed-interface wrapper must
     // then take over even for an all-scalar-param member, to WRITE the result to the retptr (else the compound
     // result leaks as a raw u32 handle via the provider path). The result-side twin of `any_record`.
@@ -8488,6 +8496,11 @@ fn record_interface_export(
         // boundary disc, `sum-new` the guest cell, passed DIRECTLY as the def arg. `None` for a scalar/record/
         // mem-leaf param.
         let mut sum_params: Vec<Option<(serialize::SumArgRebuild, bool)>> = Vec::new();
+        // Parallel to `params`: a TOP-LEVEL payloadless-ENUM param with a WIT/guest case-order MISMATCH carries
+        // `Some(inv_perm)` (`inv_perm[wit_disc] = guest_disc`, by name) so the wrapper remaps the boundary disc
+        // to the guest disc; an order-matching enum param (or a non-enum param) is `None`. The PARAM twin of
+        // `ResultLower::EnumRemap`.
+        let mut enum_disc_params: Vec<Option<Vec<u32>>> = Vec::new();
         for ((binder, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
                 Ty::Record(map) => {
@@ -8504,6 +8517,7 @@ fn record_interface_export(
                     param_slots.push(Some(slots));
                     mem_leaf_params.push(None);
                     sum_params.push(None);
+                    enum_disc_params.push(None);
                     any_record = true;
                 }
                 // A TOP-LEVEL `tuple<…>` param is a POSITIONAL record: the canon lift flattens it depth-first
@@ -8530,7 +8544,58 @@ fn record_interface_export(
                     param_slots.push(Some(slots));
                     mem_leaf_params.push(None);
                     sum_params.push(None);
+                    enum_disc_params.push(None);
                     any_record = true; // a param needs the cell-rebuild wrapper (same gate as a record param)
+                }
+                // A TOP-LEVEL payloadless-ENUM param (`Ty::Sum` `is_enum_disc`) crosses as a WIT `enum{…}`,
+                // whose canonical flatten is a single `i32` case index. The guest def receives the raw `i32`
+                // disc (select's enum-disc rep — no heap handle), so the wrapper passes the boundary disc
+                // straight through when the WIT/guest case orders MATCH, or REMAPS it by name (`inv_perm[wit]
+                // = guest`) when they differ — the PARAM twin of `record_result_lower`'s enum-disc RESULT arm
+                // (#7036, SHAPE 64). Guest ↔ WIT by kebab name; a genuinely different case SET declines. No
+                // heap handle → no reclaim, no escape concern (a raw `i32` scalar).
+                Ty::Sum { decl, .. } if db.is_enum_disc(*decl) => {
+                    use crate::backend::common::export_name::kebab_extern_name;
+                    let wit_cases: Vec<String> = match wty {
+                        WitType::Enum(cs) => cs.clone(),
+                        WitType::Variant(cs) if cs.iter().all(|(_, p)| p.is_none()) => {
+                            cs.iter().map(|(n, _)| n.clone()).collect()
+                        }
+                        _ => return None, // WIT type is not an enum/all-nullary variant — decline
+                    };
+                    let guest_cases: Vec<String> = {
+                        let dr = db.type_decl_by_occ(*decl)?;
+                        dr.variants
+                            .iter()
+                            .map(|v| kebab_extern_name(&v.name))
+                            .collect()
+                    };
+                    if guest_cases.len() != wit_cases.len() {
+                        return None; // a genuinely different case set (not just a reorder) — decline
+                    }
+                    // `inv_perm[wit_disc] = guest_disc`: the guest case index of the WIT case at position
+                    // `wit_disc`, matched by name. A WIT case with no guest name-match declines (`?`).
+                    let mut inv_perm: Vec<u32> = Vec::with_capacity(wit_cases.len());
+                    for wc in &wit_cases {
+                        inv_perm.push(guest_cases.iter().position(|gc| gc == wc)? as u32);
+                    }
+                    // The enum crosses as a single `i32` disc.
+                    param_vts.push(crate::backend::wasm::lir::ValType::I32.byte());
+                    params.push(None);
+                    param_slots.push(None);
+                    mem_leaf_params.push(None);
+                    sum_params.push(None);
+                    // Identity → passthrough (the disc IS the guest disc; the `params` `None` arm forwards it);
+                    // a genuine reorder → record the remap the wrapper emits before the def call.
+                    if inv_perm.iter().enumerate().all(|(i, &g)| g == i as u32) {
+                        enum_disc_params.push(None);
+                    } else {
+                        enum_disc_params.push(Some(inv_perm));
+                    }
+                    // Either way the typed wrapper must take over — even an identity passthrough needs it to
+                    // DECLARE + re-export the enum DEFINED type (the `note` pass) instead of the provider path's
+                    // bare `u32` handle (the param twin of the enum-RESULT `needs_result_wrapper`).
+                    any_enum_disc_param = true;
                 }
                 // A TOP-LEVEL `option<scalar>` param crosses as a native component `option<T>`, flattened to
                 // `(disc, payload…)` and rebuilt into the guest sum cell via `SumArgRebuild` (branch on the
@@ -8579,6 +8644,7 @@ fn record_interface_export(
                     // drop_after: the def only BORROWS the shell (matches it), so the wrapper (its owner) drops
                     // it after the call — the shell never escapes (checked above), so no double-free.
                     sum_params.push(Some((rebuild, true)));
+                    enum_disc_params.push(None);
                     any_sum_param = true;
                 }
                 // A TOP-LEVEL memory-bearing leaf param — `Bytes` ↔ `list<u8>`, `String` ↔ `string`, or a
@@ -8618,6 +8684,7 @@ fn record_interface_export(
                     param_slots.push(None);
                     mem_leaf_params.push(Some((kind, true))); // drop_after = borrowed (checked above)
                     sum_params.push(None);
+                    enum_disc_params.push(None);
                     any_mem_leaf_param = true;
                 }
                 Ty::Map(_, _) | Ty::Set(_) => {
@@ -8630,6 +8697,7 @@ fn record_interface_export(
                     param_slots.push(None);
                     mem_leaf_params.push(None);
                     sum_params.push(None);
+                    enum_disc_params.push(None);
                 }
             }
         }
@@ -8675,6 +8743,7 @@ fn record_interface_export(
             // the loop above); a scalar/record/mem-leaf param is `None` (a sum INSIDE a record rides via the
             // record-field `FieldRebuild::Sum` route instead).
             sum_params,
+            enum_disc_params,
             params,
             param_slots,
             mem_leaf_params,
@@ -8695,7 +8764,12 @@ fn record_interface_export(
     // TOP-LEVEL memory-bearing byte-leaf param (`Bytes`/`String`/`list<scalar>` copy-in), a TOP-LEVEL
     // `option<scalar>` param (sum rebuild), OR a spilled COMPOUND result (retptr write). A scalar-param +
     // compound-result member needs only the last.
-    if !any_record && !any_mem_leaf_param && !any_sum_param && !needs_result_wrapper {
+    if !any_record
+        && !any_mem_leaf_param
+        && !any_sum_param
+        && !any_enum_disc_param
+        && !needs_result_wrapper
+    {
         return None;
     }
     // The exported instance must EXPORT each named (record/variant) type its funcs reference, or the
