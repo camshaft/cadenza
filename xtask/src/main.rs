@@ -488,13 +488,10 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
         && committed != runtime_hash
     {
         eprintln!(
-            "\n⚠️  cargo xtask build: NATIVE release runtime hash ({runtime_hash}) != committed\n\
-             ⚠️  canonical REQUIRED_RUNTIME_HASH ({committed}).\n\
-             ⚠️  This natively-built store is fine for REJECT `--case` cases but NOT for RUNTIME\n\
-             ⚠️  (execute) cases: a nix-built `cdz` pins the canonical hash, so a compiled program's\n\
-             ⚠️  runtime import ({committed}) will not resolve against this store ({runtime_hash}).\n\
-             ⚠️  To gate RUNTIME cases, point CDZ_STORE at the nix-canonical store:\n\
-             ⚠️      CDZ_STORE=$(nix build --no-link --print-out-paths .#store)\n"
+            "\n⚠ cargo xtask build: native release runtime hash ({runtime_hash}) != committed canonical\n\
+             ⚠ REQUIRED_RUNTIME_HASH ({committed}) — OK for REJECT `--case`, NOT for RUNTIME (execute)\n\
+             ⚠ cases (a nix-built `cdz` pins the canonical hash). Gate RUNTIME cases via the nix store:\n\
+             ⚠     CDZ_STORE=$(nix build --no-link --print-out-paths .#store)\n"
         );
     }
 
