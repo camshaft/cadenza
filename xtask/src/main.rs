@@ -3845,6 +3845,26 @@ fn gate_via_nix_cache(paths: &Paths, files: &[PathBuf], target: GateTarget) -> O
 }
 
 fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
+    // FIDELITY GUARD (v-rcdzc-ts-1 + concierge nix-arbitration, 2026-08-31): the native IN-PROCESS gate grade
+    // DIVERGES from the authoritative nix corpus-exec grade in BOTH directions — it false-FAILs cases nix
+    // PASSES (corpus-05 "runtime Qty returned WITH its unit") AND MISSES fails nix CATCHES (corpus-18 "Qty
+    // with a bad inner type", CDZ0101 message check). A FRESH nix store did NOT fix it → the divergence is the
+    // native PATH, not store staleness. So a baseline SAVED from this native grade is UNFAITHFUL (it masks
+    // real regressions + bakes false-fails). The ONLY faithful baseline mechanism is the NIX harvest. REFUSE
+    // `--save` here and direct to it, so no one re-produces an unfaithful baseline (as an aborted attempt
+    // already did). This completes the v-xtask-decompose seq-202 intent (`xtask-save-baseline` / the nix app
+    // is the `gate --save` replacement). Escape `CDZ_GATE_SAVE_NATIVE_ANYWAY=1` (DISCOURAGED — unfaithful).
+    if opts.save && std::env::var_os("CDZ_GATE_SAVE_NATIVE_ANYWAY").is_none() {
+        eprintln!(
+            "xtask gate --save: REFUSED — the native in-process grade DIVERGES from the authoritative nix \
+             corpus-exec grade (both ways: false-fails + missed fails, proven corpus-05/18), so a baseline \
+             saved from it is UNFAITHFUL. Regenerate via the NIX harvest instead:\n\
+             \x20 nix run .#save-baseline   (builds .#corpus-verdicts = the faithful nix grade, writes the \
+             .gate-baseline; run per backend — wasm/rust/rust-async)\n\
+             (override, discouraged, produces an unfaithful baseline: CDZ_GATE_SAVE_NATIVE_ANYWAY=1)"
+        );
+        std::process::exit(2);
+    }
     // OPERATOR (2026-08-26 "cut over to the faster/cached wasm builds"): the whole-corpus + `--files`
     // verify path runs through the CACHED per-case nix corpus so it does NOT recompile every case each run
     // (#3363). `--case` (single-case debug), `--save` (baseline regen — needs in-process verdicts),
