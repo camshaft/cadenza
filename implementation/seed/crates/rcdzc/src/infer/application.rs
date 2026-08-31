@@ -4,6 +4,46 @@
 
 use super::*;
 
+/// The fault (if any) for NEGATING an operand of type `t` — shared by the unary `-` (`Prim::Sub` arity-1)
+/// and `Num.neg` (`Prim::Neg`) checks. A DEFINITELY-UNSIGNED integer has no negation (its domain has no
+/// sign): `CDZ0310` `UnsignedNegation`, a COMPILE-TIME reject rather than the const-overflow / runtime trap
+/// it degrades to today. A NON-number operand is `CDZ0201` `Malformed` (Cadenza never coerces to a number).
+/// A SIGNED number (`Int`/`Float`/`Rational`/`BigInt`/`Qty`), an undetermined `Any`, or a not-yet-fixed
+/// sign (`Deferred`/`Var` — may still ground to signed) is NOT a fault here (`None`).
+fn negate_operand_fault(db: &mut Db, t: &Ty, _at: StructId) -> Option<Reject> {
+    // A DEFINITELY-unsigned integer (a FIXED unsigned sign; a Deferred/Var sign may still resolve to
+    // signed, so it is not rejected). Negation is undefined on an unsigned domain.
+    if let Ty::Int(it) = t
+        && it.sign == crate::ty::Sign::Fixed(false)
+    {
+        trace!(target: "rcdzc::infer", ty = %t.render_name(&db.name_ctx()), "fault: negation of an unsigned integer (CDZ0310)");
+        return Some(Reject::coded(
+            Code::UnsignedNegation,
+            format!(
+                "negation is not defined on {} — an unsigned integer has no sign to negate; use a \
+                 signed integer type (e.g. Int64) if you need negative values",
+                t.render_name(&db.name_ctx())
+            ),
+        ));
+    }
+    // A NON-number operand: negation is not defined (never coerced to a number). Same CDZ0201 the binary
+    // arithmetic-on-a-non-number reject uses.
+    if !matches!(
+        t,
+        Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Qty { .. } | Ty::Any
+    ) {
+        trace!(target: "rcdzc::infer", ty = %t.render_name(&db.name_ctx()), "fault: negation of a non-numeric operand (CDZ0201)");
+        return Some(Reject::coded(
+            Code::Malformed,
+            format!(
+                "negation is not defined on {} — Cadenza never coerces this to a number",
+                t.render_name(&db.name_ctx())
+            ),
+        ));
+    }
+    None
+}
+
 pub(crate) fn check_application(
     db: &mut Db,
     app: StructId,
@@ -317,18 +357,23 @@ pub(crate) fn check_application(
     // operand for its own faults either way.
     if args.len() == 1 && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Sub) {
         let t = type_of(db, args[0]);
-        if !matches!(
-            t,
-            Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Qty { .. } | Ty::Any
-        ) {
-            trace!(target: "rcdzc::infer", head = head.0, ty = %t.render_name(&db.name_ctx()), "fault: negation of a non-numeric operand (CDZ0201)");
-            out.push(Reject::coded(
-                Code::Malformed,
-                format!(
-                    "negation is not defined on {} — Cadenza never coerces this to a number",
-                    t.render_name(&db.name_ctx())
-                ),
-            ));
+        if let Some(reject) = negate_operand_fault(db, &t, args[0]) {
+            out.push(reject);
+        }
+        collect(db, args[0], out);
+        return;
+    }
+    // `(Num.neg e)` / a per-type `<T>.neg` (`Prim::Neg`, a UNARY negation over the number shape — the
+    // generic `∀a. a → a` front `Num.neg` #7023 backs; the scheme is unconstrained, so the operand type is
+    // checked HERE). Same operand rule as unary `-`: an UNSIGNED integer has no negation (CDZ0310), a
+    // NON-number operand is CDZ0201 (Cadenza never coerces to a number) — the shared `negate_operand_fault`
+    // (v-compiler-primitives co-design step-3 + operator's explicit unsigned-static-reject requirement;
+    // code CDZ0310 assigned by v-deferral-declines). A signed-number operand is well-typed; descend for its
+    // own faults and return so the ∀a scheme-unify adds no phantom.
+    if args.len() == 1 && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Neg) {
+        let t = type_of(db, args[0]);
+        if let Some(reject) = negate_operand_fault(db, &t, args[0]) {
+            out.push(reject);
         }
         collect(db, args[0], out);
         return;
