@@ -823,6 +823,31 @@
       (export main)))
   (output (: 17 Int64)))
 
+; The DEEPER nesting the case above defers: a binder BELOW a nested-record FIELD value — the field value is
+; ITSELF a compound (`#record((= x #tuple(c d)))`, `c`/`d` inside the tuple at field `x`) — is NOT yet wired
+; in EITHER the binding or the match path (a record field projects by NAME→sorted-slot and `PathStep` has no
+; name-keyed step to COMPOSE a projection with a further sub-path). It is DECLINED as an unbuilt construct,
+; and — since operator seq-286 requires a code on every user-facing decline — the decline carries the umbrella
+; CDZ0900 (`Reject::unsupported`), the SAME code the match-arm twin at `match_arm_record_binds` already
+; emitted. The binding path formerly used the UNCODED `Reject::decline`, so the identical feature-gap surfaced
+; as a bare `error:` in a binding position but `error [CDZ0900]:` in a match arm — a diagnostic-quality
+; asymmetry now closed (BOTH the resolve-side `last_binder_named` and the check-side `check_binding_pattern`
+; declines are CDZ0900). `(no-other-errors)` pins that NO spurious unbound-name CDZ0101 cascade rides
+; alongside — the resolve/check declines and the body-reference resolution agree, so the ONLY emitted codes
+; are the CDZ0900 decline (the regression the earlier binding-path fix suppressed).
+(case
+  "a deeper nested compound below a record BINDING field is a coded decline (CDZ0900, no unbound cascade)"
+  (input
+    (do
+      (def (f #record((= x #tuple(c d)))) (+ c d))
+      (def (main) (f #record((= x #tuple(3 4)))))
+      (export main)))
+  (declines
+    CDZ0900
+    (message "nested compound sub-pattern inside a record binding pattern is not supported")
+    (not "unbound")
+    (no-other-errors)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`
@@ -24140,6 +24165,28 @@
       (export main)))
   (call main)
   (output (: 15 Int64)))
+
+; The "separate coded decline" the case above names: a binder BELOW a nested-record field value in a MATCH
+; arm — the field value is ITSELF a compound (`#record((= x #tuple(c d)))`) — is the not-yet-wired deeper
+; nesting (a record field projects by NAME→sorted-slot; `PathStep` has no name-keyed step to compose a
+; further sub-path). Declined as an unbuilt construct with the seq-286 umbrella CDZ0900 (`Reject::unsupported`
+; at `match_arm_record_binds`). The binding twin above pins the SAME code from the binding position; this
+; pins the match face so the two stay symmetric (a regression to an uncoded decline on either would flip its
+; case). `(no-other-errors)` pins no unbound-name CDZ0101 cascade rides alongside.
+(case
+  "a deeper nested compound below a record MATCH field is a coded decline (CDZ0900, no unbound cascade)"
+  (input
+    (do
+      (def
+        (f (: t (Record (: x (Tuple Int64 Int64)))))
+        (match t (#record((= x #tuple(c d))) (+ c d))))
+      (def (main) (f #record((= x #tuple(3 4)))))
+      (export main)))
+  (declines
+    CDZ0900
+    (message "nested compound sub-pattern inside a record match pattern is not supported")
+    (not "unbound")
+    (no-other-errors)))
 
 (case
   "a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
