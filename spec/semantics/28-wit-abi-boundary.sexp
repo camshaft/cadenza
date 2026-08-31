@@ -307,7 +307,7 @@
            String handle after the call, same borrow-only 0-leak lift as the Bytes param.")
   (wit-world (world w (export iface (member check-str (func (param x (string)) (result (bool)))))))
   (component-name "cadenza:demo/iface")
-  (input (do (def (checkStr (: x String)) (> ((. String byte-len) x) 0)) (export checkStr)))
+  (input (do (def (checkStr (: x String)) (> (String.byte-len x) 0)) (export checkStr)))
   (call check-str (: "hi" String))
   (output (: true Bool))
   (live-objects known-leak))
@@ -601,7 +601,7 @@
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond clock.now (: 42 UInt64)))
-  (host-calls (call (. cadenza:platform/clock now)))
+  (host-calls (call cadenza:platform/clock.now))
   (output
     #record((=
         requests
@@ -680,7 +680,7 @@
     (respond
       probe.info
       (: #record((= zebra #list(9)) (= alpha #list(7))) (Record (: zebra Bytes) (: alpha Bytes)))))
-  (host-calls (call (. cadenza:platform/probe info)))
+  (host-calls (call cadenza:platform/probe.info))
   (output
     #record((=
         requests
@@ -746,7 +746,7 @@
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -809,7 +809,7 @@
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/deliver push)))
+  (host-calls (call cadenza:platform/deliver.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -872,7 +872,7 @@
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond hasher.hash (: 42 UInt64)))
-  (host-calls (call (. cadenza:platform/hasher hash)))
+  (host-calls (call cadenza:platform/hasher.hash))
   (output
     #record((=
         requests
@@ -958,7 +958,7 @@
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond run.run (: (Ok #list(82 65 78)) (Result Bytes Error))))
-  (host-calls (call (. cadenza:platform/run run)))
+  (host-calls (call cadenza:platform/run.run))
   (output
     #record((=
         requests
@@ -1399,7 +1399,7 @@
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -1568,7 +1568,7 @@
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -1623,7 +1623,7 @@
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -1684,7 +1684,7 @@
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond kv.delete (: true Bool)))
-  (host-calls (call (. cadenza:platform/kv delete)))
+  (host-calls (call cadenza:platform/kv.delete))
   (output
     #record((=
         requests
@@ -1746,7 +1746,7 @@
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -1795,7 +1795,7 @@
         (host
           (kv)
           (if
-            (> (List.len ((. kv prefix-scan) m.token)) 0)
+            (> (List.len (kv.prefix-scan m.token)) 0)
             #record((=
                 requests
                 #list(#record((= contract m.contract)
@@ -1812,9 +1812,9 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses
     (respond
-      (. kv prefix-scan)
+      kv.prefix-scan
       (: #list((#list(107) #list(49)) (#list(107) #list(50))) (List (Tuple Bytes Bytes)))))
-  (host-calls (call (. cadenza:platform/kv prefix-scan)))
+  (host-calls (call cadenza:platform/kv.prefix-scan))
   (output
     #record((=
         requests
@@ -1876,7 +1876,7 @@
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -1933,7 +1933,7 @@
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2062,7 +2062,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2117,7 +2117,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2175,7 +2175,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2232,7 +2232,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2293,7 +2293,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2353,7 +2353,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2409,7 +2409,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2469,7 +2469,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2529,7 +2529,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2593,7 +2593,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2651,7 +2651,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2709,7 +2709,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2730,7 +2730,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
-  (host-calls (call (. cadenza:demo/hosti base)))
+  (host-calls (call cadenza:demo/hosti.base))
   (output (: 1000 Int64))
   (live-objects known-leak))
 
@@ -2751,11 +2751,11 @@ cases
         (f (: m (Record (: x Int64))))
         (host
           (hosti)
-          (match ((. Int64 checked-add) (Int64.of (hosti.base unit)) 1) ((Some v) v) ((None _) -1))))
+          (match (Int64.checked-add (Int64.of (hosti.base unit)) 1) ((Some v) v) ((None _) -1))))
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
-  (host-calls (call (. cadenza:demo/hosti base)))
+  (host-calls (call cadenza:demo/hosti.base))
   (output (: 1001 Int64))
   (live-objects known-leak))
 
@@ -2777,7 +2777,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
-  (host-calls (call (. cadenza:demo/hosti base)))
+  (host-calls (call cadenza:demo/hosti.base))
   (output (: 7 Int64))
   (live-objects known-leak))
 
@@ -2796,7 +2796,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
-  (host-calls (call (. cadenza:demo/hosti base)))
+  (host-calls (call cadenza:demo/hosti.base))
   (output (: 1000 Int64))
   (live-objects known-leak))
 
@@ -2822,7 +2822,7 @@ cases
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
-  (host-calls (call (. cadenza:demo/hosti base)))
+  (host-calls (call cadenza:demo/hosti.base))
   (output (: 1070 Int64))
   (live-objects known-leak))
 
@@ -2845,7 +2845,7 @@ cases
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.put (: 42 UInt64)))
-  (host-calls (call (. cadenza:demo/hosti put)))
+  (host-calls (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
   (live-objects known-leak))
 
@@ -2905,7 +2905,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2961,7 +2961,7 @@ cases
     (:
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
-  (host-calls (call (. cadenza:platform/sink push)))
+  (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
   (live-objects known-leak))
 
@@ -2993,9 +2993,9 @@ cases
       (export f)))
   (call f (: #record((= x 42)) (Record (: x Int64))))
   (host-calls
-    (call (. cadenza:demo/hosti put))
-    (call (. cadenza:demo/hosti put))
-    (call (. cadenza:demo/hosti put)))
+    (call cadenza:demo/hosti.put)
+    (call cadenza:demo/hosti.put)
+    (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
   (live-objects known-leak))
 
@@ -3026,9 +3026,9 @@ cases
       (export f)))
   (call f (: #record((= x 42)) (Record (: x Int64))))
   (host-calls
-    (call (. cadenza:demo/hosti put))
-    (call (. cadenza:demo/hosti put))
-    (call (. cadenza:demo/hosti put)))
+    (call cadenza:demo/hosti.put)
+    (call cadenza:demo/hosti.put)
+    (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
   (live-objects known-leak))
 
@@ -3055,7 +3055,7 @@ cases
         (host (hosti) (do (hosti.put #record((= v (V.Big 900000000000)) (= n 1))) m.x)))
       (export f)))
   (call f (: #record((= x 42)) (Record (: x Int64))))
-  (host-calls (call (. cadenza:demo/hosti put)))
+  (host-calls (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
   (live-objects known-leak))
 
@@ -3079,7 +3079,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (b 900000000000) V)))
-  (host-calls (call (. cadenza:demo/hosti get)))
+  (host-calls (call cadenza:demo/hosti.get))
   (output (: 900000000000 Int64))
   (live-objects known-leak))
 
@@ -3102,7 +3102,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.pick (: (small 5) pick)))
-  (host-calls (call (. cadenza:demo/hosti pick)))
+  (host-calls (call cadenza:demo/hosti.pick))
   (output (: 5 Int64))
   (live-objects known-leak))
 
@@ -3131,9 +3131,9 @@ cases
     (respond hosti.next (: (big 900000000000) v))
     (respond hosti.next (: (mark unit) v)))
   (host-calls
-    (call (. cadenza:demo/hosti next))
-    (call (. cadenza:demo/hosti next))
-    (call (. cadenza:demo/hosti next)))
+    (call cadenza:demo/hosti.next)
+    (call cadenza:demo/hosti.next)
+    (call cadenza:demo/hosti.next))
   (output (: 900000000006 Int64))
   (live-objects known-leak))
 
@@ -3155,7 +3155,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (val -5000000000) r)))
-  (host-calls (call (. cadenza:demo/hosti get)))
+  (host-calls (call cadenza:demo/hosti.get))
   (output (: -5000000000 Int64))
   (live-objects known-leak))
 
@@ -3179,7 +3179,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (raw #list(1 2 3 4 5)) V)))
-  (host-calls (call (. cadenza:demo/hosti get)))
+  (host-calls (call cadenza:demo/hosti.get))
   (output (: 5 Int64))
   (live-objects known-leak))
 
@@ -3202,7 +3202,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (items #list(5 6 7)) r)))
-  (host-calls (call (. cadenza:demo/hosti get)))
+  (host-calls (call cadenza:demo/hosti.get))
   (output (: 3 Int64))
   (live-objects known-leak))
 
@@ -3226,7 +3226,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (tag #record((= a 40) (= b 2))) r)))
-  (host-calls (call (. cadenza:demo/hosti get)))
+  (host-calls (call cadenza:demo/hosti.get))
   (output (: 42 Int64))
   (live-objects known-leak))
 
@@ -3292,7 +3292,7 @@ cases
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
-  (host-calls (call (. cadenza:demo/hosti base)))
+  (host-calls (call cadenza:demo/hosti.base))
   (output (: 1070 Int64))
   (live-objects known-leak))
 
@@ -3320,7 +3320,7 @@ cases
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
-  (host-calls (call (. cadenza:demo/hosti base)))
+  (host-calls (call cadenza:demo/hosti.base))
   (output (: 1030 Int64))
   (live-objects known-leak))
 
@@ -3346,7 +3346,7 @@ cases
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 Int64)))
-  (host-calls (call (. cadenza:demo/hosti base)))
+  (host-calls (call cadenza:demo/hosti.base))
   (output (: 1070 Int64))
   (live-objects known-leak))
 
@@ -3367,7 +3367,7 @@ cases
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.put (: 42 Int64)))
-  (host-calls (call (. cadenza:demo/hosti put)))
+  (host-calls (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
   (live-objects known-leak))
 
@@ -3398,7 +3398,7 @@ cases
     (respond
       hosti.info
       (: #record((= alpha 7) (= beta 42)) (Record (: alpha Int64) (: beta Int64)))))
-  (host-calls (call (. cadenza:demo/hosti info)))
+  (host-calls (call cadenza:demo/hosti.info))
   (output (: 42 Int64))
   (live-objects known-leak))
 
@@ -3417,7 +3417,7 @@ cases
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.fetch (: #list(5 6 7) (List Int64))))
-  (host-calls (call (. cadenza:demo/hosti fetch)))
+  (host-calls (call cadenza:demo/hosti.fetch))
   (output (: 3 Int64))
   (live-objects known-leak))
 
@@ -3437,7 +3437,7 @@ cases
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses
     (respond hosti.peek (: #record((= a 10) (= b 32)) (Record (: a Int64) (: b Int64)))))
-  (host-calls (call (. cadenza:demo/hosti peek)))
+  (host-calls (call cadenza:demo/hosti.peek))
   (output (: 32 Int64))
   (live-objects known-leak))
 
@@ -3456,7 +3456,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.all (: #list(4 5) (List Int64))))
-  (host-calls (call (. cadenza:demo/hosti all)))
+  (host-calls (call cadenza:demo/hosti.all))
   (output (: 2 Int64))
   (live-objects known-leak))
 
@@ -3478,7 +3478,7 @@ cases
         (host (hosti) (do (hosti.put #record((= a m.x) (= b 9))) 7)))
       (export f)))
   (call f (: #record((= x 3)) (Record (: x Int64))))
-  (host-calls (call (. cadenza:demo/hosti put)))
+  (host-calls (call cadenza:demo/hosti.put))
   (output (: 7 Int64))
   (live-objects known-leak))
 
@@ -3501,7 +3501,7 @@ cases
   (host-responses
     (respond hosti.peek (: #record((= a 10) (= b 0)) (Record (: a Int64) (: b Int64))))
     (respond hosti.peek (: #record((= a 0) (= b 32)) (Record (: a Int64) (: b Int64)))))
-  (host-calls (call (. cadenza:demo/hosti peek)) (call (. cadenza:demo/hosti peek)))
+  (host-calls (call cadenza:demo/hosti.peek) (call cadenza:demo/hosti.peek))
   (output (: 42 Int64))
   (live-objects known-leak))
 
@@ -3620,7 +3620,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.mode (: (fast unit) mode)))
-  (host-calls (call (. cadenza:demo/hosti mode)))
+  (host-calls (call cadenza:demo/hosti.mode))
   (output (: 1 Int64))
   (live-objects known-leak))
 
@@ -3681,7 +3681,7 @@ cases
         (host
           (kv)
           (if
-            (> ((. String byte-len) (kv.lookup m.token)) 0)
+            (> (String.byte-len (kv.lookup m.token)) 0)
             #record((=
                 requests
                 #list(#record((= contract m.contract)
@@ -3697,7 +3697,7 @@ cases
       #record((= contract #list(1)) (= payload #list(2)) (= token #list(3)))
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond kv.lookup (: "hi" String)))
-  (host-calls (call (. cadenza:platform/kv lookup)))
+  (host-calls (call cadenza:platform/kv.lookup))
   (output
     #record((=
         requests

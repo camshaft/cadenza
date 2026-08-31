@@ -433,7 +433,7 @@
            One Numeric Type) — `+` over two Float64 operands is float addition, dispatched on the operand
            type. The unconverted `(+ 1 2.0)` would reject (an Int64/Float64 mix), which is why the `1` is
            converted first.")
-  (input (+ ((. Float64 of-int) 1) 2.0))
+  (input (+ (Float64.of-int 1) 2.0))
   (output (: 3.0 Float64)))
 
 ; `T.of` is the CHECKED (range-checked) integer conversion (numeric-model.md #A Conversion Between Integer
@@ -777,7 +777,7 @@
            rounds UP to 9007199254740996.0 (nearest even — the .5-tie breaks toward the even neighbor, not
            half-up). Pins the conversion's precision loss at the mantissa boundary and its round-to-nearest-EVEN
            tie-break, matching the deterministic float mode. Both backends agree.")
-  (input (do (def (main (: n Int64)) ((. Float64 of-int) n)) (export main)))
+  (input (do (def (main (: n Int64)) (Float64.of-int n)) (export main)))
   (call main (: 9007199254740992 Int64))
   (output (: 9007199254740992.0 Float64))
   (call main (: 9007199254740993 Int64))
@@ -796,7 +796,7 @@
            to Int64.min in two's complement rather than trapping — the defined modular outcome the model
            admits alongside the trapping default `+`. (See the dedicated checked/wrapping section below
            for the full add/mul coverage.)")
-  (input ((. Int64 wrapping-add) Int64.max 1))
+  (input (Int64.wrapping-add Int64.max 1))
   (output (: -9223372036854775808 Int64)))
 
 ; --- Exact rationals: a normalized pair of big-integers, opted into explicitly ------------
@@ -1191,7 +1191,7 @@
            have trapped). Pins that the trap-preservation guard did NOT over-decline pure bindings.")
   (input
     (do
-      (def (main (: n Int64)) (let ((w ((. Int64 wrapping-add) n 1))) (if (< w w) 1 0)))
+      (def (main (: n Int64)) (let ((w (Int64.wrapping-add n 1))) (if (< w w) 1 0)))
       (export main)))
   (call main (: 0 Int64))
   (output (: 0 Int64))
@@ -1429,7 +1429,7 @@
            round-trips through exact arithmetic. Both backends.")
   (input
     (=
-      (* (Rational.of 1 -9223372036854775808) ((. Rational of-int) -2))
+      (* (Rational.of 1 -9223372036854775808) (Rational.of-int -2))
       (Rational.of 1 4611686018427387904)))
   (output (: true Bool)))
 
@@ -4136,7 +4136,7 @@
            Crossing between the integer and the rational is explicit (`Rational.of-int` in), never an
            implicit promotion, the same no-promotion discipline the integer widths obey. Its canonical
            written form is 5/1.")
-  (input ((. Rational of-int) 5))
+  (input (Rational.of-int 5))
   (output (: 5/1 Rational)))
 
 (case
@@ -5091,7 +5091,7 @@
         (main (: n Int64))
         (do
           (def s (tocol n ""))
-          (+ (* ((. String byte-len) s) 10) (if (= (fromcol s 0 ((. String byte-len) s) 0) n) 1 0))))
+          (+ (* (String.byte-len s) 10) (if (= (fromcol s 0 (String.byte-len s) 0) n) 1 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 11 Int64))
@@ -6581,7 +6581,7 @@
            Type Is Explicit) is TOTAL — an integer always has a float image (a large magnitude rounds to
            the nearest representable float, it does not trap). Pins the emitted int→float convert path,
            the runtime dual of the folded `(Float64.of-int 1)` conversion.")
-  (input (do (def (main (: n Int64)) ((. Float64 of-int) n)) (export main)))
+  (input (do (def (main (: n Int64)) (Float64.of-int n)) (export main)))
   (call main (: 42 Int64))
   (output (: 42.0 Float64)))
 
@@ -7357,9 +7357,7 @@
            that skips the width re-mask leaves the un-wrapped 260 observable (adv-57 wasm miscompile). The
            in-range call (5 + 10 = 15) triangulates that the wrap is modular, not a blanket mask error.")
   (input
-    (do
-      (def (main (: x UInt8)) (Int64.of ((. UInt8 wrapping-add) x (UInt8.wrap 10))))
-      (export main)))
+    (do (def (main (: x UInt8)) (Int64.of (UInt8.wrapping-add x (UInt8.wrap 10)))) (export main)))
   (call main (: 250 UInt8))
   (output (: 4 Int64))
   (call main (: 5 UInt8))
@@ -7374,8 +7372,7 @@
            is negative). A backend that masks but does not sign-extend, or skips the re-mask entirely,
            would observe 128 or a wider positive value instead of -128. The in-range call (10 + 1 = 11)
            is the control. Distinct from the unsigned case above — this exercises the sign-extend arm.")
-  (input
-    (do (def (main (: x Int8)) (Int64.of ((. Int8 wrapping-add) x (Int8.wrap 1)))) (export main)))
+  (input (do (def (main (: x Int8)) (Int64.of (Int8.wrapping-add x (Int8.wrap 1)))) (export main)))
   (call main (: 127 Int8))
   (output (: -128 Int64))
   (call main (: 10 Int8))
@@ -7389,8 +7386,7 @@
            asymmetry — negating Int8.min is Int8.min). Pins that wrapping-mul, like wrapping-add, re-masks
            and sign-extends its runtime narrow result; a raw machine mul leaves 128 observable. The control
            (5 * -1 = -5) confirms the sign of an in-range product survives.")
-  (input
-    (do (def (main (: x Int8)) (Int64.of ((. Int8 wrapping-mul) x (Int8.wrap -1)))) (export main)))
+  (input (do (def (main (: x Int8)) (Int64.of (Int8.wrapping-mul x (Int8.wrap -1)))) (export main)))
   (call main (: -128 Int8))
   (output (: -128 Int64))
   (call main (: 5 Int8))
@@ -7405,7 +7401,7 @@
            width (16 here), not the slot width — a fixed-width mask or no mask would return 32768. Control:
            100 + 1 = 101.")
   (input
-    (do (def (main (: x Int16)) (Int64.of ((. Int16 wrapping-add) x (Int16.wrap 1)))) (export main)))
+    (do (def (main (: x Int16)) (Int64.of (Int16.wrapping-add x (Int16.wrap 1)))) (export main)))
   (call main (: 32767 Int16))
   (output (: -32768 Int64))
   (call main (: 100 Int16))
@@ -7424,8 +7420,7 @@
     (do
       (def
         (main (: x UInt8))
-        (Int64.of
-          ((. UInt8 wrapping-mul) ((. UInt8 wrapping-add) x (UInt8.wrap 10)) (UInt8.wrap 2))))
+        (Int64.of (UInt8.wrapping-mul (UInt8.wrapping-add x (UInt8.wrap 10)) (UInt8.wrap 2))))
       (export main)))
   (call main (: 250 UInt8))
   (output (: 8 Int64))
@@ -7446,7 +7441,7 @@
            matches both backends (wasm 'integer overflow', rust 'integer overflow in addition').")
   (input
     (do
-      (def (main (: x UInt8)) (Int64.of (+ ((. UInt8 wrapping-add) x (UInt8.wrap 10)) (: 6 UInt8))))
+      (def (main (: x UInt8)) (Int64.of (+ (UInt8.wrapping-add x (UInt8.wrap 10)) (: 6 UInt8))))
       (export main)))
   (call main (: 250 UInt8))
   (output (: 10 Int64))
@@ -7462,7 +7457,7 @@
            would compare 128 (positive) and answer 0. Control x=10: 10+1=11, `< 0` false → 0.")
   (input
     (do
-      (def (main (: x Int8)) (if (< ((. Int8 wrapping-add) x (Int8.wrap 1)) (: 0 Int8)) 1 0))
+      (def (main (: x Int8)) (if (< (Int8.wrapping-add x (Int8.wrap 1)) (: 0 Int8)) 1 0))
       (export main)))
   (call main (: 127 Int8))
   (output (: 1 Int64))
@@ -7479,9 +7474,7 @@
            `=` companion of the signed `<` comparison face above.")
   (input
     (do
-      (def
-        (main (: x UInt8))
-        (if (= ((. UInt8 wrapping-add) x (UInt8.wrap 10)) (UInt8.wrap 4)) 1 0))
+      (def (main (: x UInt8)) (if (= (UInt8.wrapping-add x (UInt8.wrap 10)) (UInt8.wrap 4)) 1 0))
       (export main)))
   (call main (: 250 UInt8))
   (output (: 1 Int64))
@@ -9402,7 +9395,7 @@
            returns it wrapped in `Some` (numeric-model.md #Overflow Is Defined — a defined value
            outcome). The fallible companion of `+`, which would compute the same 42 but trap on
            overflow rather than reporting it.")
-  (input ((. Int64 checked-add) 20 22))
+  (input (Int64.checked-add 20 22))
   (output (: (Some 42) (Option Int64))))
 
 (case
@@ -9412,7 +9405,7 @@
            checked addition reports the overflow as `None` rather than trapping (contrast the `+`
            default at #overflow traps, `(+ Int64.max 1)` → trap). Pins the defined non-trapping overflow
            outcome numeric-model.md #Overflow Is Defined admits alongside the trap.")
-  (input ((. Int64 checked-add) Int64.max 1))
+  (input (Int64.checked-add Int64.max 1))
   (output (: (None unit) (Option Int64))))
 
 (case
@@ -9421,7 +9414,7 @@
     "`(Int64.checked-mul Int64.max 2)` = `(None unit)`: the product is out of range. Pins checked
            multiplication's overflow detection (distinct from addition's — it is the `r/a != b` check),
            and that a=0 and the a=-1×MIN edge are handled: `(Int64.checked-mul 6 7)` below is `(Some 42)`.")
-  (input ((. Int64 checked-mul) Int64.max 2))
+  (input (Int64.checked-mul Int64.max 2))
   (output (: (None unit) (Option Int64))))
 
 (case
@@ -9435,7 +9428,7 @@
            overflow. Checked mul and trapping `*` MUST agree on the verdict here (one via None, one via
            trap) — a fold that reused a magnitude-only bound, or diverged the checked overflow proof from
            the trapping one, would get this edge wrong. Folds at compile time on every backend.")
-  (input ((. Int64 checked-mul) Int64.min -1))
+  (input (Int64.checked-mul Int64.min -1))
   (output (: (None unit) (Option Int64))))
 
 (case
@@ -9443,7 +9436,7 @@
   (doc
     "`(Int64.checked-mul 6 7)` = `(Some 42)`: the in-range companion the overflow case above needs
            — a correct check must NOT report overflow here (a decline or a wrong `r/a` check would).")
-  (input ((. Int64 checked-mul) 6 7))
+  (input (Int64.checked-mul 6 7))
   (output (: (Some 42) (Option Int64))))
 
 (case
@@ -9453,7 +9446,7 @@
            returns it wrapped in `Some` (numeric-model.md #Overflow Is Defined — a defined value
            outcome). The fallible companion of `-`, the third named overflow-fallible form the numeric
            model requires alongside checked add and checked mul.")
-  (input ((. Int64 checked-sub) 50 8))
+  (input (Int64.checked-sub 50 8))
   (output (: (Some 42) (Option Int64))))
 
 (case
@@ -9463,7 +9456,7 @@
            so checked subtraction reports the overflow as `None` rather than trapping (contrast the `-`
            default, `(- Int64.min 1)` → trap). Pins subtraction's defined non-trapping overflow outcome —
            the fallible form must exist for subtraction, not only addition and multiplication.")
-  (input ((. Int64 checked-sub) Int64.min 1))
+  (input (Int64.checked-sub Int64.min 1))
   (output (: (None unit) (Option Int64))))
 
 (case
@@ -9476,7 +9469,7 @@
            `Some`/`None` arms — the fallible-arithmetic control flow, not just the folded constant.")
   (input
     (do
-      (def (add-or a b d) (match ((. Int64 checked-add) a b) ((Some v) v) ((None _) d)))
+      (def (add-or a b d) (match (Int64.checked-add a b) ((Some v) v) ((None _) d)))
       (def (main) (+ (add-or 20 22 -1) (add-or Int64.max 1 -1)))
       (export main)))
   (output (: 41 Int64)))
@@ -9509,7 +9502,7 @@
            overflow branch) would change 41→42/max→-1 and be caught.")
   (input
     (do
-      (def (main (: a Int64)) (match ((. Int64 checked-add) a 1) ((Some v) v) ((None _) -1)))
+      (def (main (: a Int64)) (match (Int64.checked-add a 1) ((Some v) v) ((None _) -1)))
       (export main)))
   (call main (: 41 Int64))
   (output (: 42 Int64))
@@ -9527,7 +9520,7 @@
     (do
       (def
         (main (: a Int64) (: b Int64))
-        (match ((. Int64 checked-sub) a b) ((Some v) v) ((None _) -1)))
+        (match (Int64.checked-sub a b) ((Some v) v) ((None _) -1)))
       (export main)))
   (call main (: 50 Int64) (: 8 Int64))
   (output (: 42 Int64))
@@ -9546,7 +9539,7 @@
     (do
       (def
         (main (: a UInt64) (: b UInt64))
-        (match ((. UInt64 checked-add) a b) ((Some v) v) ((None _) 0)))
+        (match (UInt64.checked-add a b) ((Some v) v) ((None _) 0)))
       (export main)))
   (call main (: 41 UInt64) (: 1 UInt64))
   (output (: 42 UInt64))
@@ -9564,7 +9557,7 @@
     (do
       (def
         (main (: a UInt64) (: b UInt64))
-        (match ((. UInt64 checked-sub) a b) ((Some v) v) ((None _) 0)))
+        (match (UInt64.checked-sub a b) ((Some v) v) ((None _) 0)))
       (export main)))
   (call main (: 43 UInt64) (: 1 UInt64))
   (output (: 42 UInt64))
@@ -9588,7 +9581,7 @@
     (do
       (def
         (main (: a Int64) (: b Int64))
-        (match ((. Int64 checked-mul) a b) ((Some v) v) ((None _) -1)))
+        (match (Int64.checked-mul a b) ((Some v) v) ((None _) -1)))
       (export main)))
   (call main (: 6 Int64) (: 7 Int64))
   (output (: 42 Int64))
@@ -9602,7 +9595,7 @@
            `Some(Int64.min)` — NOT None. The division round-trip gets this right: `p = Int64.min`, `p / a =
            Int64.min / -2^31 = 2^32 = b`, so no overflow. A naive `|a|*|b| <= max` or a widening-off-by-one
            check wrongly returns None here. The key edge the breaker's ladder targets.")
-  (input (do (def (main (: a Int64) (: b Int64)) ((. Int64 checked-mul) a b)) (export main)))
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -2147483648 Int64) (: 4294967296 Int64))
   (output (: (Some -9223372036854775808) (Option Int64)))
   (live-objects known-leak))
@@ -9615,7 +9608,7 @@
            (No div_s trap: the divisor is Int64.min, not -1.) The complement `(Int64.checked-mul Int64.min
            1)` = Some(Int64.min) confirms the a==-1 / b==Int64.min guards do not over-report — the identity
            multiply fits.")
-  (input (do (def (main (: a Int64) (: b Int64)) ((. Int64 checked-mul) a b)) (export main)))
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -9223372036854775808 Int64) (: -1 Int64))
   (output (: (None unit) (Option Int64)))
   (call main (: -9223372036854775808 Int64) (: 1 Int64))
@@ -9633,7 +9626,7 @@
     (do
       (def
         (main (: a UInt64) (: b UInt64))
-        (match ((. UInt64 checked-mul) a b) ((Some v) v) ((None _) 0)))
+        (match (UInt64.checked-mul a b) ((Some v) v) ((None _) 0)))
       (export main)))
   (call main (: 6 UInt64) (: 7 UInt64))
   (output (: 42 UInt64))
@@ -9658,7 +9651,7 @@
     (do
       (def
         (main (: a UInt8))
-        (match ((. UInt8 checked-add) a (UInt8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -1)))
+        (match (UInt8.checked-add a (UInt8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -1)))
       (export main)))
   (call main (: 100 UInt8))
   (output (: 101 Int64))
@@ -9675,7 +9668,7 @@
     (do
       (def
         (main (: a Int8))
-        (match ((. Int8 checked-add) a (Int8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -99)))
+        (match (Int8.checked-add a (Int8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -99)))
       (export main)))
   (call main (: 10 Int8))
   (output (: 11 Int64))
@@ -9691,7 +9684,7 @@
     (do
       (def
         (main (: a Int8))
-        (match ((. Int8 checked-sub) a (Int8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -99)))
+        (match (Int8.checked-sub a (Int8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -99)))
       (export main)))
   (call main (: 0 Int8))
   (output (: -1 Int64))
@@ -9714,7 +9707,7 @@
     (do
       (def
         (main (: a UInt8))
-        (match ((. UInt8 checked-mul) a (UInt8.wrap 20)) ((Some v) (Int64.of v)) ((None _) -1)))
+        (match (UInt8.checked-mul a (UInt8.wrap 20)) ((Some v) (Int64.of v)) ((None _) -1)))
       (export main)))
   (call main (: 10 UInt8))
   (output (: 200 Int64))
@@ -9731,7 +9724,7 @@
     (do
       (def
         (main (: a Int8))
-        (match ((. Int8 checked-mul) a (Int8.wrap -1)) ((Some v) (Int64.of v)) ((None _) -99)))
+        (match (Int8.checked-mul a (Int8.wrap -1)) ((Some v) (Int64.of v)) ((None _) -99)))
       (export main)))
   (call main (: 100 Int8))
   (output (: -100 Int64))
@@ -9749,7 +9742,7 @@
     (do
       (def
         (main (: a UInt32))
-        (match ((. UInt32 checked-mul) a 65536) ((Some v) (Int64.of v)) ((None _) -1)))
+        (match (UInt32.checked-mul a 65536) ((Some v) (Int64.of v)) ((None _) -1)))
       (export main)))
   (call main (: 32768 UInt32))
   (output (: 2147483648 Int64))
@@ -9763,7 +9756,7 @@
            NOT trap on overflow — it wraps in two's complement, so MAX + 1 becomes MIN (numeric-model.md
            #Overflow Is Defined, the modular value outcome). Contrast `(+ Int64.max 1)` → trap. This is
            the modular arithmetic a hash or a fixed-width round-trip wants.")
-  (input ((. Int64 wrapping-add) Int64.max 1))
+  (input (Int64.wrapping-add Int64.max 1))
   (output (: -9223372036854775808 Int64)))
 
 (case
@@ -9771,7 +9764,7 @@
   (doc
     "`(Int64.wrapping-add 20 22)` = 42: with no overflow, wrapping addition equals `+`. The
            in-range companion pinning that wrapping only differs from `+` at the overflow boundary.")
-  (input ((. Int64 wrapping-add) 20 22))
+  (input (Int64.wrapping-add 20 22))
   (output (: 42 Int64)))
 
 (case
@@ -9780,7 +9773,7 @@
     "`(Int64.wrapping-mul Int64.max 2)` = -2: MAX·2 = 2^64−2 ≡ −2 (mod 2^64), so wrapping
            multiplication returns −2 rather than trapping like `*`. Pins wrapping for the multiply, whose
            overflow is more than a single carry bit.")
-  (input ((. Int64 wrapping-mul) Int64.max 2))
+  (input (Int64.wrapping-mul Int64.max 2))
   (output (: -2 Int64)))
 
 (case
@@ -9795,9 +9788,7 @@
     (do
       (def
         (main (: a Int64))
-        #tuple(((. Int64 wrapping-add) a 0)
-          ((. Int64 wrapping-mul) a 1)
-          ((. Int64 wrapping-mul) a 0)))
+        #tuple((Int64.wrapping-add a 0) (Int64.wrapping-mul a 1) (Int64.wrapping-mul a 0)))
       (export main)))
   (call main (: 7 Int64))
   (output (: (tuple 7 7 0) (Tuple Int64 Int64 Int64)))
@@ -9812,7 +9803,7 @@
            `(Int64.wrapping-mul (/ 10 b) 0)` keeps the division (the trap is a defined outcome — the same
            is_trap_free discipline as the checked x·0 annihilator). b=2 -> `(/ 10 2)` = 5, then *% 0 = 0;
            b=0 -> the division traps (divide by zero), NOT a folded 0.")
-  (input (do (def (f (: b Int64)) ((. Int64 wrapping-mul) (/ 10 b) 0)) (export f)))
+  (input (do (def (f (: b Int64)) (Int64.wrapping-mul (/ 10 b) 0)) (export f)))
   (call f (: 2 Int64))
   (output (: 0 Int64))
   (call f (: 0 Int64))
@@ -9826,7 +9817,7 @@
            #Overflow Is Defined, the modular value outcome). Contrast `(- Int64.min 1)` → trap. The
            subtraction companion of the wrapping-add wrap, the third named wrapping form the numeric model
            requires.")
-  (input ((. Int64 wrapping-sub) Int64.min 1))
+  (input (Int64.wrapping-sub Int64.min 1))
   (output (: 9223372036854775807 Int64)))
 
 (case
@@ -9834,7 +9825,7 @@
   (doc
     "`(Int64.wrapping-sub 50 8)` = 42: with no underflow, wrapping subtraction equals `-`. The
            in-range companion pinning that wrapping only differs from `-` at the overflow boundary.")
-  (input ((. Int64 wrapping-sub) 50 8))
+  (input (Int64.wrapping-sub 50 8))
   (output (: 42 Int64)))
 
 (case
@@ -9845,7 +9836,7 @@
            Int64.max 0)` is 0: multiplying by zero annihilates even Int64.max (and `*%` never traps, so there
            is no overflow to consider). Pins the annihilator identity at the boundary — a fold that wrongly
            kept `a` would yield max instead of 0.")
-  (input ((. Int64 wrapping-mul) Int64.max 0))
+  (input (Int64.wrapping-mul Int64.max 0))
   (output (: 0 Int64)))
 
 (case
@@ -9855,7 +9846,7 @@
            Int64.min 1)` = Int64.min — adding zero and multiplying by one are the identity, preserving even
            the extreme Int64.min exactly (a fold that dropped the sign or re-derived the boundary would
            corrupt it). Confirms `a +% 0` and `a *% 1` are true identities across the whole range.")
-  (input (= ((. Int64 wrapping-add) Int64.min 0) ((. Int64 wrapping-mul) Int64.min 1)))
+  (input (= (Int64.wrapping-add Int64.min 0) (Int64.wrapping-mul Int64.min 1)))
   (output (: true Bool)))
 
 ; The identity case above preserves Int64.min under `+% 0` / `*% 1`. These pin the SELF-WRAP at min: the
@@ -9869,7 +9860,7 @@
            Int64.max and wraps to -2^63 = Int64.min (mod 2^64). The self-wrap at the minimum — negating the
            most-negative value cannot represent its positive, so wrapping returns the value unchanged. The
            wrapping companion of the trapping `(* min -1)` (traps) and checked `(checked-mul min -1)` (None).")
-  (input (= ((. Int64 wrapping-mul) -9223372036854775808 -1) -9223372036854775808))
+  (input (= (Int64.wrapping-mul -9223372036854775808 -1) -9223372036854775808))
   (output (: true Bool)))
 
 (case
@@ -9879,7 +9870,7 @@
            subtractive form of the self-wrap — negating Int64.min via `0 - min` overflows and wraps to min,
            exactly as `wrapping-mul min -1` does. Pins that the two spellings of negating the minimum agree
            under wrapping (both = min), the wrapping companion of the trapping `(- 0 min)` which traps.")
-  (input (= ((. Int64 wrapping-sub) 0 -9223372036854775808) -9223372036854775808))
+  (input (= (Int64.wrapping-sub 0 -9223372036854775808) -9223372036854775808))
   (output (: true Bool)))
 
 (case
@@ -9896,9 +9887,9 @@
       (def
         (main)
         (match
-          ((. Int64 checked-mul) -9223372036854775808 -1)
+          (Int64.checked-mul -9223372036854775808 -1)
           ((Some v) v)
-          ((None _) ((. Int64 wrapping-mul) -9223372036854775808 -1))))
+          ((None _) (Int64.wrapping-mul -9223372036854775808 -1))))
       (export main)))
   (output (: -9223372036854775808 Int64)))
 
@@ -9909,7 +9900,7 @@
            i64.add path (wasm's add wraps; no overflow guard), so `(w Int64.max 1)` = Int64.min — the
            same wrap the const fold gives. Pins that wrapping is emitted as the raw i64 op, not the
            checked/trapping one.")
-  (input (do (def (w a b) ((. Int64 wrapping-add) a b)) (def (main) (w Int64.max 1)) (export main)))
+  (input (do (def (w a b) (Int64.wrapping-add a b)) (def (main) (w Int64.max 1)) (export main)))
   (output (: -9223372036854775808 Int64)))
 
 ; The runtime case above passes a CONSTANT `Int64.max` into the wrapping op, so the boundary operand still
@@ -9925,7 +9916,7 @@
            wraps to Int64.min on the raw i64.add path (wasm's add wraps, no overflow guard), and called with
            5 it is the ordinary 6. Pins wrapping-add on a genuinely runtime operand — the const-fold and the
            earlier constant-arg runtime case never cross the boundary with the max value itself.")
-  (input (do (def (main (: x Int64)) ((. Int64 wrapping-add) x 1)) (export main)))
+  (input (do (def (main (: x Int64)) (Int64.wrapping-add x 1)) (export main)))
   (call main (: 9223372036854775807 Int64))
   (output (: -9223372036854775808 Int64))
   (call main (: 5 Int64))
@@ -9938,7 +9929,7 @@
            -9223372036854775808, and 3 · 2 = 6. Pins wrapping MULTIPLICATION on a runtime operand (the raw
            i64.mul, no overflow guard) — the multiply's overflow is more than a carry bit, so a runtime
            wrapping-mul is a distinct emit from wrapping-add.")
-  (input (do (def (main (: x Int64)) ((. Int64 wrapping-mul) x 2)) (export main)))
+  (input (do (def (main (: x Int64)) (Int64.wrapping-mul x 2)) (export main)))
   (call main (: 4611686018427387904 Int64))
   (output (: -9223372036854775808 Int64))
   (call main (: 3 Int64))
@@ -9953,7 +9944,7 @@
            it wraps to Int64.max; called with 5 it is the ordinary 4. Pins wrapping SUBTRACTION on a
            genuinely runtime operand — the underflow at the min boundary wraps rather than trapping,
            distinct from `checked-sub` (which yields None / traps via expect), on both backends.")
-  (input (do (def (main (: x Int64)) ((. Int64 wrapping-sub) x 1)) (export main)))
+  (input (do (def (main (: x Int64)) (Int64.wrapping-sub x 1)) (export main)))
   (call main (: -9223372036854775808 Int64))
   (output (: 9223372036854775807 Int64))
   (call main (: 5 Int64))
@@ -9967,7 +9958,7 @@
            two-step compute could mis-handle the boundary) and 7. The self-operand companion for
            wrapping-sub, both backends (mirrors the checked `(- x x)` self-operand pin, but on the raw
            wrapping op which emits no guard).")
-  (input (do (def (main (: x Int64)) ((. Int64 wrapping-sub) x x)) (export main)))
+  (input (do (def (main (: x Int64)) (Int64.wrapping-sub x x)) (export main)))
   (call main (: -9223372036854775808 Int64))
   (output (: 0 Int64))
   (call main (: 7 Int64))
@@ -9980,7 +9971,7 @@
            wraparound modulus is the TYPE's width (2^8), not 2^64 — a narrow wrap that reused the i64 op
            without masking to 8 bits would give 256, which is not even a UInt8. Pins per-width wraparound
            on the unsigned narrow type.")
-  (input (do (def (main (: x UInt8)) ((. UInt8 wrapping-add) x 1)) (export main)))
+  (input (do (def (main (: x UInt8)) (UInt8.wrapping-add x 1)) (export main)))
   (call main (: 255 UInt8))
   (output (: 0 UInt8))
   (call main (: 10 UInt8))
@@ -9992,7 +9983,7 @@
     "`(UInt8.wrapping-mul x 2)` on a runtime UInt8: 200 · 2 = 400 ≡ 144 (mod 256), 3 · 2 = 6. The
            multiply companion of the narrow wrapping-add — the product is masked to the UInt8 width, so a
            value exceeding 255 wraps into range rather than widening. Pins narrow wrapping multiplication.")
-  (input (do (def (main (: x UInt8)) ((. UInt8 wrapping-mul) x 2)) (export main)))
+  (input (do (def (main (: x UInt8)) (UInt8.wrapping-mul x 2)) (export main)))
   (call main (: 200 UInt8))
   (output (: 144 UInt8))
   (call main (: 3 UInt8))
@@ -10005,7 +9996,7 @@
            -5 + 1 = -4. The signed narrow wraparound folds at the type's ±128 boundary, distinct from the
            unsigned mod-256 wrap above — a signed narrow wrap must sign-extend the wrapped low 8 bits, so
            127+1 is -128, not 128. Pins per-width wraparound on the SIGNED narrow type.")
-  (input (do (def (main (: x Int8)) ((. Int8 wrapping-add) x 1)) (export main)))
+  (input (do (def (main (: x Int8)) (Int8.wrapping-add x 1)) (export main)))
   (call main (: 127 Int8))
   (output (: -128 Int8))
   (call main (: -5 Int8))
@@ -10019,7 +10010,7 @@
            TYPE's width (2^8); a narrow wrap that reused the i64 op without masking to 8 bits would give
            -1 (not a UInt8). Pins per-width wraparound for the newly-added wrapping-sub on the unsigned
            narrow type.")
-  (input (do (def (main (: x UInt8)) ((. UInt8 wrapping-sub) x 1)) (export main)))
+  (input (do (def (main (: x UInt8)) (UInt8.wrapping-sub x 1)) (export main)))
   (call main (: 0 UInt8))
   (output (: 255 UInt8))
   (call main (: 10 UInt8))
@@ -10033,7 +10024,7 @@
            bits (min-1's low byte is 0x7F = 127, not +128). The signed-narrow subtraction companion of the
            `wrapping-add on a runtime Int8` case, and the narrow face of the Int64 `wrapping-sub` min-wrap
            above.")
-  (input (do (def (main (: x Int8)) ((. Int8 wrapping-sub) x 1)) (export main)))
+  (input (do (def (main (: x Int8)) (Int8.wrapping-sub x 1)) (export main)))
   (call main (: -128 Int8))
   (output (: 127 Int8))
   (call main (: 5 Int8))
@@ -10051,8 +10042,8 @@
            identity fold must return the operand, not a width-re-derived value, both backends.")
   (input
     (do
-      (def (a0 (: x UInt8)) ((. UInt8 wrapping-add) x 0))
-      (def (m1 (: x UInt8)) ((. UInt8 wrapping-mul) x 1))
+      (def (a0 (: x UInt8)) (UInt8.wrapping-add x 0))
+      (def (m1 (: x UInt8)) (UInt8.wrapping-mul x 1))
       (def (main (: x UInt8)) (if (and (= (a0 x) x) (= (m1 x) x)) 1 0))
       (export main)))
   (call main (: 200 UInt8))
@@ -10092,7 +10083,7 @@
            compared to an `(Int8.wrap 0)` at width (not widened). Both backends.")
   (input
     (do
-      (def (a0 (: x Int8)) ((. Int8 wrapping-add) x 0))
+      (def (a0 (: x Int8)) (Int8.wrapping-add x 0))
       (def (aa (: x Int8)) (& x x))
       (def (xx (: x Int8)) (^ x x))
       (def
@@ -10133,7 +10124,7 @@
            MODULO the type width (400 mod 256 = 144), so the const-fold must MASK the result to 8 bits — not
            route it through the checked-op width-fit gate and reject CDZ0302. This is the constant twin of
            `wrapping-mul on a runtime UInt8` above (200·2 → 144): const and runtime must agree.")
-  (input (do (def (main) ((. UInt8 wrapping-mul) 20 20)) (export main)))
+  (input (do (def (main) (UInt8.wrapping-mul 20 20)) (export main)))
   (output (: 144 UInt8)))
 
 (case
@@ -10143,7 +10134,7 @@
            so 200 mod 2^8 with the sign bit set is -56. The signed companion of the const-fold above — a
            wrapping fold that width-fit-rejected (CDZ0302) or dropped the sign would diverge from the runtime
            signed narrow wrap. Pins the const-fold's signed masking at the ±128 boundary.")
-  (input (do (def (main) ((. Int8 wrapping-add) 100 100)) (export main)))
+  (input (do (def (main) (Int8.wrapping-add 100 100)) (export main)))
   (output (: -56 Int8)))
 
 (case
@@ -10153,7 +10144,7 @@
            200 100)` = 300, which exceeds UInt8; the wrapping outcome is 300 mod 256 = 44, so the const-fold
            MASKS to 8 bits rather than routing through the checked width-fit gate and rejecting CDZ0302.
            Const and runtime must agree (the runtime UInt8 wrapping-add wraps identically above).")
-  (input (do (def (main) ((. UInt8 wrapping-add) 200 100)) (export main)))
+  (input (do (def (main) (UInt8.wrapping-add 200 100)) (export main)))
   (output (: 44 UInt8)))
 
 (case
@@ -10162,7 +10153,7 @@
     "The no-over-mask control: `(UInt8.wrapping-add 100 100)` = 200 fits UInt8, so the wrapping fold
            leaves it unchanged (200) — the mask is a MODULAR outcome, not a blanket reduction. Pairs with
            the over-width add above so the two together exclude a fold that always masks.")
-  (input (do (def (main) ((. UInt8 wrapping-add) 100 100)) (export main)))
+  (input (do (def (main) (UInt8.wrapping-add 100 100)) (export main)))
   (output (: 200 UInt8)))
 
 (case
@@ -10171,7 +10162,7 @@
     "The width-parametric face of the wrapping const-fold (not hard-coded to 8 bits): `(UInt16.wrapping-mul
            300 300)` = 90000, which wraps mod 2^16 = 24464 in a UInt16. Pins that the const-fold masks to the
            TYPE's width (16 here) exactly as the UInt8 cases mask to 8, matching the runtime narrow wrap.")
-  (input (do (def (main) ((. UInt16 wrapping-mul) 300 300)) (export main)))
+  (input (do (def (main) (UInt16.wrapping-mul 300 300)) (export main)))
   (output (: 24464 UInt16)))
 
 ; ── The width-TRUNCATION conversion `(UInt N).wrap` / `(Int N).wrap` on a RUNTIME value ──────────────
@@ -12166,7 +12157,7 @@
           ps
           (#list() cnt)
           (#list(h (.. t)) (match h (#tuple(k _v) (if (< prev k) (inc t k (+ cnt 1)) -100000))))))
-      (def (main (: n Int64)) (inc ((. Map to-list) (fill n Map.empty)) (BigInt.of 0) 0))
+      (def (main (: n Int64)) (inc (Map.to-list (fill n Map.empty)) (BigInt.of 0) 0))
       (export main)))
   (call main (: 40 Int64))
   (output (: 40 Int64))
@@ -12442,7 +12433,7 @@
            Rational result through the runtime `value-encode` walker (a `Shape::Rational` descriptor, tag
            18), which reads the 2-BigInt-handle node and formats the `num/den` name leaf — the same value
            form a constant Rational bakes. Mirrors the runtime-BigInt boundary escape.")
-  (input ((. Rational of-int) (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
+  (input (Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
   (output (: 1000000000000/1 Rational))
   (live-objects known-leak))
 
@@ -13970,10 +13961,10 @@
             (do
               (def rest (cf xs (+ i 1)))
               (if
-                (= (Rational.numerator rest) (Rational.numerator ((. Rational of-int) 0)))
-                ((. Rational of-int) a)
-                (+ ((. Rational of-int) a) (/ ((. Rational of-int) 1) rest)))))
-          ((Option.None _u) ((. Rational of-int) 0))))
+                (= (Rational.numerator rest) (Rational.numerator (Rational.of-int 0)))
+                (Rational.of-int a)
+                (+ (Rational.of-int a) (/ (Rational.of-int 1) rest)))))
+          ((Option.None _u) (Rational.of-int 0))))
       (def
         (main (: k Int64))
         (do
@@ -14150,35 +14141,35 @@
 ; -- runtime checked-mul boundary ladder: in-range, past-max, the Int64.min EXACT-FIT edge, sign-flip, identity (breaker batch 383; the pre-delivered acceptance ladder for #3581) --
 (case
   "cmul1 runtime checked-mul in range yields Some"
-  (input (do (def (main (: a Int64) (: b Int64)) ((. Int64 checked-mul) a b)) (export main)))
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: 6 Int64) (: 7 Int64))
   (output (: (Some 42) (Option Int64)))
   (live-objects known-leak))
 
 (case
   "cmul2 runtime checked-mul just past Int64.max yields None (2^31 x 2^32)"
-  (input (do (def (main (: a Int64) (: b Int64)) ((. Int64 checked-mul) a b)) (export main)))
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: 2147483648 Int64) (: 4294967296 Int64))
   (output (: (None unit) (Option Int64)))
   (live-objects known-leak))
 
 (case
   "cmul3 runtime checked-mul hitting Int64.min EXACTLY fits (-2^31 x 2^32) — the naive-magnitude-check killer"
-  (input (do (def (main (: a Int64) (: b Int64)) ((. Int64 checked-mul) a b)) (export main)))
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -2147483648 Int64) (: 4294967296 Int64))
   (output (: (Some -9223372036854775808) (Option Int64)))
   (live-objects known-leak))
 
 (case
   "cmul4 runtime checked-mul of Int64.min by -1 yields None (the sign-flip overflow)"
-  (input (do (def (main (: a Int64) (: b Int64)) ((. Int64 checked-mul) a b)) (export main)))
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -9223372036854775808 Int64) (: -1 Int64))
   (output (: (None unit) (Option Int64)))
   (live-objects known-leak))
 
 (case
   "cmul5 runtime checked-mul of Int64.min by 1 yields Some Int64.min (identity edge)"
-  (input (do (def (main (: a Int64) (: b Int64)) ((. Int64 checked-mul) a b)) (export main)))
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -9223372036854775808 Int64) (: 1 Int64))
   (output (: (Some -9223372036854775808) (Option Int64)))
   (live-objects known-leak))
@@ -14191,7 +14182,7 @@
       (def
         (main (: a Int64) (: b Int64))
         (match
-          ((. UInt64 checked-mul) (UInt64.wrap a) (UInt64.wrap b))
+          (UInt64.checked-mul (UInt64.wrap a) (UInt64.wrap b))
           ((Option.Some v) (if (= v (UInt64.wrap -1)) 1 0))
           ((Option.None) -1)))
       (export main)))
@@ -14205,7 +14196,7 @@
       (def
         (main (: a Int64) (: b Int64))
         (match
-          ((. UInt64 checked-mul) (UInt64.wrap a) (UInt64.wrap b))
+          (UInt64.checked-mul (UInt64.wrap a) (UInt64.wrap b))
           ((Option.Some v) 0)
           ((Option.None) 1)))
       (export main)))
@@ -14219,7 +14210,7 @@
       (def
         (main (: a Int64) (: k Int64))
         (match
-          ((. UInt64 checked-add) (UInt64.wrap a) (UInt64.wrap k))
+          (UInt64.checked-add (UInt64.wrap a) (UInt64.wrap k))
           ((Option.Some v) 1)
           ((Option.None) 0)))
       (export main)))
@@ -14235,7 +14226,7 @@
       (def
         (main (: a Int64) (: b Int64))
         (match
-          ((. UInt64 checked-sub) (UInt64.wrap a) (UInt64.wrap b))
+          (UInt64.checked-sub (UInt64.wrap a) (UInt64.wrap b))
           ((Option.Some v) (if (= v (UInt64.wrap 0)) 2 1))
           ((Option.None) 0)))
       (export main)))
@@ -14252,7 +14243,7 @@
       (def
         (main (: a Int64) (: k Int64))
         (match
-          ((. UInt8 checked-add) (UInt8.wrap a) (UInt8.wrap k))
+          (UInt8.checked-add (UInt8.wrap a) (UInt8.wrap k))
           ((Option.Some v) (if (= v (UInt8.wrap 255)) 2 1))
           ((Option.None) 0)))
       (export main)))
@@ -14268,7 +14259,7 @@
       (def
         (main (: a Int64) (: k Int64))
         (match
-          ((. Int8 checked-add) (Int8.wrap a) (Int8.wrap k))
+          (Int8.checked-add (Int8.wrap a) (Int8.wrap k))
           ((Option.Some v) (if (= v (Int8.wrap 127)) 2 1))
           ((Option.None) 0)))
       (export main)))
@@ -14284,7 +14275,7 @@
       (def
         (main (: a Int64) (: k Int64))
         (match
-          ((. Int8 checked-sub) (Int8.wrap a) (Int8.wrap k))
+          (Int8.checked-sub (Int8.wrap a) (Int8.wrap k))
           ((Option.Some v) (if (= v (Int8.wrap -128)) 2 1))
           ((Option.None) 0)))
       (export main)))
@@ -14300,7 +14291,7 @@
       (def
         (main (: a Int64) (: k Int64))
         (match
-          ((. UInt16 checked-add) (UInt16.wrap a) (UInt16.wrap k))
+          (UInt16.checked-add (UInt16.wrap a) (UInt16.wrap k))
           ((Option.Some v) (if (= v (UInt16.wrap 65535)) 2 1))
           ((Option.None) 0)))
       (export main)))
@@ -14317,7 +14308,7 @@
       (def
         (main (: a Int64) (: b Int64))
         (match
-          ((. UInt8 checked-mul) (UInt8.wrap a) (UInt8.wrap b))
+          (UInt8.checked-mul (UInt8.wrap a) (UInt8.wrap b))
           ((Option.Some v) (if (= v (UInt8.wrap 255)) 2 1))
           ((Option.None) 0)))
       (export main)))
@@ -14333,7 +14324,7 @@
       (def
         (main (: a Int64) (: b Int64))
         (match
-          ((. Int8 checked-mul) (Int8.wrap a) (Int8.wrap b))
+          (Int8.checked-mul (Int8.wrap a) (Int8.wrap b))
           ((Option.Some v) (if (= v (Int8.wrap -128)) 2 1))
           ((Option.None) 0)))
       (export main)))
@@ -14348,10 +14339,7 @@
     (do
       (def
         (main (: a Int64) (: b Int64))
-        (match
-          ((. Int8 checked-mul) (Int8.wrap a) (Int8.wrap b))
-          ((Option.Some v) 1)
-          ((Option.None) 0)))
+        (match (Int8.checked-mul (Int8.wrap a) (Int8.wrap b)) ((Option.Some v) 1) ((Option.None) 0)))
       (export main)))
   (call main (: -128 Int64) (: -1 Int64))
   (output (: 0 Int64))
@@ -14365,7 +14353,7 @@
       (def
         (main (: a Int64) (: b Int64))
         (match
-          ((. UInt16 checked-mul) (UInt16.wrap a) (UInt16.wrap b))
+          (UInt16.checked-mul (UInt16.wrap a) (UInt16.wrap b))
           ((Option.Some v) (if (= v (UInt16.wrap 65535)) 2 1))
           ((Option.None) 0)))
       (export main)))
@@ -14580,7 +14568,7 @@
     "`(Float64.of-int n)` over a runtime integer emits f64.convert_i64_s (a constant folds instead):
            of-int 42 = 42.0; of-int Int64.max rounds to the nearest f64 = 9223372036854775808.0 (total,
            never traps).")
-  (input (do (def (f (: n Int64)) ((. Float64 of-int) n)) (export f)))
+  (input (do (def (f (: n Int64)) (Float64.of-int n)) (export f)))
   (call f (: 42 Int64))
   (output (: 42.0 Float64))
   (call f (: 9223372036854775807 Int64))
@@ -14984,27 +14972,27 @@
 ; lower and run on both backends now).
 (case
   "ce01 checked addition over a RUNTIME operand yields Some when it fits"
-  (input (do (def (f (: k Int64)) ((. Int64 checked-add) k 22)) (export f)))
+  (input (do (def (f (: k Int64)) (Int64.checked-add k 22)) (export f)))
   (call f 20)
   (output (: (Some 42) (Option Int64)))
   (live-objects known-leak))
 
 (case
   "ce02 checked addition over a RUNTIME operand yields None on overflow"
-  (input (do (def (f (: k Int64)) ((. Int64 checked-add) k 1)) (export f)))
+  (input (do (def (f (: k Int64)) (Int64.checked-add k 1)) (export f)))
   (call f 9223372036854775807)
   (output (: (None unit) (Option Int64)))
   (live-objects known-leak))
 
 (case
   "ce11 wrapping addition over a RUNTIME operand wraps"
-  (input (do (def (f (: k Int64)) ((. Int64 wrapping-add) k 1)) (export f)))
+  (input (do (def (f (: k Int64)) (Int64.wrapping-add k 1)) (export f)))
   (call f 9223372036854775807)
   (output (: -9223372036854775808 Int64)))
 
 (case
   "ce12 checked multiplication over a RUNTIME operand yields Some when it fits"
-  (input (do (def (f (: k Int64)) ((. Int64 checked-mul) k 3)) (export f)))
+  (input (do (def (f (: k Int64)) (Int64.checked-mul k 3)) (export f)))
   (call f 14)
   (output (: (Some 42) (Option Int64)))
   (live-objects known-leak))
@@ -16544,8 +16532,8 @@
       (def (shrnon (: x UInt64)) (if (< (>> x 60) 8) 111 222))
       (def (lsh (: x Int64)) (if (>= (<< x 2) -9223372036854775808) 1 0))
       (def (remdiv (: x Int64) (: d Int64)) (if (< (% (: (& x 255) Int64) d) 300) 1 0))
-      (def (wadd (: x Int64)) ((. Int64 wrapping-add) x ((. Int64 wrapping-mul) x x)))
-      (def (wann (: x Int64)) (* 0 ((. Int64 wrapping-mul) x x)))
+      (def (wadd (: x Int64)) (Int64.wrapping-add x (Int64.wrapping-mul x x)))
+      (def (wann (: x Int64)) (* 0 (Int64.wrapping-mul x x)))
       (def (proj) (let ((p #tuple(42 7))) (. p 0)))
       (def (projann) (let ((p #tuple(42 7))) (* 0 (. p 0))))
       (export shrtaut)
@@ -16792,7 +16780,7 @@
       (def
         (main (: n Int64))
         (let
-          ((x (/ ((. Float64 of-int) n) 0.0)))
+          ((x (/ (Float64.of-int n) 0.0)))
           (+ (if (> x 1000000.0) 1 0) (+ (if (= x x) 10 0) (if (< 0.0 x) 100 0)))))
       (export main)))
   (call main (: 1 Int64))
@@ -16804,9 +16792,7 @@
     (do
       (def
         (main (: n Int64))
-        (let
-          ((x (/ ((. Float64 of-int) (- 0 n)) 0.0)))
-          (+ (if (< x -1000000.0) 1 0) (if (= x x) 10 0))))
+        (let ((x (/ (Float64.of-int (- 0 n)) 0.0))) (+ (if (< x -1000000.0) 1 0) (if (= x x) 10 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 11 Int64)))
@@ -16818,7 +16804,7 @@
       (def
         (main (: n Int64))
         (let
-          ((x (/ ((. Float64 of-int) (- n 1)) 0.0)))
+          ((x (/ (Float64.of-int (- n 1)) 0.0)))
           (+
             (if (= x Float64.nan) 1 0)
             (+ (if (= x x) 10 0) (if (Set.contains (Set.insert #set() x) Float64.nan) 100 0)))))
@@ -16833,7 +16819,7 @@
     (do
       (def
         (main (: n Int64))
-        (let ((i (/ ((. Float64 of-int) n) 0.0))) (if (= (- i i) Float64.nan) 1 0)))
+        (let ((i (/ (Float64.of-int n) 0.0))) (if (= (- i i) Float64.nan) 1 0)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64)))
@@ -17566,7 +17552,7 @@
     "The semantic face: #set(n 2 3) at n=2 collapses the duplicate → len 2, at n=1/n=7 the
         three elements are distinct → len 3. Pins that the hop preserves set-construction dedup, not just
         the container plumbing.")
-  (input (do (def (main (: n Int64)) (List.len ((. Set to-list) #set(n 2 3)))) (export main)))
+  (input (do (def (main (: n Int64)) (List.len (Set.to-list #set(n 2 3)))) (export main)))
   (call main (: 1 Int64))
   (output (: 3 Int64))
   (call main (: 2 Int64))
@@ -17690,7 +17676,7 @@
     (do
       (def
         (main (: n Int64))
-        (match ((. Char from-int) (+ n 60)) ((Some c) ((. Char to-int) c)) ((None _u) -1)))
+        (match (Char.from-int (+ n 60)) ((Some c) (Char.to-int c)) ((None _u) -1)))
       (export main)))
   (call main (: 7 Int64))
   (output (: 67 Int64))
@@ -18281,7 +18267,7 @@
         the hop. f = arith+compare combined; g = the NaN face gated on the runtime arg.")
   (input
     (do
-      (def (f (: n Int64)) (if (> (* ((. Float64 of-int) n) 2.5) 5.0) 1 0))
+      (def (f (: n Int64)) (if (> (* (Float64.of-int n) 2.5) 5.0) 1 0))
       (def (g (: n Int64)) (if (= Float64.nan Float64.nan) n 0))
       (def (main (: n Int64)) (+ (* 10 (f n)) (g n)))
       (export main)))
@@ -18412,7 +18398,7 @@
     (do
       (def
         (sl (: s String) (: a Int64) (: b Int64))
-        (match (String.slice s a b) ((Some t) ((. String byte-len) t)) ((None _u) -1)))
+        (match (String.slice s a b) ((Some t) (String.byte-len t)) ((None _u) -1)))
       (def
         (main (: n Int64))
         (do
@@ -18713,9 +18699,7 @@
         n=3 → 3+(-100) = -97; n=-2 → -4+0 = -4 (Err \"boom\" → -4). Dual-path verified, byte-idempotent.")
   (input
     (do
-      (def
-        (f (: r (Result Int64 String)))
-        (match r ((Ok v) v) ((Err e) (- 0 ((. String byte-len) e)))))
+      (def (f (: r (Result Int64 String))) (match r ((Ok v) v) ((Err e) (- 0 (String.byte-len e)))))
       (def
         (g (: o (Option (Result Int64 String))))
         (match o ((Some (Ok v)) (* v 10)) ((Some (Err _e)) -100) ((None _u) 0)))
@@ -18840,9 +18824,9 @@
         (+
           (* 1000 (if (= Float64.nan Float64.nan) 1 0))
           (+
-            (* 100 (if (< Float64.nan ((. Float64 of-int) n)) 1 0))
+            (* 100 (if (< Float64.nan (Float64.of-int n)) 1 0))
             (+
-              (* 10 (if (> Float64.nan ((. Float64 of-int) n)) 1 0))
+              (* 10 (if (> Float64.nan (Float64.of-int n)) 1 0))
               (if (<= Float64.nan Float64.nan) 1 0)))))
       (export main)))
   (call main (: 7 Int64))
@@ -18863,8 +18847,8 @@
       (def
         (main (: n Int64))
         (do
-          (def i1 (/ ((. Float64 of-int) (* n n)) 0.0))
-          (def i2 (/ ((. Float64 of-int) (+ (* n n) 1)) 0.0))
+          (def i1 (/ (Float64.of-int (* n n)) 0.0))
+          (def i2 (/ (Float64.of-int (+ (* n n) 1)) 0.0))
           (+ (* 100 (if (= i1 i2) 1 0)) (+ (* 10 (if (< i1 i2) 1 0)) (if (> i1 1000000.0) 1 0)))))
       (export main)))
   (call main (: 7 Int64))
@@ -19033,7 +19017,7 @@
       (def
         (main (: n Int64))
         (+
-          (* 10 (Set.len #set(Float64.nan Float64.nan 1.5 ((. Float64 of-int) n))))
+          (* 10 (Set.len #set(Float64.nan Float64.nan 1.5 (Float64.of-int n))))
           (if (Set.contains #set(Float64.nan 2.5) Float64.nan) 1 0)))
       (export main)))
   (call main (: 7 Int64))
@@ -19059,7 +19043,7 @@
               ((Some v) v)
               ((None _u) -1)))
           (match
-            (Map.lookup #map((= Float64.nan 42)) ((. Float64 of-int) n))
+            (Map.lookup #map((= Float64.nan 42)) (Float64.of-int n))
             ((Some v) v)
             ((None _u) -1))))
       (export main)))
@@ -19106,8 +19090,8 @@
       (def
         (main (: n Int64))
         (+
-          (* 10 (if (> Float64.Infinity ((. Float64 of-int) n)) 1 0))
-          (if (= Float64.Infinity (/ 1.0 ((. Float64 of-int) (- n 7)))) 1 0)))
+          (* 10 (if (> Float64.Infinity (Float64.of-int n)) 1 0))
+          (if (= Float64.Infinity (/ 1.0 (Float64.of-int (- n 7)))) 1 0)))
       (export main)))
   (call main (: 7 Int64))
   (output (: 11 Int64))

@@ -138,7 +138,7 @@
         (def (c-to-f c) (+ (/ (* c 9) 5) 32))
 
         (export c-to-f))
-      (def (main) ((. Temp c-to-f) 100))
+      (def (main) (Temp.c-to-f 100))
       (export main)))
   (output (: 212 Int64)))
 
@@ -1815,7 +1815,7 @@
         (do
           (def a (first #list(n 6)))
           (def s (first #list("ab" "c")))
-          (+ (* a 10) ((. String byte-len) s))))
+          (+ (* a 10) (String.byte-len s))))
       (export main)))
   (module "lib"
     (do (def (first xs) (match xs (#list(h (.. _t)) h) (_ (trap "empty")))) (export first)))
@@ -2788,7 +2788,7 @@
         (do
           (def p (dup k))
           (def q (dup "ab"))
-          (+ (* 100 (+ (. p 0) (. p 1))) ((. String byte-len) (. q 0)))))
+          (+ (* 100 (+ (. p 0) (. p 1))) (String.byte-len (. q 0)))))
       (export main)))
   (module "base"
     (do (def (dup x) #tuple(x x)) (export dup)))
@@ -2963,8 +2963,8 @@
         (code (: id Int64))
         (match
           (fetch id)
-          ((Result.Ok s) ((. String byte-len) s))
-          ((Result.Err (IoErr.NotFound key)) (+ 100 ((. String byte-len) key)))
+          ((Result.Ok s) (String.byte-len s))
+          ((Result.Err (IoErr.NotFound key)) (+ 100 (String.byte-len key)))
           ((Result.Err (IoErr.Denied c)) (+ 1000 c))
           ((Result.Err (IoErr.Timeout _u)) -1)))
       (def (main (: id Int64)) (code id))

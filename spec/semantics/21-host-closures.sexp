@@ -3206,7 +3206,7 @@
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
       (def
         (mk (: n Int64))
-        (let ((s (rep "ab" n))) (fn ((: extra Int64)) (+ ((. String byte-len) s) extra))))
+        (let ((s (rep "ab" n))) (fn ((: extra Int64)) (+ (String.byte-len s) extra))))
       (export mk)))
   (call mk (: 3 Int64) (: 100 Int64))
   (output (: 105 Int64))
@@ -3254,7 +3254,7 @@
             (String.slice s k 6)
             ((Some t)
               (let
-                ((b ((. String to-bytes) t)))
+                ((b (String.to-bytes t)))
                 (fn ((: i Int64)) (match (Bytes.at b i) ((Some v) (Int64.of v)) ((None _u) -1)))))
             ((None _u) (fn ((: _i Int64)) -2)))))
       (export mk)))
@@ -4012,7 +4012,7 @@
            round trip (an i32 rope handle in-guest).")
   (input
     (do
-      (def (mk) (fn ((: s String)) ((. String byte-len) s)))
+      (def (mk) (fn ((: s String)) (String.byte-len s)))
       (def (app (: g (-> String Int64)) (: x Int64)) (g "hello"))
       (export mk)
       (export app)))
@@ -7560,7 +7560,7 @@
         (mk (: mode Int64))
         (match
           (if (> mode 0) (Some (String.concat "ab" "cde")) (None unit))
-          ((Some s) (fn ((: y Int64)) (+ ((. String byte-len) s) y)))
+          ((Some s) (fn ((: y Int64)) (+ (String.byte-len s) y)))
           ((None _u) (fn ((: y Int64)) (- 0 y)))))
       (def (main (: mode Int64)) (do (def f (mk mode)) (+ (* 10 (f 1)) (f 0))))
       (export main)))
@@ -7587,10 +7587,7 @@
             (+
               (*
                 100
-                (match
-                  (Map.lookup m k)
-                  ((Option.Some v) ((. String byte-len) v))
-                  ((Option.None _u) -1)))
+                (match (Map.lookup m k) ((Option.Some v) (String.byte-len v)) ((Option.None _u) -1)))
               (if (Set.contains s k) 1 0)))))
       (export main)))
   (call main (: 10 Int64) (: 1 Int64))

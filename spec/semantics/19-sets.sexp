@@ -927,7 +927,7 @@
               6
               #list(5)))
           (def seen (drain g #list(start) #set()))
-          (+ (* (Set.len seen) 100) (sum-set ((. Set to-list) seen) 0))))
+          (+ (* (Set.len seen) 100) (sum-set (Set.to-list seen) 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 410 Int64))
@@ -2101,7 +2101,7 @@
            the smallest, 2. The inverse of Set.of. Expected: 2.")
   (input
     (do
-      (def (main) (match (List.at ((. Set to-list) #set(5 2 8 2)) 0) ((Some v) v) ((None u) -1)))
+      (def (main) (match (List.at (Set.to-list #set(5 2 8 2)) 0) ((Some v) v) ((None u) -1)))
       (export main)))
   (output (: 2 Int64)))
 
@@ -2112,7 +2112,7 @@
            elements, three distinct) builds a set {1,2,3}, and `(List.len (Set.to-list …))` is the DEDUPED
            count 3 — not the input length 5. The canonical-order case pins index 0 and the interior order
            over already-distinct inputs; this pins that duplicates COLLAPSE in the enumerated list.")
-  (input (do (def (main) (List.len ((. Set to-list) #set(3 1 2 1 3)))) (export main)))
+  (input (do (def (main) (List.len (Set.to-list #set(3 1 2 1 3)))) (export main)))
   (output (: 3 Int64)))
 
 (case
@@ -2128,7 +2128,7 @@
       (def
         (main)
         (let
-          ((xs ((. Set to-list) #set(5 2 8))))
+          ((xs (Set.to-list #set(5 2 8))))
           (+
             (+ (* 100 (Option.expect (List.at xs 0) "0")) (* 10 (Option.expect (List.at xs 1) "1")))
             (Option.expect (List.at xs 2) "2"))))
@@ -2148,7 +2148,7 @@
       (def
         (main)
         (let
-          ((xs ((. Set to-list) #set(8 5 2))))
+          ((xs (Set.to-list #set(8 5 2))))
           (+
             (+ (* 100 (Option.expect (List.at xs 0) "0")) (* 10 (Option.expect (List.at xs 1) "1")))
             (Option.expect (List.at xs 2) "2"))))
@@ -2172,7 +2172,7 @@
       (def
         (inc (: xs (List Int64)) (: prev Int64) (: cnt Int64))
         (match xs (#list() cnt) (#list(h (.. t)) (if (> h prev) (inc t h (+ cnt 1)) -100000))))
-      (def (main (: n Int64)) (inc ((. Set to-list) (build n #set())) -1 0))
+      (def (main (: n Int64)) (inc (Set.to-list (build n #set())) -1 0))
       (export main)))
   (call main (: 100 Int64))
   (output (: 100 Int64))
@@ -2196,7 +2196,7 @@
         (main (: n Int64))
         (do
           (def src (build n #set()))
-          (def rt (Set.of ((. Set to-list) src)))
+          (def rt (Set.of (Set.to-list src)))
           (+ (* 10 (if (= rt src) 1 0)) (if (= (Set.len rt) n) 1 0))))
       (export main)))
   (call main (: 100 Int64))
@@ -2209,7 +2209,7 @@
     "`(List.len (Set.to-list (Set.of (list 3 1 2 1 3))))` — the enumerated list has one element per
            DISTINCT set element ({1,2,3} → 3), so its length equals Set.len. Pins the dedup + round count.
            Expected: 3.")
-  (input (do (def (main) (List.len ((. Set to-list) #set(3 1 2 1 3)))) (export main)))
+  (input (do (def (main) (List.len (Set.to-list #set(3 1 2 1 3)))) (export main)))
   (output (: 3 Int64)))
 
 (case
@@ -2229,7 +2229,7 @@
       (def
         (main (: n Int64))
         (match
-          (List.at ((. Set to-list) #set(#tuple((+ 3 n) 1) #tuple((+ 1 n) 2) #tuple((+ 2 n) 0))) 0)
+          (List.at (Set.to-list #set(#tuple((+ 3 n) 1) #tuple((+ 1 n) 2) #tuple((+ 2 n) 0))) 0)
           ((Some t) (. t 0))
           ((None u) -1)))
       (export main)))
@@ -2262,7 +2262,7 @@
         ; first-component tie + Bytes tie-break + answer 197 all unchanged.
         (match
           (List.at
-            ((. Set to-list)
+            (Set.to-list
               #set(#tuple((+ 1 k) (Bytes.of #list(98)))
                 #tuple((+ 1 k) (Bytes.of #list(97)))
                 #tuple((+ 2 k) (Bytes.of #list(0)))))
@@ -2292,7 +2292,7 @@
         (main (: a Int64))
         (match
           (List.at
-            ((. Set to-list)
+            (Set.to-list
               #set(#record((= x 3) (= y a)) #record((= x 1) (= y 2)) #record((= x 2) (= y 0))))
             0)
           ((Some r) r.x)
@@ -2353,7 +2353,7 @@
       (def
         (main (: x Float64))
         (let
-          ((sorted ((. Set to-list) #set((Missing) (Temp x) (Temp 1.5)))))
+          ((sorted (Set.to-list #set((Missing) (Temp x) (Temp 1.5)))))
           (match sorted (#list(a b c) (+ (rank a) (+ (* 10 (rank b)) (* 100 (rank c))))) (_ -1))))
       (export main)))
   (call main (: 2.5 Float64))
@@ -2398,9 +2398,9 @@
     (do
       (def
         (main (: x Float64))
-        #tuple((List.len ((. Set to-list) #set(x 2.5 1.5)))
+        #tuple((List.len (Set.to-list #set(x 2.5 1.5)))
           (match
-            (List.at ((. Set to-list) #set(x 0.5 2.5)) 0)
+            (List.at (Set.to-list #set(x 0.5 2.5)) 0)
             ((Some f) (if (= f 0.5) 1 0))
             ((None u) -1))))
       (export main)))
@@ -2430,7 +2430,7 @@
         (let
           ((nan (/ x x)))
           (match
-            (List.at ((. Set to-list) #set(1.5 nan -2.0)) 1)
+            (List.at (Set.to-list #set(1.5 nan -2.0)) 1)
             ((Some e) (if (= e nan) 1 0))
             ((None u) -1))))
       (export main)))
@@ -2454,7 +2454,7 @@
   (input
     (do
       (def (ins (: n Int64) (: s (Set Int64))) (if (< n 1) s (ins (- n 1) (Set.insert s (- 20 n)))))
-      (def (main (: n Int64)) (Option.expect (List.at ((. Set to-list) (ins n #set())) 0) "empty"))
+      (def (main (: n Int64)) (Option.expect (List.at (Set.to-list (ins n #set())) 0) "empty"))
       (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64)))
@@ -2473,7 +2473,7 @@
       (def
         (main (: n Int64))
         (Option.expect
-          (List.at ((. Set to-list) #set(9223372036854775807 n 0 -9223372036854775808)) 0)
+          (List.at (Set.to-list #set(9223372036854775807 n 0 -9223372036854775808)) 0)
           "empty"))
       (export main)))
   (call main (: 5 Int64))
@@ -2494,7 +2494,7 @@
       (def
         (sumlist (: l (List Int64)) (: i Int64) (: a Int64))
         (if (= i (List.len l)) a (sumlist l (+ i 1) (+ a (Option.expect (List.at l i) "oob")))))
-      (def (main (: n Int64)) (sumlist ((. Set to-list) (ins n #set())) 0 0))
+      (def (main (: n Int64)) (sumlist (Set.to-list (ins n #set())) 0 0))
       (export main)))
   (call main (: 10 Int64))
   (output (: 10 Int64))
@@ -2523,7 +2523,7 @@
       (def
         (main (: n Int64))
         (match
-          (List.at ((. Set to-list) #set((rep "b" n) (rep "a" n) (rep "c" n))) 0)
+          (List.at (Set.to-list #set((rep "b" n) (rep "a" n) (rep "c" n))) 0)
           ((Some s) (if (= s "axx") 1 0))
           ((None u) -1)))
       (export main)))
@@ -2555,7 +2555,7 @@
       (def
         (main (: z Int64))
         (let
-          ((xs ((. Set to-list) #set((b1 128) (b1 5) (b1 127)))))
+          ((xs (Set.to-list #set((b1 128) (b1 5) (b1 127)))))
           (+
             (*
               100
@@ -2594,7 +2594,7 @@
         (let
           ((m (Map.insert (Map.insert (Map.insert Map.empty (b1 128) 900) (b1 5) 100) (b1 127) 700)))
           (let
-            ((ps ((. Map to-list) m)))
+            ((ps (Map.to-list m)))
             (+
               (*
                 100
@@ -2625,7 +2625,7 @@
       (def
         (main (: n Int64))
         (match
-          (List.at ((. Set to-list) #set((pick n) "z" "a")) 2)
+          (List.at (Set.to-list #set((pick n) "z" "a")) 2)
           ((Some s) (if (= s "é") 1 (if (= s "z") 2 0)))
           ((None u) -1)))
       (export main)))
@@ -2651,8 +2651,8 @@
       (def
         (main (: n Int64))
         (match
-          (List.at ((. Set to-list) #set((rep "a" n) "a")) 0)
-          ((Some s) ((. String byte-len) s))
+          (List.at (Set.to-list #set((rep "a" n) "a")) 0)
+          ((Some s) (String.byte-len s))
           ((None u) -1)))
       (export main)))
   (call main (: 3 Int64))
@@ -2672,7 +2672,7 @@
            set that happens to be empty gets an empty list, not a trap — with the element type fixed to
            Int64 (so the canonical-order descriptor is well-defined), the shape a symbol-table / free-var
            enumeration takes when the collection is empty.")
-  (input (do (def (main) (List.len ((. Set to-list) (Set.remove #set(1) 1)))) (export main)))
+  (input (do (def (main) (List.len (Set.to-list (Set.remove #set(1) 1)))) (export main)))
   (output (: 0 Int64)))
 
 (case
@@ -2683,7 +2683,7 @@
            empty-collection shape a self-hosting compiler's fresh free-variable / visited set takes at
            seed. `(List.len (Set.to-list (es)))` is 0. Pins that an element-typeless constant empty set
            enumerates to the empty list (length 0), distinct from the runtime-emptied `Set.remove` path.")
-  (input (do (def (es) #set()) (def (main) (List.len ((. Set to-list) (es)))) (export main)))
+  (input (do (def (es) #set()) (def (main) (List.len (Set.to-list (es)))) (export main)))
   (output (: 0 Int64)))
 
 (case
@@ -2699,7 +2699,7 @@
       (def
         (main (: d Int64))
         (let
-          ((xs ((. Set to-list) (Set.insert (Set.insert (Set.insert #set() 3) 1) 2))))
+          ((xs (Set.to-list (Set.insert (Set.insert (Set.insert #set() 3) 1) 2))))
           (+ (* 100 (Option.expect (List.at xs 0) "a")) (Option.expect (List.at xs 2) "c"))))
       (export main)))
   (call main (: 0 Int64))
@@ -2724,7 +2724,7 @@
     (do
       (def
         (main (: a Int64) (: b Int64))
-        (let ((s #set(a b a))) (if (= (Set.of ((. Set to-list) s)) s) 1 0)))
+        (let ((s #set(a b a))) (if (= (Set.of (Set.to-list s)) s) 1 0)))
       (export main)))
   (call main (: 5 Int64) (: 7 Int64))
   (output (: 1 Int64))
@@ -2747,7 +2747,7 @@
         (main (: a Int64) (: b Int64))
         (let
           ((s #set(#tuple(a 1) #tuple(b 2) #tuple(a 1))))
-          (let ((r (Set.of ((. Set to-list) s)))) (+ (* 10 (Set.len r)) (if (= r s) 1 0)))))
+          (let ((r (Set.of (Set.to-list s)))) (+ (* 10 (Set.len r)) (if (= r s) 1 0)))))
       (export main)))
   (call main (: 5 Int64) (: 7 Int64))
   (output (: 21 Int64))
@@ -2841,7 +2841,7 @@
     (do
       (def
         (main (: k Int64))
-        (. (Option.expect (List.at ((. Map to-list) (Map.insert Map.empty k 42)) 0) "e") 1))
+        (. (Option.expect (List.at (Map.to-list (Map.insert Map.empty k 42)) 0) "e") 1))
       (export main)))
   (call main (: 7 Int64))
   (output (: 42 Int64))
@@ -3909,7 +3909,7 @@
       (def
         (main (: n Int64))
         (do
-          (def xs ((. Set to-list) #set((Rational.of 3 2) (Rational.of 1 2) (Rational.of n 4))))
+          (def xs (Set.to-list #set((Rational.of 3 2) (Rational.of 1 2) (Rational.of n 4))))
           (def
             a
             (match
@@ -3967,7 +3967,7 @@
       (def
         (main (: n Int64))
         (do
-          (def xs ((. Set to-list) #set((Rational.of 2 3) (Rational.of 1 n) (Rational.of 1 2))))
+          (def xs (Set.to-list #set((Rational.of 2 3) (Rational.of 1 n) (Rational.of 1 2))))
           (def
             (six (: i Int64))
             (match
@@ -4119,7 +4119,7 @@
               (Map.insert (Map.insert Map.empty (Rational.of 2 3) 1) (Rational.of 1 n) 2)
               (Rational.of 1 2)
               3))
-          (def xs ((. Map to-list) m))
+          (def xs (Map.to-list m))
           (def (vat (: i Int64)) (. (Option.expect (List.at xs i) "in bounds") 1))
           (+ (* 100 (vat 0)) (+ (* 10 (vat 1)) (vat 2)))))
       (export main)))
@@ -4196,7 +4196,7 @@
         (main (: mode Int64))
         (do
           (def r (String.concat "a" (if (> mode 0) "a" "z")))
-          (def xs ((. Set to-list) #set("b" r "c")))
+          (def xs (Set.to-list #set("b" r "c")))
           (def (at (: i Int64)) (Option.expect (List.at xs i) "in"))
           (+ (* 10 (if (= (at 0) "aa") 1 0)) (if (= (at 2) "c") 1 0))))
       (export main)))
@@ -4222,7 +4222,7 @@
         (do
           (def a #tuple((Option.expect (String.slice "xkeyz" 1 4) "in") 1))
           (def b #tuple((String.concat "ke" (if (> mode 0) "y" "x")) 2))
-          (def xs ((. Set to-list) #set(a b)))
+          (def xs (Set.to-list #set(a b)))
           (match (List.at xs 0) ((Some t) (. t 1)) ((None _u) -1))))
       (export main)))
   (call main (: 1 Int64))
@@ -4273,7 +4273,7 @@
   "Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)"
   (input
     (do
-      (def (main) (List.len ((. Set to-list) #set(#tuple(1.5 1) #tuple(2.5 2) #tuple(-1.0 3)))))
+      (def (main) (List.len (Set.to-list #set(#tuple(1.5 1) #tuple(2.5 2) #tuple(-1.0 3)))))
       (export main)))
   (declines))
 
@@ -4293,7 +4293,7 @@
         (main (: x Float64))
         (do
           (def m (Map.insert (Map.insert Map.empty #"b" 2.5) #"a" (/ x x)))
-          (def xs ((. Map to-list) m))
+          (def xs (Map.to-list m))
           (+
             (* 100 (List.len xs))
             (+
@@ -4380,7 +4380,7 @@
       (def
         (main (: x Float32))
         (do
-          (def xs ((. Set to-list) #set(x (: 0.5 Float32) (: 2.5 Float32))))
+          (def xs (Set.to-list #set(x (: 0.5 Float32) (: 2.5 Float32))))
           (match
             (List.at xs 0)
             ((Some v) (if (= v (: 0.5 Float32)) 1 (if (= v x) 2 0)))
@@ -4427,8 +4427,8 @@
           (def es #set())
           (def s1 (Set.remove #set(k) k))
           (+
-            (* 100 (List.len ((. Set to-list) es)))
-            (+ (* 10 (List.len ((. Set to-list) s1))) (if (= es s1) 1 0)))))
+            (* 100 (List.len (Set.to-list es)))
+            (+ (* 10 (List.len (Set.to-list s1))) (if (= es s1) 1 0)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64)))
@@ -4453,7 +4453,7 @@
           Sink
           0
           ((emit (v) s (resume unit (+ (* s 10) v))) (total (_u) s (resume s s)))
-          (do (drain ((. Set to-list) #set(3 k 1)) 0) (Sink.total))))
+          (do (drain (Set.to-list #set(3 k 1)) 0) (Sink.total))))
       (export main)))
   (call main (: 2 Int64))
   (output (: 123 Int64))
@@ -4796,7 +4796,7 @@
       (def
         (main (: z Int64))
         (match
-          ((. Set to-list) #set((+ z 536870920) (+ z 100) (- 0 (+ z 536870915))))
+          (Set.to-list #set((+ z 536870920) (+ z 100) (- 0 (+ z 536870915))))
           (#list(a b c)
             (+
               (* 100 (if (< a b) 1 0))
@@ -4893,7 +4893,7 @@
         (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp))
       (def
         (loop (: j Int64) (: n Int64) (: tot Int64))
-        (if (< j n) (loop (+ j 1) n (+ tot (List.len ((. Map to-list) (build 0 3 Map.empty))))) tot))
+        (if (< j n) (loop (+ j 1) n (+ tot (List.len (Map.to-list (build 0 3 Map.empty))))) tot))
       (def (main (: n Int64)) (loop 0 n 0))
       (export main)))
   (call main (: 500 Int64))
@@ -4914,7 +4914,7 @@
         (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
       (def
         (loop (: j Int64) (: n Int64) (: tot Int64))
-        (if (< j n) (loop (+ j 1) n (+ tot (List.len ((. Set to-list) (build 0 3 #set()))))) tot))
+        (if (< j n) (loop (+ j 1) n (+ tot (List.len (Set.to-list (build 0 3 #set()))))) tot))
       (def (main (: n Int64)) (loop 0 n 0))
       (export main)))
   (call main (: 500 Int64))
@@ -4939,7 +4939,7 @@
         (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp))
       (def
         (loop (: j Int64) (: n Int64) (: mp (Map Int64 Int64)) (: tot Int64))
-        (if (< j n) (loop (+ j 1) n mp (+ tot (List.len ((. Map to-list) mp)))) tot))
+        (if (< j n) (loop (+ j 1) n mp (+ tot (List.len (Map.to-list mp)))) tot))
       (def (main (: n Int64)) (loop 0 n (build 0 3 Map.empty) 0))
       (export main)))
   (call main (: 500 Int64))
@@ -4962,7 +4962,7 @@
         (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
       (def
         (loop (: j Int64) (: n Int64) (: s (Set Int64)) (: tot Int64))
-        (if (< j n) (loop (+ j 1) n s (+ tot (List.len ((. Set to-list) s)))) tot))
+        (if (< j n) (loop (+ j 1) n s (+ tot (List.len (Set.to-list s)))) tot))
       (def (main (: n Int64)) (loop 0 n (build 0 3 #set()) 0))
       (export main)))
   (call main (: 500 Int64))
@@ -5151,10 +5151,7 @@
     (do
       (def
         (main (: n Int64))
-        (if
-          (= #tuple(1 ((. Set to-list) #set(3 1 2 n))) #tuple(1 ((. Set to-list) #set(n 2 3 1))))
-          1
-          0))
+        (if (= #tuple(1 (Set.to-list #set(3 1 2 n))) #tuple(1 (Set.to-list #set(n 2 3 1)))) 1 0))
       (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64)))
@@ -5168,7 +5165,7 @@
         (match (List.at xs i) ((Option.Some v) (+ v (sum-at xs (+ i 1)))) ((Option.None) 0)))
       (def
         (main (: n Int64))
-        (let ((xs ((. Set to-list) #set(n 10 20)))) (+ (* 100 (List.len xs)) (sum-at xs 0))))
+        (let ((xs (Set.to-list #set(n 10 20)))) (+ (* 100 (List.len xs)) (sum-at xs 0))))
       (export main)))
   (call main (: 3 Int64))
   (output (: 333 Int64))
@@ -5183,9 +5180,7 @@
         (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
       (def
         (main (: n Int64))
-        (let
-          ((xs ((. Set to-list) #set(3 1 2))))
-          (+ (* 100 (at xs 0)) (+ (* 10 (at xs 1)) (at xs 2)))))
+        (let ((xs (Set.to-list #set(3 1 2)))) (+ (* 100 (at xs 0)) (+ (* 10 (at xs 1)) (at xs 2)))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 123 Int64)))
@@ -5200,7 +5195,7 @@
       (def
         (main (: n Int64))
         (let
-          ((xs ((. Set to-list) #set("b" "a" "c"))))
+          ((xs (Set.to-list #set("b" "a" "c"))))
           (String.concat (at xs 0) (String.concat (at xs 1) (at xs 2)))))
       (export main)))
   (call main (: 0 Int64))
@@ -5218,7 +5213,7 @@
       (def
         (main (: n Int64))
         (let
-          ((xs ((. Set to-list) (grow #set() 20))))
+          ((xs (Set.to-list (grow #set() 20))))
           (+ (* 10000 (at xs 0)) (+ (* 100 (at xs 1)) (at xs 2)))))
       (export main)))
   (call main (: 0 Int64))
@@ -5234,7 +5229,7 @@
       (def
         (main (: n Int64))
         (let
-          ((xs ((. Set to-list) #set(100 -5 7))))
+          ((xs (Set.to-list #set(100 -5 7))))
           (if (= (at xs 0) -5) (if (= (at xs 1) 7) (if (= (at xs 2) 100) 1 -3) -2) -1)))
       (export main)))
   (call main (: 0 Int64))
@@ -5250,7 +5245,7 @@
       (def
         (main (: n Int64))
         (let
-          ((xs ((. Set to-list) #set("bb" "ab" "b"))))
+          ((xs (Set.to-list #set("bb" "ab" "b"))))
           (String.concat
             (at xs 0)
             (String.concat "|" (String.concat (at xs 1) (String.concat "|" (at xs 2)))))))
@@ -5394,14 +5389,14 @@
   "stl1 Set.to-list folds under the Ast.encode const-param demand path"
   (input
     (do
-      (def (f (const (: n Int64))) (List.len ((. Set to-list) #set(n (* n 2) n))))
+      (def (f (const (: n Int64))) (List.len (Set.to-list #set(n (* n 2) n))))
       (def (run) (= (Ast.encode (Ast.Int (BigInt.of (f 4)))) (Ast.encode (Ast.Int (BigInt.of 2)))))
       (export run)))
   (output (: true Bool)))
 
 (case
   "stl2 a (const Set.to-list) result is consumed by runtime List.len outside the block"
-  (input (do (def (main) (List.len (const ((. Set to-list) #set(1 2))))) (export main)))
+  (input (do (def (main) (List.len (const (Set.to-list #set(1 2))))) (export main)))
   (output (: 2 Int64)))
 
 ; -- breaker batch 423 (2026-08-26): CROSS-FEATURE seam pins over the day's fixes — an
@@ -5423,7 +5418,7 @@
           (% n 3)
           ((tick () s (resume (* s 10) (+ s 1))))
           (match
-            (List.at (const ((. Set to-list) #set(30 10 20))) (ap (fn (x) (+ x (E.tick)))))
+            (List.at (const (Set.to-list #set(30 10 20))) (ap (fn (x) (+ x (E.tick)))))
             ((Option.Some v) v)
             ((Option.None) -1))))
       (export main)))
@@ -5460,7 +5455,7 @@
             (let
               ((b (E.put)))
               (match
-                (List.at ((. Set to-list) #set((* 10 a) b)) 0)
+                (List.at (Set.to-list #set((* 10 a) b)) 0)
                 ((Option.Some v) v)
                 ((Option.None) -1))))))
       (export main)))
@@ -5522,7 +5517,7 @@
       (def
         (main (: n Int64))
         (match
-          (List.at ((. Set to-list) #set(#\c (if (> n 0) #\a #\q) #\b)) 0)
+          (List.at (Set.to-list #set(#\c (if (> n 0) #\a #\q) #\b)) 0)
           ((Option.Some ch) (if (= ch #\a) 1 0))
           ((Option.None) -1)))
       (export main)))
@@ -5600,8 +5595,8 @@
       (def
         (main (: n Int64))
         (let
-          ((cs ((. Set to-list) #set(#tuple(2 1) #tuple(1 9) #tuple(1 2))))
-            (rs ((. Set to-list) #set(#tuple((+ n (- 0 3)) 1) #tuple((- n 4) 9) #tuple((- n 4) 2)))))
+          ((cs (Set.to-list #set(#tuple(2 1) #tuple(1 9) #tuple(1 2))))
+            (rs (Set.to-list #set(#tuple((+ n (- 0 3)) 1) #tuple((- n 4) 9) #tuple((- n 4) 2)))))
           (if (= cs rs) 1 0)))
       (export main)))
   (call main (: 5 Int64))
@@ -5614,8 +5609,8 @@
       (def
         (main (: n Int64))
         (let
-          ((cs ((. Set to-list) #set((Option.Some 2) Option.None (Option.Some 1))))
-            (rs ((. Set to-list) #set((Option.Some (- n 3)) Option.None (Option.Some (- n 4))))))
+          ((cs (Set.to-list #set((Option.Some 2) Option.None (Option.Some 1))))
+            (rs (Set.to-list #set((Option.Some (- n 3)) Option.None (Option.Some (- n 4))))))
           (if (= cs rs) 1 0)))
       (export main)))
   (call main (: 5 Int64))
@@ -5629,13 +5624,13 @@
         (main (: n Int64))
         (let
           ((cm
-              ((. Map to-list)
+              (Map.to-list
                 (Map.insert
                   (Map.insert (Map.insert Map.empty (Option.Some 2) 20) Option.None 30)
                   (Option.Some 1)
                   10)))
             (rm
-              ((. Map to-list)
+              (Map.to-list
                 (Map.insert
                   (Map.insert (Map.insert Map.empty (Option.Some (- n 3)) 20) Option.None 30)
                   (Option.Some (- n 4))

@@ -512,7 +512,7 @@
           ps
           (#list() cnt)
           (#list(h (.. t)) (match h (#tuple(k _v) (if (< prev k) (inc t k (+ cnt 1)) -100000))))))
-      (def (main (: n Int64)) (inc ((. Map to-list) (fill n Map.empty)) (Rational.of 0 1) 0))
+      (def (main (: n Int64)) (inc (Map.to-list (fill n Map.empty)) (Rational.of 0 1) 0))
       (export main)))
   (call main (: 40 Int64))
   (output (: 40 Int64))
@@ -3326,9 +3326,7 @@
            base the left's pending f64 needed → invalid module (order-specific: only this operand order). Now
            the right operand's scratch floats above the left's high-water. n=100 → 100.0 ≠ 101.0 → false.")
   (input
-    (do
-      (def (main (: n Int64)) (= ((. Float64 of-int) n) ((. Float64 of-int) (+ n 1))))
-      (export main)))
+    (do (def (main (: n Int64)) (= (Float64.of-int n) (Float64.of-int (+ n 1)))) (export main)))
   (call main (: 100 Int64))
   (output (: false Bool)))
 
@@ -3346,9 +3344,7 @@
            f64 → true. Pins the double-precision integer-exactness boundary (adjacent ints collapse at 2^53),
            riding the param-left/arith-right emit fix above.")
   (input
-    (do
-      (def (main (: n Int64)) (= ((. Float64 of-int) n) ((. Float64 of-int) (+ n 1))))
-      (export main)))
+    (do (def (main (: n Int64)) (= (Float64.of-int n) (Float64.of-int (+ n 1)))) (export main)))
   (call main (: 9007199254740992 Int64))
   (output (: true Bool))
   (call main (: 100 Int64))
@@ -3457,7 +3453,7 @@
         (do
           (def s #set((Some k) (: (None unit) (Option Int64)) (Some 1)))
           (match
-            (List.at ((. Set to-list) s) 0)
+            (List.at (Set.to-list s) 0)
             ((Option.Some v) (match v ((Option.Some inner) inner) ((Option.None _u) -99)))
             ((Option.None _u) -1))))
       (export main)))
@@ -3534,7 +3530,7 @@
           (+
             (* 10 (Set.len s))
             (match
-              (List.at ((. Set to-list) s) 0)
+              (List.at (Set.to-list s) 0)
               ((Option.Some v) (match v ((Tri.Lo _u) 1) ((Tri.Mid _u) 2) ((Tri.Hi _u) 3)))
               ((Option.None _u) -1)))))
       (export main)))
@@ -4114,7 +4110,7 @@
   (input
     (do
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-      (def (main) ((. String scalar-len) (rep "hi" 3)))
+      (def (main) (String.scalar-len (rep "hi" 3)))
       (export main)))
   (call main)
   (output (: 5 Int64))
@@ -4130,7 +4126,7 @@
   (input
     (do
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-      (def (main) (let ((r (rep "hi" 3))) (if (< r "zzzzzzzz") ((. String byte-len) r) (- 0 1))))
+      (def (main) (let ((r (rep "hi" 3))) (if (< r "zzzzzzzz") (String.byte-len r) (- 0 1))))
       (export main)))
   (call main)
   (output (: 5 Int64))
@@ -4311,9 +4307,7 @@
     (do
       (def
         (main (: n Int64))
-        (let
-          ((s (if (= n 1) "hi" "yo")))
-          (if (= ((. String to-bytes) s) ((. String to-bytes) s)) 1 0)))
+        (let ((s (if (= n 1) "hi" "yo"))) (if (= (String.to-bytes s) (String.to-bytes s)) 1 0)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64))
@@ -5013,7 +5007,7 @@
       (def
         (main (: n Int64))
         (let
-          ((nan (/ ((. Float64 of-int) (- n 1)) 0.0)))
+          ((nan (/ (Float64.of-int (- n 1)) 0.0)))
           (+ (if (<= nan nan) 1 0) (+ (if (>= nan nan) 10 0) (if (= nan nan) 100 0)))))
       (export main)))
   (call main (: 1 Int64))
@@ -5026,7 +5020,7 @@
       (def
         (main (: n Int64))
         (let
-          ((inf (/ ((. Float64 of-int) n) 0.0)) (ninf (/ ((. Float64 of-int) (- 0 n)) 0.0)))
+          ((inf (/ (Float64.of-int n) 0.0)) (ninf (/ (Float64.of-int (- 0 n)) 0.0)))
           (+
             (if (< 1000000.0 inf) 1 0)
             (+ (if (< ninf -1000000.0) 10 0) (+ (if (< ninf inf) 100 0) (if (<= inf inf) 1000 0))))))

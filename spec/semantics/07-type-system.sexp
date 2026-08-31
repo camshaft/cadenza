@@ -4298,7 +4298,7 @@
         (main (: n Int64))
         (+
           (* 1000 (List.len (unbox (Box.Box (bld n)))))
-          ((. String byte-len) (unbox (Box.Box (String.concat "ab" (if (> n 0) "c" "")))))))
+          (String.byte-len (unbox (Box.Box (String.concat "ab" (if (> n 0) "c" "")))))))
       (export main)))
   (call main (: 3 Int64))
   (output (: 3003 Int64)))

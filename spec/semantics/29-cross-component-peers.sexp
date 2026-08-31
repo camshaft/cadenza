@@ -219,7 +219,7 @@
       (def
         (sumv (: es (List (Tuple Int64 Int64))) (: acc Int64))
         (match es (#list() acc) (#list(e (.. rest)) (sumv rest (+ acc (. e 1))))))
-      (def (main (: x Int64)) (host (M) (sumv ((. Map to-list) (M.mk x)) 0)))
+      (def (main (: x Int64)) (host (M) (sumv (Map.to-list (M.mk x)) 0)))
       (export main)))
   (call main (: 5 Int64))
   (output (: 40 Int64))
@@ -368,7 +368,7 @@
       (bind M "cadenza:mo/api")
       (def
         (main (: x Int64))
-        (host (M) (match ((. Map to-list) (M.mk x)) (#list(e (.. rest)) (. e 0)) (#list() -1))))
+        (host (M) (match (Map.to-list (M.mk x)) (#list(e (.. rest)) (. e 0)) (#list() -1))))
       (export main)))
   (call main (: 9 Int64))
   (output (: 1 Int64)))
@@ -654,7 +654,7 @@
   (peer
     "cadenza:ra/api"
     (do
-      (def (req (: r (Record (: msg String) (: n Int64)))) (+ ((. String byte-len) r.msg) r.n))
+      (def (req (: r (Record (: msg String) (: n Int64)))) (+ (String.byte-len r.msg) r.n))
       (export req)))
   (input
     (do
@@ -675,9 +675,7 @@
            are read by the provider.")
   (peer
     "cadenza:req/api"
-    (do
-      (def (req (: t (Tuple String Int64))) (+ ((. String byte-len) (. t 0)) (. t 1)))
-      (export req)))
+    (do (def (req (: t (Tuple String Int64))) (+ (String.byte-len (. t 0)) (. t 1))) (export req)))
   (input
     (do
       (effect S (op req (-> (Tuple String Int64) Int64)))
@@ -749,14 +747,14 @@
            use-after-free — a trap or a garbage length, NOT 10 (and it would still VALIDATE: byte-valid is not
            refcount-correct). Running it e2e proves the handle stays live across the boundary. Relocated from
            rcdzc a_string_argument_handle_survives_the_peer_call_and_is_reused_locally.")
-  (peer "cadenza:reuse/api" (do (def (blen (: s String)) ((. String byte-len) s)) (export blen)))
+  (peer "cadenza:reuse/api" (do (def (blen (: s String)) (String.byte-len s)) (export blen)))
   (input
     (do
       (effect S (op blen (-> String Int64)))
       (bind S "cadenza:reuse/api")
       (def
         (main)
-        (let ((s (String.concat "ab" "cde"))) (host (S) (+ (S.blen s) ((. String byte-len) s)))))
+        (let ((s (String.concat "ab" "cde"))) (host (S) (+ (S.blen s) (String.byte-len s)))))
       (export main)))
   (call main)
   (output (: 10 Int64)))
@@ -778,7 +776,7 @@
     (do
       (effect M (op converse (-> String String)))
       (bind M "cadenza:model/api")
-      (def (main) ((. String byte-len) (host (M) (M.converse "hello"))))
+      (def (main) (String.byte-len (host (M) (M.converse "hello"))))
       (export main)))
   (call main)
   (output (: 10 Int64)))
@@ -873,7 +871,7 @@
            built in-body — crosses to the peer as its handle: `blen(String.concat \"ab\" \"cde\")` reads the
            crossed rope's byte-len = 5. The runtime-built companion of the literal string-arg crossing; pins
            that a DYNAMICALLY-produced rope handle crosses the boundary, not only a compile-time literal.")
-  (peer "cadenza:strs2/api" (do (def (blen (: s String)) ((. String byte-len) s)) (export blen)))
+  (peer "cadenza:strs2/api" (do (def (blen (: s String)) (String.byte-len s)) (export blen)))
   (input
     (do
       (effect S (op blen (-> String Int64)))
@@ -894,12 +892,12 @@
            `(-> String Int64 …)` model op takes.")
   (peer
     "cadenza:mix/api"
-    (do (def (blen-plus (: s String) (: n Int64)) (+ ((. String byte-len) s) n)) (export blen-plus)))
+    (do (def (blen-plus (: s String) (: n Int64)) (+ (String.byte-len s) n)) (export blen-plus)))
   (input
     (do
       (effect S (op blen-plus (-> String Int64 Int64)))
       (bind S "cadenza:mix/api")
-      (def (main) (host (S) ((. S blen-plus) "hello" 7)))
+      (def (main) (host (S) (S.blen-plus "hello" 7)))
       (export main)))
   (call main)
   (output (: 12 Int64)))
@@ -1043,7 +1041,7 @@
            envelope as a String (both are the byte-leaf heap rep) but decodes to the Bytes value form
            `(: b\"…\" Bytes)`, NOT the String form. The shape a model op returning a binary blob (an
            embedding, an image) takes. mk = String.to-bytes \"hi\"; main RETURNS it → escapes as b\"hi\".")
-  (peer "cadenza:blob/api" (do (def (mk (: _x Int64)) ((. String to-bytes) "hi")) (export mk)))
+  (peer "cadenza:blob/api" (do (def (mk (: _x Int64)) (String.to-bytes "hi")) (export mk)))
   (input
     (do
       (effect M (op mk (-> Int64 Bytes)))
@@ -1141,7 +1139,7 @@
       (bind M "cadenza:model/api")
       (def
         (main (: seed Int64))
-        (if (= (host (M) (M.reply seed)) "ok") ((. String byte-len) (host (M) (M.reply seed))) 0))
+        (if (= (host (M) (M.reply seed)) "ok") (String.byte-len (host (M) (M.reply seed))) 0))
       (export main)))
   (call main (: 1 Int64))
   (output (: 2 Int64)))
