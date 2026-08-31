@@ -18,6 +18,7 @@
     "check:diagnostics": "node scripts/check-diagnostics.mjs",
     "check:worker-stack": "node scripts/check-worker-stack.mjs",
     "check:tuple-collection": "node scripts/check-tuple-collection.mjs",
+    "check:parameterized-entry": "node scripts/check-parameterized-entry.mjs",
     "check:cad-preload": "node scripts/check-cad-preload.mjs",
     "check:music-preload": "node scripts/check-music-preload.mjs",
     "audit:mobile": "LD_PRELOAD=/usr/lib64/libstdc++.so.6 LD_LIBRARY_PATH=/usr/lib64:/lib64 node scripts/mobile-audit.mjs",

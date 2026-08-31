@@ -15,6 +15,7 @@
 
 import { transpileBytes } from "@bytecodealliance/jco-transpile";
 import { genArgs, renderArgs, normalizeName, GenPool } from "./genPool.ts";
+import { exportedFunctions, selectRunEntry, parameterizedEntryMessage } from "./runEntry.ts";
 
 const HEAP_IMPORT = "cadenza:runtime/heap";
 
@@ -256,49 +257,28 @@ async function runTests(job: RunJob): Promise<RunResult> {
 
 async function runComponent(job: RunJob): Promise<RunResult> {
   const root = await instantiateComponent(job);
-
-  // Compound result: the resource-escape path exposes `cadenza:run/run` with make()/encode().
-  const runIface = (root["cadenza:run/run"] ?? root["run"]) as
-    | { make: () => unknown; encode: (h: unknown) => Uint8Array }
-    | undefined;
-  if (runIface && typeof runIface.make === "function") {
-    const handle = runIface.make();
-    const bytes = runIface.encode(handle);
-    return { kind: "value-bytes", bytes: new Uint8Array(bytes) };
+  // `selectRunEntry` classifies the entry (compound resource-escape / bare scalar / parameterized / none).
+  // Crucially it detects a PARAMETERIZED entry — a `def main(a: Int64) = …` compiles to an arity-N `make(a)`
+  // (compound) or `main(a)` (scalar) — up front, so we never call an arity-N maker/function with no argument
+  // (which lowers `undefined` to the missing i64 and throws "Cannot convert undefined to a BigInt": the
+  // operator-reported "any program with an argument fails / result coerced to a BigInt" playground bug).
+  const plan = selectRunEntry(root);
+  switch (plan.kind) {
+    case "compound": {
+      // Resource-escape path: `make()` builds the value (a handle), `encode(handle)` → canonical value bytes.
+      const handle = plan.iface.make();
+      const bytes = plan.iface.encode(handle);
+      return { kind: "value-bytes", bytes: new Uint8Array(bytes) };
+    }
+    case "scalar":
+      // A bare nullary export (the runnable `main` shape) — Run produces a value with no input.
+      return { kind: "scalar", value: String(plan.fn()) };
+    case "parameterized":
+      // Run needs a zero-argument entry; a parameterized one is called from the REPL or via a nullary `main`.
+      return { kind: "error", message: parameterizedEntryMessage(plan.name, plan.arity) };
+    case "none":
+      return { kind: "error", message: "component exported no runnable entry" };
   }
-
-  // Scalar/unit result: a bare function export. Prefer a NULLARY entry (the runnable `main` shape) —
-  // Run produces a value with no input, so a nullary export is what it can invoke.
-  const fns = exportedFunctions(root);
-  const nullary = fns.find((f) => f.fn.length === 0);
-  if (nullary) return { kind: "scalar", value: String(nullary.fn()) };
-
-  // The only runnable export takes arguments (e.g. `export { inc }` where `inc(x: Int64)`). Calling it
-  // with no argument would lower `undefined` to an i64 and throw a cryptic "Cannot convert undefined to
-  // a BigInt". Explain instead: Run needs a zero-argument entry; a parameterized fn is called from the
-  // REPL or via a nullary `main` that applies it.
-  const param = fns[0];
-  if (param) {
-    const n = param.fn.length;
-    const args = n === 1 ? "an argument" : `${n} arguments`;
-    const call = `${param.name}(${Array.from({ length: n }, () => "…").join(", ")})`;
-    return {
-      kind: "error",
-      message:
-        `\`${param.name}\` takes ${args}, so Run can't produce a value on its own. ` +
-        `Call it in the REPL (e.g. \`${call}\`), or add \`def main() = ${param.name}(…)\` and export \`main\`.`,
-    };
-  }
-
-  return { kind: "error", message: "component exported no runnable entry" };
-}
-
-/// The component's exported FUNCTIONS, each with its name and the JS function (whose `.length` is the
-/// declared parameter count). Used to pick a nullary entry to run, or to explain a parameterized one.
-function exportedFunctions(root: Record<string, unknown>): { name: string; fn: (...a: unknown[]) => unknown }[] {
-  return Object.entries(root)
-    .filter(([, v]) => typeof v === "function")
-    .map(([name, v]) => ({ name, fn: v as (...a: unknown[]) => unknown }));
 }
 
 /// A property test's default trial count, mirroring `cdz test`. (The generator core — `intRange`, `genArg`,
