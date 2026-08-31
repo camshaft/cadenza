@@ -793,6 +793,16 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
         | some tId, some iId =>
           match (m.nodes[iId]?).bind (fun n => match n with | .atom lid => m.leaves[lid]? | _ => none) with
           | some (Leaf.name fld) =>
+            -- prelude float CONSTANTS `(. Float64|Float32 nan)` → NaN, `… Infinity` → +∞ (member-ACCESS
+            -- values, not record fields). Byte-faithful to evalNode (Eval.lean:2052-2056). (v-cdz-smith
+            -- next-tier boundary — negative infinity is `(- Float64.Infinity)`, already handled by `-`.)
+            let baseName? := (m.nodes[tId]?).bind (fun n => match n with
+                                                            | .atom lid => (match m.leaves[lid]? with | some (Leaf.name b) => some b | _ => none)
+                                                            | _ => none)
+            let isFloatMod := baseName? == some "Float64".toUTF8 || baseName? == some "Float32".toUTF8
+            if isFloatMod && fld == "nan".toUTF8 then .sym (.const .floatNan)
+            else if isFloatMod && fld == "Infinity".toUTF8 then .sym (.const (.floatInf false))
+            else
             (match symEval m senv fuel ty tId with
              | .sym (.record fs) => (match fs.find? (fun kv => kv.1 == fld) with
                                      | some (_, e) => .sym e
@@ -1904,6 +1914,17 @@ private def _int64OfExpr : Module :=  -- (Int64.of 70) → 70 (in range)
                 Leaf.intLit false .dec (ByteArray.mk #[70])],
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .list #[3, 4]], root := 5 }
 #guard symEval _int64OfExpr [] symDefaultFuel defaultIntTy 5 == SymOutcome.sym (.const (.int 70))
+
+-- FLOAT64.NAN prelude-constant member-access `(. Float64 nan)` → the NaN value (v-cdz-smith next tier).
+private def _float64NanExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Float64".toUTF8, Leaf.name "nan".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+#guard symEval _float64NanExpr [] symDefaultFuel defaultIntTy 3 == SymOutcome.sym (.const .floatNan)
+
+private def _float64InfExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Float64".toUTF8, Leaf.name "Infinity".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+#guard symEval _float64InfExpr [] symDefaultFuel defaultIntTy 3 == SymOutcome.sym (.const (.floatInf false))
 
 -- OPTION.EXPECT member-op coverage: `((. Option expect) (Some 5))` → 5 (unwrap the Some payload).
 private def _optExpectExpr : Module :=
