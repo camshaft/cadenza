@@ -256,6 +256,19 @@ theorem normalize_case (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
       = .case (normalize s) (arms.attach.map (fun x => (x.val.1, normalize x.val.2))) := by
   simp [normalize]
 
+/-! ### `normalize`-`ite` fold-SELECT equations: a condition that normalizes to a bool literal collapses.
+When `normalize c` folds to `.const (.bool b)`, the whole `ite` collapses to the normal form of the
+selected branch (`normalize`'s `.ite` arm short-circuits before the materialize/collapse/rebuild logic).
+These are the structural half of the capstone `.ite` fold-select sub-case; paired with the IH on the
+selected branch (and the `.ite` value-inversion `denote_ite_value_inv`), they carry the meaning across. -/
+theorem normalize_ite_condTrue (c t e : SymExpr) (hc : normalize c = .const (.bool true)) :
+    normalize (.ite c t e) = normalize t := by
+  simp only [normalize, hc]
+
+theorem normalize_ite_condFalse (c t e : SymExpr) (hc : normalize c = .const (.bool false)) :
+    normalize (.ite c t e) = normalize e := by
+  simp only [normalize, hc]
+
 /-! ## Trap classification: `arithOps` ∪ `bitwiseOps` = exactly the trapping ops.
 `arithOps`/`bitwiseOps` are plain `List String` data, so membership is decidable — these `decide`
 facts pin that `mayTrap`'s `arithOps.contains op || bitwiseOps.contains op` guard fires on ALL
