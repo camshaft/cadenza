@@ -7771,7 +7771,7 @@
         (main (: n Int64))
         (handle
           St
-          (- 0 100)
+          -100
           ((dip (v) s (resume (+ v s) (- s 10))))
           (+ (St.dip (- 0 n)) (St.dip 3))))
       (export main)))
@@ -10956,7 +10956,7 @@
             ((step (v) s (match s ((Idle) (resume 0 (Run v))) ((Run k) (resume k (Run (+ k v))))))
               (dump () s (resume s s)))
             (do (M.step n) (M.step 3) (M.dump)))
-          ((Idle) (- 0 1))
+          ((Idle) -1)
           ((Run k) (* 2 k))))
       (export main)))
   (call main (: 5 Int64))
