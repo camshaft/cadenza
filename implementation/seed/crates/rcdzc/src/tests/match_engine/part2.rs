@@ -3442,34 +3442,14 @@ fn registering_a_family_unit_twice_with_conflicting_conversions_is_an_error() {
     assert!(crate::prelude::unit_families().contains_key("mbps"));
 }
 
-#[test]
-fn a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary() {
-    // REGRESSION: a GENERIC sum whose variant carries a TUPLE or RECORD payload MENTIONING a type
-    // parameter — `(type Box (B (Tuple a Int64)) N)` / `(type Box (B (Record (val a))) N)` — must
-    // construct, not be misread as NULLARY. `type_in_env` (which reduces a generic variant ctor's
-    // `(meta t)` type-lambda to its scheme) handled `Int`/`Fn`/`List`/`Sum`/`UInt` compound payloads
-    // but had NO `Tuple`/`Record` arm, so a param nested in a tuple/record payload made the ctor arrow
-    // unreadable → `variant_payload_type` = None → `B` looked NULLARY → CDZ0201 on the construction.
-    // A bare/`List a`/`Option a` payload worked (those arms existed); the gap was tuple + record.
-    // Fixed by adding `TupleCtor`/`RecordCtor` arms to `type_in_env` (reduce each element/field type
-    // under the env). The bug was a compile-time REJECT (the ctor looked nullary → CDZ0201), so
-    // COMPILING the construction is the precise guard; the runs are exercised by the corpus cases "a
-    // generic sum with a type parameter inside a tuple/record payload …" (which link the runtime).
-    let tup = "(module m (type Box (B (Tuple a Int64)) N) \
-                     (def (main) (match (Box.B (tuple 7 8)) ((Box.B (tuple x y)) (+ x y)) (Box.N 0))) \
-                   (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(tup))).is_ok(),
-        "a generic sum with a type param in a TUPLE payload must compile — not reject B as nullary"
-    );
-    let rec = "(module m (type Box (B (Record (val a))) N) \
-                     (def (main) (match (Box.B (record (= val 7))) ((Box.B r) (. r val)) (Box.N 0))) \
-                   (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(rec))).is_ok(),
-        "a generic sum with a type param in a RECORD payload must compile — not reject B as nullary"
-    );
-}
+// (a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary redundant — the compile-only
+// not-nullary guard is subsumed by corpus 05-compound-types "a generic sum with a type parameter inside a
+// tuple payload constructs and destructures" ((type Box (B (Tuple a Int64)) N) → value) and "… inside a
+// record payload constructs and projects" ((type Box (B (Record (: val a))) N) → value): each RUN case
+// requires the construction to compile, so a green value proves B is not misread as nullary. Redundant,
+// removed. (The comma-tuple ML-spelling twin `Mk(s, s -> Option((a, s)))` — the Resolved::Tuple path
+// reachable only from ML source, not s-expr corpus — stays as
+// a_variant_payload_with_a_nested_comma_tuple_over_two_type_params_is_not_nullary below.)
 
 #[test]
 fn a_variant_payload_with_a_nested_comma_tuple_over_two_type_params_is_not_nullary() {
