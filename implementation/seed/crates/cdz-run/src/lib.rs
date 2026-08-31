@@ -7,7 +7,7 @@
 //! The compiler is never in this crate's dependency graph — running a component needs no compiler —
 //! so `cdz-run` stays a pure consumer of finished artifacts (component-abi.md).
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{Component, Linker, Type, Val};
 use wasmtime::{Config, Engine, Store};
@@ -948,6 +948,104 @@ pub fn run_reducer_bytes(
     func.post_return(&mut store)
         .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
     val_list_u8(&results[0])
+}
+
+/// QUOTE-CORPUS round-trip exec (v-quote-corpus `--quote-wrap` pass): the caller-boundary anti-const-fold
+/// witness for the operator §2 two-export component. Instantiates `component_bytes` (composing the
+/// value-heap runtime it imports), then drives the round-trip on interface `iface`:
+///
+/// ```text
+/// 1. call `<iface>#encode-quoted() -> list<u8>` -> the canonical binary-AST bytes B of (quote E);
+/// 2. POSITIVE trial: `<iface>#decode-check(B) -> bool` MUST return true (the round-trip identity
+///    decode(encode(quote E)) == quote E);
+/// 3. NEGATIVE trial (the anti-const-fold VERIFICATION): `<iface>#decode-check(corrupt(B))` MUST return
+///    false OR trap — proving decode-check genuinely DECODES caller-supplied RUNTIME bytes at run time.
+///    A compiler that const-folded decode-check to a constant true would WRONGLY pass here.
+/// ```
+/// Because the bytes cross the CALLER boundary (this fn is the caller — the exec threads `encode-quoted`'s
+/// output back into `decode-check`), the decode reads runtime input the compiler cannot see through, so the
+/// round-trip is not a single const-foldable expression. Returns `Ok(())` iff BOTH trials hold; an `Err`
+/// names the failing trial (the corpus exec maps it to a `Fail`). Mirrors [`run_reducer_bytes`]'s
+/// interface-member call shape (`get_export_index` → `get_func` → `call`/`post_return`).
+pub fn run_quote_roundtrip(component_bytes: &[u8], iface: &str, opts: &RunOpts) -> Result<()> {
+    let (mut store, instance) = compose_and_instantiate(component_bytes, opts)?;
+    let iface_idx = instance
+        .get_export_index(&mut store, None, iface)
+        .ok_or_else(|| anyhow!("quote-roundtrip: component does not export interface `{iface}`"))?;
+    let enc_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "encode-quoted")
+        .ok_or_else(|| {
+            anyhow!("quote-roundtrip: interface `{iface}` has no member `encode-quoted`")
+        })?;
+    let enc = instance
+        .get_func(&mut store, enc_idx)
+        .ok_or_else(|| anyhow!("quote-roundtrip: `encode-quoted` is not a func"))?;
+    let chk_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "decode-check")
+        .ok_or_else(|| {
+            anyhow!("quote-roundtrip: interface `{iface}` has no member `decode-check`")
+        })?;
+    let chk = instance
+        .get_func(&mut store, chk_idx)
+        .ok_or_else(|| anyhow!("quote-roundtrip: `decode-check` is not a func"))?;
+
+    // 1. encode-quoted() -> list<u8> = the binary-AST bytes B of (quote E).
+    let mut enc_res = [Val::Bool(false)];
+    enc.call(&mut store, &[], &mut enc_res)
+        .map_err(|e| anyhow!("quote-roundtrip: encode-quoted() call failed: {e:#}"))?;
+    enc.post_return(&mut store)
+        .map_err(|e| anyhow!("quote-roundtrip: encode-quoted post_return failed: {e:#}"))?;
+    let bytes = val_list_u8(&enc_res[0])?;
+    if bytes.is_empty() {
+        bail!("quote-roundtrip: encode-quoted() returned no bytes");
+    }
+
+    // 2. POSITIVE trial: decode-check(B) MUST be true (round-trip identity).
+    let mut pos = [Val::Bool(false)];
+    chk.call(&mut store, &[list_u8_val(&bytes)], &mut pos)
+        .map_err(|e| anyhow!("quote-roundtrip: decode-check(B) call failed: {e:#}"))?;
+    chk.post_return(&mut store)
+        .map_err(|e| anyhow!("quote-roundtrip: decode-check post_return failed: {e:#}"))?;
+    if !matches!(pos[0], Val::Bool(true)) {
+        bail!(
+            "quote-roundtrip POSITIVE trial FAILED: decode-check(encode-quoted()) returned {:?}, \
+             expected true — the encode→decode round-trip identity is broken",
+            pos[0]
+        );
+    }
+
+    // 3. NEGATIVE trial (anti-const-fold): decode-check(corrupt(B)) MUST be false OR trap. A trap is an
+    // acceptable witness (decode genuinely ran on the bad bytes); only a `true` is a regression (decode
+    // was folded away / not actually reading its input).
+    let corrupt = corrupt_bytes(&bytes);
+    let mut neg = [Val::Bool(false)];
+    // A trap on the corrupt bytes is an ACCEPTABLE witness (decode executed at run time), so only the `Ok`
+    // path needs checking — a returned `true` is the anti-const-fold regression.
+    if chk
+        .call(&mut store, &[list_u8_val(&corrupt)], &mut neg)
+        .is_ok()
+    {
+        chk.post_return(&mut store).ok();
+        if matches!(neg[0], Val::Bool(true)) {
+            bail!(
+                "quote-roundtrip NEGATIVE trial FAILED: decode-check(corrupt bytes) returned true — \
+                 decode did NOT genuinely run on the caller-supplied bytes (anti-const-fold regression)"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Corrupt canonical binary-AST bytes so `Ast.decode` cannot reproduce `quote E`: truncate to the first
+/// byte, which drops the length-prefixed framing → the decoder must reject it (`Err` → `decode-check`
+/// returns false) or, at worst, decode to a DIFFERENT AST (≠ `quote E` → false). Truncation (vs a single
+/// byte flip) reliably breaks the framing regardless of the payload's content. `[0xff]` for a 0/1-byte input.
+fn corrupt_bytes(b: &[u8]) -> Vec<u8> {
+    if b.len() <= 1 {
+        vec![0xff]
+    } else {
+        b[..1].to_vec()
+    }
 }
 
 /// Invoke a reducer provider's TYPED interface member — the typed analog of [`run_reducer_bytes`] (which is
@@ -4420,6 +4518,25 @@ fn parse_tuple_fields(s: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `corrupt_bytes` (the quote-roundtrip NEGATIVE trial) truncates canonical binary-AST bytes to their
+    /// first byte so the framing breaks and the decoder can't reproduce `quote E` — and it MUST differ from
+    /// the input (else the negative trial is vacuous). A 0/1-byte input degenerates to `[0xff]`.
+    #[test]
+    fn corrupt_bytes_breaks_the_framing_and_differs() {
+        let b = b"cdzast\x00\x01\x02\x03".to_vec();
+        let c = corrupt_bytes(&b);
+        assert_ne!(c, b, "corrupt must differ from the input");
+        assert_eq!(
+            c,
+            b"c".to_vec(),
+            "truncates to the first byte (breaks the length-prefixed framing)"
+        );
+        // Degenerate short inputs still yield a non-empty, decode-rejectable blob.
+        assert_eq!(corrupt_bytes(&[]), vec![0xff]);
+        assert_eq!(corrupt_bytes(&[0x42]), vec![0xff]);
+        assert_ne!(corrupt_bytes(&[0x42]), vec![0x42u8]);
+    }
 
     /// bytes-second run-wiring: the byte-scanner walks a component's top-level sections + returns the
     /// `cdz-result-type` custom section's payload; `parse_result_types` + `lookup_result_ty` resolve the
