@@ -1,0 +1,5 @@
+/// one
+/// two
+type T =
+  | A
+  | B

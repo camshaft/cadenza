@@ -1,0 +1,4 @@
+/// one
+/// two
+effect E =
+  | emit : -> Unit

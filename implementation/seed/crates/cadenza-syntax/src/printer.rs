@@ -6410,49 +6410,12 @@ mod tests {
     // line `type … =`⏎`  | …` canonical surface; the sexp→ml `print((type …))`/`print((def x 5))` oracles
     // are subsumed by the ml cases' format goldens.
 
-    #[test]
-    fn a_multiline_type_doc_header_prints_every_line_flush_not_indented() {
-        // A `///` doc header on a `type` decl must print EVERY line at the type's own column — line 1 AND
-        // its continuation lines. Regression: `print_type` opened `cbox(INDENT)` BEFORE the docs, so the
-        // first `hardbreak` reflowed line 2+ to the box's INDENT while line 1 stayed at column 0 — an
-        // inconsistent per-line indent within one doc block (v-cdz-tooling flagged: multi-line `type` doc
-        // headers went `///`\n`  ///`). Docs now print outside the variant-indent box, like `print_def`.
-        let a = sexpr::read(r#"(type T (doc "line one") (doc "line two") (doc "line three") A B)"#)
-            .unwrap();
-        assert_eq!(
-            print(&a, 80),
-            "/// line one\n/// line two\n/// line three\ntype T =\n  | A\n  | B",
-            "every doc-header line flush at column 0; variants indented under `type`"
-        );
-        // Round-trips + idempotent (the `///` header re-reads to the same `(doc …)` nodes).
-        assert_eq!(
-            assert_roundtrip("/// one\n/// two\ntype T = | A | B", 80),
-            "/// one\n/// two\ntype T =\n  | A\n  | B"
-        );
-    }
-
-    #[test]
-    fn a_multiline_effect_doc_header_prints_every_line_flush_not_indented() {
-        // Same layout invariant as the `type` doc header, for an `effect` decl: a multi-line `///` header
-        // must print EVERY line at the effect's own column. Regression sibling to `print_type` — before
-        // the fix `print_effect` also opened `cbox(INDENT)` BEFORE the docs, so line 2+ reflowed to the
-        // box's INDENT (`///`\n`  ///`) while line 1 stayed flush. Docs now print outside the `|`-led
-        // operations' indent box, like `print_type`/`print_def`.
-        let a = sexpr::read(
-            r#"(effect E (doc "line one") (doc "line two") (doc "line three") (op emit (-> Unit)))"#,
-        )
-        .unwrap();
-        assert_eq!(
-            print(&a, 80),
-            "/// line one\n/// line two\n/// line three\neffect E =\n  | emit : -> Unit",
-            "every doc-header line flush at column 0; operations indented under `effect`"
-        );
-        // Round-trips + idempotent (the `///` header re-reads to the same `(doc …)` nodes).
-        assert_eq!(
-            assert_roundtrip("/// one\n/// two\neffect E = | emit : -> Unit", 80),
-            "/// one\n/// two\neffect E =\n  | emit : -> Unit"
-        );
-    }
+    // The multi-line `///` doc-header layout tests (every line flush at the decl's own column) MIGRATED to
+    // the spec/syntax corpus (inc-6 batch-47, doc block): ml/299-multiline-doc-header-on-type
+    // `/// one`⏎`/// two`⏎`type T = | A | B`→`(type T (doc "one") (doc "two") A B)` (one `(doc …)` per
+    // line), ml/300-multiline-doc-header-on-effect `/// one`⏎`/// two`⏎`effect E = | emit : -> Unit`→
+    // `(effect E (doc "one") (doc "two") (op emit (-> Unit)))`. Each format.cdz pins the flush-doc-header +
+    // one-variant/op-per-line surface.
 
     #[test]
     fn a_malformed_empty_op_effect_clause_degrades_to_generic_form_without_panic() {
@@ -7493,54 +7456,13 @@ mod tests {
     // `def f() = 1`→`(do (module-doc "Header one.") (module-doc "Header two.") (import "dep" (x)) (def (f) 1))`
     // — two `(module-doc …)` nodes, no `(comment …)` downgrade.
 
-    #[test]
-    fn doc_before_effect_stays_a_doc_not_downgraded_to_comment() {
-        // A `///` doc before an `effect` decl attaches INSIDE the decl as a `(doc …)` node (mirroring
-        // `def`/`type`/`module`), so it re-prints as `///` — NOT downgraded to `//`. The reader used
-        // to leave the docs in the statement slot, where `stmt` wrapped them as `(comment …)` and the
-        // printer faithfully rendered them `//`, silently losing the doc marker on `cdz fmt`. A
-        // structural round-trip does NOT catch this (a `(comment …)` still round-trips structurally);
-        // the count-based assert below is the witness that pins the doc-vs-comment distinction.
-        let src = "/// Diagnostics.\n/// Two lines.\neffect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)";
-        let a = parser::read_ml(src);
-        assert!(a.ok(), "parse: {:?}", a.errors);
-        // Reader promotes both `///` runs to `(doc …)`, not `(comment …)`.
-        let sexpr = crate::sexpr::print(&a.arenas);
-        assert_eq!(
-            sexpr.matches("(doc ").count(),
-            2,
-            "both `///` lines should be `(doc …)` nodes: {sexpr}"
-        );
-        assert_eq!(
-            sexpr.matches("(comment ").count(),
-            0,
-            "no `///` should be downgraded to a `(comment …)`: {sexpr}"
-        );
-        // And they re-print as `///`, preserved across fmt — count-preserving is the invariant a
-        // structural round-trip misses. Check per-line (a `///` line contains a `//` substring, so
-        // count LINES whose trimmed start is a doc `///` vs a plain `//` comment).
-        let printed = print(&a.arenas, 100);
-        let doc_lines = printed
-            .lines()
-            .filter(|l| l.trim_start().starts_with("///"))
-            .count();
-        let comment_lines = printed
-            .lines()
-            .filter(|l| {
-                let t = l.trim_start();
-                t.starts_with("//") && !t.starts_with("///")
-            })
-            .count();
-        assert_eq!(doc_lines, 2, "both doc lines re-print as `///`: {printed}");
-        assert_eq!(
-            comment_lines, 0,
-            "no doc line downgraded to `//`: {printed}"
-        );
-        // Idempotent: re-reading the printed form and re-printing is byte-identical.
-        let b = parser::read_ml(&printed);
-        assert!(b.ok(), "reparse: {:?}", b.errors);
-        assert_eq!(print(&b.arenas, 100), printed, "not idempotent");
-    }
+    // `doc_before_effect_stays_a_doc_not_downgraded_to_comment` (a `///` before an `effect` decl attaches
+    // INSIDE as a `(doc …)` node, re-printing as `///`, NOT downgraded to `//`) MIGRATED to the spec/syntax
+    // corpus (inc-6 batch-47, doc block): ml/301-doc-before-effect-two-ops
+    // `/// Diagnostics.`⏎`/// Two lines.`⏎`effect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)`→
+    // `(effect Diag (doc "Diagnostics.") (doc "Two lines.") (op emit (-> Int64 Unit)) (op collect
+    // (-> (List Int64))))` — two `(doc …)` nodes, no `(comment …)` downgrade. v-syntax-comments verified this
+    // doc-vs-comment shape.
 
     #[test]
     fn doc_before_annotated_def_stays_a_doc_not_downgraded_to_comment() {
