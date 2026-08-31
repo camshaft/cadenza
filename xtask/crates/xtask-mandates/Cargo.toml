@@ -21,6 +21,10 @@ path = "src/main.rs"
 [dependencies]
 # Rust-source parsing for the syn-based mandate rules (no-integration-tests, no-hard-coded-runtime-hash).
 syn = { version = "2", features = ["full", "parsing", "visit"] }
+# proc-macro2 is ALREADY in the closure (syn's own dep) — the `span-locations` feature (a feature flag, no
+# new crate) turns on `Span::start().line`, so the decline-professionalism lint can report `file:line` per
+# hit (self-diagnosing gate failures, per v-fleet-tooling's interface).
+proc-macro2 = { version = "1", features = ["span-locations"] }
 # xtask-support (v-fleet-tooling 2026-08-30, v-xtask-decompose-approved OPTION A): the file-size mandate
 # (`file_size_lint` + the self-expiring FILE_SIZE_ALLOWLIST) lives in xtask-support and is run by the
 # monolith `cargo xtask check`; the standalone mandate binary calls the SAME fn so the two can't DRIFT (a

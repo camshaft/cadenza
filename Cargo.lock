@@ -3498,6 +3498,7 @@ dependencies = [
 name = "xtask-mandates"
 version = "0.0.0"
 dependencies = [
+ "proc-macro2",
  "syn 2.0.119",
  "xtask-support",
 ]
