@@ -6831,6 +6831,13 @@ pub(crate) fn read_record_fields(
                         "record field must be (= key value)",
                     ));
                 }
+                // A `(.. operand)` spread node in a record CONSTRUCTION field — recognize it BEFORE the
+                // entry-shape check below (which would misread `(.. r)` as a malformed `(key value)` field
+                // and steer "add the leading `=`", nonsense for a spread). Emit the same clear pattern-only
+                // `..` message list/set/tuple give (v-syntax construction-spread decline-quality).
+                Struct::List(kv) if kv.len() == 2 && db.ast.as_name(kv[0]) == Some("..") => {
+                    return Err(spread_in_value_reject(field));
+                }
                 // seq-276: a bare `(name value)` VALUE-record entry is NO LONGER accepted — require the
                 // canonical FieldPair `(= name value)` (operator: "prefer `=` for records/maps"). Head is
                 // NOT `=` here (the `=` spellings were caught above), so a 2-element list is a bare pair.
@@ -7075,6 +7082,21 @@ fn resolve_set(db: &Db, id: StructId) -> Resolved {
 /// the ordinary CDZ0101). A malformed entry (not a 2-element list — e.g. `(map ("a"))`, a key with no
 /// value) is a `Poison` (CDZ0201), never a panic reaching for the absent value. An empty `(map)` is a
 /// map with no entries. `infer`/`type_errors` enforce key/value homogeneity + duplicate-const-key.
+/// The CDZ0201 for a `..` rest/spread marker written in a VALUE/construction position — anchored at `at`.
+/// Shared so a `(.. operand)` spread node in a `#map`/`#record` CONSTRUCTION entry emits the SAME clear
+/// "`..` is pattern-only" message list/set/tuple already give (via `resolve_name`'s `..` arm), rather than
+/// the misleading map/record entry-shape "add the leading `=`" (the entry-shape check would otherwise read
+/// `(.. m)` as a malformed `(key value)` pair). Reported by v-syntax (construction-spread decline-quality).
+fn spread_in_value_reject(at: StructId) -> Reject {
+    Reject::coded(
+        Code::Malformed,
+        "`..` is a rest/spread marker, valid only inside a collection PATTERN — a `(list …)`, \
+         `(map …)`, `(tuple …)`, `(record …)`, or `(set …)` pattern (e.g. `(list a .. rest)`, \
+         which binds the leading elements and the tail) — it is not a value or a form head here",
+    )
+    .at(at)
+}
+
 fn resolve_map(db: &Db, id: StructId) -> Resolved {
     let tail = db
         .ast
@@ -7095,6 +7117,13 @@ fn resolve_map(db: &Db, id: StructId) -> Resolved {
             continue;
         }
         match db.ast.get(entry) {
+            // A `(.. operand)` spread node in a map CONSTRUCTION entry — recognize it BEFORE the entry-shape
+            // check below (which would misread `(.. m)` as a malformed `(key value)` pair and steer "add the
+            // leading `=`", nonsense for a spread). Emit the same clear pattern-only `..` message list/set/
+            // tuple give (v-syntax construction-spread decline-quality).
+            Struct::List(items) if items.len() == 2 && db.ast.as_name(items[0]) == Some("..") => {
+                return Resolved::Poison(spread_in_value_reject(entry));
+            }
             // seq-276: a bare `(key value)` VALUE-map entry is NO LONGER accepted — require the canonical
             // FieldPair `(= key value)` (the `=` spellings were caught above). VALUE-scoped: this arm is in
             // `resolve_map` (value maps); the `map_pattern_of` pattern reader keeps the bare 2-element form.
