@@ -100,6 +100,13 @@
   (_ 0))))
   (p "So " (c "x") " is " (c "1") ", and " (c "rest") " is the residual record " (c "#record((= b 2) (= c 3))") ", so " (c "rest.b") " is " (c "2") " and " (c "rest.c") " is " (c "3") ", giving " (c "1 + 2 + 3 = 6") ". The key difference from the tuple case: " (c "rest") " here is a " (em "record") ", so you reach into it by field name (" (c "rest.b") ", " (c "rest.c") "), not by position.")
   (note "As with the tuple rest, this supports a record " (em "constructed in place") ". A rest binder over a fully opaque runtime record is " (em "not supported") " on the backends, so the compiler declines it with a clear message rather than a wrong answer.")
+  (h2 "Matching a set's members")
+  (p "A set has no fields or positions, so a set pattern asks a different question: " (em "containment") ". " (c "#set(1 (.. rest))") " names the members that must be " (em "present") " and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing " (c "(.. rest)") " then binds " (c "rest") " to the " (em "residual set") ", the scrutinee's members minus the ones you named. Here the set contains " (c "1") ", so the arm fires and " (c "rest") " is what's left:")
+  (runnable
+    (source (match #set(1 2 3)
+  (#set(1 (.. rest)) (Set.len rest))
+  (_ 0))))
+  (p "The scrutinee " (c "#set(1 2 3)") " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (c "#set(2 3)") ", whose " (c "Set.len") " is " (c "2") ". Three things follow from its being a containment test: it matches a " (em "superset") " too (" (c "#set(1)") " matches " (c "#set(1 2 3)") "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (c "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
   (h2 "Your turn")
   (exercise
     (id "pattern-matching:1")
