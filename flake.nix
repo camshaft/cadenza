@@ -4440,19 +4440,6 @@
         guideCaseList = builtins.filter
           (c: !(c.deferred or false) && !(builtins.elem c.dir guideKnownFailingDirs))
           guideManifest.cases;
-        # INTERIM per-(dir,surface) leaf skips (v-nix 2026-08-31, concierge + v-guide-infra) — TRACKED skips
-        # for a KNOWN compiler over-fire, NOT a permanent manifest blocklist / expect=error. Leaf id =
-        # "${dir}-${surface}". A whole-dir skip (guideKnownFailingDirs) is too coarse when only ONE surface
-        # regresses. Currently:
-        #   0230-patternmatching-ml — the ML-rendered string-literal match `(match name ("add" true) …)` is
-        #   not recognized as a string-scrutinee match → a spurious CDZ0900 decline. The SEXPR surface
-        #   compiles+runs fine (the string value-eq if-chain handles it), so ONLY the ml leaf is skipped.
-        #   Remove when v-deferral-declines' match_desugar ML-string-scrutinee over-fire fix lands.
-        guideKnownFailingLeaves = [ "0230-patternmatching-ml" ];
-        # A case's surfaces MINUS any interim-skipped (dir,surface) leaf — used everywhere `c.surfaces` is
-        # iterated (the exec map + the file agg) so a skipped leaf is neither built nor force-realized.
-        guideCaseSurfaces = c:
-          builtins.filter (s: !(builtins.elem "${c.dir}-${s}" guideKnownFailingLeaves)) c.surfaces;
         # BUILD one (case, surface): convert program.<surface> → binary AST (the front-end `cdz convert`, pure
         # syntax — cdz-compile is ast-only + cdz-wasm can't emit .ast + the guide's wrap/lower stays JS, so the
         # shred emits SOURCE and the parse lives here), then compile → emit.wasm, capturing the outcome (a
@@ -4552,14 +4539,14 @@
                 };
               };
             })
-            (guideCaseSurfaces c))
+            c.surfaces)
           guideCaseList);
         # Per-FILE aggregate: force every (case,surface) exec whose case came from that chapter/source file.
         guideFileStems = pkgs.lib.unique (map (c: pkgs.lib.removeSuffix ".tsx" (baseNameOf c.file)) guideCaseList);
         mkGuideFileAgg = stem:
           let
             fileCases = builtins.filter (c: (pkgs.lib.removeSuffix ".tsx" (baseNameOf c.file)) == stem) guideCaseList;
-            execs = builtins.concatMap (c: map (surface: guideCaseChecks."${c.dir}-${surface}") (guideCaseSurfaces c)) fileCases;
+            execs = builtins.concatMap (c: map (surface: guideCaseChecks."${c.dir}-${surface}") c.surfaces) fileCases;
           in
           assert (builtins.length execs) > 0;
           pkgs.runCommand "guide-examples-shredded-${stem}" { } ''
