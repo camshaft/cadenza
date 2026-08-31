@@ -9119,85 +9119,21 @@ mod tests {
         assert!(print(&a, 80).contains("(a,) =>"), "got: {}", print(&a, 80));
     }
 
-    #[test]
-    fn rest_operator_round_trips_across_collections() {
-        // `..` is the ONE rest/spread marker, uniform across list/map in BOTH construction and
-        // pattern position. It re-reads as itself (`.. rest`), never the old `` `..` `` name escape.
-
-        // --- construction spread ---
-        assert_eq!(assert_roundtrip("[1, 2, .. rest]", 80), "[1, 2, .. rest]");
-        assert_eq!(assert_roundtrip("[.. rest]", 80), "[.. rest]");
-        assert_eq!(
-            assert_roundtrip("#{ 1 = 10, .. rest }", 80),
-            "#{ 1 = 10, .. rest }"
-        );
-        // MULTIPLE + INTERIOR spreads in ONE construction — the operator's `[a, b, ..c, d, ..e]` shape.
-        // `rest_marker` runs per element in `list_literal`, so a spread may appear at ANY position and more
-        // than once (unlike a PATTERN rest, which is tail-only); the surface round-trips all of them. (The
-        // COMPILER lowering of a construction spread is a separate slice — this pins the surface alone.)
-        assert_eq!(
-            assert_roundtrip("[a, b, .. c, d, .. e]", 80),
-            "[a, b, .. c, d, .. e]"
-        );
-        assert_eq!(assert_roundtrip("[.. a, .. b]", 80), "[.. a, .. b]");
-        // A spread of a nested list literal.
-        assert_eq!(
-            assert_roundtrip("[1, .. [2, 3], 4]", 80),
-            "[1, .. [2, 3], 4]"
-        );
-        // RECORD construction spread (`{ ..base, a = 1 }`) — the record twin; interior + multiple spreads.
-        assert_eq!(
-            assert_roundtrip("{ .. base, a = 1 }", 80),
-            "{ .. base, a = 1 }"
-        );
-        assert_eq!(
-            assert_roundtrip("{ a = 1, .. b, c = 2, .. d }", 80),
-            "{ a = 1, .. b, c = 2, .. d }"
-        );
-        // SET construction spread (`#(..a, x)`) — the set twin; leading + interior spreads.
-        assert_eq!(assert_roundtrip("#(.. a, x)", 80), "#(.. a, x)");
-        assert_eq!(
-            assert_roundtrip("#(1, .. a, 2, .. b)", 80),
-            "#(1, .. a, 2, .. b)"
-        );
-
-        // --- pattern (list) ---
-        assert_eq!(
-            assert_roundtrip("match xs with | [] => 0 | [x, .. rest] => x", 80),
-            "match xs with\n  | [] => 0\n  | [x, .. rest] => x"
-        );
-        // a catch-all rest with no leading binders.
-        assert_eq!(
-            assert_roundtrip("match xs with | [.. all] => 7", 80),
-            "match xs with\n  | [.. all] => 7"
-        );
-
-        // --- pattern (map) ---
-        assert_eq!(
-            assert_roundtrip("match m with | #{ 1 = v, .. rest } => v | _ => 0", 80),
-            "match m with\n  | #{ 1 = v, .. rest } => v\n  | _ => 0"
-        );
-
-        // --- the s-expr surface is the oracle: the flat `… ".." rest` shape prints as `.. rest`,
-        //     the SAME shape the compiler's list/map lowering scans for (no arena change). ---
-        let a = sexpr::read("(match xs ((list x .. rest) x))").unwrap();
-        assert!(
-            print(&a, 80).contains("[x, .. rest] =>"),
-            "got: {}",
-            print(&a, 80)
-        );
-        let a = sexpr::read("(match m ((map (1 v) .. rest) v) (_ 0))").unwrap();
-        assert!(
-            print(&a, 80).contains("#{ 1 = v, .. rest } =>"),
-            "got: {}",
-            print(&a, 80)
-        );
-        let a = sexpr::read("(list 1 2 .. rest)").unwrap();
-        assert_eq!(print(&a, 80), "[1, 2, .. rest]");
-        // multiple/interior construction spreads via the flat s-expr oracle.
-        let a = sexpr::read("(list a b .. c d .. e)").unwrap();
-        assert_eq!(print(&a, 80), "[a, b, .. c, d, .. e]");
-    }
+    // `rest_operator_round_trips_across_collections` (`..` is the ONE rest/spread marker, uniform across
+    // list/map/record/set in BOTH construction and pattern position, re-reading as `.. rest`) MIGRATED to
+    // the spec/syntax corpus (inc-6 batch-19). Each `..` renders as a `(.. x)` spread node:
+    //   * construction: ml/150-list-spread-tail `[1, 2, .. rest]`→`#list(1 2 (.. rest))`,
+    //     ml/151-list-spread-only, ml/152-map-spread `#{ 1 = 10, .. rest }`→`#map((= 1 10) (.. rest))`,
+    //     ml/153-list-spread-multiple-interior `[a, b, .. c, d, .. e]` (a spread may appear at ANY position
+    //     and more than once, unlike a tail-only PATTERN rest), ml/154-list-spread-two-leading,
+    //     ml/155-list-spread-nested-literal `[1, .. [2, 3], 4]`, ml/156-record-spread-leading
+    //     `{ .. base, a = 1 }`, ml/157-record-spread-multiple-interior, ml/158-set-spread-leading
+    //     `#(.. a, x)`→`#set((.. a) x)`, ml/159-set-spread-multiple-interior.
+    //   * pattern: ml/160-list-pattern-rest `[x, .. rest]`, ml/161-list-pattern-rest-catchall `[.. all]`,
+    //     ml/162-map-pattern-rest `#{ 1 = v, .. rest }` (each carries a format.cdz for the one-arm-per-line
+    //     match surface).
+    // The flat `(list … .. rest)` sexp→ml oracles are subsumed by the ml cases' fmt (the `(.. x)` shape is
+    // exactly what the compiler's list/map lowering scans for — no arena change).
 
     // The numeric-literal + forall-sugar surface round-trips MIGRATED to the spec/syntax corpus
     // (inc-6 batch-17):

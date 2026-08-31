@@ -1,0 +1,1 @@
+match xs with | [] => 0 | [x, .. rest] => x
