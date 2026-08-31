@@ -382,6 +382,12 @@ pass	ml/439-infix-ascription-forall-in-operand
 pass	ml/44-world-deeply-nested-aggregate
 pass	ml/440-infix-ascription-value-rhs
 pass	ml/441-infix-ascription-arrow-type-rhs
+pass	ml/442-derived-unit-exponent
+pass	ml/443-derived-unit-product
+pass	ml/444-derived-unit-rate-left-assoc
+pass	ml/445-derived-unit-exponent-looser-than-rate
+pass	ml/446-derived-unit-parenthesized-exponent
+pass	ml/447-derived-unit-in-result-position
 pass	ml/45-world-headed-non-decl-fallback
 pass	ml/46-import-alias-whole-module
 pass	ml/47-import-named-list

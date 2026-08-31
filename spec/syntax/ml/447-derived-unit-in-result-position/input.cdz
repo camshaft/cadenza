@@ -1,0 +1,1 @@
+def f() -> Qty(Int64, meter / second ^ 2) = x
