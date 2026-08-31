@@ -6928,36 +6928,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_same_line_trailing_comment_on_a_list_elem_is_preserved_not_dropped() {
-        // A `//` comment trailing a list element on the SAME source line (`[…, x // note]`) used to be
-        // DROPPED (it sat in the next token's / the `]`'s leading slot, which the element loop never
-        // drained), so `cdz fmt` REFUSED the whole file via the comment-drop guard. list_literal now
-        // captures it as a `(comment-after "text" elem)` wrapper (mirroring the sum-type variant loop);
-        // strip_comments peels it, so the compiler is unaffected.
-        let src = "def l() -> List(Int64) = [1, 2 // last\n]";
-        let tree = sexpr::print(&parser::read_ml(src).arenas);
-        assert_eq!(
-            tree, "(def (l) (: #list(1 (comment-after \"last\" 2)) (List Int64)))",
-            "the same-line trailing `//` on the last elem is captured, not dropped"
-        );
-        // The printer re-emits it SAME-LINE and — crucially — forces the closing `]` onto the NEXT line,
-        // else `]` is swallowed into the `// last` comment and the printed form fails to re-parse. Verify
-        // the exact layout AND that it round-trips (re-reading the printed form yields the same tree).
-        let printed = print(&parser::read_ml(src).arenas, 80);
-        assert_eq!(
-            printed, "def l() -> List(Int64) = [\n  1,\n  2 // last\n]",
-            "trailing comment prints same-line; `]` breaks to its own line"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml(&printed).arenas),
-            "(def (l) (: #list(1 (comment-after \"last\" 2)) (List Int64)))",
-            "the trailing list comment round-trips"
-        );
-        // A clean list with no trailing comment keeps the ordinary flat layout (no forced break).
-        assert_eq!(assert_roundtrip("[1, 2, 3]", 80), "[1, 2, 3]");
-        assert_eq!(assert_roundtrip("[]", 80), "[]");
-    }
+    // `a_same_line_trailing_comment_on_a_list_elem_is_preserved_not_dropped` (a `//` trailing the last list
+    // element same-line → `(comment-after "text" elem)`; printer forces `]` to its own line) MIGRATED to
+    // the spec/syntax corpus (inc-6 batch-42, comment-node block): ml/275-comment-trailing-last-list-elem
+    // `[1, 2 // last`⏎`]`→`#list(1 (comment-after "last" 2))`. Clean lists are already pinned (ml/05).
 
     #[test]
     fn a_nonlast_comment_after_in_a_decoded_ast_falls_back_and_round_trips_not_swallowed() {
@@ -7007,68 +6981,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_own_line_comment_before_a_call_argument_is_preserved_not_dropped() {
-        // An OWN-LINE `//` comment LEADING a call argument (`g(\n // note\n 1, 2)` or between args) used to
-        // be DROPPED — `arg_exprs` parses each argument via `expr`, which does not drain the argument's
-        // leading-comment slot. `arg_exprs` now captures it as a leading `(comment "text" arg)`; the call
-        // printer already renders a leading `(comment …)` on its own line above the arg. Own-line has no
-        // swallow hazard → not gated to the last arg. (Same-line trailing call-arg comments are a separate
-        // follow-up — the two-path call printer needs work to render `arg // text` + force the `)` break.)
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def f() -> Int64 = g(\n  // lead\n  1, 2)").arenas),
-            "(def (f) (: (g (comment \"lead\" 1) 2) Int64))",
-            "own-line comment before the first call arg is captured, not dropped"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def f() -> Int64 = g(1,\n  // mid\n  2)").arenas),
-            "(def (f) (: (g 1 (comment \"mid\" 2)) Int64))",
-            "own-line comment before a non-first call arg is captured"
-        );
-        assert_eq!(
-            assert_roundtrip("g(\n  // lead\n  1, 2)", 80),
-            "g(\n  // lead\n  1,\n  2\n)"
-        );
-        // A clean call keeps its ordinary layout.
-        assert_eq!(assert_roundtrip("g(1, 2, 3)", 80), "g(1, 2, 3)");
-    }
-
-    #[test]
-    fn a_same_line_trailing_comment_on_the_last_call_argument_is_preserved_not_dropped() {
-        // A same-line `//` trailing the LAST call argument (`g(1, 2 // note)`) used to be DROPPED (it sat
-        // in the `)` leading slot, which `arg_exprs` didn't drain) → `cdz fmt` refused. `arg_exprs` now
-        // captures it as `(comment-after …)` (gated on `at(RParen)`), and `call_args` routes a last-arg
-        // comment-after to `plain_call_comment_aware`, which renders `arg // text` same-line and forces `)`
-        // onto its own line so it isn't swallowed. `strip_comments` peels it; compiles to wasm.
-        let src = "def f() -> Int64 = g(1, 2 // note\n)";
-        assert_eq!(
-            sexpr::print(&parser::read_ml(src).arenas),
-            "(def (f) (: (g 1 (comment-after \"note\" 2)) Int64))",
-            "the same-line trailing comment on the last call arg is captured, not dropped"
-        );
-        assert_eq!(
-            print(&parser::read_ml(src).arenas, 80),
-            "def f() -> Int64 =\n  g(\n    1,\n    2 // note\n  )",
-            "trailing comment prints same-line; `)` breaks to its own line"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml(&print(&parser::read_ml(src).arenas, 80)).arenas),
-            "(def (f) (: (g 1 (comment-after \"note\" 2)) Int64))",
-            "the trailing call-arg comment round-trips"
-        );
-        // A `(comment-after …)` wrapping a would-be-huggable last arg (a `fn`/`match`) is NOT huggable
-        // (its head is `comment-after`), so it routes to the comment-aware plain path and round-trips.
-        let hug =
-            sexpr::read(r#"(def (f) (: (map xs (comment-after "note" (fn (x) (+ x 1)))) _))"#)
-                .unwrap();
-        assert_eq!(
-            sexpr::print(&parser::read_ml(&print(&hug, 80)).arenas),
-            r#"(def (f) (: (map xs (comment-after "note" (fn (x) (+ x 1)))) _))"#,
-            "a comment-after on a would-be-hugged last arg round-trips via the plain comment-aware path"
-        );
-        // A clean call keeps its flat layout (no forced break).
-        assert_eq!(assert_roundtrip("g(1, 2, 3)", 80), "g(1, 2, 3)");
-    }
+    // The call-argument comment tests MIGRATED to the spec/syntax corpus (inc-6 batch-42, comment-node
+    // block):
+    //   * `an_own_line_comment_before_a_call_argument_is_preserved_not_dropped` (own-line `//` leading a
+    //     call arg → `(comment "text" arg)`) → ml/276-comment-leading-first-call-arg
+    //     `g(`⏎`  // lead`⏎`  1, 2)`→`(g (comment "lead" 1) 2)`, ml/277-comment-leading-nonfirst-call-arg
+    //     `(g 1 (comment "mid" 2))`.
+    //   * `a_same_line_trailing_comment_on_the_last_call_argument_is_preserved_not_dropped` (same-line `//`
+    //     trailing the LAST call arg → `(comment-after …)`, forces `)` to its own line) →
+    //     ml/278-comment-trailing-last-call-arg `g(1, 2 // note`⏎`)`→`(g 1 (comment-after "note" 2))`,
+    //     ml/279-comment-trailing-hugged-lambda-call-arg `map(xs, fn(x) => x + 1 // note`⏎`)`→
+    //     `(map xs (comment-after "note" (fn (x) (+ x 1))))` (a comment-after on a would-be-hugged last arg
+    //     routes to the plain comment-aware path).
+    // Clean calls are already pinned (ml/04). v-syntax-comments' rule confirms these attachment points.
 
     #[test]
     fn an_own_line_comment_before_a_list_element_is_preserved_not_dropped() {

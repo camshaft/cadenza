@@ -1,0 +1,2 @@
+map(xs, fn(x) => x + 1 // note
+)
