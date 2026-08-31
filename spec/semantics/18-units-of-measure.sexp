@@ -2225,7 +2225,27 @@
            extract-alone `(Qty.value (Qty.of 5 foot))` = 5 both compile; only the redundant composition was
            the gap.) The bare-number sibling of the chained-`Unit.in` reject above.")
   (input  (Qty.value (Unit.in (Unit.of #"inch") (Qty.of 5 (Unit.of #"foot")))))
-  (error  CDZ0501))
+  (error  CDZ0501 (message "recovers a quantity") (message "which is not a quantity")
+          (message "already UNWRAPS to a bare number") (not "no machine representation")))
+
+(case "Unit.in of a NON-NUMERIC operand names the type, not a self-contradictory plain number"
+  (doc    "`(Unit.in meter true)` applies the unit conversion to a Bool — not a quantity. CDZ0501 names the
+           real operand type ('a Bool … which is not a quantity'), NOT the self-contradictory hardcoded 'a
+           plain number, not a quantity' (a Bool is not a plain number). And because the operand is
+           non-numeric (not the bare-number result of a chained Unit.in unwrap), it must NOT append the
+           numeric-only 'conversion unwrapped it — re-wrap with Qty.of' hint. (migrated from rcdzc
+           unit_in_of_a_non_numeric_operand_names_the_type_without_the_self_contradictory_plain_number.)")
+  (input  (Unit.in (Unit.of #"meter") true))
+  (error  CDZ0501 (message "a Bool") (message "which is not a quantity") (not "plain number") (not "Qty.of")))
+
+(case "Qty.value of a NON-NUMERIC operand names the type, not a self-contradictory plain number"
+  (doc    "`(Qty.value true)` extracts a magnitude from a Bool — not a quantity. CDZ0501 names the real
+           operand type ('a Bool … which is not a quantity'), NOT the hardcoded 'a plain number, not a
+           quantity'; and being a plain non-numeric (not an unwrapped conversion result), it must NOT append
+           the 'conversion UNWRAPS it' chain hint. The Qty.value sibling of the Unit.in non-numeric case.
+           (migrated from rcdzc qty_value_of_a_non_numeric_operand_names_the_type_without_the_self_contradictory_plain_number.)")
+  (input  (Qty.value true))
+  (error  CDZ0501 (message "a Bool") (message "which is not a quantity") (not "plain number") (not "UNWRAPS")))
 
 (case "re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed"
   (doc    "The repair for the chained-`Unit.in` error: wrap the first conversion's bare result back into a
