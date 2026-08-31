@@ -6004,72 +6004,22 @@ mod tests {
     // sexp→ml direction is subsumed by the ml cases' format-absent fmt-idempotence (the arity-2 `(- a b)`
     // → `a - b` binary-subtraction print is pinned by the ordinary arith cases).
 
-    #[test]
-    fn pipeline_operator_round_trips() {
-        // `|>` prints and re-parses like any infix operator; the minimal-paren split keeps a bare
-        // chain bare and drops the parens `(+ total tax)` needs only when precedence demands them.
-        assert_eq!(assert_roundtrip("x |> f", 80), "x |> f");
-        assert_eq!(assert_roundtrip("x |> f(a)", 80), "x |> f(a)");
-        assert_eq!(assert_roundtrip("x |> f |> g", 80), "x |> f |> g");
-        // Looser than `+`, so the left sum needs no parens; the pipe as a whole is the value.
-        assert_eq!(
-            assert_roundtrip("total + tax |> round", 80),
-            "total + tax |> round"
-        );
-        // The independent s-expr reader is the oracle: `(|> x f)` prints as the ML pipeline.
-        let a = sexpr::read("(|> x f)").unwrap();
-        assert_eq!(print(&a, 80), "x |> f");
-    }
-
-    #[test]
-    fn symbol_sugar_round_trips() {
-        // An identifier-content symbol prints with the unquoted `#name` sugar and re-reads to the same
-        // `Leaf::Sym`. The two surfaces (ML `#meter` and the sugar it prints) agree with the s-expr
-        // oracle's `#"meter"`.
-        assert_eq!(assert_roundtrip("#meter", 80), "#meter");
-        assert_eq!(assert_roundtrip("#map-insert", 80), "#map-insert");
-        // Both spellings read to the same value, so the quoted input canonicalizes to the sugar.
-        assert_eq!(assert_roundtrip("#\"meter\"", 80), "#meter");
-        // Non-identifier content keeps the explicit `#"…"` form (a space, an empty symbol, a leading
-        // digit, an operator glyph, a `.`): the sugar would not re-lex to the same symbol.
-        assert_eq!(assert_roundtrip("#\"foo bar\"", 80), "#\"foo bar\"");
-        assert_eq!(assert_roundtrip("#\"\"", 80), "#\"\"");
-        assert_eq!(assert_roundtrip("#\"1st\"", 80), "#\"1st\"");
-        assert_eq!(assert_roundtrip("#\"a.b\"", 80), "#\"a.b\"");
-        // The ML `#name` spelling agrees with the s-expr oracle reading `#"name"`.
-        assert_eq!(
-            print(&sexpr::read(r#"(= #"map-insert" x)"#).unwrap(), 80),
-            "#map-insert == x"
-        );
-    }
-
-    #[test]
-    fn member_call_with_a_symbol_operand_round_trips() {
-        // The surface `Record.with r #field v` relies on (already has): a member-access application
-        // whose args include a `#symbol` field-selector. Pin that it round-trips on BOTH surfaces so the
-        // feature's SURFACE half stays supported independently of the rcdzc `record-with` special-form
-        // arm (the crux the impl issue named "novel #symbol-operand parse/print" already works — this
-        // guards against a regression). ML `#field` prints as the `#name` sugar; the s-expr oracle uses
-        // the canonical `#"field"`.
-        assert_eq!(
-            assert_roundtrip("Record.with(rec, #price, 9)", 80),
-            "Record.with(rec, #price, 9)"
-        );
-        // The canonical s-expr form (member-access head + `#"price"` symbol operand) prints to the ML
-        // surface with the `#price` sugar — the two surfaces agree on the shape rcdzc receives.
-        assert_eq!(
-            print(
-                &sexpr::read(r#"((. Record with) rec #"price" 9)"#).unwrap(),
-                80
-            ),
-            "Record.with(rec, #price, 9)"
-        );
-        // A non-identifier field name keeps the explicit `#"…"` operand (the sugar would not re-lex).
-        assert_eq!(
-            assert_roundtrip(r#"Record.with(rec, #"has space", 9)"#, 80),
-            "Record.with(rec, #\"has space\", 9)"
-        );
-    }
+    // The operator/symbol surface-sugar round-trips MIGRATED to the spec/syntax corpus (inc-6 batch-9):
+    //   * `pipeline_operator_round_trips` (`|>` infix, minimal-paren split) → ml/61-pipeline-basic
+    //     `x |> f`→`(|> x f)`, ml/62-pipeline-call-rhs `x |> f(a)`→`(|> x (f a))`, ml/63-pipeline-chain
+    //     `x |> f |> g`→`(|> (|> x f) g)` (left-assoc), ml/64-pipeline-looser-than-plus
+    //     `total + tax |> round`→`(|> (+ total tax) round)` (looser than `+`, left sum needs no parens).
+    //   * `symbol_sugar_round_trips` (ident-content symbol prints the unquoted `#name` sugar; non-ident
+    //     keeps explicit `#"…"`) → ml/65-symbol-sugar-ident `#meter`, ml/66-symbol-sugar-hyphenated
+    //     `#map-insert`, ml/67-symbol-quoted-canonicalizes-to-sugar (`#"meter"` input, format.cdz=`#meter`
+    //     — the ONLY non-idempotent case), ml/68-symbol-quoted-with-space `#"foo bar"`, ml/69-symbol-empty
+    //     `#""`, ml/70-symbol-leading-digit `#"1st"`, ml/71-symbol-with-dot `#"a.b"` (last four stay
+    //     explicit = fmt-idempotent). tree.sexp renders symbols canonically as `#"…"`.
+    //   * `member_call_with_a_symbol_operand_round_trips` (member-access head + `#symbol` field-selector
+    //     operand) → ml/72-member-call-symbol-operand `Record.with(rec, #price, 9)`→
+    //     `((. Record with) rec #"price" 9)`, ml/73-member-call-quoted-symbol-operand w/ `#"has space"`.
+    // The `print(sexpr::read(…)) == ml` sexp→ml oracle checks are subsumed by each ml case's format-absent
+    // fmt-idempotence (and case 67's explicit format.cdz for the quoted→sugar canonicalization).
 
     #[test]
     fn a_hash_prefixed_name_is_backtick_escaped_to_disambiguate_from_a_symbol() {
