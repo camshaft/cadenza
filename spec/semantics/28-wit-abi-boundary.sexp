@@ -86,6 +86,9 @@
 ; SHAPE 48 — a bare tuple<…>/Tuple PARAM member (a POSITIONAL record): the wrapper builds the value-heap cell
 ; with the same arr-alloc/arr-set shape as a record param, identity slots (no name-permute). Position-sensitive
 ; witness catches a swapped element. Before this a tuple param mis-emitted a handle-erased scalar param.
+; SHAPE 49/50 — a tuple PARAM whose element is COMPOUND: tuple<list<u8>, s64> (a Bytes-leaf element, exercising
+; the tuple arm's param_field_rebuild BytesLeaf recursion + the copy-in scratch) and tuple<record{a}, s64> (a
+; nested-record element, the Nested rebuild) — each read + combined with the scalar element to prove recursion.
 
 (case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -371,6 +374,32 @@
   (input (do (def (sumPair (: p (Tuple Int64 Int64))) (+ (* 100 (. p 0)) (. p 1))) (export sumPair)))
   (call sum-pair (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 510 Int64))
+  (live-objects known-leak))
+
+(case "a tuple PARAM member whose element is a list<u8>/Bytes leaf rebuilds the compound element in-cell"
+  (doc    "SHAPE 49 — a TOP-LEVEL `tuple<list<u8>, s64>`/Tuple(Bytes, Int64) PARAM member. The tuple arm's
+           per-element `param_field_rebuild` recurses into the Bytes element as a `FieldRebuild::BytesLeaf`
+           (the same byte copy-in + scratch locals a record's bytes leaf uses), beside the scalar element — so
+           a compound tuple element crosses correctly, not just scalars. Guest f(p) = Bytes.len(p.0) + p.1;
+           ([1,2,3], 100) -> 103. Pins the tuple arm composing with a mem-bearing element.")
+  (wit-world (world w (export iface (member f (func (param p (tuple (list (u8)) (s64))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: p (Tuple Bytes Int64))) (+ (Bytes.len (. p 0)) (. p 1))) (export f)))
+  (call f (: #tuple(#list(1 2 3) 100) (Tuple Bytes Int64)))
+  (output (: 103 Int64))
+  (live-objects known-leak))
+
+(case "a tuple PARAM member whose element is a nested record rebuilds the compound element in-cell"
+  (doc    "SHAPE 50 — a TOP-LEVEL `tuple<record{a: s64}, s64>`/Tuple(Record, Int64) PARAM member. The tuple
+           arm's per-element `param_field_rebuild` recurses into the record element as a `FieldRebuild::Nested`
+           (building the inner record cell), beside the scalar element. Guest f(p) = p.0.a + p.1;
+           ({a:7}, 100) -> 107. Pins the tuple arm composing with a nested-record element (the recursive
+           cell-build the record-param route uses, now reached positionally through a tuple).")
+  (wit-world (world w (export iface (member f (func (param p (tuple (record (= a (s64))) (s64))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: p (Tuple (Record (: a Int64)) Int64))) (+ (. (. p 0) a) (. p 1))) (export f)))
+  (call f (: #tuple(#record((= a 7)) 100) (Tuple (Record (: a Int64)) Int64)))
+  (output (: 107 Int64))
   (live-objects known-leak))
 
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
