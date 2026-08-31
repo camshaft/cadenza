@@ -11,4 +11,4 @@
   (def (main) #tuple((apply-n-times (adder 3) 4 10) (apply-n-times (fn (x) (* x 2)) 5 1)))
 
   (export main)))
-  (expected (: (tuple 22 32) (Tuple Int64 Int64))))
+  (expected (: #tuple(22 32) (Tuple Int64 Int64))))
