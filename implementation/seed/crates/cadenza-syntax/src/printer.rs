@@ -6473,48 +6473,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn at_bang_param_pragma_prints_the_module_directive_surface() {
-        // `(pragma param (param <kv>…) (: name Type))` -> `@!param(k: v, …) name : Type` (the operator's
-        // module-level `@param`). Print + re-read must be structurally faithful, and the surface must be the
-        // `@!param` sugar, not a generic `pragma(param, …)` call.
-        for (sx, want) in [
-            (
-                "(pragma param (param (: widget slider)) (: width Int64))",
-                "@!param(widget: slider) width : Int64",
-            ),
-            (
-                r#"(pragma param (param (: widget slider) (: range #tuple(1 10))) (: width Int64))"#,
-                "@!param(widget: slider, range: (1, 10)) width : Int64",
-            ),
-            // empty config -> no `()`
-            (
-                "(pragma param (param) (: width Int64))",
-                "@!param width : Int64",
-            ),
-            // function-typed param
-            (
-                "(pragma param (param (: widget stepper)) (: transform (-> Int64 Int64)))",
-                "@!param(widget: stepper) transform : Int64 -> Int64",
-            ),
-        ] {
-            let a = sexpr::read(sx).unwrap();
-            let ml = print(&a, 80);
-            assert_eq!(ml, want, "@!param surface");
-            assert!(
-                parser::read_ml(&ml).arenas.structurally_eq(&a),
-                "@!param round-trips: {ml}"
-            );
-        }
-        // A non-`param` pragma still prints the plain `@!key arg` form (unchanged).
-        assert_eq!(
-            print(
-                &sexpr::read("(pragma default-fraction Rational)").unwrap(),
-                80
-            ),
-            "@!default-fraction Rational"
-        );
-    }
+    // The pragma / `@!` module-directive surface MIGRATED to the spec/syntax corpus (inc-6 batch-20):
+    //   * `at_bang_param_pragma_prints_the_module_directive_surface` (`(pragma param (param <kv>…)
+    //     (: name Type))` → `@!param(k: v, …) name : Type` — the `@!param` sugar, not a generic
+    //     `pragma(param, …)` call) → ml/163-pragma-param-single-config
+    //     `@!param(widget: slider) width : Int64`→`(pragma param (param (: widget slider)) (: width Int64))`,
+    //     ml/164-pragma-param-multi-config (tuple range `(: range #tuple(1 10))`),
+    //     ml/165-pragma-param-empty-config `@!param width : Int64` (empty config → no `()`),
+    //     ml/166-pragma-param-function-typed (arrow-typed param).
+    //   * `pragma_sugar_round_trips` (`@!key arg` desugars to `(pragma key arg)`) →
+    //     ml/167-pragma-plain-bare-name `@!default-float Float32`→`(pragma default-float Float32)`,
+    //     ml/168-pragma-plain-ctor-application `@!default-integer Int(8)`→`(pragma default-integer (Int 8))`
+    //     (the arg parses in prefix+postfix position, so a ctor application is ONE argument),
+    //     ml/169-pragma-in-module (a pragma above a module's members; format.cdz pins the surface). The
+    //     `print((pragma …))` sexp→ml oracles are subsumed by these ml cases' fmt-idempotence.
 
     #[test]
     fn tagged_template_round_trips_hole_free() {
@@ -6647,45 +6619,9 @@ mod tests {
         assert_eq!(assert_roundtrip("t\"a{{b}}c\"", 80), "t\"a{{b}}c\"");
     }
 
-    #[test]
-    fn pragma_sugar_round_trips() {
-        // `@!key arg` is the PRAGMA sugar — the inner-attribute twin of `@` (Rust's `#![…]`). It desugars
-        // to `(pragma key arg)`, byte-identical to a written pragma, so it flows through the SAME registry
-        // with no new downstream case. A bare-name argument (`Float32`) is the common shape.
-        assert_eq!(
-            assert_roundtrip("@!default-float Float32", 80),
-            "@!default-float Float32"
-        );
-        // ML surface → the canonical `(pragma …)` head; the s-expr surface reads it directly, so a written
-        // `(pragma …)` prints as `@!`. The two surfaces agree on one tree.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("@!default-fraction Rational").arenas),
-            "(pragma default-fraction Rational)"
-        );
-        assert_eq!(
-            print(&sexpr::read("(pragma default-integer Int64)").unwrap(), 80),
-            "@!default-integer Int64"
-        );
-        // The argument parses in prefix+POSTFIX position, so a constructor APPLICATION `Int(8)` is the
-        // single argument (`(Int 8)`), not `(pragma … Int)` applied to `8` — and it round-trips.
-        assert_eq!(
-            assert_roundtrip("@!default-integer Int(8)", 80),
-            "@!default-integer Int(8)"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml("@!default-integer Int(8)").arenas),
-            "(pragma default-integer (Int 8))"
-        );
-        // In a MODULE, the pragma sits above the members it governs and the following `def` is NOT
-        // swallowed as an argument (a member does not begin with `.`/`(`); the whole module round-trips.
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("module m {\n  @!default-float Float32\n  def x() = 0.5\n}")
-                    .arenas
-            ),
-            "(module m (pragma default-float Float32) (def (x) 0.5))"
-        );
-    }
+    // (`pragma_sugar_round_trips` MIGRATED with the pragma-surface batch above — see the inc-6 batch-20
+    // breadcrumb: ml/167-pragma-plain-bare-name, ml/168-pragma-plain-ctor-application, ml/169-pragma-in-
+    // module. The plain `@!key arg` bare-name/ctor-arg forms and the in-module pragma are pinned there.)
 
     // `function_definition` (named `def` vs anonymous `fn` — distinct surfaces) MIGRATED to the
     // spec/syntax corpus (inc-6 batch-15): ml/111-function-def-with-params `def add(a, b) = a + b`→

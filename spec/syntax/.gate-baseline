@@ -76,6 +76,13 @@ pass	ml/16-world-unit-tuple
 pass	ml/160-list-pattern-rest
 pass	ml/161-list-pattern-rest-catchall
 pass	ml/162-map-pattern-rest
+pass	ml/163-pragma-param-single-config
+pass	ml/164-pragma-param-multi-config
+pass	ml/165-pragma-param-empty-config
+pass	ml/166-pragma-param-function-typed
+pass	ml/167-pragma-plain-bare-name
+pass	ml/168-pragma-plain-ctor-application
+pass	ml/169-pragma-in-module
 pass	ml/17-world-result-both
 pass	ml/18-world-result-no-err
 pass	ml/19-world-result-no-ok

@@ -1,0 +1,5 @@
+module m {
+  @!default-float Float32
+
+  def x() = 0.5
+}
