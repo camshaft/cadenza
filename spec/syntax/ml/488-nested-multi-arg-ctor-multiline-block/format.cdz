@@ -1,0 +1,12 @@
+type Vec3r =
+  | V3r(Rational, Rational, Rational)
+
+type Solidr =
+  | Cuber(Vec3r)
+  | Spherer(Rational)
+  | Differencer(Solidr, Solidr)
+
+def r(n: Int64) = Rational.of(n, 1)
+
+def main() =
+  Solidr.Differencer(Solidr.Cuber(V3r(r(4), r(4), r(4))), Solidr.Spherer(Rational.of(5, 2)))
