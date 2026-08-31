@@ -747,24 +747,6 @@ fn a_ctl_arm_applying_k_inside_a_match_scrutinee_resolves_k() {
 }
 
 #[test]
-fn a_gensym_id_sum_self_recursive_effectful_loop_specializes() {
-    // The compiler-ml port's fresh-id generator shape (fresh.cdz — the self-host's first effect use):
-    // `id-sum n = if n = 0 then 0 else (Fresh.next) + id-sum(n - 1)`. The perform is the LEFT `+`
-    // operand and the self-call the RIGHT, so the perform reads the PRE-recursion (incoming) state —
-    // the single-return effect-context specialization threads it correctly. Compiles; a store run of
-    // `id-sum 3` under a 0-based counter yields 0+1+2 = 3 (verified via cdz-run + the corpus case). Pins
-    // the gensym idiom the self-hosted compiler relies on. (The self-call-BEFORE-perform sibling shape
-    // declines pending the multi-value-return increment — repro-1.)
-    let src = "(do (effect Fresh (op next (-> Int64))) \
-                   (def (id-sum (: n Int64)) (if (= n 0) 0 (+ (Fresh.next) (id-sum (- n 1))))) \
-                   (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) (id-sum 3))) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "the gensym id-sum self-recursive effectful loop must specialize + compile"
-    );
-}
-
-#[test]
 fn a_malformed_type_used_as_an_annotation_does_not_also_report_it_a_value() {
     // A type whose declaration is MALFORMED (a duplicate variant) does not fully register, so
     // `typeval_of` of its name fails — and using it as an annotation `(: c C)` used to CASCADE into a
