@@ -318,8 +318,8 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     Reject::coded(
                         Code::Malformed,
                         "`const` block requires a compile-time constant: this expression does not \
-                         fully fold at compile time (it depends on runtime data or the evaluator \
-                         cannot yet reduce it)",
+                         fully fold at compile time (it depends on runtime data, or the evaluator \
+                         cannot reduce it at compile time)",
                     )
                     .at(id),
                 )

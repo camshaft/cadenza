@@ -5062,7 +5062,7 @@ fn last_binder_named(
                         if bound {
                             return Some(Resolved::Poison(Reject::decline(
                                 "a nested compound sub-pattern inside a record binding pattern is not \
-                                 yet supported (Increment B binds a record's fields to bare names; \
+                                 supported (a record binding binds fields to bare names; \
                                  destructure a nested field with a further `let`)",
                             )));
                         }
