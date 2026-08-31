@@ -1245,7 +1245,17 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
                     .filter(|d| d.severity == Severity::Error)
             };
             let chosen = errors()
-                .find(|d| d.code.is_some())
+                // A genuine REJECTION (coded, and NOT a decline) is the stronger, more actionable "no" —
+                // prefer it over a coded DECLINE (`CDZ0900`, still an `is_decline` construct now that
+                // seq-286 gives declines a code). The old `find(code.is_some())` assumed coded ⟹ rejection
+                // (true when every decline was codeless); once a decline can carry `CDZ0900`, a coded
+                // decline raised EARLIER in the pipeline (e.g. the partial-builtin wrong-arity decline in
+                // `infer`) would otherwise pre-empt a coded rejection raised LATER (e.g. the CDZ0201
+                // partial-application-escapes-the-boundary reject), inverting the safety ordering
+                // (`reference-compiler.md` §Outcomes Are Ordered By Safety). So: rejection first, then any
+                // coded diagnostic (the coded decline), then any error at all.
+                .find(|d| d.code.is_some() && d.code.as_deref() != Some("CDZ0900"))
+                .or_else(|| errors().find(|d| d.code.is_some()))
                 .or_else(|| errors().next())
                 .cloned();
             Err(chosen.unwrap_or(Diagnostic {
