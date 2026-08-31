@@ -574,8 +574,35 @@ fn type_ref_iter_matches_recursive_type() {
         "forall a. forall b. Tuple(a, b)",
         "forall . a",
         "forall a b",
+        // unit-composition-infix de-recursion (I5 part 6): a bare op, left-assoc same-tier chain, the
+        // mixed-tier associativity cases (`^` tier 7 looser than `*`/`/` tier 11), a PAREN'd-unit operand
+        // (the `(a * (b * …))` native-recursion vector), unit-infix inside a type-app arg / on a member
+        // chain, and a following arrow.
+        "meter * second",
+        "m / s / s",
+        "kg * m / s / s",
+        "second ^ 2",
+        "kg / s ^ 2",
+        "kg * m ^ 2 / s ^ 2",
+        "(m * s) / s",
+        "(m * (s / (kg * m)))",
+        "Qty(Int64, meter / second ^ 2)",
+        "M.unit ^ 2",
+        "List(a) ^ 2",
+        "m / s -> Bool",
     ];
-    for src in cases {
+    // Also compare the iterative and recursive readers on a GENERATED deep FLAT unit chain — long enough
+    // to trip the shared `type_unit_infix` `self.depth + spine` guard (MAX_NESTING_DEPTH). Both readers
+    // build a left-assoc chain via a LOOP (no native recursion for a flat chain), so this runs on the
+    // default stack and validates the worklist's unit-spine guard against the recursive reference (arena +
+    // span table + the single "nests too deeply" error must match). `+ 40` overshoots the cap so the guard
+    // definitely trips in both.
+    let mut deep = String::from("m");
+    for _ in 0..(crate::sexpr::MAX_NESTING_DEPTH + 40) {
+        deep.push_str(" / s");
+    }
+    let owned: Vec<String> = cases.iter().map(|s| s.to_string()).chain([deep]).collect();
+    for src in owned.iter().map(String::as_str) {
         let mut rec = build_parser(src, FileId::default());
         let rec_root = rec.type_ref(); // rec.iterative == false -> recursive body
         let rec_arenas = rec.builder.finish(rec_root);

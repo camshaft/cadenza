@@ -7788,18 +7788,19 @@ impl<'a> Parser<'a> {
     ///     the recursive [`Self::type_arg`] via [`Self::type_arg_label`]).
     ///
     /// Nodes are created in the SAME order as the recursive body (the `->` head before the right operand; a
-    /// labeled arg's `label` before its type before the `:`), so the arena AND the span table match. HYBRID
-    /// STAGE: the non-postfix operand kinds (`forall` body, paren-tuple, brace-record) and the unit-infix
-    /// (`^`/`*`/`/`) composition are still read via the recursive helpers — a `{x: T}` / `forall`
-    /// body element re-enters a nested `type_ref_iter` for now — and convert onto the worklist in later
-    /// increments. (I5 part 3 added the paren-tuple/grouping/unit `(…)` interior — each element is a full
-    /// type, so it descends onto the worklist via [`TCont::Paren`] instead of recursing `type_paren ->
-    /// type_ref`; the `Tuple` head is created AFTER the first element's subtree, matching the recursive
-    /// struct-id order. I5 part 4 added the brace-record `{field: T, …}` interior via [`TCont::Brace`] — the
-    /// `Record` head is created up front and each field's type descends onto the worklist, rebuilt `(: label
-    /// ty)` by a [`TCont::Label`].) The `type_postfix`/`type_arg_exprs` depth-guard accounting (`self.depth + spine`,
-    /// `spine` per operand-level postfix chain) is mirrored exactly so the deep-nesting boundary stays
-    /// byte-identical.
+    /// labeled arg's `label` before its type before the `:`; a `Tuple` head after the first paren element),
+    /// so the arena AND the span table match. FULLY ITERATIVE (I5 complete): every recursive descent of the
+    /// type grammar is on this worklist — the `->` arrow chain, the postfix `(…)` application arguments (the
+    /// deep nested-generic vector `Foo(Bar(Baz(…)))`, via [`TCont::App`] + [`TCont::Label`]), the
+    /// paren-tuple/grouping/unit `(…)` interior ([`TCont::Paren`]), the brace-record `{field: T, …}` interior
+    /// ([`TCont::Brace`]), the `forall <binders> . body` (nested `forall`s via [`TCont::Forall`]), and the
+    /// unit-composition infix `^`/`*`/`/` Pratt ([`TCont::Unit`] — so `(a * (b * …))` no longer recurses
+    /// `type_unit_infix -> type_operand -> type_paren -> type_ref`). No type nesting can overflow the native
+    /// stack. The `type_postfix`/`type_arg_exprs`/`type_unit_infix` depth-guard accounting (`self.depth +
+    /// spine`) is mirrored exactly so the deep-nesting boundary stays byte-identical to the recursive
+    /// reference (still verified by the differential oracle until I8). The recursive helpers (`type_operand`,
+    /// `type_paren`, `type_brace_record`, `type_unit_infix`, `forall_type`, `type_postfix`) remain in place
+    /// only for the frozen `read_ml_recursive` oracle reference (`self.iterative == false`).
     fn type_ref_iter(&mut self) -> StructId {
         // Pending continuations on the explicit worklist (replacing the native recursion of `type_ref` /
         // `type_operand` / `type_postfix` / `type_arg_exprs`). Each holds only Copy ids/spans + the
@@ -7825,21 +7826,29 @@ impl<'a> Parser<'a> {
                 head_is_record: bool,
                 args: Vec<StructId>,
                 spine: u32,
+                um: u8,
             },
             /// A parenthesized type `( … )` mid-read: `start` is the `(` span; `items` the collected element
             /// nodes (empty until the first element decides grouping-vs-tuple — once a tuple, `items` holds
             /// `[Tuple-head, first, …]`); `head_made` is set once the `Tuple` head is created (i.e. a `,`
-            /// confirmed a tuple, not a single-element grouping).
+            /// confirmed a tuple, not a single-element grouping). `um` is the unit-infix min-precedence to
+            /// apply to the completed paren operand (0 for a full type, >0 for a unit-infix right operand).
             Paren {
                 start: Span,
                 items: Vec<StructId>,
                 head_made: bool,
+                um: u8,
             },
             /// A brace-record type `{ field: T, … }` mid-read: `start` is the `{` span; `items` holds
             /// `[Record-head, field…]` (the `Record` head is created up front). Each field's label + `:` is
             /// read eagerly (via [`Self::read_type_record_field_label`]) and its type descends onto the
             /// worklist, rebuilt as `(: label ty)` by a [`TCont::Label`] continuation stacked above this one.
-            Brace { start: Span, items: Vec<StructId> },
+            /// `um` is the unit-infix min-precedence for the completed record operand.
+            Brace {
+                start: Span,
+                items: Vec<StructId>,
+                um: u8,
+            },
             /// A `forall <binders> .` awaiting its body type. `head` is the pre-created `forall` name;
             /// `binder_list` the `(binders…)` node; `start` the `forall` span. On resume the body becomes
             /// `(forall (binders…) body)`. A nested `forall a. forall b. …` stacks these on the heap instead
@@ -7849,72 +7858,106 @@ impl<'a> Parser<'a> {
                 head: StructId,
                 binder_list: StructId,
             },
+            /// A pending unit-composition infix `left <op>` awaiting its RIGHT operand (I5 part 6). `head` is
+            /// the pre-created `^`/`*`/`/` glyph name; `left` the accumulated left operand; `min_prec` the
+            /// Pratt min-precedence of THIS chain (to resume after combining); `start` the chain's left-start
+            /// span; `spine` the chain's op counter (mirrors `type_unit_infix`'s spine depth guard). The right
+            /// operand is read as a fresh operand + a tighter Pratt (min_prec = op-prec + 1), then combined
+            /// `(op left right)` on the way back — so `(a * (b * …))` no longer recurses `type_unit_infix ->
+            /// type_operand -> type_paren -> type_ref -> type_unit_infix`.
+            Unit {
+                head: StructId,
+                left: StructId,
+                min_prec: u8,
+                start: Span,
+                spine: u32,
+            },
         }
         // The driver's next action.
         enum Next {
-            /// Read a fresh arrow-LHS operand (forall / paren / brace / prefix-head) from the cursor.
-            Read,
-            /// Continue the postfix loop on a partially-built prefix-head operand, then run the unit-infix
-            /// composition and reduce. `node_start` is the operand start; `spine` the postfix depth counter.
+            /// Read a fresh operand (a `forall` head ONLY when `um == 0`; else paren / brace / prefix-head),
+            /// then run the unit-composition Pratt at min-precedence `um` on it. `um == 0` = a full type
+            /// (arrow-checked after via `Reduce`); `um > 0` = a unit-infix RIGHT operand (combined into the
+            /// pending `TCont::Unit`, no arrow) — mirroring the recursive `type_operand` + `type_unit_infix`.
+            Read { um: u8 },
+            /// Continue the postfix loop (member chain + `(…)` application) on a partially-built prefix-head
+            /// operand, then run the unit-composition Pratt at `um`. `spine` is the postfix depth counter.
             Postfix {
                 node_start: Span,
                 node: StructId,
                 spine: u32,
+                um: u8,
             },
-            /// An operand (or a folded sub-node) is complete: check for a trailing `->` (arrow chain) and
-            /// otherwise deliver `value` to the nearest continuation. `start` is the operand start span.
+            /// One step of the unit-composition Pratt on `left` at `min_prec`; `spine` counts the ops folded
+            /// into this chain (the `type_unit_infix` spine depth guard). `start` is the chain left-start span.
+            Unit {
+                left: StructId,
+                min_prec: u8,
+                start: Span,
+                spine: u32,
+            },
+            /// A full type is complete: check for a trailing `->` (arrow chain) and otherwise deliver `value`
+            /// to the nearest continuation. `start` is the operand start span.
             Reduce { start: Span, value: StructId },
         }
+        // A min-precedence higher than any real unit-infix op (max ~11): forces the Pratt to read NO further
+        // ops so it delivers `left` immediately — used after the depth guard trips (mirrors the recursive
+        // `type_unit_infix` `break`, which stops that chain while ancestor chains keep folding).
+        const UNIT_DONE: u8 = u8::MAX;
         let mut stack: Vec<TCont> = Vec::new();
-        let mut next = Next::Read;
+        let mut next = Next::Read { um: 0 };
         loop {
             match next {
-                Next::Read => {
+                Next::Read { um } => {
                     let node_start = self.cur_span();
-                    if self.at_keyword(Keyword::Forall) {
+                    if um == 0 && self.at_keyword(Keyword::Forall) {
                         // `forall <binders> . body` — de-recursed onto the worklist (I5 part 5): the preamble
                         // (head + binders + `.`) is read inline, then the BODY (a full type) descends here
                         // instead of recursing `forall_type -> type_ref`. A nested `forall a. forall b. …`
-                        // stacks `TCont::Forall`s on the heap. `forall` early-returns in the recursive
-                        // `type_ref` (no unit-infix / no postfix / no arrow at the forall's own level — the
-                        // body already consumed any arrow chain), so on resume the built node reduces directly.
+                        // stacks `TCont::Forall`s on the heap. Only at `um == 0`: a `forall` after a unit op
+                        // (`a ^ forall`) is read by `prefix` as a plain name, exactly as the recursive
+                        // `type_operand` (which never re-consumes `forall`). `forall` early-returns in the
+                        // recursive `type_ref` (no unit-infix / no arrow at its own level — the body consumed
+                        // any arrow chain), so on resume the built node reduces directly.
                         let (head, binder_list) = self.read_forall_preamble(node_start);
                         stack.push(TCont::Forall {
                             start: node_start,
                             head,
                             binder_list,
                         });
-                        next = Next::Read;
+                        next = Next::Read { um: 0 };
                     } else if self.at(Kind::LParen) {
                         // Parenthesized / tuple / unit type — de-recursed onto the worklist (I5 part 3): the
                         // interior element(s) are full types, so each descends here instead of recursing
                         // `type_paren -> type_ref`. `()` is the unit type (no descent); `(A)` a transparent
-                        // grouping; `(A, B, …)` a `(Tuple …)` node. The following unit-infix (`^`/`*`/`/`) is
-                        // applied at the paren's exit points (mirroring `type_operand` + `type_unit_infix`).
+                        // grouping; `(A, B, …)` a `(Tuple …)` node. The following unit-infix Pratt runs at the
+                        // paren's exit points at min-prec `um` (mirroring `type_operand` + `type_unit_infix`).
                         self.expect(Kind::LParen, "`(`");
                         if self.at(Kind::RParen) {
                             self.bump();
                             let span = node_start.merge(self.prev_span());
                             let op = self.name("unit", span);
-                            let n = self.type_unit_infix(op, 0, node_start);
-                            next = Next::Reduce {
+                            next = Next::Unit {
+                                left: op,
+                                min_prec: um,
                                 start: node_start,
-                                value: n,
+                                spine: 0,
                             };
                         } else {
                             stack.push(TCont::Paren {
                                 start: node_start,
                                 items: Vec::new(),
                                 head_made: false,
+                                um,
                             });
-                            next = Next::Read;
+                            next = Next::Read { um: 0 };
                         }
                     } else if self.at(Kind::LBrace) {
                         // Brace record type `{ field: T, … }` — de-recursed onto the worklist (I5 part 4): the
                         // `Record` head is created up front, then each field's type descends here instead of
                         // recursing `type_brace_record -> type_ref`. Mirrors the recursive while-condition
-                        // (`!} && !EOF`) so an empty / unclosed brace closes identically; the following
-                        // unit-infix is applied at the brace exit.
+                        // (`!} && !EOF`) so an empty / unclosed brace closes identically; the unit-infix Pratt
+                        // runs at the brace exit at min-prec `um`.
                         self.expect(Kind::LBrace, "`{`");
                         let head = self.name("Record", node_start);
                         if !self.at(Kind::RBrace) && !self.at_end() {
@@ -7922,20 +7965,22 @@ impl<'a> Parser<'a> {
                             stack.push(TCont::Brace {
                                 start: node_start,
                                 items: vec![head],
+                                um,
                             });
                             stack.push(TCont::Label {
                                 start: fstart,
                                 label,
                             });
-                            next = Next::Read;
+                            next = Next::Read { um: 0 };
                         } else {
                             self.expect(Kind::RBrace, "`}`");
                             let span = node_start.merge(self.prev_span());
                             let node = self.list(vec![head], span);
-                            let n = self.type_unit_infix(node, 0, node_start);
-                            next = Next::Reduce {
+                            next = Next::Unit {
+                                left: node,
+                                min_prec: um,
                                 start: node_start,
-                                value: n,
+                                spine: 0,
                             };
                         }
                     } else {
@@ -7946,6 +7991,7 @@ impl<'a> Parser<'a> {
                             node_start,
                             node: head,
                             spine: 0,
+                            um,
                         };
                     }
                 }
@@ -7953,6 +7999,7 @@ impl<'a> Parser<'a> {
                     node_start,
                     mut node,
                     mut spine,
+                    um,
                 } => match self.kind() {
                     Kind::Dot if self.dot_is_member() => {
                         node = self.member_access(node, node_start);
@@ -7962,16 +8009,18 @@ impl<'a> Parser<'a> {
                         {
                             self.error("expression nests too deeply to parse");
                             self.depth_exceeded = true;
-                            let n = self.type_unit_infix(node, 0, node_start);
-                            next = Next::Reduce {
+                            next = Next::Unit {
+                                left: node,
+                                min_prec: um,
                                 start: node_start,
-                                value: n,
+                                spine: 0,
                             };
                         } else {
                             next = Next::Postfix {
                                 node_start,
                                 node,
                                 spine,
+                                um,
                             };
                         }
                     }
@@ -7988,16 +8037,18 @@ impl<'a> Parser<'a> {
                             {
                                 self.error("expression nests too deeply to parse");
                                 self.depth_exceeded = true;
-                                let n = self.type_unit_infix(node, 0, node_start);
-                                next = Next::Reduce {
+                                next = Next::Unit {
+                                    left: node,
+                                    min_prec: um,
                                     start: node_start,
-                                    value: n,
+                                    spine: 0,
                                 };
                             } else {
                                 next = Next::Postfix {
                                     node_start,
                                     node,
                                     spine,
+                                    um,
                                 };
                             }
                         } else {
@@ -8012,6 +8063,7 @@ impl<'a> Parser<'a> {
                                 head_is_record,
                                 args: Vec::new(),
                                 spine,
+                                um,
                             });
                             if let Some((lstart, lbl)) = label {
                                 stack.push(TCont::Label {
@@ -8019,18 +8071,91 @@ impl<'a> Parser<'a> {
                                     label: lbl,
                                 });
                             }
-                            next = Next::Read;
+                            next = Next::Read { um: 0 };
                         }
                     }
                     _ => {
-                        // No more postfix — run the unit-composition infix, then reduce.
-                        let n = self.type_unit_infix(node, 0, node_start);
-                        next = Next::Reduce {
+                        // No more postfix — run the unit-composition Pratt at `um`.
+                        next = Next::Unit {
+                            left: node,
+                            min_prec: um,
                             start: node_start,
-                            value: n,
+                            spine: 0,
                         };
                     }
                 },
+                Next::Unit {
+                    left,
+                    min_prec,
+                    start,
+                    spine,
+                } => {
+                    // The unit-composition infix Pratt (`^`/`*`/`/`), de-recursed (I5 part 6). One step:
+                    // fold the next op at precedence >= `min_prec`, else deliver the chain.
+                    let bind = match self.kind() {
+                        Kind::Caret => Some("^"),
+                        Kind::Star => Some("*"),
+                        Kind::Slash => Some("/"),
+                        _ => None,
+                    }
+                    .and_then(|o| infix_prec(o).map(|p| (o, p)))
+                    .filter(|&(_, p)| p >= min_prec);
+                    if let Some((op_name, prec)) = bind {
+                        // Read the RIGHT operand as a fresh operand + a tighter Pratt (min-prec = prec + 1,
+                        // left-associative), combined `(op left right)` when it completes via `TCont::Unit`.
+                        let op_span = self.cur_span();
+                        self.bump();
+                        let head = self.name(op_name, op_span);
+                        stack.push(TCont::Unit {
+                            head,
+                            left,
+                            min_prec,
+                            start,
+                            spine,
+                        });
+                        next = Next::Read { um: prec + 1 };
+                    } else if matches!(stack.last(), Some(TCont::Unit { .. })) {
+                        // This chain's `left` is a RIGHT operand → combine into the pending `TCont::Unit`.
+                        let (head, oleft, omp, ostart, ospine) = match stack.pop() {
+                            Some(TCont::Unit {
+                                head,
+                                left,
+                                min_prec,
+                                start,
+                                spine,
+                            }) => (head, left, min_prec, start, spine),
+                            _ => unreachable!("checked by matches! above"),
+                        };
+                        let span = ostart.merge(self.prev_span());
+                        let combined = self.list(vec![head, oleft, left], span);
+                        let spine2 = ospine + 1;
+                        if !self.depth_exceeded
+                            && self.depth + spine2 >= crate::sexpr::MAX_NESTING_DEPTH
+                        {
+                            // Guard trip: emit once + poison, then BREAK this chain (deliver `combined`, read
+                            // no more ops via `UNIT_DONE`). Ancestor chains keep folding — their guard sees
+                            // `depth_exceeded` and won't re-trip — matching the recursive `type_unit_infix`.
+                            self.error("expression nests too deeply to parse");
+                            self.depth_exceeded = true;
+                            next = Next::Unit {
+                                left: combined,
+                                min_prec: UNIT_DONE,
+                                start: ostart,
+                                spine: spine2,
+                            };
+                        } else {
+                            next = Next::Unit {
+                                left: combined,
+                                min_prec: omp,
+                                start: ostart,
+                                spine: spine2,
+                            };
+                        }
+                    } else {
+                        // A full type's operand-with-units is complete → arrow-check + deliver.
+                        next = Next::Reduce { start, value: left };
+                    }
+                }
                 Next::Reduce { start, value } => {
                     if self.at(Kind::Arrow) {
                         // `value` is an arrow LHS. Create the `->` head BEFORE descending the right operand
@@ -8042,10 +8167,18 @@ impl<'a> Parser<'a> {
                             arrow,
                             left: value,
                         });
-                        next = Next::Read;
+                        next = Next::Read { um: 0 };
                     } else {
                         match stack.pop() {
                             None => return value,
+                            // A `Reduce` only runs when the top cont is NOT a `TCont::Unit` (the `Next::Unit`
+                            // no-op branch routes to `Reduce` precisely in that case), so a pending unit chain
+                            // is never the delivery target here.
+                            Some(TCont::Unit { .. }) => {
+                                unreachable!(
+                                    "Reduce never delivers into a pending unit-infix continuation"
+                                )
+                            }
                             Some(TCont::Arrow { start, arrow, left }) => {
                                 let span = start.merge(self.prev_span());
                                 let node = self.list(vec![arrow, left, value], span);
@@ -8061,12 +8194,17 @@ impl<'a> Parser<'a> {
                                 start,
                                 mut items,
                                 head_made,
+                                um,
                             }) => {
                                 if !head_made && !self.at(Kind::Comma) {
                                     // A single parenthesized type is a transparent grouping — `(A)` is `A`.
                                     self.expect(Kind::RParen, "`)`");
-                                    let n = self.type_unit_infix(value, 0, start);
-                                    next = Next::Reduce { start, value: n };
+                                    next = Next::Unit {
+                                        left: value,
+                                        min_prec: um,
+                                        start,
+                                        spine: 0,
+                                    };
                                 } else {
                                     if !head_made {
                                         // First element of a tuple: the `Tuple` head is created AFTER the
@@ -8081,18 +8219,27 @@ impl<'a> Parser<'a> {
                                             start,
                                             items,
                                             head_made: true,
+                                            um,
                                         });
-                                        next = Next::Read;
+                                        next = Next::Read { um: 0 };
                                     } else {
                                         self.expect(Kind::RParen, "`)`");
                                         let span = start.merge(self.prev_span());
                                         let node = self.list(items, span);
-                                        let n = self.type_unit_infix(node, 0, start);
-                                        next = Next::Reduce { start, value: n };
+                                        next = Next::Unit {
+                                            left: node,
+                                            min_prec: um,
+                                            start,
+                                            spine: 0,
+                                        };
                                     }
                                 }
                             }
-                            Some(TCont::Brace { start, mut items }) => {
+                            Some(TCont::Brace {
+                                start,
+                                mut items,
+                                um,
+                            }) => {
                                 // `value` is a completed `(: label ty)` field. Mirror the recursive
                                 // `type_brace_record` loop: push the field, then `sep_continue` + re-check the
                                 // `!} && !EOF` while-condition before reading the next field's label.
@@ -8102,18 +8249,22 @@ impl<'a> Parser<'a> {
                                     && !self.at_end()
                                 {
                                     let (fstart, label) = self.read_type_record_field_label();
-                                    stack.push(TCont::Brace { start, items });
+                                    stack.push(TCont::Brace { start, items, um });
                                     stack.push(TCont::Label {
                                         start: fstart,
                                         label,
                                     });
-                                    next = Next::Read;
+                                    next = Next::Read { um: 0 };
                                 } else {
                                     self.expect(Kind::RBrace, "`}`");
                                     let span = start.merge(self.prev_span());
                                     let node = self.list(items, span);
-                                    let n = self.type_unit_infix(node, 0, start);
-                                    next = Next::Reduce { start, value: n };
+                                    next = Next::Unit {
+                                        left: node,
+                                        min_prec: um,
+                                        start,
+                                        spine: 0,
+                                    };
                                 }
                             }
                             Some(TCont::Forall {
@@ -8134,6 +8285,7 @@ impl<'a> Parser<'a> {
                                 head_is_record,
                                 mut args,
                                 spine,
+                                um,
                             }) => {
                                 args.push(value);
                                 if self.sep_continue(Kind::RParen) {
@@ -8145,6 +8297,7 @@ impl<'a> Parser<'a> {
                                         head_is_record,
                                         args,
                                         spine,
+                                        um,
                                     });
                                     if let Some((lstart, lbl)) = label {
                                         stack.push(TCont::Label {
@@ -8152,7 +8305,7 @@ impl<'a> Parser<'a> {
                                             label: lbl,
                                         });
                                     }
-                                    next = Next::Read;
+                                    next = Next::Read { um: 0 };
                                 } else {
                                     self.expect(Kind::RParen, "`)`");
                                     // RT1: a record TYPE takes only `field: T` ascriptions — flag the
@@ -8179,10 +8332,11 @@ impl<'a> Parser<'a> {
                                     {
                                         self.error("expression nests too deeply to parse");
                                         self.depth_exceeded = true;
-                                        let n = self.type_unit_infix(node, 0, node_start);
-                                        next = Next::Reduce {
+                                        next = Next::Unit {
+                                            left: node,
+                                            min_prec: um,
                                             start: node_start,
-                                            value: n,
+                                            spine: 0,
                                         };
                                     } else {
                                         // Continue the postfix loop on the new node (more `.member`/`(…)`).
@@ -8190,6 +8344,7 @@ impl<'a> Parser<'a> {
                                             node_start,
                                             node,
                                             spine,
+                                            um,
                                         };
                                     }
                                 }
