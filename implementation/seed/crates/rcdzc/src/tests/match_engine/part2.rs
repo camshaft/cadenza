@@ -924,19 +924,7 @@ fn a_non_byte_aligned_int_bin_segment_names_the_supported_widths() {
 // 3 no-over-rejection controls that MATCH + RUN (list→1, map→10, tuple→7; the controls build the
 // collection as a constant inside a nullary main, since a collection PARAMETER to an export declines).
 // --case grades the codes + messages + run values.)
-#[test]
-fn a_bytes_match_with_only_a_bin_arm_and_no_catch_all_is_non_exhaustive() {
-    // A `(bin …)` pattern never covers every byte sequence (empty input, wrong length, an unequal
-    // literal all fail), so a match whose only arm is a bin pattern is non-exhaustive → CDZ0210,
-    // exactly as a sum match missing a variant.
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (match (Bytes.of (list 1 2)) ((bin (u16 n)) n))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0210"),
-    );
-}
+// (a_bytes_match_with_only_a_bin_arm_and_no_catch_all_is_non_exhaustive migrated to corpus 16-binary-matching: CDZ0210. PASS wasm.)
 
 #[test]
 fn a_runtime_bin_construction_builds_and_range_checks_under_wasmtime() {
@@ -1872,20 +1860,7 @@ fn decimal_from_f64_round_trips_by_bits() {
     assert!(Decimal::from_f64(f64::NAN).is_none());
 }
 
-#[test]
-fn a_utf8_bin_match_with_no_catch_all_is_non_exhaustive() {
-    // A `utf8` segment can fail to match (ill-formed bytes), so a `bin` match whose only arm carries a
-    // `(utf8 …)` segment does not cover every byte sequence → CDZ0210 (the exhaustiveness rule every
-    // `bin` match obeys, made pointed by the decode itself being a source of non-match).
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (match (Bytes.of (list 3 102 111 111)) \
-                   ((bin (u8 n) (utf8 name n)) name))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0210")
-    );
-}
+// (a_utf8_bin_match_with_no_catch_all_is_non_exhaustive migrated to corpus 16-binary-matching: CDZ0210. PASS wasm.)
 
 // (a_string_annotation_checks_against_a_string_value migrated to corpus 13-strings: `(: "hi" Int64)` is a
 // String-vs-scalar annotation mismatch → CDZ0203. PASS wasm.)
