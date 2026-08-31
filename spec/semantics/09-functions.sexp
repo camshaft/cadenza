@@ -12956,20 +12956,23 @@
   ; excluded from INC1; see doc for the over-suppression tripwire.
   (live-objects known-leak))
 
-; A RECURSIVE local function that CAPTURES a binding from its enclosing scope needs LAMBDA-LIFTING (hoist
-; the local function, thread the captured value as an explicit parameter). That feature is not yet built,
-; so it is DECLINED with a clean coded diagnostic (CDZ0900, reject-not-miscompile — the honest interim per
-; concierge item3 ruling), NOT the former cryptic internal "parameter reference has no local slot". The
-; boundary is exactly RECURSION + CAPTURE: a non-recursive capturing local inlines (the binding flows in),
-; and a non-capturing recursive local compiles standalone (the two positive companions below pin that only
-; the combination declines). The message names the two mechanical work-arounds.
+; A RECURSIVE local function that CAPTURES a binding from its enclosing scope is a VALID program that SHOULD
+; compile via LAMBDA-LIFTING (hoist the local function, thread the captured value as an explicit parameter).
+; That feature is not yet built, so this case is a TODO: it pins the SPEC VALUE (`f n` counts x down from 5
+; to -1 and returns the captured `n`, so `(f 7)` = 7) and AUTO-LOCKS to Pass when lambda-lifting lands — the
+; corpus is the impl-independent spec (operator directive), so it must not pin the transient compiler decline.
+; (The compiler currently declines it with a clean coded interim diagnostic, CDZ0900 — a compiler-INTERNAL, not
+; a spec outcome.) The boundary is exactly RECURSION + CAPTURE: a non-recursive capturing local inlines (the
+; binding flows in), and a non-capturing recursive local compiles standalone (the two positive companions below
+; pin that only the combination is not-yet-built); those companions witness the two mechanical work-arounds.
 (case
-  "a recursive local function that captures its enclosing scope is declined with a coded diagnostic"
+  "a recursive local function that captures its enclosing scope returns the captured value (should compile via lambda-lifting; todo until built)"
   (input
     (do
       (def (f (: n Int64)) (do (def (rec (: x Int64)) (if (< x 0) n (rec (- x 1)))) (rec 5)))
       (export f)))
-  (declines (message "recursive local function that captures a binding from its enclosing scope")))
+  (call f (: 7 Int64))
+  (output (: 7 Int64)))
 
 (case
   "the work-around — threading the captured value as an explicit parameter — compiles and runs"
