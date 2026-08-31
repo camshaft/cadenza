@@ -530,6 +530,10 @@ todo	ml/491-wit-enum-case-bare-name
 todo	ml/492-wit-flags-bit-bare-name
 todo	ml/493-reserved-forall-bare-value
 todo	ml/494-reserved-as-bare-value
+todo	ml/495-unterminated-string-literal
+todo	ml/496-unterminated-byte-string-literal
+todo	ml/497-unterminated-symbol-literal
+todo	ml/498-unterminated-backtick-name
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string
