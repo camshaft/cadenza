@@ -1077,9 +1077,9 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         return Resolved::Poison(
             Reject::coded(
                 Code::Malformed,
-                "`..` is a rest/spread marker, valid only inside a `(list …)` or `(map …)` PATTERN \
-                 (e.g. `(list a .. rest)`, which binds the leading elements and the tail) — it is not a \
-                 value or a form head here",
+                "`..` is a rest/spread marker, valid only inside a collection PATTERN — a `(list …)`, \
+                 `(map …)`, `(tuple …)`, `(record …)`, or `(set …)` pattern (e.g. `(list a .. rest)`, \
+                 which binds the leading elements and the tail) — it is not a value or a form head here",
             )
             .at(id),
         );
