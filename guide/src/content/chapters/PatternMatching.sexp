@@ -106,7 +106,7 @@
     (source (match #set(1 2 3)
   (#set(1 (.. rest)) (Some rest))
   (_ (None unit)))))
-  (p "The scrutinee " (c "#set(1 2 3)") " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (c "#set(2 3)") ", making the whole expression " (c "(Some #set(2 3))") " — the leftover set, returned as an " (c "Option") " since a set that lacks the named member takes the " (c "None") " arm instead. Three things follow from its being a containment test: it matches a " (em "superset") " too (" (c "#set(1)") " matches " (c "#set(1 2 3)") "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (c "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
+  (p "The scrutinee " (c "#set(1 2 3)") " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (c "#set(2 3)") ", making the whole expression " (c "(Some #set(2 3))") ", the leftover set, returned as an " (c "Option") " since a set that lacks the named member takes the " (c "None") " arm instead. Three things follow from its being a containment test: it matches a " (em "superset") " too (" (c "#set(1)") " matches " (c "#set(1 2 3)") "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (c "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
   (h2 "Your turn")
   (exercise
     (id "pattern-matching:1")
