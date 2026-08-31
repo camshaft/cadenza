@@ -1845,6 +1845,17 @@ private def _ratSubNegExpr : Module :=
                .atom 4, .atom 6, .list #[3, 7, 8], .atom 0, .list #[10, 6, 9]],
     root := 11 }
 #guard symEval _ratSubNegExpr [] symDefaultFuel defaultIntTy 11 == SymOutcome.sym (.const (.rational (-1) 4))
+-- RATIONAL divide-by-zero-VALUE boundary (v-spec-oracle #6813): dividing by the zero-VALUED rational 0/1
+-- (a valid value, distinct from the zero-DENOMINATOR non-value) is a div-by-zero → rationalArith traps →
+-- the fold correctly STAYS SYMBOLIC (not a value). In the differential the backend const-proves the zero
+-- divisor and rejects CDZ0304 (program declines), so a symbolic verdict here is safe (never a false proven).
+#guard symEval { leaves := #[Leaf.name "/".toUTF8, Leaf.name ".".toUTF8, Leaf.name "Rational".toUTF8,
+                             Leaf.name "of".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                             Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[0])],
+                 nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 4, .atom 5, .list #[3, 4, 5],
+                            .atom 6, .atom 4, .list #[3, 7, 8], .atom 0, .list #[10, 6, 9]], root := 11 }
+                [] symDefaultFuel defaultIntTy 11
+       == SymOutcome.sym (.app "/" #[.const (.rational 1 2), .const (.rational 0 1)])
 
 -- BYTES.OF member-op coverage: `((. Bytes of) (list 10 20 30))` → `.const (.bytes #{10,20,30})`.
 private def _bytesOfExpr : Module :=
