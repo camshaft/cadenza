@@ -553,6 +553,12 @@ theorem evalArithOp_add_zero_r (x : Int) (ty : IntTy) (v : Value)
   simp only [evalArithOp, Int.add_zero] at h
   repeat' (first | (split at h) | simp_all (config := { decide := true }))
 
+/-- Left additive identity `0 + y` (the `0 + x → x` normalizer arm's arithmetic core). -/
+theorem evalArithOp_add_zero_l (y : Int) (ty : IntTy) (v : Value)
+    (h : evalArithOp "+" 0 y ty = .value v) : v = .int y := by
+  simp only [evalArithOp, Int.zero_add] at h
+  repeat' (first | (split at h) | simp_all (config := { decide := true }))
+
 theorem evalArithOp_sub_zero_r (x : Int) (ty : IntTy) (v : Value)
     (h : evalArithOp "-" x 0 ty = .value v) : v = .int x := by
   simp only [evalArithOp, Int.sub_zero] at h
@@ -590,6 +596,11 @@ theorem denoteBinary_add_zero_value (w : IntTy) (x : Int) (v : Value)
     (hf : foldConst? "+" #[.const (.int x), .const (.int 0)] = none)
     (h : denoteBinary "+" w (.value (.int x)) (.value (.int 0)) = .value v) : v = .int x :=
   evalArithOp_add_zero_r x w v (denoteBinary_arith "+" w x 0 hf (by decide) ▸ h)
+
+theorem denoteBinary_add_zero_l_value (w : IntTy) (y : Int) (v : Value)
+    (hf : foldConst? "+" #[.const (.int 0), .const (.int y)] = none)
+    (h : denoteBinary "+" w (.value (.int 0)) (.value (.int y)) = .value v) : v = .int y :=
+  evalArithOp_add_zero_l y w v (denoteBinary_arith "+" w 0 y hf (by decide) ▸ h)
 
 -- The remaining operand-DROPPING identities (`0*x→0`, `x-x→0`, `x%1→0`).
 theorem denoteBinary_mul_zero_l_value (w : IntTy) (y : Int) (v : Value)
