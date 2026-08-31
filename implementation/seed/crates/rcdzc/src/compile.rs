@@ -6869,7 +6869,10 @@ type LinkedInputs = (
 /// program clone-free; a self-reflecting file pays one clone so the `Prim::ReflectModule` fill can reflect its
 /// pre-mutation source (the live arena is rewritten in place before lowering).
 fn module_snapshot(arena: &crate::ast::Arenas) -> Option<std::rc::Rc<crate::ast::Arenas>> {
-    crate::quote::contains_ast_module(arena).then(|| std::rc::Rc::new(arena.clone()))
+    // Captured for `Ast.module` self-reflection OR `Type.ast`/`Type.ast-generic` type→AST reflection —
+    // both reflect a file's PRE-RESOLVE source, so either use demands the one snapshot clone.
+    (crate::quote::contains_ast_module(arena) || crate::quote::contains_type_ast(arena))
+        .then(|| std::rc::Rc::new(arena.clone()))
 }
 
 fn link_inputs(ast_arts: &[&Artifact], entry_name: Option<&str>) -> Result<LinkedInputs, Reject> {

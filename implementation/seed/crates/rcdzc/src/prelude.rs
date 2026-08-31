@@ -1937,7 +1937,23 @@ fn type_module(ast: &mut Arenas) -> StructId {
         let eqh = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eqh, eq_field, eq_op])
     };
-    push_list(ast, vec![head, of, eq])
+    // `ast` / `ast-generic` (`(meta apply) = TypeAst`) reflect a type-VALUE to the `Ast` of its DEFINITION
+    // (the verbatim `(type Name …)` decl form) — `ast` the INSTANTIATED decl (concrete args substituted),
+    // `ast-generic` the GENERIC decl (type params intact). Both `Type -> Ast`, pure, folded at lower time.
+    // Same builder-record shape as `of`/`eq` (`ctor_record`), reached by member access `(. Type ast)`.
+    let ast_field = push_atom(ast, Leaf::Name("ast".into()));
+    let ast_op = ctor_record(ast, "type-ast");
+    let ast_gen = {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, ast_field, ast_op])
+    };
+    let ast_generic_field = push_atom(ast, Leaf::Name("ast-generic".into()));
+    let ast_generic_op = ctor_record(ast, "type-ast-generic");
+    let ast_generic = {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, ast_generic_field, ast_generic_op])
+    };
+    push_list(ast, vec![head, of, eq, ast_gen, ast_generic])
 }
 
 /// The type `(fn () (-> Char Int64))` for `Char.to-int` — the total scalar-value read. A ZERO-PARAM `fn`

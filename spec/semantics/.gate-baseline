@@ -511,6 +511,8 @@ pass	TWO stacked @ensures COMPOSE: BOTH postconditions are enforced — value-tr
 pass	TWO stacked @ensures: a violated INNER postcondition traps even when the OUTER holds
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	Type is a first-class value
+pass	Type.ast on a non-generic type coincides with Type.ast-generic (verbatim decl)
+pass	Type.ast-generic reflects a nominal sum type's verbatim declaration AST
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type
 pass	Type.eq carries an integer type's full width and signedness
 pass	Type.eq compares a RECORD type-value structurally, by field types

@@ -1258,6 +1258,88 @@ pub(super) fn reflect_module_value(db: &mut Db, file_index: usize) -> Core {
     }
 }
 
+/// Fold `Type.ast-generic e` (and the non-generic case of `Type.ast e`) to the `Ast` VALUE of `e`'s type
+/// DEFINITION — the verbatim `(type Name …)` declaration reflected via the ordinary `Ast.*` ctors
+/// (`DESIGN-type-to-ast-reflection.md`; increment 1 = nominal/sum only). Reduces `e` to its type-VALUE
+/// (`typeval_of`), recovers the declaring `TypeDecl` from the `Ty::Sum`/`Nominal` `decl` occurrence, and
+/// reflects that decl's PRE-RESOLVE SOURCE node — from the defining file's snapshot, the SAME verbatim-source
+/// path `Ast.module` uses, since the live arena is post-resolve — via `arenas_to_ast_value`. `instantiated`
+/// (the short `Type.ast`) is the same verbatim decl for a NON-generic type; a GENERIC type's instantiated
+/// substitution is increment 3, so it declines here. Declines cleanly (never miscompiles) when the argument
+/// is not a concrete nominal/sum, the built-in `Ast` sum is unavailable, or no snapshot / decl node is found.
+pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> Core {
+    let Some(ty) = crate::eval::typeval_of(db, arg) else {
+        return Core::Poison(Reject::decline(
+            "Type.ast requires a concrete type-value (a Type.of result or a written type)",
+        ));
+    };
+    let decl = match &ty {
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => *decl,
+        _ => {
+            return Core::Poison(Reject::decline(
+                "Type.ast: only a nominal/sum type reflects its declaration (increment 1)",
+            ));
+        }
+    };
+    let Some((name, is_generic)) = db
+        .type_decl_by_occ(decl)
+        .map(|d| (d.name.clone(), !d.params.is_empty()))
+    else {
+        return Core::Poison(Reject::decline(
+            "Type.ast: no declaration found for the type",
+        ));
+    };
+    // The instantiated form (`Type.ast`) of a GENERIC type substitutes its concrete args into the decl —
+    // increment 3. For a non-generic type the instantiated and generic decl coincide, so proceed.
+    if instantiated && is_generic {
+        return Core::Poison(Reject::decline(
+            "Type.ast (instantiated) on a generic type is not yet supported; use Type.ast-generic",
+        ));
+    }
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline(
+            "Type.ast: the built-in Ast sum is unavailable",
+        ));
+    };
+    let file = db.file_of(decl).unwrap_or(0);
+    let Some(snapshot) = db.source_snapshots.get(file).cloned().flatten() else {
+        return Core::Poison(Reject::decline(
+            "Type.ast: no source snapshot for the declaring module",
+        ));
+    };
+    let Some(node) = find_type_decl_node(&snapshot, snapshot.root, &name) else {
+        return Core::Poison(Reject::decline(
+            "Type.ast: the type declaration was not found in the module source",
+        ));
+    };
+    match arenas_to_ast_value(db, &snapshot, node, &disc) {
+        Some(root) => core_of(db, root),
+        None => Core::Poison(Reject::decline(
+            "Type.ast: the declaration has a node with no Ast variant",
+        )),
+    }
+}
+
+/// Recursively find the `(type NAME …)` declaration form for `name` under `sid` in a PRE-RESOLVE source
+/// arena — the verbatim node `Type.ast-generic` reflects. First-match by name within the declaring file
+/// (increment 1; identity-by-occurrence for same-named decls is a later increment).
+fn find_type_decl_node(arenas: &crate::ast::Arenas, sid: StructId, name: &str) -> Option<StructId> {
+    if let Some(elems) = arenas.as_form(sid, "type")
+        && let Some(&first) = elems.first()
+        && arenas.as_name(first) == Some(name)
+    {
+        return Some(sid);
+    }
+    if let crate::ast::Struct::List(children) = arenas.get(sid) {
+        for c in children.clone() {
+            if let Some(found) = find_type_decl_node(arenas, c, name) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 /// Rebuild an `Ast` sum VALUE (`Core::SumNew`) from a node of a `codec::decode`d cadenza-ast `Arenas` — the
 /// inverse of `encode_ast_value`. Walks the `Struct`/`Leaf` at `sid` (an arena-local id) and maps each
 /// cadenza-ast kind to the matching `Ast` variant, synthesizing the payload + `SumNew` in `db`'s arena.
