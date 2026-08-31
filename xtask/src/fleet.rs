@@ -374,6 +374,7 @@ impl Fleet {
             "git-stash-safety-shim.sh",
             "cpu-monitor.sh",
             "warm-keep.sh",
+            "baseline-drift-monitor.sh",
         ] {
             let src = self.src.join(f);
             if src.exists() {
@@ -1729,6 +1730,52 @@ fn ensure_reap_orphans_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired DAILY user-crontab line for the baseline-drift DETECT monitor (concierge-greenlit
+/// 2026-08-31), tagged `# fleet:baseline-drift` so [`reconcile_tagged_crons`] can find/heal it. Runs the HUB
+/// copy of `baseline-drift-monitor.sh` — a CHEAP grep title-count scan (NO build/gate) that notifies
+/// v-corpus-harness when `.gate-baseline` drifts past the threshold behind the corpus (it went 911 titles
+/// behind SILENTLY because nothing watched the count). DETECT-only: the heavy `gate --save` stays TRIGGERED
+/// (never cron'd — heaviest build + needs a warm store + review-before-land). DAILY (drift accrues slowly —
+/// 911 over days), at an off-minute `23 4` (avoid the herd; a cheap scan, timing is not load-sensitive).
+/// Silent (a sub-threshold scan emits no cron mail; the script itself has a per-notify cooldown).
+fn baseline_drift_cron_line(hub_script: &str) -> String {
+    format!("23 4 * * * bash {hub_script} >/dev/null 2>&1 # fleet:baseline-drift")
+}
+
+/// Ensure the `# fleet:baseline-drift` daily user-crontab entry exists + points at THIS hub's
+/// `baseline-drift-monitor.sh` (concierge-greenlit 2026-08-31, the DETECT half of the baseline-drift
+/// automation split). Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as the other self-crons,
+/// and INDEPENDENT of them (a separate reconcile/write in `up`, each preserving the others' lines). Skips
+/// silently if the script isn't materialized yet (older tree) or `crontab` is absent/errs.
+fn ensure_baseline_drift_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("baseline-drift-monitor.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:baseline-drift",
+        baseline_drift_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// Pure decision for the checkout-symlink bootstrap: given whether the tracked source dir exists, and the
 /// current state of the `.claude/<name>` path (is-symlink, symlink-target, exists-as-non-symlink), what
 /// should `ensure_claude_symlinks` DO? Split out so the "when do we (re)link vs skip vs refuse" policy is
@@ -1833,6 +1880,10 @@ fn up(fleet: &Fleet) {
     // owner-dead) that hold derivation locks + starve the gate lane auto-clean instead of piling up until a
     // manual reaper run. Independent of the other self-crons; fail-open + drift-healed. Wedge-kill stays manual.
     ensure_reap_orphans_cron(fleet);
+    // Re-arm the DAILY baseline-drift DETECT cron (concierge-greenlit 2026-08-31) — a cheap grep title-count
+    // scan that notifies v-corpus-harness when `.gate-baseline` drifts past threshold behind the corpus (it
+    // went 911 behind silently). DETECT-only; the heavy `gate --save` stays triggered. Fail-open, drift-healed.
+    ensure_baseline_drift_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -17067,6 +17118,50 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
                 .count(),
             1,
             "exactly one prune-stale-targets line"
+        );
+    }
+
+    #[test]
+    fn baseline_drift_cron_line_is_daily_off_minute_silent_and_tagged() {
+        let line = baseline_drift_cron_line("/hub/baseline-drift-monitor.sh");
+        // DAILY at an off-minute (23 4 — not :00/:30), runs the hub script, silent, tagged.
+        assert!(
+            line.starts_with("23 4 * * * bash /hub/baseline-drift-monitor.sh"),
+            "daily off-minute, invoking the hub script: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — no cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:baseline-drift"),
+            "carries the reconcile tag: {line}"
+        );
+        // DETECT-only: it must NOT run a gate --save (the heavy generation stays triggered, never cron'd).
+        assert!(
+            !line.contains("gate"),
+            "detect-only, no gate --save on a timer: {line}"
+        );
+    }
+
+    #[test]
+    fn reconcile_tagged_crons_installs_the_baseline_drift_line_beside_the_others() {
+        let desired = [(
+            "# fleet:baseline-drift",
+            baseline_drift_cron_line("/hub/baseline-drift-monitor.sh"),
+        )];
+        let want = &desired[0].1;
+        let out = reconcile_tagged_crons("", &desired).expect("installs when absent");
+        assert!(out.contains(want) && out.ends_with('\n'));
+        // Present beside cpu-monitor + reap-orphans → no rewrite; preserves the others.
+        let full = format!(
+            "*/2 * * * * bash /hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n\
+             7,37 * * * * bash /hub/reap-wedged-nix-clients.sh --orphans-only --apply >/dev/null 2>&1 # fleet:reap-orphans\n\
+             {want}\n"
+        );
+        assert!(
+            reconcile_tagged_crons(&full, &desired).is_none(),
+            "verbatim-present → no rewrite"
         );
     }
 
