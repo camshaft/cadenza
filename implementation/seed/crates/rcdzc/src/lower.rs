@@ -6102,6 +6102,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
     match op {
         Prim::Add => "+",
         Prim::Sub => "-",
+        Prim::Neg => "neg",
         Prim::Mul => "*",
         Prim::Div => "/",
         Prim::Rem => "%",

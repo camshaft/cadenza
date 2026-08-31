@@ -171,8 +171,12 @@ pass	Int64 MAX threads the handler state intact (representation at the boundary)
 pass	Int64.checked-add over a u64 host-op RESULT evaluates the host call ONCE (the overflow formula names the operand)
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
+pass	Int64.neg of a constant folds to the negated value
+pass	Int64.neg of a runtime expression negates at runtime, both signs
+pass	Int64.neg of the minimum integer traps as a compile-provable overflow
 pass	Int64.of over a runtime Float64 operand rejects — no float-to-int narrowing is blessed
 pass	Int64.of over a u64 host-op RESULT evaluates the host call ONCE (the range-check names the operand)
+pass	Int8.neg negates at a narrower signed width
 pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
 pass	Int8.wrap of a constant with the sign bit set reinterprets as negative
 pass	Int8.wrap of all-ones-byte is negative one
@@ -5829,6 +5833,7 @@ pass	an unsigned LEB128 encoder emits a single byte below the continuation thres
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type
 pass	an unsigned equality guard pins the exact value so a then-branch arith sheds its guard (value parity)
+pass	an unsigned integer module offers no neg member
 pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned runtime value is not accepted by a signed segment of the same width

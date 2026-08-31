@@ -154,6 +154,13 @@ pub enum Prim {
     /// Integer Types Is Explicit: "a range-checked conversion that traps on a value outside the target
     /// type's range"). A CONSTANT operand FOLDS — in range → `Core::ConstInt`, out of range → `Core::Trap`.
     CheckedOf,
+    /// The UNARY integer negation `T.neg : T → T` — the first-class named form of prefix `(- e)`, for a
+    /// SIGNED integer module `T = (Int width)`. `(Int64.neg x)` = `0 - x` at the target width; a CONSTANT
+    /// operand FOLDS to a negated `Core::ConstInt`, and negating the width's minimum (`0 - Int64.min`)
+    /// TRAPS as a compile-provable overflow (CDZ0304) — the same fold/trap the prefix `(- e)` uses, since
+    /// it lowers through `lower_negate` (`0 - e`). Offered only on the SIGNED widths; an unsigned negate
+    /// would underflow-trap on every nonzero input, so it is not built.
+    Neg,
     /// `Int : Nat → Module` — applied to a width, builds the signed integer module of that width.
     IntCtor,
     /// `UInt : Nat → Module` — the unsigned integer module builder.
@@ -885,6 +892,7 @@ impl Prim {
             "compare" => Some(Prim::Compare),
             "wrap" => Some(Prim::Wrap),
             "checked-of" => Some(Prim::CheckedOf),
+            "neg" => Some(Prim::Neg),
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),
             "Float" => Some(Prim::FloatCtor),

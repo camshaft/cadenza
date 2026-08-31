@@ -1855,6 +1855,13 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: unary negation (- e) → 0 - e at the operand's type");
                     lower_negate(db, id, args[0])
                 }
+                // NAMED unary negation `T.neg x` — the first-class form of prefix `(- e)`. Lowers through
+                // the SAME `lower_negate` (`0 - e` at the operand's type), so it inherits the constant fold
+                // and the `0 - min` → CDZ0304 overflow trap. Offered only on signed widths (prelude).
+                Some(Prim::Neg) if args.len() == 1 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: named unary negation T.neg x → 0 - x");
+                    lower_negate(db, id, args[0])
+                }
                 // A PARTIALLY-applied binary OPERATOR — `(+ 1)`, `(< 3)`, `(* 2)` — CURRIES to a first-class
                 // function of the remaining operand (operator ruling: "operators should curry"). Synthesize
                 // the equivalent lambda `(fn (b) (op supplied b))` and lower it as a value — the same shape
