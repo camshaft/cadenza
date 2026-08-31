@@ -590,6 +590,20 @@ theorem denote_normalize_tuple (ρ : Nat → Value) (w : IntTy) (es : Array SymE
     simp only [Array.getElem_map, Array.getElem_attach]
     rw [ih _ (Array.getElem_mem _)]
 
+/-- Shared Array `.attach.map` congruence used by the capstone `.app` case (and the same shape as the
+tuple/record element congruence): if each arg's denotation is congruence-invariant under `normalize`
+(`denote (normalize aᵢ) = denote aᵢ`), the whole `denote`-mapped arg array is unchanged. `denoteApp`
+(which `denote (.app …)` calls on this map) then commutes with `normalize` on the arguments. -/
+theorem denote_map_normalize_args (ρ : Nat → Value) (w : IntTy) (args : Array SymExpr)
+    (ih : ∀ a ∈ args, denote ρ w (normalize a) = denote ρ w a) :
+    args.attach.map (fun x => denote ρ w (normalize x.val))
+      = args.attach.map (fun x => denote ρ w x.val) := by
+  apply Array.ext
+  · simp
+  · intro i h1 h2
+    simp only [Array.getElem_map, Array.getElem_attach]
+    rw [ih _ (Array.getElem_mem _)]
+
 /-- CAPSTONE record case (full-equality, per-element IH over the field VALUES). Same Array `.attach.map`
 congruence as the tuple case, over field pairs `(key, value)` — the key is preserved, the value normalized. -/
 theorem denote_normalize_record (ρ : Nat → Value) (w : IntTy) (fs : Array (ByteArray × SymExpr))
