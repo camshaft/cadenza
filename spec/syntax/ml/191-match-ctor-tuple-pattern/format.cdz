@@ -1,0 +1,3 @@
+match p with
+  | Some((a, b)) => 1
+  | _ => 0

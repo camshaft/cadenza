@@ -5951,23 +5951,12 @@ mod tests {
     //     `(quasiquote (f (unquote-splicing args) last))`.
     // The `print((quasiquote …))` sexp→ml oracles are subsumed by these ml cases' format goldens.
 
-    #[test]
-    fn small_forms_inline() {
-        assert_eq!(assert_roundtrip("1 + 2 * 3", 80), "1 + 2 * 3");
-        assert_eq!(assert_roundtrip("f(a, b, c)", 80), "f(a, b, c)");
-        assert_eq!(assert_roundtrip("a.b.c", 80), "a.b.c");
-        assert_eq!(
-            assert_roundtrip("if a then b else c", 80),
-            "if a then b else c"
-        );
-        // `let … in` always breaks the body to its own line, FLAT at the let column (ML idiom;
-        // operator seq-86 — the final body is not indented below the `let`).
-        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
-        assert_eq!(
-            assert_roundtrip("fn(x, y) => x + y", 80),
-            "fn(x, y) => x + y"
-        );
-    }
+    // `small_forms_inline` (small expression forms print inline) MIGRATED to the spec/syntax corpus
+    // (inc-6 batch-24). The NEW forms: ml/186-member-access-chain `a.b.c`→`(. (. a b) c)`,
+    // ml/187-if-then-else-basic `if a then b else c`→`(if a b c)`, ml/188-lambda-multi-param
+    // `fn(x, y) => x + y`→`(fn (x y) (+ x y))`. The other three asserts are already pinned by earlier
+    // cases: `1 + 2 * 3` = ml/02-arith-precedence, `f(a, b, c)` = the call surface (ml/04-call `f(a, b)`),
+    // `let x = 1 in x` = ml/03-let (`let … in` breaks the body to its own flat line).
 
     // `prefix_unary_minus_round_trips` (prefix negation `-<expr>` → arity-1 `(- e)`, printed tight; a
     // `-<digit>` is a signed LITERAL leaf, not a `(- …)` wrapper) MIGRATED to the spec/syntax corpus
@@ -8671,12 +8660,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn minimal_parens() {
-        // precedence: * binds tighter than +, so no parens; but (1 + 2) * 3 needs them
-        assert_eq!(assert_roundtrip("(1 + 2) * 3", 80), "(1 + 2) * 3");
-        assert_eq!(assert_roundtrip("1 + 2 * 3", 80), "1 + 2 * 3");
-    }
+    // `minimal_parens` (precedence: `*` binds tighter than `+`, so no parens; `(1 + 2) * 3` needs them)
+    // is fully subsumed by existing corpus cases — MIGRATED (inc-6 batch-24): `(1 + 2) * 3` =
+    // ml/79-paren-grouping-not-tuple (`(* (+ 1 2) 3)`), `1 + 2 * 3` = ml/02-arith-precedence
+    // (`(+ 1 (* 2 3))`). No new cases needed; the two assertions were already pinned.
 
     #[test]
     fn match_always_one_arm_per_line() {
@@ -8932,30 +8919,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tuple_patterns_use_paren_sugar() {
-        // A `(tuple …)` pattern with 2+ elements prints as `(p, …)`, matching the value tuple.
-        assert_eq!(
-            assert_roundtrip("match p with | (a, b) => a + b | _ => 0", 80),
-            "match p with\n  | (a, b) => a + b\n  | _ => 0"
-        );
-        // nested, and inside a constructor.
-        let a = sexpr::read("(match p ((tuple a (tuple b c)) 9) (_ 0))").unwrap();
-        assert!(
-            print(&a, 80).contains("(a, (b, c)) =>"),
-            "got: {}",
-            print(&a, 80)
-        );
-        let a = sexpr::read("(match p ((Some (tuple a b)) 1) (_ 0))").unwrap();
-        assert!(
-            print(&a, 80).contains("Some((a, b)) =>"),
-            "got: {}",
-            print(&a, 80)
-        );
-        // a 1-element tuple pattern prints `(a,)` (trailing comma), re-reading as a 1-tuple not `(a)`.
-        let a = sexpr::read("(match p ((tuple a) a) (_ 0))").unwrap();
-        assert!(print(&a, 80).contains("(a,) =>"), "got: {}", print(&a, 80));
-    }
+    // `tuple_patterns_use_paren_sugar` (a `(tuple …)` pattern with 2+ elements prints as `(p, …)`, matching
+    // the value tuple; a 1-element tuple pattern prints `(a,)` with a trailing comma) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-24): ml/189-match-tuple-pattern `| (a, b) => a + b`→
+    // `((tuple a b) (+ a b))`, ml/190-match-nested-tuple-pattern `| (a, (b, c)) => 9`→
+    // `((tuple a (tuple b c)) 9)`, ml/191-match-ctor-tuple-pattern `| Some((a, b)) => 1`→
+    // `((Some (tuple a b)) 1)`, ml/192-match-one-tuple-pattern `| (a,) => a`→`((tuple a) a)` (the 1-tuple
+    // re-reads as a 1-tuple, not `(a)`). Each carries a format.cdz for the one-arm-per-line match surface;
+    // the sexp→ml `.contains(…)` oracles are subsumed by the ml cases' fmt goldens.
 
     // `rest_operator_round_trips_across_collections` (`..` is the ONE rest/spread marker, uniform across
     // list/map/record/set in BOTH construction and pattern position, re-reading as `.. rest`) MIGRATED to
