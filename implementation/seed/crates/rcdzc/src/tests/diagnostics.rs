@@ -339,37 +339,10 @@ fn a_cross_kind_operator_clash_uses_the_correct_indefinite_article() {
     );
 }
 
-/// A mismatched-type comparison — `(< 1 "x")` (Int64 vs String) — reports the coded "… are different
-/// types" reject (CDZ0201, naming the kind boundary). Because one operand is a compound/text the emit
-/// path cannot fold to a scalar, `lower` ALSO returned the uncoded "comparison of a compound value
-/// needs a heap walk (not yet built)" decline — a CONSEQUENCE of the mismatch that MISDIRECTS (reads as
-/// an unbuilt feature). `dedup_faults` now drops that decline when a comparison type-mismatch reject is
-/// present, so it is ONE primary error. A WELL-TYPED compound comparison (no mismatch reject) keeps its
-/// honest not-yet-built decline.
-#[test]
-fn a_mismatched_comparison_drops_the_uncoded_heap_walk_decline() {
-    use crate::testkit::parse;
-    // The cross-kind comparison REJECT (CDZ0201 "are different types") + the compound-ordering-compiles /
-    // same-kind arity-delta facets moved to corpus 07-type-system "ordering a tuple against a list is a
-    // cross-kind type error" + siblings. Residual: the dedup the corpus cannot express — a mismatched
-    // comparison must NOT also leak the UNCODED "needs a heap walk (not yet built)" decline (a consequence
-    // of the mismatch); (no-other-errors) is coded-only, so it cannot assert the absence of an uncoded one.
-    for src in [
-        "(module m (def (main) (if (< 1 \"x\") 1 2)) (export main))",
-        "(module m (def (main) (if (< (tuple 1 2) (list 3)) 1 2)) (export main))",
-        "(module m (def (main) (if (= (tuple 1 2) (list 3)) 1 2)) (export main))",
-    ] {
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.message.contains("needs a heap walk")),
-            "the uncoded heap-walk decline is dropped: {src} -> {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-}
-
+// (a_mismatched_comparison_drops_the_uncoded_heap_walk_decline migrated to corpus 07-type-system: the 3
+//  cross-kind compares (< 1 "x", < / = of #tuple vs #list) each pin CDZ0201 "different types" + (count 1)
+//  dedup AND (no-diagnostic "needs a heap walk") — the uncoded consequent decline is dropped, via the
+//  program-scoped (no-diagnostic) lever #6765 that (not …)/(count) can't express.)
 // (a_match_pattern_head_naming_a_non_variant_suggests_the_nearest_variant migrated to corpus 05-compound-types
 //  (adjacent to "a match pattern naming a non-existent variant is a coded rejection"): the pattern-head
 //  variant-typo enrichment — near-typo did-you-mean + replace fix / far-typo "closest matches" list + no-fix,
