@@ -1,0 +1,5 @@
+module M {
+  def a() -> Int64 = 1
+
+  /// trailing doc
+}

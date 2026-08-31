@@ -6441,93 +6441,32 @@ mod tests {
         let _ = parser::read_ml(&printed);
     }
 
-    #[test]
-    fn a_leading_module_doc_prints_above_the_keyword_and_round_trips() {
-        // A `///` header ABOVE `module M {` documents the MODULE — the reader attaches it as a LEADING
-        // `(doc …)` MEMBER: `(module M (doc …) (def …))`. This is a DISTINCT tree from a doc INSIDE the
-        // braces, which attaches to the def it precedes: `(module M (def (x) (doc …) …))`. Regression:
-        // `print_module` rendered the leading module-doc member as an in-body `///` line, so it re-read
-        // as a doc on the FIRST member — silently MIGRATING the module-doc onto that member (a round-trip
-        // break in my core invariant). The leading doc run now prints ABOVE the `module` keyword.
-        // A leading module-doc member prints above `module`, and re-reads to the SAME module-doc member
-        // (NOT migrated into the def) — the round-trip witness.
-        let a = sexpr::read(r#"(module M (doc "one") (doc "two") (def (y) (: 1 Int64)))"#).unwrap();
-        let printed = print(&a, 80);
-        assert_eq!(
-            printed, "/// one\n/// two\nmodule M {\n  def y() -> Int64 = 1\n}",
-            "leading module-docs print flush above the `module` keyword"
-        );
-        let b = parser::read_ml(&printed);
-        assert!(b.ok(), "reparse: {:?}", b.errors);
-        assert_eq!(
-            sexpr::print(&b.arenas),
-            "(module M (doc \"one\") (doc \"two\") (def (y) (: 1 Int64)))",
-            "docs stay MODULE members across the round-trip, not migrated onto the def"
-        );
-        // A doc INSIDE the braces (before a def) is the DISTINCT tree and must be UNCHANGED — it stays a
-        // doc on that def, printed indented in the body (the contrast that makes the fix correct, not a
-        // blanket hoist).
-        let body = parser::read_ml("module M {\n  /// on def\n  def y() -> Int64 = 1\n}");
-        assert_eq!(
-            sexpr::print(&body.arenas),
-            "(module M (def (y) (doc \"on def\") (: 1 Int64)))",
-            "an in-body doc attaches to the def, not the module"
-        );
-        // A doc-only module (no members) also round-trips: the leading doc prints above the empty braces.
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml(&print(
-                    &sexpr::read(r#"(module M (doc "only"))"#).unwrap(),
-                    80
-                ))
-                .arenas
-            ),
-            "(module M (doc \"only\"))"
-        );
-    }
+    // `a_leading_module_doc_prints_above_the_keyword_and_round_trips` (a `///` header ABOVE `module M {`
+    // attaches as a LEADING `(doc …)` MODULE MEMBER `(module M (doc …) (def …))`, prints flush above the
+    // `module` keyword, and re-reads to the SAME member — NOT migrated onto the first def; the DISTINCT
+    // in-body doc `(module M (def (y) (doc …) …))` stays on its def) MIGRATED to the spec/syntax corpus
+    // (inc-6 batch-48, module-doc block):
+    //   * ml/302-module-leading-doc `/// one`⏎`/// two`⏎`module M { def y() -> Int64 = 1 }`→
+    //     `(module M (doc "one") (doc "two") (def (y) (: 1 Int64)))`.
+    //   * ml/303-module-in-body-doc `module M {`⏎`  /// on def`⏎`  def y() -> Int64 = 1`⏎`}`→
+    //     `(module M (def (y) (doc "on def") (: 1 Int64)))` — the in-body contrast, doc on the def.
+    //   * ml/304-module-doc-only `/// only`⏎`module M {}`→`(module M (doc "only"))` (leading doc, empty body).
 
     #[test]
-    fn a_trailing_doc_or_comment_before_a_modules_close_brace_is_preserved_not_dropped() {
-        // A `///` doc or `//` comment on the last line(s) INSIDE a module body, before the closing `}`,
-        // has no following member — it sits in the `}` token's leading slot, which the member loop never
-        // drains, so it used to be DROPPED (a genuine content LOSS: `cdz fmt` then REFUSED the whole file
-        // via the comment-drop guard, so the module could not be formatted). module_expr now drains that
-        // slot after the loop (mirroring the top-level `program()` trailing handler).
+    fn a_trailing_comment_only_empty_module_keeps_its_name_intact() {
+        // The trailing-doc / trailing-comment PRESERVATION sub-cases of this test (a `///` doc or `//`
+        // comment on the last line(s) INSIDE a module body, before the `}`, drained from the close-brace's
+        // leading slot after the member loop — mirroring the top-level `program()` trailing handler)
+        // MIGRATED to the spec/syntax corpus (inc-6 batch-48, module-doc block):
+        //   * ml/305-module-trailing-doc `module M {`⏎`  def a() -> Int64 = 1`⏎`  /// trailing doc`⏎`}`→
+        //     `(module M (def (a) (: 1 Int64)) (doc "trailing doc"))` — trailing `///` → a doc MEMBER.
+        //   * ml/306-module-trailing-comment `module M {`⏎`  def a() -> Int64 = 1`⏎`  // trailing comment`⏎`}`→
+        //     `(module M (comment "trailing comment" (def (a) (: 1 Int64))))` — trailing `//` wraps last member.
+        //   * ml/307-module-trailing-doc-empty-body `module M {`⏎`  /// only doc`⏎`}`→`(module M (doc "only doc"))`.
+        // The comment-only EMPTY-body case below STAYS Rust: read drops the comment → `(module M)`, and the
+        // real `cdz fmt` REFUSES via the comment-drop guard (byte-identical), but the corpus reference printer
+        // has no drop-refuse guard — it would bless a content-losing `format.cdz`, so there is no clean slot.
         //
-        // A trailing `///` doc → a `(doc …)` MODULE MEMBER at the end of the body (docs are members here).
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("module M {\n  def a() -> Int64 = 1\n  /// trailing doc\n}")
-                    .arenas
-            ),
-            "(module M (def (a) (: 1 Int64)) (doc \"trailing doc\"))",
-            "a trailing `///` before the close brace becomes a doc member, not dropped"
-        );
-        // It round-trips (re-reading the printed form yields the same trailing doc member).
-        let printed = print(
-            &parser::read_ml("module M {\n  def a() -> Int64 = 1\n  /// trailing doc\n}").arenas,
-            80,
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml(&printed).arenas),
-            "(module M (def (a) (: 1 Int64)) (doc \"trailing doc\"))",
-            "trailing module doc round-trips"
-        );
-        // A trailing `//` comment → wraps the LAST member as `(comment …)`, preserved (not dropped).
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("module M {\n  def a() -> Int64 = 1\n  // trailing comment\n}")
-                    .arenas
-            ),
-            "(module M (comment \"trailing comment\" (def (a) (: 1 Int64))))",
-            "a trailing `//` before the close brace wraps the last member, not dropped"
-        );
-        // A trailing doc in an EMPTY module body is also preserved (a `(doc …)` stands alone).
-        assert_eq!(
-            sexpr::print(&parser::read_ml("module M {\n  /// only doc\n}").arenas),
-            "(module M (doc \"only doc\"))",
-            "a trailing doc in an empty module body is preserved"
-        );
         // A `//` comment in an EMPTY body has no member to wrap and no clean standalone carrier — it must
         // NOT corrupt the module name (the earlier `items.pop()` bug wrapped the name → `(module (comment
         // … M))`). The module reads as `(module M)`; the comment stays in the slot for the drop-guard to

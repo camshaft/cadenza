@@ -1,0 +1,5 @@
+/// one
+/// two
+module M {
+  def y() -> Int64 = 1
+}

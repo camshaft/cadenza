@@ -1,0 +1,4 @@
+module M {
+  // trailing comment
+  def a() -> Int64 = 1
+}
