@@ -5920,29 +5920,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prefix_unary_minus_round_trips() {
-        // `-<expr>` (prefix negation applied to a NAME / call / member / paren) parses to the arity-1
-        // subtraction `(- e)` and prints back to `-e`, tight over its operand. A `-<digit>` is a signed
-        // LITERAL (a separate leaf), unaffected. The independent s-expr reader is the oracle for shape.
-        assert_eq!(assert_roundtrip("-x", 80), "-x");
-        assert_eq!(assert_roundtrip("-f(x)", 80), "-f(x)");
-        assert_eq!(assert_roundtrip("-x.field", 80), "-x.field");
-        // Negation binds TIGHTER than binary `+`: `-x + 1` is `(+ (- x) 1)`, printed back the same.
-        assert_eq!(assert_roundtrip("-x + 1", 80), "-x + 1");
-        // A parenthesized operand keeps its parens (the whole sum is negated): `(- (+ x 1))`.
-        assert_eq!(assert_roundtrip("-(x + 1)", 80), "-(x + 1)");
-        // A negative literal stays a literal (no `(- …)` wrapper), and `3 * -2` is binary `*` of two
-        // literals — round-trips unchanged.
-        assert_eq!(assert_roundtrip("-1", 80), "-1");
-        assert_eq!(assert_roundtrip("3 * -2", 80), "3 * -2");
-        // The s-expr reader is the oracle: `(- x)` (arity-1) prints as the ML prefix `-x`.
-        let a = sexpr::read("(- x)").unwrap();
-        assert_eq!(print(&a, 80), "-x");
-        // Arity-2 `(- a b)` stays binary subtraction.
-        let b = sexpr::read("(- a b)").unwrap();
-        assert_eq!(print(&b, 80), "a - b");
-    }
+    // `prefix_unary_minus_round_trips` (prefix negation `-<expr>` → arity-1 `(- e)`, printed tight; a
+    // `-<digit>` is a signed LITERAL leaf, not a `(- …)` wrapper) MIGRATED to the spec/syntax corpus
+    // (inc-6):
+    //   * ml/54-neg-prefix-name `-x` → `(- x)`; ml/55-neg-prefix-call `-f(x)` → `(- (f x))`;
+    //     ml/56-neg-prefix-member `-x.field` → `(- (. x field))`.
+    //   * ml/57-neg-tighter-than-plus `-x + 1` → `(+ (- x) 1)` (negation binds tighter than binary `+`).
+    //   * ml/58-neg-parenthesized-operand `-(x + 1)` → `(- (+ x 1))` (parens kept: the whole sum negated).
+    //   * ml/59-neg-signed-literal `-1` → `-1` (signed literal leaf, NO `(- …)`); ml/60-mul-of-signed-
+    //     literals `3 * -2` → `(* 3 -2)`.
+    // Each tree.sexp pins the arity-1-vs-signed-literal shape the test asserted; the `print((- x)) == -x`
+    // sexp→ml direction is subsumed by the ml cases' format-absent fmt-idempotence (the arity-2 `(- a b)`
+    // → `a - b` binary-subtraction print is pinned by the ordinary arith cases).
 
     #[test]
     fn pipeline_operator_round_trips() {
