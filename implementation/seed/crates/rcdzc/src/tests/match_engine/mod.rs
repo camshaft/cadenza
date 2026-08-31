@@ -2921,59 +2921,12 @@ fn a_small_operand_shift_whose_result_exceeds_i64_folds_at_the_unsigned_width_bu
 // → message "0..=255"), and "the widest unsigned range bound renders exactly (u128 arithmetic, not i64)"
 // (`(: 18446744073709551616 UInt64)` → message "0..=18446744073709551615"). All three graded PASS on wasm.)
 
-#[test]
-fn a_suffixed_bigint_literal_annotated_or_passed_to_int64_faults_once_as_a_type_mismatch() {
-    // An EXPLICITLY-SUFFIXED literal `999…N` types as `BigInt` (a distinct numeric type), so
-    // annotating it `Int64` — or passing it to an `Int64` parameter — is a genuine TYPE MISMATCH
-    // (CDZ0203), NOT a bare literal that "does not fit the width". The width fit-check
-    // (`literal_width_fault`) sees through the suffix's `(: 999 BigInt)` desugar to the inner literal
-    // and USED to ALSO fire CDZ0302, double-reporting the same slip with a misleading framing. The
-    // fault set for a suffixed literal must carry the mismatch and NOT the range-fit code.
-    crate::host::run_with_compiler_stack(|| {
-        for src in [
-            // A value annotation, and an argument to an Int64 parameter — both route through the
-            // shared `literal_width_fault`; both must report the mismatch alone.
-            "(module m (def (main) (: 999999999999999999999999N Int64)) (export main))",
-            "(module m (def (g (: x Int64)) x) (def (main) (g 999999999999999999999999N)) (export main))",
-            // A value that FITS Int64's range but is still the wrong type — the mismatch, no range fault.
-            "(module m (def (main) (: 5N Int64)) (export main))",
-        ] {
-            let out = compile(
-                &[crate::abi::Artifact::new(
-                    crate::abi::Artifact::KIND_AST,
-                    "main",
-                    crate::codec::encode(&parse(src)),
-                )],
-                &[Target::Wasm],
-            );
-            let codes: Vec<_> = out
-                .diagnostics
-                .iter()
-                .filter(|d| d.severity == crate::abi::Severity::Error)
-                .filter_map(|d| d.code.clone())
-                .collect();
-            assert!(
-                codes.iter().any(|c| c == "CDZ0203"),
-                "the type mismatch is reported for {src}: {codes:?}"
-            );
-            assert!(
-                !codes.iter().any(|c| c == "CDZ0302"),
-                "no redundant range-fit fault for a suffixed literal in {src}: {codes:?}"
-            );
-        }
-        // The BARE (unsuffixed) overflow literal still range-checks — it types as the Int64 DEFAULT, so
-        // it is a grounding, and its overflow IS a CDZ0302 (with the BigInt widen fix), unchanged.
-        let bare =
-            reject_full("(module m (def (main) (: 999999999999999999999999 Int64)) (export main))")
-                .expect("a bare over-Int64 literal is rejected");
-        assert_eq!(
-            bare.code.as_deref(),
-            Some("CDZ0302"),
-            "got: {}",
-            bare.message
-        );
-    });
-}
+// [migrated → spec/semantics/06-numeric-model.sexp] a_suffixed_bigint_literal_annotated_or_passed_to_int64_faults_once_as_a_type_mismatch:
+// a suffixed `999…N` literal carries type BigInt, so annotating it Int64 / passing it to an Int64 param is a
+// CDZ0203 type mismatch (BigInt ≠ Int64), NOT the range-fit CDZ0302 a bare over-width literal takes. Corpus 06
+// cases: annotation, argument-position, and FITS-range (`5N`) faces all assert CDZ0203 (message "BigInt" +
+// "must be the same type") with (not "does not fit") pinning the ABSENCE of the double-reported range framing;
+// the BARE (unsuffixed) over-Int64 counterpart still range-checks CDZ0302 (message "does not fit"). All PASS on wasm.
 
 #[test]
 fn a_bare_literal_grounds_to_bigint_in_a_constructor_payload_position() {
