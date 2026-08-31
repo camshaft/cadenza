@@ -6524,15 +6524,12 @@ mod tests {
     // blank-separated — space-juxtaposed input `def a = 1 def b = 2 def c = 3`→`(do (def a 1) (def b 2)
     // (def c 3))`, format.cdz canonicalizes to the blank-line-separated layout.
 
-    #[test]
-    fn doc_line_hugs_its_def_no_blank() {
-        // A `///` doc line stays glued to the def it documents (single break), while distinct
-        // definitions are still blank-separated — again with no `;` between the top-level forms.
-        assert_eq!(
-            assert_roundtrip("/// first\ndef a = 1\n/// second\ndef b = 2", 80),
-            "/// first\ndef a = 1\n\n/// second\ndef b = 2"
-        );
-    }
+    // `doc_line_hugs_its_def_no_blank` (a `///` doc line stays glued to the def it documents — single break —
+    // while distinct definitions are blank-separated, no `;` between top-level forms) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-57): ml/366-doc-line-hugs-def-blank-between
+    // `/// first`⏎`def a = 1`⏎`/// second`⏎`def b = 2`→`(do (def a (doc "first") 1) (def b (doc "second") 2))`,
+    // format.cdz pins the doc-hugs-def + BLANK-between-defs surface (width-invariant blank policy; distinct
+    // from ml/290-doc-line-on-def which pins a single doc'd def).
 
     // `def_match_body_hugs_the_eq` (a `match … with` body stays on the `=` line; its `|`-arms break one per
     // line, indented one level under the def) MIGRATED to the spec/syntax corpus (inc-6 batch-27):
@@ -6574,19 +6571,13 @@ mod tests {
     // Each carries a format.cdz pinning the exact flush-vs-indent surface; the layouts are structural
     // (verified byte-identical to the deleted asserts at the corpus width).
 
-    #[test]
-    fn parenthesized_arm_body_opens_paren_on_the_arm_line_seq95() {
-        // Operator seq-95: a PARENTHESIZED match-arm body puts the open `(` on the `=>` line, the body
-        // indented one level under the arm, and the close `)` on its OWN line dedented to the arm indent
-        // — not `(expr` bound tight nor a trailing `)` glued to the last body line.
-        assert_eq!(
-            assert_roundtrip(
-                "def f() = match x with | A => (match x with | C => 1 | _ => 2) | B => 3",
-                200,
-            ),
-            "def f() = match x with\n  | A => (\n    match x with\n    | C => 1\n    | _ => 2\n  )\n  | B => 3"
-        );
-    }
+    // `parenthesized_arm_body_opens_paren_on_the_arm_line_seq95` (operator seq-95: a PARENTHESIZED match-arm
+    // body puts the open `(` on the `=>` line, the body indented one level, and the close `)` on its OWN line
+    // dedented to the arm indent) MIGRATED to the spec/syntax corpus (inc-6 batch-57):
+    // ml/367-parenthesized-match-arm-body-seq95 `def f() = match x with | A => (match x with | C => 1 | _ =>
+    // 2) | B => 3`→`(def (f) (match x (A (match x (C 1) (_ 2))) (B 3)))`. Width-invariant: the nested `match`
+    // always breaks its arms one-per-line, forcing the paren layout regardless of width (format.cdz pins it,
+    // byte-identical to the deleted width-200 assert at the corpus width).
 
     #[test]
     fn def_and_fn_param_lists_wrap_one_per_line_when_they_overflow() {

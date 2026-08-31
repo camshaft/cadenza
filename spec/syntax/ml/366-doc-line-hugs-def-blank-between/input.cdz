@@ -1,0 +1,4 @@
+/// first
+def a = 1
+/// second
+def b = 2
