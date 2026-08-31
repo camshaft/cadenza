@@ -306,6 +306,11 @@ pass	NEGATIVE values thread every effect slot — state, argument, and result st
 pass	NESTED CONTRACT: an @ensures predicate that CALLS a @requires-guarded helper enforces the HELPER's precondition during postcondition eval
 pass	NESTED effect-free calls in the continuation compose and fold
 pass	NaN equality survives the hoisted float compare by canonical byte form
+pass	Num.neg negates a BigInt generically
+pass	Num.neg negates a Rational generically
+pass	Num.neg negates a float generically
+pass	Num.neg negates a runtime signed integer generically
+pass	Num.neg negates a signed integer generically
 pass	ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)
 pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case
 pass	OPEN-sum values as SET elements hash by tag and payload

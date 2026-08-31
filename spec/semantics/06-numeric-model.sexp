@@ -7220,6 +7220,38 @@
   (call main)
   (output (: true Bool)))
 
+; --- GENERIC `Num.neg` — the number-shape capability's negate, over ANY admitted number type ---
+; `Num.neg : ∀a:Num. a → a` — one generic op negates a signed integer, a float, a BigInt, or a Rational
+; (backed by the same negate the per-type `T.neg` and prefix `(- e)` use). The `Num` shape ADMITS the
+; signed numeric types; it EXCLUDES unsigned integers, so `Num.neg` over an unsigned value is a
+; COMPILE-TIME type error (unsigned has no negate) — that static rejection is owned by the type-checker
+; (v-inference) and its witness lands with it; here we pin the admitted-type behavior.
+(case
+  "Num.neg negates a signed integer generically"
+  (input (do (def (main) (Num.neg (: 5 Int64))) (export main)))
+  (call main)
+  (output (: -5 Int64)))
+(case
+  "Num.neg negates a runtime signed integer generically"
+  (input (do (def (f (: n Int64)) (Num.neg n)) (export f)))
+  (call f (: 7 Int64))
+  (output (: -7 Int64)))
+(case
+  "Num.neg negates a float generically"
+  (input (do (def (main) (Num.neg 1.5)) (export main)))
+  (call main)
+  (output (: -1.5 Float64)))
+(case
+  "Num.neg negates a BigInt generically"
+  (input (do (def (main) (= (Num.neg (BigInt.of 5)) (BigInt.of -5))) (export main)))
+  (call main)
+  (output (: true Bool)))
+(case
+  "Num.neg negates a Rational generically"
+  (input (do (def (main) (= (Num.neg (Rational.of 3 4)) (Rational.of -3 4))) (export main)))
+  (call main)
+  (output (: true Bool)))
+
 (case
   "a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum"
   (doc
