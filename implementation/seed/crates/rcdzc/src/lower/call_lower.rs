@@ -776,7 +776,17 @@ pub(super) fn lower_recursive_call_or_decline(
     // has no such identity, so it still declines.
     let callee = match callee_def_index(db, head) {
         Some(d) => d,
-        None => return Core::Poison(Reject::decline(msg)),
+        // A computed/anonymous recursive head has no stable top-level identity to emit a call to, so it
+        // declines — the same "needs runtime specialization" reason as the catalogued family. Tag it with
+        // the stable id (seq-286 coded-tracking; surfaced as a reachable codeless decline by v-cdz-smith's
+        // reachability sweep). `declined` preserves the message, so the `is_recursion_decline` .contains
+        // gate above still matches.
+        None => {
+            return Core::Poison(Reject::declined(
+                crate::diag::DeclineId::RecursiveFunctionRuntimeSpecialization,
+                msg,
+            ));
+        }
     };
     emit_call_or_specialize(db, head, callee, args)
 }
