@@ -1987,8 +1987,14 @@ impl Arenas {
     /// (a bound `list` shadows it) and is NOT recognized here. The migration dual-read for dispatch; M3
     /// drops the string arm, leaving `compound_ctor_leaf`. See `DESIGN-native-ast-compound-data.md`.
     pub fn compound_ctor_prim(&self, id: StructId) -> Option<CompoundCtor> {
+        // M3 reader-flip (operator-confirmed 2026-08-31): the recognizer accepts ONLY the native ctor-LEAF
+        // head — the legacy STRING-primitive head (`("record" …)`) is no longer a compound constructor. Was
+        // `compound_ctor_leaf(id).or_else(|| compound_ctor(id))` (the transitional dual-read); collapsed to
+        // leaf-only, so BOTH callers (resolve.rs:465 + lower.rs) drop string-head recognition at once. The
+        // shadowable NAME alias (`(record …)`, `(set …)`) is UNAFFECTED — it never resolved via this
+        // primitive path (it falls through to the lexical/Apply prelude-alias path). `compound_ctor` (the
+        // dead string helper) + its unit tests are cosmetic cleanup (v-ast-consolidate follow-up).
         self.compound_ctor_leaf(id)
-            .or_else(|| self.compound_ctor(id))
     }
 
     /// The child occurrences of `id` if it is a `List` headed by the compound ctor `want`, accepting
@@ -2003,7 +2009,9 @@ impl Arenas {
                 if self.compound_ctor_leaf(id) == Some(want) {
                     return Some(&items[1..]);
                 }
-                let spelling = self.as_name(h).or_else(|| self.as_str(h))?;
+                // M3 reader-flip: recognize the native ctor-leaf head (above) OR the shadowable NAME alias
+                // (`as_name`) ONLY — the legacy STRING head (`as_str`) is dropped (no more `("record" …)`).
+                let spelling = self.as_name(h)?;
                 (CompoundCtor::from_spelling(spelling) == Some(want)).then_some(&items[1..])
             }
             _ => None,
