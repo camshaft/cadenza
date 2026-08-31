@@ -51,7 +51,7 @@ export default function Units() {
       <Runnable
         source={`(/ (Qty.of 240.0 (Unit.of #"meter")) (Qty.of 8.0 (Unit.of #"second")))`}
       />
-      <P>The result carries its derived unit, <C>30.0 meter/second</C>, a compound Cadenza built by dividing the two units right along with the numbers. You can spell such units directly, too: <C>(Unit.* a b)</C> for a product (an area is a length times a length), <C>(Unit./ a b)</C> for a quotient, <C>(Unit.^ u n)</C> for a power, and <C>Unit.one</C> for a plain dimensionless number.</P>
+      <P>The result carries its derived unit, <C>30.0 meter/second</C>, a compound Cadenza built by dividing the two units right along with the numbers. You can spell such units directly, too: <Cadenza>(Unit.* a b)</Cadenza> for a product (an area is a length times a length), <Cadenza>(Unit./ a b)</Cadenza> for a quotient, <Cadenza>(Unit.^ u n)</Cadenza> for a power, and <C>Unit.one</C> for a plain dimensionless number.</P>
       <H2>Raising a quantity to a power</H2>
       <P><C>Qty.pow</C> raises a whole quantity, value <em>and</em> unit, to a compile-time integer power. Square a length and you get an area: the unit becomes meters-squared while the value squares. A five-meter side gives twenty-five square meters, <C>25.0 meter^2</C>, the unit squared along with the value:</P>
       <Runnable
