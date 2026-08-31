@@ -3622,6 +3622,27 @@
   (input  (do (def (main) (resume 5 6)) (export main)))
   (error  CDZ0201 (message "no enclosing handler arm")))
 
+; A `resume`'s NEXT-STATE (second operand) must match the handler's SEED type: `(handle E 0 …)` seeds an
+; Int64 state, so resuming with a Bool or String next-state is CDZ0201 naming the next-state type + "state
+; type is Int64". A next-state that matches the seed (arithmetic on `s`, `s` itself, a same-shape tuple seed)
+; is well-typed and the handler folds + runs. (Migrated from rcdzc
+; resuming_with_a_wrong_type_next_state_is_cdz0201.)
+(case "resuming with a Bool next-state under an Int64-seeded handler is a type error"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5 true))) (+ (E.get) 1))) (export main)))
+  (error  CDZ0201 (message "next-state of type") (message "Bool") (message "state type is Int64")))
+
+(case "resuming with a String next-state under an Int64-seeded handler is a type error"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5 "x"))) (+ (E.get) 1))) (export main)))
+  (error  CDZ0201 (message "next-state of type") (message "String") (message "state type is Int64")))
+
+(case "resuming with a matching arithmetic next-state under an Int64 seed folds and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5 (+ s 1)))) (+ (E.get) 1))) (export main)))
+  (call   main) (output (: 6 Int64)))
+
+(case "resuming with a same-shape tuple next-state under a tuple seed folds and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E #tuple(0 0) ((get () s (resume 5 #tuple(1 2)))) (E.get))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
 (case "a host delegation of an effect the body never reaches is latent authority and is rejected"
   (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
            `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised

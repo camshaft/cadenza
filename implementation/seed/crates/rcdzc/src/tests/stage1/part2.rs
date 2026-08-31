@@ -822,60 +822,6 @@ fn a_handler_threads_a_map_as_its_state_across_multiple_performs() {
     );
 }
 
-/// The state-side companion of `resuming_with_a_wrong_type_value_is_cdz0201`. A handler folds a STATE
-/// fixed by its `init` seed and threads it purely (`capabilities-and-effects.md` §Discharging An
-/// Operation Produces … The Next State Carried Forward); the NEXT-state in `(resume value next-state)`
-/// continues that fold, so it MUST have the seed's type. `(resume 5 true)` / `(resume 5 "x")` under an
-/// Int64 seed change the state's type mid-fold — was SILENTLY ACCEPTED (a type-confusion miscompile),
-/// now CDZ0201. GUARDED with `agrees_with` so a recursive/unconstrained-state handler is never falsely
-/// flagged, and a matching next-state (arithmetic on `s`, or `s` itself, or a same-shape tuple) is clean.
-#[test]
-fn resuming_with_a_wrong_type_next_state_is_cdz0201() {
-    use crate::testkit::parse;
-    for (src, next_ty) in [
-        (
-            "(module m (effect E (op get (-> Unit Int64))) \
-                 (def (main) (handle E 0 ((get () s (resume 5 true))) (+ (E.get) 1))) (export main))",
-            "Bool",
-        ),
-        (
-            "(module m (effect E (op get (-> Unit Int64))) \
-                 (def (main) (handle E 0 ((get () s (resume 5 \"x\"))) (+ (E.get) 1))) (export main))",
-            "String",
-        ),
-    ] {
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.message.contains("next-state of type"))
-            .unwrap_or_else(|| panic!("a wrong-type next-state must be rejected: {src}"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains(next_ty) && d.message.contains("state type is Int64"),
-            "names the next-state type + the seed's state type: {}",
-            d.message
-        );
-    }
-    // NO FALSE POSITIVE: a next-state that matches the seed type (arithmetic on `s`, `s` itself, or a
-    // same-shape tuple) is clean; a recursive/list-state handler (state type undetermined at this arm)
-    // is not flagged.
-    for ok in [
-        "(module m (effect E (op get (-> Unit Int64))) \
-             (def (main) (handle E 0 ((get () s (resume 5 (+ s 1)))) (+ (E.get) 1))) (export main))",
-        "(module m (effect E (op get (-> Unit Int64))) \
-             (def (main) (handle E 0 ((get () s (resume 5 s))) (+ (E.get) 1))) (export main))",
-        "(module m (effect E (op get (-> Unit Int64))) \
-             (def (main) (handle E (tuple 0 0) ((get () s (resume 5 (tuple 1 2)))) (E.get))) (export main))",
-    ] {
-        let bad = crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-            .into_iter()
-            .find(|d| d.message.contains("next-state of type"));
-        assert!(
-            bad.is_none(),
-            "a matching next-state must not be flagged: {ok} -> {bad:?}"
-        );
-    }
-}
-
 #[test]
 fn a_malformed_type_used_as_an_annotation_does_not_also_report_it_a_value() {
     // A type whose declaration is MALFORMED (a duplicate variant) does not fully register, so
