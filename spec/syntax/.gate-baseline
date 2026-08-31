@@ -342,6 +342,11 @@ pass	ml/401-set-rest-match-arm-literal-element
 pass	ml/402-tuple-rest-single-leading
 pass	ml/403-tuple-rest-nested-in-rest-binder
 pass	ml/404-record-rest-field-shorthand
+pass	ml/405-rest-only-record-pattern
+pass	ml/406-rest-only-set-pattern
+pass	ml/407-rest-only-list-pattern
+pass	ml/408-non-trailing-rest-pattern
+pass	ml/409-multiple-rests-pattern
 pass	ml/41-match-closed-single-variant
 pass	ml/42-match-already-lowered-noop
 pass	ml/43-match-nested-bottom-up
