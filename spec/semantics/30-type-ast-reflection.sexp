@@ -112,15 +112,15 @@
   (output (: 21 Int64)))
 
 (case
-  "Type.ast-generic of a FUNCTION type reflects its arrow surface (TODO: arrow-surface reflection gap)"
+  "Type.ast-generic of a FUNCTION type reflects its arrow surface (-> …)"
   (doc
-    "IDEAL (corpus-as-spec, operator corpus policy — assert the should-happen + track the gap, never
-           work around): reflecting a `Fn` type yields its arrow type-surface AST `(-> Param… Result)`,
-           just as a structural type reflects its surface. It currently DECLINES — `type_ast` has no
-           value-form surface for a function (a function is not a boundary value), so `Type.ast-generic`
-           has no arrow surface to reflect yet. This case therefore grades TODO: it pins the intended value
-           (`(-> Int64 Int64)`) and tracks the arrow-surface-reflection gap (a later type-reflection
-           increment, owned by v-metaprogramming), rather than pinning the transient decline.")
+    "Reflecting a `Fn` type yields its arrow type-surface AST `(-> Param Result)`, just as a structural
+           type reflects its surface. `type_ast` has no value-form surface for a function (a function is not
+           a boundary value), so the reflection renders the arrow directly (`type_surface_ast`), matching
+           `Ty::render_name`'s arrow form. Here `id : Int64 -> Int64` reflects `(-> Int64 Int64)`; a curried
+           multi-arg fn nests, `(-> p0 (-> p1 r))`. Closes the arrow-surface gap the earlier increments
+           TODO-pinned — reflection is now total over function types too (only a continuation type has no
+           surface).")
   (input
     (do
       (def (id (: x Int64)) x)
