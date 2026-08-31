@@ -18,4 +18,4 @@
           ((None) #tuple(((. Bytes len) bytes) 0))))))
 
   (export main)))
-  (expected (: (tuple 73 7) (Tuple Int64 Int64))))
+  (expected (: #tuple(73 7) (Tuple Int64 Int64))))
