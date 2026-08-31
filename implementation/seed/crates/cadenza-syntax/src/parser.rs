@@ -2093,6 +2093,21 @@ impl<'a> Parser<'a> {
             } else {
                 self.binder()
             };
+            // An optional TYPE ANNOTATION on the binder: `let x: T = v in …` -> the binder-position
+            // annotation `(: x T)` (the shape the s-expr surface writes + the compiler validates), exactly
+            // like an annotated `param`. A plain name / un-annotated pattern keeps its form. This closes the
+            // annotated-let-binder surface gap: `(let (((: x T) v)) …)` — widely used in the corpus — had NO
+            // ML surface (the reader rejected `let x: T = …`), so it only round-tripped via the degenerate
+            // `` `let`(…) `` quoted-op fallback.
+            let n = if self.at(Kind::Colon) {
+                self.bump(); // `:`
+                let colon = self.name(":", b_start);
+                let ty = self.type_ref();
+                let ann_span = b_start.merge(self.prev_span());
+                self.list(vec![colon, n, ty], ann_span)
+            } else {
+                n
+            };
             self.expect(Kind::Eq, "`=`");
             // An own-line `//` comment BETWEEN `=` and the value (`let y =<newline> // note<newline>
             // x + 1`) sits at the value's first-token leading slot, which `expr` does not drain — capture

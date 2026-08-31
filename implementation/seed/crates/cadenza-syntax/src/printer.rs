@@ -1110,11 +1110,28 @@ impl<'a> Printer<'a> {
                 let b = self.strip_comment_after(b);
                 if let Struct::List(pair) = self.a.get(b) {
                     let (n, e) = (pair[0], pair[1]);
-                    // A binder is a plain NAME (`Atom`) or a destructuring PATTERN (`List` —
-                    // `(tuple a b)` / `(list x .. rest)` / …). A pattern binder renders through the
-                    // pattern surface (`(a, b)`, `[x, .. rest]`), the inverse of `let_expr` routing a
-                    // pattern-opening binder to `pattern`; a plain name renders as an ordinary expr.
-                    if matches!(self.a.get(n), Struct::List(_)) {
+                    // A binder is a plain NAME (`Atom`), a type-ANNOTATED binder `(: binder Type)`, or a
+                    // destructuring PATTERN (`List` — `(tuple a b)` / `(list x .. rest)` / …). An annotated
+                    // binder renders `binder: Type` (the inverse of the `let x: T = …` surface) — the SAME
+                    // shape as an annotated `param` (`print_param`: `binder` + `": "` + type, so no space
+                    // before the colon), with the inner binder itself rendered as a pattern or a name. A
+                    // pattern binder renders through the pattern surface (`(a, b)`, `[x, .. rest]`), the
+                    // inverse of `let_expr` routing a pattern-opening binder to `pattern`; a plain name
+                    // renders as an ordinary expr.
+                    let annotated = self
+                        .a
+                        .as_form(n, ":")
+                        .filter(|a| a.len() == 2)
+                        .map(|a| (a[0], a[1]));
+                    if let Some((binder, ty)) = annotated {
+                        if matches!(self.a.get(binder), Struct::List(_)) {
+                            self.pattern(binder);
+                        } else {
+                            self.expr(binder, 0);
+                        }
+                        self.doc.word(": ");
+                        self.expr(ty, 0);
+                    } else if matches!(self.a.get(n), Struct::List(_)) {
                         self.pattern(n);
                     } else {
                         self.expr(n, 0);
@@ -4428,13 +4445,27 @@ impl<'a> Printer<'a> {
                     // which round-trips via idempotence.
                     Struct::List(p) => {
                         p.len() == 2
-                            && (self.head_name(p[0]).is_some() || self.is_binder_pattern(p[0]))
+                            && (self.head_name(p[0]).is_some()
+                                || self.is_binder_pattern(p[0])
+                                || self.is_annotated_binder(p[0]))
                     }
                     _ => false,
                 }
             }),
             _ => false,
         }
+    }
+
+    /// A type-ANNOTATED binder `(: binder Type)` — a `:`-headed 2-arg node whose first arg is itself a
+    /// renderable binder (a plain name or a binder PATTERN). The `let x: T = v` surface (the mirror of an
+    /// annotated `param`) reads to this; `print_let` renders it back as `x: T`. Without this arm an
+    /// annotated let binder made `is_let_shape` reject the whole `let`, forcing the degenerate quoted-op
+    /// `` `let`(…) `` fallback (structurally round-tripping, but an ugly surface) — even though such binders
+    /// are common in the corpus and compiler-validated.
+    fn is_annotated_binder(&self, id: StructId) -> bool {
+        self.a.as_form(id, ":").is_some_and(|a| {
+            a.len() == 2 && (self.head_name(a[0]).is_some() || self.is_binder_pattern(a[0]))
+        })
     }
 
     /// Whether `id` is a destructuring pattern the ML surface can render AND read back in a BINDER
@@ -4892,6 +4923,46 @@ mod tests {
             assert!(
                 a.structurally_eq(&back.arenas),
                 "rest pattern lost in round-trip\n src:  {src}\n ml:   {printed}\n back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
+    }
+
+    #[test]
+    fn an_annotated_let_binder_prints_the_colon_surface_and_round_trips() {
+        // A type-annotated let binder `let x: T = v in …` reads to `(let (((: x T) v)) …)` (the binder-
+        // position annotation, the mirror of an annotated `param`) and prints back to the clean `x: T`
+        // surface — NOT the degenerate `` `let`(…) `` quoted-op fallback it produced before (which
+        // `is_let_shape` forced by rejecting the annotated binder; it round-tripped only via idempotence).
+        // Such binders are common in the corpus + compiler-validated, so the surface must be first-class.
+        for (src, want) in [
+            (
+                "(do (def (main) (let (((: n Int64) 5)) n)) (export main))",
+                "let n: Int64 = 5",
+            ),
+            (
+                "(do (def (main) (let (((: r (Record (: x Int64))) #record((= x 5)))) (. r x))) \
+                 (export main))",
+                // The let-binder colon is param-style (`let r:`, no space before); the INNER record-TYPE
+                // field keeps the record-type printer's own `x : Int64` spacing — both round-trip.
+                "let r: Record(x : Int64) =",
+            ),
+        ] {
+            let a = sexpr::read(src).expect("sexpr parses");
+            let printed = print(&a, 80);
+            assert!(
+                printed.contains(want),
+                "expected {want:?} in the ML print\n{printed}"
+            );
+            assert!(
+                !printed.contains("`let`"),
+                "annotated let fell back to the quoted-op `let`(…) form\n{printed}"
+            );
+            let back = parser::read_ml(&printed);
+            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
+            assert!(
+                a.structurally_eq(&back.arenas),
+                "annotated let binder lost in round-trip\n src: {src}\n ml:  {printed}\n back: {}",
                 sexpr::print(&back.arenas)
             );
         }
