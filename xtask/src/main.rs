@@ -378,6 +378,40 @@ impl Paths {
     }
 }
 
+/// Store `bytes` at `dest` in the content-addressed store via a same-directory temp file + atomic `rename`,
+/// so a rebuild that re-stores an entry is idempotent no matter how the store was previously populated. Two
+/// reasons a plain `fs::write(dest, ..)` is wrong here: (1) `target/cadenza-store` entries can be SYMLINKS
+/// into the READ-ONLY nix component store (a devshell staging flow links `<hash>.wasm` → the nix store);
+/// `fs::write` FOLLOWS such a symlink and hits `EACCES` writing into the read-only nix store — this bites the
+/// NFC entry first, whose content hash is usually UNCHANGED across a runtime-hash bump so its stale symlink
+/// pre-exists. (2) the store is READ CONCURRENTLY across the fleet (programs resolve the runtime by content
+/// hash out of this dir), so a remove-then-write would expose an absent-target window; an atomic `rename`
+/// replaces the destination directory entry (regular file OR stale symlink) in one step, never observed
+/// absent or half-written. The final on-disk name is EXACTLY `dest` (the content-addressed `<hash>.wasm` a
+/// composed program imports), and a missing prior entry (fresh store / first build) is fine.
+fn store_atomic_write(dest: &std::path::Path, bytes: &[u8]) {
+    let parent = dest.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let fname = dest
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("store-entry");
+    let tmp = parent.join(format!(
+        ".{fname}.tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    ));
+    // Fresh, unique temp path (pid+nanos); clear any lingering entry so the write itself never follows a
+    // stale symlink, then atomically rename onto `dest` (replacing a prior file or nix-store symlink).
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(&tmp, bytes)
+        .unwrap_or_else(|e| panic!("store: write temp {}: {e}", tmp.display()));
+    std::fs::rename(&tmp, dest)
+        .unwrap_or_else(|e| panic!("store: rename {} → {}: {e}", tmp.display(), dest.display()));
+}
+
 fn build(paths: &Paths, store: Option<PathBuf>) {
     // Acquire the fleet-wide build/check concurrency lease FIRST (operator-mandated, 2026-07-20 host
     // hang). `cargo xtask build` recompiles the wasm runtime + build-std from source — a heavy multi-
@@ -409,7 +443,7 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     let nfc_bytes = canonicalize_runtime(&nfc_wasm);
     let nfc_hash = content_address(&nfc_bytes);
     let nfc_stored = store.join(format!("{nfc_hash}.wasm"));
-    std::fs::write(&nfc_stored, &nfc_bytes).expect("store nfc component");
+    store_atomic_write(&nfc_stored, &nfc_bytes);
     println!("   nfc component content address: {nfc_hash}");
     println!("   stored → {}", nfc_stored.display());
 
@@ -429,7 +463,7 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     let debug_stamped = stamp_nfc_into_heap(&paths.repo, &debug_wasm, &nfc_hash);
     let debug_bytes = canonicalize_runtime(&debug_stamped);
     let debug_hash = content_address(&debug_bytes);
-    std::fs::write(store.join(format!("{debug_hash}.wasm")), &debug_bytes).expect("store debug rt");
+    store_atomic_write(&store.join(format!("{debug_hash}.wasm")), &debug_bytes);
     println!("   debug-counters runtime content address: {debug_hash}");
 
     let runtime_wasm = build_component(&sh, &paths.seed, "cdz-runtime", "cdz_runtime");
@@ -438,7 +472,7 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     let runtime_hash = content_address(&runtime_bytes);
     println!("   runtime content address: {runtime_hash}");
     let runtime_stored = store.join(format!("{runtime_hash}.wasm"));
-    std::fs::write(&runtime_stored, &runtime_bytes).expect("store runtime");
+    store_atomic_write(&runtime_stored, &runtime_bytes);
     println!("   stored → {}", runtime_stored.display());
 
     // A small manifest listing the stored heap runtimes — INFORMATIONAL only (a nix-build / store-listing
@@ -451,7 +485,7 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
          runtime = \"{runtime_hash}\"\n\
          debug_runtime = \"{debug_hash}\"\n"
     );
-    std::fs::write(store.join("runtime.toml"), manifest).expect("write runtime.toml");
+    store_atomic_write(&store.join("runtime.toml"), manifest.as_bytes());
 
     println!("\n== xtask: done ==");
     println!("   store:   {}", store.display());
