@@ -1576,17 +1576,18 @@ fn emit_expr_viewed(
                             node = b.list(vec![match_head, node, arm]);
                             cur_ty = slot_ty;
                         } else {
-                            return Err(Reject::decline(
-                                "the Cadenza backend reached a payload projection over a single-variant sum \
-                                 whose erased payload layout it does not support indexing"
+                            return Err(Reject::unsupported(
+                                "the Cadenza backend does not support a payload projection over a \
+                                 single-variant sum whose erased payload layout it cannot index"
                                     .to_string(),
                             ));
                         }
                     }
                     _ => {
-                        return Err(Reject::decline(
-                            "the Cadenza backend reached a payload projection over a non-tuple/record \
-                             value"
+                        return Err(Reject::unsupported(
+                            "the Cadenza backend does not support a payload projection over a \
+                             non-tuple/record value (e.g. a newtype ctor sub-pattern nested under a \
+                             list/tuple pattern over Map.to-list output)"
                                 .to_string(),
                         ));
                     }
