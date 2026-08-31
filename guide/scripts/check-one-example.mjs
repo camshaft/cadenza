@@ -24,7 +24,7 @@
 /// mode="test"/deferred case is SKIPPED (needs the @test-export driver, a later shred kind). All checking goes
 /// through check-examples.mjs's SHARED checkProgram/checkExample, so zero drift from the monolithic gate.
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainThread, Worker, parentPort } from "node:worker_threads";
 
@@ -38,6 +38,35 @@ let checkProgram, checkExample;
 if (!isBatch) {
   process.env.CHECK_EXAMPLES_LIB_ONLY = "1";
   ({ checkProgram, checkExample } = await import("./check-examples.mjs"));
+}
+
+// ---- the WASM-lane residual blocklist (guide/example-wasm-blocklist.json) ----
+// Cases that fail-wasm/pass-native (owner v-memory-safety). The MAIN thread (standalone verdict + batch
+// supervisor) re-labels a blocked case's fail as "wasm-blocked" (tracked, NON-failing) and a blocked case that
+// now PASSES as "recovered" (surfaced so the entry is removed) — mirroring how the native check-examples.mjs
+// consumes example-blocklist.json, and enabling the RE-RUN/recovery loop (a case filtered out upstream is
+// never run, so a v-memory-safety fix is never detected; running blocked cases + re-labeling detects it). The
+// worker doesn't need it — it just runs + returns pass/fail; main interprets. Matched by the case dir's
+// basename (the blocklist stores `dir` as the <NNNN>-slug; the harness receives a full/relative path).
+const wasmBlockedDirs = (() => {
+  if (!isMainThread) return new Set();
+  try {
+    const guideRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const raw = JSON.parse(readFileSync(join(guideRoot, "example-wasm-blocklist.json"), "utf8"));
+    return new Set((raw.wasmBlocked ?? []).map((e) => e.dir));
+  } catch {
+    return new Set(); // absent/unreadable blocklist ⇒ nothing blocked (fail-open; the file is optional)
+  }
+})();
+const baseName = (p) => String(p).replace(/\/+$/, "").split("/").pop();
+// Re-interpret a raw verdict against the wasm blocklist: a blocked case's fail/timeout → "wasm-blocked"
+// (tracked, not a gate failure); a blocked case that PASSES → "recovered" (loud, entry removable, not a
+// failure); everything else unchanged. Non-blocked verdicts pass through untouched.
+function applyWasmBlocklist(caseDir, v) {
+  if (!wasmBlockedDirs.has(baseName(caseDir))) return v;
+  if (v.status === "pass") return { status: "recovered", detail: `WASM-BLOCKLIST ENTRY CAN BE REMOVED (now passes in wasm) — ${v.detail}` };
+  if (v.status === "fail" || v.status === "timeout") return { status: "wasm-blocked", detail: `known wasm-residual (example-wasm-blocklist.json; owner v-memory-safety) — ${v.detail}` };
+  return v;
 }
 
 // ---- the reusable per-case check: returns a verdict {status, detail}, NEVER process.exit ----
@@ -181,8 +210,9 @@ if (!isMainThread) {
   }
 
   spawnWorker();
-  let passed = 0, failed = 0, skipped = 0;
+  let passed = 0, failed = 0, skipped = 0, wasmBlocked = 0, recovered = 0;
   const failures = [];
+  const recoveredDirs = [];
   for (let i = 0; i < cases.length; i++) {
     // Reload cadence: a fresh worker (= fresh compiler) every RELOAD_EVERY cases, before the accumulation OOB.
     if (i > 0 && i % RELOAD_EVERY === 0) { await killWorker(); spawnWorker(); }
@@ -194,16 +224,26 @@ if (!isMainThread) {
     } catch (e) {
       v = { status: "harness-error", detail: `worker unavailable: ${String(e && e.message ? e.message : e)}` };
     }
-    // A timed-out or errored worker is unusable → terminate + respawn a fresh one for the next case.
+    // Respawn on the RAW status: a timed-out / errored worker is dead (blocked or not), so replace it before
+    // re-interpreting the verdict.
     if (v.status === "timeout" || v.status === "harness-error") { await killWorker(); spawnWorker(); }
-    const glyph = v.status === "pass" ? "✓" : v.status === "skip" ? "·" : "✗";
+    // Re-label against the wasm blocklist (blocked+fail → wasm-blocked, non-failing; blocked+pass → recovered).
+    v = applyWasmBlocklist(caseDir, v);
+    const glyph = v.status === "pass" ? "✓" : v.status === "skip" ? "·" : v.status === "wasm-blocked" ? "⊘" : v.status === "recovered" ? "★" : "✗";
     console.log(`  ${glyph} ${caseDir} [${v.status}]${v.detail ? " — " + String(v.detail).replace(/\n/g, " ").slice(0, 160) : ""}`);
     if (v.status === "pass") passed++;
     else if (v.status === "skip") skipped++;
+    else if (v.status === "wasm-blocked") wasmBlocked++;
+    else if (v.status === "recovered") { recovered++; recoveredDirs.push(baseName(caseDir)); }
     else { failed++; failures.push(`${caseDir} [${v.status}]: ${String(v.detail).replace(/\n/g, " ").slice(0, 200)}`); }
   }
   await killWorker();
-  console.log(`check-one-example --batch: ${cases.length} case(s) — ${passed} passed, ${failed} failed/timed-out, ${skipped} skipped`);
+  console.log(`check-one-example --batch: ${cases.length} case(s) — ${passed} passed, ${failed} failed/timed-out, ${skipped} skipped, ${wasmBlocked} wasm-blocked, ${recovered} recovered`);
+  if (recovered) {
+    // A previously-blocked wasm-residual now PASSES — surface it loudly so the example-wasm-blocklist.json
+    // entry is removed (the case can ship). Non-fatal (recovery is good), like the native check's report.
+    console.log(`  ★ WASM-BLOCKLIST ENTRIES CAN BE REMOVED (now pass in wasm): ${recoveredDirs.join(", ")} — drop them from example-wasm-blocklist.json`);
+  }
   if (failed) {
     console.error("FAILURES:\n" + failures.map((f) => "  ✗ " + f).join("\n"));
     process.exit(1);
@@ -216,8 +256,10 @@ if (!isMainThread) {
     console.error("usage: node --expose-gc check-one-example.mjs <case-dir>  |  --batch <case-dir...>");
     process.exit(2);
   }
-  const v = await checkOneCase(caseDir);
+  const v = applyWasmBlocklist(caseDir, await checkOneCase(caseDir));
   if (v.status === "pass") { console.log(`✓ ${caseDir} [${v.detail}]`); process.exit(0); }
+  if (v.status === "recovered") { console.log(`★ ${caseDir} — ${v.detail}`); process.exit(0); } // now passes; entry removable (non-fatal)
+  if (v.status === "wasm-blocked") { console.error(`⊘ ${caseDir} — ${v.detail}`); process.exit(2); } // known residual, tracked (not a hard fail)
   if (v.status === "skip") { console.error(`check-one-example: ${caseDir}: ${v.detail} — needs the @test-export driver (a later shred kind)`); process.exit(2); }
   if (v.status === "harness-error") { console.error(`check-one-example: ${caseDir}: ${v.detail}`); process.exit(2); }
   console.error(`✗ ${caseDir} — ${v.detail}`);
