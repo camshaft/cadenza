@@ -29,6 +29,14 @@ pass	ml/117-sum-type-nullary-variants
 pass	ml/118-sum-type-mixed-variants
 pass	ml/119-module-block
 pass	ml/12-world-nullary-member
+pass	ml/120-record-field-pun
+pass	ml/121-record-field-pun-explicit-canonicalizes
+pass	ml/122-record-field-single
+pass	ml/123-record-field-mixed
+pass	ml/124-shadowed-ctor-let-binder
+pass	ml/125-shadowed-ctor-def-param
+pass	ml/126-shadowed-ctor-per-name-not-all
+pass	ml/127-record-key-non-name-falls-back
 pass	ml/13-world-full-decl
 pass	ml/14-world-wit-prim-list-option
 pass	ml/15-world-wit-list-result

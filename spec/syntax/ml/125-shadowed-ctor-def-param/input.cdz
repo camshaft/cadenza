@@ -1,0 +1,1 @@
+def f(tuple) = tuple(3, 4)

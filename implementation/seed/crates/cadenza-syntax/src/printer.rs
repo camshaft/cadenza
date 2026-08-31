@@ -8225,36 +8225,14 @@ mod tests {
     // legacy name-headed input no longer cross-surface round-trips; the native surface is covered by the
     // native-form tests. See DESIGN-native-ast-compound-data.md / v-ast-compound M2.)
 
-    #[test]
-    fn record_field_shorthand() {
-        // A value-record field is the canonical `(= name value)` triple (RV1/RV2, Phase B). `{ x }`
-        // puns to `(record (= x x))`; the printer renders a same-name field back as `{ x }`. The printer
-        // also tolerates the legacy `(x x)` pair (prints `{ x }` too) so a stray un-migrated node still
-        // renders.
-        assert_eq!(
-            print(&sexpr::read("(record (= x x))").unwrap(), 80),
-            "{ x }"
-        );
-        assert_eq!(print(&sexpr::read("(record (x x))").unwrap(), 80), "{ x }"); // legacy pair tolerated
-        assert_eq!(
-            print(&sexpr::read("(record (= x x) (= y 2))").unwrap(), 80),
-            "{ x, y = 2 }"
-        );
-        // a non-punned field keeps `name = value`.
-        assert_eq!(
-            print(&sexpr::read("(record (= x 1))").unwrap(), 80),
-            "{ x = 1 }"
-        );
-        // parse `{ x }` → the pun as the canonical `(= x x)` triple (a STRING-headed record primitive,
-        // per the reader's literal desugar).
-        assert_eq!(
-            sexpr::print(&parser::read_ml("{ x }").arenas),
-            "#record((= x x))"
-        );
-        assert_eq!(assert_roundtrip("{ x }", 80), "{ x }");
-        assert_eq!(assert_roundtrip("{ x = x }", 80), "{ x }");
-        assert_eq!(assert_roundtrip("{ x, y = 2 }", 80), "{ x, y = 2 }");
-    }
+    // `record_field_shorthand` (a value-record field is the canonical `(= name value)` triple; `{ x }`
+    // PUNS to `(= x x)`, a same-name field prints back as `{ x }`) MIGRATED to the spec/syntax corpus
+    // (inc-6 batch-16): ml/120-record-field-pun `{ x }`→`#record((= x x))`,
+    // ml/121-record-field-pun-explicit-canonicalizes `{ x = x }` (tree `#record((= x x))`, format.cdz
+    // canonicalizes back to `{ x }`), ml/122-record-field-single `{ x = 1 }`→`#record((= x 1))`
+    // (non-punned keeps `name = value`), ml/123-record-field-mixed `{ x, y = 2 }`→
+    // `#record((= x x) (= y 2))`. (The legacy `(record (x x))` pair-tolerance is a sexp-side robustness
+    // for an un-migrated node — an internal concern, not a surface contract — so it stays out of scope.)
 
     // The export brace surface + member wildcard MIGRATED to the spec/syntax corpus (inc-6 batch-13):
     //   * `export_brace_surface` (`(export name…)` ↔ `export { … }` brace name group) →
@@ -8297,33 +8275,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shadowed_ctor_name_stays_a_call() {
-        // A binder for a ctor name makes every NAME-headed occurrence of it (tree-wide) a user
-        // application — rendered as a call, NOT sugared. This is the head-position shadow the
-        // resolver honours; the printer must not misrepresent it as a literal.
-        assert_eq!(
-            assert_roundtrip("let list = fn(a, b) => a + b in\nlist(3, 4)", 80),
-            "let list = fn(a, b) => a + b in\nlist(3, 4)"
-        );
-        // shadowed via a def parameter: the `tuple` argument, not a tuple literal.
-        let a = sexpr::read("(def (f tuple) (tuple 3 4))").unwrap();
-        assert_eq!(print(&a, 80), "def f(tuple) = tuple(3, 4)");
-        // an unshadowed sibling in the SAME tree still sugars (shadow is per-name, not all-ctors).
-        let a = sexpr::read("(let ((list (fn (a) a))) (tuple (list 1) 2))").unwrap();
-        assert_eq!(print(&a, 80), "let list = fn(a) => a in\n(list(1), 2)");
-    }
-
-    #[test]
-    fn record_key_must_be_a_name_else_falls_back() {
-        // A `record` whose field key is not a plain name can't use the `{…}` surface; it falls back
-        // to the generic call form and still round-trips.
-        let a = sexpr::read("(record (1 v))").unwrap();
-        let printed = print(&a, 80);
-        // generic form: `record` applied to the field-list `(1 v)`, which prints as `1(v)`.
-        assert_eq!(printed, "record(1(v))");
-        assert!(parser::read_ml(&printed).arenas.structurally_eq(&a));
-    }
+    // `shadowed_ctor_name_stays_a_call` (a binder for a ctor name makes every NAME-headed occurrence a
+    // user application — rendered as a call, NOT sugared; per-name, not all-ctors) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-16): ml/124-shadowed-ctor-let-binder
+    // `let list = fn(a, b) => a + b in`⏎`list(3, 4)`→`(let ((list (fn (a b) (+ a b)))) (list 3 4))`,
+    // ml/125-shadowed-ctor-def-param `def f(tuple) = tuple(3, 4)`→`(def (f tuple) (tuple 3 4))`,
+    // ml/126-shadowed-ctor-per-name-not-all `let list = fn(a) => a in`⏎`(list(1), 2)`→
+    // `(let ((list (fn (a) a))) #tuple((list 1) 2))` (shadowed `list` is a call, unshadowed `tuple` sugars).
+    // `record_key_must_be_a_name_else_falls_back` (a `record` whose field key is not a plain name can't use
+    // the `{…}` surface; falls back to the generic call form) MIGRATED: ml/127-record-key-non-name-falls-back
+    // `record(1(v))`→`(record (1 v))`. The sexp→ml oracles are subsumed by these ml cases' fmt-idempotence.
 
     #[test]
     fn documented_def_prints_doc_line() {
