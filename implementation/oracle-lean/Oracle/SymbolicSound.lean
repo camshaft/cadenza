@@ -554,4 +554,38 @@ theorem denote_ite_value_inv (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr) 
     | exact Or.inr ⟨‹_›, h⟩
     | simp_all
 
+/-! ### Capstone `.ite` fold-SELECT step (the sub-case where the condition folds to a bool literal).
+When `normalize c` folds to `.const (.bool true/false)`, the whole `ite` normalizes to the selected
+branch (`normalize_ite_condTrue/False`, #6472). These lemmas prove that sub-case of the value-conditioned
+`.ite` induction step: given the branch IH (`iht`/`ihe`) and the condition IH (`ihc`), a value-producing
+`ite` transports across `normalize`. The condition IH is what rules out the *other* branch — if the
+`ite` actually took the false branch while `normalize c` folded to `true`, `ihc` would force
+`denote (normalize c) = .value (.bool false)`, contradicting `denote (.const (.bool true)) = .value
+(.bool true)`. No `foldConst?`/complex-arm exposure — this is the clean structural half of the step. -/
+theorem denote_normalize_ite_condTrue_step (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr)
+    (ihc : ∀ u, denote ρ w c = .value u → denote ρ w (normalize c) = .value u)
+    (iht : ∀ u, denote ρ w t = .value u → denote ρ w (normalize t) = .value u)
+    (hnc : normalize c = .const (.bool true)) (v : Value)
+    (h : denote ρ w (.ite c t e) = .value v) :
+    denote ρ w (normalize (.ite c t e)) = .value v := by
+  rw [normalize_ite_condTrue c t e hnc]
+  rcases denote_ite_value_inv ρ w c t e v h with ⟨_, ht⟩ | ⟨hc, _⟩
+  · exact iht v ht
+  · have := ihc _ hc
+    rw [hnc] at this
+    simp [denote, Value.asF64?] at this
+
+theorem denote_normalize_ite_condFalse_step (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr)
+    (ihc : ∀ u, denote ρ w c = .value u → denote ρ w (normalize c) = .value u)
+    (ihe : ∀ u, denote ρ w e = .value u → denote ρ w (normalize e) = .value u)
+    (hnc : normalize c = .const (.bool false)) (v : Value)
+    (h : denote ρ w (.ite c t e) = .value v) :
+    denote ρ w (normalize (.ite c t e)) = .value v := by
+  rw [normalize_ite_condFalse c t e hnc]
+  rcases denote_ite_value_inv ρ w c t e v h with ⟨hc, _⟩ | ⟨_, he⟩
+  · have := ihc _ hc
+    rw [hnc] at this
+    simp [denote, Value.asF64?] at this
+  · exact ihe v he
+
 end Oracle
