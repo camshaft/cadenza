@@ -845,6 +845,28 @@ theorem foldConst?_unary_operand_some (op : String) (x0 : SymExpr) (v : Value)
   | none => rw [foldConst?] at h; simp [h0] at h
   | some c0 => exact ⟨c0, rfl⟩
 
+/-- `foldConst?` DECLINES (`= none`) as soon as its FIRST operand is not `symToValue?`-extractable — its
+`consts.any (·.isNone)` guard short-circuits on the leading `none`. This is the exact `foldConst? … = none`
+hypothesis the capstone `.app`-IDENTITY branch has in hand: `normalize`'s `.app` arm applies an algebraic
+identity (`x+0→x`, `x*1→x`, …) only after `foldConst?` returned `none`, and it returns `none` here precisely
+because the surviving operand is symbolic (a `var`/`app`, so `symToValue? = none`). Companion of
+`foldConst?_binary_operands_some` (the fires-⇒-both-some direction). -/
+theorem foldConst?_none_of_fst_symbolic (op : String) (a b : SymExpr)
+    (ha : symToValue? a = none) : foldConst? op #[a, b] = none := by
+  rw [foldConst?]; simp [ha]
+
+-- ⚠ ASSEMBLY BLOCKER (confirmed 2026-08-31) — the companion syntactic equation lemma the `.app`-identity
+-- capstone cases need (`normalizeAppIdentities "+" #[a, .const (.int 0)] = a`, and its `*`/`-`/`/`/bitwise
+-- siblings) is NOT cleanly provable: `normalizeAppIdentities`'s identity arms fire on `isI b 0`
+-- (`b == .const (.int 0)`), and reducing that concrete `SymExpr` BEq requires unfolding the DERIVED `BEq`
+-- of a NESTED inductive (`SymExpr` recurses through `Array SymExpr`), which the kernel will not reduce —
+-- `rfl`/`decide`/`simp`/`unfold instBEqSymExpr.beq` all fail; only `native_decide` reduces it, and that
+-- pulls the `Lean.ofReduceBool` compiler-trust axiom (breaks this file's clean {propext, Classical.choice,
+-- Quot.sound} axiom set). Note `∀ e, (e == e) = true` is even FALSE for `SymExpr` (`.const (.f64 nan)`),
+-- so no general reflexivity lemma exists. Unblocking needs either a hand-proven int-const-BEq equation
+-- (`(SymExpr.const (.int m) == SymExpr.const (.int n)) = decide (m = n)`, via the generated beq's structural
+-- recursion) or a `@[simp]` normal form for the derived beq's `.const` arm — tracked for a later tick.
+
 /-- Every `.const` LEAF anywhere in a symbolic expression is `asF64?`-canonical (its float components are
 already `.f64`, never a `.float`/`.floatNan`/`.floatInf` spelling). This is the invariant `normalize`
 OUTPUTS satisfy (`normalize_allConstsCanon`): the `.const` arm canonicalizes float literals to `.f64`, and
