@@ -13589,152 +13589,129 @@
   (input (> ((. (Int 4) wrap) 7) ((. (Int 4) wrap) 8)))
   (output (: true Bool)))
 
-; --- Unary negation: prefix `-<expr>` is the arity-1 subtraction `(- e)` -----------------------
-; The ML surface `-x` (prefix minus applied to an expression, not a bare literal) canonicalizes to the
-; ONE-operand subtraction `(- e)`, negation. It is `0 - e` at the operand's numeric type — closed over
-; every numeric type, with the integer `MIN`-overflow trap the binary subtraction already carries — and
-; is NOT the wrong-arity error a bare binary operator otherwise is. Negating a non-numeric value is a
-; type error (CDZ0201), the unary twin of arithmetic-on-a-non-number. A negative LITERAL (`-1`, `-1.5`)
-; lexes as a signed literal, a separate path, so these witness negation of an EXPRESSION specifically.
+; --- Negation via Num.neg -----------------------------------------------------------------------
+; `(Num.neg e)` is negation at the operand's numeric type — closed over every numeric type (Int, Float,
+; BigInt, Rational, Qty), carrying the integer MIN-overflow trap. It is the canonical way to negate an
+; EXPRESSION. (The deprecated surface prefix `-x` and its arity-1 subtraction lowering are being cut: `-x`
+; now lowers to a curried-Sub type error + suggest-neg diagnostic — see the deprecation case landing with it.)
+; Negating a non-numeric value is a type error (CDZ0201), the unary twin of arithmetic-on-a-non-number. A
+; negative LITERAL (`-1`, `-1.5`, `-42N`) lexes as a signed literal, a separate path — these witness negation
+; of an EXPRESSION specifically.
 (case
-  "unary negation of a bound integer name yields its opposite"
-  (doc
-    "`(- x)` with x a let-bound Int64 is negation — `0 - x` at Int64 — so `-5` = -5. Witnesses the
-           arity-1 subtraction as negation, not a wrong-arity `- takes exactly 2 operands` error.")
-  (input (let ((x 5)) (- x)))
+  "Num.neg of a bound integer name yields its opposite"
+  (doc "`(Num.neg x)` with x a let-bound Int64 negates it to -5.")
+  (input (let ((x 5)) (Num.neg x)))
   (output (: -5 Int64)))
 
 (case
-  "unary negation binds tighter than binary addition"
+  "Num.neg of a runtime integer parameter negates at run time"
   (doc
-    "The ML surface `-x + 1` parses as `(+ (- x) 1)` — prefix negation binds tighter than every
-           infix operator — so with x = 5 it is `-5 + 1` = -4, not `-(x + 1)` = -6. Pins negation as a
-           tight prefix over its single operand.")
-  (input (let ((x 5)) (+ (- x) 1)))
-  (output (: -4 Int64)))
-
-(case
-  "unary negation of a parenthesized sum negates the whole expression"
-  (doc
-    "`-(x + 1)` (ML) canonicalizes to `(- (+ x 1))`: the parenthesized sum is the single operand, so
-           with x = 5 the result is -(5 + 1) = -6. The companion of the tighter-than-`+` case above.")
-  (input (let ((x 5)) (- (+ x 1))))
-  (output (: -6 Int64)))
-
-(case
-  "unary negation of a runtime integer parameter negates at run time"
-  (doc
-    "`(- n)` with n a parameter emits the runtime `0 - n` (the checked subtract): n = 7 → -7. At
-           n = Int64.min the negation `-(-2^63)` = +2^63 has no Int64 representation and the subtract's
-           overflow guard TRAPS, exactly as `(- 0 n)` does — negation inherits the binary subtraction's
-           `x == MIN` trap. Pins that negation is emitted (not only constant-folded) and traps correctly.")
-  (input (do (def (main (: n Int64)) (- n)) (export main)))
+    "`(Num.neg n)` with n a parameter emits the runtime checked negate: n = 7 -> -7. At n = Int64.min the
+           negation -(-2^63) = +2^63 has no Int64 representation and the overflow guard TRAPS. Pins that
+           negation is emitted (not only constant-folded) and traps correctly.")
+  (input (do (def (main (: n Int64)) (Num.neg n)) (export main)))
   (call main (: 7 Int64))
   (output (: -7 Int64))
   (call main (: -9223372036854775808 Int64))
   (trap "integer overflow"))
 
 (case
-  "unary negation of an unusual-width minimum overflows its declared range and is rejected CDZ0304"
+  "Num.neg of an unusual-width minimum overflows its declared range and is rejected CDZ0304"
   (doc
-    "The unusual-width member of the negate-MIN family. `(Int 4).wrap 8` = -8 (Int4.min); `-(-8)` = +8,
-           which exceeds the (Int 4) maximum 7 → a compile-provable overflow, CDZ0304 at the declared 4-bit
-           range [-8, 7]. The negation face of the unusual-width overflow family (arith/shift/bitwise/div all
-           pinned nearby): negating the narrow minimum overflows the DECLARED range, not the i8 storage range
-           (which would accept +8), the same width-parametric check as the arithmetic on that width.")
-  (input (- ((. (Int 4) wrap) 8)))
+    "`(Int 4).wrap 8` = -8 (Int4.min); `(Num.neg -8)` = +8, which exceeds the (Int 4) maximum 7 -> a
+           compile-provable overflow, CDZ0304 at the declared 4-bit range [-8, 7]. Negating the narrow minimum
+           overflows the DECLARED range, not the i8 storage range (which would accept +8) — the same
+           width-parametric check as the arithmetic on that width.")
+  (input (Num.neg ((. (Int 4) wrap) 8)))
   (error CDZ0304))
 
 (case
-  "unary negation of an in-range unusual-width value computes at the declared width"
+  "Num.neg of an in-range unusual-width value computes at the declared width"
   (doc
-    "`(Int 4).wrap 7` = 7; `-(7)` = -7, within the (Int 4) range [-8, 7], so it computes to -7, a value
-           of type (Int 4). The in-range control for the negate-MIN overflow case above — negating a value
-           whose opposite fits the narrow width is accepted and computed.")
-  (input (- ((. (Int 4) wrap) 7)))
+    "`(Int 4).wrap 7` = 7; `(Num.neg 7)` = -7, within the (Int 4) range [-8, 7], so it computes to -7, a
+           value of type (Int 4). The in-range control for the negate-MIN overflow case above.")
+  (input (Num.neg ((. (Int 4) wrap) 7)))
   (output (: -7 (Int 4))))
 
 (case
-  "unary negation of a SECOND unusual width's minimum (Int 12) is also rejected CDZ0304"
+  "Num.neg of a SECOND unusual width's minimum (Int 12) is also rejected CDZ0304"
   (doc
-    "`(Int 12).wrap 2048` = -2048 (Int12.min); `-(-2048)` = +2048 exceeds the (Int 12) maximum 2047 →
-           CDZ0304 at the 12-bit range [-2048, 2047]. The second-width witness that the negate overflow check
-           is width-parametric, paralleling the Int12 arithmetic/shift cases.")
-  (input (- ((. (Int 12) wrap) 2048)))
+    "`(Int 12).wrap 2048` = -2048 (Int12.min); `(Num.neg -2048)` = +2048 exceeds the (Int 12) maximum
+           2047 -> CDZ0304 at the 12-bit range [-2048, 2047]. The second-width witness that the negate overflow
+           check is width-parametric.")
+  (input (Num.neg ((. (Int 12) wrap) 2048)))
   (error CDZ0304))
 
 (case
-  "unary negation in a lambda body negates the argument"
+  "Num.neg in a lambda body negates the argument"
   (doc
-    "A negating function `(def (neg x) (- x))` applied to 7 yields -7 — prefix negation in a
-           function body over its (inferred-numeric) parameter. Witnesses `-x` in the `fn`/`def`-body
-           position the workaround `0 - x` was reached for.")
-  (input (do (def (neg x) (- x)) (def (main) (neg 7)) (export main)))
+    "A negating function `(def (neg x) (Num.neg x))` applied to 7 yields -7 — negation in a function body
+           over its (inferred-numeric) parameter.")
+  (input (do (def (neg x) (Num.neg x)) (def (main) (neg 7)) (export main)))
   (output (: -7 Int64)))
 
 (case
-  "unary negation of a float flips the sign, preserving signed zero"
+  "Num.neg of a float flips the sign, preserving signed zero"
   (doc
-    "`(- x)` with x a Float64 is negation at the float type — emitted as `-1.0 * x`, NOT `0.0 - x`
-           (IEEE `0.0 - (+0.0)` = +0.0, but negation must flip a zero's sign). So `-(0.0)` = -0.0, which
-           is distinct from +0.0 by the canonical byte form (core-semantics.md §Floating-Point Equality
-           Follows The Canonical Byte Form). Pins float negation and its signed-zero correctness.")
-  (input (let ((x 0.0)) (- x)))
+    "`(Num.neg x)` with x a Float64 flips the sign bit (NOT `0.0 - x`, since IEEE `0.0 - (+0.0)` = +0.0
+           but negation must flip a zero's sign). So `(Num.neg 0.0)` = -0.0, distinct from +0.0 by the canonical
+           byte form (core-semantics.md §Floating-Point Equality Follows The Canonical Byte Form). Pins float
+           negation and its signed-zero correctness.")
+  (input (let ((x 0.0)) (Num.neg x)))
   (output (: -0.0 Float64)))
 
 (case
-  "float double negation round-trips signed zero — -(-0.0) is +0.0, not -0.0"
+  "float double negation round-trips signed zero — Num.neg of Num.neg 0.0 is +0.0, not -0.0"
   (doc
-    "Each unary `(- …)` flips a float's sign bit (the case above pins `(- 0.0)` = -0.0). Two of them
-           compose back: `(- (- 0.0))` flips 0.0 → -0.0 → +0.0. So `-(-x)` = x holds for float INCLUDING
-           signed zero. Pins that a `-(-x) → x` simplification round-trips the sign correctly — a fold that
-           dropped ONE of the two flips (leaving -0.0), or that emitted the `0.0 - x` form for negation
-           (which does NOT flip +0.0's sign), would leave -0.0 and be caught here (distinct from +0.0 by the
-           canonical byte form). `(- (- 0.0))` = 0.0, both backends. The double-negation companion of the
-           single float-negation case above.")
-  (input (let ((x 0.0)) (- (- x))))
+    "Each `Num.neg` flips a float's sign bit (the case above pins `(Num.neg 0.0)` = -0.0). Two of them
+           compose back: `(Num.neg (Num.neg 0.0))` flips 0.0 -> -0.0 -> +0.0. So double negation round-trips the
+           sign for float INCLUDING signed zero. A negate that dropped one flip (leaving -0.0), or emitted the
+           `0.0 - x` form (which does not flip +0.0's sign), would be caught here (distinct from +0.0 by the
+           canonical byte form). `(Num.neg (Num.neg 0.0))` = 0.0, both backends.")
+  (input (let ((x 0.0)) (Num.neg (Num.neg x))))
   (output (: 0.0 Float64)))
 
 (case
-  "unary negation of a nonzero float"
-  (doc "`(- x)` with x = 5.0 negates to -5.0 — the ordinary (nonzero) float-negation case.")
-  (input (let ((x 5.0)) (- x)))
+  "Num.neg of a nonzero float"
+  (doc "`(Num.neg x)` with x = 5.0 negates to -5.0 — the ordinary (nonzero) float-negation case.")
+  (input (let ((x 5.0)) (Num.neg x)))
   (output (: -5.0 Float64)))
 
 (case
-  "unary negation of an exact rational negates the numerator"
+  "Num.neg of an exact rational negates the numerator"
   (doc
-    "`(- r)` with r = 1/4 is exact rational negation (`0 - 1/4`), yielding -1/4 — the sign lives on
-           the numerator of the normalized form. Witnesses negation over the exact `Rational` type.")
-  (input (let ((r (Rational.of 1 4))) (- r)))
+    "`(Num.neg r)` with r = 1/4 is exact rational negation, yielding -1/4 — the sign lives on the
+           numerator of the normalized form. Witnesses negation over the exact `Rational` type.")
+  (input (let ((r (Rational.of 1 4))) (Num.neg r)))
   (output (: -1/4 Rational)))
 
 (case
-  "unary negation of an arbitrary-precision integer"
+  "Num.neg of an arbitrary-precision integer"
   (doc
-    "`(- b)` with b a BigInt is unbounded negation (`0 - b` via the runtime bigint-sub), yielding
-           -5 — never overflowing (the point of the type). Witnesses negation over BigInt.")
-  (input (let ((b (BigInt.of 5))) (- b)))
+    "`(Num.neg b)` with b a BigInt is unbounded negation, yielding -5 — never overflowing (the point of
+           the type). Witnesses negation over BigInt.")
+  (input (let ((b (BigInt.of 5))) (Num.neg b)))
   (output (: -5 BigInt))
   (live-objects known-leak))
 
 (case
-  "unary negation of a quantity preserves its unit"
+  "Num.neg of a quantity preserves its unit"
   (doc
-    "`(- q)` with q = 5 meter negates the erased magnitude while keeping the dimension: -5 meter.
-           Witnesses that negation is defined over a `Qty` and does not strip its unit (units-of-measure.md
-           — the running arithmetic is the inner numeric operation, the unit is carried through).")
-  (input (let ((q (Qty.of 5 (Unit.base #"meter")))) (- q)))
+    "`(Num.neg q)` with q = 5 meter negates the erased magnitude while keeping the dimension: -5 meter.
+           Witnesses that negation is defined over a `Qty` and does not strip its unit (units-of-measure.md).")
+  (input (let ((q (Qty.of 5 (Unit.base #"meter")))) (Num.neg q)))
   (output (: (Qty.of -5 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
 
 (case
-  "unary negation of a non-numeric value is a type error"
+  "Num.neg of a non-numeric value is a type error"
   (doc
-    "`(- s)` with s a String is rejected (CDZ0201): negation is not defined on a non-numeric value,
-           the unary twin of arithmetic-on-a-non-number. Cadenza never coerces a String to a number. A
-           generation that does not yet cover unary negation declines (reject-don't-miscompile).")
-  (input (let ((s "hi")) (- s)))
-  (error CDZ0201 (message "negation is not defined on")))
+    "`(Num.neg s)` with s a String SHOULD be rejected (CDZ0201): negation is not defined on a non-numeric
+           value, the unary twin of arithmetic-on-a-non-number (Cadenza never coerces a String to a number).
+           Today Num.neg over a non-numeric declines codelessly rather than emitting the coded type error, so
+           this asserts the ideal CDZ0201 as a TODO — it auto-passes when Num.neg's type check emits the code
+           (the prefix `-` lowering emitted CDZ0201 here; Num.neg must too). Gap owner: v-compiler-primitives.")
+  (input (let ((s "hi")) (Num.neg s)))
+  (error CDZ0201))
 
 (case
   "a multiply crossing the single-limb boundary lands exactly and divides back"

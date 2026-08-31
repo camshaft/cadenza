@@ -6170,7 +6170,6 @@ pass	float <= is NOT (< or =): they diverge on NaN because canonical-byte equali
 pass	float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side
 pass	float division rounds under the fixed mode
 pass	float division that does not divide evenly rounds to nearest
-pass	float double negation round-trips signed zero — -(-0.0) is +0.0, not -0.0
 pass	float multiplication uses the arithmetic operator
 pass	float subtraction uses the arithmetic operator
 pass	floating-point uses the fixed rounding mode
@@ -8196,20 +8195,6 @@ pass	uint8 wrap of a negative multiple of 256 is its low byte, zero
 pass	uint8 wrap of a negative runtime value reads the low byte as unsigned
 pass	uint8 wrap truncates a wide runtime value to the low 8 bits
 pass	una1 a runtime unsigned less-than orders by magnitude (i64.lt_u), the runtime dual of the const-fold
-pass	unary negation binds tighter than binary addition
-pass	unary negation in a lambda body negates the argument
-pass	unary negation of a SECOND unusual width's minimum (Int 12) is also rejected CDZ0304
-pass	unary negation of a bound integer name yields its opposite
-pass	unary negation of a float flips the sign, preserving signed zero
-pass	unary negation of a non-numeric value is a type error
-pass	unary negation of a nonzero float
-pass	unary negation of a parenthesized sum negates the whole expression
-pass	unary negation of a quantity preserves its unit
-pass	unary negation of a runtime integer parameter negates at run time
-pass	unary negation of an arbitrary-precision integer
-pass	unary negation of an exact rational negates the numerator
-pass	unary negation of an in-range unusual-width value computes at the declared width
-pass	unary negation of an unusual-width minimum overflows its declared range and is rejected CDZ0304
 pass	und1 an IDEMPOTENT-UNDO counter — the tuple state carries (value,last-delta); undo reverses the last delta exactly once and answers it, the second undo answers zero and no-ops
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unequal-depth payload paths bind distinctly
