@@ -558,6 +558,20 @@ theorem denote_normalize_proj (ρ : Nat → Value) (w : IntTy) (b : SymExpr) (s 
 theorem denote_normalize_case (ρ : Nat → Value) (w : IntTy) (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
     denote ρ w (normalize (.case s arms)) = denote ρ w (.case s arms) := by simp only [normalize, denote]
 
+/-! ### `denote` equations for the modeled COMPOUND arms (tuple #6569, record #6579).
+Pin the value-producing shape of the compound arms `denote` now models: each denotes to a `.value` of the
+compound whose children are the elements' `denote` folded through `outcomeToValue` (poison for a trapping
+child — "trap when observed", matching `evalNode`). These are the building blocks the eventual capstone
+tuple/record congruence cases use (they reduce `denote (.tuple/.record …)` to the element denotations),
+and they pin the arm shape against a refactor. -/
+theorem denote_tuple (ρ : Nat → Value) (w : IntTy) (es : Array SymExpr) :
+    denote ρ w (.tuple es) = .value (.tuple (es.attach.map (fun x => outcomeToValue (denote ρ w x.val)))) := by
+  simp only [denote]
+theorem denote_record (ρ : Nat → Value) (w : IntTy) (fs : Array (ByteArray × SymExpr)) :
+    denote ρ w (.record fs)
+      = .value (.record (fs.attach.map (fun x => (x.val.1, outcomeToValue (denote ρ w x.val.2))))) := by
+  simp only [denote]
+
 /-! ### Capstone `.ite` building blocks: denote-soundness of the boolean-materialization identities.
 `normalize` rewrites `if c then true else false → c` and `if c then false else true → not c` (#6450).
 These pin the denote-soundness of that rewrite in VALUE-CONDITIONED form: when the condition denotes to
