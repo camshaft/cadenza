@@ -631,6 +631,31 @@
   (input  (do (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) .. rest) v) (_ 0))) (def (main) (f #map((= 1 42) (= 2 99)))) (export main)))
   (call   main) (output (: 42 Int64)))
 
+; A keyed map pattern matches by KEY CONTAINMENT — it names a REQUIRED SUBSET of keys and binds their
+; values, IGNORING any other keys the scrutinee carries (no rest binder needed to absorb them). So a
+; single-key pattern matches a MULTI-key map (the superset), binding the present key's value; a pattern
+; key ABSENT from the scrutinee refutes the arm (falls to the next); a multi-key pattern is order-
+; independent (a map is unordered) and requires EVERY named key present. This is the map twin of the
+; set-pattern containment (19-sets) and the open-row record pattern — a collection pattern names a
+; substructure, not the whole value. (The empty `#map()` — the vacuous containment identity that matches
+; any map — is pinned above; the single-key EXACT match is "a map pattern over its matching Map scrutinee
+; kind".)
+(case "a keyed map pattern matches a SUPERSET map, binding the present key and ignoring the rest"
+  (input  (match #map((= 1 10) (= 2 20)) (#map((= 1 v)) v) (_ 0)))
+  (output (: 10 Int64)))
+
+(case "a map pattern naming a key the scrutinee lacks does NOT match (falls to the next arm)"
+  (input  (match #map((= 1 10) (= 2 20)) (#map((= 3 v)) v) (_ 0)))
+  (output (: 0 Int64)))
+
+(case "a multi-key map pattern is order-independent and binds each named key's value"
+  (input  (match #map((= 1 10) (= 2 20)) (#map((= 2 b) (= 1 a)) (+ a b)) (_ 0)))
+  (output (: 30 Int64)))
+
+(case "a multi-key map pattern requires EVERY named key present, else it does not match"
+  (input  (match #map((= 1 10)) (#map((= 1 v) (= 2 w)) v) (_ 0)))
+  (output (: 0 Int64)))
+
 (case "a tuple pattern over a non-tuple scrutinee is a type error"
   (doc    "`(match 5 ((tuple a b) a) (_ 0))` — a `(tuple …)` pattern matches a Tuple value, and the Int64
            `5` is not a Tuple, rejected CDZ0203. The pattern-position companion of `(. 5 0)` (positional
