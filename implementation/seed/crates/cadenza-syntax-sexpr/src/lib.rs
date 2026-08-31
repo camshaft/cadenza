@@ -549,7 +549,7 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
                     // stack. Emit nothing now; queue `obj` `.` `key` (reversed → source order on pop).
                     if !structural
                         && let Some((obj, key)) = a.member_parts(id)
-                        && a.as_name(key).is_some()
+                        && is_plain_ident_name(a, key)
                         && is_dotted_operand_sugarable(a, obj)
                     {
                         stack.push(Work::Node(key, false));
@@ -702,15 +702,33 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
     }
 }
 
+/// Whether `id` is a Name whose text is a PLAIN IDENTIFIER — non-empty, first char alphabetic or `_`,
+/// every char alphanumeric or `_`. This is the strict subset of names that re-lex CLEANLY as a dotted-name
+/// SEGMENT: it excludes any operator/delimiter/whitespace char (and a leading digit) that would break the
+/// `obj.key` sugar's round-trip (e.g. a fuzzed name `":.*}7中3-x"` — printing `obj.:.*}7中3-x` would NOT
+/// re-read to the same `Member`). CJK etc. is alphabetic, so a Unicode identifier still qualifies. Kept
+/// STRICTER than the reader's `is_dotted_name` (which checks only each segment's first char) so the sugar
+/// is round-trip-safe over ARBITRARY arenas (the `sexpr_printer_is_total` totality property) — a name that
+/// is not a plain ident simply keeps the canonical `(. obj key)`, never a mis-rendered sugar.
+fn is_plain_ident_name(a: &Arenas, id: StructId) -> bool {
+    a.as_name(id).is_some_and(|n| {
+        n.chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
+            && n.chars().all(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
 /// Whether `id` is a valid OPERAND for the dotted member sugar `obj.key` (source/fmt surface only): a
-/// plain NAME atom (`Option`, `r`), OR a MEMBER `(. obj' key')` that is itself sugarable — i.e. `key'` is
-/// a Name and `obj'` is recursively sugarable (a chain like `a.b.c` = `(. (. a b) c)`). Anything else (a
-/// compound obj, a non-Name key) is NOT sugarable, so the member stays the canonical `(. …)`. Used by the
-/// pretty printer's member arm to decide whether to emit `obj.key` (seq-282 B) vs `(. obj key)`.
+/// plain-identifier NAME (`Option`, `r`), OR a MEMBER `(. obj' key')` that is itself sugarable — i.e. `key'`
+/// is a plain-identifier Name and `obj'` is recursively sugarable (a chain like `a.b.c` = `(. (. a b) c)`).
+/// Anything else (a compound obj, a non-Name or non-plain-identifier key) is NOT sugarable, so the member
+/// stays the canonical `(. …)` — which keeps the printer TOTAL (flat/pretty agree structurally) over
+/// arbitrary arenas. Used by the pretty printer's member arm: `obj.key` (seq-282 B) vs `(. obj key)`.
 fn is_dotted_operand_sugarable(a: &Arenas, id: StructId) -> bool {
-    a.as_name(id).is_some()
+    is_plain_ident_name(a, id)
         || a.member_parts(id).is_some_and(|(obj, key)| {
-            a.as_name(key).is_some() && is_dotted_operand_sugarable(a, obj)
+            is_plain_ident_name(a, key) && is_dotted_operand_sugarable(a, obj)
         })
 }
 
@@ -3461,6 +3479,18 @@ mod tests {
             print_pretty_width(&a, 80).contains("(. "),
             "a compound-obj member must stay (. …) on the pretty surface"
         );
+        // A NON-plain-identifier key/obj (an operator name, or any name with a char that is not
+        // alphanumeric/`_`) is NOT sugarable — it would NOT re-lex as a dotted-name segment, so it stays
+        // canonical `(. …)`. This keeps the printer TOTAL over arbitrary/fuzzed arenas (regression guard for
+        // sexpr_printer_is_total: a fuzzed member key like `:.*}7中3-x` must never sugar).
+        for src in ["(. p +)", "(. + x)", "(. p 3bad)"] {
+            let a = read(src).unwrap();
+            assert!(
+                print_pretty_width(&a, 80).contains("(. "),
+                "a non-plain-identifier member must stay (. …): {src} -> {}",
+                print_pretty_width(&a, 80)
+            );
+        }
     }
 
     /// Generate a random VALID s-expr program (bounded by `depth`) — atoms, infix, calls, `let`, `if`,
