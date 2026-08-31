@@ -90,7 +90,16 @@ fn parse_doc(src: &str) -> Result<DocumentMut, ReadError> {
 /// The first line of a toml_edit error message (its Display is multi-line with a source excerpt; we
 /// keep the headline and append our own `at byte N`).
 fn err_head(e: &toml_edit::TomlError) -> String {
-    e.message().to_string()
+    let msg = e.message();
+    if msg.trim().is_empty() {
+        // toml_edit emits an EMPTY message when its VALUE parser reaches end-of-input or only trailing
+        // whitespace after `key =` (a missing value: `a = `, `a =`, `x = \t`) — every OTHER malformation
+        // (invalid key/table/string/array/datetime) carries a specific headline. Without this, the lifted
+        // `toml{ … }` region error was a bare `at byte N` with no cause (double space, no reason) — found
+        // by v-parser-corpus. Substitute the accurate cause for the whole empty-message class.
+        return "expected a value".to_string();
+    }
+    msg.to_string()
 }
 
 // ============================================================================
@@ -788,6 +797,41 @@ mod tests {
             assert!(
                 read(bad).is_err(),
                 "expected a parse error for {bad:?}, got Ok"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_value_after_eq_reports_a_cause_not_an_empty_headline() {
+        // toml_edit emits an EMPTY message for the missing-value class (a `key =` whose value position
+        // hits end-of-input or only whitespace). Left unhandled it lifted into the embedded `toml{ … }`
+        // region as a bare `... region:  at byte N` (double space, no reason) — the gap v-parser-corpus
+        // routed here. `err_head` now substitutes an accurate cause, and every message still ends in the
+        // `at byte N` the caller remaps to line:col.
+        for src in ["a = ", "a =", "x = \t", "[t]\nb =", "y =  "] {
+            let msg = read(src).unwrap_err().0;
+            assert!(
+                msg.starts_with("expected a value"),
+                "missing-value {src:?} must report a cause, got {msg:?}"
+            );
+            assert!(
+                msg.contains("at byte"),
+                "message must keep the byte anchor, got {msg:?}"
+            );
+        }
+        // A value that IS present but malformed keeps toml_edit's own specific headline (NOT the
+        // missing-value fallback): a bare `@`, a newline, or a `#` comment in value position is an
+        // "invalid string" (toml_edit tries the string parser), an unterminated array is "invalid array".
+        for (src, head) in [
+            ("a = @", "invalid string"),
+            ("a = [1, 2", "invalid array"),
+            ("[unterminated", "invalid table header"),
+            ("= 1", "invalid key"),
+        ] {
+            let msg = read(src).unwrap_err().0;
+            assert!(
+                msg.starts_with(head),
+                "{src:?} should keep its specific headline {head:?}, got {msg:?}"
             );
         }
     }
