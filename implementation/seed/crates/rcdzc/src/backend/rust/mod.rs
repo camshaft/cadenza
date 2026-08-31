@@ -1095,7 +1095,7 @@ fn emit_signature(
         }) || result_render_unsupported)
     {
         return Err(Reject::decline(format!(
-            "`{name}`: this closure-PARAMETER export shape (higher-order / compound arg / Bytes-String result / no producing sibling) does not cross the Rust export boundary yet"
+            "`{name}`: this closure-PARAMETER export shape (higher-order / compound arg / Bytes-String result / no producing sibling) does not cross the Rust export boundary"
         )));
     }
     // Whether this function is compiled as a `loop` (it self-tail-calls). A looped function REASSIGNS

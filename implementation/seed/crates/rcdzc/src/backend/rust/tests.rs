@@ -1305,7 +1305,7 @@ fn a_closure_param_export_declines_but_a_scalar_factory_result_now_emits() {
     assert!(
         param
             .iter()
-            .any(|d| d.contains("does not cross the Rust export boundary yet")),
+            .any(|d| d.contains("does not cross the Rust export boundary")),
         "decline cites the export boundary: {param:?}"
     );
     // A closure RESULT (a scalar-capture FACTORY), by contrast, NOW EMITS (host-closure S1): it crosses as

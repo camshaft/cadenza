@@ -3098,7 +3098,7 @@ fn emit_closure_resource(
     if sum_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
         return Err(Reject::unsupported(
             "a closure taking a sum (Option/Result) argument AND returning a list/compound/byte-rope needs \
-             the sum-arg rebuild path in the list-result cores (they currently thread tuple-arg rebuilds)",
+             the sum-arg rebuild path in the list-result cores (which thread tuple-arg rebuilds, not sum-arg)",
         ));
     }
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
@@ -4644,7 +4644,7 @@ fn emit_mixed_closure_resource(
     if sum_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
         return Err(Reject::decline(
             "a mixed closure taking an Option/Result arg AND returning a byte-rope/compound/collection is not \
-             yet emitted (the mixed list-result path threads tuples, not sums; scalar-result works)",
+             supported on the mixed list-result path (which threads tuples, not sums; a scalar result is supported)",
         ));
     }
     // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
