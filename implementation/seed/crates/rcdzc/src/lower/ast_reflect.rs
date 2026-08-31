@@ -1275,10 +1275,45 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
     };
     let decl = match &ty {
         crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => *decl,
+        // Increment 2 — a STRUCTURAL type (a bare record/tuple/`List`/`Map`/`Set`/primitive/`Bytes`/
+        // `Float`/`Qty`/`Type`) has no `TypeDecl` to reify, so reflect its CANONICAL type-surface AST via
+        // `type_ast` (`lower.rs:1511`) — the same renderer the value-form + `encode_ty` use, so the
+        // reflected surface agrees byte-for-byte. There are no type params to keep generic, so
+        // `Type.ast-generic` and `Type.ast` COINCIDE for a structural type (both reach here). A
+        // NON-CONCRETE type (one still carrying an unresolved `Ty::Var`) DECLINES with a diagnostic naming
+        // the ambiguity — reflecting an undetermined type would fabricate a shape. `type_ast` yields `None`
+        // for a `Fn`/`Cont` (no value-form surface); those decline here too (arrow-surface reflection is a
+        // later refinement — the corpus TODO-pins the intended `(-> …)` form).
         _ => {
-            return Core::Poison(Reject::decline(
-                "Type.ast: only a nominal/sum type reflects its declaration (increment 1)",
-            ));
+            if ty.has_free_var() {
+                return Core::Poison(Reject::decline(
+                    "Type.ast requires a concrete type; found an unresolved type variable (annotate the type)",
+                ));
+            }
+            let Some(disc) = ast_variant_discs(db) else {
+                return Core::Poison(Reject::decline(
+                    "Type.ast: the built-in Ast sum is unavailable",
+                ));
+            };
+            let mut b = crate::ast::Builder::new();
+            // Scope the `NameCtx` borrow of `db` so the mutable `arenas_to_ast_value(db, …)` below is free.
+            let surface = {
+                let ncx = db.name_ctx();
+                super::type_ast(&mut b, &ty, &ncx)
+            };
+            let Some(node) = surface else {
+                return Core::Poison(Reject::decline(
+                    "Type.ast: this type has no canonical surface form to reflect (a function or \
+                     continuation type — arrow-surface reflection is a later increment)",
+                ));
+            };
+            let arenas = b.finish(node);
+            return match arenas_to_ast_value(db, &arenas, arenas.root, &disc) {
+                Some(root) => core_of(db, root),
+                None => Core::Poison(Reject::decline(
+                    "Type.ast: the type-surface form has a node with no Ast variant",
+                )),
+            };
         }
     };
     let Some((name, is_generic)) = db
