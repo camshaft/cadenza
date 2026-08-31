@@ -71,6 +71,9 @@
 ; SHAPE 40 — a TOP-LEVEL bare list<u8>/Bytes PARAM member of a typed export interface (decode-check(list<u8>)
 ; -> bool): the wrapper copies the incoming (ptr,len) out of memory into a value-heap Bytes (mem_leaf_params
 ; lift) and reclaims it after the call — the decode-check half of the operator §2 two-export shape.
+; SHAPE 41 — the CAPSTONE operator §2 shape: ONE component with BOTH exports — encode-quoted() -> list<u8>
+; (bytes RESULT, CopyBytes) AND decode-check(list<u8>) -> bool (bytes PARAM, mem_leaf lift) — in one
+; interface, proving the per-member wrappers (SHAPE 34/40) compose: each member emits its own wrapper.
 
 (case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -227,6 +230,41 @@
   (wit-world (world w (export iface (member decode-check (func (param x (list (u8))) (result (bool)))))))
   (component-name "cadenza:demo/iface")
   (input (do (def (decodeCheck (: x Bytes)) (> (Bytes.len x) 0)) (export decodeCheck)))
+  (call decode-check (: #list(104 105) Bytes))
+  (output (: true Bool))
+  (live-objects known-leak))
+
+(case "a bare string/String PARAM member of a typed export interface crosses (mem_leaf Str-arm coverage)"
+  (doc    "SHAPE 42 — a TOP-LEVEL bare `string`/String PARAM member of a typed export interface. Same
+           `mem_leaf_params` copy-in as SHAPE 40's `list<u8>`/Bytes, but `MemLeafKind::Str`: a Cadenza String
+           IS a flat UTF-8 byte-leaf, so a WIT `string` param (guaranteed valid UTF-8) copies straight into a
+           value-heap String handle with NO `str-from-bytes` decode — only the boundary TYPE differs from the
+           Bytes case. Pins the Str arm of the increment-2 param lift (SHAPE 40 witnessed only the Bytes arm).
+           Guest checkStr(x: String) = String.byte-len(x) > 0; \"hi\" -> true. The wrapper reclaims the borrowed
+           String handle after the call, same borrow-only 0-leak lift as the Bytes param.")
+  (wit-world (world w (export iface (member check-str (func (param x (string)) (result (bool)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (checkStr (: x String)) (> (String.byte-len x) 0)) (export checkStr)))
+  (call check-str (: "hi" String))
+  (output (: true Bool))
+  (live-objects known-leak))
+
+(case "a single component exports BOTH a list<u8>-result member and a list<u8>-param member of one interface (operator §2 two-export capstone)"
+  (doc    "SHAPE 41 — the CAPSTONE of the operator-mandated single-component TWO-export shape (§2, seq-107/108):
+           ONE interface with BOTH members — encode-quoted() -> list<u8> (the bytes-RESULT member, emitted via
+           `ResultLower::CopyBytes`, SHAPE 34) AND decode-check(list<u8>) -> bool (the bytes-PARAM member,
+           lifted via the `mem_leaf_params` copy-in, SHAPE 40). `record_interface_export` emits one boundary
+           wrapper PER member, so this proves the two independently-landed member emitters COMPOSE in a single
+           component: the result-copy-out wrapper and the param-copy-in wrapper coexist, share the one memory +
+           `cabi_realloc` + the two `list<u8>` scratch locals, and each crosses its own bytes independently.
+           Guest defines encodeQuoted() = Bytes.of([104,105]) and decodeCheck(x) = Bytes.len(x) > 0; running
+           BOTH (encode-quoted -> #list(104 105); decode-check([104,105]) -> true) exercises the full two-export
+           boundary end to end — the shape the operator's real encode/decode contract needs.")
+  (wit-world (world w (export iface (member encode-quoted (func (result (list (u8))))) (member decode-check (func (param x (list (u8))) (result (bool)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (encodeQuoted) (Bytes.of #list(104 105))) (def (decodeCheck (: x Bytes)) (> (Bytes.len x) 0)) (export encodeQuoted) (export decodeCheck)))
+  (call encode-quoted)
+  (output #list(104 105))
   (call decode-check (: #list(104 105) Bytes))
   (output (: true Bool))
   (live-objects known-leak))
