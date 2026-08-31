@@ -597,18 +597,16 @@ theorem asF64Canon_idem (v : Value) :
   have hf : ∀ f : Float, Value.asF64? (.f64 f) = some f := fun _ => rfl
   cases h : Value.asF64? v <;> simp [h, hf]
 
-/- ⚠ CAPSTONE `.app` FOLD-CASE BLOCKER (confirmed empirically 2026-08-31, not yet resolved):
-the fold-select case's last step needs `foldConst?`-output float-canon STABILITY —
+/- ✅ WALL DODGED (2026-08-31): the `foldConst?.match_10` sparse-cases wall is GONE — `foldConst?`'s binary
+arms are now a reducible `size == 2` dispatch (this PR, mirroring the `not` size-dispatch #6487), so
+`split`/`simp` now case `foldConst?` cleanly (verified: the "failed to generate equality theorems for
+match_10" error no longer occurs; `repeat' split at h` fully cases it). REMAINING for the capstone `.app`
+fold-select case is `foldConst?_canon_stable`:
   `foldConst? op args = some v → (match asF64? v with | some f => .f64 f | none => v) = v`
-(every fold result is `.bool`/`.int`/`.f64`, each its own `asF64?`-canon). But proving it by casing
-`foldConst?` FAILS: `split`/`simp` report "failed to generate equality theorems for match expression
-`foldConst?.match_10`" — the binary `#[a,b]` array-literal arms compile to a sparse-cases matcher whose
-equation lemmas can't be generated (the same wall dodged for the unary `not` arm via a leading
-size-dispatch, #6487). FIX (a focused increment): refactor `foldConst?`'s BINARY arms behind a
-`(consts.filterMap id).size == 2` size-dispatch (mirroring the `not` dispatch) so they reduce, then
-`foldConst?_canon_stable` + operand-canon-invariance go through, unblocking the `.app` fold case. All
-other `.app` building blocks (denote{Unary,Binary}_fold, denoteApp_fold[_unary], denoteBinary_arith,
-the arithmetic-identity value-chars, denote_map_normalize_args, asF64Canon_idem) are already proven. -/
+— TRUE (every fold output is `.bool`/`.f64`, both `asF64?`-canon) and now PROVABLE (split works); only the
+per-leaf closer needs tuning (after `repeat' split at h`, most leaves close by contradiction / injection +
+`asF64?`, but a few leaves' `h` isn't a clean `some=some` — an unsplit inner `match` remains — so the
+uniform closer needs a per-shape case). A focused next increment. -/
 
 /-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
 `normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
