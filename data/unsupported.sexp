@@ -92,12 +92,12 @@
   (decline NestedRecordFieldPatternDescent
     (code UnsupportedConstruct)
     (reason "a nested compound sub-pattern below a record field")
-    (doc "A deeper compound sub-pattern below a record field — a record match pattern (resolve.rs match_arm_record_binds), a tuple/list/constructor-nested record match (resolve.rs, reclassified CDZ0201->CDZ0900 by #6850), or a record binding pattern (resolve.rs + lower/match_tree.rs, #6800/#6838). v-ast-compound is building PathStep::Field (name-keyed record-field descent) to make most such cases BIND; whatever still declines is tagged declined(id) in that build PR.")
+    (doc "A deeper compound sub-pattern below a record field, in a match OR a binding pattern. NARROWED FINAL RESIDUAL: v-ast-compound BUILT the POSITIONAL (Elem-reachable) case — #6890 (match: top-level record + record-nested-in-tuple) + #6911 (binding: def-param/let via check_binding_pattern + last_binder_named) — those now BIND. What STILL declines (this id): (1) a nested RECORD below a record field (#record((= x #record((= y v))))) — needs a deferred NAME-KEYED slot (records project by name->sorted-slot, not a resolve-time Elem index); (2) a VARIANT below a record field (#record((= x (Some c)))) — needs a Payload-step HEAD threaded through the RecordField's sub_heads. Both in match AND binding. Emit sites tagged declined(id): resolve.rs last_binder_named + lower/match_tree.rs check_binding_pattern (binding); resolve.rs match_arm_record_binds Unwireable + Case-6rec-nested-decline (match).")
     (blocked-on
       (status blocked)
       (owner v-ast-compound)
-      (needs "PathStep::Field name-keyed record-field descent so a nested compound sub-pattern under a record field binds")
-      (ref pr 6850)))
+      (needs "a deferred name-keyed record-field slot (for a record below a field) + a Payload-step head through RecordField sub_heads (for a variant below a field) — the positional Elem-reachable case is built (#6890/#6911)")
+      (ref pr 6911)))
   (decline WasmClosureBoundaryNoRepr
     (code UnsupportedConstruct)
     (reason "a closure's param, result, or capture type has no machine representation")
