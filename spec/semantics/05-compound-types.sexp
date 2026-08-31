@@ -8527,6 +8527,30 @@
   (call   main (: 5 Int64)) (output (: -1 Int64))
   (live-objects 0))
 
+(case "a list-payload split is total regardless of arm ORDER — non-empty arm before the empty arm"
+  (doc    "The arm-order-independence face of the empty+non-empty split (migrated from rcdzc
+           a_sum_variants_list_payload_split_across_empty_and_rest_arms_is_exhaustive): the split covers every
+           length whether the empty arm comes first (the dispatch cases above) or LAST. `(match b ((Bx
+           #list(x .. _r)) x) ((Bx #list()) 0))` — non-empty THEN empty — is still total for `Bx` without a
+           `_`; the saturation of the `ListLen` else-rows does not depend on arm order. `f (Bx #list(7))`
+           fires the first (non-empty) arm → 7.")
+  (input  (do (type Box (Bx (List Int64)))
+              (def (f (: b Box)) (match b ((Bx #list(x .. _r)) x) ((Bx #list()) 0)))
+              (def (main) (f (Bx #list(7)))) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
+(case "a lone vacuous list-rest arm covers every length on its own"
+  (doc    "A single arm whose list pattern is a bare rest `(Bx #list(.. _r))` — a vacuous length test that
+           matches EVERY length, no leading element required — covers the `Bx` variant on its own, no split
+           and no `_` needed (migrated from the same rcdzc test). `f (Bx #list(7))` → the lone arm returns 0.
+           The degenerate end of the empty+non-empty split: one arm that is already total.")
+  (input  (do (type Box (Bx (List Int64)))
+              (def (f (: b Box)) (match b ((Bx #list(.. _r)) 0)))
+              (def (main) (f (Bx #list(7)))) (export main)))
+  (call   main)
+  (output (: 0 Int64)))
+
 (case "a list-payload split missing the non-empty arm is non-exhaustive"
   (doc    "The soundness counterpart of the exhaustive-split cases: the empty+rest split is total only
            because the two list arms JOINTLY cover every length. Drop the rest arm — `(match o ((Some
