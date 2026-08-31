@@ -619,6 +619,29 @@ theorem denote_normalize_ite_condFalse_step (ρ : Nat → Value) (w : IntTy) (c 
     simp [denote, Value.asF64?] at this
   · exact ihe v he
 
+/-- Capstone `.ite` MATERIALIZE-true STEP (`if c then true else false → c`, the `c'`-rebuild sub-case):
+given the condition/branch IHs and the branches normalizing to `true`/`false`, a value-producing `ite`
+transports across `normalize` (which collapses it to `normalize c`, #6513). Whichever branch the `ite`
+took, the produced value equals the (normalized) condition's: the taken branch is a bool literal fixing
+`v`, and `ihc` carries `denote c` to `denote (normalize c) = .value v`. -/
+theorem denote_normalize_ite_materializeTrue_step (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr)
+    (ihc : ∀ u, denote ρ w c = .value u → denote ρ w (normalize c) = .value u)
+    (iht : ∀ u, denote ρ w t = .value u → denote ρ w (normalize t) = .value u)
+    (ihe : ∀ u, denote ρ w e = .value u → denote ρ w (normalize e) = .value u)
+    (hnt : normalize t = .const (.bool true)) (hne : normalize e = .const (.bool false))
+    (v : Value) (h : denote ρ w (.ite c t e) = .value v) :
+    denote ρ w (normalize (.ite c t e)) = .value v := by
+  rw [normalize_ite_materializeTrue c t e hnt hne]
+  rcases denote_ite_value_inv ρ w c t e v h with ⟨hc, ht⟩ | ⟨hc, he⟩
+  · have hvt := iht _ ht
+    rw [hnt] at hvt
+    simp only [denote, Value.asF64?] at hvt
+    rw [ihc _ hc]; exact hvt
+  · have hve := ihe _ he
+    rw [hne] at hve
+    simp only [denote, Value.asF64?] at hve
+    rw [ihc _ hc]; exact hve
+
 /-- denote-side of the equal-branch COLLAPSE identity (`if c then a else a → a`): whichever branch the
 condition selects, the value is `a`'s — so a value-producing `ite` with identical branches denotes to
 exactly what that branch does. This is the denote half of the capstone `.ite` collapse sub-case (the
