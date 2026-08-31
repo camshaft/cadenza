@@ -36,6 +36,8 @@ pass	sexp/29-bool
 pass	sexp/30-hex-int
 pass	sexp/31-bigint-suffix
 pass	sexp/32-match-to-let-tuple
+pass	sexp/33-multiline-string-semicolon
+pass	sexp/34-char-literal-semicolon
 todo	ml/08-incomplete-binding
 todo	ml/10-unterminated-call
 todo	sexp/17-unterminated-list
