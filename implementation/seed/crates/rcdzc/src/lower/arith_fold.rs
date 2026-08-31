@@ -4063,6 +4063,7 @@ pub(super) fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::Compare
         | Prim::Wrap
         | Prim::CheckedOf
+        | Prim::Neg
         | Prim::IntCtor
         | Prim::UIntCtor
         | Prim::FnCtor

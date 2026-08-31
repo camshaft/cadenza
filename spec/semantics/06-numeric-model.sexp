@@ -7145,6 +7145,46 @@
   (call f (: -9223372036854775808 Int64))
   (trap "overflow"))
 
+; --- `Int64.neg` — the NAMED first-class form of unary negation `T.neg : T -> T` ---
+; The named companion of prefix `(- e)`: a signed integer module offers `neg`, a first-class negate VALUE
+; that negates an expression unambiguously (where the bare `-` is a lexer-level prefix). Same semantics as
+; `(- e)` — it lowers through the same checked negate (`0 - e`), so it folds a constant, negates at runtime,
+; and traps at the width's minimum. Offered only on SIGNED widths (negating an unsigned underflow-traps on
+; every nonzero input, so no `neg` is built there).
+(case
+  "Int64.neg of a constant folds to the negated value"
+  (input (do (def (main) (Int64.neg 5)) (export main)))
+  (call main)
+  (output (: -5 Int64)))
+(case
+  "Int64.neg of a runtime expression negates at runtime, both signs"
+  (doc
+    "The named `Int64.neg` over a runtime operand mirrors the unary `(- n)` above: it negates the value,
+           positive to negative and negative to positive. `f(4) = neg(5) = -5`; `f(-43) = neg(-42) = 42`.
+           Pins that the named op lowers to the SAME checked negate as prefix `-`.")
+  (input (do (def (f (: n Int64)) (Int64.neg (+ n 1))) (export f)))
+  (call f (: 4 Int64))
+  (output (: -5 Int64))
+  (call f (: -43 Int64))
+  (output (: 42 Int64)))
+(case
+  "Int64.neg of the minimum integer traps as a compile-provable overflow"
+  (doc "The named form inherits the checked negate's overflow: `0 - Int64.min` has no Int64 result.")
+  (input (do (def (main) (Int64.neg -9223372036854775808)) (export main)))
+  (error CDZ0304))
+(case
+  "Int8.neg negates at a narrower signed width"
+  (doc "`neg` is offered on every SIGNED width, not only Int64; it negates at the narrow width.")
+  (input (do (def (main) (Int8.neg (: 5 Int8))) (export main)))
+  (call main)
+  (output (: -5 Int8)))
+(case
+  "an unsigned integer module offers no neg member"
+  (doc "Negation is signed-only: an unsigned negate would underflow-trap on every nonzero input, so the
+           unsigned modules do not offer `neg`; naming it is an unknown-member error.")
+  (input (do (def (main) (UInt8.neg 5)) (export main)))
+  (error CDZ0201))
+
 (case
   "a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum"
   (doc

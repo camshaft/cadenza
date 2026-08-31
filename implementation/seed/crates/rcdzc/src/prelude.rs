@@ -2756,6 +2756,13 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     //= spec/capabilities/numeric-model.md#a-conversion-between-integer-types-is-explicit
     //# A conversion between two integer types MUST be written explicitly, as either a range-checked conversion that traps on a value outside the target type's range or a truncating conversion that keeps the target type's low bits, never an implicit widening or narrowing.
     fields.push(of_field(ast, signed, width));
+    // `neg` — UNARY negation `T → T` (`(Int64.neg x)` = `0 - x`), the first-class NAMED form of prefix
+    // `(- e)`. Offered only on SIGNED widths: negating an unsigned value underflow-traps on every nonzero
+    // input, so an unsigned `neg` would be a near-useless always-trapping op. A constant folds (and
+    // `0 - min` traps CDZ0304) via the shared `lower_negate` path.
+    if signed {
+        fields.push(neg_field(ast, signed, width));
+    }
     let mut children = vec![head];
     children.append(&mut fields);
     push_list(ast, children)
@@ -2932,6 +2939,45 @@ fn wrapping_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width:
     let apply_field = meta_field(ast, "apply", prim_node);
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     let k = push_atom(ast, Leaf::Name(name.into()));
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, record])
+    }
+}
+
+/// A `(neg (record ((meta t) TYPE) ((meta apply) (intrinsic neg))))` field — UNARY negation on this
+/// module's width. `TYPE` is `(fn () (-> TARGET TARGET))`: operand and result are `TARGET` = `(Int width)`,
+/// this module's own concrete SIGNED type (offered only on signed widths). The zero-param `fn` wrapper
+/// makes `scheme_of` read a monomorphic SCHEME (see `checked_field`/`wrapping_field`). `(meta apply)` = the
+/// `neg` intrinsic; it lowers through the same `lower_negate` (`0 - e`) prefix `(- e)` uses, so a constant
+/// folds (and `0 - min` traps CDZ0304). The named first-class form of prefix negation.
+fn neg_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
+    let target = |ast: &mut Arenas| {
+        let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    // `(-> TARGET TARGET)`.
+    let rhs = target(ast);
+    let out = target(ast);
+    let body = arrow_type(ast, rhs, out);
+    // `(fn () body)`.
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    let lambda = push_list(ast, vec![fn_head, params, body]);
+    // `(record ((meta t) lambda) ((meta apply) (intrinsic neg)))`.
+    let rec_head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
+    let t_field = meta_field(ast, "t", lambda);
+    let prim_node = intrinsic_node(ast, "neg");
+    let apply_field = meta_field(ast, "apply", prim_node);
+    let record = push_list(ast, vec![rec_head, t_field, apply_field]);
+    let k = push_atom(ast, Leaf::Name("neg".into()));
     {
         let eq = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eq, k, record])
