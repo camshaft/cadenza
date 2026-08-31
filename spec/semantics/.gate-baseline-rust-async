@@ -1306,7 +1306,6 @@ pass	a bare BIGINT as op ARGUMENT — the arm does exact wide arithmetic on the 
 pass	a bare RATIONAL as op ARGUMENT — the arm reads exact numerator/denominator off the crossed value
 pass	a bare TUPLE of quantities renders each element scaled to its reference (mixed inner types)
 pass	a bare UInt8 literal-match (no newtype) is the width template
-pass	a bare Value.decode with no grounding annotation declines with an actionable unsolved-target message
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
@@ -5651,7 +5650,6 @@ pass	compacting then TWO order-compares (no equality) is safe (adv-66 perimeter)
 pass	compacting then a concat+len of the flat after an equality (no rope-left compare) is safe (adv-66 perimeter)
 pass	compacting then reading the flat's LEN after an equality against the rope is safe (adv-66 perimeter)
 pass	compare on a sum whose payload is BYTES orders by discriminant then Bytes payload lexicographically
-pass	compare on a sum whose payload is a FLOAT declines — the IEEE partial order never enters the walk
 pass	comparing a Float32 nan to a Float64 finite value is a cross-width type error
 pass	comparing a Float32 nan to a Float64 nan is a cross-width type error
 pass	comparing a char to a FLOAT is rejected with a working two-step conversion fix
@@ -6061,7 +6059,6 @@ pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
-pass	equality on a TUPLE containing a closure declines — the fn leaf poisons the compound walk
 pass	equality on an unusual signed width holds for two equal sign-extended values
 pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both
