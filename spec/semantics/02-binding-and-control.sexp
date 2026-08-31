@@ -3105,6 +3105,41 @@
             ((guard x true) 1)))
   (error  CDZ0210))
 
+; --- A guard CONDITION must be Bool, and faults inside it surface ---------------------------------
+; A guarded arm `(guard <pattern> <cond>)` gates the arm on the boolean predicate `<cond>`, so
+; `<cond>` must be Bool — exactly like an `if` condition. A non-Bool guard condition is a type error
+; (CDZ0203, "guard condition must be Bool", naming the offending type), and a fault INSIDE the guard
+; condition (e.g. an unbound name) surfaces rather than being silently swallowed — the condition is
+; walked. A well-typed Bool guard compiles and runs clean. Migrated from rcdzc match_engine
+; `a_guard_condition_must_be_bool_and_its_faults_surface`.
+
+(case "a non-Bool guard condition is a type error naming the offending type"
+  (doc    "`(guard x (+ x 1))` uses an Int64 as the arm's boolean predicate. The guard condition must be
+           Bool like an `if` condition, so this is CDZ0203 'guard condition must be Bool', naming the
+           offending type (Int64). A generation that used a non-boolean as a branch condition would wrongly
+           accept it.")
+  (input  (do (def (g (: n Int64)) (match n ((guard x (+ x 1)) x) (_ 0))) (export g)))
+  (error  CDZ0203 (message "guard condition must be Bool") (message "Int64")))
+
+(case "a String guard condition is likewise rejected — the Bool check is general"
+  (doc    "A String guard `(guard x \"y\")` is rejected with the same CDZ0203 'guard condition must be Bool'
+           — the check is general over the condition's type, not int-specific.")
+  (input  (do (def (g (: n Int64)) (match n ((guard x "y") x) (_ 0))) (export g)))
+  (error  CDZ0203 (message "guard condition must be Bool")))
+
+(case "a fault inside a guard condition surfaces — the condition is walked"
+  (doc    "An unbound name inside a guard condition `(guard x (> x zzz))` surfaces as CDZ0101 rather than
+           being silently accepted. The guard condition is walked, so faults within it are reported.")
+  (input  (do (def (g (: n Int64)) (match n ((guard x (> x zzz)) x) (_ 0))) (export g)))
+  (error  CDZ0101))
+
+(case "a well-typed Bool guard condition compiles and runs clean"
+  (doc    "The no-false-positive control: a Bool guard `(guard x (> x 0))` is well-typed and produces no
+           fault. For n = 5 the guard 5 > 0 holds, so the guarded arm fires and returns n = 5.")
+  (input  (do (def (g (: n Int64)) (match n ((guard x (> x 0)) x) (_ 0))) (export g)))
+  (call   g (: 5 Int64))
+  (output (: 5 Int64)))
+
 ; --- A guard may refine a VARIANT pattern ---------------------------------------------------------
 ; A guard composes with a variant (sum) pattern, not only a bare binder: `(guard (Some x) <cond>)`
 ; fires when the scrutinee is `Some` AND `<cond>` (which reads the payload binder `x`) holds. On a
