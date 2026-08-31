@@ -6401,6 +6401,17 @@
             (def (main) (classify #list(0 5 9))) (export main)))
   (output (: 5 Int64)))
 
+(case "a refutable literal list element does NOT count toward length-coverage — a catch-all is still required"
+  (doc    "The reject complement of the positive dispatch case above (migrated from rcdzc
+           a_refutable_literal_list_element_still_requires_a_catch_all): a literal element is a value TEST
+           that may fail, so — like any guarded arm — it does NOT count toward length-coverage exhaustiveness.
+           `(match xs (#list(0 .. r) 1) (#list(_ .. r) 2))` has two arms that both require length ≥ 1 (a
+           literal-head arm and a bare-binder-head arm), so the EMPTY list (length 0) is uncovered → CDZ0210.
+           A `_` / `#list()` arm covering length 0 is required; the refutable literal does not discharge it.")
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(0 .. r) 1) (#list(_ .. r) 2)))
+              (def (main) (f #list(0))) (export main)))
+  (error  CDZ0210))
+
 (case "two literal list elements in one arm conjoin — both must match"
   (doc    "MULTIPLE refutable literal elements in ONE arm conjoin: `((list 0 1 a .. r) a)` matches only a list
            whose first two elements are 0 THEN 1, binding the third. Each literal desugars to its own

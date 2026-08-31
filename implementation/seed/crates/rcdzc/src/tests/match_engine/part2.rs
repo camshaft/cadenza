@@ -1119,23 +1119,11 @@ fn a_guarded_list_arm_does_not_count_toward_exhaustiveness() {
     );
 }
 
-#[test]
-fn a_refutable_literal_list_element_still_requires_a_catch_all() {
-    // A literal element is a value TEST that may not match, so — like any guarded arm — it does NOT
-    // count toward length-coverage exhaustiveness. `(match xs ((list 0 .. r) 1) ((list _ .. r) 2))`
-    // leaves the empty list uncovered AND the `(list 0 .. r)` arm's non-zero-head case relies on the
-    // second arm, but there is no arm covering length 0 → CDZ0210 (a `_`/`(list)` arm is required).
-    assert_eq!(
-        reject_code(
-            "(module m (def (f (: xs (List Int64))) \
-                   (match xs ((list 0 .. r) 1) ((list _ .. r) 2))) \
-                 (def (main) (f (list 0))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0210"),
-        "a refutable-literal-element match still needs a catch-all covering every length"
-    );
-}
+// (a_refutable_literal_list_element_still_requires_a_catch_all migrated to corpus 05-compound-types "a
+// refutable literal list element does NOT count toward length-coverage — a catch-all is still required"
+// ((match xs (#list(0 .. r) 1) (#list(_ .. r) 2)) → CDZ0210, the empty list uncovered): the reject complement
+// of the positive "a literal list element dispatches a runtime list by its value" dispatch cases, which
+// document in prose that a `_`/rest catch-all stays required but had no case pinning the rejection.)
 
 // (a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects migrated to corpus
 // 05-compound-types, the saturation-soundness reject block after the bool/ctor-lead-saturating cases:
