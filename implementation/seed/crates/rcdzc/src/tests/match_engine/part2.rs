@@ -1664,29 +1664,11 @@ fn a_variant_name_colliding_with_a_prelude_name_does_not_shadow_it() {
 // pattern → CDZ0203 — is covered richly by the corpus-05 "not a variant of the matched type" did-you-mean
 // cluster. Redundant, removed.)
 
-#[test]
-fn the_builtin_ast_sum_type_checks_its_variant_payloads() {
-    // 12-metaprogramming "a built-in Ast constructor applied to a wrong-type payload is a type error":
-    // the built-in `Ast` is an ordinary MONOMORPHIC prelude sum (Int:Int64, Name:String, List:(List
-    // Ast)) — a variant per syntactic form (type-system.md §The Abstract Syntax Tree Type Is An
-    // Ordinary Sum Type). Its variants are reached ONLY QUALIFIED (`Ast.Int`), their names colliding
-    // with prelude `Int`/`List` so they don't bind bare. `Ast.Int`'s payload is Int64, so `(Ast.Int
-    // "x")` applies it to a String — the wrong-payload CDZ0201, exactly as a user sum variant is.
-    assert_eq!(
-        reject_code("(module m (def (main) (Ast.Int \"x\")) (export main))").as_deref(),
-        Some("CDZ0201"),
-        "the built-in Ast.Int checks its Int64 payload"
-    );
-    // The correct payload types (no fault); a String payload to `Ast.Name` is likewise well-typed.
-    assert!(
-        reject_code("(module m (def (main) (Ast.Int 42)) (export main))").is_none(),
-        "Ast.Int applied to Int64 is well-typed"
-    );
-    assert!(
-        reject_code("(module m (def (main) (Ast.Name \"x\")) (export main))").is_none(),
-        "Ast.Name applied to String is well-typed"
-    );
-}
+// (the_builtin_ast_sum_type_checks_its_variant_payloads redundant — corpus 12-metaprogramming already
+// pins the wrong-payload reject "a built-in Ast constructor applied to a wrong-type payload is a type
+// error" ((Ast.Int "x") → CDZ0201), and the well-typed controls (Ast.Int 42, Ast.Name "x") are exercised
+// positively across corpus 12 (the quote-vs-constructor equality `(= (Ast.Int 42) (quote 42))` → true and
+// the quote-tuple cases building (Ast.Name "foo") / (Ast.Int 1)). Redundant, removed.)
 
 #[test]
 fn quote_reifies_to_the_ast_value_it_denotes() {
