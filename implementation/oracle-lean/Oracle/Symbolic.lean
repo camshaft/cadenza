@@ -1849,6 +1849,24 @@ private def _topDefRefProg : Module :=
     root := 16 }
 #guard symEvalMain _topDefRefProg == SymOutcome.sym (.const (.int 8))
 
+-- FLOAT-SOUNDNESS regression guards (bit-faithful valEq/canonSet, NOT IEEE SymExpr-beq): NaN DEDUPES
+-- (NaN==NaN under the canonical-bits key), so `(set NaN NaN)` canonicalizes to ONE element. If Set/canon
+-- ever regressed to the derived IEEE `==` (where NaN≠NaN), this set would keep 2 → guard fires.
+private def _setNanDedupExpr : Module :=
+  { leaves := #[Leaf.name "set".toUTF8, Leaf.floatNan],
+    nodes := #[.atom 0, .atom 1, .atom 1, .list #[0, 1, 2]], root := 3 }
+#guard symEval _setNanDedupExpr [] symDefaultFuel defaultIntTy 3
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.const .floatNan])
+
+-- and `Set.contains` finds NaN in `(set NaN)` (valEq NaN NaN = true, bit-faithful). IEEE beq would say false.
+private def _setContainsNanExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "contains".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.floatNan],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[4, 5],
+               .atom 4, .list #[3, 6, 7]], root := 8 }
+#guard symEval _setContainsNanExpr [] symDefaultFuel defaultIntTy 8
+       == SymOutcome.sym (.const (.bool true))
+
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
 private def _matchExpr : Module :=
