@@ -1851,10 +1851,6 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // (- 0 x)` strength reduction already relies on), a `Float`/`Rational`/`BigInt`/`Qty` its
                 // own arithmetic. `infer` already typed `(- e)` as e's type and rejected a non-numeric
                 // operand; here it can only be numeric (or an `Any` that faulted elsewhere → decline).
-                Some(Prim::Sub) if args.len() == 1 => {
-                    trace!(target: "rcdzc::lower", node = id.0, "apply: unary negation (- e) → 0 - e at the operand's type");
-                    lower_negate(db, id, args[0])
-                }
                 // NAMED unary negation `T.neg x` — the first-class form of prefix `(- e)`. Lowers through
                 // the SAME `lower_negate` (`0 - e` at the operand's type), so it inherits the constant fold
                 // and the `0 - min` → CDZ0304 overflow trap. Offered only on signed widths (prelude).
@@ -1865,14 +1861,14 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // A PARTIALLY-applied binary OPERATOR — `(+ 1)`, `(< 3)`, `(* 2)` — CURRIES to a first-class
                 // function of the remaining operand (operator ruling: "operators should curry"). Synthesize
                 // the equivalent lambda `(fn (b) (op supplied b))` and lower it as a value — the same shape
-                // the user could write by hand. `(- e)` is UNARY NEGATION (the arm above), not a curried
-                // subtraction, so Sub with one operand never reaches here. A non-numeric/undetermined
+                // the user could write by hand. Arity-1 `Sub` `(- e)` CURRIES here too (a partial
+                // subtraction `(fn (b) (- e b))`) — prefix negation is deprecated in favour of `Num.neg` /
+                // `T.neg`, so `(- e)` is no longer special-cased to `0 - e`. A non-numeric/undetermined
                 // operand makes `partial_binop_eta` return `None` → falls through to the arity fault below,
-                // so a genuine malformed `(+ x)` (x unfixed) still reports rather than synthesizing a
-                // broken closure.
+                // so a genuine malformed `(+ x)` / `(- x)` (x unfixed) still reports rather than synthesizing
+                // a broken closure.
                 Some(prim)
                     if args.len() == 1
-                        && prim != Prim::Sub
                         && (prim.is_binop() || prim.is_float_arith())
                         && let Some(c) = partial_binop_eta(db, head, args[0]) =>
                 {

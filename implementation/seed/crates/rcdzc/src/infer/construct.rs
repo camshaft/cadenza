@@ -340,23 +340,9 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return *inner;
     }
-    // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML surface's prefix `-<expr>`, canonicalized
-    // to `(- e)`; `lower` rewrites it to `0 - e` at the operand's numeric type). Its result type is the
-    // OPERAND's type: negation is closed over every numeric type (`Int N`, `Float N`, `Rational`,
-    // `BigInt`, and a `Qty` — negating a quantity keeps its unit), unlike the fixed-width `∀a. (Int a)`
-    // scheme (which would ground a Float/Rational/BigInt/Qty operand to Int64 and phantom-fault). A
-    // NON-numeric operand falls through to `Any` — `check_application` reports the honest "negation is not
-    // defined on <type>" (the unary twin of the binary arithmetic-on-non-number reject). Checked before
-    // the arity-2 numeric block below; the two are disjoint by operand count.
-    if args.len() == 1 && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Sub) {
-        let t = type_of(db, args[0]);
-        if matches!(
-            t,
-            Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Qty { .. }
-        ) {
-            return t;
-        }
-    }
+    // (Prefix negation `(- e)` is deprecated: arity-1 `Sub` is no longer typed as its operand's type —
+    // it CURRIES like `(+ 1)` via the generic binary scheme below, so its result type is the curried
+    // arrow `(-> T T)`. `Num.neg`/`T.neg` (`Prim::Neg`) are the negation replacement.)
     // A binary OPERATOR applied to QUANTITIES — the dimensional result type (units-of-measure.md §How
     // Arithmetic Composes Dimensions). Only engages when an operand is a `Ty::Qty` (two bare numbers take
     // the ordinary scheme path). `+`/`-` keep the shared unit (result `(Qty T u)`); `*`/`/` COMPOSE units
