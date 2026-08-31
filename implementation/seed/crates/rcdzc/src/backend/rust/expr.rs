@@ -7109,6 +7109,14 @@ fn emit_sum_cont(
                 crate::core::Probe::Bool(b) => {
                     ((if *b { "true" } else { "false" }).to_string(), subject)
                 }
+                crate::core::Probe::Char(c) => {
+                    // A CHAR sub-value is a SCALAR (`Ty::Char` -> native rust `char`, the same as a
+                    // top-level char scrutinee), so a nested char literal-payload probe renders as a
+                    // value-equality compare `(<subject>) == '<c>'` — the identical `rust_char_literal`
+                    // escaping the scalar-match arm and `Core::ConstChar` emit use, matching the wasm
+                    // decision-tree's scalar compare. Only Bytes/ListLen/MapHasKeys/Wild remain non-scalar.
+                    (rust_char_literal(*c), subject)
+                }
                 crate::core::Probe::Str(s) => {
                     // A STRING/SYMBOL sub-value probes by CONTENT equality. A Symbol payload inside a sum
                     // variant (`(type W (Mk Symbol))`, `(match w ((Mk #"go") …))`) reaches the decision tree
@@ -7137,8 +7145,7 @@ fn emit_sum_cont(
                 // rendered on wasm (the `value-eq` byte-leaf compare) but not yet by the Rust backend —
                 // decline cleanly. (Top-level runtime Bytes dispatch desugars to a `value-eq` if-chain in
                 // `lower` and works on BOTH backends; only this nested-sum payload probe is Rust-deferred.)
-                crate::core::Probe::Char(_)
-                | crate::core::Probe::Bytes(_)
+                crate::core::Probe::Bytes(_)
                 | crate::core::Probe::ListLen { .. }
                 | crate::core::Probe::MapHasKeys { .. }
                 | crate::core::Probe::Wild => {
