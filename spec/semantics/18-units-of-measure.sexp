@@ -226,7 +226,8 @@
            being otherwise fault-free, so an unbound arg reports only the unbound name — the two checks do not
            double-report one root cause.")
   (input  (do (def (main) (Qty.of 5 meter)) (export main)))
-  (error  CDZ0101 (message "unbound name `meter`") (not "second argument must be a UNIT")))
+  (error  CDZ0101 (message "unbound name `meter`"))
+  (no-diagnostic "second argument must be a UNIT"))
 
 ; A `Unit.*`/`Unit./`/`Unit.^` COMPOSITION with a MALFORMED operand — a non-unit factor, a non-integer
 ; exponent, a non-unit base — made `eval::unit_of` return None. `Qty.of`'s not-a-unit check SKIPPED it (the
