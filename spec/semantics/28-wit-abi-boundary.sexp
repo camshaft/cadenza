@@ -4248,3 +4248,70 @@ cases
   (output (: 10 Int64))
   (call set-color (: (blue unit) Color))
   (output (: 30 Int64)))
+
+(case
+  "a typed list<tuple<s64,s64>> EXPORT result crosses as a WIT list of tuples (declared world)"
+  (doc
+    "SHAPE 69 - a TYPED `list<tuple<s64,s64>>` EXPORT result under an imposed world. The result-lower's SpillRecord path (`canon_write_of` Ty::List → CanonWrite::List whose element is the Tuple arm's 2-field Record write) composes with NO new emit: `vec-len`/`vec-get` over the def's list, each element written at the canonical `tuple<s64,s64>` offsets. The TYPED-EXPORT twin of SHAPE 7 (which round-trips a list-of-records only via the untyped run/encode envelope, NOT a self-declared WIT type). getPairs(x) = [(x, x+1), (x+10, x+11)]; x=5 -> [(5,6),(15,16)]. KNOWN-LEAK: the spilled list result + its boxed tuple elements are not reclaimed after the copy-out (the SpillRecord-result reclaim class, same as SHAPE 60/62/63; value-correct, routed to v-memory-safety) -> pinned `(live-objects known-leak)`.")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member get-pairs (func (param x (s64)) (result (list (tuple (s64) (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (getPairs (: x Int64)) #list(#tuple(x (+ x 1)) #tuple((+ x 10) (+ x 11))))
+      (export getPairs)))
+  (call get-pairs (: 5 Int64))
+  (output (: #list(#tuple(5 6) #tuple(15 16)) (List (Tuple Int64 Int64))))
+  (live-objects known-leak))
+
+(case
+  "a typed list<record> EXPORT result crosses as a WIT list of records (declared world)"
+  (doc
+    "SHAPE 70 - the RECORD-element twin of SHAPE 69: a TYPED `list<record{lo,hi}>` EXPORT result. The list element is a `record` written by `canon_write_of`'s Record arm (fields placed BY NAME at their WIT canonical offsets — the same name-permute as a bare record result, exercised per element). getRecs(x) = [{lo:x, hi:x+1}]; x=5 -> [{lo:5,hi:6}]. Pins the list<record> typed export result (SHAPE 7 was untyped run/encode). KNOWN-LEAK (SpillRecord-result reclaim class, as SHAPE 69).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member
+          get-recs
+          (func (param x (s64)) (result (list (record (= lo (s64)) (= hi (s64))))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (getRecs (: x Int64)) #list(#record((= lo x) (= hi (+ x 1)))))
+      (export getRecs)))
+  (call get-recs (: 5 Int64))
+  (output
+    (:
+      #list(#record((= lo 5) (= hi 6)))
+      (List (Record (: lo Int64) (: hi Int64)))))
+  (live-objects known-leak))
+
+(case
+  "a typed list<tuple<s64, list<s64>>> EXPORT result — a NESTED-list element field crosses (declared world)"
+  (doc
+    "SHAPE 71 - the NESTED-compound-element case the coverage doc flagged as an open `list<record|tuple> element with a nested list field` gap: it actually COMPOSES with no new emit. The recursive `canon_write_of` builds CanonWrite::List{ elem = Record[ s64 @0, List @8 ] }, and the element write recurses into the inner `CanonWrite::List` (a `(ptr,len)` write at the tuple's second-field offset, its own `cabi_realloc`'d element buffer). getNested(x) = [(x, [x, x+1])]; x=5 -> [(5, [5,6])]. Disproves the doc gap — a nested list/record/tuple element already crosses on the RESULT side via recursive composition. KNOWN-LEAK (SpillRecord-result reclaim class, as SHAPE 69).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member
+          get-nested
+          (func (param x (s64)) (result (list (tuple (s64) (list (s64))))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (getNested (: x Int64)) #list(#tuple(x #list(x (+ x 1)))))
+      (export getNested)))
+  (call get-nested (: 5 Int64))
+  (output
+    (:
+      #list(#tuple(5 #list(5 6)))
+      (List (Tuple Int64 (List Int64)))))
+  (live-objects known-leak))
