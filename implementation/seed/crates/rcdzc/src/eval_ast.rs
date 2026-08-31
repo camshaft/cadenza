@@ -441,23 +441,20 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
             return Some(push_list(ast, children));
         }
     }
-    // Record/Map: children are `Ast.FieldPair` — rebuild each to its entry (`(= k v)` for a record, `(k v)`
-    // for a map), then head with the native ctor leaf.
-    for (variant, ctor, as_eq) in [
-        ("RecordCtor", CompoundCtor::Record, true),
-        ("MapCtor", CompoundCtor::Map, false),
+    // Record/Map: children are `Ast.FieldPair` — rebuild each to the canonical native `(= k v)` entry (a
+    // `Leaf::FieldPair` head — the M3 spelling BOTH `#record(…)` and `#map(…)` use, per the corpus's
+    // `#map((= 1 2))` / `#record((= a 1))`), then head with the native ctor leaf.
+    for (variant, ctor) in [
+        ("RecordCtor", CompoundCtor::Record),
+        ("MapCtor", CompoundCtor::Map),
     ] {
         if let Some(payload) = ast_ctor_arg(ast, node, variant) {
             let elems = list_elems(ast, payload)?;
             let mut children = vec![push_atom(ast, Leaf::Ctor(ctor))];
             for fp in elems {
                 let (k, v) = reconstruct_field_pair(ast, fp)?;
-                let entry = if as_eq {
-                    let eq = push_atom(ast, Leaf::Name("=".into()));
-                    push_list(ast, vec![eq, k, v])
-                } else {
-                    push_list(ast, vec![k, v])
-                };
+                let eq = push_atom(ast, Leaf::FieldPair);
+                let entry = push_list(ast, vec![eq, k, v]);
                 children.push(entry);
             }
             return Some(push_list(ast, children));
