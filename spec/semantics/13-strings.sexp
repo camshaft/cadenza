@@ -1436,7 +1436,7 @@
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
       (def
         (f (: mp (Map String String)) (: k String))
-        (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) (- 0 1))))
+        (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) -1)))
       (def (main) (f (Map.insert (Map.empty) "y" (rep "hi" 3)) "y"))
       (export main)))
   (output (: 1 Int64))
@@ -1861,7 +1861,7 @@
         (match
           (Map.lookup (Map.insert (Map.empty) (rep "hi" 3) 42) "hixxx")
           ((Some v) v)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -1880,7 +1880,7 @@
         (match
           (Map.lookup (Map.insert (Map.empty) "hixxx" 42) (rep "hi" 3))
           ((Some v) v)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -3976,7 +3976,7 @@
           (Bytes.of #list((UInt8.wrap n)))))
       (def
         (main (: n Int64))
-        (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
+        (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) -1)))
       (export main)))
   (call main (: 33 Int64))
   (output (: 3 Int64))
@@ -3993,7 +3993,7 @@
       (def (mk (: n Int64)) (Bytes.of #list((UInt8.wrap n) (UInt8.wrap 255))))
       (def
         (main (: n Int64))
-        (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
+        (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) -1)))
       (export main)))
   (call main (: 104 Int64))
   (output (: -1 Int64))
@@ -5037,7 +5037,7 @@
         (match
           (Map.lookup (Map.insert Map.empty #tuple((rep "hi" 3) 1) 42) #tuple("hixxx" 1))
           ((Some v) v)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -5059,7 +5059,7 @@
         (match
           (Map.lookup (Map.insert Map.empty #list((rep "hi" 3)) 42) #list("hixxx"))
           ((Some v) v)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -5148,7 +5148,7 @@
             (Map.insert Map.empty #tuple(#tuple((rep "hi" 3) 1) 2) 42)
             #tuple(#tuple("hixxx" 1) 2))
           ((Some v) v)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -6266,7 +6266,7 @@
         (if (= n 0) acc (rep (Bytes.concat acc b"\xff") (- n 1))))
       (def
         (main)
-        (match (String.from-bytes (rep b"" 2)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
+        (match (String.from-bytes (rep b"" 2)) ((Some s) (String.byte-len s)) ((None _) -1)))
       (export main)))
   (call main)
   (output (: -1 Int64)))

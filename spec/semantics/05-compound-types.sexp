@@ -5181,9 +5181,9 @@
           ((Ix k) (if (= k j) s (Ix k)))
           ((Lam b) (Lam (subst (+ j 1) (shift 1 0 s) b)))
           ((App f x) (App (subst j s f) (subst j s x)))))
-      (def (contract (: body Tm) (: arg Tm)) (shift (- 0 1) 0 (subst 0 (shift 1 0 arg) body)))
-      (def (rhs (: t Tm)) (match t ((App _ x) (match x ((Ix k) k) (_ (- 0 1)))) (_ (- 0 2))))
-      (def (lhs (: t Tm)) (match t ((App f _) (match f ((Ix k) k) (_ (- 0 1)))) (_ (- 0 2))))
+      (def (contract (: body Tm) (: arg Tm)) (shift -1 0 (subst 0 (shift 1 0 arg) body)))
+      (def (rhs (: t Tm)) (match t ((App _ x) (match x ((Ix k) k) (_ -1))) (_ -2)))
+      (def (lhs (: t Tm)) (match t ((App f _) (match f ((Ix k) k) (_ -1))) (_ -2)))
       (def
         (main)
         (+
@@ -5665,9 +5665,9 @@
           (T.LP
             (match
               (tok xs (+ i 1))
-              ((T.Num m) (match (tok xs (+ i 2)) (T.RP (+ m 1000)) (_ (- 0 5))))
-              (_ (- 0 6))))
-          (_ (- 0 1))))
+              ((T.Num m) (match (tok xs (+ i 2)) (T.RP (+ m 1000)) (_ -5)))
+              (_ -6)))
+          (_ -1)))
       (def (main) (paren-num #list((T.LP) (T.Num 7) (T.RP)) 0))
       (export main)))
   (output (: 1007 Int64)))
@@ -6069,7 +6069,7 @@
           (match
             (Map.lookup (Map.insert Map.empty concat-key 100) push-key)
             ((Some v) v)
-            ((None) (- 0 1)))))
+            ((None) -1))))
       (export main)))
   (call main (: 1 Int64) (: 2 Int64) (: 3 Int64))
   (output (: 100 Int64)))
@@ -6100,7 +6100,7 @@
           (match
             (Map.lookup (Map.insert Map.empty concat-key 42) push-key)
             ((Some v) v)
-            ((None) (- 0 1)))))
+            ((None) -1))))
       (export main)))
   (call main (: 40 Int64))
   (output (: 42 Int64)))
@@ -6129,7 +6129,7 @@
           ((half (/ n 2))
             (concat-elem (List.concat (build 0 half #list()) (build half n #list())))
             (push-elem (build 0 n #list())))
-          (if (Set.contains (Set.insert #set() concat-elem) push-elem) 42 (- 0 1))))
+          (if (Set.contains (Set.insert #set() concat-elem) push-elem) 42 -1)))
       (export main)))
   (call main (: 40 Int64))
   (output (: 42 Int64)))
@@ -6155,7 +6155,7 @@
           ((half (/ n 2))
             (concat-elem (List.concat (build 0 half #list()) (build half n #list())))
             (other (build 1 (+ n 1) #list())))
-          (if (Set.contains (Set.insert #set() concat-elem) other) 42 (- 0 1))))
+          (if (Set.contains (Set.insert #set() concat-elem) other) 42 -1)))
       (export main)))
   (call main (: 40 Int64))
   (output (: -1 Int64)))
@@ -8367,7 +8367,7 @@
     (do
       (def
         (f (: xs (List (Map Int64 Int64))))
-        (match xs (#list(#map((= 1 a)) (.. rest)) a) (_ (- 0 1))))
+        (match xs (#list(#map((= 1 a)) (.. rest)) a) (_ -1)))
       (def (main) (f #list(#map((= 1 77)))))
       (export main)))
   (output (: 77 Int64)))
@@ -8383,7 +8383,7 @@
     (do
       (def
         (f (: xs (List (Map Int64 Int64))))
-        (match xs (#list(#map((= 9 a)) (.. rest)) a) (_ (- 0 1))))
+        (match xs (#list(#map((= 9 a)) (.. rest)) a) (_ -1)))
       (def (main) (f #list(#map((= 1 77)))))
       (export main)))
   (output (: -1 Int64)))
@@ -8399,7 +8399,7 @@
     (do
       (def
         (f (: xs (List (Map Int64 Int64))))
-        (match xs (#list(#map((= 1 a) (= 2 b)) (.. rest)) (+ a b)) (_ (- 0 1))))
+        (match xs (#list(#map((= 1 a) (= 2 b)) (.. rest)) (+ a b)) (_ -1)))
       (def (main) (f #list(#map((= 1 100) (= 2 5)))))
       (export main)))
   (output (: 105 Int64)))
@@ -21179,7 +21179,7 @@
     (do
       (def
         (f (: t (Tuple (Map Int64 Int64) Int64)))
-        (match t (#tuple(#map((= 1 a)) k) (+ a k)) (_ (- 0 1))))
+        (match t (#tuple(#map((= 1 a)) k) (+ a k)) (_ -1)))
       (def (main) (f #tuple(#map((= 1 100)) 5)))
       (export main)))
   (output (: 105 Int64)))
@@ -21195,7 +21195,7 @@
     (do
       (def
         (f (: t (Tuple (Map Int64 Int64) Int64)))
-        (match t (#tuple(#map((= 7 a)) k) (+ a k)) (_ (- 0 1))))
+        (match t (#tuple(#map((= 7 a)) k) (+ a k)) (_ -1)))
       (def (main) (f #tuple(#map((= 1 100)) 5)))
       (export main)))
   (output (: -1 Int64)))
@@ -22072,7 +22072,7 @@
   (input
     (do
       (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-      (def (main) (match (Map.lookup #map((= (add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1))))
+      (def (main) (match (Map.lookup #map((= (add 2 3) 42)) 5) ((Some v) v) ((None) -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -22090,7 +22090,7 @@
   (input
     (do
       (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-      (def (main) (match #map((= (add 2 3) 42)) (#map((= 5 v) (.. rest)) v) (_ (- 0 1))))
+      (def (main) (match #map((= (add 2 3) 42)) (#map((= 5 v) (.. rest)) v) (_ -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -22868,7 +22868,7 @@
         (match
           (List.at (Map.to-list (ins n Map.empty)) 0)
           ((Some p) (match p (#tuple(k v) (+ k v))))
-          ((None u) (- 0 1))))
+          ((None u) -1)))
       (export main)))
   (call main (: 4 Int64))
   (output (: 11 Int64))
@@ -33046,7 +33046,7 @@
   (input
     (do
       (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-      (def (main) (match #map((= (add 2 3) 42)) (#map((= 5 v) (.. rest)) v) (_ (- 0 1))))
+      (def (main) (match #map((= (add 2 3) 42)) (#map((= 5 v) (.. rest)) v) (_ -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -33058,7 +33058,7 @@
   (input
     (do
       (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-      (def (main) (match #map((= (add 2 4) 42)) (#map((= 5 v) (.. rest)) v) (_ (- 0 1))))
+      (def (main) (match #map((= (add 2 4) 42)) (#map((= 5 v) (.. rest)) v) (_ -1)))
       (export main)))
   (output (: -1 Int64)))
 
@@ -33073,7 +33073,7 @@
   (input
     (do
       (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
-      (def (main) (match (Map.lookup #map((= (add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1))))
+      (def (main) (match (Map.lookup #map((= (add 2 3) 42)) 5) ((Some v) v) ((None) -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -33266,7 +33266,7 @@
         (match
           (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
           ((guard #map((= 1 v) (.. r)) (> v 3)) v)
-          (_ (- 0 1))))
+          (_ -1)))
       (export main)))
   (call main (: 9 Int64))
   (output (: 5 Int64)))

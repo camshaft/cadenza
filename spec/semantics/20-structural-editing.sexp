@@ -520,7 +520,7 @@
   (input
     (do
       (type W (Mk BigInt))
-      (def (main (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ (- 0 1))))
+      (def (main (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ -1)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 40 Int64))
@@ -537,7 +537,7 @@
   (input
     (do
       (type W (Mk BigInt))
-      (def (main (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ (- 0 1))))
+      (def (main (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ -1)))
       (export main)))
   (call main (: 2 Int64))
   (output (: -1 Int64))
@@ -560,7 +560,7 @@
       (type W (Mk BigInt))
       (def
         (walk (: n Int64) (: w W))
-        (if (< n 1) (- 0 1) (match w ((Mk 1) 40) (_ (walk (- n 1) w)))))
+        (if (< n 1) -1 (match w ((Mk 1) 40) (_ (walk (- n 1) w)))))
       (def (main) (walk 2 (Mk 1)))
       (export main)))
   (output (: 40 Int64)))

@@ -12789,8 +12789,8 @@
 (case
   "a constant SIGNED shift-right sign-extends (the unsigned-width fold bails on a signed type)"
   (doc
-    "`(>> (- 0 256) 4)` = -16: a SIGNED `>>` is ARITHMETIC (sign-extending), so the unsigned-width shift fold must BAIL on a signed type (returns None → the i64 path folds it, preserving the sign). Treating a signed `>>` as a logical shift over the width-masked magnitude would fold -256 >> 4 to 0 instead of -16. Guards that the width-aware unsigned shift fold does not swallow signed arithmetic shifts.")
-  (input (do (def (main) (>> (- 0 256) 4)) (export main)))
+    "`(>> -256 4)` = -16: a SIGNED `>>` is ARITHMETIC (sign-extending), so the unsigned-width shift fold must BAIL on a signed type (returns None → the i64 path folds it, preserving the sign). Treating a signed `>>` as a logical shift over the width-masked magnitude would fold -256 >> 4 to 0 instead of -16. Guards that the width-aware unsigned shift fold does not swallow signed arithmetic shifts.")
+  (input (do (def (main) (>> -256 4)) (export main)))
   (output (: -16 Int64)))
 
 (case

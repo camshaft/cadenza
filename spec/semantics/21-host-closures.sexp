@@ -6408,7 +6408,7 @@
   "a closure taking a Result Int64 Int64 ARG — Err crosses the direct-call boundary"
   (doc
     "The SAME closure driven with `Err(3)`: the boundary result's disc 1 (Err) → the guest builds the
-           `Err` cell, the match takes the `Err` arm → `(- 0 3)` = -3. Both variants carry a payload (unlike
+           `Err` cell, the match takes the `Err` arm → `-3` = -3. Both variants carry a payload (unlike
            Option's nullary None), boxed into the rebuilt cell.")
   (input
     (do

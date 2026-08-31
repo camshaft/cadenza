@@ -1909,7 +1909,7 @@
         (dec b i)
         (if
           (= (cbor-major b i) 1)
-          (- (- 0 1) (cbor-arg b i))
+          (- -1 (cbor-arg b i))
           (if (= (cbor-major b i) 7) (if (= (cbor-arg b i) 21) 1 0) (cbor-arg b i))))
       (def
         (main)
@@ -1937,7 +1937,7 @@
            not default it; this case pins the discrimination the decline depends on.")
   (input
     (do
-      (def (classify-simple arg) (if (= arg 21) 1 (if (= arg 20) 0 (- 0 1))))
+      (def (classify-simple arg) (if (= arg 21) 1 (if (= arg 20) 0 -1)))
       (def
         (main)
         (+ (classify-simple 20) (+ (* 10 (classify-simple 21)) (* 100 (classify-simple 27)))))
@@ -2257,7 +2257,7 @@
             (Map.insert Map.empty #tuple((rep (Bytes.of #list(104 105)) 3) 1) 42)
             #tuple((Bytes.of #list(104 105 120 120 120)) 1))
           ((Some v) v)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (output (: 42 Int64)))
 
@@ -3408,7 +3408,7 @@
             (Map.insert (Map.empty) (rep (Bytes.of #list(104)) 1) 42)
             (Bytes.of #list(104 120)))
           ((Some v) v)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (call main)
   (output (: 42 Int64))

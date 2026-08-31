@@ -2756,7 +2756,7 @@
       (def
         (main (: x Int64))
         (do
-          (def b (bin (u32 (UInt32.wrap x) le) (i16 (Int16.wrap (- 0 2)))))
+          (def b (bin (u32 (UInt32.wrap x) le) (i16 (Int16.wrap -2))))
           (+
             (* 100000 (Bytes.len b))
             (+
