@@ -7,7 +7,7 @@
 //! 20-byte LITTLE-ENDIAN fixed records (contract settled with v-runtime + v-nix, 2026-08-31):
 //!
 //! ```text
-//!   byte 0     : op        (0=ALLOC, 1=DUP, 2=DROP)
+//!   byte 0     : op        (0=ALLOC, 1=DUP, 2=DROP, 3=MARK_IMMORTAL — a census-exit, not a leak)
 //!   byte 1     : tag       (0=Leaf, 1=Sum, 2=Compound — structural, tagless runtime)
 //!   byte 2     : freed     (0/1; meaningful on DROP)
 //!   byte 3     : _pad
@@ -17,7 +17,8 @@
 //!   bytes 16..20: cascade_parent u32 LE  (0xFFFF_FFFF = none / root drop)
 //! ```
 //!
-//! A LEAK is a node with an ALLOC but no DROP reaching `freed = 1` — [`leak_summary`]. This module is
+//! A LEAK is a node with an ALLOC but no census-EXIT — neither a DROP reaching `freed = 1` NOR a
+//! MARK_IMMORTAL (an immortal build-once static the RC never frees is not a leak) — [`leak_summary`]. This module is
 //! the pure decode/summary half of `cdz-run --rc-trace`; the export-call wiring (instantiate the
 //! runtime-debug world, `rc-trace-enable` pre-run, `rc-trace-drain`/`rc-trace-truncated` post-run) is
 //! added when the `.#rctrace-runtime` variant + the debug-trace WIT land on main.
@@ -28,6 +29,9 @@ pub enum RcOp {
     Alloc,
     Dup,
     Drop,
+    /// The node left the census AS IMMORTAL (`op_mark_immortal`/`_deep`) — NOT a leak and NOT a freed
+    /// drop; a census-EXIT that [`leak_summary`] excludes from the leak set (same as a freed drop).
+    MarkImmortal,
 }
 
 /// The node's structural tag (the runtime is tagless; this is the shape class the trace records).
@@ -103,6 +107,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<RcEvent>, DecodeErr> {
             0 => RcOp::Alloc,
             1 => RcOp::Dup,
             2 => RcOp::Drop,
+            3 => RcOp::MarkImmortal,
             other => return Err(DecodeErr::BadOp { index, op: other }),
         };
         let tag = match rec[1] {
@@ -131,19 +136,24 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<RcEvent>, DecodeErr> {
 pub fn leak_summary(events: &[RcEvent]) -> Vec<u32> {
     use std::collections::BTreeSet;
     let mut allocated: BTreeSet<u32> = BTreeSet::new();
-    let mut freed: BTreeSet<u32> = BTreeSet::new();
+    // Nodes that EXITED the census legitimately: a freed DROP (reclaimed) OR a MARK_IMMORTAL (left the
+    // census as immortal — a build-once static the RC never frees). Neither is a leak.
+    let mut exited: BTreeSet<u32> = BTreeSet::new();
     for e in events {
         match e.op {
             RcOp::Alloc => {
                 allocated.insert(e.node);
             }
             RcOp::Drop if e.freed => {
-                freed.insert(e.node);
+                exited.insert(e.node);
+            }
+            RcOp::MarkImmortal => {
+                exited.insert(e.node);
             }
             _ => {}
         }
     }
-    allocated.difference(&freed).copied().collect()
+    allocated.difference(&exited).copied().collect()
 }
 
 /// A human-readable trace: one line per event + a trailing LEAK SUMMARY. `truncated` reflects
@@ -162,6 +172,7 @@ pub fn render(events: &[RcEvent], truncated: bool) -> String {
             RcOp::Alloc => "ALLOC",
             RcOp::Dup => "DUP  ",
             RcOp::Drop => "DROP ",
+            RcOp::MarkImmortal => "IMMOR",
         };
         let tag = match e.tag {
             NodeTag::Leaf => "Leaf".to_string(),
@@ -280,6 +291,20 @@ mod tests {
         assert_eq!(leak_summary(&evs), vec![2]);
         assert!(render(&evs, false).contains("node#2"));
         assert!(render(&evs, false).contains("1 leaked node"));
+    }
+
+    #[test]
+    fn mark_immortal_is_a_census_exit_not_a_leak() {
+        // node#1: alloc → MARK_IMMORTAL (op 3, rc→IMMORTAL) = census-exit, NOT a leak (dqe17 fix).
+        // node#2: alloc, never exited = a real leak.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&rec(0, 1, 0, 1, 0, 1, CASCADE_NONE)); // alloc 1 (Sum)
+        buf.extend_from_slice(&rec(3, 1, 0, 1, 1, u32::MAX, CASCADE_NONE)); // mark-immortal 1
+        buf.extend_from_slice(&rec(0, 0, 0, 2, 0, 1, CASCADE_NONE)); // alloc 2, never exits
+        let evs = decode(&buf).unwrap();
+        assert_eq!(evs[1].op, RcOp::MarkImmortal); // op 3 decodes (no BadOp)
+        assert_eq!(leak_summary(&evs), vec![2]); // 1 excluded (immortal), 2 flagged
+        assert!(render(&evs, false).contains("IMMOR node#1"));
     }
 
     #[test]
