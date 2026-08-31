@@ -6711,6 +6711,41 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_rest_patterns_parse_permissively_without_panic() {
+        use crate::sexpr;
+        // The compound pattern surfaces are INTENTIONALLY PERMISSIVE about rest position/count — like the
+        // long-standing list pattern, they accept a rest-ONLY pattern, a NON-TRAILING rest, and MULTIPLE
+        // rests, parsing each to the wrapped `(.. rest)` node in situ WITHOUT panicking. The SEMANTIC
+        // constraints (at most one rest, trailing-only where the type requires it) are the MATCH-LOWERING's
+        // to enforce (v-inference/v-ast-compound), NOT the parser's — keeping the surface a uniform,
+        // scope-blind grammar. Pinned so a future refactor of `rest_marker` / the pattern arms can neither
+        // crash on a degenerate form nor silently change its shape.
+        // Rest-ONLY (whole-collection bind) across record/set/list — the tuple has no rest-only form (a rest
+        // needs a leading element + comma), and the map rest-only is `#{ .. rest }` (covered elsewhere).
+        assert_eq!(
+            sexpr::print(&parse_ok("def f({ .. rest }) = 0")),
+            "(def (f (record (.. rest))) 0)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(#(.. rest)) = 0")),
+            "(def (f #set((.. rest))) 0)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f([.. rest]) = 0")),
+            "(def (f (list (.. rest))) 0)"
+        );
+        // NON-TRAILING and MULTIPLE rests parse in situ (surface-permissive; lowering rejects the malformed).
+        assert_eq!(
+            sexpr::print(&parse_ok("def f((a, .. rest, b)) = a")),
+            "(def (f (tuple a (.. rest) b)) a)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f((a, .. r1, .. r2)) = a")),
+            "(def (f (tuple a (.. r1) (.. r2))) a)"
+        );
+    }
+
+    #[test]
     fn parameterized_annotation_name_takes_a_glued_application() {
         use crate::sexpr;
         // `@tag("slow")` — a call-style annotation argument: a `(` GLUED to the annotation name makes
