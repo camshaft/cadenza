@@ -8156,36 +8156,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_trailing_comment_on_an_if_then_branch_round_trips_not_dropped() {
-        // A same-line `//` after an `if`'s THEN branch (`if a then 1 // note` before `else`) was DROPPED
-        // — the reader didn't capture a trailing comment in that mid-expression slot, so `cdz fmt`
-        // refused (the comment-attachment gap that blocked hm-collect.cdz). Now captured as
-        // `(comment-after "note" 1)` on the then-branch + re-printed same-line, with `else` forced to the
-        // next line (a `//` runs to EOL, so `else` can't share the line). assert_roundtrip pins re-parse
-        // + idempotence.
-        let out = assert_roundtrip("def f(a) = if a then 1 // note\nelse 2", 100);
-        assert!(
-            out.lines().any(|l| l.contains("1 // note")),
-            "the then-branch trailing comment re-prints same-line: {out}"
-        );
-        assert!(
-            out.lines().any(|l| l.trim_start().starts_with("else")),
-            "`else` drops to its own line after the // (not swallowed into the comment): {out}"
-        );
-    }
-
-    #[test]
-    fn a_trailing_comment_after_let_in_round_trips_not_dropped() {
-        // A same-line `//` after `in` (`let x = a in // note` before the body) was DROPPED. Now captured
-        // as a `(comment-after "note" binds)` wrapper + re-printed after `in`; the body's own hardbreak
-        // drops it to the next line so the `//` can't swallow it.
-        let out = assert_roundtrip("def f(a) = let x = a in // note\nx + 1", 100);
-        assert!(
-            out.lines().any(|l| l.contains("in // note")),
-            "the `in` trailing comment re-prints same-line after `in`: {out}"
-        );
-    }
+    // Two mid-expression trailing-comment preservation tests MIGRATED to the spec/syntax corpus (inc-6
+    // batch-37, first of the comment-node block; comment nodes render structurally as `(comment-after …)`):
+    //   * `a_trailing_comment_on_an_if_then_branch_round_trips_not_dropped` (a same-line `//` after an
+    //     `if`'s THEN branch is captured as `(comment-after "note" 1)` + re-printed same-line, with `else`
+    //     forced to the next line since a `//` runs to EOL) → ml/252-comment-after-if-then-branch
+    //     `def f(a) = if a then 1 // note`⏎`else 2`→`(def (f a) (if a (comment-after "note" 1) 2))`.
+    //   * `a_trailing_comment_after_let_in_round_trips_not_dropped` (a same-line `//` after `in` is captured
+    //     `(comment-after "note" binds)` + re-printed after `in`) → ml/253-comment-after-let-in
+    //     `def f(a) = let x = a in // note`⏎`x + 1`→`(def (f a) (let (comment-after "note" ((x a))) (+ x 1)))`.
+    // Each carries a format.cdz pinning the preserved-comment surface (the comment forces the multi-line
+    // layout — structural, width-invariant).
 
     #[test]
     fn own_line_comments_leading_match_arm_body_and_let_value_and_let_body_round_trip() {

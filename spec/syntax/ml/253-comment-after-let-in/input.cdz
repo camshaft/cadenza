@@ -1,0 +1,2 @@
+def f(a) = let x = a in // note
+x + 1
