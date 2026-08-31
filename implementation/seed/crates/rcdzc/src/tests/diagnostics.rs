@@ -1619,36 +1619,12 @@ fn a_map_match_pattern_with_a_malformed_rest_names_the_shape_not_an_unbound_bind
     );
 }
 
-/// The LIST twin of the map malformed-rest case above: a `(list …)` pattern whose `..` is followed by
-/// MORE than one binder (`(list a .. b c)`) reports the clear rest-shape CDZ0201 and — when the body
-/// references one of the SURPLUS post-`..` binders (`c`) — does NOT also leak a misleading CDZ0101
-/// "unbound name". `lower_match_list` always faulted the shape, but `find_rest_binder_in_list_pattern`
-/// recognizes ONLY the single `dd + 1` rest binder, so a body ref to `c` fell through to `resolve_name`
-/// → a spurious unbound cascade on top of the real fault (the same class the map twin fixed,
-/// v-diagnostics note 2026-07-16). The resolver now resolves such a reference to the SAME coded
-/// rest-shape decline (Case Lmr / `match_arm_malformed_list_binds`), co-anchored at the list pattern so
-/// the same-node dedup collapses it into ONE primary diagnostic.
-#[test]
-fn a_malformed_list_rest_pattern_names_the_shape_not_an_unbound_surplus_binder() {
-    // Reject facets cite-deleted to corpus 05-compound-types: the single surplus binder is :18878, and
-    // the TWO-surplus + NESTED-in-variant-payload facets are the two cases just below it (all CDZ0201
-    // rest-shape, no unbound leak, native #list form — the native list path has no classic/native
-    // discrepancy, unlike the #map two-`..` case in queue #47). What STAYS here: the well-formed no-false-
-    // alarm control — a `(List …)` entry parameter has no scalar boundary, so it declines at the export
-    // path (not a clean runnable value case).
-    // NO false alarm: a WELL-FORMED list rest pattern (one binder after `..`, body reads it) checks clean.
-    let ok = "(module m (def (f (: xs (List Int64))) \
-                  (match xs ((list x .. rest) (List.len rest)) (_ 0))) (export f))";
-    // Bind once — `diags_of` recompiles the module, so evaluating it in both the predicate and the
-    // failure message would double the compile cost (PR #1167 review).
-    let ok_diags = diags_of(ok);
-    assert!(
-        ok_diags
-            .iter()
-            .all(|d| d.severity != crate::abi::Severity::Error),
-        "a well-formed list rest pattern still checks clean: {ok_diags:?}"
-    );
-}
+// Corpus-covered: the malformed-list-rest REJECT facets were already migrated to 05-compound-types.sexp
+// (:18878 + the two cases below). The remaining well-formed no-false-alarm control — a `(list x .. rest)`
+// element+rest pattern checking clean — is covered by 04-capabilities.sexp:359 (`#list(h (.. t))`, the same
+// elem+rest shape) which RUNS clean (and 12-metaprogramming:728 matches `#list(x (.. rest))` on a literal
+// list). The old "corpus-inexpressible `(List …)` entry param" note was wrong (nullary-main + literal list).
+// Rust test a_malformed_list_rest_pattern_names_the_shape_not_an_unbound_surplus_binder deleted.
 
 /// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,
 /// `(list … .. …)`), not the enclosing `(match …)`. The pattern-shape rejects in `pattern_constraints`
