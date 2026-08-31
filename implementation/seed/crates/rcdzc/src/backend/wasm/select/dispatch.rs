@@ -1345,7 +1345,8 @@ pub(super) fn emit_littest_probe(
             // `map-lookup` per key (and the value binders a runtime keyed read), not yet wired — a
             // CONSTANT map folds the `MapHasKeys` test instead (`build_tree`), never reaching here.
             // Decline (like the runtime string-payload probe), never a miscompile.
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmMapPatternRuntimeMap,
                 "matching a map-pattern payload against a runtime map needs the per-binder runtime \
                  keyed-read (a constant map folds the key test instead)",
             ));
