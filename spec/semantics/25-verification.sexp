@@ -1015,7 +1015,7 @@
         (depth-of (: v Int64) (: stack (List Int64)))
         (match
           stack
-          (#list() -1)
+          (#list() (- 0 1))
           (#list(top (.. rest))
             (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
       (def
@@ -1070,7 +1070,7 @@
         (depth-of (: v Int64) (: stack (List Int64)))
         (match
           stack
-          (#list() -1)
+          (#list() (- 0 1))
           (#list(top (.. rest))
             (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
       (def
@@ -1134,7 +1134,7 @@
         (depth-of (: v Int64) (: stack (List Int64)))
         (match
           stack
-          (#list() -1)
+          (#list() (- 0 1))
           (#list(top (.. rest))
             (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
       (def
@@ -1975,7 +1975,7 @@
         (depth-of (: v Int64) (: stack (List Int64)))
         (match
           stack
-          (#list() -1)
+          (#list() (- 0 1))
           (#list(top (.. rest))
             (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
       (def
@@ -2071,7 +2071,7 @@
         (depth-of (: v Int64) (: stack (List Int64)))
         (match
           stack
-          (#list() -1)
+          (#list() (- 0 1))
           (#list(top (.. rest))
             (if (= top v) 0 (let ((d (depth-of v rest))) (if (< d 0) d (+ d 1)))))))
       (def
