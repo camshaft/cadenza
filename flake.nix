@@ -7520,6 +7520,54 @@
             program = "${wrapper}/bin/cdz-save-baseline";
           };
 
+        # apps.save-quote-baseline — regenerate spec/semantics/.quote-gate-baseline from the
+        # `.#quote-corpus-verdicts` harvest (v-quote-corpus inc-4; mirrors apps.save-baseline). `nix run
+        # .#save-quote-baseline` builds the whole-pass <tag>\t<description> quote-roundtrip harvest (the cached
+        # per-case shred→build→verdict graph) then runs the SAME xtask-save-baseline leaf to write the baseline
+        # via serialize_baseline — byte-identical format to .gate-baseline, so v-corpus-harness's
+        # canonicalize/prune/check tooling applies uniformly.
+        #   --fallback: the fresh CA-derivation realisations are never in a cache, so a substituter 502/504 on
+        #     the realisation lookup must fall back to a LOCAL build, not abort.
+        #   --option eval-cache false: under heavy fleet contention a cache-ON client wedges on the shared
+        #     eval-cache SQLite lock (0 CPU, 0 output — looks like a stall); the fleet gate builds carry it too.
+        #   #6835 FAIL-SPIKE GUARD: a nix build-phase starvation run mis-emits `fail`, and a REAL pass→fail is a
+        #     regression to FIX (never bake). Refuse to (over)write when the harvest carries MORE fails than the
+        #     committed baseline — the regenerator is safe-by-default; a genuine fail must be resolved at source.
+        apps.save-quote-baseline =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-save-quote-baseline";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                baseline="$root/spec/semantics/.quote-gate-baseline"
+                # --option substitute false (the #7175 fix): the harvest is a huge CONTENT-ADDRESSED graph
+                # (tens of thousands of per-case CA outputs); with substitution ON, nix fires a realisation
+                # (.doi) query per CA output PER substituter (cachix + the determinate/cache.nixos defaults,
+                # which ALWAYS 404 for our CA realisations) → hundreds of thousands of tiny HTTP GETs that build
+                # nothing = a network-bound WEDGE that hangs even SOLO at low load. substitute=false skips that
+                # (a fresh re-baseline substitutes nothing anyway; per-case verdicts are byte-identical local).
+                # --option eval-cache false: also dodge the shared eval-cache SQLite lock under fleet contention.
+                harvest="$(nix build "$root#quote-corpus-verdicts" --option substitute false --option eval-cache false --no-link --print-out-paths)"
+                new_fails="$(grep -c '^fail' "$harvest" || true)"
+                old_fails="$(grep -c '^fail' "$baseline" 2>/dev/null || true)"
+                new_fails="''${new_fails:-0}"
+                old_fails="''${old_fails:-0}"
+                if [ "$new_fails" -gt "$old_fails" ]; then
+                  echo "save-quote-baseline: REFUSING — harvest has $new_fails fail(s) vs $old_fails in the committed baseline." >&2
+                  echo "  A fail-spike is either nix build-phase starvation (#6835 — re-run on a quiet window) or a REAL" >&2
+                  echo "  quote/codec/decode regression (fix the source; do NOT bake the fail into the baseline)." >&2
+                  exit 1
+                fi
+                exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$baseline"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-save-quote-baseline";
+          };
+
         apps.bench =
           let
             wrapper = pkgs.writeShellApplication {
