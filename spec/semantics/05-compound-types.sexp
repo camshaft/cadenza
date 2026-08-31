@@ -646,6 +646,21 @@
   (input  (do (def (main) (let ((#record((= x a) (.. rest)) #record((= x 5) (= y 6)))) a)) (export main)))
   (call   main) (output (: 5 Int64)))
 
+(case "a NESTED record inside a binding-param tuple binds its field (Patterns Compose, binding position)"
+  (doc    "Composition depth for a record in a binding position: a `(record …)` pattern NESTED inside an outer
+           tuple binding param `#tuple(a #record((= x b)))` binds `a` = outer element 0 and `b` = field x of
+           the record at element 1 — a `RecordField` reading field x off the value at an `Elem(1)` sub-path,
+           the binding twin of the match-arm nested-record (§Patterns Compose). Over `#tuple(7 #record((= x
+           10)))`: 7+10 = 17. Pins that a nested record destructure BINDS in a binding position (was a spurious
+           CDZ0101 — the binding-path resolver did not descend a compound element into a nested record, an
+           asymmetry with the match arm which already bound it). A DEEPER nested compound inside the record's
+           FIELD value stays the Increment-B decline (unchanged).")
+  (input  (do
+            (def (f #tuple(a #record((= x b)))) (+ a b))
+            (def (main) (f #tuple(7 #record((= x 10)))))
+            (export main)))
+  (output (: 17 Int64)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`
