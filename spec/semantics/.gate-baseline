@@ -9522,3 +9522,38 @@ pass	an op clause with a non-name keeps the specific must-be-named reject, not t
 pass	an unbound handle head keeps its own unbound-name error
 pass	applying a value to a NON-type value keeps the generic not-a-function message, not missing-colon
 pass	the BARE (unsuffixed) over-Int64 counterpart still range-checks as CDZ0302 (a grounding, not a mismatch)
+pass	a String guard condition is likewise rejected — the Bool check is general
+pass	a bare literal at the narrow default's max fits and runs (no over-reject at the boundary)
+pass	a bare literal one past the narrow default's max is rejected at the exact boundary
+pass	a bare-name match arm far from any variant is a genuine catch-all binder and runs
+pass	a bare-name match arm near a variant is a typo suggesting the variant, not a binder
+pass	a bin segment width too far from a byte-aligned kind keeps the bits guidance but carries no rename fix
+pass	a fault inside a guard condition surfaces — the condition is walked
+pass	a genuinely unbound plain name reports its own plain unbound, not the eval teaching message
+pass	a genuinely unrecognized bin segment kind keeps the generic message, not the width guidance
+pass	a malformed application in a DEAD parameter's argument still rejects (a non-unbound fault kind)
+pass	a near-miss integer bin segment width carries a rename fix to the byte-aligned width
+pass	a negative bare literal under an unsigned narrow default is rejected (the sign face)
+pass	a nested tuple in the list rest slot is the same rest-shape error, no unbound leak
+pass	a nested-rest list inside a variant payload gets the same rest-shape reject
+pass	a non-Bool guard condition is a type error naming the offending type
+pass	a non-byte-aligned integer bin segment width names the supported widths and the bits alternative
+pass	a well-formed overflow pragma is accepted and does not block module registration
+pass	a well-formed record parameter annotation compiles and the field reads back
+pass	a well-typed Bool guard condition compiles and runs clean
+pass	a well-typed same-shape tuple ordering compiles and runs the lexicographic walk
+pass	a wildcard in the list rest slot is a valid rest binder and matches
+pass	an empty op effect clause is a malformed effect declaration
+pass	an overflow pragma with an unknown mode is a malformed directive (CDZ0602)
+pass	an overflow pragma with no signedness sub-form is malformed (CDZ0602)
+pass	an unbound argument to a USED parameter still rejects (surfaced via the reduced body)
+pass	an unknown type in a NESTED record parameter annotation field names only the deep type
+pass	an unknown type in a record LET-BINDER annotation names the type, not the field label
+pass	an unknown type in a record VALUE annotation names the type, not the field label
+pass	an unknown type in a record parameter annotation names the type, not the field label
+pass	comparing a tuple against a list for equality is a cross-kind type error
+pass	eval on a runtime value in a let init gives the compile-time-AST teaching message
+pass	eval on a runtime value in a match scrutinee gives the compile-time-AST teaching message
+pass	eval on a runtime value in an arithmetic operand gives the compile-time-AST teaching message
+pass	ordering a tuple against a list is a cross-kind type error
+pass	ordering two same-kind tuples of different arity names the arity delta, not a kind boundary
