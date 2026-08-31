@@ -347,61 +347,27 @@ fn a_cross_kind_operator_clash_uses_the_correct_indefinite_article() {
 /// present, so it is ONE primary error. A WELL-TYPED compound comparison (no mismatch reject) keeps its
 /// honest not-yet-built decline.
 #[test]
-fn a_mismatched_comparison_drops_the_misleading_heap_walk_decline() {
+fn a_mismatched_comparison_drops_the_uncoded_heap_walk_decline() {
     use crate::testkit::parse;
+    // The cross-kind comparison REJECT (CDZ0201 "are different types") + the compound-ordering-compiles /
+    // same-kind arity-delta facets moved to corpus 07-type-system "ordering a tuple against a list is a
+    // cross-kind type error" + siblings. Residual: the dedup the corpus cannot express — a mismatched
+    // comparison must NOT also leak the UNCODED "needs a heap walk (not yet built)" decline (a consequence
+    // of the mismatch); (no-other-errors) is coded-only, so it cannot assert the absence of an uncoded one.
     for src in [
-        // compound/text-vs-scalar cross-kind (M111)
         "(module m (def (main) (if (< 1 \"x\") 1 2)) (export main))",
-        "(module m (def (main) (if (< true \"x\") 1 2)) (export main))",
-        // two compounds of DIFFERENT structural kinds — tuple vs list, record vs map (this increment).
-        // These formerly took the generic "must be the same type here" unify path (so the M111 dedup,
-        // keyed on "are different types", did NOT fire and the heap-walk secondary leaked); the
-        // cross-kind reject now covers different-kind compounds too, giving the clear message + the dedup.
         "(module m (def (main) (if (< (tuple 1 2) (list 3)) 1 2)) (export main))",
         "(module m (def (main) (if (= (tuple 1 2) (list 3)) 1 2)) (export main))",
     ] {
         let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
         assert!(
-            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("are different types")),
-            "the coded kind-boundary reject is present: {src} -> {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-        assert!(
             !diags
                 .iter()
                 .any(|d| d.message.contains("needs a heap walk")),
-            "the misleading heap-walk decline is dropped: {src} -> {:?}",
+            "the uncoded heap-walk decline is dropped: {src} -> {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
-    // A GENUINELY well-typed compound comparison (same-type tuples) is NOT mismatched, and — since the
-    // blessed compound ORDERING landed (`value-cmp`, slice 2) — it now COMPILES to the lexicographic heap
-    // walk rather than declining. The "needs a heap walk (not yet built)" decline is GONE: a compound `<`
-    // over orderable leaves is built, not refused. (Build the tuples internally so the export is a scalar
-    // bool-as-int — a compound PARAMETER still can't cross the boundary, an orthogonal boundary limit.)
-    let ok = "(module m (def (mk (: n Int64)) (tuple 1 n)) \
-                   (def (main) (if (< (mk 2) (mk 3)) 1 2)) (export main))";
-    crate::compile::compile_component(&crate::codec::encode(&parse(ok))).expect(
-        "a well-typed compound comparison now COMPILES (compound ordering is built, not declined)",
-    );
-    // NO OVER-REACH: two SAME-kind compounds that differ internally (two records, two tuples of
-    // different arity) are NOT relabeled a "kind boundary" (that guard fires only across DISTINCT
-    // kinds). The comparison-arg check now names the readable structural DELTA (the tuple arity), not
-    // the raw "must be the same type here" unify lead nor the kind-boundary message.
-    let same_kind = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (g (: a (Tuple Int64)) (: b (Tuple Int64 Int64))) (if (< a b) 1 2)) (export g))",
-    )));
-    assert!(
-        same_kind.iter().any(|d| d
-            .message
-            .contains("expected a tuple with 1 element, but this one has 2"))
-            && !same_kind
-                .iter()
-                .any(|d| d.message.contains("across that kind boundary")),
-        "two same-kind (tuple) compounds name the arity delta, not the kind-boundary message: {:?}",
-        same_kind.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
 }
 
 // (a_match_pattern_head_naming_a_non_variant_suggests_the_nearest_variant migrated to corpus 05-compound-types

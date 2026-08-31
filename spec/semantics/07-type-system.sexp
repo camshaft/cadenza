@@ -1668,6 +1668,30 @@
   (input  (do (type UserId (Mk Int64)) (def (g (: u UserId)) (+ u 1)) (export g)))
   (error  CDZ0201 (message "kind boundary")))
 
+; The COMPOUND-vs-COMPOUND cross-kind comparison companion of the scalar/compound-vs-scalar kind-boundary
+; cases above: two compounds of DIFFERENT structural kinds — a tuple vs a list — are different types, so a
+; comparison (`<`/`=`) across them is CDZ0201 "are different types" (not the generic same-type-here unify
+; lead). A well-typed SAME-KIND compound comparison (two same-shape tuples) is NOT a mismatch — with blessed
+; compound ordering it COMPILES and runs the lexicographic walk. Two SAME-kind compounds that differ only
+; STRUCTURALLY (a tuple arity diff) name the readable arity delta (CDZ0203), not a kind boundary. (Migrated
+; from rcdzc a_mismatched_comparison_drops_the_misleading_heap_walk_decline — the compound comparison facets;
+; the uncoded heap-walk-decline dedup stays a rust residual.)
+(case "ordering a tuple against a list is a cross-kind type error"
+  (input  (do (def (main) (if (< #tuple(1 2) #list(3)) 1 2)) (export main)))
+  (error  CDZ0201 (message "are different types")))
+
+(case "comparing a tuple against a list for equality is a cross-kind type error"
+  (input  (do (def (main) (if (= #tuple(1 2) #list(3)) 1 2)) (export main)))
+  (error  CDZ0201 (message "are different types")))
+
+(case "a well-typed same-shape tuple ordering compiles and runs the lexicographic walk"
+  (input  (do (def (mk (: n Int64)) #tuple(1 n)) (def (main) (if (< (mk 2) (mk 3)) 1 2)) (export main)))
+  (call   main) (output (: 1 Int64)))
+
+(case "ordering two same-kind tuples of different arity names the arity delta, not a kind boundary"
+  (input  (do (def (g (: a (Tuple Int64)) (: b (Tuple Int64 Int64))) (if (< a b) 1 2)) (export g)))
+  (error  CDZ0203 (message "expected a tuple with 1 element, but this one has 2") (not "kind boundary")))
+
 ; A first-class TYPE VALUE (a type name `Color`/`Int64`, a module) used as an arithmetic/comparison operand is
 ; a type error — there is no `+` on types, and type EQUALITY is the dedicated `Type.eq`, not the bare `=`/`+`.
 ; A naive generic scheme leaked a phantom "Int64 and Type" clash. Now a Type-VALUE vs a scalar names the KIND
