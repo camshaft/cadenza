@@ -308,12 +308,14 @@ fn ml_forall_binder_compiles_and_monomorphizes_end_to_end() {
 /// the `x == MIN` overflow trap. The fold unit + the wasmtime run + the MIN trap in one test, plus the
 /// non-numeric reject, cover the whole negation path (06-numeric-model pins the same at corpus level).
 #[test]
-fn a_unary_minus_negates_its_operand() {
+fn a_named_negate_folds_a_constant_operand() {
     use crate::core::Core;
     use crate::db::Db;
     use crate::lower::core_of;
-    // FOLD unit: a constant operand folds to its negation — `(- (+ 2 3))` → `Core::ConstInt(-5)`, no
-    // runtime subtract emitted.
+    // FOLD unit for the named negate `Num.neg` (the first-class negation, `Prim::Neg` → `lower_negate`):
+    // a constant operand folds to its negation — `(Num.neg (+ 2 3))` → `Core::ConstInt(-5)`, no runtime
+    // subtract emitted. (Was `a_unary_minus_negates_its_operand`, migrated to `Num.neg` ahead of the
+    // arity-1 prefix-`-` deprecation — `(- e)` becomes a partial subtraction; `Num.neg` is the replacement.)
     let fold = |body: &str| -> Option<i64> {
         let src = format!("(module m (def (main) {body}) (export main))");
         let mut db = Db::load(parse(&src));
@@ -325,14 +327,18 @@ fn a_unary_minus_negates_its_operand() {
         }
     };
     assert_eq!(
-        fold("(- (+ 2 3))"),
+        fold("(Num.neg (+ 2 3))"),
         Some(-5),
         "constant negation folds to -5"
     );
-    assert_eq!(fold("(- (- 4))"), Some(4), "double negation folds to +4");
-    // Runtime behavior — `(- n)` returns -n (f(7)=-7, f(-42)=42) and traps at Int64.min — is the
-    // corpus case "a genuinely-runtime UNARY negation returns the negation and traps at the minimum
-    // integer" (spec/semantics/06-numeric-model.sexp), run end-to-end via cdz-run.
+    assert_eq!(
+        fold("(Num.neg (Num.neg 4))"),
+        Some(4),
+        "double negation folds to +4"
+    );
+    // Runtime behavior — `(Num.neg n)` returns -n (f(7)=-7, f(-42)=42) and traps at Int64.min — is the
+    // corpus case "Int64.neg of a runtime expression negates at runtime, both signs" +
+    // "a genuinely-runtime UNARY negation ..." (spec/semantics/06-numeric-model.sexp), run via cdz-run.
 }
 
 #[test]
