@@ -1074,50 +1074,13 @@ fn a_non_tail_list_fold_is_accumulator_transformed_into_a_constant_stack_loop() 
 // is covered by the runtime-String match cases elsewhere in 13-strings (the via-match/via-chain equivalence
 // and dispatch cases).)
 
-#[test]
-fn a_guarded_list_arm_does_not_count_toward_exhaustiveness() {
-    // A guarded list arm may fail its guard, so it covers NO length unconditionally — a match whose only
-    // tail-covering arm is GUARDED is non-exhaustive (CDZ0210), exactly as a guarded scalar/sum tail is.
-    // `(match xs ((guard (list .. all) (> (List.len all) 0)) 1))` — the guarded catch-all does not close
-    // coverage, so the empty list (and a failing guard) are uncovered.
-    let code = |body: &str| -> Option<String> {
-        let src = format!("(module m (def (f (: xs (List Int64))) {body}) (export f))");
-        let out = crate::compile::compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "m",
-                crate::codec::encode(&parse(&src)),
-            )],
-            &[crate::backend::Target::Wasm],
-        );
-        if out
-            .artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_some()
-        {
-            return None;
-        }
-        // Skip the umbrella CDZ0900 not-yet decline (seq-286) — here the non-scalar `(List Int64)` entry
-        // param hits the "non-scalar entry parameter" CDZ0900 on the export path (#6101) regardless of the
-        // match under test; surface the exhaustiveness/pattern code (CDZ0210/…), not that boundary not-yet.
-        out.diagnostics
-            .iter()
-            .filter(|d| d.severity == crate::abi::Severity::Error)
-            .find(|d| d.code.as_deref() != Some("CDZ0900"))
-            .and_then(|d| d.code.clone())
-    };
-    // A guarded rest-arm alone is non-exhaustive (its guard may fail).
-    assert_eq!(
-        code("(match xs ((guard (list x .. rest) (> x 0)) 1))").as_deref(),
-        Some("CDZ0210"),
-        "a lone guarded list arm does not cover every length"
-    );
-    // Adding an UNGUARDED catch-all makes it exhaustive again (no over-rejection).
-    assert_eq!(
-        code("(match xs ((guard (list x .. rest) (> x 0)) 1) (_ 0))"),
-        None,
-        "a guarded arm plus an unguarded catch-all is exhaustive"
-    );
-}
+// (a_guarded_list_arm_does_not_count_toward_exhaustiveness migrated to corpus 05-compound-types: the reject
+// half is "a lone guarded list arm does NOT count toward exhaustiveness — the empty list stays uncovered"
+// ((match xs ((guard #list(x .. rest) (> x 0)) 1)) → CDZ0210), the reject complement of the positive "a list
+// match arm may carry a guard on its element binders" case (guarded arms + an unguarded `(_ 0)` catch-all →
+// exhaustive). The corpus input calls `f` from a nullary `main` so the non-scalar `(List Int64)` parameter is
+// not an export entry param — surfacing the CDZ0210 exhaustiveness reject, not the orthogonal CDZ0900
+// non-scalar-entry-param not-yet the rust test filtered out.)
 
 // (a_refutable_literal_list_element_still_requires_a_catch_all migrated to corpus 05-compound-types "a
 // refutable literal list element does NOT count toward length-coverage — a catch-all is still required"

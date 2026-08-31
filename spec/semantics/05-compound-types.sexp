@@ -6827,6 +6827,20 @@
             (def (main) (classify (one -5))) (export main)))
   (output (: 2 Int64)))
 
+(case "a lone guarded list arm does NOT count toward exhaustiveness — the empty list stays uncovered"
+  (doc    "The reject complement of the guarded-list-arm case above (migrated from rcdzc
+           a_guarded_list_arm_does_not_count_toward_exhaustiveness): a guarded list arm may fail its guard, so
+           it covers NO length unconditionally. A match whose ONLY arm is a guarded list arm —
+           `(match xs ((guard #list(x .. rest) (> x 0)) 1))` — is non-exhaustive (CDZ0210): the empty list
+           (and any failing guard) is uncovered, exactly as a guarded scalar/sum tail is. Adding an unguarded
+           catch-all makes it exhaustive again (the positive case above, which keeps its `(_ 0)`). `f` is
+           called from a nullary `main` so the non-scalar `(List Int64)` parameter is not an export entry
+           param (which would surface an orthogonal not-yet on the boundary); the exhaustiveness reject is on
+           the match itself.")
+  (input  (do (def (f (: xs (List Int64))) (match xs ((guard #list(x .. rest) (> x 0)) 1)))
+              (def (main) (f #list(1))) (export main)))
+  (error  CDZ0210))
+
 (case "a guarded list-match arm body reads its element binder"
   (doc    "A guarded list arm's BODY may READ the list pattern's binders — the obvious reason to bind them.
            `((guard (list x .. rest) (> x 0)) x)` on `[7]`: the guard holds (`x = 7 > 0`) and the body
