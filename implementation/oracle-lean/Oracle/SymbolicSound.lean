@@ -259,6 +259,9 @@ theorem normalize_proj (b : SymExpr) (s : ByteArray) : normalize (.proj b s) = .
   simp [normalize]
 theorem normalize_tuple (es : Array SymExpr) :
     normalize (.tuple es) = .tuple (es.attach.map (fun x => normalize x.val)) := by simp [normalize]
+theorem normalize_record (fs : Array (ByteArray × SymExpr)) :
+    normalize (.record fs) = .record (fs.attach.map (fun x => (x.val.1, normalize x.val.2))) := by
+  simp [normalize]
 theorem normalize_ctor (tag : ByteArray) (args : Array SymExpr) :
     normalize (.ctor tag args) = .ctor tag (args.attach.map (fun x => normalize x.val)) := by
   simp [normalize]
@@ -571,6 +574,34 @@ theorem denote_record (ρ : Nat → Value) (w : IntTy) (fs : Array (ByteArray ×
     denote ρ w (.record fs)
       = .value (.record (fs.attach.map (fun x => (x.val.1, outcomeToValue (denote ρ w x.val.2))))) := by
   simp only [denote]
+
+/-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
+through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
+congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
+Array `.attach.map` congruence that was banked; proven here by extensionality over the element index. -/
+theorem denote_normalize_tuple (ρ : Nat → Value) (w : IntTy) (es : Array SymExpr)
+    (ih : ∀ x ∈ es, denote ρ w (normalize x) = denote ρ w x) :
+    denote ρ w (normalize (.tuple es)) = denote ρ w (.tuple es) := by
+  rw [normalize_tuple, denote_tuple, denote_tuple]
+  congr 2
+  apply Array.ext
+  · simp
+  · intro i h1 h2
+    simp only [Array.getElem_map, Array.getElem_attach]
+    rw [ih _ (Array.getElem_mem _)]
+
+/-- CAPSTONE record case (full-equality, per-element IH over the field VALUES). Same Array `.attach.map`
+congruence as the tuple case, over field pairs `(key, value)` — the key is preserved, the value normalized. -/
+theorem denote_normalize_record (ρ : Nat → Value) (w : IntTy) (fs : Array (ByteArray × SymExpr))
+    (ih : ∀ x ∈ fs, denote ρ w (normalize x.2) = denote ρ w x.2) :
+    denote ρ w (normalize (.record fs)) = denote ρ w (.record fs) := by
+  rw [normalize_record, denote_record, denote_record]
+  congr 2
+  apply Array.ext
+  · simp
+  · intro i h1 h2
+    simp only [Array.getElem_map, Array.getElem_attach]
+    rw [ih _ (Array.getElem_mem _)]
 
 /-! ### Capstone `.ite` building blocks: denote-soundness of the boolean-materialization identities.
 `normalize` rewrites `if c then true else false → c` and `if c then false else true → not c` (#6450).
