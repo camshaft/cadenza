@@ -4044,111 +4044,33 @@ fn a_malformed_empty_op_effect_clause_is_cdz0201() {
     assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
 }
 
+// The head-naming MESSAGE facets (a value/type/unbound/prelude-type handle head names "head must name an
+// EFFECT" / "is a type") moved to corpus 14b-effects-and-handlers "a handle head that is a value def …" +
+// siblings. Residual: the "exactly ONE diagnostic" dedup the corpus cannot express — the dropped member-
+// access / fold-decline cascades are UNCODED, so (no-other-errors) (coded-only) does not catch them.
 #[test]
-fn a_handle_head_naming_a_value_reports_one_clear_diagnostic() {
-    // A `handle`'s head must name an EFFECT (the arms ARE that effect's operations). `(handle foo 0 …)`
-    // where `foo` is a value def used to surface ONLY as a leaky cascade — a CDZ0201 "member access
-    // requires a record, found Int64" (from the desugared `(. foo op)`) plus an uncoded "not yet
-    // reducible by the tail-resumptive fold" decline — neither naming the real problem. Now the primary
-    // is a clear CDZ0201 at the head, and `dedup_faults` drops both cascade faults, so `cdz check` shows
-    // exactly ONE actionable diagnostic.
-    let src = "(module m (def foo 5) (def (main) (handle foo 0 ((x (u) s (resume 1 s))) 5)) (export main))";
-    let mut db = crate::db::Db::load(parse(src));
-    let ds = crate::diagnostics(&mut db);
+fn a_handle_head_naming_a_non_effect_reports_one_diagnostic_dropping_uncoded_cascades() {
+    // value head: exactly ONE diagnostic (the member-access + fold-decline cascades dropped).
+    let ds = crate::diagnostics(&mut crate::db::Db::load(parse(
+        "(module m (def foo 5) (def (main) (handle foo 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+    )));
     assert_eq!(
         ds.len(),
         1,
-        "exactly one diagnostic (cascade dropped): {ds:?}"
+        "value head = one diagnostic (cascade dropped): {ds:?}"
     );
-    assert_eq!(
-        ds[0].code.as_deref(),
-        Some("CDZ0201"),
-        "got: {}",
-        ds[0].message
-    );
-    assert!(
-        ds[0].message.contains("head must name an EFFECT") && ds[0].message.contains("foo"),
-        "names the real problem — a value head, not a member-access artifact: {}",
-        ds[0].message
-    );
-    // An UNBOUND head keeps its own CDZ0101 (the resolver's primary — not shadowed by this check, which
-    // is conservative to a value def). A valid effect head compiles clean.
-    let unbound = crate::db::Db::load(parse(
-        "(module m (def (main) (handle Nonesuch 0 ((x (u) s (resume 1 s))) 5)) (export main))",
-    ));
-    let mut unbound = unbound;
-    assert!(
-        crate::diagnostics(&mut unbound)
-            .iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0101")),
-        "an unbound handle head keeps its CDZ0101"
-    );
-    // A TYPE head — `(handle C …)` where `C` is a sum type — is the same "head is not an effect" root
-    // cause (it leaked "record has no field `op`" + the fold-decline before). It now names the head as
-    // `a type`, not the misleading "not yet reducible by the tail-resumptive fold".
-    // Use an arm-op name (`a`) that is NOT a variant of `C` so the desugared `(. C a)` would report
-    // "the type `C` has no variant `a`" — the type-head analogue of the value head's "member access
-    // requires a record" consequent. That consequent is now suppressed too, so ONLY the head reject
-    // remains.
-    let mut ty_head = crate::db::Db::load(parse(
+    // type head: exactly ONE error (the fold-decline + no-variant consequents dropped).
+    let td: Vec<crate::abi::Diagnostic> = crate::diagnostics(&mut crate::db::Db::load(parse(
         "(module m (type C (Red)) (def (main) (handle C 0 ((a (u) s (resume 1 s))) 5)) (export main))",
-    ));
-    let td: Vec<crate::abi::Diagnostic> = crate::diagnostics(&mut ty_head)
-        .into_iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect();
+    )))
+    .into_iter()
+    .filter(|d| d.severity == crate::abi::Severity::Error)
+    .collect();
     assert_eq!(
         td.len(),
         1,
-        "a type handle head reports exactly one error (consequents dropped): {:?}",
-        td.iter().map(|d| &d.message).collect::<Vec<_>>()
+        "type head = one error (consequents dropped): {td:?}"
     );
-    assert!(
-        td[0].message.contains("`C`") && td[0].message.contains("is a type"),
-        "names the head as a type: {}",
-        td[0].message
-    );
-    assert!(
-        !td.iter().any(|d| d
-            .message
-            .contains("not reducible by the tail-resumptive fold")
-            || d.message.contains("has no variant")),
-        "the misleading fold-decline + no-variant consequents are dropped: {td:?}"
-    );
-    // A PRELUDE TYPE head — `(handle Int64 …)` / `(handle Option …)` — is the same root cause but a
-    // prelude type has NO user decl (neither `def_by_name` nor `type_decl_by_name`), so it slipped
-    // through to the leaky "not yet reducible" fold-decline while a USER type was named. `typeval_of`
-    // now classifies it as a type-value generically, so it reads the same "is a type" message.
-    for (src, head) in [
-        (
-            "(module m (def (main) (handle Int64 0 ((x (u) s (resume 1 s))) 5)) (export main))",
-            "Int64",
-        ),
-        (
-            "(module m (def (main) (handle Option 0 ((x (u) s (resume 1 s))) 5)) (export main))",
-            "Option",
-        ),
-    ] {
-        let mut prelude_head = crate::db::Db::load(parse(src));
-        let pd = crate::diagnostics(&mut prelude_head);
-        let d = pd
-            .iter()
-            .find(|d| d.message.contains("head must name an EFFECT"))
-            .unwrap_or_else(|| {
-                panic!("a prelude-type handle head `{head}` names the real problem: {pd:?}")
-            });
-        assert!(
-            d.message.contains(&format!("`{head}`")) && d.message.contains("is a type"),
-            "names the prelude-type head `{head}` as a type: {}",
-            d.message
-        );
-        assert!(
-            !pd.iter().any(|d| d
-                .message
-                .contains("not reducible by the tail-resumptive fold")),
-            "the misleading fold-decline is dropped for `{head}`: {pd:?}"
-        );
-    }
 }
 
 mod part2;
