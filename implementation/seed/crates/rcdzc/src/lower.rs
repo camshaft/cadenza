@@ -619,10 +619,10 @@ fn lower_let(
     // Gated PRECISELY to a TUPLE/RECORD destructure binder — the irrefutable compound destructures whose
     // element binders are `SumPayload`/`Proj` reads of the init. A destructure binder appears in THREE
     // surface forms and the gate must catch ALL of them (the reported hang was the third, missed by an
-    // earlier ctor-only gate): the native ctor-LEAF head `#tuple(a b)` (`compound_ctor_leaf`), the legacy
-    // STRING-prim head `("tuple" …)` (`compound_ctor_prim`), and — crucially — the NAME head `(tuple a b)` /
-    // `(record …)` that the ML/paren surface `let (a,b) = …` desugars to (`head_name`; `compound_ctor*`
-    // deliberately reject a name head). An ANNOTATED binder `(: x T)` (head `:`), a bare name, a `bin`/`list`/
+    // earlier ctor-only gate): the native ctor-LEAF head `#tuple(a b)` (`compound_ctor_leaf`; the legacy
+    // STRING-prim head `("tuple" …)` is gone post the M3 reader-flip 2026-08-31) and — crucially — the NAME
+    // head `(tuple a b)` / `(record …)` that the ML/paren surface `let (a,b) = …` desugars to (`head_name`;
+    // `compound_ctor_leaf` deliberately rejects a name head). An ANNOTATED binder `(: x T)` (head `:`), a bare name, a `bin`/`list`/
     // `map` binder, or a sum-ctor pattern (`(Some x)`) are NOT caught — head_name is `:`/`bin`/`Some`/… ≠
     // tuple|record — so they keep the ordinary path (annotated-binder diagnostics, bin/list/map reclaim, the
     // CDZ0210 refutable-sum reject all unchanged).
@@ -639,9 +639,7 @@ fn lower_let(
     if bindings.len() == 1
         && bindings[0].0 != bindings[0].1
         && (matches!(
-            db.ast
-                .compound_ctor_prim(bindings[0].0)
-                .or_else(|| db.ast.compound_ctor_leaf(bindings[0].0)),
+            db.ast.compound_ctor_leaf(bindings[0].0),
             Some(CompoundCtor::Tuple | CompoundCtor::Record)
         ) || matches!(
             db.ast.head_name(bindings[0].0),
