@@ -878,63 +878,13 @@ fn an_eliminated_provable_trap_warns_but_still_compiles() {
 // (message "<kind>"))` over a nullary-main + helper form (runs to 7). Rust test
 // a_reachable_const_trap_warning_names_the_specific_trap_kind deleted.
 
-#[test]
-fn an_unused_non_normalizing_let_init_warns_but_still_compiles() {
-    // The dead-computation warning (CDZ0305) covers a computation with NO VALUE, not only a trapping
-    // one: a non-normalizing self-application `((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))` (no normal
-    // form) bound to an UNUSED let-binder is dead code — the fold eliminates it, the program compiles
-    // (`main => 0`), and a CDZ0305 warning flags the likely bug. This is DCE consistency: an
-    // un-observed non-normalizing binding is elided exactly as an un-observed trap is (rather than
-    // reducing dead code), while the SAME term USED is the hard CDZ0999 error.
-    // `warnings_of` asserts the component WAS produced (dead code elided → it compiles) and returns
-    // the warnings; exactly one CDZ0305 dead-computation warning (CDZ0306 unused-`y` rides alongside).
-    let src = "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0)) (export main))";
-    let dead: Vec<_> = warnings_of(src)
-        .into_iter()
-        .filter(|d| d.code.as_deref() == Some("CDZ0305"))
-        .collect();
-    assert_eq!(
-        dead.len(),
-        1,
-        "expected one CDZ0305 warning for the dead non-normalizing binding, got {dead:?}"
-    );
-    assert!(
-        dead[0].message.contains("does not reduce to a value"),
-        "the warning names the non-normalizing reason: {}",
-        dead[0].message
-    );
-    // The SAME term USED is a hard CDZ0999 error (the component is DENIED, not merely warned).
-    let used = "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) y)) (export main))";
-    // Same host-stack guard as `warnings_of` above — the USED non-normalizing term recurses just as
-    // deep during the fold, so this direct `compile` must not run on the default test stack either.
-    let out = crate::host::run_with_compiler_stack(|| {
-        compile(
-            &[Artifact::new(
-                Artifact::KIND_AST,
-                "m",
-                crate::codec::encode(&parse(used)),
-            )],
-            &[Target::Wasm],
-        )
-    });
-    assert!(
-        out.artifact(Target::Wasm.artifact_kind()).is_none()
-            && out
-                .diagnostics
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0999")),
-        "a USED non-normalizing binding is rejected CDZ0999, not just warned: {:?}",
-        out.diagnostics
-    );
-    // NO FALSE POSITIVE: a NORMAL unused let-init gets no dead-computation warning.
-    let normal = "(module m (def (main) (let ((y (+ 1 2))) 0)) (export main))";
-    assert!(
-        warnings_of(normal)
-            .into_iter()
-            .all(|d| d.code.as_deref() != Some("CDZ0305")),
-        "a normal unused let-init must not get a dead-computation warning"
-    );
-}
+// MIGRATED to corpus (02-binding-and-control.sexp): the dead-computation CDZ0305 warning covers a
+// NON-NORMALIZING (no normal form) computation, not only a trapping one. Three cases: (1) an unused
+// non-normalizing let init is elided → CDZ0305 "does not reduce to a value" (count 1, `_y` silences the
+// unused-binding CDZ0306, runs to 0); (2) the SAME term USED is a hard CDZ0999 error (reduction-limit-bounded,
+// errors cleanly — no stack overflow); (3) a NORMAL unused init (`(+ 1 2)`) elides with NO CDZ0305
+// (`(no-diagnostic "does not reduce to a value")`). Rust test
+// an_unused_non_normalizing_let_init_warns_but_still_compiles deleted.
 
 #[test]
 fn a_dead_trap_warning_anchors_to_a_user_node() {
