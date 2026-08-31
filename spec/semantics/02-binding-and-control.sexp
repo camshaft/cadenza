@@ -8000,6 +8000,22 @@
   (count 1)
   (warning CDZ0305 (message "always traps but its value is never used")))
 
+; The COMPLEMENT of the dead-trap warning: it fires only for a PROVABLY-trapping dropped computation. A
+; clean program, and an UNPROVABLE (runtime-valued) computation in a dropped position, must NOT warn — the
+; fold cannot prove the runtime `(/ 100 x)` traps, so no CDZ0305 (a false dead-trap warning on runtime code
+; would be noise). (Migrated from rcdzc a_clean_program_and_an_unprovable_trap_do_not_warn.)
+(case
+  "a clean program with no dead computation earns no dead-trap warning"
+  (input (do (def (main) (. #tuple(42 7) 0)) (export main)))
+  (output (: 42 Int64))
+  (no-diagnostic "always traps"))
+
+(case
+  "an UNPROVABLE (runtime) trap in a dropped position earns NO dead-trap warning"
+  (input (do (def (f (: x Int64)) (. #tuple(42 (/ 100 x)) 0)) (def (main) (f 3)) (export main)))
+  (output (: 42 Int64))
+  (no-diagnostic "always traps"))
+
 ; The dead-COMPUTATION warning covers a computation with NO VALUE, not only a trapping one: the same
 ; CDZ0305 code + elision applies when an unobserved init does not REDUCE to a value (a non-terminating or
 ; explosively-growing reduction) — DCE consistency, an un-observed non-normalizing binding is elided
