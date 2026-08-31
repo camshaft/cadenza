@@ -534,6 +534,10 @@ todo	ml/495-unterminated-string-literal
 todo	ml/496-unterminated-byte-string-literal
 todo	ml/497-unterminated-symbol-literal
 todo	ml/498-unterminated-backtick-name
+todo	ml/499-embedded-json-malformed-body
+todo	ml/500-embedded-json-unterminated-region
+todo	ml/501-embedded-toml-malformed-body
+todo	ml/502-embedded-toml-unterminated-region
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string
