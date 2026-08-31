@@ -560,6 +560,20 @@ fn type_ref_iter_matches_recursive_type() {
         "{a: Int64, b: Bool,}",
         "{fn: (A, B) -> C}",
         "{x: Int64} -> Bool",
+        // forall-body de-recursion (I5 part 5): nested foralls (the unbounded native-recursion vector),
+        // forall body carrying an arrow / application / paren / record, forall as an application arg /
+        // paren element / record field type, and a malformed forall (missing binder / missing `.`).
+        "forall a. forall b. forall c. a -> b -> c",
+        "forall a. List(a) -> Option(a)",
+        "forall a b. Map(a, b)",
+        "forall a. (a, a)",
+        "forall a. {x: a}",
+        "List(forall a. a -> a)",
+        "(forall a. a, Bool)",
+        "{f: forall a. a -> a}",
+        "forall a. forall b. Tuple(a, b)",
+        "forall . a",
+        "forall a b",
     ];
     for src in cases {
         let mut rec = build_parser(src, FileId::default());
