@@ -872,50 +872,12 @@ fn a_runtime_bin_construction_builds_and_range_checks_under_wasmtime() {
     );
 }
 
-#[test]
-fn bytes_of_out_of_range_element_is_a_width_error() {
-    // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
-    // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
-    // UInt8 model the ill-typed byte cannot be constructed. 256 is too large, -1 negative. To truncate
-    // a wider value into a byte, the program writes `(UInt8.wrap n)` explicitly (total, never traps).
-    // (Used via `len` so `main` returns a scalar.)
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 256)))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0302")
-    );
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) ((. Bytes len) ((. Bytes of) (list -1)))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0302")
-    );
-    // The reject NAMES the truncation `UInt8.wrap` AND now offers it as a structural fix — wrap the
-    // offending element in `(UInt8.wrap …)` (which truncates to the low 8 bits). Anchored at the
-    // element, not the whole `Bytes.of` / list, and it VERIFIES: applying it recompiles clean.
-    let d = reject_full(
-        "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 256)))) (export main))",
-    )
-    .expect("must reject");
-    let fix = d.fix.as_ref().expect("a UInt8.wrap fix is carried");
-    assert_eq!(fix.kind, crate::abi::FixKind::Wrap, "a wrap fix: {:?}", fix);
-    assert!(
-        fix.replacement.contains("UInt8") && fix.replacement.contains("wrap"),
-        "the fix wraps in UInt8.wrap: {}",
-        fix.replacement
-    );
-    // Applying the truncation makes the program compile (the byte is now in range by construction).
-    assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (def (main) ((. Bytes len) ((. Bytes of) (list ((. UInt8 wrap) 256))))) (export main))"
-            )))
-            .is_ok(),
-            "the UInt8.wrap'd element compiles"
-        );
-}
+// bytes_of_out_of_range_element_is_a_width_error (`(Bytes.of (list 256))` / `(list -1)` → CDZ0302, an
+// out-of-range UInt8 width literal, with a UInt8.wrap Wrap fix) migrated to corpus 10-bytes: the 256 face
+// is "constructing a byte sequence with a value out of range is a type error" (:80, enriched with
+// (fix (kind wrap) (replacement-contains "UInt8.wrap"))), the -1 face is "constructing a byte sequence
+// with a negative value is a type error" (:96), and the UInt8.wrap'd-element-compiles positive control is
+// corpus 10's Bytes.of #list((UInt8.wrap …)) rope cases. rcdzc test deleted (corpus-covered).
 
 #[test]
 fn a_single_use_list_consume_stays_on_the_fbip_fast_path_no_dup() {

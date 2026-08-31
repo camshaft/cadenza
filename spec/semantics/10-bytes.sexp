@@ -85,7 +85,7 @@
            byte, TRUNCATE deliberately with `(UInt8.wrap n)` (total, never traps); a bare `256` is not a
            truncation request, it is an ill-typed literal.")
   (input  (Bytes.of #list(0 256)))
-  (error  CDZ0302))
+  (error  CDZ0302 (fix (kind wrap) (replacement-contains "UInt8.wrap"))))
 
 ; The out-of-range case above tests the HIGH end (256 > 255); a byte value is a UInt8, bounded on BOTH
 ; sides, so the LOW end matters too — a NEGATIVE literal is not a UInt8 either and is rejected the same
