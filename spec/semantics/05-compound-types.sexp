@@ -24457,12 +24457,76 @@
 ; the consequent WARNING which `(not …)` (first-error-message-scoped) cannot see. The phrase is the EXACT
 ; CDZ0306 prose ("unused match binding: `x` is never used"); the shorter "unused binding" would be VACUOUS
 ; (never a substring, so the absence would hold trivially even on a regression). (Migrated from rcdzc
-; a_malformed_match_pattern_does_not_also_warn_its_binders_unused; the well-formed still-warns controls stay
-; a rust pin — they need a compiling program that emits the warning, a `(Tuple)`/`(List)` entry-param boundary.)
+; a_malformed_match_pattern_does_not_also_warn_its_binders_unused. The well-formed still-warns controls are
+; now migrated too — see the POSITIVE cluster below — using LITERAL scrutinees in a nullary `main` to dodge
+; the compound entry-param boundary that previously kept them as rust pins.)
 (case
   "a too-wide tuple pattern rejects with no consequent unused-binding warning for its dead binders"
   (input (do (def (f (: t (Tuple Int64 Int64))) (match t (#tuple(a b c) a))) (export f)))
   (error CDZ0201 (message "binds 3 elements"))
+  (no-diagnostic "unused match binding"))
+
+; ── The well-formed match-arm-binder unused warning, POSITIVE controls (the twin of the malformed
+; ── negative case above). A binder bound by an arm pattern but never referenced in that arm's body (or
+; ── guard) is dead → CDZ0306 "unused match binding" + a `_`-prefix fix, the same code-quality band as an
+; ── unused let/parameter. These use LITERAL scrutinees (`#tuple(3 4)`, `(Some …)`) in a nullary `main` so
+; ── the program compiles+runs — sidestepping the compound ENTRY-PARAM boundary that kept these as rust
+; ── pins. (Migrated from rcdzc an_unused_match_arm_binder_warns_with_an_underscore_fix.)
+(case
+  "an unused variant-payload match binder warns CDZ0306 with a `_`-prefix fix"
+  (input (do (def (main) (match (Some 5) ((Some x) 0) ((None) 1))) (export main)))
+  (output (: 0 Int64))
+  (count 1)
+  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_x"))))
+
+(case
+  "an unused tuple-pattern match binder warns exactly once (only the dead binder, `b`)"
+  (input (do (def (main) (match #tuple(3 4) (#tuple(a b) a))) (export main)))
+  (output (: 3 Int64))
+  (count 1)
+  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_b"))))
+
+(case
+  "a guarded binder referenced in NEITHER the guard cond nor the body still warns unused"
+  (doc
+    "The guard-cond usage scan WIDENS what counts as used; it does not blanket-suppress. Here the cond
+           tests the scrutinee `n`, the body is a constant, so the arm binder `x` is dead → CDZ0306.")
+  (input (do (def (f (: n Int64)) (match n ((guard x (> n 0)) 5) (_ 0))) (def (main) (f 5)) (export main)))
+  (output (: 5 Int64))
+  (count 1)
+  (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_x"))))
+
+(case
+  "a USED variant-payload match binder is clean — no unused-match-binding warning"
+  (input (do (def (main) (match (Some 5) ((Some x) x) ((None) 1))) (export main)))
+  (output (: 5 Int64))
+  (no-diagnostic "unused match binding"))
+
+(case
+  "an `_`-prefixed variant-payload match binder is silenced — no unused-match-binding warning"
+  (input (do (def (main) (match (Some 5) ((Some _x) 0) ((None) 1))) (export main)))
+  (output (: 0 Int64))
+  (no-diagnostic "unused match binding"))
+
+(case
+  "a tuple-pattern with BOTH binders used is clean — no unused-match-binding warning"
+  (input (do (def (main) (match #tuple(3 4) (#tuple(a b) (+ a b)))) (export main)))
+  (output (: 7 Int64))
+  (no-diagnostic "unused match binding"))
+
+(case
+  "a used NESTED-payload match binder is clean — no unused-match-binding warning"
+  (input (do (def (main) (match (Some (Some 9)) ((Some (Some y)) y) (_ 0))) (export main)))
+  (output (: 9 Int64))
+  (no-diagnostic "unused match binding"))
+
+(case
+  "a guarded binder used in the guard COND (not the body) is used — no unused-match-binding warning"
+  (doc
+    "The usage scan must cover the guard cond subtree, not just the arm body: `x` is referenced in the
+           cond `(> x 0)`, so it is used even though the body is a constant.")
+  (input (do (def (f (: n Int64)) (match n ((guard x (> x 0)) 5) (_ 0))) (def (main) (f 5)) (export main)))
+  (output (: 5 Int64))
   (no-diagnostic "unused match binding"))
 
 (case

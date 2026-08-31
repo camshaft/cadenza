@@ -1021,15 +1021,6 @@ fn unused_of(src: &str) -> Vec<String> {
         .collect()
 }
 
-/// The CDZ0306 unused-binding DIAGNOSTICS (full records, so a test can read the carried fix).
-fn unused_diags(src: &str) -> Vec<crate::abi::Diagnostic> {
-    let mut db = Db::load(parse(src));
-    crate::diagnostics(&mut db)
-        .into_iter()
-        .filter(|d| d.code.as_deref() == Some("CDZ0306"))
-        .collect()
-}
-
 /// EVERY diagnostic (faults + warnings) the `cdz check`/LSP path reports — so a test can assert on the
 /// FULL set (e.g. that a consequent warning is NOT emitted alongside a primary fault).
 fn diags_of(src: &str) -> Vec<crate::abi::Diagnostic> {
@@ -1195,67 +1186,13 @@ fn a_recursive_functions_used_parameter_is_not_flagged_unused() {
     assert!(u[0].contains("`z`"), "{u:?}");
 }
 
-/// A MATCH-ARM pattern binder its arm body never references is unused — the match-arm analogue of an
-/// unused `let` binding / parameter, warned CDZ0306 with a `_`-prefix fix. A reference to a match
-/// binder resolves to a `SumPayload`/scrutinee-`Ref` (not the binder's own occ), so the `used`-occ set
-/// misses it; a scope-correct NAME check (`used_match_binder_names`) decides usage. Shadowing is
-/// honored (the arm binder resolution wins over an outer same-named param).
-#[test]
-fn an_unused_match_arm_binder_warns_with_an_underscore_fix() {
-    // A variant-payload binder never used in its arm → CDZ0306 + a `_x` fix.
-    let d = unused_diags(
-        "(module m (def (main) (match (Some 5) ((Some x) 0) ((None) 1))) (export main))",
-    );
-    assert_eq!(d.len(), 1, "the unused variant binder x warns: {d:?}");
-    assert!(d[0].message.contains("`x`"), "{d:?}");
-    assert_eq!(
-        d[0].fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("_x"),
-        "carries the `_`-prefix fix: {d:?}"
-    );
-    // A tuple-pattern binder unused (b), the other (a) used → only b warns.
-    let tup = unused_of(
-        "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((tuple a b) a))) (export g))",
-    );
-    assert_eq!(
-        tup.len(),
-        1,
-        "only the unused tuple binder b warns: {tup:?}"
-    );
-    assert!(tup[0].contains("`b`"), "{tup:?}");
-    // NO false positive: a USED binder (bare, nested, tuple), a `_`-prefixed binder, and a binder used
-    // in a nested payload are all clean.
-    for ok in [
-        "(module m (def (main) (match (Some 5) ((Some x) x) ((None) 1))) (export main))",
-        "(module m (def (main) (match (Some 5) ((Some _x) 0) ((None) 1))) (export main))",
-        "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((tuple a b) (+ a b)))) (export g))",
-        "(module m (def (g (: o (Option (Option Int64)))) (match o ((Some (Some y)) y) (_ 0))) (export g))",
-        // A GUARDED binder used only in the guard COND (not the body) is used — the usage scan must
-        // cover the cond subtree, not just the arm body. (Regression: the resolution-kind heuristic
-        // mis-classified the cond's `Ref`-to-scrutinee occurrence and false-flagged this binder.)
-        "(module m (def (f (: n Int64)) (match n ((guard x (> x 0)) 5) (_ 0))) (export f))",
-        // A guarded scalar binder used in BOTH cond and body.
-        "(module m (def (f (: n Int64)) (match n ((guard x (> x 0)) x) (_ 0))) (export f))",
-    ] {
-        assert!(
-            unused_of(ok).is_empty(),
-            "a used/underscored match binder must not warn: {ok} -> {:?}",
-            unused_of(ok)
-        );
-    }
-    // A genuinely-unused GUARDED binder (bound but referenced in NEITHER the cond nor the body) still
-    // warns — the guard-cond scan widens usage, it does not blanket-suppress. Here the cond tests `n`,
-    // the body is a constant, so `x` is dead.
-    let dead_guard = unused_of(
-        "(module m (def (f (: n Int64)) (match n ((guard x (> n 0)) 5) (_ 0))) (export f))",
-    );
-    assert_eq!(
-        dead_guard.len(),
-        1,
-        "a guard binder used in neither cond nor body still warns: {dead_guard:?}"
-    );
-    assert!(dead_guard[0].contains("`x`"), "{dead_guard:?}");
-}
+// MIGRATED to corpus (05-compound-types.sexp, the "well-formed match-arm-binder unused warning" POSITIVE
+// cluster): unused variant-payload + tuple binders warn CDZ0306 "unused match binding" + `_`-prefix fix
+// (each `(count 1)`); the dead-guard binder (referenced in neither cond nor body) warns; the used /
+// `_`-prefixed / tuple-both-used / nested-used / guard-cond-used clean cases via `(no-diagnostic "unused
+// match binding")`. LITERAL scrutinees (`#tuple(3 4)`, `(Some …)`) in a nullary `main` compile+run, so the
+// warning is corpus-gradeable — sidestepping the compound entry-param boundary that had kept this a rust
+// pin. Rust test an_unused_match_arm_binder_warns_with_an_underscore_fix deleted — language-independent.
 
 #[test]
 fn a_bin_pattern_byte_order_modifier_is_not_an_unused_match_binding() {
