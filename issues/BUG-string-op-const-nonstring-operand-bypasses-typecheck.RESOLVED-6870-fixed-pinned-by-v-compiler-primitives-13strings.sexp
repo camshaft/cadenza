@@ -46,3 +46,11 @@
 ;   (String.byte-len 5)                          -> CDZ0203      | (def (f (: n Int64)) (String.byte-len n)) -> CDZ0203
 ;   (String.at 5 0)                              -> CDZ0203      | (def (f (: n Int64)) (String.at n 0))     -> CDZ0203
 ;   (String.concat "a" 5)                        -> CDZ0203      | (def (f (: n Int64)) (String.concat "a" n)) -> CDZ0203
+;
+; RESOLVED — v-compiler-primitives #6870 (trunk 9609d6a392). Root cause was exactly the diagnosis here:
+; const-fold decline emitted BEFORE the operand type-check. Fix routes the 3 lower sites
+; (lower.rs:289/302, runtime_ops.rs:863, compute.rs:2701) through runtime_string_op_decline so
+; dedup_faults DROPS the neutral fold-decline when infer's CDZ0203 is present. Verified: all 3 const forms
+; now give clean CDZ0203 (== their runtime twins). v-compiler-primitives pinned the corpus-13 witnesses
+; themselves (const+runtime parity) — NO double-pin from v-rcdzc-ts-2. Loop closed: edge-hunt find → repro →
+; route → #6861 → v-spec-oracle CDZ0203 verdict → Bytes-reference fix-aid → #6870 fix+pin.
