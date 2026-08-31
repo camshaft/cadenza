@@ -8016,32 +8016,12 @@ mod tests {
     // Each carries a format.cdz pinning the preserved-comment surface (the comment forces the multi-line
     // layout — structural, width-invariant).
 
-    #[test]
-    fn own_line_comments_leading_match_arm_body_and_let_value_and_let_body_round_trip() {
-        // Own-line `//` comments in three more mid-expression leading slots the reader previously dropped
-        // (so `cdz fmt` refused): leading a MATCH-ARM BODY (`=> <newline> // note <newline> body`),
-        // leading a LET-BINDING VALUE (`let y = <newline> // note <newline> value`), and leading the LET
-        // BODY (`in <newline> // note <newline> body`). Each is now captured `(comment "text" …)` +
-        // printed own-line above its expr. assert_roundtrip pins re-parse + idempotence for each.
-        let arm = assert_roundtrip(
-            "def f(x) = match x with\n  | A() =>\n// note\n1\n  | _ => 2",
-            100,
-        );
-        assert!(
-            arm.contains("// note"),
-            "match-arm-body leading comment preserved: {arm}"
-        );
-        let val = assert_roundtrip("def f(x) = let y =\n// vnote\nx + 1 in\n  y", 100);
-        assert!(
-            val.contains("// vnote"),
-            "let-value leading comment preserved: {val}"
-        );
-        let body = assert_roundtrip("def f(x) = let y = x in\n  // bnote\ny + 1", 100);
-        assert!(
-            body.contains("// bnote"),
-            "let-body leading comment preserved: {body}"
-        );
-    }
+    // `own_line_comments_leading_match_arm_body_and_let_value_and_let_body_round_trip` (own-line `//`
+    // leading a MATCH-ARM BODY / LET-BINDING VALUE / LET BODY → captured `(comment "text" …)`) MIGRATED to
+    // the spec/syntax corpus (inc-6 batch-40, comment-node block): ml/266-comment-leading-match-arm-body
+    // `| A() =>`⏎`// note`⏎`1`→`(match x ((A) (comment "note" 1)) (_ 2))`, ml/267-comment-leading-let-value
+    // `let y =`⏎`// vnote`⏎`x + 1 in`→`(let ((y (comment "vnote" (+ x 1)))) y)`, ml/268-comment-leading-let-
+    // body `in`⏎`  // bnote`⏎`y + 1`→`(let ((y x)) (comment "bnote" (+ y 1)))`.
 
     // Two own-line-leading comment tests MIGRATED to the spec/syntax corpus (inc-6 batch-38, comment-node
     // block; an own-line `//` attaches `(comment "text" node)` — LEADING on the node it PRECEDES —
@@ -8054,61 +8034,14 @@ mod tests {
     //     the else-branch).
     // Each carries a format.cdz pinning the own-line-above comment surface.
 
-    #[test]
-    fn an_own_line_comment_leading_a_match_arm_is_preserved_not_dropped() {
-        // An own-line `//` above a match arm (`match x with\n  // note\n  | 0 => …`) used to be DROPPED
-        // (it sat in the arm's `|`/pattern leading slot, which the arm loop didn't drain → the whole match
-        // fell to the generic call form). match_expr now drains it (before the `|` bump) and wraps the arm
-        // `(comment "text" (pat body))`; `is_match_shape` unwraps via `strip_field_comments` and
-        // `print_match` renders the comment as a `// …` line above the arm's `| `. Own-line, no swallow
-        // hazard → captured on any arm. `strip_comments` peels it (compiles to wasm).
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml(
-                    "def f(x: Int64) -> Int64 = match x with\n  // note\n  | 0 => 0\n  | _ => 1"
-                )
-                .arenas
-            ),
-            "(def (f (: x Int64)) (: (match x (comment \"note\" (0 0)) (_ 1)) Int64))",
-            "own-line comment before the first arm is captured, not dropped"
-        );
-        // Before a NON-first arm too:
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml(
-                    "def f(x: Int64) -> Int64 = match x with\n  | 0 => 0\n  // mid\n  | _ => 1"
-                )
-                .arenas
-            ),
-            "(def (f (: x Int64)) (: (match x (0 0) (comment \"mid\" (_ 1))) Int64))",
-            "own-line comment before a non-first arm is captured"
-        );
-        // Renders above the `| ` and round-trips (idempotent).
-        let src = "def f(x: Int64) -> Int64 = match x with\n  // note\n  | 0 => 0\n  | _ => 1";
-        let printed = print(&parser::read_ml(src).arenas, 80);
-        assert!(
-            printed.contains("with\n  // note\n  | 0 =>"),
-            "leading comment prints on its own line above the arm: {printed}"
-        );
-        assert_eq!(
-            print(&parser::read_ml(&printed).arenas, 80),
-            printed,
-            "idempotent"
-        );
-        // Leading + trailing on one arm compose (nesting normalizes idempotently, nothing dropped).
-        let combo =
-            "def f(x: Int64) -> Int64 = match x with\n  // lead\n  | 0 => 0 // t\n  | _ => 1";
-        let p1 = print(&parser::read_ml(combo).arenas, 80);
-        assert_eq!(
-            print(&parser::read_ml(&p1).arenas, 80),
-            p1,
-            "lead+trail idempotent"
-        );
-        assert!(
-            p1.contains("// lead") && p1.contains("// t"),
-            "both the leading and trailing arm comments survive: {p1}"
-        );
-    }
+    // `an_own_line_comment_leading_a_match_arm_is_preserved_not_dropped` (own-line `//` above a match arm →
+    // `(comment "text" (pat body))` LEADING the arm; renders as a `// …` line above the arm's `| `)
+    // MIGRATED to the spec/syntax corpus (inc-6 batch-40, comment-node block):
+    // ml/263-comment-leading-first-match-arm `match x with`⏎`  // note`⏎`  | 0 => 0 …`→
+    // `(match x (comment "note" (0 0)) (_ 1))`, ml/264-comment-leading-nonfirst-match-arm →
+    // `(match x (0 0) (comment "mid" (_ 1)))`, ml/265-comment-leading-and-trailing-match-arm (a leading +
+    // a trailing comment compose on one arm) → `(match x (comment-after "t" (comment "lead" (0 0))) (_ 1))`
+    // — the trailing `comment-after` wraps the leading `comment` wraps the arm. Each carries a format.cdz.
 
     #[test]
     fn an_own_line_comment_leading_a_type_variant_is_preserved_not_dropped() {

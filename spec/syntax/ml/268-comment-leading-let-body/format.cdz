@@ -1,0 +1,4 @@
+def f(x) =
+  let y = x in
+  // bnote
+  y + 1

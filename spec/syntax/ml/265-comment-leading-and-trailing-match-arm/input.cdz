@@ -1,0 +1,4 @@
+def f(x: Int64) -> Int64 = match x with
+  // lead
+  | 0 => 0 // t
+  | _ => 1
