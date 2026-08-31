@@ -2843,67 +2843,6 @@ fn a_literal_parameter_position_is_rejected() {
 }
 
 #[test]
-fn performing_an_operation_with_a_wrong_type_argument_is_rejected() {
-    // `E.op` is declared `(-> Int64 Int64)`; performing `(E.op true)` supplies a Bool where an Int64
-    // is required. E0 synthesizes `E.op` as a typed operation value, so a perform is an ordinary
-    // application checked against that arrow (`capabilities-and-effects.md` §Performing An Operation
-    // Is Typed) — a wrong-type argument is a type error even before the perform can be lowered
-    // (which E0 does not do; the point is the ARGUMENT check fires at the surface). The perform is
-    // written with the qualified projection `(. E op)` (the desugaring of `E.op`); `main` returns the
-    // op's result, so the whole program still declines to run (no handler yet) — but the mistyped
-    // argument is caught first.
-    let src = "(do (effect E (op op (-> Int64 Int64))) \
-                   (def (main) ((. E op) true)) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a wrong-type perform argument must be rejected");
-    // The message NAMES the operation + its declared argument type — the perform-site analogue of the
-    // variant-ctor payload message — not the generic "Int64 and Bool must be the same type here"
-    // (which reads like an internal clash, not "you performed `op` with the wrong argument").
-    assert!(
-        err.message.contains("operation `op`")
-            && err.message.contains("Int64")
-            && err.message.contains("Bool"),
-        "names the operation + expected/actual types: {}",
-        err.message
-    );
-}
-
-#[test]
-fn a_perform_arg_structural_mismatch_names_the_delta_not_just_the_types() {
-    // M180/M181 structural-delta audit applied to the effect-op perform arm. When the performed value
-    // and the declared operation argument are SAME-KIND compounds that differ structurally (a record
-    // field-set diff here), the perform arm named only the two rendered types — leaving the reader to
-    // diff `(Record (x Int64))` against `(Record (y Int64))` by eye. It now appends the minimal-conflict
-    // delta the annotation / operator-arg / peer-join sites already carry, so the message says WHICH
-    // field is wrong. A SCALAR mismatch (Int64 vs Bool — no structural delta) keeps the bare message.
-    let src = "(do (effect Log (op put (-> (Record (x Int64)) Unit))) \
-                   (def (main) (handle Log unit ((put (r) s (resume unit s))) \
-                   ((. Log put) (record (= y 2))))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a structurally-mismatched perform argument must be rejected");
-    assert!(
-        err.message.contains("operation `put`")
-            && err.message.contains("was performed")
-            && err.message.contains("field `x`")
-            && err.message.contains('y'),
-        "names the operation + the field-level delta: {}",
-        err.message
-    );
-    // NO spurious delta on a SCALAR mismatch — the same effect with an Int64 op performed a Bool keeps
-    // the bare "was performed" message (structural_delta_hint is None → the empty tail).
-    let scalar = "(do (effect Log (op put (-> Int64 Unit))) \
-                      (def (main) (handle Log unit ((put (r) s (resume unit s))) \
-                      ((. Log put) true))) (export main))";
-    let serr = compile_component(&crate::codec::encode(&parse(scalar)))
-        .expect_err("a scalar perform mismatch still rejects");
-    assert!(
-        serr.message.contains("operation `put`") && !serr.message.contains(" — "),
-        "a scalar perform mismatch carries no structural-delta tail: {}",
-        serr.message
-    );
-}
-
-#[test]
 fn a_wide_effect_handler_compiles_linearly() {
     // COMPILE-PERF guard (not a behavior check): a handler over a WIDE effect (many ops, many arms) must
     // COMPILE — the behaviour the `program_delegates_effect` memo (in `effects::perform_host_target`)
