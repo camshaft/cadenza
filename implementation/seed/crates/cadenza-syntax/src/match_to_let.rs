@@ -308,48 +308,12 @@ mod tests {
     // output (a `normalize.match-to-let.cdz` golden) + the input's parse tree, graded by the per-case nix
     // check + gate-syntax. (The is_irrefutable/single_variant_ctors PREDICATE unit tests stay Rust — internal.)
 
-    #[test]
-    fn native_compound_head_single_arm_matches_convert() {
-        // Regression (concierge, seq-263 codemod gap): `cdz normalize --match-to-let` recognized the pattern
-        // head only as the LEGACY name-head `tuple`/`record`, so a NATIVE `#tuple(…)`/`#record(…)` single-arm
-        // match (post-M3, what current code carries) NO-OPED. `is_irrefutable_with` now accepts the native
-        // `Leaf::Ctor` head too, so these convert. Read via the s-expr surface (which produces the native
-        // ctor-leaf head), the path `cdz normalize` sees on native code.
-        let native = |src: &str| {
-            let a = crate::sexpr::read(src).unwrap();
-            let (out, n) = rewrite(&Tree::of(&a));
-            (crate::sexpr::print(&out.to_arena()), n)
-        };
-        // A native `#tuple(a b)` single-arm match → a let (previously left unchanged).
-        let (out, n) = native("(match p (#tuple(a b) (+ a b)))");
-        assert_eq!(n, 1, "native #tuple match must convert; got {n}: {out}");
-        assert_eq!(out, "(let ((#tuple(a b) p)) (+ a b))", "got {out}");
-        // A native `#record((= x a))` single-arm match → a let.
-        let (out, n) = native("(match p (#record((= x a)) a))");
-        assert_eq!(n, 1, "native #record match must convert; got {n}: {out}");
-        assert_eq!(out, "(let ((#record((= x a)) p)) a)", "got {out}");
-        // A native `#tuple` with a REFUTABLE sub-pattern (a literal) still does NOT convert.
-        let (_, n) = native("(match p (#tuple(a 0) a))");
-        assert_eq!(
-            n, 0,
-            "a refutable sub-pattern keeps the native tuple match refutable"
-        );
-    }
-
-    #[test]
-    fn refutable_or_multi_clause_matches_are_left_unchanged() {
-        // Every one of these must NOT rewrite (would erase a trap or is not single-clause).
-        for src in [
-            "def f(p) = match p with | Some(x) => x", // sum ctor (capitalized) — refutable
-            "def f(p) = match p with | 0 => 1",       // literal — refutable
-            "def f(p) = match p with | x if x > 0 => x", // guarded — refutable
-            "def f(p) = match p with | (a, Some(x)) => a", // nested refutable sub-pattern
-            "def f(p) = match p with | Some(x) => x | None => 0", // multi-clause
-            "def f(p) = match p with | (a, b) => a | _ => b", // multi-clause (irrefutable first)
-        ] {
-            assert_eq!(count_rewrites(src), 0, "must NOT rewrite: {src}");
-        }
-    }
+    // native_compound_head_single_arm (native #tuple/#record single-arm match → let, + a refutable
+    // sub-pattern stays) and refutable_or_multi_clause_matches_are_left_unchanged (6 refutable/multi-
+    // clause matches that must NOT rewrite — the trap-preservation safety invariant) MIGRATED to the
+    // spec/syntax codemod corpus (inc-6/codemod): sexp/37-39 (native tuple/record convert + refutable
+    // no-op) + ml/29-34 (refutable sum-ctor/literal/guarded/nested + 2 multi-clause) — each pins the
+    // `cdz normalize --match-to-let` output (a rewrite, or unchanged for a left-alone match).
 
     #[test]
     fn single_variant_sum_ctor_is_irrefutable_and_rewrites() {

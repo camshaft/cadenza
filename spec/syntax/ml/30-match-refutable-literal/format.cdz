@@ -1,0 +1,2 @@
+def f(p) = match p with
+  | 0 => 1

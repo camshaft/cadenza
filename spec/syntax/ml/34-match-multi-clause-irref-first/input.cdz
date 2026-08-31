@@ -1,0 +1,1 @@
+def f(p) = match p with | (a, b) => a | _ => b
