@@ -287,11 +287,14 @@
            i*i` = 285 (e.g. a Bytes literal miscaught as Symbol makes term 8 read 8*9). A `#\"…\"` literal is a
            SYMBOL (arm 9), a `b\"…\"` literal is BYTES (arm 8) — the two are distinct leaves that a naive
            reader conflates.
-           The seven compound-ctor arms AND the rational arm (17) are present for EXHAUSTIVENESS but NOT yet
-           exercised by `main` here (a dedicated case below deconstructs `(quote 3/2)` through the
-           `Ast.Rational` arm). TODO(quote-of-collections): extend `main` with one representative per ctor
-           variant (weights 10..16) + the rational (weight 17) → the full self-witness `Σ_{1..17} i*i` = 1785.
-           Tracked by v-ast-compound (Ast-sum owner) + v-metaprog.")
+           The seven compound-ctor arms AND the rational arm (17) are present for EXHAUSTIVENESS but not
+           exercised by `main` HERE — they are exercised elsewhere: the quote-BUILDS-them direction (each
+           collection literal + member access reflecting to its dedicated ctor) is pinned by the dedicated
+           case \"a quoted collection or member access equals the node built by its dedicated Ast ctor, never
+           name-headed\" just below, and `(quote 3/2)` deconstructs through the `Ast.Rational` arm in its own
+           case. So this fence proves the deconstruction arms EXIST + are exhaustive (no wildcard); the
+           companion case proves quote CONSTRUCTS the compound ctors. (Co-owned by v-ast-compound, the Ast-sum
+           owner, + v-metaprog.)")
   (input
     (do
       (def
@@ -334,6 +337,74 @@
                       (+ (* 8 (kind (quote b"\x00"))) (* 9 (kind (quote #"sym"))))))))))))
       (export main)))
   (output (: 285 Int64)))
+
+(case
+  "a quoted collection or member access equals the node built by its dedicated Ast ctor, never name-headed"
+  (doc
+    "Witnesses metaprogramming.md §\"Quote Produces An AST Value\": quoting a collection construction — a
+           list, tuple, record, map, or set — MUST produce that collection's OWN first-class ctor variant
+           (`Ast.ListCtor`/`TupleCtor`/`RecordCtor`/`MapCtor`/`SetCtor`), a reflected record is a `RecordCtor`
+           of `Ast.FieldPair` values and a reflected map a `MapCtor` of `FieldPair` values, and a member
+           access `(. obj key)` an `Ast.Member` — NO collection reflects as a string- or name-headed node.
+           Each `(quote <literal>)` is checked `= <the same node hand-built from the Ast ctor>`, weighted by
+           position so a form that reflected to an `Ast.List`/`Ast.Name` (the old name-headed shape) instead
+           of its dedicated ctor drops its term: 1(list)+2(tuple)+4(record-of-FieldPair)+8(map-of-FieldPair)+
+           16(set)+32(member) = 63. The `FieldPair`/`Member` payload is a single `(Tuple Ast Ast)` (`#tuple`).
+           Discharges the fence's TODO(quote-of-collections) for the reflection direction (the exhaustiveness
+           fence above proves the deconstruction arms exist; this proves quote BUILDS them).")
+  (input
+    (do
+      (def
+        (main)
+        (+
+          (*
+            1
+            (if
+              (= (quote #list(1 2 3)) (Ast.ListCtor #list((Ast.Int 1) (Ast.Int 2) (Ast.Int 3))))
+              1
+              0))
+          (+
+            (*
+              2
+              (if (= (quote #tuple(1 true)) (Ast.TupleCtor #list((Ast.Int 1) (Ast.Bool true)))) 1 0))
+            (+
+              (*
+                4
+                (if
+                  (=
+                    (quote #record((= a 1) (= b 2)))
+                    (Ast.RecordCtor
+                      #list((Ast.FieldPair #tuple((Ast.Name "a") (Ast.Int 1)))
+                        (Ast.FieldPair #tuple((Ast.Name "b") (Ast.Int 2))))))
+                  1
+                  0))
+              (+
+                (*
+                  8
+                  (if
+                    (=
+                      (quote #map((= 1 true)))
+                      (Ast.MapCtor #list((Ast.FieldPair #tuple((Ast.Int 1) (Ast.Bool true))))))
+                    1
+                    0))
+                (+
+                  (*
+                    16
+                    (if
+                      (=
+                        (quote #set(1 2 3))
+                        (Ast.SetCtor #list((Ast.Int 1) (Ast.Int 2) (Ast.Int 3))))
+                      1
+                      0))
+                  (*
+                    32
+                    (if
+                      (= (quote obj.key) (Ast.Member #tuple((Ast.Name "obj") (Ast.Name "key"))))
+                      1
+                      0))))))))
+      (export main)))
+  (call main)
+  (output (: 63 Int64)))
 
 (case
   "a qualified (. Ast Ctor) pattern binds each variant's payload at its own type"
@@ -3075,15 +3146,25 @@ c")))
   (live-objects known-leak))
 
 (case
-  "unquote-splicing a list of nested lists declines — no scalar leaf to lift into"
+  "unquote-splicing a list of nested lists lifts each list element into an Ast.ListCtor"
   (doc
-    "The splice-lift wraps a scalar element in its matching `Ast` leaf (or splices an `Ast` element
-           by identity); a NESTED-list element is neither a scalar nor an `Ast`, so the splice declines
-           (the runtime splice map is not yet built) rather than building a wrong-typed node —
-           reject-don't-miscompile. `(f ,@xs)` with xs=(list (list 1) (list 2)) is a `(List (List
-           Int64))`, outside the liftable set.")
-  (input (let ((xs #list(#list(1) #list(2)))) (quasiquote (f (unquote-splicing xs)))))
-  (declines))
+    "IDEAL (corpus-as-spec, locked in per operator policy; graded TODO until the recursive splice-lift
+           lands — v-metaprog owns `ast_reflect` splice-lift). Splicing `xs = (list (list 1) (list 2))` into
+           `` `(f ,@xs) `` splices xs's two ELEMENTS into `(f …)`; each element is a CONSTANT list value,
+           statically reifiable to its dedicated `Ast.ListCtor` exactly as `(quote #list(1))` reflects (see
+           \"a quoted collection or member access equals the node built by its dedicated Ast ctor\" above). So
+           the splice SHOULD build `(Ast.List (Ast.Name \"f\") (Ast.ListCtor (Ast.Int 1)) (Ast.ListCtor
+           (Ast.Int 2)))` — the same shape a scalar splice builds, one level deeper. Today the splice-lift is
+           scalar-only (no recursion into a list value), so this DECLINES rather than miscompiling
+           (reject-don't-miscompile); the assertion below pins the expected AST and grades TODO, auto-flipping
+           to PASS when the recursive lift ships. This was the LAST bare `(declines)` corpus-wide — converting
+           it to a value-asserting TODO discharges the (declines)-deprecation (v-deferral-declines, 2026-08-31).")
+  (input
+    (=
+      (let ((xs #list(#list(1) #list(2)))) (quasiquote (f (unquote-splicing xs))))
+      (Ast.List
+        #list((Ast.Name "f") (Ast.ListCtor #list((Ast.Int 1))) (Ast.ListCtor #list((Ast.Int 2)))))))
+  (output (: true Bool)))
 
 ; --- Splicing requires a list --------------------------------------------------------------
 ; metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation (witnessed above): `,@`
@@ -3533,9 +3614,7 @@ c")))
       (def (forms-of (const (: mm Ast))) (match mm ((Ast.List fs) fs) (_ (: #list() (List Ast)))))
       (def
         (main)
-        (>
-          (Bytes.len (Ast.encode (Ast.List (keep-types (unwrap-all (forms-of Ast.module))))))
-          -1))
+        (> (Bytes.len (Ast.encode (Ast.List (keep-types (unwrap-all (forms-of Ast.module)))))) -1))
       (export main)))
   (output (: true Bool)))
 
