@@ -537,6 +537,7 @@ theorem denote_ite_materialize_false (ρ : Nat → Value) (w : IntTy) (c : SymEx
   simp only [denote, h, Value.asF64?]
   cases b <;> rfl
 
+
 /-- INVERSION for the `.ite` case: an `ite` denotes to a VALUE only via the branch its condition selects
 — the condition denotes to a boolean, and the taken branch denotes to that same value. (`denote`'s `.ite`
 arm returns a `.value` only in the `bool true`/`bool false` condition sub-cases; a non-bool value gives
@@ -587,5 +588,14 @@ theorem denote_normalize_ite_condFalse_step (ρ : Nat → Value) (w : IntTy) (c 
     rw [hnc] at this
     simp [denote, Value.asF64?] at this
   · exact ihe v he
+
+/-- denote-side of the equal-branch COLLAPSE identity (`if c then a else a → a`): whichever branch the
+condition selects, the value is `a`'s — so a value-producing `ite` with identical branches denotes to
+exactly what that branch does. This is the denote half of the capstone `.ite` collapse sub-case (the
+value-conditioned formulation needs no `!mayTrap` guard here: `denote (.ite c a a) = .value v` already
+witnesses that the condition neither trapped nor diverged in this valuation). -/
+theorem denote_ite_same_value (ρ : Nat → Value) (w : IntTy) (c a : SymExpr) (v : Value)
+    (h : denote ρ w (.ite c a a) = .value v) : denote ρ w a = .value v := by
+  rcases denote_ite_value_inv ρ w c a a v h with ⟨_, ha⟩ | ⟨_, ha⟩ <;> exact ha
 
 end Oracle
