@@ -7403,126 +7403,23 @@ mod tests {
     // (-> (List Int64))))` — two `(doc …)` nodes, no `(comment …)` downgrade. v-syntax-comments verified this
     // doc-vs-comment shape.
 
-    #[test]
-    fn doc_before_annotated_def_stays_a_doc_not_downgraded_to_comment() {
-        // A `///` doc before an `@`-ANNOTATED def belongs to the def below the annotation, so the
-        // reader CARRIES it across the `@name` onto the def's slot, where def_expr drains it into a
-        // `(doc …)`. Without the carry the docs sat at the `@` slot (unseen by def_expr, which runs
-        // after `@name`) and `stmt` downgraded them to a `(comment …)` — the annotated-def doc-loss
-        // bug (dense `/// section-divider` files before `@test` defs lost most of their docs on fmt).
-        // Verified against a plain-def control (already worked) + a STACKED-annotation case.
-        for (src, label) in [
-            (
-                "/// Doc before annotated def.\n@test\ndef b() -> Bool = true",
-                "single annotation",
-            ),
-            (
-                "/// Stacked doc.\n@inline-always\n@test\ndef c() -> Bool = true",
-                "stacked annotations",
-            ),
-            (
-                "/// Tagged.\n@tag(\"slow\")\ndef d() -> Int64 = 5",
-                "call-style annotation",
-            ),
-            // The carry deposits at the wrapped-form slot, so EVERY documentable form that drains
-            // (type/effect/module, not just def) preserves a doc before its annotation. Pin them so a
-            // future change to any of those forms' doc-drain can't silently regress the annotated case.
-            (
-                "/// Annotated type.\n@derive\ntype Color = | Red | Green",
-                "annotated type",
-            ),
-            (
-                "/// Annotated effect.\n@handler\neffect E = | op : -> Unit",
-                "annotated effect",
-            ),
-            (
-                "/// Annotated module.\n@inline\nmodule M { def x() -> Int64 = 1 }",
-                "annotated module",
-            ),
-        ] {
-            let a = parser::read_ml(src);
-            assert!(a.ok(), "[{label}] parse: {:?}", a.errors);
-            let sexpr = crate::sexpr::print(&a.arenas);
-            assert_eq!(
-                sexpr.matches("(doc ").count(),
-                1,
-                "[{label}] the `///` should be a `(doc …)` node: {sexpr}"
-            );
-            assert_eq!(
-                sexpr.matches("(comment ").count(),
-                0,
-                "[{label}] no `///` downgraded to `(comment …)`: {sexpr}"
-            );
-            let printed = print(&a.arenas, 100);
-            let doc_lines = printed
-                .lines()
-                .filter(|l| l.trim_start().starts_with("///"))
-                .count();
-            let comment_lines = printed
-                .lines()
-                .filter(|l| {
-                    let t = l.trim_start();
-                    t.starts_with("//") && !t.starts_with("///")
-                })
-                .count();
-            assert_eq!(doc_lines, 1, "[{label}] doc re-prints as `///`: {printed}");
-            assert_eq!(comment_lines, 0, "[{label}] no `//` downgrade: {printed}");
-            // Idempotent across a second fmt pass.
-            let b = parser::read_ml(&printed);
-            assert!(b.ok(), "[{label}] reparse: {:?}", b.errors);
-            assert_eq!(print(&b.arenas, 100), printed, "[{label}] not idempotent");
-        }
-    }
-
-    #[test]
-    fn doc_above_an_annotated_def_prints_above_the_annotation_not_between() {
-        // A `/// header` the user wrote ABOVE an `@`-annotation must re-print ABOVE the annotation, NOT
-        // BETWEEN the annotation and its def. The reader carries the doc INSIDE the def (`carry_docs`),
-        // so a naive printer emits `@test` \n `/// header` \n `def` — moving a section header below its
-        // annotation (the annotation-comment adjacency the frontend is touchy about; v-cad/v-cdz-tooling
-        // report). The printer hoists the def's leading docs above the `@`. Arena is unchanged (a
-        // print-POSITION fix), so it stays round-trip-safe.
-        for (src, label) in [
-            (
-                "/// header\n@test\ndef t() -> Bool = true",
-                "single annotation",
-            ),
-            (
-                "/// h1\n/// h2\n@test\ndef t() -> Bool = true",
-                "multi-line doc",
-            ),
-            (
-                "/// header\n@inline-always\n@test\ndef t() -> Bool = true",
-                "stacked annotations",
-            ),
-        ] {
-            let a = parser::read_ml(src);
-            assert!(a.ok(), "[{label}] parse: {:?}", a.errors);
-            let printed = print(&a.arenas, 100);
-            // The FIRST non-blank line must be the doc (`///`), not an `@` annotation.
-            let first = printed.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-            assert!(
-                first.trim_start().starts_with("///"),
-                "[{label}] doc must be the FIRST line (above the annotation); got:\n{printed}"
-            );
-            // No `///` line may appear AFTER an `@` line (the reorder bug's signature).
-            let mut seen_at = false;
-            for l in printed.lines() {
-                let t = l.trim_start();
-                if t.starts_with('@') {
-                    seen_at = true;
-                }
-                assert!(
-                    !(seen_at && t.starts_with("///")),
-                    "[{label}] a `///` appears BELOW an `@` (reordered):\n{printed}"
-                );
-            }
-            // Idempotent + round-trip-safe (arena unchanged): re-read → re-print is byte-identical.
-            let b = parser::read_ml(&printed);
-            assert!(b.ok(), "[{label}] reparse: {:?}", b.errors);
-            assert_eq!(print(&b.arenas, 100), printed, "[{label}] not idempotent");
-        }
-    }
+    // `doc_before_annotated_def_stays_a_doc_not_downgraded_to_comment` (a `///` before an `@`-ANNOTATED
+    // form is CARRIED across the `@name` onto the wrapped form's slot and drained into a `(doc …)` child,
+    // NOT downgraded to a `(comment …)` — the annotated-def doc-loss bug) AND
+    // `doc_above_an_annotated_def_prints_above_the_annotation_not_between` (a def's leading docs HOIST above
+    // the `@`, print-position fix, arena unchanged) MIGRATED to the spec/syntax corpus (inc-6 batch-49,
+    // annotated-doc block). The doc is a `(doc …)` child of the inner form in every case (never a comment):
+    //   * ml/308-doc-before-annotated-def `/// Doc before annotated def.`⏎`@test`⏎`def b() -> Bool = true`→
+    //     `(@ test (def (b) (doc "Doc before annotated def.") (: true Bool)))` — canonical: doc ABOVE `@` (hoist).
+    //   * ml/309-doc-before-stacked-annotated-def `@inline-always`+`@test` → nested `(@ inline-always (@ test …))`.
+    //   * ml/310-doc-before-call-annotated-def `@tag("slow")` → `(@ (tag "slow") (def (d) (doc "Tagged.") …))`.
+    //   * ml/311-doc-before-annotated-type `@derive` / ml/312-…-effect `@handler` / ml/313-…-module `@inline`:
+    //     doc stays a `(doc …)` member of the type/effect/module; their format.cdz pins the CURRENT surface
+    //     (`@ann`⏎`/// doc`⏎`form` — the def-only HOIST does NOT apply to these forms, so the `///` prints
+    //     BELOW the annotation; faithful to today's printer — re-bless if v-syntax later hoists them too).
+    //   * ml/314-multiline-doc-above-annotation `/// h1`⏎`/// h2`⏎`@test`⏎`def t()…`→two `(doc …)` above `@`.
+    // The Rust position-guarantee (def `///` above `@`) is captured by 308/309/310/314 being canonical
+    // (fmt-idempotent with the doc already above the annotation).
 
     // Two same-line trailing-comment preservation tests MIGRATED to the spec/syntax corpus (inc-6
     // batch-38, comment-node block; a same-line `//` attaches `(comment-after "text" node)` on the node it

@@ -235,7 +235,14 @@ pass	ml/304-module-doc-only
 pass	ml/305-module-trailing-doc
 pass	ml/306-module-trailing-comment
 pass	ml/307-module-trailing-doc-empty-body
+pass	ml/308-doc-before-annotated-def
+pass	ml/309-doc-before-stacked-annotated-def
 pass	ml/31-match-refutable-guarded
+pass	ml/310-doc-before-call-annotated-def
+pass	ml/311-doc-before-annotated-type
+pass	ml/312-doc-before-annotated-effect
+pass	ml/313-doc-before-annotated-module
+pass	ml/314-multiline-doc-above-annotation
 pass	ml/32-match-refutable-nested
 pass	ml/33-match-multi-clause
 pass	ml/34-match-multi-clause-irref-first

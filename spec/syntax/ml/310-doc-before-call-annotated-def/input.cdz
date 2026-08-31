@@ -1,0 +1,3 @@
+/// Tagged.
+@tag("slow")
+def d() -> Int64 = 5

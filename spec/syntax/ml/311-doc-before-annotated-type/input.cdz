@@ -1,0 +1,3 @@
+/// Annotated type.
+@derive
+type Color = | Red | Green

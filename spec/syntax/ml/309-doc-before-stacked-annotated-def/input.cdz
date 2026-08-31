@@ -1,0 +1,4 @@
+/// Stacked doc.
+@inline-always
+@test
+def c() -> Bool = true
