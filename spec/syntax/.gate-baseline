@@ -261,6 +261,11 @@ pass	ml/328-comment-leading-and-trailing-list-elem
 pass	ml/329-comment-leading-first-type-variant
 pass	ml/33-match-multi-clause
 pass	ml/330-comment-leading-nonfirst-type-variant
+pass	ml/331-tuple-rest-pattern
+pass	ml/332-record-rest-pattern
+pass	ml/333-set-rest-pattern
+pass	ml/334-reserved-name-backtick-escaped
+pass	ml/335-operator-name-backtick-escaped
 pass	ml/34-match-multi-clause-irref-first
 pass	ml/35-match-single-variant-wrap
 pass	ml/36-match-single-variant-nested-box
