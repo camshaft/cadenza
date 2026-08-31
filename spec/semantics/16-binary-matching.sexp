@@ -2801,3 +2801,15 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 100 Int64)))
+
+; A `(bin …)` pattern never covers every byte sequence — empty input, a wrong length, an unequal literal, or
+; (for a `utf8` segment) ill-formed bytes all fail to match — so a `bin` match whose only arm is a bin pattern
+; is non-exhaustive → CDZ0210, exactly as a sum match missing a variant. (Migrated from rcdzc
+; a_bytes_match_with_only_a_bin_arm_and_no_catch_all_is_non_exhaustive + a_utf8_bin_match_with_no_catch_all_is_non_exhaustive.)
+(case "a bytes match with only a bin arm and no catch-all is non-exhaustive"
+  (input  (do (def (main) (match (Bytes.of #list(1 2)) ((bin (u16 n)) n))) (export main)))
+  (error  CDZ0210))
+
+(case "a utf8 bin match with no catch-all is non-exhaustive"
+  (input  (do (def (main) (match (Bytes.of #list(3 102 111 111)) ((bin (u8 n) (utf8 name n)) name))) (export main)))
+  (error  CDZ0210))
