@@ -1112,28 +1112,11 @@ fn a_non_tail_list_fold_is_accumulator_transformed_into_a_constant_stack_loop() 
 // ctor-element list arm is refutable so does not count toward length-coverage — two ctor arms still leave
 // the empty list uncovered → CDZ0210. PASS wasm.)
 
-#[test]
-fn a_map_list_element_dispatches_by_key_presence() {
-    // The MAP twin of the refutable-ctor list element: a list of key-value records matched by KEY in one
-    // arm — `(match xs ((list (map (1 a)) .. rest) a) …)`. A `(map (k v)…)` element is REFUTABLE (matches
-    // only a map containing the named keys) AND binds the values, so it desugars to a fresh binder + a
-    // key-presence guard + a body re-match binding the values (`desugar_refutable_map_list_elements`,
-    // reusing the direct map matcher). Before, it declined CDZ0201 "not a tuple, record, or constructor"
-    // — the list-arm element check had tuple/sum/nested-list arms but no `map`.
-    assert!(
-        reject_code(
-            "(module m (def (f (: xs (List (Map Int64 Int64)))) \
-                   (match xs ((list (map (1 a)) .. rest) a) (_ (- 0 1)))) \
-                 (def (main) (f (list (map (= 1 77))))) (export main))"
-        )
-        .is_none(),
-        "a map list element now compiles (dispatches by key presence)"
-    );
-    // The RUNTIME dispatch — key-present binds the value (77), an absent key falls through (-1), and two
-    // named keys bind both (105) — is corpus-covered by 05-compound-types "a map pattern as a list-arm
-    // element binds its value binder" / "a list-arm map element whose key is absent falls through" / "a
-    // list-arm map element binds both of two named keys"; this test keeps the compile (CDZ0201-gone) pin.
-}
+// (a_map_list_element_dispatches_by_key_presence redundant — the compile (CDZ0201-gone) pin is subsumed by
+// the corpus 05-compound-types RUN case "a map pattern as a list-arm element binds its value binder"
+// ((match xs (#list(#map((= 1 a)) .. rest) a) (_ …)) on #list(#map((= 1 77))) → 77, a green value requiring
+// the map-list-element match to compile), with "a list-arm map element whose key is absent falls through"
+// and "a list-arm map element binds both of two named keys" covering the dispatch. Redundant, removed.)
 
 // (a_map_pattern_key_of_the_wrong_type_is_a_type_error migrated to corpus 05-compound-types, in the
 // map-pattern section: a wrong-type key pattern on a typed map → CDZ0201 (message "map-pattern key is
