@@ -614,6 +614,29 @@ pub fn escape_string(s: &str) -> String {
     out
 }
 
+/// Like [`escape_string`], but emits a line-feed (`\n`) as a REAL newline instead of the `\n` escape.
+/// Every other escape is unchanged (`\t`/`\r`/`\\`/`"` stay escaped), so the string's bytes are
+/// preserved EXACTLY — the reader accepts a literal newline inside a `"…"` string, and re-reading yields
+/// the identical content. Used by a MULTI-LINE surface rendering (the s-expr pretty printer) to keep a
+/// multi-line `(doc "…")` doc-comment readable instead of collapsing it to one `\n`-laden line (seq-282
+/// multi-line comment preservation). Round-trip-safe precisely because ONLY the line break is
+/// literalized: a continuation line's own leading whitespace is string CONTENT and is emitted verbatim,
+/// so the printer never re-indents inside the literal (which would change its bytes).
+pub fn escape_string_multiline(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '\n' => out.push('\n'),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Escape a byte sequence's contents for a `b"…"` literal — the byte-string form
 /// (`options/binary-syntax`). A printable ASCII byte (`0x20..=0x7e`) stands for itself; `\n \r \t \\
 /// \"` use their named escapes; every other byte is a two-lowercase-hex `\xNN`. So `[1,2,3]` →
@@ -1148,6 +1171,33 @@ mod tests {
         ] {
             assert_eq!(unescape_string(&escape_string(s)).as_deref(), Ok(s));
         }
+    }
+
+    #[test]
+    fn multiline_escape_literalizes_only_the_newline_and_reparses() {
+        // `escape_string_multiline` emits `\n` as a REAL newline (for a multi-line surface rendering) but
+        // keeps every OTHER escape, and always round-trips through `unescape_string` to the same content.
+        for s in [
+            "a\nb",                    // the newline becomes literal
+            "one; still\n  two; also", // continuation indentation + `;` are content, preserved
+            "tab\there",               // a tab stays escaped (only the newline is literalized)
+            "quote\"inside",           // a quote stays escaped
+            "back\\slash",             // a backslash stays escaped
+            "no newline",              // single-line: identical to escape_string
+            "",
+        ] {
+            let m = escape_string_multiline(s);
+            assert_eq!(
+                unescape_string(&m).as_deref(),
+                Ok(s),
+                "multiline escape must reparse to the same content: {s:?} -> {m:?}"
+            );
+        }
+        // The line feed is literal (a real newline), NOT the `\n` escape.
+        assert_eq!(escape_string_multiline("a\nb"), "a\nb");
+        assert!(!escape_string_multiline("a\nb").contains("\\n"));
+        // Other escapes are unchanged vs `escape_string` (only the newline differs).
+        assert_eq!(escape_string_multiline("t\tq\"s"), escape_string("t\tq\"s"));
     }
 
     #[test]

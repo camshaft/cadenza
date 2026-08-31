@@ -1982,8 +1982,10 @@ mod tests {
 
         // The false-positive that refused EVERY doc-commented `spec/semantics/*.sexp`: a multi-line
         // `(doc "…; …")` string whose CONTINUATION line carries a `;`. The reader preserves the real
-        // `; header` comment, and the doc string's content is byte-preserved (its literal newline becomes a
-        // `\n` escape), so the guard must NOT refuse. Pin both: the real comment survives AND
+        // `; header` comment, so the guard must NOT refuse. And (seq-282 multi-line comment preservation)
+        // the pretty printer keeps a multi-line string MULTI-LINE (its `\n` is emitted as a REAL newline,
+        // not the `\n` escape), byte-exact — a `;` on a continuation line is string CONTENT, never a
+        // comment. Pin: the real comment survives, the multi-line string stays multi-line byte-exact, and
         // `would_drop_comments(src, fmt(src))` is `None`.
         let src =
             b"; header\n(case \"x\"\n  (doc \"one; still string\n        two; also string\"))\n";
@@ -1999,8 +2001,12 @@ mod tests {
             "the ; comment must survive fmt over a multi-line doc string, got: {formatted_s:?}"
         );
         assert!(
-            formatted_s.contains("one; still string\\n"),
-            "the multi-line doc string content is byte-preserved (newline -> \\n), got: {formatted_s:?}"
+            formatted_s.contains("one; still string\n        two; also string"),
+            "the multi-line doc string stays multi-line byte-exact (real newline, ; is content), got: {formatted_s:?}"
+        );
+        assert!(
+            !formatted_s.contains("one; still string\\n"),
+            "the multi-line string must NOT be collapsed to a `\\n` escape (seq-282), got: {formatted_s:?}"
         );
         assert!(
             would_drop_comments(src, &formatted, CommentLexis::Semicolon).is_none(),
