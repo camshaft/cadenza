@@ -25323,6 +25323,30 @@
   (input  (do (def (f (: p (Tuple (List Int64) (List Int64)))) (match p (#tuple(#list(a .. r) #list(b .. r)) a) (_ 0))) (def (main) (f #tuple(#list(1) #list(2)))) (export main)))
   (error  CDZ0102))
 
+; A LIST pattern is a binder position and MUST be linear (core-semantics.md §145), exactly as a tuple pattern
+; is — the list matcher runs the same linearity check (a prior soundness gap let `(list a a)` compile
+; silently). And a SHAPE-INCOMPATIBLE element pattern (a tuple pattern against a scalar list element) is a
+; hard reject, not a decline. (Migrated from rcdzc a_list_pattern_must_be_linear_and_refutable_elements_decline;
+; the refutable literal/ctor ELEMENT dispatch is now compile-clean — covered by the dispatch cases above.)
+(case "a list pattern with a repeated leading binder is non-linear"
+  (input  (do (def (f xs) (match xs (#list(a a) (+ a a)) (_ 0))) (def (main) (f #list(1 2))) (export main)))
+  (error  CDZ0102))
+
+(case "a list binder repeated across a leading position and the rest is non-linear"
+  (input  (do (def (f xs) (match xs (#list(a b .. a) a) (_ 0))) (def (main) (f #list(1 2 3))) (export main)))
+  (error  CDZ0102))
+
+(case "a list binder repeated inside a NESTED tuple element is non-linear"
+  (input  (do (def (f xs) (match xs (#list(#tuple(a a) .. r) a) (_ 0))) (def (main) (f #list(#tuple(1 2)))) (export main)))
+  (error  CDZ0102))
+
+(case "a tuple element pattern against a scalar list element is a shape error, not a decline"
+  (doc    "A `(List Int64)`'s elements are scalars, so a `#tuple(a b)` element pattern cannot match one — a
+           hard shape reject (CDZ0201), not a decline. The element sub-pattern's shape is checked against the
+           list's element type.")
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(#tuple(a b) .. r) a) (_ 0))) (def (main) (f #list(1))) (export main)))
+  (error  CDZ0201))
+
 ; A ctor-element list arm is REFUTABLE (its discriminant test may fail), so — like a literal element or any
 ; guarded arm — it does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every
 ; discriminant still leave the empty list (and the discriminant-failure path) uncovered → CDZ0210. (Migrated
