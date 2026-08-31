@@ -196,20 +196,34 @@
 
 (case "every Ast variant deconstructs to its own arm through a qualified (. Ast Ctor) pattern"
   (doc    "First-user fence for the deconstruction dual of quote: a `kind` dispatcher matches a reflected
-           AST with a QUALIFIED `((. Ast Ctor) subpat)` pattern for each of the nine built-in Ast variants
-           (Int/Float/Name/List/Bool/Str/Char/Bytes/Symbol) — the exact pattern shape the Lean oracle newly
-           recognizes (the `Ast` sum is built-in, absent from the scanned `(type …)` decls, so its qualified
-           ctor patterns had fallen through to a headless-list skip). Applied to one representative literal of
-           each variant, weighted by position `i` so a misclassification of arm `i` shifts the total off the
-           self-witnessing `Σ i*i` = 285 (e.g. a Bytes literal miscaught as Symbol makes term 8 read 8*9). A
-           `#\"…\"` literal is a SYMBOL (arm 9), a `b\"…\"` literal is BYTES (arm 8) — the two are distinct
-           leaves that a naive reader conflates. The nine arms are exhaustive over the Ast sum (no wildcard).")
+           AST with a QUALIFIED `((. Ast Ctor) subpat)` pattern for EVERY Ast variant — the exact pattern
+           shape the Lean oracle recognizes (the `Ast` sum is built-in, absent from the scanned `(type …)`
+           decls, so its qualified ctor patterns had fallen through to a headless-list skip). The Ast sum
+           has SIXTEEN variants: the nine scalar/generic leaves (Int/Float/Name/List/Bool/Str/Char/Bytes/
+           Symbol) PLUS the seven native-compound-ctor variants (ListCtor/TupleCtor/RecordCtor/MapCtor/
+           SetCtor/FieldPair/Member — operator 2026-08-28 native-collections-in-the-Ast). All sixteen arms
+           are present, so the match is EXHAUSTIVE over the whole sum with NO wildcard (a bare `_` would
+           defeat the point of this fence — it proves coverage by naming every variant).
+           `main` EXERCISES the nine QUOTABLE leaves, applied to one representative literal each, weighted by
+           position `i` so a misclassification of arm `i` shifts the total off the self-witnessing `Σ_{1..9}
+           i*i` = 285 (e.g. a Bytes literal miscaught as Symbol makes term 8 read 8*9). A `#\"…\"` literal is a
+           SYMBOL (arm 9), a `b\"…\"` literal is BYTES (arm 8) — the two are distinct leaves that a naive
+           reader conflates.
+           The seven compound-ctor arms are present for EXHAUSTIVENESS but NOT yet exercised by `main`:
+           `quote` of a native collection literal (`(quote #list(…))` …) currently declines \"quote produces
+           an AST value, which is not supported\" — the quote→native-ctor-variant reflection is not yet wired,
+           so no literal can classify to arms 10..16 today. TODO(quote-of-collections): once `quote` of a
+           collection lands, extend `main` with one representative per ctor variant (weights 10..16) → the
+           full self-witness `Σ_{1..16} i*i` = 1496. Tracked by v-ast-compound (Ast-sum owner) + v-metaprog.")
   (input  (do
             (def (kind a)
               (match a
                 (((. Ast Int) _) 1) (((. Ast Float) _) 2) (((. Ast Name) _) 3)
                 (((. Ast List) _) 4) (((. Ast Bool) _) 5) (((. Ast Str) _) 6)
-                (((. Ast Char) _) 7) (((. Ast Bytes) _) 8) (((. Ast Symbol) _) 9)))
+                (((. Ast Char) _) 7) (((. Ast Bytes) _) 8) (((. Ast Symbol) _) 9)
+                (((. Ast ListCtor) _) 10) (((. Ast TupleCtor) _) 11) (((. Ast RecordCtor) _) 12)
+                (((. Ast MapCtor) _) 13) (((. Ast SetCtor) _) 14) (((. Ast FieldPair) _) 15)
+                (((. Ast Member) _) 16)))
             (def (main)
               (+ (* 1 (kind (quote 42)))
               (+ (* 2 (kind (quote 2.5)))
