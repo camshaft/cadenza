@@ -463,13 +463,23 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
         // The reflected module's own `(do …)` root, at its position in the merged arena.
         let sib_root = StructId(file_spans[from_file].struct_base + files[from_file].1.root.0);
         let Some(reified) = crate::quote::reflect_document(&mut merged, sib_root) else {
-            // A leaf with no `Ast` variant (a Char/Symbol literal) — reflection declines, never
-            // miscompiles (matching the realized `Ast` set Int/Float/Bool/Str/Name/List/Bytes).
-            return Err(Reject::decline(format!(
-                "`import {{ __ast__ }}` from `{}`: the module contains a syntax leaf with no `Ast` \
-                 variant (a Char/Symbol literal) and cannot yet be reflected",
-                file_spans[from_file].path
-            )));
+            // `reflect_document` bails ONLY on a leaf with no `Ast` variant — a reader error-recovery
+            // marker (`BadChar`/`BadEscape`, produced only from MALFORMED source) or a stray unquote
+            // escape (`,x` / `,@x` outside a quasiquote). Every ordinary syntax leaf — including `Char`
+            // (`#\a`) and `Symbol` (`#"x"`) — DOES reflect, so reflection is TOTAL over a well-formed
+            // module (operator directive; see the "reflection is total" corpus case). Hence when this
+            // fires the reflected module is NOT well-formed: it is a genuine REJECTION (CDZ0201
+            // malformed, seq-32 reclassify), not a "cannot-yet" capability decline (there is nothing
+            // left to build). Bails, never miscompiles.
+            return Err(Reject::coded(
+                crate::diag::Code::Malformed,
+                format!(
+                    "`import {{ __ast__ }}` from `{}`: the module contains a syntax node with no \
+                     `Ast` representation — a reader error-recovery marker or a stray unquote escape \
+                     (`,x`) outside a quasiquote; only a well-formed module reflects",
+                    file_spans[from_file].path
+                ),
+            ));
         };
         // Splice `(def (__ast__$N) <reified>)` — a nullary value-def; a bare reference denotes its body.
         let name_leaf = LeafId(merged.leaves.len() as u32);
