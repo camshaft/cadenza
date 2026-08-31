@@ -233,7 +233,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             // not yet lowered — decline gracefully (slice 1: the const/inline-structural case folds above;
             // the runtime residual-record construction is a follow-up slice). Never a miscompile.
             Core::Poison(Reject::unsupported(
-                "a runtime record rest binder (residual-record construction) is not yet lowered",
+                "a runtime record rest binder (residual-record construction) is not supported (a constant/inline record-rest is)",
             ))
         }
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
