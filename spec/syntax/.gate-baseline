@@ -451,6 +451,9 @@ pass	ml/519-precedence-and-tighter-than-or
 pass	ml/52-effect-op-resource-marker-second-param
 pass	ml/520-precedence-comparison-tighter-than-and
 pass	ml/521-precedence-arithmetic-tighter-than-comparison
+pass	ml/522-subtraction-left-associative
+pass	ml/523-division-left-associative
+pass	ml/524-mixed-additive-left-associative
 pass	ml/53-effect-op-no-resource-marker
 pass	ml/54-neg-prefix-name
 pass	ml/55-neg-prefix-call
