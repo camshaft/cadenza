@@ -3658,6 +3658,27 @@
   (input  (do (effect Sim (op sleep (-> Int64 Unit)) (op now (-> Unit Int64))) (def (main) (handle Sim 0 ((now (u) s (resume s s)) (sleep (d) s k (let ((wake (+ s d))) (resume unit wake)))) (do (Sim.sleep 3) 42))) (export main)))
   (call   main) (output (: 42 Int64)))
 
+; The tail-resume peel COMPOSES through NESTED/combination wrappings, not just a single wrap: a `resume` in
+; the tail of a `let` around a `do`, of nested `let`s, of a `match` inside a `let`, and of a `do` inside a
+; `match` arm each fold to a tail-resumptive arm and run. Seed 0, one `(E.get)` perform, so the program value
+; is the resumed value. These pin that the peel recurses through combinations — a peel that handled only one
+; wrapping level would regress them. (Edge-probed by v-wasmtime-migration.)
+(case "a tail resume under a let wrapping a do folds and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (let ((x 1)) (do (+ x 1) (resume (+ s x) s))))) (E.get))) (export main)))
+  (call   main) (output (: 1 Int64)))
+
+(case "a tail resume under nested lets folds and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (let ((a 1)) (let ((b 2)) (resume (+ s (+ a b)) s))))) (E.get))) (export main)))
+  (call   main) (output (: 3 Int64)))
+
+(case "a tail resume under a match inside a let folds and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (let ((x s)) (match (> x -1) (true (resume (+ x 7) s)) (false (resume 0 s)))))) (E.get))) (export main)))
+  (call   main) (output (: 7 Int64)))
+
+(case "a tail resume under a do inside a match arm folds and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (match (> s -1) (true (do 99 (resume (+ s 5) s))) (false (resume 0 s))))) (E.get))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
 (case "a host delegation of an effect the body never reaches is latent authority and is rejected"
   (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
            `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised
