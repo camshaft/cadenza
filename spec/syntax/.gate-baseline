@@ -414,6 +414,8 @@ pass	ml/468-bare-backtick-reserved-word
 pass	ml/469-binary-subtraction
 pass	ml/47-import-named-list
 pass	ml/470-match-basic-two-arm
+pass	ml/471-comment-trailing-effect-op
+pass	ml/472-comment-own-line-after-last-sum-variant
 pass	ml/48-import-per-name-rename
 pass	ml/49-const-force-eval-call
 pass	ml/50-const-force-eval-infix

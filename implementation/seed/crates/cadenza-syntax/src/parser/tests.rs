@@ -853,47 +853,11 @@ fn nested_multi_arg_constructor_in_a_type_def_block_parses_and_round_trips() {
     }
 }
 
-#[test]
-fn an_own_line_comment_after_a_match_bodied_def_leads_the_next_def_not_dropped() {
-    // Regression (seq-277/C3): a `match`-bodied def followed by an own-line comment then the next def
-    // USED TO DROP the comment — `match_expr`'s arm loop drained it as the "next arm's" leading run
-    // and, finding no next arm (a `def`, not `|`), DISCARDED it (`cdz fmt` refused: "would drop N
-    // comment(s)"). It must instead be restored to lead the FOLLOWING form. This closes db-demand.cdz's
-    // 10 dropped comments (all section headers after match-bodied defs).
-    let src = "def a(x) = match x with\n  | 0 => 1\n  | _ => 2\n\n\
-                   // ---- SECTION between defs\n\
-                   def b() = 2\n\nexport { a, b }\n";
-    let count_comments = |a: &Arenas| {
-        (0..a.structure.len() as u32)
-            .map(StructId)
-            .filter(|&id| a.head_name(id) == Some("comment"))
-            .count()
-    };
-    let p = read_ml(src);
-    assert!(p.ok(), "parses cleanly: {:?}", p.errors);
-    assert_eq!(
-        count_comments(&p.arenas),
-        1,
-        "the section comment is attached as a (comment …) node, not dropped"
-    );
-    // Round-trips: reprint to ML + reparse keeps the comment (this is what `cdz fmt`'s drop-guard checks).
-    let printed = crate::printer::print(&p.arenas, 100);
-    let reparsed = read_ml(&printed);
-    assert!(
-        reparsed.ok(),
-        "reprint reparses: {:?}\n{printed}",
-        reparsed.errors
-    );
-    assert_eq!(
-        count_comments(&reparsed.arenas),
-        1,
-        "the comment survives the ML round-trip\n{printed}"
-    );
-    assert!(
-        printed.contains("// ---- SECTION between defs"),
-        "comment text is re-emitted:\n{printed}"
-    );
-}
+// `an_own_line_comment_after_a_match_bodied_def_leads_the_next_def_not_dropped` (an own-line comment after a
+// match-bodied def, before the next def, leads the FOLLOWING form instead of being dropped as a phantom "next
+// match arm") is subsumed by the spec/syntax corpus (inc-6 batch-81): ml/297-comment-after-match-bodied-def-
+// leads-next `def f(e) = match e with …`⏎`// section header`⏎`def g() = 3`→`(do (def (f e) (match …)) (comment
+// "section header" (def (g) 3)))` pins the identical own-line-comment-leads-next-def-after-a-match shape.
 
 #[test]
 fn a_chained_else_if_ladder_flattens_headers_to_one_indent() {
@@ -983,89 +947,17 @@ fn an_own_line_comment_between_infix_operands_survives_the_round_trip() {
     );
 }
 
-#[test]
-fn a_trailing_comment_on_a_non_last_infix_operand_survives_the_round_trip() {
-    // Regression (seq-277/C3 slice 3): a same-line `//` on a NON-LAST operand of a multi-line infix
-    // chain (`a and b  // note` newline `and c`) USED TO DROP — the Pratt infix loop never drained the
-    // operator token's leading slot. Reader: drain the operand's trailing comment before the operator
-    // and attach `(comment-after …)` to `left`. Printer: `infix_operand` re-emits it as `inner // note`
-    // and forces a break before the next operator. (Closes int-width.cdz's operand-trailing drops.)
-    let src = "def f(a, b, c) = a\n  and b   // note on b\n  and c\n\nexport { f }\n";
-    let count = |a: &Arenas| {
-        (0..a.structure.len() as u32)
-            .map(StructId)
-            .filter(|&id| a.head_name(id) == Some("comment-after"))
-            .count()
-    };
-    let p = read_ml(src);
-    assert!(p.ok(), "parses: {:?}", p.errors);
-    assert_eq!(
-        count(&p.arenas),
-        1,
-        "the operand-trailing comment is a (comment-after …) node"
-    );
-    let printed = crate::printer::print(&p.arenas, 100);
-    assert!(
-        printed.contains("// note on b"),
-        "comment re-emitted:\n{printed}"
-    );
-    let reparsed = read_ml(&printed);
-    assert!(reparsed.ok(), "reparse: {:?}\n{printed}", reparsed.errors);
-    assert_eq!(
-        count(&reparsed.arenas),
-        1,
-        "comment survives the round-trip\n{printed}"
-    );
-    // Idempotent: the forced break makes the reprint a fixed point.
-    assert_eq!(
-        crate::printer::print(&reparsed.arenas, 100),
-        printed,
-        "idempotent\n{printed}"
-    );
-}
+// `a_trailing_comment_on_a_non_last_infix_operand_survives_the_round_trip` (a same-line `//` on a non-last
+// operand of a multi-line infix chain → `(comment-after …)` on the left operand) is subsumed by the spec/syntax
+// corpus (inc-6 batch-81): ml/295-comment-trailing-infix-operand `(and (comment-after "mid" (and a b)) c)` pins
+// the identical shape (comment-after on a non-last infix operand).
 
-#[test]
-fn a_trailing_comment_on_an_effect_op_survives_the_round_trip() {
-    // Regression (seq-277/C3): a same-line `//` on an effect op (`| op : Sig  // note`) USED TO DROP
-    // (a non-last op) or mis-attach to the FOLLOWING def (the last op) — the effect-op loop drained no
-    // comments. Reader attaches `(comment-after …)`; the printer + `is_effect_shape` peel + re-emit it
-    // same-line (closes db-query-perfield.cdz), while the leading `///` docs stay intact.
-    let src = "effect E =\n  | get : Int64 -> Int64 // note on get\n  | put : Int64 -> Unit // note on put\n\
-                   def f() = 1\n\nexport { f }\n";
-    let count = |a: &Arenas| {
-        (0..a.structure.len() as u32)
-            .map(StructId)
-            .filter(|&id| a.head_name(id) == Some("comment-after"))
-            .count()
-    };
-    let p = read_ml(src);
-    assert!(p.ok(), "parses: {:?}", p.errors);
-    assert_eq!(
-        count(&p.arenas),
-        2,
-        "both op-trailing comments attached as (comment-after …)"
-    );
-    let printed = crate::printer::print(&p.arenas, 100);
-    assert!(
-        printed.contains("// note on get") && printed.contains("// note on put"),
-        "both re-emitted:\n{printed}"
-    );
-    assert!(
-        printed.contains("effect E ="),
-        "stays the effect surface (not the generic call form):\n{printed}"
-    );
-    let rp = read_ml(&printed);
-    assert!(
-        rp.ok() && p.arenas.structurally_eq(&rp.arenas),
-        "round-trips: {:?}\n{printed}",
-        rp.errors
-    );
-    assert_eq!(
-        crate::printer::print(&rp.arenas, 100),
-        printed,
-        "idempotent\n{printed}"
-    );
-}
+// `a_trailing_comment_on_an_effect_op_survives_the_round_trip` (a same-line `//` on an effect op → a
+// `(comment-after …)` on the op, staying the `effect E =` surface, not mis-attaching to a following def)
+// MIGRATED to the spec/syntax corpus (inc-6 batch-81): ml/471-comment-trailing-effect-op `effect E =`⏎`  | get
+// : Int64 -> Int64 // note on get`⏎`  | put : Int64 -> Unit // note on put`⏎`def f() = 1`→`(do (effect E
+// (comment-after "note on get" (op get (-> Int64 Int64))) (comment-after "note on put" (op put (-> Int64
+// Unit)))) (def (f) 1))` — both op-trailing comments as `(comment-after …)`, the following def unaffected.
 
 #[test]
 fn a_multiline_trailing_comment_on_a_type_variant_round_trips() {
@@ -1113,39 +1005,11 @@ fn a_multiline_trailing_comment_on_a_type_variant_round_trips() {
     );
 }
 
-#[test]
-fn an_own_line_comment_after_the_last_sum_variant_is_not_dropped() {
-    // Regression (seq-277/C3): an own-line comment after the LAST variant of a `type T = | A | B`
-    // decl (before the next form) USED TO DROP — the variant loop drained it as the "next variant's"
-    // leading run and discarded it on break (no next `|`). Same class as the match-arm fix; restored
-    // on break so it leads the following form. (Closes emit-db.cdz / resolve-db.cdz drops.)
-    let src = "type T =\n  | A\n  | B\n  // trailing note after the last variant\ndef f() = 1\n\nexport { f }\n";
-    let count_comments = |a: &Arenas| {
-        (0..a.structure.len() as u32)
-            .map(StructId)
-            .filter(|&id| a.head_name(id) == Some("comment"))
-            .count()
-    };
-    let p = read_ml(src);
-    assert!(p.ok(), "parses cleanly: {:?}", p.errors);
-    assert_eq!(
-        count_comments(&p.arenas),
-        1,
-        "the post-variant comment is a (comment …) node, not dropped"
-    );
-    let printed = crate::printer::print(&p.arenas, 100);
-    let reparsed = read_ml(&printed);
-    assert!(
-        reparsed.ok(),
-        "reprint reparses: {:?}\n{printed}",
-        reparsed.errors
-    );
-    assert_eq!(
-        count_comments(&reparsed.arenas),
-        1,
-        "comment survives the ML round-trip\n{printed}"
-    );
-}
+// `an_own_line_comment_after_the_last_sum_variant_is_not_dropped` (an own-line comment after the LAST variant
+// of a `type T = | A | B`, before the next form, leads the FOLLOWING form instead of being dropped as a phantom
+// "next variant") MIGRATED to the spec/syntax corpus (inc-6 batch-81): ml/472-comment-own-line-after-last-sum-
+// variant `type T =`⏎`  | A`⏎`  | B`⏎`  // trailing note after the last variant`⏎`def f() = 1`→`(do (type T A
+// B) (comment "trailing note after the last variant" (def (f) 1)))`.
 
 #[test]
 fn deeply_nested_input_is_diagnosed_not_crashed() {

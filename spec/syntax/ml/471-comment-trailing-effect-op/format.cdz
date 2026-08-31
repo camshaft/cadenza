@@ -1,0 +1,5 @@
+effect E =
+  | get : Int64 -> Int64 // note on get
+  | put : Int64 -> Unit // note on put
+
+def f() = 1
