@@ -1,0 +1,5 @@
+def f(a) =
+  if a then
+    1 // note
+  else
+    2
