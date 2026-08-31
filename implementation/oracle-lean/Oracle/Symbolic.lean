@@ -1037,6 +1037,46 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Map.lookup on non-map / non-const key")
            | _, _ => .cannotProve "symeval: malformed Map.lookup")
+        else if q == "Set".toUTF8 && mem == "insert".toUTF8 then
+          -- `Set.insert s x` → the set with `x` added, RE-CANONICALIZED (`canonSet (es.push x)`,
+          -- Eval.lean:1655-1659). Now that set LITERALS are canonical too (#6691), this canonical output is
+          -- consistent with them. All-const elements + const `x` required; unorderable → cannotProve.
+          (match children[1]?, children[2]? with
+           | some sId, some xId =>
+             (match symEval m senv fuel ty sId, symEval m senv fuel ty xId with
+              | .sym (.ctor t elems), .sym (.const xv) =>
+                if t == "set".toUTF8 then
+                  (if elems.all (fun e => match e with | .const _ => true | _ => false) then
+                     (match canonSet ((elems.filterMap (fun e => match e with | .const v => some v | _ => none)).push xv) with
+                      | some s => .sym (.ctor "set".toUTF8 (s.map (fun v => SymExpr.const v)))
+                      | none => .cannotProve "symeval: Set.insert on unorderable elements")
+                   else .cannotProve "symeval: Set.insert needs all-concrete elements")
+                else .cannotProve "symeval: Set.insert on a non-set value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Set.insert on non-set / non-const element")
+           | _, _ => .cannotProve "symeval: malformed Set.insert")
+        else if q == "Map".toUTF8 && mem == "remove".toUTF8 then
+          -- `Map.remove mp k` → the map without k's entry, re-canonicalized (`canonMap (es.filter (·.1 ≠ k))`,
+          -- Eval.lean:1746-1749). Reify all-const `.tuple #[k,v]` entries, drop keys valEq `k`, canonMap.
+          (match children[1]?, children[2]? with
+           | some mId, some kId =>
+             (match symEval m senv fuel ty mId, symEval m senv fuel ty kId with
+              | .sym (.ctor t elems), .sym (.const kv) =>
+                if t == "map".toUTF8 then
+                  (match elems.mapM (fun e => match e with
+                                              | .tuple #[.const k, .const v] => some (k, v)
+                                              | _ => none) with
+                   | some kvs =>
+                     (match canonMap (kvs.filter (fun e => !(valEq e.1 kv))) with
+                      | some cm => .sym (.ctor "map".toUTF8 (cm.map (fun p => SymExpr.tuple #[.const p.1, .const p.2])))
+                      | none => .cannotProve "symeval: Map.remove on unorderable key")
+                   | none => .cannotProve "symeval: Map.remove needs all-concrete entries")
+                else .cannotProve "symeval: Map.remove on a non-map value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Map.remove on non-map / non-const key")
+           | _, _ => .cannotProve "symeval: malformed Map.remove")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1634,6 +1674,29 @@ private def _mapLookupNoneExpr : Module :=
     root := 10 }
 #guard symEval _mapLookupNoneExpr [] symDefaultFuel defaultIntTy 10
        == SymOutcome.sym (.ctor "None".toUTF8 #[])
+
+-- SET.INSERT member-op coverage: `((. Set insert) (set 1 3) 2)` → canonical set `[1,2,3]` (sort-inserted).
+private def _setInsertExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "insert".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[3]), Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5,
+               .list #[4, 5, 6], .atom 6, .list #[3, 7, 8]],
+    root := 9 }
+#guard symEval _setInsertExpr [] symDefaultFuel defaultIntTy 9
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 1), .const (.int 2), .const (.int 3)])
+
+-- MAP.REMOVE member-op coverage: `((. Map remove) (map (1 10) (2 20)) 1)` → `[(2,20)]` (key 1 dropped).
+private def _mapRemoveExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Map".toUTF8, Leaf.name "remove".toUTF8,
+                Leaf.name "map".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.intLit false .dec (ByteArray.mk #[2]),
+                Leaf.intLit false .dec (ByteArray.mk #[20])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 4, .atom 5, .list #[4, 5],
+               .atom 6, .atom 7, .list #[7, 8], .atom 3, .list #[10, 6, 9], .atom 4, .list #[3, 11, 12]],
+    root := 13 }
+#guard symEval _mapRemoveExpr [] symDefaultFuel defaultIntTy 13
+       == SymOutcome.sym (.ctor "map".toUTF8 #[.tuple #[.const (.int 2), .const (.int 20)]])
 
 -- INLINE `(do …)` EXPRESSION coverage: `(do (def x 5) (+ x 1))` → binds x=5, value is the last expr → 6.
 private def _inlineDoExpr : Module :=
