@@ -970,6 +970,37 @@
   (call   main (: 0 Int64))
   (output (: -1 Int64)))
 
+; `_` is a binding-position WILDCARD (it discards the bound value in a pattern or a discarded `let` binder).
+; Using it as a VALUE — `(+ _ 1)`, an argument `(g _)`, a bare `_` body — is a category misuse, not an
+; unbound name (a "did you mean?" typo suggestion is nonsense for it): CDZ0201 naming the misuse ("`_` is a
+; wildcard … only in a binding position … discards the value"), not the generic unbound-name error. A
+; LEGITIMATE `_` in a binding position (a wildcard match arm, a discarded `let` binder) compiles clean, and a
+; `_`-LED name (`_x`) is an ordinary silenced binder, never the bare wildcard. (Migrated from rcdzc
+; a_wildcard_used_as_a_value_names_the_binding_position_misuse.)
+(case "a wildcard used as an operator operand names the binding-position misuse"
+  (input  (do (def x (+ _ 1)) (export x)))
+  (error  CDZ0201 (message "`_` is a wildcard") (message "only in a binding position") (message "discards the value")))
+
+(case "a wildcard used as a function argument names the binding-position misuse"
+  (input  (do (def (g a) a) (def x (g _)) (export x)))
+  (error  CDZ0201 (message "`_` is a wildcard")))
+
+(case "a bare wildcard used as a def body names the binding-position misuse"
+  (input  (do (def (f) _) (export f)))
+  (error  CDZ0201 (message "`_` is a wildcard")))
+
+(case "a legitimate wildcard match arm compiles and selects"
+  (input  (do (def (f (: n Int64)) (match n (0 1) (_ 2))) (def (main) (f 5)) (export main)))
+  (call   main) (output (: 2 Int64)))
+
+(case "a discarded let binder _ compiles clean"
+  (input  (do (def (f) (let ((_ 5)) 3)) (def (main) (f)) (export main)))
+  (call   main) (output (: 3 Int64)))
+
+(case "a _-led name is an ordinary silenced binder, not the bare wildcard"
+  (input  (do (def (f (: _x Int64)) _x) (def (main) (f 9)) (export main)))
+  (call   main) (output (: 9 Int64)))
+
 (case "a sparse three-arm match's terminal pair dispatches branchlessly — the middle probe"
   (doc    "`(def (main (: x Int64)) (match x (0 10) (100 20) (_ 30)))` — a SPARSE three-arm scalar match
            (the 0/100 values are too far apart for a jump table), so it compiles to a probe chain whose

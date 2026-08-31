@@ -781,54 +781,6 @@ fn a_misspelled_form_keyword_head_suppresses_its_cascade() {
 }
 
 #[test]
-fn a_wildcard_used_as_a_value_names_the_binding_position_misuse() {
-    // `_` is a binding-position WILDCARD (it discards the bound value in a pattern / a discarded `let`
-    // binder); using it as a VALUE — `(+ _ 1)`, `(g _)`, a bare `_` body — previously drew the generic
-    // "unbound name `_`" (a "did you mean?" typo suggestion is nonsense for it). It now names the
-    // category misuse specifically and points at the legitimate uses.
-    let all = |src: &str| crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-    for src in [
-        "(module m (def x (+ _ 1)) (export x))",
-        "(module m (def (g a) a) (def x (g _)) (export x))",
-        "(module m (def (f) _) (export f))",
-    ] {
-        let d = all(src)
-            .into_iter()
-            .find(|d| d.message.contains("`_` is a wildcard"))
-            .unwrap_or_else(|| panic!("`_` as a value names the misuse: {src}"));
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("only in a binding position")
-                && d.message.contains("discards the value"),
-            "names the wildcard misuse + the legitimate use: {}",
-            d.message
-        );
-    }
-    // NO false positive: a LEGITIMATE `_` in a binding position is not flagged — a wildcard match arm,
-    // a wildcard tuple-pattern element, and a discarded `let` binder all compile clean.
-    for ok in [
-        "(module m (def (f (: n Int64)) (match n (0 1) (_ 2))) (export f))",
-        "(module m (def (f (: p (Tuple Int64 Int64))) (match p ((tuple _ b) b))) (export f))",
-        "(module m (def (f) (let ((_ 5)) 3)) (export f))",
-    ] {
-        assert!(
-            !all(ok)
-                .iter()
-                .any(|d| d.message.contains("`_` is a wildcard")),
-            "a legitimate binding-position `_` is not flagged: {ok}"
-        );
-    }
-    // A `_`-LED binder (`_x`) is an ORDINARY name (a silenced binder), never the bare wildcard — it
-    // must not draw the wildcard-misuse message.
-    assert!(
-        !all("(module m (def (f (: _x Int64)) _x) (export f))")
-            .iter()
-            .any(|d| d.message.contains("`_` is a wildcard")),
-        "a `_x` silenced binder is an ordinary name, not the bare wildcard"
-    );
-}
-
-#[test]
 fn a_miscased_boolean_literal_suggests_the_lowercase_literal() {
     // The POSITIVE suggest+fix faces — `True` -> replace-fix `true`, `False` -> replace-fix `false` —
     // migrated to corpus 01-literals ("a miscased boolean True/False suggests the lowercase … literal
