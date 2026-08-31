@@ -97,4 +97,22 @@
       (status blocked)
       (owner v-ast-compound)
       (needs "PathStep::Field name-keyed record-field descent so a nested compound sub-pattern under a record field binds")
-      (ref pr 6850))))
+      (ref pr 6850)))
+  (decline WasmClosureBoundaryNoRepr
+    (code UnsupportedConstruct)
+    (reason "a closure's param, result, or capture type has no machine representation")
+    (doc "A closure crossing the host boundary whose parameter, result, or capture type has no machine representation — one family over the 3 sibling diag.rs declines CLOSURE_PARAM/RESULT/CAPTURE_NO_REPR. A fully-typed closure crosses via the host-closure resource; these are the un-built frontier (e.g. a bare `(fn (v1) v1)` in a list whose v1 solves to Any — infer recovers the param type from an enclosing higher-order arrow when it can, this face cannot). Fuzzer-surfaced (v-cdz-smith reachability sweep #6878, faces #1/#6); classified feature-gap by v-rust-backend. NUANCE: the pure-Any param subcase borders the CDZ0203 annotate-it undetermined-type reject — kept as a closure-boundary family tag; the operator may reclassify the pure-Any face to a coded CDZ0203 reject later.")
+    (blocked-on
+      (status blocked)
+      (owner v-rust-backend)
+      (needs "the host-closure-resource boundary emit for a closure whose param/result/capture type has no scalar machine representation")
+      (ref pr 6878)))
+  (decline WasmHeapReturnParamNoBoundaryRep
+    (code UnsupportedConstruct)
+    (reason "a parameterized heap-return export forwards scalar params only; this param type has no boundary representation")
+    (doc "A parameterized heap-return export (the make(a…)->own<t> resource-escape path) forwards scalar and fixed-shape scalar tuple/record params only; a String/Bytes/list param has no boundary representation on this path. The mem-leaf param lift that would forward it exists for the typed-interface member route (#6624/#6639) but is not wired on the bare resource-escape path. Fuzzer-surfaced (#6878 face #3); classified feature-gap (buildable-next) by v-rust-backend. Emit site backend/wasm/mod.rs:9277.")
+    (blocked-on
+      (status blocked)
+      (owner v-rust-backend)
+      (needs "wire the mem-leaf param lift on the bare resource-escape heap-return export path (exists for the typed-interface member route #6624/#6639)")
+      (ref pr 6624))))
