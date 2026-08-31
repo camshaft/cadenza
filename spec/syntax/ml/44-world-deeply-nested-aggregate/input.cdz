@@ -1,0 +1,1 @@
+world W = | export i = | get : (key : string) -> option(result({val: list(u8), tags: list(string)}, variant(NotFound, Corrupt(string))))

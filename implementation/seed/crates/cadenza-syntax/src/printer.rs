@@ -4813,43 +4813,11 @@ mod tests {
     // (inc-6): ml/17-world-result-both, ml/18-world-result-no-err, ml/19-world-result-no-ok,
     // ml/20-world-result-bare — each tree.sexp pins the exact result descriptor the test asserted.
 
-    #[test]
-    fn inline_world_deeply_nested_aggregate_member_type_round_trips() {
-        // Hardening: the WIT type-descriptor lower (`wit_type_desc_of`) and its printer inverse recurse, so a
-        // member type composing EVERY aggregate — option over a result whose ok is a record with list fields
-        // and whose err is a variant with a payload — must lower fully (no name-head aggregate node left
-        // un-lowered anywhere in the tree) and print back to the same surface. This pins the recursion
-        // against a drift that only shows under composition (e.g. a lower/print arm that forgets to recurse
-        // into a nested slot). A realistic key/value get-with-tags-or-error shape.
-        let ty = "option(result({val: list(u8), tags: list(string)}, variant(NotFound, Corrupt(string))))";
-        let src = format!("world W = | export i = | get : (key : string) -> {ty}");
-        let printed = assert_roundtrip(&src, 200);
-        assert!(
-            printed.contains(&format!("-> {ty}")),
-            "the deeply-nested member type round-trips to the same surface: {printed}"
-        );
-        // Every aggregate is fully lowered to its canonical str-head descriptor — no name-head `(Record`/
-        // `(option`/`(result`/`(variant` application node survives anywhere in the stored tree.
-        let parsed = parser::read_ml(&src);
-        let sexp = sexpr::print(&parsed.arenas);
-        assert!(
-            sexp.contains(
-                "(\"option\" (\"result\" \
-                 (\"record\" (val (\"list\" (u8))) (tags (\"list\" (string)))) \
-                 (\"variant\" (NotFound) (Corrupt (string)))))"
-            ),
-            "the whole nested type lowers to composed str-head descriptors, got: {sexp}"
-        );
-        // No un-lowered name-head aggregate TYPE node should survive. (`(result …)` is EXCLUDED: it also
-        // names the func signature's result-slot wrapper — a legitimate structural node — so it cannot
-        // discriminate an un-lowered result type; the positive assertion above already proves result lowered.)
-        for name_head in ["(Record", "(option ", "(variant ", "(Tuple"] {
-            assert!(
-                !sexp.contains(name_head),
-                "no un-lowered name-head aggregate node `{name_head}` should survive, got: {sexp}"
-            );
-        }
-    }
+    // inline_world_deeply_nested_aggregate (option/result/record/list/variant composed → fully-lowered
+    // str-head descriptors) + a_world_headed_form_that_is_not_a_world_decl (`world(x)` → generic (world x)
+    // call, not a decl) MIGRATED to spec/syntax: ml/44-world-deeply-nested-aggregate (tree pins the whole
+    // composed descriptor + no name-head aggregate survives) + ml/45-world-headed-non-decl-fallback.
+    // ALL inline_world printer round-trips are now delanguaged into the corpus.
 
     #[test]
     fn a_nested_do_in_a_greedy_body_keeps_its_block_boundary_across_the_ml_round_trip() {
@@ -4927,13 +4895,6 @@ mod tests {
                 sexpr::print(&back.arenas)
             );
         }
-    }
-
-    #[test]
-    fn a_world_headed_form_that_is_not_a_world_decl_falls_back_to_the_generic_form() {
-        // A `(world x)` that is NOT a well-shaped world decl (no interfaces) must NOT crash print_world;
-        // is_world_shape declines it and it prints as the generic call form, round-tripping.
-        assert_roundtrip("world(x)", 80);
     }
 
     #[test]

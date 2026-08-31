@@ -40,6 +40,8 @@ pass	ml/40-match-open-sum-refutable
 pass	ml/41-match-closed-single-variant
 pass	ml/42-match-already-lowered-noop
 pass	ml/43-match-nested-bottom-up
+pass	ml/44-world-deeply-nested-aggregate
+pass	ml/45-world-headed-non-decl-fallback
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
