@@ -168,49 +168,52 @@ pub(crate) mod cse {
                 .filter_map(|d| d.body)
                 .collect();
             for body in bodies {
-                // ELIGIBILITY (MVP): only CSE a body whose resolved subtree is ENTIRELY context-free
-                // PURE-SCALAR forms. This pass runs at the PassManager hook, which currently fires BEFORE
-                // lazy lowering — so a pass-time `core_of` is the FIRST demand of a node, and a node whose
-                // correct lowering needs a context established at lower time (a lambda-lift / handler-lift /
-                // contract desugar / `?`-try / pattern binder) would lower WITHOUT it and MEMO-POISON
-                // `db.core` (→ "reference has no local slot" at emit). The closed pure-scalar whitelist
-                // guarantees every node this pass touches is safe to lower first-demand. The proper fix is
-                // TIMING — run the pass over an already-lowered+lifted column (a `force-lower-all` before
-                // the PassManager); that Option-A follow-up lets CSE cover capturing/effectful bodies too.
-                // This MVP delivers the common repeated-scalar-subexpr win soundly and never ships the poison.
-                if body_is_pure_scalar(db, body) {
+                // ELIGIBILITY: only CSE a body built ENTIRELY from CONTEXT-FREE-LOWERING forms (pure scalar
+                // + heap CONSTRUCTORS + field READS). The historical pre-lowering MEMO-POISON hazard is gone
+                // (the PassManager now runs POST-LAYOUT, so a pass-time `core_of` is a cache hit, not a
+                // first-demand). The gate now guards a CSE-CORRECTNESS hazard: the MVP `cse_body` is not
+                // scope-aware, so a subtree reading a PATTERN-BINDER (`Match`/`Try`/`SumPayload`) or a
+                // CONTINUATION context (`Handle`/`Resume`/`Host`) is not invariant across occurrences —
+                // sharing it miscompiles. Heap CONSTRUCTORS (`Tuple`/`List`/`Record`/`Map`/`Bin`) + field
+                // READS are admitted: a repeated SCALAR subexpr inside them CSEs soundly (guard (A) keeps the
+                // heap handle itself uncse'd; opt-sweep-verified O0..O3-equivalent). Extending to binder-
+                // scoped bodies needs scope-aware grouping (a later slice).
+                if body_admits_cse(db, body) {
                     cse_body(db, body);
                 }
             }
         }
     }
 
-    /// Whether the body's resolved subtree is built ENTIRELY from CONTEXT-FREE PURE-SCALAR forms — the
-    /// eligibility gate for this MVP pass.
+    /// Whether the body's resolved subtree is built ENTIRELY from forms `cse_body` can safely rewrite — the
+    /// eligibility gate for this pass.
     ///
-    /// The hazard (root-caused with v-wasm-opt): this pass currently runs at the PassManager hook which
-    /// fires BEFORE lazy lowering, so `db.core` / `db.captured_ref` are empty. A pass-time `core_of` is thus
-    /// the FIRST demand of a node — and for any node whose correct lowering needs a context established at
-    /// lower time (a lambda-lift populating `captured_ref`, a handler lift, a contract desugar, a `?`-try, a
-    /// pattern binder) that first-demand lowers WITHOUT the context and MEMO-POISONS `db.core` permanently
-    /// (surfacing at emit as "parameter/let reference has no local slot"). The proper fix is TIMING (run the
-    /// pass over an already-filled+lifted column — a `force-lower-all` step before the PassManager, tracked
-    /// as the Option-A follow-up). Until then this MVP gates to a CLOSED WHITELIST of forms whose lowering
-    /// is context-free, so a `core_of` over such a body touches only nodes safe to lower first-demand.
+    /// HISTORY: originally "pure-scalar only" to dodge a PRE-LOWERING poison (the pass once ran before lazy
+    /// lowering, so a pass-time `core_of` first-demanded a context-needing node WITHOUT its lift/handler/
+    /// binder context and memo-poisoned `db.core`). That timing hazard is GONE — the PassManager now runs
+    /// POST-LAYOUT (compile.rs), where layout has lowered every reachable body top-down, so a pass-time
+    /// `core_of` is a cache hit. What remains is a VALUE-CORRECTNESS hazard: the MVP `cse_body` is NOT
+    /// scope-aware, so a subtree reading a PATTERN-BINDER (`Match`/`Try`/`SumPayload`) or a CONTINUATION
+    /// context (`Handle`/`Resume`/`Host`) is not invariant across occurrences — sharing it miscompiles.
     ///
-    /// A closed ALLOW-list (reject any unlisted / future variant — the safe default) rather than a blocklist
-    /// of risky forms (which is open-ended: effects, contracts, try, match-binders, map-patterns, …). The
-    /// check uses `resolved_of`, NOT `core_of`, so the pre-check itself cannot poison the memo.
-    fn body_is_pure_scalar(db: &mut Db, id: StructId) -> bool {
+    /// So the ALLOW-list admits the CONTEXT-FREE-LOWERING forms: pure scalar/boolean/control leaves, heap
+    /// CONSTRUCTORS (`Tuple`/`List`/`Record`/`Map`/`Bin` — a repeated SCALAR subexpr inside them CSEs
+    /// soundly; guard (A) keeps the heap handle itself uncse'd) and field READS (`MapField`/`RecordField`/
+    /// `BinField`, like `Proj`/`Member`). It REJECTS the binder/continuation forms (`Match`/`Try`/
+    /// `SumPayload`/`Lambda`/`Handle`/`Resume`/`Host`/arbitrary-`Apply`). Closed ALLOW-list — an unlisted/
+    /// future variant rejects (the safe default). Uses `resolved_of`, NOT `core_of`, so the pre-check cannot
+    /// poison the memo. A later slice adds SCOPE-AWARE grouping to admit binder-scoped bodies.
+    fn body_admits_cse(db: &mut Db, id: StructId) -> bool {
         use crate::resolved::Resolved;
         let ok = match crate::resolve::resolved_of(db, id) {
-            // Leaves + pure scalar/boolean operators + straight control flow whose lowering needs no
-            // lift/capture/contract/pattern context. `Ref`/`Param` read a param or a plain let-local slot
-            // that lowering establishes in-body; `Let`/`If`/`And`/`Not`/`Annot`/`Prim` are scalar-structural;
-            // `Proj`/`Member` are pure field reads. Everything else — `Lambda` (lift), `Handle`/`Host`/
-            // `Resume` (effects), `Try` (fallible desugar), `Match` (pattern binders), `Apply` (arbitrary
-            // callee, may reach any of the above), `Map`/`MapField`/`List`/`Record`/`Tuple`/`Bin`/`BinField`/
-            // `SumPayload` (heap builds / pattern-bound / context-lowered) — is REJECTED.
+            // ADMITTED — CONTEXT-FREE-LOWERING forms: pure scalar/boolean/control leaves (`Ref`/`Param`/
+            // `Let`/`If`/`And`/`Not`/`Annot`/`Prim` read a param/let-slot or are scalar-structural), field
+            // READS (`Proj`/`Member`/`MapField`/`RecordField`/`BinField` — pure reads, no binder context),
+            // and heap CONSTRUCTORS (`Tuple`/`List`/`Record`/`Map`/`Bin` — build a fresh heap value; a
+            // repeated SCALAR subexpr inside them CSEs soundly, guard (A) keeps the handle uncse'd).
+            // REJECTED — the binder/continuation forms whose subtrees are NOT invariant for scope-unaware
+            // CSE: `Lambda` (lift), `Handle`/`Host`/`Resume` (effects/continuation), `Try` (fallible-desugar
+            // binder), `Match`/`SumPayload` (pattern binders), and arbitrary `Apply` (callee may reach any).
             Resolved::Unit
             | Resolved::Bool(_)
             | Resolved::Int(_)
@@ -226,6 +229,14 @@ pub(crate) mod cse {
             | Resolved::If { .. }
             | Resolved::Proj { .. }
             | Resolved::Member { .. }
+            | Resolved::MapField { .. }
+            | Resolved::RecordField { .. }
+            | Resolved::BinField { .. }
+            | Resolved::Tuple { .. }
+            | Resolved::List { .. }
+            | Resolved::Record { .. }
+            | Resolved::Map { .. }
+            | Resolved::Bin { .. }
             | Resolved::Annot { .. }
             | Resolved::ConstBlock { .. }
             | Resolved::Let { .. } => true,
@@ -245,9 +256,7 @@ pub(crate) mod cse {
             return false;
         }
         match db.ast.get(id).clone() {
-            crate::ast::Struct::List(children) => {
-                children.iter().all(|&c| body_is_pure_scalar(db, c))
-            }
+            crate::ast::Struct::List(children) => children.iter().all(|&c| body_admits_cse(db, c)),
             crate::ast::Struct::Atom(_) => true,
         }
     }
@@ -977,7 +986,7 @@ mod tests {
         );
     }
 
-    // SOUNDNESS-GUARD WITNESS: the `body_is_pure_scalar` eligibility gate must SKIP any body that
+    // SOUNDNESS-GUARD WITNESS: the `body_admits_cse` eligibility gate must SKIP any body that
     // contains a nested def / lambda / capture. A pre-emit Core pass that `core_of`s such a body poisons
     // `db.core` (the captured-ref fast path reads `db.captured_ref`, populated only at lambda-LIFT time —
     // walking a capturing body pre-lift follows a captured ref to an out-of-scope binding and memoizes a
