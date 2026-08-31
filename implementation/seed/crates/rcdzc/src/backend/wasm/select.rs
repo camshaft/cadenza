@@ -202,6 +202,17 @@ pub struct Emit {
     /// `select_function_of` (it has params/self_def/body); empty otherwise. Reuses the EXISTING
     /// `count_param_consumes` + `looped_owned_param_drops` machinery (no re-derived predicate).
     nontail_match_reclaim_binders: HashSet<StructId>,
+    /// 05:18721 PART 1 (RestFrom preservation-dup skip-gate, read by the `emit.rs` `Core::SumPayload`
+    /// `RestFrom` arm): whether the function body being emitted is BOUNDARY-OWNED (an export-entry or a
+    /// lifted lambda) — i.e. the scrutinee is borrowed and the CALLER emits the single shell-drop_after (the
+    /// caller-drop). Set by `select_function_of` (which computes `is_boundary_owned`) before the emit. In such
+    /// a body a per-arm RestFrom `(.. r)` preservation dup is never balanced → leak, so it is a candidate for
+    /// the skip-gate (together with the rest-borrow-only + no-sibling-after-vec-drop conjuncts).
+    pub body_is_boundary_owned: bool,
+    /// The function-body ROOT of the emit in progress — set by `select_function_of`. Lets the emit run a
+    /// body-scoped escape query (`reclaim::restfrom_result_escapes`) for the RestFrom skip-gate's
+    /// rest-borrow-only conjunct. `None` outside a `select_function_of` emit.
+    pub fn_body: Option<StructId>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -1090,6 +1101,10 @@ pub fn select_function_of(
     // never a lifted lambda). Internal callee-owned recursive defs (sum-nat) are neither → reclaimed.
     let is_boundary_owned =
         layout.exports.iter().any(|e| e.body == body) || db.lifted.iter().any(|l| l.body == body);
+    // 05:18721 PART 1: expose the boundary-owned flag + body root to the emit so the RestFrom preservation-dup
+    // skip-gate (emit.rs `Core::SumPayload` RestFrom arm) can read them (v-wasm-opt owns that gate).
+    code.body_is_boundary_owned = is_boundary_owned;
+    code.fn_body = Some(body);
     let nontail_reclaim: HashSet<StructId> = if is_boundary_owned {
         HashSet::new()
     } else {

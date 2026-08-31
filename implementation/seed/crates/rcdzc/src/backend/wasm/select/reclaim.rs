@@ -123,6 +123,25 @@ pub(super) fn binding_escapes_dup_aware(
     v
 }
 
+/// Whether the RESULT of the RestFrom extraction node `restfrom_node` (a `(.. r)` tail slice) ESCAPES —
+/// reaches a CONSUMING position (a self-call arg / a persistent op / the result) — anywhere in `body`. The
+/// 05:18721 PART-1 "rest-borrow-only" side-condition for the emit's RestFrom preservation-dup skip-gate
+/// (emit.rs `Core::SumPayload` RestFrom arm, v-wasm-opt's site): the per-arm preservation dup may be skipped
+/// (in a boundary-owned body, no sibling reads the handle after the vec-drop) ONLY when the rest is NOT
+/// persistently consumed — i.e. this returns FALSE. If the rest IS consumed (`sum-l`'s tail threaded to the
+/// self-call, `Option.expect`/ruf/AST-walker payload consumed), this returns TRUE and the dup is KEPT
+/// (drift-safe by construction — never suppress a dup whose extracted value escapes). Reuses the `Node`-target
+/// escape query (`EscapeTarget::Node`, the "this extraction node's value escapes" verdict).
+// TEMP `allow`: consumed by v-wasm-opt's emit.rs RestFrom skip-gate (part-1 land removes the allow).
+#[allow(dead_code)]
+pub(super) fn restfrom_result_escapes(
+    db: &mut Db,
+    body: StructId,
+    restfrom_node: StructId,
+) -> bool {
+    binding_escapes_dup_aware(db, body, EscapeTarget::Node(restfrom_node), false, None)
+}
+
 /// The unmemoized worker of [`binding_escapes_dup_aware`]. Its recursive `binding_escapes_dup_aware(...)`
 /// calls resolve to the MEMOIZED wrapper above, so a shared subtree reached via many paths is computed once.
 fn binding_escapes_dup_aware_inner(
