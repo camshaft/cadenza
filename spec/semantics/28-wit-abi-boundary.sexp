@@ -544,6 +544,25 @@
   (live-objects known-leak))
 
 (case
+  "a bare enum RESULT member of a typed export interface crosses (payloadless-enum disc passthrough)"
+  (doc
+    "SHAPE 52 — a TOP-LEVEL bare `enum{…}` RESULT member of a typed export interface. An all-nullary
+           Cadenza sum (`db.is_enum_disc`) is represented as its raw i32 DISCRIMINANT (no heap handle), which
+           IS the canonical-ABI core rep of a WIT `enum` (`flatten(enum) = [i32]`), so `record_result_lower`
+           passes it straight through (`ResultLower::Passthrough`) — the def returns the disc directly and the
+           declared WIT `enum` becomes the member's result type. GUARD: the guest case order (kebab) must equal
+           the WIT case order (else the disc would index the wrong case — a reorder needs a runtime remap, a
+           later increment). Guest returns Color.Green over `enum{red,green,blue}`; it crosses + renders the
+           canonical nullary-variant value `(green unit)`. Pins the enum-result-member passthrough (distinct
+           from an enum as a record FIELD or a host-result — a top-level enum export member).")
+  (wit-world (world w (export iface (member choose (func (result (enum red green blue)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type Color (Red) (Green) (Blue)) (def (choose) Color.Green) (export choose)))
+  (call choose)
+  (output (green unit))
+  (live-objects known-leak))
+
+(case
   "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
   (doc
     "SHAPE 10 — a scalar host-import RESULT (clock.now : () -> u64) driven through an imposed WIT world.
