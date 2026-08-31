@@ -8345,72 +8345,20 @@ mod tests {
         assert_eq!(assert_roundtrip("{ x, y = 2 }", 80), "{ x, y = 2 }");
     }
 
-    #[test]
-    fn export_brace_surface() {
-        // `(export name…)` renders as a brace name group; `export { … }` parses back to it.
-        assert_eq!(
-            print(&sexpr::read("(export main)").unwrap(), 80),
-            "export { main }"
-        );
-        assert_eq!(
-            print(&sexpr::read("(export main helper)").unwrap(), 80),
-            "export { main, helper }"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml("export { main, helper }").arenas),
-            "(export main helper)"
-        );
-        assert_eq!(
-            assert_roundtrip("export { main, helper }", 80),
-            "export { main, helper }"
-        );
-    }
-
-    #[test]
-    fn export_constructor_and_wildcard_surface() {
-        // Opaque/abstract types: an export element may be a type's CONSTRUCTOR `(. T A)` or the
-        // WILDCARD `(. T *)` (the whole constructor set), alongside bare names. Each renders inside the
-        // `export { … }` brace group as `T.A` / `T.*`, and parses back to the same member-access form.
-        assert_eq!(
-            print(&sexpr::read("(export (. Color *))").unwrap(), 80),
-            "export { Color.* }"
-        );
-        assert_eq!(
-            print(&sexpr::read("(export (. Color Red) main)").unwrap(), 80),
-            "export { Color.Red, main }"
-        );
-        // Round-trip both directions: `Color.*` reads back to `(. Color *)`.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("export { Color.* }").arenas),
-            "(export (. Color *))"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml("export { Color.Red, main }").arenas),
-            "(export (. Color Red) main)"
-        );
-        assert_eq!(
-            assert_roundtrip("export { Color.* }", 80),
-            "export { Color.* }"
-        );
-        assert_eq!(
-            assert_roundtrip("export { Color.Red, main }", 80),
-            "export { Color.Red, main }"
-        );
-    }
-
-    #[test]
-    fn member_wildcard_reads_and_prints() {
-        // `T.*` as a bare member access (the segment the export surface reuses) parses to `(. T *)`
-        // and prints back — `*` is a reserved final member segment, distinct from the `*` multiply op
-        // (which needs an operand before it).
-        assert_eq!(
-            sexpr::print(&parser::read_ml("Color.*").arenas),
-            "(. Color *)"
-        );
-        assert_eq!(print(&sexpr::read("(. Color *)").unwrap(), 80), "Color.*");
-        // Multiply is untouched — `a * b` stays the `*` operator, not a member access.
-        assert_eq!(sexpr::print(&parser::read_ml("a * b").arenas), "(* a b)");
-    }
+    // The export brace surface + member wildcard MIGRATED to the spec/syntax corpus (inc-6 batch-13):
+    //   * `export_brace_surface` (`(export name…)` ↔ `export { … }` brace name group) →
+    //     ml/97-export-brace-single `export { main }`→`(export main)`, ml/98-export-brace-multi
+    //     `export { main, helper }`→`(export main helper)`.
+    //   * `export_constructor_and_wildcard_surface` (an export element may be a type CONSTRUCTOR `(. T A)`
+    //     or the WILDCARD `(. T *)` — the whole ctor set) → ml/99-export-constructor-wildcard
+    //     `export { Color.* }`→`(export (. Color *))`, ml/100-export-constructor-and-name
+    //     `export { Color.Red, main }`→`(export (. Color Red) main)`.
+    //   * `member_wildcard_reads_and_prints` (`T.*` bare member access → `(. T *)`; `*` is a reserved
+    //     final member segment) → ml/101-member-wildcard `Color.*`→`(. Color *)`. The multiply anti-case
+    //     `a * b`→`(* a b)` is already pinned by the arith cases (e.g. ml/79 `(1 + 2) * 3`), which keep
+    //     `*` distinct from the wildcard segment.
+    // The sexp→ml `print((export …))`/`print((. Color *))` oracles are subsumed by the ml cases'
+    // format-absent fmt-idempotence (all five inputs are already canonical).
 
     #[test]
     fn import_brace_from_surface() {
