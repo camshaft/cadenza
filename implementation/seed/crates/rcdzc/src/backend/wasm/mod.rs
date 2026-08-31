@@ -8495,6 +8495,32 @@ fn record_interface_export(
                     sum_params.push(None);
                     any_record = true;
                 }
+                // A TOP-LEVEL `tuple<…>` param is a POSITIONAL record: the canon lift flattens it depth-first
+                // (no field names, so no WIT-vs-name-lex permute — identity slots 0..n). Rebuild each element in
+                // order via `param_field_rebuild` (scalar/bytes/nested-record/sum, recursing on a compound
+                // element), and the wrapper builds the value-heap cell with the SAME `arr-alloc`/`arr-set` shape
+                // as a record cell (a Cadenza tuple and record share the array rep — `Core::Tuple`/`Core::Record`
+                // build identically). Without this a tuple param declined here and fell through to a scalar/
+                // handle-erased emit (a `u32` param the driver could not marshal a tuple arg against).
+                Ty::Tuple(gtys) => {
+                    let WitType::Tuple(wtys) = wty else {
+                        return None;
+                    };
+                    if gtys.len() != wtys.len() {
+                        return None;
+                    }
+                    let mut rebuild = Vec::with_capacity(gtys.len());
+                    for (gt, wt) in gtys.iter().zip(wtys) {
+                        rebuild.push(param_field_rebuild(db, gt, wt, &mut param_vts)?);
+                    }
+                    // Positional slots: element i lands in cell slot i (identity — a tuple has no name-lex order).
+                    let slots: Vec<u32> = (0..gtys.len() as u32).collect();
+                    params.push(Some(rebuild));
+                    param_slots.push(Some(slots));
+                    mem_leaf_params.push(None);
+                    sum_params.push(None);
+                    any_record = true; // a param needs the cell-rebuild wrapper (same gate as a record param)
+                }
                 // A TOP-LEVEL `option<scalar>` param crosses as a native component `option<T>`, flattened to
                 // `(disc, payload…)` and rebuilt into the guest sum cell via `SumArgRebuild` (branch on the
                 // boundary disc → `sum-new`), passed DIRECTLY as the def arg — the sum sibling of the mem-leaf
@@ -8567,7 +8593,7 @@ fn record_interface_export(
                     sum_params.push(None);
                     any_mem_leaf_param = true;
                 }
-                Ty::Tuple(_) | Ty::Map(_, _) | Ty::Set(_) => {
+                Ty::Map(_, _) | Ty::Set(_) => {
                     return None;
                 } // needs memory / a deeper wrapper — later
                 scalar => {

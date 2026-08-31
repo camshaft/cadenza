@@ -83,6 +83,9 @@
 ; a mem-leaf param interleaved with a scalar, and a sum (option) param beside a mem-leaf — each pins that the
 ; wrapper's flattened-leaf CURSOR advances correctly across differently-sized top-level params (2 for a
 ; (ptr,len) mem-leaf, 1 for a scalar, disc+payload for a sum). A broken cursor would misread a later param.
+; SHAPE 48 — a bare tuple<…>/Tuple PARAM member (a POSITIONAL record): the wrapper builds the value-heap cell
+; with the same arr-alloc/arr-set shape as a record param, identity slots (no name-permute). Position-sensitive
+; witness catches a swapped element. Before this a tuple param mis-emitted a handle-erased scalar param.
 
 (case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -350,6 +353,23 @@
   (input (do (def (both (: o (Option Int64)) (: b Bytes)) (+ (match o ((Option.Some v) v) ((Option.None) 0)) (Bytes.len b))) (export both)))
   (call both (: (Some 40) (Option Int64)) (: #list(1 2) Bytes))
   (output (: 42 Int64))
+  (live-objects known-leak))
+
+(case "a bare tuple<scalar,scalar>/Tuple PARAM member of a typed export interface crosses (positional cell rebuild)"
+  (doc    "SHAPE 48 — a TOP-LEVEL `tuple<s64,s64>`/Tuple Int64 Int64 PARAM member of a typed export interface.
+           A tuple is a POSITIONAL record: the canon lift flattens it depth-first, and the wrapper rebuilds the
+           value-heap cell with the SAME `arr-alloc`/`arr-set` shape as a record param but with IDENTITY slots
+           (no WIT-vs-name-lex permute — a tuple has no field names). Reuses `param_field_rebuild` per element
+           (recursing on a compound element). Guest sumPair(p) = 100*p.0 + p.1 — POSITION-SENSITIVE so a
+           swapped or mis-slotted element is caught; (5,10) -> 510. Before this a top-level tuple param declined
+           in record_interface_export and fell through to a handle-erased scalar (`u32`) param the boundary
+           driver could not marshal a tuple arg against. The arg is written `(tuple 5 10)` (the coerce_one
+           tuple-arg form), distinct from the `#tuple(5 10)` RESULT render form.")
+  (wit-world (world w (export iface (member sum-pair (func (param p (tuple (s64) (s64))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (sumPair (: p (Tuple Int64 Int64))) (+ (* 100 (. p 0)) (. p 1))) (export sumPair)))
+  (call sum-pair (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: 510 Int64))
   (live-objects known-leak))
 
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
