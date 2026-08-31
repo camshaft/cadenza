@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -21,7 +21,7 @@ export default function Floats() {
       <Runnable
         source={`(/ 7.0 2.0)`}
       />
-      <P>Notice <C>(/ 7.0 2.0)</C> is <C>3.5</C>, which is real division because the operands are floats. Give <C>/</C> two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.</P>
+      <P>Notice <Cadenza>(/ 7.0 2.0)</Cadenza> is <C>3.5</C>, which is real division because the operands are floats. Give <C>/</C> two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.</P>
       <H2>Floating-point is approximate, and honest about it</H2>
       <P>IEEE-754 floats can't represent every decimal exactly, and Cadenza doesn't pretend otherwise. The classic example: add a tenth and two tenths, and the result isn't quite three tenths.</P>
       <Runnable
