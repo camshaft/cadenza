@@ -2886,7 +2886,24 @@
             (effect E (op op (-> Int64 Int64)))
             (def (main)
               (handle E unit ((op (n) s (resume n s))) (E.op true))) (export main)))
-  (error  CDZ0203))
+  (error  CDZ0203 (message "operation `op`") (message "Int64") (message "Bool")))
+
+; The perform-argument message NAMES the operation + its expected/actual types (the perform-site analogue of
+; the member-op wrong-type-arg message), not the generic "Int64 and Bool must be the same type here" internal
+; clash. When the performed value and the declared argument are SAME-KIND compounds that differ structurally
+; (a record field-set diff), it appends the minimal-conflict DELTA — WHICH field is wrong — the annotation /
+; operator-arg / peer-join sites already carry. A SCALAR mismatch (Int64 vs Bool, no structural delta) keeps
+; the bare message with no delta tail. (Migrated from rcdzc a_perform_arg_structural_mismatch_names_the_delta_
+; not_just_the_types + the message half of performing_an_operation_with_a_wrong_type_argument_is_rejected.)
+(case "a structurally-mismatched perform argument names the operation and the field-level delta"
+  (input  (do (effect Log (op put (-> (Record (: x Int64)) Unit)))
+              (def (main) (handle Log unit ((put (r) s (resume unit s))) ((. Log put) #record((= y 2))))) (export main)))
+  (error  CDZ0203 (message "operation `put`") (message "was performed") (message "field `x`")))
+
+(case "a scalar-mismatched perform argument names the operation with no structural-delta tail"
+  (input  (do (effect Log (op put (-> Int64 Unit)))
+              (def (main) (handle Log unit ((put (r) s (resume unit s))) ((. Log put) true))) (export main)))
+  (error  CDZ0203 (message "operation `put`") (not " — ")))
 
 ; The perform-argument check must fire for EVERY declared parameter type, not only Int64. An operation
 ; declared `(-> String Unit)` performed on an Int64 argument — `(E.emit 42)` — is the same type mismatch
