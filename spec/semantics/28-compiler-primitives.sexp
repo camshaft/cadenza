@@ -3450,3 +3450,26 @@
   (output (: 1 Int64))
   (call main (: false Bool))
   (output (: 2 Int64)))
+
+; A CONSTANT wrong-typed operand to a collection / conversion op is a TYPE error (CDZ0203), NOT a
+; misleading/uncoded const-fold decline. The wrong-typed operand reaches the lowering decline before the
+; type-check surfaces; the lowering now DEFERS to infer's authoritative CDZ0203 ("expects an argument of
+; type (Set _)/(Map _ _)/Int64, got Int64/String") via the neutral "(see the type error above)" decline
+; that dedup_faults drops. The runtime/unsolved forms keep their honest declines (this only fires for a
+; DEFINITE non-matching kind). Sibling of the String-op faces (#6870/#6875); reported by v-deferral-declines.
+(case
+  "a constant non-Set operand to Set.contains is a coded type mismatch, not an uncoded decline"
+  (input (do (def (main) (Set.contains 5 0)) (export main)))
+  (error CDZ0203))
+(case
+  "a constant non-Set operand to Set.insert is a coded type mismatch, not an uncoded decline"
+  (input (do (def (main) (Set.insert 5 0)) (export main)))
+  (error CDZ0203))
+(case
+  "a constant non-Map operand to Map.lookup is a coded type mismatch, not an uncoded decline"
+  (input (do (def (main) (Map.lookup 5 0)) (export main)))
+  (error CDZ0203))
+(case
+  "a constant non-integer operand to Int64.of is a coded type mismatch, not a misleading conversion decline"
+  (input (do (def (main) (Int64.of "x")) (export main)))
+  (error CDZ0203))

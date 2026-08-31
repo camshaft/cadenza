@@ -4666,13 +4666,14 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             {
                 return false;
             }
-            // Drop the "operand is not a string (see the type error above)" decline when a member-op
-            // wrong-arg-type CDZ0203 is present — the decline defers to it explicitly (and once the CDZ0203
-            // anchors at the argument, they no longer share a node for the node-keyed dedup below).
+            // Drop any "(see the type error above)" operand decline when a member-op wrong-arg-type CDZ0203
+            // is present — this self-describing marker (String's `runtime_string_op_decline`, and the
+            // generic collection/typed `ill_typed_operand_decline`) means the decline EXPLICITLY defers to
+            // that type error (and once the CDZ0203 anchors at the argument, they no longer share a node for
+            // the node-keyed dedup below). Keyed on the marker so every typed-family site is covered.
             if has_member_op_arg_type_reject
                 && r.is_decline()
-                && r.message
-                    .contains("this operation's operand is not a string (see the type error above)")
+                && r.message.contains("(see the type error above)")
             {
                 return false;
             }
