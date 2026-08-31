@@ -6,7 +6,7 @@
                 ((list) 0)
                 ((list h .. t) (+ (* 0 (St.check h)) (walk t)))))
             (def (main (: n Int64))
-              (handle St (- 0 1)
+              (handle St -1
                 ((check (v) s (resume 0 (if (= (% v 3) 0) v s)))
                  (best (u) s (resume s s)))
                 (+ (* 0 (walk (list 4 6 7 9 11))) (St.best))))

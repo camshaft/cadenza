@@ -9,7 +9,7 @@
                                       ((Run k) (resume k (Run (+ k v))))))
                         (dump () s (resume s s)))
                        (do (M.step n) (M.step 3) (M.dump)))
-                ((Idle) (- 0 1))
+                ((Idle) -1)
                 ((Run k) (* 2 k))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 16 Int64))
