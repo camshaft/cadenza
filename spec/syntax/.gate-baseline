@@ -339,6 +339,9 @@ pass	ml/399-set-pattern-rest-param
 pass	ml/40-match-open-sum-refutable
 pass	ml/400-set-pattern-empty-param
 pass	ml/401-set-rest-match-arm-literal-element
+pass	ml/402-tuple-rest-single-leading
+pass	ml/403-tuple-rest-nested-in-rest-binder
+pass	ml/404-record-rest-field-shorthand
 pass	ml/41-match-closed-single-variant
 pass	ml/42-match-already-lowered-noop
 pass	ml/43-match-nested-bottom-up

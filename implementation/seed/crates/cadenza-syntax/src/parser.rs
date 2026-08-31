@@ -10397,58 +10397,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_tuple_rest_pattern_parses() {
-        use crate::sexpr;
-        // A tuple pattern with a trailing `.. rest` binds the remaining positional elements to the wrapped
-        // `(.. rest)` node — the twin of the list-pattern rest, per the operator's `(.. v)`-everywhere
-        // canonical. Tuple arity is STATIC, so this is a fixed-arity trailing-positional bind: `(a, b, .. r)`
-        // reads to `(tuple a b (.. r))`. (The tuple-rest MATCH lowering is v-inference's co-land slice — the
-        // reference shape they asked to land FIRST; this pins the SURFACE node it consumes.)
-        assert_eq!(
-            sexpr::print(&parse_ok("def f((a, b, .. rest)) = a")),
-            "(def (f (tuple a b (.. rest))) a)"
-        );
-        // A single leading binder plus the rest.
-        assert_eq!(
-            sexpr::print(&parse_ok("def g((x, .. rest)) = x")),
-            "(def (g (tuple x (.. rest))) x)"
-        );
-        // A plain tuple pattern (no rest) is unchanged — the rest arm is additive.
-        assert_eq!(
-            sexpr::print(&parse_ok("def h((a, b)) = a")),
-            "(def (h (tuple a b)) a)"
-        );
-        // The rest binder is itself a full sub-pattern position, so a nested pattern nests under it.
-        assert_eq!(
-            sexpr::print(&parse_ok("def k((a, .. (b, c))) = a")),
-            "(def (k (tuple a (.. (tuple b c)))) a)"
-        );
-    }
-
-    #[test]
-    fn a_record_rest_pattern_parses() {
-        use crate::sexpr;
-        // A record pattern with a trailing `.. rest` binds the REMAINING (un-named) fields to the wrapped
-        // `(.. rest)` node — the twin of the map/set/list-pattern rest, per the operator's `(.. v)`-everywhere
-        // canonical. A record field-set is STATIC, so `rest` is a residual record of the un-named fields:
-        // `{ a = p, .. rest }` reads to `(record (= a p) (.. rest))`. (The record-rest MATCH lowering —
-        // residual-record construction — is v-inference's co-land slice; this pins the SURFACE node.)
-        assert_eq!(
-            sexpr::print(&parse_ok("def f({ a = x, .. rest }) = x")),
-            "(def (f (record (= a x) (.. rest))) x)"
-        );
-        // Field SHORTHAND `{ a }` puns to `(= a a)` and coexists with the rest.
-        assert_eq!(
-            sexpr::print(&parse_ok("def g({ a, .. rest }) = a")),
-            "(def (g (record (= a a) (.. rest))) a)"
-        );
-        // A plain record pattern (no rest) is unchanged — the rest arm is additive.
-        assert_eq!(
-            sexpr::print(&parse_ok("def h({ a = x, b = y }) = x")),
-            "(def (h (record (= a x) (= b y))) x)"
-        );
-    }
+    // `a_tuple_rest_pattern_parses` + `a_record_rest_pattern_parses` (a tuple/record pattern with a trailing
+    // `.. rest` binding the remaining positional/un-named elements to the wrapped `(.. rest)` node — the twin
+    // of the list/map/set-pattern rest) MIGRATED to the spec/syntax corpus (inc-6 batch-66):
+    //   * ml/331-tuple-rest-pattern `(a, b, .. rest)`→`(tuple a b (.. rest))`, ml/402-tuple-rest-single-leading
+    //     `(x, .. rest)`→`(tuple x (.. rest))`, ml/403-tuple-rest-nested-in-rest-binder `(a, .. (b, c))`→
+    //     `(tuple a (.. (tuple b c)))` (the rest binder is a full sub-pattern position). Plain `(a, b)` = ml/336.
+    //   * ml/332-record-rest-pattern `{ a = x, .. rest }`→`(record (= a x) (.. rest))`, ml/404-record-rest-field-
+    //     shorthand `{ a, .. rest }`→`(record (= a a) (.. rest))` (field shorthand puns `{ a }`→`(= a a)`).
+    //     Plain `{ a = x, b = y }` = ml/345.
 
     #[test]
     fn degenerate_rest_patterns_parse_permissively_without_panic() {
