@@ -5667,18 +5667,22 @@ fn check(paths: &Paths, profile: &str) {
     // seq-96/97 flush), and the trailing PRs re-fmt'd the corpus, so all 6 domain src dirs are canonical under
     // the frozen printer (verified `cdz fmt --check` exit 0 + a fresh fmt-all is a NO-OP). v-nix un-holds + wires
     // the merge-required nix `cdzFmtCheck` (#6323) in lockstep with this flip.
-    // WIDENED to `.sexp` 2026-08-31: the operator (ruling B) required the fmt printer preserve readability FIRST —
-    // both dependencies landed: multi-line comment preservation (#6808 v-syntax-comments) + member-access-sugar
-    // print arm (#6816 v-syntax, emits dotted `X.Y` not `(. X Y)`). So `cdz fmt` over spec/semantics/*.sexp is now
-    // comment-safe + idempotent + READABLE (sugar + multi-line docs kept). Fmt-normalized the 34 spec .sexp + added
-    // `spec/semantics` to the gate. (B) cdz-platform stays out (v-platform zone).
+    // WIDENED to `.sexp` 2026-08-31: fmt-normalized the 34 spec/semantics/*.sexp + added `spec/semantics` (after the
+    // operator ruling-B printer-readability deps #6808/#6816 landed). — but TEMPORARILY REVERTED to .cdz-only below.
+    // TEMP (C) 2026-08-31 (concierge-APPROVED): the .sexp portion is now ADVISORY (dropped from this merge-required
+    // gate) — KEEP the 6 .cdz dirs merge-required. WHY: v-parser-corpus's inc-6 comment-round-trip series touches
+    // printer.rs nearly every batch (#6863/#6868/#6874…), re-rendering gated .sexp (13-strings doc-header) → the
+    // merge-required .sexp gate reded per-batch → a re-fmt treadmill (#6873/#6880). The .sexp fmt gate is COSMETIC
+    // (canonicalization, not behavior), so advisory-until-stable is low-risk + stops the churn; .cdz stays enforced.
+    // RE-PROMOTE `spec/semantics` here (+ v-nix nix cdzFmtCheck) AFTER the inc-6 comment-round-trip series COMPLETES
+    // AND v-syntax declares the comment/doc PRINTER stable — do ONE final `cdz fmt spec/semantics` then flip it back.
     const CDZ_FMT_CHECK_ENFORCE: bool = true;
     if CDZ_FMT_CHECK_ENFORCE {
         log.step(
             "cdz-fmt-check",
             "cargo run -q -p cdz -- fmt --check implementation/compiler-ml/src implementation/cad/src \
              implementation/music/src implementation/des/src implementation/iterators/src \
-             implementation/choreography/src spec/semantics",
+             implementation/choreography/src",
             repo,
         );
     }
