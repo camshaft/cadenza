@@ -1661,12 +1661,15 @@ fn a_deeper_binder_below_a_native_nested_record_field_declines_cleanly_not_cdz01
         "a deeper binder below a NATIVE nested record field must NOT leak a spurious CDZ0101 unbound (the \
          `=`-FieldPair form was missed by the binding-path nested-decline): {diags:?}"
     );
-    // The clean not-yet-wired decline IS present (check ≡ compile).
+    // The clean not-yet-wired decline IS present (check ≡ compile) AND carries the seq-286 umbrella
+    // CDZ0900 (`Reject::unsupported`) — the SAME code the match-arm twin emits. It formerly used the
+    // UNCODED `Reject::decline`, so the identical feature-gap was `error [CDZ0900]:` in a match but a bare
+    // `error:` in a binding; pinning the code here guards against a regression to the uncoded form.
     assert!(
-        diags.iter().any(|d| d
-            .message
-            .contains("nested compound sub-pattern inside a record binding pattern")),
-        "the deeper nested-compound binder gives the clean 'not supported' decline: {diags:?}"
+        diags.iter().any(|d| d.code.as_deref() == Some("CDZ0900")
+            && d.message
+                .contains("nested compound sub-pattern inside a record binding pattern")),
+        "the deeper nested-compound binder gives the clean coded (CDZ0900) 'not supported' decline: {diags:?}"
     );
 }
 

@@ -5074,7 +5074,13 @@ fn last_binder_named(
                             find_binder_in_pattern(db, value_pat, name, &mut path, &mut heads)
                         };
                         if bound {
-                            return Some(Resolved::Poison(Reject::decline(
+                            // CODED decline (CDZ0900) — same umbrella the MATCH-arm twin at
+                            // `match_arm_record_binds` emits via `Reject::unsupported`. The binding-path
+                            // decline formerly used the UNCODED `Reject::decline`, so the identical
+                            // feature-gap surfaced as a bare `error:` in a binding position but
+                            // `error [CDZ0900]:` in a match arm — a diagnostic-quality asymmetry (operator
+                            // seq-286: every user-facing decline carries a code). Now both paths are CDZ0900.
+                            return Some(Resolved::Poison(Reject::unsupported(
                                 "a nested compound sub-pattern inside a record binding pattern is not \
                                  supported (a record binding binds fields to bare names; \
                                  destructure a nested field with a further `let`)",

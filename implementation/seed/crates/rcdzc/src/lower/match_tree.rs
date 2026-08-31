@@ -1032,7 +1032,12 @@ pub(crate) fn check_binding_pattern(
             // keeping LOWER and RESOLVE in lockstep — never a silent CDZ0101 on an unwired nested binder.
             let is_bare_binder_or_wild = db.ast.as_name(value_pat).is_some();
             if !is_bare_binder_or_wild {
-                return Err(Reject::decline(
+                // CODED decline (CDZ0900) — the check-side twin of the resolve-side
+                // `last_binder_named` decline, both matching the MATCH-arm `Reject::unsupported`
+                // umbrella. Formerly `Reject::decline` (uncoded), so the check-time report of this
+                // feature-gap surfaced as a bare `error:` while the match arm gave `error [CDZ0900]:`
+                // (operator seq-286: every user-facing decline carries a code).
+                return Err(Reject::unsupported(
                     "a nested compound sub-pattern inside a record binding pattern is not supported \
                      (a record binding binds fields to bare names; destructure a nested field with \
                      a further `let`)",
