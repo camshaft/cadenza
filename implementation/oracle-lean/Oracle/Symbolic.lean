@@ -774,7 +774,13 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
             match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
             | some r => .cannotProve r
             | none =>
-              let args := outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)
+              -- NORMALIZE each operand first: normalize folds width-INDEPENDENT structure (comparisons, `if`
+              -- branch-selection, float, let-ground substitutions already done by symEval) to a `.const`, so a
+              -- surrounding INTEGER op whose operands only become concrete AFTER those fold (e.g. `(+ (if C a a) b)`
+              -- with both branches equal) now sees `.const`s and folds at width `ty` below — closing the
+              -- const-fold-to-literal gap the backend exploits (v-cdz-smith FP-0/FP-1). normalize does NOT fold
+              -- int arith itself (no width context), so the width-checked fold stays here; idempotent + sound.
+              let args := outs.map (fun o => match o with | .sym e => normalize e | .cannotProve _ => .const .unit)
               -- INTEGER const-fold at the ascribed/ambient width `ty`. `evalArithOp` does the width-checked
               -- overflow trap, so fold ONLY when it yields a VALUE (fits): an overflow / div-by-zero /
               -- unsupported keeps the op SYMBOLIC — folding an overflowing case to a value would be a FALSE
@@ -1898,6 +1904,21 @@ private def _setContainsNanExpr : Module :=
 -- (a fold-through-a-trapping-condition the sampler can miss at v0=0). Pinning it as CORRECT — do not "fix".
 #guard normalize (.app "+" #[.ite (.app "%" #[.var 0, .var 0]) (.const (.int (-1000000))) (.const (.int (-1000000))), .const (.int (-1000000))])
        == .app "+" #[.ite (.app "%" #[.var 0, .var 0]) (.const (.int (-1000000))) (.const (.int (-1000000))), .const (.int (-1000000))]
+-- FP-1 first-factor: an int op whose operands are `if`s that fold only under normalize now GROUNDS to a
+-- literal (symEval normalizes operands before its width-checked int fold). `(let ((v0 5)) (+ (if (> v0 v0)
+-- v0 v0) (if (>= 10 v0) 100 v0)))` = (5) + (100) = 105 — was the FP-1 boundary, now proven.
+private def _fp1ProbeExpr : Module :=
+  { leaves := #[Leaf.name "let".toUTF8, Leaf.name "v0".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5]),
+                Leaf.name "+".toUTF8, Leaf.name ">".toUTF8, Leaf.name ">=".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.intLit false .dec (ByteArray.mk #[100]),
+                Leaf.name "if".toUTF8],
+    nodes := #[.atom 1, .atom 2, .list #[0, 1], .list #[2], .atom 4, .atom 1, .atom 1, .list #[4, 5, 6],
+               .atom 8, .atom 1, .atom 1, .list #[8, 7, 9, 10], .atom 5, .atom 6, .atom 1, .list #[12, 13, 14],
+               .atom 8, .atom 7, .atom 1, .list #[16, 15, 17, 18], .atom 3, .list #[20, 11, 19],
+               .atom 0, .list #[22, 3, 21]],
+    root := 23 }
+#guard (match symEval _fp1ProbeExpr [] symDefaultFuel defaultIntTy 23 with
+        | .sym e => normalize e == .const (.int 105) | _ => false)
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
