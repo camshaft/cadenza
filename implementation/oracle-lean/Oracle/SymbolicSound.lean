@@ -597,16 +597,18 @@ theorem asF64Canon_idem (v : Value) :
   have hf : ∀ f : Float, Value.asF64? (.f64 f) = some f := fun _ => rfl
   cases h : Value.asF64? v <;> simp [h, hf]
 
-/- ✅ WALL DODGED (2026-08-31): the `foldConst?.match_10` sparse-cases wall is GONE — `foldConst?`'s binary
-arms are now a reducible `size == 2` dispatch (this PR, mirroring the `not` size-dispatch #6487), so
-`split`/`simp` now case `foldConst?` cleanly (verified: the "failed to generate equality theorems for
-match_10" error no longer occurs; `repeat' split at h` fully cases it). REMAINING for the capstone `.app`
-fold-select case is `foldConst?_canon_stable`:
+/- CAPSTONE `.app` fold-step — final piece `foldConst?_canon_stable`:
   `foldConst? op args = some v → (match asF64? v with | some f => .f64 f | none => v) = v`
-— TRUE (every fold output is `.bool`/`.f64`, both `asF64?`-canon) and now PROVABLE (split works); only the
-per-leaf closer needs tuning (after `repeat' split at h`, most leaves close by contradiction / injection +
-`asF64?`, but a few leaves' `h` isn't a clean `some=some` — an unsplit inner `match` remains — so the
-uniform closer needs a per-shape case). A focused next increment. -/
+TRUE (every fold output is `.bool`/`.f64`, both `asF64?`-canon — never `.int`/`.float`/`.floatNan`/
+`.floatInf`) and STRUCTURALLY unblocked (#6892 dodged the `foldConst?.match_10` wall — `foldConst?` reduces).
+🪤 TACTIC GAP (found 2026-08-31, Mathlib-FREE project): `split_ifs` is a MATHLIB tactic → "unknown tactic"
+here; and core `split at h` does NOT fire on the `if (bool-cond) = true then … else …` chain (`simp only
+[foldConst?] at h` leaves the whole `ite`-chain in `h`; `repeat' split at h` no-ops → the fold value is
+never constrained). NEXT FIX to try (no Mathlib): `by_cases`/`Bool.rec` on each `op == …` / `.size == …`
+Bool condition manually (or add `@[simp]` reductions so `simp … at h` collapses the `ite`s), then the
+inner `Value`/`Option` matches DO split; leaves close by `contradiction` / `injection`+`subst`+`rfl`.
+All OTHER `.app` building blocks are proven (denote{Unary,Binary}_fold, denoteApp_fold[_unary],
+denoteBinary_arith, arithmetic-identity value-chars, denote_map_normalize_args, asF64Canon_idem). -/
 
 /-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
 `normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
