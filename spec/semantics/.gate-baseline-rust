@@ -8630,7 +8630,6 @@ pass	a reachable unbound name found by two passes is reported exactly once
 pass	a record ARGUMENT missing fields carries an add (insert) fix with a placeholder per missing field
 pass	a record ARGUMENT with a lone surplus field carries a delete fix
 pass	a record match pattern typo field suggests the nearest field with a rename fix
-pass	a rest-form set match pattern is a coded, check-surfaced not-yet-supported rejection
 pass	a reused rest binder across sibling rest-lists is non-linear
 pass	a same-arity function PARAMETER difference resolves at the inner argument, no fn-signature tail
 pass	a same-arity per-position tuple type mismatch keeps its element message with no add or delete fix

@@ -3852,7 +3852,6 @@ pass	a repeated trapping divide inside one if-arm is not speculated past the bra
 pass	a repeated trapping divide inside one match arm is not hoisted past the match
 pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
-pass	a rest-form set match pattern is a coded, check-surfaced not-yet-supported rejection
 pass	a rest-pattern head binder read by an inlined match-arg callee resolves
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
 pass	a result<Bytes, enum> param field is read and rebuilt by the wrapper on Ok and Err arms (via an imposed WIT world)
