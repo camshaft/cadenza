@@ -8241,7 +8241,7 @@
   (output (: 7 Int64)))
 
 ; --- A match arm's pattern is TYPE-CHECKED against the scrutinee's sum type ---------------------
-; type-system.md §The Structural Types Are Record, Sum, Function, Tuple, And List + §sum identity is by
+; type-system.md §The Structural Types Are Record, Tuple, And Sum + §sum identity is by
 ; DECLARATION OCCURRENCE (`Option Int64` ≠ `Option Bool`; two distinct `(type …)` decls are distinct
 ; types even when they share a variant name). A match arm's CONSTRUCTOR pattern names a variant, and that
 ; variant MUST belong to the SCRUTINEE's sum — matching a `T` value against a `Some`/`U.A` pattern is a
