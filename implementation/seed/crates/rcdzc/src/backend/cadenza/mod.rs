@@ -324,17 +324,21 @@ pub fn emit_fragment(
 }
 
 /// Reconstruct a user sum's `(type <Name> (<Variant> <PayloadTy>…)…)` declaration, or `None` for a sum
-/// this slice does not emit: a GENERIC sum (type parameters — the payload is a type variable) or an OPEN
-/// sum (row-variable tail). A MULTI-variant sum's values are `Ty::Sum`; a SINGLE-variant sum's values are
-/// the erased `Ty::Nominal` newtype (re-emitted as `(<Ctor> <payload>)`) — BOTH need this decl in scope,
-/// so both are emitted (any `variants.len() >= 1`). A variant's payload types are recovered from their
-/// declaration occurrences via `typeval_of` + lower's `type_ast`; a nullary variant is `(<Variant>)`.
-/// `decl` is an owned clone (so `typeval_of`'s `&mut db` does not alias a `db.type_decls` borrow).
+/// this slice does not emit: an OPEN sum (row-variable tail). A MULTI-variant sum's values are `Ty::Sum`; a
+/// SINGLE-variant sum's values are the erased `Ty::Nominal` newtype (re-emitted as `(<Ctor> <payload>)`) —
+/// BOTH need this decl in scope, so both are emitted. An EMPTY sum (`(type V)`, ZERO variants, uninhabited)
+/// is ALSO emitted — as the bare `(type V)`: no value ever flows through it, but it is a valid CLOSED type
+/// that a live sum may carry as a payload (`(type W (Ok Int64) (Bad V))`), so its declaration must be in
+/// scope for the dependent decl to re-resolve on recompile (else `unknown type V`). A variant's payload
+/// types are recovered from their declaration occurrences via `typeval_of` + lower's `type_ast`; a nullary
+/// variant is `(<Variant>)`. `decl` is an owned clone (so `typeval_of`'s `&mut db` does not alias a
+/// `db.type_decls` borrow).
 fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> Option<StructId> {
-    // Emit any CLOSED sum of arity ≥1. A GENERIC sum (`decl.params` non-empty) is now handled: its head is
-    // `(<Name> p0 p1…)` and a bare type-parameter payload re-emits its name. An OPEN sum (row tail) still
-    // declines (its `.. r` surface is a later slice).
-    if decl.open_tail.is_some() || decl.variants.is_empty() {
+    // Emit any CLOSED sum, including the ZERO-variant (empty / uninhabited) sum as a bare `(type V)`. A
+    // GENERIC sum (`decl.params` non-empty) is handled: its head is `(<Name> p0 p1…)` and a bare
+    // type-parameter payload re-emits its name. An OPEN sum (row tail) still declines (its `.. r` surface
+    // is a later slice).
+    if decl.open_tail.is_some() {
         return None;
     }
     let type_head = b.name("type");
@@ -2143,6 +2147,18 @@ fn build_arm_pat(
     path: &[crate::core::PathStep],
     read_path: &[crate::core::PathStep],
     choices: &std::collections::HashMap<Vec<crate::core::PathStep>, Option<u32>>,
+    // A LITERAL-at-a-path refinement from a `LitTest` slot. `lit_choices[P]` is:
+    //   `Some(lit)` — emit the pre-built literal PATTERN node at path `P` (the `7` in `#tuple(a 7)`): the
+    //     matched `then_` sub-tree, where the slot is fixed to the literal.
+    //   `None` — a FREED slot: the fall-through `els` sub-tree does NOT fix this slot, but the tuple/record
+    //     around it must still be DESTRUCTURED so the freed slot (and its siblings) get fresh binders the
+    //     body reads (`#tuple(a k)`). `has_deeper` scans these keys, so an ancestor path destructures down
+    //     to reach it, and the slot itself falls through to a fresh leaf-bind.
+    // Kept SEPARATE from `choices` (variant discriminants) — a LitTest tests a scalar value at a leaf, a
+    // Switch tests a discriminant; the two path sets are disjoint. Emitting the literal directly (vs a
+    // `(= b lit)` guard) keeps the round-trip IDEMPOTENT: `#tuple(a 7)` re-lowers straight back to a
+    // `LitTest` (a guard would re-lower to a `Guarded`, which this tree-walk declines → a hop1≠hop2 split).
+    lit_choices: &std::collections::HashMap<Vec<crate::core::PathStep>, Option<StructId>>,
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
@@ -2161,6 +2177,7 @@ fn build_arm_pat(
         path: &[PathStep],
         read_path: &[PathStep],
         choices: &std::collections::HashMap<Vec<PathStep>, Option<u32>>,
+        lit_choices: &std::collections::HashMap<Vec<PathStep>, Option<StructId>>,
         env: &mut BinderEnv,
         emitted: &std::collections::HashSet<StructId>,
     ) -> Result<StructId, Reject> {
@@ -2206,12 +2223,28 @@ fn build_arm_pat(
                 _ => Ty::Any,
             };
             children.push(build_arm_pat(
-                db, b, root_scrut, &kty, &kpath, &kread, choices, env, emitted,
+                db,
+                b,
+                root_scrut,
+                &kty,
+                &kpath,
+                &kread,
+                choices,
+                lit_choices,
+                env,
+                emitted,
             )?);
         }
         Ok(b.list(children))
     }
 
+    // A LITERAL refinement at THIS path (a `LitTest` slot fixed to a literal) — emit the literal pattern
+    // itself (`7` in `#tuple(a 7)`); no binder, the value is fixed. A `None` entry (a freed `els` slot)
+    // does NOT return here — it falls through to the leaf-bind below (a fresh binder). Checked before
+    // `choices`: a LitTest path is a scalar leaf, never a discriminant switch, so the two never collide.
+    if let Some(Some(lit)) = lit_choices.get(path) {
+        return Ok(*lit);
+    }
     if let Some(choice) = choices.get(path) {
         return match choice {
             None => Ok(b.name("_")),
@@ -2226,14 +2259,27 @@ fn build_arm_pat(
                     }
                 };
                 ctor_pat(
-                    db, b, root_scrut, ty, decl, *disc, path, read_path, choices, env, emitted,
+                    db,
+                    b,
+                    root_scrut,
+                    ty,
+                    decl,
+                    *disc,
+                    path,
+                    read_path,
+                    choices,
+                    lit_choices,
+                    env,
+                    emitted,
                 )
             }
         };
     }
-    // No switch at THIS path. Reach a deeper choice by destructuring the irrefutable structure, else bind a leaf.
+    // No switch at THIS path. Reach a deeper choice (a discriminant Switch OR a literal LitTest below
+    // here) by destructuring the irrefutable structure, else bind a leaf.
     let has_deeper = choices
         .keys()
+        .chain(lit_choices.keys())
         .any(|k| k.len() > path.len() && k.starts_with(path));
     if has_deeper {
         match ty {
@@ -2241,7 +2287,18 @@ fn build_arm_pat(
             Ty::Nominal { decl, .. } => {
                 let decl = *decl;
                 return ctor_pat(
-                    db, b, root_scrut, ty, decl, 0, path, read_path, choices, env, emitted,
+                    db,
+                    b,
+                    root_scrut,
+                    ty,
+                    decl,
+                    0,
+                    path,
+                    read_path,
+                    choices,
+                    lit_choices,
+                    env,
+                    emitted,
                 );
             }
             Ty::Sum { decl, .. }
@@ -2251,7 +2308,18 @@ fn build_arm_pat(
             {
                 let decl = *decl;
                 return ctor_pat(
-                    db, b, root_scrut, ty, decl, 0, path, read_path, choices, env, emitted,
+                    db,
+                    b,
+                    root_scrut,
+                    ty,
+                    decl,
+                    0,
+                    path,
+                    read_path,
+                    choices,
+                    lit_choices,
+                    env,
+                    emitted,
                 );
             }
             Ty::Tuple(ts) => {
@@ -2263,7 +2331,16 @@ fn build_arm_pat(
                     let mut er = read_path.to_vec();
                     er.push(PathStep::Elem(i));
                     children.push(build_arm_pat(
-                        db, b, root_scrut, et, &ep, &er, choices, env, emitted,
+                        db,
+                        b,
+                        root_scrut,
+                        et,
+                        &ep,
+                        &er,
+                        choices,
+                        lit_choices,
+                        env,
+                        emitted,
                     )?);
                 }
                 return Ok(b.compound(crate::ast::CompoundCtor::Tuple, &children));
@@ -2279,8 +2356,18 @@ fn build_arm_pat(
                     ep.push(PathStep::Elem(i));
                     let mut er = read_path.to_vec();
                     er.push(PathStep::Elem(i));
-                    let vpat =
-                        build_arm_pat(db, b, root_scrut, fty, &ep, &er, choices, env, emitted)?;
+                    let vpat = build_arm_pat(
+                        db,
+                        b,
+                        root_scrut,
+                        fty,
+                        &ep,
+                        &er,
+                        choices,
+                        lit_choices,
+                        env,
+                        emitted,
+                    )?;
                     let kn = b.name(fname.as_str());
                     children.push(b.field_pair(kn, vpat));
                 }
@@ -2305,8 +2392,11 @@ fn build_arm_pat(
 /// Reconstruct surface arms for a deep decision-`SumCont` tree under one outer variant (v-wasm-opt review #4):
 /// walk each `Switch` arm, threading a `path -> variant-choice` map; at each `Leaf`, [`build_arm_pat`] emits
 /// ONE surface arm `(<deep-pattern> <body>)` reflecting that leaf-path's choices (an explicit variant becomes a
-/// sub-pattern, a default becomes `_`). Enumerating every leaf keeps the emitted match exhaustive without relying
-/// on a synthetic wildcard. A `Guarded`/`LitTest` node in the tree declines (a later slice).
+/// sub-pattern, a default becomes `_`). A `LitTest` refines a scalar slot to a literal: it emits the literal
+/// IN the pattern (`#tuple(a 7)`) for the `then_` sub-tree and threads the fall-through `els` unrefined, so the
+/// round-trip stays idempotent (a literal pattern re-lowers to a `LitTest`, whereas a `(= b lit)` guard would
+/// re-lower to a `Guarded` this walk declines). Enumerating every leaf keeps the emitted match exhaustive
+/// without a synthetic wildcard. A `Guarded` node, or a non-scalar `LitTest` probe, still declines (a later slice).
 #[allow(clippy::too_many_arguments)]
 fn emit_switch_tree(
     db: &mut Db,
@@ -2315,6 +2405,7 @@ fn emit_switch_tree(
     root_ty: &Ty,
     cont: &crate::core::SumCont,
     choices: std::collections::HashMap<Vec<crate::core::PathStep>, Option<u32>>,
+    lit_choices: std::collections::HashMap<Vec<crate::core::PathStep>, Option<StructId>>,
     expected: &Option<Ty>,
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
@@ -2323,7 +2414,18 @@ fn emit_switch_tree(
     use crate::core::SumCont;
     match cont {
         SumCont::Leaf(body) => {
-            let pat = build_arm_pat(db, b, root_scrut, root_ty, &[], &[], &choices, env, emitted)?;
+            let pat = build_arm_pat(
+                db,
+                b,
+                root_scrut,
+                root_ty,
+                &[],
+                &[],
+                &choices,
+                &lit_choices,
+                env,
+                emitted,
+            )?;
             let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
             children.push(b.list(vec![pat, body_node]));
             Ok(())
@@ -2332,12 +2434,78 @@ fn emit_switch_tree(
             for arm in arms {
                 let mut c = choices.clone();
                 c.insert(path.to_vec(), arm.disc);
-                emit_switch_tree(db, b, root_scrut, root_ty, &arm.cont, c, expected, env, emitted, children)?;
+                emit_switch_tree(
+                    db,
+                    b,
+                    root_scrut,
+                    root_ty,
+                    &arm.cont,
+                    c,
+                    lit_choices.clone(),
+                    expected,
+                    env,
+                    emitted,
+                    children,
+                )?;
             }
             Ok(())
         }
-        _ => Err(Reject::unsupported(
-            "the Cadenza backend does not support lowering a guarded / literal-test node in a deep sum-match tree"
+        // A LITERAL-PAYLOAD test on a scalar slot at `path` — `(#tuple(a 7) …)` / `(#record((= f 7)) …)`.
+        // Emit the literal IN the pattern for the matched `then_` sub-tree (fixing the slot to the literal),
+        // then the fall-through `els` sub-tree UNREFINED (the slot binds / is further tested there). The two
+        // become adjacent surface arms — the specific literal arm first, the general fall-through after — so
+        // the surface matcher's top-to-bottom order reproduces the LitTest's then/else, and the fall-through
+        // keeps the match exhaustive. Only a scalar Int/Bool probe reconstructs (mirrors the own-payload
+        // LitTest arm in `emit_match_sum`); any other probe kind, or a deeper nested `then_`/`els`, is handled
+        // by the recursion or declines there.
+        SumCont::LitTest {
+            path,
+            probe,
+            then_,
+            els,
+        } => {
+            let lit = match probe {
+                crate::core::Probe::Int(v) => b.atom_leaf(Leaf::Int {
+                    value: v.clone(),
+                    radix: Radix::Dec,
+                }),
+                crate::core::Probe::Bool(x) => b.atom_leaf(Leaf::Bool(*x)),
+                _ => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend reconstructs a literal-at-slot test only for a scalar \
+                         (Int/Bool) probe"
+                            .to_string(),
+                    ));
+                }
+            };
+            // then_: fix the slot to the literal (`Some(lit)` → emitted in the pattern).
+            let mut lc_then = lit_choices.clone();
+            lc_then.insert(path.to_vec(), Some(lit));
+            emit_switch_tree(
+                db,
+                b,
+                root_scrut,
+                root_ty,
+                then_,
+                choices.clone(),
+                lc_then,
+                expected,
+                env,
+                emitted,
+                children,
+            )?;
+            // els: the slot is FREED (`None` → destructure-to + fresh binder, so the fall-through pattern
+            // `#tuple(a k)` binds it and its siblings; the arm follows the literal arm, keeping order +
+            // exhaustiveness).
+            let mut lc_els = lit_choices.clone();
+            lc_els.insert(path.to_vec(), None);
+            emit_switch_tree(
+                db, b, root_scrut, root_ty, els, choices, lc_els, expected, env, emitted, children,
+            )?;
+            Ok(())
+        }
+        SumCont::Guarded { .. } => Err(Reject::unsupported(
+            "the Cadenza backend does not support lowering a guarded node in a deep sum-match tree"
                 .to_string(),
         )),
     }
@@ -2376,11 +2544,12 @@ fn emit_match_sum(
         // arms with the SAME general tree-walk the deep-cont arm uses ([`emit_switch_tree`] + [`build_arm_pat`]):
         // destructure the irrefutable compound structure down to the switched slot and dispatch THERE —
         // `(#tuple(a (Some b)) …)` / `(#record((= f (V …))) …)` (the variant-at-slot shape, e.g. #6967's
-        // variant-below-record, and inner-sum-at-a-tuple-slot). The per-`decl` un-emitted-user-sum guard lives
-        // inside `build_arm_pat`/`ctor_pat`, and every tree leaf is enumerated so the emitted match stays
-        // exhaustive (no synthesized wildcard). A `Guarded`/`LitTest` node anywhere in the tree still declines
-        // (a literal-at-slot / guard-at-slot surface reconstruction is a later slice).
-        SumCont::Switch { .. } => {
+        // variant-below-record, and inner-sum-at-a-tuple-slot). A root `LitTest` (a LITERAL at a compound slot —
+        // `(#tuple(a 7) …)`) routes the same way (the tree-walk emits the literal in the pattern). The per-`decl`
+        // un-emitted-user-sum guard lives inside `build_arm_pat`/`ctor_pat`, and every tree leaf is enumerated so
+        // the emitted match stays exhaustive (no synthesized wildcard). A `Guarded` root, or a non-scalar
+        // `LitTest` probe, still declines (a guard-at-slot surface reconstruction is a later slice).
+        SumCont::Switch { .. } | SumCont::LitTest { .. } => {
             let root_ty = crate::infer::type_of(db, scrutinee);
             let match_head = b.name("match");
             let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
@@ -2391,6 +2560,7 @@ fn emit_match_sum(
                 scrutinee,
                 &root_ty,
                 root,
+                std::collections::HashMap::new(),
                 std::collections::HashMap::new(),
                 &expected,
                 env,
@@ -2646,6 +2816,7 @@ fn emit_match_sum(
                                 &root_ty,
                                 cont,
                                 choices,
+                                std::collections::HashMap::new(),
                                 &expected,
                                 env,
                                 emitted,
