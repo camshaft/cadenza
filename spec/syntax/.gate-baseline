@@ -220,6 +220,11 @@ pass	ml/290-doc-line-on-def
 pass	ml/291-comment-line-on-def
 pass	ml/292-file-header-module-doc
 pass	ml/293-def-non-doc-body-fallback
+pass	ml/294-comment-trailing-nonlast-sum-variant
+pass	ml/295-comment-trailing-infix-operand
+pass	ml/296-comment-trailing-match-arm-whole
+pass	ml/297-comment-after-match-bodied-def-leads-next
+pass	ml/298-comment-mid-expr-between-infix-operands
 pass	ml/30-match-refutable-literal
 pass	ml/31-match-refutable-guarded
 pass	ml/32-match-refutable-nested
