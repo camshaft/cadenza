@@ -1169,6 +1169,25 @@
   (call   main (: 9 Int64)) (output (: 39 Int64))
   (call   main (: 0 Int64)) (output (: 30 Int64)))
 
+; A tuple reshape op over a DEFINITE non-tuple operand is a KIND error, the tuple twin of "member access
+; requires a record, found Int64" (05-compound-types). `(Tuple.concat n …)`/`(Tuple.remove n)`/`(Tuple.split-at
+; n 1)` for `n : Int64` names the op AND the non-tuple type it got (CDZ0201, "`Tuple.<op>` requires a tuple,
+; found Int64") — not the dead-end "over a runtime tuple is not yet built" it once compiled to. (An
+; unconstrained `Any` parameter is NOT rejected — its projection/reshape check defers to the call site,
+; pinned by the bare-parameter helper cases in 09-functions.) (Migrated from rcdzc
+; a_tuple_row_op_over_a_non_tuple_names_the_kind.)
+(case "Tuple.concat over a non-tuple operand names the op and the non-tuple type"
+  (input  (do (def (g (: n Int64)) (Tuple.concat n n)) (export g)))
+  (error  CDZ0201 (message "`Tuple.concat` requires a tuple") (message "Int64")))
+
+(case "Tuple.remove over a non-tuple operand names the op and the non-tuple type"
+  (input  (do (def (g (: n Int64)) (Tuple.remove n)) (export g)))
+  (error  CDZ0201 (message "`Tuple.remove` requires a tuple") (message "Int64")))
+
+(case "Tuple.split-at over a non-tuple operand names the op and the non-tuple type"
+  (input  (do (def (g (: n Int64)) (Tuple.split-at n 1)) (export g)))
+  (error  CDZ0201 (message "`Tuple.split-at` requires a tuple") (message "Int64")))
+
 (case "a match on an open sum with an open-tail arm is exhaustive"
   (doc    "Witnesses type-system.md #A Sum Type May Be Open, With A Mandatory Open-Tail Arm: an open sum
            is DECLARED with a trailing `.. r` row-variable marker (`(type Vocab (Known Unit) (Unknown
