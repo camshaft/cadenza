@@ -376,7 +376,7 @@
         (main)
         (match
           (quote 3/2)
-          ((Ast.Rational (tuple (Ast.Int n) (Ast.Int d))) (+ (* 100 (Int64.of n)) (Int64.of d)))
+          ((Ast.Rational #tuple((Ast.Int n) (Ast.Int d))) (+ (* 100 (Int64.of n)) (Int64.of d)))
           (_ 0)))
       (export main)))
   (output (: 302 Int64)))
