@@ -4841,7 +4841,7 @@
           if diff <(jq -S . ${./guide/examples-manifest.json}) <(jq -S . ${guideShred}/manifest.json) > manifest.diff; then
             echo "ok: committed guide/examples-manifest.json == fresh shred manifest" > "$out"
           else
-            echo "DRIFT: committed guide/examples-manifest.json != fresh shred manifest — regen:"; echo "  (in guide/) node --expose-gc scripts/shred-examples.mjs --out-dir /tmp/gs && cp /tmp/gs/manifest.json guide/examples-manifest.json"
+            echo "DRIFT: committed guide/examples-manifest.json != fresh shred manifest — regen (the node shred-examples.mjs was retired for the Rust xtask-codegen-guide --shred, seq-248; the manifest IS the guideShred derivation output, so regen from it and it can't drift):"; echo "  nix build .#guide-shred && cp -f result/manifest.json guide/examples-manifest.json"
             cat manifest.diff; exit 1
           fi
         '';
