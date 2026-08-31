@@ -1869,6 +1869,17 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             )),
         });
     }
+    // Case 6rec-rest: `form` is a MATCH ARM whose top-level `(record (= f p) … (.. rest))` pattern binds
+    // `name` as the REST binder — the RESIDUAL RECORD of the fields NOT named. Resolves to a `RecordRest`
+    // (the record twin of a `MapField` REST binder): a NEW record of the scrutinee's fields minus `named`.
+    // A record's field set is static, so the residual is a fixed field-subset gather (typed + folded from
+    // the solved scrutinee type). Scoped to this arm.
+    if let Some((scrutinee, named)) = match_arm_record_rest_binds(db, form, from, name) {
+        return Some(Resolved::RecordRest {
+            scrutinee,
+            named: named.into(),
+        });
+    }
     // Case 6rec-nested: `form` is a match arm whose pattern is a TUPLE / LIST / VARIANT compound with a
     // `(record …)` sub-pattern NESTED inside it binding `name` at a BARE-binder field — `(tuple (record (x
     // a)) c)`, `(list (record (x a)))`, `(W.Wrap (record (x a)))`. The nested walk
@@ -2939,6 +2950,16 @@ fn guard_cond_tuple_binds(
 /// field reader (guard-cond binds, Case 6rec, the let-binder resolver's nested path) so the triple vs
 /// pair distinction lives in ONE place.
 fn record_pattern_field_kv(db: &Db, field: StructId) -> Option<(StructId, StructId)> {
+    // A trailing `(.. rest)` rest marker is NOT a field — its head is `..`, and the legacy 2-element case
+    // below would otherwise mis-read it as field `..` binding `rest` (a spurious `Member { key: .. }` →
+    // CDZ0212 "record has no field `..`"). The rest binder is resolved separately (Case 6rec-rest →
+    // `Resolved::RecordRest`); skip it here so every field iteration ignores the marker.
+    if db.ast.as_name(field).is_none()
+        && let Struct::List(kv) = db.ast.get(field)
+        && kv.first().is_some_and(|&h| db.ast.as_name(h) == Some(".."))
+    {
+        return None;
+    }
     match db.ast.get(field) {
         Struct::List(kv) if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") => {
             Some((kv[1], kv[2]))
@@ -3135,6 +3156,61 @@ fn match_arm_record_binds(
         }
     }
     None
+}
+
+/// Whether `form` is a match ARM whose TOP-LEVEL `(record (= f p) … (.. rest))` pattern binds `name` as the
+/// REST binder — the residual record of the fields NOT named by the pattern. Returns `(scrutinee, the named
+/// field-name key occurrences)`; the residual `rest` is the scrutinee's record minus those. The record twin
+/// of the map-rest arm (Case M with `key = None`). `None` when `name` is not this arm's record-rest binder
+/// (no trailing `.. rest`, or the rest names a different binder).
+fn match_arm_record_rest_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<StructId>)> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 {
+        return None;
+    }
+    let (pattern, body) = (pb[0], pb[1]);
+    let (record_pat, guard_cond) = match db.ast.as_form(pattern, "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pattern, None),
+    };
+    if from != body && Some(from) != guard_cond {
+        return None;
+    }
+    let fields: Vec<StructId> = db
+        .ast
+        .compound_form_of(record_pat, CompoundCtor::Record)?
+        .to_vec();
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = match mtail.first() {
+        Some(&s) if s != form => s,
+        _ => return None,
+    };
+    // Split the trailing `.. rest`; its operand must be the bare binder `name`.
+    let (leads, rest): (&[StructId], StructId) = match db.ast.rest_marker(&fields) {
+        Some((k, operand, trailing_start)) if trailing_start == fields.len() => {
+            (&fields[..k], operand)
+        }
+        _ => return None,
+    };
+    if db.ast.as_name(rest) != Some(name) || name == "_" {
+        return None;
+    }
+    // The NAMED field key occurrences (removed from the scrutinee's record to form the residual `rest`).
+    let mut named = Vec::new();
+    for &pair in leads {
+        if let Some((key_id, _)) = record_pattern_field_kv(db, pair) {
+            named.push(key_id);
+        }
+    }
+    Some((scrutinee, named))
 }
 
 /// Whether `form` is a match ARM `(pattern body)` (ascended from its BODY or guard cond) whose pattern is

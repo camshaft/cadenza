@@ -2270,7 +2270,8 @@ pub(super) fn collect_binding_uses(
         Resolved::SumPayload { scrutinee, .. }
         | Resolved::BinField { scrutinee, .. }
         | Resolved::MapField { scrutinee, .. }
-        | Resolved::RecordField { scrutinee, .. } => {
+        | Resolved::RecordField { scrutinee, .. }
+        | Resolved::RecordRest { scrutinee, .. } => {
             *out.count.entry(scrutinee).or_insert(0) += 1;
         }
         Resolved::Handle {

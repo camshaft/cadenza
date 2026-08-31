@@ -1715,6 +1715,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::BinField { .. }
         | Resolved::MapField { .. }
         | Resolved::RecordField { .. }
+        | Resolved::RecordRest { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
