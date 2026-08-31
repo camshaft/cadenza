@@ -59,6 +59,7 @@ pass	BINOMIAL nCk multiplies incrementally with exact interleaved division and u
 pass	BIPARTITE check two-colors components and rejects the odd cycle
 pass	BOYER-MOORE majority vote pairs a cancel-count sweep with a verify recount
 pass	BST DELETE-MIN walks the left spine, returns the minimum and the rebuilt tree
+pass	BigInt.neg negates an arbitrary-precision integer, total
 pass	BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)
 pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
@@ -154,6 +155,9 @@ pass	Float64.Infinity equals itself under the canonical byte form
 pass	Float64.Infinity is greater than any finite float
 pass	Float64.Infinity is not equal to a finite float
 pass	Float64.Infinity is not less than a finite float
+pass	Float64.neg negates a constant float
+pass	Float64.neg negates a runtime float
+pass	Float64.neg of negative zero is positive zero (sign-correct, total)
 pass	Float64.of promotes a runtime Float32 exactly
 pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
 pass	Float64.of-int converts a runtime integer, rounding a large Int64 to the nearest f64
@@ -332,6 +336,7 @@ pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	RLE encode/decode round-trips a list — the runtime element merges or splits a run
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
+pass	Rational.neg negates an exact rational, total
 pass	Rational.of over TWO perform results — ctor-arg order observable through the dispatches
 pass	Record.extend ADDS a closure field beside two existing ones and all three apply
 pass	Record.extend chained onto Record.without of a map-borne record computes, not traps

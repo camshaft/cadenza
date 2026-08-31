@@ -7185,6 +7185,41 @@
   (input (do (def (main) (UInt8.neg 5)) (export main)))
   (error CDZ0201))
 
+; --- `neg` on the other numeric types: Float / BigInt / Rational, all TOTAL (no trap) ---
+; The named first-class `neg` extends past the fixed-width integers to every numeric type, each lowering
+; through the same negate: Float is `-1.0 * e` (sign-correct for signed zero / infinity, never traps),
+; BigInt and Rational are exact `0 - e` (arbitrary precision / exact fraction, never trap).
+(case
+  "Float64.neg negates a constant float"
+  (input (do (def (main) (Float64.neg 1.5)) (export main)))
+  (call main)
+  (output (: -1.5 Float64)))
+(case
+  "Float64.neg negates a runtime float"
+  (input (do (def (f (: x Float64)) (Float64.neg x)) (export f)))
+  (call f (: 2.5 Float64))
+  (output (: -2.5 Float64)))
+(case
+  "Float64.neg of negative zero is positive zero (sign-correct, total)"
+  (doc "Float negation is `-1.0 * e`, sign-correct across the IEEE special values: `neg(-0.0) = +0.0`.")
+  (input (do (def (main) (Float64.neg -0.0)) (export main)))
+  (call main)
+  (output (: 0.0 Float64)))
+(case
+  "BigInt.neg negates an arbitrary-precision integer, total"
+  (doc "BigInt negation is exact `0 - e` and never overflows (arbitrary precision). Asserted via equality
+           to the negated literal so the result is a scalar Bool.")
+  (input (do (def (main) (= (BigInt.neg (BigInt.of 5)) (BigInt.of -5))) (export main)))
+  (call main)
+  (output (: true Bool)))
+(case
+  "Rational.neg negates an exact rational, total"
+  (doc "Rational negation is exact `0 - e` (negates the numerator) and never traps. Asserted via equality
+           to the negated rational so the result is a scalar Bool.")
+  (input (do (def (main) (= (Rational.neg (Rational.of 3 4)) (Rational.of -3 4))) (export main)))
+  (call main)
+  (output (: true Bool)))
+
 (case
   "a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum"
   (doc
