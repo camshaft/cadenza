@@ -956,6 +956,23 @@
   (input  (Record.pop #record((= a 1)) z))
   (error  CDZ0212))
 
+; The DERIVED row ops carry the same two-tier absent-field did-you-mean the `Record.without`/dot-access
+; labels get. A near-miss field on `Record.pop` (`alpa` for `alpha`) is CDZ0212 naming the pop context AND
+; a confident "did you mean `alpha`?" with a heuristic replace fix on the label. `Record.with` adds a
+; distinguishing hint — a near-miss update field ALSO names the extend-vs-update distinction ("use
+; `Record.extend` to add"), since the likeliest other intent for an absent field is to ADD it. (Migrated
+; from rcdzc record_extend_with_pop_are_derived_row_ops_with_presence_checks's did-you-mean faces; the
+; presence-check faces — extend present→CDZ0211/absent→runs, with present→runs/absent→CDZ0212, pop
+; present→runs/absent→CDZ0212 — are the extend/with/pop cases already in this chapter.)
+(case "a near-miss field in Record.pop suggests the near field with a replace fix"
+  (input  (do (def (main) (Record.pop #record((= alpha 1) (= beta 2)) alpa)) (export main)))
+  (error  CDZ0212 (message "did you mean `alpha`?") (fix (kind replace) (replacement "alpha") (unverified))))
+
+(case "a near-miss field in Record.with suggests the near field and keeps the extend hint"
+  (input  (do (def (main) (Record.with #record((= alpha 1) (= beta 2)) #"alpa" 9)) (export main)))
+  (error  CDZ0212 (message "did you mean `alpha`?") (message "use `Record.extend`")
+                  (fix (kind replace) (replacement "alpha") (unverified))))
+
 (case "record reshaping is subset comparison as explicit projection"
   (doc    "Witnesses type-system.md #Records Are Rows (4th sentence: subset comparison is explicit
            projection-then-`=`, never an overloaded `=`) with `Record.project` as the narrowing operation.
