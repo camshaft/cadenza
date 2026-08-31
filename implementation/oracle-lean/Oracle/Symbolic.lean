@@ -541,6 +541,9 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
           | some (Node.list pairs) => symLet m senv fuel ty pairs.toList bodyId
           | _ => .cannotProve "symeval: let bindings not a list"
         | _, _ => .cannotProve "symeval: malformed let"
+      else if h == "do".toUTF8 then
+        -- an inline `(do stmt… last)` expression → sequential def-bindings + discarded non-defs + last.
+        symDo m senv fuel ty children
       else if h == "tuple".toUTF8 then
         -- a tuple value (lazy elements). Build `.tuple` of the element SymExprs; an unmodelable element
         -- sinks the whole tuple (conservative — the value can't be fully compared).
@@ -939,6 +942,39 @@ partial def symLet (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (ps : 
         | none => .cannotProve "symeval: let binding missing name"
       | _, _ => .cannotProve "symeval: malformed let binding"
     | _ => .cannotProve "symeval: let binding not a (name value) pair"
+
+/-- Symbolically evaluate an inline `(do stmt… last)` EXPRESSION, mirroring `evalDo` (Eval.lean:1220-1260):
+the block's value is the LAST item, evaluated under the env extended by the preceding statements.
+A `(def x val)` (bare-atom target) binds `x` sequentially (let-like, `.sym` value; unmodelable → sink).
+A NON-DEF statement is DISCARDED and its trap ELIDED (unobserved) — so it is SKIPPED (same env), faithful
+to the pure-value oracle. A LOCAL FUNCTION def `(def (f params) body)` (list target) binds a CLOSURE in
+`evalDo`; the symbolic env holds no closures → `cannotProve` (punt, conservative). Empty do → cannotProve. -/
+partial def symDo (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (children : Array Nat) : SymOutcome :=
+  let items := children.extract 1 children.size
+  match items.back? with
+  | none => .cannotProve "symeval: empty do"
+  | some lastId =>
+    let rec bind (senv : SymEnv) (js : List Nat) : Except SymOutcome SymEnv :=
+      match js with
+      | [] => .ok senv
+      | j :: rest =>
+        match asDef? m j with
+        | some dc =>
+          match dc[1]?, dc[dc.size - 1]? with
+          | some targetId, some valId =>
+            match nameOf? m targetId with
+            | some nm =>
+              -- value binding `(def x val)` — bind sequentially (later stmts see it), like `let`.
+              (match symEval m senv fuel ty valId with
+               | .sym e => bind ((nm, e) :: senv) rest
+               | .cannotProve r => .error (.cannotProve r))
+            | none => .error (.cannotProve "symeval: do local-function def (closure) not modeled")
+          | _, _ => .error (.cannotProve "symeval: malformed do def")
+        -- a NON-DEF statement: value discarded, trap elided → skip, same env (faithful to evalDo).
+        | none => bind senv rest
+    match bind senv (items.extract 0 (items.size - 1)).toList with
+    | .ok senv' => symEval m senv' fuel ty lastId
+    | .error o => o
 
 /-- Try to construct a user/prelude SUM value from `(C arg…)` / `((. T C) arg…)`. `some outcome` if the
 head resolves to a DECLARED constructor (MIRRORING `evalVariantCtor`'s erasure so the symbolic value matches
@@ -1384,6 +1420,27 @@ private def _sliceOobExpr : Module :=
     root := 7 }
 #guard symEval _sliceOobExpr [] symDefaultFuel defaultIntTy 7
        == SymOutcome.sym (.ctor "None".toUTF8 #[])
+
+-- INLINE `(do …)` EXPRESSION coverage: `(do (def x 5) (+ x 1))` → binds x=5, value is the last expr → 6.
+private def _inlineDoExpr : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "x".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[5]), Leaf.name "+".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[1])],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 4, .atom 2, .atom 5,
+               .list #[4, 5, 6], .atom 0, .list #[8, 3, 7]],
+    root := 9 }
+#guard symEval _inlineDoExpr [] symDefaultFuel defaultIntTy 9
+       == SymOutcome.sym (.const (.int 6))
+
+-- INLINE `(do …)` TRAP-ELISION: `(do (/ 1 0) 7)` — the discarded `(/ 1 0)` is UNOBSERVED so its trap is
+-- ELIDED (skipped, same env); value is the last expr → 7. Faithful to evalDo's discard-non-def semantics.
+private def _inlineDoDiscardExpr : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "/".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[0]), Leaf.intLit false .dec (ByteArray.mk #[7])],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 4, .atom 0, .list #[5, 3, 4]],
+    root := 6 }
+#guard symEval _inlineDoDiscardExpr [] symDefaultFuel defaultIntTy 6
+       == SymOutcome.sym (.const (.int 7))
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
