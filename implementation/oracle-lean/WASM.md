@@ -59,6 +59,30 @@ Oracle.Outcome     (consumed by v-lean-oracle's differential glue)
 The talos exit-code contract maps directly onto `Oracle.Outcome`: `OK`→`.value`, `TRAP`→`.trap`,
 `OUT_OF_FUEL`→`.diverges`, `ERR` (imports present / decode-fail / bad method)→`.unsupported`.
 
+### The `Driver` adapter (what the talos-drive slice writes)
+
+The `Driver := (coreWat : String) → Trial → WasmOutcome` seam (see `Oracle.Wasm`) is filled by an adapter
+importing **only** `Interpreter.Wasm.SmallStep` + `Interpreter.Wasm.Decoder.Wat` (their closure is Std-only,
+Mathlib-free — see below). It replicates talos's own runner invocation (`α := Unit` ⇒ empty host, matching
+the self-contained subset):
+
+```
+let m ← Wasm.Decoder.Wat.decode wat                 -- Except _ Module          (.error → .err → .unsupported)
+let idx ← m.findExport entry                        -- (none → unknown export → .err)
+let store0 := m.runConstGlobals fuel (m.initialStore (α := Unit)) {}
+let store0 := m.runActiveSegments fuel store0 {}
+let inst : Wasm.SmallStep.ModuleInstance Unit := { module := m, host := {} }
+let cfg  ← Wasm.SmallStep.initConfig inst idx store0 vs.reverse    -- params in STACK order (reversed)
+match (Wasm.SmallStep.runSteps fuel cfg).result with
+| .success results _   => .ok (results.reverse.map talosValToWasmVal)
+| .trapped reason _    => .trap reason.message         -- (+ special .uncaughtException case)
+| .outOfFuel _         => .outOfFuel
+| .internalError err _ => .err err.message
+```
+
+`talosVal → WasmVal`: `i32 v → .i32 v.toInt32.toInt` (SIGNED), `i64 → .i64 v.toInt64.toInt`, `f32 b → .f32 b`,
+`f64 b → .f64 b`.
+
 ## Interface with v-lean-oracle (confirmed)
 
 - Reuse the shared `Oracle.Value` + `Oracle.Eval.Outcome` — no parallel model.
@@ -81,8 +105,32 @@ The talos exit-code contract maps directly onto `Oracle.Outcome`: `OK`→`.value
   `Wasm.SmallStep`) on the extracted core module, producing a `WasmOutcome` for `toOutcome`.
 - **W4 — self-contained scalar/arith subset**: end-to-end differential over zero-import core modules
   (align with compiler-ml's `run-emitted` set); widen verified `ScalarTy` spellings from real emits.
-- **W5+ — runtime-importing cases**: multi-module components need entry-module identification + cdz-runtime
-  (`"heap"`) import modeling/linking. The deep end; scalars first.
+- **W5+ — runtime-importing cases**: heap/collection cases import the cdz-runtime (`"heap" …`); satisfy those
+  imports with clean-room Lean host functions (see "Running imported runtime functions" below). The deep end;
+  scalars first — but FEASIBLE, not a hard ceiling.
+
+## Running imported runtime functions — the host API (W5+ feasibility)
+
+talos's interpreter is **host-parameterized** (`Store α` carries a `host : α` the wasm core never inspects);
+the runner declines imports only because it picks the trivial `α := Unit`/empty host. The library supports
+real imports first-class:
+
+- **`HostFn α = { params, results, invoke : Store α → List Value → HostResult α }`** — the import's behavior
+  as a Lean function; `invoke` may read/write the store (incl. linear **memory**) and thread host state `α`.
+  `HostResult α = .Return vals store' | .Trap store' msg | .Throw …`.
+- **`HostEnv α = { funcs : List (HostFn α) }`** — positional, indexed like the module's `imports`
+  (`call i` → `funcs[i]`). A name-keyed **`HostRegistry`** builds it per-module by walking `m.imports`
+  (unresolved → trapping stub; total). `Host.Universal` composes several hosts via `HostLens`.
+- **Proof side:** `HostSpec`/`HostContract` let a program be verified *parametric over any host satisfying a
+  contract* (CompCert/seL4 "abstract oracle" pattern) — so the differential theorem can quantify over a
+  runtime-host spec rather than a specific implementation.
+
+So the **W5+ path** is: implement the cdz-runtime `"heap"` interface as clean-room Lean `HostFn`s modeling its
+**observable, value-level** semantics from the spec (`deterministic-value-form.md` + the heap/collections
+semantics) — **not** the Rust byte layout / Perceus refcounts. The real cost is the memory ABI (how handles
+and values sit in linear memory). **Do NOT** satisfy the imports by linking the *real* runtime wasm: that
+would make the oracle share the runtime with rcdzc, destroying the independence the differential depends on
+(a runtime bug would be invisible to both sides). Native host functions keep the oracle independent.
 
 ## Gate coverage
 
