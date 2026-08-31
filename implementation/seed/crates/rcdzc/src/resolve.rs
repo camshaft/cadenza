@@ -5069,6 +5069,31 @@ fn last_binder_named(
                     }
                 }
             }
+            // A NESTED record inside a TUPLE / LIST / VARIANT destructuring binding — `((tuple a (record
+            // (= x b))) V)` binds `b` to field `x` of the record at element 1 of `V`. The top-level cases
+            // above (tuple → `SumPayload`, ctor → `SumPayload`, list, record → `Member`/`RecordRest`) do not
+            // descend a compound element INTO a nested record, so `b` fell through to a misleading CDZ0101.
+            // `find_record_binder_in_pattern` descends the compound (the SAME walker the match-arm Case
+            // 6rec-nested uses) to the nested record + returns the field key + the `Elem`/`Payload` access
+            // path; resolve `name` to a `RecordField` reading field `key` off the record at that sub-path of
+            // the bound value — the binding twin of Case 6rec-nested (§Patterns Compose). A non-empty path
+            // is required (a TOP-LEVEL record is the `Member`/`RecordRest` case above); a nested record inside
+            // a RECORD FIELD is NOT descended by the walker (declined above, Increment B — consistent with
+            // the match path). Placed AFTER the shape cases so a directly-bound name resolves first.
+            {
+                let (mut path, mut heads) = (Vec::new(), Vec::new());
+                if let Some(key) =
+                    find_record_binder_in_pattern(db, lhs, name, &mut path, &mut heads)
+                    && !path.is_empty()
+                {
+                    return Some(Resolved::RecordField {
+                        scrutinee: kv[1],
+                        path: path.into(),
+                        key,
+                        heads: heads.into(),
+                    });
+                }
+            }
         }
     }
     None
