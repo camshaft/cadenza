@@ -196,48 +196,12 @@ fn a_chained_else_if_ladder_flattens_headers_to_one_indent() {
     );
 }
 
-#[test]
-fn an_own_line_comment_between_infix_operands_survives_the_round_trip() {
-    // Regression (seq-277/C3): an OWN-LINE `//` comment/block BETWEEN operands of a multi-line infix
-    // chain (`a\n  and b\n  // block\n  and c`) sits at the next operator's leading slot. The infix loop
-    // drained a same-line operand-trailing (slice 3) but NOT an own-line-before-operator comment, so it
-    // dropped. Reader now attaches it as leading on the RIGHT operand; the printer emits it OWN-LINE
-    // BEFORE the operator (emitting after the op re-reads to a DROP — non-idempotent). Closes sread-eval.
-    let src = "def f(a, b, c) = if a\n  and b\n  // block line1\n  // block line2\n  and c\n  then 1 else 2\n";
-    let count = |a: &Arenas| {
-        (0..a.structure.len() as u32)
-            .map(StructId)
-            .filter(|&id| a.head_name(id) == Some("comment"))
-            .count()
-    };
-    let p = read_ml(src);
-    assert!(p.ok(), "parses: {:?}", p.errors);
-    assert_eq!(
-        count(&p.arenas),
-        2,
-        "both own-line block lines attached as leading (comment …)"
-    );
-    let printed = crate::printer::print(&p.arenas, 80);
-    assert!(
-        !printed.contains("comment("),
-        "no garbage comment(...):\n{printed}"
-    );
-    assert!(
-        printed.contains("// block line1") && printed.contains("// block line2"),
-        "both re-emitted:\n{printed}"
-    );
-    let rp = read_ml(&printed);
-    assert!(
-        rp.ok() && p.arenas.structurally_eq(&rp.arenas),
-        "round-trips: {:?}\n{printed}",
-        rp.errors
-    );
-    assert_eq!(
-        crate::printer::print(&rp.arenas, 80),
-        printed,
-        "idempotent\n{printed}"
-    );
-}
+// `an_own_line_comment_between_infix_operands_survives_the_round_trip` (own-line `//` block lines between
+// operands of a multi-line infix chain attach as LEADING `(comment …)` on the right operand, printed own-line
+// before the operator) MIGRATED to the spec/syntax corpus (inc-6 batch-85): ml/480-comment-own-line-multiline-
+// block-between-infix `def f(a, b, c) = if a`⏎`  and b`⏎`  // block line1`⏎`  // block line2`⏎`  and c`⏎`  then
+// 1 else 2`→`(def (f a b c) (if (and (and a b) (comment "block line1" (comment "block line2" c))) 1 2))` — both
+// block lines nested as leading comments on `c`. (Single own-line comment between infix operands is ml/298.)
 
 // `a_trailing_comment_on_a_non_last_infix_operand_survives_the_round_trip` (a same-line `//` on a non-last
 // operand of a multi-line infix chain → `(comment-after …)` on the left operand) is subsumed by the spec/syntax
@@ -251,51 +215,13 @@ fn an_own_line_comment_between_infix_operands_survives_the_round_trip() {
 // (comment-after "note on get" (op get (-> Int64 Int64))) (comment-after "note on put" (op put (-> Int64
 // Unit)))) (def (f) 1))` — both op-trailing comments as `(comment-after …)`, the following def unaffected.
 
-#[test]
-fn a_multiline_trailing_comment_on_a_type_variant_round_trips() {
-    // Regression (seq-277/C3): a MULTI-LINE trailing comment on a variant (`| A(T) // line1` then
-    // own-line `// line2` continuations) leaves the continuation lines as the NEXT variant's LEADING
-    // comment, nested OUTSIDE that variant's own trailing `(comment-after …)`. `print_type` peeled only
-    // a leading `comment` (outer), so with `(comment-after trail (comment lead V))` the inner leading
-    // comment rendered as a garbage `comment(text, V)` variant + dropped. Now it peels BOTH wrappers in
-    // either order. (Closes ty.cdz / parse-db.cdz / lower-db.cdz variant multi-line trailing drops.)
-    let src = "type T =\n  | A(Int64) // trailing on A\n  // continuation of A\n  | B(Int64) // trailing on B\n\nexport {}\n";
-    let comments = |a: &Arenas| {
-        (0..a.structure.len() as u32)
-            .map(StructId)
-            .filter(|&id| matches!(a.head_name(id), Some("comment") | Some("comment-after")))
-            .count()
-    };
-    let p = read_ml(src);
-    assert!(p.ok(), "parses: {:?}", p.errors);
-    let n = comments(&p.arenas);
-    assert_eq!(
-        n, 3,
-        "A-trailing + A-continuation + B-trailing all attached (got {n})"
-    );
-    let printed = crate::printer::print(&p.arenas, 100);
-    assert!(
-        !printed.contains("comment("),
-        "no garbage comment(...) variant:\n{printed}"
-    );
-    assert!(
-        printed.contains("// trailing on A")
-            && printed.contains("// continuation of A")
-            && printed.contains("// trailing on B"),
-        "all three re-emitted:\n{printed}"
-    );
-    let rp = read_ml(&printed);
-    assert!(
-        rp.ok() && p.arenas.structurally_eq(&rp.arenas),
-        "round-trips: {:?}\n{printed}",
-        rp.errors
-    );
-    assert_eq!(
-        crate::printer::print(&rp.arenas, 100),
-        printed,
-        "idempotent\n{printed}"
-    );
-}
+// `a_multiline_trailing_comment_on_a_type_variant_round_trips` (a same-line `//` on a variant PLUS own-line
+// continuation lines leaves the continuations as the NEXT variant's LEADING comment, nested OUTSIDE that
+// variant's own trailing `(comment-after …)` — the reader/printer peel BOTH wrappers in either order)
+// MIGRATED to the spec/syntax corpus (inc-6 batch-85): ml/481-comment-multiline-trailing-type-variant `type T
+// =`⏎`  | A(Int64) // trailing on A`⏎`  // continuation of A`⏎`  | B(Int64) // trailing on B`⏎`def f() = 1`→
+// `(do (type T (comment-after "trailing on A" (A Int64)) (comment-after "trailing on B" (comment "continuation
+// of A" (B Int64)))) (def (f) 1))` — the nested `(comment-after trail (comment lead V))` wrapper on B.
 
 // `an_own_line_comment_after_the_last_sum_variant_is_not_dropped` (an own-line comment after the LAST variant
 // of a `type T = | A | B`, before the next form, leads the FOLLOWING form instead of being dropped as a phantom

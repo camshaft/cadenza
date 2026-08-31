@@ -1,0 +1,6 @@
+type T =
+  | A(Int64) // trailing on A
+  // continuation of A
+  | B(Int64) // trailing on B
+
+def f() = 1

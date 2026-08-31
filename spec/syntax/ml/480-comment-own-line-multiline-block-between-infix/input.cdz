@@ -1,0 +1,6 @@
+def f(a, b, c) = if a
+  and b
+  // block line1
+  // block line2
+  and c
+  then 1 else 2
