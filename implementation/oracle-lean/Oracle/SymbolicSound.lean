@@ -434,6 +434,48 @@ theorem denoteApp_fold_unary (op : String) (w : IntTy) (va v : Value)
   have hred : denoteApp op w #[.value va] = denoteUnary op (.value va) := rfl
   rw [hred]; exact denoteUnary_fold op va v h
 
+/-! ### `denote`-app VALUE INVERSION: a `.value`-producing application had `.value` operands.
+`denoteUnary`/`denoteBinary` return a `.value` ONLY through their leading `.value`(-`.value`) arm — every
+other operand outcome (`.trap`/`.diverges`/`.unsupported`) is propagated verbatim (`| o => o`, the trap
+arms) or falls to `.unsupported`. So a `.value` result WITNESSES that the operands were themselves values.
+The capstone `.app` case needs this to turn `denote (.app op args) = .value v` into per-operand
+`denote aᵢ = .value uᵢ` facts, which the argument IHs then transport across `normalize`. -/
+theorem denoteUnary_value_inv (op : String) (oa : Outcome) (v : Value)
+    (h : denoteUnary op oa = .value v) : ∃ u, oa = .value u := by
+  cases oa with
+  | value u => exact ⟨u, rfl⟩
+  | _ => simp [denoteUnary] at h
+
+theorem denoteBinary_value_inv (op : String) (w : IntTy) (oa ob : Outcome) (v : Value)
+    (h : denoteBinary op w oa ob = .value v) : (∃ ua, oa = .value ua) ∧ (∃ ub, ob = .value ub) := by
+  cases oa <;> cases ob <;>
+    first
+      | exact ⟨⟨_, rfl⟩, ⟨_, rfl⟩⟩
+      | simp [denoteBinary] at h
+
+/-- `denoteApp` VALUE INVERSION: a `.value` result forces arity 1 (a `.value` operand) or 2 (two `.value`
+operands). Combines the arity dispatch with the unary/binary operand inversions above. -/
+theorem denoteApp_value_inv (op : String) (w : IntTy) (oargs : Array Outcome) (v : Value)
+    (h : denoteApp op w oargs = .value v) :
+    (oargs.size = 1 ∧ ∃ u, oargs[0]! = .value u) ∨
+    (oargs.size = 2 ∧ (∃ u0, oargs[0]! = .value u0) ∧ (∃ u1, oargs[1]! = .value u1)) := by
+  unfold denoteApp at h
+  split at h
+  · rename_i h1
+    left
+    refine ⟨h1, ?_⟩
+    have hu := denoteUnary_value_inv op _ v h
+    rwa [getElem!_pos oargs 0 (by omega)]
+  · split at h
+    · rename_i h2
+      right
+      refine ⟨h2, ?_, ?_⟩
+      · have hb := (denoteBinary_value_inv op w _ _ v h).1
+        rwa [getElem!_pos oargs 0 (by omega)]
+      · have hb := (denoteBinary_value_inv op w _ _ v h).2
+        rwa [getElem!_pos oargs 1 (by omega)]
+    · exact absurd h (by simp)
+
 /-- The deferred integer-arithmetic path: when `foldConst?` declines (int `+ - * / %` are not folded —
 their overflow-trap conditions are width-dependent) and the op is arithmetic, `denote`'s combiner falls
 through to the REAL width-`w` `evalArithOp` (byte-identical to `evalNode`), so its trap/overflow
