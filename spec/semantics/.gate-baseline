@@ -9400,3 +9400,30 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a bare lowercase name in the Qty unit position names it a unit misuse, not a type variable
+pass	a bare uppercase name in the Qty unit position names it a unit misuse, not an unknown type
+pass	a genuinely unknown export name keeps the plain names-no-definition message
+pass	a keyed map binding param rejects the same in the name-alias (map …) spelling
+pass	a keyed map destructuring binding param is refutable and rejected CDZ0210
+pass	a malformed literal in a non-exported nullary def body still surfaces
+pass	a malformed literal in a parameterized (unreached) body still surfaces
+pass	a map rest pattern with a keyed entry after the rest is a malformed shape, rejected CDZ0201
+pass	a map rest post-entry rejects the same in the name-alias (map …) spelling
+pass	a member-operand typo suggests a member-accessible module sharing a variant name, with a rename fix
+pass	a non-String Ast.read argument names the String requirement (Bool operand)
+pass	a non-String Ast.read argument names the String requirement (Int64 operand)
+pass	a non-String trap message names the String requirement (Bool operand)
+pass	a non-String trap message names the String requirement (tuple operand)
+pass	a non-scalar char in a parameterized (unreached) body still surfaces
+pass	a prelude type name as an arithmetic operand names the kind boundary, not a phantom Int64
+pass	a reachable malformed literal reports exactly once, not doubled
+pass	a record-type mismatch message renders the type capitalized, matching the annotation spelling
+pass	a well-formed String-message trap in a polymorphic position compiles and runs clean
+pass	a well-formed rest-last map pattern matches the keyed entry and binds the rest
+pass	a wrong-arity trap keeps the over-application message, not the message-type reject
+pass	an arithmetic op with a user-type VALUE operand and a scalar names the kind boundary, not a phantom Int64
+pass	exporting a bare TYPE handle in a single module names the type-handle export
+pass	exporting an EFFECT names the category, not a value definition
+pass	the Qty unit-position misuse fires at a value-annotation site too
+pass	the rendered capitalized record type round-trips as a valid annotation and runs
+pass	two type-value operands in arithmetic name that arithmetic is not defined on Type
