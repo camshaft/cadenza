@@ -1,0 +1,1 @@
+((. Qty of) 9 (/ ((. Unit of) #"m") (^ ((. Unit of) #"s") 2)))
