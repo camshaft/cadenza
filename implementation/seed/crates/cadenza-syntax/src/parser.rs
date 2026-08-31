@@ -1157,16 +1157,14 @@ impl<'a> Parser<'a> {
         self.expr_iter(min_prec)
     }
 
-    /// Iterative precedence-climbing — the explicit-stack replacement for the recursive [`Self::expr`]'s
-    /// `self.expr(right_min)` right-operand recursion (v-syntax-nonrec-reader I3). Byte-identical to
-    /// `expr` (verified by the differential oracle in `roundtrip_tests::generative_roundtrip`): it mirrors
-    /// every arm — the `as`-conversion, the `:`+`forall` intercept, same-line + own-line comment attach,
-    /// the unit suffix, the spine + depth guards, and the `min_prec == PREC_SEQ` `finish_sequence`.
-    ///
-    /// HYBRID STAGE: operands are still read via the (recursive) [`Self::prefix`]/[`Self::postfix`], so
-    /// this de-recurses the infix / right-operand / right-assoc-arrow chains; bracket/keyword operand
-    /// NESTING still recurses through `prefix` until those forms are pulled onto the worklist in a later
-    /// increment. It reuses `expr`'s exact helpers, so the output arena + span table + errors match.
+    /// The expression reader — iterative precedence-climbing on an explicit `Cont` worklist. It covers every
+    /// arm — the `as`-conversion, the `:`+`forall` intercept, same-line + own-line comment attach, the unit
+    /// suffix, the spine + depth guards, and the `min_prec == PREC_SEQ` `finish_sequence` — and every operand
+    /// FAMILY is dispatched onto the worklist (paren/list/record/map/set/hash/bin literals; the
+    /// if/match/fn/let/handle/host/def/module keyword forms; `@`/`@!` annotations incl. their glued-call /
+    /// config args; unary-minus; unquote), so operand NESTING no longer recurses. Only LEAF operands
+    /// (names/literals) fall back to the shared [`Self::prefix`] (they don't nest), and the postfix
+    /// `.member`/`(args)` chain folds via the funnel + `Cont::Call`. [`Self::expr`] delegates here.
     fn expr_iter(&mut self, min_prec: u8) -> StructId {
         // A pending continuation on the explicit stack — the worklist that replaces native recursion.
         enum Cont {
@@ -4685,7 +4683,7 @@ impl<'a> Parser<'a> {
     /// is captured (gated on `at(RParen)`, the PR#758 rule — a non-last element's comment sits before the
     /// `,` with no faithful slot). `rest_marker` returns false on a non-`..` element, so an ORDINARY tuple
     /// is byte-identical — this is pure ADDITIVE acceptance of a previously-rejected spread. Shared by the
-    /// recursive `paren` and the iterative `Cont::Paren` path (kept in sync by the differential oracle).
+    /// iterative `Cont::Paren` path and the `paren` operand reader.
     fn finish_tuple(&mut self, mut items: Vec<StructId>, start: Span) -> StructId {
         while self.sep_continue(Kind::RParen) {
             if !self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1)) {
@@ -6244,15 +6242,6 @@ impl<'a> Parser<'a> {
         self.pattern_iter()
     }
 
-    /// Iterative pattern reader (I4) — the explicit-worklist replacement for the recursive [`Self::pattern`]
-    /// (byte-identical, verified by the differential oracle). HYBRID STAGE: the head atom is read via the
-    /// (recursive) [`Self::pattern_atom`] — so a `(tuple)`/`[list]`/`#{map}`/etc. sub-pattern still recurses
-    /// through a nested `pattern_iter` for now — but the postfix chain (`.member` folded inline, `(args)`
-    /// applications) is de-recursed onto this worklist, so a `C(C(C(… )))` constructor-application nest no
-    /// longer grows the native stack. Depth accounting mirrors `pattern`'s `guard_prefix` exactly (one
-    /// budget unit per pattern LEVEL — atom + its whole postfix chain — decremented when the level and all
-    /// its postfix complete), so a pathological nest declines at the same point/shape. Remaining atom
-    /// families (tuple/list/map/set/record/bin/raw-list) convert onto the worklist in later increments.
     /// Iterative-reader helper: advance a `{ … }` record PATTERN, appending completed SHORTHAND fields
     /// (`{ x }` -> `(= x x)`, read inline — no sub-pattern) to `items` until either the body CLOSES (the
     /// `}` is consumed here) -> `None`, or a field needs a sub-pattern DESCENT (a `.. rest` operand or a
@@ -6338,6 +6327,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The pattern reader — a fully iterative (explicit-worklist) recursive descent. Every sub-pattern
+    /// family — tuple `(…)`, list `[…]`, set `#(…)`, raw-list `#[…]`, record `{…}`, map `#{…}`, bin `b[…]`,
+    /// and the postfix `.member` / `(args)` constructor-application chain — descends onto this worklist, so
+    /// a `C(C(C(…)))` / `(((…)))` / `[[[…]]]` nest cannot overflow the native stack. Only LEAF patterns fall
+    /// back to the shared [`Self::pattern_atom`] (they don't nest). Depth accounting bounds one budget unit
+    /// per pattern LEVEL (atom + its whole postfix chain) so a pathological nest declines with a clean
+    /// diagnostic. [`Self::pattern`] delegates here.
     fn pattern_iter(&mut self) -> StructId {
         // A pattern postfix `( arg, … )` application awaiting an argument sub-pattern. `items` = `[ base,
         // arg… ]`; `start` is the base pattern's start (the folded node's span); `entered` = whether the
@@ -7815,31 +7811,26 @@ impl<'a> Parser<'a> {
         self.type_ref_iter()
     }
 
-    /// Iterative type reader (I5) — the explicit-worklist replacement for the recursive [`Self::type_ref`]
-    /// (byte-identical, verified by the differential oracle). Two grammar layers are de-recursed onto the
-    /// worklist here:
-    ///   - the `->` ARROW chain — right-associative (`A -> B -> C` = `A -> (B -> C)`), so each right operand
-    ///     is read as a fresh arrow-LHS and the chain folds on the way back; and
-    ///   - the postfix `(…)` APPLICATION arguments — the deep nested-generic vector `Foo(Bar(Baz(…)))` (a
-    ///     type-application argument is a full [`Self::type_ref`], so it descends onto this worklist instead
-    ///     of recursing `type_operand -> type_postfix -> type_arg -> type_ref`). Labeled record-type
-    ///     arguments `name: T` build `(: name T)` via a [`TCont::Label`] continuation (shared node order with
-    ///     the recursive [`Self::type_arg`] via [`Self::type_arg_label`]).
+    /// The type reader — a fully iterative (explicit-worklist) recursive descent. Every layer of the type
+    /// grammar is on the worklist, so no type nesting can overflow the native stack:
+    ///   - the `->` ARROW chain — right-associative (`A -> B -> C` = `A -> (B -> C)`), each right operand
+    ///     read as a fresh arrow-LHS and the chain folded on the way back;
+    ///   - the postfix `(…)` APPLICATION arguments — the deep nested-generic vector `Foo(Bar(Baz(…)))` (each
+    ///     argument is a full type, so it descends here) via [`TCont::App`] + labeled `name: T` args as
+    ///     `(: name T)` via [`TCont::Label`] (label read by the shared [`Self::type_arg_label`]);
+    ///   - the paren-tuple/grouping/unit `(…)` interior ([`TCont::Paren`]);
+    ///   - the brace-record `{field: T, …}` interior ([`TCont::Brace`], field label via the shared
+    ///     [`Self::read_type_record_field_label`]);
+    ///   - the `forall <binders> . body` (nested `forall`s stack via [`TCont::Forall`], preamble via the
+    ///     shared [`Self::read_forall_preamble`]); and
+    ///   - the unit-composition infix `^`/`*`/`/` Pratt ([`TCont::Unit`]) — so `(a * (b * …))` no longer
+    ///     recurses through the operand read.
     ///
-    /// Nodes are created in the SAME order as the recursive body (the `->` head before the right operand; a
-    /// labeled arg's `label` before its type before the `:`; a `Tuple` head after the first paren element),
-    /// so the arena AND the span table match. FULLY ITERATIVE (I5 complete): every recursive descent of the
-    /// type grammar is on this worklist — the `->` arrow chain, the postfix `(…)` application arguments (the
-    /// deep nested-generic vector `Foo(Bar(Baz(…)))`, via [`TCont::App`] + [`TCont::Label`]), the
-    /// paren-tuple/grouping/unit `(…)` interior ([`TCont::Paren`]), the brace-record `{field: T, …}` interior
-    /// ([`TCont::Brace`]), the `forall <binders> . body` (nested `forall`s via [`TCont::Forall`]), and the
-    /// unit-composition infix `^`/`*`/`/` Pratt ([`TCont::Unit`] — so `(a * (b * …))` no longer recurses
-    /// `type_unit_infix -> type_operand -> type_paren -> type_ref`). No type nesting can overflow the native
-    /// stack. The `type_postfix`/`type_arg_exprs`/`type_unit_infix` depth-guard accounting (`self.depth +
-    /// spine`) is mirrored exactly so the deep-nesting boundary stays byte-identical to the recursive
-    /// reference (still verified by the differential oracle until I8). The recursive helpers (`type_operand`,
-    /// `type_paren`, `type_brace_record`, `type_unit_infix`, `forall_type`, `type_postfix`) remain in place
-    /// only for the frozen `read_ml_recursive` oracle reference (`self.iterative == false`).
+    /// Nodes are created in a fixed order (the `->` head before the right operand; a labeled arg's `label`
+    /// before its type before the `:`; a `Tuple` head after the first paren element) so the arena AND span
+    /// table are stable, and the `spine` depth-guard accounting (`self.depth + spine`) bounds the arena-tree
+    /// depth a recursive downstream consumer walks. [`Self::type_ref`] delegates here; the corpus round-trip,
+    /// the spec/syntax goldens, and the surface-totality fuzz property are the standing net.
     fn type_ref_iter(&mut self) -> StructId {
         // Pending continuations on the explicit worklist (replacing the native recursion of `type_ref` /
         // `type_operand` / `type_postfix` / `type_arg_exprs`). Each holds only Copy ids/spans + the
