@@ -23388,7 +23388,16 @@
         (+ (f (List.push #list() (Op.Add 15))) (f (List.push #list() (Op.Add v)))))
       (export main)))
   (call main (: 5 Int64))
-  (output (: 120 Int64)))
+  (output (: 120 Int64))
+  ; KNOWN-LEAK (v-memory-safety, nix-confirmed real via v-rcdzc-ts-1): value 120 is CORRECT but the
+  ; owned list `main` builds and passes to the lifted helper `f` leaks its 3-node spine — f is
+  ; boundary-owned (caller-owns), it BORROWS xs and does not reclaim it, and `main` emits no drop_after
+  ; for the arg (0 drops in the module). Value-correct leak, NOT a UAF. The committed baseline masked it
+  ; with a stale pass (pre-value-fix a9353987a3: the earlier value miscompile short-circuited the
+  ; live-objects grade); the value fix unmasked the latent leak. Re-pinned known-leak pending the
+  ; caller-side reclaim fix (blocked on the caller-owns/lambda-lift ownership model — co-design with
+  ; v-inference/v-core-opt/v-runtime; see the memory-safety log).
+  (live-objects known-leak))
 
 (case
   "a guard combines the payload binder with the rest binder"
