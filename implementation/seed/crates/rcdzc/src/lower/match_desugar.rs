@@ -492,6 +492,27 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
     }) {
         return lower_match_map(db, scrutinee, arms);
     }
+    // A SET scrutinee whose arms use `(set …)` element-membership patterns → the set matcher
+    // (`core-semantics.md` §A Set Is Matched By Element-Membership Patterns). A set pattern `(set e… .. rest)`
+    // matches when the set CONTAINS every named element (each an ordinary value expression, compared by the
+    // set's own value equality), binding `rest` to the set MINUS the named elements — a membership QUERY, not
+    // a structural shape (the KEYS-ONLY twin of the map matcher). `lower_match_set` desugars to a nested
+    // `Set.contains` presence-test `if`-chain + a `Set.remove` residual `let`, working over BOTH a constant
+    // `Core::SetOf` and a runtime set (`Set.contains`/`Set.remove` evaluate either way). A scalar-only match
+    // over a set (only bare-binder/`_` arms — no `(set …)` pattern) falls through to the scalar path.
+    if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::Set(_))
+        && arms.iter().any(|&(pat, _)| {
+            // Peel a `(guard (set …) cond)` wrapper so a GUARDED set arm routes here too (the set twin of the
+            // map routing peel). `lower_match_set` peels the guard internally + threads the cond.
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            db.ast.compound_form_of(inner, CompoundCtor::Set).is_some()
+        })
+    {
+        return lower_match_set(db, scrutinee, arms);
+    }
     // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
     // `(guard <inner-pat> <cond>)` — the inner pattern gives the probe, `<cond>` the guard (a boolean the
     // arm's binder is in scope for, resolve Case 5). A pattern that is not a scalar literal, binder,
@@ -560,20 +581,12 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
                 {
                     return Core::Poison(reject);
                 }
-                // A `#set(…)` match pattern is a VALID pattern head (the matcher for it is not yet built —
-                // there is no `lower_match_set` route above, the SET analogue of `lower_match_list` /
-                // `lower_match_map`), so it falls through to the scalar path. Left as the generic UNCODED
-                // decline below it was SILENT in `cdz check` (`match_pattern_fault` surfaces only CODED
-                // poison, and a `decline` is never a check diagnostic) while `compile` faulted it — the
-                // check≡compile hole the LIST (Inc 39), MAP, and scalar-fallthrough fixes already closed,
-                // but SET was never covered (v-rcdzc-ts-1 edge-hunt, queue/48). Emit the CODED `CDZ0201`
-                // (`Code::Malformed`) anchored at the pattern — the SAME code the list/map rest-shape
-                // rejects use and the nested-record match decline uses (a coded reject, NOT `CDZ0900`
-                // `unsupported`: a decline is filtered from `diagnostics`, so it would stay silent in check
-                // exactly like the uncoded one). Now `match_pattern_fault` surfaces it in `check` on EVERY
-                // body and `check`≡`compile`. The message names the workaround (a set is matched by a
-                // whole-value binder / `_`, or queried with `Set.contains` / `Set.size`). When a real set
-                // matcher is built, route it above (like List/Map) and this arm stops firing.
+                // A `#set(…)` element-membership pattern is now LOWERED by `lower_match_set` (routed above on
+                // a `Ty::Set` scrutinee) — so reaching HERE with a set pattern means the scrutinee is NOT a
+                // set (a set-typed scrutinee would have routed away). That is a shape mismatch, not an
+                // unsupported construct: emit the CODED `CDZ0201` (`Code::Malformed`) anchored at the pattern
+                // so `match_pattern_fault` surfaces it in `cdz check` on EVERY body (`check` ≡ `compile`, the
+                // same property the list/map matchers keep) rather than a check-silent uncoded decline.
                 if db
                     .ast
                     .compound_form_of(inner_pat, crate::ast::CompoundCtor::Set)
@@ -582,9 +595,7 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
                     return Core::Poison(
                         Reject::coded(
                             Code::Malformed,
-                            "a set match pattern is not supported (a set has no positional structure to \
-                             destructure — bind the whole set with a name or `_`, and query it with \
-                             `Set.contains` / `Set.size`)",
+                            "a `(set …)` pattern matches only a set scrutinee",
                         )
                         .at(inner_pat),
                     );
@@ -3580,6 +3591,167 @@ pub(super) fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
         }
         _ => k,
     }
+}
+
+/// Read a `(set …)` element-membership pattern: its named ELEMENTS (each an ordinary value expression —
+/// NOT a binder, since a set element IS the value) and an OPTIONAL single rest binder. Accepts any `#set`
+/// spelling via `compound_form_of`; splits an optional trailing `.. rest` via `rest_marker` (wrapped
+/// `(.. r)` or flat). Returns `None` if `pat` is not a set form OR its `..` is MALFORMED (a `..` not
+/// followed by exactly one rest binder) — the set twin of `map_pattern_of`.
+pub(crate) fn set_pattern_of(db: &Db, pat: StructId) -> Option<(Vec<StructId>, Option<StructId>)> {
+    let tail = db
+        .ast
+        .compound_form_of(pat, crate::ast::CompoundCtor::Set)?;
+    let (elems_tail, rest) = match db.ast.rest_marker(tail) {
+        Some((i, operand, trailing_start)) => {
+            if trailing_start != tail.len() {
+                return None; // `..` must be followed by exactly one rest binder
+            }
+            (&tail[..i], Some(operand))
+        }
+        None => (tail, None),
+    };
+    Some((elems_tail.to_vec(), rest))
+}
+
+/// Whether `pat` is a `(set …)` FORM whose `..` rest is MALFORMED (a `..` marker NOT followed by exactly
+/// one binder) — the set twin of `map_form_is_malformed_rest`, so the matcher names the rest-shape fault
+/// clearly rather than the generic "not a set pattern".
+fn set_form_is_malformed_rest(db: &Db, pat: StructId) -> bool {
+    let Some(tail) = db.ast.compound_form_of(pat, crate::ast::CompoundCtor::Set) else {
+        return false;
+    };
+    match db.ast.rest_marker(tail) {
+        Some((_, _, trailing_start)) => trailing_start != tail.len(),
+        None => false,
+    }
+}
+
+/// `((. Set <member>) <a> <b>)` — a curried `Set` member call (`contains`/`remove`) over two args, the
+/// surface a source `(Set.contains s e)` / `(Set.remove s e)` lowers through. A FRESH `.`/`Set`/member node
+/// set per call (a node has one parent); `s` and `e` are spliced verbatim (already-resolved / freshly
+/// cloned by the caller).
+fn set_member_call(db: &mut Db, member: &str, a: StructId, b: StructId) -> StructId {
+    let dot = db.push_name(".");
+    let set_mod = db.push_name("Set");
+    let member_key = db.push_name(member);
+    let access = db.push_list(vec![dot, set_mod, member_key]);
+    db.push_list(vec![access, a, b])
+}
+
+/// Lower a match over a SET scrutinee by ELEMENT-MEMBERSHIP patterns (`core-semantics.md` §A Set Is Matched
+/// By Element-Membership Patterns). A `(set e… .. rest)` arm matches when the set CONTAINS every named
+/// element `e` (each an ordinary value expression compared by the set's own value equality); a set lacking
+/// any named element does NOT match, so matching falls through to a later arm. An optional `.. rest` binds a
+/// set of the same type containing every element EXCEPT the named ones. A set's element set is UNBOUNDED, so
+/// a `(set …)` arm covers no shape — the match needs a MANDATORY catch-all (a whole-set binder / `_`, else
+/// CDZ0210). This is the KEYS-ONLY twin of `lower_match_map`: a set is a map with only keys and no value
+/// binders, so membership is a `Set.contains` presence-test `if`-chain and the residual is a `Set.remove`
+/// chain BOUND BY A `let` (`rest : (Set E)` types via the `Set.remove` scheme — no new PathStep/infer arm,
+/// per the inference contract). The desugar works over BOTH a constant `Core::SetOf` and a runtime set
+/// (`Set.contains`/`Set.remove` evaluate either way), so — unlike the map matcher's split const/runtime
+/// paths — one membership-chain desugar serves both.
+//= spec/capabilities/core-semantics.md#a-set-is-matched-by-element-membership-patterns
+//# A membership pattern naming elements MUST match a set that CONTAINS every named element, binding a trailing rest binder to the set of remaining elements; because a set's element set is unbounded, a match on a set MUST end in a name or wildcard catch-all (else a compile-time error under Matching Is Exhaustive Or Rejected).
+pub(super) fn lower_match_set(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Core {
+    if matches!(core_of(db, scrutinee), Core::Poison(_)) {
+        return core_of(db, scrutinee);
+    }
+    // MANDATORY catch-all: the FIRST unguarded bare-binder / `_` arm (arms after it are dead). A set's
+    // element set is unbounded, so without one the match is non-exhaustive (CDZ0210) — mirror the map matcher.
+    let catch_all_ix = arms.iter().position(|&(pat, _)| {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        db.ast.as_form(pat, "guard").is_none() && db.ast.as_name(inner).is_some()
+    });
+    let Some(catch_all_ix) = catch_all_ix else {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a set match must end in a catch-all (`_` or a whole-set binder) — a set's element set is unbounded"
+                .to_string(),
+        ));
+    };
+    // Validate the membership arms before the catch-all: each must be a well-formed `(set …)` pattern. A
+    // MALFORMED `..` (not followed by exactly one binder) names the rest-shape fault (CDZ0201) — the set twin
+    // of the map/list rest-shape message.
+    for &(pat, _) in &arms[..catch_all_ix] {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let Some((_elems, rest)) = set_pattern_of(db, inner) else {
+            if set_form_is_malformed_rest(db, inner) {
+                return Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a set rest pattern is `(set e… .. rest)` — exactly one binder after `..`"
+                            .to_string(),
+                    )
+                    .at(inner),
+                );
+            }
+            return Core::Poison(Reject::decline(
+                "a set match arm that is not a `(set …)` pattern or a binder is not supported",
+            ));
+        };
+        // SLICE 1 lowers the MEMBERSHIP form `(set e…)` (a `Set.contains` presence-test chain). The REST form
+        // `(set e… .. rest)` — binding `rest` to the set MINUS the named elements — needs the rest binder to
+        // resolve to the residual (a `Set.remove` chain), which the initial resolve pass does not yet wire (a
+        // reused body's rest-binder occurrence resolves UNBOUND before lowering can bind it via a `let`). That
+        // resolve wiring is the co-owned slice-2 increment with v-inference. Until then, a rest form is a
+        // CODED CDZ0201 (check-surfaced, `check` ≡ `compile`), naming the supported subset.
+        if rest.is_some() {
+            return Core::Poison(
+                Reject::coded(
+                    Code::Malformed,
+                    "a set rest pattern (`#set(e… .. rest)`) is not yet supported — the membership form \
+                     `#set(e…)` (matches when the set contains every named element) is"
+                        .to_string(),
+                )
+                .at(inner),
+            );
+        }
+    }
+    // The innermost `<else>` = the catch-all body (a binder catch-all reads the whole set via the Case-5
+    // binder→scrutinee rule). Fold the membership arms from LAST backward into nested `Set.contains` `if`s.
+    let mut else_node = arms[catch_all_ix].1;
+    for &(pat, body) in arms[..catch_all_ix].iter().rev() {
+        let (inner, guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let (elems, _rest) = set_pattern_of(db, inner).expect("validated above (rest rejected)");
+        // The taken branch: the body, guarded if the arm has a `(guard … cond)` (a false guard falls to the
+        // same `<else>` as a missing element). SLICE 1: no rest binder (a rest form is rejected above), so no
+        // `Set.remove` residual `let` — the membership form binds no names.
+        let mut taken = body;
+        if let Some(g) = guard {
+            let if_head = db.push_name("if");
+            taken = db.push_list(vec![if_head, g, taken, else_node]);
+        }
+        // Nest a `Set.contains` presence test per named element: `(if (Set.contains s e) <inner> <else>)`,
+        // INNERMOST last so the FIRST element is the OUTERMOST test.
+        let mut chain = taken;
+        for &e in elems.iter().rev() {
+            let e_copy = clone_key_expr(db, e);
+            let contains = set_member_call(db, "contains", scrutinee, e_copy);
+            let if_head = db.push_name("if");
+            chain = db.push_list(vec![if_head, contains, chain, else_node]);
+        }
+        else_node = chain;
+    }
+    // Scope-skip the synthesized chain (O(arms) deep of non-binding `if`/`.`/application forms) so a prelude
+    // name (`Set`/`contains`/`remove`) resolution is O(1), not O(depth) — mirror the map matcher.
+    db.extend_scope_skip_pass_through(else_node);
+    crate::resolve::resolve_subtree(db, else_node);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "set match → nested Set.contains if-chain (rest = Set.remove residual let)");
+    core_of(db, else_node)
 }
 
 /// Lower a match over a MAP scrutinee by KEY-DIRECTED patterns (ask-61, core-semantics.md §A Map Is

@@ -164,6 +164,18 @@ Because a map's key set is unbounded, no finite set of key-directed patterns can
 
 A key-directed pattern MUST observe a map only through the presence of keys and the values it associates with them; it MUST NOT expose or depend on any internal ordering or node structure of the map's representation, so that the same pattern matches a map regardless of how the map is represented.
 
+### A Set Is Matched By Element-Membership Patterns
+
+A set MUST be matchable by a membership pattern that names some number of elements and MAY end in a rest binder for the remaining elements. A set's element set is runtime data, not a static shape, so a set pattern is a QUERY on the presence of specific elements rather than a structural decomposition of a fixed layout.
+
+A membership pattern naming elements `e₁ … eₙ` MUST match a set that CONTAINS every named element; a set lacking any named element MUST NOT match that pattern, so that matching falls through to a later arm. Each named element MUST be an ordinary value expression, compared to the set's elements by the same value equality the set itself uses, so that an element computed at run time selects a member exactly as a constant element does. A named element position is NOT a binder position — a set element is the value itself, so a bare name at an element position is an ordinary value expression (an in-scope name), not a new binding, exactly as a named key in a map pattern is a value expression rather than a binder.
+
+A pattern MAY end in a rest binder that binds a set of the same type containing every element of the matched set EXCEPT the named elements, so that the named elements are consumed and the remainder is available for further matching. The rest binder is the only binder position in a set pattern; the whole pattern MUST remain linear (`CDZ0102`).
+
+Because a set's element set is unbounded, no finite set of membership patterns can cover every set, so a match on a set MUST end in a name or wildcard pattern that binds the whole set; a set of membership arms with no such catch-all MUST be a compile-time error under *Matching Is Exhaustive Or Rejected*.
+
+A membership pattern MUST observe a set only through the presence of elements; it MUST NOT expose or depend on any internal ordering or node structure of the set's representation, so that the same pattern matches a set regardless of how the set is represented.
+
 ## Types As First-Class Values
 
 ### Types Are First-Class Values
