@@ -1,0 +1,1 @@
+(type Point (record (: x Int64) (: y Int64)))
