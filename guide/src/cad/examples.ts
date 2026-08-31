@@ -148,11 +148,11 @@ const DETAIL_OVERRIDE: ExampleModel = {
     ml: `def main() =
   lower(
     Solid.Union(
-      Solid.Translate(v3(0 - 5, 0, 0), Solid.Sphere(3)),
+      Solid.Translate(v3(-5, 0, 0), Solid.Sphere(3)),
       Solid.Translate(v3(5, 0, 0), Solid.Detail((6 : Int64), Solid.Sphere(3)))))`,
     sexpr: `(def (main)
   (lower ((. Solid Union)
-           ((. Solid Translate) (v3 (- 0 5) 0 0) ((. Solid Sphere) 3))
+           ((. Solid Translate) (v3 -5 0 0) ((. Solid Sphere) 3))
            ((. Solid Translate) (v3 5 0 0) ((. Solid Detail) (: 6 Int64) ((. Solid Sphere) 3))))))`,
   },
 };
