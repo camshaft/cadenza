@@ -528,6 +528,8 @@ todo	ml/489-wit-result-at-most-two-args
 todo	ml/490-wit-variant-single-payload
 todo	ml/491-wit-enum-case-bare-name
 todo	ml/492-wit-flags-bit-bare-name
+todo	ml/493-reserved-forall-bare-value
+todo	ml/494-reserved-as-bare-value
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string
