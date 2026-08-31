@@ -436,9 +436,28 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
             }
             Work::Node(id, top) => match a.get(id) {
                 Struct::Atom(l) => {
-                    let mut s = String::new();
-                    print_leaf(a.leaf(*l), &mut s);
-                    doc.word(s);
+                    // A MULTI-LINE string literal (contains a line feed) renders with REAL newlines
+                    // instead of the `\n` escape, so a multi-line `(doc "…")` doc-comment stays readable
+                    // instead of collapsing to one `\n`-laden line (seq-282 multi-line comment
+                    // preservation). Byte-exact + round-trips: the reader accepts a literal newline in a
+                    // `"…"` string, and each continuation line's own bytes (incl. any authored indentation,
+                    // which is string CONTENT) are emitted verbatim — the Doc engine adds no indent inside
+                    // a Text token. Only the FMT (non-`structural`) surface does this; the STRUCTURAL
+                    // render (`render_sexpr`, the `tree.sexp` golden oracle) keeps the stable one-line
+                    // escaped form, as does the compact `print_node`, both via `print_leaf`.
+                    if !structural
+                        && let Leaf::Str(s) = a.leaf(*l)
+                        && s.contains('\n')
+                    {
+                        doc.word(format!(
+                            "\"{}\"",
+                            cadenza_syntax_core::literal::escape_string_multiline(s)
+                        ));
+                    } else {
+                        let mut s = String::new();
+                        print_leaf(a.leaf(*l), &mut s);
+                        doc.word(s);
+                    }
                 }
                 Struct::List(items) => {
                     // The reader never produces an empty list; render defensively as `()`.
@@ -3163,6 +3182,52 @@ mod tests {
                 "render_sexpr is idempotent for {src:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_multi_line_string_pretty_prints_multi_line_but_stays_escaped_structurally() {
+        // seq-282 multi-line comment preservation: the FMT (pretty) surface renders a multi-line string
+        // literal (e.g. a multi-line `(doc "…")` doc-comment) with REAL newlines instead of collapsing it
+        // to one `\n`-laden line — byte-exact (a continuation line's own indentation is string CONTENT and
+        // is emitted verbatim). The STRUCTURAL render (`render_sexpr`, the tree.sexp oracle) and the
+        // compact `print` keep the stable one-line `\n`-escaped form. All three round-trip to the SAME
+        // arena, and the pretty form is idempotent.
+        let src = "(doc \"line one; still a string\n      line two; also a string\" (def (f) 1))";
+        let a = read(src).unwrap();
+
+        // FMT/pretty: real newline, NOT the `\n` escape.
+        let pretty = print_pretty(&a);
+        assert!(
+            pretty.contains("line one; still a string\n"),
+            "pretty must keep a multi-line string MULTI-LINE (real newline): {pretty:?}"
+        );
+        assert!(
+            !pretty.contains("still a string\\n"),
+            "pretty must NOT collapse a multi-line string to a `\\n` escape: {pretty:?}"
+        );
+        // The `;` inside the string is CONTENT, never a comment node.
+        assert!(
+            !pretty.contains("(comment"),
+            "a `;` inside a string is content, not a comment: {pretty:?}"
+        );
+        // Pretty re-reads to the same arena and is byte-idempotent.
+        let b = read(&pretty).unwrap();
+        assert!(a.structurally_eq(&b), "pretty round-trips: {pretty:?}");
+        assert_eq!(print_pretty(&b), pretty, "pretty is idempotent");
+
+        // STRUCTURAL + compact: one-line `\n`-escaped (stable oracle), and both round-trip.
+        let structural = render_sexpr(&a);
+        assert!(
+            structural.contains("still a string\\n") && !structural.contains("still a string\n"),
+            "render_sexpr keeps the one-line `\\n`-escaped form: {structural:?}"
+        );
+        let compact = print(&a);
+        assert!(
+            compact.contains("still a string\\n"),
+            "compact keeps the one-line `\\n`-escaped form: {compact:?}"
+        );
+        assert!(a.structurally_eq(&read(&structural).unwrap()));
+        assert!(a.structurally_eq(&read(&compact).unwrap()));
     }
 
     #[test]
