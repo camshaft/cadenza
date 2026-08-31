@@ -84,6 +84,9 @@ pass	ml/167-pragma-plain-bare-name
 pass	ml/168-pragma-plain-ctor-application
 pass	ml/169-pragma-in-module
 pass	ml/17-world-result-both
+pass	ml/170-tagged-template-hole-free
+pass	ml/171-tagged-template-escapes
+pass	ml/172-tagged-template-empty
 pass	ml/18-world-result-no-err
 pass	ml/19-world-result-no-ok
 pass	ml/20-world-result-bare

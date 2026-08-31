@@ -6488,37 +6488,14 @@ mod tests {
     //     ml/169-pragma-in-module (a pragma above a module's members; format.cdz pins the surface). The
     //     `print((pragma …))` sexp→ml oracles are subsumed by these ml cases' fmt-idempotence.
 
-    #[test]
-    fn tagged_template_round_trips_hole_free() {
-        // B1: a hole-free tagged template `tag"…"` reads to `(tagged-template <tag> (chunks <str>)
-        // (holes))` and prints back to the glued `tag"…"` surface.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def m() = jsx\"hello world\"").arenas),
-            "(def (m) (tagged-template jsx (chunks \"hello world\") (holes)))"
-        );
-        assert_eq!(
-            assert_roundtrip("def m() = jsx\"hello world\"", 80),
-            "def m() = jsx\"hello world\""
-        );
-        // The canonical s-expr node prints back to the sugar.
-        assert_eq!(
-            print(
-                &sexpr::read("(def (m) (tagged-template id (chunks \"hi\") (holes)))").unwrap(),
-                80
-            ),
-            "def m() = id\"hi\""
-        );
-        // Escapes in the body survive (escape_string ∘ unescape_string).
-        assert_eq!(
-            assert_roundtrip("def m() = id\"a\\nb\\\"c\"", 80),
-            "def m() = id\"a\\nb\\\"c\""
-        );
-        // A tag glued to an EMPTY string is a valid (empty single chunk) template.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def m() = e\"\"").arenas),
-            "(def (m) (tagged-template e (chunks \"\") (holes)))"
-        );
-    }
+    // `tagged_template_round_trips_hole_free` (B1: a hole-free tagged template `tag"…"` reads to
+    // `(tagged-template <tag> (chunks <str>) (holes))` and prints back to the glued `tag"…"` surface)
+    // MIGRATED to the spec/syntax corpus (inc-6 batch-21): ml/170-tagged-template-hole-free
+    // `def m() = jsx"hello world"`→`(def (m) (tagged-template jsx (chunks "hello world") (holes)))`,
+    // ml/171-tagged-template-escapes `def m() = id"a\nb\"c"` (escapes survive the ML round-trip —
+    // fmt-idempotent; the `\n` lexes to a real newline in the chunk value, which render_sexpr renders
+    // literally in the tree), ml/172-tagged-template-empty `def m() = e""`→`(chunks "")`. The
+    // `print((tagged-template …))` sexp→ml oracle is subsumed by the ml cases' fmt-idempotence.
 
     #[test]
     fn tagged_template_non_bare_tag_falls_back_to_call_form() {
