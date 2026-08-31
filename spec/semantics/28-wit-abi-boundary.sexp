@@ -3833,9 +3833,9 @@ cases
   (live-objects known-leak))
 
 (case
-  "a declared-world enum EXPORT whose guest case order MISMATCHES the WIT declines (not a silent u32 degrade)"
+  "a declared-world enum EXPORT whose guest case order MISMATCHES the WIT remaps by case NAME to the declared order"
   (doc
-    "SHAPE 64 - breaker FINDING 1 regression pin. Guest `(type Color (Red)(Green)(Blue))` under an imposed world declaring `(result (\"enum\" green red blue))` [case order REVERSED]. Before, the SHAPE-60 order-mismatch guard returned None → silently fell through to the PROVIDER path and exported `f: func(s64) -> u32` — a DIFFERENT type than the world declares (the value even round-tripped, masking it). Now the imposed-world contract guard in the export dispatch DECLINES loudly: an explicit wit_world's typed member that can't be emitted must NOT silently cross as a u32 handle. A reorder needs a runtime disc-remap (a later increment), so it declines rather than mis-emitting. A component-name-ONLY peer provider (no imposed wit_world) is unaffected — it still crosses compounds as handles (29-* peer cases).")
+    "SHAPE 64 - breaker FINDING 1 regression pin. Guest `(type Color (Red)(Green)(Blue))` under an imposed world declaring `(result (\"enum\" green red blue))` [case order REVERSED]. Before, the SHAPE-60 order-mismatch guard returned None → silently fell through to the PROVIDER path and exported `f: func(s64) -> u32` — a DIFFERENT type than the world declares (the value even round-tripped, masking it). Now the imposed-world contract guard in the export dispatch DECLINES loudly: an explicit wit_world's typed member that can't be emitted must NOT silently cross as a u32 handle. A reorder needs a runtime disc-remap (a later increment), so it declines rather than mis-emitting. SHOULD-WORK: the value crosses by case NAME (guest Red -> WIT `red`, guest Green -> WIT `green`) — the wire discriminant is remapped guest-disc->WIT-disc but the semantic case is name-keyed, identical to the order-MATCHING sibling SHAPE 60; this mirrors the record boundary that already places fields BY NAME not guest slot order (SHAPE 20), an enum being the degenerate variant (v-rust-backend WIT-semantics ruling). So this case now asserts the remapped-by-name result as a TODO — it declines CDZ0900 TODAY (the record_result_lower enum arm guards guest_cases==wit_cases) and auto-passes when the disc-remap increment (a guest-disc->WIT-disc lookup at the enum result + param arms, owned by the WIT-boundary lane) lands. A component-name-ONLY peer provider (no imposed wit_world) is unaffected — it still crosses compounds as handles (29-* peer cases).")
   (wit-world
     (world
       w
@@ -3846,7 +3846,10 @@ cases
       (type Color (Red) (Green) (Blue))
       (def (f (: x Int64)) (if (= x 0) Color.Red Color.Green))
       (export f)))
-  (declines (message "a different type than the world declares")))
+  (call f (: 0 Int64))
+  (output (: (red unit) Color))
+  (call f (: 5 Int64))
+  (output (: (green unit) Color)))
 
 (case
   "a typed RECORD result with a VARIANT field crosses the export boundary (declared world)"
