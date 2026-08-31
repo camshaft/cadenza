@@ -1022,6 +1022,27 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, _, .cannotProve r => .cannotProve r
               | _, _, _ => .cannotProve "symeval: String.slice on non-string / non-const indices")
            | _, _, _ => .cannotProve "symeval: malformed String.slice")
+        else if q == "String".toUTF8 && mem == "at".toUTF8 then
+          -- `String.at s i` — Unicode-SCALAR-indexed char access → `Some s[i]` (a single-char string) when
+          -- `0 ≤ i < char-count`, else `None`; byte-faithful to evalNode (Eval.lean:1697-1706): decode UTF-8,
+          -- take code-point `i`, re-encode as a 1-char string. Invalid UTF-8 / non-const args → cannotProve.
+          (match children[1]?, children[2]? with
+           | some sId, some iId =>
+             (match symEval m senv fuel ty sId, symEval m senv fuel ty iId with
+              | .sym (.const (.str bytes)), .sym (.const (.int i)) =>
+                (match String.fromUTF8? bytes with
+                 | some s =>
+                   let cs := s.toList
+                   if 0 ≤ i && i < Int.ofNat cs.length then
+                     (match cs[i.toNat]? with
+                      | some ch => .sym (.ctor "Some".toUTF8 #[.const (.str (String.toUTF8 ch.toString))])
+                      | none => .sym (.ctor "None".toUTF8 #[]))
+                   else .sym (.ctor "None".toUTF8 #[])
+                 | none => .cannotProve "symeval: String.at on invalid UTF-8")
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: String.at on non-string / non-const index")
+           | _, _ => .cannotProve "symeval: malformed String.at")
         else if q == "Bytes".toUTF8 && mem == "len".toUTF8 then
           -- `Bytes.len b` → the byte count (`.const (.int b.size)`), byte-faithful to evalNode
           -- (Eval.lean:1711-1712). Purely structural. Non-bytes → cannotProve.
@@ -1705,6 +1726,23 @@ private def _sliceOobExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .list #[3, 4, 5, 6]],
     root := 7 }
 #guard symEval _sliceOobExpr [] symDefaultFuel defaultIntTy 7
+       == SymOutcome.sym (.ctor "None".toUTF8 #[])
+
+-- STRING.AT member-op coverage: `((. String at) "café" 3)` → `Some "é"` (scalar index 3 = é); OOB → None.
+private def _strAtInExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "String".toUTF8, Leaf.name "at".toUTF8,
+                Leaf.str "café".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[3])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
+    root := 6 }
+#guard symEval _strAtInExpr [] symDefaultFuel defaultIntTy 6
+       == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.str "é".toUTF8)])
+
+private def _strAtOobExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "String".toUTF8, Leaf.name "at".toUTF8,
+                Leaf.str "café".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[10])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
+    root := 6 }
+#guard symEval _strAtOobExpr [] symDefaultFuel defaultIntTy 6
        == SymOutcome.sym (.ctor "None".toUTF8 #[])
 
 -- BYTES len/at/slice member-op coverage over #{10,20,30,40} (byte-indexed; slice is start/LENGTH).
