@@ -680,6 +680,73 @@ fn lower_let(
             }
         }
     }
+    // RUNTIME `?` SHORT-CIRCUIT (BRICK 3b, `DESIGN-try-operator-rcdzc.md` §3.2/§4 v1). A single-binding
+    // `(let ((x (try e))) body)` whose operand `e` is a RUNTIME (non-constant) fallible value — its
+    // Some/Ok-vs-None/Err discriminant is decided at run time (the operator's `try(Int64.checked-add(max, v))`
+    // over a runtime `v`) — desugars to a `Core::MatchSum` over `e`, exactly the nested-`match` the `?`
+    // collapses (§0). The SUCCESS arm continues with `body` (the payload binder `x` resolves to a
+    // `Core::SumPayload` of `e` — installed as a core-override on the `try` init, mirroring how a real
+    // match-arm binder resolves); the FAILURE (default) arm yields `e`'s own failure value (`None`/`Err r`,
+    // already `T_B`-typed), which flows out as the boundary body's value — the abortive short-circuit. The
+    // scrutinee `e` is materialized ONCE by `MatchSum`'s scrutinee slot, so the runtime operand (and any
+    // host call it makes) evaluates exactly once and every payload read + the failure re-reference read the
+    // slot. Emitted through the existing `MatchSum` backend — no new `block`/`br`. Like the constant-failure
+    // fold above, this assumes the `let` is in BOUNDARY-TAIL position (its value IS the boundary's value);
+    // a `?` under a non-fallible/non-tail wrapper is the same accepted v1 limitation the constant path has.
+    // Restricted to a SINGLE-binding `let` (the ML `let x = e? in …` / `do (def x e?) …` idiom desugars to
+    // nested single-binding lets); a multi-binding `let` containing a runtime `?` keeps the decline below.
+    if bindings.len() == 1
+        && let Resolved::Try { operand } = resolved_of(db, bindings[0].1)
+        && let Some(success_disc) = success_disc_of(db, operand)
+        && let Some(failure_disc) = failure_disc_of(db, operand)
+        && !matches!(core_of(db, operand), Core::SumNew { .. } | Core::Poison(_))
+        && let Some(failure) = runtime_try_failure_value(db, operand, node)
+    {
+        // A constant success/failure operand never reaches here (`compute.rs`'s `Resolved::Try` folds a
+        // constant `SumNew` to the payload / a `Core::Break`, and the const-failure loop above handles the
+        // break); the `SumNew`/`Poison` guard drops those + an ill-typed operand, so only a runtime fallible
+        // value builds the desugar.
+        let (_name_occ, init) = bindings[0];
+        trace!(target: "rcdzc::lower", node = node.0, "runtime `?` → MatchSum short-circuit (success arm continues, failure arm re-wraps the failure value)");
+        // The payload binder `x` (a reference resolves to the `try` init occurrence) reads the success
+        // payload of the materialized scrutinee — the same `SumPayload` shape a real `(Some x)` arm binder
+        // resolves to (`core.rs` `SumArm`), so the existing match reclaim governs its dup/drop. Installed as
+        // a core-override so it wins over the init's memoized runtime-decline core.
+        db.core_override.insert(
+            init,
+            Core::SumPayload {
+                scrutinee: operand,
+                path: std::rc::Rc::from(vec![crate::core::PathStep::Payload]),
+            },
+        );
+        let root = crate::core::SumCont::Switch {
+            path: std::rc::Rc::from(Vec::<crate::core::PathStep>::new()),
+            arms: vec![
+                crate::core::SumArm {
+                    disc: Some(success_disc),
+                    cont: crate::core::SumCont::Leaf(body),
+                },
+                // The FAILURE arm — the single failure variant (`None` for an Option, `Err` for a Result;
+                // each is a two-variant sum, so the two explicit-disc arms are exhaustive) — yields a FRESHLY
+                // RE-WRAPPED failure value (`None` / `Err r`, `r` extracted from the matched scrutinee).
+                // Re-wrapping — rather than returning the scrutinee itself — keeps the matched shell from
+                // ESCAPING through this arm: the scrutinee is fully consumed on BOTH paths (its shell dropped
+                // after the success payload borrow, matched-then-reconstructed on the failure path), so no
+                // cell leaks. The disc is EXPLICIT (not a `None` wildcard default) so the failure re-wrap's
+                // `SumPayload` extraction sits under a bound match arm the RUST backend recognizes (a
+                // wildcard-default `SumPayload` is "no bound match arm" there). The value is `T_B`-typed and
+                // flows out as the boundary body's value.
+                crate::core::SumArm {
+                    disc: Some(failure_disc),
+                    cont: crate::core::SumCont::Leaf(failure),
+                },
+            ],
+        };
+        return Core::MatchSum {
+            scrutinee: operand,
+            root: std::rc::Rc::new(root),
+        };
+    }
     // DIVERGING-INIT SHORT-CIRCUIT: a binding whose INIT is an unconditional `(trap …)` DIVERGES before the
     // binding is ever bound, so the body (and every later binding) is UNREACHABLE — the whole `let` IS the
     // trap. Lower it to the trap init directly. Without this the body is lowered against a binding whose type
@@ -4554,6 +4621,68 @@ fn success_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
     option_discs(db, id)
         .map(|(some, _)| some)
         .or_else(|| result_discs(db, id).map(|(ok, _)| ok))
+}
+
+/// The FAILURE-variant discriminant of a fallible value `id` — `None`'s disc for an Option, `Err`'s for a
+/// Result (the twin of [`success_disc_of`]). This is the discriminant the runtime `?` desugar's failure
+/// (short-circuit) arm matches. `None` if `id` is neither an Option nor a Result.
+fn failure_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
+    option_discs(db, id)
+        .map(|(_, none)| none)
+        .or_else(|| result_discs(db, id).map(|(_, err)| err))
+}
+
+/// The FAILURE value a runtime `?`/try short-circuits to (`DESIGN-try-operator-rcdzc.md` §3.2): a freshly
+/// RE-WRAPPED `None` (Option) / `Err r` (Result), typed `T_B` (the enclosing boundary type, read off the
+/// desugared `let` node `boundary`). The failure value is RECONSTRUCTED rather than the matched scrutinee
+/// re-read, so the scrutinee shell does not escape the failure arm (it is consumed on both paths — see
+/// `lower_let`). For an Option, `None` is a `Core::SumNew` at the none discriminant with NO payloads
+/// (`(None)`, the empty-payload form the `List.at` out-of-range fold produces). For a Result, `Err r`
+/// re-wraps the error payload `r`, extracted from the matched scrutinee via a `Core::SumPayload` typed with
+/// the Err variant's field type (so a scalar error unboxes, a heap error rides as a handle). `None` when
+/// `operand` is neither a well-formed Option nor Result (the caller then keeps the decline).
+fn runtime_try_failure_value(
+    db: &mut Db,
+    operand: StructId,
+    boundary: StructId,
+) -> Option<StructId> {
+    let boundary_ty = crate::infer::type_of(db, boundary);
+    if let Some((_some, none_disc)) = option_discs(db, operand) {
+        return Some(synth_core(
+            db,
+            Core::SumNew {
+                disc: none_disc,
+                payloads: Vec::new().into(),
+            },
+            boundary_ty,
+        ));
+    }
+    if let Some((_ok, err_disc)) = result_discs(db, operand) {
+        // The Err variant's payload TYPE, so the extracted `r` unboxes correctly (scalar) or rides as a
+        // handle (heap). Read off the operand's solved Result type by variant NAME (never positionally).
+        let operand_ty = crate::infer::type_of(db, operand);
+        let err_ty = crate::lower::value_form::sum_variant_payload_types(db, &operand_ty)?
+            .into_iter()
+            .find(|(name, _)| name == "Err")
+            .and_then(|(_, tys)| tys.into_iter().next())?;
+        let r = synth_core(
+            db,
+            Core::SumPayload {
+                scrutinee: operand,
+                path: std::rc::Rc::from(vec![crate::core::PathStep::Payload]),
+            },
+            err_ty,
+        );
+        return Some(synth_core(
+            db,
+            Core::SumNew {
+                disc: err_disc,
+                payloads: vec![r].into(),
+            },
+            boundary_ty,
+        ));
+    }
+    None
 }
 
 /// Lower `(List.at list index)` — the fallible indexed read. FOLD when the `list` operand is a

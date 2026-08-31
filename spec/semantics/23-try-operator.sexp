@@ -11,10 +11,18 @@
 ; CDZ0203; a wrong-arity `(try …)` is CDZ0201; a `?` with no enclosing `Result`/`Option` function boundary
 ; is CDZ0230; a `Result`-`?` under an `Option` boundary (or vice-versa) is CDZ0203 (no coercion). Lowering:
 ; a CONSTANT `?` compiles and EXECUTES both paths — the success fold (BRICK 2a) and the constant-failure
-; short-circuit (BRICK 3a, via `Core::Block`/`Break` + the `lower_let` break-fold), so the executing Option
-; cases below PASS (a value comes out the far side). REMAINING: a RUNTIME `?` (a non-constant operand →
-; the `Core::MatchSum` / `block`-`br` emit, BRICK 3b) still DECLINES (scored *todo*); the ML postfix `?`
-; surface; the `try { }` block boundary (v2); and the T3 conversion-idiom prelude ops.
+; short-circuit (BRICK 3a, via `Core::Block`/`Break` + the `lower_let` break-fold). And BRICK 3b now lands:
+; a RUNTIME-DISC `?` (a non-constant operand whose Some/Ok-vs-None/Err variant is decided at run time)
+; desugars in `lower_let` to a `Core::MatchSum` short-circuit — the success arm continues the body (the
+; payload binder resolves to a `Core::SumPayload` of the materialized operand), the failure arm re-wraps
+; the failure value (`None` / `Err r`) — so the executing Option AND runtime-disc cases below PASS on all
+; three backends (a value comes out the far side on both paths). The desugar fires for a SINGLE-binding
+; `let` in boundary-tail position (the `let x = e? in …` / `do (def x e?) …` idiom); a `?` under a
+; non-fallible/non-tail wrapper is the same accepted v1 limitation the constant path has, and a runtime `?`
+; in a MULTI-binding `let` or a non-let expression position stays a clean decline (scored *todo*).
+; REMAINING: the runtime-disc `?` inside a stored CLOSURE (a lambda-boundary infer gap, still *todo* —
+; CDZ0230 there); the ML postfix `?` surface; the `try { }` block boundary (v2); and the T3
+; conversion-idiom prelude ops.
 ; ── T0a: rejections (these PASS today) ──────────────────────────────────────────────────────────────
 (case
   "a `?` on a non-fallible operand is a type error"
@@ -175,6 +183,64 @@
           (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))
       (export main)))
   (output (: (None unit) (Option Int64))))
+
+; ── BRICK 3b: the RUNTIME-DISC `?` (the operand's Some/Ok-vs-None/Err variant is decided at RUN TIME) ──
+; These are the operator-reported bug: a `?` over a NON-CONSTANT operand whose DISCRIMINANT depends on a
+; runtime value (`Int64.checked-add(Int64.max, v)` for a runtime `v` overflows — or not — per call). Unlike
+; the constant / static-ctor pins above (which const-fold the disc or fire the success fold at a known
+; disc), here NEITHER path is compile-time-known: the SUCCESS arm unwraps the payload and the FAILURE arm
+; short-circuits the enclosing boundary, and the compiled body must answer BOTH by the run-time disc. The
+; `?` desugars to a `Core::MatchSum` over the operand — exactly the nested `match` the `?` collapses
+; (DESIGN §0/§3.2) — the success arm continuing the body, the default arm re-wrapping the failure value.
+; The `(live-objects known-leak)` clauses track the SHARED fresh-Option/Result-scrutinee reclaim gap: an
+; equivalent HAND-WRITTEN `(match (Int64.checked-add …) …)` leaks the same scrutinee shell (v-memory-safety-
+; owned), so the `?` desugar is leak-identical to the match it lowers to — not a `?`-specific leak.
+(case
+  "a RUNTIME-DISC `?` unwraps or short-circuits by a per-call value (Option — the operator repro)"
+  (doc
+    "The operator's reported bug, verbatim: `?` over a RUNTIME operand whose variant is decided per
+           call. `(try (Int64.checked-add Int64.max v))` — for `v = -100` the add is in range → `Some
+           (max-100)`, so `x` unwraps to `max-100`; the second `?` over the constant `(Int64.checked-add 40
+           2)` = `Some 42` unwraps to `42`; the body returns `(Some (+ x y))` = `(Some (max-58))`. For `v =
+           1` the add OVERFLOWS → `None`, so the FIRST `?` short-circuits the boundary — `main` = `(None
+           unit)` and the second `?` + body never run. One compiled body answers BOTH by the run-time
+           discriminant, which the constant / static-ctor folds above cannot (the disc is not known at
+           compile time). Witnesses DESIGN-try-operator-rcdzc.md §3.2 (the Option desugar) + §4 v1 on a
+           genuinely runtime operand — the `Core::MatchSum` short-circuit (BRICK 3b).")
+  (input
+    (do
+      (def
+        (main (: v Int64))
+        (let
+          ((x (try (Int64.checked-add Int64.max v))))
+          (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))
+      (export main)))
+  (call main (: -100 Int64))
+  (output (: (Some 9223372036854775749) (Option Int64)))
+  (call main (: 1 Int64))
+  (output (: (None unit) (Option Int64)))
+  (live-objects known-leak))
+
+(case
+  "a RUNTIME-DISC `?` unwraps Ok or short-circuits Err by a per-call value (Result)"
+  (doc
+    "The Result companion of the runtime-disc repro: `safe` returns `(Ok n)` or `(Err \"neg\")` picked
+           by a run-time `if`, so `(try (safe v))`'s discriminant is decided per call. For `v = 5` it is
+           `Ok 5` → `x` unwraps to `5`, the body re-wraps `(Ok (+ x 1))` = `(Ok 6)`. For `v = -3` it is
+           `(Err \"neg\")` → the `?` short-circuits, and `main` = `(Err \"neg\")` — the error VALUE (the
+           heap String payload) preserved unchanged through the re-wrap, not the scrutinee re-read. Pins
+           that the runtime-disc desugar reads the `Ok` disc by NAME and reconstructs `Err r` with the
+           error payload extracted from the matched scrutinee (DESIGN §3.2 Result arm).")
+  (input
+    (do
+      (def (safe (: n Int64)) (: (if (>= n 0) (Ok n) (Err "neg")) (Result Int64 String)))
+      (def (main (: v Int64)) (: (let ((x (try (safe v)))) (Ok (+ x 1))) (Result Int64 String)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: (Ok 6) (Result Int64 String)))
+  (call main (: -3 Int64))
+  (output (: (Err "neg") (Result Int64 String)))
+  (live-objects known-leak))
 
 ; ── T1a gate pins: invariants the constant-fold desugar must hold (all PASS today) ───────────────────
 ; These pin now-passing behaviors so a future change to the `?` desugar (or the BRICK sequence) cannot
