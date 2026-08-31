@@ -1488,6 +1488,29 @@ fn collect_arm_binder_leaves(db: &Db, pat: StructId, out: &mut Vec<(String, Stru
         {
             collect_arm_binder_leaves(db, children[2], out);
         }
+        // A SET pattern `#set(e… .. rest)` — its named ELEMENTS are ordinary value expressions (the set twin
+        // of a map KEY), NOT binders, so they bind NOTHING; only the REST binder (after `..`) is a binder.
+        // Without this the generic recursion below collected every element as a spurious binder → a false
+        // CDZ0306 "unused match binding" on an IN-SCOPE name element (`#set(k)`, `k` a param used only for
+        // its membership value), whose bogus `_k` rename would also break the membership test.
+        Struct::List(_)
+            if db
+                .ast
+                .compound_form_of(pat, crate::ast::CompoundCtor::Set)
+                .is_some() =>
+        {
+            let tail = db
+                .ast
+                .compound_form_of(pat, crate::ast::CompoundCtor::Set)
+                .expect("set form (checked in guard)");
+            if let Some((i, _op, _trailing)) = db.ast.rest_marker(tail) {
+                // Collect ONLY the rest region (after `..`): the flat `.. rest` binder, or a wrapped
+                // `(.. rest)` (recursed). The elements before `..` bind nothing.
+                for &e in &tail[i..] {
+                    collect_arm_binder_leaves(db, e, out);
+                }
+            }
+        }
         // A compound pattern `(head arg…)` — skip the HEAD (a ctor / `list`/`tuple`/`map`/`record` alias
         // / `guard`), recurse the arguments. A `(map (k v) …)` entry is itself a compound, so the
         // recursion reaches its `k`/`v` leaves naturally. A `(record (= f p) …)` field is handled by the
