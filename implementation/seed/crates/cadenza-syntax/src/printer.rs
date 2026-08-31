@@ -5991,58 +5991,18 @@ mod tests {
     //     call form (computed unit, non-bare-safe symbol, bare `Unit.of`).
     // The `print((Qty.of …)) == 5 meter` sexp→ml oracles are subsumed by the ml cases' fmt-idempotence.
 
-    #[test]
-    fn quantity_over_a_tight_non_literal_operand_prints_concise() {
-        // The parser accepts unit application as a general POSTFIX on any tight expression
-        // (`x meter`, `f(x) meter`, `x.y meter` — not just a literal `5 meter`). The printer now mirrors
-        // that: a `(Qty.of <tight> (Unit.of #name))` renders concise `<tight> name` for a name / call /
-        // member-chain operand, re-reading to the same node. Before, only a numeric-literal operand
-        // rendered concise and every other operand fell back to the verbose `Qty.of(x, Unit.of(#meter))`.
-        assert_eq!(assert_roundtrip("x meter", 80), "x meter");
-        assert_eq!(assert_roundtrip("f(x) meter", 80), "f(x) meter");
-        assert_eq!(assert_roundtrip("f(g(x)) meter", 80), "f(g(x)) meter");
-        assert_eq!(assert_roundtrip("x.y meter", 80), "x.y meter");
-        // The independent s-expr oracle: a var/call operand prints concise.
-        assert_eq!(
-            print(
-                &sexpr::read(r#"(Qty.of x (Unit.of #"meter"))"#).unwrap(),
-                80
-            ),
-            "x meter"
-        );
-        assert_eq!(
-            print(
-                &sexpr::read(r#"(Qty.of (f x) (Unit.of #"meter"))"#).unwrap(),
-                80
-            ),
-            "f(x) meter"
-        );
-        // NON-tight operands stay in the explicit `Qty.of(…)` call form — the concise `<op> name` surface
-        // would MISBIND (`a + b meter` binds the unit to `b`; `if … meter` to the else-branch; a nested
-        // `Qty.of` would double-suffix). Each still round-trips via the call form.
-        assert_eq!(
-            print(
-                &sexpr::read(r#"(Qty.of (+ a b) (Unit.of #"meter"))"#).unwrap(),
-                80
-            ),
-            "Qty.of(a + b, Unit.of(#meter))"
-        );
-        assert_eq!(
-            print(
-                &sexpr::read(r#"(Qty.of (if a b c) (Unit.of #"meter"))"#).unwrap(),
-                80
-            ),
-            "Qty.of(if a then b else c, Unit.of(#meter))"
-        );
-        // A negative literal is not the `<digit>… name` surface either — stays explicit.
-        assert_eq!(
-            print(
-                &sexpr::read(r#"(Qty.of -3 (Unit.of #"meter"))"#).unwrap(),
-                80
-            ),
-            "Qty.of(-3, Unit.of(#meter))"
-        );
-    }
+    // `quantity_over_a_tight_non_literal_operand_prints_concise` (unit application is a general POSTFIX on
+    // any TIGHT expression — name/call/member — not just a literal `5 meter`; the concise `<tight> name`
+    // surface renders for those, but a NON-tight operand stays the explicit `Qty.of(…)` call form, since
+    // `a + b meter` would misbind the unit to `b`) MIGRATED to the spec/syntax corpus (inc-6 batch-35):
+    //   * concise: ml/242-quantity-tight-var-operand `x meter`→`((. Qty of) x ((. Unit of) #"meter"))`,
+    //     ml/243-quantity-tight-call-operand `f(x) meter`, ml/244-quantity-tight-nested-call-operand
+    //     `f(g(x)) meter`, ml/245-quantity-tight-member-operand `x.y meter`.
+    //   * verbose call-form (non-tight): ml/246-quantity-nontight-sum-verbose
+    //     `Qty.of(a + b, Unit.of(#meter))`, ml/247-quantity-nontight-if-verbose
+    //     `Qty.of(if a then b else c, Unit.of(#meter))`, ml/248-quantity-negative-literal-verbose
+    //     `Qty.of(-3, Unit.of(#meter))` (a negative literal is not the `<digit>… name` surface).
+    // All fmt-idempotent; the sexp→ml oracles are subsumed by these ml cases' round-trip.
 
     /// The DISPLAY surface renders a VALUE for a human — dropping the round-trip ceremony the canonical
     /// printer must keep. Each case pairs the compiler's canonical VALUE FORM (as `cdz-run` emits it,
