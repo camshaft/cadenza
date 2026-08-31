@@ -763,17 +763,25 @@ pub(crate) const REDUCE_NODE_BUDGET: u64 = 1_000_000;
 /// `enter_reduction_structural` denies entry (declines like the depth limit), so the walk bottoms out with a
 /// resource-limit CDZ0999 instead of hanging. (Tunable; v-compiler-perf gates the self-host carve-out.)
 ///
-/// RAISED 2M → 16M (#6100 shipped 2M, but that FALSE-DECLINED a legitimate large EFFECT-FOLD body): the
+/// RAISED 2M → 8M (#6100 shipped 2M, but that FALSE-DECLINED a legitimate large EFFECT-FOLD body): the
 /// 14c corpus case `lgt1` (a two-op `#tuple`-state handler, 8 perform sites, many nested-match resumes) does
 /// ~3–4M structural reductions in one def body during its fault walk, tripped the 2M ceiling mid-fold, and
 /// declined codeless "value is not applyable" (a pass→todo regression git-bisected to #6100). Bracketed:
-/// 2M/2.5M/3M decline, 4M/200M compile — so lgt1 needs 3–4M; 16M gives ~4× margin. A RAISE is
+/// 2M/2.5M/3M decline, 4M/200M compile — so lgt1's peak is ~3–4M; 8M gives a ~2× margin. A RAISE is
 /// monotonic-safe for correctness (it only ADMITS more reductions — a program that compiled at 2M is
-/// unchanged; one that declined either still declines above 16M or now compiles): the only cost is a
-/// divergent case running a few more doublings before tripping, and since the HANG term widens
-/// EXPONENTIALLY it still trips 16M in bounded time (the three `*_inference_hang` regression tests + the
-/// Option.None `*_survives_reduction_budget_exhaustion` carve-out all still pass at 16M).
-pub(crate) const STRUCTURAL_REDUCTION_BUDGET: u64 = 16_000_000;
+/// unchanged; one that declined either still declines above 8M or now compiles).
+///
+/// WHY 8M and not higher: the ceiling's cost is the HANG-DECLINE LATENCY, which scales ~LINEARLY with it —
+/// each structural reduction is ~constant work and the counter must REACH the ceiling before
+/// `enter_reduction_structural` denies entry, so a self-app HANG case that declines in ~2s at 2M takes ~4×
+/// that at 8M (and ~8× at 16M). Every corpus gate-local runs these self-app decline cases, so a looser
+/// ceiling is a recurring gate cost — 8M is the smallest power-of-two clearing lgt1's ~4M peak with a safe
+/// margin while keeping that per-decline cost low (v-compiler-perf's carve-out-gate measurement, #6100
+/// owner; supersedes an earlier 16M whose cost reasoning wrongly assumed the HANG trips in "a few cheap
+/// doublings"). Validated at 8M by v-compiler-perf (full rcdzc lib suite 1459/0; both `*_inference_hang`
+/// regression tests + the Option.None `*_survives_reduction_budget_exhaustion` carve-out all pass). If a
+/// 14c/14b sibling effect-fold body ever exceeds 8M, raise the const further (the fix is just this value).
+pub(crate) const STRUCTURAL_REDUCTION_BUDGET: u64 = 8_000_000;
 
 /// The bound on RECURSIVE-DESCENT depth across the demand queries (`type_of`, the fault `collect`, and
 /// `core_of`) — a backstop against a native stack overflow on pathologically deep input. Each query is
