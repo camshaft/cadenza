@@ -1752,7 +1752,7 @@
            (CDZ0501), exactly like `+`/`-` across dimensions: a remainder requires equal dimensions (units
            are never silently converted across dimensions). The dimension pin for the new same-dimension `%`.")
   (input  (Qty.value (% (Qty.of 7 (Unit.base #"meter")) (Qty.of 3 (Unit.base #"second")))))
-  (error  CDZ0501))
+  (error  CDZ0501 (message "incompatible dimension")))
 
 (case "remainder (%) on a floating-point quantity is CDZ0301 (no float remainder)"
   (doc    "`(% (Qty.of 7.0 meter) (Qty.of 3.0 meter))` — a remainder on a FLOAT-inner quantity — is rejected
@@ -1761,7 +1761,7 @@
            Pins that the same-dimension `%` fold is INTEGER-only; the repair is an integer quantity, or
            recover the value with `Qty.value` first.")
   (input  (Qty.value (% (Qty.of 7.0 (Unit.base #"meter")) (Qty.of 3.0 (Unit.base #"meter")))))
-  (error  CDZ0301))
+  (error  CDZ0301 (message "floating-point or rational quantity")))
 
 ; ============================================================================================
 ; Dimensional equality is by canonical form, not syntax — differently-written equal dimensions
