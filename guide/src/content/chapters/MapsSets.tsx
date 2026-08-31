@@ -15,10 +15,6 @@ export default function MapsSets() {
       <Runnable
         source={`(Set.of #list(1 2 2 3))`}
       />
-      <P>Because those duplicates are gone, <C>Set.len</C> counts <em>distinct</em> elements: <C>3</C> here, not the four you passed in:</P>
-      <Runnable
-        source={`(Set.len (Set.of #list(1 2 2 3)))`}
-      />
       <P><C>Set.contains</C> answers membership directly:</P>
       <Runnable
         source={`(Set.contains (Set.of #list(1 2 3)) 2)`}

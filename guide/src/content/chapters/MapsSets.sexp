@@ -10,9 +10,6 @@
   (p "Build one from a list with " (c "Set.of") ". A set collapses duplicates and forgets order; return one and you'll see the collapse directly: the two " (c "2") "s in the input become a single " (c "2") ", so the set holds " (c "1 2 3") ":")
   (runnable
     (source (Set.of #list(1 2 2 3))))
-  (p "Because those duplicates are gone, " (c "Set.len") " counts " (em "distinct") " elements: " (c "3") " here, not the four you passed in:")
-  (runnable
-    (source (Set.len (Set.of #list(1 2 2 3)))))
   (p (c "Set.contains") " answers membership directly:")
   (runnable
     (source (Set.contains (Set.of #list(1 2 3)) 2)))
