@@ -454,6 +454,9 @@ pass	ml/521-precedence-arithmetic-tighter-than-comparison
 pass	ml/522-subtraction-left-associative
 pass	ml/523-division-left-associative
 pass	ml/524-mixed-additive-left-associative
+pass	ml/525-unit-value-literal
+pass	ml/526-boolean-literal-true
+pass	ml/527-boolean-literal-false
 pass	ml/53-effect-op-no-resource-marker
 pass	ml/54-neg-prefix-name
 pass	ml/55-neg-prefix-call
