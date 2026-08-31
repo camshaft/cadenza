@@ -55,6 +55,16 @@ A match over an abstract-syntax-tree scrutinee whose arms are quasiquote pattern
 
 A quasiquote pattern MUST layer over the untyped abstract-syntax-tree analysis substrate, so that it may destructure arbitrary tree structure — the dual of the construction quote, which carries the type of the expression it builds (§"A Typed Quote Carries The Type Of The Expression It Builds").
 
+### Reflecting A Type To Its Definition AST
+
+A program MUST be able to reflect a type value to the abstract-syntax-tree of that type's definition, so that a compiler authored in the language can inspect not only how an expression was written (quote) but how a type is defined, then analyze that definition with the ordinary AST machinery. The reflected value MUST be an ordinary AST value of the definition's declaration form (the same AST a quote of that declaration produces), reusing the abstract-syntax-tree sum's existing variants rather than a bespoke descriptor, so that it prints, encodes, decodes, and pattern-matches like any other AST.
+
+Reflecting a type to its definition AST MUST offer both the generic form and the instantiated form: the generic form MUST reflect the declaration verbatim with its type parameters intact, and the instantiated form MUST substitute the type's concrete arguments for its parameters in the declaration, so that a caller chooses whether to observe the definition as declared or as specialized. For a type with no parameters the two forms MUST coincide.
+
+Reflecting a type to its definition AST MUST be total over concrete types — a nominal or sum type reflects its declaration, and a structural type (a record, tuple, list, map, set, primitive) reflects its canonical type-surface form — and MUST reject a type that is not concrete (one carrying an unresolved type variable) with a machine-readable diagnostic, since a type variable has no definition to reflect, rather than fabricate a definition or silently decline.
+
+The instantiated form MUST remain finite for a recursive or mutually-recursive type: substituting a type's concrete arguments MUST replace only the declaration's own parameter binders in its own body, leaving every nested type reference — including a self-reference — a named application that is not unfolded.
+
 ## AST Evaluation (Optional)
 
 ### Eval Is Optional For Macros And Interactive Use
