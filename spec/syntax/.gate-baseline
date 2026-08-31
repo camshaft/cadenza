@@ -96,6 +96,11 @@ pass	ml/178-tagged-template-escaped-quote-in-hole
 pass	ml/179-tagged-template-backslash-brace-canonicalizes
 pass	ml/18-world-result-no-err
 pass	ml/180-tagged-template-doubled-braces
+pass	ml/181-quasiquote-block
+pass	ml/182-quasiquote-unquote
+pass	ml/183-quasiquote-unquote-infix
+pass	ml/184-quasiquote-unquote-splicing
+pass	ml/185-quasiquote-splicing-with-trailing
 pass	ml/19-world-result-no-ok
 pass	ml/20-world-result-bare
 pass	ml/21-world-record-member
