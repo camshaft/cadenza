@@ -1046,6 +1046,8 @@ pass	a RUNTIME negative signed field beside an unsigned one round-trips with ind
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
 pass	a RUNTIME quantity is returned WITH its unit (the unit label is injected at compile time)
 pass	a RUNTIME string scrutinee matches string literals by equality
+pass	a RUNTIME-DISC `?` unwraps Ok or short-circuits Err by a per-call value (Result)
+pass	a RUNTIME-DISC `?` unwraps or short-circuits by a per-call value (Option — the operator repro)
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a RUNTIME-built unreduced Rational and its reduced form are ONE map key

@@ -4847,6 +4847,43 @@ fn a_constant_err_try_short_circuits_a_result_boundary() {
 }
 
 #[test]
+fn a_runtime_disc_try_lowers_to_a_matchsum_short_circuit() {
+    // BRICK 3b (DESIGN-try-operator-rcdzc.md §3.2/§4 v1): a `?` over a RUNTIME operand whose Some/None
+    // discriminant is decided at RUN TIME — the operator's `(try (Int64.checked-add Int64.max v))` for a
+    // param `v` (overflows, or not, per call) — desugars in `lower_let` to a `Core::MatchSum` over the
+    // operand: the SUCCESS arm continues the body (the payload binder resolves to a `Core::SumPayload` of
+    // the materialized scrutinee) and the FAILURE arm re-wraps `None`, short-circuiting the boundary. It
+    // COMPILES (no longer the "lowers only a constant operand" decline). The corpus
+    // `23-try-operator.sexp` runtime-disc cases RUN both paths through wasmtime + rust (v=-100 → Some,
+    // v=1 → None); this pins the compile at the lib level.
+    let src = "(module m (def (main (: v Int64)) \
+                   (let ((x (try (Int64.checked-add Int64.max v)))) \
+                     (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y))))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a runtime-disc `?` (operand variant decided at run time) compiles via the MatchSum \
+             short-circuit, not the constant-operand decline"
+    );
+}
+
+#[test]
+fn a_runtime_disc_try_under_a_result_boundary_lowers() {
+    // The Result companion of the runtime-disc lowering: `(try (safe v))` where `safe` picks `Ok`/`Err`
+    // by a runtime `if` — a runtime-disc Result operand. The failure arm re-wraps `Err r` (the error
+    // payload `r` extracted from the matched scrutinee via a typed `SumPayload`), so it COMPILES rather
+    // than declining. Uses an EXPLICIT failure disc so the `SumPayload` extraction sits under a bound
+    // match arm the rust backend recognizes (not a wildcard default).
+    let src = "(module m \
+                   (def (safe (: n Int64)) (: (if (>= n 0) (Ok n) (Err \"neg\")) (Result Int64 String))) \
+                   (def (main (: v Int64)) (: (let ((x (try (safe v)))) (Ok (+ x 1))) (Result Int64 String))) \
+                   (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a runtime-disc `?` under a Result boundary compiles (the `Err` re-wrap), not declines"
+    );
+}
+
+#[test]
 fn a_constant_failure_after_an_effectful_binding_declines() {
     // The soundness guard for BRICK 3a's strict-spine fold: the break drops every LATER binding + the
     // body, so an EARLIER binding whose init has an OBSERVABLE side effect (a host call) cannot be
