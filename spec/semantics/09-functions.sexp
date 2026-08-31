@@ -3434,9 +3434,13 @@
            By §Functions Are Single-Arity this desugars to `((f 5) 9)` — `(f 5)` = 6, applied to 9 is a
            non-function application → CDZ0203. Arity is checked for a named function exactly as for a
            lambda or a constructor. Carries a DELETE fix on the surplus argument (heuristic/unverified).
-           Fix-quality migrated from rcdzc over_application_offers_a_delete_the_extra_argument_fix.")
+           Fix-quality migrated from rcdzc over_application_offers_a_delete_the_extra_argument_fix.
+           Also pins the DEDUP (migrated from rcdzc over_applying_a_function_reports_one_error_not_a_shadowing_decline):
+           over-application is EXACTLY ONE error — the coded CDZ0203 — not that reject PLUS the evaluator's
+           uncoded 'applied more arguments than the function accepts' decline for the same node, which
+           dedup_faults drops when the coded reject is present. Hence (count 1).")
   (input  (do (def (f (: x Int64)) (+ x 1)) (def (main) (f 5 9)) (export main)))
-  (error  CDZ0203 (fix (kind delete) (unverified))))
+  (error  CDZ0203 (fix (kind delete) (unverified)) (count 1)))
 
 ; The arity check has a lower end too: a UNARY variant applied to ZERO arguments is under-applied. A
 ; sum type constructor is a single-arity function that produces the tagged variant "when applied to

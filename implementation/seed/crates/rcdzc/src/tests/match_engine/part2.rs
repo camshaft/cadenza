@@ -355,84 +355,17 @@ fn a_non_unit_qty_of_arg_unbound_unit_is_not_a_double_report() {
 // dedup_faults drops). The (count 1) corpus assertion is the dedup-migration lever for the "reports one
 // error" cluster.)
 
-#[test]
-fn an_ill_typed_try_operand_reports_one_error_not_a_shadowing_constant_decline() {
-    // A `?` on a non-fallible operand (`(try 3.14)`) must be ONE primary `error:` — the coded CDZ0203
-    // `?` operand must be a fallible `Result`/`Option`, found Float64 — NOT that reject PLUS the emit
-    // path's uncoded "the ?/try operator lowers only a constant operand yet" decline. The ill-typed
-    // operand's non-sum CONSTANT core misses the `Resolved::Try` `SumNew` fold arm in `lower`, so the
-    // decline fired alongside the CDZ0203 — and misleadingly, since the operand IS constant (its problem
-    // is the TYPE). `dedup_faults`'s `has_try_non_fallible_reject` gate drops the decline when the CDZ0203
-    // is present. (A genuinely-RUNTIME fallible operand — no CDZ0203 — keeps its honest BRICK-3b decline;
-    // that path is covered by the runtime-`?`-declines corpus/behavior, not suppressed here.)
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse("(module m (def (main) (try 3.14)) (export main))")),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    let errors: Vec<&crate::abi::Diagnostic> = out
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect();
-    assert_eq!(
-        errors.len(),
-        1,
-        "an ill-typed `?` operand = one error, got: {:?}",
-        out.diagnostics
-    );
-    assert_eq!(
-        errors[0].code.as_deref(),
-        Some("CDZ0203"),
-        "the surviving error is the coded non-fallible-operand reject: {}",
-        errors[0].message
-    );
-    assert!(
-        !out.diagnostics.iter().any(|d| d
-            .message
-            .starts_with(crate::diag::TRY_RUNTIME_OPERAND_DECLINE_PREFIX)),
-        "the misleading 'lowers only a constant operand yet' decline must not accompany the CDZ0203"
-    );
-}
-
-#[test]
-fn over_applying_a_function_reports_one_error_not_a_shadowing_decline() {
-    // Over-application (`(f 1 2)` for a 1-param `f`) must be ONE primary `error:` — the coded CDZ0203
-    // `applied 2 arguments to a function of arity 1 …` — NOT that reject PLUS the evaluator's uncoded
-    // "applied more arguments than the function accepts" decline for the same node. `dedup_faults`
-    // drops the weaker decline when the coded over-application reject is present.
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse(
-                "(module m (def (f (: x Int64)) x) (def (main) (f 1 2)) (export main))",
-            )),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    let errors: Vec<&crate::abi::Diagnostic> = out
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect();
-    assert_eq!(
-        errors.len(),
-        1,
-        "over-application = one error, got: {:?}",
-        out.diagnostics
-    );
-    assert_eq!(errors[0].code.as_deref(), Some("CDZ0203"));
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.message == crate::diag::OVER_APPLICATION_DECLINE),
-        "the 'applied more arguments' decline must not accompany the coded reject"
-    );
-}
+// (an_ill_typed_try_operand_reports_one_error_not_a_shadowing_constant_decline migrated to corpus
+// 23-try-operator "a `?` on a non-fallible operand is a type error" ((try 5) → CDZ0203 (message "fallible")
+// (count 1)): the (count 1) pins the DEDUP — a non-fallible `?` operand is one coded CDZ0203, not that reject
+// PLUS the emit path's uncoded "lowers only a constant operand yet" decline for the same non-sum-constant
+// node (dedup_faults drops it via has_try_non_fallible_reject). (Runtime-fallible-operand declines — no
+// CDZ0203 sibling — keep their honest decline, covered by the runtime-`?` corpus.)
+//
+// (over_applying_a_function_reports_one_error_not_a_shadowing_decline migrated to corpus 09-functions
+// "over-applying a named function by an extra argument is a type error" ((f 5 9) → CDZ0203 (fix (kind delete)
+// (unverified)) (count 1)): the (count 1) pins the DEDUP — over-application is one coded CDZ0203, not that
+// reject PLUS the evaluator's uncoded "applied more arguments than the function accepts" decline.)
 
 // (over_applying_a_builtin_operation_reports_one_error_with_the_delete_fix migrated to corpus 09-functions,
 // after the built-in-op-partial cluster: "an over-applied built-in operation is ONE CDZ0203 with a
