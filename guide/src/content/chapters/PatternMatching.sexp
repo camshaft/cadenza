@@ -91,7 +91,7 @@
   (#tuple(a b (.. rest)) (+ (+ a b) (. rest 0)))
   (_ 0))))
   (p "So " (c "a") " is " (c "3") ", " (c "b") " is " (c "4") ", and " (c "rest") " is the one-element tuple " (c "#tuple(5)") ", whose " (c ".0") " is " (c "5") ", giving " (c "3 + 4 + 5 = 12") ". Two things to hold onto: " (c "rest") " is the trailing " (em "sub-tuple") ", not a flattened list, so a " (c "#tuple(1 2 3 4)") " matched by " (c "#tuple(x (.. rest))") " leaves " (c "rest") " as " (c "#tuple(2 3 4)") ", indexed " (c ".0") "/" (c ".1") "/" (c ".2") "; and the arity is fixed, so " (c "#tuple(a b (.. rest))") " needs at least two elements, and a shorter tuple simply doesn't match that arm.")
-  (note "This lowers today for a tuple you " (em "construct") " in place, the common case, like the literal above. A rest binder over a fully opaque runtime tuple isn't lowered yet, so the compiler declines it with a plain \"not yet\" rather than a wrong answer, the same honest refusal you've seen elsewhere.")
+  (note "The example above binds a rest over a tuple " (em "constructed in place") ", which is what this pattern supports. A rest binder over a fully opaque runtime tuple is " (em "not supported") " on the backends, so the compiler declines it with a clear message rather than compute a wrong answer, the same honest refusal you've seen elsewhere.")
   (h2 "Your turn")
   (exercise
     (id "pattern-matching:1")
