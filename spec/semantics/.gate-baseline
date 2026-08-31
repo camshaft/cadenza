@@ -9672,3 +9672,5 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	unquote-splicing a list of nested lists lifts each list element into an Ast.ListCtor
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	prefix `(- x)` in value (annotation) position is a partial subtraction, rejected with a suggest-`Num.neg` (CDZ0203)
+pass	a non-`-` partial in value position keeps the GENERIC not-fully-applied message (no suggest-`Num.neg`)
