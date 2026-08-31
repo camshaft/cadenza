@@ -87,7 +87,15 @@ pass	ml/17-world-result-both
 pass	ml/170-tagged-template-hole-free
 pass	ml/171-tagged-template-escapes
 pass	ml/172-tagged-template-empty
+pass	ml/173-tagged-template-single-hole
+pass	ml/174-tagged-template-empty-edge-chunks
+pass	ml/175-tagged-template-hole-with-expr
+pass	ml/176-tagged-template-literal-braces
+pass	ml/177-tagged-template-string-in-hole
+pass	ml/178-tagged-template-escaped-quote-in-hole
+pass	ml/179-tagged-template-backslash-brace-canonicalizes
 pass	ml/18-world-result-no-err
+pass	ml/180-tagged-template-doubled-braces
 pass	ml/19-world-result-no-ok
 pass	ml/20-world-result-bare
 pass	ml/21-world-record-member

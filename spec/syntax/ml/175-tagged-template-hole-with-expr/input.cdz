@@ -1,0 +1,1 @@
+def m(a, b) = t"sum={a + b * 2}!"
