@@ -2081,47 +2081,12 @@ fn a_bare_value_position_forall_is_a_reserved_keyword_error() {
 // (`^` tier-7 LOOSER than `/`/`*` tier-11), ml/446-derived-unit-parenthesized-exponent `meter / (second ^ 2)`→
 // `(/ meter (^ second 2))`, ml/447-derived-unit-in-result-position (`-> Qty(…)` parses identically).
 
-#[test]
-fn at_bang_param_carries_a_config_and_a_name_type_binder() {
-    use crate::sexpr;
-    // `@!param` is the operator's MODULE-level `@param` (module-scoped, like `@!default-fraction`). It
-    // carries a PARAM PAYLOAD — a glued `(config kv…)` of `key: value` pairs PLUS a `name : Type`
-    // binder — parsing to `(pragma param (param (: k v)…) (: name Type))`. Before this, the generic
-    // `@!key <one-type-arg>` path read the config as the arg and let the general unit-suffix postfix
-    // eat the trailing `name` as a unit on the pragma node (a garbled `Qty.of` tree). Pin the shape.
-    assert_eq!(
-        sexpr::print(&parse_ok("@!param(widget: slider) width : Int64")),
-        "(pragma param (param (: widget slider)) (: width Int64))"
-    );
-    // Multiple config kvs; a compound value (tuple).
-    assert_eq!(
-        sexpr::print(&parse_ok(
-            "@!param(widget: slider, range: (1, 10)) width : Int64"
-        )),
-        r#"(pragma param (param (: widget slider) (: range #tuple(1 10))) (: width Int64))"#
-    );
-    // Empty / absent config -> `(param)`; both spellings parse to the same node.
-    assert_eq!(
-        sexpr::print(&parse_ok("@!param() width : Int64")),
-        "(pragma param (param) (: width Int64))"
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("@!param width : Int64")),
-        "(pragma param (param) (: width Int64))"
-    );
-    // A function-typed param — the binder's type is a full `type_ref` (arrow), not swallowed.
-    assert_eq!(
-        sexpr::print(&parse_ok(
-            "@!param(widget: stepper) transform : Int64 -> Int64"
-        )),
-        "(pragma param (param (: widget stepper)) (: transform (-> Int64 Int64)))"
-    );
-    // A NON-`param` pragma is unchanged — single type-arg form.
-    assert_eq!(
-        sexpr::print(&parse_ok("@!default-fraction Rational")),
-        "(pragma default-fraction Rational)"
-    );
-}
+// `at_bang_param_carries_a_config_and_a_name_type_binder` (`@!param` carries a glued `(config kv…)` of
+// `key: value` pairs PLUS a `name : Type` binder → `(pragma param (param (: k v)…) (: name Type))`) MIGRATED
+// to the spec/syntax corpus (inc-6 batch-77): ml/163-pragma-param-single-config, ml/164-pragma-param-multi-
+// config (tuple value), ml/165-pragma-param-empty-config (`@!param` no parens), ml/166-pragma-param-function-
+// typed (arrow binder), ml/456-pragma-param-empty-config-parens (`@!param()` explicit empty parens → `(param)`,
+// same tree as ml/165). A NON-`param` pragma `@!default-fraction Rational` is the single-type-arg form ml/167.
 
 // The leading-`def forall` DESUGAR parse-tree assertions MIGRATED to the spec/syntax corpus (inc-6): a LEADING
 // `def forall a b. f(…)` clause prepends a `(: a Type)` param per binder — ml/139-def-leading-forall-desugars
@@ -2135,64 +2100,14 @@ fn a_malformed_leading_def_forall_recovers_without_panic() {
     assert!(!read_ml("def forall a f() = 1").ok());
 }
 
-#[test]
-fn unit_application_is_a_general_postfix_on_any_expression() {
-    use crate::sexpr;
-    // OPERATOR BUG FIX: unit application is a general POSTFIX, not literal-only. `let x = 10 in x
-    // meters` (the operator's reported failure) now applies the unit to the VARIABLE. Before, `x
-    // meters` SILENTLY mis-parsed to a two-statement sequence `(do x meters)` — a wrong tree.
-    assert_eq!(
-        sexpr::print(&parse_ok("let x = 10 in x meters")),
-        r#"(let ((x 10)) ((. Qty of) x ((. Unit of) #"meters")))"#
-    );
-    // A bare variable, a parenthesized expression, and a call result all take a unit.
-    assert_eq!(
-        sexpr::print(&parse_ok("x meters")),
-        r#"((. Qty of) x ((. Unit of) #"meters"))"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("(a + b) meters")),
-        r#"((. Qty of) (+ a b) ((. Unit of) #"meters"))"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("f(5) meters")),
-        r#"((. Qty of) (f 5) ((. Unit of) #"meters"))"#
-    );
-    // PRECEDENCE (operator-confirmed): the unit binds TIGHTER than infix, so `x + 1 meters` groups
-    // as `x + (1 meters)`; the whole sum needs parens — `(x + 1) meters`.
-    assert_eq!(
-        sexpr::print(&parse_ok("x + 1 meters")),
-        r#"(+ x ((. Qty of) 1 ((. Unit of) #"meters")))"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("(x + 1) meters")),
-        r#"((. Qty of) (+ x 1) ((. Unit of) #"meters"))"#
-    );
-    // A unit inside a call argument reads as a quantity arg — the CAD units-everywhere case
-    // (`cube(width meters)`). (Consequence: `f(a b)` is now a valid unit-suffixed arg, not a
-    // missing-comma error — see `missing_comma_between_args_recovers`, which uses number args.)
-    assert_eq!(
-        sexpr::print(&parse_ok("cube(width meters)")),
-        r#"(cube ((. Qty of) width ((. Unit of) #"meters")))"#
-    );
-    // A type-SUFFIXED literal is still EXEMPT (a suffix selects a numeric type, not a unit): `100N
-    // feet` is NOT a quantity — it stays the two-form sequence, unchanged by the generalization.
-    assert_eq!(sexpr::print(&parse_ok("100N feet")), r#"(do 100N feet)"#);
-}
-
-#[test]
-fn unit_suffix_does_not_cross_a_newline_on_a_variable() {
-    use crate::sexpr;
-    // The same-line guard that protects the literal sugar (`f57c4a53`) protects the general postfix
-    // too: a variable ending one statement must not eat the next statement's leading name as a unit.
-    // `def a = x <newline> meters` is TWO forms, not `x meters`.
-    let a = parse_ok("def w = x\nmeters");
-    assert_eq!(
-        sexpr::print(&a),
-        r#"(do (def w x) meters)"#,
-        "a newline between the expr and the candidate unit means separate statements"
-    );
-}
+// `unit_application_is_a_general_postfix_on_any_expression` (unit application is a general POSTFIX, not
+// literal-only: any expr followed same-line by a bare name is a `(Qty.of expr (Unit.of #name))` quantity;
+// the unit binds TIGHTER than infix) + `unit_suffix_does_not_cross_a_newline_on_a_variable` MIGRATED to the
+// spec/syntax corpus (inc-6 batch-77): bare-var `x meter`=ml/242, call `f(x) meter`=ml/243; the new bits —
+// ml/457-unit-suffix-binds-tighter-than-infix `x + 1 meters`→`(+ x ((. Qty of) 1 …))`, ml/458-unit-suffix-
+// parenthesized-sum-magnitude `(x + 1) meters`→`((. Qty of) (+ x 1) …)`, ml/459-unit-suffix-in-call-arg
+// `cube(width meters)`, ml/460-type-suffixed-literal-not-a-quantity `100N feet`→`(do 100N feet)` (a numeric-
+// type suffix is EXEMPT), ml/461-unit-suffix-no-cross-newline `def w = x`⏎`meters`→`(do (def w x) meters)`.
 
 // `set_literal_desugars` (`#(…)` is the native set ctor literal `#set(…)`, head `Leaf::Ctor(Set)`, uniform
 // with `#list`/`#tuple`/`#record`/`#map`) MIGRATED to the spec/syntax corpus (inc-6 batch-63):
