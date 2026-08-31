@@ -7,6 +7,7 @@ import Oracle.Leb
 import Oracle.Ast
 import Oracle.Value
 import Oracle.Eval
+import Oracle.Wasm
 import Oracle.Symbolic
 import Oracle.SymbolicSound
 import Oracle.Check
