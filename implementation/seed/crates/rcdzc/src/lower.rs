@@ -2051,6 +2051,43 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
                     Code::TypeMismatch,
                     "`compare` needs a total order, but a floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no three-way comparison — use the relational operators `<`, `<=`, `>`, `>=` instead",
                 )),
+                // A COMPOUND (tuple/record/list/sum) whose leaves are NOT all orderable — a float leaf (only
+                // the IEEE partial order, §319) or a Set/Map leaf (no blessed order). Reached only after the
+                // orderable-compound `ValueCmp` arm above declined, so the compound has an UN-orderable leaf:
+                // a PERMANENT carve-out (never a not-yet), the three-way `compare` twin of the boolean-ordering
+                // carve-out `lower_comparison` codes (this file, §7143 reconcile). Coded CDZ0203 — the SAME
+                // no-total-order `Code::TypeMismatch` family as the pure-float `compare` above and the `<`/`>`
+                // compound arm — with the ALL-LEAF message (float OR set/map) + the component-wise route.
+                //
+                // GATE on the operands being the SAME type (`ta == tb`), NOT merely "some side is a compound":
+                // unlike the `<`/`>` node (whose ill-typed form `infer` poisons upstream, so lower never runs),
+                // a mismatched `(compare (tuple …) 1)` DOES reach here, and `comparison_compound_ty` reports the
+                // tuple side even for that cross-type pair — coding it would DOUBLE-error alongside infer's
+                // "different types" CDZ0201 (which the codeless fallback below stays droppable-as-consequent
+                // for). The checker unified a well-typed compare's operands, so `ta == tb` is exactly the
+                // matched-compound carve-out and excludes every mismatch shape (tuple-vs-int, tuple-vs-record,
+                // 2-tuple-vs-1-tuple, …). An under-resolved empty collection (`(compare (list) (list 1.0))` —
+                // one side `List ?`) fails `ta == tb` and degrades to the codeless decline below: still a clean
+                // refusal, dedup-safe, and vanishingly rare.
+                None if {
+                    let ta = crate::infer::type_of(db, lhs);
+                    ta == crate::infer::type_of(db, rhs)
+                        && matches!(
+                            ta,
+                            crate::ty::Ty::Tuple(_)
+                                | crate::ty::Ty::Record(_)
+                                | crate::ty::Ty::List(_)
+                                | crate::ty::Ty::Sum { .. }
+                        )
+                } =>
+                {
+                    Core::Poison(Reject::coded(
+                        Code::TypeMismatch,
+                        "a compound value with a float, set, or map leaf has no total order, so it has no \
+                         three-way `compare` (a float offers only the IEEE partial order; a set/map carries no \
+                         blessed order) — compare its orderable components individually",
+                    ))
+                }
                 None => Core::Poison(Reject::decline(
                     "`compare` of this value has no total order the compiler can walk (a float/bytes/set/map leaf, or an un-orderable shape) — compare its orderable components individually",
                 )),

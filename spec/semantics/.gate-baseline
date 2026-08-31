@@ -6426,6 +6426,7 @@ pass	compacting then TWO order-compares (no equality) is safe (adv-66 perimeter)
 pass	compacting then a concat+len of the flat after an equality (no rope-left compare) is safe (adv-66 perimeter)
 pass	compacting then reading the flat's LEN after an equality against the rope is safe (adv-66 perimeter)
 pass	compare on a sum whose payload is BYTES orders by discriminant then Bytes payload lexicographically
+pass	compare on a sum whose payload is a FLOAT is rejected CDZ0203 (no total order; the IEEE partial order never enters the walk)
 pass	comparing a Float32 nan to a Float64 finite value is a cross-width type error
 pass	comparing a Float32 nan to a Float64 nan is a cross-width type error
 pass	comparing a boolean against a character names the scalar kind boundary

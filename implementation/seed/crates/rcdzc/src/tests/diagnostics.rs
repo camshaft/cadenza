@@ -1837,25 +1837,31 @@ fn compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route
     // A COMPOUND (tuple/record/list/sum) is ordered lexicographically ONLY when every leaf offers a
     // total order. A float (or bytes/set/map) leaf INSIDE a compound makes the whole compound
     // un-orderable (a float offers only the IEEE partial order; §319 / core-semantics.md
-    // #compound-ordering-is-lexicographic), so `compare` over it declines — but the message must not
-    // dead-end: it names the actionable route, comparing the orderable components individually. This
-    // pins that redirect (lower.rs compound-`compare` arm) so a refactor can't degrade it. Runtime
-    // float params inside a tuple so it reaches lowering (a constant compound would fold).
+    // #compound-ordering-is-lexicographic), so a three-way `compare` over it is a PERMANENT carve-out —
+    // never a not-yet — so it is a coded CDZ0203 rejection (the SAME no-total-order `Code::TypeMismatch`
+    // family as the pure-float `compare` and the `<`/`>`/`<=`/`>=` compound arm, unified by the §7143
+    // reconcile), NOT an uncoded decline. The message must not dead-end: it names WHY (the offending leaf
+    // kinds) AND the actionable route — comparing the orderable components individually. This pins that
+    // redirect (lower.rs compound-`compare` arm) so a refactor can't degrade it. Runtime float params
+    // inside a tuple so it reaches lowering (a constant compound would fold).
     let d = first_error(
         "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of (tuple x 1) (tuple y 2))) (export f))",
     );
-    // An uncoded DECLINE (the un-orderable-leaf carve-out), not a coded rejection.
+    // A CODED CDZ0203 no-total-order carve-out (a float leaf offers only the IEEE partial order), not an
+    // uncoded not-yet decline.
     assert_eq!(
-        d.code, None,
-        "an un-orderable-leaf compound compare is an uncoded decline: {}",
+        d.code.as_deref(),
+        Some("CDZ0203"),
+        "an un-orderable-leaf compound compare is the coded no-total-order carve-out: {}",
         d.message
     );
     assert!(
-        d.message.contains("no total order the compiler can walk")
+        d.message.contains("has no total order")
                 // names WHY (the offending leaf kinds) AND the component-wise route
-                && d.message.contains("float/bytes/set/map leaf")
+                && d.message.contains("float, set, or map leaf")
+                && d.message.contains("no three-way `compare`")
                 && d.message.contains("compare its orderable components individually"),
-        "the decline names the un-orderable-leaf reason AND the component-wise route: {}",
+        "the carve-out names the un-orderable-leaf reason AND the component-wise route: {}",
         d.message
     );
     // ROUND-TRIP witness: the named route — comparing the orderable component (the Int field) on its
