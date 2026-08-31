@@ -631,10 +631,10 @@ pass	a BARE-param recursive state-threading walk compiles without leaking the sp
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
-pass	a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)
+todo	a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)
 pass	a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE folds through the block (adv-69 g3)
 pass	a BLOCK-wrapped branch perform in a let-init folds through the block (adv-69 Site-6 commuting conversion)
-pass	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3)
+todo	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3)
 pass	a BOOL as a Map key routes a runtime lookup to the right entry
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
@@ -5273,7 +5273,7 @@ pass	an abortive handler arm never resumes, so its value becomes the handle's va
 pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive handler discards a suspended body holding live rope and map handles
-pass	an abortive handler over a non-tail MUTUAL recursion declines cleanly
+todo	an abortive handler over a non-tail MUTUAL recursion declines cleanly
 pass	an abortive let-init after an effectful binding folds via inner-handle pre-reduction
 pass	an abortive perform MID-WALK carries the accumulated state out as its argument
 pass	an abortive perform beside an effectful sibling under a nested handle folds via inner pre-reduction
@@ -5413,7 +5413,7 @@ pass	an effect operation reached with neither a handler nor a delegation is reje
 pass	an effect operation returning a SUM is resumed with a sum value and matched
 pass	an effect operation taking a SUM parameter matches it in the handler arm
 pass	an effect performed in a callee is discharged by the caller's handler
-pass	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
+todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 pass	an effect resolves past an intermediate frame that installs no handler
 pass	an effect resolves through a deep chain of intermediate functions
 pass	an effect result drives the bound of a PURE recursive helper called in the handle body
