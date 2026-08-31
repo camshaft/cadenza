@@ -3622,6 +3622,18 @@
   (input  (do (def (main) (resume 5 6)) (export main)))
   (error  CDZ0201 (message "no enclosing handler arm")))
 
+; A `resume`'s ANSWER (first operand) must match the OPERATION'S RESULT type: `(op get (-> Unit Int64))`
+; yields Int64, so resuming with a String or Bool answer is CDZ0201 naming the answer type + "the operation's
+; result type is Int64". This is the answer-slot twin of the next-state-slot type check below. (Edge-probed by
+; v-wasmtime-migration.)
+(case "resuming with a String answer under an Int64-result operation is a type error"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (resume "x" s))) (E.get))) (export main)))
+  (error  CDZ0201 (message "resumes with a value of type") (message "String") (message "result type is Int64")))
+
+(case "resuming with a Bool answer under an Int64-result operation is a type error"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (resume true s))) (E.get))) (export main)))
+  (error  CDZ0201 (message "resumes with a value of type") (message "Bool") (message "result type is Int64")))
+
 ; A `resume`'s NEXT-STATE (second operand) must match the handler's SEED type: `(handle E 0 …)` seeds an
 ; Int64 state, so resuming with a Bool or String next-state is CDZ0201 naming the next-state type + "state
 ; type is Int64". A next-state that matches the seed (arithmetic on `s`, `s` itself, a same-shape tuple seed)
