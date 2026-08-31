@@ -1360,13 +1360,23 @@ impl<'a, 'b> Reader<'a, 'b> {
                         leading: _,
                     } => {
                         self.skip_ws();
-                        let (trailing, leading) = self.take_pending();
+                        let (trailing, mut leading) = self.take_pending();
                         // A same-line comment attaches to the element it FOLLOWS as `(comment-after …)`.
-                        if !trailing.is_empty()
-                            && let Some(&last) = items.last()
-                        {
-                            let wrapped = self.wrap_trailing(trailing, last);
-                            *items.last_mut().expect("items non-empty") = wrapped;
+                        // But if there is NO preceding element (the comment sits on the opening `(`'s line,
+                        // before the FIRST element — e.g. `(let (; b1` <newline> `(x 1)) …)`), it is not
+                        // trailing anything; it LEADS the first element. Re-classify it as leading (prepended
+                        // to any own-line leading run) so it is preserved as `(comment …)` rather than
+                        // dropped — mirroring `read_document`, which treats a no-prior-sibling comment as
+                        // leading. (The mis-drop was reported by v-parser-corpus for a let-bindings list.)
+                        if !trailing.is_empty() {
+                            if let Some(&last) = items.last() {
+                                let wrapped = self.wrap_trailing(trailing, last);
+                                *items.last_mut().expect("items non-empty") = wrapped;
+                            } else {
+                                let mut merged = trailing;
+                                merged.append(&mut leading);
+                                leading = merged;
+                            }
                         }
                         match self.peek() {
                             None => return Err(ReadError("unterminated list".into())),
@@ -1420,14 +1430,22 @@ impl<'a, 'b> Reader<'a, 'b> {
                         leading: _,
                     } => {
                         self.skip_ws();
-                        let (trailing, leading) = self.take_pending();
-                        // A same-line comment attaches to the entry it FOLLOWS as `(comment-after …)`.
-                        if !trailing.is_empty()
-                            && items.len() > 1
-                            && let Some(&last) = items.last()
-                        {
-                            let wrapped = self.wrap_trailing(trailing, last);
-                            *items.last_mut().expect("items non-empty") = wrapped;
+                        let (trailing, mut leading) = self.take_pending();
+                        // A same-line comment attaches to the entry it FOLLOWS as `(comment-after …)`. The
+                        // head (`items[0]`, the synthetic ctor leaf) is not an entry, so "no preceding entry"
+                        // is `items.len() <= 1`: such a same-line comment sits on the `#word(`'s line before
+                        // the FIRST entry and LEADS it — re-classify as leading so it is preserved, not
+                        // dropped (same mis-drop class as the list branch above).
+                        if !trailing.is_empty() {
+                            if items.len() > 1 {
+                                let last = *items.last().expect("items non-empty");
+                                let wrapped = self.wrap_trailing(trailing, last);
+                                *items.last_mut().expect("items non-empty") = wrapped;
+                            } else {
+                                let mut merged = trailing;
+                                merged.append(&mut leading);
+                                leading = merged;
+                            }
                         }
                         match self.peek() {
                             None => {
@@ -2971,6 +2989,35 @@ mod tests {
                 a.structurally_eq(&read(&compact).unwrap()),
                 "compact round-trips for {src:?} (printed {compact:?})"
             );
+        }
+    }
+
+    #[test]
+    fn a_comment_leading_the_first_element_of_a_nested_list_is_preserved() {
+        // Regression (reported by v-parser-corpus): a `;` comment that sits on the SAME line as a nested
+        // list's opening `(`, BEFORE its first element, was tagged trailing (it follows a same-line prior
+        // node like `let`) but had no element to attach to, so it was DROPPED. It actually LEADS the first
+        // element and must be preserved as `(comment …)`. Both a plain sub-list (let-bindings) and a
+        // `#word(…)` compound literal exercised (each has its own element loop).
+        let cases = [
+            ("(let (; b1\n (x 1)) x)", "(let ((comment \"b1\" (x 1))) x)"),
+            ("(f #list(; c\n 1 2))", "(f #list((comment \"c\" 1) 2))"),
+        ];
+        for (src, expected_compact) in cases {
+            let a = read(src).unwrap();
+            assert_eq!(
+                print(&a),
+                expected_compact,
+                "the leading comment on the first element must be preserved for {src:?}"
+            );
+            // And it round-trips structurally + is a pretty fixed point (the comment is not re-dropped).
+            let pretty = print_pretty(&a);
+            let b = read(&pretty).unwrap();
+            assert!(
+                a.structurally_eq(&b),
+                "pretty round-trips for {src:?} (pretty: {pretty:?})"
+            );
+            assert_eq!(print_pretty(&b), pretty, "pretty is idempotent for {src:?}");
         }
     }
 
