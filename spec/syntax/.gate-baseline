@@ -7,6 +7,8 @@ pass	ml/05-list-literal
 pass	ml/06-tuple-literal
 pass	ml/07-doc-comment
 pass	ml/09-bang-comment
+pass	ml/100-export-constructor-and-name
+pass	ml/101-member-wildcard
 pass	ml/11-nested-list
 pass	ml/12-world-nullary-member
 pass	ml/13-world-full-decl
@@ -93,6 +95,9 @@ pass	ml/93-annotation-sigil-stacked
 pass	ml/94-annotation-parameterized
 pass	ml/95-annotation-parameterized-stacked-with-bare
 pass	ml/96-annotation-parameterized-multi-arg
+pass	ml/97-export-brace-single
+pass	ml/98-export-brace-multi
+pass	ml/99-export-constructor-wildcard
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
