@@ -1,0 +1,2 @@
+effect Fs =
+  | read : Bytes -> Bytes

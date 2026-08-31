@@ -47,6 +47,9 @@ pass	ml/47-import-named-list
 pass	ml/48-import-per-name-rename
 pass	ml/49-const-force-eval-call
 pass	ml/50-const-force-eval-infix
+pass	ml/51-effect-op-resource-marker-first-param
+pass	ml/52-effect-op-resource-marker-second-param
+pass	ml/53-effect-op-no-resource-marker
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
