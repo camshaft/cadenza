@@ -591,6 +591,19 @@
             (export main)))
   (output (: 78 Int64)))
 
+(case "a NESTED tuple rest inside a binding-param tuple binds the inner leading + residual"
+  (doc    "Composition depth for the binding-position rest: a tuple rest inside an OUTER tuple binding param
+           `#tuple(a #tuple(b (.. r)))` binds `a` = outer element 0, `b` = inner element 0, and `r` = the
+           inner tuple's residual (a `TupleRestFrom` under an outer `Elem(1)` descent — the binding twin of
+           the nested match-arm rest). Over `#tuple(7 #tuple(8 9 10))`: a=7, b=8, r=(9,10) so `(. r 0)`=9 →
+           7+8+9 = 24. Pins that the residual rest composes under an enclosing tuple descent in a binding
+           position, not only at top level.")
+  (input  (do
+            (def (f #tuple(a #tuple(b (.. r)))) (+ a (+ b (. r 0))))
+            (def (main) (f #tuple(7 #tuple(8 9 10))))
+            (export main)))
+  (output (: 24 Int64)))
+
 (case "a record open-row rest is IRREFUTABLE, so it binds in a BINDING-PARAM position (not only a match arm)"
   (doc    "A record has a STATIC field set, so `#record((= x a) (.. rest))` over a record HAVING field x
            ALWAYS matches — it is irrefutable (core-semantics §A Binding Position Accepts An Irrefutable
