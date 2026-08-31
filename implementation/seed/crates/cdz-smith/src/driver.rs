@@ -29,6 +29,19 @@ use crate::finding::{Category, Finding, FindingStore};
 use crate::generator::generate;
 use crate::oracle::{CrashInfo, Verdict, compile_catching};
 
+/// Which generator the crash / reachability hunt draws programs from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GenMode {
+    /// The text grammar (`generator::generate`) — broad, declines ~73%, the default crash hunt.
+    #[default]
+    Text,
+    /// The coercing AST grammar (`astgen::generate_coerced`) — type-correct-by-construction programs
+    /// that reach DIFFERENT construct coverage (the reachability complement of the text grammar). The
+    /// same shapes the lean/cadenza differential grades, but run here through the crash/reachability
+    /// oracle so a codeless (class-2) decline the coercing grammar reaches is surfaced too.
+    Astgen,
+}
+
 /// Configuration for a fuzzing run.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -44,6 +57,8 @@ pub struct Config {
     pub commit: String,
     /// Print a progress line every N iterations (0 = quiet).
     pub progress_every: u64,
+    /// Which generator to draw programs from (text grammar vs the coercing astgen grammar).
+    pub gen_mode: GenMode,
 }
 
 impl Config {
@@ -59,6 +74,7 @@ impl Config {
             findings_dir: store.dir().to_path_buf(),
             commit: detect_commit(),
             progress_every: 1000,
+            gen_mode: GenMode::default(),
         })
     }
 }
@@ -144,7 +160,7 @@ pub fn run(cfg: &Config) -> std::io::Result<Stats> {
             .deadline_ns
             .store(deadline.as_nanos() as u64, Ordering::SeqCst);
 
-        let verdict = compile_seed(seed);
+        let verdict = compile_seed(seed, cfg.gen_mode);
 
         // Disarm the deadline and beat the heart: this compile finished in time.
         progress.deadline_ns.store(0, Ordering::SeqCst);
@@ -169,9 +185,9 @@ pub fn run(cfg: &Config) -> std::io::Result<Stats> {
     Ok(stats)
 }
 
-/// Generate a program from a seed and run it through the crash oracle.
-fn compile_seed(seed: u64) -> Verdict {
-    compile_catching(&program_for_seed(seed))
+/// Generate a program from a seed (under `mode`) and run it through the crash oracle.
+fn compile_seed(seed: u64, mode: GenMode) -> Verdict {
+    compile_catching(&program_for_seed_with(seed, mode))
 }
 
 fn classify(verdict: &Verdict, seed: u64, cfg: &Config, store: &FindingStore, stats: &mut Stats) {
@@ -226,7 +242,7 @@ fn file_and_tally(
 }
 
 fn file_crash(seed: u64, info: &CrashInfo, cfg: &Config, store: &FindingStore, stats: &mut Stats) {
-    let raw = program_for_seed(seed);
+    let raw = program_for_seed_with(seed, cfg.gen_mode);
     // Shrink while preserving the same crash site, so the filed reproducer is minimal.
     let target = info.site.as_deref().map(crate::finding::normalize_site);
     let program = crate::finding::shrink(&raw, target.as_deref());
@@ -258,7 +274,7 @@ fn file_reachability(
     store: &FindingStore,
     stats: &mut Stats,
 ) {
-    let raw = program_for_seed(seed);
+    let raw = program_for_seed_with(seed, cfg.gen_mode);
     let program = crate::finding::shrink_codeless_decline(&raw, message);
     let finding = Finding {
         category: Category::ReachabilityInvariant,
@@ -284,7 +300,7 @@ fn file_invalid_wasm(
     store: &FindingStore,
     stats: &mut Stats,
 ) {
-    let raw = program_for_seed(seed);
+    let raw = program_for_seed_with(seed, cfg.gen_mode);
     // Shrink while preserving that the emitted component still fails to validate.
     let program = crate::finding::shrink_invalid_wasm(&raw);
     let finding = Finding {
@@ -769,13 +785,36 @@ fn file_timeout(seed: u64, cfg: &Config) {
 }
 
 /// Run a single seed and return its verdict (no watchdog, no filing) — for `once`/repro and tests.
+/// Uses the default text grammar (the `once` repro path is text-grammar-seeded).
 pub fn once(seed: u64) -> Verdict {
-    compile_seed(seed)
+    compile_seed(seed, GenMode::Text)
 }
 
 /// Regenerate the program source for a seed (for `verify`/repro tooling and the watchdog).
 pub fn program_for_seed(seed: u64) -> String {
-    generate(&seed_entropy(seed)).source
+    program_for_seed_with(seed, GenMode::Text)
+}
+
+/// The program for `seed` under generator `mode`. The run loop and its finding filers must use the
+/// SAME mode so a filed reproducer regenerates identically. `Text` = the mutating text grammar (the
+/// default crash hunt); `Astgen` = the coercing AST grammar (type-correct-by-construction, reaching
+/// the complement of construct coverage — the same shapes the differential grades).
+pub fn program_for_seed_with(seed: u64, mode: GenMode) -> String {
+    match mode {
+        GenMode::Text => generate(&seed_entropy(seed)).source,
+        GenMode::Astgen => crate::astgen::generate_coerced(&astgen_seed_entropy(seed)).source,
+    }
+}
+
+/// Derive the 64 entropy bytes the coercing generator consumes from a single seed (mirrors the
+/// differential sweep's per-program expansion, so an `Astgen`-mode witness is seed-reproducible).
+fn astgen_seed_entropy(seed: u64) -> Vec<u8> {
+    let mut ent = Vec::with_capacity(64);
+    let mut r = SplitMix64::new(seed);
+    for _ in 0..8 {
+        ent.extend_from_slice(&r.next().to_le_bytes());
+    }
+    ent
 }
 
 /// Expand a `u64` seed into a DIVERSE generator byte stream via splitmix64. The generator makes one
@@ -900,6 +939,7 @@ mod tests {
             findings_dir: tmp.clone(),
             commit: "test".into(),
             progress_every: 0,
+            gen_mode: GenMode::default(),
         };
         let store = FindingStore::open(&cfg.findings_dir).unwrap();
 
@@ -966,6 +1006,7 @@ mod tests {
             findings_dir: tmp.clone(),
             commit: "test".into(),
             progress_every: 0,
+            gen_mode: GenMode::default(),
         };
         let stats = run(&cfg).unwrap();
         assert_eq!(stats.total(), 200, "every iteration is accounted for");

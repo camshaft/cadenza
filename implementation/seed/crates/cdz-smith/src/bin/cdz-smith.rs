@@ -140,7 +140,7 @@ fn usage() {
         "cdz-smith — fuzz the reference compiler\n\
          \n\
          USAGE:\n\
-         \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR]\n\
+         \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR] [--astgen]\n\
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH]\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
@@ -897,6 +897,7 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         findings_dir: findings_dir.clone(),
         commit: driver::detect_commit(),
         progress_every: 100,
+        gen_mode: driver::GenMode::default(),
     };
 
     eprintln!(
@@ -1001,6 +1002,7 @@ fn cmd_cadenza_differential(args: &[String]) -> ExitCode {
         findings_dir: findings_dir.clone(),
         commit: driver::detect_commit(),
         progress_every: 100,
+        gen_mode: driver::GenMode::default(),
     };
     eprintln!(
         "[cdz-smith] cadenza-differential @{} | seed {} | count {} | store {} | cdz {} | findings → {}",
@@ -1114,6 +1116,7 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
         findings_dir: findings_dir.clone(),
         commit: driver::detect_commit(),
         progress_every: 100,
+        gen_mode: driver::GenMode::default(),
     };
     eprintln!(
         "[cdz-smith] cadenza-equiv @{} | seed {} | count {} | store {} | cdz {} | oracle {} | findings → {}",
@@ -1440,6 +1443,10 @@ fn cmd_fuzz(args: &[String]) -> ExitCode {
     let mut seed: Option<u64> = None;
     let mut timeout_secs: u64 = 10;
     let mut findings: Option<PathBuf> = None;
+    // Default = the text grammar; `--astgen` draws from the coercing AST grammar instead (the
+    // reachability complement — type-correct-by-construction programs that reach different codeless
+    // (class-2) declines than the text grammar).
+    let mut gen_mode = driver::GenMode::Text;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1448,6 +1455,7 @@ fn cmd_fuzz(args: &[String]) -> ExitCode {
             "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
             "--timeout" => timeout_secs = it.next().and_then(|s| s.parse().ok()).unwrap_or(10),
             "--findings" => findings = it.next().map(PathBuf::from),
+            "--astgen" => gen_mode = driver::GenMode::Astgen,
             other => {
                 eprintln!("cdz-smith fuzz: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -1468,13 +1476,19 @@ fn cmd_fuzz(args: &[String]) -> ExitCode {
         findings_dir: findings_dir.clone(),
         commit: driver::detect_commit(),
         progress_every: 1000,
+        gen_mode,
     };
 
     eprintln!(
-        "[cdz-smith] fuzzing @{} | seed {} | timeout {}s | findings → {}",
+        "[cdz-smith] fuzzing @{} | seed {} | timeout {}s | grammar {} | findings → {}",
         cfg.commit,
         cfg.run_seed,
         timeout_secs,
+        if gen_mode == driver::GenMode::Astgen {
+            "astgen"
+        } else {
+            "text"
+        },
         findings_dir.display()
     );
     match driver::run(&cfg) {
