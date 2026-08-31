@@ -5091,6 +5091,31 @@
             (export main)))
   (error  CDZ0101))
 
+; The USED-parameter counterpart of the dead-argument case above. The linear-fault-walk optimization DROPS
+; the raw-argument descent for a parameter the body USES — its argument is substituted into the reduced body,
+; so the body walk sees the fault there instead. This must NOT lose the fault: an unbound name passed to a
+; USED parameter (`(f frobnicate)` for `(def (f a) (+ a 1))`, which references `a`) still rejects CDZ0101,
+; surfaced through the reduced body rather than the dropped raw-argument descent. Together with the dead case
+; this pins that an argument fault is reported whether or not the parameter is used. (Migrated from rcdzc
+; an_argument_fault_is_reported_whether_or_not_the_parameter_is_used.)
+(case "an unbound argument to a USED parameter still rejects (surfaced via the reduced body)"
+  (input  (do
+            (def (f a) (+ a 1))
+            (def (main) (f frobnicate))
+            (export main)))
+  (error  CDZ0101))
+
+(case "a malformed application in a DEAD parameter's argument still rejects (a non-unbound fault kind)"
+  (doc    "A dead argument is descended for ALL its own faults, not only unbound names: a malformed
+           application `(5 3)` (a non-callable literal in head position) passed to the dead parameter of
+           `(def (f a) 0)` rejects CDZ0201, proving the dead-argument descent catches a structural fault the
+           body — which never references the parameter — could not otherwise see.")
+  (input  (do
+            (def (f a) 0)
+            (def (main) (f (5 3)))
+            (export main)))
+  (error  CDZ0201))
+
 (case "a function using only its first parameter accepts all its well-typed arguments"
   (doc    "The accept companion: the same `(def (f a b c) a)` applied to all well-typed arguments compiles
            and returns the used one — `(f 7 2 3)` = 7. Pins that a body referencing only a subset of its
