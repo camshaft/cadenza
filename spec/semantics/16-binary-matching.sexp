@@ -359,7 +359,8 @@
            boundary representation yet, so the program DECLINES at emit (not a type reject) — confirming the
            bin/Bytes match itself is accepted, distinct from the wrong-kind rejects above.")
   (input (do (def (f (: b Bytes)) (match b ((bin (u8 x)) x) (_ 0))) (export f)))
-  (declines))
+  (call f (: b"\x2a" Bytes))
+  (output (: 42 Int64)))
 
 (case
   "a le pattern segment reads a fixed-width integer little-endian"
