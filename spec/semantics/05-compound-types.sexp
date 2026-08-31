@@ -24560,6 +24560,19 @@
   (warning CDZ0306 (message "unused match binding") (fix (kind replace) (replacement "_b"))))
 
 (case
+  "a well-formed tuple pattern with BOTH binders unused warns each — exactly two CDZ0306"
+  (doc
+    "The well-formed control that the malformed-pattern poison guard must NOT over-suppress: a WELL-FORMED
+           `#tuple(a b)` whose body uses NEITHER binder genuinely leaves both `a` and `b` unused, so both warn
+           (exactly two CDZ0306 unused-match-binding) — the count distinguishes this from the count-1 sibling
+           above and from the malformed-pattern cases (which suppress the consequent unused warning). Runs to
+           99. (Migrated from rcdzc a_well_formed_pattern_still_warns_its_genuinely_unused_binders.)")
+  (input (do (def (main) (match #tuple(3 4) (#tuple(a b) 99))) (export main)))
+  (output (: 99 Int64))
+  (count 2)
+  (warning CDZ0306 (message "unused match binding")))
+
+(case
   "a guarded binder referenced in NEITHER the guard cond nor the body still warns unused"
   (doc
     "The guard-cond usage scan WIDENS what counts as used; it does not blanket-suppress. Here the cond
