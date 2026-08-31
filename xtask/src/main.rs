@@ -150,6 +150,10 @@ enum Cmd {
         /// not covered by the baseline.
         #[arg(long)]
         check: bool,
+        /// Fold PRE-HARVESTED `<verdict>\t<title>` verdicts from this file against the baseline WITHOUT
+        /// re-grading via `cdz` (the per-case nix aggregate's entry). Ignores `--files`/`--case`.
+        #[arg(long, conflicts_with_all = ["save", "check"])]
+        compare: Option<PathBuf>,
     },
     /// The omnibus health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
     /// the wasm runtime build, and the behavior gate. Each step's output is captured to a log file
@@ -266,12 +270,14 @@ fn main() {
             case,
             save,
             check,
+            compare,
         } => {
             let opts = gate_syntax::GateSyntaxOpts {
                 files,
                 case,
                 save,
                 check,
+                compare,
             };
             std::process::exit(gate_syntax::gate_syntax(&paths, &opts));
         }

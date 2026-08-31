@@ -41,6 +41,25 @@ pub struct GateSyntaxOpts {
     pub save: bool,
     /// Compare against the committed baseline and exit non-zero on a regression/vanished/failing case.
     pub check: bool,
+    /// Read PRE-HARVESTED `<verdict>\t<title>` verdicts from this file and fold them against the
+    /// committed baseline — WITHOUT re-grading via `cdz`. This is the entry the per-case nix aggregate
+    /// (`.#checks.<arch>-linux.syntax-corpus`, inc-3c) uses: each cached per-case derivation emits its
+    /// verdict line, the aggregate concatenates them, and this folds the whole set through the SAME
+    /// `check_baseline` compare the live `--check` uses (single-sourced fold — the nix path never gets a
+    /// divergent/weaker verdict comparison). Mutually exclusive with grading (ignores `--files`/`--case`).
+    pub compare: Option<PathBuf>,
+}
+
+/// Parse `<verdict>\t<title>` lines (the baseline / harvested-verdict format) into `(title, verdict)`
+/// pairs; `#`/blank lines and unparseable lines are skipped. Shared by the `--compare` aggregate entry.
+fn parse_verdicts(text: &str) -> Vec<(String, Verdict)> {
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .filter_map(|l| {
+            l.split_once('\t')
+                .and_then(|(v, d)| Verdict::parse(v).map(|verdict| (d.to_string(), verdict)))
+        })
+        .collect()
 }
 
 /// The syntax corpus root under `repo`.
@@ -212,6 +231,28 @@ pub fn gate_syntax(paths: &Paths, opts: &GateSyntaxOpts) -> i32 {
         eprintln!("gate-syntax: no corpus at {}", root.display());
         return 2;
     }
+
+    // `--compare <file>`: fold PRE-HARVESTED verdicts against the baseline, no `cdz` re-grading (the
+    // per-case nix aggregate's entry). A full-corpus fold — subset=false so the vanished check applies.
+    if let Some(vpath) = &opts.compare {
+        let text = match std::fs::read_to_string(vpath) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("gate-syntax --compare: reading {}: {e}", vpath.display());
+                return 2;
+            }
+        };
+        let verdicts = parse_verdicts(&text);
+        if verdicts.is_empty() {
+            eprintln!(
+                "gate-syntax --compare: no `<verdict>\\t<title>` lines in {}",
+                vpath.display()
+            );
+            return 2;
+        }
+        return check_baseline(&paths.repo, &verdicts, false);
+    }
+
     let cdz = match resolve_cdz(&paths.repo) {
         Ok(c) => c,
         Err(e) => {
@@ -591,5 +632,27 @@ mod tests {
         let cmp = compare_baseline(&v(&[("a", Verdict::Pass)]), baseline, false);
         assert_eq!(cmp.exit_code(), 0);
         assert_eq!(cmp.benign_dups, 0);
+    }
+
+    #[test]
+    fn parse_verdicts_reads_the_harvested_format_and_skips_noise() {
+        // The `--compare` aggregate entry parses `<verdict>\t<title>` lines (the concatenated per-case
+        // nix verdicts), skipping `#`/blank/garbage lines — the same vocabulary as the baseline file.
+        let text = "# header\n\npass\tsexp/01\ttrailing-ignored?\ntodo\tsexp/17\nfail\tml/03\ngarbage line\nnope\tx\n";
+        // `split_once('\t')` keeps everything after the FIRST tab as the title (so a stray tab stays in
+        // the title, matching the baseline's own map-load); the garbage line (no tab) and the unknown
+        // verdict tag `nope` are dropped. (Verdict isn't Debug, so compare via its tag.)
+        let got: Vec<(String, &str)> = parse_verdicts(text)
+            .into_iter()
+            .map(|(d, v)| (d, v.tag()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("sexp/01\ttrailing-ignored?".to_string(), "pass"),
+                ("sexp/17".to_string(), "todo"),
+                ("ml/03".to_string(), "fail"),
+            ]
+        );
     }
 }
