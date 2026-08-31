@@ -1,0 +1,6 @@
+def f(b: Bool) -> Int64 =
+  if b then
+    1
+  else
+    // note
+    2

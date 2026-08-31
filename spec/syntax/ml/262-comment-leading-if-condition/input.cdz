@@ -1,0 +1,3 @@
+def f(b: Bool) -> Int64 = if
+  // note
+  b then 1 else 2
