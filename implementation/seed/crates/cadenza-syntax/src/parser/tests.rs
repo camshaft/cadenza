@@ -301,6 +301,15 @@ fn expr_iter_matches_recursive_expr() {
         // (a following `.member`/`(args)` binds to the OUTER `(@ …)`, not the form) / annotated keyword.
         "@test x",
         "@tag(\"slow\") x",
+        // `@tag(args)` glued-call name args now descend on the worklist (Cont::AtArgs): empty, multi-arg,
+        // labeled arg, a NESTED annotation as an arg (the de-recursion target `@a(@b(…))`), a call-valued
+        // arg, and a trailing comma.
+        "@tag() x",
+        "@cfg(\"a\", \"b\") x",
+        "@route(path: \"/x\") handler",
+        "@wrap(@inner(\"y\")) x",
+        "@tag(f(g(h(1)))) x",
+        "@cfg(\"a\", \"b\",) x",
         "@a @b x",
         "@ann (a + b)",
         "@ann f(y)",
