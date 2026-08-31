@@ -816,7 +816,14 @@ pub(crate) fn check_application(
         // never a number), the base message stands alone (honest — "just call it" is not the fix).
         if matches!(a, Ty::Fn(_, _)) || matches!(b, Ty::Fn(_, _)) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: an operand is a function value — not operable/comparable (CDZ0203)");
-            let hint = fn_not_applied_hint(&b, &a, &db.name_ctx())
+            // Prefer the suggest-NEG hint when an operand is a partial subtraction `(- e)` (likely a
+            // negation the user wrote as `-e`) over the generic "apply it to N more arguments".
+            let mut neg = crate::infer::construct::suggest_neg_hint(db, args[0]);
+            if neg.is_none() {
+                neg = crate::infer::construct::suggest_neg_hint(db, args[1]);
+            }
+            let hint = neg
+                .or_else(|| fn_not_applied_hint(&b, &a, &db.name_ctx()))
                 .or_else(|| fn_not_applied_hint(&a, &b, &db.name_ctx()))
                 .unwrap_or_default();
             out.push(Reject::coded(
