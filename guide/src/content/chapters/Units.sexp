@@ -44,7 +44,7 @@
   (runnable
     (source (/ (Qty.of 240.0 (Unit.of #"meter"))
    (Qty.of 8.0 (Unit.of #"second")))))
-  (p "The result carries its derived unit, " (c "30.0 meter/second") ", a compound Cadenza built by dividing the two units right along with the numbers. You can spell such units directly, too: " (c "(Unit.* a b)") " for a product (an area is a length times a length), " (c "(Unit./ a b)") " for a quotient, " (c "(Unit.^ u n)") " for a power, and " (c "Unit.one") " for a plain dimensionless number.")
+  (p "The result carries its derived unit, " (c "30.0 meter/second") ", a compound Cadenza built by dividing the two units right along with the numbers. You can spell such units directly, too: " (cdz "(Unit.* a b)") " for a product (an area is a length times a length), " (cdz "(Unit./ a b)") " for a quotient, " (cdz "(Unit.^ u n)") " for a power, and " (c "Unit.one") " for a plain dimensionless number.")
   (h2 "Raising a quantity to a power")
   (p (c "Qty.pow") " raises a whole quantity, value " (em "and") " unit, to a compile-time integer power. Square a length and you get an area: the unit becomes meters-squared while the value squares. A five-meter side gives twenty-five square meters, " (c "25.0 meter^2") ", the unit squared along with the value:")
   (runnable

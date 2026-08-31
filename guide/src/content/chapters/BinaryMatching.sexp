@@ -6,12 +6,12 @@
   (blurb "Describe a byte layout as typed segments; the (bin …) form builds and destructures Bytes.")
   (lede "A " (c "Bytes") " chapter showed raw octets; this one gives them structure. The " (c "(bin …)") " form describes a byte layout as a sequence of typed segments, and it works both ways: in expression position it " (em "builds") " a " (c "Bytes") ", in a " (c "match") " pattern it " (em "takes one apart") ".")
   (h2 "Building bytes from segments")
-  (p "A " (c "(bin …)") " expression lays out fixed-width fields. " (c "(u16 258)") " is a 16-bit unsigned integer, two bytes, most-significant first (big-endian, the network default), while " (c "(u8 …)") " is one byte. Return it and you see the exact octets it lays down:")
+  (p "A " (c "(bin …)") " expression lays out fixed-width fields. " (cdz "(u16 258)") " is a 16-bit unsigned integer, two bytes, most-significant first (big-endian, the network default), while " (c "(u8 …)") " is one byte. Return it and you see the exact octets it lays down:")
   (runnable
     (source (bin (u16 258) (u8 (UInt8.wrap 5)))))
   (p (c "b\"\\x01\\x02\\x05\"") " is three bytes: " (c "258") " is " (c "0x0102") ", written big-endian as " (c "\\x01") " then " (c "\\x02") ", followed by the " (c "u8") " byte " (c "\\x05") ". Each fixed-width segment contributes exactly its width, so a " (c "u16") " is always two bytes and a " (c "u32") " always four, whatever value it carries, and you can read the layout straight off the result.")
   (h2 "Taking bytes apart")
-  (p "The same grammar, on the left of a " (c "match") " arm, " (em "reads") " a " (c "Bytes") " back. Matching a two-byte value against " (c "(bin (u16 n))") " binds " (c "n") " to the integer those bytes encode, since construction and matching are exact inverses:")
+  (p "The same grammar, on the left of a " (c "match") " arm, " (em "reads") " a " (c "Bytes") " back. Matching a two-byte value against " (cdz "(bin (u16 n))") " binds " (c "n") " to the integer those bytes encode, since construction and matching are exact inverses:")
   (runnable
     (source (match (bin (u16 258))
   ((bin (u16 n)) (Some n))
@@ -27,7 +27,7 @@
     (source (match (Bytes.of #list(1 1 2))
   ((bin (u8 1) (u16 n)) (Some n))
   (_                    (None unit)))))
-  (p "Written as a hex literal, the same idea reads a magic-number header legibly, so a " (c "u32") " equal to " (c "0x89504E47") " is the PNG signature, and a trailing " (c "(bytes rest)") " absorbs the payload after it. Here the question is only " (em "is this a PNG") ", so the arms return a " (c "Bool") " directly, the matched header being " (c "true") ":")
+  (p "Written as a hex literal, the same idea reads a magic-number header legibly, so a " (c "u32") " equal to " (c "0x89504E47") " is the PNG signature, and a trailing " (cdz "(bytes rest)") " absorbs the payload after it. Here the question is only " (em "is this a PNG") ", so the arms return a " (c "Bool") " directly, the matched header being " (c "true") ":")
   (runnable
     (source (match (Bytes.of #list(137 80 78 71 1 2))
   ((bin (u32 0x89504E47) (bytes rest)) true)
@@ -38,7 +38,7 @@
     (source (match (Bytes.of #list(1 2 3))
   ((bin (u16 n)) (Some n))
   (_             (None unit)))))
-  (p "The fix is a trailing unsized " (c "(bytes rest)") ", which absorbs the variable-length remainder, so now the " (c "u16") " reads the first two bytes and " (c "rest") " takes the third, the arm matches, and the result is " (cdz "(Some 258)") ":")
+  (p "The fix is a trailing unsized " (cdz "(bytes rest)") ", which absorbs the variable-length remainder, so now the " (c "u16") " reads the first two bytes and " (c "rest") " takes the third, the arm matches, and the result is " (cdz "(Some 258)") ":")
   (runnable
     (source (match (Bytes.of #list(1 2 3))
   ((bin (u16 n) (bytes rest)) (Some n))
@@ -57,13 +57,13 @@
        (bytes (Bytes.of #list(10 20 30)))))))
   (p "A two-byte length prefix plus a three-byte payload is five bytes. The length is computed and narrowed to the segment's width with " (c "UInt16.of") ", a checked narrow, so a payload too long to frame in 16 bits is a real error, not a silent wrap.")
   (h2 "Sub-byte fields")
-  (p "Not every field is a whole number of bytes. A " (c "(bits name k)") " segment reads exactly " (c "k") " bits, so you can split a single byte into smaller fields. Bits are read most-significant first, which means the first segment takes the high bits. Here one byte splits into a 3-bit field and a 5-bit field, and " (c "165") " is " (c "0b101_00101") ", so " (c "a") " reads the high " (c "0b101 = 5") " and " (c "b") " the low " (c "0b00101 = 5") ":")
+  (p "Not every field is a whole number of bytes. A " (cdz "(bits name k)") " segment reads exactly " (c "k") " bits, so you can split a single byte into smaller fields. Bits are read most-significant first, which means the first segment takes the high bits. Here one byte splits into a 3-bit field and a 5-bit field, and " (c "165") " is " (c "0b101_00101") ", so " (c "a") " reads the high " (c "0b101 = 5") " and " (c "b") " the low " (c "0b00101 = 5") ":")
   (runnable
     (source (match (Bytes.of #list((UInt8.wrap 165)))
   ((bin (bits a 3) (bits b 5)) (Some (+ (* 100 a) b)))
   (_                           (None unit)))))
-  (p "That reads back as " (cdz "(Some 505)") ". A bit-field literal dispatches the same way a byte literal does, so a leading " (c "(bits 1 1)") " matches only when the top bit is set and binds the remaining seven, which is how a one-bit tag selects a format. A run of bit-fields must still close a whole number of bytes, and the compiler checks that alignment before the program runs (CDZ0220), so a layout whose bits don't add up is a compile error rather than a runtime surprise.")
-  (why (tenet "A binary layout is width-typed, and checked at compile time") "A fixed-width segment takes a value of " (em "exactly") " its width, so " (c "(u8 v)") " wants a " (c "UInt8") " and " (c "(bits v k)") " a " (c "(UInt k)") ". Hand it something wider or negative and it's a compile-time type error, not a runtime \"does not fit\" trap, since construction is total, and narrowing is the caller's explicit choice (" (c "UInt8.wrap") " truncates, " (c "UInt8.of") " narrows checked). And the byte alignment is static too: a layout whose bits don't close a byte is rejected before it runs. The result is that a binary format's shape is checked the same way the rest of your types are, so the layout can't silently corrupt a value, because a value that wouldn't fit never compiles.")
+  (p "That reads back as " (cdz "(Some 505)") ". A bit-field literal dispatches the same way a byte literal does, so a leading " (cdz "(bits 1 1)") " matches only when the top bit is set and binds the remaining seven, which is how a one-bit tag selects a format. A run of bit-fields must still close a whole number of bytes, and the compiler checks that alignment before the program runs (CDZ0220), so a layout whose bits don't add up is a compile error rather than a runtime surprise.")
+  (why (tenet "A binary layout is width-typed, and checked at compile time") "A fixed-width segment takes a value of " (em "exactly") " its width, so " (cdz "(u8 v)") " wants a " (c "UInt8") " and " (cdz "(bits v k)") " a " (c "(UInt k)") ". Hand it something wider or negative and it's a compile-time type error, not a runtime \"does not fit\" trap, since construction is total, and narrowing is the caller's explicit choice (" (c "UInt8.wrap") " truncates, " (c "UInt8.of") " narrows checked). And the byte alignment is static too: a layout whose bits don't close a byte is rejected before it runs. The result is that a binary format's shape is checked the same way the rest of your types are, so the layout can't silently corrupt a value, because a value that wouldn't fit never compiles.")
   (p "Bytes and binary layouts are about raw data. The last of the core value types is the opposite, a value that's purely a " (em "name") ", compared by identity: " (em "symbols") ", next.")
   (h2 "Your turn")
   (exercise
@@ -87,4 +87,4 @@
   ((bin (u8 n) (bytes body n) (bytes rest)) (Bytes.len body))
   (_                                        0)))
     (expected "3")
-    (hint "The size is the name bound by the earlier segment, " (c "n") ", read from the first byte (" (c "3") "). So " (c "(bytes body n)") " binds the next three bytes, and " (c "rest") " takes the trailing " (c "99") ".")))
+    (hint "The size is the name bound by the earlier segment, " (c "n") ", read from the first byte (" (c "3") "). So " (cdz "(bytes body n)") " binds the next three bytes, and " (c "rest") " takes the trailing " (c "99") ".")))
