@@ -444,6 +444,10 @@ fn load_runtime_component(
 }
 
 mod grade;
+/// The rc-TRACE drain decoder (attribution complement to `--guarded-all`; the export-call wiring for
+/// `cdz-run --rc-trace` is added when `.#rctrace-runtime` + the debug-trace WIT land). `pub` so the
+/// decode/leak-summary API is stable + linkable; exercised by its own unit tests today.
+pub mod rc_trace;
 mod render;
 pub use render::render_val;
 
