@@ -426,29 +426,53 @@ impl Gen<'_> {
     /// Operator directive 2026-08-30: keep expanding generated program shapes.
     fn rec_list_builder_program(&mut self) {
         let start = self.cur.range(0, 6);
-        let ret_len = self.cur.flip(); // main returns List.len of the built list, else the list itself
-        if self.cur.flip() {
-            // Non-tail builder: build(n) = if n<=0 then (list) else push(build(n-1), n).
-            self.out.push_str(
-                "(do (def (build (: n Int64)) (if (<= n 0) (list) ((. List push) (build (- n 1)) n))) (def (main) ",
-            );
-            if ret_len {
-                let _ = write!(self.out, "(List.len (build {start}))");
-            } else {
-                let _ = write!(self.out, "(build {start})");
+        let ret_len = self.cur.flip(); // main returns the built structure's len, else the structure itself
+        match self.cur.choice(3) {
+            0 => {
+                // Non-tail builder of a list-of-X: the pushed ELEMENT is a scalar `n`, a `(tuple n n)`, or
+                // a `(list n n)` — so the result is a (List Int64) / (List (Tuple …)) / (List (List …)),
+                // combining recursion with a NESTED-heap element (the built nested value round-trips).
+                let elem = match self.cur.choice(3) {
+                    0 => "n",
+                    1 => "(tuple n n)",
+                    _ => "(list n n)",
+                };
+                let _ = write!(
+                    self.out,
+                    "(do (def (build (: n Int64)) (if (<= n 0) (list) ((. List push) (build (- n 1)) {elem}))) (def (main) "
+                );
+                if ret_len {
+                    let _ = write!(self.out, "(List.len (build {start}))");
+                } else {
+                    let _ = write!(self.out, "(build {start})");
+                }
+                self.out.push_str(") (export main))");
             }
-            self.out.push_str(") (export main))");
-        } else {
-            // Tail-accumulator builder: build(n, acc) = if n<=0 then acc else build(n-1, push(acc, n)).
-            self.out.push_str(
-                "(do (def (build (: n Int64) (: acc (List Int64))) (if (<= n 0) acc (build (- n 1) ((. List push) acc n)))) (def (main) ",
-            );
-            if ret_len {
-                let _ = write!(self.out, "(List.len (build {start} (list)))");
-            } else {
-                let _ = write!(self.out, "(build {start} (list))");
+            1 => {
+                // Tail-accumulator LIST builder: build(n, acc) = if n<=0 then acc else build(n-1, push(acc, n)).
+                self.out.push_str(
+                    "(do (def (build (: n Int64) (: acc (List Int64))) (if (<= n 0) acc (build (- n 1) ((. List push) acc n)))) (def (main) ",
+                );
+                if ret_len {
+                    let _ = write!(self.out, "(List.len (build {start} (list)))");
+                } else {
+                    let _ = write!(self.out, "(build {start} (list))");
+                }
+                self.out.push_str(") (export main))");
             }
-            self.out.push_str(") (export main))");
+            _ => {
+                // Tail-accumulator MAP builder: grow a (Map Int64 Int64) across calls (recursion × hash-map
+                // growth) — build(n, acc) = if n<=0 then acc else build(n-1, (Map.insert acc n n)).
+                self.out.push_str(
+                    "(do (def (build (: n Int64) (: acc (Map Int64 Int64))) (if (<= n 0) acc (build (- n 1) (Map.insert acc n n)))) (def (main) ",
+                );
+                if ret_len {
+                    let _ = write!(self.out, "(Map.len (build {start} Map.empty))");
+                } else {
+                    let _ = write!(self.out, "(build {start} Map.empty)");
+                }
+                self.out.push_str(") (export main))");
+            }
         }
     }
 
@@ -2988,8 +3012,9 @@ mod tests {
             if src.contains("(def (build ") {
                 hit = true;
                 assert!(
-                    src.contains("(if (<= n 0)") && src.contains("(. List push)"),
-                    "recursive list-builder missing base guard or List.push:\n{src}"
+                    src.contains("(if (<= n 0)")
+                        && (src.contains("(. List push)") || src.contains("(Map.insert acc")),
+                    "recursive builder missing base guard or push/insert:\n{src}"
                 );
             }
         }
