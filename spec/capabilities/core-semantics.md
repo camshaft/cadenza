@@ -234,6 +234,8 @@ A record MUST associate a fixed set of statically-known field names each with a 
 
 A record MUST be deconstructible by pattern matching on its field names, binding each named field's sub-value.
 
+Each named field's sub-value MUST be a binder position in the sense of *Patterns Compose*, so a field's value MAY be bound by any pattern — a wildcard, a name, a tuple pattern, a record pattern, or a constructor pattern — matched recursively against the value at that field to any depth, and the whole pattern MUST remain linear (`CDZ0102`), exactly as a map's value binder (§"A Map Is Matched By Key-Directed Patterns") and a list's element binder (§"A List Is Deconstructed By Element Patterns With An Optional Rest") compose recursively.
+
 A record pattern MAY name a subset of the fields, ignoring the rest.
 
 A record pattern that names a subset of the fields MAY end in a rest binder — `(record (= x a) .. rest)` — binding the rest binder to a record of exactly the fields the pattern does not name, so the unnamed fields are available as a record value rather than only ignored. Because a record's field set is fixed by its type, a record pattern that names only fields the type has and binds the remainder matches every record of that type and is therefore irrefutable in the sense of *A Binding Position Accepts An Irrefutable Pattern*.
