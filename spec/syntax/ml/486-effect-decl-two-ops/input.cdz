@@ -1,0 +1,1 @@
+effect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)

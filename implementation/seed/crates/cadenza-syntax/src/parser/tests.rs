@@ -546,68 +546,17 @@ fn arena_shapes() {
 //     ml/58-neg-parenthesized-operand; new ml/469-binary-subtraction `a - b`→`(- a b)` (arity-2 contrast).
 //   * guarded arm `(match n ((guard x (< x 0)) neg) (_ pos))`=ml/149-match-guarded-arm.
 
-#[test]
-fn effect_op_resource_marker_lifts_to_a_hash_clean_sibling() {
-    // SEC-F1 resource marker (concierge-ruled, v-agent-harness coord 2026-08-13): `@resource T` on an
-    // op param designates the resource arg. It must lift OUT of the op TYPE (so the schema-hash is
-    // marker-invariant) into a decl-level `(resource <idx>)` sibling on the op. Here: `write` marks
-    // its FIRST param (index 0) as the resource; the op TYPE is marker-FREE (bare Bytes, NOT
-    // `(@ resource Bytes)`), and a `(resource 0)` sibling records the position.
-    let a = parse_ok("effect Fs = | write : @resource Bytes -> Bytes -> Unit");
-    let op = a
-        .as_form(a.as_form(a.root, "effect").unwrap()[1], "op")
-        .unwrap();
-    assert_eq!(a.as_name(op[0]), Some("write"));
-    // op[1] = the op TYPE; op[2] = the (resource 0) sibling.
-    let ty_sexp = crate::sexpr::print_from(&a, op[1]);
-    assert!(
-        ty_sexp.contains("(-> Bytes (-> Bytes Unit))") && !ty_sexp.contains("resource"),
-        "op type is marker-FREE (hash-clean): {ty_sexp}"
-    );
-    assert_eq!(
-        crate::sexpr::print_from(&a, op[2]),
-        "(resource 0)",
-        "resource marks param index 0"
-    );
+// `effect_op_resource_marker_lifts_to_a_hash_clean_sibling` (`@resource T` on an op param lifts OUT of the
+// marker-FREE op TYPE into a decl-level `(resource <idx>)` sibling; a no-marker op has no sibling) is subsumed
+// by the spec/syntax corpus (inc-6 batch-88): ml/51-effect-op-resource-marker-first-param `(op write (-> Bytes
+// (-> Bytes Unit)) (resource 0))`, ml/52-effect-op-resource-marker-second-param `(resource 1)`, ml/53-effect-op-
+// no-resource-marker `(op read (-> Bytes Bytes))` (name + type only, no resource sibling).
 
-    // The SECOND param can be the resource (index 1); a no-marker op has NO resource sibling.
-    let b = parse_ok("effect Fs = | write : Bytes -> @resource Bytes -> Unit");
-    let opb = b
-        .as_form(b.as_form(b.root, "effect").unwrap()[1], "op")
-        .unwrap();
-    assert_eq!(crate::sexpr::print_from(&b, opb[2]), "(resource 1)");
-
-    let c = parse_ok("effect Fs = | read : Bytes -> Bytes");
-    let opc = c
-        .as_form(c.as_form(c.root, "effect").unwrap()[1], "op")
-        .unwrap();
-    assert_eq!(
-        opc.len(),
-        2,
-        "no resource marker => no (resource N) sibling (name + type only)"
-    );
-}
-
-#[test]
-fn effect_decl_builds_op_signatures() {
-    // `effect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)` ->
-    // `(effect Diag (op emit (-> Int64 Unit)) (op collect (-> (List Int64))))`. The leading-arrow
-    // op type is the nullary-elided one-element `(-> R)`.
-    let a = parse_ok("effect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)");
-    let tail = a.as_form(a.root, "effect").unwrap();
-    assert_eq!(a.as_name(tail[0]), Some("Diag"));
-    let emit = a.as_form(tail[1], "op").unwrap();
-    assert_eq!(a.as_name(emit[0]), Some("emit"));
-    let emit_ty = a.as_form(emit[1], "->").unwrap();
-    assert_eq!(emit_ty.len(), 2, "P -> R is a two-element arrow");
-    let collect = a.as_form(tail[2], "op").unwrap();
-    let collect_ty = a.as_form(collect[1], "->").unwrap();
-    assert_eq!(
-        collect_ty.len(),
-        1,
-        "nullary-elided `-> R` is a one-element arrow"
-    );
-}
+// `effect_decl_builds_op_signatures` (an `effect` decl builds `(op name Sig)` children; a leading-arrow op
+// type `-> R` is the nullary-elided one-element `(-> R)`) MIGRATED to the spec/syntax corpus (inc-6 batch-88):
+// ml/486-effect-decl-two-ops `effect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)`→`(effect Diag
+// (op emit (-> Int64 Unit)) (op collect (-> (List Int64))))` — `emit`'s `P -> R` is a two-element arrow,
+// `collect`'s `-> R` the nullary-elided one-element arrow. (Effect with doc headers = ml/300-301.)
 
 #[test]
 fn world_decl_builds_the_canonical_wit_world_node() {
