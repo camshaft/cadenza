@@ -4692,10 +4692,14 @@
   (live-objects 0))
 
 ; ── breaker batch 526: leg-2 trigger table (walker-conditioned branch arm-escape). The escapee's
-; tree leaks ONCE when it is a non-operand (dqe16), TWICE when it is an operand (dqe10/11);
-; untaken escape arms (dqe17) and scalar conditions (dqe18) are clean — the dup is minted on the
-; TAKEN path in the shadow of the walker call. dqe19 = leg-1 cross-scope: projection + walker on
-; a RETURNED binding leaks in the caller exactly as on a local.
+; tree leaked ONCE when it is a non-operand (dqe16), TWICE when it is an operand (dqe10/11); untaken
+; escape arms (dqe17) and scalar conditions (dqe18) are clean — the dup is minted on the TAKEN path
+; in the shadow of the walker call. dqe19 = leg-1 cross-scope: projection + walker on a RETURNED
+; binding. UPDATE: dqe16 (non-operand escapee) and dqe19 (cross-scope projection+walker) now reclaim
+; CLEAN — fixed by the landed projected-binder dup-suppression / must-escape reclaim (#6834/#7051): the
+; walker's borrow no longer mints an unbalanced keep-alive dup on the escapee/returned binding. dqe10/dqe11
+; (the escapee is ALSO a walked OPERAND, so its tree AND the dead sibling's leak = 6) still leak — the
+; two-sided end-of-scope drop (drop the dead sibling WITHOUT dropping the escapee) is not yet placed.
 (case
   "dqe16 a walker-conditioned branch escaping a NON-operand heap binding leaks the escapee's tree once"
   (input
@@ -4711,7 +4715,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 1001 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "dqe17 a walker-conditioned escape arm left UNTAKEN (operands unequal) reclaims clean — the dup is minted on the taken path only"
@@ -4756,7 +4760,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 102001 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── breaker batch 546: Float special values as CHAMP keys/elements — the hash/eq AGREEMENT cells.
 ; Cadenza equality is canonical-byte (= -0.0 0.0) is FALSE (pinned above); these pin that the
