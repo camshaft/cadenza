@@ -759,7 +759,26 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
                   | none => .cannotProve "symeval: a call argument is unmodelable or a param spec is malformed"
               | none => .cannotProve s!"symeval: operator/construct '{hs}' not modeled (boundary)"
         | none => .cannotProve "symeval: non-UTF8 head"
-    | none => .cannotProve "symeval: non-name head"
+    | none =>
+      -- a MEMBER-CALL head `((. Q mem) args)` (non-name head). Model the non-recursive builtin collection
+      -- ops here (they are NOT library recursion, so no fuel boundary). First: `List.concat a b` over two
+      -- concrete list values → `.ctor "list"` of the appended element arrays (byte-identical to
+      -- `List.concat`'s eval). Coverage: list-concat programs get a verdict instead of `cannotProve`.
+      match qualHead? m children with
+      | some (q, mem) =>
+        if q == "List".toUTF8 && mem == "concat".toUTF8 then
+          (match children[1]?, children[2]? with
+           | some aId, some bId =>
+             (match symEval m senv fuel ty aId, symEval m senv fuel ty bId with
+              | .sym (.ctor t1 as), .sym (.ctor t2 bs) =>
+                if t1 == "list".toUTF8 && t2 == "list".toUTF8 then .sym (.ctor "list".toUTF8 (as ++ bs))
+                else .cannotProve "symeval: List.concat on non-list values"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: List.concat on non-list values")
+           | _, _ => .cannotProve "symeval: malformed List.concat")
+        else .cannotProve "symeval: member-op head not modeled (boundary)"
+      | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
 
 /-- Symbolically evaluate a `(let ((n v)…) body)`: bind the remaining `(name value)` pairs `ps`
@@ -1091,6 +1110,18 @@ private def _mapExpr : Module :=
 #guard symEval _mapExpr [] symDefaultFuel defaultIntTy 7
        == SymOutcome.sym (.ctor "map".toUTF8 #[.tuple #[.const (.int 1), .const (.int 10)],
                                                .tuple #[.const (.int 2), .const (.int 20)]])
+
+-- LIST.CONCAT member-op coverage: `((. List concat) (list 1) (list 2))` → `.ctor "list" [const 1, const 2]`
+-- (appends the element arrays). Member-calls were previously `cannotProve` ("non-name head").
+private def _concatExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "List".toUTF8, Leaf.name "concat".toUTF8,
+                Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[4, 5],
+               .atom 3, .atom 5, .list #[7, 8], .list #[3, 6, 9]],
+    root := 10 }
+#guard symEval _concatExpr [] symDefaultFuel defaultIntTy 10
+       == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2)])
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
