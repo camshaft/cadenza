@@ -1,0 +1,6 @@
+type T =
+  | A
+  | B
+
+// trailing note after the last variant
+def f() = 1
