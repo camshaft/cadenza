@@ -366,6 +366,63 @@ pub(crate) struct B2BindPlanEntry {
 ///    select.rs:5251. Admits cmb1: its recomputed divide (divisor k+1, NOT trap-free) sits in the inner-if
 ///    GUARD its arm-body LCA unconditionally evaluates → in the frontier.
 pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
+    // B2 = HEAP-HANDLE shares. The detection + value-stability (3a/3b) + bind-safety (4) + members/LCA
+    // machinery is share-KIND-AGNOSTIC (see `shared_node_bind_plan`); only the per-node ELIGIBILITY (gate 2
+    // HEAP-SHARE + the v-rb whitelist P1/P3) is heap-specific, carried by `b2_heap_eligible`. The O2 scalar
+    // CSE (a later slice) drives the SAME engine with a scalar eligibility predicate.
+    shared_node_bind_plan(db, body, b2_heap_eligible)
+}
+
+/// Per-node ELIGIBILITY for a share KIND: returns `Some(ty)` when the node at `id` (reached by `count`
+/// parent edges, reachable from `body`) is an eligible SHARE for this kind, `None` to skip it. ONLY the
+/// KIND-SPECIFIC gates live here — B2's heap gate-2 + P1/P3 (`b2_heap_eligible`), or the O2 CSE's scalar
+/// gate (a later slice). The SHARED value-stability (3a/3b) + bind-safety (4) gates + members/LCA are
+/// applied uniformly by [`shared_node_bind_plan`], so they stay IDENTICAL across kinds (a divergence there
+/// would let heap and scalar sharing disagree on what is sound).
+type ShareEligibility = fn(&mut Db, StructId, StructId, u32) -> Option<Ty>;
+
+/// B2's HEAP-HANDLE eligibility: gate (2) shared heap handle + (2b/P1) fully-solved type + (2c/P3) not a
+/// rust-slot-UNSAFE sum-variant scrutinee. Returns the node's type (for the slot valtype) when admitted.
+fn b2_heap_eligible(db: &mut Db, body: StructId, id: StructId, count: u32) -> Option<Ty> {
+    // (2) HEAP-SHARE: shared (count≥2), not a LocalRef, a heap handle (not Unit) — see is_shared_heap_node.
+    if !is_shared_heap_node(db, id, count) {
+        return None;
+    }
+    let ty = crate::infer::type_of(db, id);
+    // (2b) FULLY-SOLVED TYPE (v-rb bind-safety whitelist P1): a slot binding fixes the slot's valtype
+    // to the shared node's type up front; an unsolved type (a Deferred int sign/width — the shape v-rb's
+    // install dump showed on 2 Record.with shares) yields an indeterminate slot valtype → emit fails
+    // 'let-binding reference has no local slot'. Require a determinate machine representation.
+    if !ty.is_fully_solved() {
+        return None;
+    }
+    // (2c) P3-NARROW (v-rb rust-grounded): a dispatched-on share is excluded ONLY when a read of it is a
+    // SUM-VARIANT read (MatchSum/SumExpect, or a SumPayload with a `Payload` path step) — the rust
+    // backend resolves such a payload via a bind minted by a MatchSum arm on the DIRECT scrutinee, so a
+    // slotted LocalRef scrutinee has no bind and DECLINES ('sum payload has no bound match arm'), a
+    // rust-only decline the wasm sweep can't see. A share whose dispatch-reads are ALL Tuple/Record/List
+    // reads (Match/MatchList scrutinee, or SumPayload with an Elem/RestFrom-only path) is resolved
+    // DIRECTLY off the (slotted) scrutinee by dot-index/split → rust-slot-SAFE, so it is ADMITTED for
+    // bind-once. This narrows the old blanket "any dispatched-on share is excluded" P3 to exactly the
+    // sum-variant shape P3 was added for. cmb1's 127 shares are all Tuple state-tuple reads → all
+    // admitted (v-rb measured bind-once of them = both-backend 1 PASS, correct 828567056280870).
+    if b2_is_dispatched_on(db, body, id) && !b2_dispatch_rust_slot_safe(db, body, id) {
+        return None;
+    }
+    Some(ty)
+}
+
+/// The share-KIND-AGNOSTIC bind-plan ENGINE both B2 (heap handles) and the O2 scalar CSE (a later slice)
+/// share: detect the shared-DAG nodes, and for each node the `eligible` predicate ADMITS, apply the uniform
+/// value-stability (3a/3b) + bind-safety (4) gates + members/LCA, emitting a `B2BindPlanEntry`.
+/// Parameterizing ONLY the per-node eligibility keeps the correctness-critical shared gates IDENTICAL across
+/// kinds — the tick-cg handler-threaded-TEMPLATE gate (3a), the rq3/plt2 LOOP-INVARIANCE gate (3b), the
+/// moved-trap bind-safety gate (4). Pure analysis (no override); v-rb's install consumes the returned plan.
+fn shared_node_bind_plan(
+    db: &mut Db,
+    body: StructId,
+    eligible: ShareEligibility,
+) -> Vec<B2BindPlanEntry> {
     // (1) DETECTION: core_child_ids parent-edge counts (descends MatchSum), first-seen order.
     let mut counts: HashMap<StructId, u32> = HashMap::new();
     let mut order: Vec<StructId> = Vec::new();
@@ -381,32 +438,11 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
 
     let mut plan: Vec<B2BindPlanEntry> = Vec::new();
     for id in order {
-        // (2) HEAP-SHARE: shared (count≥2), not a LocalRef, a heap handle (not Unit) — see is_shared_heap_node.
+        // (2) PER-KIND ELIGIBILITY (gate 2 + kind whitelist); yields the node's type for the slot when admitted.
         let count = counts.get(&id).copied().unwrap_or(0);
-        if !is_shared_heap_node(db, id, count) {
+        let Some(ty) = eligible(db, body, id, count) else {
             continue;
-        }
-        let ty = crate::infer::type_of(db, id);
-        // (2b) FULLY-SOLVED TYPE (v-rb bind-safety whitelist P1): a slot binding fixes the slot's valtype
-        // to the shared node's type up front; an unsolved type (a Deferred int sign/width — the shape v-rb's
-        // install dump showed on 2 Record.with shares) yields an indeterminate slot valtype → emit fails
-        // 'let-binding reference has no local slot'. Require a determinate machine representation.
-        if !ty.is_fully_solved() {
-            continue;
-        }
-        // (2c) P3-NARROW (v-rb rust-grounded): a dispatched-on share is excluded ONLY when a read of it is a
-        // SUM-VARIANT read (MatchSum/SumExpect, or a SumPayload with a `Payload` path step) — the rust
-        // backend resolves such a payload via a bind minted by a MatchSum arm on the DIRECT scrutinee, so a
-        // slotted LocalRef scrutinee has no bind and DECLINES ('sum payload has no bound match arm'), a
-        // rust-only decline the wasm sweep can't see. A share whose dispatch-reads are ALL Tuple/Record/List
-        // reads (Match/MatchList scrutinee, or SumPayload with an Elem/RestFrom-only path) is resolved
-        // DIRECTLY off the (slotted) scrutinee by dot-index/split → rust-slot-SAFE, so it is ADMITTED for
-        // bind-once. This narrows the old blanket "any dispatched-on share is excluded" P3 to exactly the
-        // sum-variant shape P3 was added for. cmb1's 127 shares are all Tuple state-tuple reads → all
-        // admitted (v-rb measured bind-once of them = both-backend 1 PASS, correct 828567056280870).
-        if b2_is_dispatched_on(db, body, id) && !b2_dispatch_rust_slot_safe(db, body, id) {
-            continue;
-        }
+        };
         // (3) NOT-A-TEMPLATE-SHARE / VALUE-STABILITY = LOOP-INVARIANCE.
         let free = free_binders_of(db, id);
         // (3a) every free binder must be a Core::Param — a share reading a re-threaded inner Let binder
