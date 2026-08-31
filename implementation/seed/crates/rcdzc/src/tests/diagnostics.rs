@@ -1255,42 +1255,14 @@ fn a_bin_segment_size_operand_name_is_counted_used_not_flagged_cdz0306() {
 // tests a_dotted_nullary_variant_arm_pattern_binds_nothing_and_never_warns_unused +
 // a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns deleted.
 
-/// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r
-/// b)` with a binder after the rest) must NOT also emit consequent CDZ0306 "unused binding" warnings
-/// for the binders inside that rejected pattern: those binders never bind, so their "unusedness" is a
-/// CONSEQUENCE of the pattern fault, not an INDEPENDENT problem. This was a check≡compile discrepancy —
-/// `cdz compile` bails at the first fault set (only the CDZ0201 shows), but `cdz check`/`diagnostics()`
-/// collects faults AND warnings, and without the poison guard it appended spurious CDZ0306s. The
-/// match-arm binder pass now skips a match whose `core_of` POISONS (the same lowering the CDZ0201 comes
-/// from — they can never disagree).
-#[test]
-fn a_well_formed_pattern_still_warns_its_genuinely_unused_binders() {
-    // The MALFORMED-pattern-no-consequent-CDZ0306 halves (a too-wide `#tuple(a b c)` on a 2-tuple, and a
-    // malformed list-rest `#list(a .. rest b)` — each CDZ0201 with NO consequent "unused binding" warning
-    // for the dead binders) migrated to corpus 05-compound-types via the program-scoped `(no-diagnostic
-    // "unused binding")` lever (#6765). What STAYS here (needs a COMPILING program that emits the CDZ0306
-    // warning — a `(Tuple)`/`(List)` entry-param would decline at the export boundary, so these are white-box
-    // warning-count controls): NOT-over-suppressed — a well-formed pattern still warns its genuinely-unused
-    // binders (the suppression is scoped to a poisoned pattern, not the whole binder pass).
-    // NOT over-suppressed: a WELL-FORMED pattern whose body TRAPS (a poison in the BODY, not the
-    // pattern — the match's `core_of` is NOT a poison) still warns its genuinely-unused binders.
-    let trap_body = "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b) (trap \"x\")))) (export f))";
-    let u = unused_of(trap_body);
-    assert_eq!(
-        u.len(),
-        2,
-        "a well-formed pattern with a trapping body still warns its 2 unused binders: {u:?}"
-    );
-    // NOT over-suppressed: an ordinary well-formed match still warns a genuinely-unused binder.
-    assert_eq!(
-        unused_of(
-            "(module m (def (f (: o (Option Int64))) (match o ((Some x) 0) ((None) 1))) (export f))"
-        )
-        .len(),
-        1,
-        "a well-formed match's unused binder still warns"
-    );
-}
+// MIGRATED to corpus (05-compound-types.sexp): a well-formed pattern still warns its genuinely-unused
+// binders — the malformed-pattern poison guard is NOT over-suppressing. Facet-1 (a well-formed `#tuple(a b)`
+// with BOTH binders unused → exactly TWO CDZ0306) is the case "a well-formed tuple pattern with BOTH binders
+// unused warns each — exactly two CDZ0306" (runs to 99, `(count 2)` + `(warning CDZ0306 …)`); facet-2 (a
+// well-formed match's single unused binder → count 1) is covered by the migrated variant-payload-binder
+// warning case. The old "white-box: a (Tuple) entry-param declines" claim is over-conservative — a LITERAL
+// `#tuple(3 4)` scrutinee in a nullary main compiles+runs. Rust test
+// a_well_formed_pattern_still_warns_its_genuinely_unused_binders deleted.
 
 // The well-formed-recursive-list-fold no-false-arm-head-fault CONTROL is corpus-covered: the reject halves
 // (unbound / non-member intrinsic arm head over a recursive body) were migrated to 05-compound-types, and
