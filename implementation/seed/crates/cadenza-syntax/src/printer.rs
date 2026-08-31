@@ -6953,19 +6953,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn literals_render_and_round_trip() {
-        assert_eq!(assert_roundtrip("{ x = 1, y = 2 }", 80), "{ x = 1, y = 2 }");
-        assert_eq!(assert_roundtrip("[1, 2, 3]", 80), "[1, 2, 3]");
-        assert_eq!(assert_roundtrip("(1, 2)", 80), "(1, 2)");
-        assert_eq!(assert_roundtrip("(1, 2, 3)", 80), "(1, 2, 3)");
-        // maps use `=` (like records); the `#` sigil is what distinguishes them.
-        assert_eq!(
-            assert_roundtrip("#{ \"a\" = 1, \"b\" = 2 }", 80),
-            "#{ \"a\" = 1, \"b\" = 2 }"
-        );
-        assert_eq!(assert_roundtrip("#{ 1 = 10 }", 80), "#{ 1 = 10 }");
-    }
+    // `literals_render_and_round_trip` (the compound-value literal surfaces) MIGRATED to the spec/syntax
+    // corpus (inc-6 batch-33): ml/229-record-value `{ x = 1, y = 2 }`→`#record((= x 1) (= y 2))`,
+    // ml/230-tuple-pair-value `(1, 2)`→`#tuple(1 2)`, ml/231-tuple-triple-value `(1, 2, 3)`→`#tuple(1 2 3)`,
+    // ml/232-map-string-keys `#{ "a" = 1, "b" = 2 }`→`#map((= "a" 1) (= "b" 2))`, ml/233-map-int-key
+    // `#{ 1 = 10 }`→`#map((= 1 10))` (maps use `=` like records; the `#` sigil distinguishes them). The
+    // list literal `[1, 2, 3]` is already pinned by ml/05-list-literal. All fmt-idempotent.
 
     #[test]
     fn a_same_line_trailing_comment_on_the_last_record_or_map_field_is_preserved() {

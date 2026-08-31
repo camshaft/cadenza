@@ -148,7 +148,12 @@ pass	ml/225-as-conversion-call-arg
 pass	ml/226-as-conversion-member-operand-parens
 pass	ml/227-unit-in-compound-target-call-form
 pass	ml/228-unit-in-nonbare-target-call-form
+pass	ml/229-record-value
 pass	ml/23-world-variant-prim-payload
+pass	ml/230-tuple-pair-value
+pass	ml/231-tuple-triple-value
+pass	ml/232-map-string-keys
+pass	ml/233-map-int-key
 pass	ml/24-world-enum-flags
 pass	ml/25-match-to-let-tuple
 pass	ml/26-match-to-let-var
