@@ -212,6 +212,50 @@
   (input  (do (def (main) (: 5 #tuple(1 2))) (export main)))
   (error  CDZ0203))
 
+; A type-CONSTRUCTOR form with a well-formed NON-TYPE in a type-argument position — `(List 5)`, `(Tuple Int64
+; 5)`, `(-> Int64 5)`, `(Map 5 Int64)` — used to read as the flat "requires a type, but found a non-type" over
+; the WHOLE form, naming neither WHICH element is wrong nor anchoring at it. It now names the specific POSITION
+; (element / element-index / key / value / result / parameter-index) and anchors at the offending element. An
+; UNBOUND name in a type-argument position keeps its own CDZ0101; a nested WRONG-ARITY ctor keeps its arity
+; message; a valid type raises nothing. (Migrated from rcdzc
+; a_non_type_argument_in_a_type_constructor_names_the_position — the per-case node-anchor check is covered by
+; the dedicated anchor tests.)
+(case "a non-type in a List element position names the element type"
+  (input  (do (def (g (: x (List 5))) x) (export g)))
+  (error  CDZ0203 (message "the element type must be a type, but this is a value")))
+
+(case "a non-type in a Set element position names the element type"
+  (input  (do (def (g (: x (Set 5))) x) (export g)))
+  (error  CDZ0203 (message "the element type must be a type, but this is a value")))
+
+(case "a non-type in a Tuple element position names the element index"
+  (input  (do (def (g (: x (Tuple Int64 5))) x) (export g)))
+  (error  CDZ0203 (message "element 1's type must be a type, but this is a value")))
+
+(case "a non-type in a Map key position names the key type"
+  (input  (do (def (g (: m (Map 5 Int64))) m) (export g)))
+  (error  CDZ0203 (message "the key type must be a type, but this is a value")))
+
+(case "a non-type in a Map value position names the value type"
+  (input  (do (def (g (: m (Map Int64 5))) m) (export g)))
+  (error  CDZ0203 (message "the value type must be a type, but this is a value")))
+
+(case "a non-type in a function result position names the result type"
+  (input  (do (def (g (: f (-> Int64 5))) f) (export g)))
+  (error  CDZ0203 (message "the result type must be a type, but this is a value")))
+
+(case "a non-type in a function parameter position names the parameter index"
+  (input  (do (def (g (: f (-> 5 Int64))) f) (export g)))
+  (error  CDZ0203 (message "parameter 0's type must be a type, but this is a value")))
+
+(case "an unbound name in a type-argument position keeps CDZ0101, not the non-type message"
+  (input  (do (def (g (: x (List Nonesuch))) x) (export g)))
+  (error  CDZ0101 (message "Nonesuch") (not "must be a type, but this is a value")))
+
+(case "a nested wrong-arity type constructor keeps its own arity message"
+  (input  (do (def (g (: x (List (Map Int64)))) x) (export g)))
+  (error  CDZ0203 (message "`Map` takes 2 type arguments")))
+
 (case "a non-constructor type applied to arguments in type position is rejected"
   (doc    "`(: true (Int64 Int64))` applies `Int64` — which is NOT a type constructor (it takes no
            arguments) — to an argument, a malformed type expression. Were the operand simply `Int64`, the
