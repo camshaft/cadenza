@@ -702,15 +702,26 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             }
             // A NATIVE COLLECTION-CTOR head inside a quasiquote — reflect to the dedicated `Ast.<X>Ctor`
             // (bare children, no head), exactly as the plain-quote path (`reify_inner`), but recursing via
-            // `reify_active` so a nested active unquote inside the collection still fires. Record/Map (whose
-            // children are FieldPairs) fall through to the generic path here (a quasiquoted `#record`/`#map`
-            // value is a later increment); List/Tuple/Set — the common case — reflect correctly.
+            // `reify_active` so a nested active unquote inside the collection still fires. Record/Map carry
+            // `Ast.FieldPair` children (their `(= k v)`/`(k v)` entries); List/Tuple/Set carry bare elements.
+            // Covers a quasiquoted `#map`/`#record` value (e.g. inside a quasiquoted `(match #map(…) …)`), the
+            // pattern-side gap that left the map-pattern eval-fold case declining CDZ0101.
             if let Some(&h) = items.first()
-                && let Some((variant, false)) = native_ctor_variant(ast, h)
+                && let Some((variant, fieldpair_children)) = native_ctor_variant(ast, h)
             {
                 let mut children = Vec::with_capacity(items.len() - 1);
                 for &child in &items[1..] {
-                    children.push(reify_active(ast, child, depth)?);
+                    let reified = if fieldpair_children {
+                        let (k, v) = field_kv(ast, child)?;
+                        let rk = reify_active(ast, k, depth)?;
+                        let rv = reify_active(ast, v, depth)?;
+                        let th = push_atom(ast, Leaf::Name("tuple".into()));
+                        let tup = push_list(ast, vec![th, rk, rv]);
+                        ast_ctor(ast, "FieldPair", tup)
+                    } else {
+                        reify_active(ast, child, depth)?
+                    };
+                    children.push(reified);
                 }
                 let payload = list_form(ast, children);
                 return Some(ast_ctor(ast, variant, payload));
@@ -834,6 +845,50 @@ fn reify_pattern(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<Str
         // `(unquote-splicing name)` element becomes a `.. name` REST binder (binds the remaining
         // elements); a non-final splice bails (CDZ0221 — a rest is meaningful only last).
         _ => {
+            // A native MEMBER access `(. obj key)` PATTERN → `Ast.Member (tuple <pat obj> <pat key>)` — the
+            // pattern-direction twin of the value-side member reflection (`reify_inner`/`reify_active`).
+            if let Some((obj, key)) = ast.member_parts(node) {
+                let robj = reify_pattern(ast, obj, under_qq)?;
+                let rkey = reify_pattern(ast, key, under_qq)?;
+                let th = push_atom(ast, Leaf::Name("tuple".into()));
+                let tup = push_list(ast, vec![th, robj, rkey]);
+                return Some(ast_ctor(ast, "Member", tup));
+            }
+            // A native COLLECTION-CTOR PATTERN (`#list`/`#tuple`/`#record`/`#map`/`#set`, a `Leaf::Ctor`
+            // head) → the dedicated `Ast.<X>Ctor` (bare children, no head; record/map children are
+            // `Ast.FieldPair`), reifying each child in PATTERN mode (`reify_pattern` — an `(unquote P)`
+            // element/value is a BINDER, a literal matches by equality). The pattern-direction twin of the
+            // value-side `Leaf::Ctor` reflection: without it a quasiquoted match arm whose pattern is a
+            // native `#map((= 1 x))`/`#list(…)` left the ctor-leaf head un-reified → eval declined CDZ0101
+            // (the 12th eval-fold red, the pattern-side gap `reify_inner`/`reify_active` didn't cover).
+            // Fall through to the generic list-pattern path when a `,@`-splice rest is present (its `.. rest`
+            // handling below) or the head is not a native ctor.
+            let has_active_splice = under_qq
+                && items
+                    .iter()
+                    .any(|&c| ast.as_form(c, "unquote-splicing").is_some());
+            if !has_active_splice
+                && let Some(&h) = items.first()
+                && let Some((variant, fieldpair_children)) = native_ctor_variant(ast, h)
+            {
+                let mut children = Vec::with_capacity(items.len() - 1);
+                for &child in &items[1..] {
+                    let reified = if fieldpair_children {
+                        // A record/map entry `(= k v)` / `(k v)` → `Ast.FieldPair (tuple <pat k> <pat v>)`.
+                        let (k, v) = field_kv(ast, child)?;
+                        let rk = reify_pattern(ast, k, under_qq)?;
+                        let rv = reify_pattern(ast, v, under_qq)?;
+                        let th = push_atom(ast, Leaf::Name("tuple".into()));
+                        let tup = push_list(ast, vec![th, rk, rv]);
+                        ast_ctor(ast, "FieldPair", tup)
+                    } else {
+                        reify_pattern(ast, child, under_qq)?
+                    };
+                    children.push(reified);
+                }
+                let payload = list_form(ast, children);
+                return Some(ast_ctor(ast, variant, payload));
+            }
             let mut pat_children: Vec<StructId> = Vec::with_capacity(items.len());
             for (i, &child) in items.iter().enumerate() {
                 let is_last = i + 1 == items.len();
