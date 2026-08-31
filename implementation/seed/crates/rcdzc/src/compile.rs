@@ -2000,15 +2000,17 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
     for (head, occ) in db.unknown_top_forms() {
         // `import` is a KNOWN surface keyword (the ML reader lexes `import { … } from "…"` → an
-        // `(import …)` top-level form) that this compiler does NOT YET model — distinct from a typo. The
-        // generic path below would suggest "did you mean `export`?" (import→export is only 2 edits), an
-        // actively MISLEADING fix: an author who wrote `import` never meant its opposite. Name the real
-        // situation — a recognized module form that is not yet supported — with NO swap fix.
+        // `(import …)` top-level form) that the MODULE LINKER resolves, not this single-module compile
+        // path — a STRUCTURAL boundary, distinct from a typo (concierge seq-286 ruling: cross-module
+        // imports ARE realized, via the linker/module-system path, so this is not a "not yet built" gap).
+        // The generic path below would suggest "did you mean `export`?" (import→export is only 2 edits),
+        // an actively MISLEADING fix: an author who wrote `import` never meant its opposite. Name the real
+        // situation — a module form handled by the linker, not compiled here — with NO swap fix.
         if head == "import" {
             faults.push(
                 Reject::decline(
-                    "`import` is a module form this compiler does not yet model (cross-module imports \
-                     are not supported here) — the program cannot be compiled",
+                    "`import` is resolved by the module linker, not by this single-module compile \
+                     path — a top-level `import` is not compiled here",
                 )
                 .at(occ),
             );
