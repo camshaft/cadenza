@@ -4765,74 +4765,13 @@ mod tests {
     // self-consistency test. The `contains(…)` sanity checks are subsumed by the byte-exact `format.cdz`
     // goldens; the `assert_roundtrip` idempotence by the corpus's fmt-idempotence property.
 
-    #[test]
-    fn inline_world_wit_type_descriptors_round_trip() {
-        // WIT primitive + list + option member types lower to the canonical descriptor form AND print
-        // back to the surface, so a world using them round-trips ML->ML. `string` -> `(string)` prim;
-        // `list(u8)` -> `("list" (u8))`; `option(list(u8))` -> `("option" ("list" (u8)))`; each prints
-        // back bare/`list(...)`/`option(...)`.
-        let printed = assert_roundtrip(
-            "world W = | export i = | m : (key : string, val : list(u8)) -> option(list(u8))",
-            80,
-        );
-        assert!(
-            printed.contains("key : string"),
-            "prim round-trips bare: {printed}"
-        );
-        assert!(
-            printed.contains("val : list(u8)"),
-            "list round-trips: {printed}"
-        );
-        assert!(
-            printed.contains("-> option(list(u8))"),
-            "option(list) round-trips: {printed}"
-        );
-        // The stored descriptor is the canonical str-head form (not the ML `(list u8)` application).
-        let parsed = parser::read_ml("world W = | export i = | m : (v : list(u8)) -> u8");
-        let sexp = sexpr::print(&parsed.arenas);
-        assert!(
-            sexp.contains("(\"list\" (u8))"),
-            "member type stored as canonical str-head descriptor, got: {sexp}"
-        );
-        assert!(
-            sexp.contains("(result (u8))"),
-            "result prim stored as (u8) descriptor, got: {sexp}"
-        );
-    }
-
-    #[test]
-    fn inline_world_unit_and_tuple_member_types_round_trip() {
-        // The kv-widened world's extra member types — `unit` and `tuple(A, B)` — lower to the str-head
-        // descriptor form (`("unit")`, `("tuple" <a> <b>)`) and print back to the surface, so a full
-        // kv-shaped world round-trips ML->ML. Mirrors put's unit result + prefix-scan's list-of-pairs.
-        let printed = assert_roundtrip(
-            "world W = | export i = | put : (v : list(u8)) -> unit \
-             | scan : (p : list(u8)) -> list(tuple(list(u8), list(u8)))",
-            80,
-        );
-        assert!(
-            printed.contains("-> unit"),
-            "unit result round-trips bare: {printed}"
-        );
-        assert!(
-            printed.contains("list(tuple(list(u8), list(u8)))"),
-            "list-of-tuple-pairs round-trips: {printed}"
-        );
-        // Stored as the canonical str-head descriptors (not name-head ML applications).
-        let parsed = parser::read_ml(
-            "world W = | export i = | put : (v : list(u8)) -> unit \
-             | scan : (p : list(u8)) -> list(tuple(list(u8), list(u8)))",
-        );
-        let sexp = sexpr::print(&parsed.arenas);
-        assert!(
-            sexp.contains("(result (\"unit\"))"),
-            "unit stored as str-head (\"unit\"), got: {sexp}"
-        );
-        assert!(
-            sexp.contains("(\"tuple\" (\"list\" (u8)) (\"list\" (u8)))"),
-            "tuple stored as str-head positional descriptor, got: {sexp}"
-        );
-    }
+    // `inline_world_wit_type_descriptors_round_trip` (string/list(u8)/option(list) + the str-head
+    // descriptor storage `("list" (u8))`/`(result (u8))`) and `inline_world_unit_and_tuple_member_types_round_trip`
+    // (`("unit")` result + `("tuple" …)`) MIGRATED to the spec/syntax corpus (inc-6):
+    // ml/14-world-wit-prim-list-option + ml/15-world-wit-list-result + ml/16-world-unit-tuple pin those
+    // inline-`world` WIT-type parse trees (render_sexpr — the tree.sexp carries the exact str-head
+    // descriptors these tests asserted via sexpr::print) + canonical formats, graded by the per-case
+    // nix check + the self-consistency test. Round-trip idempotence ← the corpus's fmt-idempotence.
 
     #[test]
     fn inline_world_record_member_type_round_trips() {
