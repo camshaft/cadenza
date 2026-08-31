@@ -6174,6 +6174,21 @@ impl<'a> Parser<'a> {
                 dd_span: Span,
                 before: usize,
             },
+            // A `( … )` pattern awaiting a sub-pattern (an ATOM-position form). Like the expr `Cont::Paren`:
+            // `items` empty while the FIRST sub-pattern decides grouping `(p)` vs tuple `(p, …)`; once tuple
+            // mode is entered it holds `[ "tuple"-head, first, … ]`. A subsequent element may be a `.. rest`
+            // spread (`is_rest`). `paren_span` is the `(`'s span; `lvl_*` the owning level (resume postfix +
+            // balance depth on close).
+            Tuple {
+                lvl_start: Span,
+                lvl_entered: bool,
+                paren_span: Span,
+                items: Vec<StructId>,
+                is_rest: bool,
+                rest_head: StructId,
+                dd_span: Span,
+                before: usize,
+            },
         }
         let mut pending: Vec<PCont> = Vec::new();
         let mut node: StructId = StructId(0); // placeholder; assigned before use (reading=true first)
@@ -6198,7 +6213,30 @@ impl<'a> Parser<'a> {
                         // ATOM DISPATCH: the `[ … ]` list pattern descends its elements on the worklist
                         // (so `[[[[…` de-recurses); every OTHER atom family falls back to the (recursive)
                         // `pattern_atom` for now (converted in later increments — byte-identical meanwhile).
-                        if self.at(Kind::LBracket) {
+                        if self.at(Kind::LParen) {
+                            let paren_span = cur_start;
+                            self.bump(); // '('
+                            if self.at(Kind::RParen) {
+                                let s = self.cur_span();
+                                self.bump();
+                                node = self.name("unit", s); // `()` -> unit
+                                reading = false; // -> postfix phase
+                            } else {
+                                // Descend the FIRST sub-pattern (grouping-vs-tuple decided on deliver; the
+                                // first element is never a `.. rest`). `items` empty = deciding mode.
+                                pending.push(PCont::Tuple {
+                                    lvl_start: cur_start,
+                                    lvl_entered: cur_entered,
+                                    paren_span,
+                                    items: Vec::new(),
+                                    is_rest: false,
+                                    rest_head: StructId(0),
+                                    dd_span: paren_span,
+                                    before: 0,
+                                });
+                                continue; // reading stays true: read the first sub-pattern
+                            }
+                        } else if self.at(Kind::LBracket) {
                             let bracket_span = cur_start;
                             self.bump(); // '['
                             let head = self.name("list", bracket_span);
@@ -6373,6 +6411,85 @@ impl<'a> Parser<'a> {
                     });
                     reading = true;
                     continue; // read the next element as a fresh level
+                }
+                Some(PCont::Tuple {
+                    lvl_start,
+                    lvl_entered,
+                    paren_span,
+                    mut items,
+                    is_rest,
+                    rest_head,
+                    dd_span,
+                    before,
+                }) => {
+                    // Macro-free next-element helper (grouping-vs-tuple's Comma branch + a subsequent
+                    // element): a `.. rest` spread (head created before the descent) or an ordinary
+                    // sub-pattern; descends it. Diverges via `continue`.
+                    macro_rules! next_tuple_pat {
+                        ($items:expr) => {{
+                            let before = self.pos;
+                            let (is_rest, dd_span, rest_head) = if self.at(Kind::DotDot) {
+                                let dd = self.cur_span();
+                                self.bump(); // `..`
+                                (true, dd, self.name("..", dd))
+                            } else {
+                                (false, paren_span, StructId(0))
+                            };
+                            pending.push(PCont::Tuple {
+                                lvl_start,
+                                lvl_entered,
+                                paren_span,
+                                items: $items,
+                                is_rest,
+                                rest_head,
+                                dd_span,
+                                before,
+                            });
+                            reading = true;
+                            continue; // read the next tuple element as a fresh level
+                        }};
+                    }
+                    if items.is_empty() {
+                        // `node` is the delivered FIRST sub-pattern — decide grouping `(p)` vs tuple `(p, …)`.
+                        let first = node;
+                        if self.at(Kind::Comma) {
+                            let head = self.name("tuple", paren_span);
+                            let items = vec![head, first];
+                            if self.sep_continue(Kind::RParen) {
+                                next_tuple_pat!(items);
+                            }
+                            // `(p,)` — trailing comma, no further element.
+                            self.expect(Kind::RParen, "`)`");
+                            node = self.list(items, paren_span.merge(self.prev_span()));
+                        } else {
+                            // Grouping: transparent — `first` IS the pattern.
+                            self.expect(Kind::RParen, "`)`");
+                            node = first;
+                        }
+                    } else {
+                        // `node` is a delivered subsequent element (or `.. rest` operand).
+                        if is_rest {
+                            let span = dd_span.merge(self.prev_span());
+                            items.push(self.list(vec![rest_head, node], span));
+                        } else {
+                            items.push(node);
+                        }
+                        // Missing-`,` progress guard fires AFTER each element, BEFORE the next `sep_continue`
+                        // (the tuple loop's `while sep_continue { before; elem; if pos==before bump }` order,
+                        // distinct from the list loop where the guard is after `sep_continue`).
+                        if self.pos == before {
+                            self.bump();
+                        }
+                        if self.sep_continue(Kind::RParen) {
+                            next_tuple_pat!(items);
+                        }
+                        self.expect(Kind::RParen, "`)`");
+                        node = self.list(items, paren_span.merge(self.prev_span()));
+                    }
+                    cur_start = lvl_start;
+                    cur_entered = lvl_entered;
+                    reading = false; // resume the owning level's postfix phase on the tuple/group node
+                    continue;
                 }
             }
         }
@@ -8001,7 +8118,15 @@ mod tests {
             "(a, b)",
             "(a)",
             "()",
+            "(a,)",
             "(a, b, .. rest)",
+            "((a, b), (c, d))",
+            "((((x))))",
+            "(((a, b)))",
+            "(Some(x), None)",
+            "(a, .. rest)",
+            "(a, b, c)",
+            "(x, y).swap",
             "[]",
             "[x, y]",
             "[x, .. rest]",
