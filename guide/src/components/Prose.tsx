@@ -3,6 +3,12 @@
 
 import type { ReactNode } from "react";
 
+// Surface-aware inline Cadenza code, authored as (cdz …). Re-exported here so the chapter codegen can pull
+// it from the same Prose.tsx import line as the other inline primitives (C/em/…). Its own module carries the
+// compiler-client + SyntaxContext deps; C below is a hoisted function declaration, so the Cadenza→Prose
+// import it makes is a safe ES-module cycle.
+export { Cadenza } from "./Cadenza.tsx";
+
 export function H1({ children }: { children: ReactNode }) {
   return <h1 className="mb-2 text-3xl font-bold tracking-tight text-slate-100">{children}</h1>;
 }

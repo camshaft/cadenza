@@ -643,6 +643,10 @@ fn scan_inline(
             Some("c") => {
                 prose.insert("C");
             }
+            Some("cdz") => {
+                // <Cadenza> is re-exported from Prose.tsx, so it rides the same prose import line as C.
+                prose.insert("Cadenza");
+            }
             Some("link") => {
                 *uses_ch = true;
                 scan_inline(
@@ -699,6 +703,14 @@ fn render_inline(a: &Arenas, i: StructId) -> String {
         Some("em") => format!("<em>{}</em>", render_inlines(a, children(a, i))),
         Some("strong") => format!("<strong>{}</strong>", render_inlines(a, children(a, i))),
         Some("c") => format!("<C>{}</C>", escape_text(attr_str(a, i).unwrap_or(""))),
+        // (cdz "<sexpr>") — a SURFACE-AWARE inline Cadenza span (vs (c …) which stays literal). The body
+        // is authored s-expr; <Cadenza> shows it verbatim in the s-expr surface and re-renders it in the
+        // conventional (ml) surface at runtime (the codegen only has the s-expr printer). Re-exported from
+        // Prose.tsx, so it rides the existing prose import line (prose.insert("Cadenza") in scan_inline).
+        Some("cdz") => format!(
+            "<Cadenza>{}</Cadenza>",
+            escape_text(attr_str(a, i).unwrap_or(""))
+        ),
         Some("br") => "<br />".to_string(),
         Some("link") => {
             let slug = children(a, i)
