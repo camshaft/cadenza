@@ -2720,8 +2720,14 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 // `lower_compare` float/compound arms): name the un-orderable leaf as the reason AND the
                 // actionable route — order the orderable components individually. Keeps the shared
                 // `COMPOUND_ORDERING_NO_TOTAL_ORDER_DECLINE` substring so the mismatched-type dedup still fires.
-                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: ordering of a compound with an un-orderable (float/set/map) leaf — permanent carve-out");
-                Core::Poison(Reject::decline(
+                // Because this is a PERMANENT carve-out (never a not-yet), it is a coded CDZ0203 — the SAME
+                // `Code::TypeMismatch` no-total-order class as the pure-float three-way `compare` carve-out
+                // above (`lower_compare`, #7001), Set.to-list over a float leaf (#7076), and the sum-payload
+                // float leaf — one family, one code (v-inference/v-corpus-declines reconcile of the compound
+                // float-leaf ordering decline; replaces the former codeless decline).
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "reject: ordering of a compound with an un-orderable (float/set/map) leaf — permanent carve-out (CDZ0203)");
+                Core::Poison(Reject::coded(
+                    Code::TypeMismatch,
                     "a compound value with a float, set, or map leaf has no total order, so it cannot be \
                      ordered by `<`/`<=`/`>`/`>=` (a float offers only the IEEE partial order; a set/map \
                      carries no blessed order) — order its orderable components individually",

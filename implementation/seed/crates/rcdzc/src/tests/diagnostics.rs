@@ -1943,13 +1943,17 @@ fn ordering_a_compound_with_an_unorderable_leaf_is_a_carve_out_not_a_not_yet_bui
     // compound already took the runtime `ValueCmp` ordering arm. So a `<` over a float-leaf tuple is a
     // PERMANENT carve-out (a float has only the IEEE partial order), NOT the "needs a heap walk (not yet
     // built)" the equality path names — that message MISLED (read as a temporary limit a later slice
-    // lifts). The message now mirrors `compare`: names the un-orderable leaf + the component-wise route.
+    // lifts). The message mirrors `compare`: names the un-orderable leaf + the component-wise route, and
+    // because it is PERMANENT it is now a coded CDZ0203 (`Code::TypeMismatch`) — the SAME no-total-order
+    // family as the pure-float three-way `compare` carve-out (#7001), Set.to-list over a float leaf
+    // (#7076), and the sum-payload float leaf (v-inference/v-corpus-declines reconcile; was uncoded).
     let d = first_error(
         "(module m (def (f (: x Float64) (: y Float64)) (< (tuple x 1) (tuple y 2))) (export f))",
     );
     assert_eq!(
-        d.code, None,
-        "an un-orderable-leaf compound ordering is an uncoded decline: {}",
+        d.code.as_deref(),
+        Some("CDZ0203"),
+        "an un-orderable-leaf compound ordering is a coded CDZ0203 carve-out (no-total-order family): {}",
         d.message
     );
     assert!(
