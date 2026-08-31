@@ -9,17 +9,17 @@
   (runnable
     (source (List.len #list(1 2 3))))
   (h2 "Building lists")
-  (p (c "List.push") " adds an element to the end; " (c "List.concat") " joins two lists. Each returns a whole new list, so Run this and you'll see the result, " (c "#list(1 2 3)") ", not just a count:")
+  (p (c "List.push") " adds an element to the end; " (c "List.concat") " joins two lists. Each returns a whole new list, so Run this and you'll see the result, " (cdz "#list(1 2 3)") ", not just a count:")
   (runnable
     (source (List.push #list(1 2) 3)))
-  (p (c "List.prepend") " is the mirror of " (c "push") ": it adds an element to the " (em "front") " rather than the end. It takes the list first and the new element second, the same receiver-first order as " (c "push") ", so prepending " (c "1") " to " (c "#list(2 3)") " gives " (c "#list(1 2 3)") ", the new element leading:")
+  (p (c "List.prepend") " is the mirror of " (c "push") ": it adds an element to the " (em "front") " rather than the end. It takes the list first and the new element second, the same receiver-first order as " (c "push") ", so prepending " (c "1") " to " (cdz "#list(2 3)") " gives " (cdz "#list(1 2 3)") ", the new element leading:")
   (runnable
     (source (List.prepend #list(2 3) 1)))
-  (p (c "List.concat") " joins two lists into a new one, so Run this and you see the whole joined list, " (c "#list(1 2 3 4 5)") ", the two inputs laid end to end:")
+  (p (c "List.concat") " joins two lists into a new one, so Run this and you see the whole joined list, " (cdz "#list(1 2 3 4 5)") ", the two inputs laid end to end:")
   (runnable
     (source (List.concat #list(1 2) #list(3 4 5))))
   (h2 "Reaching in safely")
-  (p (c "List.at") " gets the element at an index. But what if the index is out of range? Rather than crash, " (c "List.at") " returns an " (c "Option") ", either " (c "(Some x)") " when the element exists or " (c "(None unit)") " when it doesn't, which you take apart with " (c "match") ". Here index 1 exists, so you get its value, " (c "20") ":")
+  (p (c "List.at") " gets the element at an index. But what if the index is out of range? Rather than crash, " (c "List.at") " returns an " (c "Option") ", either " (cdz "(Some x)") " when the element exists or " (cdz "(None unit)") " when it doesn't, which you take apart with " (c "match") ". Here index 1 exists, so you get its value, " (c "20") ":")
   (runnable
     (source (def (main)
   (match (List.at #list(10 20 30) 1)
@@ -36,7 +36,7 @@
     ((Some x) x)
     ((None _) 0)))))
   (p "The answer is " (c "20") ", not " (c "99") ": " (c "original") " never changed. The " (c "99") " lives only in " (c "bumped") ". Swap " (c "original") " for " (c "bumped") " in the " (c "List.at") " line and Run again to see " (c "99") ". Two lists, sharing most of their structure internally, each with its own value.")
-  (p "Return the updated list itself and you can see the change in place, one slot different, " (c "#list(10 99 30)") ", and the input " (c "#list(10 20 30)") " still intact wherever else it's held:")
+  (p "Return the updated list itself and you can see the change in place, one slot different, " (cdz "#list(10 99 30)") ", and the input " (cdz "#list(10 20 30)") " still intact wherever else it's held:")
   (runnable
     (source (List.update #list(10 20 30) 1 99)))
   (why (tenet "Immutable, persistent values") "Every value in Cadenza is immutable; an \"update\" always produces a fresh value and leaves every existing reference untouched. That's not just tidiness; it's what makes the whole system tractable. Because values can never form a cycle, the runtime reclaims memory by simple reference counting, no garbage collector needed. Because a list you handed to a function can't change underneath you, there's a whole class of aliasing bug that simply cannot happen. And whether a list is stored as a flat array or a balanced tree is the runtime's business, not yours: one type, many representations, sharing structure between versions so " (c "update") " doesn't copy the whole thing.")
@@ -53,7 +53,7 @@
     (#list() 0)
     (#list(x .. rest) (+ x (sum rest)))))
 (def (main) (sum #list(10 20 30)))))
-  (p "The empty case is the base case, " (c "0") ", the sum of nothing, and each step peels off one element and sums the rest, so " (c "#list(10 20 30)") " is " (c "10 + (20 + (30 + 0))") " = " (c "60") ". Toggle to the ML surface and the pattern reads as " (c "[x, .. rest]") ", the shape spelled out. You didn't declare the element type either: it flows from the " (c "+") ", so " (c "sum") " is inferred over a list of " (c "Int64") ".")
+  (p "The empty case is the base case, " (c "0") ", the sum of nothing, and each step peels off one element and sums the rest, so " (cdz "#list(10 20 30)") " is " (c "10 + (20 + (30 + 0))") " = " (c "60") ". Toggle to the ML surface and the pattern reads as " (c "[x, .. rest]") ", the shape spelled out. You didn't declare the element type either: it flows from the " (c "+") ", so " (c "sum") " is inferred over a list of " (c "Int64") ".")
   (p "The " (c "rest") " after " (c "..") " is special: it binds the " (em "whole tail") " as one sublist, so it must be a plain name (or " (c "_") "), not another pattern. You can destructure the leading elements as deeply as you like, but you can't nest a pattern in the rest slot itself. This tries to, and the compiler stops you:")
   (note "This one is " (strong "meant to be rejected") ": " (c "#list(b .. r)") " in the rest position asks to match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it, then match it.")
   (runnable
@@ -74,7 +74,7 @@
   (h2 "Your turn")
   (exercise
     (id "lists:1")
-    (prompt "Use " (c "List.update") " to change index " (c "0") " of " (c "#list(5 6 7)") " to " (c "50") ", then read that slot back with " (c "List.at") ". The answer is " (c "50") ".")
+    (prompt "Use " (c "List.update") " to change index " (c "0") " of " (cdz "#list(5 6 7)") " to " (c "50") ", then read that slot back with " (c "List.at") ". The answer is " (c "50") ".")
     (starter (match (List.at (List.update #list(5 6 7) 0 ?) 0)
   ((Some x) x)
   ((None _) 0)))
@@ -85,7 +85,7 @@
     (hint (c "List.update") " takes the list, the index (" (c "0") "), and the new value (" (c "50") "), in that order. Then " (c "List.at … 0") " reads the slot you just set."))
   (exercise
     (id "lists:2")
-    (prompt "Add the single element " (c "99") " to the end of " (c "#list(10 20 30)") ", then ask its length, so a three-element list grows to " (c "4") ". Which operation appends " (em "one element") ", " (c "push") " or " (c "concat") "? Fill in the blank.")
+    (prompt "Add the single element " (c "99") " to the end of " (cdz "#list(10 20 30)") ", then ask its length, so a three-element list grows to " (c "4") ". Which operation appends " (em "one element") ", " (c "push") " or " (c "concat") "? Fill in the blank.")
     (starter (List.len (List.? #list(10 20 30) 99)))
     (solution (List.len (List.push #list(10 20 30) 99)))
     (expected "4")
@@ -107,7 +107,7 @@
     (hint "The base case has to be the value that leaves a product unchanged, so multiplying by it does nothing. For " (c "+") " that identity was " (c "0") "; for " (c "*") " it's " (c "1") ". (Try " (c "0") " and watch the whole product collapse to " (c "0") ".)"))
   (exercise
     (id "lists:4")
-    (prompt "Add " (c "0") " to the " (em "front") " of " (c "#list(1 2 3)") ", then read index " (c "0") " back with " (c "List.at") " for the answer " (c "0") ". Which operation adds to the front, " (c "push") " or " (c "prepend") "? Fill in the blank.")
+    (prompt "Add " (c "0") " to the " (em "front") " of " (cdz "#list(1 2 3)") ", then read index " (c "0") " back with " (c "List.at") " for the answer " (c "0") ". Which operation adds to the front, " (c "push") " or " (c "prepend") "? Fill in the blank.")
     (starter (match (List.at (List.? #list(1 2 3) 0) 0)
   ((Some x) x)
   ((None _) -1)))
