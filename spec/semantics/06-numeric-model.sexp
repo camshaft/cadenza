@@ -4999,7 +4999,7 @@
 ; The cases above pin nan-propagation and float `/0 → ±inf`. The IEEE INDETERMINATE forms — an operation on
 ; an actual INFINITY whose result IEEE leaves undefined — are the companion: `inf − inf` and `inf × 0.0` are
 ; both NaN (not 0, not inf). A genuine +inf is produced at RUN TIME by dividing a runtime finite by 0.0 (a
-; const inf would hit the "not finite has no value form yet" decline; the runtime `x` keeps `x/0.0` off the
+; const inf would hit the "not finite (±inf or NaN) has no written value form" decline; the runtime `x` keeps `x/0.0` off the
 ; fold), then fed to the indeterminate op. Pins that the runtime float ops compute the IEEE indeterminate
 ; result rather than trapping or folding, both backends — the inf-operand companion of the existing
 ; `0.0 * nan = nan` case (which tests a NaN operand, never an inf one) and of `inf` being nowhere subtracted.
@@ -12972,7 +12972,7 @@
 
 (case "fi1 runtime float division by zero produces +infinity (huge, self-equal, positive)"
   (doc    "Non-finite RUNTIME float semantics (the const-fold path rejects non-finite results with an
-           honest decline — a fold reaching 0.0/0.0 errors 'has no value form yet'; these cells keep the
+           honest decline — a fold reaching 0.0/0.0 errors 'not finite (±inf or NaN) has no written value form'; these cells keep the
            operands runtime so the IEEE semantics execute). fi3/fi4 pin that runtime-PRODUCED NaNs are
            CANONICALIZED: byte-equal to the Float64.nan literal, self-equal under canonical-byte =, and
            found in a Set by the literal probe — the collection/eq contract holds for every NaN source.")

@@ -225,7 +225,7 @@ fn a_list_pattern_must_be_linear_and_refutable_elements_decline() {
 // (an_ill_typed_try_operand_reports_one_error_not_a_shadowing_constant_decline migrated to corpus
 // 23-try-operator "a `?` on a non-fallible operand is a type error" ((try 5) → CDZ0203 (message "fallible")
 // (count 1)): the (count 1) pins the DEDUP — a non-fallible `?` operand is one coded CDZ0203, not that reject
-// PLUS the emit path's uncoded "lowers only a constant operand yet" decline for the same non-sum-constant
+// PLUS the emit path's uncoded "lowers only a constant operand" decline for the same non-sum-constant
 // node (dedup_faults drops it via has_try_non_fallible_reject). (Runtime-fallible-operand declines — no
 // CDZ0203 sibling — keep their honest decline, covered by the runtime-`?` corpus.)
 //

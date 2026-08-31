@@ -877,7 +877,7 @@ pub const BUILTIN_WRONG_ARITY_DECLINE: &str = "a built-in operation must be appl
 pub const EMIT_OPERAND_ARITY_MARKER: &str = "takes exactly";
 
 /// The stable PREFIX of the UNCODED decline `lower`'s `Resolved::Try` arm returns when a `?`'s operand
-/// core is not a constant `SumNew` — `the ?/try operator lowers only a constant operand yet …`. This fires
+/// core is not a constant `SumNew` — `the ?/try operator lowers only a constant operand …`. This fires
 /// on TWO shapes: a genuinely-RUNTIME fallible operand (the honest BRICK-3b decline — the primary "no",
 /// kept) AND an ILL-TYPED operand (`(try 3.14)`, `(try "hi")`) whose non-sum constant core also misses the
 /// `SumNew` arm. In the ill-typed case `infer` already reports the authoritative CDZ0203
@@ -887,7 +887,7 @@ pub const EMIT_OPERAND_ARITY_MARKER: &str = "takes exactly";
 /// is present — ONE primary `error:` per ill-typed `?` (`reference-compiler.md` §Outcomes Are Ordered By
 /// Safety), while a runtime operand with no such reject keeps its honest decline.
 pub const TRY_RUNTIME_OPERAND_DECLINE_PREFIX: &str =
-    "the `?`/`try` operator lowers only a constant operand yet";
+    "the `?`/`try` operator lowers only a constant operand";
 
 /// The stable PREFIX of the coded CDZ0203 a `?` on a non-fallible operand reject (`` `?` operand must be a
 /// fallible `Result`/`Option`, found <T>``). `dedup_faults` matches this to recognize the reject that makes

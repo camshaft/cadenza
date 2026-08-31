@@ -1038,13 +1038,14 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             Core::SumNew { disc, .. } if success_disc_of(db, operand) == Some(disc) => {
                 // Success disc but arity ≠ 1 — a malformed success (should not reach here); decline.
                 Core::Poison(Reject::decline(
-                    "the `?`/`try` operator lowers only a single-payload success operand yet",
+                    "the `?`/`try` operator requires a single-payload success operand",
                 ))
             }
             Core::SumNew { .. } => Core::Break { value: operand },
+            // The boundary break for a RUNTIME operand is a later brick; until then the message names
+            // the current limit (seq-280: the "later" intent stays here in the comment).
             _ => Core::Poison(Reject::decline(
-                "the `?`/`try` operator lowers only a constant operand yet (the boundary break for a \
-                 runtime operand is the next brick)",
+                "the `?`/`try` operator lowers only a constant operand",
             )),
         },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose

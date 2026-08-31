@@ -2596,7 +2596,7 @@ fn compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route
         d.message
     );
     assert!(
-        d.message.contains("no total order the compiler can walk yet")
+        d.message.contains("no total order the compiler can walk")
                 // names WHY (the offending leaf kinds) AND the component-wise route
                 && d.message.contains("float/bytes/set/map leaf")
                 && d.message.contains("compare its orderable components individually"),
