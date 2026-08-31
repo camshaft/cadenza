@@ -6729,6 +6729,23 @@
   (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. #list(b .. r)) (+ b (List.len r))) (_ 0))) (export f)))
   (error  CDZ0201 (message "rest binder of a list pattern must be a name") (count 1)))
 
+; The rest-slot shape check covers a nested TUPLE sub-pattern (a tuple is a nested pattern just like a list)
+; and fires through a VARIANT-PAYLOAD descent (`(Wrap #list(a .. #list(…)))`), the full message naming that a
+; nested pattern or literal is not allowed in the rest slot; the wildcard `_` IS a valid rest binder. (Migrated
+; from rcdzc a_nested_pattern_in_list_rest_position_names_the_shape_not_an_unbound_binder — the tuple-rest +
+; variant-payload facets; the nested-list-rest + leading-nested-valid are the cluster above.)
+(case "a nested tuple in the list rest slot is the same rest-shape error, no unbound leak"
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. #tuple(b c)) (+ a b)) (#list() 0))) (export f)))
+  (error  CDZ0201 (message "rest binder of a list pattern must be a name or `_`") (message "a nested pattern or literal is not allowed here") (no-other-errors)))
+
+(case "a nested-rest list inside a variant payload gets the same rest-shape reject"
+  (input  (do (type W (Wrap (List Int64))) (def (f (: w W)) (match w ((Wrap #list(a .. #list(b .. r))) (+ a b)) (_ 0))) (export f)))
+  (error  CDZ0201 (message "rest binder of a list pattern must be a name or `_`") (no-other-errors)))
+
+(case "a wildcard in the list rest slot is a valid rest binder and matches"
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. _) a) (#list() 0))) (def (main) (f #list(7 8))) (export main)))
+  (call   main) (output (: 7 Int64)))
+
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
            arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's
