@@ -358,6 +358,26 @@
       (export main)))
   (output (: 100 Int64)))
 
+(case
+  "a type-suffixed numeric literal quotes as the (: <body> Type) annotation the suffix denotes"
+  (doc
+    "A `100N`/`0.5R` suffix IS a terse annotation — the reader desugars it to `(: <body> BigInt|Rational)`,
+           and the normalization that restores that invariant now runs BEFORE quote reification, so a
+           suffixed literal inside a `(quote …)` reifies as its annotation form rather than declining on an
+           un-reifiable `Suffixed` leaf. Pins the two spellings structurally EQUAL: `(quote 5N)` is the same
+           `Ast` value as `(quote (: 5 BigInt))`, and `(quote 0.5R)` the same as `(quote (: 0.5 Rational))`.
+           Before the ordering fix the whole quote declined (`quote produces an AST value, not supported`);
+           this is the metaprogramming face of the reader's suffix-is-an-annotation rule.")
+  (input
+    (do
+      (def
+        (main)
+        (+
+          (if (= (quote 5N) (quote (: 5 BigInt))) 10 0)
+          (if (= (quote 0.5R) (quote (: 0.5 Rational))) 20 0)))
+      (export main)))
+  (output (: 30 Int64)))
+
 ; A quasiquote in PATTERN position: a FINAL `,@name` binds the remaining elements of the matched form as a
 ; list (`` `(f ,@args) `` folds `.. args` against the constant `(quote (f 1 2 3))` → args = the 3 operand
 ; nodes). A NON-FINAL `,@` — `` `(f ,@init ,last) `` — is ill-formed (a rest binder is meaningful only last),
