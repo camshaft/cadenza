@@ -1022,5 +1022,29 @@ impl Guest for Component {
     }
 }
 
+// The rc-trace leak-attribution DRAIN EXPORT (the `debug-trace` WIT interface). Gated on the
+// `rc-trace-export` feature (NOT `debug-counters`), so it is present ONLY in the rc-trace variant — the
+// nix flake build that enables `rc-trace-export` AND targets `world runtime-debug` (heap + debug-trace),
+// for `cdz-run --rc-trace`. It is CFG'D OUT of both (a) the release runtime (no feature, `world runtime`,
+// 058B5h untouched) AND (b) the plain debug-counters leak-check runtime (feature off → `world runtime`,
+// heap-only bindings with no `debug-trace` trait → no E0433 in xtask codegen / the gate). `rc-trace-export`
+// implies `debug-counters`, so the instrumentation + the crate-root rc-trace fns this wraps are present.
+// Thin wrappers over those fns (the serialization + enable/flag LOGIC is native-tested in lib.rs). The
+// exact wit-bindgen trait PATH below is v-nix's debug-build compile-gate (the regenerated runtime-debug
+// bindings are the authority — v-nix's build already validated it compiles; only rc-trace-enable's arg
+// needed the WIT `on: bool`).
+#[cfg(all(target_arch = "wasm32", feature = "rc-trace-export"))]
+impl bindings::exports::cadenza::runtime::debug_trace::Guest for Component {
+    fn rc_trace_enable(on: bool) {
+        crate::rc_trace_enable(on);
+    }
+    fn rc_trace_drain() -> alloc::vec::Vec<u8> {
+        crate::rc_trace_drain_bytes()
+    }
+    fn rc_trace_truncated() -> bool {
+        crate::rc_trace_truncated_flag()
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 bindings::export!(Component with_types_in bindings);

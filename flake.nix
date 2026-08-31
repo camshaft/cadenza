@@ -1853,7 +1853,7 @@
         # SHARED `hashOf` derivation (no IFD; computed once, not re-run here) and stamped by the
         # `cdz-component-rewrite` CLI, mirroring `xtask build`'s `stamp_nfc_into_heap` so nix and the
         # self-build agree byte-for-byte.
-        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false, stampNfcHash ? null }:
+        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false, stampNfcHash ? null, world ? null }:
           pkgs.stdenvNoCC.mkDerivation {
             inherit pname src;
             version = "0.0.0";
@@ -1884,6 +1884,21 @@
               # Merged vendor (crates.io + build-std + the NFC component-dep lock) → merged = true.
               ${mkCargoVendorEnv { inherit vendor; merged = true; }}
               cd implementation/seed/crates/${crateDir}
+              ${pkgs.lib.optionalString (world != null) ''
+                # RC-TRACE variant (v-nix 2026-08-31): retarget cargo-component at a non-default world for
+                # THIS build only. cargo-component reads the world from [package.metadata.component.target]
+                # world = "…"; patch it in-place (fileset copies are read-only → chmod first) + chmod the
+                # checked-in src/bindings.rs so cargo-component can regenerate it for the new world (it is a
+                # DO-NOT-EDIT wit-bindgen file overwritten per targeted world). Only the rc-trace runtime
+                # variant passes world = "runtime-debug" (heap + debug-trace export); release + the
+                # debug-counters leak-check runtime pass no `world` and keep the committed `world runtime`,
+                # so REQUIRED_RUNTIME_HASH + DEBUG_RUNTIME_HASH are unaffected. Sandbox-only mutation (the
+                # throwaway fileset copy) — NOT the dev tree, so no SIGKILL-orphan hazard (option B moved the
+                # export off `debug-counters` onto `rc-trace-export`, so xtask codegen never patches a world).
+                chmod u+w Cargo.toml src/bindings.rs
+                sed -i 's/^world = "runtime"/world = "${world}"/' Cargo.toml
+                grep -q 'world = "${world}"' Cargo.toml || { echo "rc-trace world patch FAILED: world line not rewritten" >&2; exit 1; }
+              ''}
               # --locked honors the committed Cargo.lock exactly. Network is blocked by CARGO_NET_OFFLINE
               # (set by mkCargoVendorEnv) + the sandbox itself — NOT the `--offline` FLAG: the runtime's
               # world imports the NFC component (a `[package.metadata.component.target.dependencies]` WIT
@@ -1933,9 +1948,9 @@
         # nfcHash` stamps the NFC component's content address inline into the heap's `cadenza:nfc/normalize`
         # import (self-describing dep — no runtime.toml/mapping; operator directive 2026-08-23). `nfcHash` is
         # `hashOf nfc` and `nfc` is itself a plain (unstamped) mkStripComponent, so there is no cycle.
-        mkRuntime = { pname, features, emitRaw ? false }:
+        mkRuntime = { pname, features, emitRaw ? false, world ? null }:
           mkStripComponent {
-            inherit pname features emitRaw;
+            inherit pname features emitRaw world;
             crateDir = "cdz-runtime";
             artifact = "cdz_runtime";
             src = runtimeSrc;
@@ -1952,11 +1967,29 @@
           emitRaw = true;
         };
 
-        # The DEBUG-COUNTERS runtime — same code + the `live-objects` leak counter
-        # (`--features debug-counters`); the Perceus leak-check harness composes it (DEBUG_RUNTIME_HASH).
+        # The DEBUG-COUNTERS runtime — same code + the `live-objects` leak counter + (2026-08-31) the
+        # rc-trace INSTRUMENTATION (`--features debug-counters`); the Perceus leak-check harness composes it
+        # (DEBUG_RUNTIME_HASH). world `runtime` (NO debug-trace export — that is gated behind the separate
+        # `rc-trace-export` feature, absent here), so this build stays world-`runtime`-only and its hash
+        # re-bakes ONLY for the new instrumentation bytes (05mPZx-successor), not for any export.
         runtimeDebug = mkRuntime {
           pname = "cdz-runtime-component-debug";
           features = [ "debug-counters" ];
+        };
+
+        # The RC-TRACE runtime variant (v-nix + v-runtime 2026-08-31, option B) — the debug-counters runtime
+        # PLUS the debug-trace drain export (`--features debug-counters,rc-trace-export`), targeting `world
+        # runtime-debug` (heap + debug-trace). FLAKE-ONLY: nothing pins its hash (rc-trace is a diagnostic,
+        # not a gate assertion), so cdz-run --rc-trace consumes it by EXPLICIT --runtime <this path>, exactly
+        # like the leak-check AOT execs pass --runtime runtimeDebugCwasm. Isolating the export to this variant
+        # (feature `rc-trace-export` gates guest.rs; `world` retargets cargo-component) keeps the release
+        # 058B5h AND the DEBUG_RUNTIME_HASH leak-check runtime byte-identical to their no-export builds — no
+        # re-pin, and xtask codegen (which builds only the plain debug-counters world-`runtime` runtime) never
+        # touches a non-default world (no E0433).
+        runtimeRctrace = mkRuntime {
+          pname = "cdz-runtime-component-rctrace";
+          features = [ "debug-counters" "rc-trace-export" ];
+          world = "runtime-debug";
         };
 
         # ── N1: the NFC component (`cdz-nfc`) AS an input-addressed derivation (hash from output) ──
@@ -2796,6 +2829,10 @@
         # this blob."
         runtimeHash = hashOf runtime "cdz-runtime-hash";
         runtimeDebugHash = hashOf runtimeDebug "cdz-runtime-debug-hash";
+        # The rc-trace runtime variant's content address — for STORE placement + `--runtime` resolution only
+        # (cdz-run --rc-trace loads it by path); NOT pinned by any gate, so it is deliberately NOT a
+        # runtime_hash.rs const (that would force an xtask codegen emit; rc-trace stays flake-only, zero-xtask).
+        runtimeRctraceHash = hashOf runtimeRctrace "cdz-runtime-rctrace-hash";
         nfcHash = hashOf nfc "cdz-nfc-hash";
 
         # ── R2: the content-addressed component STORE ─────────────────────────────────────────────
@@ -4732,11 +4769,15 @@
         # packages.runtime (stripped) is byte-unchanged, so exposing this does not move REQUIRED_RUNTIME_HASH.
         packages.runtime-raw = runtime.raw;
         packages.runtime-debug = runtimeDebug;
+        # The rc-trace runtime variant (debug-counters + rc-trace-export, world runtime-debug) — cdz-run
+        # --rc-trace consumes it by explicit --runtime; v-corpus-harness wires that. `nix build .#rctrace-runtime`.
+        packages.rctrace-runtime = runtimeRctrace;
         # The `*-hash` outputs are the SHARED `hashOf` derivations (also consumed by componentStore + the
         # compiler-hash injection + the NFC-stamp), so `nix build .#runtime-hash` yields the exact file those
         # consumers `cat` — one hash derivation per component, not one per use-site.
         packages.runtime-hash = runtimeHash;
         packages.runtime-debug-hash = runtimeDebugHash;
+        packages.rctrace-runtime-hash = runtimeRctraceHash;
 
         # N1: the NFC component (`cdz-nfc`) the runtime imports by hash (REQUIRED_NFC_HASH). `.#nfc` is
         # the stripped component; `.#nfc-hash` its derived content address.

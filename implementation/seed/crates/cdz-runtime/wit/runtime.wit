@@ -567,3 +567,36 @@ world runtime {
   // is NOT a program effect/capability — it is the runtime's internal component dependency.
   import cadenza:nfc/normalize;
 }
+
+// ── DEBUG-ONLY rc-trace diagnostic (v-nix + v-runtime, 2026-08-31) ────────────────────────────────
+// A leak-attribution primitive: the rc-trace runtime variant records per-node ALLOC/DUP/DROP events
+// (rc.rs, under the debug-counters instrumentation) into a ring buffer that cdz-run enables before the
+// guest runs + drains after. This interface is exported ONLY by `world runtime-debug` below, built ONLY
+// by the flake's rc-trace variant (features debug-counters + rc-trace-export). It is absent from the
+// shipped `world runtime` (release, 058B5h) AND from the plain debug-counters leak-check runtime (world
+// runtime, DEBUG_RUNTIME_HASH) — the guest.rs impl is cfg-gated on feature rc-trace-export, so a
+// debug-counters build without that feature (xtask codegen / the gate) cfgs it out and needs no
+// debug-trace bindings (no E0433). The FROZEN `heap` interface is untouched. cdz-run --rc-trace consumes
+// the rc-trace runtime by explicit --runtime <path>; nothing pins its hash (it is not a gate assertion).
+interface debug-trace {
+  // Toggle event recording (off by default = zero append cost). cdz-run calls this with true before
+  // instantiating+running the guest under --rc-trace.
+  rc-trace-enable: func(on: bool);
+  // Drain the ring buffer: a flat byte array of 20-byte little-endian fixed records
+  // [op:u8, tag:u8, freed:u8, _pad:u8, node:u32, rc-before:u32, rc-after:u32, cascade-parent:u32]
+  // (cascade-parent = u32 max means none). v-corpus-harness decodes it post-run.
+  rc-trace-drain: func() -> list<u8>;
+  // True if the buffer overflowed (events dropped past RC_TRACE_CAP) — the "truncated at N" marker.
+  rc-trace-truncated: func() -> bool;
+}
+
+// The rc-trace world: the release `world runtime` (export heap + import nfc) PLUS the debug-only rc-trace
+// drain export. The flake's rc-trace-variant runtime derivation targets THIS world (via a Cargo.toml
+// world-patch, features debug-counters + rc-trace-export); release + the debug-counters leak-check runtime
+// keep `world runtime`. Extra worlds in this WIT do NOT change a build targeting `runtime` (release 058B5h
+// + DEBUG_RUNTIME_HASH byte-identical to a no-world-debug build).
+world runtime-debug {
+  export heap;
+  export debug-trace;
+  import cadenza:nfc/normalize;
+}

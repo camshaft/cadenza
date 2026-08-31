@@ -21,12 +21,90 @@ fn cdz_abi_imm_unit_constant_matches_imm_unit_bits() {
 }
 
 #[test]
+fn rc_trace_records_events_and_attributes_a_leak() {
+    // The rc-trace diagnostic: enable recording, exercise a balanced node + a leaked one, and confirm
+    // the event log gives the attribution static op-counts cannot — WHICH handle leaked (alloc'd, never
+    // reached a freed drop) vs a fully-reclaimed one.
+    rc_trace_enable(true);
+    // A leaf (raw-bearing, 0 handles): alloc (rc 0→1), dup (1→2), drop (2→1), drop (1→0 freed).
+    let balanced_h = alloc(alloc::vec::Vec::new(), alloc::vec::Vec::from([1u8, 2, 3]));
+    op_dup(balanced_h);
+    op_drop(balanced_h);
+    op_drop(balanced_h);
+    // A second leaf, alloc'd and NEVER dropped — the leak.
+    let leaked_h = alloc(alloc::vec::Vec::new(), alloc::vec::Vec::from([9u8]));
+    let (events, truncated) = rc_trace_snapshot();
+    rc_trace_enable(false);
+
+    assert!(
+        !truncated,
+        "a handful of events must not overflow RC_TRACE_CAP"
+    );
+    let allocs: alloc::vec::Vec<_> = events.iter().filter(|e| e.op == RC_TRACE_ALLOC).collect();
+    assert_eq!(
+        allocs.len(),
+        2,
+        "exactly two ALLOC events recorded in the enabled window"
+    );
+    let (balanced, leaked) = (allocs[0].node, allocs[1].node);
+    assert_ne!(balanced, leaked, "node ids are unique per alloc");
+
+    // The balanced node: a DUP 1→2 and a final freed DROP reaching rc0; tagged Leaf (0 handles + raw).
+    let bal: alloc::vec::Vec<_> = events.iter().filter(|e| e.node == balanced).collect();
+    assert_eq!(bal[0].op, RC_TRACE_ALLOC);
+    assert_eq!(
+        bal[0].tag, RC_TAG_LEAF,
+        "a raw-bearing 0-handle node is structurally a Leaf"
+    );
+    assert!(
+        bal.iter()
+            .any(|e| e.op == RC_TRACE_DUP && e.rc_before == 1 && e.rc_after == 2),
+        "the dup is recorded with rc 1→2"
+    );
+    assert!(
+        bal.iter()
+            .any(|e| e.op == RC_TRACE_DROP && e.freed && e.rc_after == 0),
+        "the balanced node reaches a freed drop (rc0)"
+    );
+
+    // The leaked node: an ALLOC but NO freed DROP — the definitive leak-attribution signal.
+    let lk: alloc::vec::Vec<_> = events.iter().filter(|e| e.node == leaked).collect();
+    assert_eq!(lk.len(), 1, "only the ALLOC event — nothing released it");
+    assert!(
+        !lk.iter().any(|e| e.op == RC_TRACE_DROP && e.freed),
+        "the leaked handle never reaches a freed drop — attributable as node#{leaked}"
+    );
+
+    // The flat `list<u8>` wire the rc-trace-drain export returns: 20 bytes per event, LE fields, and
+    // the first record decodes back to events[0] (op at 0, node u32 at offset 4).
+    let bytes = rc_trace_drain_bytes();
+    assert_eq!(
+        bytes.len(),
+        events.len() * 20,
+        "20-byte fixed record per event"
+    );
+    assert_eq!(bytes[0], events[0].op, "record[0].op byte");
+    assert_eq!(
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        events[0].node,
+        "record[0].node is the LE u32 at offset 4"
+    );
+
+    // Reclaim the intentional leak so LIVE_NODES nets to zero for sibling tests.
+    op_drop(leaked_h);
+}
+
+#[test]
 fn node_layout_sizes_are_pinned_native() {
     use core::mem::size_of;
     assert_eq!(
         size_of::<Node>(),
-        64,
-        "Node size changed — a bloat is paid by every heap value"
+        72,
+        "Node size changed — a bloat is paid by every heap value. NOTE: this is the NATIVE/debug \
+         layout, which carries the debug-ONLY `guard` (UAF) + `node_id` (rc-trace attribution) \
+         fields; both are `#[cfg(any(test, feature=\"debug-counters\"))]`, ABSENT from the shipped \
+         Node, so the RELEASE layout + REQUIRED_RUNTIME_HASH are byte-unchanged. Was 64 before the \
+         rc-trace `node_id` field (+8 w/ alignment) — debug-only diagnostic cost, no release bloat."
     );
     assert_eq!(
         size_of::<Handles>(),
