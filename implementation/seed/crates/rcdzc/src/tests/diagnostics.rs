@@ -1507,25 +1507,10 @@ fn a_set_membership_element_is_a_value_expression_not_a_binder() {
 // field binds via the RecordField sub_path (§235)"), which RUNS to 7 — a false CDZ0101/CDZ0900 would deny
 // that. Rust test a_deeper_positional_binder_below_a_native_nested_record_binding_field_binds deleted.
 
-/// §235 full nested-record descent: a nested RECORD below a record binding field — `#record((= x #record((=
-/// y v))))`, the field value itself a RECORD — now BINDS via a `RecordField` whose `sub_path` is a NAME-keyed
-/// `RecordSubStep::Field(y)` (resolved to `Elem(<slot>)` at lowering). Must be CLEAN: no CDZ0101 "unbound",
-/// no CDZ0900 "not supported" decline. (A VARIANT below a field stays deferred — refutable, a separate path.)
-#[test]
-fn a_record_below_a_record_binding_field_binds_via_name_keyed_sub_path() {
-    let src = "(module m (def (f #record((= x #record((= y v)))))  v) (export f))";
-    let diags = diags_of(src);
-    assert!(
-        !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")),
-        "no misleading 'unbound name' cascade for the nested-record binding field binder: {diags:?}"
-    );
-    assert!(
-        !diags.iter().any(|d| d
-            .message
-            .contains("nested compound sub-pattern inside a record binding pattern")),
-        "a nested record below a binding field now BINDS (§235 name-keyed sub_path) — no CDZ0900 decline: {diags:?}"
-    );
-}
+// Corpus-covered: the nested-record-below-a-binding-field binder `(def (f #record((= x #record((= y v)))))
+// v)` is the EXACT program of 05-compound-types.sexp:909 (§235 FULL nested-record descent, binding face),
+// which RUNS to 9 — a false CDZ0101/CDZ0900 would deny that. Rust test
+// a_record_below_a_record_binding_field_binds_via_name_keyed_sub_path deleted.
 
 /// A `(.. operand)` spread node in a `#map`/`#record` CONSTRUCTION entry gives the CLEAR pattern-only `..`
 /// CDZ0201 that `#list`/`#set`/`#tuple` already give — NOT the misleading map/record entry-shape "add the
@@ -1553,42 +1538,11 @@ fn a_spread_in_a_map_or_record_construction_entry_names_the_pattern_only_dotdot_
     }
 }
 
-/// A RECORD match pattern is now IMPLEMENTED (record match landed — the match twin of the record
-/// binding pattern). A field-binder reference in the body must CHECK CLEAN (resolve to a scrutinee
-/// projection, Case 6rec), NOT leak the old misleading "unbound name" CDZ0101 nor the superseded "not
-/// yet supported" CDZ0201. This test was the v-diagnostics regression pin for the UNIMPLEMENTED era
-/// (2026-07-16); it now pins that the field binder resolves and the arm type-checks. (The whole-binder
-/// + projection form — the old workaround — remains valid too.)
-#[test]
-fn a_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
-    // Body references the field binder `a`. `f` is a parameterized (non-nullary) body, so this
-    // exercises the check≡compile path — it must be CLEAN now that record match resolves the binder.
-    let uses_binder = "(module m (def (f (: r (Record (x Int64)))) \
-                           (match r ((record (x a)) a))) (export f))";
-    let all = diags_of(uses_binder);
-    assert!(
-        all.iter()
-            .all(|d| d.severity != crate::abi::Severity::Error),
-        "a record match binding a field checks clean now that record match is implemented: {all:?}"
-    );
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")
-            && !d
-                .message
-                .contains("record match pattern is not yet supported")),
-        "no misleading unbound-name and no superseded 'not yet supported' decline: {all:?}"
-    );
-    // The WHOLE-value binder + field projection form (the former workaround) still checks clean.
-    let workaround = "(module m (def (f (: r (Record (x Int64)))) \
-                          (match r (whole (. whole x)))) (export f))";
-    assert!(
-        diags_of(workaround)
-            .iter()
-            .all(|d| d.severity != crate::abi::Severity::Error),
-        "the whole-binder + projection form still checks clean: {:?}",
-        diags_of(workaround)
-    );
-}
+// Corpus-covered: a RECORD match binding a field — `(match r (#record((= x a)) a))` — is 05-compound-types
+// .sexp:24120 ("a record match arm + a wildcard alternative selects by shape"), which RUNS to 3; the
+// whole-value-binder + projection workaround form is covered by the "a record scrutinee is bound whole by a
+// match binder" case (05:18-27). Both RUN clean → a false CDZ0101 / "not supported" decline would deny the
+// output. Rust test a_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder deleted.
 
 /// A MAP match pattern with a MALFORMED `..` rest (a `..` not followed by exactly one binder) reports
 /// the clear rest-shape CDZ0201 — the map twin of the list's "a list rest pattern is `(list p… .. rest)`
