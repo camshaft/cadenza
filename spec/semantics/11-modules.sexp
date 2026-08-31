@@ -2931,3 +2931,23 @@
 (case "a constructor-export whose head is a FAR-MISS undeclared name gets no spurious did-you-mean"
   (input (do (type Color (R)) (export (. zzzzz *)) (def (main) 5) (export main)))
   (error CDZ0201 (message "to be a sum type") (not "did you mean")))
+
+; The CONSTRUCTOR-NAME near-miss (the twin of the TYPE-name near-miss above): the type head IS a declared
+; sum, but the named variant is a near-miss of one of its constructors. `(export (. T Alph))` for
+; `(type T (Alpha) (Beta))` names no constructor of `T` (CDZ0201), suggests the near variant, and carries a
+; heuristic rename fix on the constructor occurrence (`Alph` -> `Alpha`). The two category-word faces pin how
+; a NON-sum head is described: a VALUE definition head says "a value definition", an UNDECLARED head says
+; "not a declared type" — both distinct from a near-miss sum (no did-you-mean). (Migrated from rcdzc
+; a_constructor_export_is_semantically_validated.)
+(case "a constructor-export naming a near-miss variant suggests the constructor with a rename fix"
+  (input (do (type T (Alpha) (Beta)) (export (. T Alph)) (def (main) 1) (export main)))
+  (error CDZ0201 (message "is not a constructor of the sum type `T`") (message "did you mean `Alpha`?")
+                 (fix (kind replace) (replacement "Alpha") (unverified))))
+
+(case "a constructor-export whose head is a value definition names the value-definition category"
+  (input (do (def foo 5) (export (. foo A)) (def (main) 1) (export main)))
+  (error CDZ0201 (message "to be a sum type") (message "a value definition")))
+
+(case "a constructor-export whose head is an undeclared name names the not-a-declared-type category"
+  (input (do (export (. Undeclared A)) (def (main) 1) (export main)))
+  (error CDZ0201 (message "to be a sum type") (message "not a declared type")))
