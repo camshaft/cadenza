@@ -460,9 +460,10 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // are NOT matched below: a `(tuple …)` NAME head falls through to `Resolved::Apply` and
             // resolves lexically-first (a local `tuple` binding shadows the alias). ("The strings are
             // the symbols.")
-            // Recognize the native ctor-LEAF-KIND head (what the reader now emits) OR the legacy
-            // string-primitive head (`compound_ctor_prim`), both unshadowable — the migration dual-read.
-            match db.ast.compound_ctor_prim(id) {
+            // Recognize the native ctor-LEAF-KIND head (what the reader emits) — unshadowable. Post the M3
+            // reader-flip (2026-08-31) the legacy string-primitive head is gone; leaf-only dispatch. (The
+            // shadowable NAME alias `(tuple …)`/`(set …)` is NOT recognized here — it resolves lexically.)
+            match db.ast.compound_ctor_leaf(id) {
                 Some(CompoundCtor::Record) => return resolve_record(db, id),
                 Some(CompoundCtor::Tuple) => return resolve_tuple(db, id),
                 Some(CompoundCtor::List) => return resolve_list(db, id),
