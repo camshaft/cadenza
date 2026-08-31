@@ -3728,24 +3728,24 @@ pub(super) fn lower_match_set(
                 );
             }
         }
-        // SLICE 1 lowers the MEMBERSHIP form `(set e…)` (a `Set.contains` presence-test chain). The REST form
-        // `(set e… .. rest)` — binding `rest` to the set MINUS the named elements — needs the rest binder to
-        // resolve to the residual (a `Set.remove` chain), which the initial resolve pass does not yet wire (a
-        // reused body's rest-binder occurrence resolves UNBOUND before lowering can bind it via a `let`). That
-        // resolve wiring is the co-owned slice-2 increment with v-inference. Until then, a rest form is a
-        // CODED CDZ0201 (check-surfaced, `check` ≡ `compile`), naming the supported subset.
-        if rest.is_some() {
-            return Core::Poison(
-                Reject::coded(
-                    Code::Malformed,
-                    "a set rest pattern (`#set(e… .. rest)`) is not yet supported — the membership form \
-                     `#set(e…)` (matches when the set contains every named element) is"
-                        .to_string(),
-                )
-                .at(inner),
-            );
-        }
+        let _ = rest;
     }
+    // Whether ANY membership arm has a `.. rest` binder. A rest arm's body (+ guard cond) may reference the
+    // rest binder — which the resolver binds to `Resolved::SetRest` (Case 6set-rest, typed `(Set E)`) — so
+    // it is DEEP-COPIED (a fresh, unmemoized `rest` the follow-up `resolve_subtree` re-binds to the
+    // synthesized `let`, NOT the `SetRest` core compute.rs declines), then bound by a `let` over the
+    // `Set.remove` residual. A membership-only match reuses bodies verbatim (memos stand) and needs no graft.
+    let any_rest = arms[..catch_all_ix].iter().any(|&(pat, _)| {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        matches!(set_pattern_of(db, inner), Some((_, Some(_))))
+    });
+    // Graft target (used only when `any_rest`): a copied rest-arm body's free names ascend the synthesized
+    // chain → the original match → the enclosing binder, exactly as `fuse_match_into_if` grafts.
+    let orig_match = db.parent_of(scrutinee);
+    let scrut_ix = db.child_ix_of(scrutinee) as u32;
     // The innermost `<else>` = the catch-all body (a binder catch-all reads the whole set via the Case-5
     // binder→scrutinee rule). Fold the membership arms from LAST backward into nested `Set.contains` `if`s.
     let mut else_node = arms[catch_all_ix].1;
@@ -3754,33 +3754,76 @@ pub(super) fn lower_match_set(
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
             _ => (pat, None),
         };
-        let (elems, _rest) = set_pattern_of(db, inner).expect("validated above (rest rejected)");
-        // The taken branch: the body, guarded if the arm has a `(guard … cond)` (a false guard falls to the
-        // same `<else>` as a missing element). SLICE 1: no rest binder (a rest form is rejected above), so no
-        // `Set.remove` residual `let` — the membership form binds no names.
-        let mut taken = body;
-        if let Some(g) = guard {
+        let (elems, rest) =
+            set_pattern_of(db, inner).expect("validated above (well-formed set pattern)");
+        // For a REST arm, the body (+ guard) reference `rest` (resolved to `SetRest`) — DEEP-COPY them so the
+        // copy's `rest` is fresh and re-binds to the `let` below (a pinned β-capture is shared,
+        // `clone_subtree_db_for_fused(_, None)`). A membership-only arm REUSES body/guard verbatim (memos
+        // stand — an in-scope element keeps its resolution; no residual binder to introduce).
+        let (body_u, guard_u) = match rest {
+            Some(_) => (
+                clone_subtree_db_for_fused(db, body, None),
+                guard.map(|g| clone_subtree_db_for_fused(db, g, None)),
+            ),
+            None => (body, guard),
+        };
+        let mut taken = body_u;
+        if let Some(g) = guard_u {
             let if_head = db.push_name("if");
             taken = db.push_list(vec![if_head, g, taken, else_node]);
         }
+        // A REST binder (`.. rest`, not `_`): bind it to `(Set.remove (… (Set.remove s e1) …) en)` — the set
+        // MINUS the named elements — via a `let`. The copied body's `rest` then re-resolves to this `let`
+        // (nearest binder), so no bare `SetRest` core reaches compute.rs. `rest = _` skips the dead `let`.
+        if let Some(rest_binder) = rest
+            && db.ast.as_name(rest_binder) != Some("_")
+        {
+            let mut residual = scrutinee;
+            for &e in &elems {
+                let e_copy = clone_key_expr(db, e);
+                residual = set_member_call(db, "remove", residual, e_copy);
+            }
+            let binder_occ = clone_key_expr(db, rest_binder);
+            let binding = db.push_list(vec![binder_occ, residual]);
+            let bindings = db.push_list(vec![binding]);
+            let let_head = db.push_name("let");
+            taken = db.push_list(vec![let_head, bindings, taken]);
+        }
         // Nest a `Set.contains` presence test per named element: `(if (Set.contains s e) <inner> <else>)`,
-        // INNERMOST last so the FIRST element is the OUTERMOST test. Each element is used EXACTLY ONCE (slice
-        // 1 has no residual), so the element node is REUSED VERBATIM — NOT `clone_key_expr`'d. A cloned NAME
-        // atom is re-parented under the synthesized `Set.contains` call and loses its pattern-position scope
-        // ancestry → an in-scope name element (`#set(k)`, `k` a param) re-resolves UNBOUND; reused, it keeps
-        // its already-resolved memo (the element resolved as an ordinary value expression at its pattern
-        // position — the set twin of the map-key-is-a-value rule). A literal element is a constant either way.
+        // INNERMOST last so the FIRST element is the OUTERMOST test. A MEMBERSHIP-only arm uses each element
+        // once, so it is REUSED VERBATIM (keeping its resolved memo — a cloned NAME atom would lose its
+        // pattern-position scope ancestry and re-resolve unbound). A REST arm already consumed each element in
+        // the `Set.remove` chain above, so here it CLONES (a second occurrence), re-resolving via the graft.
+        let clone_elems = rest.is_some();
         let mut chain = taken;
         for &e in elems.iter().rev() {
-            let contains = set_member_call(db, "contains", scrutinee, e);
+            let e_use = if clone_elems {
+                clone_key_expr(db, e)
+            } else {
+                e
+            };
+            let contains = set_member_call(db, "contains", scrutinee, e_use);
             let if_head = db.push_name("if");
             chain = db.push_list(vec![if_head, contains, chain, else_node]);
         }
         else_node = chain;
     }
+    // GRAFT the synthesized chain under the original match node (at the scrutinee's child slot) when a rest
+    // arm copied a body — so a free name in the copy ascends → this match → the enclosing binder (the
+    // fusion's discipline). The original match is lowered away after `core_of`, so the transient slot reuse
+    // is harmless. A membership-only match reuses bodies (memos stand) and needs no graft.
+    if any_rest && let Some(orig) = orig_match {
+        db.reparent(else_node, Some(orig), scrut_ix);
+    }
     // Scope-skip the synthesized chain (O(arms) deep of non-binding `if`/`.`/application forms) so a prelude
-    // name (`Set`/`contains`/`remove`) resolution is O(1), not O(depth) — mirror the map matcher.
-    db.extend_scope_skip_pass_through(else_node);
+    // name (`Set`/`contains`/`remove`) resolution is O(1), not O(depth) — mirror the map matcher. ONLY for a
+    // membership-only match: `extend_scope_skip_pass_through` assumes every synth form BINDS NOTHING (marks
+    // it scope-transparent), but a REST arm's synthesized `let` DOES bind `rest`; marking it pass-through
+    // would make the copied body's `rest` skip the binding → resolve UNBOUND. When any rest arm is present,
+    // SKIP the optimization (resolution still works via the ordinary parent walk; a rest match is small).
+    if !any_rest {
+        db.extend_scope_skip_pass_through(else_node);
+    }
     crate::resolve::resolve_subtree(db, else_node);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "set match → nested Set.contains if-chain (rest = Set.remove residual let)");
     core_of(db, else_node)
