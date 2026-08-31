@@ -208,6 +208,29 @@
   (input  (do (def (main) (Qty.value (Qty.of 5 #tuple(1 2)))) (export main)))
   (error  CDZ0201 (message "`Qty.of`'s second argument must be a UNIT")))
 
+; A `Unit.*`/`Unit./`/`Unit.^` COMPOSITION with a MALFORMED operand — a non-unit factor, a non-integer
+; exponent, a non-unit base — made `eval::unit_of` return None. `Qty.of`'s not-a-unit check SKIPPED it (the
+; arg IS a unit-builder form, so it deferred to the builder's own validation), but the builder had NONE: it
+; silently reduced to `Any`, `check` passed, and `compile` leaked "function return type has no machine
+; representation". The composition is now WALKED to NAME the offending operand (CDZ0201). Valid compositions
+; (a product of two units, an integer-exponent power, a nested composition) are unaffected — covered by the
+; run cases below. (Migrated from rcdzc a_malformed_unit_composition_operand_is_named_not_silently_shipped.)
+(case "a non-unit factor in a Unit.* product is named, not silently shipped"
+  (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit.* (Unit.base #"m") 5)))) (export main)))
+  (error  CDZ0201 (message "`Unit.*` composes two UNITS, but this operand is not a unit")))
+
+(case "a non-unit factor in a Unit./ quotient is named, not silently shipped"
+  (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit./ (Unit.base #"m") 5)))) (export main)))
+  (error  CDZ0201 (message "`Unit./` composes two UNITS, but this operand is not a unit")))
+
+(case "a non-integer exponent in a Unit.^ power is named, not silently shipped"
+  (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit.^ (Unit.base #"m") 2.5)))) (export main)))
+  (error  CDZ0201 (message "`Unit.^`'s exponent must be a compile-time integer")))
+
+(case "a non-unit base in a Unit.^ power is named, not silently shipped"
+  (input  (do (def (main) (Qty.value (Qty.of 1.0 (Unit.^ 5 2)))) (export main)))
+  (error  CDZ0201 (message "`Unit.^` raises a UNIT to a power, but this base is not a unit")))
+
 (case "a valid base-unit Qty.of is accepted and Qty.value recovers the magnitude (no over-rejection)"
   (input  (do (def (main) (Qty.value (Qty.of 5 (Unit.base #"meter")))) (export main)))
   (call   main) (output (: 5 Int64)))
