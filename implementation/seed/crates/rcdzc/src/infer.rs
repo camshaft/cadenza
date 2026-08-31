@@ -552,9 +552,23 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 _ => Ty::Any,
             },
         },
-        // A tuple's type is the tuple of its elements' types, in position order (each a lazy `type_of`).
-        // Arity + element types ARE the type.
-        Resolved::Tuple { elems } => Ty::Tuple(elems.iter().map(|&e| type_of(db, e)).collect()),
+        // A tuple's type is the tuple of its elements' types, in position order. Each element is an
+        // INDEPENDENT type position — freshen its free vars into a disjoint block off a SHARED counter so
+        // two elements that each `type_of` to a colliding var (two bare `None()`, each `Option(?0)`) do NOT
+        // cross-contaminate when the tuple unifies against an expected type in one `Subst` (`?0 := Bytes`
+        // for one element then `?0` vs `Outcome` for its sibling — a spurious CDZ0203). Mirrors the
+        // `Resolved::Record` arm above and `compound_ctor_type`'s `TupleNew`. Fixes the native
+        // `#tuple((None) (None))` direct-arg cross-contamination (the symbol-headed twin of the `#record`
+        // fix; the arg-check step-1 `type_of` unify hit the shared var before the freshened reflection).
+        Resolved::Tuple { elems } => {
+            let mut fresh = crate::unify::Fresh::new();
+            Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|&e| crate::unify::freshen_free(&type_of(db, e), &mut fresh))
+                    .collect(),
+            )
+        }
         // A list's type is `List <elem>` where `<elem>` is the JOIN of the element types (like a match's
         // arm-join — every element shares one type; a deferred/`Any` element yields the others). An empty
         // list is `List Any` (a deferred element, solved by unification against its use). The homogeneity
@@ -3624,7 +3638,19 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
         // shapes reached directly rather than through the name-alias `Apply`. Recurse identically so both
         // spellings ground a fn element.
         Resolved::Tuple { elems } => {
-            Ty::Tuple(elems.iter().map(|&e| reflected_ty(db, e)).collect())
+            // Freshen each element into a disjoint block off a SHARED counter — the symbol-headed twin of
+            // the `Apply(TupleNew)` arm above. Two bare `None()` elements each reflect `Option(?0)`;
+            // without the disjoint freshen they share var 0 and cross-contaminate when the tuple unifies
+            // against an expected type via the synthesized `(: arg paramtype)` check (the native
+            // `#tuple((None) (None))` direct-arg bug — the classic `(tuple …)` name-alias took the
+            // freshened `Apply(TupleNew)` path; this symbol-headed native form did not).
+            let mut fresh = crate::unify::Fresh::new();
+            Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|&e| crate::unify::freshen_free(&reflected_ty(db, e), &mut fresh))
+                    .collect(),
+            )
         }
         Resolved::List { elems } => {
             let mut elem_ty = Ty::Any;
@@ -3646,9 +3672,18 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
             if crate::eval::typeval_of(db, id).is_some() {
                 Ty::Type
             } else {
+                // Freshen each field into a disjoint block off a SHARED counter — the symbol-headed twin of
+                // the `Apply(RecordNew)` arm above (and `compound_ctor_type` / the `type_of`
+                // `Resolved::Record` arm). A native `#record((= a (None)) (= b (None)) …)` reflects two
+                // `Option(?0)` fields that WITHOUT this share var 0 and cross-contaminate when the record is
+                // checked against the expected param type via the synthesized `(: arg paramtype)`
+                // annotation — the direct-arg CDZ0203 bug (the classic `(record …)` name-alias took the
+                // freshened `Apply(RecordNew)` path; this symbol-headed native form did not).
+                let mut fresh = crate::unify::Fresh::new();
                 let mut field_tys = std::collections::BTreeMap::new();
                 for (label, &value) in fields.iter() {
-                    field_tys.insert(label.clone(), reflected_ty(db, value));
+                    let ft = crate::unify::freshen_free(&reflected_ty(db, value), &mut fresh);
+                    field_tys.insert(label.clone(), ft);
                 }
                 Ty::Record(std::rc::Rc::new(field_tys))
             }

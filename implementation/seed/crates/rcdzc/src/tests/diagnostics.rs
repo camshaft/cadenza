@@ -798,29 +798,48 @@ fn diags_of(src: &str) -> Vec<crate::abi::Diagnostic> {
 // Option element types"): the LET-BOUND bare-None cross-contamination regression now RUNS in the corpus
 // (value-heap runtime present) → output 9, and a CDZ0203 regression would deny that output. Rust test
 // two_bare_none_record_fields_do_not_cross_contaminate_via_a_let_bound_record deleted.
-// NOTE: the two DIRECT-ARG tests below stay rust pins — the NATIVE `#record(…)` direct-arg form still
-// cross-contaminates (CDZ0203) where the classic `(record …)` form + the let-bound form do not (routed to
-// v-spec-oracle + inference owner). Migrate them once that native-form bug is fixed.
 
 #[test]
 fn two_bare_none_record_fields_passed_as_a_direct_arg_do_not_cross_contaminate() {
-    // REGRESSION (residual of the let-bound fix above): the SAME two-bare-`None()` record, passed as a
-    // DIRECT call argument instead of `let`-bound, took a DIFFERENT type-building path — the call's
-    // synthesized `(: arg paramtype)` check reflects a compound-literal arg via `reflected_ty`, whose
-    // RecordNew arm rebuilt field types WITHOUT the disjoint-freshening the `compound_ctor_type` /
-    // `Resolved::Record` paths got. So both `None()` fields reflected `Option(?0)` sharing var 0 and
-    // the record unify hit `Bytes` vs `Outcome` on the shared var — a spurious CDZ0203, even though the
-    // let-bound twin type-checked. FIX: freshen each field/element into a disjoint block in
-    // `reflected_ty`'s RecordNew + TupleNew arms too. Same shape as the let-bound test, arg inlined.
+    // REGRESSION (residual of the let-bound fix): the SAME two-bare-`None()` record, passed as a DIRECT
+    // call argument instead of `let`-bound, took a DIFFERENT type-building path. The call's arg-check
+    // types the compound-literal arg via BOTH `type_of` (step 1) AND the synthesized `(: arg paramtype)`
+    // `reflected_ty` (step 2), and each has separate compound arms. The classic `(record …)` name-alias
+    // (an `Apply(RecordNew)`) was freshened; but the NATIVE `#record((= a …) …)` resolves to a
+    // symbol-headed `Resolved::Record`, whose `type_of` arm freshened while its `reflected_ty` arm did
+    // NOT — so both `None()` fields reflected `Option(?0)` sharing var 0 and the record unify hit `Bytes`
+    // vs `Outcome` on the shared var (spurious CDZ0203), even though the let-bound twin type-checked. FIX:
+    // freshen each field into a disjoint block in `reflected_ty`'s `Resolved::Record` arm. This test uses
+    // the NATIVE `#record` form (the one that regressed); the classic form is covered by corpus.
     let src = "(module m \
            (type Outcome (Ok Int64) (Err Int64)) \
            (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
-           (def (main) (apply (record (= a (None)) (= b (None)) (= c 9)))) \
+           (def (main) (apply #record((= a (None)) (= b (None)) (= c 9)))) \
            (export main))";
     let all = diags_of(src);
     assert!(
         all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
-        "two bare None() record fields passed as a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
+        "two bare None() NATIVE #record fields passed as a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
+    );
+}
+
+#[test]
+fn two_bare_none_native_tuple_elements_passed_as_a_direct_arg_do_not_cross_contaminate() {
+    // The `#tuple` twin of the `#record` regression above. A native `#tuple((None) (None))` resolves to a
+    // symbol-headed `Resolved::Tuple`, whose `type_of` arm (unlike `Resolved::Record`'s) did NOT freshen
+    // per element — so the arg-check step-1 `type_of` unify hit the shared `Option(?0)` before the
+    // reflection, cross-contaminating the two positions (`(Tuple (Option Bytes) (Option Bytes))` vs the
+    // expected `(Option Bytes)`/`(Option Outcome)`). FIX: freshen each element in `type_of`'s
+    // `Resolved::Tuple` arm (and `reflected_ty`'s), mirroring `Resolved::Record` / `Apply(TupleNew)`.
+    let src = "(module m \
+           (type Outcome (Ok Int64) (Err Int64)) \
+           (def (apply (: t (Tuple (Option Bytes) (Option Outcome)))) 0) \
+           (def (main) (apply #tuple((None) (None)))) \
+           (export main))";
+    let all = diags_of(src);
+    assert!(
+        all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
+        "two bare None() NATIVE #tuple elements passed as a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
     );
 }
 
