@@ -1,0 +1,1 @@
+(def (apply (: g (-> Int64 Bool)) (: n Int64)) (g n))

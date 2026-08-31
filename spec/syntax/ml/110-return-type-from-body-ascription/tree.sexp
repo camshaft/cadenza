@@ -1,0 +1,1 @@
+(def (main) (: (f x) Int64))

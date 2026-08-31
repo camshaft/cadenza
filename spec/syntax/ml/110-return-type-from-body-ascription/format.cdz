@@ -1,0 +1,1 @@
+def main() -> Int64 = f(x)
