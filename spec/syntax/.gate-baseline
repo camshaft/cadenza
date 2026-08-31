@@ -419,6 +419,9 @@ pass	ml/472-comment-own-line-after-last-sum-variant
 pass	ml/473-comment-trailing-last-top-level-form
 pass	ml/474-comment-trailing-stacked-on-last-form
 pass	ml/475-comment-leading-first-of-multi-form
+pass	ml/477-comment-before-closer-set
+pass	ml/478-comment-before-closer-record
+pass	ml/479-comment-before-closer-map
 pass	ml/48-import-per-name-rename
 pass	ml/49-const-force-eval-call
 pass	ml/50-const-force-eval-infix
