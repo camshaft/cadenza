@@ -52,6 +52,15 @@ pass	ml/138-forall-return-type-not-hoisted
 pass	ml/139-def-leading-forall-desugars
 pass	ml/14-world-wit-prim-list-option
 pass	ml/140-def-leading-forall-multi
+pass	ml/141-positional-member-access
+pass	ml/142-named-member-access
+pass	ml/143-positional-member-on-tuple
+pass	ml/144-positional-member-digit-adjacent-literal
+pass	ml/145-positional-member-chained
+pass	ml/146-positional-member-on-call
+pass	ml/147-nested-if-condition-parens
+pass	ml/148-else-if-chain-stays-bare
+pass	ml/149-match-guarded-arm
 pass	ml/15-world-wit-list-result
 pass	ml/16-world-unit-tuple
 pass	ml/17-world-result-both
