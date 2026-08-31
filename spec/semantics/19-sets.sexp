@@ -361,12 +361,22 @@
   (call f (: 1 Int64))
   (output (: 9 Int64))
   (call f (: 5 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  ; `k` is a VALUE expression (the membership element), NOT a binder — so it must not be mis-collected as an
+  ; arm binder and spuriously warned CDZ0306 unused (the regression this guards; migrated from rcdzc
+  ; a_set_membership_element_is_a_value_expression_not_a_binder).
+  (no-diagnostic "unused"))
 
 (case
   "a set-pattern element that names no in-scope value is an unbound value reference (CDZ0101)"
   (input (do (def (main) (match #set(1 2) (#set(a) 9) (_ 0))) (export main)))
-  (error CDZ0101 (message "unbound name `a`")))
+  ; the CDZ0101 carries a STEER (v-spec-oracle ruling #6685): a set names members BY VALUE and does not bind
+  ; them; use an in-scope value or query the whole set with Set.contains / Set.len. (Steer facets migrated
+  ; from rcdzc a_set_membership_element_is_a_value_expression_not_a_binder.)
+  (error CDZ0101
+    (message "unbound name `a`")
+    (message "does not bind")
+    (message "Set.contains")))
 
 ; A set match must END IN A CATCH-ALL (`_` or a whole-set binder): a set's element set is UNBOUNDED, so
 ; membership patterns — including the matches-any `#set()` — never exhaust it, and the exhaustiveness checker
