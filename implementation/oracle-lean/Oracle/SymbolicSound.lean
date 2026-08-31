@@ -658,4 +658,36 @@ invariant the fold/normalize pipeline relies on when it replaces a folded sub-te
 theorem symToValue?_idem (e : SymExpr) (v : Value) (h : symToValue? e = some v) :
     symToValue? (.const v) = some v := symToValue?_const v
 
+/-- `normalize`-`ite` MATERIALIZE-false structural equation, in the `c'`-rebuild sub-case: when the
+condition does NOT fold to a bool literal (the `≠` hypotheses put us in the rebuild arm) and the branches
+normalize to `false`/`true`, the `ite` normalizes to `not (normalize c)`. (Unlike materialize-TRUE, this
+needs the `≠ const bool` hypotheses: on a const-fold condition the arm would return `normalize t/e`, not
+`not (normalize c)`.) -/
+theorem normalize_ite_materializeFalse (c t e : SymExpr)
+    (h1 : normalize c ≠ .const (.bool true)) (h2 : normalize c ≠ .const (.bool false))
+    (hnt : normalize t = .const (.bool false)) (hne : normalize e = .const (.bool true)) :
+    normalize (.ite c t e) = .app "not" #[normalize c] := by
+  simp only [normalize, hnt, hne]
+
+/-- Capstone `.ite` MATERIALIZE-false STEP (`if c then false else true → not c`). Uses the structural
+equation above + the condition IH to pin `denote (not (normalize c)) = .value v`: `denote_not_bool`
+turns it into `!b` where `denote (normalize c) = .value (.bool b)` (via `ihc`), and the taken bool-literal
+branch fixes `v = !b`. -/
+theorem denote_normalize_ite_materializeFalse_step (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr)
+    (ihc : ∀ u, denote ρ w c = .value u → denote ρ w (normalize c) = .value u)
+    (iht : ∀ u, denote ρ w t = .value u → denote ρ w (normalize t) = .value u)
+    (ihe : ∀ u, denote ρ w e = .value u → denote ρ w (normalize e) = .value u)
+    (h1 : normalize c ≠ .const (.bool true)) (h2 : normalize c ≠ .const (.bool false))
+    (hnt : normalize t = .const (.bool false)) (hne : normalize e = .const (.bool true))
+    (v : Value) (h : denote ρ w (.ite c t e) = .value v) :
+    denote ρ w (normalize (.ite c t e)) = .value v := by
+  rw [normalize_ite_materializeFalse c t e h1 h2 hnt hne]
+  rcases denote_ite_value_inv ρ w c t e v h with ⟨hc, ht⟩ | ⟨hc, he⟩
+  · rw [denote_not_bool ρ w (normalize c) true (ihc _ hc)]
+    have hvt := iht _ ht; rw [hnt] at hvt
+    simp only [denote, Value.asF64?] at hvt; simpa using hvt
+  · rw [denote_not_bool ρ w (normalize c) false (ihc _ hc)]
+    have hve := ihe _ he; rw [hne] at hve
+    simp only [denote, Value.asF64?] at hve; simpa using hve
+
 end Oracle
