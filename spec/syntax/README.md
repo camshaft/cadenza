@@ -76,12 +76,40 @@ what `cdz fmt` compares against.
   verdict MUST co-update `.gate-baseline` in the SAME PR — otherwise the vanished/regression check
   reds. Regenerate with `cargo xtask gate-syntax --save`.
 
-- **Increment 1/2 self-consistency check** — `tests/syntax_corpus.rs` in `cadenza-syntax` also
-  enforces the two equalities against the reference reader/printer (a bootstrapping guard). Run it with
-  `cargo test -p cadenza-syntax --test syntax_corpus`; regenerate goldens after editing an input (or
-  adding a case) with `CDZ_BLESS=1 cargo test -p cadenza-syntax --test syntax_corpus`.
-- **Increment 3b (next):** per-case nix derivations (`.#checks.<arch>-linux.syntax-corpus`) following
-  the semantics corpus's per-case caching — the authoritative, cached, parallel gate.
+- **Self-consistency check** — `cadenza-syntax/src/syntax_corpus_tests.rs` (a `#[cfg(test)] mod`, NOT a
+  `tests/*.rs` binary — the no-integration-tests mandate is zero-tolerance) also enforces the two
+  equalities against the reference reader/printer (a bootstrapping guard). Run it with `cargo test -p
+  cadenza-syntax --lib syntax_corpus_tests`; regenerate goldens after editing an input (or adding a
+  case) with `CDZ_BLESS=1 cargo test -p cadenza-syntax --lib syntax_corpus_tests`.
+- **Per-case nix gate** — `.#checks.<arch>-linux.syntax-corpus`: one classify derivation per case dir
+  (inputs = that case dir + the `cdz` bin only, so editing one case never re-runs another), verdicts
+  harvested + folded vs `.gate-baseline` through `gate-syntax --compare`. The authoritative cached,
+  parallel gate (advisory per the hourly-advisory land model).
+
+## Migrating the in-crate parser/printer tests into this corpus
+
+The corpus also **replaces** the behavioral parser/printer `#[test]`s in the `cadenza-syntax`* crates
+(the delanguaging move — so the Cadenza rewrite validates against this neutral corpus, not Rust-only
+tests). Recipe: one behavioral `#[test]` → one case directory; the `#[test]` is **deleted in the same
+commit** its case lands (coverage never dips); land per-module batches, each a green MR.
+
+**What this corpus can express (⇒ migrate here):**
+- an `input → parse-tree` assertion → a case with `input.<ext>` + `tree.sexp`.
+- an `input → canonical-format` / round-trip assertion → add `format.<ext>` (or rely on the
+  format-absent `fmt(input) == input` idempotence check).
+- a `this input should fail to parse` assertion → a decline case (no `tree.sexp`; optional `error.txt`).
+
+**What stays a Rust `#[test]` (⇒ do NOT migrate):** it pins only the *two* functions above
+(single-surface parse-tree + same-surface fmt). These are OUT of scope and stay Rust:
+- **internal invariants** — arena/codec builder guards (`cadenza-ast`), `SpanTable` totality,
+  printer-is-iterative / printer-total-over-arbitrary-arenas structural guards, lexer edge cases.
+- **the query/rewrite engine** (`query.rs`, `cdz query`/metavar/splice/rewrite) — a different feature;
+  it would want its own corpus, not this parser/printer one.
+- **cross-surface conversions** (`ml → sexpr`, `binary → ml`, …) beyond what `input → tree` already
+  subsumes — the corpus pins one surface → arena, not surface-to-surface printing.
+- **surface codemods** (`match_to_let` / `cdz normalize …`, a `normalize(input) → tree` transform) —
+  a *third* function this corpus does not currently compare; migrating them would need a new
+  `normalize`-golden dimension (a scope decision, not yet adopted).
 
 ## How it drives the future Cadenza-parser rewrite
 
