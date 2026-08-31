@@ -1502,36 +1502,10 @@ fn a_set_membership_element_is_a_value_expression_not_a_binder() {
     );
 }
 
-/// A binder BELOW a NESTED record field in a BINDING pattern — `#record((= x #tuple(c d)))` binds `c`/`d`
-/// inside the record field `x`'s tuple value — is a not-yet-wired composition (a record field projects by
-/// NAME, and there is no name-keyed `PathStep` to compose a projection with a further descent; the match
-/// arm's Case 6rec-nested-decline declines the SAME shape). The binding path MUST give that clean decline —
-/// NOT a misleading CDZ0101 "unbound `c`" at the body reference. The bug: the binding-path nested-decline
-/// loop read only the LEGACY 2-element `(x value)` field form and MISSED the M3-nativized 3-element
-/// `(= x value)` FieldPair (an `=`-migration miss, the sibling of the map effects-fold #6790), so a NATIVE
-/// nested field's deeper binder fell through to a spurious CDZ0101 while `check` declined — a check≡compile
-/// diagnostic split. Now both forms reach the decline; no cascade CDZ0101.
-#[test]
-fn a_deeper_positional_binder_below_a_native_nested_record_binding_field_binds() {
-    // A POSITIONAL (tuple) compound below a native record BINDING field — `#record((= x #tuple(c d)))` —
-    // now BINDS (§235 slice 2, the binding twin of the slice-1 match path): `resolve::last_binder_named`
-    // wires it to a `RecordField` (empty path, field `x`, `sub_path = [Elem(0/1)]`) and
-    // `check_binding_pattern` accepts the positional field value (`is_positional_field_value`). Must be
-    // CLEAN — no CDZ0101 "unbound" cascade, no CDZ0900 "not supported" decline.
-    let src = "(module m (def (f #record((= x #tuple(c d)))) (+ c d)) (export f))";
-    let diags = diags_of(src);
-    assert!(
-        !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")),
-        "no misleading 'unbound name' cascade for the positional deeper binding-field binder: {diags:?}"
-    );
-    assert!(
-        !diags.iter().any(|d| d
-            .message
-            .contains("nested compound sub-pattern inside a record binding pattern")),
-        "the positional deeper binding-field binder BINDS via the RecordField sub_path (§235) — no CDZ0900 \
-         'not supported' decline: {diags:?}"
-    );
-}
+// Corpus-covered: the positional deeper binding-field binder `(def (f #record((= x #tuple(c d)))) (+ c d))`
+// is the EXACT program of 05-compound-types.sexp:876 ("a deeper positional compound below a record BINDING
+// field binds via the RecordField sub_path (§235)"), which RUNS to 7 — a false CDZ0101/CDZ0900 would deny
+// that. Rust test a_deeper_positional_binder_below_a_native_nested_record_binding_field_binds deleted.
 
 /// §235 full nested-record descent: a nested RECORD below a record binding field — `#record((= x #record((=
 /// y v))))`, the field value itself a RECORD — now BINDS via a `RecordField` whose `sub_path` is a NAME-keyed
