@@ -551,6 +551,7 @@ todo	ml/502-embedded-toml-unterminated-region
 todo	ml/503-list-missing-comma
 todo	ml/504-tuple-missing-comma
 todo	ml/505-embedded-toml-missing-value
+todo	ml/516-if-requires-else
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string
