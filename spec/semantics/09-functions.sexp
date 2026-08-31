@@ -7185,6 +7185,30 @@
   (input (do (def (f x _y) x) (def (main) (f 7 8)) (export main)))
   (output (: 7 Int64)))
 
+; The DEFINITION face of the unused-binding warning: a top-level `def` that NOTHING references and is NOT
+; exported is dead code → CDZ0306 `unused definition` + a `_`-prefix fix. A def that IS referenced, or that is
+; exported (a reachable entry), is used and does not warn. (Migrated from rcdzc
+; an_unused_nonexported_definition_warns_but_a_used_or_exported_one_does_not.)
+(case
+  "an unused non-exported definition compiles and runs but the build surfaces a CDZ0306 unused-definition warning"
+  (input (do (def (helper) (: 9 Int64)) (def (main) 42) (export main)))
+  (output (: 42 Int64))
+  (count 1)
+  (warning CDZ0306 (message "unused definition") (fix (kind replace) (replacement "_helper"))))
+
+(case
+  "a REFERENCED non-exported definition is used and does not warn"
+  (input (do (def (helper) (: 9 Int64)) (def (main) (helper)) (export main)))
+  (output (: 9 Int64))
+  (no-diagnostic "unused definition"))
+
+(case
+  "an EXPORTED definition is a reachable entry and does not warn unused"
+  (input (do (def (helper) (: 9 Int64)) (export helper)))
+  (call helper)
+  (output (: 9 Int64))
+  (no-diagnostic "unused definition"))
+
 (case
   "an argument bound to a used parameter IS observed, so its trap occurs (the anchor)"
   (doc
