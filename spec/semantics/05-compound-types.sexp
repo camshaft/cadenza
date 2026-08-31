@@ -619,6 +619,33 @@
             (export main)))
   (output (: 24 Int64)))
 
+; EDGE extensions of the trailing-rest binding-param witnesses above (all irrefutable → bind, so all are
+; ACCEPT/output cases; core-semantics §A Binding Position Accepts An Irrefutable Pattern, #6723/#6750;
+; greenlit by v-ast-compound, the binding-rest fix-class owner). (a) a WILDCARD rest `(.. _)` binds the
+; leading element and DISCARDS the residual (no `rest` name), for both tuple and record. (b) a DOUBLE-NESTED
+; tuple-rest — a rest-bearing tuple pattern nested inside another — recurses (distinct from v-ast-compound's
+; #6766 `#tuple(a #tuple(b (.. r)))`; here the OUTER element is itself a rest pattern). (c) a trailing-rest
+; pattern in a `let` binder position binds exactly as in a fn parameter (both are binding positions).
+(case "a tuple WILDCARD trailing-rest binding param binds the leading element and discards the residual"
+  (input  (do (def (f #tuple(a (.. _))) a) (def (main) (f #tuple(7 8 9))) (export main)))
+  (call   main) (output (: 7 Int64)))
+
+(case "a record WILDCARD trailing-rest binding param binds the named field and discards the residual"
+  (input  (do (def (f #record((= x a) (.. _))) a) (def (main) (f #record((= x 7) (= y 8)))) (export main)))
+  (call   main) (output (: 7 Int64)))
+
+(case "a DOUBLE-NESTED tuple trailing-rest binding param recurses into the nested rest pattern"
+  (input  (do (def (f #tuple(#tuple(a (.. r1)) (.. r2))) a) (def (main) (f #tuple(#tuple(3 4) 5))) (export main)))
+  (call   main) (output (: 3 Int64)))
+
+(case "a tuple trailing-rest pattern binds in a LET binder position, like a fn parameter"
+  (input  (do (def (main) (let ((#tuple(a (.. rest)) #tuple(5 6 7))) a)) (export main)))
+  (call   main) (output (: 5 Int64)))
+
+(case "a record trailing-rest pattern binds in a LET binder position, like a fn parameter"
+  (input  (do (def (main) (let ((#record((= x a) (.. rest)) #record((= x 5) (= y 6)))) a)) (export main)))
+  (call   main) (output (: 5 Int64)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`
