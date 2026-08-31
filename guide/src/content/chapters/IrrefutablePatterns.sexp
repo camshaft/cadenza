@@ -24,12 +24,12 @@
   (runnable
     (source (def (add-pair #tuple(a b)) (+ a b))
 (def (main) (add-pair #tuple(3 4)))))
-  (p "A single-constructor type is irrefutable in the same way, since there's no other shape it could be, so a pattern like " (c "(C c)") " on a one-constructor type unwraps its payload directly in the parameter, with no " (c "match") ". Here " (c "Celsius") " wraps an " (c "Int64") ", and " (c "to-f") " names the wrapped value " (c "c") " right in its parameter list:")
+  (p "A single-constructor type is irrefutable in the same way, since there's no other shape it could be, so a pattern like " (cdz "(C c)") " on a one-constructor type unwraps its payload directly in the parameter, with no " (c "match") ". Here " (c "Celsius") " wraps an " (c "Int64") ", and " (c "to-f") " names the wrapped value " (c "c") " right in its parameter list:")
   (runnable
     (source (type Celsius (C Int64))
 (def (to-f (C c)) (+ (/ (* c 9) 5) 32))
 (def (main) (to-f (C 100)))))
-  (p (c "(to-f (C 100))") " is " (c "212") ", unwrapping the " (c "100") " and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.")
+  (p (cdz "(to-f (C 100))") " is " (c "212") ", unwrapping the " (c "100") " and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.")
   (p "Records destructure in a parameter too. " (c "mag") " takes one point record and names its " (c "x") " and " (c "y") " fields directly in the parameter list, so the body reads " (c "a") " and " (c "b") " with no accessor. The squared magnitude of " (c "(3, 4)") " is " (c "3² + 4² = 25") ":")
   (runnable
     (source (def (mag #record((= x a) (= y b))) (+ (* a a) (* b b)))
@@ -47,14 +47,14 @@
   (h2 "Your turn")
   (exercise
     (id "irrefutable-patterns:1")
-    (prompt "Destructure the tuple right in the " (c "let") " binder, then finish the body so it sums the two parts. With " (c "#tuple(10 20)") " the answer is " (c "30") ".")
+    (prompt "Destructure the tuple right in the " (c "let") " binder, then finish the body so it sums the two parts. With " (cdz "#tuple(10 20)") " the answer is " (c "30") ".")
     (starter (def (main) (let ((#tuple(a b) #tuple(10 20))) ?)))
     (solution (def (main) (let ((#tuple(a b) #tuple(10 20))) (+ a b))))
     (expected "30")
-    (hint "Both names come from the tuple pattern, so the body is " (c "(+ a b)") "."))
+    (hint "Both names come from the tuple pattern, so the body is " (cdz "(+ a b)") "."))
   (exercise
     (id "irrefutable-patterns:2")
-    (prompt (c "fst") " destructures its tuple argument in the parameter list. Finish the body so it returns the " (em "first") " part. With " (c "(fst #tuple(7 9))") " the answer is " (c "7") ".")
+    (prompt (c "fst") " destructures its tuple argument in the parameter list. Finish the body so it returns the " (em "first") " part. With " (cdz "(fst #tuple(7 9))") " the answer is " (c "7") ".")
     (starter (def (fst #tuple(a b)) ?)
 (def (main) (fst #tuple(7 9))))
     (solution (def (fst #tuple(a b)) a)
