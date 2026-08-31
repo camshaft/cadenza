@@ -3499,27 +3499,9 @@ fn a_const_adapter_iterator_chain_fuses_to_zero_call_indirect() {
 // match with only true / only false / two-of-the-same-literal is non-exhaustive (CDZ0210); both-arms is
 // exhaustive and runs; an Int64 literal match without a wildcard stays CDZ0210. All PASS wasm.)
 
-#[test]
-fn do_local_record_binding_projection_is_not_a_destructure() {
-    // A DO-BLOCK value-def binds a bare name to a record; a later projection reads a field. `compute.rs`
-    // routes the value-def through `lower_let` as a SELF-KEYED `(V, V)` binding, and the destructure-let
-    // fast-path once misfired on it — reading the record VALUE `.0` as a destructure PATTERN and routing
-    // `(def p0 #record(…))` through a single-arm match of the record against itself, which match_tree
-    // then rejected as a non-exhaustive sum match (spurious CDZ0210, corpus-15 regression). Both the
-    // top-level and the do-local forms must compile cleanly (the do-local binding is a bare name, never a
-    // destructure). Pins the `.0 != .1` guard in `lower_let`.
-    assert_eq!(
-        reject_code("(module m (def (main) (. #record((= x 1) (= y 2)) y)) (export main))")
-            .as_deref(),
-        None,
-        "top-level record projection compiles"
-    );
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (do (def p0 #record((= x 1) (= y 2))) (. p0 y))) (export main))"
-        )
-        .as_deref(),
-        None,
-        "a do-local record binding + projection is a bare-name binding, not a destructure — no CDZ0210"
-    );
-}
+// (do_local_record_binding_projection_is_not_a_destructure migrated to corpus 05-compound-types: the
+// top-level record-literal projection `(. #record((= x 1) (= y 2)) y)` → 2 is "a multi-field record with one
+// param-named key survives the call", and the do-local value-def binding + projection `(do (def p0 #record(…))
+// (. p0 y))` → 2 (the anti-destructure-misfire regression: a do-local bare-name binding must not be routed
+// through the destructure-let fast-path → spurious CDZ0210) is "a do-local value-def bound to a record is
+// projected as a bare-name binding, not misread as a destructure".)
