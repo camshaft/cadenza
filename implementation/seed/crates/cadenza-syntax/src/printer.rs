@@ -4897,135 +4897,21 @@ mod tests {
     // All canonical (fmt-idempotent = the clean-surface round-trip witness, no `` `..` `` fallback). The
     // list/map pattern-rest are already pinned (ml/160-162), the let-binder tuple-rest at ml/218.
 
-    #[test]
-    fn construction_spread_of_a_literal_operand_round_trips() {
-        // Construction spread whose OPERAND is itself a compound LITERAL (not a bare name) — the canonical
-        // splat shape the runtime lowering will evaluate (operator 2026-08-31: "spread should be both in
-        // patterns and construction"), e.g. `[..[1, 2], 3]` → `#list((.. #list(1 2)) 3)` (splats to
-        // `[1, 2, 3]` once lowered). Pin the ML tree + round-trip for all 5 compounds so the lowering
-        // owners' upcoming splat-VALUE corpus cases (`[..#list(1 2), 3] => #list(1 2 3)`) can't red the
-        // round-trip harness on a SURFACE gap. Surface-only (the runtime splat is v-ast-compound/v-inference).
-        for (src, want_tree) in [
-            (
-                "def f() = [..[1, 2], 3]",
-                "(def (f) #list((.. #list(1 2)) 3))",
-            ),
-            (
-                "def f() = #(..#(1, 2), 3)",
-                "(def (f) #set((.. #set(1 2)) 3))",
-            ),
-            (
-                "def f() = #{ ..#{ 1 = 2 }, 3 = 4 }",
-                "(def (f) #map((.. #map((= 1 2))) (= 3 4)))",
-            ),
-            (
-                "def f() = { ..{ a = 1 }, b = 2 }",
-                "(def (f) #record((.. #record((= a 1))) (= b 2)))",
-            ),
-            (
-                "def f() = (..(1, 2), 3)",
-                "(def (f) #tuple((.. #tuple(1 2)) 3))",
-            ),
-        ] {
-            let p = parser::read_ml(src);
-            assert!(
-                p.ok(),
-                "literal-operand splat must parse: {src} -> {:?}",
-                p.errors
-            );
-            assert_eq!(sexpr::print(&p.arenas), want_tree, "tree for {src}");
-            let ml = crate::printer::print(&p.arenas, 100);
-            let back = parser::read_ml(&ml);
-            assert!(back.ok(), "reparse of {ml:?}: {:?}", back.errors);
-            assert!(
-                p.arenas.structurally_eq(&back.arenas),
-                "literal-operand splat lost in round-trip\n src:  {src}\n ml:   {ml}\n back: {}",
-                sexpr::print(&back.arenas)
-            );
-        }
-    }
-
-    #[test]
-    fn degenerate_construction_spreads_round_trip() {
-        // The construction twin of `degenerate_rest_patterns_parse_permissively_without_panic`: the parser
-        // is scope-blind, so MULTIPLE, LEADING, spread-ONLY, and INTERLEAVED `.. operand` construction
-        // spreads all parse permissively AND round-trip through the ML surface for list/set/map/record —
-        // whatever well-formedness a compound imposes on repeated/positional spreads is lowering's job, not
-        // the parser's. Pins that the permissive edges don't panic and survive parse→print→reparse (so a
-        // printer/reader refactor can't silently break or mis-render the multi-spread surface).
-        for src in [
-            "def f(a, b) = [..a, ..b]",        // two spreads
-            "def f(a) = [..a]",                // spread-only
-            "def f(a, x) = [..a, x, ..a]",     // interleaved with an ordinary element
-            "def f(m1, m2) = #{ ..m1, ..m2 }", // map, two spreads
-            "def f(b1, b2) = { ..b1, ..b2 }",  // record, two spreads
-            "def f(a) = #(..a)",               // set, spread-only
-            "def f(a, b) = #(..a, ..b)",       // set, two spreads
-        ] {
-            let p = parser::read_ml(src);
-            assert!(
-                p.ok(),
-                "degenerate construction spread must parse: {src} -> {:?}",
-                p.errors
-            );
-            let printed = crate::printer::print(&p.arenas, 80);
-            let back = parser::read_ml(&printed);
-            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
-            assert!(
-                p.arenas.structurally_eq(&back.arenas),
-                "degenerate construction spread lost in round-trip\n src:  {src}\n ml:   {printed}\n back: {}",
-                sexpr::print(&back.arenas)
-            );
-        }
-    }
-
-    #[test]
-    fn construction_spread_round_trips_for_all_compounds() {
-        // The `.. operand` CONSTRUCTION spread (value position, the twin of the pattern-rest) reads to a
-        // wrapped `(.. operand)` element and MUST round-trip through the ML surface for every compound —
-        // the construction side of the operator's "(.. v) everywhere" ruling. Pin the ML tree AND the
-        // parse→print→reparse round-trip so a printer/reader refactor can't silently break the spread
-        // surface (the class of round-trip hole that bit annotated-let #6676 / rationals #6678).
-        //
-        // TUPLE construction spread (`(.. a, 1)` leading, `(1, .. a)` trailing) closed the last gap: the
-        // printer always rendered it but neither reader accepted it back until the dual-path reader fix
-        // (recursive `fn paren` + iterative `Cont::Paren`, #6912) — landed by v-syntax-nonrec-reader with
-        // the differential oracle proving both readers agree. All 5 compounds now round-trip here.
-        for (src, want_tree) in [
-            ("def f(a) = [..a, 1]", "(def (f a) #list((.. a) 1))"),
-            ("def f(a) = #(..a, 1)", "(def (f a) #set((.. a) 1))"),
-            (
-                "def f(m) = #{ ..m, 1 = 2 }",
-                "(def (f m) #map((.. m) (= 1 2)))",
-            ),
-            (
-                "def f(b) = { ..b, a = 1 }",
-                "(def (f b) #record((.. b) (= a 1)))",
-            ),
-            ("def f(a) = (..a, 1)", "(def (f a) #tuple((.. a) 1))"),
-            ("def f(a) = (1, ..a)", "(def (f a) #tuple(1 (.. a)))"),
-        ] {
-            let p = parser::read_ml(src);
-            assert!(
-                p.ok(),
-                "construction spread must parse: {src} -> {:?}",
-                p.errors
-            );
-            assert_eq!(sexpr::print(&p.arenas), want_tree, "tree for {src}");
-            let printed = crate::printer::print(&p.arenas, 80);
-            assert!(
-                printed.contains(".. "),
-                "the clean `.. operand` spread surface is lost for {src}\n ml: {printed}"
-            );
-            let back = parser::read_ml(&printed);
-            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
-            assert!(
-                p.arenas.structurally_eq(&back.arenas),
-                "construction spread lost in round-trip\n src:  {src}\n ml:   {printed}\n back: {}",
-                sexpr::print(&back.arenas)
-            );
-        }
-    }
+    // The construction-spread `.. operand` round-trip tests (`construction_spread_of_a_literal_operand_round_
+    // trips`, `degenerate_construction_spreads_round_trip`, `construction_spread_round_trips_for_all_compounds`
+    // — the operator's "(.. v) everywhere" ruling: the value-position twin of the pattern-rest, wrapped
+    // `(.. operand)`, for list/set/map/record/tuple, incl. literal operands, multiple/leading/spread-only/
+    // interleaved) MIGRATED to the spec/syntax corpus. LIST/MAP/RECORD/SET spreads (canonical, multiple,
+    // leading, spread-only, interior, literal-operand) were ALREADY pinned by ml/150-159; the genuine surface
+    // gap was TUPLE construction spread (closed by the #6912 dual-path reader fix) + per-compound literal
+    // operands — added inc-6 batch-61:
+    //   * ml/380-construction-spread-tuple-leading `(..a, 1)`→`#tuple((.. a) 1)`,
+    //     ml/381-construction-spread-tuple-trailing `(1, ..a)`→`#tuple(1 (.. a))`.
+    //   * ml/382-…-tuple-literal-operand `(..(1, 2), 3)`→`#tuple((.. #tuple(1 2)) 3)`, ml/383-…-set-literal-
+    //     operand `#set((.. #set(1 2)) 3)`, ml/384-…-map-literal-operand `#map((.. #map((= 1 2))) (= 3 4))`,
+    //     ml/385-…-record-literal-operand `#record((.. #record((= a 1))) (= b 2))`.
+    // The list-literal-operand is ml/155; the degenerate multiple/leading/spread-only edges for list/map/
+    // record/set are ml/151-159 (permissive parse is uniform across compounds — tuple rides the same path).
 
     // The annotated-let-binder surface (#6676: `let x: T = v in …` reads to `(let (((: x T) v)) …)` — the
     // binder-position annotation, mirror of an annotated `param` — and prints the clean `x: T` surface,
