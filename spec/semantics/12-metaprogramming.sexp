@@ -152,6 +152,25 @@
   (input  (do (def (main) nosuchname) (export main)))
   (error  CDZ0101 (message "unbound") (not "COMPILE-TIME-VISIBLE AST")))
 
+(case "eval on a RUNTIME Ast parameter gives the compile-time-AST teaching message — the requirement is compile-time VISIBILITY, not Ast-ness"
+  (doc    "The runtime-Ast face of the teaching message (migrated from rcdzc
+           eval_of_a_non_compile_time_ast_names_the_form_not_an_unbound_eval): `(eval a)` where `a` is a
+           RUNTIME `Ast` parameter — not a non-Ast scalar like the Int64 cases above — still declines
+           CDZ0101 with the COMPILE-TIME-VISIBLE AST teaching text. `eval` desugars only a compile-time-
+           visible AST (a `(quote …)` / literal `Ast.*`), so a runtime Ast has nothing to reconstruct; the
+           requirement is compile-time VISIBILITY, not merely being an Ast value.")
+  (input  (do (def (f (: a Ast)) (eval a)) (export f)))
+  (error  CDZ0101 (message "COMPILE-TIME-VISIBLE AST")))
+
+(case "a near-eval typo keeps the ordinary unbound did-you-mean to a near def, not the eval teaching message"
+  (doc    "The over-reach guard for the eval teaching path (migrated from the same rcdzc test): a bare
+           `eval`-shaped typo that is NOT an `(eval …)` head — `(evel)`, distance-1 from both the form
+           `eval` AND a user def `evil` — still gets the ORDINARY unbound-name did-you-mean pointing at the
+           near def `evil`, NOT the eval-form COMPILE-TIME-VISIBLE AST message. Pins that the eval teaching
+           text fires only for a genuine `(eval …)` head, and does not hijack an ordinary near-name typo.")
+  (input  (do (def (evil) 5) (def (main) (evel)) (export main)))
+  (error  CDZ0101 (message "did you mean `evil`?") (not "COMPILE-TIME-VISIBLE AST")))
+
 (case "eval of a quoted RECURSIVE-sum construction builds the heap spine"
   (doc    "Eval over a USER-declared recursive sum: `(eval (quote (S (S (Z)))))` must resolve the quoted
            constructor NAMES against the user's `(type Nat (Z) (S Nat))`, build the two-level heap spine at
