@@ -7871,6 +7871,29 @@
   (output (: 42 Int64))
   (warns CDZ0305 (message "always traps but its value is never used")))
 
+; A CONSTANT operation that ALWAYS traps, sitting in a branch whose reachability depends on a RUNTIME value
+; (`(if (> n 0) 7 <const-trap>)`), earns the non-error CDZ0309 "potentially reachable trap" WARNING that NAMES
+; the specific trap kind — divide-by-zero / overflow / shift-out-of-range — so the reader knows what would
+; trap and can guard it. The program still compiles + runs the taken branch (`main 1` = 7). Wasm-graded (the
+; run paths skip the warns check). (Migrated from rcdzc a_reachable_const_trap_warning_names_the_specific_trap_kind.)
+(case
+  "a reachable constant divide-by-zero in a runtime branch earns a CDZ0309 warning naming the trap kind"
+  (input (do (def (f (: n Int64)) (if (> n 0) 7 (/ 1 0))) (def (main) (f 1)) (export main)))
+  (output (: 7 Int64))
+  (warning CDZ0309 (message "potentially reachable trap") (message "divide by zero")))
+
+(case
+  "a reachable constant overflow in a runtime branch earns a CDZ0309 warning naming the trap kind"
+  (input (do (def (f (: n Int64)) (if (> n 0) 7 (* 9223372036854775807 9223372036854775807))) (def (main) (f 1)) (export main)))
+  (output (: 7 Int64))
+  (warning CDZ0309 (message "potentially reachable trap") (message "overflows Int64")))
+
+(case
+  "a reachable constant shift-out-of-range in a runtime branch earns a CDZ0309 warning naming the trap kind"
+  (input (do (def (f (: n Int64)) (if (> n 0) 7 (<< 1 100))) (def (main) (f 1)) (export main)))
+  (output (: 7 Int64))
+  (warning CDZ0309 (message "potentially reachable trap") (message "out of range")))
+
 ; The dead-trap warning fires for EVERY provably-trapping constant, not only integer ÷0 — the trap-
 ; observation elision + its CDZ0305 diagnostic are about WHETHER the value is observed, not WHICH trap the
 ; dead computation would raise. These two pin the other trap kinds as unprojected tuple elements (the clean
