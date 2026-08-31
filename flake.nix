@@ -3299,7 +3299,21 @@
               elif cmp -s tree.actual "$case/tree.sexp"; then
                 if [ -f "$case/format.$ext" ]; then expected="$case/format.$ext"; else expected="$input"; fi
                 cdz fmt --stdout "$input" > fmt.actual 2>/dev/null
-                if cmp -s fmt.actual "$expected"; then verdict=pass; else verdict=fail; fi
+                if cmp -s fmt.actual "$expected"; then
+                  verdict=pass
+                  # CODEMOD goldens: each `normalize.<pass>.<ext>` must equal `cdz normalize --<pass>
+                  # --stdout <input>` (same-surface). Mirrors gate_syntax::grade_case; extends free as
+                  # more `cdz normalize` passes land. nullglob-safe (no match → loop body never runs).
+                  for g in "$case"/normalize.*."$ext"; do
+                    [ -e "$g" ] || continue
+                    b=$(basename "$g"); b=''${b#normalize.}; pass=''${b%.$ext}
+                    [ -n "$pass" ] || continue
+                    if cdz normalize "--$pass" --stdout "$input" > norm.actual 2>/dev/null \
+                       && cmp -s norm.actual "$g"; then :; else verdict=fail; fi
+                  done
+                else
+                  verdict=fail
+                fi
               else
                 verdict=fail            # wrong tree
               fi
