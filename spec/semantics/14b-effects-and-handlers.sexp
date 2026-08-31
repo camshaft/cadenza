@@ -3213,6 +3213,38 @@
           (not "did you mean")
           (fix (kind delete) (unverified))))
 
+; The TIER-1 (close-typo) companion of the far-miss above: a handler-arm op ONE edit from a declared op
+; (`picks` for `pick`) gets a CONFIDENT "did you mean `pick`?" + a REPLACE fix on the mistyped op key, rather
+; than the far-miss's delete-the-arm. (Migrated from rcdzc a_handler_arm_for_an_undeclared_operation_is_cdz0403
+; — the tier-1 close-typo path.)
+(case "a close-typo handler arm op names the declared op with a replace fix"
+  (input  (do (effect Choose (op pick (-> Unit Int64)))
+              (def (main) (handle Choose unit ((picks () s (resume 5 s))) ((. Choose pick)))) (export main)))
+  (error  CDZ0403 (message "did you mean `pick`?") (fix (kind replace) (replacement "pick") (unverified))))
+
+; A handler arm binding the WRONG NUMBER of parameter binders is CDZ0201 — the arm analogue of a function at
+; the wrong arity, naming the operation and the expected/actual counts. Was either silently accepted (too few)
+; or surfaced only the leaky "not reducible by the tail-resumptive fold" decline (too many); the coded reject
+; now names the count and the consequent fold-decline is dropped (ONE primary). The ELIDED-UNIT convention
+; holds: a `(-> Unit R)` op accepts BOTH a 0-binder and a 1-binder arm, so only a count outside `{0,1}` for a
+; unit op is a mismatch; a genuine N-param op requires exactly N. (Migrated from rcdzc
+; a_handler_arm_with_the_wrong_parameter_count_is_cdz0201.)
+(case "a handler arm binding too many parameters for a unit op is rejected"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u v) s (resume 5 s))) (+ (E.get) 1))) (export main)))
+  (error  CDZ0201 (message "handler arm for operation `get` binds 2 parameters") (message "declares 0 or 1") (not "not reducible by the tail-resumptive fold")))
+
+(case "a handler arm binding too few parameters for a genuine one-param op is rejected"
+  (input  (do (effect E (op set (-> Int64 Unit))) (def (main) (handle E 0 ((set () s (resume unit s))) (E.set 3))) (export main)))
+  (error  CDZ0201 (message "handler arm for operation `set` binds 0 parameters") (message "declares 1")))
+
+(case "the elided-unit zero-binder handler arm for a unit op compiles and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5 s))) (+ (E.get) 1))) (export main)))
+  (call   main) (output (: 6 Int64)))
+
+(case "the elided-unit one-binder handler arm for a unit op compiles and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (resume 5 s))) (+ (E.get) 1))) (export main)))
+  (call   main) (output (: 6 Int64)))
+
 (case "a handler mixing arms of two different effects is rejected"
   (doc    "A handler discharges EXACTLY ONE effect — every arm names an operation of the handle head's
            declaring effect (capabilities-and-effects.md #A Handler Discharges Exactly One Effect).
