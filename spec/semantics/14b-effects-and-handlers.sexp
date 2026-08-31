@@ -1814,6 +1814,10 @@
   (input  (do (effect E (foo (-> Unit Int64))) (def (main) 1) (export main)))
   (error  CDZ0201 (message "an effect clause must be an operation")))
 
+(case "an empty op effect clause is a malformed effect declaration"
+  (input  (do (effect E (op)) (def (main) 1) (export main)))
+  (error  CDZ0201 (message "an effect clause must be an operation")))
+
 (case "an op clause with a non-name keeps the specific must-be-named reject, not the generic clause one"
   (input  (do (effect E (op 5 (-> Unit Int64))) (def (main) 1) (export main)))
   (error  CDZ0201 (message "an effect operation must be named") (not "an effect clause must be an operation")))

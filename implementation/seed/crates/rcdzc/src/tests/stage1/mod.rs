@@ -3708,23 +3708,6 @@ fn a_malformed_resume_in_an_arm_suppresses_the_stray_resume_secondary() {
     }
 }
 
-// A MALFORMED EFFECT CLAUSE that is not an `(op …)` operation is CDZ0201, not silently dropped. The
-// `(effect E 5)` / `(effect E (foo …))` / `(op 5 …)` siblings + the doc-clause control moved to corpus
-// 14b-effects-and-handlers "a bare literal effect clause …" + siblings. Residual: the empty `(op)` clause,
-// whose ROUND-TRIP crashes the ML printer (printer.rs:2840 indexes o[0] on a zero-child op — flagged to
-// v-syntax-render-ty), so it cannot be a corpus input.
-#[test]
-fn a_malformed_empty_op_effect_clause_is_cdz0201() {
-    use crate::testkit::parse;
-    let d = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (effect E (op)) (def (main) 1) (export main))",
-    )))
-    .into_iter()
-    .find(|d| d.message.contains("an effect clause must be an operation"))
-    .expect("an empty (op) clause is a malformed effect declaration");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-}
-
 // The head-naming MESSAGE facets (a value/type/unbound/prelude-type handle head names "head must name an
 // EFFECT" / "is a type") moved to corpus 14b-effects-and-handlers "a handle head that is a value def …" +
 // siblings. Residual: the "exactly ONE diagnostic" dedup the corpus cannot express — the dropped member-
