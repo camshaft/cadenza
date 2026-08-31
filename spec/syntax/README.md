@@ -134,6 +134,34 @@ commit** its case lands (coverage never dips); land per-module batches, each a g
   a *third* function this corpus does not currently compare; migrating them would need a new
   `normalize`-golden dimension (a scope decision, not yet adopted).
 
+## Migration status (snapshot 2026-08-31)
+
+The delanguaging is tracked by module. This is a point-in-time snapshot, not a contract — the live
+truth is the corpus itself (`ml/` + `sexp/` case dirs) and the `#[test]`s that remain.
+
+- **`printer.rs` behavioral tests — COMPLETE.** Every `input → parse-tree` / `input → canonical-format`
+  / round-trip printer test has been migrated to an `ml/` case (the corpus is at ~385 cases). What
+  remains in `printer.rs` is *only* the out-of-scope guards this corpus deliberately does not express
+  (per the list above): printer-totality / iterative-printer structural guards over arbitrary and
+  sexpr-sourced arenas, generated/property sweeps (`…over_generated…`, `…over widths`, the reserved-word
+  and `emit_name` lexer round-trip sweeps), **width-specific** layout breaks (a break that only triggers
+  below the corpus width — `wide_*`, `*_when_wide`, `def_record_body_hugs`, `multi_binding_let_breaks…`),
+  cross-surface `Display`/value-render, arena-sourced comment guards (`multiple_comment_wrappers…`,
+  `a_nonlast_comment_after_in_a_decoded_ast`), the read-OK-but-fmt-refuses edges
+  (`a_same_line_comment_on_a_non_last_collection_elem`, comment-only empty module), and the
+  cross-surface disambiguation oracle (`const_expression_is_distinct…`).
+- **`parser.rs` behavioral tests — IN ASSESSMENT.** The bulk stay Rust by the same rules: error-recovery
+  and diagnostic-quality assertions (recover/`does_not_bail`/`missing_*_recovers`/`*_does_not_cascade`),
+  span totality/slice guards, depth-bound "diagnosed not crashed" guards, the recursive-vs-iterative
+  reader-agreement guards, and the arena/WIT-builder codec-equivalence tests (`…encodes_identically…`,
+  `world_decl_builds…`). Many of the remaining `input → tree` assertions are **already covered** by the
+  `ml/` cases (set/bin/quantity/compound-unit desugar, rest/destructuring patterns, backtick-escape,
+  semicolon/juxtapose, negation) — those tests are redundant with the corpus and can be retired as their
+  coverage is confirmed. The genuinely-new surface features not yet in the corpus are the migration
+  frontier: **embedded `json`/`toml` regions** (the grafting + round-trip), **brace record-type
+  annotations**, the **pipeline operator**, **handle promotion / stateless-seed elision**, and a few
+  type-position parses (`forall` binders, type-application args, derived-unit infix in type position).
+
 ## How it drives the future Cadenza-parser rewrite
 
 For every case, the implementation-under-test must satisfy `render_sexpr(parse(input)) == tree.sexp`
