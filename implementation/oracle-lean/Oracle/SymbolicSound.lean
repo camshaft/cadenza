@@ -1180,6 +1180,88 @@ theorem denote_record (ρ : Nat → Value) (w : IntTy) (fs : Array (ByteArray ×
       = .value (.record (fs.attach.map (fun x => (x.val.1, outcomeToValue (denote ρ w x.val.2))))) := by
   simp only [denote]
 
+/-! ### `symToValue?`↔`denote` bridge — a CONSTANT expression (`.const`/`.tuple`/`.record` of constants)
+whose const leaves are `asF64?`-canonical (`AllConstsCanon`) `denote`s to EXACTLY the value `symToValue?`
+extracts. This closes the general (tuple/record-operand) `.app` fold case: a folded operand's `symToValue?`
+value equals its `denote` value, so the fold outcome matches. The compound cases need a generic
+`mapM (Option)` ↔ `map` agreement lemma (`array_mapM_map_agree`), proven by `List.mapM_cons` induction. -/
+private theorem list_mapM_map_agree {α β} (f : α → Option β) (g : α → β) :
+    ∀ (l : List α) (out : List β), l.mapM f = some out →
+      (∀ x ∈ l, ∀ y, f x = some y → g x = y) → l.map g = out := by
+  intro l
+  induction l with
+  | nil => intro out h _; simp_all [List.mapM_nil]
+  | cons a as ih =>
+    intro out h hfg
+    rw [List.mapM_cons] at h
+    cases hfa : f a with
+    | none => simp [hfa] at h
+    | some b =>
+      cases hbs : as.mapM f with
+      | none => simp [hfa, hbs] at h
+      | some bs =>
+        simp only [hfa, hbs, Option.bind_some, Option.pure_def] at h
+        injection h with h'; rw [← h']
+        have hga : g a = b := hfg a (by simp) b hfa
+        have hgas : as.map g = bs := ih bs hbs (fun x hx => hfg x (by simp [hx]))
+        simp [List.map_cons, hga, hgas]
+
+private theorem array_mapM_map_agree {α β} (f : α → Option β) (g : α → β) (arr : Array α) (out : Array β)
+    (h : arr.mapM f = some out) (hfg : ∀ x ∈ arr, ∀ y, f x = some y → g x = y) :
+    arr.map g = out := by
+  have hconv : arr.toList.mapM f = some out.toList := by
+    have h2 : (List.toArray <$> arr.toList.mapM f) = some out := by
+      rw [← List.mapM_toArray, Array.toArray_toList]; exact h
+    cases hl : arr.toList.mapM f with
+    | none => rw [hl] at h2; simp at h2
+    | some ol => rw [hl] at h2; injection h2 with h2'; rw [← h2']
+  apply Array.toList_inj.mp
+  rw [Array.toList_map]
+  exact list_mapM_map_agree f g arr.toList out.toList hconv (fun x hx => hfg x (by simpa using hx))
+
+/-- The bridge: an `AllConstsCanon` expression `denote`s to the value `symToValue?` extracts. -/
+theorem denote_symToValue (ρ : Nat → Value) (w : IntTy) (e : SymExpr) (c : Value)
+    (hcanon : AllConstsCanon e) (h : symToValue? e = some c) : denote ρ w e = .value c := by
+  induction e using symToValue?.induct generalizing c with
+  | case1 v =>
+    simp only [symToValue?] at h; injection h with h'; subst h'
+    simp only [denote]
+    simp only [AllConstsCanon] at hcanon
+    rw [hcanon]
+  | case2 es ih =>
+    simp only [symToValue?] at h
+    cases hm : es.attach.mapM (fun x => symToValue? x.val) with
+    | none => rw [hm] at h; simp at h
+    | some cs =>
+      rw [hm] at h; simp only [Option.map_some, Option.some.injEq] at h; subst h
+      rw [denote_tuple]
+      simp only [Outcome.value.injEq, Value.tuple.injEq]
+      apply array_mapM_map_agree (fun x => symToValue? x.val)
+        (fun x => outcomeToValue (denote ρ w x.val)) es.attach cs hm
+      intro x _ y hy
+      simp only [AllConstsCanon] at hcanon
+      rw [ih x y (hcanon x.val x.property) hy]; rfl
+  | case3 fs ih =>
+    simp only [symToValue?] at h
+    cases hm : fs.attach.mapM (fun x => (symToValue? x.val.2).map (fun v => (x.val.1, v))) with
+    | none => rw [hm] at h; simp at h
+    | some cs =>
+      rw [hm] at h; simp only [Option.map_some, Option.some.injEq] at h; subst h
+      rw [denote_record]
+      simp only [Outcome.value.injEq, Value.record.injEq]
+      apply array_mapM_map_agree (fun x => (symToValue? x.val.2).map (fun v => (x.val.1, v)))
+        (fun x => (x.val.1, outcomeToValue (denote ρ w x.val.2))) fs.attach cs hm
+      intro x _ y hy
+      simp only [AllConstsCanon] at hcanon
+      cases hs : symToValue? x.val.2 with
+      | none => rw [hs] at hy; simp at hy
+      | some d =>
+        rw [hs] at hy; simp only [Option.map_some, Option.some.injEq] at hy; subst hy
+        rw [ih x d (hcanon x.val.1 x.val.2 (by simpa using x.property)) hs]; rfl
+  | case4 x _ _ _ =>
+    exfalso
+    cases x <;> simp_all [symToValue?]
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
