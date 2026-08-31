@@ -32,8 +32,8 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use xshell::{Shell, cmd};
 use xtask_support::{
-    Call, CorpusRecord, Verdict, content_address, default_corpus_files, first_line, hash_tree,
-    launch_fail, read_corpus, serialize_baseline, split_message_clause,
+    Call, CorpusRecord, Verdict, compare_verdicts_baseline, content_address, default_corpus_files,
+    first_line, hash_tree, launch_fail, read_corpus, serialize_baseline, split_message_clause,
 };
 
 /// The one interface for driving the Cadenza seed workspace. Every knob is a typed flag; there are
@@ -5120,185 +5120,95 @@ fn check_baseline(
             return 2;
         }
     };
-    // Parse into a description→verdict map, but DETECT duplicate descriptions as we go. The baseline
-    // is keyed by description (a map), so two lines with the same description silently collapse —
-    // last-parsed wins — which can MASK a real verdict (e.g. a `todo` line hiding a `pass` line for the
-    // same case, or vice-versa). Duplicates are easy to introduce now that these files are `merge=union`
-    // (both sides of a merge append their copy). Fail loudly on any duplicate rather than let it hide a
-    // verdict silently. (`gate --save` re-sorts + de-dupes, so the fix is to regenerate the baseline.)
-    // Classify duplicate descriptions. `merge=union` on this file re-injects a duplicate LINE whenever
-    // two branches append near the same region, so a BENIGN same-verdict dup (both copies agree) is a
-    // routine merge artifact — NOT a reason to hard-fail every agent's `gate --check`. Only a
-    // CONFLICTING dup (same description, DIFFERENT verdicts) is dangerous: the map-load's last-wins
-    // would silently mask a verdict. So: auto-dedup benign dups (rewrite the file clean + continue),
-    // and HARD-FAIL only on a conflicting dup.
-    let mut base: std::collections::HashMap<String, Verdict> = std::collections::HashMap::new();
-    let mut seen: std::collections::HashMap<String, Verdict> = std::collections::HashMap::new();
-    let mut benign_dups = 0usize;
-    let mut conflicting: Vec<String> = Vec::new();
-    for line in text.lines() {
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
-        if let Some((v, d)) = line.split_once('\t')
-            && let Some(verdict) = Verdict::parse(v)
-        {
-            base.insert(d.to_string(), verdict);
-            match seen.insert(d.to_string(), verdict) {
-                None => {}
-                Some(prev) if prev == verdict => benign_dups += 1,
-                Some(_) => conflicting.push(d.to_string()),
-            }
-        }
-    }
-    if !conflicting.is_empty() {
-        conflicting.sort();
-        conflicting.dedup();
+    // Delegate to the canonical whole-pass baseline fold (xtask_support::compare_verdicts_baseline) — the
+    // single source of truth v-corpus-harness blessed: the semantics `gate --check`, `gate-syntax --check`,
+    // the rust/rust-async harvests, and the xtask-check-baseline leaf all grade through it. Verdict- and
+    // exit-code-IDENTICAL to the former inline HashMap compare (same five invariants: pass→not-pass
+    // regression / gained / vanished-on-full-run / failing gate-hole / tracked known-fail); the fold's
+    // BTreeMap load additionally makes the reported lists deterministic (a strict improvement over the old
+    // nondeterministic HashMap iteration order). The report wording below stays the semantics gate's own.
+    let cmp = compare_verdicts_baseline(verdicts, &text, subset);
+
+    if !cmp.conflict.is_empty() {
         eprintln!(
             "xtask gate --check: {} CONFLICTING duplicate case description(s) in {} — the same case \
              appears with DIFFERENT verdicts, so the map-keyed baseline silently masks one (last wins). \
              This is a real integrity error; regenerate with `cargo xtask gate --save` and check which \
              verdict is correct. Conflicting:",
-            conflicting.len(),
+            cmp.conflict.len(),
             path.display()
         );
-        for d in &conflicting {
+        for d in &cmp.conflict {
             eprintln!("  •  {d}");
         }
         return 3;
     }
-    if benign_dups > 0 {
-        // Benign same-verdict dups (a `merge=union` artifact — both merge sides append their copy) are
-        // HARMLESS: the description-keyed `base` map has already collapsed them (same verdict, so no
-        // masking), and the regression compare below reads only that map. So `--check` DEDUPES IN MEMORY
-        // and does NOT touch the file — `--check` must be READ-ONLY.
-        //
-        // It used to REWRITE the baseline clean here (via `save_baseline`). That left a DIRTY worktree
-        // every run a union-merge dup existed, which then blocked `fleet sync` ("worktree is DIRTY —
-        // refusing to reset") for EVERY agent that runs `gate --check` + `sync` each tick — a recurring
-        // fleet-wide churn (+ a source of the drain-stalls the watchdog was waking agents from).
-        // Dedup-on-disk is `gate --save`'s job (its canonical sorted+unique writer); `--check` only
-        // OBSERVES. (concierge-greenlit fix (a), 2026-08-02.)
+    if cmp.benign_dups > 0 {
+        // Benign same-verdict dups (a `merge=union` artifact) are HARMLESS — the fold deduped them in
+        // memory for the compare. `--check` is READ-ONLY (rewriting here would dirty the worktree + block
+        // every agent's `fleet sync`); dedup-on-disk is `gate --save`'s job. (concierge-greenlit fix (a).)
         eprintln!(
-            "xtask gate --check: {benign_dups} benign (same-verdict) duplicate line(s) in {} — a \
-             merge=union artifact, harmless (deduped in memory for the compare). Run `cargo xtask gate \
-             --save` to rewrite the file clean; `--check` leaves it untouched.",
+            "xtask gate --check: {} benign (same-verdict) duplicate line(s) in {} — a merge=union \
+             artifact, harmless (deduped in memory for the compare). Run `cargo xtask gate --save` to \
+             rewrite the file clean; `--check` leaves it untouched.",
+            cmp.benign_dups,
             path.display()
         );
     }
 
-    let now: std::collections::HashMap<&str, Verdict> =
-        verdicts.iter().map(|(d, v)| (d.as_str(), *v)).collect();
-
-    let mut regressed: Vec<String> = Vec::new();
-    let mut gained: Vec<String> = Vec::new();
-    let mut vanished: Vec<String> = Vec::new();
-
-    for (desc, &was) in &base {
-        match now.get(desc.as_str()) {
-            // A baseline case absent from this run: a dropped case (full run) — but under `--shard` it is
-            // simply in another shard, so subset mode does not count it as vanished.
-            None => {
-                if !subset {
-                    vanished.push(desc.clone());
-                }
-            }
-            Some(&is) => {
-                if was == Verdict::Pass && is != Verdict::Pass {
-                    regressed.push(format!("{desc} ({} → {})", was.tag(), is.tag()));
-                } else if was != Verdict::Pass && is == Verdict::Pass {
-                    gained.push(desc.clone());
-                }
-            }
-        }
-    }
-
-    // A `fail` verdict is normally a MISCOMPILE (ran to an outcome disagreeing with the record — the
-    // actionable frontier). The `regressed` check above catches a baseline pass→fail, but a case ABSENT
-    // from the baseline (a recent test→corpus migration) or a baselined todo→fail would FAIL yet slip past
-    // `--check` as "not a regression" — making the fleet landing bar (`gate --check` 0-regressed) strictly
-    // WEAKER than plain `gate`. That hole let ~12 reds accrue on green `--check` (v-nix report 2026-08-27).
-    // Close it: fail on ANY current `fail` whose baseline is NOT `fail` and NOT `pass` — i.e. a `todo`/absent
-    // case that now fails (v-nix's hole stays closed), regardless of shard.
-    //
-    // EXCEPTION — a TRACKED KNOWN-FAIL: a baseline row explicitly recording `fail` is a DELIBERATE,
-    // git-committed pin of a known-wrong behavior (a compiler bug whose real fix is deferred — the operator's
-    // no-silent-miscompiles directive: track the repro, don't leave it silent, and don't rush a risky fix).
-    // A `fail` baseline + a `fail` verdict is the EXPECTED, tracked state → NOT a gate failure (reported
-    // separately as KNOWN-FAIL so it stays visible). This does NOT reopen v-nix's hole: only an EXPLICIT
-    // `fail` baseline is exempt; a `todo`/absent case that fails still reds. A pinned known-fail that later
-    // PASSES surfaces as `gained` (prompting a baseline update — the bug got fixed).
-    let failing: Vec<&str> = verdicts
-        .iter()
-        .filter(|(d, v)| {
-            *v == Verdict::Fail
-                && !matches!(
-                    base.get(d.as_str()),
-                    Some(Verdict::Pass) | Some(Verdict::Fail)
-                )
-        })
-        .map(|(d, _)| d.as_str())
-        .collect();
-    // Tracked known-fails: a `fail` verdict against an explicit `fail` baseline row — expected + visible.
-    let tracked_fail: Vec<&str> = verdicts
-        .iter()
-        .filter(|(d, v)| *v == Verdict::Fail && base.get(d.as_str()) == Some(&Verdict::Fail))
-        .map(|(d, _)| d.as_str())
-        .collect();
-
-    if !gained.is_empty() {
-        println!("\nnewly passing ({}):", gained.len());
-        for g in &gained {
+    if !cmp.gained.is_empty() {
+        println!("\nnewly passing ({}):", cmp.gained.len());
+        for g in &cmp.gained {
             println!("  +  {g}");
         }
     }
-    if !regressed.is_empty() {
-        println!("\nREGRESSED ({}):", regressed.len());
-        for r in &regressed {
+    if !cmp.regressed.is_empty() {
+        println!("\nREGRESSED ({}):", cmp.regressed.len());
+        for r in &cmp.regressed {
             println!("  -  {r}");
         }
     }
-    if !vanished.is_empty() {
-        println!("\nvanished from the corpus ({}):", vanished.len());
-        for v in &vanished {
+    if !cmp.vanished.is_empty() {
+        println!("\nvanished from the corpus ({}):", cmp.vanished.len());
+        for v in &cmp.vanished {
             println!("  ?  {v}");
         }
     }
-    if !failing.is_empty() {
+    if !cmp.failing.is_empty() {
         println!(
             "\nFAILING — a fail not caught by the pass-regression check ({}):",
-            failing.len()
+            cmp.failing.len()
         );
-        for f in &failing {
+        for f in &cmp.failing {
             println!("  x  {f}");
         }
     }
-    if !tracked_fail.is_empty() {
+    if !cmp.tracked_fail.is_empty() {
         // Visible but NOT gate-redding: git-committed known-wrong pins (a deferred-fix compiler bug).
         println!(
             "\nKNOWN-FAIL — tracked known-wrong (baseline `fail`), not a gate failure ({}):",
-            tracked_fail.len()
+            cmp.tracked_fail.len()
         );
-        for f in &tracked_fail {
+        for f in &cmp.tracked_fail {
             println!("  ⊗  {f}");
         }
     }
 
-    if regressed.is_empty() && vanished.is_empty() && failing.is_empty() {
+    let code = cmp.exit_code();
+    if code == 0 {
         println!(
             "\ngate --check: OK (no regressions vs baseline; {} newly passing)",
-            gained.len()
+            cmp.gained.len()
         );
-        0
     } else {
         println!(
             "\ngate --check: FAIL ({} regressed, {} vanished, {} failing)",
-            regressed.len(),
-            vanished.len(),
-            failing.len()
+            cmp.regressed.len(),
+            cmp.vanished.len(),
+            cmp.failing.len()
         );
-        1
     }
+    code
 }
 
 /// A nix REMOTE-BUILDER / DAEMON transient in a gate's output — NOT a real test/clippy/compile failure.
