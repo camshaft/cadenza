@@ -1088,6 +1088,64 @@ compound whose children are the elements' `denote` folded through `outcomeToValu
 child — "trap when observed", matching `evalNode`). These are the building blocks the eventual capstone
 tuple/record congruence cases use (they reduce `denote (.tuple/.record …)` to the element denotations),
 and they pin the arm shape against a refactor. -/
+/-- `denote`-app REDUCTION for a concrete UNARY/BINARY application: `denote (.app op #[…])` reduces
+through `denoteApp`'s arity dispatch (`.attach.map` on the literal + the size-1/2 `if`) to
+`denoteUnary`/`denoteBinary` over the operand denotations. This is the GLUE that lets the capstone `.app`
+fold-soundness core (`denoteApp_normalize_fold_{binary,unary}`, stated at the `denoteBinary`/`denoteUnary`
+level) apply to an actual `.app` node once its args are destructured by arity. -/
+theorem denote_app1 (ρ : Nat → Value) (w : IntTy) (op : String) (a0 : SymExpr) :
+    denote ρ w (.app op #[a0]) = denoteUnary op (denote ρ w a0) := by
+  simp [denote, denoteApp]
+
+theorem denote_app2 (ρ : Nat → Value) (w : IntTy) (op : String) (a0 a1 : SymExpr) :
+    denote ρ w (.app op #[a0, a1]) = denoteBinary op w (denote ρ w a0) (denote ρ w a1) := by
+  simp [denote, denoteApp]
+
+/-- CAPSTONE `.app` FOLD CASE (concrete binary, scalar/const operands): the value-form soundness
+`denote (.app op #[a0,a1]) = .value v → denote (normalize (.app op #[a0,a1])) = .value v` when the
+operands normalize to constants and `foldConst?` fires. Ties the glue (`denote_app2`), the fold-soundness
+core (`denoteApp_normalize_fold_binary`), `normalize_app_fold` (normalize collapses to `.const vf`), and
+`foldConst?_canon_stable` (`denote (.const vf) = .value vf`). The concrete-arity + scalar-operand slice of
+the capstone `.app` case; the arbitrary-arity destructure + tuple/record-operand bridge remain. -/
+theorem denote_normalize_app_fold2 (ρ : Nat → Value) (w : IntTy) (op : String)
+    (a0 a1 : SymExpr) (v c0 c1 vf : Value)
+    (hn0 : normalize a0 = .const c0) (hn1 : normalize a1 = .const c1)
+    (hfold : foldConst? op #[.const c0, .const c1] = some vf)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app op #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app op #[a0, a1])) = .value v := by
+  have hargs : (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[.const c0, .const c1] := by
+    simp [hn0, hn1]
+  have hnf : normalize (.app op #[a0, a1]) = .const vf := by
+    rw [normalize_app_fold op #[a0, a1] vf (by rw [hargs]; exact hfold)]
+  rw [hnf]
+  have hv : v = vf := by
+    rw [denote_app2] at h
+    exact denoteApp_normalize_fold_binary ρ w op a0 a1 v c0 c1 vf hn0 hn1 hfold ih0 ih1 h
+  simp only [denote]
+  rw [foldConst?_canon_stable op #[.const c0, .const c1] vf hfold, hv]
+
+/-- CAPSTONE `.app` FOLD CASE (concrete unary, `not` of a const operand). Arity-1 companion of
+`denote_normalize_app_fold2`. -/
+theorem denote_normalize_app_fold1 (ρ : Nat → Value) (w : IntTy) (op : String)
+    (a0 : SymExpr) (v c0 vf : Value)
+    (hn0 : normalize a0 = .const c0)
+    (hfold : foldConst? op #[.const c0] = some vf)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (h : denote ρ w (.app op #[a0]) = .value v) :
+    denote ρ w (normalize (.app op #[a0])) = .value v := by
+  have hargs : (#[a0] : Array SymExpr).attach.map (fun x => normalize x.val) = #[.const c0] := by
+    simp [hn0]
+  have hnf : normalize (.app op #[a0]) = .const vf := by
+    rw [normalize_app_fold op #[a0] vf (by rw [hargs]; exact hfold)]
+  rw [hnf]
+  have hv : v = vf := by
+    rw [denote_app1] at h
+    exact denoteApp_normalize_fold_unary ρ w op a0 v c0 vf hn0 hfold ih0 h
+  simp only [denote]
+  rw [foldConst?_canon_stable op #[.const c0] vf hfold, hv]
+
 theorem denote_tuple (ρ : Nat → Value) (w : IntTy) (es : Array SymExpr) :
     denote ρ w (.tuple es) = .value (.tuple (es.attach.map (fun x => outcomeToValue (denote ρ w x.val)))) := by
   simp only [denote]
