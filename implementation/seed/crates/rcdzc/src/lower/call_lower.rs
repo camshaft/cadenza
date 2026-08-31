@@ -1374,11 +1374,95 @@ pub(super) fn emit_call_or_specialize(
             }
         };
     }
-    trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
+    // LOCAL LAMBDA-LIFT: if the callee is a recursive do-local function that captures an enclosing
+    // parameter, thread each captured param as an explicit trailing argument (and, once, as a trailing
+    // callee param). EMPTY for every other callee → byte-identical to the plain call. This runs for BOTH
+    // the external call and the recursive self-call (each reaches here), so the arity stays consistent.
+    let extra = local_lift_extra_args(db, callee);
+    trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), lifted = extra.len(), "recursive call → Core::Call");
+    let mut all_args = args.to_vec();
+    all_args.extend(extra);
     Core::Call {
         callee,
-        args: args.to_vec().into(),
+        args: all_args.into(),
     }
+}
+
+/// LOCAL LAMBDA-LIFT for a recursive do-local function that CAPTURES its enclosing scope. If `callee` is
+/// an internal (do-local) def whose body reads one or more ENCLOSING PARAMETERS, thread each captured
+/// param as an explicit trailing parameter — append its signature entry to `defs[callee].params` (so
+/// `def_params`/`select_function` slot it in the callee's frame and the body's otherwise slot-less
+/// `Core::Param` resolves, NO body rewrite) — and return the capture REFERENCE occurrences to append as
+/// the extra call arguments. Each such argument lowers to `Core::Param{binder}` (frame-agnostic in
+/// `core_of`) and is resolved PER-FRAME at emit: the caller's slot at an external call, the callee's own
+/// new slot at the recursive self-call. Computed ONCE per callee and MEMOIZED: recomputing after the
+/// params were extended would see the captures as own-params and drop them, corrupting the self-call's
+/// arity. Returns EMPTY (byte-identical; the CDZ0900 recursive-local-capture decline unchanged) for a
+/// non-internal callee, one with no captures, or an UNSUPPORTED capture — a non-parameter binding (an
+/// enclosing `let`-local, which has no reusable signature entry) or a capture the analysis refuses. Those
+/// keep the honest interim decline until a later increment threads non-param captures too (all-or-nothing;
+/// no partial lift).
+fn local_lift_extra_args(db: &mut Db, callee: usize) -> Vec<StructId> {
+    if let Some(occs) = db.local_lift_captures.get(&callee) {
+        return occs.clone();
+    }
+    // Record an empty (unsupported / no-capture) result so the analysis runs at most once per callee.
+    let unsupported = |db: &mut Db| -> Vec<StructId> {
+        db.local_lift_captures.insert(callee, Vec::new());
+        Vec::new()
+    };
+    // Only a do-local / module-member internal def can capture an enclosing scope; a top-level def has
+    // none (and this keeps the plain-call path byte-identical for them).
+    if !db.defs[callee].internal {
+        return unsupported(db);
+    }
+    let Some(body) = db.defs[callee].body else {
+        return unsupported(db);
+    };
+    // The callee's OWN params (name occurrences) — excluded from the capture set.
+    let own_params: Vec<StructId> = db.defs[callee]
+        .params
+        .iter()
+        .map(|&p| crate::eval::param_name_occ(db, p))
+        .collect();
+    let mut caps: Vec<StructId> = Vec::new();
+    let mut refs: Vec<(StructId, usize)> = Vec::new();
+    // `body` doubles as the lambda-id region for `is_within` (a callee-local `let` is "within" it).
+    if !collect_captures(db, body, &own_params, body, &mut caps, &mut refs) {
+        return unsupported(db);
+    }
+    if caps.is_empty() {
+        return unsupported(db);
+    }
+    // INCREMENT-1 SCOPE: every capture must be an ENCLOSING PARAMETER — it then has a reusable `(: name T)`
+    // (or bare-name) signature entry to append as the callee's new param. A captured non-parameter binding
+    // (an enclosing `let`-local) has no such entry and needs real param synthesis (a later increment), so
+    // keep the decline for it — all-or-nothing.
+    let mut entries: Vec<StructId> = Vec::with_capacity(caps.len());
+    for &cap in &caps {
+        if crate::infer::def_of_param(db, cap).is_none() {
+            return unsupported(db);
+        }
+        let entry = match db.parent_of(cap) {
+            Some(parent) if db.ast.as_form(parent, ":").is_some() => parent,
+            _ => cap,
+        };
+        entries.push(entry);
+    }
+    // The extra call arguments, in capture order: the FIRST reference occurrence recorded for each capture.
+    let mut extra: Vec<StructId> = Vec::with_capacity(caps.len());
+    for i in 0..caps.len() {
+        match refs.iter().find(|(_, idx)| *idx == i).map(|(r, _)| *r) {
+            Some(r) => extra.push(r),
+            None => return unsupported(db), // unreachable: record_capture pushes a ref per capture
+        }
+    }
+    // Thread the captures as explicit trailing params (positional order matches `extra`).
+    for entry in entries {
+        db.defs[callee].params.push(entry);
+    }
+    db.local_lift_captures.insert(callee, extra.clone());
+    extra
 }
 
 /// A CANONICAL STRUCTURAL FINGERPRINT of the subtree at `id` — a string that is EQUAL for two subtrees of

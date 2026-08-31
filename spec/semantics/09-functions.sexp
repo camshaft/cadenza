@@ -12956,20 +12956,30 @@
   ; excluded from INC1; see doc for the over-suppression tripwire.
   (live-objects known-leak))
 
-; A RECURSIVE local function that CAPTURES a binding from its enclosing scope needs LAMBDA-LIFTING (hoist
-; the local function, thread the captured value as an explicit parameter). That feature is not yet built,
-; so it is DECLINED with a clean coded diagnostic (CDZ0900, reject-not-miscompile — the honest interim per
-; concierge item3 ruling), NOT the former cryptic internal "parameter reference has no local slot". The
-; boundary is exactly RECURSION + CAPTURE: a non-recursive capturing local inlines (the binding flows in),
-; and a non-capturing recursive local compiles standalone (the two positive companions below pin that only
-; the combination declines). The message names the two mechanical work-arounds.
+; A RECURSIVE local function that CAPTURES a binding from its enclosing scope is LAMBDA-LIFTED: the local
+; function is threaded the captured value as an explicit trailing parameter (its enclosing param's slot is
+; added to the local's own frame, and every call site — the enclosing call and the recursive self-call —
+; passes the captured value as that extra argument), so no closure/heap-env is needed and it compiles +
+; runs. `rec` captures its enclosing `n`; the lift makes `rec` take `(x n)` and rewrites `(rec 5)` →
+; `(rec 5 n)` and the self-call `(rec (- x 1))` → `(rec (- x 1) n)`. `rec` counts x down from 5 to -1 and
+; then returns the captured n, so `(f 7)` = 7. The boundary is exactly RECURSION + CAPTURE: a non-recursive
+; capturing local inlines (the binding flows in), and a non-capturing recursive local compiles standalone
+; (the two positive companions below pin that only the combination needs the lift). A captured NON-parameter
+; binding (an enclosing `let`-local, which has no signature slot to thread) is not yet lifted and still
+; declines — this case is the parameter-capture increment.
 (case
-  "a recursive local function that captures its enclosing scope is declined with a coded diagnostic"
+  "a recursive local function that captures its enclosing parameter is lambda-lifted and runs"
+  (doc
+    "The capturing-recursive local `rec` reads its enclosing function's parameter `n`. Lambda-lifting
+           threads `n` in as an explicit trailing parameter of `rec` (rather than a heap closure), so both
+           the enclosing call `(rec 5)` and the recursive self-call `(rec (- x 1))` forward the captured
+           `n`. `rec` counts `x` down from 5 to -1 and returns the captured `n`, so `(f 7)` yields 7.")
   (input
     (do
       (def (f (: n Int64)) (do (def (rec (: x Int64)) (if (< x 0) n (rec (- x 1)))) (rec 5)))
       (export f)))
-  (declines (message "recursive local function that captures a binding from its enclosing scope")))
+  (call f (: 7 Int64))
+  (output (: 7 Int64)))
 
 (case
   "the work-around — threading the captured value as an explicit parameter — compiles and runs"
@@ -12998,3 +13008,19 @@
       (export f)))
   (call f (: 5 Int64))
   (output (: 0 Int64)))
+
+(case
+  "a recursive local function that captures TWO enclosing parameters is lambda-lifted and runs"
+  (doc
+    "Lambda-lift threads MORE THAN ONE captured parameter — `rec` reads both enclosing params `a` and
+           `b`, so it is lifted to take `(x a b)` and every call forwards both. `rec` counts `x` down from
+           3 to -1 then returns `(+ a b)`, so `(g 4 5)` yields 9. Pins that the capture set threads in
+           signature order (positional), not just a single value.")
+  (input
+    (do
+      (def
+        (g (: a Int64) (: b Int64))
+        (do (def (rec (: x Int64)) (if (< x 0) (+ a b) (rec (- x 1)))) (rec 3)))
+      (export g)))
+  (call g (: 4 Int64) (: 5 Int64))
+  (output (: 9 Int64)))
