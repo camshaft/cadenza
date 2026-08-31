@@ -2149,14 +2149,10 @@ fn a_malformed_leading_def_forall_recovers_without_panic() {
 // (bytes rest)) n))`, ml/396-bin-pattern-empty `b[]`→`(match x ((bin) 0))`, ml/397-bin-pattern-le-modifier
 // `b[u16(n, le)]`→`(match x ((bin (u16 n le)) n))`. (Single-segment `b[u16(n)]` is ml/241.)
 
-#[test]
-fn number_before_keyword_is_not_a_quantity() {
-    use crate::sexpr;
-    // Only a bare NON-keyword identifier attaches as a unit. A word-operator keeps its infix
-    // meaning after a number: `5 and mask` is the boolean `and`, not a quantity in unit `and`.
-    let a = parse_ok("5 and mask");
-    assert_eq!(sexpr::print(&a), "(and 5 mask)");
-}
+// `number_before_keyword_is_not_a_quantity` (only a bare NON-keyword identifier attaches as a unit; a word-
+// operator keeps its infix meaning after a number) MIGRATED to the spec/syntax corpus (inc-6 batch-79):
+// ml/464-word-op-after-number-not-a-quantity `5 and mask`→`(and 5 mask)` (the boolean `and`, not a quantity in
+// unit `and`). (Number-magnitude quantities `5 feet` etc. are ml/80-88.)
 
 // `a_set_pattern_parses` + `a_set_rest_pattern_parses_in_a_match_arm` (a `#(`-led SET PATTERN — the pattern
 // twin of the `#(…)` set literal: native set ctor leaf head, sub-pattern elements, a `.. rest` binding the
@@ -2241,46 +2237,21 @@ fn parameterized_annotation_name_takes_a_glued_application() {
 // ml/03-let plain `let x = 1 in x`→`(let ((x 1)) x)`, ml/344-let-mixed-binder-destructure `let x = 1, (a,
 // b) = p in x + a`→`(let ((x 1) ((tuple a b) p)) (+ x a))`. No new cases needed.
 
-#[test]
-fn quantity_sugar_does_not_cross_a_newline() {
-    use crate::sexpr;
-    // The quantity sugar (`5 feet` → Qty) repurposes number+name ADJACENCY, but statement sequencing
-    // juxtaposes forms across lines with no separator — so a number ending one statement sits right
-    // before the next statement's leading identifier. The sugar must NOT eat that identifier as a unit
-    // (a miscompile that swallows the following statement). A NEWLINE between the number and the
-    // candidate unit means they are different statements: leave the bare number, let the next form be
-    // its own statement.
-    //
-    // `def a() = 10 <newline> a() + 5`: the `10` must stay a bare number (main's `a` def), and `a()+5`
-    // is the next top-level form — NOT `(Qty.of 10 (Unit.of "a"))` eating the next line.
-    let a = parse_ok("def a() = 10\na() + 5");
-    assert_eq!(
-        sexpr::print(&a),
-        "(do (def (a) 10) (+ (a) 5))",
-        "the quantity sugar must not span the newline into the next statement"
-    );
-    // A genuine SAME-LINE quantity is unchanged — `10 a` (no intervening newline) is still a quantity.
-    assert_eq!(
-        sexpr::print(&parse_ok("10 a")),
-        r#"((. Qty of) 10 ((. Unit of) #"a"))"#
-    );
-    // Same-line even when a statement follows on the NEXT line: `5 feet` is the quantity, `x` is next.
-    assert_eq!(
-        sexpr::print(&parse_ok("5 feet\nx")),
-        r#"(do ((. Qty of) 5 ((. Unit of) #"feet")) x)"#
-    );
-}
+// `quantity_sugar_does_not_cross_a_newline` (the number+name adjacency quantity sugar must NOT eat the next
+// statement's leading identifier across a newline) MIGRATED to the spec/syntax corpus (inc-6 batch-79):
+// ml/465-quantity-sugar-no-cross-newline `def a() = 10`⏎`a() + 5`→`(do (def (a) 10) (+ (a) 5))` (the `10`
+// stays a bare number, `a() + 5` is the next form), ml/466-quantity-same-line-then-next-stmt `5 feet`⏎`x`→
+// `(do ((. Qty of) 5 (Unit.of #feet)) x)` (a SAME-LINE quantity terminates at the newline). Same-line `10 a`
+// quantity = ml/80-88.
 
+// The same-line `as`-conversion parse-tree assertions of `as_conversion_does_not_cross_a_newline` MIGRATED to
+// the spec/syntax corpus (inc-6 batch-79): `x as meter`=ml/220-as-conversion-basic, `5.0 as meter`⏎`x`→`(do
+// ((. Unit in) (Unit.of #meter) 5.0) x)`=ml/467-as-conversion-same-line-then-next-stmt. This test keeps ONLY
+// the `x`⏎`as meter` RECOVERY guard below (a leading `as` on a new line must not reach back across the newline
+// — an error-recovery/negative assertion, out of the parse-tree/fmt corpus scope).
 #[test]
-fn as_conversion_does_not_cross_a_newline() {
+fn a_leading_as_on_a_new_line_does_not_absorb_the_previous_statement() {
     use crate::sexpr;
-    // The `as` unit-conversion postfix (`value as meter` → `(Unit.in (Unit.of "meter") value)`) must
-    // apply only WITHIN one statement. Statement sequencing juxtaposes forms across lines, so an `as`
-    // beginning a new line must NOT reach back across the newline and absorb the previous statement's
-    // trailing expression — `x as meter` split over two lines is a value `x` then a separate (erroring)
-    // `as meter`, NOT `(x as meter)`. Same boundary the quantity sugar draws; the `as` operator landed
-    // without it, so `def a() = 5.0 <newline> as meter` silently became `def a() = (5.0 as meter)`.
-    //
     // `x <newline> as meter`: `x` is a complete statement; the leading `as` on the next line does not
     // continue it. (`read_ml` tolerates the stray `as`-with-no-left-operand error and still yields a
     // tree; the stray `as`/`meter` land as their own error-recovered forms — the point is `x` is NOT
@@ -2290,17 +2261,6 @@ fn as_conversion_does_not_cross_a_newline() {
     assert!(
         !printed.contains("Unit in"),
         "a leading `as` on a new line must not absorb the previous statement into a conversion: {printed}"
-    );
-    // A genuine SAME-LINE conversion is unchanged — `x as meter` (no intervening newline) still converts.
-    assert_eq!(
-        sexpr::print(&parse_ok("x as meter")),
-        r#"((. Unit in) ((. Unit of) #"meter") x)"#
-    );
-    // Same-line `as` even when a statement follows on the NEXT line: the conversion is `5.0 as meter`,
-    // `x` is the next statement — the newline after the conversion ends it, it does not chain into `x`.
-    assert_eq!(
-        sexpr::print(&parse_ok("5.0 as meter\nx")),
-        r#"(do ((. Unit in) ((. Unit of) #"meter") 5.0) x)"#
     );
 }
 
@@ -2312,12 +2272,9 @@ fn as_conversion_does_not_cross_a_newline() {
 // (`^` tighter than `/`), ml/463-as-conversion-spaced-slash-division `x as meter / 2`→`(/ ((. Unit in) (Unit.of
 // #meter) x) 2)` (a SPACED `/ 2` is a division of the conversion, not part of the compound unit).
 
-#[test]
-fn backtick_escapes_reserved_word() {
-    // `` `let` `` is the name "let", not a let-form.
-    let a = parse_ok("`let`");
-    assert_eq!(a.as_name(a.root), Some("let"));
-}
+// `backtick_escapes_reserved_word` (`` `let` `` is the name "let", not a let-form) MIGRATED to the spec/syntax
+// corpus (inc-6 batch-79): ml/468-bare-backtick-reserved-word `` `let` ``→`let`. (In-call/list backtick escapes
+// are ml/334 `` f(`let`) `` and ml/335 `` [`+`, `-`] ``.)
 
 #[test]
 fn string_unescape_and_nfc() {

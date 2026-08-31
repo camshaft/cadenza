@@ -406,6 +406,11 @@ pass	ml/460-type-suffixed-literal-not-a-quantity
 pass	ml/461-unit-suffix-no-cross-newline
 pass	ml/462-as-conversion-compound-exponent
 pass	ml/463-as-conversion-spaced-slash-division
+pass	ml/464-word-op-after-number-not-a-quantity
+pass	ml/465-quantity-sugar-no-cross-newline
+pass	ml/466-quantity-same-line-then-next-stmt
+pass	ml/467-as-conversion-same-line-then-next-stmt
+pass	ml/468-bare-backtick-reserved-word
 pass	ml/47-import-named-list
 pass	ml/48-import-per-name-rename
 pass	ml/49-const-force-eval-call
