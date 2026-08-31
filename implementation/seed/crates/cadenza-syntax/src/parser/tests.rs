@@ -1786,36 +1786,19 @@ fn bare_world_is_still_an_ordinary_name_not_a_world_decl() {
 //   * ml/423-host-delegation-effect-list `host ask, log in ask.ask()`→`(host (ask log) ((. ask ask)))`.
 //   Each fmt pins the `handle … with`⏎`  | op(…) => …`⏎`in`⏎`body` / `host …, … in body` surface.
 
-#[test]
-fn semicolon_sequences_a_function_body() {
-    // A `;`-separated body folds into a flat `(do …)`, the last element the value — modelling
-    // `a; b` as `let _ = a in b`. The body greedily collects its run and stops at the next
-    // top-level `def` (a declaration keyword ends the sequence, so `g`'s def is NOT swallowed).
-    let a = parse_ok("def f() = a; b; c\ndef g() = 2");
-    let top = a.as_form(a.root, "do").unwrap();
-    assert_eq!(top.len(), 2, "two top-level defs: {top:?}");
-    let f = a.as_form(top[0], "def").unwrap();
-    let body = a.as_form(f[1], "do").unwrap();
-    assert_eq!(
-        body.len(),
-        3,
-        "f's body is the 3-element sequence (do a b c)"
-    );
-    assert_eq!(a.as_name(body[0]), Some("a"));
-    assert_eq!(a.as_name(body[2]), Some("c"));
-}
+// `semicolon_sequences_a_function_body` (a `;`-separated body folds to a flat `(do …)`, greedily collecting
+// its run and STOPPING at the next top-level `def`) + `top_level_forms_juxtapose_without_semicolons` (top-level
+// forms are whitespace-separated, no `;`) MIGRATED to the spec/syntax corpus (inc-6 batch-72):
+// ml/431-semicolon-body-stops-at-next-def `def f() = a; b; c`⏎`def g() = 2`→`(do (def (f) (do a b c)) (def (g)
+// 2))` (body stops at `def g`); the def-juxtaposition `def a = 1 def b = 2`→`(do (def a 1) (def b 2))` is
+// subsumed by ml/203-top-level-value-defs-blank-separated. (`top_level_semicolon_folds…` stays Rust — GAP note below.)
 
-#[test]
-fn top_level_forms_juxtapose_without_semicolons() {
-    // Top-level forms are whitespace-separated — no `;` needed. `def a = 1 def b = 2` is two
-    // distinct root forms, not a body that swallowed the second.
-    let a = parse_ok("def a = 1 def b = 2");
-    let top = a.as_form(a.root, "do").unwrap();
-    assert_eq!(top.len(), 2);
-    assert!(a.as_form(top[0], "def").is_some());
-    assert!(a.as_form(top[1], "def").is_some());
-}
-
+// STAYS RUST pending a reader GAP (corpus-policy: never pin a compiler gap): `f(); g()` (with `;`) →
+// `(do (f) (g))` correctly (pinned at ml/432-semicolon-top-level-folds), but `f() g()` (juxtaposition, no `;`)
+// parses to `(do ((. Qty of) (f) ((. Unit of) #"g")) unit)` — the quantity sugar wrongly eats the call-result
+// `f()` as a magnitude + `g` as a unit. So the "`;` is optional / identical tree" invariant does NOT hold; this
+// test only passes because it checks `len == 2` (the quantity `do` is also len 2). Spec-correct: `f() g()`
+// should be `(do (f) (g))`. Flagged v-syntax + concierge (inc-6 batch-72); once fixed, migrate + retire this.
 #[test]
 fn top_level_semicolon_folds_and_flattens_to_the_same_root() {
     // A `;` between top-level forms is optional: it folds a stmt-level `(do …)` that the root
@@ -1830,28 +1813,12 @@ fn top_level_semicolon_folds_and_flattens_to_the_same_root() {
     assert_eq!(with.head_name(wt[1]), Some("g"));
 }
 
-#[test]
-fn semicolon_in_argument_position_needs_parens() {
-    // A call argument is a single expression: a `;` inside must parenthesize, so `f((a; b))` is a
-    // one-argument call whose argument is the sequence `(do a b)`.
-    let a = parse_ok("f((a; b))");
-    let call = a.as_form(a.root, "f").unwrap();
-    assert_eq!(call.len(), 1, "one argument");
-    let seq = a.as_form(call[0], "do").unwrap();
-    assert_eq!(seq.len(), 2, "the argument is the sequence (do a b)");
-}
-
-#[test]
-fn if_branch_does_not_swallow_the_trailing_sequence() {
-    // `if`'s branches parse at `PREC_SEQ + 1`, so a `;` after the `if` belongs to the enclosing
-    // sequence: `if c then a else b; more` is `(do (if c a b) more)`, not `(if c a (do b more))`.
-    let a = parse_ok("def f() = if c then a else b; more");
-    let f = a.as_form(a.root, "def").unwrap();
-    let body = a.as_form(f[1], "do").unwrap();
-    assert_eq!(body.len(), 2, "body is (do (if …) more)");
-    assert!(a.as_form(body[0], "if").is_some(), "first stmt is the if");
-    assert_eq!(a.as_name(body[1]), Some("more"));
-}
+// `semicolon_in_argument_position_needs_parens` (a call argument is a single expression, so a `;` inside must
+// parenthesize: `f((a; b))` is a one-arg call whose argument is the sequence `(do a b)`) +
+// `if_branch_does_not_swallow_the_trailing_sequence` (`if`'s branches parse at `PREC_SEQ + 1`, so a `;` after
+// the `if` belongs to the ENCLOSING sequence) MIGRATED to the spec/syntax corpus (inc-6 batch-72):
+// ml/434-semicolon-in-arg-needs-parens `f((a; b))`→`(f (do a b))`, ml/435-if-branch-no-swallow-trailing-seq
+// `def f() = if c then a else b; more`→`(def (f) (do (if c a b) more))` (NOT `(if c a (do b more))`).
 
 #[test]
 fn spans_are_total_and_distinct_for_occurrences() {
