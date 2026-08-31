@@ -1,0 +1,4 @@
+(do
+  (@ inline-never (def (h) 1))
+
+  (def (m) (h)))

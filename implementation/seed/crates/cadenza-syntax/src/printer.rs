@@ -6340,25 +6340,14 @@ mod tests {
     // `(def (add a b) (+ a b))`, ml/112-function-def-nullary `def main() = 42`→`(def (main) 42)`,
     // ml/113-lambda-anonymous `fn(x) => x * 2`→`(fn (x) (* x 2))`.
 
-    #[test]
-    fn an_annotated_def_juxtaposes_without_a_spurious_semicolon() {
-        // A top-level `@name def …` FOLLOWED by another form must NOT get a trailing `;`: an annotation is
-        // a self-delimiting form boundary (an `@` only ever begins a fresh annotation), so the next form
-        // juxtaposes, exactly as after a bare `def`. Before, the root-form printer treated the following
-        // `@`-form as "open" and appended a `;` (`@test def a() = unit;`), which then FAILED to re-parse
-        // ("a do block must end in a value form"). `assert_roundtrip` re-parses the printed text, so it
-        // would panic on that breakage — this pins the fix. Two annotated defs in a row is the exact case.
-        let printed = assert_roundtrip("@test def a() = unit\n@test def b() = unit", 80);
-        assert!(
-            !printed.contains(';'),
-            "an annotated def must not gain a trailing `;`: {printed:?}"
-        );
-        // The inline-policy annotation (the original `@` user) juxtaposes the same way.
-        assert!(
-            !assert_roundtrip("@inline-never def h() = 1\ndef m() = h()", 80).contains("1;"),
-            "an @inline-never def must not gain a trailing `;`"
-        );
-    }
+    // `an_annotated_def_juxtaposes_without_a_spurious_semicolon` (a top-level `@name def …` FOLLOWED by
+    // another form must NOT get a trailing `;` — an annotation is a self-delimiting form boundary, so the
+    // next form juxtaposes like after a bare `def`; the old spurious `;` FAILED to re-parse) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-56):
+    //   * ml/362-annotated-def-juxtapose-no-semicolon `@test def a() = unit`⏎`@test def b() = unit`→
+    //     `(do (@ test (def (a) unit)) (@ test (def (b) unit)))` — format.cdz pins the blank-separated, NO-`;` surface.
+    //   * ml/363-annotated-inline-def-juxtapose `@inline-never def h() = 1`⏎`def m() = h()`→
+    //     `(do (@ inline-never (def (h) 1)) (def (m) (h)))`. The no-`;` juxtaposition is the fmt-idempotence witness.
 
     // `value_definition` (`def name = value` — hoisting, so `def` not `let`; AST `(def name value)`, a
     // name atom not a signature list) MIGRATED to the spec/syntax corpus (inc-6 batch-15):
@@ -6452,50 +6441,18 @@ mod tests {
     // contrast (`type C = | A | B(Int64)`, unchanged) is covered by the ml/116-118 sum-type cases; the
     // sexp→ml `print((type …))` oracles are subsumed by these ml cases' fmt goldens.
 
-    #[test]
-    fn nullary_variant_as_a_one_element_list_renders_as_a_type_decl_not_a_backtick_application() {
-        // A nullary variant has TWO arena spellings: a bare atom `A` (from ML `A`) AND a 1-element list
-        // `(A)` (from ML `A()`). `is_type_shape` used to require a LIST variant have len >= 2, so a type
-        // with an `(A)` variant failed the shape check and rendered as the backtick-fallback application
-        // `` `type`(T, A(), B(Int64)) `` — which does NOT round-trip under an `@invariant`/annotation
-        // wrapper (the annotation re-binds to `type` as a value head). v-verification hit this on an
-        // @invariant establish corpus case. Fix: accept a 1-elem list nullary + render `(A)` as `A()`
-        // (the empty parens PRESERVED — see the next paragraph for why NOT bare `A`).
-        //
-        // The 1-elem-list `(A)` variant renders as a proper `type T = | A() | B(Int64)` — the `()`
-        // PRESERVED (NOT bare `A`), because `(A)` (1-elem list) and `A` (atom) are DISTINCT arenas and
-        // corpus_roundtrip requires read(ml(read(x))) == read(x) EXACTLY (no canonicalization). `A()`
-        // re-reads to the 1-elem list `(A)`, so the exact shape survives.
-        assert_eq!(
-            print(&sexpr::read("(type T (A) (B Int64))").unwrap(), 80),
-            "type T =\n  | A()\n  | B(Int64)"
-        );
-        // ...and re-reads BACK to the exact 1-elem-list `(A)` form (round-trip-preserving, NOT canonicalized).
-        assert_eq!(
-            sexpr::print(&parser::read_ml("type T =\n  | A()\n  | B(Int64)").arenas),
-            "(type T (A) (B Int64))"
-        );
-        // The bare-atom nullary `A` (from ML `A`) is a SEPARATE shape and still renders/round-trips as `A`.
-        assert_eq!(
-            print(&sexpr::read("(type T A (B Int64))").unwrap(), 80),
-            "type T =\n  | A\n  | B(Int64)"
-        );
-        // The full v-verification repro: an @invariant on a multi-variant type with a nullary variant
-        // round-trips (the @invariant stays bound to the `(type …)`, not mis-bound to `type` as a value).
-        let src = "(do (@ (invariant (match self (((. T A)) false) (((. T B) x) (> x 0)))) (type T (A) (B Int64))))";
-        let ml = print(&sexpr::read(src).unwrap(), 80);
-        assert!(
-            ml.contains("type T =") && !ml.contains("`type`"),
-            "the annotated type must render as a `type` decl, not a backtick application; got:\n{ml}"
-        );
-        // ml -> sexpr keeps the @invariant bound to the type declaration (arena-idempotent).
-        let back = sexpr::print(&parser::read_ml(&ml).arenas);
-        assert!(
-            back.contains("(@ (invariant") && back.contains("(type T (A) (B Int64))"),
-            "the @invariant must stay bound to the (type …) with the exact (A) shape preserved, not \
-             (@ … type) as an application head; got:\n{back}"
-        );
-    }
+    // `nullary_variant_as_a_one_element_list_renders_as_a_type_decl_not_a_backtick_application` (a nullary
+    // variant has TWO DISTINCT arena spellings — bare atom `A` from ML `A`, and 1-elem list `(A)` from ML
+    // `A()`; the `(A)` form must render `A()` with the `()` PRESERVED, NOT the backtick-`type`-app fallback,
+    // and survives an `@invariant`/annotation wrapper — the annotation stays bound to `(type …)`, not mis-
+    // bound to `type` as a value head) MIGRATED to the spec/syntax corpus (inc-6 batch-56):
+    //   * ml/364-nullary-variant-empty-parens `type T = | A() | B(Int64)`→`(type T (A) (B Int64))` (the `()`
+    //     survives — `(A)` re-reads exactly, no canonicalization to bare `A`).
+    //   * ml/365-invariant-on-type-with-nullary-variant `@invariant(match self with | T.A() => false |
+    //     T.B(x) => x > 0)`⏎`type T = | A() | B(Int64)`→`(@ (invariant (match self (((. T A)) false)
+    //     (((. T B) x) (> x 0)))) (type T (A) (B Int64)))` — the @invariant stays bound to the type, `(A)`
+    //     shape preserved, no `` `type` `` app fallback (the v-verification repro).
+    // The bare-atom nullary contrast `(type T A (B Int64))` is subsumed by ml/118-sum-type-mixed-variants.
 
     // The type-surface round-trips MIGRATED to the spec/syntax corpus (inc-6 batch-14):
     //   * `type_annotated_parameter` (`(: name Type)` binder → `name: Type`) → ml/102-param-type-annotation
