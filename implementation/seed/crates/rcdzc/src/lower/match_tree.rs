@@ -3480,6 +3480,11 @@ pub(super) fn type_at_path(
                 // A LIST element (a `(list …)` payload sub-pattern) — every element has the list's one
                 // element type (homogeneous), so `Elem(i)` over a `Ty::List(e)` is `e` for any `i`.
                 crate::ty::Ty::List(elem) => (**elem).clone(),
+                // A RECORD field (deep variant checking): a record lays out flat by SORTED field order, so
+                // `Elem(i)` reads the `i`-th sorted field's type — letting the match decision-tree resolve
+                // the switch type of a variant nested under a record field (`pattern_constraints`' record
+                // arm descends fields at `Elem(sorted-slot)`, so the switch path lands here).
+                crate::ty::Ty::Record(fields) => fields.values().nth(*i)?.clone(),
                 _ => return None,
             },
             // A rest sublist is the same `List` type as its scrutinee.
