@@ -2240,6 +2240,59 @@ mod tests {
     }
 
     #[test]
+    fn a_match_arm_pattern_rest_round_trips_through_the_sexpr_surface() {
+        // A MATCH-ARM PATTERN REST (`(match xs (#list(h .. t) …))`) canonicalizes the SAME way a
+        // construction spread does: per the operator's `(.. v)`-everywhere migration the reader NORMALIZES a
+        // legacy flat trailing `.. <binder>` to the WRAPPED `(.. binder)` node, so a flat pattern-rest input
+        // prints as the wrapped canonical form and the wrapped form round-trips idempotently. This is the
+        // exact shape the guide playground's 0057/0058 examples carry (`#list(h .. t)` in a `from-list`
+        // match arm) — pinned HERE because a flat pattern-rest and a wrapped one compile to BYTE-IDENTICAL
+        // wasm (verified: the compiler + `Arenas::rest_marker` read both), so the canonicalization is
+        // behaviour-preserving, NOT a read/serialize bug: the correct fix for a flat-committed generated
+        // artifact is to REGENERATE it to this wrapped canonical form, never to un-canonicalize the reader.
+        // (v-guide-infra flagged the absence of a pattern-position round-trip pin, spread-P2 #6452.)
+        for (flat, wrapped) in [
+            // The guide 0057/0058 `from-list` arm — a `#list` head-and-tail destructure.
+            (
+                "(match xs (#list() (Nil unit)) (#list(h .. t) (Cons #tuple(h (from-list t)))))",
+                "(match xs (#list() (Nil unit)) (#list(h (.. t)) (Cons #tuple(h (from-list t)))))",
+            ),
+            // A leading-binders-plus-rest list pattern.
+            (
+                "(match p (#list(a b .. rest) a))",
+                "(match p (#list(a b (.. rest)) a))",
+            ),
+            // The same trailing-rest pattern in the other collection heads (set/map/record/tuple).
+            (
+                "(match s (#set(a .. rest) a))",
+                "(match s (#set(a (.. rest)) a))",
+            ),
+            (
+                "(match m (#map((= 1 v) .. rest) v))",
+                "(match m (#map((= 1 v) (.. rest)) v))",
+            ),
+            (
+                "(match r (#record((= a x) .. rest) x))",
+                "(match r (#record((= a x) (.. rest)) x))",
+            ),
+            (
+                "(match tp (#tuple(a b .. rest) a))",
+                "(match tp (#tuple(a b (.. rest)) a))",
+            ),
+        ] {
+            // A legacy flat trailing `.. <binder>` pattern-rest normalizes to the wrapped canonical form.
+            let a = read(flat).unwrap();
+            assert_eq!(print(&a), wrapped, "flat->wrapped normalize of {flat}");
+            // The wrapped canonical form round-trips idempotently, through text and binary.
+            let w = read(wrapped).unwrap();
+            assert_eq!(print(&w), wrapped, "sexpr round-trip of {wrapped}");
+            let bytes = cadenza_ast::codec::encode(&w);
+            let back = cadenza_ast::codec::decode(&bytes).expect("pattern-rest decodes");
+            assert_eq!(print(&back), wrapped, "binary round-trip of {wrapped}");
+        }
+    }
+
+    #[test]
     fn nativize_compound_source_exempts_effect_op_handler_arm_heads() {
         // An effect op-handler arm names its operation BARE at the arm head. When the op is named after a
         // compound ctor (`set` is the real case — a State effect's setter; also list/map/tuple/record), that
