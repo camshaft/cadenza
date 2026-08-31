@@ -1439,30 +1439,14 @@ fn a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns() {
 /// match-arm binder pass now skips a match whose `core_of` POISONS (the same lowering the CDZ0201 comes
 /// from — they can never disagree).
 #[test]
-fn a_malformed_match_pattern_does_not_also_warn_its_binders_unused() {
-    // A too-wide tuple pattern → CDZ0201 ONLY; no CDZ0306 for `b`/`c` (inside the rejected pattern).
-    let tup =
-        "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b c) a))) (export f))";
-    let all = diags_of(tup);
-    assert!(
-        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")),
-        "the malformed tuple pattern is rejected CDZ0201: {all:?}"
-    );
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
-        "no consequent CDZ0306 for a binder inside the rejected pattern: {all:?}"
-    );
-    // A malformed list-rest pattern (a binder after `..`) → same: CDZ0201 only, no CDZ0306.
-    let lst = "(module m (def (f (: xs (List Int64))) (match xs ((list a .. rest b) a) (_ 0))) (export f))";
-    let all = diags_of(lst);
-    assert!(
-        all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")),
-        "the malformed list-rest pattern is rejected CDZ0201: {all:?}"
-    );
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
-        "no consequent CDZ0306 for a binder inside the rejected list pattern: {all:?}"
-    );
+fn a_well_formed_pattern_still_warns_its_genuinely_unused_binders() {
+    // The MALFORMED-pattern-no-consequent-CDZ0306 halves (a too-wide `#tuple(a b c)` on a 2-tuple, and a
+    // malformed list-rest `#list(a .. rest b)` — each CDZ0201 with NO consequent "unused binding" warning
+    // for the dead binders) migrated to corpus 05-compound-types via the program-scoped `(no-diagnostic
+    // "unused binding")` lever (#6765). What STAYS here (needs a COMPILING program that emits the CDZ0306
+    // warning — a `(Tuple)`/`(List)` entry-param would decline at the export boundary, so these are white-box
+    // warning-count controls): NOT-over-suppressed — a well-formed pattern still warns its genuinely-unused
+    // binders (the suppression is scoped to a poisoned pattern, not the whole binder pass).
     // NOT over-suppressed: a WELL-FORMED pattern whose body TRAPS (a poison in the BODY, not the
     // pattern — the match's `core_of` is NOT a poison) still warns its genuinely-unused binders.
     let trap_body = "(module m (def (f (: t (Tuple Int64 Int64))) (match t ((tuple a b) (trap \"x\")))) (export f))";
