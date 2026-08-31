@@ -192,7 +192,7 @@ pub(crate) fn unframe_precompiled(bytes: &[u8]) -> (Option<&[u8]>, &[u8]) {
 fn result_types_of(
     component_bytes: &[u8],
     opts: &RunOpts,
-) -> std::collections::HashMap<String, cadenza_syntax::ast::Arenas> {
+) -> Result<std::collections::HashMap<String, cadenza_syntax::ast::Arenas>> {
     if opts.precompiled {
         parse_result_types(unframe_precompiled(component_bytes).0)
     } else {
@@ -697,7 +697,7 @@ pub fn run_with_live_objects(
     // comes from the wasm `cdz-result-type` section (JIT) OR the self-framed `.cwasm` (AOT/precompiled) via
     // `result_types_of` — the AOT case is what corpus-28 0008/0026 needed (a serialized `.cwasm` drops the
     // section, so the nix corpus-exec rendered type-blind `#list`). Absent/no-match → `None` = type-blind.
-    let result_types = result_types_of(component_bytes, opts);
+    let result_types = result_types_of(component_bytes, opts)?;
     let result_ty = lookup_result_ty(&result_types, opts.export.as_deref());
 
     let outcome = run_export(
@@ -804,7 +804,7 @@ pub fn run_with_rc_trace(
 
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
-    let result_types = result_types_of(component_bytes, opts);
+    let result_types = result_types_of(component_bytes, opts)?;
     let result_ty = lookup_result_ty(&result_types, opts.export.as_deref());
 
     let outcome = run_export(
@@ -1383,7 +1383,7 @@ pub fn run_capturing(
         // prior type-blind behavior (unchanged).
         CompiledComponent {
             component: load_guest(&engine, component_bytes, opts)?,
-            result_types: result_types_of(component_bytes, opts),
+            result_types: result_types_of(component_bytes, opts)?,
         }
     } else {
         compile_component(component_bytes)?
@@ -1424,8 +1424,9 @@ pub fn compile_component(component_bytes: &[u8]) -> Result<CompiledComponent> {
         jit_component(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     // Byte-scan the component's own `cdz-result-type` custom section (bytes-second): the guest export
     // result-Ty map rides IN the component, so it reaches EVERY invocation (this in-process API AND the
-    // spawned corpus-gate binary that pipes the raw component). Absent → empty map (type-blind).
-    let result_types = parse_result_types(scan_result_type_section(component_bytes).as_deref());
+    // spawned corpus-gate binary that pipes the raw component). Absent → empty map (type-blind); a
+    // present-but-malformed section is a hard error (decode-validity invariant).
+    let result_types = parse_result_types(scan_result_type_section(component_bytes).as_deref())?;
     Ok(CompiledComponent {
         component,
         result_types,
@@ -2617,18 +2618,30 @@ fn read_uleb(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
 /// into the export->result-Ty map. A missing/empty/non-UTF-8 payload yields an empty map (type-blind).
 fn parse_result_types(
     map_bytes: Option<&[u8]>,
-) -> std::collections::HashMap<String, cadenza_syntax::ast::Arenas> {
+) -> Result<std::collections::HashMap<String, cadenza_syntax::ast::Arenas>> {
     let mut map = std::collections::HashMap::new();
     if let Some(bytes) = map_bytes {
         // seq-284 binary-AST wire: the `cdz-result-type` section is ONE canonical binary AST value; the
         // codec decodes each boundary export's structured `Ty` payload into a standalone `Arenas` (rooted
-        // at the type). render.rs WALKS it. TOTAL decode — a malformed section yields no entries and the
-        // render falls back to type-blind.
-        for (name, ty_arena) in cadenza_compile_abi::decode_result_types(bytes) {
+        // at the type). render.rs WALKS it.
+        //
+        // DECODE-VALIDITY INVARIANT (operator directive 2026-08-31): this section IS an expected
+        // cadenza-AST, so use the CHECKED decode — a PRESENT-but-MALFORMED section (non-empty bytes that
+        // fail codec::decode, or a wrong-shaped root) is a HARD ERROR (the compiler emitted a bad
+        // result-type doc), NOT a silent empty map that degrades the render to TYPE-BLIND (the
+        // Qty-erases-to-raw-bytes class root-caused in native-gate-fidelity pt2). An ABSENT/empty section
+        // stays Ok(empty) = the intended type-blind path (a legitimately typeless program / raw `.cwasm`).
+        let entries = cadenza_compile_abi::result_types_wire::decode_result_types_checked(bytes).map_err(|e| {
+            anyhow!(
+                "cdz-run: the cdz-result-type section is a MALFORMED cadenza-AST — the compiler emitted a \
+                 bad result-type doc (decode-validity invariant): {e}"
+            )
+        })?;
+        for (name, ty_arena) in entries {
             map.insert(name, ty_arena);
         }
     }
-    map
+    Ok(map)
 }
 
 /// Look up the result-Ty arena for the export being run. Keyed by the requested export name (or its kebab-
@@ -4635,7 +4648,8 @@ mod tests {
 
         let scanned = scan_result_type_section(&comp).expect("finds cdz-result-type");
         assert_eq!(scanned, payload);
-        let map = parse_result_types(Some(&scanned));
+        let map =
+            parse_result_types(Some(&scanned)).expect("well-formed result-type section decodes");
         let u8s = vec![Val::U8(1), Val::U8(2)];
         assert_eq!(
             crate::render::render_val_typed(
@@ -4655,6 +4669,30 @@ mod tests {
         // No section → None (type-blind).
         let bare = vec![0, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00];
         assert!(scan_result_type_section(&bare).is_none());
+    }
+
+    /// DECODE-VALIDITY INVARIANT (operator directive 2026-08-31, slice-2): a `cdz-result-type` section is
+    /// an expected cadenza-AST, so parse_result_types must HARD-FAIL on a PRESENT-but-MALFORMED section (the
+    /// checked decode returns Err) — the compiler emitted a bad result-type doc — NOT silently return an
+    /// empty map that degrades the render to type-blind (the Qty-erases-to-raw-bytes class). An ABSENT
+    /// section (None) stays Ok(empty) = the intended type-blind path.
+    #[test]
+    fn parse_result_types_hard_fails_on_a_malformed_section_not_type_blind() {
+        // Non-empty junk that carries no valid binary-AST framing → the checked decode rejects it.
+        let junk: &[u8] = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        // Precondition: the checked abi decode genuinely reports this as malformed (self-validating).
+        assert!(
+            cadenza_compile_abi::result_types_wire::decode_result_types_checked(junk).is_err(),
+            "fixture must be a non-empty buffer the checked decode rejects"
+        );
+        let err = parse_result_types(Some(junk)).expect_err("a malformed section must hard-fail");
+        assert!(
+            err.to_string().contains("MALFORMED cadenza-AST"),
+            "the error must name the decode-validity failure; got: {err}"
+        );
+        // An ABSENT section (None) is the legitimate type-blind path → Ok(empty), NOT an error.
+        let absent = parse_result_types(None).expect("absent section is Ok(empty), not an error");
+        assert!(absent.is_empty());
     }
 
     #[test]
