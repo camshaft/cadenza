@@ -19337,6 +19337,25 @@
             (export main)))
   (output (: 1001001 Int64)))
 
+(case "an empty membership pattern #set() matches ANY set, and a duplicate element is idempotent"
+  (doc    "Boundary of the membership (superset) semantics. A pattern matches a set that CONTAINS every
+           named element; `#set()` names ZERO elements, so it matches VACUOUSLY — every set, empty or not
+           (the superset of the empty set is the universe). `empty-matches-any` returns 1 over both a
+           non-empty `{7,8}` and the empty `{}`. And a repeated element is idempotent: `#set(1 1)` is
+           `contains 1` (a set holds each value once), so `dup {1,2}` → 1. Weighted 100·1 + 10·1 + 1 = 111.
+           Pins that a no-element set pattern is not an empty-set test (that would need an exact-size design)
+           but a vacuous match, and that duplicate named elements collapse — both consequences of the
+           blessed contains-semantics.")
+  (input  (do
+            (def (empty-matches-any (: s (Set Int64))) (match s (#set() 1) (_ 0)))
+            (def (dup (: s (Set Int64))) (match s (#set(1 1) 1) (_ 0)))
+            (def (main)
+              (+ (* 100 (empty-matches-any #set(7 8)))
+              (+ (* 10  (empty-matches-any #set()))
+                        (dup #set(1 2)))))
+            (export main)))
+  (output (: 111 Int64)))
+
 (case "a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)"
   (input  (do (def (f (: s (Set Int64))) (match s (#set(1) 0))) (export f)))
   (error  CDZ0210 (message "a set match must end in a catch-all")))
