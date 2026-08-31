@@ -138,7 +138,10 @@ pub(super) fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
                 Core::ConstFloatNan | Core::ConstFloatInf
             ) =>
         {
-            Core::Poison(Reject::decline(
+            // Same PERMANENT correct-reject as the direct-ctor guard (lower.rs) — a coded CDZ0201, the
+            // non-finite-float-has-no-value-form family (resolve.rs literal / arith_fold const fold #6893).
+            Core::Poison(Reject::coded(
+                crate::diag::Code::Malformed,
                 "an active unquote of a non-canonical float (a NaN or infinity has no canonical value form) \
                  cannot lift into an `Ast.Float`; a finite float lifts, matching `(Ast.Float nan)`, \
                  `(Ast.Float Infinity)`, and `,@` of a non-canonical-float list",
