@@ -4929,6 +4929,40 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_construction_spreads_round_trip() {
+        // The construction twin of `degenerate_rest_patterns_parse_permissively_without_panic`: the parser
+        // is scope-blind, so MULTIPLE, LEADING, spread-ONLY, and INTERLEAVED `.. operand` construction
+        // spreads all parse permissively AND round-trip through the ML surface for list/set/map/record —
+        // whatever well-formedness a compound imposes on repeated/positional spreads is lowering's job, not
+        // the parser's. Pins that the permissive edges don't panic and survive parse→print→reparse (so a
+        // printer/reader refactor can't silently break or mis-render the multi-spread surface).
+        for src in [
+            "def f(a, b) = [..a, ..b]",        // two spreads
+            "def f(a) = [..a]",                // spread-only
+            "def f(a, x) = [..a, x, ..a]",     // interleaved with an ordinary element
+            "def f(m1, m2) = #{ ..m1, ..m2 }", // map, two spreads
+            "def f(b1, b2) = { ..b1, ..b2 }",  // record, two spreads
+            "def f(a) = #(..a)",               // set, spread-only
+            "def f(a, b) = #(..a, ..b)",       // set, two spreads
+        ] {
+            let p = parser::read_ml(src);
+            assert!(
+                p.ok(),
+                "degenerate construction spread must parse: {src} -> {:?}",
+                p.errors
+            );
+            let printed = crate::printer::print(&p.arenas, 80);
+            let back = parser::read_ml(&printed);
+            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
+            assert!(
+                p.arenas.structurally_eq(&back.arenas),
+                "degenerate construction spread lost in round-trip\n src:  {src}\n ml:   {printed}\n back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
+    }
+
+    #[test]
     fn construction_spread_round_trips_for_list_set_map_record() {
         // The `.. operand` CONSTRUCTION spread (value position, the twin of the pattern-rest) reads to a
         // wrapped `(.. operand)` element and MUST round-trip through the ML surface for every compound that
