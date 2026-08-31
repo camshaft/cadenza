@@ -1,0 +1,1 @@
+def f() = let x = json{ [1, 2] } in x

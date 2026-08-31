@@ -363,7 +363,14 @@ pass	ml/420-paren-empty-unit-type
 pass	ml/421-handle-stateful-seed-state-last
 pass	ml/422-handle-stateless-seed-elides-unit
 pass	ml/423-host-delegation-effect-list
+pass	ml/424-embedded-json-region
+pass	ml/425-embedded-toml-region
+pass	ml/426-embedded-json-in-let
+pass	ml/427-embedded-mixed-in-tuple
+pass	ml/428-grammar-tag-bare-is-a-name
+pass	ml/429-embedded-json-brace-in-string
 pass	ml/43-match-nested-bottom-up
+pass	ml/430-grammar-tag-spaced-not-embedded
 pass	ml/44-world-deeply-nested-aggregate
 pass	ml/45-world-headed-non-decl-fallback
 pass	ml/46-import-alias-whole-module

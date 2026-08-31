@@ -11439,147 +11439,20 @@ mod tests {
 
     // ---- first-class embedded syntaxes (front-end syntax-switch) ----
 
-    #[test]
-    fn json_embedded_region_grafts_the_json_arena_under_an_embedded_node() {
-        // `json{ … }` switches into the JSON sub-grammar: the region parses via `json::read` and lands as
-        // `(embedded #json <json-arena>)` in the SHARED arena, so the whole toolchain sees ordinary nodes.
-        let a = parse_ok(r#"json{ {"a": [1, true], "b": null} }"#);
-        // The root is the embedded wrapper: head `embedded`, a `#json` symbol, then the grafted subtree.
-        let emb = a
-            .as_form(a.root, "embedded")
-            .expect("root is an (embedded …) node");
-        assert_eq!(emb.len(), 2, "embedded node = grammar tag + subtree");
-        // The grammar tag is a `#json` symbol leaf.
-        match a.get(emb[0]) {
-            crate::ast::Struct::Atom(lid) => assert_eq!(
-                a.leaf(*lid),
-                &Leaf::Sym("json".into()),
-                "the grammar tag is the #json symbol"
-            ),
-            other => panic!("grammar tag is an atom, got {other:?}"),
-        }
-        // The grafted subtree is STRUCTURALLY EQUAL to parsing that JSON body standalone.
-        let standalone = crate::json::read(r#"{"a": [1, true], "b": null}"#).unwrap();
-        let sub = crate::query::Tree::from_arena(&a, emb[1]).to_arena();
-        assert!(
-            sub.structurally_eq(&standalone),
-            "embedded JSON subtree must equal the standalone parse"
-        );
-    }
-
-    #[test]
-    fn toml_embedded_region_grafts_the_toml_arena() {
-        // TOML is the second reserved grammar — proves the switch is grammar-agnostic (no new machinery).
-        // The region body is sliced VERBATIM between the braces (including the surrounding spaces), so the
-        // standalone comparison must parse the identical bytes — TOML layout is significant.
-        let a = parse_ok("toml{ a = 1\nb = [2, 3] }");
-        let emb = a
-            .as_form(a.root, "embedded")
-            .expect("root is an (embedded …) node");
-        let standalone = crate::toml_surface::read(" a = 1\nb = [2, 3] ").unwrap();
-        let sub = crate::query::Tree::from_arena(&a, emb[1]).to_arena();
-        assert!(
-            sub.structurally_eq(&standalone),
-            "embedded TOML subtree must equal the standalone parse"
-        );
-    }
-
-    #[test]
-    fn embedded_region_round_trips_through_the_printer() {
-        // The ML printer emits the region and the ML reader reads it back to a structurally equal arena —
-        // the round-trip contract the shared AST already guarantees, now spanning an embedded surface.
-        let a = parse_ok(r#"json{ {"x": 1} }"#);
-        let printed = crate::printer::print(&a, 80);
-        let back = read_ml(&printed);
-        assert!(
-            back.ok(),
-            "printed embedded form re-parses clean: {printed:?}"
-        );
-        assert!(
-            back.arenas.structurally_eq(&a),
-            "embedded region round-trips: {printed:?}"
-        );
-        // SURFACE fidelity (not just structural): the printer must re-emit the `json{ … }` SURFACE via
-        // the sub-grammar's own printer — NOT the generic application `embedded(#json, json-object(…))` a
-        // fall-through render produces (which is structurally-equal, so `structurally_eq` above passes
-        // either way, but is NOT the readable surface a user wrote / `cdz fmt` must preserve). This pins
-        // the embedded printer arm: without it, formatting a `json{ … }` file destroyed its embedded syntax.
-        assert!(
-            printed.contains("json{") && !printed.contains("embedded("),
-            "embedded region re-prints as the `json{{ … }}` surface, not `embedded(…)`: {printed:?}"
-        );
-    }
-
-    #[test]
-    fn an_embedded_region_nested_in_a_larger_expr_re_emits_its_surface() {
-        // `embedded_region_round_trips_through_the_printer` pins the TOP-LEVEL/def-body position; this pins
-        // the printer's `embedded` arm fires wherever `expr` recurses — an embedded region nested inside a
-        // let / tuple / call / list (realistic: a `json{ … }` config as a fn arg or let binding). Each must
-        // re-emit the `grammar{ … }` SURFACE (not the generic `embedded(…)` application) AND round-trip
-        // structurally. Guards against a regression where only the top-level path re-sugars.
-        for src in [
-            r#"def f() = let x = json{ [1, 2] } in x"#,
-            r#"def f() = g(json{ {"k": "v"} })"#,
-            r#"def f() = (json{ {"a": 1} }, toml{ x = 1 })"#,
-            r#"def f() = [json{ 1 }, json{ 2 }]"#,
-        ] {
-            let a = parse_ok(src);
-            let printed = crate::printer::print(&a, 80);
-            assert!(
-                !printed.contains("embedded("),
-                "nested embedded must re-emit its `grammar{{ … }}` surface, not `embedded(…)`: \
-                 {src:?} -> {printed:?}"
-            );
-            let back = read_ml(&printed);
-            assert!(
-                back.ok(),
-                "printed form re-parses: {printed:?}: {:?}",
-                back.errors
-            );
-            assert!(
-                back.arenas.structurally_eq(&a),
-                "nested embedded round-trips: {src:?} -> {printed:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_grammar_tag_not_glued_to_a_brace_is_an_ordinary_name() {
-        // The switch fires ONLY on a reserved tag GLUED to `{` (no space). A bare `json` — or `json`
-        // followed by a space — stays an ordinary name, so existing programs using such a name are
-        // unaffected. (`json` is not a keyword.)
-        let a = parse_ok("json");
-        assert_eq!(
-            a.as_name(a.root),
-            Some("json"),
-            "bare `json` is a plain name"
-        );
-        // `json` with a space before `{` does NOT switch — it parses as a name (a following record
-        // literal would be a separate form / juxtaposition, never the embedded switch).
-        let spaced = read_ml("json {}");
-        // The point is only that it does NOT become an (embedded …) node.
-        assert!(
-            spaced
-                .arenas
-                .as_form(spaced.arenas.root, "embedded")
-                .is_none(),
-            "a space between the tag and `{{` must NOT trigger the embedded switch"
-        );
-    }
-
-    #[test]
-    fn a_brace_inside_a_json_string_does_not_close_the_region() {
-        // The raw-region scanner tracks string literals: a `}` inside a JSON string must not close the
-        // region early. `{"s": "a}b"}` has a `}` inside the string; the region ends at the FINAL `}`.
-        let a = parse_ok(r#"json{ {"s": "a}b{c"} }"#);
-        let emb = a.as_form(a.root, "embedded").expect("root is (embedded …)");
-        let standalone = crate::json::read(r#"{"s": "a}b{c"}"#).unwrap();
-        let sub = crate::query::Tree::from_arena(&a, emb[1]).to_arena();
-        assert!(
-            sub.structurally_eq(&standalone),
-            "the `}}` inside the string must not close the region early"
-        );
-    }
+    // The embedded-region PARSE-TREE + round-trip tests (`json_embedded_region_grafts…`, `toml_embedded_region_
+    // grafts…`, `embedded_region_round_trips…`, `an_embedded_region_nested_in_a_larger_expr_re_emits…`,
+    // `a_grammar_tag_not_glued_to_a_brace_is_an_ordinary_name`, `a_brace_inside_a_json_string_does_not_close_the_
+    // region`) MIGRATED to the spec/syntax corpus (inc-6 batch-71). A reserved tag GLUED to `{` switches into a
+    // sub-grammar and grafts `(embedded #"tag" <sub-arena>)`; the printer re-emits the `tag{ … }` surface:
+    //   * ml/424-embedded-json-region `json{ {"a": [1, true], "b": null} }`→`(embedded #"json" (json-object
+    //     (member "a" (json-array 1 true)) (member "b" (json-null))))`, ml/425-embedded-toml-region (toml-document).
+    //   * ml/426-embedded-json-in-let (nested in a `let`), ml/427-embedded-mixed-in-tuple (json + toml in a tuple)
+    //     — the printer's embedded arm fires wherever `expr` recurses; round-trip is each case's fmt-idempotence.
+    //   * ml/428-grammar-tag-bare-is-a-name `json`→`json` (bare, not glued) + ml/430-grammar-tag-spaced-not-
+    //     embedded `json {}`→`(do json #record())` (a space before `{` does NOT switch).
+    //   * ml/429-embedded-json-brace-in-string `json{ {"s": "a}b{c"} }` — a `}` inside a JSON string doesn't
+    //     close the region early (the raw-region scanner tracks string literals).
+    // The recovery/span/never-panic embedded tests below STAY Rust (diagnostic-quality / span / totality guards).
 
     #[test]
     fn a_malformed_embedded_body_is_a_recovered_error_not_a_panic() {
