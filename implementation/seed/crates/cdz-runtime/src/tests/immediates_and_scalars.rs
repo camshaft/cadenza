@@ -95,6 +95,36 @@ fn rc_trace_records_events_and_attributes_a_leak() {
 }
 
 #[test]
+fn rc_trace_mark_immortal_is_census_exit_not_a_leak() {
+    // A node marked IMMORTAL leaves the census WITHOUT a freed DROP (a build-once static). It MUST emit a
+    // MARK_IMMORTAL event so the leak summary excludes it — else every immortal constant reads as a false
+    // leak (the dqe17 false-positive: its `#tuple(9 …)` constant is mark-immortal'd, and rc-trace wrongly
+    // reported it leaked while the census/gate said clean).
+    rc_trace_enable(true);
+    let imm = alloc(alloc::vec::Vec::new(), alloc::vec::Vec::from([7u8]));
+    op_mark_immortal(imm);
+    let (events, _truncated) = rc_trace_snapshot();
+    rc_trace_enable(false);
+
+    let a = events
+        .iter()
+        .find(|e| e.op == RC_TRACE_ALLOC)
+        .expect("the alloc is recorded");
+    assert!(
+        events
+            .iter()
+            .any(|e| e.op == RC_TRACE_MARK_IMMORTAL && e.node == a.node),
+        "the marked-immortal node emits a MARK_IMMORTAL census-exit event — the leak summary excludes it"
+    );
+    assert!(
+        !events.iter().any(|e| e.op == RC_TRACE_DROP && e.freed),
+        "an immortal node is never freed (op_drop no-ops); its census-exit is via MARK_IMMORTAL, not a drop"
+    );
+    // `imm` stays immortal (op_drop no-ops on it) and already left the census at the mark — LIVE_NODES
+    // nets to zero for sibling tests without a drop.
+}
+
+#[test]
 fn node_layout_sizes_are_pinned_native() {
     use core::mem::size_of;
     assert_eq!(

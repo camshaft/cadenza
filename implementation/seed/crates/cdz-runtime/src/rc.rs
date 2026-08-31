@@ -32,9 +32,24 @@ pub(crate) fn op_mark_immortal(h: Handle) -> Handle {
     if let Some(node) = unsafe { h.node_mut() }
         && node.rc != IMMORTAL
     {
+        #[cfg(any(test, feature = "debug-counters"))]
+        let before = node.rc;
         node.rc = IMMORTAL;
         #[cfg(any(test, feature = "debug-counters"))]
-        LIVE_NODES.with(|n| n.set(n.get() - 1));
+        {
+            LIVE_NODES.with(|n| n.set(n.get() - 1));
+            // rc-trace: a node LEAVING the census as immortal — record it so the leak summary excludes it
+            // (census-exit, not a leak; not a freed drop). `rc_after` = 0 marks the census-exit.
+            rc_trace_push(
+                RC_TRACE_MARK_IMMORTAL,
+                node.node_id,
+                rc_struct_tag(node),
+                before,
+                0,
+                false,
+                RC_TRACE_NO_PARENT,
+            );
+        }
     }
     h
 }
@@ -62,9 +77,23 @@ pub(crate) fn op_mark_immortal_deep(root: Handle) -> Handle {
         if let Some(node) = unsafe { cur.node_mut() }
             && node.rc != IMMORTAL
         {
+            #[cfg(any(test, feature = "debug-counters"))]
+            let before = node.rc;
             node.rc = IMMORTAL;
             #[cfg(any(test, feature = "debug-counters"))]
-            LIVE_NODES.with(|n| n.set(n.get() - 1));
+            {
+                LIVE_NODES.with(|n| n.set(n.get() - 1));
+                // rc-trace: per marked node — census-exit-as-immortal (excluded from the leak summary).
+                rc_trace_push(
+                    RC_TRACE_MARK_IMMORTAL,
+                    node.node_id,
+                    rc_struct_tag(node),
+                    before,
+                    0,
+                    false,
+                    RC_TRACE_NO_PARENT,
+                );
+            }
             // Mark this node's children transitively. `handles` derefs to `[Handle]`, covering the inline
             // (≤2, e.g. a CHAMP `[k,v]` entry) and heap-spilled (a wide RRB/CHAMP node) cases uniformly.
             for &child in node.handles.iter() {

@@ -923,6 +923,12 @@ pub(crate) const RC_TRACE_ALLOC: u8 = 0;
 pub(crate) const RC_TRACE_DUP: u8 = 1;
 #[cfg(any(test, feature = "debug-counters"))]
 pub(crate) const RC_TRACE_DROP: u8 = 2;
+/// A node LEFT THE CENSUS as IMMORTAL (`mark-immortal`/`mark-immortal-deep`): it is reclaimed-via-immortal
+/// (a build-once static held for the instance's life), NOT a leak and NOT a freed drop. The leak summary
+/// must treat a node with this event as census-exited (excluded from "ALLOC with no freed DROP") — else
+/// every immortal constant reads as a false leak (the dqe17 false-positive that motivated this).
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TRACE_MARK_IMMORTAL: u8 = 3;
 
 // Structural node tag — the runtime is TAGLESS (see `Node`: no stored Cadenza type), so this is the
 // node SHAPE, not the semantic type. `Leaf` (0 handles, raw-bearing: scalar/Bytes/String/BigInt — not
