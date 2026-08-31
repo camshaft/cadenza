@@ -3208,7 +3208,10 @@
             (effect Choose (op pick (-> Unit Int64)))
             (def (main)
               (handle Choose unit ((guess () s (resume 5 s))) (Choose.pick))) (export main)))
-  (error  CDZ0403))
+  (error  CDZ0403
+          (message "closest matches: `pick`")
+          (not "did you mean")
+          (fix (kind delete) (unverified))))
 
 (case "a handler mixing arms of two different effects is rejected"
   (doc    "A handler discharges EXACTLY ONE effect — every arm names an operation of the handle head's
