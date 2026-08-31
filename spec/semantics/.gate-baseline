@@ -1676,7 +1676,6 @@ pass	a closure performing a HANDLED (non-delegated) effect does NOT trip the esc
 pass	a closure returned from a match arm carries the arm's HEAP payload binding
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning Bytes crosses to the host as list<u8>
-pass	a closure returning Unit is declined — Unit has no machine representation
 pass	a closure returning a LIST of tuples (direct-call)
 pass	a closure returning a List crosses as the value form
 pass	a closure returning a Map — canonical key order
@@ -1718,7 +1717,6 @@ pass	a closure's captured perform result survives a LATER state advance (capture
 pass	a closure-driver result feeds a perform's ARGUMENT
 pass	a closure-payload sum built by an if-helper with a reused arg compiles and runs, not CDZ0101 (value parity)
 pass	a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args
-pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a collection-carrying recursion whose base arm reads via a raw match compiles
 pass	a collision node holds a FIXNUM immediate and a BOXED Int64 sharing one hash as distinct keys
@@ -3507,7 +3505,6 @@ pass	a private module member is still visible to a sibling
 pass	a private module member participates in mutual recursion with an exported sibling
 pass	a private sibling defined after its exported caller still resolves
 pass	a produced closure is handed back into a consumer export (the round trip)
-pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 pass	a product of two DIFFERENT base dimensions renders as Unit.*
 pass	a product type of three Qty fields with concrete units constructs and projects
 pass	a product-REACHED quantity equals the directly-composed unit in either written order

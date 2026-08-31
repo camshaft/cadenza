@@ -458,15 +458,18 @@
 ; host-SUPPLIED compound does not. The compiler DECLINES (pinned `(declines)`) rather than emit a component
 ; that can't accept the argument — the "decline rather than miscompile" outcome, now a live guard.
 (case
-  "a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode"
+  "a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)"
   (doc
     "`(def (mk (: xs (List Int64))) (fn (i) ((. List len) xs)))` returns a closure capturing the List
-           `xs`, but `xs` is a `make` PARAMETER the HOST supplies over the boundary — a `(List Int64)` has no
-           scalar host-boundary representation, and there is no host→guest decode of a compound into the guest
-           heap. Declines (pinned `(declines)`). Contrast the round-trip cases, where a compound closure
-           argument is BUILT in-guest and crosses freely.")
+           `xs`, where `xs` is a `make` PARAMETER the HOST supplies over the boundary. A `(List Int64)` param
+           SHOULD decode as `list<s64>` into the guest heap (the same list-param decode built for list<scalar>
+           members), so combined with the closure-factory export the whole thing works — mk(xs) returns a
+           closure and the closure returns `(List.len xs)`. Declines today only because host→guest decode of a
+           compound ENTRY param is not yet built (v-rust-backend ruling; the round-trip cases, where a compound
+           closure arg is BUILT in-guest, already cross freely). Grades Todo; auto-passes when the decode lands.")
   (input (do (def (mk (: xs (List Int64))) (fn ((: i Int64)) (List.len xs))) (export mk)))
-  (declines))
+  (call mk (: #list(10 20 30) (List Int64)) (: 0 Int64))
+  (output (: 3 Int64)))
 
 ; The scope fence is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose result
 ; the closure merely CAPTURES does NOT escape and must not be rejected. The distinction is where the
@@ -7051,14 +7054,22 @@
   (live-objects known-leak))
 
 (case
-  "a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure"
+  "a higher-order closure applied to a GUEST-produced closure arg (should-work)"
   (doc
-    "A single higher-order closure export called DIRECTLY by the host: the host would have to supply the
-           `(-> Int64 Int64)` function argument OVER the boundary (itself a closure resource passed INTO a
-           call), which the current envelope does not accept. Declines (pinned `(declines)`); contrast the
-           round-trip cases above, where the inner closure is built in-guest.")
-  (input (do (def (mk) (fn ((: f (-> Int64 Int64))) (f 10))) (export mk)))
-  (declines))
+    "A higher-order closure `(fn (f) (f 10))` applied to a closure argument. The host can never supply
+           the `(-> Int64 Int64)` arg over the boundary (every guest is Cadenza; a `(call …)` supplies DATA,
+           never behavior), so the witness routes a GUEST-PRODUCED closure `inc` in: `((mk) inc)` = `(inc 10)`
+           = 11. Declines today only because higher-order closure params are a deferred build (v-rust-backend
+           roadmap; the simple sync closure-param shape already landed). Grades Todo; auto-passes when the
+           higher-order-closure boundary lands.")
+  (input
+    (do
+      (def (inc) (fn ((: n Int64)) (+ n 1)))
+      (def (mk) (fn ((: f (-> Int64 Int64))) (f 10)))
+      (def (main) ((mk) inc))
+      (export main)))
+  (call main)
+  (output (: 11 Int64)))
 
 ; A SUM (Option/Result/user sum) result, and a fixed-shape COMPOUND result CONTAINING a variable-length
 ; element (a tuple/record with a List/Map/Set inside), cross as `list<u8>` via the runtime `value-encode`
@@ -7384,15 +7395,19 @@
 ; there is nothing for it to DO across the boundary. Declines (pinned `(declines)`) — a documented boundary,
 ; not a miscompile.
 (case
-  "a closure returning Unit is declined — Unit has no machine representation"
+  "a closure returning Unit crosses the boundary — unit is a zero-result (should-work)"
   (doc
-    "`(def (mk) (fn (x) unit))` — the closure returns `Unit`, which has no machine slot; the lifted
-           lambda's result cannot be represented, so it declines at lift (`a closure's result type has no
-           machine representation`). A pure Unit-returning closure only makes sense as an effect callback, and
-           closures escaping effects are forbidden (CDZ0406) — so a `Unit` result has no boundary role today.
-           Declines (pinned `(declines)`).")
+    "`(def (mk) (fn (x) unit))` — the closure returns `Unit`. Unit IS representable at the boundary: a
+           unit-returning function crosses as a ZERO-RESULT (the serializer emits `0x60 <params> <>`; a plain
+           `(def (main) unit)` export already crosses + passes on both backends). CDZ0406 does NOT apply — this
+           closure is PURE (performs no effect), so it is not an escaping effect-callback, merely vacuous, and
+           vacuous is not forbidden (v-rust-backend ruling, correcting the old `no machine representation`
+           reason). Declines today only because the closure-LIFT guard does not yet map a Unit closure-result
+           to a zero-result functype (the internal-closure path already does). Grades Todo; auto-passes when the
+           lift guard is fixed.")
   (input (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
-  (declines))
+  (call mk (: 0 Int64))
+  (output (: unit Unit)))
 
 ; CONTRAST — the INTERNAL boxed Unit-result closure COMPILES. The sound decline above is about EXPORTING
 ; a Unit-result closure to the HOST (the host `call` boundary needs a scalar result). But a Unit-result
