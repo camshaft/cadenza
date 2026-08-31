@@ -3198,40 +3198,12 @@ fn a_top_level_default_pragma_takes_effect_not_a_placement_fault() {
 // are each now an unknown-directive reject → CDZ0601 (message "`<key>` is not a module directive").
 // --case grades the code + message (all 3 PASS). Pins the #4542 removal; a re-add flips these cases.)
 
-#[test]
-fn a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type() {
-    // `numeric-model.md` §A Module May Declare Its Default Integer Literal Type: a bare, otherwise-
-    // unconstrained integer literal WRITTEN in a `(pragma default-integer <T>)` module takes `<T>`
-    // instead of Int64. Realized by the load-time `default_int_literals` map (keyed by the ORIGINAL
-    // literal node, so it survives the β-copy that reparents an inlined body).
-    //
-    // (1) THE EFFECT: `double`'s bare `2` is a BigInt, so `(* x 2)` with `x : BigInt` is a homogeneous
-    //     BigInt op and `(double (BigInt.of 21))` = 42 : BigInt — clean, no CDZ0301 mix.
-    assert_eq!(
-        reject_code(
-            "(module top (def (main) (do (module crypto (pragma default-integer BigInt) \
-                   (def (double x) (* x 2))) ((. crypto double) ((. BigInt of) 21)))) (export main))"
-        ),
-        None,
-        "a bare literal in a default-integer=BigInt module is a BigInt, so (* x 2) is homogeneous"
-    );
-    // (2) AN EXPLICIT ANNOTATION STILL WINS: `(: 5 Int64)` in the same module is Int64, not BigInt —
-    //     the default only decides the otherwise-unconstrained case (the `Annot` node fixes its type).
-    assert_eq!(
-        reject_code(
-            "(module top (def (main) (do (module m (pragma default-integer BigInt) \
-                   (def (pinned) (: 5 Int64))) ((. m pinned) unit))) (export main))"
-        ),
-        None,
-        "an explicit annotation overrides the module default without a mismatch"
-    );
-    // (3) A literal OUTSIDE any pragma module is unaffected — still the Int64 default (no map entry).
-    assert_eq!(
-        reject_code("(module m (def (main) (+ 2 3)) (export main))"),
-        None,
-        "a literal outside a default-integer module keeps the ordinary Int64 default"
-    );
-}
+// [migrated → spec/semantics/06-numeric-model.sexp] a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type:
+// fully corpus-covered — (1) the BigInt-default EFFECT is "a default-integer pragma makes a bare literal take
+// the declared integer type" ((pragma default-integer BigInt) (def (double x) (* x 2)); (double (BigInt.of
+// 21)) = 42 : BigInt), (2) the annotation-override is "an explicit annotation overrides the default-integer
+// pragma" ((: 5 Int64) → 5 : Int64); (3) a literal OUTSIDE a pragma keeps the Int64 default is the trivial
+// baseline exercised by every non-pragma Int64 arithmetic case. Redundant here; pure cite-delete.
 
 #[test]
 fn overflow_mode_of_resolves_the_single_mode_by_operand_signedness() {
