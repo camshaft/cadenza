@@ -1,0 +1,2 @@
+def main() = match (@test (if a then b else c)) : Int64 with
+  | 3 => x

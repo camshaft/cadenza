@@ -250,6 +250,10 @@ pass	ml/318-annotation-on-if-self-delimiting
 pass	ml/319-annotation-on-list-self-delimiting
 pass	ml/32-match-refutable-nested
 pass	ml/320-parameterized-annotation-on-compound
+pass	ml/321-annotation-operand-infix-simple
+pass	ml/322-annotation-operand-infix-compound
+pass	ml/323-annotation-ascription-match-scrutinee
+pass	ml/324-annotation-ascription-arrow-type
 pass	ml/33-match-multi-clause
 pass	ml/34-match-multi-clause-irref-first
 pass	ml/35-match-single-variant-wrap

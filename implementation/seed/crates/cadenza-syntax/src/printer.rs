@@ -6216,40 +6216,19 @@ mod tests {
     // The deeper post-prefix variants (computed-callee `((g y) x)`, member-chain `(. (. a b) c)`, nested
     // `(+ (* a b) (f x))`) and the self-delimiting `def` are deeper instances of the SAME two rules — subsumed.
 
-    #[test]
-    fn annotation_in_an_operand_position_parenthesizes_the_whole_annotation() {
-        // An `@name` annotation prints on its OWN line above the form — safe only at a STATEMENT/body
-        // position, where the next surface token is a fresh statement. In an OPERAND position (an infix/
-        // ascription operand, a `match` scrutinee), a trailing operator would bind to the annotated form's
-        // LAST line, not the whole `(@ …)`: `(: (@ test (if a b c)) T)` printed `@test\n if … c : T`,
-        // which re-read as `(@ test (if a b (: c T)))` — the `: T` swallowed by the `if`'s else-branch, a
-        // round-trip BREAK. In operand position the whole annotation is now parenthesized.
-        use crate::sexpr;
-        // Ascription of an annotation, as a match scrutinee (the reported break) — round-trips now.
-        for sx in [
-            r#"(def (main) (match (: (@ test (if a b c)) (-> Int64 Bool)) (3 x)))"#,
-            r#"(def (main) (match (: (@ test (if a b c)) Int64) (3 x)))"#,
-            // annotation as an infix operand.
-            r#"(def (main) (+ (@ test (if a b c)) 1))"#,
-            r#"(def (main) (+ (@ test x) 1))"#,
-        ] {
-            let a = sexpr::read(sx).unwrap();
-            let ml = print(&a, 80);
-            let back = parser::read_ml(&ml);
-            assert!(
-                back.ok() && back.arenas.structurally_eq(&a),
-                "annotation in operand position round-trips:\n  sx: {sx}\n  ml: {ml}\n  back: {}",
-                sexpr::print(&back.arenas)
-            );
-        }
-        // A STATEMENT-position annotation must still print WITHOUT a wrapping paren (`@name` on its own
-        // line above the form) — the parenthesization is operand-position ONLY.
-        let stmt = print(&sexpr::read("(def (main) (@ inline (+ a 1)))").unwrap(), 80);
-        assert!(
-            stmt.contains("@inline\n") && !stmt.contains("(@inline"),
-            "a statement-position annotation must not be parenthesized:\n{stmt}"
-        );
-    }
+    // `annotation_in_an_operand_position_parenthesizes_the_whole_annotation` (an `@name` prints on its own
+    // line above the form — safe only at STATEMENT position; in an OPERAND position — an infix/ascription
+    // operand or a `match` scrutinee — the WHOLE `(@ …)` is parenthesized, else a trailing operator binds
+    // to the annotated form's LAST line, e.g. `(: (@ test (if a b c)) T)` re-read as `(@ test (if a b (: c
+    // T)))` — the `: T` swallowed by the `if`'s else-branch, a round-trip BREAK) MIGRATED to the spec/syntax
+    // corpus (inc-6 batch-51, annotation-parenthesize block):
+    //   * ml/321-annotation-operand-infix-simple `def main() = (@test x) + 1`→`(def (main) (+ (@ test x) 1))`.
+    //   * ml/322-annotation-operand-infix-compound `(@test (if a then b else c)) + 1`→`(+ (@ test (if a b c)) 1)`.
+    //   * ml/323-annotation-ascription-match-scrutinee `match (@test (if …)) : Int64 with | 3 => x`→
+    //     `(match (: (@ test (if a b c)) Int64) (3 x))` — the reported round-trip break, fixed.
+    //   * ml/324-annotation-ascription-arrow-type same with `: (Int64 -> Bool)`→`(: (@ …) (-> Int64 Bool))`.
+    // Each format.cdz pins the parenthesized `(@test …)` operand surface. The STATEMENT-position contrast
+    // (annotation NOT parenthesized, `@name` on its own line) is subsumed by ml/315 (`@inline`⏎`(a + 1)`).
 
     // The pragma / `@!` module-directive surface MIGRATED to the spec/syntax corpus (inc-6 batch-20):
     //   * `at_bang_param_pragma_prints_the_module_directive_surface` (`(pragma param (param <kv>…)
