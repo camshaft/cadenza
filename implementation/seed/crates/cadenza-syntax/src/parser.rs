@@ -1535,7 +1535,8 @@ impl<'a> Parser<'a> {
         // operand began with a number, gating the unit suffix, and `pf_spine` the postfix-layer depth
         // counter) and leaves `left`/`cur_start` at the operand; the funnel below folds the chain. Sites
         // NOT yet converted still call the recursive `self.postfix` directly — both produce byte-identical
-        // arenas, so the conversion is incremental + oracle-green at every step.
+        // arenas (the invariant the incremental de-recursion preserved at every step; the differential
+        // oracle that checked it during the rewrite was retired once complete — see the module-level note).
         let mut pf_pending = false;
         let mut pf_num = false;
         let mut pf_spine: u32 = 0;
@@ -1559,7 +1560,7 @@ impl<'a> Parser<'a> {
                     // OPERAND DISPATCH (I3, family-by-family): a worklist-handled operand family pushes a
                     // `Cont` and DESCENDS (read its sub-expr as a fresh level) rather than recursing through
                     // `prefix`; every OTHER operand falls back to the (recursive) `prefix` — so each stage
-                    // stays byte-identical (oracle-green) as families are pulled onto the worklist one at a
+                    // stayed byte-identical as families were pulled onto the worklist one at a
                     // time. quasiquote `` `{ e } `` is the first family (a clean single braced sub-expr).
                     if self.kind() == Kind::Backtick {
                         let head = self.name("quasiquote", cur_start);
@@ -6987,7 +6988,7 @@ impl<'a> Parser<'a> {
                 let word = self.text(t);
                 // A word that heads a `.member` chain or an application is a constructor NAME; a
                 // bare word that is a literal in shape (`true`/`false`/number) is a LITERAL pattern
-                // (matching the oracle); any other bare word is a binding/wildcard name.
+                // (via the same `classify_word` value position uses); any other bare word is a binding/wildcard name.
                 if self.at(Kind::Dot) || self.at(Kind::LParen) {
                     self.name(word, span)
                 } else {
@@ -7496,8 +7497,8 @@ impl<'a> Parser<'a> {
     /// a loop (sibling iteration, NOT recursion — bounded by field count, never nesting depth). The two
     /// families differ only where `record_literal`/`map_literal` do: map drains own-line leading comments
     /// BEFORE the `..`-rest check (dropped on a rest), record checks rest FIRST (no leading on that path);
-    /// map reads a `key` expr where record reads a flat `binder` + optional `= value` / pun. Byte-identical
-    /// to the recursive bodies (arena order, span table, errors) — the `expr_iter` oracle diffs it.
+    /// map reads a `key` expr where record reads a flat `binder` + optional `= value` / pun. Output is
+    /// identical (arena order, span table, errors) to the recursive record/map field readers this replaced.
     fn advance_fields(
         &mut self,
         items: &mut Vec<StructId>,
