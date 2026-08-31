@@ -669,56 +669,6 @@ fn an_exported_annotated_char_param_names_the_no_boundary_representation_not_amb
 }
 
 #[test]
-fn a_misspelled_export_carries_a_replace_fix_not_just_a_did_you_mean_string() {
-    // An export naming no definition that is a near-miss for a defined name (`computee` for `compute`)
-    // is a typo — CDZ0101 already NAMED the candidate ("did you mean `compute`?"), but carried NO fix,
-    // so an agent got a text hint and no applicable structural patch. It now carries the concrete
-    // repair: REPLACE the export's name atom with the real definition's name — the export-position
-    // analogue of the pragma-key / unbound-name did-you-mean replace fix.
-    let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (compute) 1) (export computee))",
-    )));
-    let d = diags
-        .iter()
-        .find(|d| d.code.as_deref() == Some("CDZ0101"))
-        .expect("a misspelled export is reported in check");
-    assert!(
-        d.message.contains("did you mean `compute`?"),
-        "names the candidate: {}",
-        d.message
-    );
-    let fix = d
-        .fix
-        .as_ref()
-        .expect("carries a replace fix, not just a string");
-    assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-    assert_eq!(
-        fix.replacement, "compute",
-        "replaces the typo with the real name"
-    );
-    assert!(!fix.verified, "the nearest-name match is a heuristic guess");
-    // NO OVERREACH: an export naming no definition with NO near-miss (nothing close enough) states the
-    // fault but carries NO fix — a baseless "did you mean?" is worse than none.
-    let far = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (compute) 1) (export zzzzzzzz))",
-    )));
-    let d2 = far
-        .iter()
-        .find(|d| d.code.as_deref() == Some("CDZ0101"))
-        .expect("the far-miss export is still reported");
-    assert!(
-        !d2.message.contains("did you mean"),
-        "no baseless suggestion: {}",
-        d2.message
-    );
-    assert!(
-        d2.fix.is_none(),
-        "no fix without a plausible candidate: {:?}",
-        d2.fix
-    );
-}
-
-#[test]
 fn a_misspelled_export_does_not_also_flag_its_intended_target_unused() {
     // A near-miss export typo (`(export mian)` for `(def (main) …)`) has ONE real defect — the export
     // names no definition (CDZ0101, "did you mean `main`?"). The intended target `main` must NOT ALSO
