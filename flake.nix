@@ -4940,6 +4940,32 @@
           fi
         '';
 
+        # Lean 4.32.2 toolchain (v-wasm-oracle talos wasm-oracle pin) — the OFFICIAL leanprover PREBUILT
+        # elan release, pinned + autoPatchelf'd. ISOLATED from the fleet nixpkgs on purpose: nixpkgs lean4 is
+        # 4.30.0 on BOTH unstable + master and builds from source, and a fleet nixpkgs bump would rotate the
+        # whole toolchain → REQUIRED_RUNTIME_HASH flag-day. Prebuilt is PREFERRED here: the official v4.32.2
+        # release IS the reference talos + Mathlib v4.32.2 are pinned against (a source re-derivation would
+        # drift). Consumed ONLY by oracle-lean (the wasm-oracle half); the fleet default gate never pulls it.
+        # Co-design [[lean-432-toolchain-and-talos-mathlib-codesign]] — atomic-land with the oracle-lean
+        # lean-toolchain bump to v4.32.2 (v-wasm-oracle's zone; flipping oracleLean here alone while the
+        # committed lean-toolchain still says v4.30.0 mismatches, so the wiring lands together with their bump).
+        lean4_432 = pkgs.stdenv.mkDerivation {
+          pname = "lean4";
+          version = "4.32.2";
+          src = pkgs.fetchurl {
+            url = "https://github.com/leanprover/lean4/releases/download/v4.32.2/lean-4.32.2-linux_aarch64.tar.zst";
+            hash = "sha256-ea7n7JD3IXV9Q/dddf4uZZ3tB/C05fFWnpKsmhg+P4E=";
+          };
+          nativeBuildInputs = [ pkgs.autoPatchelfHook pkgs.zstd ];
+          buildInputs = [ (pkgs.lib.getLib pkgs.stdenv.cc.cc) pkgs.zlib pkgs.gmp ];
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp -a . "$out/"
+            runHook postInstall
+          '';
+        };
+
         # ── oracle-lean (L0.1): the Lean reference interpreter as an independent differential oracle ─
         #
         # A pure Lean 4 model of Cadenza semantics over the frozen binary AST, cross-checked against
@@ -5264,6 +5290,8 @@
         # is the wasm module; `.#rcdzc-wasm-hash` its derived content address (for v-agent-harness's
         # compiler-latest store pointer).
         packages.cdz-wasm-pkg = cdzWasmPkg;
+        # The isolated Lean 4.32.2 toolchain (v-wasm-oracle talos pin) — buildable standalone for validation.
+        packages.lean4-432 = lean4_432;
         # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
         packages.guide-shred = guideShred;
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
