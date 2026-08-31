@@ -121,6 +121,29 @@
   (input  (do (def (g (: xs (List (Qty Float64 #"kg")))) xs) (def (main) 0) (export main)))
   (error  CDZ0201 (message "is a UNIT expression, not a bare symbol") (fix (kind replace) (replacement-contains "(Unit.base") (unverified))))
 
+; The VALUE-expression twin: a bare identifier in the SYMBOL-NAME argument of a unit BUILDER — `(Unit.base
+; foot)`, `(Unit.of foot)`, `(Unit.define furlong …)` — is the author writing the unit's name as an
+; identifier where a `#"…"` SYMBOL belongs. It used to resolve as a MISLEADING "unbound name `foot`" (with a
+; did-you-mean to some near value); it now names the symbol requirement ("names its unit with a SYMBOL") and
+; carries the `#"foot"` quote fix. An ORDINARY unbound name (not a unit-builder arg) keeps the plain "unbound
+; name", not the redirect. (Migrated from rcdzc
+; a_bare_name_in_a_unit_builder_names_the_symbol_and_offers_the_hash_quote_fix.)
+(case "a bare name in Unit.base names the symbol requirement with a hash-quote fix"
+  (input  (do (def (main) (Qty.of 1.0 (Unit.base foot))) (export main)))
+  (error  CDZ0201 (message "is not a unit name here") (message "names its unit with a SYMBOL") (fix (kind replace) (replacement "#\"foot\"") (unverified))))
+
+(case "a bare name in Unit.of names the symbol requirement with a hash-quote fix"
+  (input  (do (def (main) (Qty.of 1.0 (Unit.of foot))) (export main)))
+  (error  CDZ0201 (message "is not a unit name here") (fix (kind replace) (replacement "#\"foot\"") (unverified))))
+
+(case "a bare name in Unit.define names the symbol requirement with a hash-quote fix"
+  (input  (do (def (main) (Qty.of 1.0 (Unit.define furlong (Unit.base #"m") 201 1))) (export main)))
+  (error  CDZ0201 (message "is not a unit name here") (fix (kind replace) (replacement "#\"furlong\"") (unverified))))
+
+(case "an ordinary unbound name (not a unit-builder arg) keeps the plain unbound message, not the redirect"
+  (input  (do (def (main) (bar 5)) (export main)))
+  (error  CDZ0101 (message "unbound") (not "is not a unit name here")))
+
 (case "Qty.value recovers the underlying numeric value, discarding the unit"
   (doc    "`(Qty.value (Qty.of 5.0 (Unit.base #\"meter\")))` = 5.0 : Float64 — the explicit exit from
            the dimensional layer (the widening that requires no check, verification-layers.md #Refinement
