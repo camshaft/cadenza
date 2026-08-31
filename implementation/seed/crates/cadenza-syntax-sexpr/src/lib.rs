@@ -412,6 +412,9 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
         OpenAttach,
         CloseParen, // emits `word(")")` then `end()` — the box closer paired with each `cbox`+`(`.
         CloseBox,   // emits `end()` only — the closer for a comment wrapper's `cbox` (no `)`).
+        // A literal word emitted with NO surrounding break — e.g. the `.` glue of the dotted member sugar
+        // `obj.key` (queued between the obj and key `Node`s so they render adjacent, no space).
+        Word(&'static str),
         // A TRAILING `(comment-after "text" node)` re-emitted SAME-LINE after its node: ` ;text`.
         TrailComment(StructId),
     }
@@ -422,6 +425,7 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
             Work::OpenBlank => blank_line(doc),
             Work::OpenHardBreak => doc.hardbreak(),
             Work::OpenAttach => doc.word(" "),
+            Work::Word(s) => doc.word(s),
             Work::CloseParen => {
                 doc.word(")");
                 doc.end();
@@ -530,6 +534,27 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
                         stack.push(Work::CloseBox);
                         stack.push(Work::TrailComment(tail[0]));
                         stack.push(Work::Node(tail[1], top));
+                        continue;
+                    }
+                    // A MEMBER `(. obj key)` on the SOURCE/fmt surface (structural=false): a QUALIFIED-NAME
+                    // member — key a plain Name, obj a Name OR itself a sugarable member (a chain) — renders
+                    // as the DOTTED SUGAR `obj.key` (operator seq-282 ruling B: keep `Option.None` /
+                    // `List.concat` readable rather than desugaring to `(. Option None)`). The reader reads
+                    // `x.y` (dotted token) back to the SAME `Member` node, so it is a pure surface change.
+                    // A COMPOUND obj/key (`(. (f x) field)`, a compound key) stays canonical `(. …)`. Only the
+                    // SOURCE surface sugars: the STRUCTURAL render (structural=true) and the compact value-
+                    // render (`print_node`, used by `render_val` + the corpus round-trip) keep `(. obj key)`
+                    // (so gate outputs + goldens are untouched — seq-282 is a 2-party fmt/guide co-land). A
+                    // CHAIN `a.b.c` = `(. (. a b) c)` sugars fully: `obj` re-enters this arm via the Work
+                    // stack. Emit nothing now; queue `obj` `.` `key` (reversed → source order on pop).
+                    if !structural
+                        && let Some((obj, key)) = a.member_parts(id)
+                        && a.as_name(key).is_some()
+                        && is_dotted_operand_sugarable(a, obj)
+                    {
+                        stack.push(Work::Node(key, false));
+                        stack.push(Work::Word("."));
+                        stack.push(Work::Node(obj, false));
                         continue;
                     }
                     // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
@@ -675,6 +700,18 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         // so it falls back to the marker word `#rational` (mirrors the `#ctor`-style bare-head fallbacks).
         Leaf::Rational => out.push_str("#rational"),
     }
+}
+
+/// Whether `id` is a valid OPERAND for the dotted member sugar `obj.key` (source/fmt surface only): a
+/// plain NAME atom (`Option`, `r`), OR a MEMBER `(. obj' key')` that is itself sugarable — i.e. `key'` is
+/// a Name and `obj'` is recursively sugarable (a chain like `a.b.c` = `(. (. a b) c)`). Anything else (a
+/// compound obj, a non-Name key) is NOT sugarable, so the member stays the canonical `(. …)`. Used by the
+/// pretty printer's member arm to decide whether to emit `obj.key` (seq-282 B) vs `(. obj key)`.
+fn is_dotted_operand_sugarable(a: &Arenas, id: StructId) -> bool {
+    a.as_name(id).is_some()
+        || a.member_parts(id).is_some_and(|(obj, key)| {
+            a.as_name(key).is_some() && is_dotted_operand_sugarable(a, obj)
+        })
 }
 
 /// The reserved surface word for a compound constructor — the inverse of the reader's `#word(` → ctor
@@ -3278,10 +3315,17 @@ mod tests {
     /// A form that fits the width stays on one line — pretty output matches the single-line print.
     #[test]
     fn pretty_keeps_small_forms_on_one_line() {
-        for src in ["(+ 1 2)", "(f a b c)", "42", "(. p x)"] {
+        // For small forms the PRETTY printer agrees byte-for-byte with the compact `print` — EXCEPT a
+        // member access, which the pretty (source/fmt) surface sugars to `obj.key` (seq-282 B) while the
+        // compact/value printer keeps the canonical `(. obj key)`. So a member is exercised separately.
+        for src in ["(+ 1 2)", "(f a b c)", "42"] {
             let a = read(src).unwrap();
             assert_eq!(print_pretty_width(&a, 80), print(&a), "for {src:?}");
         }
+        // A member stays on one line but renders the dotted sugar on the pretty surface.
+        let a = read("(. p x)").unwrap();
+        assert_eq!(print_pretty_width(&a, 80), "p.x");
+        assert_eq!(print(&a), "(. p x)"); // compact/value printer keeps the canonical form
     }
 
     /// A form too wide for the target width breaks: the head hugs the `(`, each child drops to its
@@ -3333,7 +3377,6 @@ mod tests {
     fn pretty_reads_back_to_the_same_arena() {
         for src in [
             "(+ 1 2)",
-            "(let ((p (record (x 1) (y 2)))) (. p x))",
             "(match e ((Some n) n) ((None _) 0))",
             "(f a b c)",
             "(quasiquote (unquote x))",
@@ -3354,6 +3397,70 @@ mod tests {
                 "pretty not idempotent for {src:?}"
             );
         }
+        // A MEMBER-bearing form: the pretty surface sugars `(. p x)` -> `p.x` (seq-282 B), which re-reads to
+        // a STRUCTURALLY-equal `Member` node — but NOT a byte-identical arena, because the dotted-token read
+        // path and the explicit `(. …)` read path differ in transient orphans (the sugar merely EXPOSES that
+        // pre-existing reader-path difference). So the guarantee is structural round-trip + TEXT idempotence,
+        // not arena `==` (the compact/value printer keeps `(. p x)` for the byte-exact path). Corpus round-trip
+        // uses `structurally_eq`, so this is the same contract the gate enforces.
+        {
+            let src = "(let ((p (record (x 1) (y 2)))) (. p x))";
+            let a = read(src).unwrap();
+            let pretty = print_pretty_width(&a, 10);
+            assert!(
+                pretty.contains("p.x"),
+                "expected the dotted sugar in\n{pretty}"
+            );
+            let b = read(&pretty).unwrap();
+            assert!(
+                a.structurally_eq(&b),
+                "member-sugar pretty re-read not structurally equal (pretty:\n{pretty})"
+            );
+            assert_eq!(
+                print_pretty_width(&b, 10),
+                pretty,
+                "member-sugar pretty not idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn pretty_sugars_qualified_name_members_to_the_dotted_form() {
+        // seq-282 B: the SOURCE/fmt (pretty) surface renders a qualified-name member `(. X Y)` as `X.Y`
+        // (readable Option.None / List.concat), while the COMPACT/value printer (`print`, used by render_val
+        // + the corpus round-trip) AND the STRUCTURAL render (render_sexpr, the spec/syntax goldens) KEEP the
+        // canonical `(. X Y)` — so outputs + parser-corpus goldens are untouched (2-party co-land: fmt+guide).
+        for (src, pretty_want) in [
+            ("(. Option None)", "Option.None"), // qualified ctor
+            ("(. List concat)", "List.concat"), // qualified fn
+            ("(. r w)", "r.w"),                 // value field access
+            ("(. (. a b) c)", "a.b.c"),         // chain: obj re-enters the arm
+        ] {
+            let a = read(src).unwrap();
+            assert_eq!(
+                print_pretty_width(&a, 80),
+                pretty_want,
+                "pretty sugar of {src}"
+            );
+            // Compact/value printer keeps the canonical form; structural render (structural=true) too.
+            assert!(
+                print(&a).starts_with("(. "),
+                "compact keeps canonical for {src}"
+            );
+            assert!(
+                render_sexpr(&a).starts_with("(. "),
+                "structural render keeps canonical for {src}"
+            );
+            // The sugared source re-reads to a STRUCTURALLY-equal Member node.
+            let b = read(pretty_want).unwrap();
+            assert!(a.structurally_eq(&b), "sugar round-trip of {src}");
+        }
+        // A COMPOUND obj (or key) is NOT sugarable — stays the canonical `(. …)` even on the pretty surface.
+        let a = read("(. (f x) field)").unwrap();
+        assert!(
+            print_pretty_width(&a, 80).contains("(. "),
+            "a compound-obj member must stay (. …) on the pretty surface"
+        );
     }
 
     /// Generate a random VALID s-expr program (bounded by `depth`) — atoms, infix, calls, `let`, `if`,
