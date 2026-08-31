@@ -585,6 +585,18 @@ theorem denote_normalize_const (ρ : Nat → Value) (w : IntTy) (v : Value) :
   simp only [normalize, denote]
   cases h : Value.asF64? v <;> simp [h, hf]
 
+/-- Float canonicalization (`asF64? v` → `.f64`, else `v` — the shared `.const`/`normalize`/`denote` canon)
+is IDEMPOTENT. A float value maps to its `.f64` (whose `asF64?` is itself), a non-float is unchanged — so
+re-canonicalizing is a no-op. This is the fact that a `normalize`-`const` output (already canon'd via the
+`.const` arm) is canon-STABLE, which the capstone `.app`/`.const` cases rely on when relating a folded
+constant to its denotation. -/
+theorem asF64Canon_idem (v : Value) :
+    (match Value.asF64? (match Value.asF64? v with | some f => Value.f64 f | none => v) with
+     | some g => Value.f64 g | none => (match Value.asF64? v with | some f => Value.f64 f | none => v))
+    = (match Value.asF64? v with | some f => Value.f64 f | none => v) := by
+  have hf : ∀ f : Float, Value.asF64? (.f64 f) = some f := fun _ => rfl
+  cases h : Value.asF64? v <;> simp [h, hf]
+
 /-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
 `normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
 normalized — the structural equations above), and `denote` currently maps every compound to the SAME
