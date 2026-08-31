@@ -473,6 +473,8 @@ pass	TWO sibling inner handlers observe through ONE outer counter
 pass	TWO stacked @ensures COMPOSE: BOTH postconditions are enforced — value-transparent when both hold
 pass	TWO stacked @ensures: a violated INNER postcondition traps even when the OUTER holds
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
+pass	Type.ast INSTANTIATES a generic type's params; Type.ast-generic keeps them verbatim (they differ)
+pass	Type.ast on a RECURSIVE generic stays finite — a nested self-reference is not unfolded
 pass	Type.ast on a non-generic type coincides with Type.ast-generic (verbatim decl)
 todo	Type.ast-generic of a FUNCTION type reflects its arrow surface (TODO: arrow-surface reflection gap)
 pass	Type.ast-generic reflects a STRUCTURAL type's canonical type-surface AST (increment 2)

@@ -1280,8 +1280,10 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
             "Type.ast requires a concrete type-value (a Type.of result or a written type)",
         ));
     };
-    let decl = match &ty {
-        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => *decl,
+    let (decl, ty_args) = match &ty {
+        crate::ty::Ty::Sum { decl, args } | crate::ty::Ty::Nominal { decl, args, .. } => {
+            (*decl, args.to_vec())
+        }
         // Increment 2 — a STRUCTURAL type (a bare record/tuple/`List`/`Map`/`Set`/primitive/`Bytes`/
         // `Float`/`Qty`/`Type`) has no `TypeDecl` to reify, so reflect its CANONICAL type-surface AST via
         // `type_ast` (`lower.rs:1511`) — the same renderer the value-form + `encode_ty` use, so the
@@ -1323,21 +1325,15 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
             };
         }
     };
-    let Some((name, is_generic)) = db
+    let Some((name, params)) = db
         .type_decl_by_occ(decl)
-        .map(|d| (d.name.clone(), !d.params.is_empty()))
+        .map(|d| (d.name.clone(), d.params.clone()))
     else {
         return Core::Poison(Reject::decline(
             "Type.ast: no declaration found for the type",
         ));
     };
-    // The instantiated form (`Type.ast`) of a GENERIC type substitutes its concrete args into the decl —
-    // increment 3. For a non-generic type the instantiated and generic decl coincide, so proceed.
-    if instantiated && is_generic {
-        return Core::Poison(Reject::decline(
-            "Type.ast (instantiated) on a generic type is not yet supported; use Type.ast-generic",
-        ));
-    }
+    let is_generic = !params.is_empty();
     let Some(disc) = ast_variant_discs(db) else {
         return Core::Poison(Reject::decline(
             "Type.ast: the built-in Ast sum is unavailable",
@@ -1354,11 +1350,150 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
             "Type.ast: the type declaration was not found in the module source",
         ));
     };
+
+    // The INSTANTIATED form (`Type.ast`) of a GENERIC type (increment 3): substitute the decl's own type
+    // params with the type-value's concrete args, then reflect. A free LOWERCASE name in a variant payload
+    // IS a type parameter (a type ref is Capitalized — `TypeDecl.params` doc), so substituting a
+    // param-named atom by its arg's canonical type-surface is UNAMBIGUOUS (no shadowing — a type decl
+    // cannot rebind its own param), which is why an AST-level substitution here is capture-safe. The head
+    // param BINDERS are DROPPED (design §7.1 default — the params are gone once concrete), so
+    // `type Pair a b (Pair a b)` at `Pair Int Str` reflects `(type Pair (Pair Int Str))`. FINITENESS
+    // (design §3.3): a nested named ref is copied structurally with its params substituted but NEVER
+    // unfolded — `type List a = Nil | Cons a (List a)` at `List Int` reflects
+    // `(type List (Nil) (Cons Int64 (List Int64)))`, the self-reference staying a named application.
+    if instantiated && is_generic {
+        // A NON-CONCRETE instantiation (an arg still carrying an unresolved `Ty::Var` — a polymorphic
+        // value reflected before it is pinned) has no definite shape to substitute; decline naming the
+        // ambiguity rather than fabricating one (design §3.4). (A CONCRETE generic — `Opt Int64`,
+        // `Lst Int64` — proceeds; a concrete arg that is itself a `Fn` still declines below, as arrow
+        // surfaces are a later increment.)
+        if ty.has_free_var() {
+            return Core::Poison(Reject::decline(
+                "Type.ast requires a concrete type; a type argument is an unresolved type variable \
+                 (annotate the type)",
+            ));
+        }
+        // Render each concrete arg to its canonical type-surface node in a fresh builder; a param appearing
+        // in a payload is replaced by the matching arg surface. An arg with no surface (a `Fn`) declines.
+        let mut b = crate::ast::Builder::new();
+        let mut param_surface: std::collections::HashMap<String, StructId> =
+            std::collections::HashMap::new();
+        {
+            let ncx = db.name_ctx();
+            for (p, arg) in params.iter().zip(ty_args.iter()) {
+                match super::type_ast(&mut b, arg, &ncx) {
+                    Some(surf) => {
+                        param_surface.insert(p.clone(), surf);
+                    }
+                    None => {
+                        return Core::Poison(Reject::decline(
+                            "Type.ast: a type argument has no canonical surface form to substitute (a \
+                             function type — arrow-surface reflection is a later increment)",
+                        ));
+                    }
+                }
+            }
+        }
+        // If some params had no matching arg (arity mismatch — should not happen for a solved concrete
+        // type), fall back to the verbatim generic decl rather than emitting a partial substitution.
+        if param_surface.len() != params.len() {
+            return match arenas_to_ast_value(db, &snapshot, node, &disc) {
+                Some(root) => core_of(db, root),
+                None => Core::Poison(Reject::decline(
+                    "Type.ast: the declaration has a node with no Ast variant",
+                )),
+            };
+        }
+        let params_set: std::collections::HashSet<&str> =
+            params.iter().map(String::as_str).collect();
+        let Some(instantiated_decl) =
+            copy_decl_instantiated(&snapshot, node, &params_set, &param_surface, &mut b)
+        else {
+            return Core::Poison(Reject::decline(
+                "Type.ast: the generic declaration was not a well-formed (type …) form",
+            ));
+        };
+        let arenas = b.finish(instantiated_decl);
+        return match arenas_to_ast_value(db, &arenas, arenas.root, &disc) {
+            Some(root) => core_of(db, root),
+            None => Core::Poison(Reject::decline(
+                "Type.ast: the instantiated declaration has a node with no Ast variant",
+            )),
+        };
+    }
+
+    // Otherwise (`Type.ast-generic`, or `Type.ast` on a NON-generic type): reflect the verbatim decl.
     match arenas_to_ast_value(db, &snapshot, node, &disc) {
         Some(root) => core_of(db, root),
         None => Core::Poison(Reject::decline(
             "Type.ast: the declaration has a node with no Ast variant",
         )),
+    }
+}
+
+/// Copy a generic `(type Name param… variant…)` source declaration into `b` with its type params
+/// SUBSTITUTED by concrete-arg surfaces — the instantiated form for `Type.ast` (increment 3). The head
+/// param binders (bare atoms whose name is a param) are DROPPED; every other node is copied structurally,
+/// and a bare atom whose name is a param is REPLACED by that param's arg-surface node (`param_surface`,
+/// already built in `b`). A nested named ref (`(List a)`) is copied with its params substituted but is
+/// NOT unfolded, keeping the result finite under recursive/self-referential generics. `None` if `node` is
+/// not a `(type …)` form.
+fn copy_decl_instantiated(
+    src: &crate::ast::Arenas,
+    node: StructId,
+    params: &std::collections::HashSet<&str>,
+    param_surface: &std::collections::HashMap<String, StructId>,
+    b: &mut crate::ast::Builder,
+) -> Option<StructId> {
+    let crate::ast::Struct::List(children) = src.get(node) else {
+        return None;
+    };
+    let children = children.clone();
+    // Head: `type`, the Name, then param BINDERS (dropped) + variants (copied, params substituted).
+    let mut out = Vec::with_capacity(children.len());
+    for (i, &child) in children.iter().enumerate() {
+        // A head-level bare atom whose name is a param is a BINDER → drop it (the params are now concrete).
+        // Index 0/1 are the `type` head + the type name — never a binder — so only skip at index >= 2.
+        if i >= 2
+            && let crate::ast::Struct::Atom(l) = src.get(child)
+            && let crate::ast::Leaf::Name(n) = src.leaf(*l)
+            && params.contains(n.as_ref())
+        {
+            continue;
+        }
+        out.push(copy_subst_node(src, child, param_surface, b));
+    }
+    Some(b.list(out))
+}
+
+/// Recursively copy `node` from `src` into `b`, replacing any bare `Leaf::Name` atom that is a type
+/// PARAM with its concrete arg-surface node (`param_surface`); every other node is copied verbatim. A
+/// nested compound is copied structurally (its own param atoms substituted), so a named type reference is
+/// preserved as a named application — never unfolded.
+fn copy_subst_node(
+    src: &crate::ast::Arenas,
+    node: StructId,
+    param_surface: &std::collections::HashMap<String, StructId>,
+    b: &mut crate::ast::Builder,
+) -> StructId {
+    match src.get(node) {
+        crate::ast::Struct::Atom(l) => {
+            let leaf = src.leaf(*l).clone();
+            if let crate::ast::Leaf::Name(n) = &leaf
+                && let Some(&surf) = param_surface.get(n.as_ref())
+            {
+                return surf;
+            }
+            b.atom_leaf(leaf)
+        }
+        crate::ast::Struct::List(kids) => {
+            let kids = kids.clone();
+            let copied: Vec<StructId> = kids
+                .iter()
+                .map(|&c| copy_subst_node(src, c, param_surface, b))
+                .collect();
+            b.list(copied)
+        }
     }
 }
 
