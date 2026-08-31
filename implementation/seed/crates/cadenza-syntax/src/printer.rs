@@ -6530,21 +6530,14 @@ mod tests {
     // ml/205-def-let-body-flat `def f(x) = let y = x + 1 in y * y`→`(def (f x) (let ((y (+ x 1))) (* y y)))`,
     // format.cdz `def f(x) =`⏎`  let y = x + 1 in`⏎`  y * y`. (Structural, width-invariant.)
 
-    #[test]
-    fn single_expression_arm_body_stays_bare_no_unneeded_parens_seq101() {
-        // Operator seq-101 (bug in seq-95): a SINGLE-EXPRESSION arm body (a call/var/literal) must stay
-        // BARE after `=>` — NOT wrapped in parens. Only a body that genuinely needs grouping (a block
-        // form: a let-in chain, a multi-line body) gets the seq-95 `=> ( … )` paren layout. Handle arms
-        // exercise both: non-last call bodies are bare; the non-last `let` body is paren-wrapped.
-        let out = assert_roundtrip(
-            "def main(db0) = handle DbState(db0) with\n  | get-tcol(db) => resume(types-col(db), db)\n  | get-ty(id, db) => resume(require-ty(db, id), db)\n  | set-ty(pair, db) => let (id, t) = pair in resume(unit, fill-ty(db, id, t))\n  | get-resolved(id, db) => resume(require-resolved(db, id), db)\n  in run-program(db0)",
-            100,
-        );
-        assert_eq!(
-            out,
-            "def main(db0) =\n  handle DbState(db0) with\n    | get-tcol(db) => resume(types-col(db), db)\n    | get-ty(id, db) => resume(require-ty(db, id), db)\n    | set-ty(pair, db) => (\n      let (id, t) = pair in\n      resume(unit, fill-ty(db, id, t))\n    )\n    | get-resolved(id, db) => resume(require-resolved(db, id), db)\n  in\n  run-program(db0)"
-        );
-    }
+    // `single_expression_arm_body_stays_bare_no_unneeded_parens_seq101` (a SINGLE-EXPRESSION arm body —
+    // call/var/literal — stays BARE after `=>`, NOT paren-wrapped; only a block-form body — let-in chain /
+    // multi-line — gets the seq-95 `=> ( … )` paren layout) MIGRATED to the spec/syntax corpus (inc-6 batch-59):
+    // ml/373-handle-arm-bodies-bare-vs-paren-seq101 — a `handle DbState(db0) with` whose non-last call arms
+    // stay bare and whose `set-ty` let-in arm is paren-wrapped →`(def (main db0) (handle DbState db0 ((get-tcol
+    // () db (resume …)) … (set-ty (pair) db (let (((tuple id t) pair)) …)) …) (run-program db0)))`. Width-
+    // INVARIANT: the single-expr arms fit inline + the let-in arm always breaks (format.cdz byte-identical to
+    // the deleted width-100 assert at the corpus width).
 
     // `match_arm_flush_is_conditional_on_own_line_seq96_97` (operator seq-96/97: match arms FLUSH with the
     // `match` keyword when `match` starts its OWN line — a let/if body-tail; they stay INDENTED one level
@@ -7012,31 +7005,13 @@ mod tests {
     // The sexp→ml `print((export …))`/`print((. Color *))` oracles are subsumed by the ml cases'
     // format-absent fmt-idempotence (all five inputs are already canonical).
 
-    #[test]
-    fn import_brace_from_surface() {
-        // `(import "path" (name…))` renders `import { name, … } from "path"`; parses back to it.
-        assert_eq!(
-            print(&sexpr::read("(import \"lib\" (helper))").unwrap(), 80),
-            "import { helper } from \"lib\""
-        );
-        assert_eq!(
-            print(&sexpr::read("(import \"lib\" (helper other))").unwrap(), 80),
-            "import { helper, other } from \"lib\""
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml("import { helper, other } from \"lib\"").arenas),
-            "(import \"lib\" (helper other))"
-        );
-        assert_eq!(
-            assert_roundtrip("import { helper, other } from \"lib\"", 80),
-            "import { helper, other } from \"lib\""
-        );
-        // `from` is contextual — still usable as an ordinary name elsewhere.
-        assert_eq!(
-            assert_roundtrip("let from = 5 in\nfrom", 80),
-            "let from = 5 in\nfrom"
-        );
-    }
+    // `import_brace_from_surface` (`(import "path" (name…))` renders `import { name, … } from "path"` and
+    // parses back; `from` is CONTEXTUAL — usable as an ordinary name elsewhere) MIGRATED to the spec/syntax
+    // corpus (inc-6 batch-59):
+    //   * ml/374-import-brace-single-name `import { helper } from "lib"`→`(import "lib" (helper))` (1-elem list).
+    //   * ml/375-from-contextual-name `let from = 5 in`⏎`from`→`(let ((from 5)) from)` (`from` as a plain name).
+    // The MULTI-name form `import { helper, other } from "lib"`→`(import "lib" (helper other))` is subsumed by
+    // ml/47-import-named-list (same 2-name named-list shape); alias/rename are ml/46/48.
 
     // `shadowed_ctor_name_stays_a_call` (a binder for a ctor name makes every NAME-headed occurrence a
     // user application — rendered as a call, NOT sugared; per-name, not all-ctors) MIGRATED to the

@@ -307,6 +307,9 @@ pass	ml/37-match-multi-variant-refutable
 pass	ml/370-let-chain-body-flat-seq86
 pass	ml/371-match-arm-let-body-indented-seq87
 pass	ml/372-if-then-else-ladder-indent-seq89
+pass	ml/373-handle-arm-bodies-bare-vs-paren-seq101
+pass	ml/374-import-brace-single-name
+pass	ml/375-from-contextual-name
 pass	ml/38-match-imported-ctor-refutable
 pass	ml/39-match-unrelated-ctor-refutable
 pass	ml/40-match-open-sum-refutable
