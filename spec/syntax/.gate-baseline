@@ -21,6 +21,10 @@ pass	ml/21-world-record-member
 pass	ml/22-world-variant-record-payload
 pass	ml/23-world-variant-prim-payload
 pass	ml/24-world-enum-flags
+pass	ml/25-match-to-let-tuple
+pass	ml/26-match-to-let-var
+pass	ml/27-match-to-let-wildcard
+pass	ml/28-match-to-let-record
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
