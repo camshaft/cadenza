@@ -1793,12 +1793,16 @@ fn bare_world_is_still_an_ordinary_name_not_a_world_decl() {
 // 2))` (body stops at `def g`); the def-juxtaposition `def a = 1 def b = 2`→`(do (def a 1) (def b 2))` is
 // subsumed by ml/203-top-level-value-defs-blank-separated. (`top_level_semicolon_folds…` stays Rust — GAP note below.)
 
-// STAYS RUST pending a reader GAP (corpus-policy: never pin a compiler gap): `f(); g()` (with `;`) →
-// `(do (f) (g))` correctly (pinned at ml/432-semicolon-top-level-folds), but `f() g()` (juxtaposition, no `;`)
-// parses to `(do ((. Qty of) (f) ((. Unit of) #"g")) unit)` — the quantity sugar wrongly eats the call-result
-// `f()` as a magnitude + `g` as a unit. So the "`;` is optional / identical tree" invariant does NOT hold; this
-// test only passes because it checks `len == 2` (the quantity `do` is also len 2). Spec-correct: `f() g()`
-// should be `(do (f) (g))`. Flagged v-syntax + concierge (inc-6 batch-72); once fixed, migrate + retire this.
+// STAYS RUST pending an OPERATOR DESIGN RULING (corpus-policy: never pin an unsettled spec question). `f(); g()`
+// (with `;`) → `(do (f) (g))` correctly (pinned at ml/432-semicolon-top-level-folds), but `f() g()`
+// (juxtaposition, no `;`) → `(do ((. Qty of) (f) ((. Unit of) #"g")) unit)`. This is NOT a bug: name/call/member-
+// magnitude quantities are FIRST-CLASS GOLDENED (ml/242-245, e.g. `f(x) meter` → `(Qty.of (f x) …)`), so `f() g`
+// as a call-magnitude quantity is CONSISTENT with the quantity spec (v-syntax, reader owner). The real tension is
+// a DESIGN CONFLICT: goldened call/name-magnitude quantities vs this test's "`;`-optional between top-level forms"
+// claim — for `f() g()` only one can win (mirrors `5 meter` quantity vs `5; meter` two forms). v-syntax's read
+// (routed to operator): NARROW the `;`-optional claim to "except where the juxtaposition forms a valid quantity",
+// NOT restrict the quantity sugar. Until the operator rules, pin NEITHER tree in the corpus and keep this test as
+// a `len == 2` structural check. (inc-6 batch-72 flagged; v-syntax + concierge routing to operator.)
 #[test]
 fn top_level_semicolon_folds_and_flattens_to_the_same_root() {
     // A `;` between top-level forms is optional: it folds a stmt-level `(do …)` that the root
@@ -2025,44 +2029,15 @@ fn forall_binder_in_a_param_annotation_desugars_to_leading_type_params() {
     );
 }
 
-#[test]
-fn infix_ascription_rhs_beginning_with_forall_is_a_type_not_an_expression() {
-    use crate::sexpr;
-    // A NESTED (expression-position, infix `:`) ascription `e : forall a. T` must parse its RHS as a
-    // TYPE — `forall` is a contextual keyword the structural `:` sites reach through `type_ref`, but the
-    // infix `:` parses its RHS via the general `expr`. Without the intercept the general path misread
-    // `forall` as an ordinary name and the unit-suffix postfix ate the binder
-    // (`forall a` → `(Qty.of forall (Unit.of #"a"))`), so the printed `e : forall a. T` failed to
-    // re-parse — a printer/parser round-trip gap (the printer already emits the type surface).
-    assert_eq!(
-        sexpr::print(&parse_ok("f(x : forall a. a)")),
-        r#"(f (: x (forall (a) a)))"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("f(x : forall a. a -> a)")),
-        r#"(f (: x (forall (a) (-> a a))))"#
-    );
-    // Nested under a `let` value and under an arithmetic operand — the RHS is still a type.
-    assert_eq!(
-        sexpr::print(&parse_ok("let h = k : forall a. a in h")),
-        r#"(let ((h (: k (forall (a) a)))) h)"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("(q : forall a. a) + 1")),
-        r#"(+ (: q (forall (a) a)) 1)"#
-    );
-    // The intercept is forall-ONLY: every other `:` RHS is unchanged — a value/expression RHS stays an
-    // expression (`x : a + b` is the arithmetic `(+ a b)`, NOT a type), and the other type forms already
-    // round-tripped through the general `expr` path.
-    assert_eq!(
-        sexpr::print(&parse_ok("f(x : a + b)")),
-        r#"(f (: x (+ a b)))"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("f(x : a -> b)")),
-        r#"(f (: x (-> a b)))"#
-    );
-}
+// `infix_ascription_rhs_beginning_with_forall_is_a_type_not_an_expression` (a NESTED, expression-position
+// infix `:` ascription whose RHS begins with `forall` parses the RHS as a TYPE, keeping a `(forall …)` node —
+// distinct from a PARAM-annotation forall which desugars to `(: a Type)`, ml/135-140) MIGRATED to the
+// spec/syntax corpus (inc-6 batch-73): ml/436-infix-ascription-forall-rhs `f(x : forall a. a)`→`(f (: x
+// (forall (a) a)))`, ml/437-infix-ascription-forall-arrow `forall a. a -> a`→`(forall (a) (-> a a))`,
+// ml/438-infix-ascription-forall-in-let `let h = k : forall a. a in h`, ml/439-infix-ascription-forall-in-
+// operand `(q : forall a. a) + 1`. The forall-ONLY intercept contrast (a non-forall `:` RHS stays as-is):
+// ml/440-infix-ascription-value-rhs `f(x : a + b)`→`(f (: x (+ a b)))`, ml/441-infix-ascription-arrow-type-rhs
+// `f(x : a -> b)`→`(f (: x (-> a b)))`.
 
 #[test]
 fn type_application_argument_is_parsed_as_a_type_not_a_value() {

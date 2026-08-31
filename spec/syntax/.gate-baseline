@@ -375,7 +375,13 @@ pass	ml/431-semicolon-body-stops-at-next-def
 pass	ml/432-semicolon-top-level-folds
 pass	ml/434-semicolon-in-arg-needs-parens
 pass	ml/435-if-branch-no-swallow-trailing-seq
+pass	ml/436-infix-ascription-forall-rhs
+pass	ml/437-infix-ascription-forall-arrow
+pass	ml/438-infix-ascription-forall-in-let
+pass	ml/439-infix-ascription-forall-in-operand
 pass	ml/44-world-deeply-nested-aggregate
+pass	ml/440-infix-ascription-value-rhs
+pass	ml/441-infix-ascription-arrow-type-rhs
 pass	ml/45-world-headed-non-decl-fallback
 pass	ml/46-import-alias-whole-module
 pass	ml/47-import-named-list

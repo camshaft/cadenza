@@ -1,0 +1,2 @@
+let h = k : forall a. a in
+h
