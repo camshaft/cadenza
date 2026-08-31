@@ -4969,6 +4969,42 @@ mod tests {
     }
 
     #[test]
+    fn annotated_let_binder_edges_round_trip() {
+        // Harden the annotated-let surface (#6676) across the tricky binder shapes beyond a plain name +
+        // record-type (pinned above): a MULTI-binding let with one annotated + one plain binder; an
+        // annotated PATTERN binder (`(a, b): T`); an annotated tuple-REST pattern binder; and a
+        // FUNCTION-TYPE annotation (`f: (-> A B)`). Each must round-trip structurally through ML — the
+        // annotated-binder path reuses `type_ref` (reader) + the pattern/expr split (printer), so these
+        // exercise that path, not just the scalar case. Round-trip-only (structural), since the printed
+        // surface for e.g. a function type is verified by its own tests; here we pin no-loss composition.
+        for src in [
+            // multi-binding: one annotated, one plain — the annotated one must not derail the others.
+            "(do (def (main) (let (((: n Int64) 5) (m 6)) (+ n m))) (export main))",
+            // annotated PATTERN binder: a tuple destructure with a type annotation.
+            "(do (def (main) (let (((: (tuple a b) (Tuple Int64 Int64)) #tuple(1 2))) a)) (export main))",
+            // annotated tuple-REST pattern binder (the spread-in-pattern surface under an annotation).
+            "(do (def (main) (let (((: (tuple a (.. rest)) (Tuple Int64 Int64)) #tuple(1 2))) a)) \
+             (export main))",
+            // FUNCTION-TYPE annotation on the binder.
+            "(do (def (main) (let (((: f (-> Int64 Int64)) (fn (x) x))) (f 3))) (export main))",
+        ] {
+            let a = sexpr::read(src).expect("sexpr parses");
+            let printed = print(&a, 80);
+            assert!(
+                !printed.contains("`let`"),
+                "annotated let fell back to the quoted-op `let`(…) form\n src: {src}\n ml:  {printed}"
+            );
+            let back = parser::read_ml(&printed);
+            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
+            assert!(
+                a.structurally_eq(&back.arenas),
+                "annotated let-binder edge lost in round-trip\n src: {src}\n ml:  {printed}\n back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
+    }
+
+    #[test]
     fn every_reserved_word_used_as_a_bare_name_backtick_round_trips_to_a_name() {
         // A NAME leaf whose text collides with a keyword or word-operator (`let`, `if`, `match`, `and`,
         // `or`, …) MUST print backtick-quoted (`` `let` ``) so it re-reads as that NAME, not as the
