@@ -123,10 +123,9 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1600 Int64))
-  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn closure-dup over-retention (dup ⊇ drop margin)
-  ; reaching corpus-13 — same class as the #6057/#6089 re-pins; drop-set fix in flight (v-rb+v-mem);
-  ; #5766 tolerate-fewer auto-passes the collapse.
-  (live-objects known-leak))
+  ; tightened back to 0 (#6209 borrowed-env + #6307 fold-reclaim collapsed the #6022 interim re-pin;
+  ; breaker census 2026-08-30, value byte-correct).
+  (live-objects 0))
 
 (case "a balanced-paren scan tracks depth over a runtime string and fails fast on early close"
   (doc    "The delimiter recognizer every parser front-end runs: a `String.at` scalar walk over a
@@ -216,9 +215,10 @@
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 1 Int64))
-  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn closure-dup over-retention (dup ⊇ drop margin)
-  ; reaching corpus-13 — same class as the #6057/#6089 re-pins; drop-set fix in flight (v-rb+v-mem);
-  ; #5766 tolerate-fewer auto-passes the collapse.
+  ; residual leak SURVIVES #6209+#6307 (breaker census 2026-08-30: per-call 18/8/6/0, values
+  ; byte-correct) — NOT the collapsed #6022 fold class; shape = list-stack push/pop of string
+  ; openers (named to v-core-opt with the B multi-apply residuals). #5766 tolerate-fewer
+  ; auto-passes the eventual collapse.
   (live-objects known-leak))
 
 (case "a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN"
@@ -261,9 +261,10 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 321 Int64))
   (call   main (: 0 Int64)) (output (: 411 Int64))
-  ; INTERIM re-pin (breaker, 2026-08-30): #6022 Ty::Fn closure-dup over-retention (dup ⊇ drop margin)
-  ; reaching corpus-13 — same class as the #6057/#6089 re-pins; drop-set fix in flight (v-rb+v-mem);
-  ; #5766 tolerate-fewer auto-passes the collapse.
+  ; residual leak SURVIVES #6209+#6307 (breaker census 2026-08-30: per-call 6/7, values
+  ; byte-correct) — NOT the collapsed #6022 fold class; shape = sliced-field List String
+  ; accumulation (named to v-core-opt with the B multi-apply residuals). #5766 tolerate-fewer
+  ; auto-passes the eventual collapse.
   (live-objects known-leak))
 
 (case "a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len"

@@ -10120,3 +10120,78 @@
   (call   main (: 5 Int64)) (output (: 15 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
   (live-objects known-leak))
+
+(case "hc1 an empty-captures COMBINATOR boxed as a first-class value and applied via call_indirect reclaims its compound shells"
+  (doc    "The INC1 acceptance fence (v-core-opt owned-param compound-shell reclaim; v-runtime Q3 +
+           v-mem disjointness co-verified, breaker two-sided sweep 2026-08-30): two empty-captures
+           combinators over a compound BST — peel (rebuilds the node) and mirror (swaps children) —
+           are BOXED into a variant payload, runtime-selected `(if (= mode 1) (Boxed peel) (Boxed
+           mirror))`, extracted by match and applied → a GENUINE call_indirect (the runtime-selected
+           funcref-through-variant shape is REQUIRED: a statically-known box DEVIRTUALIZES to a
+           direct call and misses the path). The edge this pins: under call_indirect params stay
+           CALLEE-owned; only the env CELL is caller-reclaimed (two DISJOINT drops — no double-free,
+           release-trap clean both modes). depth counts nodes: 3 for the 3-node tree under both
+           combinators.")
+  (input  (do
+    (type BST (Empty) (Node (Tuple BST Int64 BST)))
+    (type FnBox (Boxed (-> BST BST)))
+    (def (peel (: t BST))
+      (match t
+        ((Empty _u) (Empty))
+        ((Node p) (match p (#tuple(l k r) (Node #tuple(l k r)))))))
+    (def (mirror (: t BST))
+      (match t
+        ((Empty _u) (Empty))
+        ((Node p) (match p (#tuple(l k r) (Node #tuple(r k l)))))))
+    (def (unbox-apply (: b FnBox) (: x BST)) (match b ((Boxed f) (f x))))
+    (def (depth (: t BST))
+      (match t ((Empty _u) 0) ((Node p) (match p (#tuple(l _k r) (+ 1 (+ (depth l) (depth r))))))))
+    (def (main (: mode Int64))
+      (do
+        (def tree (Node #tuple((Node #tuple((Empty) 3 (Empty))) 5 (Node #tuple((Empty) 8 (Empty))))))
+        (def b (if (= mode 1) (Boxed peel) (Boxed mirror)))
+        (depth (unbox-apply b tree))))
+    (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  ; main measures 2 (breaker census 2026-08-30, debug 05mPZxve). INC1 v1 was RETRACTED
+  ; 2026-08-31 (captures.is_empty() double-freed at DIRECT-call boundaries — 67 A/B-proven
+  ; regressions; this case pins the INDIRECT face, which stayed sound; the direct-boundary
+  ; face lives in corpus 21). Tighten to (live-objects 0) only when a SOUND reclaim
+  ; discriminator lands, with the owning lane's sign-off + a fresh census.
+  (live-objects known-leak))
+
+(case "hc2 a CAPTURING closure boxed as a value stays EXCLUDED from the combinator shell-reclaim (leak, never double-free)"
+  (doc    "The INC1 negative control (keeps-hold side of the census criterion): `(mk base)` returns a
+           closure CAPTURING the free var `base` (non-empty captures → excluded by the
+           captures.is_empty() discriminator), same variant-box + runtime-selected genuine
+           call_indirect, same compound param + compound-rebuild arm. The exclusion must fail SAFE:
+           retained cells (a leak the reclaim lane later collapses), NEVER a caller-side drop of a
+           callee-owned param (double-free/UAF). Values correct + release-trap clean both modes;
+           this pin must STAY a leak until the capturing-closure reclaim lane lands its own
+           increment — a spontaneous drop to 0 here without that landing is the OVER-SUPPRESSION
+           signal (UAF direction), investigate before tightening.")
+  (input  (do
+    (type BST (Empty) (Node (Tuple BST Int64 BST)))
+    (type FnBox (Boxed (-> BST BST)))
+    (def (unbox-apply (: b FnBox) (: x BST)) (match b ((Boxed f) (f x))))
+    (def (depth (: t BST))
+      (match t ((Empty _u) 0) ((Node p) (match p (#tuple(l _k r) (+ 1 (+ (depth l) (depth r))))))))
+    (def (mk (: base BST))
+      (fn ((: t BST))
+        (match t
+          ((Empty _u) base)
+          ((Node p) (match p (#tuple(l k r) (Node #tuple(l k r))))))))
+    (def (main (: mode Int64))
+      (do
+        (def f1 (mk (Node #tuple((Empty) 99 (Empty)))))
+        (def f2 (mk (Empty)))
+        (def b (if (= mode 1) (Boxed f1) (Boxed f2)))
+        (def tree (Node #tuple((Empty) 5 (Empty))))
+        (depth (unbox-apply b tree))))
+    (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  ; measures 2 on main (breaker census 2026-08-30) — MUST-STAY-LEAK while capturing closures are
+  ; excluded from INC1; see doc for the over-suppression tripwire.
+  (live-objects known-leak))
