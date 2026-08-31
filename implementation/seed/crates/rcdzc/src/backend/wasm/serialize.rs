@@ -927,6 +927,12 @@ pub enum ResultLower {
         /// The recursive plan for writing the value-heap value's canonical form.
         write: CanonWrite,
     },
+    /// The def returns a value-heap `Bytes`/`list<u8>` HANDLE; the boundary result is a `list<u8>` — the
+    /// wrapper copies the runtime bytes into a fresh `cabi_realloc`'d buffer and writes the `(ptr, len)`
+    /// pair to the retptr'd 8-byte return area (mirrors the single-export bytes-roundtrip copy-out
+    /// [`emit_bytes_roundtrip_apply_body`], but the buffer + retarea come from `cabi_realloc` like
+    /// [`ResultLower::SpillRecord`]). `result_vts = [i32]` (the retptr). Needs memory + `cabi_realloc`.
+    CopyBytes,
 }
 
 /// A recursive plan for writing ONE value-heap value's canonical-ABI form into linear memory — the reducer
@@ -1026,6 +1032,8 @@ fn core_module_impl(
             .flatten()
             .any(FieldRebuild::has_bytes_leaf)
             || matches!(w.result, ResultLower::SpillRecord { .. })
+            // A `list<u8>`/Bytes result member allocates its buffer + retarea via `cabi_realloc` too.
+            || matches!(w.result, ResultLower::CopyBytes)
             // A TOP-LEVEL memory-bearing leaf param (String/Bytes) reads its bytes out of linear memory too.
             || w.mem_leaf_params.iter().any(Option::is_some)
     });
@@ -1487,6 +1495,14 @@ fn core_module_impl(
                     &imp,
                     &mut inner,
                 );
+            }
+            // A `list<u8>`/Bytes result member: copy the runtime bytes to a `cabi_realloc`'d buffer and
+            // write the `(ptr,len)` retarea (the multi-member-interface twin of the single-export provider).
+            if matches!(wrap.result, ResultLower::CopyBytes) {
+                let rec = next_local;
+                let retptr = next_local + 1;
+                next_local += 2;
+                emit_result_copy_bytes(rec, retptr, &mut next_local, realloc_abs, &imp, &mut inner);
             }
             inner.push(op::END);
             let n_locals = next_local - p;
@@ -3331,6 +3347,111 @@ fn emit_result_spill(
     // Return the area pointer.
     out.push(op::LOCAL_GET);
     uleb128(retptr as u64, out);
+}
+
+/// Lower a `list<u8>`/`Bytes` RESULT member (a def returning a value-heap Bytes handle) to the canonical
+/// `list<u8>` return: allocate an N-byte buffer via `cabi_realloc`, copy the runtime bytes into it, then
+/// write the `(ptr, len)` pair into a `cabi_realloc`'d 8-byte return area and return that retptr. Mirrors
+/// the copy-out half of [`emit_bytes_roundtrip_apply_body`] (a single-export bytes provider) but sources
+/// its buffer/retarea from `cabi_realloc` like [`emit_result_spill`], so it composes as ONE member of a
+/// multi-member typed interface. `rec`/`retptr` are the two scratch i32 locals the caller reserved; three
+/// more (`n`, `buf`, `i`) come from `next_local`.
+fn emit_result_copy_bytes(
+    rec: u32,
+    retptr: u32,
+    next_local: &mut u32,
+    realloc_abs: u64,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    let get = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(l as u64, out);
+    };
+    let set = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_SET);
+        uleb128(l as u64, out);
+    };
+    let call = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(imp(name), out);
+    };
+    let (n, buf, i) = (*next_local, *next_local + 1, *next_local + 2);
+    *next_local += 3;
+    // rec = the def's result Bytes handle (currently on the stack).
+    set(rec, out);
+    // n = bytes-len(rec)
+    get(rec, out);
+    call("bytes-len", out);
+    set(n, out);
+    // buf = cabi_realloc(orig=0, orig_size=0, align=1, size=n)
+    const_i32(0, out);
+    const_i32(0, out);
+    const_i32(1, out);
+    get(n, out);
+    out.push(op::CALL);
+    uleb128(realloc_abs, out);
+    set(buf, out);
+    // COPY LOOP: i = 0; while i < n { store8(buf + i, bytes-get(rec, i)); i++ }
+    const_i32(0, out);
+    set(i, out);
+    out.push(op::BLOCK);
+    out.push(wasm_abi::BLOCK_EMPTY);
+    out.push(op::LOOP);
+    out.push(wasm_abi::BLOCK_EMPTY);
+    {
+        get(i, out);
+        get(n, out);
+        out.push(op::I32_GE_U);
+        out.push(op::BR_IF);
+        uleb128(1, out);
+        get(buf, out);
+        get(i, out);
+        out.push(op::I32_ADD);
+        get(rec, out);
+        get(i, out);
+        call("bytes-get", out);
+        out.push(op::I32_STORE8);
+        out.push(0x00);
+        out.push(0x00);
+        get(i, out);
+        const_i32(1, out);
+        out.push(op::I32_ADD);
+        set(i, out);
+        out.push(op::BR);
+        uleb128(0, out);
+    }
+    out.push(op::END);
+    out.push(op::END);
+    // retptr = cabi_realloc(0, 0, align=4, size=8) — the (ptr,len) return area.
+    const_i32(0, out);
+    const_i32(0, out);
+    const_i32(4, out);
+    const_i32(8, out);
+    out.push(op::CALL);
+    uleb128(realloc_abs, out);
+    set(retptr, out);
+    // retptr[0] = buf (ptr), retptr[4] = n (len) — i32 stores, 4-byte aligned.
+    get(retptr, out);
+    get(buf, out);
+    out.push(op::I32_STORE);
+    out.push(0x02);
+    out.push(0x00);
+    get(retptr, out);
+    get(n, out);
+    out.push(op::I32_STORE);
+    out.push(0x02);
+    out.push(0x04);
+    // Drop the def result handle (the wrapper consumed it into the buffer).
+    get(rec, out);
+    call("drop", out);
+    // Return the area pointer.
+    get(retptr, out);
 }
 
 /// Recursively write ONE value-heap value's canonical-ABI form into linear memory at `dst_base + offset`.

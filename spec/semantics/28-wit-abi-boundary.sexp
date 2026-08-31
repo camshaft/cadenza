@@ -195,6 +195,22 @@
   (output #record((= items #list(#record((= echo b"\n\x14\x1e"))))))
   (live-objects known-leak))
 
+(case "a bare list<u8>/Bytes RESULT member of a typed export interface crosses (multi-export list<u8> result — operator §2 encode-quoted half)"
+  (doc    "SHAPE 34 — a TOP-LEVEL bare `list<u8>`/Bytes RESULT member of a DECLARED export interface (not a
+           nested record leaf like SHAPE 9). The def returns a value-heap Bytes handle; the typed-interface
+           wrapper copies the runtime bytes into a `cabi_realloc`'d buffer and writes the canonical
+           `(ptr,len)` `list<u8>` return (`ResultLower::CopyBytes` — the multi-member-interface twin of the
+           single-export bytes provider `emit_bytes_roundtrip_apply_body`). This is the `encode-quoted`
+           half of the operator-mandated single-component TWO-export shape (§2, seq-107/108). The bytes
+           cross type-blind as `list<u8>` so the boundary render is `#list` (the consumer's `decode-check`
+           takes the `list<u8>` wire back). Guards the bytes-RESULT-member emit against regression.")
+  (wit-world (world w (export iface (member encode-quoted (func (result (list (u8))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (encodeQuoted) (Bytes.of #list(104 105))) (export encodeQuoted)))
+  (call encode-quoted)
+  (output #list(104 105))
+  (live-objects known-leak))
+
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
   (doc    "SHAPE 10 — a scalar host-import RESULT (clock.now : () -> u64) driven through an imposed WIT world.
            The reducer on-message performs clock.now (nullary scalar host op) and threads the u64 into the

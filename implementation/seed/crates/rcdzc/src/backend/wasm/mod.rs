@@ -625,6 +625,13 @@ pub fn emit(
                     used.insert(op);
                 });
             }
+            // A `list<u8>`/Bytes result member (CopyBytes) copies the runtime bytes out (`bytes-len` +
+            // `bytes-get` loop) and drops the handle — register those so the wrapper body resolves them.
+            if matches!(w.result, serialize::ResultLower::CopyBytes) {
+                used.insert("bytes-len");
+                used.insert("bytes-get");
+                used.insert("drop");
+            }
         }
     }
     let imports: Vec<&runtime_abi::RtOp> = used
@@ -8291,6 +8298,18 @@ fn record_interface_export(
         if let Some(vts) = scalar_result_vts(gr) {
             return Some((ResultLower::Passthrough, vts));
         }
+        // A `list<u8>`/Bytes RESULT member: the def returns a value-heap Bytes handle, which the wrapper
+        // copies to a `cabi_realloc`'d buffer and writes as the canonical `(ptr,len)` `list<u8>` return
+        // (`ResultLower::CopyBytes`). The multi-member typed-interface twin of the single-export bytes
+        // provider (the operator's `encode_quoted() -> list<u8>` member). WIT result must be `list<u8>`.
+        if matches!(gr.strip_nominal(), Ty::Bytes)
+            && matches!(wr, WitType::List(inner) if matches!(**inner, WitType::U8))
+        {
+            return Some((
+                ResultLower::CopyBytes,
+                vec![crate::backend::wasm::lir::ValType::I32.byte()],
+            ));
+        }
         // A payloadless-enum RESULT (all-nullary `Ty::Sum`, `db.is_enum_disc`): the def already returns the
         // raw i32 DISCRIMINANT (select's enum-disc build — no heap handle, no `sum-disc` read), which IS the
         // canonical-ABI core rep of a WIT `enum` (`flatten(Enum) = [I32]`). So it passes straight through as
@@ -8410,6 +8429,12 @@ fn record_interface_export(
         // u32 handle (a leaked pointer, not the lifted value). The result-write machinery (`SpillRecord` /
         // `canon_write_of`) is identical to the record-param route — only the param-shape gate excluded it.
         if matches!(result_lower, serialize::ResultLower::SpillRecord { .. }) {
+            needs_result_wrapper = true;
+        }
+        // A `list<u8>`/Bytes result member (CopyBytes) likewise needs this wrapper for the bytes copy-out —
+        // else the `!any_record && !needs_result_wrapper` gate bails and the export falls through to the
+        // provider path, which crosses the Bytes as a raw `u32` handle instead of the declared `list<u8>`.
+        if matches!(result_lower, serialize::ResultLower::CopyBytes) {
             needs_result_wrapper = true;
         }
         // A payloadless-ENUM result is a `Passthrough` (raw i32 disc), NOT a `SpillRecord`, but it STILL needs
