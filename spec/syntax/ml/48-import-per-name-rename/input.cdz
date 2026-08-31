@@ -1,0 +1,1 @@
+import { descriptor as foo, other } from "m"
