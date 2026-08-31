@@ -4790,6 +4790,48 @@ fn set_literal_ctor_lowers_to_the_same_set_as_set_of() {
     }
 }
 
+/// The SHADOWABLE `set` NAME alias (operator ruling 2026-08-31: keep a shadowable name constructor for set
+/// as the string-form `("set" …)` is dropped at the M3 reader-flip; the set companion of the tuple/record/
+/// list/map aliases, which set uniquely lacked). `(set …)` reduces (via the `set-new` intrinsic) to the
+/// native `#set(…)`, so it lowers to the SAME `Core::SetOf` — constant-element dedup at build — and it is
+/// SHADOWABLE: a local `set` binding suppresses the alias (unlike the unshadowable native `#set(…)` leaf).
+#[test]
+fn set_name_alias_lowers_like_native_and_is_shadowable() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    let fold = |body: &str| -> Core {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let mut db = Db::load(crate::testkit::parse(&src));
+        let d = db.def_by_name("main").expect("def main");
+        let mbody = db.defs[d].body.expect("main has a body");
+        core_of(&mut db, mbody)
+    };
+    // `(set 3 1 2)` — the shadowable name alias — lowers to a 3-element `Core::SetOf`, same as `#set(3 1 2)`.
+    match fold("(set 3 1 2)") {
+        Core::SetOf { elems, .. } => assert_eq!(elems.len(), 3, "(set 3 1 2) → 3-element SetOf"),
+        other => panic!("(set 3 1 2) must lower to Core::SetOf, got {other:?}"),
+    }
+    // Constant elements DEDUP at build (like the native literal): `(set 1 1 2)` is a 2-element set.
+    match fold("(set 1 1 2)") {
+        Core::SetOf { elems, .. } => {
+            assert_eq!(elems.len(), 2, "(set 1 1 2) dedups to 2-element SetOf")
+        }
+        other => panic!("(set 1 1 2) must lower to Core::SetOf, got {other:?}"),
+    }
+    // SHADOWABLE: a local `set` binding suppresses the alias — `(let ((set 7)) set)` is the Int 7, NOT a
+    // set constructor. (The native `#set(…)` leaf is unshadowable; the NAME alias is the shadowable form the
+    // operator ruling endorses.) The whole `main` returns 7, so it lowers to a constant, not a `SetOf`.
+    // main returns 7 (a constant), so it lowers to a constant int, NOT a Core::SetOf.
+    if let Core::SetOf { .. } = fold("(let ((set 7)) set)") {
+        panic!("a local `set` binding must SHADOW the set alias, not build a set");
+    }
+    // A shadowed `set` used arithmetically still lowers cleanly (the alias does not leak into the local).
+    if let Core::SetOf { .. } = fold("(let ((set 7)) (+ set 1))") {
+        panic!("a shadowed `set` in `(+ set 1)` must not resurrect the set alias");
+    }
+}
+
 #[test]
 fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
     use crate::core::Core;

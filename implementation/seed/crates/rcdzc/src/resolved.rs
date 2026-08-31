@@ -442,6 +442,14 @@ pub enum Prim {
     /// type is `Ty::List(elem)` not a per-position product. Lowers to `Core::ListNew{elems}` (built on
     /// the persistent `vec-*` heap). The tuple/record companion for the homogeneous sequence.
     ListNew,
+    /// A SET VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `set` NAME alias (operator ruling
+    /// 2026-08-31: keep a SHADOWABLE name constructor for set as the string-form `("set" …)` is dropped at
+    /// the M3 reader-flip). Applying it (`(set 1 2 3)`) reduces to the native `#set(1 2 3)` form, resolving
+    /// to `Resolved::Set` → `Core::SetOf` (constant elements dedup at build) — IDENTICAL to the native
+    /// literal, so a shadowable `(set …)` and the unshadowable `#set(…)` denote the same set. VARIADIC,
+    /// homogeneous. The set companion of `ListNew`/`TupleNew`/`RecordNew`/`MapNew` (set uniquely lacked a
+    /// name alias until now — it had only the native leaf + the dropped string form).
+    SetNew,
     /// `List.len` — the length of a list, an `Int64`. The `(meta apply)` of the `len` field of the `List`
     /// prelude module. Lowers to the runtime `vec-len` op.
     ListLen,
@@ -924,6 +932,7 @@ impl Prim {
             "tuple-split-at" => Some(Prim::TupleSplitAt),
             "tuple-pop" => Some(Prim::TuplePop),
             "list-new" => Some(Prim::ListNew),
+            "set-new" => Some(Prim::SetNew),
             "list-len" => Some(Prim::ListLen),
             "list-push" => Some(Prim::ListPush),
             "list-prepend" => Some(Prim::ListPrepend),
