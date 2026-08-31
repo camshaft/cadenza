@@ -6024,27 +6024,14 @@ mod tests {
     // The `print(sexpr::read(…)) == ml` sexp→ml oracle checks are subsumed by each ml case's format-absent
     // fmt-idempotence (and case 67's explicit format.cdz for the quoted→sugar canonicalization).
 
-    #[test]
-    fn a_hash_prefixed_name_is_backtick_escaped_to_disambiguate_from_a_symbol() {
-        // A `Leaf::Name` whose text STARTS WITH `#` (e.g. the s-expr `#price` NAME, as opposed to the
-        // `#"price"` SYMBOL) must print backtick-escaped as `` `#price` `` in ML — a bare `#price` there
-        // lexes as a SYMBOL (`Leaf::Sym`), a DIFFERENT node, so the backtick is load-bearing for the
-        // round-trip. This edge sits right next to the `Record.with(r, #field, v)` symbol-operand surface
-        // (a `#`-headed name vs a `#`-symbol is exactly the ambiguity the record-update feature's `#field`
-        // operand leans on), yet no test pinned the NAME side — pin it so a printer change can't drop the
-        // escape and silently reinterpret a `#`-name as a symbol.
-        // The s-expr oracle's `#price` is a Name leaf; ML must backtick it.
-        assert_eq!(
-            print(&sexpr::read("(def (f) #price)").unwrap(), 80),
-            "def f() = `#price`"
-        );
-        // And the ML backtick form round-trips: `` `#price` `` -> Name `#price` -> `` `#price` ``.
-        assert_eq!(assert_roundtrip("`#price`", 80), "`#price`");
-        // Contrast (the SYMBOL side, already covered by symbol_sugar_round_trips): a bare ML `#price`
-        // reads to a `Leaf::Sym` and prints back as the bare `#price` sugar — the two `#price` surfaces
-        // are DISTINCT nodes, and each round-trips to its own spelling.
-        assert_eq!(assert_roundtrip("#price", 80), "#price");
-    }
+    // `a_hash_prefixed_name_is_backtick_escaped_to_disambiguate_from_a_symbol` (a `Leaf::Name` whose text
+    // STARTS WITH `#` must print backtick-escaped `` `#price` `` — a bare `#price` in ML lexes as a SYMBOL,
+    // a DIFFERENT node, so the backtick is load-bearing) MIGRATED to the spec/syntax corpus (inc-6
+    // batch-25): ml/193-hash-prefixed-name-backtick `` `#price` ``→ tree `#price` (a Name leaf; note
+    // render_sexpr renders the `#`-Name as bare `#price`, DISTINCT from a Sym's `#"…"` — cf. ml/65
+    // `#meter`→`#"meter"`), ml/194-hash-prefixed-name-in-def `def f() = `#price``→`(def (f) #price)`. The
+    // SYMBOL contrast (`#price`→bare `#price` sugar) is already covered by the symbol_sugar cases
+    // (ml/65-71). The `print((def (f) #price))` sexp→ml oracle is subsumed by ml/194's fmt-idempotence.
 
     // `quantity_literal_round_trips` (the concise `<num> name` surface for `(Qty.of <num> (Unit.of
     // #"name"))`, its tighter-than-any-operator binding, and the VERBOSE canonicalization of compound
@@ -6754,54 +6741,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn open_sum_row_variable_round_trips() {
-        // OPEN SUM (open-sums OS1): a trailing `.. r` row-variable marker after the last variant. It is
-        // the flat two-sibling convention — `Name("..")` then a lowercase `Name` — as the type list's
-        // final two children, NOT a wrapper node (matches `db.rs::scan_type_decl` + the s-expr corpus).
-        // It prints on its own line as `.. r` (NOT as spurious `| ..` / `| r` variants).
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("type T =\n  | Known(Int64)\n  | Unknown(String)\n  .. r").arenas
-            ),
-            "(type T (Known Int64) (Unknown String) .. r)"
-        );
-        assert_eq!(
-            assert_roundtrip("type T = | Known(Int64) | Unknown(String) .. r", 80),
-            "type T =\n  | Known(Int64)\n  | Unknown(String)\n  .. r"
-        );
-        // The canonical s-expr open sum prints back to the `.. r` ML surface.
-        assert_eq!(
-            print(
-                &sexpr::read("(type Vocab (Known Unit) (Unknown Unit) .. r)").unwrap(),
-                80
-            ),
-            "type Vocab =\n  | Known(Unit)\n  | Unknown(Unit)\n  .. r"
-        );
-        // A CLOSED sum (no `.. r`) is unchanged — a trailing lowercase would be a nullary variant, but
-        // there is none here; the two-sibling peel only fires on a `..` second-to-last atom.
-        assert_eq!(
-            assert_roundtrip("type C = | A | B(Int64)", 80),
-            "type C =\n  | A\n  | B(Int64)"
-        );
-        // A ZERO-named-variant open sum (`type Opaque = .. r`) — the body is ONLY a row tail, no
-        // variants. The parser must not require a leading variant (it skips the variant loop at a `..`
-        // head), and the printer emits `.. r` on its own line. Round-trips through both ML and s-expr.
-        // (Regression: `type_expr`'s variant loop used to call `variant()` unconditionally, so it hit
-        // `..` expecting a name and failed to re-parse the printed form — a trunk-red round-trip gap.)
-        assert_eq!(
-            sexpr::print(&parser::read_ml("type Opaque =\n  .. r").arenas),
-            "(type Opaque .. r)"
-        );
-        assert_eq!(
-            assert_roundtrip("type Opaque = .. r", 80),
-            "type Opaque =\n  .. r"
-        );
-        assert_eq!(
-            print(&sexpr::read("(type Opaque .. r)").unwrap(), 80),
-            "type Opaque =\n  .. r"
-        );
-    }
+    // `open_sum_row_variable_round_trips` (OPEN SUM OS1: a trailing `.. r` row-variable marker after the
+    // last variant — the flat two-sibling `Name("..")` then a lowercase `Name` convention, NOT a wrapper;
+    // prints on its own line as `.. r`, not spurious `| ..`/`| r` variants) MIGRATED to the spec/syntax
+    // corpus (inc-6 batch-25): ml/195-open-sum-row-variable
+    // `type T = | Known(Int64) | Unknown(String) .. r`→`(type T (Known Int64) (Unknown String) .. r)`,
+    // ml/196-open-sum-zero-variant `type Opaque = .. r`→`(type Opaque .. r)` (body is ONLY a row tail, no
+    // variants — the parser skips the variant loop at a `..` head; a prior regression failed to re-parse
+    // the printed form). Both carry a format.cdz for the one-per-line `type … =` surface. The CLOSED-sum
+    // contrast (`type C = | A | B(Int64)`, unchanged) is covered by the ml/116-118 sum-type cases; the
+    // sexp→ml `print((type …))` oracles are subsumed by these ml cases' fmt goldens.
 
     #[test]
     fn nullary_variant_as_a_one_element_list_renders_as_a_type_decl_not_a_backtick_application() {
