@@ -28,7 +28,7 @@ pub enum DeclineId {
     MatchOverHeapCollectionScrutinee,
     ///A recursive function applied where it would need runtime specialization (the eval beta-reduction recursion guard, eval.rs); reworded off deferral wording to "which is not supported" by v-core-opt #6565.
     RecursiveFunctionRuntimeSpecialization,
-    ///A deeper compound sub-pattern below a record field, in a match OR a binding pattern. NARROWED FINAL RESIDUAL: v-ast-compound BUILT the POSITIONAL (Elem-reachable) case — #6890 (match: top-level record + record-nested-in-tuple) + #6911 (binding: def-param/let via check_binding_pattern + last_binder_named) — those now BIND. What STILL declines (this id): (1) a nested RECORD below a record field (#record((= x #record((= y v))))) — needs a deferred NAME-KEYED slot (records project by name->sorted-slot, not a resolve-time Elem index); (2) a VARIANT below a record field (#record((= x (Some c)))) — needs a Payload-step HEAD threaded through the RecordField's sub_heads. Both in match AND binding. Emit sites tagged declined(id): resolve.rs last_binder_named + lower/match_tree.rs check_binding_pattern (binding); resolve.rs match_arm_record_binds Unwireable + Case-6rec-nested-decline (match).
+    ///A refutable VARIANT sub-pattern below a record field (#record((= x (Some c)))), in a match OR a binding pattern — the sole remaining residual. v-ast-compound BUILT everything else: the POSITIONAL Elem-reachable case (#6890 match + #6911 binding) AND the RECORD/tuple/list-below-a-field case (#6944, name-keyed RecordSubStep::Field, both faces) — those all BIND now. What STILL declines (this id): only a VARIANT below a record field, which is REFUTABLE and needs the match-arm switch-lowering path (a separate increment). Emit sites: binding — resolve.rs last_binder_named (has_variant→declined) + lower/match_tree.rs check_binding_pattern; match — resolve.rs match_arm_record_binds Unwireable + Case-6rec-nested skips Payload → Case-6rec-nested-decline.
     NestedRecordFieldPatternDescent,
     ///A closure crossing the host boundary whose parameter, result, or capture type has no machine representation — one family over the 3 sibling diag.rs declines CLOSURE_PARAM/RESULT/CAPTURE_NO_REPR. A fully-typed closure crosses via the host-closure resource; these are the un-built frontier (e.g. a bare `(fn (v1) v1)` in a list whose v1 solves to Any — infer recovers the param type from an enclosing higher-order arrow when it can, this face cannot). Fuzzer-surfaced (v-cdz-smith reachability sweep #6878, faces #1/#6); classified feature-gap by v-rust-backend. NUANCE: the pure-Any param subcase borders the CDZ0203 annotate-it undetermined-type reject — kept as a closure-boundary family tag; the operator may reclassify the pure-Any face to a coded CDZ0203 reject later.
     WasmClosureBoundaryNoRepr,
@@ -126,7 +126,7 @@ impl DeclineId {
                 "a recursive function needs runtime specialization"
             }
             DeclineId::NestedRecordFieldPatternDescent => {
-                "a nested compound sub-pattern below a record field"
+                "a variant sub-pattern below a record field"
             }
             DeclineId::WasmClosureBoundaryNoRepr => {
                 "a closure's param, result, or capture type has no machine representation"
