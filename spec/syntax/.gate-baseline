@@ -229,6 +229,12 @@ pass	ml/299-multiline-doc-header-on-type
 pass	ml/30-match-refutable-literal
 pass	ml/300-multiline-doc-header-on-effect
 pass	ml/301-doc-before-effect-two-ops
+pass	ml/302-module-leading-doc
+pass	ml/303-module-in-body-doc
+pass	ml/304-module-doc-only
+pass	ml/305-module-trailing-doc
+pass	ml/306-module-trailing-comment
+pass	ml/307-module-trailing-doc-empty-body
 pass	ml/31-match-refutable-guarded
 pass	ml/32-match-refutable-nested
 pass	ml/33-match-multi-clause

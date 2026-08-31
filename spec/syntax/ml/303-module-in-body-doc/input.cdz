@@ -1,0 +1,4 @@
+module M {
+  /// on def
+  def y() -> Int64 = 1
+}
