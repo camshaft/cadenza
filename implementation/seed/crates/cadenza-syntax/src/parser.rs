@@ -10460,55 +10460,17 @@ mod tests {
     // 1))`, ml/394-bin-literal-dependent-size `b[u16(Bytes.len(payload)), bytes(payload)]`→`(bin (u16 ((. Bytes
     // len) payload)) (bytes payload))`, ml/395-bin-literal-as-operand `b[u8(1)] == other`→`(= (bin (u8 1)) other)`.
 
-    #[test]
-    fn a_def_parameter_may_be_a_destructuring_pattern() {
-        use crate::sexpr;
-        // A def parameter that STARTS a compound pattern is a destructuring binder, not just a bare name —
-        // the ML reader must accept every pattern shape the printer emits for a pattern parameter, or the
-        // corpus round-trip breaks (the regression this guards: `def head([x, .. rest]) = x` failed
-        // "expected a name" because `param` routed only `(`-led patterns to `pattern()`, not `[`/`#{`).
-
-        // A `(`-led TUPLE pattern parameter (the already-working case) — kept as a regression anchor.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f((a, b)) = a")),
-            "(def (f (tuple a b)) a)"
-        );
-        // A `[`-led LIST pattern parameter — a fixed-arity and a rest form.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f([a, b]) = a")),
-            "(def (f (list a b)) a)"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
-            "(def (head (list x (.. rest))) x)"
-        );
-        // A `#{`-led MAP pattern parameter. The entry is the canonical `(= key sub)` `FieldPair` triple
-        // (symmetric with map VALUES + record-pattern fields, operator M3 ruling — was a 2-element pair).
-        assert_eq!(
-            sexpr::print(&parse_ok("def get(#{ 1 = v }) = v")),
-            "(def (get (map (= 1 v))) v)"
-        );
-        // A `{`-led RECORD pattern parameter — the destructuring-record-arg the operator's DB-records
-        // fast-follow needed (backlog flagged it once mis-parsed "expected a name" in the param slot; it
-        // now parses like the other compound params). A partial (name a subset of fields) is fine.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f({ x = a, y = b }) = a")),
-            "(def (f (record (= x a) (= y b))) a)"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("def f({ x = a }) = a")),
-            "(def (f (record (= x a))) a)"
-        );
-        // Pattern parameters COMPOSE and mix with plain-name / annotated params.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f([(a, b), .. rest]) = a")),
-            "(def (f (list (tuple a b) (.. rest))) a)"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(x, [a, .. rest]) = x")),
-            "(def (f x (list a (.. rest))) x)"
-        );
-    }
+    // `a_def_parameter_may_be_a_destructuring_pattern` + `a_destructuring_pattern_parameter_parses` (a def
+    // parameter that STARTS a compound pattern — `(`-tuple, `[`-list, `#{`-map, `{`-record, `b[`-binary — is a
+    // destructuring binder routed to `pattern`, not a bare name; plain-name / annotated params keep the
+    // ordinary binder path) MIGRATED to the spec/syntax corpus (inc-6 batch-68):
+    //   * ml/410-def-param-list-plain `[a, b]`→`(list a b)`, ml/411-def-param-map `#{ 1 = v }`→`(map (= 1 v))`
+    //     (canonical `(= key sub)` FieldPair), ml/414-def-param-bin `b[u8(n)]`→`(bin (u8 n))`.
+    //   * ml/412-def-param-nested-tuple-in-list-rest `[(a, b), .. rest]`→`(list (tuple a b) (.. rest))`,
+    //     ml/413-def-param-mixed-plain-and-list-rest `def f(x, [a, .. rest])`→`(def (f x (list a (.. rest))) x)`.
+    //   Already pinned: tuple `(a, b)`=ml/336, list-rest `[x, .. rest]`=ml/337, record `{x=a,y=b}`=ml/345 /
+    //   `{x=a}`=ml/346, plain-name/annotated-param=ml/102. (The regression guarded: `param` once routed only
+    //   `(`-led patterns to `pattern()`, "expected a name" on `[`/`#{`.)
 
     // `bin_pattern_desugars` (in pattern position `b[…]` desugars to the same `(bin …)` head with sub-PATTERN
     // segments — `u16(n)` binds `n`, `bytes(rest)` binds the tail) MIGRATED to the spec/syntax corpus (inc-6
@@ -10537,31 +10499,9 @@ mod tests {
     //     rest) (_ s))` adds the literal-element residual-binding form (the tree behind the #6877 e2e example).
     //   The clean-surface round-trip (no `` `..` `` fallback) is each case's fmt-idempotence.
 
-    #[test]
-    fn a_destructuring_pattern_parameter_parses() {
-        use crate::sexpr;
-        // A `(`-led tuple, `[`-led list, `#{`-led map, or `b[`-led binary parameter is a destructuring
-        // PATTERN (`param` routes it to `pattern`); a plain `name` / annotated `name: Type` is not.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f((a, b)) = a + b")),
-            "(def (f (tuple a b)) (+ a b))"
-        );
-        // The reported gap: a list-REST pattern parameter (`def head([x, .. rest]) = x`).
-        assert_eq!(
-            sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
-            "(def (head (list x (.. rest))) x)"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("def g(b[u8(n)]) = n")),
-            "(def (g (bin (u8 n))) n)"
-        );
-        // A plain-name and an annotated parameter keep the ordinary binder path.
-        assert_eq!(sexpr::print(&parse_ok("def h(x) = x")), "(def (h x) x)");
-        assert_eq!(
-            sexpr::print(&parse_ok("def s(xs: List(Int64)) = xs")),
-            "(def (s (: xs (List Int64))) xs)"
-        );
-    }
+    // (`a_destructuring_pattern_parameter_parses` MIGRATED with the a_def_parameter breadcrumb above, inc-6
+    // batch-68: its `(a, b)`=ml/336, `[x, .. rest]`=ml/337, `b[u8(n)]`=ml/414, plain-name (trivial) + annotated
+    // `xs: List(Int64)`=ml/102 assertions are all pinned there.)
 
     // `a_tuple_rest_pattern_parses` + `a_record_rest_pattern_parses` (a tuple/record pattern with a trailing
     // `.. rest` binding the remaining positional/un-named elements to the wrapped `(.. rest)` node — the twin

@@ -348,6 +348,11 @@ pass	ml/407-rest-only-list-pattern
 pass	ml/408-non-trailing-rest-pattern
 pass	ml/409-multiple-rests-pattern
 pass	ml/41-match-closed-single-variant
+pass	ml/410-def-param-list-plain
+pass	ml/411-def-param-map
+pass	ml/412-def-param-nested-tuple-in-list-rest
+pass	ml/413-def-param-mixed-plain-and-list-rest
+pass	ml/414-def-param-bin
 pass	ml/42-match-already-lowered-noop
 pass	ml/43-match-nested-bottom-up
 pass	ml/44-world-deeply-nested-aggregate
