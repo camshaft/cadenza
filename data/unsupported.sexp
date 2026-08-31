@@ -91,13 +91,13 @@
       (ref pr 6565)))
   (decline NestedRecordFieldPatternDescent
     (code UnsupportedConstruct)
-    (reason "a nested compound sub-pattern below a record field")
-    (doc "A deeper compound sub-pattern below a record field, in a match OR a binding pattern. NARROWED FINAL RESIDUAL: v-ast-compound BUILT the POSITIONAL (Elem-reachable) case — #6890 (match: top-level record + record-nested-in-tuple) + #6911 (binding: def-param/let via check_binding_pattern + last_binder_named) — those now BIND. What STILL declines (this id): (1) a nested RECORD below a record field (#record((= x #record((= y v))))) — needs a deferred NAME-KEYED slot (records project by name->sorted-slot, not a resolve-time Elem index); (2) a VARIANT below a record field (#record((= x (Some c)))) — needs a Payload-step HEAD threaded through the RecordField's sub_heads. Both in match AND binding. Emit sites tagged declined(id): resolve.rs last_binder_named + lower/match_tree.rs check_binding_pattern (binding); resolve.rs match_arm_record_binds Unwireable + Case-6rec-nested-decline (match).")
+    (reason "a variant sub-pattern below a record field")
+    (doc "A refutable VARIANT sub-pattern below a record field (#record((= x (Some c)))), in a match OR a binding pattern — the sole remaining residual. v-ast-compound BUILT everything else: the POSITIONAL Elem-reachable case (#6890 match + #6911 binding) AND the RECORD/tuple/list-below-a-field case (#6944, name-keyed RecordSubStep::Field, both faces) — those all BIND now. What STILL declines (this id): only a VARIANT below a record field, which is REFUTABLE and needs the match-arm switch-lowering path (a separate increment). Emit sites: binding — resolve.rs last_binder_named (has_variant→declined) + lower/match_tree.rs check_binding_pattern; match — resolve.rs match_arm_record_binds Unwireable + Case-6rec-nested skips Payload → Case-6rec-nested-decline.")
     (blocked-on
       (status blocked)
       (owner v-ast-compound)
-      (needs "a deferred name-keyed record-field slot (for a record below a field) + a Payload-step head through RecordField sub_heads (for a variant below a field) — the positional Elem-reachable case is built (#6890/#6911)")
-      (ref pr 6911)))
+      (needs "the match-arm switch-lowering path for a refutable variant sub-pattern below a record field (the positional + record/tuple/list-below-field cases are built — #6890/#6911/#6944)")
+      (ref pr 6944)))
   (decline WasmClosureBoundaryNoRepr
     (code UnsupportedConstruct)
     (reason "a closure's param, result, or capture type has no machine representation")
