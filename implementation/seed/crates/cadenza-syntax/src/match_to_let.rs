@@ -302,20 +302,11 @@ mod tests {
         rewrite(&Tree::of(&a.arenas)).1
     }
 
-    #[test]
-    fn irrefutable_single_clause_matches_become_lets() {
-        // tuple / record / var / wildcard patterns are irrefutable → rewritten.
-        assert!(
-            normalize_sexpr("def f(p) = match p with | (a, b) => a + b")
-                .contains("(let (((tuple a b) p)) (+ a b))")
-        );
-        assert!(normalize_sexpr("def f(p) = match p with | x => x").contains("(let ((x p)) x)"));
-        assert!(normalize_sexpr("def f(p) = match p with | _ => 9").contains("(let ((_ p)) 9)"));
-        assert!(
-            normalize_sexpr("def f(p) = match p with | { x = a } => a")
-                .contains("(let (((record (= x a)) p)) a)")
-        );
-    }
+    // `irrefutable_single_clause_matches_become_lets` MIGRATED to the spec/syntax codemod corpus
+    // (v-syntax green-lit match_to_let; a codemod belongs in the corpus, not inc-6): ml/25-match-to-let-
+    // tuple, ml/26-…-var, ml/27-…-wildcard, ml/28-…-record — each pins the `cdz normalize --match-to-let`
+    // output (a `normalize.match-to-let.cdz` golden) + the input's parse tree, graded by the per-case nix
+    // check + gate-syntax. (The is_irrefutable/single_variant_ctors PREDICATE unit tests stay Rust — internal.)
 
     #[test]
     fn native_compound_head_single_arm_matches_convert() {
