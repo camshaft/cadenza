@@ -127,6 +127,22 @@ enum CorpusCmd {
         #[arg(required = true)]
         files: Vec<String>,
     },
+    /// Check the corpus contains NO `(declines …)` assertion — the operator DEPRECATION (2026-08-31).
+    ///
+    /// The corpus is the impl-INDEPENDENT runnable spec, so a `(declines …)` MUST NOT appear at all — each
+    /// current one converts to exactly one of: `(error CDZxxxx)` (a genuine USER-FACING error — every one has
+    /// a code), a flagged FAILURE (a CODELESS INTERNAL decline is a BUG — give it a code or fix the path), or
+    /// `(output <spec value>)` (a NOT-YET-IMPLEMENTED should-work case — asserts the value so it AUTO-PASSES
+    /// when implemented). A `(declines)` grades PASS ("correctly declines"), which is FALSE for a should-work
+    /// case + goes STALE-FAILING once the feature lands — the anti-pattern the directive removes. This lint
+    /// FLAGs every `(declines)` case (reporting coded-vs-codeless to aid the 3-bucket classification). Exits
+    /// NON-ZERO on any hit. NOT yet gate-folded (v-corpus-declines is converting the ~74; v-fleet-tooling folds
+    /// it into localGate once the conversions land — fix-then-fold).
+    DeclinesDeprecatedCheck {
+        /// Corpus `.sexp` files to check (typically the full `spec/semantics/*.sexp` glob).
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
 }
 
 /// Run a corpus command per `args`, returning the process exit code. `prog` names the tool in
@@ -149,6 +165,7 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
         CorpusCmd::NativizeCheck { files } => check_nativize_idempotence(files),
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
+        CorpusCmd::DeclinesDeprecatedCheck { files } => check_declines_deprecated(files),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -331,6 +348,67 @@ fn check_capability_error_pins(files: &[String]) -> Result<(), String> {
         }
         Err(format!(
             "{} case(s) pin a capability-limit code as an (error …) — convert to (output V)/(declines …) (operator: corpus is the impl-independent spec)",
+            hits.len()
+        ))
+    }
+}
+
+/// The `(desc, coded?)` of every case in `records` carrying a `(declines …)` assertion — the operator
+/// deprecation surface. `coded` is `Some(code)` for `(declines CDZxxxx …)` / `None` for a codeless
+/// `(declines …)`; the classification hint (a CODELESS decline is clause-3 BUG-flavored — needs a code or a
+/// fix; a coded one is a should-work → `(output V)` / genuine `(error CODE)`). Pure over parsed records.
+fn declines_hits(records: &[Record]) -> Vec<(String, Option<String>)> {
+    let mut hits = Vec::new();
+    for rec in records {
+        for trial in &rec.trials {
+            if let Expect::Declines(code, ..) = &trial.expect {
+                hits.push((rec.description.clone(), code.clone()));
+            }
+        }
+    }
+    hits
+}
+
+/// `declines-deprecated-check FILE…`: flag EVERY `(declines …)` case — the operator deprecation (2026-08-31:
+/// the corpus, the impl-independent spec, must contain NO `(declines)`). Each converts to `(error CDZxxxx)` /
+/// a flagged FAILURE (codeless internal = bug) / `(output V)` (should-work, auto-Passes when implemented).
+/// Parser-based; reports coded-vs-codeless per case to aid the 3-bucket conversion. Exits NON-ZERO on any.
+fn check_declines_deprecated(files: &[String]) -> Result<(), String> {
+    let mut hits: Vec<(String, String, Option<String>)> = Vec::new(); // (file, desc, coded?)
+    for path in files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+        if crate::is_platform_genre(&text) {
+            continue;
+        }
+        let records = crate::read(&text).map_err(|e| format!("{path}: {e}"))?;
+        for (desc, coded) in declines_hits(&records) {
+            hits.push((path.clone(), desc, coded));
+        }
+    }
+    if hits.is_empty() {
+        println!(
+            "declines-deprecated-check: OK — no (declines …) assertion in {} file(s) (corpus is (declines)-free)",
+            files.len()
+        );
+        Ok(())
+    } else {
+        let codeless = hits.iter().filter(|(_, _, c)| c.is_none()).count();
+        for (path, desc, coded) in &hits {
+            let kind = match coded {
+                Some(code) => format!("(declines {code} …) [CODED]"),
+                None => "(declines …) [CODELESS — classify: (output V) if should-work / (error CODE) if a \
+                         user-facing error needing a code / flagged FAILURE if an internal bug]"
+                    .to_string(),
+            };
+            eprintln!(
+                "declines-deprecated-check: {path}: case {desc:?} has {kind} — (declines) is DEPRECATED; \
+                 convert to (error CDZxxxx) [genuine user-facing error] / (output <spec value>) [should-work, \
+                 auto-Passes when implemented] / a flagged FAILURE [codeless internal bug] (operator: corpus \
+                 is the impl-independent spec, no (declines))"
+            );
+        }
+        Err(format!(
+            "{} (declines …) case(s) — {codeless} CODELESS (need classification) — the corpus must be (declines)-free (operator deprecation); convert each to (error CODE)/(output V)/flagged-failure",
             hits.len()
         ))
     }
@@ -1315,6 +1393,30 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
     /// seq-29: a `(not "phrase")` message-ABSENCE pin reaches the shredded `test-run.ast` as a `(not …)`
     /// sub-form INSIDE the `expect-error` / `expect-declines` form — distinguishable from the bare-string
     /// positive `(message …)` substring leaves, exactly the wire `cdz_corpus_grade` decodes.
+    #[test]
+    fn declines_deprecated_check_flags_every_declines_coded_or_codeless() {
+        // Every (declines …) is flagged (deprecated); coded vs codeless is reported (classification hint).
+        // (error …)/(output …) cases are NOT flagged (only (declines) is deprecated).
+        let recs = crate::read(
+            r#"(case "codeless declines" (input 1_) (declines))
+               (case "coded declines" (input 1_) (declines CDZ0900))
+               (case "a genuine error stays" (input 1_) (error CDZ0201))
+               (case "an output case stays" (input (do (def (main) 0) (export main))) (output (: 0 Int64)))"#,
+        )
+        .unwrap();
+        let hits = declines_hits(&recs);
+        assert_eq!(
+            hits.len(),
+            2,
+            "both (declines) cases flagged, error/output not: {hits:?}"
+        );
+        assert_eq!(hits[0], ("codeless declines".to_string(), None));
+        assert_eq!(
+            hits[1],
+            ("coded declines".to_string(), Some("CDZ0900".to_string()))
+        );
+    }
+
     #[test]
     fn capability_error_check_flags_error_cdz0900_only() {
         // (error CDZ0900) = the anti-pattern (a not-yet-built umbrella pinned as an ill-formed REJECTION) → FLAG.
