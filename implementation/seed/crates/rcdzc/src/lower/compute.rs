@@ -7,6 +7,34 @@
 
 use super::*;
 
+/// Const-fold a `RecordField.sub_path` (§235 nested descent) over a field value NODE `root`, returning the
+/// folded `Core` — `Elem` reads a constant tuple/list element, `Field(k)` a nested `Core::Record` field by
+/// NAME, `Payload` a single-payload `Core::SumNew`. A multi-payload variant / a runtime (non-constant) shape
+/// yields `None`, falling to the runtime `Elem(slot)` walk. Mirrors `fold_sum_path` but for `RecordSubStep`
+/// (which includes the name-keyed `Field` a `PathStep` can't express).
+fn fold_record_substeps(
+    db: &mut Db,
+    root: StructId,
+    steps: &[crate::core::RecordSubStep],
+) -> Option<Core> {
+    use crate::core::RecordSubStep;
+    let mut cur = root;
+    for step in steps {
+        cur = match (step, core_of(db, cur)) {
+            (RecordSubStep::Elem(i), Core::Tuple { elems }) => *elems.get(*i)?,
+            (RecordSubStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
+            (RecordSubStep::Field(k), Core::Record { fields }) => {
+                *fields.get(&crate::resolve::read_key(db, *k)?)?
+            }
+            (RecordSubStep::Payload(_), Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
+                payloads[0]
+            }
+            _ => return None,
+        };
+    }
+    Some(core_of(db, cur))
+}
+
 pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
     // A `(do S… tail)` block whose NON-FINAL statements reach a HOST CALL lowers to a `Core::Seq` — the
     // side-effecting statements must be EMITTED (their host call crosses the boundary), then the tail is
@@ -181,26 +209,8 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             sub_path,
             heads,
         } => {
-            // CONSTANT FOLD: reach the nested record Core (a constant scrutinee folds its `Elem`/`Payload`
-            // steps to the inner `Core::Record`); the field folds to its value `fv` by name. Then fold the
-            // `sub_path` descent BELOW the field over `fv` (§235 deeper-nesting binder) — an EMPTY sub_path
-            // (bare-binder field) yields `fv` directly. A runtime field value (sub_path fold `None`) falls
-            // through to the runtime walk below.
-            if let Some(Core::Record { fields }) = fold_sum_path(db, scrutinee, &path)
-                && let Some(&fv) = fields.get(&key)
-            {
-                if sub_path.is_empty() {
-                    return core_of(db, fv);
-                }
-                if let Some(c) = fold_sum_path(db, fv, &sub_path) {
-                    return c;
-                }
-            }
-            // RUNTIME: the field's SORTED slot in the record type at the path end (the same slot
-            // `runtime_member_index` computes for a top-level member read). A record is a flat array read
-            // by `arr-get` at the slot, so the field read is an `Elem(slot)` step; the `sub_path` descent
-            // BELOW the field appends more `Elem`/`Payload` steps the `SumPayload` walker already handles.
-            // Walk = `path ++ [Elem(slot)] ++ sub_path`.
+            // The field's SORTED slot + its value TYPE, at the path end (records are flat arrays read by
+            // slot — the same slot `runtime_member_index` computes for a top-level member read).
             let rec_ty = crate::infer::record_field_at_path(db, scrutinee, &path, &heads);
             let crate::ty::Ty::Record(rec_fields) = rec_ty else {
                 return Core::Poison(Reject::unsupported(
@@ -213,9 +223,71 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     "a nested record match binder's field is absent from the record type (arm mis-selected)",
                 ));
             };
+            let field_ty = rec_fields.get(&key).cloned().unwrap_or(crate::ty::Ty::Any);
+            // CONSTANT FOLD: reach the nested record Core, read field `key`'s value node `fv` by name, then
+            // fold the `sub_path` descent (§235 full nested descent) over `fv` — `Field` reads a nested
+            // record's field by NAME, `Elem` a tuple/list element, `Payload` a single-payload variant. An
+            // EMPTY sub_path (bare-binder field) yields `fv` directly. A runtime field value / undecidable
+            // descent (`None`) falls through to the runtime walk below.
+            if let Some(Core::Record { fields }) = fold_sum_path(db, scrutinee, &path)
+                && let Some(&fv) = fields.get(&key)
+            {
+                if sub_path.is_empty() {
+                    return core_of(db, fv);
+                }
+                if let Some(c) = fold_record_substeps(db, fv, &sub_path) {
+                    return c;
+                }
+            }
+            // RUNTIME: the field read is `Elem(slot)`; the `sub_path` descent BELOW it type-tracks into more
+            // ordinary `Elem`/`Payload` steps (each `Field(k)` resolves to `Elem(<sorted-slot>)` via the
+            // record type at that step — a record is a flat array). Walk = `path ++ [Elem(slot)] ++ resolved`.
             let mut walk = path.to_vec();
             walk.push(crate::core::PathStep::Elem(slot));
-            walk.extend(sub_path.iter().copied());
+            let mut cur_ty = field_ty;
+            for step in sub_path.iter() {
+                match step {
+                    crate::core::RecordSubStep::Elem(i) => {
+                        walk.push(crate::core::PathStep::Elem(*i));
+                        cur_ty = match cur_ty {
+                            crate::ty::Ty::Tuple(es) => {
+                                es.get(*i).cloned().unwrap_or(crate::ty::Ty::Any)
+                            }
+                            crate::ty::Ty::List(e) => (*e).clone(),
+                            _ => crate::ty::Ty::Any,
+                        };
+                    }
+                    crate::core::RecordSubStep::Payload(_) => {
+                        walk.push(crate::core::PathStep::Payload);
+                        // The payload's type is not tracked further here (a `Field`/`Elem` AFTER a variant
+                        // payload below a field is a niche the type-walk grounds to `Any` → the `Field` arm
+                        // below then declines cleanly). The common variant-below-field binds directly under
+                        // the `Payload` (no following step), so this suffices.
+                        cur_ty = crate::ty::Ty::Any;
+                    }
+                    crate::core::RecordSubStep::Field(fk) => {
+                        let crate::ty::Ty::Record(fs) = &cur_ty else {
+                            return Core::Poison(Reject::unsupported(
+                                "a nested record field descent whose intermediate value is not a record \
+                                 (or a variant payload) is not supported",
+                            ));
+                        };
+                        let Some(fsym) = crate::resolve::read_key(db, *fk) else {
+                            return Core::Poison(Reject::decline(
+                                "a nested record field key does not resolve (arm mis-selected)",
+                            ));
+                        };
+                        let Some(fslot) = fs.keys().position(|k| *k == fsym) else {
+                            return Core::Poison(Reject::decline(
+                                "a nested record field is absent from the record type (arm mis-selected)",
+                            ));
+                        };
+                        let next = fs.get(&fsym).cloned().unwrap_or(crate::ty::Ty::Any);
+                        walk.push(crate::core::PathStep::Elem(fslot));
+                        cur_ty = next;
+                    }
+                }
+            }
             Core::SumPayload {
                 scrutinee,
                 path: walk.into(),

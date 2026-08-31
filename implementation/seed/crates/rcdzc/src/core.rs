@@ -126,6 +126,27 @@ pub struct ListArm {
     pub body: StructId,
 }
 
+/// A step in a `Resolved::RecordField.sub_path` — the descent BELOW a record field's value into a nested
+/// compound sub-pattern (§235 full nested-record matching). CONFINED to `RecordField` and ELIMINATED at
+/// lowering (each becomes an ordinary [`PathStep`] on the emitted `Core::SumPayload` walk), so the backend
+/// never sees it — unlike the shared [`PathStep`], adding a name-keyed field kind here does not ripple to
+/// every path consumer. `Elem`/`Payload` mirror the same-named `PathStep`s (a tuple/list element, a variant
+/// payload — `Payload` carries its variant HEAD inline, folding the separate `sub_heads`); `Field` is the
+/// NAME-keyed record projection whose sorted slot is only known once the record type at this step is solved
+/// (resolved to `Elem(<slot>)` at lowering via a type-walk).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum RecordSubStep {
+    /// A tuple/list element at static `index` (mirrors [`PathStep::Elem`]).
+    Elem(usize),
+    /// A variant payload, carrying the variant-constructor HEAD occurrence inline (mirrors
+    /// [`PathStep::Payload`] + its `heads` entry). Only a MATCH sub_path (a variant is refutable, so a
+    /// binding position rejects it).
+    Payload(StructId),
+    /// A RECORD field projected by NAME — the field-key OCCURRENCE (resolved by `read_key`). Its sorted
+    /// slot resolves at lowering from the record type at this step (records are flat arrays read by slot).
+    Field(StructId),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PathStep {
     /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a

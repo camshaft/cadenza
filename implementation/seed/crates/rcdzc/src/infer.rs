@@ -406,10 +406,10 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
                 _ => Ty::Any,
             };
-            // Then project the descent BELOW the field (`sub_path` — the §235 deeper-nesting binder). An
-            // EMPTY sub_path (bare-binder field) returns `field_ty` unchanged. `sub_path` is all-`Elem`
-            // (slice 1: tuple/list below a field — a variant below a field is deferred), so no `heads`.
-            project_path_type(db, field_ty, &sub_path, &[])
+            // Then project the descent BELOW the field (`sub_path` — §235 full nested descent). An EMPTY
+            // sub_path (bare-binder field) returns `field_ty` unchanged; else walk each `RecordSubStep`
+            // (`Elem`→tuple/list elem, `Field`→nested-record field type, `Payload`→variant payload).
+            project_record_substeps(db, field_ty, &sub_path)
         }
         // A RECORD REST binder — the RESIDUAL RECORD of the scrutinee's fields MINUS the `named` ones. A
         // record's field set is static, so drop the named fields (by spelling) from the scrutinee's record
@@ -4189,6 +4189,45 @@ fn project_path_type(
                 Ty::Tuple(elems) => Ty::Tuple(elems.get(*k..).unwrap_or(&[]).to_vec().into()),
                 _ => return Ty::Any,
             },
+        };
+    }
+    cur
+}
+
+/// Type-walk a `RecordField.sub_path` — the §235 descent BELOW a record field, over the field's value TYPE.
+/// The `RecordSubStep` twin of [`project_path_type`]: `Elem` reads a tuple element / homogeneous list elem,
+/// `Field(key)` reads the name-keyed field type off a `Ty::Record`, `Payload(head)` unwraps a variant payload
+/// (a nominal newtype unwraps to its inner). Every mismatch degrades to `Ty::Any` (poison-safe — a real shape
+/// fault surfaces at the match/binding, never a miscompile here). An EMPTY sub_path returns `cur` unchanged.
+fn project_record_substeps(db: &mut Db, mut cur: Ty, steps: &[crate::core::RecordSubStep]) -> Ty {
+    use crate::core::RecordSubStep;
+    for step in steps {
+        cur = match step {
+            RecordSubStep::Elem(i) => match &cur {
+                Ty::Tuple(elems) => match elems.get(*i) {
+                    Some(t) => t.clone(),
+                    None => return Ty::Any,
+                },
+                Ty::List(elem) => (**elem).clone(),
+                _ => return Ty::Any,
+            },
+            RecordSubStep::Field(key_id) => match &cur {
+                Ty::Record(fields) => match crate::resolve::read_key(db, *key_id) {
+                    Some(sym) => fields.get(&sym).cloned().unwrap_or(Ty::Any),
+                    None => return Ty::Any,
+                },
+                _ => return Ty::Any,
+            },
+            RecordSubStep::Payload(head) => {
+                if let Ty::Nominal { inner, .. } = &cur {
+                    (**inner).clone()
+                } else {
+                    match payload_ty_at_instantiation(db, *head, &cur) {
+                        Some(t) => t,
+                        None => return Ty::Any,
+                    }
+                }
+            }
         };
     }
     cur

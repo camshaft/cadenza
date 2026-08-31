@@ -1674,23 +1674,23 @@ fn a_deeper_positional_binder_below_a_native_nested_record_binding_field_binds()
     );
 }
 
-/// The residual the binding slice defers: a nested RECORD below a record binding field — `#record((= x
-/// #record((= y v))))`, the field value itself a RECORD (a deferred name-keyed slot, not a positional
-/// `Elem` descent) — still DECLINES, tagged with the `NestedRecordFieldPatternDescent` DeclineId (CDZ0900,
-/// seq-286). No CDZ0101 cascade (check ≡ compile: `check_binding_pattern` + `last_binder_named` agree).
+/// §235 full nested-record descent: a nested RECORD below a record binding field — `#record((= x #record((=
+/// y v))))`, the field value itself a RECORD — now BINDS via a `RecordField` whose `sub_path` is a NAME-keyed
+/// `RecordSubStep::Field(y)` (resolved to `Elem(<slot>)` at lowering). Must be CLEAN: no CDZ0101 "unbound",
+/// no CDZ0900 "not supported" decline. (A VARIANT below a field stays deferred — refutable, a separate path.)
 #[test]
-fn a_record_below_a_record_binding_field_still_declines_coded() {
+fn a_record_below_a_record_binding_field_binds_via_name_keyed_sub_path() {
     let src = "(module m (def (f #record((= x #record((= y v)))))  v) (export f))";
     let diags = diags_of(src);
     assert!(
         !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")),
-        "no misleading 'unbound name' cascade for the deferred record-below-field binder: {diags:?}"
+        "no misleading 'unbound name' cascade for the nested-record binding field binder: {diags:?}"
     );
     assert!(
-        diags.iter().any(|d| d.code.as_deref() == Some("CDZ0900")
-            && d.message
-                .contains("nested compound sub-pattern inside a record binding pattern")),
-        "a record below a binding field is the deferred residual — a coded (CDZ0900) decline: {diags:?}"
+        !diags.iter().any(|d| d
+            .message
+            .contains("nested compound sub-pattern inside a record binding pattern")),
+        "a nested record below a binding field now BINDS (§235 name-keyed sub_path) — no CDZ0900 decline: {diags:?}"
     );
 }
 
