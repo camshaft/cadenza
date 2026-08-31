@@ -4409,7 +4409,30 @@ fn gate_one_case(
                 println!("expect:   {}", trial.expect);
                 println!("actual:   {actual}");
             }
-            println!("verdict:  {verdict}\n");
+            println!("verdict:  {verdict}");
+            // BLIND-SPOT NOTE (breaker 2026-08-31): `--case` grades the diagnostic CODE + message + the
+            // value/trap/host-calls/warns/live-objects outcome, but NOT the DIAGNOSTIC-QUALITY asserts
+            // (`(fix …)`/`(no-fix)`/`(count …)`) — those need the KIND_DIAGNOSTICS sidecar wire, which this
+            // in-process spot-check path does not capture (only the nix corpus-exec / `cdz-run --grade` does).
+            // So a `--case` PASS on an error/warning case does NOT confirm its fix asserts — a real
+            // fix-proposal regression can hide behind a green `--case` (breaker mis-triaged one this way).
+            // The record stream drops the fix asserts too, so we cannot detect them precisely here; flag the
+            // scope on any error/warning case (the only kinds that can carry diagnostic-quality asserts).
+            let diag_quality_eligible = rec.trials.iter().any(|t| {
+                let kind = t
+                    .expect
+                    .split_once(' ')
+                    .map_or(t.expect.as_str(), |(k, _)| k);
+                kind == "error" || kind == "warning"
+            });
+            if diag_quality_eligible {
+                println!(
+                    "note:     --case does NOT grade (fix …)/(no-fix)/(count …) diagnostic-quality asserts \
+                     (no sidecar capture) — a PASS here does not confirm them; run the nix corpus-exec \
+                     (`cargo xtask gate --check` / the per-case drv) to grade those."
+                );
+            }
+            println!();
         }
     }
     if found == 0 {
