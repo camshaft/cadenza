@@ -1365,9 +1365,10 @@ pub(crate) fn param_name_occ(db: &Db, param: StructId) -> StructId {
 /// a runtime argument keeps its own (already-checked) type. The annotation type occurrence `T` is shared
 /// from the parameter (pinned by the caller's `resolve_subtree` of the signature) — a type expression
 /// resolves position-independently (its names are global), so sharing it into the wrap is sound.
-/// Whether `arg` is a 1-of-2 PARTIAL binary-operator application `(+ 10)` / `(< 3)` — a curried operator
-/// (ch01e). Peels a `Ref` (a `let`-bound partial `(let ((add10 (+ 10))) …)`) to reach the application.
-/// `Sub` at one operand is unary negation (not a curry), so it is excluded, matching `partial_binop_eta`.
+/// Whether `arg` is a 1-of-2 PARTIAL binary-operator application `(+ 10)` / `(< 3)` / `(- 5)` — a curried
+/// operator (ch01e). Peels a `Ref` (a `let`-bound partial `(let ((add10 (+ 10))) …)`) to reach the
+/// application. Arity-1 `Sub` `(- 5)` is a partial subtraction like the others (prefix negation deprecated
+/// in favour of `Num.neg`/`T.neg`), so it is INCLUDED, matching `partial_binop_eta`.
 fn is_partial_binop_app(db: &mut Db, arg: StructId) -> bool {
     let mut cur = arg;
     while let Resolved::Ref { value } = resolved_of(db, cur) {
@@ -1376,7 +1377,6 @@ fn is_partial_binop_app(db: &mut Db, arg: StructId) -> bool {
     if let Resolved::Apply { head, args } = resolved_of(db, cur)
         && args.len() == 1
         && let Some(p) = meta_apply_of(db, head)
-        && p != crate::resolved::Prim::Sub
         && (p.is_arith() || p.is_comparison() || p.is_float_arith())
     {
         return true;

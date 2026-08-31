@@ -926,12 +926,10 @@ pub fn binop_arity_fault(db: &mut Db, id: StructId) -> Option<Reject> {
     if !(prim.is_arith() || prim.is_comparison() || prim.is_float_arith()) {
         return None;
     }
-    // The arity-1 `Sub` is UNARY NEGATION (the ML prefix `-<expr>`), NOT a wrong-arity subtraction — it
-    // lowers to a type-directed `0 - e`, not a poison. Exempt it so a well-formed `(- e)` is not reported
-    // as "takes exactly 2 operands". (A genuine wrong-arity `(- a b c)` / `(-)` still faults below.)
-    if args.len() == 1 && prim == Prim::Sub {
-        return None;
-    }
+    // Arity-1 `Sub` `(- e)` is no longer special: like arity-1 `Add` `(+ e)` it CURRIES to a partial
+    // subtraction (prefix negation deprecated in favour of `Num.neg`/`T.neg`), so a well-formed `(- e)`
+    // lowers to a closure (not a poison) and takes the `core_of` path below to `None` — no arity fault.
+    // A genuine malformed `(- a b c)` / `(-)` still faults there, uniformly with `Add`.
     match core_of(db, id) {
         Core::Poison(r) if r.code == Some(Code::Malformed) => Some(r),
         _ => None,

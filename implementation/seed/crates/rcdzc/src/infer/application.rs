@@ -345,24 +345,10 @@ pub(crate) fn check_application(
         }
         return;
     }
-    // UNARY NEGATION `(- e)` — the arity-1 subtraction (the ML prefix `-<expr>` desugar). Negation is
-    // closed over EVERY numeric type (`Int N`/`Float N`/`Rational`/`BigInt`/`Qty`); `lower` rewrites it
-    // to `0 - e` at the operand's type. The operator's fixed-width `∀a. (Int a) → (Int a) → (Int a)`
-    // scheme is BINARY, so the generic scheme-unify below would report the wrong-arity "takes exactly 2
-    // operands" (via `binop_arity_fault`) and, for a Float/Rational/BigInt operand, a phantom numeric
-    // clash. Handle it here: a NUMERIC operand is well-typed (return, so `binop_arity_fault` in the
-    // `Apply` collector still sees a poison-free lowering — see `binop_arity_fault`'s arity guard, which
-    // now also excludes the arity-1 Sub); a NON-numeric operand is the honest "negation is not defined on
-    // <type>" reject (the unary twin of the binary arithmetic-on-a-non-number CDZ0201). Descend into the
-    // operand for its own faults either way.
-    if args.len() == 1 && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Sub) {
-        let t = type_of(db, args[0]);
-        if let Some(reject) = negate_operand_fault(db, &t, args[0]) {
-            out.push(reject);
-        }
-        collect(db, args[0], out);
-        return;
-    }
+    // (Prefix negation `(- e)` is deprecated: arity-1 `Sub` is NOT handled here as negation — it CURRIES
+    // like `(+ 1)` (a partial subtraction) and takes the ordinary binary scheme-unify below, which types
+    // it as the curried arrow. `Num.neg`/`T.neg` (`Prim::Neg`, next arm) are the negation replacement and
+    // carry the operand check.)
     // `(Num.neg e)` / a per-type `<T>.neg` (`Prim::Neg`, a UNARY negation over the number shape — the
     // generic `∀a. a → a` front `Num.neg` #7023 backs; the scheme is unconstrained, so the operand type is
     // checked HERE). Same operand rule as unary `-`: an UNSIGNED integer has no negation (CDZ0310), a
