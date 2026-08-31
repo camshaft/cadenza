@@ -2975,7 +2975,6 @@ fn a_wide_effect_handler_compiles_linearly() {
         .expect("a wide 12-op effect handler compiles (linear routing memo)");
 }
 
-#[test]
 // two_same_named_effects_are_distinct_not_conflated (two `(effect Log …)` with different ops; a handler
 // arm on the SECOND's op `record` → CDZ0403 because a bare `Log` resolves first-declared {emit}) migrated
 // to corpus 14b-effects-and-handlers "two effects declared with the same name are distinct, not one merged
