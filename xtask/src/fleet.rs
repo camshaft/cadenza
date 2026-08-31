@@ -2207,17 +2207,21 @@ if [ "${{FLEET_SKIP_BASELINE_VANISHED_CHECK:-}}" != "1" ]; then
     elif command -v cdz >/dev/null 2>&1; then _vc="cdz corpus vanished-check"; fi
     if [ -n "$_vc" ]; then
       # Positional = staged baselines (a baseline change stages all-or-nothing); --corpus = the COMPLETE glob
-      # (a subset false-positives). The hook runs from the repo toplevel, so these relative paths resolve.
+      # (a subset false-positives); --quiet = suppress the per-baseline OK lines (errors + vanished still print).
+      # The hook runs from the repo toplevel, so these relative paths resolve.
       # ROBUSTNESS: `cdz`/`cdz-corpus` is a wrapper that can COLD-resolve (nix/cargo) + block for MINUTES under
       # contention — a pre-commit hook must NEVER hang a commit, and must NEVER false-block on a tooling failure.
-      # So: (a) bound it with `timeout` (a missing `timeout` binary just makes this fail-open too), and (b) BLOCK
-      # ONLY on the CLI's recognizable "VANISHED baseline" detection line — a timeout / cold-resolve error / any
-      # other non-detection exit produces no such line → FAIL-OPEN (warn, never block). Bias: a real vanished
-      # title blocks; anything else lets the commit through (gate-local's corpus-vanished-check is the backstop).
-      _vout="$(timeout 60 $_vc $_staged_bl --corpus spec/semantics/*.sexp 2>&1)"
-      if printf '%s' "$_vout" | grep -q 'VANISHED baseline'; then
+      # So: (a) bound it with `timeout` (a missing `timeout` binary just makes this fail-open too), and (b) key
+      # on the CLI's DOCUMENTED exit codes (v-corpus-harness #7201, a stable hook contract): 3 = a VANISHED title
+      # was DETECTED → BLOCK; ANY other code — 0 (OK), 2 (tool/usage error), 124 (timeout), 127 (missing CLI),
+      # a clap-usage code — FAILS OPEN (warn, never block). Keying on exit 3 (not the output string) is sturdier:
+      # a timeout/cold-resolve/hang surfaces its OWN nonzero code, never 3, so it can't masquerade as a detection.
+      # Bias: a real vanished title blocks; every tooling hiccup lets the commit through (gate-local's
+      # corpus-vanished-check is the post-merge backstop).
+      _vout="$(timeout 60 $_vc $_staged_bl --corpus spec/semantics/*.sexp --quiet 2>&1)"; _vrc=$?
+      if [ "$_vrc" = 3 ]; then
         echo "✗ pre-commit blocked: a staged .gate-baseline* has a VANISHED title (a baseline case with no corpus case)." >&2
-        printf '%s\n' "$_vout" | grep 'VANISHED baseline' | sed 's/^/    /' >&2
+        printf '%s\n' "$_vout" | sed 's/^/    /' >&2
         echo "  This is the #7176/#6835 contamination class — a bulk re-pin from a STALE/non-harvest source reds" >&2
         echo "  corpus-vanished-check in gate-local FLEET-WIDE. The ONLY sanctioned baseline writer is the faithful" >&2
         echo "  whole-corpus harvest:  nix run .#save-baseline  (vanished==0 by construction). Re-harvest instead of" >&2
@@ -20295,11 +20299,13 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(b.contains("command -v cdz-corpus")); // fail-open CLI resolution
         assert!(b.contains("save-baseline")); // re-harvest remediation pointer
         // ROBUSTNESS: the check is `timeout`-bounded (a cold `cdz` wrapper resolve can block for minutes — a
-        // pre-commit hook must never hang a commit) and BLOCKS ONLY on the CLI's recognizable "VANISHED
-        // baseline" detection token — a timeout / tool-resolve failure / any non-detection exit FAILS OPEN
-        // (never false-blocks a commit on a tooling hiccup; gate-local's corpus-vanished-check is the backstop).
+        // pre-commit hook must never hang a commit) and BLOCKS on the CLI's DOCUMENTED exit code 3 = vanished
+        // DETECTED (v-corpus-harness #7201, a stable hook contract) — a timeout / tool-resolve failure / any
+        // other non-3 exit FAILS OPEN (never false-blocks a commit on a tooling hiccup; keying on the exit code
+        // is sturdier than the output string — a hang surfaces its own code, never 3). --quiet trims OK noise.
         assert!(b.contains("timeout 60"));
-        assert!(b.contains("grep -q 'VANISHED baseline'"));
+        assert!(b.contains("--quiet"));
+        assert!(b.contains(r#"[ "$_vrc" = 3 ]"#)); // BLOCK iff the CLI reports exit 3 (vanished detected)
         // Fail-open: the script's LAST statement is `exit 0` (the warn sections never block a commit; only the
         // trunk-guard (1) and the baseline vanished-check (6) block, each on its own explicit `exit 1`).
         assert!(
