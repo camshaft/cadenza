@@ -6164,10 +6164,17 @@ impl<'a> Parser<'a> {
             // is the `[`'s span; `before` the element-loop progress guard. `lvl_start`/`lvl_entered` are the
             // OWNING pattern level's start + depth-entered flag — restored on the close so the list node's
             // OWN postfix chain (`.member`/`(args)`) resumes + the depth budget balances once.
+            // A comma-list pattern atom awaiting an element sub-pattern — the shared skeleton for `[ … ]`
+            // list (head `list`, closer `]`, rest), `#( … )` set (head `#set` ctor, closer `)`, rest), and
+            // `#[ … ]` raw-list (NO head, closer `]`, NO rest — a bare `(p …)`). `open_span` is the opener's
+            // span; `closer`/`allow_rest` select the family; `items` holds the (optional) head + elements;
+            // `lvl_*` the owning level (resume postfix + balance depth on close).
             List {
                 lvl_start: Span,
                 lvl_entered: bool,
-                bracket_span: Span,
+                open_span: Span,
+                closer: Kind,
+                allow_rest: bool,
                 items: Vec<StructId>,
                 is_rest: bool,
                 rest_head: StructId,
@@ -6236,31 +6243,47 @@ impl<'a> Parser<'a> {
                                 });
                                 continue; // reading stays true: read the first sub-pattern
                             }
-                        } else if self.at(Kind::LBracket) {
-                            let bracket_span = cur_start;
-                            self.bump(); // '['
-                            let head = self.name("list", bracket_span);
-                            let items = vec![head];
-                            if self.at(Kind::RBracket) {
-                                self.expect(Kind::RBracket, "`]`");
-                                node = self.list(items, bracket_span.merge(self.prev_span()));
-                                reading = false; // -> postfix phase on the list node
+                        } else if self.at(Kind::LBracket)
+                            || (self.kind() == Kind::Hash
+                                && matches!(self.nth_kind(1), Kind::LBracket | Kind::LParen))
+                        {
+                            // `[ … ]` list / `#[ … ]` raw-list / `#( … )` set — the comma-list pattern
+                            // atoms (mirror `pattern_atom`'s `[`/`#[`/`#(` arms): (optional) head created
+                            // BEFORE elements, then sub-patterns read on the worklist. Family selects head +
+                            // closer + rest.
+                            let open_span = cur_start;
+                            let (items, closer, allow_rest) = if self.kind() == Kind::LBracket {
+                                self.bump(); // '['
+                                (vec![self.name("list", open_span)], Kind::RBracket, true)
+                            } else if self.nth_kind(1) == Kind::LBracket {
+                                self.bump(); // '#'
+                                self.bump(); // '['
+                                (Vec::new(), Kind::RBracket, false) // raw-list: NO head, NO rest
                             } else {
-                                // Start the first element: a `.. rest` spread (create the `..` head NOW,
-                                // before the operand descends — matching `rest_marker`'s order) or an
-                                // ordinary sub-pattern. Descend it as a fresh level.
+                                self.bump(); // '#'
+                                self.bump(); // '('
+                                (vec![self.ctor_head("set", open_span)], Kind::RParen, true)
+                            };
+                            if self.at(closer) {
+                                self.expect(closer, "comma-list pattern closer");
+                                node = self.list(items, open_span.merge(self.prev_span()));
+                                reading = false; // -> postfix phase on the assembled node
+                            } else {
                                 let before = self.pos;
-                                let (is_rest, dd_span, rest_head) = if self.at(Kind::DotDot) {
-                                    let dd = self.cur_span();
-                                    self.bump(); // `..`
-                                    (true, dd, self.name("..", dd))
-                                } else {
-                                    (false, bracket_span, StructId(0))
-                                };
+                                let (is_rest, dd_span, rest_head) =
+                                    if allow_rest && self.at(Kind::DotDot) {
+                                        let dd = self.cur_span();
+                                        self.bump(); // `..`
+                                        (true, dd, self.name("..", dd))
+                                    } else {
+                                        (false, open_span, StructId(0))
+                                    };
                                 pending.push(PCont::List {
                                     lvl_start: cur_start,
                                     lvl_entered: cur_entered,
-                                    bracket_span,
+                                    open_span,
+                                    closer,
+                                    allow_rest,
                                     items,
                                     is_rest,
                                     rest_head,
@@ -6365,7 +6388,9 @@ impl<'a> Parser<'a> {
                 Some(PCont::List {
                     lvl_start,
                     lvl_entered,
-                    bracket_span,
+                    open_span,
+                    closer,
+                    allow_rest,
                     mut items,
                     is_rest,
                     rest_head,
@@ -6373,36 +6398,38 @@ impl<'a> Parser<'a> {
                     before,
                 }) => {
                     // `node` is the delivered element (or `.. rest` operand). Push it, then read the next
-                    // element or close `]` and resume the OWNING level's postfix on the list node.
+                    // element or close and resume the OWNING level's postfix on the assembled node.
                     if is_rest {
                         let span = dd_span.merge(self.prev_span());
                         items.push(self.list(vec![rest_head, node], span));
                     } else {
                         items.push(node);
                     }
-                    if !self.sep_continue(Kind::RBracket) {
-                        self.expect(Kind::RBracket, "`]`");
-                        node = self.list(items, bracket_span.merge(self.prev_span()));
+                    if !self.sep_continue(closer) {
+                        self.expect(closer, "comma-list pattern closer");
+                        node = self.list(items, open_span.merge(self.prev_span()));
                         cur_start = lvl_start;
                         cur_entered = lvl_entered;
-                        reading = false; // resume the owning level's postfix phase on the list node
+                        reading = false; // resume the owning level's postfix phase on the assembled node
                         continue;
                     }
                     if self.pos == before {
                         self.bump(); // element didn't consume — avoid a missing-`,` spin
                     }
                     let before = self.pos;
-                    let (is_rest, dd_span, rest_head) = if self.at(Kind::DotDot) {
+                    let (is_rest, dd_span, rest_head) = if allow_rest && self.at(Kind::DotDot) {
                         let dd = self.cur_span();
                         self.bump(); // `..`
                         (true, dd, self.name("..", dd))
                     } else {
-                        (false, bracket_span, StructId(0))
+                        (false, open_span, StructId(0))
                     };
                     pending.push(PCont::List {
                         lvl_start,
                         lvl_entered,
-                        bracket_span,
+                        open_span,
+                        closer,
+                        allow_rest,
                         items,
                         is_rest,
                         rest_head,
@@ -8139,6 +8166,14 @@ mod tests {
             "#{ 1 = p }",
             "#{ k = Some(v), .. rest }",
             "#(a, b)",
+            "#()",
+            "#(a, b, .. rest)",
+            "#(Some(x), None)",
+            "#(#(a), b)",
+            "#[]",
+            "#[p, q]",
+            "#[[x], y]",
+            "#[Some(a), b]",
             "{ f = p, g = q }",
             "b[u8(1)]",
             "Point(x, y).norm(z)",
