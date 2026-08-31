@@ -209,13 +209,16 @@ pub(crate) struct AstEncDiscs {
     set_ctor: u32,
     field_pair: u32,
     member: u32,
+    // The native RATIONAL literal (`3/2`) reflected variant — payload is a `(Tuple Ast Ast)` of num/den,
+    // appended after `member` (matches the compiler's `AstDiscs`/bake field order).
+    rational: u32,
 }
 
-/// Decode the baked 16-disc descriptor: 16 LEB128 varints in
-/// `[int,float,bool,str,name,list,bytes,char,symbol, list_ctor,tuple_ctor,record_ctor,map_ctor,set_ctor,field_pair,member]`
-/// order (the 7 M2 native-collection ctors appended last). `None` on a truncated descriptor (the compiler
-/// always bakes a well-formed one; a pre-M2 9-disc descriptor truncates → `None`, which is correct: a B
-/// runtime requires a B descriptor).
+/// Decode the baked 17-disc descriptor: 17 LEB128 varints in
+/// `[int,float,bool,str,name,list,bytes,char,symbol, list_ctor,tuple_ctor,record_ctor,map_ctor,set_ctor,field_pair,member,rational]`
+/// order (the 7 M2 native-collection ctors, then the native rational, appended last). `None` on a truncated
+/// descriptor (the compiler always bakes a well-formed one; a pre-M2 9-disc descriptor truncates → `None`,
+/// which is correct: a B runtime requires a B descriptor).
 pub(crate) fn read_ast_enc_discs(discs: Handle) -> Option<AstEncDiscs> {
     let n = op_bytes_len(discs);
     let mut buf = Vec::with_capacity(n as usize);
@@ -254,6 +257,7 @@ pub(crate) fn read_ast_enc_discs(discs: Handle) -> Option<AstEncDiscs> {
         set_ctor: next()?,
         field_pair: next()?,
         member: next()?,
+        rational: next()?,
     })
 }
 
@@ -364,6 +368,13 @@ pub(crate) fn encode_ast_to_arenas(
         let obj = encode_ast_to_arenas(op_arr_get(payload, 0), d, b)?;
         let key = encode_ast_to_arenas(op_arr_get(payload, 1), d, b)?;
         Some(b.member(obj, key))
+    } else if disc == d.rational {
+        // Ast.Rational payload is a `(Tuple Ast Ast)` = an `arr` of the numerator/denominator (each an
+        // `Ast.Int`); emit the native `(RationalTag <num> <den>)` node via `Builder::rational` — the exact
+        // inverse of `decode_arenas_to_ast`'s rational-head arm, byte-identical to the compile-time fold.
+        let num = encode_ast_to_arenas(op_arr_get(payload, 0), d, b)?;
+        let den = encode_ast_to_arenas(op_arr_get(payload, 1), d, b)?;
+        Some(b.rational(num, den))
     } else {
         None
     }
@@ -469,8 +480,8 @@ pub(crate) fn decode_arenas_to_ast(
                 | crate::ast::Leaf::FieldPair
                 | crate::ast::Leaf::Member
                 // The rational-literal HEAD leaf (seq-204) is the same shape — a LIST head, never a bare
-                // atom; its `(RationalTag num den)` node rebuilds in the List arm (the Ast-reflection of a
-                // rational is the deferred fast-follow). A stray bare tag is likewise malformed → None.
+                // atom; its `(RationalTag num den)` node rebuilds to `Ast.Rational` in the List arm below. A
+                // stray bare tag is likewise malformed → None.
                 | crate::ast::Leaf::Rational => return None,
                 crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
                 // A type-suffixed numeric literal (`100N`/`0.5R`) is decoded to a plain Int/Float by the
@@ -521,6 +532,20 @@ pub(crate) fn decode_arenas_to_ast(
                             d.member
                         };
                         return Some(op_sum_new(disc, tup));
+                    }
+                    // A native RATIONAL literal `(RationalTag <num> <den>)` → Ast.Rational of a `(Tuple Ast
+                    // Ast)` of the two reflected Int children (exactly 2 elems), the inverse of the rational
+                    // encode arm and the runtime twin of the compiler's `arenas_to_ast_value` rational arm.
+                    crate::ast::Leaf::Rational => {
+                        if children.len() != 3 {
+                            return None; // malformed: a rational head needs exactly two children
+                        }
+                        let num = decode_arenas_to_ast(arenas, children[1], d)?;
+                        let den = decode_arenas_to_ast(arenas, children[2], d)?;
+                        let tup = op_arr_alloc(2);
+                        op_arr_set(tup, 0, num);
+                        op_arr_set(tup, 1, den);
+                        return Some(op_sum_new(d.rational, tup));
                     }
                     _ => {} // a name/other head → the generic `Ast.List` below
                 }

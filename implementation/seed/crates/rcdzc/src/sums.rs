@@ -185,6 +185,16 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         let setctor_pay = list_ast_payload(&mut *ast);
         let fieldpair_pay = tuple_ast_ast_payload(&mut *ast);
         let member_pay = tuple_ast_ast_payload(&mut *ast);
+        // `Rational` — a native RATIONAL literal (`3/2`, a `(RationalTag <num> <den>)` node headed by the
+        // payloadless `Leaf::Rational`, operator seq-204/207). Its payload is a `(Tuple Ast Ast)` of the
+        // numerator and denominator abstract syntax trees (each an `Ast.Int`), mirroring `FieldPair`/`Member`
+        // — so a reflected rational literal is its OWN first-class variant, not a name-headed node, and
+        // quote/reflection stay TOTAL over well-formed leaves (operator directive: reflection never declines
+        // on a well-formed leaf; a bare rational literal previously bailed to a Todo decline). Appended LAST
+        // so existing discriminants are unchanged (discs are read BY NAME via `ast_variant_discs`). The codec
+        // already carries the `Leaf::Rational` tag, so no byte-format change — only the guest-facing `Ast`
+        // VALUE sum gains the variant.
+        let rational_pay = tuple_ast_ast_payload(&mut *ast);
         // The `Ast` sum's variants follow the spec's enumeration order (`type-system.md` §The Abstract
         // Syntax Tree Is An Ordinary Sum Type: "an integer, a float, a string, a boolean, a name, and a
         // list of child nodes"). The variants: `Int` (BigInt — non-lossy quoted-integer storage), `Float`
@@ -220,6 +230,7 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
                 ("SetCtor", &[setctor_pay]),
                 ("FieldPair", &[fieldpair_pay]),
                 ("Member", &[member_pay]),
+                ("Rational", &[rational_pay]),
             ],
         );
         let mut decl = crate::db::scan_type_decl(ast, form).expect("built-in Ast decl scans");

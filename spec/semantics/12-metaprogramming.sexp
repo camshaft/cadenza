@@ -276,22 +276,22 @@
            AST with a QUALIFIED `((. Ast Ctor) subpat)` pattern for EVERY Ast variant — the exact pattern
            shape the Lean oracle recognizes (the `Ast` sum is built-in, absent from the scanned `(type …)`
            decls, so its qualified ctor patterns had fallen through to a headless-list skip). The Ast sum
-           has SIXTEEN variants: the nine scalar/generic leaves (Int/Float/Name/List/Bool/Str/Char/Bytes/
-           Symbol) PLUS the seven native-compound-ctor variants (ListCtor/TupleCtor/RecordCtor/MapCtor/
-           SetCtor/FieldPair/Member — operator 2026-08-28 native-collections-in-the-Ast). All sixteen arms
-           are present, so the match is EXHAUSTIVE over the whole sum with NO wildcard (a bare `_` would
-           defeat the point of this fence — it proves coverage by naming every variant).
+           has SEVENTEEN variants: the nine scalar/generic leaves (Int/Float/Name/List/Bool/Str/Char/Bytes/
+           Symbol), the seven native-compound-ctor variants (ListCtor/TupleCtor/RecordCtor/MapCtor/
+           SetCtor/FieldPair/Member — operator 2026-08-28 native-collections-in-the-Ast), and the native
+           Rational literal variant (`3/2` — reflection stays total over every well-formed literal leaf).
+           All seventeen arms are present, so the match is EXHAUSTIVE over the whole sum with NO wildcard (a
+           bare `_` would defeat the point of this fence — it proves coverage by naming every variant).
            `main` EXERCISES the nine QUOTABLE leaves, applied to one representative literal each, weighted by
            position `i` so a misclassification of arm `i` shifts the total off the self-witnessing `Σ_{1..9}
            i*i` = 285 (e.g. a Bytes literal miscaught as Symbol makes term 8 read 8*9). A `#\"…\"` literal is a
            SYMBOL (arm 9), a `b\"…\"` literal is BYTES (arm 8) — the two are distinct leaves that a naive
            reader conflates.
-           The seven compound-ctor arms are present for EXHAUSTIVENESS but NOT yet exercised by `main`:
-           `quote` of a native collection literal (`(quote #list(…))` …) currently declines \"quote produces
-           an AST value, which is not supported\" — the quote→native-ctor-variant reflection is not yet wired,
-           so no literal can classify to arms 10..16 today. TODO(quote-of-collections): once `quote` of a
-           collection lands, extend `main` with one representative per ctor variant (weights 10..16) → the
-           full self-witness `Σ_{1..16} i*i` = 1496. Tracked by v-ast-compound (Ast-sum owner) + v-metaprog.")
+           The seven compound-ctor arms AND the rational arm (17) are present for EXHAUSTIVENESS but NOT yet
+           exercised by `main` here (a dedicated case below deconstructs `(quote 3/2)` through the
+           `Ast.Rational` arm). TODO(quote-of-collections): extend `main` with one representative per ctor
+           variant (weights 10..16) + the rational (weight 17) → the full self-witness `Σ_{1..17} i*i` = 1785.
+           Tracked by v-ast-compound (Ast-sum owner) + v-metaprog.")
   (input
     (do
       (def
@@ -313,7 +313,8 @@
           ((Ast.MapCtor _) 13)
           ((Ast.SetCtor _) 14)
           ((Ast.FieldPair _) 15)
-          ((Ast.Member _) 16)))
+          ((Ast.Member _) 16)
+          ((Ast.Rational _) 17)))
       (def
         (main)
         (+
@@ -357,6 +358,28 @@
               (match (quote b"\x01\x02") ((Ast.Bytes b) (if (= (Bytes.len b) 2) 40 0)) (_ 0))))))
       (export main)))
   (output (: 100 Int64)))
+
+(case
+  "a bare rational literal quotes as a first-class Ast.Rational of its numerator and denominator"
+  (doc
+    "A rational literal `3/2` is its own syntactic form (a `(RationalTag <num> <den>)` node), so quoting
+           it reflects to the DEDICATED `Ast.Rational` variant whose payload is a `(Tuple Ast Ast)` of the two
+           child ASTs (each an `Ast.Int`) — NOT a name-headed generic node, mirroring the collection-ctor /
+           FieldPair / Member variants. Deconstructs `(quote 3/2)` through `(Ast.Rational (tuple (Ast.Int n)
+           (Ast.Int d)))` and scores `n*100 + d` = 302 (num 3, den 2 — already lowest terms). Before this
+           the `Leaf::Rational` head hit the reifier's un-reifiable-leaf bail and the whole quote DECLINED
+           (`quote produces an AST value, not supported`); this closes reflection totality over the rational
+           literal leaf, and the encode/decode arms round-trip it through the binary-AST codec.")
+  (input
+    (do
+      (def
+        (main)
+        (match
+          (quote 3/2)
+          ((Ast.Rational (tuple (Ast.Int n) (Ast.Int d))) (+ (* 100 (Int64.of n)) (Int64.of d)))
+          (_ 0)))
+      (export main)))
+  (output (: 302 Int64)))
 
 (case
   "a type-suffixed numeric literal quotes as the (: <body> Type) annotation the suffix denotes"

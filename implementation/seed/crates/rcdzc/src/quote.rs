@@ -587,6 +587,19 @@ fn reify_inner(
                 let tup = push_list(ast, vec![th, robj, rkey]);
                 return Some(ast_ctor(ast, "Member", tup));
             }
+            // A NATIVE RATIONAL literal `3/2` (a `(RationalTag <num> <den>)` node headed by `Leaf::Rational`)
+            // → the dedicated `Ast.Rational (tuple <reify num> <reify den>)` (spec: a reflected rational
+            // literal is its own first-class variant, not a name-headed node). The num/den children are
+            // ordinary `Leaf::Int` value leaves, so each reifies to an `Ast.Int`. Without this the
+            // `Leaf::Rational` head hit `reify_inner`'s leaf-match `_ => None` and the whole `(quote 3/2)`
+            // declined ("quote produces an AST value, not supported").
+            if let Some((num, den)) = ast.rational_parts(node) {
+                let rnum = reify(ast, num, child_under_qq)?;
+                let rden = reify(ast, den, child_under_qq)?;
+                let th = push_atom(ast, Leaf::Name("tuple".into()));
+                let tup = push_list(ast, vec![th, rnum, rden]);
+                return Some(ast_ctor(ast, "Rational", tup));
+            }
             // A NATIVE COLLECTION-CTOR head (`#list`/`#tuple`/`#record`/`#map`/`#set`, a `Leaf::Ctor`) —
             // reflect to the DEDICATED first-class `Ast.<X>Ctor` variant carrying the reified CHILDREN with
             // NO head (spec: metaprogramming.md §"Quoting a collection construction … MUST produce that
@@ -727,6 +740,15 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
                 let th = push_atom(ast, Leaf::Name("tuple".into()));
                 let tup = push_list(ast, vec![th, robj, rkey]);
                 return Some(ast_ctor(ast, "Member", tup));
+            }
+            // A NATIVE RATIONAL literal `3/2` inside a quasiquote → `Ast.Rational (tuple …)`, recursing via
+            // `reify_active` (the quasiquote twin of the plain-quote rational branch in `reify_inner`).
+            if let Some((num, den)) = ast.rational_parts(node) {
+                let rnum = reify_active(ast, num, depth)?;
+                let rden = reify_active(ast, den, depth)?;
+                let th = push_atom(ast, Leaf::Name("tuple".into()));
+                let tup = push_list(ast, vec![th, rnum, rden]);
+                return Some(ast_ctor(ast, "Rational", tup));
             }
             // A NATIVE COLLECTION-CTOR head inside a quasiquote — reflect to the dedicated `Ast.<X>Ctor`
             // (bare children, no head), exactly as the plain-quote path (`reify_inner`), but recursing via
