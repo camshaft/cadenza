@@ -1805,6 +1805,16 @@ private def _ratOfExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
     root := 6 }
 #guard symEval _ratOfExpr [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.const (.rational 3 2))
+-- RATIONAL.OF zero-numerator sign cross-edge (v-spec-oracle #6797, 06-numeric-model): a ZERO numerator with
+-- a NEGATIVE denominator canonicalizes to 0/1 (NOT 0/-1 / signed zero) — intersection of lowest-terms + the
+-- sign-on-numerator rule. `((. Rational of) 0 -5)` → .rational 0/1 (mkRational: den<0 → negate both → (0,5),
+-- gcd(0,5)=5 → 0/1). Cross-oracle-verified: agrees with v-spec-oracle's corpus pin.
+private def _ratZeroNegExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Rational".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[0]), Leaf.intLit true .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
+    root := 6 }
+#guard symEval _ratZeroNegExpr [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.const (.rational 0 1))
 
 -- BYTES.OF member-op coverage: `((. Bytes of) (list 10 20 30))` → `.const (.bytes #{10,20,30})`.
 private def _bytesOfExpr : Module :=
