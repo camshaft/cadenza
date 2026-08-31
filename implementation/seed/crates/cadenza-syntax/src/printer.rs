@@ -6876,85 +6876,21 @@ mod tests {
     // `#{ 1 = 10 }`→`#map((= 1 10))` (maps use `=` like records; the `#` sigil distinguishes them). The
     // list literal `[1, 2, 3]` is already pinned by ml/05-list-literal. All fmt-idempotent.
 
-    #[test]
-    fn a_same_line_trailing_comment_on_the_last_record_or_map_field_is_preserved() {
-        // The record/map siblings of the list/tuple/set trailing-comment fix. A field/entry is a
-        // `(name value)` PAIR (not a bare value), so the `(comment-after "text" (pair))` wrapper is
-        // unwrapped by the shape-guards (`is_pairs`/`is_record_shape`) AND the printer
-        // (`bracketed_pairs_comment_aware`), which re-emits ` // text` after the field and forces `}` to
-        // its own line. Captured only on the LAST field (PR#758 gate); a mid-field comment is left to the
-        // drop-guard. strip_comments peels it — a record with a trailing comment compiles.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def r() -> Int64 = { a = 1, b = 2 // last\n}").arenas),
-            "(def (r) (: #record((= a 1) (comment-after \"last\" (= b 2))) Int64))",
-            "a trailing comment on the last RECORD field is captured, not dropped"
-        );
-        assert_eq!(
-            assert_roundtrip("{ a = 1, b = 2 // last\n}", 80),
-            "{\n  a = 1,\n  b = 2 // last\n}"
-        );
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def m() -> Int64 = #{ 1 = 10, 2 = 20 // last\n}").arenas
-            ),
-            "(def (m) (: #map((= 1 10) (comment-after \"last\" (= 2 20))) Int64))",
-            "a trailing comment on the last MAP entry is captured, not dropped"
-        );
-        assert_eq!(
-            assert_roundtrip("#{ 1 = 10, 2 = 20 // last\n}", 80),
-            "#{\n  1 = 10,\n  2 = 20 // last\n}"
-        );
-        // Clean record/map (incl. field-shorthand pun) keep their ordinary flat layout — no forced break.
-        assert_eq!(assert_roundtrip("{ x = 1, y = 2 }", 80), "{ x = 1, y = 2 }");
-        assert_eq!(assert_roundtrip("{ x, y }", 80), "{ x, y }");
-        assert_eq!(assert_roundtrip("#{ 1 = 10 }", 80), "#{ 1 = 10 }");
-    }
-
-    #[test]
-    fn an_own_line_comment_before_a_record_or_map_field_is_preserved_not_dropped() {
-        // The record/map own-line interior sibling. A field/entry is a `(name value)` PAIR, so an own-line
-        // leading `//` wraps it as `(comment "text" (name value))` — which the shape-guards (`is_pairs`/
-        // `is_record_shape` via `strip_field_comments`) unwrap, and the printer (`bracketed_pairs_comment_
-        // aware`) renders as a `// …` line ABOVE the field, forcing the container to break. Distinct from
-        // the same-line trailing `(comment-after …)`. Own-line has no swallow hazard → works at any field.
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def r() -> Int64 = {\n  // lead\n  a = 1, b = 2 }").arenas
-            ),
-            "(def (r) (: #record((comment \"lead\" (= a 1)) (= b 2)) Int64))",
-            "own-line comment before the first record field is captured, printer renders it above"
-        );
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def r() -> Int64 = { a = 1,\n  // mid\n  b = 2 }").arenas
-            ),
-            "(def (r) (: #record((= a 1) (comment \"mid\" (= b 2))) Int64))",
-            "own-line comment before a non-first record field is captured (no swallow hazard)"
-        );
-        assert_eq!(
-            assert_roundtrip("{\n  // lead\n  a = 1, b = 2 }", 80),
-            "{\n  // lead\n  a = 1,\n  b = 2\n}"
-        );
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def m() -> Int64 = #{\n  // lead\n  1 = 10, 2 = 20 }").arenas
-            ),
-            "(def (m) (: #map((comment \"lead\" (= 1 10)) (= 2 20)) Int64))",
-            "own-line comment before a map entry is captured"
-        );
-        // Leading own-line + trailing same-line (last field) compose.
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def r() -> Int64 = {\n  // lead\n  a = 1, b = 2 // last\n}")
-                    .arenas
-            ),
-            "(def (r) (: #record((comment \"lead\" (= a 1)) (comment-after \"last\" (= b 2))) Int64))",
-            "leading own-line + trailing same-line record comments compose"
-        );
-        // Clean record/map (incl. pun) keep their flat layout.
-        assert_eq!(assert_roundtrip("{ x = 1, y = 2 }", 80), "{ x = 1, y = 2 }");
-        assert_eq!(assert_roundtrip("{ x, y }", 80), "{ x, y }");
-    }
+    // The record/map field-comment tests MIGRATED to the spec/syntax corpus (inc-6 batch-41, comment-node
+    // block; a field/entry is a `(name value)` PAIR — the `//` wraps the pair):
+    //   * `a_same_line_trailing_comment_on_the_last_record_or_map_field_is_preserved` (LAST-field only) →
+    //     ml/269-comment-trailing-last-record-field `{ a = 1, b = 2 // last`⏎`}`→
+    //     `#record((= a 1) (comment-after "last" (= b 2)))`, ml/270-comment-trailing-last-map-entry
+    //     `#{ 1 = 10, 2 = 20 // last`⏎`}`→`#map((= 1 10) (comment-after "last" (= 2 20)))`.
+    //   * `an_own_line_comment_before_a_record_or_map_field_is_preserved_not_dropped` (own-line, any field)
+    //     → ml/271-comment-leading-first-record-field `#record((comment "lead" (= a 1)) (= b 2))`,
+    //     ml/272-comment-leading-nonfirst-record-field `#record((= a 1) (comment "mid" (= b 2)))`,
+    //     ml/273-comment-leading-map-entry `#map((comment "lead" (= 1 10)) (= 2 20))`,
+    //     ml/274-comment-record-field-lead-and-trail (leading own-line + trailing same-line compose) →
+    //     `#record((comment "lead" (= a 1)) (comment-after "last" (= b 2)))`.
+    // Clean record/map layouts are already pinned (ml/229, ml/123, ml/232-233). (`multiple_comment_wrappers_
+    // on_a_record_field` STAYS Rust — its nested `(comment (comment …))` is only from a decoded AST,
+    // unwritable in the ML surface.)
 
     #[test]
     fn multiple_comment_wrappers_on_a_record_field_all_print_not_just_the_first() {
