@@ -8936,3 +8936,7 @@ pass	a refutable literal list element does NOT count toward length-coverage — 
 pass	a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)
 pass	a set-pattern element that names no in-scope value is an unbound value reference (CDZ0101)
 pass	a top-level-do module member's Bool/Int mix is type-checked and rejected CDZ0203
+pass	Type.ast reflects the type-of-types Type itself as the bare Ast.Name Type
+pass	Type.ast on a transparent alias reflects its own declaration verbatim and both forms coincide
+pass	Type.ast on a MUTUALLY-recursive generic stays finite — a cross-type reference is not unfolded
+pass	Type.ast instantiates a generic with a COMPOUND type argument, keeping the nested application named

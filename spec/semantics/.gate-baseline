@@ -9675,3 +9675,7 @@ pass	same-effect shadowing with ADVANCING states, HEAP (tuple) state — the out
 pass	the LET-BOUND twin of finding #20 — a state byte LET-bound as a Bytes then decoded by a from-bytes match in a tail-resumptive arm folds (flatten+pin fix landed; regression-guard)
 pass	the PASSING FLOOR of adv-20's bisection — a state byte LET-bound as a Bytes and consumed by Bytes.len (NO decode-match) in a tail-resumptive arm folds correctly
 pass	ti1h the HEAP-state twin of ti1 — two DIFFERENT effects, BOTH threading a TUPLE (heap) state, interleaved A-B-A draws with values crossing
+pass	Type.ast reflects the type-of-types Type itself as the bare Ast.Name Type
+pass	Type.ast on a transparent alias reflects its own declaration verbatim and both forms coincide
+pass	Type.ast on a MUTUALLY-recursive generic stays finite — a cross-type reference is not unfolded
+pass	Type.ast instantiates a generic with a COMPOUND type argument, keeping the nested application named

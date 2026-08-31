@@ -265,3 +265,82 @@
       (export main)))
   (call main)
   (output (: 7 Int64)))
+
+(case
+  "Type.ast reflects the type-of-types Type itself as the bare Ast.Name Type"
+  (doc
+    "Design §3.4: the type-of-types `Type` is concrete and reflects to the bare `(Ast.Name \"Type\")` — it
+           has no `(type …)` declaration and no structural surface, it IS the primitive type name. Here
+           `(Type.of Int64)` is `Type` (the type of the type-VALUE `Int64`), so `(Type.ast (Type.of Int64))`
+           folds to `(quote Type)` == `(Ast.Name \"Type\")`. Pins the `Ty::Type` reflection arm the earlier
+           increments left implicit — reflection is total over concrete types INCLUDING the type of types. A
+           compiler that failed to name `Type`, or fabricated a declaration for it, diffs here.")
+  (input (do (def (main) (if (= (Type.ast (Type.of Int64)) (quote Type)) 1 0)) (export main)))
+  (call main)
+  (output (: 1 Int64)))
+
+(case
+  "Type.ast on a transparent alias reflects its own declaration verbatim and both forms coincide"
+  (doc
+    "Design §7.4: a transparent alias / newtype `(type Meters Int64)` reflects its OWN declaration form
+           `(type Meters Int64)` — reflection does NOT chase through to the aliased `Int64` (that would lose
+           the alias's identity, the whole point of reflecting the DEFINITION). It has no type params, so
+           `Type.ast` and `Type.ast-generic` COINCIDE (like the non-generic sum case). Checks the verbatim
+           reflection (weight 1) and the coincidence (weight 2) — self-witness 3. A compiler that chased the
+           alias to `Int64`, or diverged the two forms, drops a term.")
+  (input
+    (do
+      (type Meters Int64)
+      (def
+        (main)
+        (+
+          (* 1 (if (= (Type.ast-generic Meters) (quote (type Meters Int64))) 1 0))
+          (* 2 (if (= (Type.ast Meters) (Type.ast-generic Meters)) 1 0))))
+      (export main)))
+  (call main)
+  (output (: 3 Int64)))
+
+(case
+  "Type.ast on a MUTUALLY-recursive generic stays finite — a cross-type reference is not unfolded"
+  (doc
+    "Design §3.3 extends finiteness to MUTUALLY-recursive groups, not just self-recursion (pinned above
+           for `Lst`). Instantiating `(type Tree a (Leaf a) (Node (Forest a)))` at `Tree Int64` substitutes
+           only `Tree`'s OWN param `a` in `Tree`'s OWN body; the cross-reference `(Forest a)` becomes
+           `(Forest Int64)` but is NEVER inlined to `Forest`'s definition — so the result
+           `(type Tree (Leaf Int64) (Node (Forest Int64)))` is finite even though `Tree`/`Forest` are mutually
+           infinite. A substitution that unfolded the cross-reference would not terminate (or diverge from
+           this pinned shape).")
+  (input
+    (do
+      (type Tree a (Leaf a) (Node (Forest a)))
+      (type Forest a (Empty) (More (Tree a) (Forest a)))
+      (def
+        (main)
+        (if
+          (=
+            (Type.ast (Type.of (Node (More (Leaf 1) (Empty)))))
+            (quote (type Tree (Leaf Int64) (Node (Forest Int64)))))
+          1
+          0))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
+
+(case
+  "Type.ast instantiates a generic with a COMPOUND type argument, keeping the nested application named"
+  (doc
+    "The instantiated form substitutes a param by a COMPOUND (non-scalar) type argument, not just a
+           primitive (increment 3 pinned `a`->`Int64`). For `(type Opt a (Sm a) (Nn))` reflected from a value
+           of type `Opt (Opt Int64)` (`(Sm (Sm 1))`), `Type.ast` substitutes `a`->`Opt Int64`, folding to
+           `(type Opt (Sm (Opt Int64)) (Nn))` — the argument `(Opt Int64)` is a named application left intact
+           (not unfolded to `Opt`'s own definition), consistent with the finiteness rule. Pins that argument
+           surfaces of arbitrary shape flow through the substitution, not only scalar type names.")
+  (input
+    (do
+      (type Opt a (Sm a) (Nn))
+      (def
+        (main)
+        (if (= (Type.ast (Type.of (Sm (Sm 1)))) (quote (type Opt (Sm (Opt Int64)) (Nn)))) 1 0))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
