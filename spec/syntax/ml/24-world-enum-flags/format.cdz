@@ -1,0 +1,4 @@
+world W =
+  | export i =
+    | color : (x : u8) -> enum(Red, Green, Blue)
+    | perms : (x : u8) -> flags(Read, Write)
