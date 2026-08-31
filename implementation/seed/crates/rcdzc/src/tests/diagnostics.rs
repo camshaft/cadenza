@@ -1059,30 +1059,13 @@ fn a_deeper_nested_record_match_field_binds_via_sub_path() {
     );
 }
 
-#[test]
-fn two_bare_none_record_fields_do_not_cross_contaminate_via_a_let_bound_record() {
-    // REGRESSION (v-agent-harness report): TWO bare `None()` fields in one LET-BOUND record literal used
-    // to cross-contaminate their `Option` element vars. Each `None()` types as `Option(?0)` (the
-    // nullary-variant scheme var, memoized per node), so both fields SHARED `?0`; when the record's type
-    // (built by the `Resolved::Record` field loop) unified against the expected param type in one
-    // `Subst`, one field borrowed its sibling's element type — `resumes : Option Bytes` was inferred
-    // `Option Outcome`, a spurious CDZ0203. FIX: each record field's free vars are freshened into a
-    // DISJOINT block, so sibling `None()` fields solve independently against their own expected field
-    // type. `apply` takes a record with two DIFFERENTLY-typed Option fields, both bound `None` via a
-    // `let`, then applied — must type-check with NO CDZ0203 field-mismatch (the cross-contamination
-    // fault). Asserts the diagnostics are clean rather than running it (a `Bytes`-bearing record needs
-    // the value-heap runtime the lib-test linker doesn't stage).
-    let src = "(module m \
-           (type Outcome (Ok Int64) (Err Int64)) \
-           (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
-           (def (main) (let ((evt (record (= a (None)) (= b (None)) (= c 9)))) (apply evt))) \
-           (export main))";
-    let all = diags_of(src);
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
-        "two bare None() record fields must not cross-contaminate (no CDZ0203 field mismatch): {all:?}"
-    );
-}
+// MIGRATED to corpus (05-compound-types.sexp, "two bare-None record fields (let-bound) keep their distinct
+// Option element types"): the LET-BOUND bare-None cross-contamination regression now RUNS in the corpus
+// (value-heap runtime present) → output 9, and a CDZ0203 regression would deny that output. Rust test
+// two_bare_none_record_fields_do_not_cross_contaminate_via_a_let_bound_record deleted.
+// NOTE: the two DIRECT-ARG tests below stay rust pins — the NATIVE `#record(…)` direct-arg form still
+// cross-contaminates (CDZ0203) where the classic `(record …)` form + the let-bound form do not (routed to
+// v-spec-oracle + inference owner). Migrate them once that native-form bug is fixed.
 
 #[test]
 fn two_bare_none_record_fields_passed_as_a_direct_arg_do_not_cross_contaminate() {

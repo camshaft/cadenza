@@ -14,6 +14,26 @@
   (input (let ((p #record((= x 1) (= y 2)))) p.x))
   (output (: 1 Int64)))
 
+; ── Two bare `(None)` fields in one LET-BOUND record literal must NOT cross-contaminate their Option element
+; ── types. Each `(None)` types as `Option ?0` (a per-node scheme var); a bug shared that var across sibling
+; ── fields, so unifying the record against a param type let one field borrow its sibling's element type
+; ── (`a : Option Bytes` inferred `Option Outcome`) — a spurious CDZ0203. The FIX freshens each field's free
+; ── vars into a disjoint block. GUARD = the run itself: a CDZ0203 is an ERROR that denies the artifact, so a
+; ── regression can't produce `9`. (This RUNS — the value-heap runtime the rcdzc lib-test linker couldn't
+; ── stage is present in the corpus; migrated from rcdzc two_bare_none_record_fields_..._let_bound.)
+; ── NOTE: the DIRECT-ARG + NESTED variants are NOT yet corpus-migrated — the native `#record(…)` direct-arg
+; ── form STILL cross-contaminates (CDZ0203) where the classic `(record …)` form + this let-bound form do not
+; ── (routed to v-spec-oracle + the inference owner); their rcdzc rust pins stay until that native-form bug is fixed.
+(case
+  "two bare-None record fields (let-bound) keep their distinct Option element types — no cross-contamination"
+  (input
+    (do
+      (type Outcome (Ok Int64) (Err Int64))
+      (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c))
+      (def (main) (let ((evt #record((= a (None)) (= b (None)) (= c 9)))) (apply evt)))
+      (export main)))
+  (output (: 9 Int64)))
+
 (case
   "a record scrutinee is bound whole by a match binder"
   (doc
