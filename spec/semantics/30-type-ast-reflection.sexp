@@ -17,8 +17,10 @@
 ; concrete args (dropping the head binders), rendered finite (a nested self-reference stays a named
 ; application, never unfolded). INCREMENT 4: interop lock — a reflected definition is an ordinary `Ast`, so
 ; it round-trips through `Ast.encode`/`Ast.decode` byte-identically and renders via `Ast.print`, with no
-; reflection-specific codec path. REMAINING: only the `Fn` arrow surface (TODO-pinned above) — the core
-; feature is complete.
+; reflection-specific codec path. INCREMENT 5 (operator directive): reflect BUILT-IN type definitions
+; (`Option`, `Result`, …) — prelude sums with no user source file reflect their `(type …)` definition from
+; the synthesized decl, like a user type. REMAINING: only the `Fn` arrow surface (TODO-pinned above) — the
+; core feature is complete.
 (case
   "Type.ast-generic reflects a nominal sum type's verbatim declaration AST"
   (doc
@@ -229,3 +231,37 @@
            has a concrete definition to render.")
   (input (do (type Opt a (Sm a) (Nn)) (def (main) (Type.ast (Type.of (Nn)))) (export main)))
   (error CDZ0203 (message "requires a concrete type")))
+
+(case
+  "Type.ast reflects a BUILT-IN type's definition (Option, Result) like a user type"
+  (doc
+    "Increment 5 (operator directive) — reflection MUST handle BUILT-IN type definitions, not just
+           user-declared ones. `Option` and `Result` are prelude sums with no user source file, but they
+           have the same `(type …)` definition shape, so `Type.ast-generic`/`Type.ast` reflect them
+           identically to a user type: generic `Option` → `(type Option (Some a) None)`, its instantiation
+           at `Option Int64` → `(type Option (Some Int64) None)`, and `Result` → `(type Result (Ok a) (Err
+           e))`. Checked `(= reflected (quote <def>))` weighted 1/2/4 — self-witness 7. (Structural
+           built-ins — `List`/`Map`/`Set`/`Tuple`/primitives — already reflect via the type-surface
+           fallback, pinned in the structural case above.) A built-in that failed to reflect its definition
+           would drop its term.")
+  (input
+    (do
+      (def
+        (main)
+        (+
+          (*
+            1
+            (if (= (Type.ast-generic (Type.of (Some 1))) (quote (type Option (Some a) None))) 1 0))
+          (+
+            (* 2 (if (= (Type.ast (Type.of (Some 1))) (quote (type Option (Some Int64) None))) 1 0))
+            (*
+              4
+              (if
+                (=
+                  (Type.ast-generic (Type.of (: (Ok 1) (Result Int64 String))))
+                  (quote (type Result (Ok a) (Err e))))
+                1
+                0)))))
+      (export main)))
+  (call main)
+  (output (: 7 Int64)))

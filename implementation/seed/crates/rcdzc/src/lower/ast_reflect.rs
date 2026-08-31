@@ -1347,16 +1347,24 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
             "Type.ast: the built-in Ast sum is unavailable",
         ));
     };
+    // The decl SOURCE to reflect. For a USER type it is the verbatim node in the defining file's
+    // PRE-RESOLVE snapshot (the live arena is post-resolve). For a BUILT-IN / snapshot-less type (`Option`,
+    // `Result`, … — the prelude synthesizes them, so there is no user source file) fall back to the
+    // PRELUDE-synthesized `(type …)` node at `TypeDecl.occ` (`decl`) in the live arena, copied out into an
+    // OWNED arena so the later `arenas_to_ast_value(db, …)` mutable borrow does not clash with the `&db.ast`
+    // read (operator directive 2026-08-31: type reflection MUST handle built-in type definitions). Both
+    // paths yield an owned `(Arenas, root-node)` the generic/instantiated logic below reflects uniformly.
     let file = db.file_of(decl).unwrap_or(0);
-    let Some(snapshot) = db.source_snapshots.get(file).cloned().flatten() else {
-        return Core::Poison(Reject::decline(
-            "Type.ast: no source snapshot for the declaring module",
-        ));
-    };
-    let Some(node) = find_type_decl_node(&snapshot, snapshot.root, &name) else {
-        return Core::Poison(Reject::decline(
-            "Type.ast: the type declaration was not found in the module source",
-        ));
+    let (snapshot, node) = if let Some(snap) = db.source_snapshots.get(file).cloned().flatten()
+        && let Some(n) = find_type_decl_node(&snap, snap.root, &name)
+    {
+        (snap, n)
+    } else {
+        let mut b = crate::ast::Builder::new();
+        let empty: std::collections::HashMap<String, StructId> = std::collections::HashMap::new();
+        let copied = copy_subst_node(&db.ast, decl, &empty, &mut b);
+        let arenas = b.finish(copied);
+        (std::rc::Rc::new(arenas), copied)
     };
 
     // The INSTANTIATED form (`Type.ast`) of a GENERIC type (increment 3): substitute the decl's own type
