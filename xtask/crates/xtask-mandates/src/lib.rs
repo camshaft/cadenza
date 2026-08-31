@@ -328,6 +328,220 @@ fn is_integration_test_path(path: &Path) -> bool {
     true
 }
 
+/// The DECLINE-PROFESSIONALISM hard-fail lexicon (operator seq-280 write-literally: a user-facing decline
+/// must be professional — the "we'll build it later" intent lives in a comment/tracker, never in the text a
+/// USER sees). OWNED by v-deferral-declines (their spec v1, 2026-08-31) — kept as a DATA const so they can
+/// tune it without touching the scan logic. Case-insensitive, word-boundary matched. Deliberately EXCLUDES
+/// "currently"/"presently" (usually FACTUAL — "the cores currently thread tuples" — an advisory tier at
+/// most, not a hard fail) and "not implemented" (a borderline terminal statement). "yet" is highest-signal
+/// (subsumes not-yet / yet-supported / yet-emitted / boundary-yet).
+pub const DEFERRAL_LEXICON: &[&str] = &[
+    "yet",
+    "not yet",
+    "for now",
+    "for the moment",
+    "at this time",
+    "later slice",
+    "later increment",
+    "later widening",
+    "next brick",
+    "someday",
+    "eventually",
+    "to be implemented",
+    "planned",
+    "will support",
+    "coming soon",
+];
+
+/// The `decline-professionalism` lint (operator seq-280): scan `rcdzc/src/**/*.rs` for a `Reject::decline`
+/// / `unsupported` / `declined` / `coded` call whose MESSAGE string carries a [`DEFERRAL_LEXICON`] phrase —
+/// deferral-trash wording ("… yet", "for now") that leaked into user-facing text. Returns the violations
+/// (empty = clean). A COMPLETE static source scan (every decline site), the durable complement to a manual
+/// sweep — which had a 3-tick false-clean (a `\`-continued "not\nyet" the line-based regex could not see).
+///
+/// This is DELIBERATELY NOT part of [`lint_mandates`] (which is already folded into the live `mandateLint`
+/// gate): v-deferral's ratchet is turn-on-at-ZERO with NO grandfather, and 3 residue sites are still pending
+/// their owner's land — so v-fleet-tooling wires this as its OWN check (a `decline-professionalism`
+/// runCommand + a `.#lint-declines` app over the `xtask-mandates declines` subcommand) and folds it into
+/// localGate only AFTER the residue clears, so the gate starts green. Until then this fn is inert.
+///
+/// syn resolves the `\`-continuation JOIN + escapes for free ([`syn::LitStr::value`] gives the actual
+/// string content), which is exactly the miss a naive line scan makes — the whole reason for an AST lint.
+pub fn lint_decline_professionalism(repo: &Path) -> Result<Vec<Violation>, String> {
+    let src_root = repo.join("implementation/seed/crates/rcdzc/src");
+    let mut rs = Vec::new();
+    collect_rs_files(&src_root, &mut rs).map_err(|e| {
+        format!(
+            "cannot enumerate {} for the decline lint: {e}",
+            src_root.display()
+        )
+    })?;
+    rs.sort(); // deterministic report order
+    let mut out = Vec::new();
+    for f in rs {
+        let rel = f.strip_prefix(repo).unwrap_or(&f);
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        // Generated decline tables are machine-emitted (not hand-authored user text) — excluded.
+        if is_generated_declines_file(&rel_str) {
+            continue;
+        }
+        let src = std::fs::read_to_string(&f)
+            .map_err(|e| format!("cannot read {} for the decline lint: {e}", f.display()))?;
+        // Cheap prefilter: only parse a file that actually calls a `Reject::` constructor (most don't).
+        if !src.contains("Reject::") {
+            continue;
+        }
+        let file = syn::parse_file(&src)
+            .map_err(|e| format!("cannot parse {} for the decline lint: {e}", f.display()))?;
+        let mut finder = DeclineFinder::default();
+        syn::visit::visit_file(&mut finder, &file);
+        for (line, phrase, excerpt) in finder.hits {
+            out.push(Violation {
+                file: f.clone(),
+                reason: format!(
+                    "line {line}: deferral wording '{phrase}' in a user-facing decline message: {excerpt:?} \
+                     — operator seq-280 requires professional decline text; move the \"build it later\" \
+                     intent to a code comment or tracker, not the message a USER sees"
+                ),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// A generated decline table (machine-emitted, not hand-authored user text) — excluded from the scan.
+fn is_generated_declines_file(rel_slash: &str) -> bool {
+    rel_slash.ends_with("declines_generated.rs") || rel_slash.ends_with("proptest_gen.rs")
+}
+
+/// The first [`DEFERRAL_LEXICON`] phrase present in `msg` as a WHOLE WORD (case-insensitive), or `None`.
+/// Word-boundary anchored so "yet" hits "not yet supported" / "yet-emitted" but NOT "yeti" / "keytype".
+fn deferral_hit(msg: &str) -> Option<&'static str> {
+    let lower = msg.to_lowercase();
+    DEFERRAL_LEXICON
+        .iter()
+        .copied()
+        .find(|&p| word_bounded_contains(&lower, p))
+}
+
+/// Does `hay` (already lowercased) contain `needle` (ASCII lowercase) as a whole word — the char just
+/// before and just after are non-alphanumeric (or a string edge)? Internal spaces in a multi-word phrase
+/// ("not yet") are fine; only the phrase ENDS are boundary-checked.
+fn word_bounded_contains(hay: &str, needle: &str) -> bool {
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(needle) {
+        let s = from + rel;
+        let e = s + needle.len();
+        let before_ok = s == 0 || !hay[..s].chars().next_back().unwrap().is_alphanumeric();
+        let after_ok = e == hay.len() || !hay[e..].chars().next().unwrap().is_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        from = s + 1;
+    }
+    false
+}
+
+/// A `syn` visitor collecting deferral-worded strings that appear INSIDE a `Reject::{decline,unsupported,
+/// declined,coded}` call — the only string literals in such a call are the user-facing message (`declined`'s
+/// id / `coded`'s Code arg are not string literals), so scanning every string literal within the call
+/// (direct, `.to_string()` receiver, or inside a `format!`/`concat!` macro) captures the message in all its
+/// shapes. SKIPS anything under a `#[cfg(test)]` / `#[test]` item (a test author's assertion message is not
+/// user-facing — the false-hit class v-deferral's manual sweep tripped on).
+#[derive(Default)]
+struct DeclineFinder {
+    /// `(line, matched-phrase, excerpt)` per hit.
+    hits: Vec<(usize, &'static str, String)>,
+    in_reject: usize,
+    in_test: usize,
+}
+
+impl DeclineFinder {
+    /// Check one resolved string value (a message literal seen inside a Reject call) and record a hit.
+    fn scan_value(&mut self, value: &str, line: usize) {
+        if self.in_reject == 0 || self.in_test > 0 {
+            return;
+        }
+        if let Some(phrase) = deferral_hit(value) {
+            // Excerpt: the message, single-lined + capped so a gate failure is readable.
+            let flat = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            let excerpt: String = if flat.chars().count() > 90 {
+                format!("{}…", flat.chars().take(90).collect::<String>())
+            } else {
+                flat
+            };
+            self.hits.push((line, phrase, excerpt));
+        }
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for DeclineFinder {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        let gated = item_attrs(item).is_some_and(is_test_gated);
+        if gated {
+            self.in_test += 1;
+        }
+        syn::visit::visit_item(self, item);
+        if gated {
+            self.in_test -= 1;
+        }
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        let is_reject = matches!(&*call.func, syn::Expr::Path(p) if is_reject_ctor_path(&p.path));
+        if is_reject {
+            self.in_reject += 1;
+        }
+        syn::visit::visit_expr_call(self, call);
+        if is_reject {
+            self.in_reject -= 1;
+        }
+    }
+
+    fn visit_lit_str(&mut self, lit: &'ast syn::LitStr) {
+        // syn resolves `\`-continuation + escapes → the actual message content.
+        let line = lit.span().start().line;
+        self.scan_value(&lit.value(), line);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        // A message built by `format!(…)` / `concat!(…)` inside the Reject call: the macro body is an opaque
+        // token stream syn does not descend into for `visit_lit_str`, so scan its string-literal tokens here.
+        if self.in_reject > 0 && self.in_test == 0 {
+            for tok in mac.tokens.clone() {
+                if let proc_macro2::TokenTree::Literal(l) = tok
+                    && let syn::Lit::Str(s) = syn::Lit::new(l.clone())
+                {
+                    self.scan_value(&s.value(), l.span().start().line);
+                }
+            }
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+/// Is `path` a `Reject::{decline,unsupported,declined,coded}` constructor path (the seq-280 user-facing
+/// rejection surface)? Matched on the last two segments so a `crate::…::Reject::decline` qualification holds.
+fn is_reject_ctor_path(path: &syn::Path) -> bool {
+    let segs: Vec<&syn::Ident> = path.segments.iter().map(|s| &s.ident).collect();
+    let n = segs.len();
+    n >= 2
+        && segs[n - 2] == "Reject"
+        && matches!(
+            segs[n - 1].to_string().as_str(),
+            "decline" | "unsupported" | "declined" | "coded"
+        )
+}
+
+/// Does an attribute list gate the item to TEST builds — `#[cfg(test)]` or a `#[test]`/`#[…::test]` attr?
+/// (A Reject call inside a test is an author assertion, not user-facing text.)
+fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
+    has_cfg_test(attrs)
+        || attrs
+            .iter()
+            .any(|a| a.path().segments.last().is_some_and(|s| s.ident == "test"))
+}
+
 /// Recursively collect `.rs` files under `dir` (skipping `target/`). Mirrors the emoji lint's walker.
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if !dir.exists() {
@@ -482,6 +696,133 @@ mod tests {
         assert!(!line_contains_hash_string(&format!(
             "  x = \"cadenza:runtime/heap@0.0.0+{b62}\";"
         )));
+    }
+
+    fn decline_hits(src: &str) -> Vec<(usize, &'static str, String)> {
+        let file = syn::parse_file(src).expect("parse");
+        let mut f = DeclineFinder::default();
+        syn::visit::visit_file(&mut f, &file);
+        f.hits
+    }
+
+    #[test]
+    fn word_bounded_matches_whole_words_only() {
+        assert!(word_bounded_contains("not yet supported", "yet"));
+        assert!(word_bounded_contains("emitted yet-again", "yet")); // "yet" then '-' = boundary
+        assert!(word_bounded_contains("yet", "yet")); // whole string
+        assert!(!word_bounded_contains("a yeti walks", "yet")); // "yet" inside "yeti" → no
+        assert!(!word_bounded_contains("the keytype", "yet")); // substring mid-word → no
+        assert!(word_bounded_contains("done for now, ok", "for now")); // multi-word phrase
+    }
+
+    #[test]
+    fn deferral_lexicon_excludes_currently_and_not_implemented() {
+        assert_eq!(deferral_hit("this is not supported yet"), Some("yet"));
+        assert_eq!(deferral_hit("this is planned"), Some("planned"));
+        // "currently"/"presently" are factual (advisory tier), NOT hard-fail; "not implemented" is terminal.
+        assert_eq!(deferral_hit("the cores currently thread tuples"), None);
+        assert_eq!(deferral_hit("this is not implemented"), None);
+        assert_eq!(deferral_hit("a clean professional decline message"), None);
+    }
+
+    #[test]
+    fn decline_flags_deferral_wording_only_in_reject_calls() {
+        // A direct string-literal decline with "yet" → hit.
+        let src = r#"fn f() { Reject::decline("this shape is not supported yet"); }"#;
+        let hits = decline_hits(src);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, "yet");
+        // The SAME wording in a plain (non-Reject) call is NOT flagged (scope = Reject ctors only).
+        assert!(decline_hits(r#"fn f() { log("not done yet"); }"#).is_empty());
+        // coded / unsupported / declined surfaces are all in scope.
+        assert_eq!(
+            decline_hits(r#"fn f() { Reject::coded(Code::X, "will support this soon"); }"#).len(),
+            1
+        );
+        assert_eq!(
+            decline_hits(r#"fn f() { Reject::unsupported("for now, no"); }"#).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn decline_joins_backslash_continued_literal_before_matching() {
+        // THE case a line-based regex misses: a `\`-continued literal splits "not\nyet" across lines. syn's
+        // LitStr::value() collapses the continuation → "…not yet supported", so "yet" IS seen. (v-deferral's
+        // 3-tick false-clean class.)
+        let src = "fn f() { Reject::decline(\"this is not \\\n        yet supported\"); }";
+        let hits = decline_hits(src);
+        assert_eq!(
+            hits.len(),
+            1,
+            "continuation-joined literal must be scanned: {hits:?}"
+        );
+        assert_eq!(hits[0].1, "yet");
+    }
+
+    #[test]
+    fn decline_scans_format_and_concat_macro_messages() {
+        // `format!(…)` message inside the Reject call — the literal is in an opaque macro token stream, so
+        // visit_lit_str never fires for it; visit_macro handles it.
+        let src =
+            r#"fn f(x: u32) { Reject::declined(Id::A, format!("case {x} is not done yet")); }"#;
+        let hits = decline_hits(src);
+        assert_eq!(hits.len(), 1, "format! message must be scanned: {hits:?}");
+        assert_eq!(hits[0].1, "yet");
+        // A clean format! message → no hit.
+        assert!(
+            decline_hits(r#"fn f() { Reject::decline(concat!("a clean ", "message")); }"#)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn decline_ignores_comments_and_test_gated_items() {
+        // Deferral wording in a COMMENT is ALLOWED (that's where the "later" intent belongs) — the scan is
+        // string-literal-bounded, so a comment is never seen.
+        let src = r#"fn f() {
+            // we will support this later, someday, eventually
+            Reject::decline("a clean professional message");
+        }"#;
+        assert!(
+            decline_hits(src).is_empty(),
+            "comment wording must not be flagged"
+        );
+        // A Reject call inside a #[cfg(test)] item is a test author's message, not user-facing → skipped.
+        let gated = r#"#[cfg(test)]
+        mod t { fn g() { Reject::decline("not built yet"); } }"#;
+        assert!(
+            decline_hits(gated).is_empty(),
+            "cfg(test) decline must be exempt"
+        );
+        // A #[test] fn likewise.
+        let test_fn = r#"#[test]
+        fn g() { Reject::decline("not built yet"); }"#;
+        assert!(
+            decline_hits(test_fn).is_empty(),
+            "#[test] decline must be exempt"
+        );
+    }
+
+    #[test]
+    fn decline_reports_the_line_of_the_hit() {
+        let src = "fn f() {\n    let x = 1;\n    Reject::decline(\"not done yet\");\n}";
+        let hits = decline_hits(src);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, 3, "the Reject::decline is on line 3 (1-based)");
+    }
+
+    #[test]
+    fn generated_declines_file_excluded() {
+        assert!(is_generated_declines_file(
+            "implementation/seed/crates/rcdzc/src/declines_generated.rs"
+        ));
+        assert!(is_generated_declines_file(
+            "implementation/seed/crates/rcdzc/src/foo/proptest_gen.rs"
+        ));
+        assert!(!is_generated_declines_file(
+            "implementation/seed/crates/rcdzc/src/backend/rust/mod.rs"
+        ));
     }
 
     #[test]

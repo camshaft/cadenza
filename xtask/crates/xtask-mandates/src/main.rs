@@ -12,6 +12,35 @@ fn main() {
     let repo = std::env::var_os("CDZ_REPO_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
+
+    // `xtask-mandates declines` runs ONLY the seq-280 decline-professionalism scan and nothing else — a
+    // SEPARATE check surface so v-fleet-tooling can wire it (a `.#lint-declines` app + `decline-
+    // professionalism` gate check) and fold it into localGate INDEPENDENTLY of the default mandate set,
+    // AFTER v-deferral's 3 residue sites land (ratchet-at-zero, no grandfather). The default (no arg) run
+    // is UNCHANGED — it must not carry this check, else it would red the already-folded mandate gate early.
+    if std::env::args().nth(1).as_deref() == Some("declines") {
+        match xtask_mandates::lint_decline_professionalism(&repo) {
+            Ok(v) if v.is_empty() => {
+                println!("lint-declines: ok — no deferral wording in decline messages");
+            }
+            Ok(violations) => {
+                for x in &violations {
+                    eprintln!("lint-declines: {}:{}", x.file.display(), x.reason);
+                }
+                eprintln!(
+                    "lint-declines: {} decline-professionalism violation(s)",
+                    violations.len()
+                );
+                std::process::exit(1);
+            }
+            Err(msg) => {
+                eprintln!("lint-declines: {msg}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let mut failed = false;
 
     // (1) The syn-based STANDING MANDATES (no-integration-tests, no-hard-coded-runtime-hash, …).
