@@ -404,6 +404,8 @@ pass	ml/459-unit-suffix-in-call-arg
 pass	ml/46-import-alias-whole-module
 pass	ml/460-type-suffixed-literal-not-a-quantity
 pass	ml/461-unit-suffix-no-cross-newline
+pass	ml/462-as-conversion-compound-exponent
+pass	ml/463-as-conversion-spaced-slash-division
 pass	ml/47-import-named-list
 pass	ml/48-import-per-name-rename
 pass	ml/49-const-force-eval-call

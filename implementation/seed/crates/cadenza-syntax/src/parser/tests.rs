@@ -1838,16 +1838,15 @@ fn bare_world_is_still_an_ordinary_name_not_a_world_decl() {
 // 2))` (body stops at `def g`); the def-juxtaposition `def a = 1 def b = 2`→`(do (def a 1) (def b 2))` is
 // subsumed by ml/203-top-level-value-defs-blank-separated. (`top_level_semicolon_folds…` stays Rust — GAP note below.)
 
-// STAYS RUST pending an OPERATOR DESIGN RULING (corpus-policy: never pin an unsettled spec question). `f(); g()`
-// (with `;`) → `(do (f) (g))` correctly (pinned at ml/432-semicolon-top-level-folds), but `f() g()`
-// (juxtaposition, no `;`) → `(do ((. Qty of) (f) ((. Unit of) #"g")) unit)`. This is NOT a bug: name/call/member-
-// magnitude quantities are FIRST-CLASS GOLDENED (ml/242-245, e.g. `f(x) meter` → `(Qty.of (f x) …)`), so `f() g`
-// as a call-magnitude quantity is CONSISTENT with the quantity spec (v-syntax, reader owner). The real tension is
-// a DESIGN CONFLICT: goldened call/name-magnitude quantities vs this test's "`;`-optional between top-level forms"
-// claim — for `f() g()` only one can win (mirrors `5 meter` quantity vs `5; meter` two forms). v-syntax's read
-// (routed to operator): NARROW the `;`-optional claim to "except where the juxtaposition forms a valid quantity",
-// NOT restrict the quantity sugar. Until the operator rules, pin NEITHER tree in the corpus and keep this test as
-// a `len == 2` structural check. (inc-6 batch-72 flagged; v-syntax + concierge routing to operator.)
+// STAYS RUST pending v-syntax's READER-IMPL landing (corpus-policy: never pin an unsettled spec question).
+// OPERATOR RULED (2026-08-31, via v-syntax): top-level `;` is a SEPARATOR required ONLY to disambiguate an
+// ambiguous expr boundary (the `f() g()`→Qty fold); ALL declarations are exempt and a lone expr needs none.
+// So `f(); g()` → `(do (f) (g))` (two forms, pinned ml/432), and `f() g()` (no `;`) is the AMBIGUOUS case that
+// now REQUIRES `;` (an error/diagnostic — no longer a silent Qty fold). name/call/member-magnitude quantities
+// stay goldened (ml/242-245); the narrowing is to the `;`-optional claim, not the quantity sugar. v-syntax is
+// coordinating the reader change with v-syntax-nonrec-reader and will PING v-parser-corpus with the exact
+// goldens to migrate once it lands. HOLD the pinning until then; this `len == 2` check remains until reconciled.
+// (inc-6 batch-72 flagged → operator ruled; awaiting reader impl.)
 #[test]
 fn top_level_semicolon_folds_and_flattens_to_the_same_root() {
     // A `;` between top-level forms is optional: it folds a stmt-level `(do …)` that the root
@@ -2304,32 +2303,13 @@ fn as_conversion_does_not_cross_a_newline() {
     );
 }
 
-#[test]
-fn as_conversion_target_may_be_a_compound_unit() {
-    use crate::sexpr;
-    // The `as` conversion target extends across a GLUED `/`/`*`/`^` chain into a COMPOUND unit, the
-    // same surface as the `<num> GiB/s` quantity literal — so `x as GiB/s` converts to the rate unit.
-    // Without this the bare-name case read only a SINGLE unit and `/s` fell to the enclosing infix loop
-    // as a division of the conversion by unbound `s` (the sibling of BUG #51 on the conversion path).
-    assert_eq!(
-        sexpr::print(&parse_ok("x as GiB/s")),
-        r#"((. Unit in) (/ ((. Unit of) #"GiB") ((. Unit of) #"s")) x)"#
-    );
-    // `^` binds tighter than `/` here too: `m/s^2`.
-    assert_eq!(
-        sexpr::print(&parse_ok("x as m/s^2")),
-        r#"((. Unit in) (/ ((. Unit of) #"m") (^ ((. Unit of) #"s") 2)) x)"#
-    );
-    // A single unit is unchanged, and a SPACED `/ 2` stays a division of the conversion (glue rule).
-    assert_eq!(
-        sexpr::print(&parse_ok("x as meter")),
-        r#"((. Unit in) ((. Unit of) #"meter") x)"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("x as meter / 2")),
-        r#"(/ ((. Unit in) ((. Unit of) #"meter") x) 2)"#
-    );
-}
+// `as_conversion_target_may_be_a_compound_unit` (the `as` conversion target extends across a GLUED `/`/`*`/`^`
+// chain into a COMPOUND unit, like `<num> GiB/s`; a SPACED `/ 2` stays a division of the conversion — the glue
+// rule) MIGRATED to the spec/syntax corpus (inc-6 batch-78): single `x as meter`=ml/220-as-conversion-basic,
+// compound rate `x as GiB/s`=ml/227-unit-in-compound-target-call-form (`(Unit.in (/ …) q)` shape); new bits —
+// ml/462-as-conversion-compound-exponent `x as m/s^2`→`((. Unit in) (/ (Unit.of #m) (^ (Unit.of #s) 2)) x)`
+// (`^` tighter than `/`), ml/463-as-conversion-spaced-slash-division `x as meter / 2`→`(/ ((. Unit in) (Unit.of
+// #meter) x) 2)` (a SPACED `/ 2` is a division of the conversion, not part of the compound unit).
 
 #[test]
 fn backtick_escapes_reserved_word() {
