@@ -7790,10 +7790,14 @@ impl<'a> Parser<'a> {
     /// Nodes are created in the SAME order as the recursive body (the `->` head before the right operand; a
     /// labeled arg's `label` before its type before the `:`), so the arena AND the span table match. HYBRID
     /// STAGE: the non-postfix operand kinds (`forall` body, paren-tuple, brace-record) and the unit-infix
-    /// (`^`/`*`/`/`) composition are still read via the recursive helpers — a `(A, B)` / `{x: T}` / `forall`
+    /// (`^`/`*`/`/`) composition are still read via the recursive helpers — a `{x: T}` / `forall`
     /// body element re-enters a nested `type_ref_iter` for now — and convert onto the worklist in later
-    /// increments. The `type_postfix`/`type_arg_exprs` depth-guard accounting (`self.depth + spine`, `spine`
-    /// per operand-level postfix chain) is mirrored exactly so the deep-nesting boundary stays byte-identical.
+    /// increments. (I5 part 3 added the paren-tuple/grouping/unit `(…)` interior — each element is a full
+    /// type, so it descends onto the worklist via [`TCont::Paren`] instead of recursing `type_paren ->
+    /// type_ref`; the `Tuple` head is created AFTER the first element's subtree, matching the recursive
+    /// struct-id order.) The `type_postfix`/`type_arg_exprs` depth-guard accounting (`self.depth + spine`,
+    /// `spine` per operand-level postfix chain) is mirrored exactly so the deep-nesting boundary stays
+    /// byte-identical.
     fn type_ref_iter(&mut self) -> StructId {
         // Pending continuations on the explicit worklist (replacing the native recursion of `type_ref` /
         // `type_operand` / `type_postfix` / `type_arg_exprs`). Each holds only Copy ids/spans + the
@@ -7819,6 +7823,15 @@ impl<'a> Parser<'a> {
                 head_is_record: bool,
                 args: Vec<StructId>,
                 spine: u32,
+            },
+            /// A parenthesized type `( … )` mid-read: `start` is the `(` span; `items` the collected element
+            /// nodes (empty until the first element decides grouping-vs-tuple — once a tuple, `items` holds
+            /// `[Tuple-head, first, …]`); `head_made` is set once the `Tuple` head is created (i.e. a `,`
+            /// confirmed a tuple, not a single-element grouping).
+            Paren {
+                start: Span,
+                items: Vec<StructId>,
+                head_made: bool,
             },
         }
         // The driver's next action.
@@ -7851,13 +7864,29 @@ impl<'a> Parser<'a> {
                             value: n,
                         };
                     } else if self.at(Kind::LParen) {
-                        // Parenthesized / tuple type — recursive helper (later increment); then unit-infix.
-                        let op = self.type_paren(node_start);
-                        let n = self.type_unit_infix(op, 0, node_start);
-                        next = Next::Reduce {
-                            start: node_start,
-                            value: n,
-                        };
+                        // Parenthesized / tuple / unit type — de-recursed onto the worklist (I5 part 3): the
+                        // interior element(s) are full types, so each descends here instead of recursing
+                        // `type_paren -> type_ref`. `()` is the unit type (no descent); `(A)` a transparent
+                        // grouping; `(A, B, …)` a `(Tuple …)` node. The following unit-infix (`^`/`*`/`/`) is
+                        // applied at the paren's exit points (mirroring `type_operand` + `type_unit_infix`).
+                        self.expect(Kind::LParen, "`(`");
+                        if self.at(Kind::RParen) {
+                            self.bump();
+                            let span = node_start.merge(self.prev_span());
+                            let op = self.name("unit", span);
+                            let n = self.type_unit_infix(op, 0, node_start);
+                            next = Next::Reduce {
+                                start: node_start,
+                                value: n,
+                            };
+                        } else {
+                            stack.push(TCont::Paren {
+                                start: node_start,
+                                items: Vec::new(),
+                                head_made: false,
+                            });
+                            next = Next::Read;
+                        }
                     } else if self.at(Kind::LBrace) {
                         // Brace record type — recursive helper (later increment); then unit-infix.
                         let op = self.type_brace_record(node_start);
@@ -7984,6 +8013,41 @@ impl<'a> Parser<'a> {
                                 let span = start.merge(self.prev_span());
                                 let node = self.list(vec![colon, label, value], span);
                                 next = Next::Reduce { start, value: node };
+                            }
+                            Some(TCont::Paren {
+                                start,
+                                mut items,
+                                head_made,
+                            }) => {
+                                if !head_made && !self.at(Kind::Comma) {
+                                    // A single parenthesized type is a transparent grouping — `(A)` is `A`.
+                                    self.expect(Kind::RParen, "`)`");
+                                    let n = self.type_unit_infix(value, 0, start);
+                                    next = Next::Reduce { start, value: n };
+                                } else {
+                                    if !head_made {
+                                        // First element of a tuple: the `Tuple` head is created AFTER the
+                                        // first element's subtree (matching the recursive struct-id order),
+                                        // then `items` becomes `[Tuple-head, first]`.
+                                        let head = self.name("Tuple", start);
+                                        items.push(head);
+                                    }
+                                    items.push(value);
+                                    if self.sep_continue(Kind::RParen) {
+                                        stack.push(TCont::Paren {
+                                            start,
+                                            items,
+                                            head_made: true,
+                                        });
+                                        next = Next::Read;
+                                    } else {
+                                        self.expect(Kind::RParen, "`)`");
+                                        let span = start.merge(self.prev_span());
+                                        let node = self.list(items, span);
+                                        let n = self.type_unit_infix(node, 0, start);
+                                        next = Next::Reduce { start, value: n };
+                                    }
+                                }
                             }
                             Some(TCont::App {
                                 node_start,
@@ -8895,6 +8959,20 @@ mod tests {
             "Tuple(forall b. List(b), a -> b)",
             "List(A -> B -> C)",
             "Point(x, y).norm(z).scale(w)",
+            // Paren-tuple / grouping / unit de-recursion (I5 part 3): unit, transparent grouping (incl.
+            // deeply nested + around an arrow), nested tuples, tuple inside an application arg, trailing
+            // comma, and a paren grouping carrying a following unit-infix.
+            "()",
+            "(A)",
+            "((((A))))",
+            "(A, (B, C))",
+            "((A, B), (C, D))",
+            "List((A, B))",
+            "Map((Int64, Bool), (a, b, c))",
+            "(A, B, C,)",
+            "((A -> B), C)",
+            "(meter) ^ 2",
+            "() -> Bool",
         ];
         for src in cases {
             let mut rec = build_parser(src, FileId::default());
