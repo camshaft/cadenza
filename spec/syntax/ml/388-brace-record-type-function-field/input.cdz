@@ -1,0 +1,1 @@
+def f(g: {describe: Int64 -> Int64}) = g
