@@ -1782,7 +1782,7 @@ pass	a conditional's condition may itself be a conditional
 pass	a conditional-resume (two-site) arm folds across TWO performs via the two-hole refold
 pass	a conditional-resume (two-site) arm folds across a SINGLE perform
 pass	a conditionally-reached trap in a loop body fires exactly when its iteration arrives
-pass	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
+todo	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
 pass	a conditionally-selected nullary variant is returned as a runtime sum result
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a confident prelude-module member typo carries an applyable rename fix
@@ -9377,9 +9377,9 @@ todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
-pass	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
-pass	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
-pass	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
+todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
+todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
+todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
