@@ -7013,27 +7013,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn last_arg_lambda_hugs() {
-        // A trailing lambda stays on the call line, breaking only its own body — head args inline.
-        let out = assert_roundtrip(
-            "fold(xs, zero, fn(acc, x) => match x with | Some(v) => acc + v | None(_) => acc)",
-            80,
-        );
-        assert_eq!(
-            out,
-            "fold(xs, zero, fn(acc, x) => match x with\n  | Some(v) => acc + v\n  | None(_) => acc)"
-        );
-    }
-
-    #[test]
-    fn last_arg_hug_fits_inline() {
-        // When the whole call fits, hugging is invisible — it stays on one line.
-        assert_eq!(
-            assert_roundtrip("map(items, fn(x) => x + 1)", 80),
-            "map(items, fn(x) => x + 1)"
-        );
-    }
+    // The trailing-lambda "hug" layout MIGRATED to the spec/syntax corpus (inc-6 batch-30):
+    //   * `last_arg_lambda_hugs` (a trailing lambda stays on the call line, breaking only its own body —
+    //     head args inline) → ml/212-last-arg-lambda-hugs
+    //     `fold(xs, zero, fn(acc, x) => match x with | Some(v) => acc + v | None(_) => acc)` — format.cdz
+    //     hugs the `fn` and breaks only the match arms one per line (verified byte-identical at the corpus
+    //     width — structural: the lambda always hugs, `match` always breaks its arms).
+    //   * `last_arg_hug_fits_inline` (when the whole call fits, hugging is invisible) →
+    //     ml/213-last-arg-hug-fits-inline `map(items, fn(x) => x + 1)` (fmt-idempotent, stays one line).
 
     #[test]
     fn infix_chain_breaks_at_one_indent() {

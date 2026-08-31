@@ -130,6 +130,8 @@ pass	ml/209-non-last-arm-if-let-bare
 pass	ml/21-world-record-member
 pass	ml/210-non-last-arm-nested-match-parens
 pass	ml/211-non-last-arm-if-else-match-parens
+pass	ml/212-last-arg-lambda-hugs
+pass	ml/213-last-arg-hug-fits-inline
 pass	ml/22-world-variant-record-payload
 pass	ml/23-world-variant-prim-payload
 pass	ml/24-world-enum-flags
