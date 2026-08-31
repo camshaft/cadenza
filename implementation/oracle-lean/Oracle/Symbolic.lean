@@ -176,65 +176,80 @@ optimizer's branch-elimination rewrites. -/
 -- typing (`x+0`,`x*0`,`x/1`,`x%1` — `float ⊕ int` is ill-typed, never compiles); integer-only ops
 -- (`&`,`|`,`^`,`<<`,`>>` — bitwise on floats is ill-typed); bool-only ops (`and`/`or`/`not`); comparing a
 -- concrete value with `Value.valueEqSpec` (bit-faithful) instead of the derived `==`.
+-- REFACTORED (mirrors the `foldConst?` #6892/#7005 arc): a `not` size-1 dispatch + a `size == 2` binary
+-- SIZE-DISPATCH of `if op == …` chains, NOT a `match op, #[a,b]` sparse matcher. The `match op, args' with
+-- | "+", #[a,b] => …` form compiled to a non-reducible matcher (like `foldConst?.match_10`) that neither
+-- `split` nor `simp` can case — blocking the capstone `denote (normalize e) = denote e`'s `.app`-identity
+-- soundness (which must case this def). Built only from `if op == …`/`Value` matches, it now REDUCES in
+-- proofs (`by_cases hop : (op == "…") = true; rw [if_pos/if_neg]`, the #6997 tactic). BYTE-IDENTICAL to the
+-- former arms — verified by the full `#guard` identity suite below + the nix `oracle-lean-smoke`.
 def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
   let isI := fun (e : SymExpr) (n : Int) => e == SymExpr.const (Value.int n)
   let isB := fun (e : SymExpr) (b : Bool) => e == SymExpr.const (Value.bool b)
-  match op, args' with
-  | "+", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
-  -- `x-0→x` PRESERVES the operand (the `int 0` literal forces an int context; `- float int` is ill-typed).
-  -- SOUNDNESS: NO `x-x→0` here. `-` is valid on FLOATS too, and `normalize` is type-erased (a `var` may be
-  -- float), so `(- x x)` on a float `x` would wrongly fold to `.int 0` — but `x - x` is `.f64 (x-x)`
-  -- (NaN for x=NaN/inf; `.f64 0.0 ≠ .int 0` even when finite). It is NOT meaning-preserving, so it is
-  -- removed (was an unsound completeness fold). (`x^x→0` is safe: `^` is integer-only, so `^` on floats is
-  -- ill-typed and never compiles.)
-  | "-", #[a, b] => if isI b 0 then a else .app op args'
-  | "*", #[a, b] => if isI b 1 then a else if isI a 1 then b
-                    else if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
-                    else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
-                    else .app op args'
-  -- DIVISION/MODULO by the literal 1 — divisor 1 is never 0 and never the INT_MIN/-1 overflow case, so
-  -- these never trap. `x/1=x` PRESERVES the operand (no guard); `x%1=0` for all x DROPS the dividend →
-  -- `!mayTrap` guard. Only the literal-1 divisor is folded (general `/`,`%` stay deferred: trap-conditional).
-  | "/", #[a, b] => if isI b 1 then a else .app op args'
-  | "%", #[a, b] => if isI b 1 && !mayTrap a then SymExpr.const (Value.int 0) else .app op args'
-  | "or", #[a, b] =>
-    if isB a true then SymExpr.const (Value.bool true)
-    else if isB a false then b
-    else if isB b false then a
-    else if isB b true && !mayTrap a then SymExpr.const (Value.bool true)
-    -- IDEMPOTENCE `x or x → x` (bool companion of `x|x→x`): PRESERVES the operand (both sides evaluate x,
-    -- with the same trap), so no `!mayTrap` guard — sound like `x&x→x`/`x|x→x`.
-    else if a == b then a
-    else .app op args'
-  | "and", #[a, b] =>
-    if isB a false then SymExpr.const (Value.bool false)
-    else if isB a true then b
-    else if isB b true then a
-    else if isB b false && !mayTrap a then SymExpr.const (Value.bool false)
-    else if a == b then a  -- `x and x → x` idempotence (operand-preserving, like `x or x → x`)
-    else .app op args'
-  -- SOUND BITWISE identities — WIDTH-INDEPENDENT (0 is all-zero bits, `<<`/`>>` by 0 is identity at any
-  -- width), the bit-op companions of the integer ones above. `x&0`/`0&x`→0 DROPS the operand → `!mayTrap`
-  -- guard; `x|0`/`x^0`/`x<<0`/`x>>0`→x and `x&x`/`x|x`→x PRESERVE the operand (incl. its traps).
-  | "&", #[a, b] => if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
-                    else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
-                    else if a == b then a
-                    else .app op args'
-  | "|", #[a, b] => if isI b 0 then a else if isI a 0 then b else if a == b then a else .app op args'
-  -- `x^0`/`0^x`→x PRESERVE the operand; `x^x`→0 (XOR of equal operands is all-zero at ANY width, the
-  -- common zeroing idiom; the XOR companion of `x-x→0`/`x&0→0`) DROPS the operand → `!mayTrap` guard.
-  | "^", #[a, b] => if isI b 0 then a else if isI a 0 then b
-                    else if a == b && !mayTrap a then SymExpr.const (Value.int 0)
-                    else .app op args'
-  | "<<", #[a, b] => if isI b 0 then a else .app op args'
-  | ">>", #[a, b] => if isI b 0 then a else .app op args'
   -- DOUBLE-NEGATION `not (not x) → x`: the two `not`s evaluate `x` once and cancel (bool involution),
   -- with the same trap behavior as `x` — operand-preserving, no guard (matches the identity discipline
-  -- above: sound for well-typed bool `x`; an ill-typed `x` never compiles into the differential).
-  | "not", #[a] => match a with
-                   | .app "not" #[inner] => inner
-                   | _ => .app op args'
-  | _, _ => .app op args'
+  -- below: sound for well-typed bool `x`; an ill-typed `x` never compiles into the differential).
+  if op == "not" && args'.size == 1 then
+    (match args'[0]? with
+     | some (SymExpr.app "not" #[inner]) => inner
+     | _ => .app op args')
+  else if args'.size == 2 then
+    let a := args'[0]!
+    let b := args'[1]!
+    if op == "+" then (if isI b 0 then a else if isI a 0 then b else .app op args')
+    -- `x-0→x` PRESERVES the operand (the `int 0` literal forces an int context; `- float int` is ill-typed).
+    -- SOUNDNESS: NO `x-x→0` here. `-` is valid on FLOATS too, and `normalize` is type-erased (a `var` may be
+    -- float), so `(- x x)` on a float `x` would wrongly fold to `.int 0` — but `x - x` is `.f64 (x-x)`
+    -- (NaN for x=NaN/inf; `.f64 0.0 ≠ .int 0` even when finite). It is NOT meaning-preserving, so it is
+    -- removed (was an unsound completeness fold). (`x^x→0` is safe: `^` is integer-only, so `^` on floats is
+    -- ill-typed and never compiles.)
+    else if op == "-" then (if isI b 0 then a else .app op args')
+    else if op == "*" then
+      (if isI b 1 then a else if isI a 1 then b
+       else if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
+       else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
+       else .app op args')
+    -- DIVISION/MODULO by the literal 1 — divisor 1 is never 0 and never the INT_MIN/-1 overflow case, so
+    -- these never trap. `x/1=x` PRESERVES the operand (no guard); `x%1=0` for all x DROPS the dividend →
+    -- `!mayTrap` guard. Only the literal-1 divisor is folded (general `/`,`%` stay deferred: trap-conditional).
+    else if op == "/" then (if isI b 1 then a else .app op args')
+    else if op == "%" then (if isI b 1 && !mayTrap a then SymExpr.const (Value.int 0) else .app op args')
+    else if op == "or" then
+      (if isB a true then SymExpr.const (Value.bool true)
+       else if isB a false then b
+       else if isB b false then a
+       else if isB b true && !mayTrap a then SymExpr.const (Value.bool true)
+       -- IDEMPOTENCE `x or x → x` (bool companion of `x|x→x`): PRESERVES the operand (both sides evaluate x,
+       -- with the same trap), so no `!mayTrap` guard — sound like `x&x→x`/`x|x→x`.
+       else if a == b then a
+       else .app op args')
+    else if op == "and" then
+      (if isB a false then SymExpr.const (Value.bool false)
+       else if isB a true then b
+       else if isB b true then a
+       else if isB b false && !mayTrap a then SymExpr.const (Value.bool false)
+       else if a == b then a  -- `x and x → x` idempotence (operand-preserving, like `x or x → x`)
+       else .app op args')
+    -- SOUND BITWISE identities — WIDTH-INDEPENDENT (0 is all-zero bits, `<<`/`>>` by 0 is identity at any
+    -- width), the bit-op companions of the integer ones above. `x&0`/`0&x`→0 DROPS the operand → `!mayTrap`
+    -- guard; `x|0`/`x^0`/`x<<0`/`x>>0`→x and `x&x`/`x|x`→x PRESERVE the operand (incl. its traps).
+    else if op == "&" then
+      (if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
+       else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
+       else if a == b then a
+       else .app op args')
+    else if op == "|" then
+      (if isI b 0 then a else if isI a 0 then b else if a == b then a else .app op args')
+    -- `x^0`/`0^x`→x PRESERVE the operand; `x^x`→0 (XOR of equal operands is all-zero at ANY width, the
+    -- common zeroing idiom; the XOR companion of `x-x→0`/`x&0→0`) DROPS the operand → `!mayTrap` guard.
+    else if op == "^" then
+      (if isI b 0 then a else if isI a 0 then b
+       else if a == b && !mayTrap a then SymExpr.const (Value.int 0)
+       else .app op args')
+    else if op == "<<" then (if isI b 0 then a else .app op args')
+    else if op == ">>" then (if isI b 0 then a else .app op args')
+    else .app op args'
+  else .app op args'
 
 /-- Does the expression contain NO float (`.f64`) constant anywhere? The equal-branch `ite` collapse
 (`if c then t else e` with `t == e` → `t`) compares branches with `SymExpr`'s derived `BEq`, whose float
