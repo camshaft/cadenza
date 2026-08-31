@@ -5218,6 +5218,20 @@
         packages.corpus-verdicts-rust = corpusRustVerdictsAll;
         packages.corpus-verdicts-rust-async = corpusRustAsyncVerdictsAll;
 
+        # `.#corpus-verdicts-rust-smoke` / `-rust-async-smoke` — a FAST single-file end-to-end smoke of the
+        # rust/rust-async verdict harvest: the per-file agg over ONE small corpus file (30-type-ast-reflection,
+        # ~2 cases) so `cdz-rust-run --emit-verdict` is exercised end-to-end in the sandbox in SECONDS, vs the
+        # whole-corpus `.#corpus-verdicts-rust` (hundreds of rustc compiles, too heavy for an interactive
+        # confirm). packages-only (never gated); a permanent quick smoke for the harvest + the --emit-verdict flag.
+        packages.corpus-verdicts-rust-smoke = verdictsRustFileAgg {
+          name = "30-type-ast-reflection";
+          file = ./spec/semantics/30-type-ast-reflection.sexp;
+        };
+        packages.corpus-verdicts-rust-async-smoke = verdictsRustAsyncFileAgg {
+          name = "30-type-ast-reflection";
+          file = ./spec/semantics/30-type-ast-reflection.sexp;
+        };
+
         # `.#quote-corpus-verdicts` — the quote-corpus round-trip verdict harvest (inc-4; mirrors
         # `.#corpus-verdicts`). `<tag>\t<description>` per eligible case (declined→todo, round-trip-ok→pass,
         # fail→fail); the regenerator input a `save` writes `.quote-gate-baseline` from (single-component
