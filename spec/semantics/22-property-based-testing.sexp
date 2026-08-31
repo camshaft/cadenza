@@ -1867,6 +1867,81 @@
   (output (: 5 Int64))
   (live-objects known-leak))
 
+; --- High-coverage value-codec gaps (operator-directed): the scalar leaves + edges the round-trips above
+; do not yet pin — BOOL, a NESTED compound (a tuple inside a record field, exercising the codec recursion
+; through a FieldPair whose value is a ctor-leaf node), and the EMPTY-collection edge. Each is a
+; `Value.decode (Value.encode v) == Some v` round-trip through the canonical ctor-leaf codec (encode_value's
+; KIND_*_CTOR / KIND_BOOL path). Runs on wasm (the rust Value emit is a later increment — additive baseline). ---
+(case
+  "a Value.encode/Value.decode round-trip preserves a BOOL element of a compound"
+  (doc
+    "Extends the round-trips to a `(Tuple Int64 Bool)` — the R2 value-form KIND_BOOL leaf. `Value.decode
+           (Value.encode (tuple n (> n 0))) == Some (tuple n (> n 0))`; the match reads the bool back and returns
+           `n` when it is true, `(- 0 n)` when false, so the two calls discriminate: `main 7` -> true -> 7;
+           `main -3` -> false -> 3. A dropped/garbled Bool leaf would not discriminate. Pins the Bool leaf of
+           the canonical value codec round-trips faithfully.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          (: (Value.decode (Value.encode #tuple(n (> n 0)))) (Option (Tuple Int64 Bool)))
+          ((Some m) (match m (#tuple(k b) (if b k (- 0 k)))))
+          ((None u) (- 0 1))))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 7 Int64))
+  (call main (: -3 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case
+  "a Value.encode/Value.decode round-trip preserves a NESTED compound (a tuple inside a record field)"
+  (doc
+    "The codec RECURSION edge: a `(Record (p (Tuple Int64 Int64)))` — a compound NESTED inside a record
+           field, so the encoder emits a FieldPair whose value is itself a `#tuple(..)` ctor-leaf node and the
+           decoder rebuilds it. `Value.decode (Value.encode (record (= p (tuple n (+ n 1))))) == Some (...)`;
+           reads back field `p`'s tuple and returns `(+ (* a 100) b)`. `main 5` -> 5*100+6 = 506; `main 8` ->
+           809. Pins that the value serialization recurses through a nested compound faithfully (not just flat
+           scalar leaves) — the depth guarantee the canonical ctor-leaf codec must hold.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          (:
+            (Value.decode (Value.encode #record((= p #tuple(n (+ n 1))))))
+            (Option (Record (: p (Tuple Int64 Int64)))))
+          ((Some m) (match m (#record((= p pr)) (match pr (#tuple(a b) (+ (* a 100) b))))))
+          ((None u) (- 0 1))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 506 Int64))
+  (call main (: 8 Int64))
+  (output (: 809 Int64))
+  (live-objects 0))
+
+(case
+  "a Value.encode/Value.decode round-trip preserves the EMPTY list (zero-element collection edge)"
+  (doc
+    "The empty-collection edge: `Value.decode (Value.encode (: #list() (List Int64))) == Some []` — a
+           zero-element `(list)` value form (a length header of 0). Returns `(List.len l)` = 0 when the
+           round-tripped list is empty. A codec that mishandled the zero-element case (a bad length header, or
+           an off-by-one that fabricated an element) would fault or return a non-empty list. Pins that an empty
+           collection round-trips through the canonical codec.")
+  (input
+    (do
+      (def
+        (main)
+        (match
+          (: (Value.decode (Value.encode (: #list() (List Int64)))) (Option (List Int64)))
+          ((Some l) (List.len l))
+          ((None u) (- 0 1))))
+      (export main)))
+  (call main)
+  (output (: 0 Int64))
+  (live-objects known-leak))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 (case
   "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"
