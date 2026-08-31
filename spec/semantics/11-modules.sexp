@@ -1212,6 +1212,39 @@
             ((. m x) unit)))
   (error  CDZ0602))
 
+; The `overflow` key's shape contract is RICHER than the single-type-arg keys above: each argument is a
+; nested `(signed <mode>)` / `(unsigned <mode>)` sub-form whose mode is drawn from the fixed set {trap, wrap}.
+; A well-formed pragma (either or both signednesses) is ACCEPTED and does not block the module's registration
+; — the member `(. m f)` resolves and runs; an unspecified signedness simply falls through to the default.
+; A mode OUTSIDE {trap, wrap} (`(signed nonesuch)`), or NO signedness sub-form at all (`(pragma overflow)`),
+; is the structural CDZ0602 — the same malformed-shape reject as the arity checks above, applied to this
+; key's own shape. (Migrated from rcdzc an_overflow_pragma_validates_its_shape_and_does_not_block_registration;
+; the overflow pragma's runtime WRAP/TRAP behavior is witnessed by the `(pragma overflow …)` cases in
+; 06-numeric-model.sexp — here we pin only its shape contract.)
+(case "a well-formed overflow pragma is accepted and does not block module registration"
+  (input  (do
+            (module m
+              (pragma overflow (signed wrap) (unsigned trap))
+              (def (f) 1))
+            ((. m f) unit)))
+  (output (: 1 Int64)))
+
+(case "an overflow pragma with an unknown mode is a malformed directive (CDZ0602)"
+  (input  (do
+            (module m
+              (pragma overflow (signed nonesuch))
+              (def (f) 1))
+            ((. m f) unit)))
+  (error  CDZ0602))
+
+(case "an overflow pragma with no signedness sub-form is malformed (CDZ0602)"
+  (input  (do
+            (module m
+              (pragma overflow)
+              (def (f) 1))
+            ((. m f) unit)))
+  (error  CDZ0602))
+
 ; The REMOVED contract-identity directives `contract`/`input`/`output` (a contract's identity is now derived
 ; from its evaluated `descriptor`, not dedicated directives — the D3 pragma deprecation, #4542) are no longer
 ; in PRAGMA_REGISTRY, so each is now an UNKNOWN module directive: rejected CDZ0601 naming it as not-a-directive,
