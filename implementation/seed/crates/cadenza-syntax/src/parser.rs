@@ -10550,68 +10550,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn paren_comma_in_type_position_is_a_tuple_type() {
-        use crate::sexpr;
-        // A paren-comma form `(A, B)` in TYPE position (the RHS of a `:`) is the tuple TYPE
-        // `(Tuple A B)` — NOT the tuple VALUE ctor `("tuple" A B)` the shared prefix path builds for a
-        // value/pattern. Before this, `def f(p: (Int64, Int64))` lowered to the value ctor and resolved
-        // to a value where a type is required (CDZ0203). Now tuple values/patterns and tuple TYPES
-        // share the `(…)` spelling. The `Tuple` name head is byte-identical to the `Tuple(A, B)` form.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(p: (Int64, Int64)) = p.0")),
-            "(def (f (: p (Tuple Int64 Int64))) (. p 0))"
-        );
-        // The paren-comma spelling and the explicit `Tuple(…)` spelling produce the IDENTICAL type.
-        assert!(
-            parse_ok("def f(p: (Int64, Int64)) = p.0")
-                .structurally_eq(&parse_ok("def f(p: Tuple(Int64, Int64)) = p.0")),
-            "(A, B) and Tuple(A, B) in type position must be the same arena"
-        );
-        // A function-type OPERAND spelled with paren-comma is a tuple type: `(A, B) -> C`.
-        assert_eq!(
-            sexpr::print(&parse_ok("def g(f: (Int64, Bool) -> Int64) = f")),
-            "(def (g (: f (-> (Tuple Int64 Bool) Int64))) f)"
-        );
-        // A nested tuple type: `(A, (B, C))` → `(Tuple A (Tuple B C))`.
-        assert_eq!(
-            sexpr::print(&parse_ok("def h(p: (Int64, (Bool, Int64))) = p.0")),
-            "(def (h (: p (Tuple Int64 (Tuple Bool Int64)))) (. p 0))"
-        );
-        // A SINGLE parenthesized type is a transparent grouping — `(A)` is `A`, not a 1-tuple.
-        assert_eq!(
-            sexpr::print(&parse_ok("def i(p: (Int64)) = p")),
-            "(def (i (: p Int64)) p)"
-        );
-        // `()` in type position is the `unit` type.
-        assert_eq!(
-            sexpr::print(&parse_ok("def j(p: ()) = p")),
-            "(def (j (: p unit)) p)"
-        );
-        // A VALUE-position paren-comma still builds the tuple VALUE ctor — the retyping is TYPE-only.
-        assert_eq!(sexpr::print(&parse_ok("(1, 2)")), r#"#tuple(1 2)"#);
-    }
+    // `paren_comma_in_type_position_is_a_tuple_type` (a paren-comma `(A, B)` in TYPE position — RHS of a `:` —
+    // is the tuple TYPE `(Tuple A B)`, NOT the tuple VALUE ctor `#tuple(A B)` the prefix path builds in
+    // value/pattern position; tuple values/patterns and tuple TYPES share the `(…)` spelling) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-69):
+    //   * ml/415-tuple-type-param-annotation `def f(p: (Int64, Int64)) = p.0`→`(def (f (: p (Tuple Int64
+    //     Int64))) (. p 0))`, ml/416-tuple-type-paren-equals-explicit `Tuple(Int64, Int64)` — BYTE-IDENTICAL
+    //     tree.sexp to ml/415, pinning the `(A, B)` == `Tuple(A, B)` type-position equivalence.
+    //   * ml/417-tuple-type-function-operand `(Int64, Bool) -> Int64`→`(-> (Tuple Int64 Bool) Int64)`,
+    //     ml/418-tuple-type-nested `(Int64, (Bool, Int64))`→`(Tuple Int64 (Tuple Bool Int64))`,
+    //     ml/419-paren-single-type-transparent `(Int64)`→`Int64` (transparent grouping, not a 1-tuple),
+    //     ml/420-paren-empty-unit-type `()`→`unit`.
+    //   The VALUE-position `(1, 2)`→`#tuple(1 2)` contrast (the retyping is TYPE-only) is ml/06-tuple-literal.
 
-    #[test]
-    fn a_destructuring_pattern_let_binder_parses() {
-        use crate::sexpr;
-        // A `let` binder that opens a destructuring pattern binds by pattern — the twin of the pattern
-        // parameter, so `let (a, b) = p in …` and `let [x, .. rest] = ys in …` parse.
-        assert_eq!(
-            sexpr::print(&parse_ok("let (a, b) = p in a + b")),
-            "(let (((tuple a b) p)) (+ a b))"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("let [x, .. rest] = ys in x")),
-            "(let (((list x (.. rest)) ys)) x)"
-        );
-        // A plain-name binder is unchanged, and a `let` may MIX a name and a pattern binder.
-        assert_eq!(sexpr::print(&parse_ok("let x = 1 in x")), "(let ((x 1)) x)");
-        assert_eq!(
-            sexpr::print(&parse_ok("let x = 1, (a, b) = p in x + a")),
-            "(let ((x 1) ((tuple a b) p)) (+ x a))"
-        );
-    }
+    // `a_destructuring_pattern_let_binder_parses` (a `let` binder opening a destructuring pattern binds by
+    // pattern — the twin of the pattern parameter) is fully subsumed by the spec/syntax corpus (inc-6 batch-69):
+    // ml/342-let-tuple-binder-destructure `let (a, b) = p in a + b`→`(let (((tuple a b) p)) (+ a b))`,
+    // ml/343-let-list-rest-binder-destructure `let [x, .. rest] = ys in x`→`(let (((list x (.. rest)) ys)) x)`,
+    // ml/03-let plain `let x = 1 in x`→`(let ((x 1)) x)`, ml/344-let-mixed-binder-destructure `let x = 1, (a,
+    // b) = p in x + a`→`(let ((x 1) ((tuple a b) p)) (+ x a))`. No new cases needed.
 
     #[test]
     fn quantity_sugar_does_not_cross_a_newline() {
