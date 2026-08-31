@@ -1934,14 +1934,11 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // for it — the slot resolves at fold from `key`), so `path` reaches the RECORD, not the field. A
     // TOP-LEVEL record arm is Case 6rec's job (`match_arm_record_binds` → `Member`), so a non-empty path is
     // required here. Complements Case 6rec; wireable BEFORE the deeper-nesting decline below.
-    // (A VARIANT below the field — a `Payload` in `sub_path` — is a further increment: its `Core::SumPayload`
-    // walk from a nested field needs a solved switch type not yet threaded. Skip it here so it falls to the
-    // Case 6rec-nested-decline below; `Elem`/`Field` — tuple/list/nested-record — wire.)
+    // Deep variant checking: a VARIANT below the field (`Payload` in `sub_path`) wires in a MATCH arm too
+    // now (`pattern_constraints` switches on the nested variant discriminant; the `RecordField` `Payload`
+    // step reads its payload). `Elem`/`Field`/`Payload` all wire.
     if let Some((scrutinee, path, key, sub_path, heads)) =
         match_arm_nested_record_binds_path(db, form, from, name)
-        && !sub_path
-            .iter()
-            .any(|s| matches!(s, crate::core::RecordSubStep::Payload(_)))
     {
         return Some(Resolved::RecordField {
             scrutinee,
@@ -3213,15 +3210,14 @@ fn match_arm_record_binds(
         if let Some((key_id, value_pat)) = record_pattern_field_kv(db, pair) {
             let mut sub_path = Vec::new();
             if find_binder_substeps(db, value_pat, name, &mut sub_path) {
-                // A VARIANT below the field (`Payload` in `sub_path`) is a further increment (its
-                // `Core::SumPayload` walk from a nested field needs a solved switch type not yet threaded) —
-                // `Unwireable` → the coded decline. `Elem`/`Field` (tuple/list/nested-record) wire.
-                let has_variant = sub_path
-                    .iter()
-                    .any(|s| matches!(s, crate::core::RecordSubStep::Payload(_)));
+                // Deep variant checking: a VARIANT below the field (`Payload` in `sub_path`) now WIRES in a
+                // MATCH arm too — `pattern_constraints`' record arm switches on the nested variant's
+                // discriminant, and the `RecordField` `Payload` step reads its payload. `Elem`/`Field`/
+                // `Payload` all wire here. (A binding position separately rejects a `Payload` — refutable,
+                // §139 — in `last_binder_named`.)
                 let bind = match read_key(db, key_id) {
-                    Some(key) if !has_variant => RecordArmBind::Deeper(key, sub_path),
-                    _ => RecordArmBind::Unwireable,
+                    Some(key) => RecordArmBind::Deeper(key, sub_path),
+                    None => RecordArmBind::Unwireable,
                 };
                 return Some((scrutinee, bind));
             }

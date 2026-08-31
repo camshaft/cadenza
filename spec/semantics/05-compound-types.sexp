@@ -873,6 +873,26 @@
   (call main)
   (output (: 9 Int64)))
 
+; DEEP VARIANT CHECKING (§Patterns Compose, operator-prioritized — makes nested matching feature-complete):
+; a VARIANT below a record MATCH field — `(match t (#record((= x (Some c))) c) (_ 0))` — now switches on the
+; nested variant's discriminant. A record has no discriminant of its own, but field `x`'s `(Some c)` sub-
+; pattern is REFUTABLE, so the match tests field `x`'s Option tag: `pattern_constraints`' record arm descends
+; field `x` at `Elem(<sorted slot>)` and constrains the `Some` disc there, and `type_at_path` resolves the
+; switch type off the `Ty::Record` field. Over `#record((= x (Some 7)))` the `Some` arm binds `c` = 7; over
+; `#record((= x None))` it falls to the catch-all → 0. (This is MATCH-only — a variant is refutable, so a
+; BINDING position rejects it, §139; that refusal is correct, not a gap.)
+(case
+  "a VARIANT below a record MATCH field switches on its discriminant and binds the payload (deep variant checking)"
+  (input
+    (do
+      (def (f (: t (Record (: x (Option Int64))))) (match t (#record((= x (Some c))) c) (_ 0)))
+      (def (main (: n Int64)) (if (> n 0) (f #record((= x (Some n)))) (f #record((= x None)))))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 7 Int64))
+  (call main (: -1 Int64))
+  (output (: 0 Int64)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`
