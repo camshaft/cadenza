@@ -3732,6 +3732,21 @@ impl<'a> Printer<'a> {
                     });
                     return;
                 }
+                // set pattern (native `#set(p …)` / `(set p …)`) -> `#( p, …, .. rest )`, the
+                // element-directed twin of the `#(…)` set literal (v-ast-compound ruling: native `#set`
+                // head, matching the corpus's native compound match-patterns + the set VALUE surface).
+                // Elements are sub-patterns; a trailing `.. rest` binds the remaining set. Without this arm
+                // a native `#set` pattern fell to the generic ctor-call fallback `set(…)` (+ the quoted-op
+                // `` `..`(rest) `` for the rest) — a name-head call, not the `#(…)` set surface. Empty
+                // `(set)` -> `#()` (no inner padding), matching the empty set literal.
+                if pat_head.as_deref() == Some("set") {
+                    if items.len() == 1 {
+                        self.doc.word("#()");
+                        return;
+                    }
+                    self.print_pattern_seq("#(", ")", &items[1..], |p, e| p.pattern(e));
+                    return;
+                }
                 // binary pattern `(bin <segment> …)` -> `b[<segment>, …]`, the pattern-position twin of
                 // the construction literal (unconditional — `bin` is a reserved grammar form, not a
                 // shadowable ctor). Each segment is a sub-pattern (`u16(n)` binds `n`); `(bin)` -> `b[]`.
@@ -4888,6 +4903,10 @@ mod tests {
             (
                 "(do (def (f r) (match r ((record (= a x) (.. rest)) x) (_ 0))) (export f))",
                 "{ a = x, .. rest }",
+            ),
+            (
+                "(do (def (f s) (match s (#set(a (.. rest)) a) (_ 0))) (export f))",
+                "#(a, .. rest)",
             ),
         ] {
             let a = sexpr::read(src).expect("sexpr parses");
