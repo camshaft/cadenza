@@ -3738,27 +3738,35 @@ impl<'a> Parser<'a> {
                 if !self.at(Kind::RBrace) {
                     loop {
                         let before = self.pos;
-                        let f_start = self.cur_span();
-                        // Capture the field spelling BEFORE `binder()` consumes it, so a shorthand field
-                        // can pun the same name as its binder sub-pattern.
-                        let pun = self.binder_spelling();
-                        let field = self.binder();
-                        let value = if self.at(Kind::Eq) {
-                            self.bump(); // `=`
-                            self.pattern()
-                        } else if let Some(n) = pun {
-                            // shorthand `{ x }` -> `(= x x)`: the field binds a same-named binder.
-                            self.name(n, f_start)
-                        } else {
-                            self.expect(Kind::Eq, "`=`");
-                            self.pattern()
-                        };
-                        let f_span = f_start.merge(self.prev_span());
-                        // A record-PATTERN field is the canonical `(= name sub-pattern)` triple — the SAME
-                        // form as a value-record field (RV1), so patterns and literals spell identically
-                        // (operator ruling: path B, full symmetry). Was a bare `(name sub-pattern)` pair.
-                        let eq = self.atom(Leaf::FieldPair, f_start);
-                        items.push(self.list(vec![eq, field, value], f_span));
+                        // A `.. rest` binds the REMAINING fields (those not named by the pattern) to the
+                        // wrapped `(.. rest)` node — the twin of the map/set/list-pattern rest, per the
+                        // operator's `(.. v)`-everywhere canonical. A record field-set is STATIC, so `rest`
+                        // is a residual record of the un-named fields (`{ a = p, .. rest }` ->
+                        // `(record (= a p) (.. rest))`). (The record-rest MATCH lowering — residual-record
+                        // construction — is v-inference's co-land slice; this is the surface node.)
+                        if !self.rest_marker(&mut items, |p| p.pattern()) {
+                            let f_start = self.cur_span();
+                            // Capture the field spelling BEFORE `binder()` consumes it, so a shorthand
+                            // field can pun the same name as its binder sub-pattern.
+                            let pun = self.binder_spelling();
+                            let field = self.binder();
+                            let value = if self.at(Kind::Eq) {
+                                self.bump(); // `=`
+                                self.pattern()
+                            } else if let Some(n) = pun {
+                                // shorthand `{ x }` -> `(= x x)`: the field binds a same-named binder.
+                                self.name(n, f_start)
+                            } else {
+                                self.expect(Kind::Eq, "`=`");
+                                self.pattern()
+                            };
+                            let f_span = f_start.merge(self.prev_span());
+                            // A record-PATTERN field is the canonical `(= name sub-pattern)` triple — the
+                            // SAME form as a value-record field (RV1), so patterns and literals spell
+                            // identically (operator ruling: path B, full symmetry).
+                            let eq = self.atom(Leaf::FieldPair, f_start);
+                            items.push(self.list(vec![eq, field, value], f_span));
+                        }
                         if !self.sep_continue(Kind::RBrace) {
                             break;
                         }
@@ -6621,6 +6629,30 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("def k((a, .. (b, c))) = a")),
             "(def (k (tuple a (.. (tuple b c)))) a)"
+        );
+    }
+
+    #[test]
+    fn a_record_rest_pattern_parses() {
+        use crate::sexpr;
+        // A record pattern with a trailing `.. rest` binds the REMAINING (un-named) fields to the wrapped
+        // `(.. rest)` node — the twin of the map/set/list-pattern rest, per the operator's `(.. v)`-everywhere
+        // canonical. A record field-set is STATIC, so `rest` is a residual record of the un-named fields:
+        // `{ a = p, .. rest }` reads to `(record (= a p) (.. rest))`. (The record-rest MATCH lowering —
+        // residual-record construction — is v-inference's co-land slice; this pins the SURFACE node.)
+        assert_eq!(
+            sexpr::print(&parse_ok("def f({ a = x, .. rest }) = x")),
+            "(def (f (record (= a x) (.. rest))) x)"
+        );
+        // Field SHORTHAND `{ a }` puns to `(= a a)` and coexists with the rest.
+        assert_eq!(
+            sexpr::print(&parse_ok("def g({ a, .. rest }) = a")),
+            "(def (g (record (= a a) (.. rest))) a)"
+        );
+        // A plain record pattern (no rest) is unchanged — the rest arm is additive.
+        assert_eq!(
+            sexpr::print(&parse_ok("def h({ a = x, b = y }) = x")),
+            "(def (h (record (= a x) (= b y))) x)"
         );
     }
 
