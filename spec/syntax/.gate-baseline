@@ -170,7 +170,10 @@ pass	ml/245-quantity-tight-member-operand
 pass	ml/246-quantity-nontight-sum-verbose
 pass	ml/247-quantity-nontight-if-verbose
 pass	ml/248-quantity-negative-literal-verbose
+pass	ml/249-annotation-test-example
 pass	ml/25-match-to-let-tuple
+pass	ml/250-annotation-property-example
+pass	ml/251-multi-line-match-arm-body
 pass	ml/26-match-to-let-var
 pass	ml/27-match-to-let-wildcard
 pass	ml/28-match-to-let-record
