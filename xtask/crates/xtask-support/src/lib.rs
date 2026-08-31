@@ -918,9 +918,278 @@ pub fn canonicalize_baseline_text(text: &str) -> Result<Option<String>, Vec<Stri
     }
 }
 
+/// Parse `<verdict>\t<title>` lines (the baseline / harvested-verdict format) into `(title, verdict)`
+/// pairs; `#`/blank lines and unparseable lines (no tab, or an unknown verdict tag) are skipped.
+/// `split_once('\t')` keeps everything after the FIRST tab as the title (a stray tab stays in the title,
+/// matching the baseline's own map-load). The shared reader for every `--compare`/regeneration consumer.
+pub fn parse_verdicts(text: &str) -> Vec<(String, Verdict)> {
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .filter_map(|l| {
+            l.split_once('\t')
+                .and_then(|(v, d)| Verdict::parse(v).map(|verdict| (d.to_string(), verdict)))
+        })
+        .collect()
+}
+
+/// The result of comparing a run's verdicts against a committed `.gate-baseline*` — the whole-pass
+/// baseline-regression fold, backend-independent, carrying the FIVE canonical invariants (blessed by
+/// v-corpus-harness as the single source of truth; the semantics `gate --check`, `gate-syntax --check`,
+/// the quote/rust/rust-async harvests, and the `xtask-check-baseline` leaf all grade through this):
+///  1. REGRESSION: only `pass → not-pass` (pass→fail AND pass→todo) reds; `todo → pass` is `gained`
+///     (additive, never reds); a steady pass/todo is quiet.
+///  2. GAINED: a `not-pass → pass` case — reported, never failing (prompts a re-baseline).
+///  3. FAILING gate-hole guard: a `todo`-baselined OR absent case that now `fail`s reds even though it
+///     is not a pass→not-pass regression.
+///  4. TRACKED KNOWN-FAIL: a `fail` verdict against an explicit `fail` baseline is a deliberate,
+///     git-committed pin — reported (`tracked_fail`) for visibility but NOT a gate failure.
+///  5. VANISHED: a baseline title with no current case reds only on a FULL run; a `subset` run
+///     (`--files`/`--case`) skips it (the case lives in another selection).
+///
+/// A CONFLICTING duplicate baseline line (same title, different verdicts) is a hard integrity error
+/// (`exit_code` 3); a BENIGN same-verdict duplicate (a `merge=union` artifact) is counted, harmless.
+#[derive(Debug, Default, PartialEq)]
+pub struct BaselineCompare {
+    /// `pass → not-pass` regressions, formatted `title (was → now)`.
+    pub regressed: Vec<String>,
+    /// Baseline titles absent from this run (full run only).
+    pub vanished: Vec<String>,
+    /// Current fails not covered by a `pass`/`fail` baseline (the gate-hole guard).
+    pub failing: Vec<String>,
+    /// Current fails pinned by an explicit `fail` baseline — visible, not gate-redding.
+    pub tracked_fail: Vec<String>,
+    /// Cases that went `not-pass → pass` — additive, reported but never failing.
+    pub gained: Vec<String>,
+    /// A CONFLICTING duplicate title in the baseline (different verdicts) — a hard integrity error.
+    pub conflict: Vec<String>,
+    /// Count of BENIGN same-verdict duplicate lines (a `merge=union` artifact) — harmless.
+    pub benign_dups: usize,
+}
+
+impl BaselineCompare {
+    /// The process exit code: 3 on a conflicting-dup integrity error, 1 on any regression/vanished/
+    /// failing, else 0 (`tracked_fail`/`gained`/`benign_dups` never red).
+    pub fn exit_code(&self) -> i32 {
+        if !self.conflict.is_empty() {
+            3
+        } else if !self.regressed.is_empty()
+            || !self.vanished.is_empty()
+            || !self.failing.is_empty()
+        {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// Compare current `verdicts` against `baseline_text` — the PURE, I/O-free core carrying the five
+/// invariants documented on [`BaselineCompare`]. `subset` is a `--files`/`--case` run (skips vanished).
+/// The `BTreeMap` load makes the reported lists DETERMINISTIC (sorted) — a strict improvement over a
+/// `HashMap` iteration, same cases/exit code. The canonical fold every consumer delegates to.
+pub fn compare_verdicts_baseline(
+    verdicts: &[(String, Verdict)],
+    baseline_text: &str,
+    subset: bool,
+) -> BaselineCompare {
+    use std::collections::BTreeMap;
+    let mut out = BaselineCompare::default();
+    // Parse the baseline into a title→verdict map, splitting BENIGN (same-verdict) from CONFLICTING
+    // (different-verdict) duplicate lines as we go.
+    let mut base: BTreeMap<String, Verdict> = BTreeMap::new();
+    for line in baseline_text.lines() {
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((v, d)) = line.split_once('\t')
+            && let Some(verdict) = Verdict::parse(v)
+        {
+            match base.insert(d.to_string(), verdict) {
+                None => {}
+                Some(prev) if prev == verdict => out.benign_dups += 1,
+                Some(_) => out.conflict.push(d.to_string()),
+            }
+        }
+    }
+    if !out.conflict.is_empty() {
+        out.conflict.sort();
+        out.conflict.dedup();
+        return out; // a conflicting baseline is an integrity error — do not compare against it.
+    }
+
+    let now: BTreeMap<&str, Verdict> = verdicts.iter().map(|(d, v)| (d.as_str(), *v)).collect();
+    for (desc, &was) in &base {
+        match now.get(desc.as_str()) {
+            None => {
+                if !subset {
+                    out.vanished.push(desc.clone());
+                }
+            }
+            Some(&is) if was == Verdict::Pass && is != Verdict::Pass => {
+                out.regressed
+                    .push(format!("{desc} ({} → {})", was.tag(), is.tag()));
+            }
+            Some(&is) if was != Verdict::Pass && is == Verdict::Pass => {
+                out.gained.push(desc.clone())
+            }
+            Some(_) => {}
+        }
+    }
+    for (d, v) in verdicts {
+        if *v != Verdict::Fail {
+            continue;
+        }
+        match base.get(d.as_str()) {
+            // A `fail` baseline is a deliberate tracked known-fail — visible, not redding.
+            Some(Verdict::Fail) => out.tracked_fail.push(d.clone()),
+            // A `pass` baseline that now fails is already a regression (caught above).
+            Some(Verdict::Pass) => {}
+            // A `todo` baseline or an absent case that now fails reds — the gate-hole guard.
+            _ => out.failing.push(d.clone()),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── the whole-pass baseline-regression fold (compare_verdicts_baseline) — the 7 canonical invariant
+    // tests, lifted verbatim from xtask/src/gate_syntax.rs (v-corpus-harness blessed them as the complete
+    // behavior spec; both `gate --check` and `gate-syntax --check` now delegate to the fold under test).
+    fn v(pairs: &[(&str, Verdict)]) -> Vec<(String, Verdict)> {
+        pairs.iter().map(|(d, v)| (d.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn pass_to_not_pass_is_the_only_regression() {
+        // pass→fail and pass→todo REGRESS; todo→pass GAINS; a steady pass/todo is quiet.
+        let baseline = "pass\ta\npass\tb\ntodo\tc\ntodo\td\n";
+        let now = v(&[
+            ("a", Verdict::Fail), // pass→fail: regressed
+            ("b", Verdict::Todo), // pass→todo: regressed
+            ("c", Verdict::Pass), // todo→pass: gained (additive)
+            ("d", Verdict::Todo), // steady todo: quiet
+        ]);
+        let cmp = compare_verdicts_baseline(&now, baseline, false);
+        assert_eq!(
+            cmp.regressed.len(),
+            2,
+            "pass→fail and pass→todo both regress"
+        );
+        assert_eq!(cmp.gained, vec!["c".to_string()], "todo→pass is a gain");
+        // `b` is a pass→todo regression, NOT a `failing` (it is not a Fail verdict).
+        assert!(cmp.failing.is_empty());
+        assert_eq!(cmp.exit_code(), 1);
+    }
+
+    #[test]
+    fn failing_hole_guard_reds_a_todo_or_absent_case_that_now_fails() {
+        // The v-nix gate-hole: a todo-baselined or ABSENT case that now FAILs must red even though it is
+        // not a pass→not-pass regression.
+        let baseline = "todo\ta\n"; // `b` is absent from the baseline (a fresh case)
+        let now = v(&[("a", Verdict::Fail), ("b", Verdict::Fail)]);
+        let cmp = compare_verdicts_baseline(&now, baseline, false);
+        assert!(cmp.regressed.is_empty(), "neither was a baseline pass");
+        assert_eq!(
+            cmp.failing.len(),
+            2,
+            "a todo→fail AND an absent→fail both red (the gate-hole guard)"
+        );
+        assert_eq!(cmp.exit_code(), 1);
+    }
+
+    #[test]
+    fn tracked_known_fail_is_visible_but_not_redding() {
+        // A `fail` verdict against an explicit `fail` baseline is a deliberate pin — reported, not red.
+        let baseline = "fail\ta\npass\tb\n";
+        let now = v(&[("a", Verdict::Fail), ("b", Verdict::Pass)]);
+        let cmp = compare_verdicts_baseline(&now, baseline, false);
+        assert_eq!(cmp.tracked_fail, vec!["a".to_string()]);
+        assert!(
+            cmp.failing.is_empty(),
+            "a fail+fail-baseline is NOT the gate-hole failing set"
+        );
+        assert!(cmp.regressed.is_empty());
+        assert_eq!(
+            cmp.exit_code(),
+            0,
+            "a tracked known-fail does not red the gate"
+        );
+    }
+
+    #[test]
+    fn vanished_reds_only_on_a_full_run() {
+        // A baseline title with no current case is vanished on a FULL run, ignored on a SUBSET run.
+        let baseline = "pass\ta\npass\tb\n";
+        let now = v(&[("a", Verdict::Pass)]); // `b` not run
+        assert_eq!(
+            compare_verdicts_baseline(&now, baseline, false).vanished,
+            vec!["b".to_string()],
+            "full run flags the vanished case"
+        );
+        assert_eq!(
+            compare_verdicts_baseline(&now, baseline, false).exit_code(),
+            1
+        );
+        assert!(
+            compare_verdicts_baseline(&now, baseline, true)
+                .vanished
+                .is_empty(),
+            "subset run skips the vanished check"
+        );
+        assert_eq!(
+            compare_verdicts_baseline(&now, baseline, true).exit_code(),
+            0
+        );
+    }
+
+    #[test]
+    fn benign_dup_is_harmless_but_conflicting_dup_is_a_hard_error() {
+        let now = v(&[("a", Verdict::Pass)]);
+        // Benign: the same title+verdict twice (a merge=union artifact) — counted, not fatal.
+        let benign = "pass\ta\npass\ta\n";
+        let cmp = compare_verdicts_baseline(&now, benign, false);
+        assert_eq!(cmp.benign_dups, 1);
+        assert!(cmp.conflict.is_empty());
+        assert_eq!(cmp.exit_code(), 0, "a benign dup does not red");
+        // Conflicting: the same title with DIFFERENT verdicts — a hard integrity error (exit 3).
+        let conflicting = "pass\ta\ntodo\ta\n";
+        let cmp = compare_verdicts_baseline(&now, conflicting, false);
+        assert_eq!(cmp.conflict, vec!["a".to_string()]);
+        assert_eq!(cmp.exit_code(), 3, "a conflicting dup is exit 3");
+    }
+
+    #[test]
+    fn comment_and_blank_lines_are_ignored() {
+        let baseline = "# header\n\npass\ta\n";
+        let cmp = compare_verdicts_baseline(&v(&[("a", Verdict::Pass)]), baseline, false);
+        assert_eq!(cmp.exit_code(), 0);
+        assert_eq!(cmp.benign_dups, 0);
+    }
+
+    #[test]
+    fn parse_verdicts_reads_the_harvested_format_and_skips_noise() {
+        // The `--compare` aggregate entry parses `<verdict>\t<title>` lines (the concatenated per-case
+        // nix verdicts), skipping `#`/blank/garbage lines — the same vocabulary as the baseline file.
+        let text = "# header\n\npass\tsexp/01\ttrailing-ignored?\ntodo\tsexp/17\nfail\tml/03\ngarbage line\nnope\tx\n";
+        // `split_once('\t')` keeps everything after the FIRST tab as the title (so a stray tab stays in
+        // the title, matching the baseline's own map-load); the garbage line (no tab) and the unknown
+        // verdict tag `nope` are dropped. (Verdict isn't Debug, so compare via its tag.)
+        let got: Vec<(String, &str)> = parse_verdicts(text)
+            .into_iter()
+            .map(|(d, v)| (d, v.tag()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("sexp/01\ttrailing-ignored?".to_string(), "pass"),
+                ("sexp/17".to_string(), "todo"),
+                ("ml/03".to_string(), "fail"),
+            ]
+        );
+    }
 
     #[test]
     fn canonicalize_baseline_text_collapses_benign_dups_and_sorts() {
