@@ -577,6 +577,20 @@
               (export main)))
   (call   main (: 5 Int64)) (output (: 30 Int64)))
 
+(case "a tuple trailing-rest is IRREFUTABLE, so it binds in a BINDING-PARAM position (not only a match arm)"
+  (doc    "A tuple has STATIC arity, so `#tuple(a (.. rest))` over a tuple of arity ≥ 1 ALWAYS matches — it is
+           irrefutable (core-semantics §A Binding Position Accepts An Irrefutable Pattern; v-spec-oracle
+           ruling) and so binds directly in a fn PARAMETER destructure, exactly as it binds in a match arm.
+           `a` = element 0, `rest` = the residual sub-tuple. `head-and-rest0(#tuple(7 8 9))` = 10·7 +
+           `(. rest 0)` where rest = `(tuple 8 9)` → 70 + 8 = 78. Pins that a tuple rest-param binds (was a
+           spurious CDZ0201 'binding pattern head is not a tuple/record/constructor' — the binding-path
+           resolver failing to recognize the native `.. rest`), the binding twin of the match-arm cases above.")
+  (input  (do
+            (def (head-and-rest0 #tuple(a (.. rest))) (+ (* 10 a) (. rest 0)))
+            (def (main) (head-and-rest0 #tuple(7 8 9)))
+            (export main)))
+  (output (: 78 Int64)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`

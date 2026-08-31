@@ -861,15 +861,42 @@ pub(crate) fn check_binding_pattern(
         // float literal the same CDZ0210 the top-level binder emits, rather than the codeless
         // "malformed sum match pattern" decline `pattern_constraints`' atom fall-through produced.
         //
-        // Element types from the value type when it is a matching-arity tuple; else `Any` (the permissive
-        // treatment for an unsolved/`Any` or wrong-arity payload — a genuine arity mismatch is faulted
-        // CDZ0201 by `pattern_constraints` below; classifying the elements against `Any` first is
-        // harmless, since refutability is a property of the pattern shape, not the value type).
-        let elem_tys: Vec<crate::ty::Ty> = match value_ty {
-            crate::ty::Ty::Tuple(ts) if ts.len() == elems.len() => ts.to_vec(),
-            _ => vec![crate::ty::Ty::Any; elems.len()],
+        // Split off a trailing `.. rest`: a tuple-rest binding pattern `#tuple(a .. rest)` is IRREFUTABLE —
+        // a tuple has STATIC arity, so over any tuple of arity ≥ the leading count it ALWAYS matches, binding
+        // the leading names + `rest` to the residual sub-tuple (v-spec-oracle ruling, core-semantics §A
+        // Binding Position Accepts An Irrefutable Pattern lines 135-139; the binding-position resolver already
+        // binds it via `find_binder_in_tuple`'s `TupleRestFrom`). Only the LEADING element sub-patterns are
+        // recursed for irrefutability; the rest binder is a bare binder / `_` (itself irrefutable). Without
+        // this split the `(.. rest)` node was recursed as an element → the head-not-recognized CDZ0201.
+        let (lead_elems, rest): (&[StructId], Option<StructId>) = match db.ast.rest_marker(&elems) {
+            Some((k, operand, trailing_start)) if trailing_start == elems.len() => {
+                (&elems[..k], Some(operand))
+            }
+            _ => (&elems[..], None),
         };
-        for (i, &elem) in elems.iter().enumerate() {
+        // A malformed `..` (not followed by exactly one binder) → the rest-shape CDZ0201 (the tuple twin of
+        // the list/map/set rest-shape message), not the misleading head-not-recognized reject.
+        if rest.is_none()
+            && elems
+                .iter()
+                .any(|&e| db.ast.as_name(e) == Some("..") || db.ast.as_form(e, "..").is_some())
+        {
+            return Err(Reject::coded(
+                Code::Malformed,
+                "a tuple rest pattern is `#tuple(a… .. rest)` — exactly one binder after `..`",
+            )
+            .at(pat));
+        }
+        // Element types from the value type: leading positions map to the value tuple's leading types when it
+        // is a tuple of arity ≥ the leading count (a rest absorbs the remainder — no exact-arity requirement);
+        // else `Any` (permissive for an unsolved/`Any` or genuine-mismatch payload, faulted below).
+        let elem_tys: Vec<crate::ty::Ty> = match value_ty {
+            crate::ty::Ty::Tuple(ts) if ts.len() >= lead_elems.len() => {
+                ts[..lead_elems.len()].to_vec()
+            }
+            _ => vec![crate::ty::Ty::Any; lead_elems.len()],
+        };
+        for (i, &elem) in lead_elems.iter().enumerate() {
             check_binding_pattern(db, elem, &elem_tys[i])?;
         }
         // Shape/arity against the value's type (CDZ0201) + nested-literal-TYPE agreement — reusing the
