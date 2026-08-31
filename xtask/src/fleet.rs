@@ -1678,6 +1678,57 @@ fn ensure_warm_keep_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired ~30-min user-crontab line for the ORPHAN-REAP (concierge-greenlit 2026-08-31), tagged
+/// `# fleet:reap-orphans` so [`reconcile_tagged_crons`] can find/heal it. Runs the HUB copy of
+/// `reap-wedged-nix-clients.sh --orphans-only --apply` — the AUTO mode that runs ONLY the guarded step-0
+/// orphan-leak reap (kills a `nix build .#checks.*` client that is ppid=1 = owner-dead AND own-user AND
+/// past the 180min age-floor AND not wasm-opt-gaps-exempt AND not CDZ_LEASED_NIX-owned) and SKIPS the
+/// stateful wedge-check (steps 1-3), which stays a deliberate MANUAL intervention. Auto-cleans orphaned
+/// `.#checks` leaks that hold derivation-output locks + starve the gate lane (v-deferral-declines found 4
+/// piled up 4-5h). Same narrow-guarded, cron-safe class as the cpu-monitor orphan-cdz reap (#5993). Every
+/// 30 min at off-minutes `7,37` (avoid the :00/:30 herd); a cheap ps-scan, not a build. Silent (no cron mail).
+fn reap_orphans_cron_line(hub_script: &str) -> String {
+    format!(
+        "7,37 * * * * bash {hub_script} --orphans-only --apply >/dev/null 2>&1 # fleet:reap-orphans"
+    )
+}
+
+/// Ensure the `# fleet:reap-orphans` ~30-min user-crontab entry exists + points at THIS hub's
+/// `reap-wedged-nix-clients.sh` (concierge-greenlit 2026-08-31). Same re-arm-on-relaunch + drift-heal +
+/// FAIL-OPEN discipline as [`ensure_warm_keep_cron`] / [`ensure_cpu_monitor_cron`], and INDEPENDENT of them
+/// (a separate reconcile/write in `up`, each preserving the others' lines via [`reconcile_tagged_crons`]).
+/// Root cause it fixes: the orphan-leak reap was MANUAL-only (its script ran only on demand), so orphaned
+/// `.#checks` builds accumulated until someone ran it. Skips silently if the script isn't materialized yet
+/// (older tree) or `crontab` is absent/errs — never blocks `fleet up`.
+fn ensure_reap_orphans_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("reap-wedged-nix-clients.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:reap-orphans",
+        reap_orphans_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// Pure decision for the checkout-symlink bootstrap: given whether the tracked source dir exists, and the
 /// current state of the `.claude/<name>` path (is-symlink, symlink-target, exists-as-non-symlink), what
 /// should `ensure_claude_symlinks` DO? Split out so the "when do we (re)link vs skip vs refuse" policy is
@@ -1777,6 +1828,11 @@ fn up(fleet: &Fleet) {
     // scheduler for `apps.warm-keep`. Without it the corpus GC-roots drop to zero and agents cold-sweep the
     // corpus (the 2026-08-28 daemon-wedge). Independent of the other self-crons; fail-open + drift-healed.
     ensure_warm_keep_cron(fleet);
+    // Re-arm the ~30-min orphan-reap cron (concierge-greenlit 2026-08-31) — runs the guarded
+    // `reap-wedged-nix-clients.sh --orphans-only --apply` so orphaned `.#checks` builds (ppid=1, >180min,
+    // owner-dead) that hold derivation locks + starve the gate lane auto-clean instead of piling up until a
+    // manual reaper run. Independent of the other self-crons; fail-open + drift-healed. Wedge-kill stays manual.
+    ensure_reap_orphans_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -17011,6 +17067,78 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
                 .count(),
             1,
             "exactly one prune-stale-targets line"
+        );
+    }
+
+    #[test]
+    fn reap_orphans_cron_line_is_30min_off_minute_orphans_only_apply_silent_tagged() {
+        let line = reap_orphans_cron_line("/hub/reap-wedged-nix-clients.sh");
+        // Every 30min at off-minutes 7,37 (not :00/:30), the hub script in --orphans-only --apply mode.
+        assert!(
+            line.starts_with(
+                "7,37 * * * * bash /hub/reap-wedged-nix-clients.sh --orphans-only --apply"
+            ),
+            "30min off-minute orphans-only --apply: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — no cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:reap-orphans"),
+            "carries the reconcile tag: {line}"
+        );
+        // --orphans-only is REQUIRED (never auto-run the manual wedge-kill on a timer).
+        assert!(
+            line.contains("--orphans-only"),
+            "must be orphans-only (wedge-kill stays manual): {line}"
+        );
+    }
+
+    #[test]
+    fn reconcile_tagged_crons_installs_and_heals_the_reap_orphans_line_beside_the_others() {
+        let desired = [(
+            "# fleet:reap-orphans",
+            reap_orphans_cron_line("/hub/reap-wedged-nix-clients.sh"),
+        )];
+        let want = &desired[0].1;
+        // Empty → installs with trailing newline.
+        let out = reconcile_tagged_crons("", &desired).expect("installs when absent");
+        assert!(out.contains(want) && out.ends_with('\n'));
+        // Present verbatim beside the other fleet crons → no rewrite.
+        let full = format!(
+            "0 5 * * * /usr/bin/backup\n\
+             */2 * * * * bash /hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n\
+             17 * * * * bash /hub/warm-keep.sh >/dev/null 2>&1 # fleet:warm-keep\n\
+             {want}\n"
+        );
+        assert!(
+            reconcile_tagged_crons(&full, &desired).is_none(),
+            "verbatim-present → no rewrite"
+        );
+        // A DRIFTED reap-orphans line (stale hub path) heals to the current form, once, preserving others.
+        let drifted = "*/2 * * * * bash /hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n\
+             7,37 * * * * bash /OLD/reap-wedged-nix-clients.sh --orphans-only --apply >/dev/null 2>&1 # fleet:reap-orphans\n";
+        let healed = reconcile_tagged_crons(drifted, &desired).expect("heals the drifted line");
+        assert!(
+            healed.contains(want),
+            "installs the current reap-orphans line"
+        );
+        assert!(
+            !healed.contains("/OLD/reap-wedged"),
+            "drops the stale hub path"
+        );
+        assert!(
+            healed.contains("# fleet:cpu-monitor"),
+            "preserves the cpu-monitor line"
+        );
+        assert_eq!(
+            healed
+                .lines()
+                .filter(|l| l.contains("# fleet:reap-orphans"))
+                .count(),
+            1,
+            "exactly one reap-orphans line after heal (dedup)"
         );
     }
 
