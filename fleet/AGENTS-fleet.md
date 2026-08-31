@@ -96,7 +96,13 @@ Every firing of your `/loop`, in order:
    If a stop-file exists for you (`cargo xtask fleet remove` sets it), STOP cleanly and do nothing.
 3. **Drain your inbox FIRST.** List it with **`cargo xtask fleet inbox <you>`** — this resolves your
    inbox at the canonical HUB path and prints it, so you can't be fooled by the trap below. Then read
-   every JSON file it lists oldest-first, act on each, and move it to the inbox's `processed/`.
+   every JSON file it lists oldest-first, act on each, and archive it with **`cargo xtask fleet inbox
+   <you> --processed <msg>`** (`<msg>` = the bare filename from the listing). That flag is the CWD-SAFE
+   consume: it resolves the hub path on BOTH sides and moves the message to `processed/` for you, so you
+   NEVER hand-`cd <inbox> && mv` a worktree-relative path (which targets an empty shadow copy, leaves the
+   real hub message unconsumed → a next-tick idle drain-stall the watchdog escalates — observed 4+ times).
+   It also avoids the `cd`-persistence trap below entirely (no `cd` needed — run it from your worktree
+   root). Idempotent (already-in-`processed/` is a clean no-op).
    Answering peers takes priority over starting new work (a `reject` from pr-sync means your last merge
    needs a fix — handle it before anything else).
    - **🪤 Your inbox is at the HUB, not your worktree.** The runtime inbox lives at the MAIN repo's
