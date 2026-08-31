@@ -1996,29 +1996,14 @@ fn a_deep_glued_unit_chain_is_diagnosed_not_an_unbounded_arena() {
     );
 }
 
+// The `forall`-in-param-annotation DESUGAR parse-tree assertions MIGRATED to the spec/syntax corpus (inc-6):
+// `forall a b. TYPE` in a param annotation desugars at parse time to leading `(: a Type)` params (infer never
+// sees a `(forall …)` node) — ml/135-forall-param-desugars `def id(x: forall a. a) = x`→`(def (id (: a Type)
+// (: x a)) x)`, ml/136-forall-param-multi-desugars, ml/137-forall-param-already-canonical `def id(a: Type, x:
+// a) = x` (BYTE-IDENTICAL tree to ml/135, pinning the pure-sugar equivalence). This test keeps ONLY the
+// value-position error guard below (a reserved-keyword diagnostic — out of the parse-tree/fmt corpus scope).
 #[test]
-fn forall_binder_in_a_param_annotation_desugars_to_leading_type_params() {
-    use crate::sexpr;
-    // `forall a b. TYPE` in a PARAMETER annotation is DESUGARED at parse time (v-inference's agreed
-    // arena-canonical route): each forall binder becomes a leading `(: a Type)` param on the signature
-    // (source order) and the parameter keeps the bare inner type. Infer NEVER sees a `(forall …)` node
-    // — it sees the exact `(: a Type)` arena a hand-written generic produces (no ∀ engine). The arrow
-    // binds tighter, so `forall a. a -> a` groups the whole arrow into the desugared param's type.
-    assert_eq!(
-        sexpr::print(&parse_ok("def id(x: forall a. a) = x")),
-        "(def (id (: a Type) (: x a)) x)"
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("def apply(f: forall a b. a -> b, x: a) = f(x)")),
-        "(def (apply (: a Type) (: b Type) (: f (-> a b)) (: x a)) (f x))"
-    );
-    // BYTE-IDENTICAL to the hand-written explicit type-valued-param form (the property that makes
-    // forall pure sugar — infer/monomorphization is unchanged).
-    assert_eq!(
-        sexpr::print(&parse_ok("def id(x: forall a. a) = x")),
-        sexpr::print(&parse_ok("def id(a: Type, x: a) = x")),
-        "forall desugars to exactly the hand-written (: a Type) form"
-    );
+fn a_bare_value_position_forall_is_a_reserved_keyword_error() {
     // `forall` is a RESERVED keyword (like `as`): recognized in type position, never a bare value
     // name — a value-position `forall` is the usual "keyword outside its form" error.
     let bare = read_ml("forall");
@@ -2191,27 +2176,13 @@ fn at_bang_param_carries_a_config_and_a_name_type_binder() {
     );
 }
 
+// The leading-`def forall` DESUGAR parse-tree assertions MIGRATED to the spec/syntax corpus (inc-6): a LEADING
+// `def forall a b. f(…)` clause prepends a `(: a Type)` param per binder — ml/139-def-leading-forall-desugars
+// `def forall a. id(x: a) = x`→`(def (id (: a Type) (: x a)) x)`, ml/140-def-leading-forall-multi. The three-
+// spelling pure-sugar equivalence (leading == param-annotation == hand-written) is pinned by ml/139 ≡ ml/135 ≡
+// ml/137 sharing a byte-identical tree.sexp. This test keeps ONLY the malformed-recovery guards below.
 #[test]
-fn def_sig_leading_forall_prepends_type_params_same_as_param_annotation() {
-    use crate::sexpr;
-    // P1 ergonomic spelling: a LEADING `def forall a b. f(…)` clause prepends a `(: a Type)` param per
-    // binder to the signature (source order), the SAME arena the param-annotation `forall` desugar and
-    // a hand-written leading `(: a Type)` param produce — pure sugar, infer sees the identical tree.
-    assert_eq!(
-        sexpr::print(&parse_ok("def forall a. id(x: a) = x")),
-        "(def (id (: a Type) (: x a)) x)"
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("def forall a b. apply(f: a -> b, x: a) = f(x)")),
-        "(def (apply (: a Type) (: b Type) (: f (-> a b)) (: x a)) (f x))"
-    );
-    // All three spellings — leading `def forall`, param-annotation `forall`, and hand-written
-    // `(: a Type)` — desugar to the EXACT SAME signature arena (the pure-sugar property).
-    let p1 = sexpr::print(&parse_ok("def forall a. id(x: a) = x"));
-    let annot = sexpr::print(&parse_ok("def id(x: forall a. a) = x"));
-    let hand = sexpr::print(&parse_ok("def id(a: Type, x: a) = x"));
-    assert_eq!(p1, annot, "leading-forall == param-annotation-forall");
-    assert_eq!(p1, hand, "leading-forall == hand-written (: a Type)");
+fn a_malformed_leading_def_forall_recovers_without_panic() {
     // A malformed leading forall recovers (never panics): missing binder, missing `.`.
     assert!(!read_ml("def forall . f() = 1").ok());
     assert!(!read_ml("def forall a f() = 1").ok());
