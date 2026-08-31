@@ -7146,7 +7146,44 @@
            `(warning …)` clause. (fix migrated from rcdzc an_unused_binding_carries_a_verified_underscore_prefix_fix.)")
   (input (do (def (f x y) x) (def (main) (f 7 8)) (export main)))
   (output (: 7 Int64))
+  ; exactly ONE CDZ0306 — the def-parameter loop fires once and is NOT double-reported by the
+  ; anonymous-lambda unused-parameter pass on the def's signature (rcdzc an_unused_anonymous_lambda…'s
+  ; no-double-report facet, migrated here).
+  (count 1)
   (warning CDZ0306 (message "unused parameter") (fix (kind replace) (replacement "_y") (verified))))
+
+(case
+  "an unused ANONYMOUS-LAMBDA parameter surfaces the CDZ0306 unused-parameter warning + `_`-prefix fix"
+  (doc
+    "The closure face of the unused-parameter warning: an anonymous `(fn ((: x Int64)) 5)` lambda never
+           references its parameter `x`, so the program still runs (`(f 3)` = 5) but the compiler emits the
+           SAME CDZ0306 `unused parameter` warning + `_x` fix as a def parameter — the lambda-parameter usage
+           scan is a DISTINCT code path from the def-parameter loop, so it earns its own pin. Only the stable
+           lead `unused parameter` is pinned (the name `x` is in the dynamic tail). Wasm-graded (warnings ride
+           the shared compile stage; rust/rust-async run paths skip the warns check). (Migrated from rcdzc
+           an_unused_anonymous_lambda_parameter_warns.)")
+  (input (do (def (main) (let ((f (fn ((: x Int64)) 5))) (f 3))) (export main)))
+  (output (: 5 Int64))
+  (warning CDZ0306 (message "unused parameter") (fix (kind replace) (replacement "_x"))))
+
+(case
+  "a USED anonymous-lambda parameter is clean — no unused-parameter warning"
+  (doc
+    "The false-positive guard for the lambda-parameter scan: `(fn ((: x Int64)) x)` references `x` in its
+           body, so no CDZ0306 fires. (Migrated from rcdzc an_unused_anonymous_lambda_parameter_warns clean case.)")
+  (input (do (def (main) (let ((f (fn ((: x Int64)) x))) (f 3))) (export main)))
+  (output (: 3 Int64))
+  (no-diagnostic "unused parameter"))
+
+(case
+  "an `_`-prefixed anonymous-lambda parameter is silenced — no unused-parameter warning"
+  (doc
+    "The `_`-silencing convention applies to lambda parameters too: `(fn ((: _x Int64)) 5)` intentionally
+           ignores `_x`, so no CDZ0306 fires. (Migrated from rcdzc an_unused_anonymous_lambda_parameter_warns
+           clean case.)")
+  (input (do (def (main) (let ((f (fn ((: _x Int64)) 5))) (f 3))) (export main)))
+  (output (: 5 Int64))
+  (no-diagnostic "unused parameter"))
 
 (case
   "applying the unused-parameter underscore fix (`y` to `_y`) silences the warning"
