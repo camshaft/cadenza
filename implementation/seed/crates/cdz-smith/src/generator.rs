@@ -754,21 +754,38 @@ impl Gen<'_> {
 
     fn string_lit(&mut self) {
         self.out.push('"');
-        if self.cur.choice(4) == 0 {
-            // ~1/4: a UNICODE (multi-byte UTF-8) string — exercises the byte-vs-char indexing / mid-
-            // codepoint boundary paths in String.at/slice/byte-len/to-bytes that an ASCII-only literal
-            // never reaches (a String op's byte index can land MID-codepoint on these). Chars are 2–3
-            // UTF-8 bytes; all lex directly in a Cadenza string literal.
-            const UCHARS: [&str; 6] = ["α", "β", "γ", "é", "ü", "€"];
-            let len = 1 + self.cur.choice(3); // 1..=3 multi-byte chars
-            for _ in 0..len {
-                self.out.push_str(UCHARS[self.cur.choice(UCHARS.len())]);
+        match self.cur.choice(4) {
+            0 => {
+                // ~1/4: a UNICODE (multi-byte UTF-8) string — exercises the byte-vs-char indexing / mid-
+                // codepoint boundary paths in String.at/slice/byte-len/to-bytes that an ASCII-only literal
+                // never reaches (a String op's byte index can land MID-codepoint on these). Chars are 2–3
+                // UTF-8 bytes; all lex directly in a Cadenza string literal.
+                const UCHARS: [&str; 6] = ["α", "β", "γ", "é", "ü", "€"];
+                let len = 1 + self.cur.choice(3); // 1..=3 multi-byte chars
+                for _ in 0..len {
+                    self.out.push_str(UCHARS[self.cur.choice(UCHARS.len())]);
+                }
             }
-        } else {
-            // Short a-z ASCII (the common case) — no escaping hazards, always lexes.
-            let len = self.cur.choice(4);
-            for _ in 0..len {
-                self.out.push((b'a' + self.cur.range(0, 25)) as char);
+            1 => {
+                // ~1/4: a string with ESCAPE SEQUENCES (\n \t \" \\) mixed with a-z — exercises the
+                // lexer's escape DECODING + the decoded byte value in String ops (a `\n` must decode to
+                // ONE byte; `\"` must not terminate the literal). Verified value-correct wasm-vs-rust.
+                const ESCAPES: [&str; 4] = ["\\n", "\\t", "\\\"", "\\\\"];
+                let len = 1 + self.cur.choice(3);
+                for _ in 0..len {
+                    if self.cur.flip() {
+                        self.out.push_str(ESCAPES[self.cur.choice(ESCAPES.len())]);
+                    } else {
+                        self.out.push((b'a' + self.cur.range(0, 25)) as char);
+                    }
+                }
+            }
+            _ => {
+                // Short a-z ASCII (the common case) — no escaping hazards, always lexes.
+                let len = self.cur.choice(4);
+                for _ in 0..len {
+                    self.out.push((b'a' + self.cur.range(0, 25)) as char);
+                }
             }
         }
         self.out.push('"');
@@ -2494,6 +2511,27 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a unicode string literal");
+    }
+
+    /// A string literal with ESCAPE SEQUENCES is reachable — some seed emits `\n`/`\t`/`\\`/`\"` inside a
+    /// string, exercising the lexer's escape decoding + the decoded byte in String ops. Every such program
+    /// parses. Guards operator seq-23 string-escape coverage.
+    #[test]
+    fn some_seed_emits_a_string_escape() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // A backslash escape inside a string: \n, \t, or \\ (all contain a backslash byte).
+            if src.contains("\\n") || src.contains("\\t") || src.contains("\\\\") {
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a string escape sequence");
     }
 
     /// The Map/Set-builtin arm is reachable — some seed emits a `(Map.*|Set.* ...)` call over a
