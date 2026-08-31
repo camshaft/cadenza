@@ -3595,7 +3595,7 @@
            is true. For scrutinee -5 the guard holds, so the arm fires and the result is -1. Pins that
            a guard `pattern if <expr>` gates its arm on a boolean condition evaluated with the
            pattern's bindings in scope (core-semantics.md #Matching Is Exhaustive Or Rejected).")
-  (input (match (- 0 5) ((guard x (< x 0)) (- 0 1)) (_ 1)))
+  (input (match -5 ((guard x (< x 0)) -1) (_ 1)))
   (output (: -1 Int64)))
 
 (case
@@ -3604,7 +3604,7 @@
     "The mirror: for scrutinee 5 the guard `x < 0` is false, so the guarded arm does NOT fire and
            the match falls through to the wildcard, yielding 1 — exactly as a non-matching pattern
            falls through. Pins that a false guard skips its arm rather than trapping or forcing it.")
-  (input (match 5 ((guard x (< x 0)) (- 0 1)) (_ 1)))
+  (input (match 5 ((guard x (< x 0)) -1) (_ 1)))
   (output (: 1 Int64)))
 
 (case
@@ -3629,7 +3629,7 @@
            above (which fold) and the single-guard runtime case below.")
   (input
     (do
-      (def (classify (: n Int64)) (match n ((guard x (< x 0)) (- 0 1)) ((guard x (> x 0)) x) (_ 0)))
+      (def (classify (: n Int64)) (match n ((guard x (< x 0)) -1) ((guard x (> x 0)) x) (_ 0)))
       (def (main (: n Int64)) (classify n))
       (export main)))
   (call main (: -5 Int64))
@@ -3830,7 +3830,7 @@
     (do
       (def
         (pick (: o (Option Int64)) (: limit Int64))
-        (match o ((guard (Some v) (< v limit)) v) ((Some y) 0) ((None) (- 0 1))))
+        (match o ((guard (Some v) (< v limit)) v) ((Some y) 0) ((None) -1)))
       (def (main (: n Int64) (: limit Int64)) (pick (Some n) limit))
       (export main)))
   (call main (: 3 Int64) (: 5 Int64))
@@ -3854,7 +3854,7 @@
           ((guard (Some x) (> x 10)) 100)
           ((guard (Some y) (> y 0)) 1)
           ((Some z) 0)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (def (main (: n Int64)) (f (Some n)))
       (export main)))
   (call main (: 5 Int64))

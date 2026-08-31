@@ -1547,7 +1547,7 @@
         (main)
         (match
           (drive #list(1 2 3 4))
-          ((Option.None) (- 0 1))
+          ((Option.None) -1)
           ((Option.Some p) (match p (#tuple(x s2) x)))))
       (export main)))
   (output (: 3 Int64))
@@ -5614,7 +5614,7 @@
         (match
           (firstlong #list("ab" "c" "abcd" "zz"))
           ((Some s) (String.byte-len s))
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 4 Int64))
@@ -5767,7 +5767,7 @@
     (do
       (def
         (loop (: b Bytes) (: p Int64) (: n Int64))
-        (if (= n 0) (match (Bytes.at b p) ((Some x) x) ((None) (- 0 1))) (loop b p (- n 1))))
+        (if (= n 0) (match (Bytes.at b p) ((Some x) x) ((None) -1)) (loop b p (- n 1))))
       (def (main (: p Int64)) (loop b"\x05" p 0))
       (export main)))
   (call main (: 0 Int64))
@@ -12100,7 +12100,7 @@
       (def (mk (: k Int64)) (if (> k 0) (Box.Fn (fn ((: x Int64)) (* x 3))) (Box.Const 77)))
       (def (run (: b Box) (: arg Int64)) (match b ((Box.Fn f) (f arg)) ((Box.Const c) c)))
       (def (pos) (let ((k 4)) (run (mk k) k)))
-      (def (neg) (let ((k (- 0 1))) (run (mk k) k)))
+      (def (neg) (let ((k -1)) (run (mk k) k)))
       (export pos)
       (export neg)))
   (call pos)

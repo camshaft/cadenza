@@ -1006,7 +1006,7 @@
     (do
       (def
         (f (: m (Record (: d (Option Int64)))))
-        (match m.d ((Option.Some x) x) (Option.None (- 0 1))))
+        (match m.d ((Option.Some x) x) (Option.None -1)))
       (export f)))
   (call f (: #record((= d (Some 42))) (Record (: d (Option Int64)))))
   (output (: 42 Int64))

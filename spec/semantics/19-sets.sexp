@@ -5596,7 +5596,7 @@
         (main (: n Int64))
         (let
           ((cs (Set.to-list #set(#tuple(2 1) #tuple(1 9) #tuple(1 2))))
-            (rs (Set.to-list #set(#tuple((+ n (- 0 3)) 1) #tuple((- n 4) 9) #tuple((- n 4) 2)))))
+            (rs (Set.to-list #set(#tuple((+ n -3) 1) #tuple((- n 4) 9) #tuple((- n 4) 2)))))
           (if (= cs rs) 1 0)))
       (export main)))
   (call main (: 5 Int64))

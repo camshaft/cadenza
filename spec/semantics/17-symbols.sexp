@@ -352,7 +352,7 @@
       (type W (Mk Symbol))
       (def
         (walk (: n Int64) (: w W))
-        (if (< n 1) (match w ((Mk #"go") 40) (_ (- 0 1))) (walk (- n 1) w)))
+        (if (< n 1) (match w ((Mk #"go") 40) (_ -1)) (walk (- n 1) w)))
       (def (main) (walk 2 (Mk #"go")))
       (export main)))
   (output (: 40 Int64)))

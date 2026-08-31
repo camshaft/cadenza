@@ -4126,7 +4126,7 @@
   (input
     (do
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-      (def (main) (let ((r (rep "hi" 3))) (if (< r "zzzzzzzz") (String.byte-len r) (- 0 1))))
+      (def (main) (let ((r (rep "hi" 3))) (if (< r "zzzzzzzz") (String.byte-len r) -1)))
       (export main)))
   (call main)
   (output (: 5 Int64))
@@ -4195,7 +4195,7 @@
         (match
           (Map.lookup (Map.insert Map.empty #tuple((rep "hi" 3) 1) 42) #tuple("hixxx" 1))
           ((Some v) v)
-          ((None) (- 0 1))))
+          ((None) -1)))
       (export main)))
   (call main)
   (output (: 42 Int64)))
@@ -4361,7 +4361,7 @@
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
       (def
         (f (: mp (Map String String)) (: k String))
-        (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) (- 0 1))))
+        (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) -1)))
       (def (main) (f (Map.insert (Map.empty) "y" (rep "hi" 3)) "y"))
       (export main)))
   (call main)
@@ -4380,7 +4380,7 @@
     (do
       (def
         (f (: mp (Map String String)) (: k String))
-        (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) (- 0 1))))
+        (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) -1)))
       (def (main) (f (Map.insert (Map.empty) "y" "hixxx") "y"))
       (export main)))
   (call main)
