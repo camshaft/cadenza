@@ -27,6 +27,13 @@ pass	sexp/21-comment-do-trailing
 pass	sexp/22-comment-do-leading
 pass	sexp/23-comment-call-arg
 pass	sexp/24-comment-compound-literal
+pass	sexp/25-string-literal
+pass	sexp/26-float-literal
+pass	sexp/27-negative-int
+pass	sexp/28-byte-string
+pass	sexp/29-bool
+pass	sexp/30-hex-int
+pass	sexp/31-bigint-suffix
 todo	ml/08-incomplete-binding
 todo	ml/10-unterminated-call
 todo	sexp/17-unterminated-list
