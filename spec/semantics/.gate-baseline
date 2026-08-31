@@ -2641,6 +2641,8 @@ pass	a member with TWO top-level mem-leaf params (list<u8> + list<s64>) threads 
 pass	a member with a mem-leaf param interleaved with a scalar param threads the cursor across mixed widths
 pass	a member with an option<s64> param beside a mem-leaf param composes the sum rebuild with the byte copy-in
 pass	a bare tuple<scalar,scalar>/Tuple PARAM member of a typed export interface crosses (positional cell rebuild)
+pass	a tuple PARAM member whose element is a list<u8>/Bytes leaf rebuilds the compound element in-cell
+pass	a tuple PARAM member whose element is a nested record rebuilds the compound element in-cell
 pass	a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)
 pass	a bare string/String PARAM member of a typed export interface crosses (mem_leaf Str-arm coverage)
 pass	a single component exports BOTH a list<u8>-result member and a list<u8>-param member of one interface (operator §2 two-export capstone)
