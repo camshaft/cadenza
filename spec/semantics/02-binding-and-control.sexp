@@ -51,7 +51,7 @@
            heap-typed (String) value, not only a scalar Bool — the String companion of the case above.")
   (input
     (do
-      (def (main) (let ((x 10)) (let ((z (let ((x "hi")) (String.byte-len x)))) (+ x z))))
+      (def (main) (let ((x 10)) (let ((z (let ((x "hi")) ((. String byte-len) x)))) (+ x z))))
       (export main)))
   (call main)
   (output (: 12 Int64)))
@@ -3522,7 +3522,7 @@
            `Option<Int64>` a runtime operation produced, unboxing to the Int64 payload.")
   (input
     (do
-      (def (add-ck a b) (Option.expect (Int64.checked-add a b) "overflow"))
+      (def (add-ck a b) (Option.expect ((. Int64 checked-add) a b) "overflow"))
       (def (main) (+ (add-ck 20 22) (add-ck 1 1)))
       (export main)))
   (output (: 44 Int64)))
@@ -3539,7 +3539,7 @@
            mismatch became a hard fail instead of a hidden todo.)")
   (input
     (do
-      (def (add-ck a b) (Option.expect (Int64.checked-add a b) "overflow"))
+      (def (add-ck a b) (Option.expect ((. Int64 checked-add) a b) "overflow"))
       (def (main) (add-ck Int64.max 1))
       (export main)))
   (trap "unreachable"))
@@ -4979,7 +4979,7 @@
     (do
       (def (d (: v Int64)) (match v (0 "a") (1 "b") (2 "c") (_ "?")))
       (def (go (: n Int64)) (if (< n 3) (d n) (String.concat (go (/ n 3)) (d (% n 3)))))
-      (def (main (: n Int64)) (String.byte-len (go n)))
+      (def (main (: n Int64)) ((. String byte-len) (go n)))
       (export main)))
   (call main (: 2 Int64))
   (output (: 1 Int64))
@@ -6031,7 +6031,7 @@
         (main (: a Int64))
         (match
           (stats #list(a 2 3) 0 3 0 "")
-          (#tuple(s t len) (+ (* 100 s) (+ (* 10 (String.byte-len t)) len)))))
+          (#tuple(s t len) (+ (* 100 s) (+ (* 10 ((. String byte-len) t)) len)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 633 Int64))
@@ -7254,7 +7254,7 @@
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
       (def
         (main (: d Int64))
-        (String.byte-len
+        ((. String byte-len)
           (Option.expect (List.at (if (> d 0) #list((rep "a" d)) #list("bb")) 0) "v")))
       (export main)))
   (call main (: 0 Int64))

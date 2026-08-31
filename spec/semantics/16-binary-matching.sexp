@@ -2603,7 +2603,7 @@
         (main (: x UInt8))
         (do
           (def b (Bytes.of #list(104 x)))
-          (match b ((bin (utf8 s 2)) (String.scalar-len s)) (_ -1))))
+          (match b ((bin (utf8 s 2)) ((. String scalar-len) s)) (_ -1))))
       (export main)))
   (call main (: 105 UInt8))
   (output (: 2 Int64))
@@ -2628,7 +2628,7 @@
         (main (: x UInt8))
         (do
           (def b (Bytes.of #list(1 104 x)))
-          (match b ((bin (u8 tag) (utf8 s 2)) (+ (* 10 tag) (String.scalar-len s))) (_ -1))))
+          (match b ((bin (u8 tag) (utf8 s 2)) (+ (* 10 tag) ((. String scalar-len) s))) (_ -1))))
       (export main)))
   (call main (: 105 UInt8))
   (output (: 12 Int64))
@@ -2654,7 +2654,7 @@
         (main (: x UInt8))
         (do
           (def b (Bytes.of #list(2 104 x)))
-          (match b ((bin (u8 n) (utf8 s n)) (String.scalar-len s)) (_ -1))))
+          (match b ((bin (u8 n) (utf8 s n)) ((. String scalar-len) s)) (_ -1))))
       (export main)))
   (call main (: 105 UInt8))
   (output (: 2 Int64))
@@ -2679,7 +2679,7 @@
         (main (: x UInt8))
         (do
           (def b (Bytes.of #list(2 104 x 7)))
-          (match b ((bin (u8 n) (utf8 s n) (u8 7)) (String.scalar-len s)) (_ -1))))
+          (match b ((bin (u8 n) (utf8 s n) (u8 7)) ((. String scalar-len) s)) (_ -1))))
       (export main)))
   (call main (: 105 UInt8))
   (output (: 2 Int64))
@@ -2705,7 +2705,7 @@
         (main (: x UInt8))
         (do
           (def b (Bytes.of #list(x 104)))
-          (match b ((bin (u8 n) (utf8 s n)) (String.scalar-len s)) (_ -1))))
+          (match b ((bin (u8 n) (utf8 s n)) ((. String scalar-len) s)) (_ -1))))
       (export main)))
   (call main (: 1 UInt8))
   (output (: 1 Int64))
@@ -3273,7 +3273,7 @@
         (main (: x UInt8))
         (do
           (def b (Bytes.of #list(2 104 x 7)))
-          (match b ((bin (u8 n) (utf8 s n) (u8 7)) (String.scalar-len s)) (_ -1))))
+          (match b ((bin (u8 n) (utf8 s n) (u8 7)) ((. String scalar-len) s)) (_ -1))))
       (export main)))
   (call main (: 105 UInt8))
   (output (: 2 Int64))
@@ -3289,7 +3289,7 @@
         (main (: x UInt8))
         (do
           (def b (Bytes.of #list(2 104 x)))
-          (match b ((bin (u8 n) (utf8 s n)) (String.scalar-len s)) (_ -1))))
+          (match b ((bin (u8 n) (utf8 s n)) ((. String scalar-len) s)) (_ -1))))
       (export main)))
   (call main (: 105 UInt8))
   (output (: 2 Int64))
@@ -3575,7 +3575,7 @@
           (match
             r
             ((bin (u8 len) (utf8 s len) (bytes rest))
-              (+ (* 1000 (String.byte-len s)) (+ (if (= s "hi") 100 0) (Bytes.len rest))))
+              (+ (* 1000 ((. String byte-len) s)) (+ (if (= s "hi") 100 0) (Bytes.len rest))))
             (_ -1))))
       (export main)))
   (call main (: 1 Int64))
@@ -3595,7 +3595,7 @@
           (= k 0)
           0
           (+
-            (match r ((bin (u8 len) (utf8 s len) (bytes rest)) (String.byte-len s)) (_ -1))
+            (match r ((bin (u8 len) (utf8 s len) (bytes rest)) ((. String byte-len) s)) (_ -1))
             (frames r (- k 1)))))
       (def (main (: n Int64)) (frames (grow (bin (u8 (UInt8.wrap (+ n 1)))) 50) n))
       (export main)))
@@ -3633,7 +3633,7 @@
         (let
           ((s (String.concat "h" (if (> n 0) "i" "o"))))
           (match
-            (bin (u8 (UInt8.wrap (String.byte-len s))) (utf8 s 2))
+            (bin (u8 (UInt8.wrap ((. String byte-len) s))) (utf8 s 2))
             ((bin (u8 len) (utf8 out len)) (if (= out "hi") 100 0))
             (_ -1))))
       (export main)))

@@ -210,7 +210,7 @@
   (doc
     "The no-false-positive control: a built-in op applied to exactly its arguments is fine.
            `(String.byte-len \"hi\")` (arity 1, fully applied) → 2.")
-  (input (do (def (main) (String.byte-len "hi")) (export main)))
+  (input (do (def (main) ((. String byte-len) "hi")) (export main)))
   (call main)
   (output (: 2 Int64)))
 
@@ -276,7 +276,7 @@
             (#tuple(s x)
               (match
                 r2
-                (#tuple(y xs) (+ (* (String.byte-len s) 100) (+ (* x 10) (+ (List.len xs) y)))))))))
+                (#tuple(y xs) (+ (* ((. String byte-len) s) 100) (+ (* x 10) (+ (List.len xs) y)))))))))
       (export main)))
   (call main (: 2 Int64))
   (output (: 440 Int64))
@@ -3409,7 +3409,7 @@
       (def (foldstr f acc xs) (match xs (#list() acc) (#list(h (.. t)) (foldstr f (f acc h) t))))
       (def
         (main (: n Int64))
-        (foldstr (fn (acc s) (+ acc (String.byte-len s))) n #list("ab" "abcd" "x")))
+        (foldstr (fn (acc s) (+ acc ((. String byte-len) s))) n #list("ab" "abcd" "x")))
       (export main)))
   (call main (: 0 Int64))
   (output (: 7 Int64))
@@ -3473,7 +3473,7 @@
         (main)
         (+
           (fold-list (fn (x a) (+ a x)) 0 #list(5 7 30))
-          (fold-list (fn (s a) (+ a (String.byte-len s))) 0 #list("ab" "abcd" "x"))))
+          (fold-list (fn (s a) (+ a ((. String byte-len) s))) 0 #list("ab" "abcd" "x"))))
       (export main)))
   (output (: 49 Int64))
   (live-objects known-leak))
@@ -3506,7 +3506,7 @@
         (+
           (fold-list (fn (x a) (+ a x)) 0 #list(5 7 30))
           (+
-            (fold-list (fn (s a) (+ a (String.byte-len s))) 0 #list("ab" "abcd" "x"))
+            (fold-list (fn (s a) (+ a ((. String byte-len) s))) 0 #list("ab" "abcd" "x"))
             (fold-list (fn (b a) (if b (+ a 1) a)) 0 #list(true false true)))))
       (export main)))
   (output (: 51 Int64))
@@ -5608,12 +5608,12 @@
           (step s)
           ((None) (None))
           ((Some pair)
-            (match pair (#tuple(x s2) (if (> (String.byte-len x) 2) (Some x) (firstlong s2)))))))
+            (match pair (#tuple(x s2) (if (> ((. String byte-len) x) 2) (Some x) (firstlong s2)))))))
       (def
         (main (: n Int64))
         (match
           (firstlong #list("ab" "c" "abcd" "zz"))
-          ((Some s) (String.byte-len s))
+          ((Some s) ((. String byte-len) s))
           ((None) (- 0 1))))
       (export main)))
   (call main (: 1 Int64))
@@ -6081,7 +6081,9 @@
       (def (id x) x)
       (def
         (main (: n Int64))
-        (+ (id n) (+ (String.byte-len (id "abc")) (match (id #tuple(1 2)) (#tuple(a b) (+ a b))))))
+        (+
+          (id n)
+          (+ ((. String byte-len) (id "abc")) (match (id #tuple(1 2)) (#tuple(a b) (+ a b))))))
       (export main)))
   (call main (: 36 Int64))
   (output (: 42 Int64)))
@@ -6145,7 +6147,9 @@
   (input
     (do
       (def (swap p) (match p (#tuple(a b) #tuple(b a))))
-      (def (main (: n Int64)) (match (swap #tuple(n "x")) (#tuple(s m) (+ m (String.byte-len s)))))
+      (def
+        (main (: n Int64))
+        (match (swap #tuple(n "x")) (#tuple(s m) (+ m ((. String byte-len) s)))))
       (export main)))
   (call main (: 41 Int64))
   (output (: 42 Int64)))
@@ -6168,7 +6172,7 @@
         (main (: n Int64))
         (+
           (fold-list (fn ((: a Int64)) (fn ((: x Int64)) (+ a x))) n #list(1 2 3))
-          (String.byte-len
+          ((. String byte-len)
             (fold-list
               (fn ((: a String)) (fn ((: x String)) (String.concat a x)))
               ""
@@ -7207,7 +7211,7 @@
       (type Box (Wrap a))
       (def (wrap1 x) (Box.Wrap x))
       (def (unwrap b) (match b ((Box.Wrap v) v)))
-      (def (main (: n Int64)) (+ (unwrap (wrap1 n)) (String.byte-len (unwrap (wrap1 "ab")))))
+      (def (main (: n Int64)) (+ (unwrap (wrap1 n)) ((. String byte-len) (unwrap (wrap1 "ab")))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 7 Int64))
@@ -7247,7 +7251,7 @@
   (input
     (do
       (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x)))
-      (def (main) (+ (loopn 3 40) (String.byte-len (loopn 2 "hi"))))
+      (def (main) (+ (loopn 3 40) ((. String byte-len) (loopn 2 "hi"))))
       (export main)))
   (output (: 42 Int64)))
 
@@ -7286,7 +7290,7 @@
       (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x)))
       (def
         (main (: k Int64))
-        (+ (loopn 2 k) (+ (String.byte-len (loopn 1 "ab")) (if (loopn 1 true) 100 0))))
+        (+ (loopn 2 k) (+ ((. String byte-len) (loopn 1 "ab")) (if (loopn 1 true) 100 0))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 107 Int64))
@@ -7777,7 +7781,7 @@
         (main)
         (+
           (icount (filt (from-list #list(1 2 3)) (fn (x) (> x 1))))
-          (icount (filt (from-list #list("a" "bb")) (fn (s) (> (String.byte-len s) 1))))))
+          (icount (filt (from-list #list("a" "bb")) (fn (s) (> ((. String byte-len) s) 1))))))
       (export main)))
   (output (: 3 Int64))
   (live-objects known-leak))
@@ -7810,7 +7814,8 @@
         (main)
         (+
           (icount (take-while (from-list #list(1 2 3)) (fn (x) (< x 3))))
-          (icount (take-while (from-list #list("a" "bb" "ccc")) (fn (s) (< (String.byte-len s) 3))))))
+          (icount
+            (take-while (from-list #list("a" "bb" "ccc")) (fn (s) (< ((. String byte-len) s) 3))))))
       (export main)))
   (output (: 4 Int64))
   (live-objects known-leak))
@@ -8167,7 +8172,7 @@
           (match
             (reduce1 (from-list #list("a" "b")) (fn (x y) (String.concat x y)))
             ((Option.None) 0)
-            ((Option.Some v) (String.byte-len v)))))
+            ((Option.Some v) ((. String byte-len) v)))))
       (export main)))
   (output (: 8 Int64))
   (live-objects known-leak))
@@ -8235,7 +8240,7 @@
     (do
       (type Box (Mk a))
       (def (unbox (: t Type) (: b (Box t))) (match b ((Box.Mk v) v)))
-      (def (main) (+ (unbox Int64 (Box.Mk 40)) (String.byte-len (unbox String (Box.Mk "hi")))))
+      (def (main) (+ (unbox Int64 (Box.Mk 40)) ((. String byte-len) (unbox String (Box.Mk "hi")))))
       (export main)))
   (output (: 42 Int64)))
 
@@ -8870,7 +8875,7 @@
            persistence case.")
   (input
     (do
-      (def (cat (: s String)) (fn (t) (String.byte-len (String.concat s t))))
+      (def (cat (: s String)) (fn (t) ((. String byte-len) (String.concat s t))))
       (def (main (: d Int64)) (let ((h (cat "ab"))) (+ (h "c") (h "de"))))
       (export main)))
   (call main (: 0 Int64))
@@ -8961,7 +8966,7 @@
         (main (: d Int64))
         (+
           (Option.expect (List.at (wrap #list(7 8)) 0) "i")
-          (String.byte-len (Option.expect (List.at (wrap #list("ab")) 0) "s"))))
+          ((. String byte-len) (Option.expect (List.at (wrap #list("ab")) 0) "s"))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 9 Int64))
@@ -8984,7 +8989,7 @@
         (main (: d Int64))
         (+
           (Option.expect (List.at (wrap (wrap #list(7))) 0) "i")
-          (String.byte-len (Option.expect (List.at (wrap (wrap #list("abc"))) 0) "s"))))
+          ((. String byte-len) (Option.expect (List.at (wrap (wrap #list("abc"))) 0) "s"))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 10 Int64))
@@ -9006,7 +9011,7 @@
         (main (: d Int64))
         (+
           (match (last #list(1 2)) ((Some v) v) ((None _) -1))
-          (match (last #list("a" "bc")) ((Some s) (String.byte-len s)) ((None _) -1))))
+          (match (last #list("a" "bc")) ((Some s) ((. String byte-len) s)) ((None _) -1))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 4 Int64))
@@ -9034,7 +9039,7 @@
           (#list(h (.. t)) (List.concat (List.push #list() (f h)) (gmap f t)))))
       (def
         (main (: d Int64))
-        (Option.expect (List.at (gmap (fn (s) (String.byte-len s)) #list("abc")) 0) "i"))
+        (Option.expect (List.at (gmap (fn (s) ((. String byte-len) s)) #list("abc")) 0) "i"))
       (export main)))
   (call main (: 0 Int64))
   (output (: 3 Int64))
@@ -9531,7 +9536,9 @@
           (def inc-then-dbl (compose dbl inc))
           (def dbl-then-inc (compose inc dbl))
           (def excite (compose shout shout))
-          (+ (* 1000 (inc-then-dbl k)) (+ (* 10 (dbl-then-inc k)) (String.byte-len (excite "hi"))))))
+          (+
+            (* 1000 (inc-then-dbl k))
+            (+ (* 10 (dbl-then-inc k)) ((. String byte-len) (excite "hi"))))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 12114 Int64)))
@@ -9744,7 +9751,7 @@
     (do
       (def (wrap x) #tuple(x x))
       (def (go (: n Int64) (: acc Int64)) (if (= n 0) acc (go (- n 1) (+ acc (. (wrap n) 0)))))
-      (def (main) (+ (* (go 3 0) 10) (String.byte-len (. (wrap "ab") 1))))
+      (def (main) (+ (* (go 3 0) 10) ((. String byte-len) (. (wrap "ab") 1))))
       (export main)))
   (output (: 62 Int64)))
 
@@ -9762,7 +9769,7 @@
       (def (ev (: f Int64) (: n Int64)) (if (= n 0) 0 (+ (od f (- n 1)) (pick2 f 2 5))))
       (def
         (od (: f Int64) (: n Int64))
-        (if (= n 0) (String.byte-len (pick2 f "xyz" "q")) (ev f (- n 1))))
+        (if (= n 0) ((. String byte-len) (pick2 f "xyz" "q")) (ev f (- n 1))))
       (def (main (: f Int64)) (+ (* (ev f 4) 10) (od f 0)))
       (export main)))
   (call main (: 1 Int64))
@@ -10084,8 +10091,8 @@
       (def
         (main (: k Int64))
         (match
-          (String.from-bytes (Bytes.of #list((UInt8.wrap k) (UInt8.wrap 98))))
-          ((Option.Some s) (String.byte-len s))
+          ((. String from-bytes) (Bytes.of #list((UInt8.wrap k) (UInt8.wrap 98))))
+          ((Option.Some s) ((. String byte-len) s))
           ((Option.None) -1)))
       (export main)))
   (call main (: 97 Int64))
@@ -10121,7 +10128,9 @@
 (case
   "ep1 TWO String entry params concat in declaration order"
   (input
-    (do (def (main (: a String) (: b String)) (String.byte-len (String.concat a b))) (export main)))
+    (do
+      (def (main (: a String) (: b String)) ((. String byte-len) (String.concat a b)))
+      (export main)))
   (call main (: "abc" String) (: "de" String))
   (output (: 5 Int64)))
 
@@ -10129,20 +10138,21 @@
   "ep2 a String param BETWEEN two scalars keeps positional correctness"
   (input
     (do
-      (def (main (: x Int64) (: s String) (: y Int64)) (+ (* x 100) (+ (String.byte-len s) y)))
+      (def (main (: x Int64) (: s String) (: y Int64)) (+ (* x 100) (+ ((. String byte-len) s) y)))
       (export main)))
   (call main (: 3 Int64) (: "abcd" String) (: 7 Int64))
   (output (: 311 Int64)))
 
 (case
   "ep3 one String param used TWICE (byte-len and content compare)"
-  (input (do (def (main (: s String)) (+ (String.byte-len s) (if (= s "hi") 100 0))) (export main)))
+  (input
+    (do (def (main (: s String)) (+ ((. String byte-len) s) (if (= s "hi") 100 0))) (export main)))
   (call main (: "hi" String))
   (output (: 102 Int64)))
 
 (case
   "ep4 an EMPTY String entry arg has byte-len zero (the ptr,0 edge)"
-  (input (do (def (main (: s String)) (String.byte-len s)) (export main)))
+  (input (do (def (main (: s String)) ((. String byte-len) s)) (export main)))
   (call main (: "" String))
   (output (: 0 Int64)))
 
@@ -10150,7 +10160,7 @@
   "ep5 a Bytes and a String param in ONE signature"
   (input
     (do
-      (def (main (: b Bytes) (: s String)) (+ (* 10 (Bytes.len b)) (String.byte-len s)))
+      (def (main (: b Bytes) (: s String)) (+ (* 10 (Bytes.len b)) ((. String byte-len) s)))
       (export main)))
   (call main (: #list(1 2 3) Bytes) (: "ab" String))
   (output (: 32 Int64)))
@@ -10159,7 +10169,7 @@
   "ep6 a String entry param passed THROUGH to a helper"
   (input
     (do
-      (def (measure (: t String)) (String.byte-len t))
+      (def (measure (: t String)) ((. String byte-len) t))
       (def (main (: s String)) (+ 1 (measure s)))
       (export main)))
   (call main (: "xyz" String))
@@ -10719,7 +10729,7 @@
         (if
           (= k 0)
           acc
-          (walk (- k 1) (+ acc (String.byte-len (String.concat "ab" (if (> k 25) "c" "de")))))))
+          (walk (- k 1) (+ acc ((. String byte-len) (String.concat "ab" (if (> k 25) "c" "de")))))))
       (def (main (: n Int64)) (walk 50 n))
       (export main)))
   (call main (: 0 Int64))
@@ -10806,7 +10816,7 @@
         (main (: n Int64))
         (let
           ((s (String.concat "ab" (if (> n 0) "c" "de"))))
-          (let ((f (fn (k) (+ k (String.byte-len s))))) (f 10))))
+          (let ((f (fn (k) (+ k ((. String byte-len) s))))) (f 10))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 13 Int64))
@@ -10838,7 +10848,7 @@
       (effect E (op q (-> Int64)))
       (def
         (main (: s String) (: b Bytes))
-        (handle E 0 ((q () st (resume (+ (String.byte-len s) (Bytes.len b)) st))) (+ 100 (E.q))))
+        (handle E 0 ((q () st (resume (+ ((. String byte-len) s) (Bytes.len b)) st))) (+ 100 (E.q))))
       (export main)))
   (call main (: "abc" String) (: #list(1 2) Bytes))
   (output (: 105 Int64))
@@ -10855,7 +10865,7 @@
   "icp3 a lifted String compared and measured through an if-chain (the viachain shape on a param)"
   (input
     (do
-      (def (main (: s String)) (if (= s "add") 1 (if (= s "sub") 2 (String.byte-len s))))
+      (def (main (: s String)) (if (= s "add") 1 (if (= s "sub") 2 ((. String byte-len) s))))
       (export main)))
   (call main (: "other" String))
   (output (: 5 Int64))
@@ -10869,7 +10879,7 @@
   "eab1 a lifted String param CAPTURED by a closure is admitted as borrowed and reclaims"
   (input
     (do
-      (def (main (: s String)) (let ((f (fn (k) (+ k (String.byte-len s))))) (f 10)))
+      (def (main (: s String)) (let ((f (fn (k) (+ k ((. String byte-len) s))))) (f 10)))
       (export main)))
   (call main (: "abcd" String))
   (output (: 14 Int64))
@@ -10882,7 +10892,7 @@
       (effect E (op put (-> String Int64)))
       (def
         (main (: s String))
-        (handle E 0 ((put (t) st (resume (String.byte-len t) st))) (E.put s)))
+        (handle E 0 ((put (t) st (resume ((. String byte-len) t) st))) (E.put s)))
       (export main)))
   (call main (: "abcd" String))
   (output (: 4 Int64))
@@ -11581,7 +11591,7 @@
     (do
       (def
         (main (: s String) (: o (Option Int64)))
-        (+ (String.byte-len s) (match o ((Option.Some v) v) ((Option.None) 0))))
+        (+ ((. String byte-len) s) (match o ((Option.Some v) v) ((Option.None) 0))))
       (export main)))
   (call main (: "abc" String) (: (Some 10) (Option Int64)))
   (output (: 13 Int64)))
@@ -11653,7 +11663,7 @@
     (do
       (def
         (main (: s String))
-        (let ((f (fn ((: k Int64)) (+ k (String.byte-len s))))) (+ (f 10) (f 100))))
+        (let ((f (fn ((: k Int64)) (+ k ((. String byte-len) s))))) (+ (f 10) (f 100))))
       (export main)))
   (call main (: "hello" String))
   (output (: 120 Int64)))
@@ -11662,7 +11672,7 @@
   "ssc2 a String entry param relayed to a helper def that borrows its byte-length"
   (input
     (do
-      (def (measure (: t String)) (String.byte-len t))
+      (def (measure (: t String)) ((. String byte-len) t))
       (def (main (: s String)) (* 2 (measure s)))
       (export main)))
   (call main (: "hello" String))
@@ -11675,7 +11685,7 @@
       (effect St (op get (-> Unit Int64)))
       (def
         (main (: s String))
-        (handle St 10 ((get (u) st (resume st st))) (+ (St.get) (String.byte-len s))))
+        (handle St 10 ((get (u) st (resume st st))) (+ (St.get) ((. String byte-len) s))))
       (export main)))
   (call main (: "hello" String))
   (output (: 15 Int64)))
@@ -11702,7 +11712,7 @@
 
 (case
   "spx2 a Char entry param declines pending a boundary representation"
-  (input (do (def (main (: c Char)) (Char.to-int c)) (export main)))
+  (input (do (def (main (: c Char)) ((. Char to-int) c)) (export main)))
   (call main (: #\a Char))
   (output (: 97 Int64)))
 
@@ -12697,7 +12707,7 @@
     (do
       (def
         (main (: v0 String))
-        (do (def (v1 v2) (if (<= v2 0) v2 (v1 (- v2 1)))) (v1 (String.byte-len v0))))
+        (do (def (v1 v2) (if (<= v2 0) v2 (v1 (- v2 1)))) (v1 ((. String byte-len) v0))))
       (export main)))
   (call main (: "hi" String))
   (output (: 0 Int64)))

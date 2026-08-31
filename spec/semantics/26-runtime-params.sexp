@@ -312,7 +312,7 @@
       (def (main) (host (Param) (Param.rate)))
       (export main)))
   (call main)
-  (host-responses (respond Param.rate-num (: 7 Int64)) (respond Param.rate-den (: 2 Int64)))
+  (host-responses (respond (. Param rate-num) (: 7 Int64)) (respond (. Param rate-den) (: 2 Int64)))
   (output (: 7/2 Rational))
   (live-objects known-leak))
 
@@ -336,7 +336,7 @@
       (def (main) (host (Param) (Qty.value (Param.len))))
       (export main)))
   (call main)
-  (host-responses (respond Param.len-num (: 7 Int64)) (respond Param.len-den (: 2 Int64)))
+  (host-responses (respond (. Param len-num) (: 7 Int64)) (respond (. Param len-den) (: 2 Int64)))
   (output (: 7/2 Rational))
   (live-objects known-leak))
 

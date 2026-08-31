@@ -1164,7 +1164,7 @@
               #tuple(20 "b")))
           (def s (labels q ""))
           (+
-            (* 10 (String.byte-len s))
+            (* 10 ((. String byte-len) s))
             (if (= s "axbc") 1 (if (= s "baxc") 2 (if (= s "bcax") 3 0))))))
       (export main)))
   (call main (: 5 Int64))

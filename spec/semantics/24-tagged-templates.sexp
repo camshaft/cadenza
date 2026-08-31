@@ -30,7 +30,10 @@
       (def (id chunks holes) (match chunks (#list(c) (Ast.Str c)) (_ (Ast.Str ""))))
       (def
         (main)
-        (match (tagged-template id (chunks "hi") (holes)) ((Ast.Str s) (String.byte-len s)) (_ 0)))
+        (match
+          (tagged-template id (chunks "hi") (holes))
+          ((Ast.Str s) ((. String byte-len) s))
+          (_ 0)))
       (export main)))
   (output (: 2 Int64)))
 
@@ -194,7 +197,7 @@
       (def (first-chunk chunks) (match chunks (#list(c) c) (#list(c (.. r)) c) (_ "")))
       (def
         (scan chunks holes)
-        (Ast.Int (BigInt.of (count-b (String.to-bytes (first-chunk chunks)) 0 0))))
+        (Ast.Int (BigInt.of (count-b ((. String to-bytes) (first-chunk chunks)) 0 0))))
       (def (main) (match (tagged-template scan (chunks "abbcbb") (holes)) ((Ast.Int n) n) (_ 0N)))
       (export main)))
   (output (: 4 BigInt))
@@ -279,7 +282,7 @@
         (match
           (tagged-template weave (chunks "p" "MID" "q") (holes (Ast.Int 10) (Ast.Int 20)))
           ((Ast.List #list((Ast.Name nm) (Ast.Int x) (Ast.Int y)))
-            (+ (BigInt.of (String.byte-len nm)) (+ x y)))
+            (+ (BigInt.of ((. String byte-len) nm)) (+ x y)))
           (_ 0N)))
       (export main)))
   (output (: 33 BigInt))
@@ -370,7 +373,7 @@
             (chunks "" "")
             (holes (tagged-template inner (chunks "x") (holes))))
           ((Ast.List #list((Ast.Name op) (Ast.Int a) (Ast.Int b)))
-            (+ (BigInt.of (String.byte-len op)) (+ a b)))
+            (+ (BigInt.of ((. String byte-len) op)) (+ a b)))
           (_ 0N)))
       (export main)))
   (output (: 46 BigInt))
@@ -518,7 +521,7 @@
         (main (: a Int64))
         (match
           (tagged-template wrap (chunks "" "") (holes (Ast.Int (BigInt.of (* a 10)))))
-          ((Ast.List #list((Ast.Name g) (Ast.Int n))) (+ n (BigInt.of (String.byte-len g))))
+          ((Ast.List #list((Ast.Name g) (Ast.Int n))) (+ n (BigInt.of ((. String byte-len) g))))
           (_ -1N)))
       (export main)))
   (call main (: 4 Int64))

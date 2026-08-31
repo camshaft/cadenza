@@ -788,7 +788,7 @@
           (def inv (Map.insert Map.empty 1 #record((= name "widget") (= qty k))))
           (def r (Option.expect (Map.lookup inv 1) "slot"))
           (+
-            (* 10 (String.byte-len (. (Record.without r (qty)) name)))
+            (* 10 ((. String byte-len) (. (Record.without r (qty)) name)))
             (. (Record.extend r #"extra" 5) extra))))
       (export main)))
   (call main (: 3 Int64))
@@ -1421,7 +1421,7 @@
            `(Tuple.split-at (tuple 1 2 3) 1)` splits at position 1 into a pair — the first element as a
            1-tuple prefix and the rest as a 2-tuple suffix — yielding `(tuple (tuple 1) (tuple 2 3))`. The
            position `k` is a compile-time literal.")
-  (input (Tuple.split-at #tuple(1 2 3) 1))
+  (input ((. Tuple split-at) #tuple(1 2 3) 1))
   (output (: #tuple(#tuple(1) #tuple(2 3)) (Tuple (Tuple Int64) (Tuple Int64 Int64)))))
 
 (case
@@ -1433,7 +1433,7 @@
            the suffix is the whole tuple. `(Tuple.split-at (tuple 1 2) 0)` yields `(tuple unit (tuple 1 2))`,
            the prefix typed `Unit`. Pins that 0 is in range and the empty prefix is the unit value, not a
            novel zero-arity tuple form.")
-  (input (Tuple.split-at #tuple(1 2) 0))
+  (input ((. Tuple split-at) #tuple(1 2) 0))
   (output (: #tuple(unit #tuple(1 2)) (Tuple Unit (Tuple Int64 Int64)))))
 
 (case
@@ -1445,7 +1445,7 @@
            1 2) 2)` yields `(tuple (tuple 1 2) unit)`, the suffix typed `Unit`. Pins that `k` = arity is in
            range (the split point may sit just past the last element) and the empty suffix is unit — the
            k=arity end of the k=0/k=arity boundary the split-at-zero case pins at the other end.")
-  (input (Tuple.split-at #tuple(1 2) 2))
+  (input ((. Tuple split-at) #tuple(1 2) 2))
   (output (: #tuple(#tuple(1 2) unit) (Tuple (Tuple Int64 Int64) Unit))))
 
 (case
@@ -1456,7 +1456,7 @@
            consistent with an out-of-arity positional access `(. x N)` being rejected. `(tuple 1 2)` has
            arity 2, so a split at 5 names a position it does not have — rejected rather than producing a
            short suffix.")
-  (input (Tuple.split-at #tuple(1 2) 5))
+  (input ((. Tuple split-at) #tuple(1 2) 5))
   (error CDZ0201))
 
 (case
@@ -1469,7 +1469,7 @@
            projection through it FOLDS through the constant tuple the operation produced (no runtime
            value-heap build), so a split-at at the k=0 / k=arity boundary is usable, not just renderable.
            Pins that the empty-side result reaches the same representation the byte-identical literal does.")
-  (input (do (def (main) (. (. (Tuple.split-at #tuple(10 20) 0) 1) 0)) (export main)))
+  (input (do (def (main) (. (. ((. Tuple split-at) #tuple(10 20) 0) 1) 0)) (export main)))
   (output (: 10 Int64)))
 
 (case
@@ -1486,8 +1486,8 @@
       (def
         (main (: n Int64))
         (+
-          (. (. (Tuple.split-at #tuple(n 20 30) 1) 0) 0)
-          (. (. (Tuple.split-at #tuple(n 20 30) 1) 1) 1)))
+          (. (. ((. Tuple split-at) #tuple(n 20 30) 1) 0) 0)
+          (. (. ((. Tuple split-at) #tuple(n 20 30) 1) 1) 1)))
       (export main)))
   (call main (: 5 Int64))
   (output (: 35 Int64))
@@ -1542,7 +1542,7 @@
 
 (case
   "Tuple.split-at over a non-tuple operand names the op and the non-tuple type"
-  (input (do (def (g (: n Int64)) (Tuple.split-at n 1)) (export g)))
+  (input (do (def (g (: n Int64)) ((. Tuple split-at) n 1)) (export g)))
   (error CDZ0201 (message "`Tuple.split-at` requires a tuple") (message "Int64")))
 
 (case
@@ -2249,7 +2249,7 @@
   (doc
     "`(Tuple.split-at (tuple 10 20) 0)` = (tuple unit (tuple 10 20)); `.1 .0` reads the suffix's first
            element = 10.")
-  (input (. (. (Tuple.split-at #tuple(10 20) 0) 1) 0))
+  (input (. (. ((. Tuple split-at) #tuple(10 20) 0) 1) 0))
   (output (: 10 Int64)))
 
 (case
@@ -2257,13 +2257,13 @@
   (doc
     "`(Tuple.split-at (tuple 10 20) 2)` = (tuple (tuple 10 20) unit); `.0 .0` reads the prefix's first
            element = 10.")
-  (input (. (. (Tuple.split-at #tuple(10 20) 2) 0) 0))
+  (input (. (. ((. Tuple split-at) #tuple(10 20) 2) 0) 0))
   (output (: 10 Int64)))
 
 (case
   "sat3 an interior split's suffix element is read correctly (not an empty-side-only fold)"
   (doc "`(Tuple.split-at (tuple 10 20 30) 2)` = (tuple (tuple 10 20) (tuple 30)); `.1 .0` = 30.")
-  (input (. (. (Tuple.split-at #tuple(10 20 30) 2) 1) 0))
+  (input (. (. ((. Tuple split-at) #tuple(10 20 30) 2) 1) 0))
   (output (: 30 Int64)))
 
 ; ── breaker batch 578: row-polymorphism × census (the file is census-light: 19/117). An open-row
