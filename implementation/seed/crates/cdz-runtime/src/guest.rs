@@ -1022,17 +1022,18 @@ impl Guest for Component {
     }
 }
 
-// The DEBUG-ONLY `debug-trace` interface export (rc-trace leak-attribution diagnostic). Present ONLY
-// in the debug-counters build, which targets `world runtime-debug` (heap + debug-trace) — the release
-// build targets `world runtime` (heap only), whose regenerated bindings carry no `debug-trace` Guest
-// trait, so this whole impl is cfg'd out there (and `REQUIRED_RUNTIME_HASH`/058B5h is untouched). Thin
-// wrappers over the crate-root rc-trace fns (the serialization + enable/flag logic is native-tested in
-// lib.rs). NOTE to v-nix: the exact trait PATH below (`bindings::exports::cadenza::runtime::debug_trace::
-// Guest`) is my best match to wit-bindgen's layout for the `cadenza:runtime` package's exported
-// `debug-trace` interface — please confirm/adjust it against the REGENERATED runtime-debug bindings (the
-// heap Guest is imported unqualified in this file, so the generated module path is the authority) and
-// report any signature mismatch; the bodies are stable.
-#[cfg(all(target_arch = "wasm32", feature = "debug-counters"))]
+// The rc-trace leak-attribution DRAIN EXPORT (the `debug-trace` WIT interface). Gated on the
+// `rc-trace-export` feature (NOT `debug-counters`), so it is present ONLY in the rc-trace variant — the
+// nix flake build that enables `rc-trace-export` AND targets `world runtime-debug` (heap + debug-trace),
+// for `cdz-run --rc-trace`. It is CFG'D OUT of both (a) the release runtime (no feature, `world runtime`,
+// 058B5h untouched) AND (b) the plain debug-counters leak-check runtime (feature off → `world runtime`,
+// heap-only bindings with no `debug-trace` trait → no E0433 in xtask codegen / the gate). `rc-trace-export`
+// implies `debug-counters`, so the instrumentation + the crate-root rc-trace fns this wraps are present.
+// Thin wrappers over those fns (the serialization + enable/flag LOGIC is native-tested in lib.rs). The
+// exact wit-bindgen trait PATH below is v-nix's debug-build compile-gate (the regenerated runtime-debug
+// bindings are the authority — v-nix's build already validated it compiles; only rc-trace-enable's arg
+// needed the WIT `on: bool`).
+#[cfg(all(target_arch = "wasm32", feature = "rc-trace-export"))]
 impl bindings::exports::cadenza::runtime::debug_trace::Guest for Component {
     fn rc_trace_enable(on: bool) {
         crate::rc_trace_enable(on);

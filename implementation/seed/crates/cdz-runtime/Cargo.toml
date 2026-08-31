@@ -29,6 +29,16 @@ crate-type = ["cdylib"]
 # OFF by default so the shipped runtime is zero-cost and byte-stable; a leak-check harness turns it
 # on to verify the compiler's Perceus dup/drop discipline (assert live-objects() == 0 after a run).
 debug-counters = []
+# The rc-trace leak-attribution DRAIN EXPORT (the `debug-trace` WIT interface, world `runtime-debug`).
+# IMPLIES `debug-counters` (the export drains the instrumentation buffer that feature compiles in). Kept
+# SEPARATE from `debug-counters` so the plain debug-counters runtime — the leak-check gate's runtime,
+# built with the DEFAULT `world = runtime` (heap only) by xtask codegen + the flake — stays world-runtime
+# and UNBROKEN (its bindings carry no `debug-trace` trait, so the cfg'd-out export raises no E0433). The
+# rc-trace variant (this feature ON, targeting `world = runtime-debug`) is built ONLY by the nix flake for
+# `cdz-run --rc-trace`, carrying its own RC_TRACE_RUNTIME_HASH; that world-targeting lives in the BUILD
+# layer (nix), never a dev-tree Cargo.toml mutation (v-xtask-decompose: seq-202 keep-xtask-tiny + the
+# SIGKILL orphan hazard a drop-guard cannot cover).
+rc-trace-export = ["debug-counters"]
 
 [lints.rust]
 # cdz-runtime `#[path]`-includes cadenza-ast's source (the shared codec core, mechanism B). Those files
