@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use crate::{
     HostResponse, Outcome, Peer, RunOpts, required_runtime, run_capturing, run_with_live_objects,
-    run_with_peers,
+    run_with_peers, run_with_rc_trace,
 };
 
 /// How `cdz run` encodes the run RESULT on stdout. `Sexp` (the historical default) pretty-prints the value
@@ -178,6 +178,15 @@ pub struct RunArgs {
     /// and the resolved runtime MUST be the debug-counters build (the shipped one always reports 0).
     #[arg(long)]
     pub report_live_objects: bool,
+
+    /// rc-TRACE (leak ATTRIBUTION): arm the runtime's per-node ALLOC/DUP/DROP recorder before the run,
+    /// run the case, drain the trace after, and print a human-readable per-event log + a LEAK SUMMARY
+    /// (the node#s allocated but never freed — WHICH handle leaked, for a reclaim fix). Complements
+    /// `--report-live-objects` (which only DETECTs a count mismatch). REQUIRES the rc-trace runtime via
+    /// `--runtime <.#rctrace-runtime path>` (a release/leak-check runtime has no `debug-trace` export and
+    /// errors with a build hint). The trace goes to STDOUT after the value.
+    #[arg(long)]
+    pub rc_trace: bool,
 
     /// LEAK-CEILING tolerance for `--grade`: on a `(live-objects known-leak N)` case, a live-cell count
     /// `<= N` PASSES (the path reclaimed MORE than the tolerated-leak ceiling — strictly safer); only a count
@@ -550,6 +559,54 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
                 Ok(ExitCode::FAILURE)
             }
         };
+    }
+
+    if cli.rc_trace {
+        // ATTRIBUTION mode: arm the runtime's per-node ALLOC/DUP/DROP recorder, run, drain, then decode +
+        // print the per-event log + a LEAK SUMMARY (nodes allocated but never freed). Requires the
+        // rc-trace runtime (--runtime <.#rctrace-runtime>); `run_with_rc_trace` errors with a build hint
+        // if the resolved runtime lacks the `debug-trace` export. The value/trap goes to stdout first
+        // (like the normal run), then the trace.
+        if let Some(rt) = &opts.runtime {
+            eprintln!(
+                "{prog}: rc-trace run on runtime {} ({})",
+                content_address(rt),
+                if cli.runtime.is_some() {
+                    "--runtime override"
+                } else {
+                    "store-resolved"
+                }
+            );
+        }
+        let (outcome, observed, trace) = run_with_rc_trace(
+            &component_bytes,
+            &opts,
+            second_call,
+            drop_handle,
+            call_member,
+        )?;
+        emit_observed_host_calls(&observed);
+        let exit = match &outcome {
+            Outcome::Value(text) => {
+                println!("{text}");
+                ExitCode::SUCCESS
+            }
+            Outcome::Trap(msg) => {
+                eprintln!("{prog}: trap: {msg}");
+                ExitCode::FAILURE
+            }
+        };
+        match trace {
+            Some((bytes, truncated)) => match crate::rc_trace::decode(&bytes) {
+                Ok(events) => print!("{}", crate::rc_trace::render(&events, truncated)),
+                Err(e) => eprintln!("{prog}: rc-trace decode failed: {e}"),
+            },
+            None => eprintln!(
+                "{prog}: no rc-trace drained (the component composes no value-heap runtime, or the run \
+                 trapped — nothing to attribute)"
+            ),
+        }
+        return Ok(exit);
     }
 
     if cli.report_live_objects {
