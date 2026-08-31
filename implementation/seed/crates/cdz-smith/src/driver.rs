@@ -72,6 +72,9 @@ pub struct Stats {
     pub crashes: u64,
     pub invalid_wasm: u64,
     pub timeouts: u64,
+    /// Class-2 / assumed-unreachable hits: a well-formed program reached a CODELESS decline
+    /// (operator directive — each is filed as a `ReachabilityInvariant` finding).
+    pub reachability_hits: u64,
     pub new_buckets: u64,
     pub duplicate_hits: u64,
 }
@@ -152,13 +155,14 @@ pub fn run(cfg: &Config) -> std::io::Result<Stats> {
         i += 1;
         if cfg.progress_every != 0 && i.is_multiple_of(cfg.progress_every) {
             eprintln!(
-                "[cdz-smith] {i} programs | {} compiled, {} declined, {} crashes, {} invalid-wasm ({} buckets), {} timeouts",
+                "[cdz-smith] {i} programs | {} compiled, {} declined, {} crashes, {} invalid-wasm ({} buckets), {} timeouts, {} reachability-invariant",
                 stats.compiled,
                 stats.declined,
                 stats.crashes,
                 stats.invalid_wasm,
                 stats.new_buckets,
-                stats.timeouts
+                stats.timeouts,
+                stats.reachability_hits
             );
         }
     }
@@ -173,7 +177,17 @@ fn compile_seed(seed: u64) -> Verdict {
 fn classify(verdict: &Verdict, seed: u64, cfg: &Config, store: &FindingStore, stats: &mut Stats) {
     match verdict {
         Verdict::Compiled { .. } => stats.compiled += 1,
-        Verdict::Declined { .. } => stats.declined += 1,
+        Verdict::Declined { code, message } => {
+            stats.declined += 1;
+            // Operator directive: a CODELESS decline (`code == None`) on a program that already
+            // passed every coded well-formedness check is the class-2 / assumed-unreachable set —
+            // reaching it falsifies an "unreachable" invariant, so it is a FINDING, not a normal
+            // decline. A coded decline (CDZ0900 feature-gap) or a coded rejection is expected: pass.
+            if code.is_none() {
+                stats.reachability_hits += 1;
+                file_reachability(seed, message, cfg, store, stats);
+            }
+        }
         Verdict::ParseError(_) => stats.parse_errors += 1,
         Verdict::Crash(info) => {
             stats.crashes += 1;
@@ -230,6 +244,36 @@ fn file_crash(seed: u64, info: &CrashInfo, cfg: &Config, store: &FindingStore, s
         &mut stats.duplicate_hits,
         seed,
         "crash",
+    );
+}
+
+/// File a class-2 / assumed-unreachable finding: a codeless decline reached by a well-formed
+/// program (operator directive). Shrink preserving the SAME codeless-decline message so the witness
+/// is minimal and stays on the same site; dedup by the (masked) message so each distinct
+/// assumed-unreachable site is one bucket regardless of how many programs reach it.
+fn file_reachability(
+    seed: u64,
+    message: &str,
+    cfg: &Config,
+    store: &FindingStore,
+    stats: &mut Stats,
+) {
+    let raw = program_for_seed(seed);
+    let program = crate::finding::shrink_codeless_decline(&raw, message);
+    let finding = Finding {
+        category: Category::ReachabilityInvariant,
+        program,
+        crash: None,
+        detail: Some(message.to_string()),
+        commit: cfg.commit.clone(),
+    };
+    file_and_tally(
+        store,
+        &finding,
+        &mut stats.new_buckets,
+        &mut stats.duplicate_hits,
+        seed,
+        "reachability-invariant",
     );
 }
 
@@ -841,6 +885,66 @@ mod tests {
             classify_equiv_verdict(&Verdict::Mismatch("unexpected".into())),
             EquivClass::SuspectedDivergence
         );
+    }
+
+    /// Operator directive (2026-08-31): `classify` files a `ReachabilityInvariant` finding for a
+    /// CODELESS decline (`code == None`) — the class-2 / assumed-unreachable set — and does NOT for a
+    /// coded decline (a CDZ0900 feature-gap or any coded rejection), which is an expected "no".
+    #[test]
+    fn codeless_decline_is_a_reachability_finding_coded_decline_is_not() {
+        let tmp = std::env::temp_dir().join(format!("cdz-smith-reach-{}", std::process::id()));
+        let cfg = Config {
+            iterations: Some(0),
+            run_seed: 0,
+            timeout: Duration::from_secs(60),
+            findings_dir: tmp.clone(),
+            commit: "test".into(),
+            progress_every: 0,
+        };
+        let store = FindingStore::open(&cfg.findings_dir).unwrap();
+
+        // A CODED decline (feature-gap CDZ0900) is expected — not flagged.
+        let mut stats = Stats::default();
+        classify(
+            &Verdict::Declined {
+                code: Some("CDZ0900".into()),
+                message: "an effect handler in a form the fold does not specialize".into(),
+            },
+            1,
+            &cfg,
+            &store,
+            &mut stats,
+        );
+        assert_eq!(stats.declined, 1);
+        assert_eq!(
+            stats.reachability_hits, 0,
+            "coded decline must not be flagged"
+        );
+        assert_eq!(
+            stats.new_buckets, 0,
+            "coded decline must not file a finding"
+        );
+
+        // A CODELESS decline (code == None) is the assumed-unreachable set — flagged + filed.
+        let mut stats = Stats::default();
+        classify(
+            &Verdict::Declined {
+                code: None,
+                message: "internal: unexpected node after resolution".into(),
+            },
+            2,
+            &cfg,
+            &store,
+            &mut stats,
+        );
+        assert_eq!(stats.declined, 1);
+        assert_eq!(
+            stats.reachability_hits, 1,
+            "codeless decline must be flagged"
+        );
+        assert_eq!(stats.new_buckets, 1, "codeless decline must file a finding");
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     // `#[ignore]` by default: `run()` arms the watchdog, which calls `process::abort()` on a hang —

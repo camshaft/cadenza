@@ -1480,10 +1480,11 @@ fn cmd_fuzz(args: &[String]) -> ExitCode {
     match driver::run(&cfg) {
         Ok(stats) => {
             eprintln!(
-                "[cdz-smith] done: {} programs | {} crashes, {} invalid-wasm ({} new buckets, {} dup hits) | {} timeouts",
+                "[cdz-smith] done: {} programs | {} crashes, {} invalid-wasm, {} reachability-invariant ({} new buckets, {} dup hits) | {} timeouts",
                 stats.total(),
                 stats.crashes,
                 stats.invalid_wasm,
+                stats.reachability_hits,
                 stats.new_buckets,
                 stats.duplicate_hits,
                 stats.timeouts
