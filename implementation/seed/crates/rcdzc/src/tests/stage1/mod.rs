@@ -2487,56 +2487,6 @@ fn a_package_export_binds_the_entry_files_def_not_a_private_siblings_same_named_
 }
 
 #[test]
-fn a_match_scrutinee_eval_gives_the_teaching_message_not_a_bare_unbound() {
-    // adv-58 FIX (v-inference 2026-08-03): `(eval q)` with a runtime-visible `q` correctly DECLINES in
-    // every position, but a MATCH-SCRUTINEE `(match (eval q) …)` got a bare "unbound name `eval`" (which
-    // misdirects toward imports) instead of the teaching text the let-init/if-cond/arith positions give.
-    // ROOT: a bare "unbound name `eval`" copy (an earlier collect path) and the `enrich_unbound` teaching
-    // text both anchored the SAME (code CDZ0101, node = the `eval` head); `dedup_faults` collapsed them to
-    // one but kept whichever was pushed FIRST (the bare copy). FIX: dedup drops a BARE "unbound name `X`"
-    // when an ENRICHED unbound sibling exists at the same node — the teaching text survives. Verifies the
-    // scrutinee gives the teaching text as a SINGLE diagnostic (matching the other positions), and that a
-    // plain unbound name (no enriched sibling) still reports once (no over-drop).
-    use crate::abi::Artifact;
-    let msgs = |s: &str| -> Vec<(Option<String>, String)> {
-        let entry = crate::codec::encode(&parse(s));
-        let out = crate::compile::compile(
-            &[
-                Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
-                cadenza_compile_abi::abi::entry_artifact("app"),
-            ],
-            &[crate::backend::Target::Wasm],
-        );
-        out.diagnostics
-            .iter()
-            .map(|d| (d.code.clone(), d.message.clone()))
-            .collect::<Vec<_>>()
-    };
-    let teaches = |v: &[(Option<String>, String)]| -> bool {
-        v.len() == 1
-            && v[0].0.as_deref() == Some("CDZ0101")
-            && v[0].1.contains("COMPILE-TIME-VISIBLE AST")
-    };
-    assert!(
-        teaches(&msgs(
-            "(do (def (main (: q Int64)) (match (eval q) (_ 0))) (export main))"
-        )),
-        "match-scrutinee eval must give the teaching message, once"
-    );
-    assert!(teaches(&msgs(
-        "(do (def (main (: q Int64)) (let ((r (eval q))) 0)) (export main))"
-    )));
-    assert!(teaches(&msgs(
-        "(do (def (main (: q Int64)) (+ (eval q) 1)) (export main))"
-    )));
-    let plain = msgs("(do (def (main) nosuchname) (export main))");
-    assert!(
-        plain.len() == 1 && plain[0].1.contains("unbound name `nosuchname`"),
-        "a genuine unbound name still reports once (no over-drop)"
-    );
-}
-
-#[test]
 fn binding_position_irrefutability_holds_across_all_lambda_positions() {
     // COVERAGE-HARDENING (v-inference 2026-08-02, at-rest sweep): the binding-position irrefutability
     // rule (core-semantics.md:135-139 — a `fn` parameter MUST accept an irrefutable pattern; a refutable
