@@ -6493,7 +6493,8 @@
           ((next (u) s (resume s (+ s x))))
           (do (def a (Src.next)) (def b (Src.next)) (+ a b))))
       (export main)))
-  (declines))
+  (call   main (: 5 UInt8)) (output (: 25 Int64))
+  (call   main (: 0 UInt8)) (output (: 20 Int64)))
 
 (case
   "a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)"
@@ -6522,7 +6523,8 @@
               (if (>= (. st 0) (. st 1)) -999 (resume (. st 0) #tuple((+ (. st 0) 1) (. st 1))))))
           (+ (Sim.step) (+ (Sim.step) (Sim.step)))))
       (export main)))
-  (declines))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (output (: -999 Int64)))
 
 (case
   "handler op-param and state binders stay hygienic when colliding with perform-site names"
@@ -6598,7 +6600,7 @@
         (if (= i 0) bad (do (def scaled (Env.scale i)) (check-all (- i 1) (+ bad scaled)))))
       (def (main (: k Int64)) (handle Env k ((scale (v) s (resume (* v s) s))) (check-all 10 0)))
       (export main)))
-  (declines))
+  (call   main (: 2 Int64)) (output (: 110 Int64)))
 
 (case
   "Qty arithmetic on the handler state binder via an arm-local def threads and runs"
@@ -12994,7 +12996,7 @@
       (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (> n 5) (walk (- n 1)) 0) (Ctr.tick))))
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
-  (declines (message "not reducible by the tail-resumptive fold")))
+  (call main) (output (: 0 Int64)))
 
 (case
   "a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted"
@@ -13010,7 +13012,7 @@
         (if (= n 0) 0 (+ (match (if (> n 5) (walk (- n 1)) 0) (_ 0)) (Ctr.tick))))
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
-  (declines (message "not reducible by the tail-resumptive fold")))
+  (call main) (output (: 0 Int64)))
 
 (case
   "a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted"
@@ -13026,7 +13028,7 @@
         (if (= n 0) 0 (+ (if (and (> n 5) (< (walk (- n 1)) 100)) 1 0) (Ctr.tick))))
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
-  (declines (message "not reducible by the tail-resumptive fold")))
+  (call main) (output (: 0 Int64)))
 
 ; ── effect safe-rejects: escaping / captured-continuation / partial-application (migrated from rcdzc
 ;    tests/mod.rs, delanguaging handoff from v-rcdzc-test-shrink 2026-08-30). A performing closure or a
