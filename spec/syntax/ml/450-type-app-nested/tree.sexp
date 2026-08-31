@@ -1,0 +1,1 @@
+(def (f (: r (Tuple (List a) Int64))) r)

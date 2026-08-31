@@ -1,0 +1,1 @@
+def f(r: List(forall a. a -> a)) = r

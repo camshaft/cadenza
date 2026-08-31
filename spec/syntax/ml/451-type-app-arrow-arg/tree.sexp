@@ -1,0 +1,1 @@
+(def (f (: r (List (-> a b)))) r)

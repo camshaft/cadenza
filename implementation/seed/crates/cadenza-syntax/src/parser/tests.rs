@@ -2051,73 +2051,17 @@ fn a_bare_value_position_forall_is_a_reserved_keyword_error() {
 // ml/440-infix-ascription-value-rhs `f(x : a + b)`→`(f (: x (+ a b)))`, ml/441-infix-ascription-arrow-type-rhs
 // `f(x : a -> b)`→`(f (: x (-> a b)))`.
 
-#[test]
-fn type_application_argument_is_parsed_as_a_type_not_a_value() {
-    use crate::sexpr;
-    // A type-position APPLICATION (`Tuple(A, B)`, `List(T)`) parses each argument as a TYPE via
-    // `type_ref`, not the value `arg_exprs`. This matters for `forall`: a contextual keyword valid
-    // only in type position — the value path misread `Tuple(forall b. L)` as a name + unit-suffix
-    // (`(Tuple (Qty.of forall (Unit.of "b")) …)` + `<error>`). Now a `forall`/arrow/nested-application
-    // argument parses correctly, so the printed `Tuple(forall b. L)` round-trips.
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(r: Tuple(forall b. L)) = r")),
-        r#"(def (f (: r (Tuple (forall (b) L)))) r)"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(r: List(forall a. a -> a)) = r")),
-        r#"(def (f (: r (List (forall (a) (-> a a))))) r)"#
-    );
-    // A positional NON-forall type argument (application, arrow, qualified name) is unaffected.
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(r: Tuple(List(a), Int64)) = r")),
-        r#"(def (f (: r (Tuple (List a) Int64))) r)"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(r: List(a -> b)) = r")),
-        r#"(def (f (: r (List (-> a b)))) r)"#
-    );
-    // The LABELED record-type application `Record(field: T, …)` still builds `(Record (: field T) …)`
-    // — a type-application arg may be a `name: T` label OR a bare type. A field type may itself be a
-    // `forall` (the general-type field the value path could not carry).
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(r: Record(x: Int64, y: Int64)) = r")),
-        r#"(def (f (: r (Record (: x Int64) (: y Int64)))) r)"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(r: Record(p: forall a. a)) = r")),
-        r#"(def (f (: r (Record (: p (forall (a) a))))) r)"#
-    );
-}
-
-#[test]
-fn a_record_payload_variant_parses_the_labeled_field_form() {
-    use crate::sexpr;
-    // breaker report: a `(type R (record (: field Ty)))` type-declaration whose variant payload is a
-    // RECORD prints as `R = | record(field : Ty)`, but `variant`'s payload parsed each arg via
-    // `type_ref` (bare types only), so the `field : Ty` label failed re-parse at the `:` (`expected
-    // ,`). No corpus case used the `(type _ (record …))` decl form, so this surface was never
-    // round-trip-exercised. Now a variant payload accepts the SAME labeled `name : Type` arg
-    // `type_arg_exprs` does (shared `type_arg`), producing `(: field Ty)`.
-    assert_eq!(
-        sexpr::print(&parse_ok("type R =\n  | record(field : NoSuchField)")),
-        r#"(type R (record (: field NoSuchField)))"#
-    );
-    // Multiple fields.
-    assert_eq!(
-        sexpr::print(&parse_ok("type Point =\n  | record(x : Int64, y : Int64)")),
-        r#"(type Point (record (: x Int64) (: y Int64)))"#
-    );
-    // A POSITIONAL (non-labeled) variant payload is unaffected — still bare types.
-    assert_eq!(
-        sexpr::print(&parse_ok("type T =\n  | Pair(Int64, String)")),
-        r#"(type T (Pair Int64 String))"#
-    );
-    // Mixed positional + labeled in one payload also parses (label is per-arg).
-    assert_eq!(
-        sexpr::print(&parse_ok("type M =\n  | v(Int64, tag : String)")),
-        r#"(type M (v Int64 (: tag String)))"#
-    );
-}
+// `type_application_argument_is_parsed_as_a_type_not_a_value` (a type-position APPLICATION — Tuple/List/Record
+// — parses each arg as a TYPE via `type_ref`, so `forall`/arrow/nested-app args parse correctly) +
+// `a_record_payload_variant_parses_the_labeled_field_form` (a sum-type variant payload accepts labeled `name :
+// Type` args, not just bare types) MIGRATED to the spec/syntax corpus (inc-6 batch-76):
+//   * ml/448-type-app-forall-arg-tuple `Tuple(forall b. L)`→`(Tuple (forall (b) L))`, ml/449-type-app-forall-
+//     arg-list-arrow `List(forall a. a -> a)`, ml/450-type-app-nested `Tuple(List(a), Int64)`, ml/451-type-app-
+//     arrow-arg `List(a -> b)`, ml/452-type-app-record-field-forall `Record(p: forall a. a)`→`(Record (: p
+//     (forall (a) a)))`. (Labeled `Record(x: Int64, y: Int64)`=ml/390.)
+//   * ml/453-record-payload-variant `type R = | record(field : NoSuchField)`→`(type R (record (: field
+//     NoSuchField)))`, ml/454-record-payload-variant-multi, ml/455-variant-mixed-positional-labeled `v(Int64,
+//     tag : String)`→`(v Int64 (: tag String))`. (Positional `Pair(Int64, String)`=ml/116.)
 
 // `derived_unit_infix_operators_parse_in_type_annotation_position` (a DERIVED-UNIT type annotation composes
 // unit factors with the infix glyphs `^`/`*`/`/` — the type grammar folds them into bare-glyph heads sharing
