@@ -1092,55 +1092,14 @@ fn a_non_tail_list_fold_is_accumulator_transformed_into_a_constant_stack_loop() 
 // 05-compound-types, the saturation-soundness reject block after the bool/ctor-lead-saturating cases:
 // a bool-lead match covering only one bool value → CDZ0210 (the other first-element value uncovered);
 // no empty arm → CDZ0210 (length 0 uncovered). --case grades the reject codes.)
-#[test]
-fn a_sum_variants_list_payload_split_across_empty_and_rest_arms_is_exhaustive() {
-    // A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —
-    // `(Bx (list)) [len 0] + (Bx (list x .. r)) [len ≥ 1]` — is TOTAL for the `Bx` variant without a
-    // `_`. The decision-tree twin of Inc-23's list-of-bools saturation: a `ListLen` lit-test is
-    // normally refutable (excluded from coverage), but the else of the `== 0` test is exactly "len ≥ 1"
-    // (`refine_listlen_else_rows`), which the second arm's `≥ 1` test covers → it becomes an
-    // unconditional leaf. Before, this was a spurious CDZ0210 (a valid total match rejected).
-    assert!(
-        reject_code(
-            "(module m (type Box (Bx (List Int64))) \
-                   (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list x .. _r)) x))) \
-                   (def (main) (f (Bx (list 7)))) (export main))"
-        )
-        .is_none(),
-        "an empty + non-empty list-payload split covers the variant without a wildcard"
-    );
-    // Reordered (non-empty THEN empty) is equally total; a lone zero-lead rest `(Bx (list .. r))`
-    // (vacuous length test — matches every length) covers the variant on its own.
-    for src in [
-        "(module m (type Box (Bx (List Int64))) \
-               (def (f (: b Box)) (match b ((Bx (list x .. _r)) x) ((Bx (list)) 0))) \
-               (def (main) (f (Bx (list 7)))) (export main))",
-        "(module m (type Box (Bx (List Int64))) \
-               (def (f (: b Box)) (match b ((Bx (list .. _r)) 0))) \
-               (def (main) (f (Bx (list 7)))) (export main))",
-    ] {
-        assert!(
-            reject_code(src).is_none(),
-            "a reordered / vacuous list-payload cover is exhaustive: {src}"
-        );
-    }
-    // MULTI-VARIANT: the same split under one variant, alongside a sibling variant, is total.
-    assert!(
-        reject_code(
-            "(module m \
-                   (def (f (: o (Option (List Int64)))) \
-                     (match o ((Some (list)) 0) ((Some (list x .. _r)) x) ((None) -1))) \
-                   (def (main) (f (Some (list 7)))) (export main))"
-        )
-        .is_none(),
-        "a per-variant list-payload split composes with sibling variants"
-    );
-    // The RUNTIME dispatch — the guard-drop preserves first-match-wins and the moved length dispatch:
-    // mk(0) → (Bx []) → the empty-list arm; mk(1) → (Bx [7]) → the non-empty arm binds x=7 — is
-    // corpus-covered by 05-compound-types "a sum variant's list payload split across empty and rest arms
-    // is exhaustive and dispatches" (and its erased-newtype vec-get twin); this test keeps the
-    // COMPILE-time exhaustiveness pins above (a list-arm set covering empty + every non-empty is total).
-}
+// (a_sum_variants_list_payload_split_across_empty_and_rest_arms_is_exhaustive migrated to corpus
+// 05-compound-types: the empty+non-empty split (Bx) and the multi-variant Some-split+None are the RUN cases
+// "an erased-newtype's list payload split across empty and rest arms dispatches with vec-get" and "a sum
+// variant's list payload split across empty and rest arms is exhaustive and dispatches" (a green value
+// requires the total match to compile); the two remaining permutations are added there as "a list-payload
+// split is total regardless of arm ORDER — non-empty arm before the empty arm" (→ 7) and "a lone vacuous
+// list-rest arm covers every length on its own" (→ 0). The reject soundness (any length/variant gap →
+// CDZ0210) is the "a list-payload split missing the non-empty arm is non-exhaustive" reject block.)
 
 // (a_sum_list_payload_with_an_uncovered_length_still_rejects + a_ctor_list_match_missing_a_variant_or_the_empty_arm_still_rejects
 // migrated to corpus 05-compound-types, the saturation-soundness reject block: a sum-payload list match
