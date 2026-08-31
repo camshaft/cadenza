@@ -917,6 +917,47 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, _, .cannotProve r => .cannotProve r
               | _, _, _ => .cannotProve "symeval: String.slice on non-string / non-const indices")
            | _, _, _ => .cannotProve "symeval: malformed String.slice")
+        else if q == "Bytes".toUTF8 && mem == "len".toUTF8 then
+          -- `Bytes.len b` → the byte count (`.const (.int b.size)`), byte-faithful to evalNode
+          -- (Eval.lean:1711-1712). Purely structural. Non-bytes → cannotProve.
+          (match children[1]? with
+           | some bId =>
+             (match symEval m senv fuel ty bId with
+              | .sym (.const (.bytes b)) => .sym (.const (.int (Int.ofNat b.size)))
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Bytes.len on a non-bytes value")
+           | none => .cannotProve "symeval: malformed Bytes.len")
+        else if q == "Bytes".toUTF8 && mem == "at".toUTF8 then
+          -- `Bytes.at b i` (byte-indexed) → `Some (Int b[i])` when `0 ≤ i < len`, else `None` — byte-faithful
+          -- to evalNode (Eval.lean:1728-1732; the byte is widened UInt8→Int). Non-const index → cannotProve.
+          (match children[1]?, children[2]? with
+           | some bId, some iId =>
+             (match symEval m senv fuel ty bId, symEval m senv fuel ty iId with
+              | .sym (.const (.bytes b)), .sym (.const (.int i)) =>
+                (if 0 ≤ i && i < Int.ofNat b.size then
+                   (match b[i.toNat]? with
+                    | some byte => .sym (.ctor "Some".toUTF8 #[.const (.int (Int.ofNat byte.toNat))])
+                    | none => .sym (.ctor "None".toUTF8 #[]))
+                 else .sym (.ctor "None".toUTF8 #[]))
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Bytes.at on non-bytes / non-const index")
+           | _, _ => .cannotProve "symeval: malformed Bytes.at")
+        else if q == "Bytes".toUTF8 && mem == "slice".toUTF8 then
+          -- `Bytes.slice b start LENGTH` (byte-indexed, start/length — NOT start/end) → `Some b[start..start+len)`
+          -- when `0 ≤ start ∧ 0 ≤ len ∧ start+len ≤ size`, else `None` — byte-faithful (Eval.lean:1714-1723).
+          (match children[1]?, children[2]?, children[3]? with
+           | some bId, some startId, some lenId =>
+             (match symEval m senv fuel ty bId, symEval m senv fuel ty startId, symEval m senv fuel ty lenId with
+              | .sym (.const (.bytes b)), .sym (.const (.int start)), .sym (.const (.int len)) =>
+                (if 0 ≤ start && 0 ≤ len && start + len ≤ Int.ofNat b.size then
+                   .sym (.ctor "Some".toUTF8 #[.const (.bytes (b.extract start.toNat (start.toNat + len.toNat)))])
+                 else .sym (.ctor "None".toUTF8 #[]))
+              | .cannotProve r, _, _ => .cannotProve r
+              | _, .cannotProve r, _ => .cannotProve r
+              | _, _, .cannotProve r => .cannotProve r
+              | _, _, _ => .cannotProve "symeval: Bytes.slice on non-bytes / non-const args")
+           | _, _, _ => .cannotProve "symeval: malformed Bytes.slice")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1420,6 +1461,32 @@ private def _sliceOobExpr : Module :=
     root := 7 }
 #guard symEval _sliceOobExpr [] symDefaultFuel defaultIntTy 7
        == SymOutcome.sym (.ctor "None".toUTF8 #[])
+
+-- BYTES len/at/slice member-op coverage over #{10,20,30,40} (byte-indexed; slice is start/LENGTH).
+private def _bytesLenExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Bytes".toUTF8, Leaf.name "len".toUTF8,
+                Leaf.bytesLit (ByteArray.mk #[10, 20, 30, 40])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .list #[3, 4]],
+    root := 5 }
+#guard symEval _bytesLenExpr [] symDefaultFuel defaultIntTy 5
+       == SymOutcome.sym (.const (.int 4))
+
+private def _bytesAtExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Bytes".toUTF8, Leaf.name "at".toUTF8,
+                Leaf.bytesLit (ByteArray.mk #[10, 20, 30, 40]), Leaf.intLit false .dec (ByteArray.mk #[1])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
+    root := 6 }
+#guard symEval _bytesAtExpr [] symDefaultFuel defaultIntTy 6
+       == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.int 20)])
+
+private def _bytesSliceExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Bytes".toUTF8, Leaf.name "slice".toUTF8,
+                Leaf.bytesLit (ByteArray.mk #[10, 20, 30, 40]), Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .list #[3, 4, 5, 6]],
+    root := 7 }
+#guard symEval _bytesSliceExpr [] symDefaultFuel defaultIntTy 7
+       == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.bytes (ByteArray.mk #[20, 30]))])
 
 -- INLINE `(do …)` EXPRESSION coverage: `(do (def x 5) (+ x 1))` → binds x=5, value is the last expr → 6.
 private def _inlineDoExpr : Module :=
