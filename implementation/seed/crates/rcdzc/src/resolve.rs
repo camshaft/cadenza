@@ -5116,47 +5116,89 @@ fn last_binder_named(
                     let Struct::List(kv2) = db.ast.get(*pair) else {
                         continue;
                     };
-                    // Read the field's VALUE sub-pattern from BOTH the canonical 3-element `(= key value)`
-                    // FieldPair (the M3-nativized `#record((= x …))` form) AND the legacy 2-element
-                    // `(key value)` pair. Handling only `kv2.len() == 2` MISSED the native `=`-form (the same
-                    // `=`-migration miss class as the map effects-fold #6790): a deeper binder below a native
-                    // nested field then fell through to a MISLEADING CDZ0101 "unbound name" at the body ref
-                    // INSTEAD of this clean decline — while `check_binding_pattern` (and the match-arm Case
-                    // 6rec-nested-decline) already declined it, so `check` disagreed with the body-ref
-                    // resolution. Now both native + legacy forms reach the decline, suppressing the cascade.
-                    let value_pat = if kv2.len() == 3 && db.ast.as_name(kv2[0]) == Some("=") {
-                        kv2[2]
-                    } else if kv2.len() == 2 {
-                        kv2[1]
-                    } else {
-                        continue;
-                    };
+                    // Read the field's KEY + VALUE sub-pattern from BOTH the canonical 3-element
+                    // `(= key value)` FieldPair (the M3-nativized `#record((= x …))` form) AND the legacy
+                    // 2-element `(key value)` pair.
+                    let (key_id, value_pat) =
+                        if kv2.len() == 3 && db.ast.as_name(kv2[0]) == Some("=") {
+                            (kv2[1], kv2[2])
+                        } else if kv2.len() == 2 {
+                            (kv2[0], kv2[1])
+                        } else {
+                            continue;
+                        };
                     {
-                        let (mut path, mut heads) = (Vec::new(), Vec::new());
-                        let bound = if is_tuple_pattern(db, value_pat) {
-                            find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
+                        // A POSITIONAL descent (tuple/list/variant via `find_binder_in_pattern`) fills
+                        // `sub_path`; a nested RECORD (`record_pattern_binds_name`, bool only) is NOT
+                        // positionally wireable (a deferred name-keyed slot).
+                        let (mut sub_path, mut sub_heads) = (Vec::new(), Vec::new());
+                        let (bound, is_record) = if is_tuple_pattern(db, value_pat) {
+                            (
+                                find_binder_in_tuple(
+                                    db,
+                                    value_pat,
+                                    name,
+                                    &mut sub_path,
+                                    &mut sub_heads,
+                                ),
+                                false,
+                            )
                         } else if is_list_pattern(db, value_pat) {
-                            find_binder_in_list(db, value_pat, name, &mut path, &mut heads)
+                            (
+                                find_binder_in_list(
+                                    db,
+                                    value_pat,
+                                    name,
+                                    &mut sub_path,
+                                    &mut sub_heads,
+                                ),
+                                false,
+                            )
                         } else if db
                             .ast
                             .compound_form_of(value_pat, crate::ast::CompoundCtor::Record)
                             .is_some()
                         {
-                            record_pattern_binds_name(db, value_pat, name)
+                            (record_pattern_binds_name(db, value_pat, name), true)
                         } else {
-                            find_binder_in_pattern(db, value_pat, name, &mut path, &mut heads)
+                            (
+                                find_binder_in_pattern(
+                                    db,
+                                    value_pat,
+                                    name,
+                                    &mut sub_path,
+                                    &mut sub_heads,
+                                ),
+                                false,
+                            )
                         };
                         if bound {
-                            // CODED decline (CDZ0900) — same umbrella the MATCH-arm twin at
-                            // `match_arm_record_binds` emits via `Reject::unsupported`. The binding-path
-                            // decline formerly used the UNCODED `Reject::decline`, so the identical
-                            // feature-gap surfaced as a bare `error:` in a binding position but
-                            // `error [CDZ0900]:` in a match arm — a diagnostic-quality asymmetry (operator
-                            // seq-286: every user-facing decline carries a code). Now both paths are CDZ0900.
-                            return Some(Resolved::Poison(Reject::unsupported(
+                            // §235 (binding twin of `match_arm_record_binds`'s `Deeper`): a POSITIONAL
+                            // (tuple/list, all-`Elem`, no variant) field value binds `name` deeper — wire it
+                            // to a `RecordField` with an EMPTY `path` (the record IS the whole binding
+                            // pattern) reading field `key` then descending `sub_path` (a record field read
+                            // lowers to `Elem(slot)`, so the descent is positional). A nested RECORD
+                            // (`is_record` — a deferred name-keyed slot) or a VARIANT below the field
+                            // (non-empty `sub_heads`, a deferred `Payload` head) is NOT yet wireable → a
+                            // CODED decline tagged with the tracked `DeclineId` (v-deferral seq-286).
+                            if !is_record
+                                && sub_heads.is_empty()
+                                && let Some(key) = read_key(db, key_id)
+                            {
+                                return Some(Resolved::RecordField {
+                                    scrutinee: kv[1],
+                                    path: Vec::new().into(),
+                                    key,
+                                    sub_path: sub_path.into(),
+                                    heads: Vec::new().into(),
+                                });
+                            }
+                            return Some(Resolved::Poison(Reject::declined(
+                                crate::diag::DeclineId::NestedRecordFieldPatternDescent,
                                 "a nested compound sub-pattern inside a record binding pattern is not \
-                                 supported (a record binding binds fields to bare names; \
-                                 destructure a nested field with a further `let`)",
+                                 supported (a record binding binds a field to a bare name or a positional \
+                                 tuple/list pattern; destructure a nested record or variant field with a \
+                                 further `let`)",
                             )));
                         }
                     }

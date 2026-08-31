@@ -1025,22 +1025,25 @@ pub(crate) fn check_binding_pattern(
             // fault the tuple arm gives such an element), winning over the scope decline below.
             check_binding_pattern(db, value_pat, &field_ty)?;
             // A field value that PASSED the irrefutability check but is NOT a bare binder / wildcard is a
-            // NESTED irrefutable compound (`(record (p (tuple a b)))`). Its binders cannot yet be WIRED — a
-            // record field projects by NAME→sorted-slot (`Resolved::Member` → `Core::Proj`), and `PathStep`
-            // has no name-keyed step to COMPOSE a projection with a further sub-path, so
-            // `resolve::last_binder_named`'s record arm wires only a bare-binder field. DECLINE cleanly here,
-            // keeping LOWER and RESOLVE in lockstep — never a silent CDZ0101 on an unwired nested binder.
-            let is_bare_binder_or_wild = db.ast.as_name(value_pat).is_some();
-            if !is_bare_binder_or_wild {
-                // CODED decline (CDZ0900) — the check-side twin of the resolve-side
-                // `last_binder_named` decline, both matching the MATCH-arm `Reject::unsupported`
-                // umbrella. Formerly `Reject::decline` (uncoded), so the check-time report of this
-                // feature-gap surfaced as a bare `error:` while the match arm gave `error [CDZ0900]:`
-                // (operator seq-286: every user-facing decline carries a code).
-                return Err(Reject::unsupported(
+            // NESTED compound. A POSITIONAL compound (a tuple/list whose binders are all reachable by `Elem`
+            // steps — no variant `Payload`, no nested record) is now WIRED (§235, the binding twin of the
+            // slice-1 match path): `resolve::find_record_binder_in_pattern` descends it into a `RecordField`
+            // `sub_path`, and lowering appends those `Elem` steps below the field's `Elem(slot)`. ACCEPT it.
+            // A field value with a nested RECORD (a deferred name-keyed slot) or a VARIANT (a `Payload` step
+            // needing a `sub_heads` entry `RecordField` does not yet carry) is NOT yet wireable — DECLINE
+            // cleanly, keeping LOWER and RESOLVE in lockstep (the resolve producer rejects the SAME shapes:
+            // a record element via its false-branch, a variant via a non-empty `sub_heads`). Never a silent
+            // CDZ0101 on an unwired binder.
+            if !is_positional_field_value(db, value_pat) {
+                // CODED decline tagged with the tracked `DeclineId` (v-deferral seq-286) — the check-side
+                // twin of the resolve-side `last_binder_named` residual decline. Narrowed to the STILL-unwired
+                // shapes (record/variant below a field); a positional tuple/list field value binds via the
+                // `RecordField.sub_path` (§235).
+                return Err(Reject::declined(
+                    crate::diag::DeclineId::NestedRecordFieldPatternDescent,
                     "a nested compound sub-pattern inside a record binding pattern is not supported \
-                     (a record binding binds fields to bare names; destructure a nested field with \
-                     a further `let`)",
+                     (a record binding binds a field to a bare name or a positional tuple/list pattern; \
+                     destructure a nested record or variant field with a further `let`)",
                 ));
             }
         }
@@ -2373,6 +2376,36 @@ pub(super) fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
 /// element descent (`pattern_constraints`'s list arm), the list analogue of [`is_tuple_pattern`].
 pub(super) fn is_list_pattern(db: &Db, id: StructId) -> bool {
     db.ast.compound_form_of(id, CompoundCtor::List).is_some()
+}
+
+/// Whether a record field's value sub-pattern binds POSITIONALLY — reachable by `Elem` steps ALONE (the
+/// §235 `sub_path` the binding-position `RecordField` wires, slice 2). True for a bare binder / `_`, or a
+/// tuple / fixed-arity list (no `.. rest`) ALL of whose elements are themselves positional (recursively).
+/// FALSE for a nested RECORD (a name-keyed slot, deferred), a VARIANT (a `Payload` step needing a head
+/// `RecordField` does not yet carry), a list WITH a rest, or a literal — the caller then declines cleanly.
+/// This mirrors `resolve::find_record_binder_in_pattern`'s binding-path acceptance: `find_binder_in_tuple`/
+/// `find_binder_in_list` build all-`Elem` paths for exactly these shapes, and the producer rejects a
+/// non-empty `sub_heads` (variant) / a nested record — so LOWER and RESOLVE stay in lockstep.
+fn is_positional_field_value(db: &Db, pat: StructId) -> bool {
+    if db.ast.as_name(pat).is_some() {
+        return true; // bare binder / wildcard
+    }
+    if is_tuple_pattern(db, pat) {
+        return db
+            .ast
+            .compound_form_of(pat, CompoundCtor::Tuple)
+            .is_some_and(|elems| elems.iter().all(|&e| is_positional_field_value(db, e)));
+    }
+    if is_list_pattern(db, pat) {
+        return db
+            .ast
+            .compound_form_of(pat, CompoundCtor::List)
+            .is_some_and(|elems| {
+                db.ast.rest_marker(&elems).is_none()
+                    && elems.iter().all(|&e| is_positional_field_value(db, e))
+            });
+    }
+    false // record / variant / literal → not positionally wireable (deferred)
 }
 
 /// The DISPLAY name of the constructor a `(Ctor arg…)` pattern applies — read from the pattern's SOURCE

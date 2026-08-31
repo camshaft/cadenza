@@ -1653,25 +1653,44 @@ fn a_set_membership_element_is_a_value_expression_not_a_binder() {
 /// nested field's deeper binder fell through to a spurious CDZ0101 while `check` declined — a check≡compile
 /// diagnostic split. Now both forms reach the decline; no cascade CDZ0101.
 #[test]
-fn a_deeper_binder_below_a_native_nested_record_field_declines_cleanly_not_cdz0101() {
+fn a_deeper_positional_binder_below_a_native_nested_record_binding_field_binds() {
+    // A POSITIONAL (tuple) compound below a native record BINDING field — `#record((= x #tuple(c d)))` —
+    // now BINDS (§235 slice 2, the binding twin of the slice-1 match path): `resolve::last_binder_named`
+    // wires it to a `RecordField` (empty path, field `x`, `sub_path = [Elem(0/1)]`) and
+    // `check_binding_pattern` accepts the positional field value (`is_positional_field_value`). Must be
+    // CLEAN — no CDZ0101 "unbound" cascade, no CDZ0900 "not supported" decline.
     let src = "(module m (def (f #record((= x #tuple(c d)))) (+ c d)) (export f))";
     let diags = diags_of(src);
-    // NO misleading "unbound name `c`"/`d` cascade — the deeper binder resolves to the clean decline.
     assert!(
-        !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
-            && (d.message.contains("unbound name `c`") || d.message.contains("unbound name `d`"))),
-        "a deeper binder below a NATIVE nested record field must NOT leak a spurious CDZ0101 unbound (the \
-         `=`-FieldPair form was missed by the binding-path nested-decline): {diags:?}"
+        !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")),
+        "no misleading 'unbound name' cascade for the positional deeper binding-field binder: {diags:?}"
     );
-    // The clean not-yet-wired decline IS present (check ≡ compile) AND carries the seq-286 umbrella
-    // CDZ0900 (`Reject::unsupported`) — the SAME code the match-arm twin emits. It formerly used the
-    // UNCODED `Reject::decline`, so the identical feature-gap was `error [CDZ0900]:` in a match but a bare
-    // `error:` in a binding; pinning the code here guards against a regression to the uncoded form.
+    assert!(
+        !diags.iter().any(|d| d
+            .message
+            .contains("nested compound sub-pattern inside a record binding pattern")),
+        "the positional deeper binding-field binder BINDS via the RecordField sub_path (§235) — no CDZ0900 \
+         'not supported' decline: {diags:?}"
+    );
+}
+
+/// The residual the binding slice defers: a nested RECORD below a record binding field — `#record((= x
+/// #record((= y v))))`, the field value itself a RECORD (a deferred name-keyed slot, not a positional
+/// `Elem` descent) — still DECLINES, tagged with the `NestedRecordFieldPatternDescent` DeclineId (CDZ0900,
+/// seq-286). No CDZ0101 cascade (check ≡ compile: `check_binding_pattern` + `last_binder_named` agree).
+#[test]
+fn a_record_below_a_record_binding_field_still_declines_coded() {
+    let src = "(module m (def (f #record((= x #record((= y v)))))  v) (export f))";
+    let diags = diags_of(src);
+    assert!(
+        !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")),
+        "no misleading 'unbound name' cascade for the deferred record-below-field binder: {diags:?}"
+    );
     assert!(
         diags.iter().any(|d| d.code.as_deref() == Some("CDZ0900")
             && d.message
                 .contains("nested compound sub-pattern inside a record binding pattern")),
-        "the deeper nested-compound binder gives the clean coded (CDZ0900) 'not supported' decline: {diags:?}"
+        "a record below a binding field is the deferred residual — a coded (CDZ0900) decline: {diags:?}"
     );
 }
 

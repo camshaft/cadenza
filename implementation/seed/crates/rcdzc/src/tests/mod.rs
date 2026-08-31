@@ -4559,19 +4559,15 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
         .as_deref(),
         Some("CDZ0102")
     );
-    // (e) nested compound field value → a CLEAN decline (uncoded), NOT a phantom CDZ0101. The reference to
-    // the nested binder `a` must attribute to the unwired feature, so the code is NOT the unbound-name one.
-    let nested = compile_component(&crate::codec::encode(&parse(
+    // (e) a POSITIONAL (tuple) compound field value in a LET binding now BINDS (§235 slice 2): field `p`'s
+    // value `(tuple a b)` binds `a`/`b` positionally via a `RecordField` sub_path. Over the CONSTANT
+    // scrutinee `(record (= p (tuple 1 2)))` it const-folds: a=1, b=2 → `a + b` compiles clean (formerly a
+    // decline; a RECORD/variant below the field would still decline — the deferred residual).
+    compile_component(&crate::codec::encode(&parse(
         "(module m (def (main) \
            (let (((record (p (tuple a b))) (record (= p (tuple 1 2))))) (+ a b))) (export main))",
     )))
-    .expect_err("nested compound record field value declines");
-    assert_ne!(nested.code.as_deref(), Some("CDZ0101"));
-    assert!(
-        nested.message.contains("nested compound sub-pattern"),
-        "nested-field decline should name the feature, got: {}",
-        nested.message
-    );
+    .expect("a positional (tuple) compound below a let-binding record field binds via the RecordField sub_path (§235)");
 }
 
 /// A record match pattern's faults are actionable and LOCKSTEP with resolve: a field the scrutinee's

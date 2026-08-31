@@ -823,24 +823,35 @@
       (export main)))
   (output (: 17 Int64)))
 
-; The DEEPER nesting the case above defers: a binder BELOW a nested-record FIELD value — the field value is
-; ITSELF a compound (`#record((= x #tuple(c d)))`, `c`/`d` inside the tuple at field `x`) — is NOT yet wired
-; in EITHER the binding or the match path (a record field projects by NAME→sorted-slot and `PathStep` has no
-; name-keyed step to COMPOSE a projection with a further sub-path). It is DECLINED as an unbuilt construct,
-; and — since operator seq-286 requires a code on every user-facing decline — the decline carries the umbrella
-; CDZ0900 (`Reject::unsupported`), the SAME code the match-arm twin at `match_arm_record_binds` already
-; emitted. The binding path formerly used the UNCODED `Reject::decline`, so the identical feature-gap surfaced
-; as a bare `error:` in a binding position but `error [CDZ0900]:` in a match arm — a diagnostic-quality
-; asymmetry now closed (BOTH the resolve-side `last_binder_named` and the check-side `check_binding_pattern`
-; declines are CDZ0900). `(no-other-errors)` pins that NO spurious unbound-name CDZ0101 cascade rides
-; alongside — the resolve/check declines and the body-reference resolution agree, so the ONLY emitted codes
-; are the CDZ0900 decline (the regression the earlier binding-path fix suppressed).
+; The DEEPER nesting the case above defers now BINDS in a BINDING position too (§235, the binding twin of
+; the match path): a POSITIONAL compound below a record binding field — `#record((= x #tuple(c d)))`, `c`/`d`
+; inside the tuple at field `x` — binds via a `RecordField` with an EMPTY path reading field `x` then
+; descending `sub_path = [Elem(0)]`/`[Elem(1)]` into the tuple (a record field read lowers to
+; `Elem(<sorted-slot>)`, so the whole descent is positional `Elem` steps). `resolve::last_binder_named`
+; produces the `RecordField` and `check_binding_pattern` accepts the positional field value. Over
+; `#record((= x #tuple(3 4)))`: c=3, d=4 → 7. (A RECORD/variant BELOW the field still declines — the deferred
+; residual, next case.)
 (case
-  "a deeper nested compound below a record BINDING field is a coded decline (CDZ0900, no unbound cascade)"
+  "a deeper positional compound below a record BINDING field binds via the RecordField sub_path (§235)"
   (input
     (do
       (def (f #record((= x #tuple(c d)))) (+ c d))
       (def (main) (f #record((= x #tuple(3 4)))))
+      (export main)))
+  (output (: 7 Int64)))
+
+; The remaining residual the binding slice defers: a nested RECORD below a record binding field —
+; `#record((= x #record((= y v))))`, the field value itself a RECORD — needs a deferred name-keyed slot (not
+; a positional `Elem` step), so it is NOT yet wired in either match or binding. Declined as an unbuilt
+; construct, tagged with the `nested-record-field-pattern-descent` DeclineId (CDZ0900, seq-286). Both the
+; resolve-side `last_binder_named` and the check-side `check_binding_pattern` agree (check ≡ compile), so
+; `(no-other-errors)` pins NO spurious unbound-name CDZ0101 cascade.
+(case
+  "a nested RECORD below a record BINDING field is the deferred residual — a coded decline (CDZ0900)"
+  (input
+    (do
+      (def (f #record((= x #record((= y v))))) v)
+      (def (main) (f #record((= x #record((= y 9))))))
       (export main)))
   (declines
     CDZ0900
