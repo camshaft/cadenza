@@ -822,7 +822,8 @@
             (effect A (op f (-> Unit Int64)))
             (def (use-k (: stored-k (-> Int64 Int64))) (stored-k 10))
             (def (main) (handle A 0 ((f () s k (use-k k))) (+ 1 (A.f)))) (export main)))
-  (output (: 11 Int64)))
+  (output (: 11 Int64))
+  (live-objects 0))
 
 (case "an escaping continuation that itself RE-PERFORMS the handled effect re-enters its handler at apply"
   (doc    "E5 step-3 (FACE-1 B2): the escaping-`k` case whose delimited continuation `C` itself RE-PERFORMS
@@ -839,7 +840,8 @@
             (effect A (op a (-> Unit Int64)))
             (def (use-k (: stored-k (-> Int64 Int64))) (stored-k 10))
             (def (main) (handle A 5 ((a () s k (use-k k))) (+ (A.a) (A.a)))) (export main)))
-  (output (: 20 Int64)))
+  (output (: 20 Int64))
+  (live-objects 0))
 
 (case "a re-performing escaping continuation over a `do`-sequenced body re-installs its handler at apply"
   (doc    "The `do`-body variant of the escaping-`k` reinstall above (the DES scheduler's body shape): the
@@ -853,7 +855,8 @@
             (effect A (op a (-> Unit Int64)))
             (def (use-k (: k (-> Int64 Int64))) (k 7))
             (def (main) (handle A 5 ((a (u) s k (use-k k))) (do (A.a) (A.a)))) (export main)))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects 0))
 
 (case "a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation"
   (doc    "E5 step-3 (the DES scheduler's `sleep`/`now` step-3 shape, contract-A1). The escaping continuation
