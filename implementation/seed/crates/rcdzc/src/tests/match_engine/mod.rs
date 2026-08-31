@@ -669,6 +669,55 @@ fn an_exported_annotated_char_param_names_the_no_boundary_representation_not_amb
 }
 
 #[test]
+fn a_non_recursive_scalar_match_scrutinee_param_is_grounded_not_declined_heap_walk() {
+    // #6426's dedup-unmask exposed CDZ0900 "matching a compound value needs a heap walk" on an
+    // unannotated SCALAR-match parameter of a NON-recursive def: the param stayed `Any` (a non-recursive
+    // param is normally left to inline at its call site, not solved from its body), so `is_scalar` failed
+    // at lowering and the scalar match declined as if compound. A standalone (non-inlined) body needs the
+    // scalar type: `infer::nonrec_scalar_scrutinee_ty` grounds a param used as a scalar-literal match
+    // scrutinee — `(match n (0 …) …)` ⇒ Int64 — so the scalar probe-chain routes it. Compiles clean now.
+    fn heap_walk_declined(src: &str) -> bool {
+        crate::host::run_with_compiler_stack(|| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[Target::Wasm],
+            );
+            out.diagnostics.iter().any(|d| {
+                d.message
+                    .contains("matching a compound value needs a heap walk")
+            })
+        })
+    }
+    assert!(
+        !heap_walk_declined(
+            "(module m (def (g n) (match n (0 100) (_ 1))) (def (main) (g 0)) (export main))"
+        ),
+        "an integer-literal scalar match on a non-recursive param grounds Int64 (no heap-walk decline)"
+    );
+    // A GUARD-only scalar match: `(guard v (>= v 60))` binds the whole scrutinee and the guard's `>=`
+    // pins it Int — grounded even with NO literal-patterned arm (the guard-bound-scrutinee case).
+    assert!(
+        !heap_walk_declined(
+            "(module m (def (grade s) (match s ((guard x (>= x 60)) 1) (_ 0))) (def (main) (grade 90)) (export main))"
+        ),
+        "a guard-only scalar match grounds Int from the guard's comparison (no heap-walk decline)"
+    );
+    // NEGATIVE (the narrowness that avoids the Ast-reflection over-ground regression): a genuine COMPOUND
+    // (tuple-pattern) match is NOT scalar-grounded — its exported param stays ambiguous (CDZ0201), never
+    // silently pinned to a concrete type that would mis-route a sum/compound match's decision tree.
+    assert_eq!(
+        reject_code("(module m (def (f p) (match p ((tuple 1 2) 10) (_ 0))) (export f))")
+            .as_deref(),
+        Some("CDZ0201"),
+        "a tuple-pattern match must NOT be scalar-grounded — the boundary param stays ambiguous"
+    );
+}
+
+#[test]
 fn a_misspelled_export_does_not_also_flag_its_intended_target_unused() {
     // A near-miss export typo (`(export mian)` for `(def (main) …)`) has ONE real defect — the export
     // names no definition (CDZ0101, "did you mean `main`?"). The intended target `main` must NOT ALSO

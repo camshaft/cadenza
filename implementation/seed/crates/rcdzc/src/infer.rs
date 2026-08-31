@@ -3108,20 +3108,131 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
 /// that def is recursive — runs the connected parameter solve (memoized), returning `binder`'s solved
 /// type. This is the ONE place a parameter's type is INFERRED from its uses rather than read off an
 /// annotation or a call-site argument (ANF step 2 / A2).
+///
+/// For a NON-recursive def the connected solve is deliberately NOT run (it would over-ground a param a
+/// SUM/ctor match leaves `Any` on purpose — e.g. an `Ast`-reflection `(match a ((. Ast Int) …) …)` lowers
+/// correctly from an `Any` scrutinee via the sum decision tree, so pinning `a` to `Ast` mis-routes it).
+/// The ONE exception a standalone (non-inlined) non-recursive body needs is a param used as the scrutinee
+/// of a SCALAR-LITERAL match — `(def (g n) (match n (0 …) …))` — which without a type is `Any`, fails
+/// `is_scalar`, and declines CDZ0900 "needs a heap walk" on what is really a scalar match (the fault
+/// #6426 unmasked). `nonrec_scalar_scrutinee_ty` grounds exactly that shape and nothing else.
 fn solved_param_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     if let Some(t) = db.param_types.get(&binder) {
         return Some(t.clone());
     }
     let def = def_of_param(db, binder)?;
-    // Only a RECURSIVE def needs this: a non-recursive def's call always inlines (β-reduces), so its
-    // param's type flows from the concrete argument and never reaches here as `Any`. Solving a
-    // non-recursive param would be redundant work and could mask the inlining path — so gate on it.
     let body = db.defs[def].body?;
     if !crate::eval::is_recursive(db, body) {
-        return None;
+        // Non-recursive: only the narrow scalar-literal-match-scrutinee grounding (below); every other
+        // param stays `Any` (the inline path), so a SUM/ctor match keeps its correct `Any`-scrutinee
+        // lowering. The result is cached so a repeat query is O(1) and a sibling read is consistent.
+        let t = nonrec_scalar_scrutinee_ty(db, def, binder);
+        if let Some(t) = &t {
+            db.param_types.insert(binder, t.clone());
+        }
+        return t;
     }
     solve_recursive_params(db, def);
     db.param_types.get(&binder).cloned()
+}
+
+/// The SCALAR type a NON-recursive def's parameter `binder` is pinned to by being the scrutinee of a
+/// match whose arms carry a SCALAR-LITERAL pattern — `(match n (0 …) …)` ⇒ `Int64`, a `#\a` arm ⇒ `Char`,
+/// a `"add"` arm ⇒ `String`, a `#"sym"` arm ⇒ `Symbol`, a `true`/`false` arm ⇒ `Bool` — or `None` if no
+/// such match constrains it. DELIBERATELY NARROW: a standalone (non-inlined) body needs its scalar-match
+/// parameter typed so `is_scalar` / the value-equality path route the match instead of declining CDZ0900
+/// "needs a heap walk"; but a SUM/ctor-patterned match (`((. Ast Int) …)`, `((Option.Some x) …)`) is
+/// LEFT `None`, because those lower correctly from an `Any`-typed scrutinee via the sum decision tree and
+/// grounding the scrutinee to a concrete type would mis-route them (a regression this narrowness avoids).
+/// Only a match whose scrutinee IS the bare parameter grounds it; a `BYTES` literal is excluded (matching
+/// a byte-string is a heap walk, not a scalar/value-eq route). Recurses through the body's sub-expressions
+/// so a match nested in a `let`/`if`/arm is still found. Returns the first scalar type witnessed.
+fn nonrec_scalar_scrutinee_ty(db: &mut Db, def: usize, binder: StructId) -> Option<Ty> {
+    fn scrutinee_is_binder(db: &mut Db, scrutinee: StructId, binder: StructId) -> bool {
+        matches!(resolved_of(db, scrutinee), Resolved::Ref { value } if value == binder)
+            || matches!(resolved_of(db, scrutinee), Resolved::Param { binder: b } if b == binder)
+    }
+    fn scalar_pattern_ty(db: &mut Db, pat: StructId) -> Option<Ty> {
+        match resolved_of(db, pat) {
+            Resolved::Int(_) => Some(Ty::int64()),
+            Resolved::Bool(_) => Some(Ty::Bool),
+            Resolved::Char(_) => Some(Ty::Char),
+            Resolved::Str(_) => Some(Ty::String),
+            Resolved::SymbolConst(_) => Some(Ty::Symbol),
+            _ => None,
+        }
+    }
+    // A GUARD arm `(guard <bare-binder> <body>)` binds the WHOLE scrutinee to `<bare-binder>`, whose type
+    // the guard `<body>`'s operators pin — `(match x ((guard v (>= v 60)) 1) (_ 0))` ⇒ `v : Int`, hence
+    // `x : Int64`. The pattern is not a literal (so `scalar_pattern_ty` misses it), and a guard-ONLY scalar
+    // match has no literal-patterned sibling arm, so this is the ONLY thing that grounds it. Collect the
+    // guard body's constraints over a fresh env holding just the binder — the same operator-scheme unify
+    // `collect_param_constraints` uses — and adopt the binder's type IF it grounds to a scalar. `usize::MAX`
+    // as the def index is a non-self sentinel (no self-recursion in a guard body). Bare-binder only: a
+    // STRUCTURAL guard pattern `(guard (tuple a b) …)` binds sub-parts, not the scrutinee, so it is skipped.
+    fn guard_scrutinee_scalar_ty(db: &mut Db, pat: StructId, scrutinee: StructId) -> Option<Ty> {
+        let g = db.ast.as_form(pat, "guard").map(<[StructId]>::to_vec)?;
+        if g.len() != 2 {
+            return None;
+        }
+        let (binder_pat, guard_body) = (g[0], g[1]);
+        // Bare-binder guard only — a `(guard v …)` binds the WHOLE scrutinee to `v`. The resolver aliases
+        // a guard-cond reference to `v` to `Ref { value: <the match's SCRUTINEE NODE> }` (resolve.rs Case
+        // 5g), so key the env by the SCRUTINEE NODE: the guard body `(>= v 60)` becomes a constraint on the
+        // scrutinee. `arg_ty_in_env` reads a `Ref { value }` operand through `env[value]` (one hop), which
+        // is exactly this node, so `>=`'s scheme unifies it with `60`'s `Int`. Adopt IF it grounds scalar.
+        db.ast.as_name(binder_pat)?;
+        let mut fresh = Fresh::new();
+        let mut env: crate::fxhash::FxHashMap<StructId, Ty> = crate::fxhash::FxHashMap::default();
+        let var = Ty::Var(fresh.var());
+        env.insert(scrutinee, var.clone());
+        let mut subst = Subst::new();
+        collect_param_constraints(db, guard_body, &env, usize::MAX, &mut subst, &mut fresh);
+        let t = ground_param(subst.apply(&var));
+        matches!(
+            t,
+            Ty::Int(_) | Ty::Bool | Ty::Char | Ty::String | Ty::Symbol
+        )
+        .then_some(t)
+    }
+    fn walk(db: &mut Db, node: StructId, binder: StructId) -> Option<Ty> {
+        if let Resolved::Match { scrutinee, arms } = resolved_of(db, node) {
+            if scrutinee_is_binder(db, scrutinee, binder) {
+                for (pat, _) in &arms {
+                    if let Some(t) = scalar_pattern_ty(db, *pat) {
+                        return Some(t);
+                    }
+                    if let Some(t) = guard_scrutinee_scalar_ty(db, *pat, scrutinee) {
+                        return Some(t);
+                    }
+                }
+            }
+            if let Some(t) = walk(db, scrutinee, binder) {
+                return Some(t);
+            }
+            for (_, b) in &arms {
+                if let Some(t) = walk(db, *b, binder) {
+                    return Some(t);
+                }
+            }
+            return None;
+        }
+        // Not a match — descend the raw AST subtree so a match nested in a `let`/`if`/application/arm is
+        // still reached. `resolved_of` above is the SEMANTIC match test; the structural descent is just a
+        // superset traversal (a non-match child simply recurses further). Collect children first to drop
+        // the `db.ast` borrow before the recursive `&mut db` calls.
+        if let crate::ast::Struct::List(children) = db.ast.get(node) {
+            let children: Vec<StructId> = children.to_vec();
+            for child in children {
+                if let Some(t) = walk(db, child, binder) {
+                    return Some(t);
+                }
+            }
+        }
+        None
+    }
+    let body = db.defs[def].body?;
+    walk(db, body, binder)
 }
 
 /// The type of the `k`-th parameter of def `callee`, for constraining an argument passed there from
