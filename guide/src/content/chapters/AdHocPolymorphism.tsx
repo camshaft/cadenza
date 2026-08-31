@@ -17,7 +17,7 @@ export default function AdHocPolymorphism() {
 
 (def (describe-bool b) (if b 1 0))
 
-(def (show-with dict x) ((. dict describe) x))
+(def (show-with dict x) (dict.describe x))
 
 (def (int-show) #record((= describe describe-int)))
 
@@ -33,7 +33,7 @@ export default function AdHocPolymorphism() {
 
 (def (describe-bool b) (if b 999 0))
 
-(def (show-with (const dict) x) ((. dict describe) x))
+(def (show-with (const dict) x) (dict.describe x))
 
 (def
   (main)
@@ -50,9 +50,7 @@ export default function AdHocPolymorphism() {
 
 (def (describe-bool b) (if b 999 0))
 
-(def
-  (show-with (: t Type) (: dict (Record (: describe (-> t Int64)))) (: x t))
-  ((. dict describe) x))
+(def (show-with (: t Type) (: dict (Record (: describe (-> t Int64)))) (: x t)) (dict.describe x))
 
 (def
   (main)
@@ -70,7 +68,7 @@ export default function AdHocPolymorphism() {
       <H2>And the implicit face: generic specialization</H2>
       <P>One more form needs no dictionary at all: a generic function the compiler <em>monomorphizes</em>. Write <C>len</C> with no type annotations and it works for any list; the compiler emits a distinct specialized copy per concrete type it's actually called at:</P>
       <Runnable
-        source={`(def (len xs) (match xs (#list() 0) (#list(h .. t) (+ 1 (len t)))))
+        source={`(def (len xs) (match xs (#list() 0) (#list(h (.. t)) (+ 1 (len t)))))
 
 (def (main) (+ (len #list(1 2 3)) (len #list("a" "b"))))`}
       />
@@ -83,12 +81,12 @@ export default function AdHocPolymorphism() {
         prompt={<>A dictionary is a record of functions. <C>apply-op</C> calls the record's <C>op</C> field on <C>x</C>. Fill the function stored in the record so <C>(apply-op … 5)</C> triples its input, giving <C>15</C>.</>}
         starter={`(def (triple n) (* 3 n))
 
-(def (apply-op dict x) ((. dict op) x))
+(def (apply-op dict x) (dict.op x))
 
 (def (main) (apply-op #record((= op ?)) 5))`}
         solution={`(def (triple n) (* 3 n))
 
-(def (apply-op dict x) ((. dict op) x))
+(def (apply-op dict x) (dict.op x))
 
 (def (main) (apply-op #record((= op triple)) 5))`}
         expected="15"

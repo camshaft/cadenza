@@ -24,7 +24,7 @@ export default function WritingAReducer() {
       (: payload (Option Bytes))
       (: correlation (Option Bytes)))))
 
-(def (main) ((. EffectKind Http)))`}
+(def (main) (EffectKind.Http))`}
       />
       <H2>The empty reducer</H2>
       <P>The smallest reducer that works ignores every input and asks for nothing. It's total (it can't brick the agent) and it's the honest starting point: a fold that advances the log and requests no effects. Here <C>apply</C> returns the empty list for every event, and a <C>main</C> exercises it on a sample message and shows exactly what came back, the list of effect-requests itself:</P>
@@ -73,8 +73,8 @@ export default function WritingAReducer() {
     (: payload (Option Bytes))
     (: resumes (Option Bytes)))
   (:
-    #list(((. EffectRequest Mk)
-        #record((= kind ((. EffectKind Http)))
+    #list((EffectRequest.Mk
+        #record((= kind (EffectKind.Http))
           (= target "https://ok.host/x")
           (= payload (None))
           (= correlation (Some ((. String to-bytes) "step-1"))))))
@@ -83,8 +83,8 @@ export default function WritingAReducer() {
 (def
   (main)
   (match
-    ((. List at) (apply #record((= family "message") (= version 1)) (None) (None)) 0)
-    ((Some (Mk r)) (. r target))
+    (List.at (apply #record((= family "message") (= version 1)) (None) (None)) 0)
+    ((Some (Mk r)) r.target)
     ((None) "no effect")))`}
       />
       <P>The result is <C>"https://ok.host/x"</C>, the exact target the reducer chose. A returned effect-request is <em>declarative</em>: the reducer doesn't perform the HTTP call, it hands the kernel a description of the work and returns. The kernel schedules it, and when it completes, calls <C>apply</C> again with the <em>resumes</em> field set to that same <C>correlation</C> tag, echoed back verbatim. The tag is the reducer's <em>own</em> token, not a kernel-assigned id, so a later <C>apply</C> whose <C>resumes</C> matches the token you chose is the completion of the request you made. That guest-chosen token is the only resume mechanism; a <C>resumes</C> of <C>None</C> means "not a resume", an inbound message, not the answer to an earlier request. That's how a pure fold reaches the outside world without ever blocking inside the reducer.</P>
@@ -113,9 +113,9 @@ export default function WritingAReducer() {
       ((Some _) #list())
       ((None)
         (if
-          (= (. ct family) "message")
-          #list(((. EffectRequest Mk)
-              #record((= kind ((. EffectKind Http)))
+          (= ct.family "message")
+          #list((EffectRequest.Mk
+              #record((= kind (EffectKind.Http))
                 (= target "https://ok.host/x")
                 (= payload (None))
                 (= correlation (None)))))
@@ -124,10 +124,7 @@ export default function WritingAReducer() {
 
 (def
   (decision ct payload resumes)
-  (match
-    ((. List at) (apply ct payload resumes) 0)
-    ((Some (Mk r)) (. r target))
-    ((None) "(no effect)")))
+  (match (List.at (apply ct payload resumes) 0) ((Some (Mk r)) r.target) ((None) "(no effect)")))
 
 (def (main) (decision #record((= family "message") (= version 1)) (None) (None)))`}
       />

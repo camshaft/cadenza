@@ -70,7 +70,7 @@ export default function PatternMatching() {
       <Runnable
         source={`(def (setting m) (match m (#map((= "width" v) (.. rest)) (Some v)) (_ (None unit))))
 
-(def (main) (setting ((. Map insert) ((. Map insert) ((. Map empty)) "width" 80) "height" 50)))`}
+(def (main) (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}
       />
       <P>The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns <C>(Some 80)</C>. Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns <C>(None unit)</C>. Toggle to the conventional surface and the pattern reads as <C>{"#{ \"width\" = v, .. rest }"}</C>, a map-literal shape on the left of a match arm (the <strong>Maps &amp; sets</strong> chapter later builds out maps as values).</P>
       <H2>Matching a tuple's shape</H2>
@@ -83,10 +83,7 @@ export default function PatternMatching() {
       <H2>Matching a record's fields</H2>
       <P>Records take a rest the same way, by <em>name</em> instead of position. A record pattern names the fields you care about and a trailing <C>(.. rest)</C> gathers the rest into a <em>residual record</em>, the record analogue of the tuple rest above. Here <C>#record((= a x) (.. rest))</C> binds <C>x</C> to field <C>a</C> and <C>rest</C> to a record of the remaining fields, whose own fields you read back by name:</P>
       <Runnable
-        source={`(match
-  #record((= a 1) (= b 2) (= c 3))
-  (#record((= a x) (.. rest)) (+ (+ x (. rest b)) (. rest c)))
-  (_ 0))`}
+        source={`(match #record((= a 1) (= b 2) (= c 3)) (#record((= a x) (.. rest)) (+ (+ x rest.b) rest.c)) (_ 0))`}
       />
       <P>So <C>x</C> is <C>1</C>, and <C>rest</C> is the residual record <C>#record((= b 2) (= c 3))</C>, so <C>rest.b</C> is <C>2</C> and <C>rest.c</C> is <C>3</C>, giving <C>1 + 2 + 3 = 6</C>. The key difference from the tuple case: <C>rest</C> here is a <em>record</em>, so you reach into it by field name (<C>rest.b</C>, <C>rest.c</C>), not by position.</P>
       <Note>As with the tuple rest, this supports a record <em>constructed in place</em>. A rest binder over a fully opaque runtime record is <em>not supported</em> on the backends, so the compiler declines it with a clear message rather than a wrong answer.</Note>

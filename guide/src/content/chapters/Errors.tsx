@@ -22,18 +22,18 @@ export default function Errors() {
       <H2>Safe indexing</H2>
       <P>The same pattern shows up in the standard library. <C>List.at</C> returns an <C>Option</C>, so you never read past the end by accident:</P>
       <Runnable
-        source={`(def (main) (match ((. List at) #list(10 20 30) 1) ((Some x) x) ((None _) 0)))`}
+        source={`(def (main) (match (List.at #list(10 20 30) 1) ((Some x) x) ((None _) 0)))`}
       />
       <P>Index <C>1</C> holds <C>20</C>, so the <C>Some</C> arm binds it and you get <C>20</C>. Change the index to <C>9</C> and the <C>None</C> arm's <C>0</C> comes back instead: a miss you handle, not a crash.</P>
       <H2>When you're sure: <C>expect</C></H2>
       <P>Sometimes you know an <C>Option</C> holds a value and want to get on with it. <C>Option.expect</C> unwraps a <C>Some</C>, or halts with your message if it's a <C>None</C>. The message is required, so the one place you turn absence into a crash is spelled out, right where it happens. Index 1 is present, so this just hands back <C>20</C>:</P>
       <Runnable
-        source={`((. Option expect) ((. List at) #list(10 20 30) 1) "index out of range")`}
+        source={`(Option.expect (List.at #list(10 20 30) 1) "index out of range")`}
       />
       <P>But ask for index <C>9</C>, off the end, and there's no value to unwrap. <C>expect</C> makes good on its name and halts, with the message you supplied:</P>
       <Note>This one is <strong>meant to halt</strong>. It compiles fine (the trap is a run-time event, not a compile error), so Run it and read the status bar: the program stops deliberately, at the exact spot you asked it to, rather than limping on with a bogus value.</Note>
       <Runnable
-        source={`((. Option expect) ((. List at) #list(10 20 30) 9) "index out of range")`}
+        source={`(Option.expect (List.at #list(10 20 30) 9) "index out of range")`}
         expect="error"
       />
       <P>That's the trade <C>expect</C> makes explicit: you're promising the <C>Option</C> is a <C>Some</C>, and if you're wrong the program halts <em>here</em>, named, instead of a wrong answer leaking downstream. Contrast the <C>match</C> above, which forces you to write the <C>None</C> case. <C>expect</C> is the "I've already checked, let me proceed" shortcut, and the required message is the receipt.</P>
@@ -57,7 +57,7 @@ export default function Errors() {
         source={`(def
   (main)
   (let
-    ((x (try ((. Int64 checked-add) (. Int64 max) 1))))
+    ((x (try ((. Int64 checked-add) Int64.max 1))))
     (let ((y (try ((. Int64 checked-add) 40 2)))) (Some (+ x y)))))`}
       />
       <P>The overflowing add is <C>None</C>, so <C>main</C> is <C>(None unit)</C>. The enclosing function must itself return the matching kind (an <C>Option</C> here, or a <C>Result</C>): <C>?</C> needs a fallible boundary to short-circuit <em>to</em>, and it doesn't convert between <C>Option</C> and <C>Result</C>: the kinds have to line up.</P>

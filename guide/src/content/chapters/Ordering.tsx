@@ -42,35 +42,31 @@ export default function Ordering() {
       <H2>The <C>Ordering</C> value</H2>
       <P><C>Ordering.of</C> takes two values and returns an <C>Ordering</C>, a sum with exactly three variants, <C>Less</C>, <C>Equal</C>, and <C>Greater</C>. The value itself is the answer, a named case instead of a magic number. Here <C>3</C> is less than <C>9</C>, so you get <C>Less</C>:</P>
       <Runnable
-        source={`((. Ordering of) 3 9)`}
+        source={`(Ordering.of 3 9)`}
       />
       <P>You read an <C>Ordering</C> apart with <C>match</C> to act on each case, the same way you would any sum. Because it's a closed sum, the compiler holds you to all three variants: drop the <C>Greater</C> arm and Run, and instead of a value you get a compile-time error, <C>non-exhaustive match: pattern `Greater` not covered</C>:</P>
       <Note>This one is <strong>meant to be rejected</strong>. The point is that a forgotten case is caught when you write it, not discovered as a wrong answer in production.</Note>
       <Runnable
-        source={`(match ((. Ordering of) 3 9) ((Less _) "less") ((Equal _) "equal"))`}
+        source={`(match (Ordering.of 3 9) ((Less _) "less") ((Equal _) "equal"))`}
         expect="error"
       />
       <P><C>Ordering.of</C> is <em>generic</em>, so it works on any two values of the same type, not just numbers. Text compares in dictionary order, so <C>"apple"</C> comes before <C>"banana"</C>, giving <C>Less</C> again:</P>
       <Runnable
-        source={`((. Ordering of) "apple" "banana")`}
+        source={`(Ordering.of "apple" "banana")`}
       />
       <H2>Ordered types can be keys</H2>
       <P><C>Bytes</C> is ordered too, lexicographically over its <em>unsigned</em> byte values, the same way Text compares in dictionary order. So <C>(Bytes.of #list(1 2))</C> comes before <C>(Bytes.of #list(1 3))</C>, decided at the first byte that differs:</P>
       <Runnable
-        source={`(< ((. Bytes of) #list(1 2)) ((. Bytes of) #list(1 3)))`}
+        source={`(< (Bytes.of #list(1 2)) (Bytes.of #list(1 3)))`}
       />
       <P>Watch the <em>unsigned</em> part: a byte holding <C>128</C> is <em>greater</em> than one holding <C>127</C>, not less, because the bytes are compared as 0–255, never as signed numbers:</P>
       <Runnable
-        source={`(> ((. Bytes of) #list(128)) ((. Bytes of) #list(127)))`}
+        source={`(> (Bytes.of #list(128)) (Bytes.of #list(127)))`}
       />
       <P>A <C>Map</C> key or a <C>Set</C> element needs two things: the collection compares keys for <em>equality</em> to find an entry, and it uses a <em>total order</em> to enumerate its contents in a stable, canonical sequence (so <C>Map.to-list</C> always yields the same order). <C>Bytes</C> now has both, so a byte string can be a key directly, and iterating the collection reads back in sorted key order. Here a <C>Map</C> keyed by <C>Bytes</C> finds its entry:</P>
       <Runnable
         source={`(do
-  (def
-    (main)
-    ((. Map lookup)
-      ((. Map insert) ((. Map empty)) ((. Bytes of) #list(1 2)) 42)
-      ((. Bytes of) #list(1 2))))
+  (def (main) (Map.lookup (Map.insert (Map.empty) (Bytes.of #list(1 2)) 42) (Bytes.of #list(1 2))))
 
   (export main))`}
       />
@@ -79,7 +75,7 @@ export default function Ordering() {
       <P>The flip side of that rule draws a sharp line. Keying needs equality and a total order, and a <em>function</em> has neither: two closures can compute the same results yet be different values, and there's no canonical way to compare or order them. So a function can't be a <C>Map</C> key or a <C>Set</C> element, and the compiler says so rather than inventing an answer. A <C>Set</C> of functions is rejected:</P>
       <Runnable
         source={`(do
-  (def (main) ((. Set len) ((. Set of) #list((fn (x) (+ x 1))))))
+  (def (main) (Set.len (Set.of #list((fn (x) (+ x 1))))))
 
   (export main))`}
         expect="error"
@@ -102,10 +98,10 @@ export default function Ordering() {
       <Exercise
         id="ordering:2"
         prompt={<>Write <C>max</C> using <C>Ordering.of</C> and <C>match</C>, picking <C>a</C> when it's greater or equal, and <C>b</C> when <C>a</C> is less. <C>(max 8 3)</C> should give <C>8</C>.</>}
-        starter={`(def (max a b) (match ((. Ordering of) a b) ((Less _) ?) ((Equal _) a) ((Greater _) a)))
+        starter={`(def (max a b) (match (Ordering.of a b) ((Less _) ?) ((Equal _) a) ((Greater _) a)))
 
 (def (main) (max 8 3))`}
-        solution={`(def (max a b) (match ((. Ordering of) a b) ((Less _) b) ((Equal _) a) ((Greater _) a)))
+        solution={`(def (max a b) (match (Ordering.of a b) ((Less _) b) ((Equal _) a) ((Greater _) a)))
 
 (def (main) (max 8 3))`}
         expected="8"

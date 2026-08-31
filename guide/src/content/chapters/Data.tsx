@@ -19,7 +19,7 @@ export default function Data() {
       <H2>Records</H2>
       <P>A record has a fixed set of <em>named</em> fields. Reach a field with the <C>.</C> accessor, here the <C>leap</C> flag of a little "year" record:</P>
       <Runnable
-        source={`(let ((y #record((= year 2026) (= leap true)))) (. y leap))`}
+        source={`(let ((y #record((= year 2026) (= leap true)))) y.leap)`}
       />
       <P>Return the whole record and, just like the tuple, it carries a structural type, one entry per field, each with its own type:</P>
       <Runnable

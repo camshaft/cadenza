@@ -24,19 +24,19 @@ export default function Iteration() {
       <Runnable
         source={`(def (main) (sum-list #list(10 20 30) 0))
 
-(def (sum-list xs acc) (match xs (#list() acc) (#list(x .. rest) (sum-list rest (+ acc x)))))`}
+(def (sum-list xs acc) (match xs (#list() acc) (#list(x (.. rest)) (sum-list rest (+ acc x)))))`}
       />
       <P>The empty list is the base case (return the accumulator); the non-empty case adds the head to the accumulator and recurses on the tail. Toggle to the ML surface and the pattern reads as <C>[x, .. rest]</C>. Building a value instead of a number is the identical move. Here it reverses a list by taking each element off the front and putting it on the <em>front</em> of the accumulator, so the first element read ends up deepest and the last read ends up first:</P>
       <Runnable
         source={`(def (main) (rev #list(1 2 3) #list()))
 
-(def (rev xs acc) (match xs (#list() acc) (#list(x .. rest) (rev rest ((. List prepend) acc x)))))`}
+(def (rev xs acc) (match xs (#list() acc) (#list(x (.. rest)) (rev rest (List.prepend acc x)))))`}
       />
       <P>Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in front of it, then <C>3</C> in front of that, so <C>#list(1 2 3)</C> comes back as <C>#list(3 2 1)</C>. <Ch to="/lists"> <C>List.prepend</C></Ch> adds an element to the front, which is what flips the order; appending each element to the end with <C>List.push</C> would instead copy the list unchanged. A quick <C>@test</C> pins it, reading the three positions of the result back and checking they spell <C>3</C>, <C>2</C>, <C>1</C> (as the single number <C>321</C>):</P>
       <Runnable
-        source={`(def (rev xs acc) (match xs (#list() acc) (#list(x .. rest) (rev rest ((. List prepend) acc x)))))
+        source={`(def (rev xs acc) (match xs (#list() acc) (#list(x (.. rest)) (rev rest (List.prepend acc x)))))
 
-(def (nth xs i) (match ((. List at) xs i) ((Some v) v) ((None _) 0)))
+(def (nth xs i) (match (List.at xs i) ((Some v) v) ((None _) 0)))
 
 (@
   test

@@ -19,16 +19,16 @@ export default function Iterators() {
   (next it)
   (match
     it
-    (((. Iter Range) r)
+    ((Iter.Range r)
       (let
         ((#tuple(lo hi) r))
-        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))))
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit))))))
 
 (def
   (sum-it it)
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
-(def (main) (sum-it ((. Iter Range) #tuple(1 5))))`}
+(def (main) (sum-it (Iter.Range #tuple(1 5))))`}
       />
       <P><C>next</C> is an ordinary recursive function over a plain sum, with no hidden mutable cursor. Exhaustion isn't a special error; it's just the <C>None</C> case, so stepping is <em>total</em> and never traps, whatever the range.</P>
       <H2>Lazy: only what you pull</H2>
@@ -40,11 +40,11 @@ export default function Iterators() {
   (next it)
   (match
     it
-    (((. Iter Range) r)
+    ((Iter.Range r)
       (let
         ((#tuple(lo hi) r))
-        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))
-    (((. Iter Take) nf)
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit))))
+    ((Iter.Take nf)
       (let
         ((#tuple(n src) nf))
         (if
@@ -53,14 +53,13 @@ export default function Iterators() {
           (match
             (next src)
             ((None _) (None unit))
-            ((Some p)
-              (let ((#tuple(v rest) p)) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))
+            ((Some p) (let ((#tuple(v rest) p)) (Some #tuple(v (Iter.Take #tuple((- n 1) rest))))))))))))
 
 (def
   (sum-it it)
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
-(def (main) (sum-it ((. Iter Take) #tuple(3 ((. Iter Range) #tuple(0 1000000))))))`}
+(def (main) (sum-it (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000))))))`}
       />
       <P>The <C>Take</C> stops asking after three, so <C>Range</C> is only ever stepped three times. Nothing forces the whole sequence into existence, since each element is computed exactly when the consumer pulls it.</P>
       <H2>Transformers compose</H2>
@@ -72,11 +71,11 @@ export default function Iterators() {
   (next it)
   (match
     it
-    (((. Iter Range) r)
+    ((Iter.Range r)
       (let
         ((#tuple(lo hi) r))
-        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))
-    (((. Iter Take) nf)
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit))))
+    ((Iter.Take nf)
       (let
         ((#tuple(n src) nf))
         (if
@@ -85,19 +84,18 @@ export default function Iterators() {
           (match
             (next src)
             ((None _) (None unit))
-            ((Some p)
-              (let ((#tuple(v rest) p)) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))
-    (((. Iter Double) src)
+            ((Some p) (let ((#tuple(v rest) p)) (Some #tuple(v (Iter.Take #tuple((- n 1) rest))))))))))
+    ((Iter.Double src)
       (match
         (next src)
         ((None _) (None unit))
-        ((Some p) (let ((#tuple(v rest) p)) (Some #tuple((* 2 v) ((. Iter Double) rest)))))))))
+        ((Some p) (let ((#tuple(v rest) p)) (Some #tuple((* 2 v) (Iter.Double rest)))))))))
 
 (def
   (sum-it it)
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
-(def (main) (sum-it ((. Iter Double) ((. Iter Take) #tuple(3 ((. Iter Range) #tuple(0 1000000)))))))`}
+(def (main) (sum-it (Iter.Double (Iter.Take #tuple(3 (Iter.Range #tuple(0 1000000)))))))`}
       />
       <P>Each layer only asks its inner iterator for the next element and transforms it, so the whole pipeline stays lazy, and you assemble complex sequences from small, independent pieces.</P>
       <Note>This <em>reified</em> encoding, an iterator as a sum of step-shapes with <C>next</C> a plain recursive function, is what the standard iterator library uses today, and it's why: the more obvious "an iterator is a function returning the next element and a new function" needs a recursive function <em>type</em> the inference won't tie without a nominal constructor to break the cycle. The sum form <em>is</em> that constructor, so it sidesteps the problem and reads just as clearly. A real library adds <C>map</C>, <C>filter</C>, <C>zip</C>, and friends the same way, one more variant each.</Note>
@@ -113,32 +111,32 @@ export default function Iterators() {
   (next it)
   (match
     it
-    (((. Iter Range) r)
+    ((Iter.Range r)
       (let
         ((#tuple(lo hi) r))
-        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))))
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit))))))
 
 (def
   (sum-it it)
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
-(def (main) (sum-it ((. Iter Range) #tuple(2 ?))))`}
+(def (main) (sum-it (Iter.Range #tuple(2 ?))))`}
         solution={`(type Iter (Range (Tuple Int64 Int64)))
 
 (def
   (next it)
   (match
     it
-    (((. Iter Range) r)
+    ((Iter.Range r)
       (let
         ((#tuple(lo hi) r))
-        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))))
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit))))))
 
 (def
   (sum-it it)
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
-(def (main) (sum-it ((. Iter Range) #tuple(2 5))))`}
+(def (main) (sum-it (Iter.Range #tuple(2 5))))`}
         expected="9"
         hint={<>The range is half-open <C>[lo, hi)</C>, so <C>hi</C> is excluded. To yield <C>2, 3, 4</C> (which sum to <C>9</C>), stop before <C>5</C>, so the upper bound is <C>5</C>.</>}
       />
@@ -151,11 +149,11 @@ export default function Iterators() {
   (next it)
   (match
     it
-    (((. Iter Range) r)
+    ((Iter.Range r)
       (let
         ((#tuple(lo hi) r))
-        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))
-    (((. Iter Take) nf)
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit))))
+    ((Iter.Take nf)
       (let
         ((#tuple(n src) nf))
         (if
@@ -164,25 +162,24 @@ export default function Iterators() {
           (match
             (next src)
             ((None _) (None unit))
-            ((Some p)
-              (let ((#tuple(v rest) p)) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))
+            ((Some p) (let ((#tuple(v rest) p)) (Some #tuple(v (Iter.Take #tuple((- n 1) rest))))))))))))
 
 (def
   (sum-it it)
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
-(def (main) (sum-it ((. Iter Take) #tuple(? ((. Iter Range) #tuple(0 1000000))))))`}
+(def (main) (sum-it (Iter.Take #tuple(? (Iter.Range #tuple(0 1000000))))))`}
         solution={`(type Iter (Range (Tuple Int64 Int64)) (Take (Tuple Int64 Iter)))
 
 (def
   (next it)
   (match
     it
-    (((. Iter Range) r)
+    ((Iter.Range r)
       (let
         ((#tuple(lo hi) r))
-        (if (< lo hi) (Some #tuple(lo ((. Iter Range) #tuple((+ lo 1) hi)))) (None unit))))
-    (((. Iter Take) nf)
+        (if (< lo hi) (Some #tuple(lo (Iter.Range #tuple((+ lo 1) hi)))) (None unit))))
+    ((Iter.Take nf)
       (let
         ((#tuple(n src) nf))
         (if
@@ -191,14 +188,13 @@ export default function Iterators() {
           (match
             (next src)
             ((None _) (None unit))
-            ((Some p)
-              (let ((#tuple(v rest) p)) (Some #tuple(v ((. Iter Take) #tuple((- n 1) rest))))))))))))
+            ((Some p) (let ((#tuple(v rest) p)) (Some #tuple(v (Iter.Take #tuple((- n 1) rest))))))))))))
 
 (def
   (sum-it it)
   (match (next it) ((None _) 0) ((Some p) (let ((#tuple(v rest) p)) (+ v (sum-it rest))))))
 
-(def (main) (sum-it ((. Iter Take) #tuple(4 ((. Iter Range) #tuple(0 1000000))))))`}
+(def (main) (sum-it (Iter.Take #tuple(4 (Iter.Range #tuple(0 1000000))))))`}
         expected="6"
         hint={<><C>0 + 1 + 2 + 3 = 6</C>, so you pull the first <C>4</C> elements. The range is effectively infinite; <C>Take</C> is what makes summing it terminate.</>}
       />

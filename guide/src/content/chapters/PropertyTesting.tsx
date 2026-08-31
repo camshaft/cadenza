@@ -46,9 +46,7 @@ export default function PropertyTesting() {
 
 (@
   test
-  (def
-    (list-length-is-nonneg)
-    (assert (>= ((. List len) #list(1 2 3)) 0) "length can't be negative")))`}
+  (def (list-length-is-nonneg) (assert (>= (List.len #list(1 2 3)) 0) "length can't be negative")))`}
         mode="test"
       />
       <P>There's nothing special about a test beyond the <C>@test</C> mark; it's a function the runner knows to call. That's all there is to testing here: no framework, no assertion library built into the language, just functions that trap when an expectation is violated.</P>
@@ -73,9 +71,7 @@ export default function PropertyTesting() {
       <P>The counterexample is <C>all-small(100)</C>: the runner found a failing draw, then shrank it toward zero to the boundary value, with a seed to reproduce the run. A property that holds passes silently over its trials; one that doesn't hands you the minimal witness.</P>
       <P>Shrinking isn't just for scalars; it minimizes <em>compound</em> values the same way. Here a property claims no generated list ever has exactly three elements, a deliberately-wrong claim. The parameter is a <C>(List Int64)</C>, so the compiler synthesizes a <em>list</em> generator (a random length, then an element per slot); press Run and the runner finds a failing list and shrinks it:</P>
       <Runnable
-        source={`(@
-  test
-  (def (never-three (: xs (List Int64))) (if (= ((. List len) xs) 3) (trap "was three") unit)))`}
+        source={`(@ test (def (never-three (: xs (List Int64))) (if (= (List.len xs) 3) (trap "was three") unit)))`}
         expect="error"
         mode="test"
       />
@@ -101,10 +97,10 @@ export default function PropertyTesting() {
       <Exercise
         id="property-testing:2"
         prompt={<>The length of a three-element list is exactly <C>3</C>, the property a length test asserts. Fill the comparison value so the check gives <C>true</C>.</>}
-        starter={`(def (len-is xs n) (= ((. List len) xs) n))
+        starter={`(def (len-is xs n) (= (List.len xs) n))
 
 (def (main) (len-is #list(10 20 30) ?))`}
-        solution={`(def (len-is xs n) (= ((. List len) xs) n))
+        solution={`(def (len-is xs n) (= (List.len xs) n))
 
 (def (main) (len-is #list(10 20 30) 3))`}
         expected="true"

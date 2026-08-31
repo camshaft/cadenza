@@ -51,14 +51,14 @@ export default function Functions() {
       <H2>Inline functions, inferred</H2>
       <P>The everyday use of a higher-order function is to pass a small function <em>inline</em>, as in the familiar map-and-combine over a list. Here <C>map-sum</C> applies <C>f</C> to each element and adds the results; the <C>f</C> we hand it is an anonymous <C>(fn (x) …)</C> written right at the call. Neither the lambda's parameter nor <C>map-sum</C>'s <C>f</C> carries a type annotation, because inference works both out from how <C>f</C> is used and in from the lambda's body:</P>
       <Runnable
-        source={`(def (map-sum f acc xs) (match xs (#list() acc) (#list(h .. t) (map-sum f (+ acc (f h)) t))))
+        source={`(def (map-sum f acc xs) (match xs (#list() acc) (#list(h (.. t)) (map-sum f (+ acc (f h)) t))))
 
 (def (main) (map-sum (fn (x) (+ x 1)) 0 #list(5 7 30)))`}
       />
       <P>Each element is incremented and the results summed: <C>6 + 8 + 31 = 45</C>. You write the lambda with no type ceremony and the compiler figures out the types from how the argument is used.</P>
       <P>The same holds for a <em>multi-argument</em> callback, as in the classic accumulator fold. Here <C>fold-list</C> takes a two-argument <C>f</C> and threads an accumulator through the list, and the lambda <C>(fn (x a) (+ a x))</C> is again fully unannotated on both sides. Folding <C>#list(5 7 30)</C> from <C>0</C> sums them to <C>42</C>:</P>
       <Runnable
-        source={`(def (fold-list f acc xs) (match xs (#list() acc) (#list(h .. t) (fold-list f (f h acc) t))))
+        source={`(def (fold-list f acc xs) (match xs (#list() acc) (#list(h (.. t)) (fold-list f (f h acc) t))))
 
 (def (main) (fold-list (fn (x a) (+ a x)) 0 #list(5 7 30)))`}
       />
