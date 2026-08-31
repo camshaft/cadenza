@@ -486,6 +486,21 @@ theorem denoteBinary_arith (op : String) (w : IntTy) (x y : Int)
     denoteBinary op w (.value (.int x)) (.value (.int y)) = evalArithOp op x y w := by
   simp only [denoteBinary, hf, hop, if_true]
 
+/-! ### Arith-operand INT inversion: an arithmetic `denoteBinary` yielding a `.value` had INT operands.
+When `foldConst?` declines (given) and the op is arithmetic, `denoteBinary`'s deferred path is
+`match va, vb with | .int x, .int y => evalArithOp … | _ => .unsupported` — so a `.value` result forces
+BOTH operands to be `.int`. The capstone `.app`-IDENTITY sub-cases (`x+0→x`, `x*1→x`, …) need this to turn
+a generic surviving operand into the `.int x` shape the `denoteBinary_*_value` lemmas require. -/
+theorem denoteBinary_arith_int_r (op : String) (w : IntTy) (va : Value) (y : Int) (v : Value)
+    (hf : foldConst? op #[.const va, .const (.int y)] = none) (hop : arithOps.contains op = true)
+    (h : denoteBinary op w (.value va) (.value (.int y)) = .value v) : ∃ x, va = .int x := by
+  cases va <;> first | exact ⟨_, rfl⟩ | simp_all [denoteBinary]
+
+theorem denoteBinary_arith_int_l (op : String) (w : IntTy) (x : Int) (vb : Value) (v : Value)
+    (hf : foldConst? op #[.const (.int x), .const vb] = none) (hop : arithOps.contains op = true)
+    (h : denoteBinary op w (.value (.int x)) (.value vb) = .value v) : ∃ y, vb = .int y := by
+  cases vb <;> first | exact ⟨_, rfl⟩ | simp_all [denoteBinary]
+
 /-! ### Arithmetic-identity value characterizations: the constant-RESULT normalizer folds are denote-sound.
 The operand-DROPPING algebraic identities (`x*0→0`, `0*x→0`, `x-x→0`, `x%1→0` — each `!mayTrap`-guarded)
 rewrite to `.const 0`. Their denote-soundness is exactly: whenever the arithmetic op yields a value at
