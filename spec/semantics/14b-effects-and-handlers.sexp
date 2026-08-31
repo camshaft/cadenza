@@ -2905,6 +2905,28 @@
               (def (main) (handle Log unit ((put (r) s (resume unit s))) ((. Log put) true))) (export main)))
   (error  CDZ0203 (message "operation `put`") (not " — ")))
 
+; A match-arm GUARD condition must be SIDE-EFFECT-FREE (operator directive): a guard is a boolean predicate
+; the pattern engine may evaluate speculatively or repeatedly, so a PERFORM in a guard cond has no
+; well-defined evaluation count/order and is a compile error (CDZ0407), regardless of the guarded pattern's
+; shape (irrefutable name or refutable literal). A NON-performing guard is fine, and a perform in the ARM
+; BODY (or scrutinee) is fine — only the GUARD position is forbidden. (Migrated from rcdzc
+; a_perform_in_a_match_guard_is_cdz0407_guards_must_be_side_effect_free.)
+(case "a performing guard on an irrefutable inner pattern is CDZ0407"
+  (input  (do (effect Ask (op get (-> Int64))) (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))) (export main)))
+  (error  CDZ0407))
+
+(case "a performing guard on a refutable inner pattern is CDZ0407 too"
+  (input  (do (effect Ask (op get (-> Int64))) (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard 9 (> (Ask.get) 3)) 100) (n 200)))) (export main)))
+  (error  CDZ0407))
+
+(case "a non-performing guard under a handle compiles and selects"
+  (input  (do (effect Ask (op get (-> Int64))) (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> n 3)) 100) (n 200)))) (export main)))
+  (call   main) (output (: 100 Int64)))
+
+(case "a perform in an arm BODY (not the guard) under a handle folds and runs"
+  (input  (do (effect Ask (op get (-> Int64))) (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 (n (Ask.get))))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
 ; The perform-argument check must fire for EVERY declared parameter type, not only Int64. An operation
 ; declared `(-> String Unit)` performed on an Int64 argument — `(E.emit 42)` — is the same type mismatch
 ; as the Int64-parameter case above and MUST be rejected (CDZ0203). This is the STRING-parameter sibling:
