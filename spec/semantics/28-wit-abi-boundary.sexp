@@ -79,6 +79,10 @@
 ; element from the (ptr,count) layout (distinct rep from Bytes), reading count+element to prove stride+box.
 ; SHAPE 44 — a bare option<scalar>/Option PARAM member (sum_params): the (disc,payload) flattening is rebuilt
 ; into the guest sum cell via sum-new (SumArgRebuild), both Some and None arms exercised, shell dropped after.
+; SHAPE 45/46/47 — MULTI/MIXED top-level param composition in one member: two mem-leaf params (Bytes+list),
+; a mem-leaf param interleaved with a scalar, and a sum (option) param beside a mem-leaf — each pins that the
+; wrapper's flattened-leaf CURSOR advances correctly across differently-sized top-level params (2 for a
+; (ptr,len) mem-leaf, 1 for a scalar, disc+payload for a sum). A broken cursor would misread a later param.
 
 (case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -306,6 +310,46 @@
   (output (: 42 Int64))
   (call check-opt (: (None unit) (Option Int64)))
   (output (: -1 Int64))
+  (live-objects known-leak))
+
+(case "a member with TWO top-level mem-leaf params (list<u8> + list<s64>) threads the flattened cursor across both"
+  (doc    "SHAPE 45 — a typed-interface member with TWO top-level memory-bearing params: a `list<u8>`/Bytes AND
+           a `list<s64>`/List, each flattening to `(ptr, len)`. The wrapper copies BOTH out of memory (bytes-leaf
+           + list-vec) in sequence, advancing the flattened-leaf cursor by 2 per param, then reclaims both. A
+           cursor that failed to advance past the first `(ptr,len)` would read the second param at the wrong
+           offset. Guest combine(b, xs) = Bytes.len(b) + List.len(xs); ([1,2,3], [10,20]) -> 5. Pins the
+           multi-mem-leaf-param composition established by SHAPE 40/43.")
+  (wit-world (world w (export iface (member combine (func (param b (list (u8))) (param xs (list (s64))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (combine (: b Bytes) (: xs (List Int64))) (+ (Bytes.len b) (List.len xs))) (export combine)))
+  (call combine (: #list(1 2 3) Bytes) (: #list(10 20) (List Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak))
+
+(case "a member with a mem-leaf param interleaved with a scalar param threads the cursor across mixed widths"
+  (doc    "SHAPE 46 — a typed-interface member mixing a top-level `list<u8>`/Bytes param (flattens to `(ptr,len)`
+           = 2 leaves) with a bare `s64` SCALAR param (1 leaf). The wrapper must advance the flattened-leaf
+           cursor by 2 for the mem-leaf and by 1 for the scalar; a miscount would swap them. Guest tag(x, n) =
+           Bytes.len(x) + n; ([7,8,9], 100) -> 103. Pins the mem-leaf + scalar mixed-width param threading.")
+  (wit-world (world w (export iface (member tag (func (param x (list (u8))) (param n (s64)) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (tag (: x Bytes) (: n Int64)) (+ (Bytes.len x) n)) (export tag)))
+  (call tag (: #list(7 8 9) Bytes) (: 100 Int64))
+  (output (: 103 Int64))
+  (live-objects known-leak))
+
+(case "a member with an option<s64> param beside a mem-leaf param composes the sum rebuild with the byte copy-in"
+  (doc    "SHAPE 47 — a typed-interface member with a top-level `option<s64>` param (sum rebuild: disc + payload)
+           beside a `list<u8>`/Bytes param (mem-leaf: ptr + len). The wrapper builds the sum cell (branching on
+           the disc, advancing the cursor past disc+payload) THEN copies the bytes out (advancing past ptr+len),
+           reclaiming both borrowed cells. Pins the sum-param + mem-leaf-param cursor composition (a broken sum
+           payload-cursor would offset the bytes param). Guest both(o, b) = (match o Some->v None->0) +
+           Bytes.len(b); (Some 40, [1,2]) -> 42.")
+  (wit-world (world w (export iface (member both (func (param o (option (s64))) (param b (list (u8))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (both (: o (Option Int64)) (: b Bytes)) (+ (match o ((Option.Some v) v) ((Option.None) 0)) (Bytes.len b))) (export both)))
+  (call both (: (Some 40) (Option Int64)) (: #list(1 2) Bytes))
+  (output (: 42 Int64))
   (live-objects known-leak))
 
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
