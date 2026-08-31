@@ -4491,6 +4491,17 @@
             ((. m third) unit)))
   (output (: 1/3 Rational)))
 
+(case "without a default-fraction pragma the same (/ 1 3) is ordinary integer division — 0, not 1/3"
+  (doc    "The negative control that gives the pragma its meaning: OUTSIDE any `default-fraction` module the
+           very same `(/ 1 3)` grounds its bare literals to the ordinary Int64 default, so it is INTEGER
+           division truncating toward zero = 0 — NOT the exact 1/3 the pragma module produces above. Pins
+           that the exact-fraction behavior is bought ONLY by the directive; its absence leaves integer
+           division untouched (numeric-model.md #A Declared Default Applies At The Definition Site — a module
+           without the pragma is unaffected). Migrated from rcdzc
+           a_default_fraction_pragma_grounds_a_bare_numeric_literal_to_rational's no-pragma control.")
+  (input  (/ 1 3))
+  (output (: 0 Int64)))
+
 (case "a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction"
   (doc    "The default applies to a decimal-written literal too: bare `0.5` in a `(pragma default-fraction
            Rational)` module is the EXACT fraction its digits denote, 1/2 — no float rounding
