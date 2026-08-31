@@ -75,6 +75,21 @@ fn rc_trace_records_events_and_attributes_a_leak() {
         "the leaked handle never reaches a freed drop — attributable as node#{leaked}"
     );
 
+    // The flat `list<u8>` wire the rc-trace-drain export returns: 20 bytes per event, LE fields, and
+    // the first record decodes back to events[0] (op at 0, node u32 at offset 4).
+    let bytes = rc_trace_drain_bytes();
+    assert_eq!(
+        bytes.len(),
+        events.len() * 20,
+        "20-byte fixed record per event"
+    );
+    assert_eq!(bytes[0], events[0].op, "record[0].op byte");
+    assert_eq!(
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        events[0].node,
+        "record[0].node is the LE u32 at offset 4"
+    );
+
     // Reclaim the intentional leak so LIVE_NODES nets to zero for sibling tests.
     op_drop(leaked_h);
 }

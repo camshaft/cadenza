@@ -1022,5 +1022,28 @@ impl Guest for Component {
     }
 }
 
+// The DEBUG-ONLY `debug-trace` interface export (rc-trace leak-attribution diagnostic). Present ONLY
+// in the debug-counters build, which targets `world runtime-debug` (heap + debug-trace) — the release
+// build targets `world runtime` (heap only), whose regenerated bindings carry no `debug-trace` Guest
+// trait, so this whole impl is cfg'd out there (and `REQUIRED_RUNTIME_HASH`/058B5h is untouched). Thin
+// wrappers over the crate-root rc-trace fns (the serialization + enable/flag logic is native-tested in
+// lib.rs). NOTE to v-nix: the exact trait PATH below (`bindings::exports::cadenza::runtime::debug_trace::
+// Guest`) is my best match to wit-bindgen's layout for the `cadenza:runtime` package's exported
+// `debug-trace` interface — please confirm/adjust it against the REGENERATED runtime-debug bindings (the
+// heap Guest is imported unqualified in this file, so the generated module path is the authority) and
+// report any signature mismatch; the bodies are stable.
+#[cfg(all(target_arch = "wasm32", feature = "debug-counters"))]
+impl bindings::exports::cadenza::runtime::debug_trace::Guest for Component {
+    fn rc_trace_enable(on: bool) {
+        crate::rc_trace_enable(on);
+    }
+    fn rc_trace_drain() -> alloc::vec::Vec<u8> {
+        crate::rc_trace_drain_bytes()
+    }
+    fn rc_trace_truncated() -> bool {
+        crate::rc_trace_truncated_flag()
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 bindings::export!(Component with_types_in bindings);

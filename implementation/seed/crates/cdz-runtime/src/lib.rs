@@ -1064,6 +1064,36 @@ pub(crate) fn rc_trace_snapshot() -> (alloc::vec::Vec<RcTraceEvent>, bool) {
     )
 }
 
+/// The truncation marker alone (true = the run produced more than `RC_TRACE_CAP` events) — a cheap
+/// read for the `rc-trace-truncated` export that avoids cloning the whole event buffer.
+#[cfg(any(test, feature = "debug-counters"))]
+#[allow(dead_code)]
+pub(crate) fn rc_trace_truncated_flag() -> bool {
+    RC_TRACE_TRUNCATED.with(|x| x.get())
+}
+
+/// Serialize the recorded events to the flat `list<u8>` wire the `rc-trace-drain` export returns: one
+/// 20-byte little-endian record per event — `[op:u8, tag:u8, freed:u8, _pad:u8, node:u32, rc_before:u32,
+/// rc_after:u32, cascade_parent:u32]` (`cascade_parent == RC_TRACE_NO_PARENT` = none). The consumer
+/// (cdz-run `--rc-trace` / v-corpus-harness) decodes this fixed layout.
+#[cfg(any(test, feature = "debug-counters"))]
+#[allow(dead_code)]
+pub(crate) fn rc_trace_drain_bytes() -> alloc::vec::Vec<u8> {
+    let events = RC_TRACE.with(|t| t.borrow().clone());
+    let mut out = alloc::vec::Vec::with_capacity(events.len() * 20);
+    for e in &events {
+        out.push(e.op);
+        out.push(e.tag);
+        out.push(e.freed as u8);
+        out.push(0u8); // _pad — keeps the u32 fields 4-byte aligned within the record
+        out.extend_from_slice(&e.node.to_le_bytes());
+        out.extend_from_slice(&e.rc_before.to_le_bytes());
+        out.extend_from_slice(&e.rc_after.to_le_bytes());
+        out.extend_from_slice(&e.cascade_parent.to_le_bytes());
+    }
+    out
+}
+
 /// The live heap-object count, or 0 when the counter is not compiled in (the default build). The
 /// `live-objects` export returns this; a leak-check harness asserts it is 0 after a run to verify the
 /// compiler's dup/drop discipline leaves nothing behind.
