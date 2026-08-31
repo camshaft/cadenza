@@ -311,6 +311,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bytes(_) => Ty::Bytes,
         // A char literal (`#\a`) is the monomorphic `Ty::Char`.
         Resolved::Char(_) => Ty::Char,
+        // A rational literal (`3/2` / `#rational(3 2)`) is the monomorphic `Ty::Rational` — the literal twin
+        // of `(Rational.of n d)`, which types the same.
+        Resolved::Rational { .. } => Ty::Rational,
         // A symbol literal (`#"meter"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
         Resolved::SymbolConst(_) => Ty::Symbol,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.

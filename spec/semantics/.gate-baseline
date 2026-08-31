@@ -9486,6 +9486,10 @@ pass	a wildcard used as a function argument names the binding-position misuse
 pass	a wildcard used as an operator operand names the binding-position misuse
 pass	an empty name-alias (map) compared against an empty record is a cross-kind type error
 pass	an explicit UInt64-max annotation is in range and runs (the bare-overflow check does not misfire)
+pass	a bare rational literal compiles and escapes as its normalized value
+pass	a bare rational literal normalizes to lowest terms (gcd-reduce), like Rational.of
+pass	the #rational(n d) alias reads to the same rational literal and compiles
+pass	a bare rational literal and Rational.of build one identical normalized value
 pass	an in-range boundary constant argument to a narrow parameter runs (no over-rejection)
 pass	an in-range constant arithmetic through a narrow parameter runs (no over-rejection)
 pass	an out-of-range constant argument to a narrow parameter is range-checked at the call

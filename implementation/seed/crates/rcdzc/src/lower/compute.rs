@@ -95,6 +95,12 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // `default-fraction` and an explicit `(: v Rational)` fold identically. A literal not in the map
         // (no pragma, or `<T>` not Rational) stays `ConstInt`.
         Resolved::Int(v) => default_fraction_rational(db, id).unwrap_or(Core::ConstInt(v)),
+        // A rational LITERAL (`3/2` / `#rational(3 2)`) — fold its two integer children through the SAME
+        // constant-fold `(Rational.of n d)` uses, so the literal and the builtin produce an identical
+        // normalized `Core::ConstRational` (gcd-reduce, sign on the numerator).
+        Resolved::Rational { num, den } => {
+            crate::lower::arith_fold::lower_rational_of(db, num, den)
+        }
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s.into()),
         // A symbol literal (`#"meter"`) shares the constant-string REP — its identity is its text — so it

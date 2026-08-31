@@ -2881,6 +2881,7 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::SymbolConst(_)
         | Resolved::Bytes(_)
         | Resolved::Char(_)
+        | Resolved::Rational { .. }
         | Resolved::Unit
         | Resolved::TypeVal(_) => {}
         // An anonymous LAMBDA `(fn (params…) body)`: check its parameter list is LINEAR, exactly as a
