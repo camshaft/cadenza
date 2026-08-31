@@ -3090,6 +3090,19 @@
   (input  (/ (Rational.of 1 2) (Rational.of 3 4)))
   (output (: 2/3 Rational)))
 
+(case "rational division by the ZERO rational is a divide-by-zero, rejected CDZ0304 when provable"
+  (doc    "The divide-by-zero counterpart of the total-for-a-nonzero-divisor case: the divisor `(Rational.of
+           0 1)` is a VALID value (zero is a rational — numerator 0, denominator 1, distinct from the
+           zero-DENOMINATOR non-value `(Rational.of 1 0)` above), but DIVIDING by it has no quotient, so
+           `(/ (Rational.of 1 2) (Rational.of 0 1))` is a divide-by-zero. The divisor folds to a provable
+           zero, so — exactly as `(/ 5 0)` and `(Rational.of 1 0)` — the compiler PROVES it and rejects at
+           compile time (CDZ0304), rather than emitting a runtime trap. Distinct from the zero-DENOMINATOR
+           construction trap: here the value zero is a legitimate divisor that the DIVISION rejects. (A
+           runtime zero-valued divisor is the defined runtime trap, the division twin of the runtime
+           zero-denominator case below.)")
+  (input  (/ (Rational.of 1 2) (Rational.of 0 1)))
+  (error  CDZ0304))
+
 (case "a whole rational carries a denominator of one"
   (doc    "`(Rational.of-int 5)` is the whole rational 5/1 : Rational — a DISTINCT type from `5 : Int64`.
            Crossing between the integer and the rational is explicit (`Rational.of-int` in), never an
