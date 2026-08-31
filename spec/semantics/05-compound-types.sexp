@@ -602,6 +602,19 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 111 Int64)))
 
+; The LIST side of that contrast, pinned directly: `#list()` matches EXACTLY the empty list — it is a
+; fixed-arity (length-0) list pattern, NOT a vacuous containment test — so over a NON-empty list it does
+; NOT match and falls to the next arm. This is the opposite of the `#map()` / `#set()` empty patterns above
+; (which name zero required keys/elements and match ANY map/set). Pins the reading the map case's doc
+; cross-references ("unlike `(list)`, which matches EXACTLY the empty list").
+(case "an empty list pattern matches only the empty list, not a non-empty one"
+  (input  (match #list(1 2) (#list() 9) (_ 0)))
+  (output (: 0 Int64)))
+
+(case "an empty list pattern matches the empty list"
+  (input  (match #list() (#list() 9) (_ 0)))
+  (output (: 9 Int64)))
+
 ; A map pattern's SHAPE is constrained at resolve. (a) A keyed map pattern tests KEY PRESENCE, so it is
 ; REFUTABLE (the key may be absent) and cannot sit in a BINDING position (a def param / let binder), where
 ; only an irrefutable pattern is legal — the only irrefutable map form is a whole-map name-bind. A keyed map
