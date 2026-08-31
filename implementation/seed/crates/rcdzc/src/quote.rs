@@ -1024,12 +1024,22 @@ fn native_ctor_variant(ast: &Arenas, head: StructId) -> Option<(&'static str, bo
 /// values). The entry is a record `(= k v)` (name-headed or the native `Leaf::FieldPair` leaf) or a map
 /// `(k v)` 2-element pair. `None` if it is not a well-formed key/value entry (then the enclosing ctor bails).
 fn reify_field_pair(ast: &mut Arenas, entry: StructId, under_qq: bool) -> Option<StructId> {
-    let (k, v) = field_kv(ast, entry)?;
-    let rk = reify(ast, k, under_qq)?;
-    let rv = reify(ast, v, under_qq)?;
-    let tuple_head = push_atom(ast, Leaf::Name("tuple".into()));
-    let tup = push_list(ast, vec![tuple_head, rk, rv]);
-    Some(ast_ctor(ast, "FieldPair", tup))
+    // A well-formed `(= k v)` entry → `Ast.FieldPair (tuple <reify k> <reify v>)`.
+    if let Some((k, v)) = field_kv(ast, entry) {
+        let rk = reify(ast, k, under_qq)?;
+        let rv = reify(ast, v, under_qq)?;
+        let tuple_head = push_atom(ast, Leaf::Name("tuple".into()));
+        let tup = push_list(ast, vec![tuple_head, rk, rv]);
+        return Some(ast_ctor(ast, "FieldPair", tup));
+    }
+    // A MALFORMED record/map entry — a child that is NOT a `(= k v)` field pair (a surplus/too-few element
+    // in a `#record`/`#map` that the compiler rejects AS CODE). `quote` reifies SYNTAX, not semantics: the
+    // malformed literal still PARSES to a well-defined structure, so reify the entry GENERICALLY as data
+    // (its own `Ast.*` node — e.g. a bare surplus `2` → `Ast.Int`) rather than bailing the whole quote.
+    // The reflected `Ast.<X>Ctor` then carries a non-`FieldPair` child, which round-trips deterministically
+    // through the codec like any other child (the ctor payload is a generic `(List Ast)`, not typed to
+    // `FieldPair`). A WELL-FORMED collection is unaffected — every child hits the field-pair arm above.
+    reify(ast, entry, under_qq)
 }
 
 /// The `(key, value)` of a record/map field entry: a native `Leaf::FieldPair` leaf `(= k v)`, a
