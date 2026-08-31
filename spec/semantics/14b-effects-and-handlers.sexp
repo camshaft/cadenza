@@ -11060,7 +11060,10 @@
                   (+ (M.step 4) (M.step 0))))
               (* 1000 (M.step 2))))))
       (export main)))
-  (declines))
+  (call main (: 0 Int64))
+  (output (: 2080 Int64))
+  (call main (: 1 Int64))
+  (output (: 3081 Int64)))
 
 ; ── SET-state gated arms (breaker se) ────────────────────────────────────────────────────────────
 ; The insert+measure Set-state pin above never GATES on membership; these pin gated dynamics:
