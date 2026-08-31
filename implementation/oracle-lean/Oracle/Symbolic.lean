@@ -800,6 +800,16 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
                    | .value v => .sym (SymExpr.const v)
                    | _ => .sym (SymExpr.app hs args))
                 else .sym (SymExpr.app hs args)
+              -- RATIONAL const-fold: `(a/b) op (c/d)` via eval's own `rationalArith` (exact, width-INDEPENDENT
+              -- — rationals never overflow); fold ONLY when it yields a VALUE (a `/`-by-zero-rational traps →
+              -- stays symbolic). Closes the rational-arith FP class (backend const-folds rational arithmetic;
+              -- symEval otherwise leaves it `.app`). v-spec-oracle cross-edges #6807 (mul/sub sign) exercise this.
+              | _, #[SymExpr.const (Value.rational a b), SymExpr.const (Value.rational c d)] =>
+                if arithOps.contains hs then
+                  (match rationalArith hs a b c d with
+                   | .value v => .sym (SymExpr.const v)
+                   | _ => .sym (SymExpr.app hs args))
+                else .sym (SymExpr.app hs args)
               -- FLOAT const-fold. Round each op to f32 when the operands mention Float32 — the backend
               -- rounds per-op to f32, so folding at f64 would diverge (v-cdz-smith fp-0); else fold at f64
               -- via evalFloatOp. (Comparison / = / bool over floats stays in normalize's foldConst?.)
@@ -1815,6 +1825,26 @@ private def _ratZeroNegExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
     root := 6 }
 #guard symEval _ratZeroNegExpr [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.const (.rational 0 1))
+-- RATIONAL ARITHMETIC sign cross-edges (v-spec-oracle #6807): mul of two negatives → positive + reduced;
+-- subtraction with a negative result → sign on numerator, reduced. symEval folds via eval's rationalArith.
+-- (1) `(* (Rational.of -2 3) (Rational.of -3 4))` = 1/2.
+private def _ratMulNegExpr : Module :=
+  { leaves := #[Leaf.name "*".toUTF8, Leaf.name ".".toUTF8, Leaf.name "Rational".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.intLit true .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3]),
+                Leaf.intLit true .dec (ByteArray.mk #[3]), Leaf.intLit false .dec (ByteArray.mk #[4])],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 4, .atom 5, .list #[3, 4, 5],
+               .atom 6, .atom 7, .list #[3, 7, 8], .atom 0, .list #[10, 6, 9]],
+    root := 11 }
+#guard symEval _ratMulNegExpr [] symDefaultFuel defaultIntTy 11 == SymOutcome.sym (.const (.rational 1 2))
+-- (3) `(- (Rational.of 1 4) (Rational.of 1 2))` = -1/4.
+private def _ratSubNegExpr : Module :=
+  { leaves := #[Leaf.name "-".toUTF8, Leaf.name ".".toUTF8, Leaf.name "Rational".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[1]), Leaf.intLit false .dec (ByteArray.mk #[4]),
+                Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 4, .atom 5, .list #[3, 4, 5],
+               .atom 4, .atom 6, .list #[3, 7, 8], .atom 0, .list #[10, 6, 9]],
+    root := 11 }
+#guard symEval _ratSubNegExpr [] symDefaultFuel defaultIntTy 11 == SymOutcome.sym (.const (.rational (-1) 4))
 
 -- BYTES.OF member-op coverage: `((. Bytes of) (list 10 20 30))` → `.const (.bytes #{10,20,30})`.
 private def _bytesOfExpr : Module :=
