@@ -1940,6 +1940,17 @@ pub(crate) fn call_reaches_conditional_abortive(
     else {
         return false;
     };
+    // NON-RECURSIVE callee: it is INLINED (`reduce_applied_lambdas`) and the RE-HOIST after inlining
+    // (`hoist_conditional_abort`) lifts its conditional abort to a branch tail where the E4 machinery folds
+    // it soundly — e.g. `(+ 10 (check -1))` with `check n = (if (< n 0) (Bail.bail 99) n)` folds to 99 (the
+    // abort abandons the `+ 10`), NOT the 109 the pre-re-hoist code feared. Any post-inline shape the hoist
+    // still cannot lift is caught by `body_has_unsound_abortive_perform` (the post-inline guard) → declines,
+    // never miscompiles. So a non-recursive conditional-abort callee no longer needs blocking here. Only a
+    // RECURSIVE callee (NOT inlined; its abort flows into the pending continuation — `(+ (go 2) 999999)` →
+    // 1000506) still needs the br-out-of-handle non-local-exit and is flagged below.
+    if !crate::eval::is_recursive(db, body) {
+        return false;
+    }
     // A RECURSIVE callee is not inlined but IS specialized (`specialize_recursive`), and that path returns
     // the callee's value as an ordinary return — so an abortive op inside a SELF-recursive callee, reached
     // through a NON-tail position in the handle body, has its abort value flow into the PENDING continuation
