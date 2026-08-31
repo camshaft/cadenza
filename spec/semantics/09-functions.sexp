@@ -277,6 +277,39 @@
   (call main)
   (output (: 20 Int64)))
 
+; An OVER-APPLIED binary OPERATOR (`+`/`<`/float `+` given 3 operands) is the binop-arity twin of the
+; over-applied member op above: it reports EXACTLY ONE CDZ0201 "takes exactly 2 operands" with a delete-the-
+; -extra-element fix (the dedup drops the un-deduped CDZ0203 sibling that lower + infer would otherwise BOTH
+; raise). Integer, comparison, and float arithmetic share the `binop_arity_reject` path. A zero-operand `(+)`
+; also faults CDZ0201. (Migrated from rcdzc over_application_offers_a_delete_the_extra_argument_fix.)
+(case
+  "an over-applied integer operator is one CDZ0201 takes-exactly-2 with a delete fix"
+  (input (do (def (main) (+ 1 2 3)) (export main)))
+  (error CDZ0201 (message "takes exactly 2 operands") (count 1) (fix (kind delete))))
+
+(case
+  "an over-applied comparison operator is one CDZ0201 takes-exactly-2 with a delete fix"
+  (input (do (def (main) (< 1 2 3)) (export main)))
+  (error CDZ0201 (message "takes exactly 2 operands") (count 1) (fix (kind delete))))
+
+(case
+  "an over-applied FLOAT arithmetic operator is one CDZ0201 takes-exactly-2 with a delete fix"
+  (input (do (def (main) (+ 1.0 2.0 3.0)) (export main)))
+  (error CDZ0201 (message "takes exactly 2 operands") (count 1) (fix (kind delete))))
+
+(case
+  "a zero-operand binary operator faults CDZ0201 takes-exactly-2"
+  (input (do (def (main) (+)) (export main)))
+  (error CDZ0201 (message "takes exactly 2 operands")))
+
+(case
+  "an UNDER-applied binary operator curries — completing it yields a value"
+  (doc
+    "The OPERATOR twin of the under-applied member-op currying above: `(+ 1)` is `+` partially applied, a
+           closure awaiting the second operand; applying it completes the sum. `((+ 1) 2)` = 3.")
+  (input (do (def (main) ((+ 1) 2)) (export main)))
+  (output (: 3 Int64)))
+
 (case
   "an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program"
   (doc

@@ -161,115 +161,12 @@ fn a_partial_application_of_a_builtin_operation_declines_honestly_naming_the_op(
 // assert). The "not integer" negative + the not-"checked" label are the corpus-inexpressible remainder
 // covered by the positive float-domain (message …) substrings.)
 
-#[test]
-fn over_application_offers_a_delete_the_extra_argument_fix() {
-    // Applying MORE arguments than a function/ctor/operator accepts (CDZ0203/CDZ0201) carries a
-    // `delete` fix removing the FIRST surplus argument. The SIMPLE ctor + user-fn over-application
-    // delete-fix migrated to corpus 09-functions ("over-applying a constructor is a type error" +
-    // "over-applying a named function by an extra argument is a type error", each now carrying
-    // (fix (kind delete) (unverified))). What REMAINS here is corpus-inexpressible: the DEDUP /
-    // no-secondary sub-cases (exactly-ONE error after a sibling reject is dropped), the 1-of-2 curry
-    // no-false-positive, and the member-op multi-substring message — none expressible in the corpus
-    // (error …) form (single (message …), no total-count / no-other-code).
-    // A fixed-arity OPERATOR `(+ 1 2 3)` produces TWO faults (the grammar CDZ0201 "+ takes exactly 2
-    // operands" + the generic CDZ0203 over-application). They are the same defect — dedup keeps ONE,
-    // the authoritative CDZ0201, carrying the delete fix on the surplus operand.
-    let over = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (f) (+ 1 2 3)) (export f))",
-    )));
-    let errs: Vec<_> = over
-        .iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect();
-    assert_eq!(
-        errs.len(),
-        1,
-        "operator over-application reports ONCE (dedup drops the CDZ0203 sibling): {errs:?}"
-    );
-    assert_eq!(
-        errs[0].code.as_deref(),
-        Some("CDZ0201"),
-        "the authoritative arity reject"
-    );
-    assert_eq!(
-        errs[0].fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Delete),
-        "the surviving CDZ0201 carries the delete fix"
-    );
-    // A ONE-of-two `(+ 1)` now CURRIES (operator ruling: "operators should curry") into `\b. 1 + b` — it
-    // is no longer an arity error, so it reports NO CDZ0201 "takes exactly 2 operands". (The former
-    // too-few reject is retired for the 1-of-2 case; the ZERO-operand `(+)` and the over-applications
-    // still fault.)
-    let few = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (f) (+ 1)) (export f))",
-    )));
-    assert!(
-        few.iter().all(|d| !(d.code.as_deref() == Some("CDZ0201")
-            && d.message.contains("takes exactly 2 operands"))),
-        "a 1-of-2 partial operator curries into a closure, no arity reject: {few:?}"
-    );
-    // The COMPARISON `(< 1 2 3)` and float arithmetic `(+ 1.0 2.0 3.0)` (the ONE `+` over float
-    // operands) share the exact shape — they route through `lower_comparison`/`lower_float_arith`,
-    // which previously lacked the delete fix (so they DOUBLE-reported: CDZ0201 + an un-deduped
-    // CDZ0203). Via the shared `binop_arity_reject` they now report ONCE with the fix, exactly like
-    // integer `+`.
-    for src in [
-        "(module m (def (f) (< 1 2 3)) (export f))",
-        "(module m (def (f) (+ 1.0 2.0 3.0)) (export f))",
-    ] {
-        let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .filter(|d| d.severity == crate::abi::Severity::Error)
-            .collect();
-        assert_eq!(
-            errs.len(),
-            1,
-            "a comparison/float operator over-application reports ONCE: {errs:?} for {src}"
-        );
-        assert_eq!(errs[0].code.as_deref(), Some("CDZ0201"), "for {src}");
-        assert_eq!(
-            errs[0].fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "the surviving reject carries the delete fix for {src}"
-        );
-    }
-    // A NAMED-MEMBER CONVERSION op over-applied — `(Int64.of 5 6)` / `(Float64.of 1.0 2.0)` — routes
-    // through `lower`'s `lower_conversion`/`lower_float_of`, which emit a coded CDZ0201 "of takes
-    // exactly 1 operand" ALONGSIDE `infer`'s member over-application CDZ0203 "`Int64.of` takes 1
-    // argument, but 2 were given" (with the delete fix). They are the same defect — dedup keeps ONE,
-    // the op-NAMING CDZ0203 with its fix, dropping the bare emit-path arity reject.
-    for (src, op) in [
-        (
-            "(module m (def (main) (Int64.of 5 6)) (export main))",
-            "Int64.of",
-        ),
-        (
-            "(module m (def (main) (Float64.of 1.0 2.0)) (export main))",
-            "Float64.of",
-        ),
-    ] {
-        let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .filter(|d| d.severity == crate::abi::Severity::Error)
-            .collect();
-        assert_eq!(
-            errs.len(),
-            1,
-            "a member-op conversion over-application reports ONCE (emit arity reject deduped): {errs:?} for {src}"
-        );
-        assert_eq!(errs[0].code.as_deref(), Some("CDZ0203"), "for {src}");
-        assert!(
-            errs[0].message.contains(op) && errs[0].message.contains("were given"),
-            "the surviving reject NAMES the op `{op}`: {}",
-            errs[0].message
-        );
-        assert_eq!(
-            errs[0].fix.as_ref().map(|f| f.kind),
-            Some(crate::abi::FixKind::Delete),
-            "the surviving CDZ0203 carries the delete fix for {src}"
-        );
-    }
-}
+// MIGRATED to corpus (09-functions.sexp): an over-applied binary OPERATOR reports exactly ONE CDZ0201
+// "takes exactly 2 operands" with a delete fix (int / comparison / float share binop_arity_reject; the
+// dedup drops the un-deduped CDZ0203 sibling); a zero-operand `(+)` also faults CDZ0201; an under-applied
+// `(+ 1)` curries and `((+ 1) 2)` = 3. The over-applied MEMBER/conversion op (CDZ0203 + delete fix + dedup)
+// is corpus case "an over-applied built-in operation is ONE CDZ0203 …" (09:263). Rust test
+// over_application_offers_a_delete_the_extra_argument_fix deleted.
 
 // (a_wrong_type_constructor_payload_offers_the_same_coercion_fix_as_an_argument migrated to corpus 07-type-system:
 //  variant-ctor payload VALUE mismatch -> CDZ0201 + the same coercion fixes as argument position — Int8→Int64
