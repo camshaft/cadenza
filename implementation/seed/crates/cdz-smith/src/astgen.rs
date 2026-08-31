@@ -1248,7 +1248,7 @@ fn gen_float_keyed_collection_body<C: Choice>(c: &mut C, out: &mut String) {
 fn gen_string_body<C: Choice>(c: &mut C, out: &mut String) {
     // Pick the string + FORM before writing (variant-ordering).
     let s = ["a", "ab", "abc", "hello"][c.variant(4)];
-    match c.variant(5) {
+    match c.variant(6) {
         // A byte length → Int64.
         0 => write!(out, "(String.byte-len \"{s}\")").ok(),
         // A Unicode scalar at index 0 → a scalar.
@@ -1257,6 +1257,15 @@ fn gen_string_body<C: Choice>(c: &mut C, out: &mut String) {
         2 => write!(out, "(String.concat \"{s}\" \"{s}\")").ok(),
         // A `[0,1)` slice → a String value (valid for any nonempty string).
         3 => write!(out, "(String.slice \"{s}\" 0 1)").ok(),
+        // A string COMPARISON → Bool: equality `(= s s2)` or ordering `(< / > / <= / >= s s2)` —
+        // string value equality + total-order lowering (a Bool result), a surface the byte/concat/
+        // slice ops never reached (none compared TWO strings). Value-comparable (the wasm-vs-rust
+        // diff grades the Bool). Both operands from the same small set so shapes repeat + agree.
+        4 => {
+            let s2 = ["a", "ab", "abc", "hello"][c.variant(4)];
+            let op = ["=", "<", ">", "<=", ">="][c.variant(5)];
+            write!(out, "({op} \"{s}\" \"{s2}\")").ok()
+        }
         // A bare string literal value.
         _ => write!(out, "\"{s}\"").ok(),
     };
@@ -2635,8 +2644,8 @@ mod tests {
     /// and every body COMPILES (S166: a String-op family the Int64/float/compound grammar never reached).
     #[test]
     fn gen_string_body_reaches_all_forms_and_compiles() {
-        let (mut saw_len, mut saw_at, mut saw_concat, mut saw_slice, mut saw_lit) =
-            (false, false, false, false, false);
+        let (mut saw_len, mut saw_at, mut saw_concat, mut saw_slice, mut saw_lit, mut saw_cmp) =
+            (false, false, false, false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1657);
             let mut bytes = Vec::new();
@@ -2651,6 +2660,8 @@ mod tests {
             saw_at |= body.contains("String.scalar-at");
             saw_concat |= body.contains("String.concat");
             saw_slice |= body.contains("String.slice");
+            // A string COMPARISON body begins with an op head over two quoted strings.
+            saw_cmp |= body.starts_with("(=") || body.starts_with("(<") || body.starts_with("(>");
             saw_lit |= body.starts_with('"');
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
@@ -2663,6 +2674,7 @@ mod tests {
         assert!(saw_concat, "should reach String.concat");
         assert!(saw_slice, "should reach String.slice");
         assert!(saw_lit, "should reach a bare string literal");
+        assert!(saw_cmp, "should reach a string comparison");
     }
 
     /// `gen_bytes_body` REACHES all five Bytes-op forms (len, at, literal, of-list, concat) and every body
