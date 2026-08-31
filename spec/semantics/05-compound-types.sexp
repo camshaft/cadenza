@@ -19412,22 +19412,24 @@
               (export f)))
   (error CDZ0201 (message "must be the final element") (not "unbound name")))
 
-; A MALFORMED match pattern must NOT also emit a consequent CDZ0306 "unused binding" WARNING for the binders
-; INSIDE the rejected pattern — those binders never bind, so their "unusedness" is a CONSEQUENCE of the
-; pattern fault, not an independent problem (the match-arm binder pass skips a match whose core_of poisons).
-; Pinned via `(no-diagnostic "unused binding")` — the program-scoped absence lever (#6765) that catches the
-; consequent WARNING which `(not …)` (first-error-message-scoped) cannot see. (Migrated from rcdzc
+; A MALFORMED match pattern must NOT also emit a consequent CDZ0306 "unused match binding" WARNING for the
+; binders INSIDE the rejected pattern — those binders never bind, so their "unusedness" is a CONSEQUENCE of
+; the pattern fault, not an independent problem (the match-arm binder pass skips a match whose core_of poisons).
+; Pinned via `(no-diagnostic "unused match binding")` — the program-scoped absence lever (#6765) that catches
+; the consequent WARNING which `(not …)` (first-error-message-scoped) cannot see. The phrase is the EXACT
+; CDZ0306 prose ("unused match binding: `x` is never used"); the shorter "unused binding" would be VACUOUS
+; (never a substring, so the absence would hold trivially even on a regression). (Migrated from rcdzc
 ; a_malformed_match_pattern_does_not_also_warn_its_binders_unused; the well-formed still-warns controls stay
 ; a rust pin — they need a compiling program that emits the warning, a `(Tuple)`/`(List)` entry-param boundary.)
 (case "a too-wide tuple pattern rejects with no consequent unused-binding warning for its dead binders"
   (input  (do (def (f (: t (Tuple Int64 Int64))) (match t (#tuple(a b c) a))) (export f)))
   (error  CDZ0201 (message "binds 3 elements"))
-  (no-diagnostic "unused binding"))
+  (no-diagnostic "unused match binding"))
 
 (case "a malformed list-rest pattern rejects with no consequent unused-binding warning"
   (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. rest b) a) (_ 0))) (export f)))
   (error  CDZ0201 (message "exactly one binder after"))
-  (no-diagnostic "unused binding"))
+  (no-diagnostic "unused match binding"))
 
 ; A SET is matched by ELEMENT-MEMBERSHIP patterns (`core-semantics.md` §A Set Is Matched By Element-Membership
 ; Patterns): a `#set(e…)` arm matches when the set CONTAINS every named element (each an ordinary value
