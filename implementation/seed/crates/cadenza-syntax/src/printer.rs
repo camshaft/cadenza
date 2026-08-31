@@ -4928,6 +4928,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn construction_spread_round_trips_for_list_set_map_record() {
+        // The `.. operand` CONSTRUCTION spread (value position, the twin of the pattern-rest) reads to a
+        // wrapped `(.. operand)` element and MUST round-trip through the ML surface for every compound that
+        // supports it — the construction side of the operator's "(.. v) everywhere" ruling. Pin the ML tree
+        // AND the parse→print→reparse round-trip so a printer/reader refactor can't silently break the
+        // spread surface (the class of round-trip hole that bit annotated-let #6676 / rationals #6678).
+        //
+        // NOTE: TUPLE construction spread `(.. a, 1)` is a KNOWN GAP — the printer renders it (`(.. a, 1)`)
+        // but neither reader accepts it back (it garbles to a `(. Qty of) <error>`), so it is NOT pinned
+        // here. Fixing it is a dual-path reader change (recursive `fn paren` + iterative `Cont::Paren`, kept
+        // in sync by the differential oracle) routed to v-syntax-nonrec-reader who owns the iterative
+        // machinery; add the tuple row here once that lands.
+        for (src, want_tree) in [
+            ("def f(a) = [..a, 1]", "(def (f a) #list((.. a) 1))"),
+            ("def f(a) = #(..a, 1)", "(def (f a) #set((.. a) 1))"),
+            (
+                "def f(m) = #{ ..m, 1 = 2 }",
+                "(def (f m) #map((.. m) (= 1 2)))",
+            ),
+            (
+                "def f(b) = { ..b, a = 1 }",
+                "(def (f b) #record((.. b) (= a 1)))",
+            ),
+        ] {
+            let p = parser::read_ml(src);
+            assert!(
+                p.ok(),
+                "construction spread must parse: {src} -> {:?}",
+                p.errors
+            );
+            assert_eq!(sexpr::print(&p.arenas), want_tree, "tree for {src}");
+            let printed = crate::printer::print(&p.arenas, 80);
+            assert!(
+                printed.contains(".. "),
+                "the clean `.. operand` spread surface is lost for {src}\n ml: {printed}"
+            );
+            let back = parser::read_ml(&printed);
+            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
+            assert!(
+                p.arenas.structurally_eq(&back.arenas),
+                "construction spread lost in round-trip\n src:  {src}\n ml:   {printed}\n back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
+    }
+
     // The annotated-let-binder surface (#6676: `let x: T = v in …` reads to `(let (((: x T) v)) …)` — the
     // binder-position annotation, mirror of an annotated `param` — and prints the clean `x: T` surface,
     // NOT the degenerate `` `let`(…) `` quoted-op fallback) MIGRATED to the spec/syntax corpus (inc-6
