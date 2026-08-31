@@ -1742,9 +1742,19 @@ pub(super) fn template_value_ast_flagged(
             if !matches!(inner.as_ref(), Ty::Int(_)) {
                 return None;
             }
+            // Build the list HEAD (`(. Qty of)`) BEFORE the inner-magnitude hole + unit, same head-first
+            // discipline as the RECORD arm above (and for the same reason): the value-form template is
+            // `codec::encode`d, which CANONICALIZES the leaf pool into traversal (head-first pre-order); the
+            // runtime hole's byte offset (`resolve_leaf_offsets`) is measured on THIS arena's pre-canon pool,
+            // so the pool must already be canonical or the offset drifts. Building `qty_of` LAST left the
+            // magnitude Int hole at pool index ~1 while canon moved it AFTER the head's leaves → the runtime
+            // magnitude write landed at the wrong offset, corrupting a struct child-id → the reader's
+            // `cdzast-decode-error IdOutOfRange` on `(: (Qty.of N unit) …)` under --guarded-all. Interning
+            // the head's leaves first makes the magnitude hole share the SAME preceding-leaf set in build and
+            // canonical order (the byte sum is order-invariant over that set), so the offset stays valid.
+            let qty_of = member_access(b, "Qty", "of");
             let inner_hole = template_value_ast_flagged(b, inner, path, out, via_sum_payload)?;
             let unit_ast = unit_value_ast(b, &unit.at_reference());
-            let qty_of = member_access(b, "Qty", "of");
             Some(b.list(vec![qty_of, inner_hole, unit_ast]))
         }
         // A NOMINAL newtype's runtime value IS its erased inner's value (the box adds nothing — `type-
