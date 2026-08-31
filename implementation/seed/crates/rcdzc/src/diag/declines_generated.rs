@@ -26,6 +26,8 @@ pub enum DeclineId {
     TailResumptiveFoldUnhandledForm,
     ///Matching over a heap-backed Set/Map scrutinee — even a whole-value binder — needs a heap walk the compiler does not yet emit; surfaced by the dedup self-suppression fix (#6417).
     MatchOverHeapCollectionScrutinee,
+    ///A recursive function applied where it would need runtime specialization (the eval beta-reduction recursion guard, eval.rs); reworded off deferral wording to "which is not supported" by v-core-opt #6565.
+    RecursiveFunctionRuntimeSpecialization,
 }
 impl DeclineId {
     /// The complete catalog (declared order — byte-deterministic).
@@ -39,6 +41,7 @@ impl DeclineId {
         DeclineId::PrimAsValueNeedsClosure,
         DeclineId::TailResumptiveFoldUnhandledForm,
         DeclineId::MatchOverHeapCollectionScrutinee,
+        DeclineId::RecursiveFunctionRuntimeSpecialization,
     ];
     /// The stable kebab-case registry key (the durable referent `data/unsupported.sexp` pins).
     pub fn key(self) -> &'static str {
@@ -56,6 +59,9 @@ impl DeclineId {
             DeclineId::PrimAsValueNeedsClosure => "prim-as-value-needs-closure",
             DeclineId::TailResumptiveFoldUnhandledForm => "tail-resumptive-fold-unhandled-form",
             DeclineId::MatchOverHeapCollectionScrutinee => "match-over-heap-collection-scrutinee",
+            DeclineId::RecursiveFunctionRuntimeSpecialization => {
+                "recursive-function-runtime-specialization"
+            }
         }
     }
     /// The umbrella code this decline carries (`Some(CDZ0900)` = coded; `None` = still codeless).
@@ -70,6 +76,7 @@ impl DeclineId {
             DeclineId::PrimAsValueNeedsClosure => Some(Code::UnsupportedConstruct),
             DeclineId::TailResumptiveFoldUnhandledForm => Some(Code::UnsupportedConstruct),
             DeclineId::MatchOverHeapCollectionScrutinee => Some(Code::UnsupportedConstruct),
+            DeclineId::RecursiveFunctionRuntimeSpecialization => Some(Code::UnsupportedConstruct),
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.
@@ -99,6 +106,9 @@ impl DeclineId {
             }
             DeclineId::MatchOverHeapCollectionScrutinee => {
                 "matching over a heap-backed Set or Map scrutinee"
+            }
+            DeclineId::RecursiveFunctionRuntimeSpecialization => {
+                "a recursive function needs runtime specialization"
             }
         }
     }
