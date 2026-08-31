@@ -38,6 +38,14 @@ pub struct Record {
     /// Built from the one normalized arena alongside `program` (the text is `sexpr::print` of it, the
     /// bytes are `codec::encode` of it — neither round-trips through the other).
     pub program_ast: Vec<u8>,
+    /// The RAW `(input …)` payload form `E` as BINARY AST — the input subtree VERBATIM, BEFORE the
+    /// `build_normalized_program` rewrite that wraps a bare expression as `(do (def (main) …) (export
+    /// main))`. This is the exact form the `--quote-wrap` corpus pass reifies: it synthesizes a program
+    /// that `(quote E)`s this raw input and round-trips it through the binary codec across the caller
+    /// boundary (`design/DESIGN-quote-corpus-roundtrip-pass.md`). Encoded from the one live arena where
+    /// the input node sits (no reparse), exactly like `wit_world_ast`. Always present (every case has an
+    /// `(input …)`); unused by the ordinary compile/run path (which reads `program_ast`).
+    pub input_ast: Vec<u8>,
     /// Sibling LIBRARY modules of a multi-file PACKAGE case (`DESIGN-package-linking.md`), each a
     /// `(name, program-text)` from a `(module "name" <prog>)` clause — the files the ENTRY (`program`,
     /// named `main`) may `(import …)` from. Empty for the common single-file case (then `program` is
@@ -1287,6 +1295,14 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 
     let input = input.ok_or_else(|| format!("case {description:?} has no (input …)"))?;
     let (program, program_ast) = normalize_program_text_and_ast(a, input);
+    // The RAW input form E as its own binary-AST artifact — the input subtree VERBATIM (no
+    // normalization), the exact form the `--quote-wrap` pass reifies with `(quote E)`. Encoded from the
+    // live arena where the node sits (mirrors the `wit_world_ast` clone-and-encode below).
+    let input_ast = {
+        let mut b = Builder::new();
+        let root = clone_into(a, input, &mut b);
+        codec::encode(&b.finish(root))
+    };
 
     if trials.is_empty() {
         return Err(format!("case {description:?} has no primary result clause"));
@@ -1305,6 +1321,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         description,
         program,
         program_ast,
+        input_ast,
         modules,
         peers,
         trials,

@@ -172,6 +172,15 @@ pub struct RunArgs {
     #[arg(long, value_name = "INTERFACE")]
     pub component_name: Option<String>,
 
+    /// QUOTE-CORPUS round-trip exec (v-quote-corpus `--quote-wrap` pass): the value is the interface the
+    /// two-export guest exports under (e.g. `cadenza:quote/roundtrip`). Runs the anti-const-fold
+    /// caller-boundary round-trip on the ONE component: call `<iface>#encode-quoted()` → binary-AST bytes B,
+    /// then `<iface>#decode-check(B)` MUST return true (round-trip identity), then `#decode-check(corrupt(B))`
+    /// MUST return false OR trap (proving decode genuinely runs on caller-supplied runtime bytes — a
+    /// const-folded-to-true decode would wrongly pass). Prints `quote-roundtrip: PASS`; a failed trial exits 1.
+    #[arg(long, value_name = "INTERFACE")]
+    pub quote_roundtrip: Option<String>,
+
     /// After running, ALSO read the value-heap runtime's live-cell count (`live-objects`) and print it as
     /// a `live-objects\t<N>` line on stdout (after the result). The corpus `(live-objects N)` clause drives
     /// this to assert heap balance (no leak / no double-free). Requires the component to import the runtime,
@@ -536,6 +545,16 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     // and navigates the value structurally — no fragile text parse. Emits the `encode` escape document (the
     // whole value form); the caller projects the field(s) it wants after decoding. A value that does not
     // escape as a value-form document (a bare scalar) errors in `capture_escaped_value_doc`, naming the cause.
+    // QUOTE-CORPUS round-trip exec (v-quote-corpus): the caller-boundary anti-const-fold witness for a
+    // `--quote-wrap` two-export component. Reuses the resolved `opts` (runtime/store). Calls
+    // `<iface>#encode-quoted()` → threads the bytes into `#decode-check(bytes)` (assert true) + a
+    // corrupt-bytes negative trial (assert false/trap). One-line verdict; a failed trial propagates an Err → exit 1.
+    if let Some(iface) = &cli.quote_roundtrip {
+        crate::run_quote_roundtrip(&component_bytes, iface, &opts)?;
+        println!("quote-roundtrip: PASS");
+        return Ok(ExitCode::SUCCESS);
+    }
+
     if cli.format == OutputFormat::BinaryAst {
         let doc = crate::capture_escaped_value_doc(&component_bytes, &cli.args, &opts)?;
         use std::io::Write;

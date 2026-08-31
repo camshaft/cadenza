@@ -3238,6 +3238,135 @@
           echo "ok: corpus-cadenza — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→cadenza-build→exec caching graph" > "$out"
         '';
 
+        # ── quote-corpus: the QUOTE binary-AST round-trip pass (v-quote-corpus, design
+        # DESIGN-quote-corpus-roundtrip-pass.md) ─────────────────────────────────────────────────────────
+        # A SECOND exec layer over a DISTINCT shred: for each ELIGIBLE corpus case the shred emits a §2
+        # two-export round-trip COMPONENT (`encodeQuoted() -> list<u8>` + `decodeCheck(list<u8>) -> bool`
+        # around `quote E`) + its imposed `wit-world.ast` + `component-name`; the build compiles it; the exec
+        # is the CALLER — `cdz-run --quote-roundtrip <iface>` threads `encode-quoted()`'s bytes back into
+        # `decode-check(bytes)` (assert true) + a corrupt-bytes negative trial (assert false/trap), the
+        # anti-const-fold caller-boundary round-trip. Mirrors mkCorpusCadenza's shred→build→exec caching graph.
+
+        # SHRED (distinct from mkCorpusShred — a DIFFERENT program via `--quote-wrap`; cache-keyed on file +
+        # cdzCorpus). Emits ELIGIBLE cases only (single-component; skips sibling-module/peer package cases),
+        # keeping the base-corpus NNNN index — so the per-idx dir may be ABSENT (an ineligible case → the
+        # build's `quote-skip` path handles it).
+        mkQuoteCorpusShred = { name, file }:
+          pkgs.runCommand "quote-corpus-shred-${name}"
+            {
+              nativeBuildInputs = [ cdzCorpus ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            cp ${file} ${name}.sexp
+            cdz-corpus records --out-dir "$out" --quote-wrap ${name}.sexp
+          '';
+
+        # BUILD (content-addressed) — compile ONE eligible case's §2 round-trip program (+ its imposed
+        # wit-world + component-name) to wasm, capturing the outcome. An ABSENT idx dir = an ineligible case
+        # the shred skipped → a `quote-skip` marker (exec skips). A DECLINE (quote can't yet reify E — a
+        # collection literal / a `def`/`export` compound) is NOT a derivation failure: `emit.wasm` is absent,
+        # `compile.status` != 0 → the exec grades it Todo.
+        mkQuoteCorpusBuild = { name, shred, idx }:
+          pkgs.runCommand "quote-corpus-build-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzCompile ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            mkdir -p "$out"
+            # nix stdenv bash has nullglob ON, so an unmatched glob expands to EMPTY (not the literal) → an
+            # absent idx (ineligible, shred-skipped) yields no `case` dir. Mark quote-skip so the exec skips.
+            case=$(echo ${shred}/${name}/${idx}-*)
+            if [ -z "$case" ] || [ ! -d "$case" ]; then
+              touch "$out/quote-skip"
+              echo "skip (ineligible / not shredded): case ${idx} of ${name}" > "$out/why"
+              exit 0
+            fi
+            cfg=("wit-world:w=$case/wit-world.ast" --component-name "$(cat "$case/component-name")")
+            # Compile the two-export round-trip program. A refusal (quote reify gap) is captured, not fatal.
+            if cdz-compile "ast:main=$case/program.ast" "''${cfg[@]}" -t wasm -o "$out/emit.wasm" 2>"$out/compile.err"; then
+              printf '0' > "$out/compile.status"
+            else
+              printf '%s' "$?" > "$out/compile.status"
+            fi
+            cp "$case/component-name" "$out/component-name"
+            cp "$case/description" "$out/description"
+          '';
+
+        # EXEC — the CALLER-boundary round-trip. Compiler-free (closure = cdzRun + the debug runtime).
+        #   quote-skip (ineligible)                 → SKIP (exit 0).
+        #   no emit.wasm (compile declined/refused) → TODO (exit 0; the quote-reify gap the pass DRIVES —
+        #                                             flips to a real run as v-metaprogramming broadens reify).
+        #   emit.wasm present                        → `cdz-run --quote-roundtrip <iface>`: PASS (exit 0) or
+        #                                             FAIL (exit 1 → the derivation REDS — a genuine
+        #                                             quote/codec/decode or anti-const-fold regression).
+        # (Baseline/regression grading — Todo→Pass tracking — is a follow-up increment; this slice reds only
+        #  on a compiled program whose round-trip breaks.)
+        mkQuoteCorpusExec = { name, build, idx }:
+          pkgs.runCommand "quote-corpus-exec-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRun ];
+            } ''
+            set -euo pipefail
+            if [ -e ${build}/quote-skip ]; then
+              echo "skip: quote-corpus ${name} case ${idx} — ineligible (module/peer or not shredded)" > "$out"
+              exit 0
+            fi
+            if [ ! -e ${build}/emit.wasm ]; then
+              echo "todo: quote-corpus ${name} case ${idx} — quote-wrap program declined to compile (quote reify gap): $(head -1 ${build}/compile.err 2>/dev/null)" > "$out"
+              exit 0
+            fi
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            # The caller-boundary round-trip: encode-quoted() → decode-check(bytes)==true + a corrupt-bytes
+            # negative trial (==false/trap). A failed trial exits 1 → this derivation reds.
+            cdz-run ${build}/emit.wasm --quote-roundtrip "$(cat ${build}/component-name)" --runtime ${runtimeDebug}
+            echo "ok: quote-corpus ${name} case ${idx} — round-trip PASS ($(cat ${build}/description))" > "$out"
+          '';
+
+        quoteCorpusCaseChecks = { name, file }:
+          let
+            shred = mkQuoteCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+          in
+          builtins.listToAttrs (map
+            (idx: {
+              name = "${name}-${idx}";
+              value = mkQuoteCorpusExec {
+                inherit name idx;
+                build = mkQuoteCorpusBuild { inherit name shred idx; };
+              };
+            })
+            idxs);
+
+        mkQuoteCorpusFileAgg = { name, file }:
+          let cases = quoteCorpusCaseChecks { inherit name file; };
+          in
+          assert (builtins.length (builtins.attrNames cases)) > 0;
+          pkgs.runCommand "quote-corpus-${name}" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
+            echo "ok: quote-corpus ${name} — ${toString (builtins.length (builtins.attrNames cases))} cases via per-case shred(--quote-wrap)→build→roundtrip-exec" > "$out"
+          '';
+
+        quoteCorpusFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            {
+              name = "quote-corpus-${stem}";
+              value = mkQuoteCorpusFileAgg { name = stem; file = ./spec/semantics + "/${f}"; };
+            })
+          corpusFileNames);
+        quoteCorpusAll = pkgs.runCommand "quote-corpus-all" { } ''
+          ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues quoteCorpusFileAggs)}
+          echo "ok: quote-corpus — ${toString (builtins.length corpusFileNames)} files, per-case quote binary-AST round-trip (design-quote-corpus-roundtrip-pass)" > "$out"
+        '';
+
         # A corpus file's per-case check MAP `{ "<idx>" = execDrv; … }` — shred once, then one build+exec
         # chain per case. `pipeline`-style (no barrier): each case is an independent chain.
         corpusCaseChecks = { name, file }:
@@ -5557,6 +5686,13 @@
             # (program.ast → cadenza → wasm), graded vs the SAME wasm baseline so a value-miscompile in the
             # round-trip shows as a grade divergence. Per-file `corpus-cadenza-<file>` aggregates spread below.
             corpus-cadenza = corpusCadenzaAll;
+            # The QUOTE binary-AST round-trip pass (v-quote-corpus, DESIGN-quote-corpus-roundtrip-pass): for
+            # each eligible case, a §2 two-export component whose `encode-quoted()`→`decode-check(bytes)`
+            # round-trip is threaded across the caller boundary by `cdz-run --quote-roundtrip` (+ a
+            # corrupt-bytes anti-const-fold negative trial). Per-file `quote-corpus-<file>` aggregates spread
+            # below. ADVISORY for now (NOT in the required local-gate set) — a first slice reds only on a
+            # compiled program whose round-trip breaks; a baseline/Todo-regression gate is a follow-up.
+            quote-corpus = quoteCorpusAll;
             # The GLOBAL half of gap #7: a baseline case with no corpus case (silently dropped, its verdict
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
@@ -5733,6 +5869,10 @@
           # the wasm baseline), so one file's cadenza per-case graph builds/caches in isolation (top-level
           # `corpus-cadenza` forces them all).
           // corpusCadenzaFileAggs
+          # PER-FILE quote round-trip aggregates: `quote-corpus-<file>` (per-case shred(--quote-wrap)→build→
+          # `cdz-run --quote-roundtrip`), so one file's quote per-case graph builds/caches in isolation
+          # (top-level `quote-corpus` forces them all).
+          // quoteCorpusFileAggs
           # PER-FILE wasm-opt-gap aggregates: `wasm-opt-gaps-<file>` for every corpus file, so a slice
           # (01-literals + 10-bytes) builds in isolation while the top-level `wasm-opt-gaps` forces the whole
           # sweep. Per-CASE reports are CA on {emit, binaryen} → shared with `wasm-opt-gaps` + cached.

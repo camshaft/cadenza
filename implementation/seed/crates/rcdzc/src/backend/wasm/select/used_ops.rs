@@ -877,6 +877,18 @@ pub(super) fn collect_used_ops_into_seen(
             out.insert(OP_DROP); // reclaim the fresh discs buffer + an owned Ast operand (emit_ast_op_with_discs)
             collect_used_ops_into_seen(db, operand, out, visited);
         }
+        // `Ast.decode` (runtime): like `AstEncode` it bakes the disc descriptor (`bytes-alloc`+`bytes-set`)
+        // and calls the op with a borrow-drop of the operand + discs buffer (`ast-decode`+`drop`); THEN it
+        // wraps the returned handle-or-0 as `(Ok …)`/`(Err unit)` via `sum-new` (the unit payload is the
+        // inline `IMM_UNIT` constant, no alloc — mirrors `StrFromBytes`).
+        Core::AstDecode { operand, .. } => {
+            out.insert(OP_AST_DECODE);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            out.insert(OP_DROP);
+            out.insert(OP_SUM_NEW);
+            collect_used_ops_into_seen(db, operand, out, visited);
+        }
         // `Blake3.of` calls the `hash-blake3` heap op (op 91) over its Bytes operand.
         Core::Blake3Of { operand } => {
             out.insert(OP_HASH_BLAKE3);

@@ -918,6 +918,33 @@
   (output (: true Bool)))
 
 (case
+  "Ast.decode of a RUNTIME byte sequence round-trips (not const-folded)"
+  (doc
+    "The RUNTIME decode path (value-heap op `ast-decode`, index 94): unlike every `Ast.decode`
+           case above — whose bytes are a COMPILE-TIME constant that the compiler const-FOLDS — here the
+           encoded bytes derive from a RUNTIME parameter `n`, so `Ast.encode` runs at run time (op 93) and
+           its result is a RUNTIME `Bytes` the compiler cannot see through. `Ast.decode` must therefore
+           parse it AT RUN TIME (op 94) rather than folding. Round-trips `Ast.Int (BigInt.of n)` through
+           encode→decode across the runtime boundary and matches the `Ok` arm: `decode(encode(v)) == v`.
+           A compiler that could not decode runtime bytes DECLINED here (op 94 was runtime-only, the
+           compiler path missing); this pins that the runtime decode now works and stays total.")
+  (input
+    (do (def (main (: n Int64))
+          (match (Ast.decode (Ast.encode (Ast.Int (BigInt.of n))))
+            ((Ok a) (= a (Ast.Int (BigInt.of n))))
+            ((Err _) false)))
+        (export main)))
+  (call main (: 42 Int64))
+  (output (: true Bool))
+  ; KNOWN-LEAK: a runtime Ast-value round-trip leaks heap cells (encode-only leaks 1; this
+  ; encode→decode→`=` round-trip leaks 3) — a PRE-EXISTING runtime Ast-value/`=`/BigInt reclaim gap,
+  ; NOT introduced by runtime Ast.decode (op 94): the analogous reflection round-trip
+  ; (11-modules.sexp `(= (Ast.encode a) (Ast.encode __ast__))`) is already `(live-objects known-leak)`.
+  ; Marked known-leak (consistent with that precedent) so this pins the runtime-decode VALUE round-trip;
+  ; the underlying leak is surfaced to the memory-safety/runtime lane to fix (then drop this marker).
+  (live-objects known-leak 3))
+
+(case
   "an Ast.Bytes nested in an Ast.List round-trips through encode and decode"
   (doc
     "Composition: an `Ast.Bytes` as a child of an `Ast.List` (`(f b\"hi\")`) round-trips through the

@@ -1172,11 +1172,20 @@ pub(super) fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Co
     }
     // Collect the raw bytes of a compile-time-visible Bytes — a baked `Core::ConstBytes` (what the
     // `Ast.encode` fold now produces) OR a `Core::BytesOf` of constant elements (a `b"…"` literal /
-    // `Bytes.of`); a runtime Bytes declines.
+    // `Bytes.of`); a runtime Bytes takes the RUNTIME path below.
     let Some(raw) = const_byte_slice(db, bytes) else {
-        return Core::Poison(Reject::unsupported(
-            "Ast.decode of a runtime byte sequence is not supported (constant Bytes only)",
-        ));
+        // RUNTIME bytes: parse at run time via the value-heap `ast-decode` op (heap index 94) over the Bytes
+        // handle, guided by the SAME baked descriptor as `Ast.encode` — byte-identical to the const fold
+        // below (the op runs the SAME shared codec). The emit wraps the op's handle-or-0 result as the
+        // `(Result Ast e)` sum (a fresh Ast → `(Ok …)`, 0 → `(Err unit)`). The symmetric companion of the
+        // runtime `Ast.encode` (`Core::AstEncode`, #3634); the runtime op 94 already existed, only this
+        // compiler path was missing (unblocks a caller-boundary round-trip over runtime bytes).
+        return Core::AstDecode {
+            operand: bytes,
+            discs: bake_ast_discs_9(&disc),
+            disc_ok,
+            disc_err,
+        };
     };
     // `codec::decode` parses the WHOLE byte sequence into a cadenza-ast `Arenas` — the canonical `cdzast`
     // decoder (None on a bad header / malformed structure / out-of-range id / TRAILING bytes; it consumes

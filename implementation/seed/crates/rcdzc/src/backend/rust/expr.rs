@@ -3385,6 +3385,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::AstEncode { .. } => Err(crate::diag::Reject::unsupported(
             "Ast.encode on a runtime Ast is not supported on the Rust backend (available on the wasm backend)",
         )),
+        Core::AstDecode { .. } => Err(crate::diag::Reject::unsupported(
+            "Ast.decode of a runtime byte sequence is not supported on the Rust backend (available on the wasm backend)",
+        )),
         // `String.at`/`String.scalar-at` on a RUNTIME string → the i-th UNICODE SCALAR, fallibly, as a
         // one-scalar `(Option String)`. `.chars()` iterates by scalar value (matching the spec's
         // scalar-value addressing — NOT bytes), `.nth(i)` picks it, `.map(to_string)` wraps the scalar as
