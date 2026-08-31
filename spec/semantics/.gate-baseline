@@ -1835,6 +1835,7 @@ pass	a constant nested tuple is returned as a program result
 pass	a constant non-String operand to String.at is a type mismatch, not an uncoded decline
 pass	a constant non-String operand to String.byte-len is a type mismatch, not a const-fold decline
 pass	a constant non-String operand to String.concat is a type mismatch, not an uncoded decline
+pass	a constant non-String operand to String.slice is a type mismatch, not an uncoded decline
 pass	a constant rational with a zero denominator is rejected and names the nonzero-denominator repair
 pass	a constant record is returned as a program result
 pass	a constant shift by an OUT-OF-RANGE count is rejected at compile time with CDZ0304
@@ -4157,6 +4158,10 @@ pass	a runtime negative dividend mod a constant power of two takes the dividend'
 pass	a runtime negative zero is not equal to positive zero
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
 pass	a runtime nibble truncation keeps the low four bits
+pass	a runtime non-String operand to String.at is the same CDZ0203 as its constant twin
+pass	a runtime non-String operand to String.byte-len is the same CDZ0203 as its constant twin
+pass	a runtime non-String operand to String.concat is the same CDZ0203 as its constant twin
+pass	a runtime non-String operand to String.slice is the same CDZ0203 as its constant twin
 pass	a runtime non-final dependent-size body of zero binds empty and rest absorbs everything
 pass	a runtime non-final dependent-size body that overruns the frame falls through
 pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
