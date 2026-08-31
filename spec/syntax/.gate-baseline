@@ -210,6 +210,11 @@ pass	ml/281-comment-leading-nonfirst-tuple-elem
 pass	ml/282-comment-leading-first-set-elem
 pass	ml/283-comment-leading-grouped-expr
 pass	ml/284-comment-trailing-last-tuple-elem
+pass	ml/285-comment-leading-bin-segment
+pass	ml/286-comment-trailing-last-bin-segment
+pass	ml/287-comment-leading-def-body
+pass	ml/288-comment-leading-value-def-body
+pass	ml/289-comment-between-top-level-defs
 pass	ml/29-match-refutable-sum-ctor
 pass	ml/30-match-refutable-literal
 pass	ml/31-match-refutable-guarded

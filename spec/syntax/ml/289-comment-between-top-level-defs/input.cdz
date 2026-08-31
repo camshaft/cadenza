@@ -1,0 +1,3 @@
+def a() -> Int64 = 1
+// between defs
+def b() -> Int64 = 2
