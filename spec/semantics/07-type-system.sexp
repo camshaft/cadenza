@@ -1709,8 +1709,21 @@
 ; — the reject-naming facets; the two-type bare-`=` no-relabel control + the spanless-decline dedup stay a
 ; rust residual.)
 (case "an arithmetic op with a user-type VALUE operand and a scalar names the kind boundary, not a phantom Int64"
+  (doc    "Also pins the DEDUP (migrated from rcdzc): `(+ Color 1)` used to report the CDZ0201 kind-boundary
+           AND a SPANLESS uncoded 'a type value has no runtime form' decline (lowering the type-valued
+           operand) — two error: lines for one root cause. dedup_faults drops the spanless decline when the
+           kind-boundary CDZ0201 is present, so it is EXACTLY ONE error. Hence (count 1).")
   (input  (do (type Color (Red)) (def (main) (+ Color 1)) (export main)))
-  (error  CDZ0201 (message "kind boundary") (message "Type") (not "Int64 and Type")))
+  (error  CDZ0201 (message "kind boundary") (message "Type") (not "Int64 and Type") (count 1)))
+
+(case "a bare `=` on two identical TYPE values is not relabeled a kind boundary — type equality is Type.eq"
+  (doc    "The no-relabel control (migrated from rcdzc): `(= Int64 Int64)` compares two TYPE values with the
+           bare `=`. Both share the Type KIND tag, so the cross-kind boundary guard does NOT fire — the bare
+           `=` on two types keeps its own path (a type error; type EQUALITY is the dedicated `Type.eq`, not
+           the bare `=`), and must NOT be relabeled a 'kind boundary'. Pins that the phantom-Int64 fix and the
+           cross-kind guard do not over-reach onto a same-kind (Type vs Type) comparison.")
+  (input  (do (def (main) (if (= Int64 Int64) 1 0)) (export main)))
+  (declines (not "kind boundary")))
 
 (case "two type-value operands in arithmetic name that arithmetic is not defined on Type"
   (input  (do (type Color (Red)) (def (main) (+ Color Color)) (export main)))

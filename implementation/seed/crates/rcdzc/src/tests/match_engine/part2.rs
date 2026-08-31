@@ -29,62 +29,14 @@ use super::*;
 // is valid" (runs → false). The record=record-ok + different-record-shapes→CDZ0203 controls are covered by
 // 07's existing equality field-set cases. All 9 PASS wasm.)
 
-#[test]
-fn arithmetic_or_comparison_with_a_type_value_operand_names_it_not_a_phantom_int64() {
-    // Residual: the corpus-inexpressible facets of the type-value-operand reject (the reject-NAMING facets —
-    // a Type-value vs a scalar → CDZ0201 "kind boundary" / no phantom `Int64 and Type`, and two Type operands
-    // → "arithmetic is not defined on Type" — moved to corpus 07-type-system "an arithmetic op with a
-    // user-type VALUE operand …" + siblings). What stays: (a) the NO-relabel control — a bare `(= Int64
-    // Int64)` on two Type operands declines its OWN way (CDZ0900, type equality is `Type.eq`), NOT relabeled a
-    // kind boundary (the cross-kind guard needs a positive `(message)` companion to grade, awkward for a
-    // CDZ0900 decline), and (b) the DEDUP — an arithmetic op on a type value is ONE error, the spanless
-    // UNCODED "type value has no runtime form" decline dropped (count-by-code cannot pin a codeless dup).
-    // NO false change: a bare `(= Int64 Int64)` (two Types) is NOT relabeled — type equality is
-    // `Type.eq`, and the bare `=` on two types keeps its own path (both share the Type kind tag, so the
-    // cross-kind guard does not fire).
-    let two_types_eq =
-        reject_full("(module m (def (main) (if (= Int64 Int64) 1 0)) (export main))")
-            .expect("bare = on two types still declines");
-    assert!(
-        !two_types_eq.message.contains("kind boundary"),
-        "bare = on two identical types is not relabeled a kind boundary: {}",
-        two_types_eq.message
-    );
-    // ONE primary error, no cascade: `(+ Color 1)` used to report the CDZ0201 kind-boundary AND a
-    // SPANLESS uncoded "a type value has no runtime form" decline (lowering the type-valued operand) —
-    // two `error:` lines for ONE root cause. `dedup_faults` now drops the spanless decline whenever the
-    // Type-kind-boundary CDZ0201 is present, so an arithmetic op on a type value is a single error.
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse(
-                "(module m (type Color (Red)) (def (main) (+ Color 1)) (export main))",
-            )),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    let errors: Vec<&crate::abi::Diagnostic> = out
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect();
-    assert_eq!(
-        errors.len(),
-        1,
-        "an arithmetic op on a type value = ONE error, not the CDZ0201 + a spanless \
-             no-runtime-form decline: {:?}",
-        out.diagnostics
-    );
-    assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.message.contains("type value has no runtime form")),
-        "the spanless no-runtime-form decline is suppressed: {:?}",
-        out.diagnostics
-    );
-}
+// (arithmetic_or_comparison_with_a_type_value_operand_names_it_not_a_phantom_int64 fully migrated to corpus
+// 07-type-system: the reject-NAMING facets are "an arithmetic op with a user-type VALUE operand …" + "two
+// type-value operands …"; the DEDUP (an arith op on a type value is ONE error — the spanless uncoded "type
+// value has no runtime form" decline dropped) is now pinned by (count 1) on that same case (corpus (count N)
+// counts TOTAL errors, so it pins a codeless-dup drop the earlier residual note thought impossible); and the
+// no-relabel control (a bare `(= Int64 Int64)` on two Type operands is NOT relabeled a kind boundary — same
+// Type kind, so the cross-kind guard does not fire) is "a bare `=` on two identical TYPE values is not
+// relabeled a kind boundary — type equality is Type.eq" ((declines (not "kind boundary"))).)
 
 // (a_bool_against_a_number_or_char_names_the_scalar_kind_boundary migrated to corpus 07-type-system, beside
 // the `(= 1 true)` int-vs-bool case: "ordering a boolean against a number" / "adding a boolean to a number" /
