@@ -12906,7 +12906,7 @@
           (Ask)
           (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Ask.ask)))))
       (export main)))
-  (declines (message "not reducible by the tail-resumptive fold")))
+  (error CDZ0408))
 
 (case
   "a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it"
@@ -12929,7 +12929,7 @@
           ((tick (u) s (resume s (+ s 1))))
           (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Ctr.tick) (Amb.flip)))))
       (export main)))
-  (declines (message "not reducible by the tail-resumptive fold")))
+  (error CDZ0408))
 
 (case
   "a multi-shot continuation reaching an outer effect via an if branch declines cleanly"
@@ -12955,7 +12955,7 @@
             ((flip (u) s (+ (resume 1 s) (resume 2 s))))
             (if (< (Amb.flip) 5) (Ctr.tick) 99))))
       (export main)))
-  (declines (message "not reducible by the tail-resumptive fold")))
+  (error CDZ0408))
 
 (case
   "a multi-shot continuation spanning a host call inside a do declines cleanly"
@@ -12975,7 +12975,7 @@
           (Log)
           (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (do (Log.emit (Amb.flip)) 7))))
       (export main)))
-  (declines (message "not reducible by the tail-resumptive fold")))
+  (error CDZ0408))
 
 ; ── self-call gated behind a nested conditional in a cond/scrutinee — the multi-value hoist safe-reject
 ;    (migrated from rcdzc tests/mod.rs a_selfcall_gated_in_an_if_condition_declines_not_hoisted, delanguaging

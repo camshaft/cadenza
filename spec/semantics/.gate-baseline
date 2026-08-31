@@ -2056,7 +2056,7 @@ pass	a distinct-signature round-trip applies the Int64->Bool closure
 pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
 pass	a distributed if-branch reading an enclosing parameter folds through the one-hole continuation
-pass	a distributed if-branch that folds to an ill-typed arm composition declines
+todo	a distributed if-branch that folds to an ill-typed arm composition declines
 pass	a distributed match arm re-resolves its pattern binder inside the pushed handle
 pass	a diverging expression unifies with an integer position
 pass	a dividend provably below its divisor folds div to zero and rem to the dividend
@@ -3525,7 +3525,7 @@ pass	a pure one-hole conditional nested inside a strict operator folds
 pass	a pure one-hole continuation body reads an enclosing function parameter and folds
 pass	a pure one-hole continuation folds with pure siblings around the hole
 pass	a pure one-hole fold passes a PURE perform-arg the op reads
-pass	a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled
+todo	a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled
 pass	a pure one-hole in a FIRST let init with a later init using its binder folds
 pass	a pure one-hole in a let BODY (pure init) folds
 pass	a pure one-hole locates the hole NESTED several operators deep
@@ -4366,8 +4366,8 @@ pass	a saturating OR-mask over a refined range folds to the constant (value + tr
 pass	a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm
-pass	a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)
-pass	a scalar abort in a TUPLE-typed handle body declines (type-consistency)
+todo	a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)
+todo	a scalar abort in a TUPLE-typed handle body declines (type-consistency)
 pass	a scalar do-def shared across both resume slots in a state-advancing add handler
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
@@ -5268,7 +5268,7 @@ pass	an abortive arm READS the heap LIST op argument it was handed — the paylo
 pass	an abortive arm returns a MAP built FROM its heap op argument as the handle's value
 pass	an abortive arm that READS a heap-typed (List) handler state folds — the List face
 pass	an abortive arm that READS a heap-typed (Map) handler state folds — seed-let-lift on the abort path
-pass	an abortive arm whose value type mismatches the op RESULT type declines
+todo	an abortive arm whose value type mismatches the op RESULT type declines
 pass	an abortive arm yields a RECURSIVE-SUM spine as the handle's value
 pass	an abortive arm yields a heap LIST built in the arm as the handle's value
 pass	an abortive handler ISSUES a host call sequenced BEFORE the abort in its discarded body
@@ -9374,10 +9374,10 @@ todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cle
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
-pass	a multi-shot continuation reaching an outer effect via an if branch declines cleanly
-pass	a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it
-pass	a multi-shot continuation spanning a host call declines cleanly, never doubling the host call
-pass	a multi-shot continuation spanning a host call inside a do declines cleanly
+todo	a multi-shot continuation reaching an outer effect via an if branch declines cleanly
+todo	a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it
+todo	a multi-shot continuation spanning a host call declines cleanly, never doubling the host call
+todo	a multi-shot continuation spanning a host call inside a do declines cleanly
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands

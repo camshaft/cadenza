@@ -12845,7 +12845,7 @@
       (effect Bail (op bail (-> Int64 Int64)))
       (def (main) (handle Bail 0 ((bail (n) s n)) #tuple(1 (Bail.bail 7))))
       (export main)))
-  (declines))
+  (error CDZ0203))
 
 (case
   "a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)"
@@ -12858,7 +12858,7 @@
       (effect Bail (op bail (-> Int64 Int64)))
       (def (main) (handle Bail 0 ((bail (n) s n)) #tuple(1 (if true (Bail.bail 7) 5))))
       (export main)))
-  (declines))
+  (error CDZ0203))
 
 (case
   "a distributed if-branch that folds to an ill-typed arm composition declines"
@@ -12874,7 +12874,7 @@
         (main)
         (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (< (Amb.flip) 5) false)))
       (export main)))
-  (declines))
+  (error CDZ0203))
 
 (case
   "a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled"
@@ -12887,7 +12887,7 @@
       (effect Amb (op flip (-> Unit Int64)))
       (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (< (Amb.flip) 5)))
       (export main)))
-  (declines))
+  (error CDZ0203))
 
 (case
   "an abortive arm whose value type mismatches the op RESULT type declines"
@@ -12902,7 +12902,7 @@
       (effect Bail (op bail (-> Int64 Bool)))
       (def (main (: x Int64)) (handle Bail false ((bail (n) s n)) (if (< x 5) (Bail.bail 7) false)))
       (export main)))
-  (declines))
+  (error CDZ0203))
 
 (case
   "a stray resume in a plain def body (no enclosing arm) is rejected CDZ0201"
