@@ -8490,7 +8490,7 @@ pass	su2 a THREE-variant cyclic machine — the op arg selects the transition, b
 pass	su3 a RECURSIVE sum state — the arm grows a Peano tower by two per dispatch, a recursive fn measures it
 pass	su4 a sum variant carrying a HEAP list — Empty seeds on first put, Full grows the payload thereafter
 pass	su5 the sum STATE escapes as the handle's value via a dump op — matched OUTSIDE the handler
-pass	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
+todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
 pass	su6f a SCALAR-state outer shadowed by a SUM-state inner cycler — the inner machine transitions twice
 pass	su6g a SUM-state outer shadowed by a SCALAR-state inner — mixed state kinds across the shadow boundary
 pass	subset record comparison is explicit projection, not an overloaded equality
