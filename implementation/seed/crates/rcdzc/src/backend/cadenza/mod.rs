@@ -163,6 +163,16 @@ use std::collections::HashMap;
 struct BinderEnv {
     lets: HashMap<StructId, std::rc::Rc<str>>,
     payloads: HashMap<(StructId, Vec<crate::core::PathStep>), std::rc::Rc<str>>,
+    /// The solved TYPE of a payload binder in `payloads` (SAME key), populated where cheaply known (the
+    /// sum-match arm-loop's variant payload slot; a `build_arm_pat` leaf). Its ONLY use: a `Core::SumPayload`
+    /// read whose binder type is an ERASED single-variant, single-payload newtype (`(type Box (Mk Int64))`)
+    /// but whose OWN solved type is that newtype's INNER — the erasure ELIDES the newtype's `Payload` step,
+    /// collapsing the inner-read's key onto the newtype binder's key, so the exact-binder lookup returns the
+    /// newtype binder where the inner is required. Emit a newtype PEEL `(match <binder> ((<Ctor> x) x))` (the
+    /// type-correct surface crossing) instead of the bare binder, which would recompile as the newtype where
+    /// the inner scalar is needed (CDZ0203, e.g. a map-key `(Box.Mk n)` sub-pattern). A key ABSENT here → no
+    /// peel (bare binder, prior behavior), so a missing / imprecise type degrades safely to today's emit.
+    payload_tys: HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
     next_payload: usize,
     /// The program's lambda-lifted lambdas (a cheap `Rc` copy of `layout.lifted`), so a `Core::Closure {
     /// code }` value resolves its lifted lambda by index and re-emits the surface `(fn (<params>) <body>)`.
@@ -1394,8 +1404,47 @@ fn emit_expr_viewed(
         // this slice does not emit) declines.
         Core::SumPayload { scrutinee, path } => {
             // Exact registered binder (a match arm's own payload slot).
-            if let Some(nm) = env.payloads.get(&(scrutinee, path.to_vec())) {
-                return Ok(b.name(nm.clone()));
+            if let Some(nm) = env.payloads.get(&(scrutinee, path.to_vec())).cloned() {
+                // TYPE-AWARE NEWTYPE PEEL: the binder may hold an ERASED single-variant, single-payload
+                // newtype (`(type Box (Mk Int64))`) whose `Payload` step the optimizer elided — collapsing an
+                // inner-payload read's key onto this binder's key. If THIS read's OWN solved type is the
+                // newtype's INNER (not the newtype), the bare binder recompiles as the newtype where the inner
+                // is required (CDZ0203, e.g. a map-key `(Box.Mk n)` sub-pattern read). Emit the type-correct
+                // unwrap `(match <binder> ((<Ctor> x) x))` (irrefutable single-variant, value-eq — recompile
+                // re-erases). Gated on a stored binder type that is an EMITTED single-variant/single-payload
+                // nominal whose inner EQUALS the node's solved type; absent / non-matching → bare binder.
+                if let Some(binder_ty) = env.payload_tys.get(&(scrutinee, path.to_vec())).cloned()
+                    && let Ty::Nominal {
+                        decl: nd, inner, ..
+                    } = &binder_ty
+                    && emitted.contains(nd)
+                    && db
+                        .type_decl_by_occ(*nd)
+                        .is_some_and(|t| t.variants.len() == 1 && t.variants[0].payloads.len() == 1)
+                {
+                    let node_ty = crate::infer::type_of(db, id);
+                    if **inner == node_ty && node_ty != binder_ty {
+                        let nd = *nd;
+                        let scrut = b.name(nm.clone());
+                        let ctor =
+                            crate::lower::variant_head_ast(db, b, nd, 0).ok_or_else(|| {
+                                Reject::decline(
+                                    "the Cadenza backend could not recover the newtype ctor for a \
+                                     payload peel"
+                                        .to_string(),
+                                )
+                            })?;
+                        let x = synth_payload_name(env.next_payload);
+                        env.next_payload += 1;
+                        let x_pat = b.name(x.clone());
+                        let pat = b.list(vec![ctor, x_pat]);
+                        let body = b.name(x);
+                        let arm = b.list(vec![pat, body]);
+                        let match_head = b.name("match");
+                        return Ok(b.list(vec![match_head, scrut, arm]));
+                    }
+                }
+                return Ok(b.name(nm));
             }
             // Else: a NESTED compound destructure — a `(tuple a c)` / `(record (= f p))` pattern inside a
             // match arm reads its element as `SumPayload { scrutinee = <the enclosing bound compound>, path =
@@ -2384,6 +2433,9 @@ fn build_arm_pat(
     // A LEAF position — bind a fresh name at the READ path (the exact key the body's `Core::SumPayload` uses).
     let nm = synth_payload_name(env.next_payload);
     env.next_payload += 1;
+    // Record the leaf's TYPE too (for the erased-newtype read peel — see `BinderEnv::payload_tys`).
+    env.payload_tys
+        .insert((root_scrut, read_path.to_vec()), ty.clone());
     env.payloads
         .insert((root_scrut, read_path.to_vec()), nm.clone());
     Ok(b.name(nm))
@@ -2634,6 +2686,11 @@ fn emit_match_sum(
                         )
                     })?;
                 let mut binder_names = Vec::with_capacity(arity);
+                // The variant's payload type(s) — the source of each slot binder's TYPE (for the erased-newtype
+                // read peel; see `BinderEnv::payload_tys`). `sum_payload_expected` returns a `Tuple` of the
+                // slots (multi-payload) or the sole type (arity 1); index slot `i` accordingly.
+                let sum_ty = crate::infer::type_of(db, scrutinee);
+                let payload_expected = sum_payload_expected(db, decl, disc, &sum_ty);
                 for slot in 0..arity {
                     let name = synth_payload_name(env.next_payload);
                     env.next_payload += 1;
@@ -2642,6 +2699,13 @@ fn emit_match_sum(
                     } else {
                         vec![PathStep::Payload, PathStep::Elem(slot)]
                     };
+                    if let Some(slot_ty) = match (&payload_expected, arity) {
+                        (Some(Ty::Tuple(ts)), n) if n > 1 => ts.get(slot).cloned(),
+                        (Some(t), 1) => Some(t.clone()),
+                        _ => None,
+                    } {
+                        env.payload_tys.insert((scrutinee, path.clone()), slot_ty);
+                    }
                     env.payloads.insert((scrutinee, path), name.clone());
                     binder_names.push(name);
                 }
