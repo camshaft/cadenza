@@ -1730,7 +1730,7 @@ impl Arenas {
                 // consolidation onto this crate (#5158) — restoring it here keeps the ~40 rcdzc member/
                 // field-pair recognition sites working on native leaves (namespaced ctor patterns
                 // `((. Sum V) x)`, record `(= k v)` patterns, …). Deliberately NOT the ctor-head leaves
-                // (`Leaf::Ctor`): those are recognized by kind via `compound_ctor_leaf`/`compound_ctor_prim`/
+                // (`Leaf::Ctor`): those are recognized by kind via `compound_ctor_leaf`/
                 // `compound_form_of`, and keeping them `None` here preserves ctor-leaf-is-its-own-identity
                 // (no name-collapse). M3 removes the legacy heads; these two bridge arms then just spell the
                 // native head.
@@ -1971,24 +1971,6 @@ impl Arenas {
         }
     }
 
-    /// The compound constructor a `List` node denotes for STRUCTURAL DISPATCH — accepting EITHER the native
-    /// ctor-LEAF-KIND head ([`Arenas::compound_ctor_leaf`], the M2 form the reader now emits) OR the legacy
-    /// unshadowable STRING-primitive head ([`Arenas::compound_ctor`], transitional). BOTH are unshadowable (a
-    /// ctor-leaf can't be rebound; a string can't be spelled as an identifier), so this is safe for the
-    /// resolver's structural dispatch — unlike the NAME alias (`(list …)`), which resolves lexically-first
-    /// (a bound `list` shadows it) and is NOT recognized here. The migration dual-read for dispatch; M3
-    /// drops the string arm, leaving `compound_ctor_leaf`. See `DESIGN-native-ast-compound-data.md`.
-    pub fn compound_ctor_prim(&self, id: StructId) -> Option<CompoundCtor> {
-        // M3 reader-flip (operator-confirmed 2026-08-31): the recognizer accepts ONLY the native ctor-LEAF
-        // head — the legacy STRING-primitive head (`("record" …)`) is no longer a compound constructor. Was
-        // `compound_ctor_leaf(id).or_else(|| compound_ctor(id))` (the transitional dual-read); collapsed to
-        // leaf-only, so BOTH callers (resolve.rs:465 + lower.rs) drop string-head recognition at once. The
-        // shadowable NAME alias (`(record …)`, `(set …)`) is UNAFFECTED — it never resolved via this
-        // primitive path (it falls through to the lexical/Apply prelude-alias path). `compound_ctor` (the
-        // dead string helper) + its unit tests are cosmetic cleanup (v-ast-consolidate follow-up).
-        self.compound_ctor_leaf(id)
-    }
-
     /// The child occurrences of `id` if it is a `List` headed by the compound ctor `want`, accepting
     /// EITHER head spelling (a transitional dual-read) — the tag-typed twin of the
     /// `as_form(id, "…").or_else(|| as_ctor_form(id, "…"))` idiom for the four compound ctors.
@@ -2187,8 +2169,8 @@ mod tests {
 
     #[test]
     fn arenas_leaf_accessors_and_compound_recognizers() {
-        // Pins the leaf-atom accessors (`as_int`/`as_float`/`as_bool`) and the transitional compound
-        // recognizers (`compound_ctor_prim`/`compound_form_of`) + `type_decl_head_name`
+        // Pins the leaf-atom accessors (`as_int`/`as_float`/`as_bool`) and the compound recognizers
+        // (`compound_ctor_leaf`/`compound_form_of`) + `type_decl_head_name`
         // — the `Arenas` surface `rcdzc` re-exports from this crate once it consolidates off its own copy.
         let mut b = Builder::new();
         let iatom = b.atom_leaf(Leaf::Int {
@@ -2216,8 +2198,8 @@ mod tests {
         assert_eq!(a.as_bool(iatom), None);
 
         // Structural dispatch: the native ctor-leaf head is recognized; the shadowable NAME alias is NOT.
-        assert_eq!(a.compound_ctor_prim(native_list), Some(CompoundCtor::List));
-        assert_eq!(a.compound_ctor_prim(alias), None);
+        assert_eq!(a.compound_ctor_leaf(native_list), Some(CompoundCtor::List));
+        assert_eq!(a.compound_ctor_leaf(alias), None);
         assert_eq!(
             a.compound_form_of(native_list, CompoundCtor::List)
                 .map(<[_]>::len),
