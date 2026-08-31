@@ -1135,7 +1135,7 @@ fn apply_lambda_uncached(
     if !allow_recursive && is_recursive(db, body) {
         trace!(target: "rcdzc::eval", body = body.0, "decline: recursive function (needs runtime specialization)");
         return Err(
-            "a recursive function needs runtime specialization (not yet built)".to_string(),
+            "a recursive function needs runtime specialization, which is not supported".to_string(),
         );
     }
     trace!(target: "rcdzc::eval", body = body.0, params = params.len(), args = args.len(), "β-reduce lambda application");
