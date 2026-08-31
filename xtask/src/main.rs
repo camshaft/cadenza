@@ -475,6 +475,26 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     store_atomic_write(&runtime_stored, &runtime_bytes);
     println!("   stored → {}", runtime_stored.display());
 
+    // Native-build fidelity guard (WARN only). A nix-built `cdz` pins the committed (nix-canonical)
+    // `REQUIRED_RUNTIME_HASH`, so a program it compiles imports its runtime BY that hash. A NATIVE
+    // `cargo xtask build` can produce a divergent release runtime hash (ambient vs pinned-hermetic
+    // toolchain/opt — the "native runtime hash is unfaithful" class), which a nix-`cdz`-compiled program
+    // cannot resolve → a cryptic "no runtime of content address …" at RUN time (cost v-inference + v-corpus-
+    // harness real debugging time). Surface it loudly HERE. This changes NOTHING (not the emitted bytes,
+    // the store contents, or the committed const) — a pure build-time divergence notice, so it is safe
+    // under either frozen runtime-hash flag-day resolution. REJECT-only `--case` gating is unaffected
+    // (it needs no runtime); only RUNTIME (execute) cases require the canonical store.
+    if let Some(committed) = parse_committed_runtime_hash(&paths.repo)
+        && committed != runtime_hash
+    {
+        eprintln!(
+            "\n⚠ cargo xtask build: native release runtime hash ({runtime_hash}) != committed canonical\n\
+             ⚠ REQUIRED_RUNTIME_HASH ({committed}) — OK for REJECT `--case`, NOT for RUNTIME (execute)\n\
+             ⚠ cases (a nix-built `cdz` pins the canonical hash). Gate RUNTIME cases via the nix store:\n\
+             ⚠     CDZ_STORE=$(nix build --no-link --print-out-paths .#store)\n"
+        );
+    }
+
     // A small manifest listing the stored heap runtimes — INFORMATIONAL only (a nix-build / store-listing
     // artifact), NOT read by any executable at run time. There is no `nfc = "<hash>"` mapping line anymore:
     // the NFC dependency is resolved from each heap's self-describing inline import, not from here (operator
@@ -1125,23 +1145,39 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     }
 }
 
-/// Parse the committed `DEBUG_RUNTIME_HASH` from the codegen'd `runtime_abi.rs` — the `None => "<hash>"`
-/// default arm of `pub const DEBUG_RUNTIME_HASH: &str = match option_env!("CDZ_DEBUG_RUNTIME_HASH") {
-/// Some(h) => h, None => "<hash>" }`. xtask must NOT depend on the compiler crate, so it reads the
-/// committed value from source (the same value the release side self-verifies via the stamped heap
-/// import). Returns `None` if the file / const / default arm is absent.
-fn parse_committed_debug_runtime_hash(repo: &Path) -> Option<String> {
+/// Parse a committed runtime-hash const's `None => "<hash>"` default arm from the codegen'd source.
+/// xtask must NOT depend on the compiler crate (lean-xtask mandate; and reading the const *value* at
+/// xtask's own compile would pick up whatever `CDZ_*` env was injected into xtask's build, not the
+/// committed canonical), so it reads the committed value from SOURCE — like the flake's parity check.
+/// The three consts (`REQUIRED_RUNTIME_HASH` / `DEBUG_RUNTIME_HASH` / `REQUIRED_NFC_HASH`) live in
+/// `cadenza-compile-abi/src/runtime_hash.rs` (rcdzc's `runtime_abi.rs` only `pub use`s them now — the
+/// consts MOVED there, which is why the earlier `runtime_abi.rs`-targeted parse returned `None`). Scope
+/// to `pub const <const_name>`, then take the first quoted string after its `None =>` arm. Parsed, not
+/// hashed — no IFD / no rebuild. Returns `None` if the file / const / default arm is absent.
+fn parse_committed_hash(repo: &Path, const_name: &str) -> Option<String> {
     let src = std::fs::read_to_string(
-        repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/runtime_abi.rs"),
+        repo.join("implementation/seed/crates/cadenza-compile-abi/src/runtime_hash.rs"),
     )
     .ok()?;
-    // Scope to the DEBUG_RUNTIME_HASH const, then take the first quoted string after its `None =>` arm.
-    let after_const = src.split("pub const DEBUG_RUNTIME_HASH").nth(1)?;
+    let after_const = src.split(&format!("pub const {const_name}")).nth(1)?;
     let after_none = after_const.split("None =>").nth(1)?;
     let open = after_none.find('"')? + 1;
     let rest = &after_none[open..];
     let close = rest.find('"')?;
     Some(rest[..close].to_string())
+}
+
+/// The committed canonical RELEASE runtime hash (`REQUIRED_RUNTIME_HASH`) — the hash a nix-built compiler
+/// pins and a compiled program imports its runtime by. Used to WARN when a native `cargo xtask build`
+/// produces a divergent (native-unfaithful) release runtime a nix-`cdz`-compiled program can't resolve.
+fn parse_committed_runtime_hash(repo: &Path) -> Option<String> {
+    parse_committed_hash(repo, "REQUIRED_RUNTIME_HASH")
+}
+
+/// The committed `DEBUG_RUNTIME_HASH` — the canonical debug-counters runtime a `(live-objects N)` case
+/// must run on (located by content address). See `parse_committed_hash`.
+fn parse_committed_debug_runtime_hash(repo: &Path) -> Option<String> {
+    parse_committed_hash(repo, "DEBUG_RUNTIME_HASH")
 }
 
 /// The outcome of driving one program (sexpr text) through the pipeline.
