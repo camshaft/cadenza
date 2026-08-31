@@ -63,6 +63,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // comparison over rationals are the ordinary operators, dispatched on a `Ty::Rational` operand.
     names.insert("Rational".to_string(), rational_module(ast));
 
+    // `Num` — the number-shape capability namespace. Carries the generic `neg : ∀a. a → a` (backed by
+    // `Prim::Neg`); v-inference attaches the `Num` constraint (admit signed-int/float/bigint/rational,
+    // reject unsigned at compile time). Grows the full numeric-capability set as the operator scopes it.
+    names.insert("Num".to_string(), num_module(ast));
+
     // The unit VALUE, bound to the bare name `unit` — an alias for the empty list `()`, the other
     // spelling of the same value (core-semantics.md #Unit And The Empty Tuple Are The Same Value;
     // 01-literals "unit and the empty tuple are the same value"). An empty-list node resolves to
@@ -534,6 +539,36 @@ fn tuple_module(ast: &mut Arenas) -> StructId {
         });
     }
     push_list(ast, children)
+}
+
+/// The `Num` namespace record — the number-shape capability that carries the generic numeric ops. B1
+/// (v-compiler-primitives) provides `neg : ∀a. a → a` (a GENERIC unary negation over any number type),
+/// backed by the `neg` intrinsic (`Prim::Neg`), which lowers through `lower_negate` — folding a constant
+/// and dispatching Int (`0 - e`) / Float (`-1.0 * e`) / BigInt / Rational. The scheme is unconstrained
+/// `∀a. a → a` here; v-inference attaches the `Num` CONSTRAINT (admit signed-int / float / bigint /
+/// rational; REJECT an unsigned integer at COMPILE time with a coded diagnostic, and a non-number). `Num`
+/// is an op namespace (no `(meta t)`): it is reached only by member access `(. Num neg)`, not used as a
+/// type. The full `Num` trait (the remaining numeric capabilities) grows here as the operator scopes it.
+fn num_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
+    // `neg : ∀a. a → a` — the generic negate. `(fn (a) (-> a a))`: a real unifiable scheme (unlike
+    // `row_op_placeholder_type`, which is never unified against), so `(Num.neg (: x T))` solves `a = T`.
+    let neg_ty = {
+        let a1 = push_atom(ast, Leaf::Name("a".into()));
+        let a2 = push_atom(ast, Leaf::Name("a".into()));
+        let body = arrow_type(ast, a1, a2);
+        let param = push_atom(ast, Leaf::Name("a".into()));
+        let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+        let params = push_list(ast, vec![param]);
+        push_list(ast, vec![fn_head, params, body])
+    };
+    let neg_op = list_op_record(ast, "neg", neg_ty);
+    let neg_key = push_atom(ast, Leaf::Name("neg".into()));
+    let neg_field = {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, neg_key, neg_op])
+    };
+    push_list(ast, vec![head, neg_field])
 }
 
 /// The permissive placeholder type-lambda `(fn (a) (-> a a))` a record row operation carries as its
