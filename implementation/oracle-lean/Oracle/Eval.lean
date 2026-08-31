@@ -1708,6 +1708,21 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "String.at: operand")
+  else if is "String" "scalar-at" then
+    -- SCALAR-indexed access → Option<Char> (spec collections-and-text §"A String's Scalars Are
+    -- Addressable": `(String.scalar-at "hello" 1)` = `Some #\e`). Same Unicode-scalar indexing as
+    -- `String.at`, but the read yields the CHAR value (`.char`), not a single-char string.
+    some (match a1, a2 with
+          | some (.value (.str bytes)), some (.value (.int i)) =>
+            (match String.fromUTF8? bytes with
+             | some s => let cs := s.toList
+                         if 0 ≤ i && i < Int.ofNat cs.length then .value (.some (.char (String.toUTF8 (cs[i.toNat]!).toString)))
+                         else .value .none
+             | none => .unsupported "String.scalar-at: invalid UTF-8")
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "String.scalar-at: operand")
   else if is "Bytes" "len" then
     some (match a1 with | some (.value (.bytes b)) => .value (.int (Int.ofNat b.size))
                         | some (.value _) => .unsupported "Bytes.len: not a bytes" | some o => o | none => .unsupported "Bytes.len arity")
