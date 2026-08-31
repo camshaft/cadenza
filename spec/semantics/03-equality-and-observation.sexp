@@ -4437,7 +4437,12 @@
 ; v-memory-safety). A nested compound BOTH projected-into and eq'd leaks its whole node tree per
 ; dual-used side; flat dual-use, eq-only, and unequal walks are all clean (pinned as 0-controls —
 ; they must STAY 0 through the fix, and the VALUES fence an over-drop that would corrupt the
-; projection reads). dqe4/dqe5 flip to 0 when the eq-operand dup is released.
+; projection reads). dqe4/dqe5/dqe6 now reclaim CLEAN (fixed): a nested compound projected via a
+; scalar-bottomed chain through compound intermediates is a pure BORROW, so a borrow-only projected
+; binder must not mint the spurious unbalanced dup that mark_binder_dups's Proj arm minted; fixed in
+; reclaim.rs by gating the compound-projection consuming/borrow transparency on binder_never_escapes
+; (dqe17-safe: a binder that ESCAPES an arm keeps the dup). dqe7/dqe8 (champ-key / Set membership)
+; still leak — their second use CONSUMES the operand as a KEY into a temporary collection, a distinct lever.
 (case
   "dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean — the control the nested cells contrast"
   (input
@@ -4479,7 +4484,7 @@
   (live-objects 0))
 
 (case
-  "dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree"
+  "dqe4 ONE nested operand dual-used (deep projection + equality) reclaims clean — borrow-only projected binder mints no spurious dup"
   (input
     (do
       (def
@@ -4490,10 +4495,10 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 101000 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
-  "dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees"
+  "dqe5 BOTH nested operands dual-used (projections + equality) reclaim clean — borrow-only projected binders mint no spurious dup"
   (input
     (do
       (def
@@ -4504,14 +4509,17 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 101001 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── breaker batch 523: the dual-use leak GENERALIZED (same issue file, scope corrected) — the
 ; second consumer can be ANY heap walker (order / champ-key / Set.contains), not just value-eq;
 ; two walkers WITHOUT a projection are clean (dqe9). Fix must target the generic dup/drop
-; placement for projected-and-walked nested compounds; an eq-only fix leaves dqe6-8 red.
+; placement for projected-and-walked nested compounds: dqe6 (ORDERING / ValueCmp, a BORROW like value-eq)
+; now reclaims clean with the same borrow-only projected-binder dup-suppression as dqe4/5. dqe7/dqe8 still
+; leak — their second use CONSUMES the operand as a KEY into a temporary Map/Set (not a borrow), a distinct
+; reclaim lever (the key-consume / collection-temp drop), tracked separately.
 (case
-  "dqe6 a nested operand dual-used by projection + ORDERING walk leaks its tree (order-only is clean)"
+  "dqe6 a nested operand dual-used by projection + ORDERING walk reclaims clean — borrow-only projected binder mints no spurious dup"
   (input
     (do
       (def
@@ -4522,7 +4530,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 1001 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "dqe7 a nested operand dual-used by projection + CHAMP-key descent (insert one, look up by the equal twin) leaks its tree"
