@@ -4315,3 +4315,49 @@ cases
       #list(#tuple(5 #list(5 6)))
       (List (Tuple Int64 (List Int64)))))
   (live-objects known-leak))
+
+(case
+  "a typed list<variant> EXPORT result crosses as a WIT list of variants (declared world)"
+  (doc
+    "SHAPE 72 - a TYPED `list<variant{lo, hi(s64)}>` EXPORT result: the list element is a VARIANT written by `canon_write_of`'s Variant arm (per-arm disc + payload at the canonical variant offsets), exercised PER element. Composes with no new emit (CanonWrite::List{ elem = Variant }). getVs(x) = [Lo, Hi(x)]; x=9 -> [lo, hi(9)]. Closes the variant-element half of the list<compound>-element coverage (SHAPE 69/70/71 covered tuple/record/nested-list elements). KNOWN-LEAK (SpillRecord-result reclaim class, SHAPE 60/62/63).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member get-vs (func (param x (s64)) (result (list (variant (lo) (hi (s64)))))))))
+  )
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type V (Lo) (Hi Int64))
+      (def (getVs (: x Int64)) #list((V.Lo unit) (V.Hi x)))
+      (export getVs)))
+  (call get-vs (: 9 Int64))
+  (output (: #list((lo unit) (hi 9)) (List V)))
+  (live-objects known-leak))
+
+(case
+  "a typed list<tuple<s64, variant>> EXPORT result — a VARIANT field inside a tuple element (declared world)"
+  (doc
+    "SHAPE 73 - the coverage-doc's flagged `tuple element whose field is a VARIANT` case: it COMPOSES with no new emit. `canon_write_of` builds CanonWrite::List{ elem = Record[ s64 @0, Variant @8 ] }, the element write recursing into the Variant arm at the tuple's second-field offset (per-arm disc + payload). getTv(x) = [(x, Hi(x+1)), (x+5, Lo)]; x=3 -> [(3, hi(4)), (8, lo)]. Together with SHAPE 71 (nested list field) this disproves the whole `list<...> element with a nested record/list/tuple/variant field` doc gap on the RESULT side — recursive composition already crosses every compound element. KNOWN-LEAK (SpillRecord-result reclaim class).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member
+          get-tv
+          (func (param x (s64)) (result (list (tuple (s64) (variant (lo) (hi (s64)))))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type V (Lo) (Hi Int64))
+      (def (getTv (: x Int64)) #list(#tuple(x (V.Hi (+ x 1))) #tuple((+ x 5) (V.Lo unit))))
+      (export getTv)))
+  (call get-tv (: 3 Int64))
+  (output
+    (:
+      #list(#tuple(3 (hi 4)) #tuple(8 (lo unit)))
+      (List (Tuple Int64 V))))
+  (live-objects known-leak))

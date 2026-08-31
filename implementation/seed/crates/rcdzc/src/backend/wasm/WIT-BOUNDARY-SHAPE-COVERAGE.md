@@ -87,14 +87,17 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
 - **[emit]** compound variant payload at the ARG (register-flatten) position; compound-payload
   variant list-element.
 - **[emit, ARG-side]** `option<compound>` host-op record-ARG field / list element (only `option<scalar>`/`option<bytes>` marshalable). The RESULT side is DONE — SHAPE 66; this is the marshal side (`field_boundary_abi`/`list_elem_marshalable`).
-- **[emit] typed `list<record|tuple>` EXPORT result element — ✅ DONE (SHAPE 69/70/71).** A typed
-  `list<tuple<s64,s64>>` (SHAPE 69), `list<record{lo,hi}>` (SHAPE 70), and a NESTED-element
-  `list<tuple<s64, list<s64>>>` (SHAPE 71) EXPORT result all cross by RECURSIVE `canon_write_of`
-  composition with no new emit (`CanonWrite::List` whose element is the Tuple/Record write, recursing into
-  an inner `List` for the nested field). The typed-export twin of SHAPE 7 (untyped run/encode). All three
-  are `(live-objects known-leak)` — the spilled list result + boxed elements are not reclaimed (the
-  SpillRecord-result reclaim class, SHAPE 60/62/63; value-correct, routed to v-memory-safety). REMAINING
-  (still open): a tuple element whose field is a VARIANT, and the ARG-side (marshal) nested compound.
+- **[emit] typed `list<COMPOUND>` EXPORT result element — ✅ DONE (SHAPE 69/70/71/72/73).** A typed
+  `list<tuple<s64,s64>>` (69), `list<record{lo,hi}>` (70), NESTED-element `list<tuple<s64, list<s64>>>`
+  (71), `list<variant{lo,hi(s64)}>` (72), and `list<tuple<s64, variant>>` (73) EXPORT result all cross by
+  RECURSIVE `canon_write_of` composition with NO new emit (`CanonWrite::List` whose element is the
+  Tuple/Record/Variant write, recursing into an inner `List`/`Variant` for a nested field). So EVERY
+  compound list-element (record/tuple/list/variant, incl. a nested compound field) crosses on the RESULT
+  side — the doc's old `list<...> element with a nested record/list/tuple/variant field` gap is CLOSED.
+  The typed-export twin of SHAPE 7 (untyped run/encode). All are `(live-objects known-leak)` — the spilled
+  list result + boxed elements are not reclaimed (the SpillRecord-result reclaim class, SHAPE 60/62/63;
+  value-correct, routed to v-memory-safety). REMAINING (still open): the ARG-side (marshal) nested compound
+  list element (`list_elem_marshalable`, host→guest), a distinct direction from this RESULT-side write.
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum
