@@ -9600,3 +9600,41 @@ pass	the non-exhaustive Bool match arm-insert is symmetric on the missing litera
 pass	the suggested unwrap type-checks and runs — the fix is total for a single-variant newtype
 pass	without a default-fraction pragma the same (/ 1 3) is ordinary integer division — 0, not 1/3
 todo	a tuple pattern with a trailing rest binds the leading elements and the trailing sub-tuple
+pass	Tuple.concat over a non-tuple operand names the op and the non-tuple type
+pass	Tuple.remove over a non-tuple operand names the op and the non-tuple type
+pass	Tuple.split-at over a non-tuple operand names the op and the non-tuple type
+pass	a FULLY applied built-in operation is not flagged as a partial
+pass	a RUNTIME String match with no wildcard is non-exhaustive — the if-chain desugar does not relax the check
+pass	a do-local value-def bound to a record is projected as a bare-name binding, not misread as a destructure
+pass	a fixed-arity list destructuring binding param is refutable and rejected CDZ0210
+pass	a keyed map pattern matches a SUPERSET map, binding the present key and ignoring the rest
+pass	a leading-element list rest binding param is refutable (does not match empty) and rejected CDZ0210
+pass	a list rest pattern with a binder BEFORE the rest (leading rest) is a malformed shape, rejected CDZ0201
+pass	a list-payload split is total regardless of arm ORDER — non-empty arm before the empty arm
+pass	a lone guarded list arm does NOT count toward exhaustiveness — the empty list stays uncovered
+pass	a lone vacuous list-rest arm covers every length on its own
+pass	a map pattern naming a key the scrutinee lacks does NOT match (falls to the next arm)
+pass	a multi-key map pattern is order-independent and binds each named key's value
+pass	a multi-key map pattern requires EVERY named key present, else it does not match
+pass	a partially applied USER function is legitimate and is not flagged as a wrong-arity built-in
+pass	a refutable literal list element does NOT count toward length-coverage — a catch-all is still required
+pass	a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)
+pass	a set-pattern element that names no in-scope value is an unbound value reference (CDZ0101)
+pass	a top-level-do module member's Bool/Int mix is type-checked and rejected CDZ0203
+pass	the zero-leading list rest is IRREFUTABLE — it is accepted in a binding position and binds the whole list
+pass	unary negation is a built-in at arity 1 and is not flagged as a partial
+todo	a GUARDED set membership arm threads its guard, and a false guard falls through to a later arm
+todo	a partial built-in operation (at at 1 of 2 args) returned from an exported def is rejected
+todo	a partial built-in operation (slice at 2 of 3 args) as an unconsumed value is rejected
+todo	a partial built-in operation spelled as a NESTED spine is rejected identically to the flat form
+todo	a record pattern with a trailing rest binds the named fields and the residual record
+todo	a set membership element may be a RUNTIME value expression, and compound elements match by value equality
+todo	a set membership match `#set(e…)` matches when the set contains every named element (with fall-through + catch-all)
+todo	a set pattern disjoint from the scrutinee does not match
+todo	a set pattern is order-independent (a set is unordered)
+todo	a set pattern matches a scrutinee set with the SAME elements
+todo	a set pattern naming a SUBSET matches by containment, not equality
+todo	a set pattern naming an element the scrutinee lacks does NOT match
+todo	a set pattern with a RUNTIME in-scope element matches by membership of its value
+todo	an empty membership pattern #set() matches ANY set, and a duplicate element is idempotent
+todo	the empty set pattern matches every set
