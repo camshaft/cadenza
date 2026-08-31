@@ -37,9 +37,11 @@ pub(super) fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
         };
     }
     let Some((key_ty, val_ty)) = map_kv_types(db, map) else {
-        return Core::Poison(Reject::decline(
-            "Map.to-list operand is not a solved map type",
-        ));
+        let mismatch = !matches!(
+            crate::infer::type_of(db, map),
+            crate::ty::Ty::Map(_, _) | crate::ty::Ty::Var(_) | crate::ty::Ty::Any
+        );
+        return ill_typed_operand_decline(mismatch, "Map.to-list operand is not a solved map type");
     };
     // A NON-EMPTY CONSTANT map folds to a baked list of `(key value)` TUPLES in canonical KEY order — the SAME
     // order the runtime `map-to-list` op produces (spec-pinned canonical value order == `const_key_order`, a
@@ -139,9 +141,14 @@ pub(super) fn lower_set_insert_remove(
         };
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
-        return Core::Poison(Reject::decline(
+        let mismatch = !matches!(
+            crate::infer::type_of(db, set),
+            crate::ty::Ty::Set(_) | crate::ty::Ty::Var(_) | crate::ty::Ty::Any
+        );
+        return ill_typed_operand_decline(
+            mismatch,
             "Set.insert/remove operand is not a solved set type",
-        ));
+        );
     };
     if is_insert {
         Core::SetInsert { set, elem, elem_ty }
@@ -659,9 +666,11 @@ pub(super) fn lower_map_lookup(db: &mut Db, id: StructId, map: StructId, key: St
         ));
     };
     let Some((key_ty, val_ty)) = map_kv_types(db, map) else {
-        return Core::Poison(Reject::decline(
-            "Map.lookup operand is not a solved map type",
-        ));
+        let mismatch = !matches!(
+            crate::infer::type_of(db, map),
+            crate::ty::Ty::Map(_, _) | crate::ty::Ty::Var(_) | crate::ty::Ty::Any
+        );
+        return ill_typed_operand_decline(mismatch, "Map.lookup operand is not a solved map type");
     };
     Core::MapLookup {
         map,
@@ -684,9 +693,11 @@ pub(super) fn lower_map_remove(db: &mut Db, map: StructId, key: StructId) -> Cor
         return Core::Poison(r);
     }
     let Some((key_ty, _)) = map_kv_types(db, map) else {
-        return Core::Poison(Reject::decline(
-            "Map.remove operand is not a solved map type",
-        ));
+        let mismatch = !matches!(
+            crate::infer::type_of(db, map),
+            crate::ty::Ty::Map(_, _) | crate::ty::Ty::Var(_) | crate::ty::Ty::Any
+        );
+        return ill_typed_operand_decline(mismatch, "Map.remove operand is not a solved map type");
     };
     Core::MapRemove { map, key, key_ty }
 }

@@ -4865,9 +4865,14 @@ fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
         return Core::ConstBool(present);
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
-        return Core::Poison(Reject::decline(
+        let mismatch = !matches!(
+            crate::infer::type_of(db, set),
+            crate::ty::Ty::Set(_) | crate::ty::Ty::Var(_) | crate::ty::Ty::Any
+        );
+        return ill_typed_operand_decline(
+            mismatch,
             "Set.contains operand is not a solved set type",
-        ));
+        );
     };
     Core::SetContains { set, elem, elem_ty }
 }
@@ -4933,9 +4938,11 @@ fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
         }
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
-        return Core::Poison(Reject::decline(
-            "Set.to-list operand is not a solved set type",
-        ));
+        let mismatch = !matches!(
+            crate::infer::type_of(db, set),
+            crate::ty::Ty::Set(_) | crate::ty::Ty::Var(_) | crate::ty::Ty::Any
+        );
+        return ill_typed_operand_decline(mismatch, "Set.to-list operand is not a solved set type");
     };
     Core::SetToList { set, elem_ty }
 }
@@ -5685,7 +5692,15 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
                         return materialize_host_operands_once(db, id, &[operand], if_core);
                     }
                 }
-                // A non-int source or unresolved target bounds can't be range-checked here — decline honestly.
+                // A non-int source or unresolved target bounds can't be range-checked here. A DEFINITE
+                // non-int SOURCE (`(Int64.of "x")`) is a TYPE error `infer` already reports as CDZ0203 —
+                // defer to it with the neutral decline rather than the misleading "runtime checked
+                // conversion out of range" wording (the source is not an integer at all). A genuine INT
+                // source (even runtime) keeps the honest conversion decline (its CDZ0900 is the only report).
+                let src_ty = crate::infer::type_of(db, args[0]);
+                if src_ty.is_fully_solved() && !matches!(src_ty, crate::ty::Ty::Int(_)) {
+                    return Core::Poison(Reject::decline(crate::lower::ILL_TYPED_OPERAND_DECLINE));
+                }
                 return Core::Poison(Reject::unsupported(
                     "a runtime checked integer conversion (T.of) that could be out of range is not supported (convert a constant, widen instead of narrow, or use T.wrap)",
                 ));

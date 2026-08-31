@@ -1832,10 +1832,14 @@ pass	a constant multi-payload variant match binds both payloads and folds to a s
 pass	a constant multi-payload variant match on the IA-variant nested payload folds to the right depth
 pass	a constant multi-payload variant match reaches each payload and dispatches a nested variant
 pass	a constant nested tuple is returned as a program result
+pass	a constant non-Map operand to Map.lookup is a coded type mismatch, not an uncoded decline
+pass	a constant non-Set operand to Set.contains is a coded type mismatch, not an uncoded decline
+pass	a constant non-Set operand to Set.insert is a coded type mismatch, not an uncoded decline
 pass	a constant non-String operand to String.at is a type mismatch, not an uncoded decline
 pass	a constant non-String operand to String.byte-len is a type mismatch, not a const-fold decline
 pass	a constant non-String operand to String.concat is a type mismatch, not an uncoded decline
 pass	a constant non-String operand to String.slice is a type mismatch, not an uncoded decline
+pass	a constant non-integer operand to Int64.of is a coded type mismatch, not a misleading conversion decline
 pass	a constant rational with a zero denominator is rejected and names the nonzero-denominator repair
 pass	a constant record is returned as a program result
 pass	a constant shift by an OUT-OF-RANGE count is rejected at compile time with CDZ0304

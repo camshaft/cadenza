@@ -3881,6 +3881,33 @@ pub(super) fn runtime_string_op_decline(db: &mut Db, arg: crate::ast::StructId, 
     }
 }
 
+/// The GENERIC "defer to the coded type error" decline text — the self-describing "(see the type error
+/// above)" marker that [`crate::compile::dedup_faults`] drops whenever a member-op wrong-arg-type CDZ0203
+/// is present (so an ill-typed operand is ONE primary `error:`). The typed-family sibling of
+/// [`runtime_string_op_decline`]'s String-specific text.
+pub(super) const ILL_TYPED_OPERAND_DECLINE: &str =
+    "this operation's operand is not of the expected type (see the type error above)";
+
+/// The decline for a collection/typed op whose operand did NOT resolve to the expected type. When the
+/// operand is a DEFINITE MISMATCH — its top-level type is a known constructor that is not the expected
+/// collection kind (`(Set.contains 5 …)` — `5` is an `Int`, definitely not a `Set`, even with a
+/// deferred integer width) — the CDZ0203 type mismatch is authoritative (`infer` emits it), so emit the
+/// neutral [`ILL_TYPED_OPERAND_DECLINE`] that `dedup_faults` drops: one primary error, never an
+/// uncoded/misleading shadow. Otherwise — the operand IS the expected kind but with an UNSOLVED element/
+/// key type, or its type is a bare `Ty::Var`/`Ty::Any` — `infer` has no definite CDZ0203, so keep
+/// `unsolved_msg` (the honest "operand is not a solved X" report, the only report of the unsolved operand).
+///
+/// NB: the caller computes `is_definite_mismatch` by the top-level KIND (`!matches!(ty, Set(_) | Var | Any)`
+/// etc.), NOT `is_fully_solved` — a deferred-width int literal is "not fully solved" yet is still a
+/// definite non-collection whose CDZ0203 infer reports.
+pub(super) fn ill_typed_operand_decline(is_definite_mismatch: bool, unsolved_msg: &str) -> Core {
+    if is_definite_mismatch {
+        Core::Poison(Reject::decline(ILL_TYPED_OPERAND_DECLINE))
+    } else {
+        Core::Poison(Reject::decline(unsolved_msg.to_string()))
+    }
+}
+
 /// Fold a constant SHIFT/BITWISE op (`BitAnd`/`BitOr`/`BitXor`/`Shl`/`Shr`) over the SOLVED WIDTH's u128
 /// two's-complement bit pattern, rather than `fold_arith`'s i64 path. This is correct at ANY fixed width
 /// (including UInt64, whose values above `i64::MAX` the i64 path spuriously rejects) AND for a small-operand
