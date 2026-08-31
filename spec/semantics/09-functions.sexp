@@ -7210,6 +7210,18 @@
   (no-diagnostic "unused definition"))
 
 (case
+  "a RECURSIVE function's parameter used only in the recursive call is NOT falsely flagged unused"
+  (doc
+    "The used-parameter analysis must count a reference inside the function's OWN recursive call: `sm`'s
+           parameter `n` is used in `(= n 0)`, `(+ n …)`, and `(sm (- n 1))` — recursion must not confuse the
+           usage scan into a spurious CDZ0306. `(sm 5)` = 5+4+3+2+1 = 15. (Migrated from rcdzc
+           a_recursive_functions_used_parameter_is_not_flagged_unused; the truly-unused-param face is the
+           unused-parameter warning case above.)")
+  (input (do (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1))))) (def (main) (sm 5)) (export main)))
+  (output (: 15 Int64))
+  (no-diagnostic "unused"))
+
+(case
   "an argument bound to a used parameter IS observed, so its trap occurs (the anchor)"
   (doc
     "The control: `(def (f x y) y)` returns its SECOND parameter, so `(f 7 (/ 1 d))` with d = 0

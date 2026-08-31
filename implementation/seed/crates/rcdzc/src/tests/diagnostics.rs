@@ -1113,26 +1113,11 @@ fn a_def_named_quote_binds_its_parameter_and_is_not_hijacked_by_reification() {
     );
 }
 
-#[test]
-fn a_recursive_functions_used_parameter_is_not_flagged_unused() {
-    // A RECURSIVE function freshens its parameter binder when its body is resolved (and the
-    // accumulator transform may rewrite the body entirely), so a reference resolves to a
-    // SYNTHESIZED param copy, not the original occurrence. The usage check keys on the resolution
-    // KIND (does a body reference resolve to a `Param`?), not the target occ, so it is not fooled:
-    // `n` here is used three times → it must NOT warn (the reported false positive).
-    let src = "(module m (def (sm n) (if (= n 0) 0 (+ n (sm (- n 1))))) (export sm))";
-    assert!(
-        unused_of(src).is_empty(),
-        "a used recursive param must not warn: {:?}",
-        unused_of(src)
-    );
-    // A genuinely-unused parameter still warns (the check is real, not just disabled for
-    // functions): `z` is never referenced.
-    let with_unused = "(module m (def (f p z) (+ p 1)) (export f))";
-    let u = unused_of(with_unused);
-    assert_eq!(u.len(), 1, "the truly-unused param z warns: {u:?}");
-    assert!(u[0].contains("`z`"), "{u:?}");
-}
+// MIGRATED to corpus (09-functions.sexp, "a RECURSIVE function's parameter used only in the recursive call
+// is NOT falsely flagged unused"): `sm`'s `n` (used in the cond, the add, and the recursive `(sm (- n 1))`)
+// must NOT draw a spurious CDZ0306 — `(sm 5)` = 15, `(no-diagnostic "unused")`. The truly-unused-param face
+// (`z` in `(def (f p z) (+ p 1))` warns) is covered by the unused-parameter warning case. Rust test
+// a_recursive_functions_used_parameter_is_not_flagged_unused deleted.
 
 // MIGRATED to corpus (05-compound-types.sexp, the "well-formed match-arm-binder unused warning" POSITIVE
 // cluster): unused variant-payload + tuple binders warn CDZ0306 "unused match binding" + `_`-prefix fix
