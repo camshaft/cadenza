@@ -147,7 +147,7 @@
           (handle
             L
             "x"
-            ((emit () s (resume ((. String byte-len) s) (String.concat s "yz"))))
+            ((emit () s (resume (String.byte-len s) (String.concat s "yz"))))
             (handle
               Bail
               0
@@ -198,7 +198,7 @@
         (handle
           L
           "abc"
-          ((emit () s (resume ((. String byte-len) s) (String.concat s s))))
+          ((emit () s (resume (String.byte-len s) (String.concat s s))))
           (handle
             Bail
             0
@@ -221,7 +221,7 @@
         (handle
           L
           "q"
-          ((emit () s (resume ((. String byte-len) s) (String.concat s "z"))))
+          ((emit () s (resume (String.byte-len s) (String.concat s "z"))))
           (+
             (handle
               Bail
@@ -981,7 +981,7 @@
           ((name (k) s (resume (if (> s k) "hi" "lo") (+ s 1))))
           (let
             ((w (St.name 3)))
-            (match w ("hi" (+ 100 ((. String byte-len) (St.name 0)))) ("lo" 200) (_o 300)))))
+            (match w ("hi" (+ 100 (String.byte-len (St.name 0)))) ("lo" 200) (_o 300)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 102 Int64))
@@ -1001,7 +1001,7 @@
           ((name (k) s (resume (if (> s k) "big" "sm") (+ s 2))))
           (let
             ((w1 (St.name 4)))
-            (let ((w2 (St.name 4))) (if (= w1 w2) ((. String byte-len) (String.concat w1 w2)) -1)))))
+            (let ((w2 (St.name 4))) (if (= w1 w2) (String.byte-len (String.concat w1 w2)) -1)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 6 Int64))
@@ -1083,13 +1083,13 @@
         (main (: n Int64))
         (handle
           F
-          ((. Float64 of-int) n)
+          (Float64.of-int n)
           ((next () s (resume s (* s 0.5))))
           (let
             ((a (F.next)))
             (let
               ((b (F.next)))
-              (let ((c (F.next))) (if (= (+ a (+ b c)) (* ((. Float64 of-int) n) 1.75)) 1 0))))))
+              (let ((c (F.next))) (if (= (+ a (+ b c)) (* (Float64.of-int n) 1.75)) 1 0))))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64))
@@ -1110,15 +1110,12 @@
           0.0
           ((clip (v) s (resume (if (< v s) s v) (+ s 1.0))))
           (let
-            ((a (F.clip ((. Float64 of-int) n))))
+            ((a (F.clip (Float64.of-int n))))
             (let
               ((b (F.clip -2.5)))
               (let
                 ((c (F.clip 3.5)))
-                (if
-                  (= (+ a (+ b c)) (+ ((. Float64 of-int) n) 4.5))
-                  7
-                  (if (= (+ a (+ b c)) 8.0) 8 9)))))))
+                (if (= (+ a (+ b c)) (+ (Float64.of-int n) 4.5)) 7 (if (= (+ a (+ b c)) 8.0) 8 9)))))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 7 Int64))
@@ -1165,7 +1162,7 @@
         (main (: n Int64))
         (handle
           F
-          ((. Float64 of-int) n)
+          (Float64.of-int n)
           ((next () s (resume s (- s 1.5))))
           (let
             ((a (F.next)))
@@ -1174,7 +1171,7 @@
               (match
                 (if (< b 0.0) 0 1)
                 (0 (if (= (- a b) 1.5) 11 12))
-                (_o (if (= (+ a b) (- (* 2.0 ((. Float64 of-int) n)) 1.5)) 21 22)))))))
+                (_o (if (= (+ a b) (- (* 2.0 (Float64.of-int n)) 1.5)) 21 22)))))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 21 Int64))
@@ -1319,7 +1316,7 @@
         (handle
           W
           9223372036854775800
-          ((bump () s (resume s ((. Int64 wrapping-add) s n))))
+          ((bump () s (resume s (Int64.wrapping-add s n))))
           (if (= (W.bump) 9223372036854775800) (if (= (W.bump) -9223372036854775806) 1 2) 3)))
       (export main)))
   (call main (: 10 Int64))
@@ -1334,11 +1331,7 @@
       (effect W (op add (-> Int64 Int64)))
       (def
         (main (: n Int64))
-        (handle
-          W
-          n
-          ((add (v) s (resume ((. Int64 wrapping-add) v s) s)))
-          (W.add 9223372036854775800)))
+        (handle W n ((add (v) s (resume (Int64.wrapping-add v s) s))) (W.add 9223372036854775800)))
       (export main)))
   (call main (: 10 Int64))
   (output (: -9223372036854775806 Int64))
@@ -1357,7 +1350,7 @@
         (handle
           W
           9223372036854775807
-          ((cyc () s (resume s ((. Int64 wrapping-add) s 1))))
+          ((cyc () s (resume s (Int64.wrapping-add s 1))))
           (let
             ((a (W.cyc)))
             (let
@@ -1657,7 +1650,7 @@
           Db
           #map((= 1 10))
           ((put (k) m (resume (Map.len m) (Map.insert m k (* k 2))))
-            (dump () m (resume ((. Map to-list) m) m)))
+            (dump () m (resume (Map.to-list m) m)))
           (let
             ((before (List.len (Db.dump))))
             (do (Db.put n) (Db.put 7) (+ (* 100 (List.len (Db.dump))) (* 10 before))))))
@@ -1680,8 +1673,7 @@
         (handle
           Sx
           #set(20 8)
-          ((add (v) s (resume (Set.len s) (Set.insert s v)))
-            (dump () s (resume ((. Set to-list) s) s)))
+          ((add (v) s (resume (Set.len s) (Set.insert s v))) (dump () s (resume (Set.to-list s) s)))
           (do
             (Sx.add n)
             (let ((xs (Sx.dump))) (+ (* 100 (at-or xs 0)) (+ (* 10 (at-or xs 1)) (at-or xs 2)))))))
@@ -1710,7 +1702,7 @@
           Db
           #map((= 1 100))
           ((put (k) m (resume (Map.len m) (Map.insert m k k)))
-            (total () m (resume (sum-snd ((. Map to-list) m) 0) m)))
+            (total () m (resume (sum-snd (Map.to-list m) 0) m)))
           (do (Db.put n) (Db.put 3) (Db.total))))
       (export main)))
   (call main (: 5 Int64))
@@ -1768,7 +1760,7 @@
               (resume (match (String.slice s 0 2) ((Some p) p) ((None) "?")) (String.concat s "cd"))))
           (let
             ((p1 (St.grow)))
-            (let ((p2 (St.grow))) (if (= p1 p2) ((. String byte-len) (String.concat p1 p2)) -1)))))
+            (let ((p2 (St.grow))) (if (= p1 p2) (String.byte-len (String.concat p1 p2)) -1)))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 4 Int64)))
@@ -1855,11 +1847,8 @@
               ()
               s
               (resume
-                ((. String byte-len) s)
-                (if
-                  (= (% ((. String byte-len) s) 2) 0)
-                  (String.concat s "a")
-                  (String.concat s "bb")))))
+                (String.byte-len s)
+                (if (= (% (String.byte-len s) 2) 0) (String.concat s "a") (String.concat s "bb")))))
           (+ (St.step) (+ (* 10 (St.step)) (+ (* 100 (St.step)) (* 1000 (St.step)))))))
       (export main)))
   (call main (: 0 Int64))
@@ -1875,10 +1864,7 @@
         (handle
           St
           "é"
-          ((grow
-              ()
-              s
-              (resume (- ((. String byte-len) s) ((. String scalar-len) s)) (String.concat s "é"))))
+          ((grow () s (resume (- (String.byte-len s) (String.scalar-len s)) (String.concat s "é"))))
           (+ (St.grow) (+ (* 10 (St.grow)) (* 100 (St.grow))))))
       (export main)))
   (call main (: 0 Int64))
@@ -1977,7 +1963,7 @@
               (match
                 s
                 (#tuple(w k)
-                  (resume (+ ((. String byte-len) w) k) #tuple((String.concat w "!") (+ k v)))))))
+                  (resume (+ (String.byte-len w) k) #tuple((String.concat w "!") (+ k v)))))))
           (+ (E.log 100) (+ (* 10 (E.log 0)) (* 100 (E.log 5))))))
       (export main)))
   (call main (: 5 Int64))
@@ -3841,7 +3827,7 @@
         (handle
           E
           9223372036854775806
-          ((next () s (resume s ((. Int64 wrapping-add) s 1))))
+          ((next () s (resume s (Int64.wrapping-add s 1))))
           (let
             ((d1 (E.next)))
             (let
@@ -3922,7 +3908,7 @@
         (handle
           E
           0
-          ((dbl (x) s (resume ((. Int64 wrapping-mul) x 2) (+ s 1))) (count () s (resume s s)))
+          ((dbl (x) s (resume (Int64.wrapping-mul x 2) (+ s 1))) (count () s (resume s s)))
           (+
             (E.dbl 9223372036854775807)
             (+ (E.dbl -9223372036854775808) (+ (E.dbl 3) (* 10 (E.count)))))))
@@ -3940,7 +3926,7 @@
         (handle
           E
           0
-          ((next () s (resume s ((. Int64 wrapping-sub) s 9223372036854775807))))
+          ((next () s (resume s (Int64.wrapping-sub s 9223372036854775807))))
           (let
             ((d1 (E.next)))
             (let
@@ -3962,7 +3948,7 @@
         (handle
           E
           0
-          ((step (x) s (resume ((. Int64 wrapping-add) x 1) (+ s 1))) (count () s (resume s s)))
+          ((step (x) s (resume (Int64.wrapping-add x 1) (+ s 1))) (count () s (resume s s)))
           (let
             ((v (E.step (E.step (E.step 9223372036854775806)))))
             (+ (if (= v -9223372036854775807) 100 900) (+ (if (< v 0) 10 90) (E.count))))))
@@ -4571,9 +4557,7 @@
           E
           n
           ((next () s (resume s (+ s 1))) (probe () s (resume s s)))
-          (let
-            ((k (+ (% (E.next) 3) 1)))
-            (+ (* 100 ((. String byte-len) (rep k ""))) (- (E.probe) n)))))
+          (let ((k (+ (% (E.next) 3) 1))) (+ (* 100 (String.byte-len (rep k ""))) (- (E.probe) n)))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 201 Int64))
@@ -4599,9 +4583,7 @@
               ((b (E.pick)))
               (let
                 ((st (String.concat a b)))
-                (+
-                  (* 100 ((. String byte-len) st))
-                  (if (= st "xypqr") 10 (if (= st "pqrxy") 20 30))))))))
+                (+ (* 100 (String.byte-len st)) (if (= st "xypqr") 10 (if (= st "pqrxy") 20 30))))))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 510 Int64))
@@ -4625,7 +4607,7 @@
               ((en (+ st (+ (% (E.next) 3) 1))))
               (match
                 (String.slice "abcdefgh" st en)
-                ((Some w) (+ (* 100 ((. String byte-len) w)) (+ (* 10 st) (- en st))))
+                ((Some w) (+ (* 100 (String.byte-len w)) (+ (* 10 st) (- en st))))
                 ((None _u) -1))))))
       (export main)))
   (call main (: 0 Int64))
@@ -5769,7 +5751,7 @@
           n
           ((next () s (resume s (+ s 1))) (probe () s (resume s s)))
           (let
-            ((b ((. String to-bytes) (if (= (% (E.next) 2) 0) "abc" "wxyz"))))
+            ((b (String.to-bytes (if (= (% (E.next) 2) 0) "abc" "wxyz"))))
             (let
               ((i (% (E.next) (Bytes.len b))))
               (match (Bytes.at b i) ((Some v) (+ (* 10 v) (- (E.probe) n))) (None -1))))))
@@ -6113,7 +6095,7 @@
                 s
                 (#tuple(acc k)
                   (resume
-                    ((. String byte-len) acc)
+                    (String.byte-len acc)
                     #tuple((String.concat acc (if (= (% k 2) 0) "ab" "xyz")) (+ k 1)))))))
           (do (E.grow) (E.grow) (E.grow) (+ (* 10 (E.grow)) 3))))
       (export main)))
@@ -8076,7 +8058,7 @@
         (main (: n Int64))
         (handle
           E
-          (+ 1.0 ((. Float64 of-int) n))
+          (+ 1.0 (Float64.of-int n))
           ((draw () s (resume s (if (< s 10.0) (* s 2.0) (* s 0.5)))))
           (+ (E.draw) (+ (E.draw) (E.draw)))))
       (export main)))
@@ -8096,7 +8078,7 @@
         (main (: n Int64))
         (handle
           E
-          (+ 1.0 ((. Float64 of-int) n))
+          (+ 1.0 (Float64.of-int n))
           ((draw () s (resume s (* s 2.0))))
           (let
             ((d1 (E.draw)))
@@ -8118,7 +8100,7 @@
         (main (: n Int64))
         (handle
           E
-          #tuple((+ 1.0 ((. Float64 of-int) n)) 0)
+          #tuple((+ 1.0 (Float64.of-int n)) 0)
           ((draw
               ()
               st
@@ -8126,7 +8108,7 @@
                 st
                 (#tuple(s c) (resume s #tuple((if (< s 10.0) (* s 2.0) (* s 0.5)) (+ c 1))))))
             (count () st (match st (#tuple(s c) (resume c st)))))
-          (+ (E.draw) (+ (E.draw) (+ (E.draw) ((. Float64 of-int) (E.count)))))))
+          (+ (E.draw) (+ (E.draw) (+ (E.draw) (Float64.of-int (E.count)))))))
       (export main)))
   (call main (: 2 Int64))
   (output (: 24.0 Float64))
@@ -8144,7 +8126,7 @@
         (main (: n Int64))
         (handle
           E
-          ((. Float64 of-int) n)
+          (Float64.of-int n)
           ((draw () s (resume s (+ s 1.0))))
           (let ((d (E.draw))) (+ (if (> d 0.0) (* d 10.0) (if (< d 0.0) (- 0.0 d) 99.0)) (E.draw)))))
       (export main)))
@@ -9263,7 +9245,7 @@
                 st
                 (#tuple(s r)
                   (resume s #tuple((+ s 1) (String.concat r (if (= (% s 3) 0) "x" "yz")))))))
-            (size () st (match st (#tuple(s r) (resume ((. String byte-len) r) st)))))
+            (size () st (match st (#tuple(s r) (resume (String.byte-len r) st)))))
           (do (E.put) (E.put) (+ (E.size) (E.size)))))
       (export main)))
   (call main (: 0 Int64))
@@ -9531,7 +9513,7 @@
                 st
                 (#tuple(s r)
                   (resume s #tuple((+ s 1) (String.concat r (if (= (% s 3) 0) "x" "yz")))))))
-            (size () st (match st (#tuple(s r) (resume ((. String byte-len) r) st)))))
+            (size () st (match st (#tuple(s r) (resume (String.byte-len r) st)))))
           (do
             (E.put)
             (E.put)
@@ -9566,8 +9548,7 @@
               st
               (match
                 st
-                (#tuple(s a b)
-                  (resume (+ (* 100 ((. String byte-len) a)) ((. String byte-len) b)) st)))))
+                (#tuple(s a b) (resume (+ (* 100 (String.byte-len a)) (String.byte-len b)) st)))))
           (do (E.put) (E.put) (+ (E.size) (E.size)))))
       (export main)))
   (call main (: 0 Int64))
@@ -11078,7 +11059,7 @@
             (pick
               (i)
               s
-              (resume (match (String.at s i) ((Some c) ((. String byte-len) c)) ((None _u) -1)) s)))
+              (resume (match (String.at s i) ((Some c) (String.byte-len c)) ((None _u) -1)) s)))
           (let ((_w (walk n))) (S.pick (- n 1)))))
       (export main)))
   (call main (: 4 Int64))
@@ -11110,7 +11091,7 @@
             (pick
               (i)
               s
-              (resume (match (Bytes.at ((. String to-bytes) s) i) ((Some b) b) ((None _u) -1)) s)))
+              (resume (match (Bytes.at (String.to-bytes s) i) ((Some b) b) ((None _u) -1)) s)))
           (let ((_w (walk n))) (S.pick (- n 1)))))
       (export main)))
   (call main (: 4 Int64))
@@ -12379,8 +12360,8 @@
                 ((s2 (String.concat s add)))
                 (resume
                   (match
-                    (String.slice s2 lo (- ((. String byte-len) s2) 1))
-                    ((Some w) ((. String byte-len) w))
+                    (String.slice s2 lo (- (String.byte-len s2) 1))
+                    ((Some w) (String.byte-len w))
                     ((None u) -1))
                   s2))))
           (let ((a (S.grow "cd" (+ n 1)))) (let ((b (S.grow "ef" (+ n 2)))) (+ (* 100 a) (* 10 b))))))
@@ -12624,10 +12605,7 @@
         (handle
           S
           (UInt8.wrap n)
-          ((add
-              (v)
-              s
-              (let ((s2 ((. UInt8 wrapping-add) s (UInt8.wrap v)))) (resume (Int64.of s2) s2))))
+          ((add (v) s (let ((s2 (UInt8.wrapping-add s (UInt8.wrap v)))) (resume (Int64.of s2) s2))))
           (let ((a (S.add 200))) (let ((b (S.add 100))) (+ (* 1000 a) b)))))
       (export main)))
   (call main (: 100 Int64))
@@ -12645,10 +12623,7 @@
         (handle
           S
           (Int8.wrap n)
-          ((add
-              (v)
-              s
-              (let ((s2 ((. Int8 wrapping-add) s (Int8.wrap v)))) (resume (Int64.of s2) s2))))
+          ((add (v) s (let ((s2 (Int8.wrapping-add s (Int8.wrap v)))) (resume (Int64.of s2) s2))))
           (let ((a (S.add 100))) (let ((b (S.add 100))) (+ (* 1000 a) b)))))
       (export main)))
   (call main (: 100 Int64))
@@ -12717,7 +12692,7 @@
           S
           ""
           ((put (s) hw (if (< hw s) (resume 1 s) (resume 0 hw)))
-            (len () hw (resume ((. String byte-len) hw) hw)))
+            (len () hw (resume (String.byte-len hw) hw)))
           (let
             ((a (S.put "banana")))
             (let
@@ -12836,10 +12811,10 @@
             (let
               ((_a (S.feed big)))
               (let
-                ((_b (S.feed ((. Float64 of-int) n))))
+                ((_b (S.feed (Float64.of-int n))))
                 (let
                   ((k (S.feed (- 0.0 big))))
-                  (let ((naive (- (+ big ((. Float64 of-int) n)) big))) (+ (* 10.0 k) naive))))))))
+                  (let ((naive (- (+ big (Float64.of-int n)) big))) (+ (* 10.0 k) naive))))))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 10.0 Float64))
@@ -13014,7 +12989,7 @@
                 (let
                   ((c2 (match (Map.lookup m b) ((Some c) (+ c 1)) ((None u) 1))))
                   (resume c2 (Map.insert m b c2)))))
-            (mode () m (resume (if (= (Map.len m) 0) -1 (best ((. Map to-list) m) 0 -1 -1)) m)))
+            (mode () m (resume (if (= (Map.len m) 0) -1 (best (Map.to-list m) 0 -1 -1)) m)))
           (let
             ((a (S.obs n)))
             (let
@@ -13150,7 +13125,7 @@
           Map.empty
           ((put (k v) m (resume (Map.len m) (Map.insert m k v)))
             (del (k) m (resume (Map.len m) (Map.remove m k)))
-            (walk () m (resume (+ (* 10 (fold-keys ((. Map to-list) m) 0 0)) (Map.len m)) m)))
+            (walk () m (resume (+ (* 10 (fold-keys (Map.to-list m) 0 0)) (Map.len m)) m)))
           (let
             ((_a (S.put n 0)))
             (let
@@ -13284,7 +13259,7 @@
                 (let
                   ((cs (: (Full "abc") (Container String))))
                   (resume
-                    (+ (* 10 (match ci ((Full v) v))) (match cs ((Full w) ((. String byte-len) w))))
+                    (+ (* 10 (match ci ((Full v) v))) (match cs ((Full w) (String.byte-len w))))
                     (+ s 1))))))
           (let ((a (S.mix))) (let ((b (S.mix))) (+ (* 1000 a) b)))))
       (export main)))
@@ -13517,16 +13492,13 @@
         (handle
           S
           ""
-          ((push (p) s (let ((s2 (String.concat p s))) (resume ((. String byte-len) s2) s2)))
+          ((push (p) s (let ((s2 (String.concat p s))) (resume (String.byte-len s2) s2)))
             (check
               (p)
               s
               (resume
                 (match
-                  (String.slice
-                    s
-                    (- ((. String byte-len) s) ((. String byte-len) p))
-                    ((. String byte-len) s))
+                  (String.slice s (- (String.byte-len s) (String.byte-len p)) (String.byte-len s))
                   ((Some w) (if (= w p) 1 0))
                   ((None u) -1))
                 s)))
@@ -13591,7 +13563,7 @@
                 ((c (S.name)))
                 (let
                   ((d (S.num)))
-                  (+ (* 100000 a) (+ (* 10000 (if b 1 0)) (+ (* 1000 ((. String byte-len) c)) d)))))))))
+                  (+ (* 100000 a) (+ (* 10000 (if b 1 0)) (+ (* 1000 (String.byte-len c)) d)))))))))
       (export main)))
   (call main (: 3 Int64))
   (output (: 614012 Int64))
@@ -13607,7 +13579,7 @@
         (main (: n Int64))
         (handle
           S
-          ((. String to-bytes) "ab")
+          (String.to-bytes "ab")
           ((push
               (b)
               bs
@@ -13619,8 +13591,8 @@
               bs
               (resume
                 (match
-                  ((. String from-bytes) bs)
-                  ((Some w) (+ (* 10 ((. String byte-len) w)) 1))
+                  (String.from-bytes bs)
+                  ((Some w) (+ (* 10 (String.byte-len w)) 1))
                   ((None u) 0))
                 bs)))
           (let
@@ -14096,7 +14068,7 @@
                 (#tuple(s cnt)
                   (let
                     ((s2 (String.concat (if (> cnt 0) (String.concat s ",") s) p)))
-                    (resume ((. String byte-len) s2) #tuple(s2 (+ cnt 1))))))))
+                    (resume (String.byte-len s2) #tuple(s2 (+ cnt 1))))))))
           (let
             ((a (S.add "ab")))
             (let
@@ -14281,10 +14253,7 @@
                   ((j (scan s i)))
                   (let
                     ((rest
-                        (match
-                          (String.slice s j ((. String byte-len) s))
-                          ((Some r) r)
-                          ((None u) ""))))
+                        (match (String.slice s j (String.byte-len s)) ((Some r) r) ((None u) ""))))
                     (resume (- j i) rest))))))
           (let
             ((a (S.tok)))
@@ -14595,8 +14564,8 @@
               (v)
               m
               (let
-                ((m2 (bump-all ((. Map to-list) m) 0 v Map.empty)))
-                (resume (sum-vals ((. Map to-list) m2) 0 0) m2)))
+                ((m2 (bump-all (Map.to-list m) 0 v Map.empty)))
+                (resume (sum-vals (Map.to-list m2) 0 0) m2)))
             (read (k) m (resume (match (Map.lookup m k) ((Some x) x) ((None u) -1)) m)))
           (let
             ((a (S.publish n)))
@@ -14990,7 +14959,7 @@
               (k)
               m
               (let
-                ((d (decay ((. Map to-list) m) 0 Map.empty)))
+                ((d (decay (Map.to-list m) 0 Map.empty)))
                 (let
                   ((c2 (+ (match (Map.lookup d k) ((Some x) x) ((None u) 0)) 4)))
                   (let ((m2 (Map.insert d k c2))) (resume (+ (* 100 (Map.len m2)) c2) m2))))))
@@ -15333,7 +15302,7 @@
           S
           #set(0)
           ((reg (k) c (let ((c2 (Set.insert c k))) (resume (- (Set.len c2) 1) c2)))
-            (elect () c (resume (maxid ((. Set to-list) c) 0 -1) c))
+            (elect () c (resume (maxid (Set.to-list c) 0 -1) c))
             (dereg (k) c (let ((c2 (Set.remove c k))) (resume (- (Set.len c2) 1) c2))))
           (let
             ((a (S.reg 5)))
@@ -16089,11 +16058,11 @@
               (frag)
               s
               (if
-                (= ((. String byte-len) s) 0)
-                (resume ((. String byte-len) frag) frag)
+                (= (String.byte-len s) 0)
+                (resume (String.byte-len frag) frag)
                 (let
                   ((r (String.concat (String.concat s ";") frag)))
-                  (resume ((. String byte-len) r) r)))))
+                  (resume (String.byte-len r) r)))))
           (let
             ((a (J.sep "ab")))
             (let
@@ -22601,7 +22570,7 @@
           E
           (if (= (% n 3) 0) "a" "bb")
           ((weave () s (resume s (String.concat s "x"))))
-          (let ((p (E.weave))) (let ((q (E.weave))) ((. String byte-len) (String.concat p q))))))
+          (let ((p (E.weave))) (let ((q (E.weave))) (String.byte-len (String.concat p q))))))
       (export main)))
   (call main (: 10 Int64))
   (output (: 5 Int64))
@@ -24615,11 +24584,8 @@
         (handle
           E
           "ab"
-          ((grow
-              ()
-              s
-              (resume ((. String scalar-len) (String.concat s "xyz")) (String.concat s "xyz")))
-            (size () s (resume ((. String scalar-len) s) s)))
+          ((grow () s (resume (String.scalar-len (String.concat s "xyz")) (String.concat s "xyz")))
+            (size () s (resume (String.scalar-len s) s)))
           (+ (* 10000 (E.grow)) (+ (* 100 (E.grow)) (E.size)))))
       (export main)))
   (call main (: 10 Int64))
@@ -24728,10 +24694,10 @@
         (handle
           E
           (% n 3)
-          ((letter () s (resume ((. Char from-int) (+ (: 97 Int64) s)) (+ s 1))))
+          ((letter () s (resume (Char.from-int (+ (: 97 Int64) s)) (+ s 1))))
           (+
-            (* 1000 (match (E.letter) ((Some c) ((. Char to-int) c)) ((None) (: -1 Int64))))
-            (match (E.letter) ((Some c) ((. Char to-int) c)) ((None) (: -1 Int64))))))
+            (* 1000 (match (E.letter) ((Some c) (Char.to-int c)) ((None) (: -1 Int64))))
+            (match (E.letter) ((Some c) (Char.to-int c)) ((None) (: -1 Int64))))))
       (export main)))
   (call main (: 10 Int64))
   (output (: 98099 Int64))
@@ -24839,7 +24805,7 @@
         (handle
           E
           (if (= (% n 3) (: 0 Int64)) "a" (if (= (% n 3) (: 1 Int64)) "ab" "abc"))
-          ((tick () s (resume ((. String scalar-len) s) (String.concat s "x"))))
+          ((tick () s (resume (String.scalar-len s) (String.concat s "x"))))
           (+ (* 100 (E.tick)) (E.tick))))
       (export main)))
   (call main (: 10 Int64))
@@ -25063,7 +25029,7 @@
         (handle
           E
           (UInt8.wrap n)
-          ((tick () s (resume (Int64.of s) ((. UInt8 wrapping-add) s (UInt8.wrap 5)))))
+          ((tick () s (resume (Int64.of s) (UInt8.wrapping-add s (UInt8.wrap 5)))))
           (+ (* 100 (E.tick)) (+ (* 10 (E.tick)) (E.tick)))))
       (export main)))
   (call main (: 10 Int64))
@@ -25102,8 +25068,8 @@
         (main (: n Int64))
         (handle
           E
-          ((. UInt8 wrapping-add) (: 250 UInt8) (UInt8.wrap (% n 3)))
-          ((tick () s (resume (Int64.of s) ((. UInt8 wrapping-add) s (: 5 UInt8)))))
+          (UInt8.wrapping-add (: 250 UInt8) (UInt8.wrap (% n 3)))
+          ((tick () s (resume (Int64.of s) (UInt8.wrapping-add s (: 5 UInt8)))))
           (+ (* 1000000 (E.tick)) (+ (* 1000 (E.tick)) (E.tick)))))
       (export main)))
   (call main (: 10 Int64))
@@ -25127,7 +25093,7 @@
         (handle
           E
           (% n 3)
-          ((tick () s (resume ((. UInt8 wrapping-add) (: 250 UInt8) (UInt8.of s)) (+ s 1))))
+          ((tick () s (resume (UInt8.wrapping-add (: 250 UInt8) (UInt8.of s)) (+ s 1))))
           (+ (* 1000 (Int64.of (E.tick))) (+ (* 100 (Int64.of (E.tick))) (Int64.of (E.tick))))))
       (export main)))
   (call main (: 10 Int64))
@@ -25150,7 +25116,7 @@
         (handle
           E
           (% n 3)
-          ((tick () s (resume ((. UInt16 wrapping-add) (: 60000 UInt16) (UInt16.of s)) (+ s 1))))
+          ((tick () s (resume (UInt16.wrapping-add (: 60000 UInt16) (UInt16.of s)) (+ s 1))))
           (+ (* 100000 (Int64.of (E.tick))) (Int64.of (E.tick)))))
       (export main)))
   (call main (: 10 Int64))
@@ -25599,10 +25565,7 @@
               s
               (resume
                 unit
-                (match
-                  ((. Char from-int) (+ ((. Char to-int) s) 1))
-                  ((Option.Some c) c)
-                  ((Option.None) s))))
+                (match (Char.from-int (+ (Char.to-int s) 1)) ((Option.Some c) c) ((Option.None) s))))
             (get () s (resume (= s #\c) s)))
           (do (C.nxt) (C.nxt) (if (C.get) 1 0))))
       (export main)))

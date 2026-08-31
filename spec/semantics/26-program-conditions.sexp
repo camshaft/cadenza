@@ -4120,7 +4120,7 @@
       (def (unp (: p Nat)) (match p ((Nat.Mk v) v)))
       (def
         (via-set (: v Int64))
-        (match ((. Set to-list) #set((Nat.Mk v))) (#list(h (.. _)) (unp h)) (_ 0)))
+        (match (Set.to-list #set((Nat.Mk v))) (#list(h (.. _)) (unp h)) (_ 0)))
       (def
         (via-map (: v Int64))
         (match (Map.lookup (Map.insert Map.empty 1 (Nat.Mk v)) 1) ((Some n) (unp n)) ((None _u) -1)))
@@ -4701,11 +4701,11 @@
   (input
     (do
       (@
-        (requires (> ((. String byte-len) s) 0))
+        (requires (> (String.byte-len s) 0))
         (@
-          (ensures (> ((. String byte-len) ret) ((. String byte-len) s)))
+          (ensures (> (String.byte-len ret) (String.byte-len s)))
           (def (shout (: s String)) (String.concat s "!"))))
-      (def (main (: k Int64)) ((. String byte-len) (shout (if (= k 1) "hi" ""))))
+      (def (main (: k Int64)) (String.byte-len (shout (if (= k 1) "hi" ""))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 3 Int64))

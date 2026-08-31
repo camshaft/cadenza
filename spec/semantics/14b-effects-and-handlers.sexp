@@ -1626,7 +1626,7 @@
         (main (: n Int64))
         (do
           (def s (handle Ctr n ((tick (_u) c (resume c (+ c 1)))) (go 3 "")))
-          (+ (* ((. String byte-len) s) 10) (if (= s "abc") 1 0))))
+          (+ (* (String.byte-len s) 10) (if (= s "abc") 1 0))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 31 Int64))
@@ -1838,7 +1838,7 @@
           Log
           ""
           ((emit (m) s (resume unit (String.concat s m))) (dump (u) s (resume s s)))
-          ((. String byte-len) (walk 3))))
+          (String.byte-len (walk 3))))
       (export main)))
   (output (: 3 Int64)))
 
@@ -4026,7 +4026,7 @@
         (handle
           Sink
           0
-          ((tally (m) s (resume (sum-pairs ((. Map to-list) m) 0) s)))
+          ((tally (m) s (resume (sum-pairs (Map.to-list m) 0) s)))
           (Sink.tally (fill n Map.empty))))
       (export main)))
   (call main (: 60 Int64))
@@ -4055,7 +4055,7 @@
           Acc
           Map.empty
           ((put (v) s (resume 0 (Map.insert s v (* v 10))))
-            (total (u) s (resume (sum-pairs ((. Map to-list) s) 0) s)))
+            (total (u) s (resume (sum-pairs (Map.to-list s) 0) s)))
           (do (feed 1 (+ n 1)) (Acc.total))))
       (export main)))
   (call main (: 40 Int64))
@@ -4125,7 +4125,7 @@
         (handle
           Sink
           0
-          ((unpack (p) s (match p (#tuple(n str) (resume (+ n ((. String byte-len) str)) s)))))
+          ((unpack (p) s (match p (#tuple(n str) (resume (+ n (String.byte-len str)) s)))))
           (Sink.unpack #tuple(a "abc"))))
       (export main)))
   (call main (: 39 Int64))
@@ -4573,7 +4573,7 @@
         (handle
           Log
           0
-          ((emit (m) st (resume ((. String byte-len) m) st)))
+          ((emit (m) st (resume (String.byte-len m) st)))
           (Log.emit (String.concat s "abc"))))
       (export main)))
   (call main (: "xy" String))
@@ -6826,7 +6826,7 @@
           ((bump (u) s (resume s (+ s 1))))
           (+
             (St.bump)
-            (match ((. String scalar-at) "hello" 1) ((Some c) (if (= c #\e) 1 0)) ((None _u) -1)))))
+            (match (String.scalar-at "hello" 1) ((Some c) (if (= c #\e) 1 0)) ((None _u) -1)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 6 Int64)))
@@ -6870,7 +6870,7 @@
           St
           ""
           ((tag (v) s (if (> v 10) (resume v (String.concat s "x")) (resume 0 s)))
-            (len (u) s (resume ((. String byte-len) s) s)))
+            (len (u) s (resume (String.byte-len s) s)))
           (+ (St.tag 20) (+ (St.tag n) (+ (St.tag 30) (* 100 (St.len)))))))
       (export main)))
   (call main (: 5 Int64))
@@ -7469,7 +7469,7 @@
           ((entry
               (id name flag score)
               s
-              (resume (+ (* 100 id) (+ ((. String byte-len) name) (+ (if flag 1000 0) score))) s)))
+              (resume (+ (* 100 id) (+ (String.byte-len name) (+ (if flag 1000 0) score))) s)))
           (Rec.entry n "abc" true 7)))
       (export main)))
   (call main (: 5 Int64))
@@ -7552,7 +7552,7 @@
           Rec
           0
           ((fetch (id) s (resume #tuple("row" (* id 10)) (+ s 1))))
-          (match (Rec.fetch n) (#tuple(name score) (+ ((. String byte-len) name) score)))))
+          (match (Rec.fetch n) (#tuple(name score) (+ (String.byte-len name) score)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 53 Int64)))
@@ -8806,7 +8806,7 @@
               v
               (eval-t (Expr.Mul #tuple((Expr.Add #tuple((Expr.Lit 2) (Expr.Lit k))) (Expr.Lit 4)))))
             (def trace (Trace.dump))
-            (+ (* 100 v) (+ (* 10 ((. String byte-len) trace)) (if (= trace "*+") 1 0))))))
+            (+ (* 100 v) (+ (* 10 (String.byte-len trace)) (if (= trace "*+") 1 0))))))
       (export main)))
   (call main (: 3 Int64))
   (output (: 2021 Int64))
@@ -8879,7 +8879,7 @@
   (input
     (do
       (effect E (op get (-> Unit Int64)))
-      (def (unused (: k Int64)) (handle E k ((get (_u) s (resume 1 s))) ((. E no-such-op))))
+      (def (unused (: k Int64)) (handle E k ((get (_u) s (resume 1 s))) (E.no-such-op)))
       (def (main) 42)
       (export main)))
   (error CDZ0201))
@@ -9145,7 +9145,7 @@
         (host
           (io)
           (match
-            (Bytes.slice ((. String to-bytes) (String.concat "abc" "defgh")) k 3)
+            (Bytes.slice (String.to-bytes (String.concat "abc" "defgh")) k 3)
             ((Some cut) (io.sink cut))
             ((None _u) -1))))
       (export main)))
@@ -10601,7 +10601,7 @@
         (handle
           Log
           "x"
-          ((emit (v) s (resume ((. String byte-len) s) (String.concat s (if (> v 0) "ab" "c")))))
+          ((emit (v) s (resume (String.byte-len s) (String.concat s (if (> v 0) "ab" "c")))))
           (+ (Log.emit n) (+ (* 10 (Log.emit n)) (* 100 (Log.emit 0))))))
       (export main)))
   (call main (: 5 Int64))
@@ -10619,7 +10619,7 @@
         (handle
           Log
           "s"
-          ((emit () s (resume ((. String byte-len) s) (String.concat s "yz"))))
+          ((emit () s (resume (String.byte-len s) (String.concat s "yz"))))
           (do (Log.emit) (Log.emit) (+ (* 10 (Log.emit)) n))))
       (export main)))
   (call main (: 5 Int64))
@@ -10637,7 +10637,7 @@
         (handle
           Log
           "aa"
-          ((emit () s (resume ((. String byte-len) s) (String.concat s "b"))))
+          ((emit () s (resume (String.byte-len s) (String.concat s "b"))))
           (+
             (Log.emit)
             (+
@@ -10646,7 +10646,7 @@
                 (handle
                   Log
                   "wxyz"
-                  ((emit () t (resume ((. String byte-len) t) (String.concat t t))))
+                  ((emit () t (resume (String.byte-len t) (String.concat t t))))
                   (+ (Log.emit) (Log.emit))))
               (* 1000 (Log.emit))))))
       (export main)))
@@ -11276,7 +11276,7 @@
         (handle
           Log
           n
-          ((tag (w) s (resume (+ ((. String byte-len) w) s) (+ s ((. String byte-len) w)))))
+          ((tag (w) s (resume (+ (String.byte-len w) s) (+ s (String.byte-len w)))))
           (+ (Log.tag "ab") (+ (* 10 (Log.tag "xyz")) (* 100 (Log.tag ""))))))
       (export main)))
   (call main (: 5 Int64))
@@ -11294,7 +11294,7 @@
         (handle
           Log
           n
-          ((pick () s (resume s (+ s 1))) (tag (w) s (resume (* ((. String byte-len) w) s) s)))
+          ((pick () s (resume s (+ s 1))) (tag (w) s (resume (* (String.byte-len w) s) s)))
           (Log.tag (String.concat "id-" (if (> (Log.pick) 3) "long" "s")))))
       (export main)))
   (call main (: 5 Int64))
@@ -11314,8 +11314,8 @@
           n
           ((name (k) s (resume (String.concat "u" (if (> k s) "-big" "-sm")) (+ s 1))))
           (+
-            ((. String byte-len) (Log.name 3))
-            (* 10 ((. String byte-len) (String.concat (Log.name 99) (Log.name 0)))))))
+            (String.byte-len (Log.name 3))
+            (* 10 (String.byte-len (String.concat (Log.name 99) (Log.name 0)))))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 94 Int64))
@@ -11393,7 +11393,7 @@
         (handle
           E
           n
-          ((mix (k w f) s (resume (+ (* (if f 10 1) k) (+ ((. String byte-len) w) s)) (+ s 1))))
+          ((mix (k w f) s (resume (+ (* (if f 10 1) k) (+ (String.byte-len w) s)) (+ s 1))))
           (+ (E.mix 3 "ab" true) (E.mix 4 "xyz" false))))
       (export main)))
   (call main (: 5 Int64))
@@ -11411,8 +11411,7 @@
         (handle
           E
           n
-          ((pick () s (resume s (+ s 2)))
-            (mix (k w) s (resume (+ (* k ((. String byte-len) w)) s) s)))
+          ((pick () s (resume s (+ s 2))) (mix (k w) s (resume (+ (* k (String.byte-len w)) s) s)))
           (E.mix (E.pick) (if (> (E.pick) 6) "wide" "nn"))))
       (export main)))
   (call main (: 5 Int64))
@@ -12463,8 +12462,8 @@
               s
               (resume
                 (match
-                  ((. String from-bytes) (Bytes.of #list((UInt8.wrap s))))
-                  ((Some t) ((. String byte-len) t))
+                  (String.from-bytes (Bytes.of #list((UInt8.wrap s))))
+                  ((Some t) (String.byte-len t))
                   ((None _u) -1))
                 s)))
           (S.dec)))
@@ -12513,10 +12512,7 @@
               (let
                 ((b (Bytes.of #list((UInt8.wrap s)))))
                 (resume
-                  (match
-                    ((. String from-bytes) b)
-                    ((Some t) ((. String byte-len) t))
-                    ((None _u) -1))
+                  (match (String.from-bytes b) ((Some t) (String.byte-len t)) ((None _u) -1))
                   s))))
           (S.dec)))
       (export main)))

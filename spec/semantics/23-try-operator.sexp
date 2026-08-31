@@ -153,8 +153,8 @@
       (def
         (main)
         (let
-          ((x (try ((. Int64 checked-add) 20 22))))
-          (let ((y (try ((. Int64 checked-add) 40 2)))) (Some (+ x y)))))
+          ((x (try (Int64.checked-add 20 22))))
+          (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))
       (export main)))
   (output (: (Some 84) (Option Int64))))
 
@@ -171,8 +171,8 @@
       (def
         (main)
         (let
-          ((x (try ((. Int64 checked-add) Int64.max 1))))
-          (let ((y (try ((. Int64 checked-add) 40 2)))) (Some (+ x y)))))
+          ((x (try (Int64.checked-add Int64.max 1))))
+          (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))
       (export main)))
   (output (: (None unit) (Option Int64))))
 

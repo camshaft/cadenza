@@ -35,9 +35,7 @@
       ((next
           (fn
             (s)
-            ((. Int64 wrapping-add)
-              ((. Int64 wrapping-mul) s 6364136223846793005)
-              1442695040888963407))))
+            (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))))
       (= (next 42) (next 42))))
   (output (: true Bool)))
 
@@ -52,7 +50,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (main (: seed Int64)) (= (next seed) (next seed)))
       (export main)))
   (call main (: 12345 Int64))
@@ -72,9 +70,7 @@
       ((next
           (fn
             (s)
-            ((. Int64 wrapping-add)
-              ((. Int64 wrapping-mul) s 6364136223846793005)
-              1442695040888963407))))
+            (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))))
       (= (next 1) (next 2))))
   (output (: false Bool)))
 
@@ -89,7 +85,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (main (: seed Int64)) (let ((a (next seed))) (= a (next a))))
       (export main)))
   (call main (: 7 Int64))
@@ -110,7 +106,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (gen (: s Int64)) #tuple((& (next s) 255) (= (% (& (next (next s)) 255) 2) 0)))
       (def (main (: seed Int64)) (= (gen seed) (gen seed)))
       (export main)))
@@ -136,7 +132,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (gen (: s Int64))
         #list((& (next s) 255) (& (next (next s)) 255) (& (next (next (next s))) 255)))
@@ -163,7 +159,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (gen (: s Int64))
         #tuple((BigInt.of (& (next s) 255)) (= (% (& (next (next s)) 255) 2) 0)))
@@ -189,10 +185,10 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (gen (: s Int64))
-        #tuple(((. Float64 of-int) (& (next s) 255)) (< (& (next (next s)) 255) 128)))
+        #tuple((Float64.of-int (& (next s) 255)) (< (& (next (next s)) 255) 128)))
       (def (main (: seed Int64)) (= (gen seed) (gen seed)))
       (export main)))
   (call main (: 12345 Int64))
@@ -216,7 +212,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (gen (: s Int64)) #tuple((Symbol.of "tag") (< (& (next s) 255) 128)))
       (def (main (: seed Int64)) (= (gen seed) (gen seed)))
       (export main)))
@@ -241,7 +237,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (pick (: b Bool)) (if b (Symbol.of "alpha") (Symbol.of "beta")))
       (def
         (differ (: seed Int64))
@@ -272,7 +268,7 @@
       (type Result (Ok Int64) (Err Int64))
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (gen (: s Int64))
         (if (= (& (next s) 1) 0) (Ok (& (next (next s)) 255)) (Err (& (next (next s)) 255))))
@@ -300,7 +296,7 @@
       (type Result (Ok Int64) (Err Int64))
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (mk (: tag Bool) (: v Int64)) (if tag (Ok v) (Err v)))
       (def
         (main (: seed Int64))
@@ -332,7 +328,7 @@
       (type Shape (Circle Int64) (Square Int64) (Point))
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (gen (: s Int64))
         (let
@@ -368,7 +364,7 @@
       (type Shape (Circle Int64) (Square Int64) (Point))
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (mk (: tag Int64) (: v Int64)) (if (= tag 0) (Circle v) (if (= tag 1) (Square v) Point)))
       (def
         (main (: seed Int64))
@@ -399,7 +395,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (gen (: s Int64)) #record((= x (& (next s) 255)) (= y (< (& (next (next s)) 255) 128))))
       (def (main (: seed Int64)) (= (gen seed) (gen seed)))
       (export main)))
@@ -421,7 +417,7 @@
     (do
       (def
         (main (: n Int64))
-        (= #tuple((Rational.of ((. Int64 wrapping-mul) n 2) 4) true) #tuple((Rational.of n 2) true)))
+        (= #tuple((Rational.of (Int64.wrapping-mul n 2) 4) true) #tuple((Rational.of n 2) true)))
       (export main)))
   (call main (: 1 Int64))
   (output (: true Bool))
@@ -466,9 +462,7 @@
         (if
           (= d 0)
           true
-          (=
-            (Rational.of n d)
-            (Rational.of ((. Int64 wrapping-sub) 0 n) ((. Int64 wrapping-sub) 0 d)))))
+          (= (Rational.of n d) (Rational.of (Int64.wrapping-sub 0 n) (Int64.wrapping-sub 0 d)))))
       (export main)))
   (call main (: 3 Int64) (: -7 Int64))
   (output (: true Bool))
@@ -488,7 +482,7 @@
            ordering (`<`) over the compiler's float generator at the boundary, not a fold.")
   (input
     (do
-      (def (of (: n Int64)) ((. Float64 of-int) n))
+      (def (of (: n Int64)) (Float64.of-int n))
       (def
         (main (: a Int64) (: b Int64))
         (let ((x (of a))) (let ((y (of b))) (if (< x y) true (if (= x y) true (< y x))))))
@@ -515,7 +509,7 @@
            negatives (of-int is signed) and across the 2^53 rounding threshold.")
   (input
     (do
-      (def (of (: n Int64)) ((. Float64 of-int) n))
+      (def (of (: n Int64)) (Float64.of-int n))
       (def (main (: a Int64) (: b Int64)) (if (< a b) (<= (of a) (of b)) true))
       (export main)))
   (call main (: 3 Int64) (: 7 Int64))
@@ -545,7 +539,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (roll (: s Int64)) (& (next s) 63))
       (def (main (: seed Int64)) (let ((v (roll seed))) (if (>= v 0) (< v 64) false)))
       (export main)))
@@ -643,10 +637,10 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (sum (: xs (List Int64)))
-        (match xs (#list() 0) (#list(h (.. t)) ((. Int64 wrapping-add) h (sum t)))))
+        (match xs (#list() 0) (#list(h (.. t)) (Int64.wrapping-add h (sum t)))))
       (def
         (main (: seed Int64))
         (let
@@ -698,7 +692,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (main (: seed Int64))
         (let
@@ -722,7 +716,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (main (: seed Int64))
         (let
@@ -749,7 +743,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (main (: seed Int64))
         (let ((a (next seed))) (let ((b (next a))) (let ((s1 #set(a b))) (= (Set.union s1 s1) s1)))))
@@ -769,7 +763,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (main (: seed Int64))
         (let
@@ -800,7 +794,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (main (: seed Int64)) (let ((a (next seed))) (let ((b (next a))) (= #set(a) #set(b)))))
       (export main)))
   (call main (: 5 Int64))
@@ -823,7 +817,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (main (: seed Int64))
         (let
@@ -859,7 +853,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (draw-even (: s Int64) (: fuel Int64))
         (let ((v (next s))) (if (= (& v 1) 0) v (if (= fuel 0) v (draw-even v (- fuel 1))))))
@@ -882,7 +876,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (draw (: s Int64) (: fuel Int64))
         (let ((v (& (next s) 15))) (if (< v 10) v (if (= fuel 0) 0 (draw (next s) (- fuel 1))))))
@@ -907,7 +901,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (draw (: s Int64) (: fuel Int64))
         (let ((v (& (next s) 15))) (if (< v 0) v (if (= fuel 0) -1 (draw (next s) (- fuel 1))))))
@@ -932,7 +926,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (gen-bool (: s Int64)) (= (& (next s) 1) 0))
       (def (main (: seed Int64)) (= (gen-bool seed) (gen-bool seed)))
       (export main)))
@@ -950,7 +944,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (gen-bool (: s Int64)) (= (& (next s) 1) 0))
       (def (main (: s1 Int64) (: s2 Int64)) (= (gen-bool s1) (gen-bool s2)))
       (export main)))
@@ -980,7 +974,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (p (: x Int64)) (< x 50))
       (def
         (find (: s Int64) (: n Int64))
@@ -1012,7 +1006,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (drive (: s Int64) (: n Int64) (: m (Map Int64 Int64)) (: cnt Int64))
         (if
@@ -1050,7 +1044,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (drive (: s Int64) (: n Int64) (: m (Map Int64 Int64)) (: cnt Int64))
         (if
@@ -1079,7 +1073,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (scan (: ps (List (Tuple Int64 Int64))) (: k Int64))
         (match
@@ -1101,7 +1095,7 @@
             (if (= (match (Map.lookup m k) ((Some v) v) ((None u) -1)) (scan ps k)) (+ acc 1) -999))))
       (def
         (main (: seed Int64))
-        (let ((m (drive seed 30 Map.empty))) (verify m ((. Map to-list) m) 0 0)))
+        (let ((m (drive seed 30 Map.empty))) (verify m (Map.to-list m) 0 0)))
       (export main)))
   (call main (: 42 Int64))
   (output (: 16 Int64))
@@ -1128,7 +1122,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (broken-scan (: ps (List (Tuple Int64 Int64))) (: k Int64)) 0)
       (def
         (drive (: s Int64) (: n Int64) (: m (Map Int64 Int64)))
@@ -1148,7 +1142,7 @@
               -999))))
       (def
         (main (: seed Int64))
-        (let ((m (drive seed 30 Map.empty))) (verify m ((. Map to-list) m) 0 0)))
+        (let ((m (drive seed 30 Map.empty))) (verify m (Map.to-list m) 0 0)))
       (export main)))
   (call main (: 42 Int64))
   (output (: -999 Int64))
@@ -1169,7 +1163,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (popcount (: b Int64) (: acc Int64))
         (if (= b 0) acc (popcount (>> b 1) (+ acc (& b 1)))))
@@ -1206,7 +1200,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (pick (: s Int64)) (match (& s 3) (0 "a") (1 "b") (2 "c") (_ "d")))
       (def
         (run (: s Int64) (: n Int64) (: seen (Set String)))
@@ -1241,7 +1235,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (pick (: s Int64)) (match (& s 3) (0 "a") (1 "b") (2 "c") (_ "d")))
       (def
         (word (: s Int64))
@@ -1279,7 +1273,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (pick (: s Int64)) (match (& s 3) (0 "a") (1 "b") (2 "c") (_ "d")))
       (def
         (run (: s Int64) (: n Int64) (: seen (Set Symbol)))
@@ -1350,7 +1344,7 @@
     (do
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def
         (gen (: s Int64) (: n Int64) (: acc (List Int64)))
         (if (< n 1) acc (gen (next s) (- n 1) (List.push acc (& (next s) 63)))))
@@ -1387,7 +1381,7 @@
       (type Level (Lo) (Mid) (Hi))
       (def
         (next (: s Int64))
-        ((. Int64 wrapping-add) ((. Int64 wrapping-mul) s 6364136223846793005) 1442695040888963407))
+        (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
       (def (lvl (: s Int64)) (let ((m (% (& s 255) 3))) (if (= m 0) (Lo) (if (= m 1) (Mid) (Hi)))))
       (def (di (: v Level)) (match v ((Lo) 0) ((Mid) 1) ((Hi) 2)))
       (def
@@ -1402,8 +1396,8 @@
             (let
               ((c (lvl (next (next (next seed))))))
               (if
-                (= ((. Set to-list) #set(a b c)) ((. Set to-list) #set(c a b)))
-                (if (sorted ((. Set to-list) #set(a b c)) 0) 1 0)
+                (= (Set.to-list #set(a b c)) (Set.to-list #set(c a b)))
+                (if (sorted (Set.to-list #set(a b c)) 0) 1 0)
                 0)))))
       (export main)))
   (call main (: 12345 Int64))
@@ -1431,12 +1425,12 @@
         (drop-sc (: s String) (: i Int64))
         (String.concat
           (Option.expect (String.slice s 0 i) "lo")
-          (Option.expect (String.slice s (+ i 1) ((. String scalar-len) s)) "hi")))
-      (def (fails (: s String)) (>= ((. String scalar-len) s) 3))
+          (Option.expect (String.slice s (+ i 1) (String.scalar-len s)) "hi")))
+      (def (fails (: s String)) (>= (String.scalar-len s) 3))
       (def
         (try-drops (: s String) (: i Int64))
         (if
-          (>= i ((. String scalar-len) s))
+          (>= i (String.scalar-len s))
           s
           (do (def cand (drop-sc s i)) (if (fails cand) (try-drops cand 0) (try-drops s (+ i 1))))))
       (def
@@ -1444,7 +1438,7 @@
         (do
           (def start (if (= mode 1) (String.concat "aé" "bc") "xy"))
           (def r (if (fails start) (try-drops start 0) "ok"))
-          (+ (* 100 ((. String scalar-len) r)) ((. String byte-len) r))))
+          (+ (* 100 (String.scalar-len r)) (String.byte-len r))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 304 Int64))

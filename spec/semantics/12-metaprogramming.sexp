@@ -593,7 +593,7 @@
     (do
       (def
         (main)
-        (let ((s "hi")) ((. String byte-len) (eval (quasiquote (String.concat (unquote s) "x"))))))
+        (let ((s "hi")) (String.byte-len (eval (quasiquote (String.concat (unquote s) "x"))))))
       (export main)))
   (output (: 3 Int64)))
 
@@ -1750,7 +1750,7 @@
     "The `Ast` sum is deconstructible by pattern matching (type-system.md #The Abstract Syntax Tree
            Type Is An Ordinary Sum Type), so a match over `(quote \"hey\")` binds the `Ast.Str` payload —
            the String literal — and `String.byte-len` of it is 3. The catch-all covers the other variants.")
-  (input (match (quote "hey") ((Ast.Str s) ((. String byte-len) s)) (_ 0)))
+  (input (match (quote "hey") ((Ast.Str s) (String.byte-len s)) (_ 0)))
   (output (: 3 Int64)))
 
 (case
@@ -1779,7 +1779,7 @@
            Interactive Use); a string form evaluates to itself, so `(eval (quote \"abcd\"))` runs to the
            string `\"abcd\"` — `String.byte-len` of it is 4. The string companion of `(eval (quote true))`
            — `eval` reconstructs the source the `Ast.Str` denotes (the string literal) and folds it.")
-  (input (do (def (main) ((. String byte-len) (eval (quote "abcd")))) (export main)))
+  (input (do (def (main) (String.byte-len (eval (quote "abcd")))) (export main)))
   (output (: 4 Int64)))
 
 (case
@@ -3312,7 +3312,7 @@ c")))
             (= input (Ast.Name "j"))
             (= output (Ast.Name "p"))
             (= types (Ast.List #list((Ast.Name "z")))))))
-      (def (main (: b Bool)) (let ((r (desc b))) (+ (Bytes.len r.id) ((. String byte-len) r.name))))
+      (def (main (: b Bool)) (let ((r (desc b))) (+ (Bytes.len r.id) (String.byte-len r.name))))
       (export main)))
   (call main (: true Bool))
   (output (: 8 Int64))
@@ -3348,7 +3348,7 @@ c")))
           ((r (if b (descriptor) (stub))))
           (>
             (+
-              (+ (Bytes.len r.id) ((. String byte-len) r.name))
+              (+ (Bytes.len r.id) (String.byte-len r.name))
               (+ (Bytes.len r.encodedInput) (Bytes.len r.encodedAst)))
             15)))
       (export main)))
@@ -3789,10 +3789,7 @@ c")))
            matches, and `String.byte-len s` is 2. Pins that a quote pattern destructures the `Ast.Str` leaf
            (distinct from `Ast.Name` — a string operand, not an identifier).")
   (input
-    (match
-      (quote (f "hi"))
-      ((quasiquote (f (unquote (Ast.Str s)))) ((. String byte-len) s))
-      (other 0)))
+    (match (quote (f "hi")) ((quasiquote (f (unquote (Ast.Str s)))) (String.byte-len s)) (other 0)))
   (output (: 2 Int64)))
 
 (case
@@ -3826,10 +3823,7 @@ c")))
            `(Ast.Name \"+\")`): here the unquote BINDS the operand name's string. Pins that a quote pattern
            destructures the `Ast.Name` leaf in operand position.")
   (input
-    (match
-      (quote (f g))
-      ((quasiquote (f (unquote (Ast.Name n)))) ((. String byte-len) n))
-      (other 0)))
+    (match (quote (f g)) ((quasiquote (f (unquote (Ast.Name n)))) (String.byte-len n)) (other 0)))
   (output (: 1 Int64)))
 
 (case
@@ -4161,7 +4155,7 @@ c")))
            application over the string literal and folds it. Pins that eval handles a quoted OPERATION
            over a string (not only constructing/executing a bare string), the string-accessor companion
            of the collection cases.")
-  (input (eval (quote ((. String byte-len) "hello"))))
+  (input (eval (quote (String.byte-len "hello"))))
   (output (: 5 Int64)))
 
 (case
@@ -4224,10 +4218,7 @@ c")))
            not semantic): a keyword head reifies exactly as an ordinary identifier head does, so no grammar
            meaning leaks into the AST value.")
   (input
-    (match
-      (quote (if a b c))
-      ((Ast.List #list((Ast.Name h) (.. _))) ((. String byte-len) h))
-      (_ -1)))
+    (match (quote (if a b c)) ((Ast.List #list((Ast.Name h) (.. _))) (String.byte-len h)) (_ -1)))
   (output (: 2 Int64)))
 
 ; The `if` case above pins head-agnostic quote for a CONTROL keyword; these extend it to the BINDER-
@@ -4269,7 +4260,7 @@ c")))
     (match
       (quote (quote x))
       ((Ast.List #list((Ast.Name h) (Ast.Name inner)))
-        (if (= h "quote") ((. String byte-len) inner) -2))
+        (if (= h "quote") (String.byte-len inner) -2))
       (_ -1)))
   (output (: 1 Int64)))
 
@@ -4288,7 +4279,7 @@ c")))
   (input
     (match
       (Ast.decode (Ast.encode (quote (let ((x 1)) x))))
-      ((Ok (Ast.List #list((Ast.Name h) (.. _)))) ((. String byte-len) h))
+      ((Ok (Ast.List #list((Ast.Name h) (.. _)))) (String.byte-len h))
       ((Ok _) -2)
       ((Err _) -1)))
   (output (: 3 Int64)))
@@ -5074,7 +5065,7 @@ c")))
   "cj03r Ast.print of a RUNTIME AST value renders"
   (input
     (do
-      (def (main (: k Int64)) ((. String byte-len) (Ast.print (Ast.Int (BigInt.of k)))))
+      (def (main (: k Int64)) (String.byte-len (Ast.print (Ast.Int (BigInt.of k)))))
       (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64)))
@@ -5085,7 +5076,7 @@ c")))
     (do
       (def
         (main (: k Int64))
-        ((. String byte-len) (Ast.print (Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of k)))))))
+        (String.byte-len (Ast.print (Ast.List #list((Ast.Name "f") (Ast.Int (BigInt.of k)))))))
       (export main)))
   (call main (: 7 Int64))
   (output (: 5 Int64)))
@@ -5205,7 +5196,7 @@ c")))
   "cj03 Ast.print of a RUNTIME AST value renders"
   (input
     (do
-      (def (main (: k Int64)) ((. String byte-len) (Ast.print (Ast.Int (BigInt.of k)))))
+      (def (main (: k Int64)) (String.byte-len (Ast.print (Ast.Int (BigInt.of k)))))
       (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64)))

@@ -501,7 +501,7 @@
       (def
         (main (: n Int64))
         (match
-          ((. String from-bytes) (Bytes.of #list(((. (UInt 8) wrap) n))))
+          (String.from-bytes (Bytes.of #list(((. (UInt 8) wrap) n))))
           ((Some s) (host (hs) (hs.h s)))
           (None 0)))
       (export main)))
@@ -592,7 +592,7 @@
       (effect hs (op h (-> String Int64)))
       (def
         (main)
-        (match ((. String from-bytes) (Bytes.of #list())) ((Some s) (host (hs) (hs.h s))) (None 0)))
+        (match (String.from-bytes (Bytes.of #list())) ((Some s) (host (hs) (hs.h s))) (None 0)))
       (export main)))
   (call main)
   (host-responses (respond hs.h (: 99 Int64)))
@@ -607,7 +607,7 @@
       (def
         (main (: a Int64))
         (match
-          ((. String from-bytes)
+          (String.from-bytes
             (Bytes.of #list(((. (UInt 8) wrap) a) ((. (UInt 8) wrap) a) ((. (UInt 8) wrap) a))))
           ((Some s) (host (hs) (hs.h s)))
           (None 0)))

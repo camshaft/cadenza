@@ -57,7 +57,7 @@
       (def
         (build (: n Int64) (: acc String))
         (if (< n 1) acc (build (- n 1) (String.concat acc "abcd"))))
-      (def (main (: n Int64)) ((. String byte-len) (build n "")))
+      (def (main (: n Int64)) (String.byte-len (build n "")))
       (export main)))
   (call main (: 1000 Int64))
   (output (: 4000 Int64)))
@@ -78,7 +78,7 @@
       (def
         (build (: s String) (: n Int64) (: acc String))
         (if (= n 0) acc (build s (- n 1) (String.concat acc s))))
-      (def (main (: n Int64)) ((. String byte-len) (build "x" n "")))
+      (def (main (: n Int64)) (String.byte-len (build "x" n "")))
       (export main)))
   (call main (: 4 Int64))
   (output (: 4 Int64))
@@ -100,7 +100,7 @@
       (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
       (def
         (cnt (: s String) (: i Int64) (: acc Int64))
-        (if (= i ((. String byte-len) s)) acc (cnt s (+ i 1) (if (= (at s i) "a") (+ acc 1) acc))))
+        (if (= i (String.byte-len s)) acc (cnt s (+ i 1) (if (= (at s i) "a") (+ acc 1) acc))))
       (def (main) (cnt "banana" 0 0))
       (export main)))
   (output (: 3 Int64))
@@ -120,7 +120,7 @@
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
       (def
         (rd (: s String))
-        (+ (if (= (Option.expect (String.at s 0) "x") "h") 1 0) ((. String byte-len) s)))
+        (+ (if (= (Option.expect (String.at s 0) "x") "h") 1 0) (String.byte-len s)))
       (def (main) (rd (rep "hi" 3)))
       (export main)))
   (output (: 6 Int64))
@@ -148,9 +148,8 @@
         (+
           (*
             100
-            ((. String byte-len)
-              (join #list("alpha" (String.concat "be" "ta") "gamma") "," "" true)))
-          (+ ((. String byte-len) (join #list() "," "" true)) n)))
+            (String.byte-len (join #list("alpha" (String.concat "be" "ta") "gamma") "," "" true)))
+          (+ (String.byte-len (join #list() "," "" true)) n)))
       (export main)))
   (call main (: 0 Int64))
   (output (: 1600 Int64))
@@ -196,7 +195,7 @@
               ((None _u) #tuple(-9 maxd))))))
       (def
         (run (: s String))
-        (match (scan s 0 ((. String scalar-len) s) 0 0) (#tuple(ok maxd) (+ (* ok 10) maxd))))
+        (match (scan s 0 (String.scalar-len s) 0 0) (#tuple(ok maxd) (+ (* ok 10) maxd))))
       (def
         (main (: n Int64))
         (do
@@ -252,7 +251,7 @@
                       (#list() -1)
                       (#list(top (.. rest)) (if (= top want) (go s (+ i 1) len rest) -1)))))))
             ((None _u) 0))))
-      (def (bal (: s String)) (go s 0 ((. String byte-len) s) #list()))
+      (def (bal (: s String)) (go s 0 (String.byte-len s) #list()))
       (def
         (main (: mode Int64))
         (do (def s (if (= mode 1) "([]{})" (if (= mode 2) "([)]" (if (= mode 3) "((" "")))) (bal s)))
@@ -302,7 +301,7 @@
                 (split-go s (+ i 1) len (+ i 1) (List.push acc (field s start i)))
                 (split-go s (+ i 1) len start acc)))
             ((None _u) acc))))
-      (def (split (: s String)) (split-go s 0 ((. String scalar-len) s) 0 #list()))
+      (def (split (: s String)) (split-go s 0 (String.scalar-len s) 0 #list()))
       (def
         (join (: parts (List String)) (: sep String) (: acc String) (: first Bool))
         (match
@@ -318,7 +317,7 @@
           (+
             (* (List.len parts) 100)
             (+
-              (* ((. String byte-len) (Option.expect (List.at parts 1) "f1")) 10)
+              (* (String.byte-len (Option.expect (List.at parts 1) "f1")) 10)
               (if (= (join parts "," "" true) s) 1 0)))))
       (export main)))
   (call main (: 1 Int64))
@@ -360,7 +359,7 @@
                 (split-go s (+ i 1) len (+ i 1) (List.push acc (field s start i)))
                 (split-go s (+ i 1) len start acc)))
             ((None _u) acc))))
-      (def (split (: s String)) (split-go s 0 ((. String scalar-len) s) 0 #list()))
+      (def (split (: s String)) (split-go s 0 (String.scalar-len s) 0 #list()))
       (def (main) (do (def s (String.concat "a," (String.concat "é" ",b"))) (List.len (split s))))
       (export main)))
   (output (: 3 Int64))
@@ -379,9 +378,9 @@
         (main (: n Int64))
         (do
           (def r (String.concat (String.concat "a" "é") "日"))
-          (def b ((. String byte-len) r))
-          (def s ((. String scalar-len) r))
-          (def w (match (String.at r n) ((Some c) ((. String byte-len) c)) ((None _u) 0)))
+          (def b (String.byte-len r))
+          (def s (String.scalar-len r))
+          (def w (match (String.at r n) ((Some c) (String.byte-len c)) ((None _u) 0)))
           (+ (* b 100) (+ (* s 10) w))))
       (export main)))
   (call main (: 0 Int64))
@@ -409,7 +408,7 @@
           (def r (String.concat (String.concat "a" "é") (String.concat "日" "x")))
           (match
             (String.slice r st en)
-            ((Some sl) (+ (* ((. String byte-len) sl) 10) (if (= sl "é日") 1 0)))
+            ((Some sl) (+ (* (String.byte-len sl) 10) (if (= sl "é日") 1 0)))
             ((None _u) -1))))
       (export main)))
   (call main (: 1 Int64) (: 3 Int64))
@@ -491,10 +490,7 @@
         (match
           (String.at s 0)
           ((Some c)
-            (if
-              (= c "-")
-              (- 0 (go s 1 ((. String scalar-len) s) 0))
-              (go s 0 ((. String scalar-len) s) 0)))
+            (if (= c "-") (- 0 (go s 1 (String.scalar-len s) 0)) (go s 0 (String.scalar-len s) 0)))
           ((None _u) 0)))
       (def
         (main (: n Int64))
@@ -560,8 +556,8 @@
       (def
         (one-apart (: a String) (: b String))
         (do
-          (def la ((. String scalar-len) a))
-          (def lb ((. String scalar-len) b))
+          (def la (String.scalar-len a))
+          (def lb (String.scalar-len b))
           (if
             (= la lb)
             (if (= (count-diffs a b 0 la 0) 1) 1 0)
@@ -628,8 +624,8 @@
       (def
         (is-rot (: a String) (: b String))
         (do
-          (def la ((. String scalar-len) a))
-          (def lb ((. String scalar-len) b))
+          (def la (String.scalar-len a))
+          (def lb (String.scalar-len b))
           (if
             (= la lb)
             (if (= la 0) 1 (do (def aa (String.concat a a)) (find aa b 0 (* la 2) lb)))
@@ -705,8 +701,8 @@
       (def
         (lev (: a String) (: b String))
         (do
-          (def la ((. String scalar-len) a))
-          (def lb ((. String scalar-len) b))
+          (def la (String.scalar-len a))
+          (def lb (String.scalar-len b))
           (def final (rows a b 1 la lb (seed 0 lb #list())))
           (at0 final lb)))
       (def
@@ -758,7 +754,7 @@
               ((None _u) i)))))
       (def
         (lcp (: a String) (: b String))
-        (lcp-go a b 0 ((. String scalar-len) a) ((. String scalar-len) b)))
+        (lcp-go a b 0 (String.scalar-len a) (String.scalar-len b)))
       (def
         (main (: n Int64))
         (do
@@ -801,7 +797,7 @@
             ((None _u) acc))))
       (def
         (runs (: s String))
-        (match (String.at s 0) ((Some c0) (go s 1 ((. String scalar-len) s) c0 1 0)) ((None _u) 0)))
+        (match (String.at s 0) ((Some c0) (go s 1 (String.scalar-len s) c0 1 0)) ((None _u) 0)))
       (def
         (main (: n Int64))
         (do (def s (String.concat "aab" (String.concat (if (> n 0) "b" "a") "bcc"))) (runs s)))
@@ -842,17 +838,14 @@
             ((None _u) acc))))
       (def
         (las (: s String))
-        (match
-          (String.at s 0)
-          ((Some c0) (las-go s 1 ((. String byte-len) s) c0 1 ""))
-          ((None _u) s)))
+        (match (String.at s 0) ((Some c0) (las-go s 1 (String.byte-len s) c0 1 "")) ((None _u) s)))
       (def (iter (: s String) (: k Int64)) (if (= k 0) s (iter (las s) (- k 1))))
       (def
         (main (: k Int64))
         (do
           (def s (iter "1" k))
           (+
-            (* ((. String byte-len) s) 10)
+            (* (String.byte-len s) 10)
             (if (= s (if (= k 5) "312211" (if (= k 3) "1211" (if (= k 1) "11" "1")))) 1 0))))
       (export main)))
   (call main (: 0 Int64))
@@ -894,7 +887,7 @@
                 ((Some b) (if (= a b) (pal s (+ lo 1) (- hi 1)) 0))
                 ((None _u) -1)))
             ((None _u) -1))))
-      (def (check (: s String)) (pal s 0 (- ((. String byte-len) s) 1)))
+      (def (check (: s String)) (pal s 0 (- (String.byte-len s) 1)))
       (def
         (main (: n Int64))
         (do
@@ -946,7 +939,7 @@
                   (go s (+ i 1) len v (+ k 1) o)
                   (go s (+ i 1) len v k (+ o 1)))))
             ((None _u) #tuple(v k o)))))
-      (def (classify (: s String)) (go s 0 ((. String byte-len) s) 0 0 0))
+      (def (classify (: s String)) (go s 0 (String.byte-len s) 0 0 0))
       (def
         (main (: mode Int64))
         (do
@@ -984,7 +977,7 @@
             (String.at s i)
             ((Some c) (srev-go s (- i 1) (String.concat acc c)))
             ((None _u) acc))))
-      (def (srev (: s String)) (srev-go s (- ((. String byte-len) s) 1) ""))
+      (def (srev (: s String)) (srev-go s (- (String.byte-len s) 1) ""))
       (def
         (main (: n Int64))
         (do
@@ -992,7 +985,7 @@
           (def b "de")
           (def whole (srev (String.concat a b)))
           (+
-            (* ((. String byte-len) whole) 100)
+            (* (String.byte-len whole) 100)
             (+
               (* (if (= whole (String.concat (srev b) (srev a))) 1 0) 10)
               (if (= (srev (srev (String.concat a b))) (String.concat a b)) 1 0)))))
@@ -1030,7 +1023,7 @@
                 (wc-go s (+ i 1) len false n)
                 (wc-go s (+ i 1) len true (if inw n (+ n 1)))))
             ((None _u) n))))
-      (def (wc (: s String)) (wc-go s 0 ((. String scalar-len) s) false 0))
+      (def (wc (: s String)) (wc-go s 0 (String.scalar-len s) false 0))
       (def
         (main (: n Int64))
         (do
@@ -1095,7 +1088,7 @@
         (do
           (def s (roman n))
           (+
-            (* ((. String byte-len) s) 10)
+            (* (String.byte-len s) 10)
             (if
               (= s (if (= n 1994) "MCMXCIV" (if (= n 9) "IX" (if (= n 40) "XL" "MMMDCCCLXXXVIII"))))
               1
@@ -1156,7 +1149,7 @@
                     0))
                 (dec-go s (+ i 1) len (if (> nxt v) (- acc v) (+ acc v)))))
             ((None _u) acc))))
-      (def (fromroman (: s String)) (dec-go s 0 ((. String scalar-len) s) 0))
+      (def (fromroman (: s String)) (dec-go s 0 (String.scalar-len s) 0))
       (def
         (emit (: n Int64) (: v Int64) (: s String) (: acc String))
         (if (< n v) #tuple(n acc) (emit (- n v) v s (String.concat acc s))))
@@ -1240,7 +1233,7 @@
                       "in range")))
                 (rot-go s k (+ i 1) len (String.concat acc out))))
             ((None _u) acc))))
-      (def (rot (: s String) (: k Int64)) (rot-go s k 0 ((. String byte-len) s) ""))
+      (def (rot (: s String) (: k Int64)) (rot-go s k 0 (String.byte-len s) ""))
       (def
         (main (: k Int64))
         (do
@@ -1330,7 +1323,7 @@
           (def r2 (String.concat r1 (rep "z" 4 "")))
           (def keep (if (= mode 1) r1 r2))
           (def ok (if (= keep (if (= mode 1) "ababab" "abababzzzz")) 1 0))
-          (+ (* ((. String byte-len) keep) 10) ok)))
+          (+ (* (String.byte-len keep) 10) ok)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 61 Int64))
@@ -1488,9 +1481,8 @@
             (String.at s 0)
             ((Some c0)
               (do
-                (def out (comp-go s 1 ((. String scalar-len) s) c0 1 ""))
-                ((. String byte-len)
-                  (if (< ((. String byte-len) out) ((. String byte-len) s)) out s))))
+                (def out (comp-go s 1 (String.scalar-len s) c0 1 ""))
+                (String.byte-len (if (< (String.byte-len out) (String.byte-len s)) out s))))
             ((None _u) -1))))
       (export main)))
   (call main (: 1 Int64))
@@ -1534,15 +1526,15 @@
           (String.at s 0)
           ((Some c0)
             (do
-              (def out (comp-go s 1 ((. String scalar-len) s) c0 1 ""))
-              (if (< ((. String byte-len) out) ((. String byte-len) s)) out s)))
+              (def out (comp-go s 1 (String.scalar-len s) c0 1 ""))
+              (if (< (String.byte-len out) (String.byte-len s)) out s)))
           ((None _u) s)))
       (def
         (main (: mode Int64))
         (do
           (def s (if (= mode 1) "aabcccccaaa" (if (= mode 2) "abc" "aa")))
           (def r (compress s))
-          (+ (* ((. String byte-len) r) 10) (if (= r (if (= mode 1) "a2b1c5a3" s)) 1 0))))
+          (+ (* (String.byte-len r) 10) (if (= r (if (= mode 1) "a2b1c5a3" s)) 1 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 81 Int64))
@@ -1578,11 +1570,9 @@
           (def c0 (Option.expect (String.at base 0) "c"))
           (def r1 (rep base n1 ""))
           (def r2 (rep c0 5 ""))
-          (def pick1 (if (< ((. String byte-len) r1) ((. String byte-len) r2)) r1 r2))
-          (def pick2 (if (< ((. String byte-len) pick1) ((. String byte-len) base)) base pick1))
-          (+
-            (* ((. String byte-len) pick2) 100)
-            (+ (* ((. String byte-len) r1) 10) ((. String byte-len) r2)))))
+          (def pick1 (if (< (String.byte-len r1) (String.byte-len r2)) r1 r2))
+          (def pick2 (if (< (String.byte-len pick1) (String.byte-len base)) base pick1))
+          (+ (* (String.byte-len pick2) 100) (+ (* (String.byte-len r1) 10) (String.byte-len r2)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 565 Int64))
@@ -1614,10 +1604,10 @@
         (do
           (def r (if (= mode 1) (rep "ab" 3 "") (if (= mode 2) (rep "xyz" 1 "") (rep "a" 0 ""))))
           (def s (if (= mode 1) "q" (if (= mode 2) "qqqqqqqq" "qq")))
-          (def shell (Some (if (< ((. String byte-len) r) ((. String byte-len) s)) s r)))
+          (def shell (Some (if (< (String.byte-len r) (String.byte-len s)) s r)))
           (match
             shell
-            ((Some pick) (+ (* ((. String byte-len) pick) 10) ((. String byte-len) r)))
+            ((Some pick) (+ (* (String.byte-len pick) 10) (String.byte-len r)))
             ((None _u) -1))))
       (export main)))
   (call main (: 1 Int64))
@@ -1644,18 +1634,14 @@
       (def
         (rep (: s String) (: n Int64) (: acc String))
         (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
-      (def
-        (shorter (: a String) (: b String))
-        (if (< ((. String byte-len) a) ((. String byte-len) b)) a b))
+      (def (shorter (: a String) (: b String)) (if (< (String.byte-len a) (String.byte-len b)) a b))
       (def
         (main (: mode Int64))
         (do
           (def r1 (if (= mode 1) (rep "ab" 3 "") (if (= mode 2) (rep "x" 1 "") (rep "a" 0 ""))))
           (def r2 (rep "z" (if (= mode 1) 2 (if (= mode 2) 4 1)) ""))
           (def p (shorter r1 r2))
-          (+
-            (* ((. String byte-len) p) 100)
-            (+ (* ((. String byte-len) r1) 10) ((. String byte-len) r2)))))
+          (+ (* (String.byte-len p) 100) (+ (* (String.byte-len r1) 10) (String.byte-len r2)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 262 Int64))
@@ -1688,13 +1674,11 @@
           (def r2 (rep "z" (if (= mode 1) 2 (if (= mode 2) 4 1)) ""))
           (def
             packed
-            (if (< ((. String byte-len) r1) ((. String byte-len) r2)) #tuple(r1 r2) #tuple(r2 r1)))
+            (if (< (String.byte-len r1) (String.byte-len r2)) #tuple(r1 r2) #tuple(r2 r1)))
           (match
             packed
             (#tuple(a b)
-              (+
-                (* ((. String byte-len) a) 100)
-                (+ (* ((. String byte-len) b) 10) ((. String byte-len) r1)))))))
+              (+ (* (String.byte-len a) 100) (+ (* (String.byte-len b) 10) (String.byte-len r1)))))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 266 Int64))
@@ -1763,7 +1747,7 @@
     then
     read
     structurally
-    ((quasiquote (. Map len`)) → 1)
+    ((quasiquote Map.len`) → 1)
     (unquote so)
     3.0
     A
@@ -1848,7 +1832,7 @@
         (do
           (def src (rep "ab" 3 ""))
           (def r (match mode (1 src) (2 (String.concat src "zz")) (_ "kk")))
-          (+ (* ((. String byte-len) r) 10) ((. String byte-len) src))))
+          (+ (* (String.byte-len r) 10) (String.byte-len src))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 66 Int64))
@@ -2020,7 +2004,7 @@
             ((Some outer)
               (match
                 (String.slice outer 1 3)
-                ((Some inner) (+ (* 100 ((. String scalar-len) inner)) (if (= inner "∀b") 1 0)))
+                ((Some inner) (+ (* 100 (String.scalar-len inner)) (if (= inner "∀b") 1 0)))
                 ((None _u) -2)))
             ((None _u) -3))))
       (export main)))
@@ -2139,7 +2123,7 @@
       (export main)))
   (output (: 1 Int64)))
 
-(case "string length" (input ((. String scalar-len) "hello")) (output (: 5 Int64)))
+(case "string length" (input (String.scalar-len "hello")) (output (: 5 Int64)))
 
 (case
   "scalar length counts Unicode scalar values, not bytes"
@@ -2150,7 +2134,7 @@
            what String.byte-len yields (the byte-len case below), and the two differ here
            precisely because the string is multi-byte. `String.scalar-len \"hello\"` above cannot witness
            this — ASCII makes the two counts coincide.")
-  (input ((. String scalar-len) "café"))
+  (input (String.scalar-len "café"))
   (output (: 4 Int64)))
 
 (case
@@ -2161,7 +2145,7 @@
            is a single Unicode scalar value — scalar length 1 — even though it is four UTF-8 bytes (and
            two UTF-16 code units). A length implementation counting bytes would report 4, UTF-16 units 2;
            the scalar count is 1.")
-  (input ((. String scalar-len) "😀"))
+  (input (String.scalar-len "😀"))
   (output (: 1 Int64)))
 
 ; --- Byte length is the UTF-8 byte count, obtained directly ------------------------------
@@ -2178,7 +2162,7 @@
            bytes), NOT the scalar count 4 (String.scalar-len \"café\" = 4, above). Pins the byte length
            as a first-class, directly-obtained op distinct from the scalar length
            (collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length).")
-  (input ((. String byte-len) "café"))
+  (input (String.byte-len "café"))
   (output (: 5 Int64)))
 
 (case
@@ -2187,7 +2171,7 @@
     "`(String.byte-len s)` MUST equal `(Bytes.len (String.to-bytes s))` — the direct byte length
            agrees with materializing the UTF-8 bytes and counting them; only the cost differs. Pins the
            two paths as the same number, so byte-len is a cheap shortcut, not a second answer.")
-  (input (= ((. String byte-len) "café") (Bytes.len ((. String to-bytes) "café"))))
+  (input (= (String.byte-len "café") (Bytes.len (String.to-bytes "café"))))
   (output (: true Bool)))
 
 (case
@@ -2199,7 +2183,7 @@
            Both A Scalar Length And A Byte Length, 2nd sentence). Pins that byte-len is a function of the
            string's value, not of the incidental byte spelling normalization removes — the byte-length
            companion of the scalar-length-after-normalization case below.")
-  (input ((. String byte-len) "café"))
+  (input (String.byte-len "café"))
   (output (: 5 Int64)))
 
 (case
@@ -2207,13 +2191,13 @@
   (doc
     "The compiler encodes export names as UTF-8 bytes for wasm sections. String.to-bytes
            produces the UTF-8 byte sequence of the string.")
-  (input (Bytes.len ((. String to-bytes) "run")))
+  (input (Bytes.len (String.to-bytes "run")))
   (output (: 3 Int64)))
 
 (case
   "string to bytes encodes multi-byte characters"
   (doc "UTF-8 encodes non-ASCII characters as multiple bytes.")
-  (input (Bytes.len ((. String to-bytes) "café")))
+  (input (Bytes.len (String.to-bytes "café")))
   (output (: 5 Int64)))
 
 (case
@@ -2226,7 +2210,7 @@
            169 240 159 152 128))` — the 2-byte then 4-byte sequences concatenated. Pins the byte-level
            correctness of the UTF-8 encoder across the 2-byte and 4-byte forms (the boundaries a naive
            encoder gets wrong), the value companion of the byte-count cases above.")
-  (input (= ((. String to-bytes) "é😀") (Bytes.of #list(195 169 240 159 152 128))))
+  (input (= (String.to-bytes "é😀") (Bytes.of #list(195 169 240 159 152 128))))
   (output (: true Bool)))
 
 (case "string equality" (input (= "hello" "hello")) (output (: true Bool)))
@@ -2331,8 +2315,8 @@
            consumes the scrutinee (not only a constant wildcard body), both backends.")
   (input
     (do
-      (def (viamatch (: s String)) (match s ("add" 1) (other ((. String byte-len) other))))
-      (def (viachain (: s String)) (if (= s "add") 1 ((. String byte-len) s)))
+      (def (viamatch (: s String)) (match s ("add" 1) (other (String.byte-len other))))
+      (def (viachain (: s String)) (if (= s "add") 1 (String.byte-len s)))
       (def (main) (+ (* 100 (viamatch (if false "add" "wxyz"))) (viachain (if false "add" "wxyz"))))
       (export main)))
   (output (: 404 Int64)))
@@ -2350,7 +2334,7 @@
     "`(String.scalar-len \"\")` is 0 — the empty string has no Unicode scalar values
            (collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length). Pins
            that length handles the zero-length string, not underflowing or reading a phantom scalar.")
-  (input ((. String scalar-len) ""))
+  (input (String.scalar-len ""))
   (output (: 0 Int64)))
 
 (case
@@ -2467,7 +2451,7 @@
     "The length of the decomposed \"café\" MUST be 4 — after normalization it is the four
            scalar values c, a, f, é, the same as the composed form (String.scalar-len \"café\" = 4,
            witnessed above). The seed counts the un-normalized e + combining acute as 5 scalar values.")
-  (input ((. String scalar-len) "café"))
+  (input (String.scalar-len "café"))
   (output (: 4 Int64)))
 
 (case
@@ -2532,7 +2516,7 @@
       (def
         (main)
         (+
-          (* 10 ((. String scalar-len) "café"))
+          (* 10 (String.scalar-len "café"))
           (match (String.at "café" 4) ((Some _c) 1) ((None _u) 0))))
       (export main)))
   (call main)
@@ -2584,7 +2568,7 @@
         (main (: k Int64))
         (let
           ((s (String.concat "ban" (String.concat "an" "a"))))
-          (+ (walk s 0 ((. String scalar-len) s) 0) k)))
+          (+ (walk s 0 (String.scalar-len s) 0) k)))
       (export main)))
   (call main (: 0 Int64))
   (output (: 3 Int64))
@@ -2731,7 +2715,7 @@
            None arm (-1), witnessing the absent result rather than a trap or a short string.")
   (input
     (do
-      (def (f s) (match (String.slice s 0 5) ((Some x) ((. String byte-len) x)) ((None _) -1)))
+      (def (f s) (match (String.slice s 0 5) ((Some x) (String.byte-len x)) ((None _) -1)))
       (def (main) (f "hi"))
       (export main)))
   (output (: -1 Int64)))
@@ -2744,7 +2728,7 @@
            0, distinguishing Some \"\" (0) from None (which the match would send elsewhere).")
   (input
     (do
-      (def (f s) (match (String.slice s 2 2) ((Some x) ((. String byte-len) x)) ((None _) -1)))
+      (def (f s) (match (String.slice s 2 2) ((Some x) (String.byte-len x)) ((None _) -1)))
       (def (main) (f "hello"))
       (export main)))
   (output (: 0 Int64)))
@@ -2769,7 +2753,7 @@
     (do
       (def
         (main (: a Int64) (: b Int64))
-        ((. String byte-len) (Option.expect (String.slice "café" a b) "in range")))
+        (String.byte-len (Option.expect (String.slice "café" a b) "in range")))
       (export main)))
   (call main (: 3 Int64) (: 4 Int64))
   (output (: 2 Int64))
@@ -2784,7 +2768,7 @@
     (do
       (def
         (main (: a Int64) (: b Int64))
-        ((. String byte-len) (Option.expect (String.slice "café" a b) "in range")))
+        (String.byte-len (Option.expect (String.slice "café" a b) "in range")))
       (export main)))
   (call main (: 0 Int64) (: 3 Int64))
   (output (: 3 Int64))
@@ -2800,7 +2784,7 @@
     (do
       (def
         (main (: a Int64) (: b Int64))
-        ((. String byte-len) (Option.expect (String.slice "café" a b) "in range")))
+        (String.byte-len (Option.expect (String.slice "café" a b) "in range")))
       (export main)))
   (call main (: 1 Int64) (: 4 Int64))
   (output (: 4 Int64))
@@ -2833,7 +2817,7 @@
     (do
       (def
         (main (: a Int64) (: b Int64))
-        ((. String byte-len) (Option.expect (String.slice "a😀b" a b) "in range")))
+        (String.byte-len (Option.expect (String.slice "a😀b" a b) "in range")))
       (export main)))
   (call main (: 1 Int64) (: 2 Int64))
   (output (: 4 Int64))
@@ -2928,7 +2912,7 @@
       (def (pick (: b Bool) (: t String) (: f String)) (if b t f))
       (def
         (main (: b Bool) (: lo Int64) (: hi Int64))
-        ((. String byte-len)
+        (String.byte-len
           (Option.expect (String.slice (String.concat (pick b "aé" "aX") "bc") lo hi) "in range")))
       (export main)))
   (call main (: true Bool) (: 1 Int64) (: 3 Int64))
@@ -2978,7 +2962,7 @@
     (do
       (def
         (spanlen (: s String) (: i Int64) (: j Int64))
-        ((. String scalar-len) (Option.expect (String.slice s i j) "in bounds")))
+        (String.scalar-len (Option.expect (String.slice s i j) "in bounds")))
       (def (main) (spanlen (if true "aébcd" "x") 1 4))
       (export main)))
   (output (: 3 Int64)))
@@ -3000,7 +2984,7 @@
     (do
       (def
         (bytelen (: s String) (: i Int64) (: j Int64))
-        ((. String byte-len) (Option.expect (String.slice s i j) "in bounds")))
+        (String.byte-len (Option.expect (String.slice s i j) "in bounds")))
       (def (main) (bytelen (if true "aébcd" "x") 1 4))
       (export main)))
   (output (: 4 Int64)))
@@ -3016,7 +3000,7 @@
     (do
       (def
         (spanlen (: s String) (: i Int64) (: j Int64))
-        ((. String scalar-len) (Option.expect (String.slice s i j) "in bounds")))
+        (String.scalar-len (Option.expect (String.slice s i j) "in bounds")))
       (def (main) (spanlen (if true "aébcd" "x") 0 5))
       (export main)))
   (output (: 5 Int64)))
@@ -3031,7 +3015,7 @@
     (do
       (def
         (bytelen (: s String) (: i Int64) (: j Int64))
-        ((. String byte-len) (Option.expect (String.slice s i j) "in bounds")))
+        (String.byte-len (Option.expect (String.slice s i j) "in bounds")))
       (def (main) (bytelen (if true "aébcd" "x") 0 5))
       (export main)))
   (output (: 6 Int64)))
@@ -3047,7 +3031,7 @@
     (do
       (def
         (spanlen (: s String) (: i Int64) (: j Int64))
-        ((. String scalar-len) (Option.expect (String.slice s i j) "in bounds")))
+        (String.scalar-len (Option.expect (String.slice s i j) "in bounds")))
       (def (main) (spanlen (if true "aébcd" "x") 1 1))
       (export main)))
   (output (: 0 Int64)))
@@ -3071,7 +3055,7 @@
            `if` but not a runtime `match`.")
   (input
     (do
-      (def (f n) ((. String scalar-len) (match n (0 "zero") (_ "other"))))
+      (def (f n) (String.scalar-len (match n (0 "zero") (_ "other"))))
       (def (main) (f 5))
       (export main)))
   (output (: 5 Int64)))
@@ -3083,7 +3067,7 @@
            computes the selected string's length — `(if b \"hello\" \"hi\")` with b=true is \"hello\",
            length 5. The seed runs this; the match companion must behave identically.")
   (input
-    (do (def (f b) ((. String scalar-len) (if b "hello" "hi"))) (def (main) (f true)) (export main)))
+    (do (def (f b) (String.scalar-len (if b "hello" "hi"))) (def (main) (f true)) (export main)))
   (output (: 5 Int64)))
 
 ; --- A string flows as a genuine RUNTIME value: a fn parameter, a return, a sum payload -----------
@@ -3102,7 +3086,7 @@
            body takes its byte length. `String.byte-len` of a runtime string parameter is 5 — the UTF-8
            byte count. Pins that a string flows across a function boundary as a first-class value, not
            only as a folded constant (the front end passes a form's head string to a classifier this way).")
-  (input (do (def (len2 s) ((. String byte-len) s)) (def (main) (len2 "hello")) (export main)))
+  (input (do (def (len2 s) (String.byte-len s)) (def (main) (len2 "hello")) (export main)))
   (output (: 5 Int64)))
 
 (case
@@ -3147,7 +3131,7 @@
   (input
     (do
       (type Node (NInt Int64) (NSym String))
-      (def (weigh n) (match n ((Node.NInt i) i) ((Node.NSym s) ((. String byte-len) s))))
+      (def (weigh n) (match n ((Node.NInt i) i) ((Node.NSym s) (String.byte-len s))))
       (def (main) (+ (weigh (Node.NSym "hello")) (weigh (Node.NInt 3))))
       (export main)))
   (output (: 8 Int64)))
@@ -3161,7 +3145,7 @@
            fragments), agreeing with `(+ (byte-len a) (byte-len b))` when neither operand is empty.")
   (input
     (do
-      (def (join a b) ((. String byte-len) (String.concat a b)))
+      (def (join a b) (String.byte-len (String.concat a b)))
       (def (main) (join "foo" "bar"))
       (export main)))
   (output (: 6 Int64)))
@@ -3183,7 +3167,7 @@
   (input
     (do
       (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-      (def (main) ((. String byte-len) (rep "" 3)))
+      (def (main) (String.byte-len (rep "" 3)))
       (export main)))
   (output (: 3 Int64)))
 
@@ -3197,7 +3181,7 @@
            the underlying representation), the invariant the Bytes-backed String realization rests on.")
   (input
     (do
-      (def (agree s) (= ((. String byte-len) s) (Bytes.len ((. String to-bytes) s))))
+      (def (agree s) (= (String.byte-len s) (Bytes.len (String.to-bytes s))))
       (def (main) (agree "café"))
       (export main)))
   (output (: true Bool)))
@@ -3214,7 +3198,7 @@
            previously declined 'not yet computed (constant strings only)'.")
   (input
     (do
-      (def (enc s) (Bytes.len ((. String to-bytes) (String.concat s ""))))
+      (def (enc s) (Bytes.len (String.to-bytes (String.concat s ""))))
       (def (main) (enc "café"))
       (export main)))
   (output (: 5 Int64)))
@@ -3230,7 +3214,7 @@
   (input
     (do
       (def (b1 x) (Bytes.of #list((UInt8.wrap x))))
-      (def (str-payload s) (Bytes.concat (b1 ((. String byte-len) s)) ((. String to-bytes) s)))
+      (def (str-payload s) (Bytes.concat (b1 (String.byte-len s)) (String.to-bytes s)))
       (def (main) (Bytes.len (Bytes.concat (b1 2) (str-payload (String.concat "foo" "")))))
       (export main)))
   (output (: 5 Int64)))
@@ -3246,7 +3230,7 @@
            avoiding runtime-Bytes value-equality (a separate unimplemented compound heap-walk).")
   (input
     (do
-      (def (enc s) ((. String to-bytes) (String.concat s "")))
+      (def (enc s) (String.to-bytes (String.concat s "")))
       (def (main) (Option.expect (Bytes.at (enc "café") 4) "in range"))
       (export main)))
   (output (: 169 Int64)))
@@ -3292,7 +3276,7 @@
            structural compare is exact → true. This is the case that DECLINED before direct-Bytes `=`.")
   (input
     (do
-      (def (enc s) ((. String to-bytes) (String.concat s "")))
+      (def (enc s) (String.to-bytes (String.concat s "")))
       (def (main) (= (enc "é😀") (Bytes.of #list(195 169 240 159 152 128))))
       (export main)))
   (output (: true Bool)))
@@ -3305,7 +3289,7 @@
            on a runtime value agrees with the const `chars().count()` — the runtime counts the UTF-8
            leading bytes (those not of the form 10xxxxxx), which for well-formed UTF-8 is the scalar
            count (collections-and-text.md #A String Offers Both A Scalar Length And A Byte Length).")
-  (input (do (def (slen s) ((. String scalar-len) s)) (def (main) (slen "café")) (export main)))
+  (input (do (def (slen s) (String.scalar-len s)) (def (main) (slen "café")) (export main)))
   (output (: 4 Int64)))
 
 (case
@@ -3322,7 +3306,7 @@
            this (\"a runtime string's scalar length needs a UTF-8 decoding walk\").")
   (input
     (do
-      (def (slen s) ((. String scalar-len) (String.concat s "")))
+      (def (slen s) (String.scalar-len (String.concat s "")))
       (def (main) (slen "café"))
       (export main)))
   (output (: 4 Int64)))
@@ -3337,7 +3321,7 @@
            multi-width companion of the café case.")
   (input
     (do
-      (def (slen s) ((. String scalar-len) (String.concat s "😀")))
+      (def (slen s) (String.scalar-len (String.concat s "😀")))
       (def (main) (slen "café—"))
       (export main)))
   (output (: 6 Int64)))
@@ -3367,7 +3351,7 @@
   (input
     (do
       (def (at s i) (String.at (String.concat s "") i))
-      (def (main) (match (at "hi" 5) ((Some c) ((. String byte-len) c)) ((None _) -1)))
+      (def (main) (match (at "hi" 5) ((Some c) (String.byte-len c)) ((None _) -1)))
       (export main)))
   (output (: -1 Int64)))
 
@@ -3466,7 +3450,7 @@
            string MUST read back to the same value, so the renderer emits ONLY the closed escapes.")
   (input
     (do
-      (def (main) (Option.expect ((. String from-bytes) (Bytes.of #list(97 7 98))) "well-formed"))
+      (def (main) (Option.expect (String.from-bytes (Bytes.of #list(97 7 98))) "well-formed"))
       (export main)))
   (output (: "ab" String)))
 
@@ -3490,7 +3474,7 @@
            (c a f, then é as the two bytes 0xC3 0xA9 = 195 169) to `(Some \"café\")`. Pins that a
            well-formed byte sequence decodes to `(Some s)` — the success arm of the total decode
            (collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping).")
-  (input (= ((. String from-bytes) (Bytes.of #list(99 97 102 195 169))) (Some "café")))
+  (input (= (String.from-bytes (Bytes.of #list(99 97 102 195 169))) (Some "café")))
   (output (: true Bool)))
 
 (case
@@ -3526,9 +3510,9 @@
     a
     valid
     decode
-    ((. collections-and-text md) #Decoding Bytes To A String Is Total)
+    (collections-and-text.md #Decoding Bytes To A String Is Total)
     .")
-  (input (= ((. String from-bytes) (Bytes.of #list())) (Some "")))
+  (input (= (String.from-bytes (Bytes.of #list())) (Some "")))
   (output (: true Bool)))
 
 (case
@@ -3552,8 +3536,8 @@
       (def
         (main (: k Int64))
         (match
-          ((. String from-bytes) (rep (Bytes.of #list()) 3))
-          ((Some s) (+ ((. String byte-len) s) ((. String scalar-len) s)))
+          (String.from-bytes (rep (Bytes.of #list()) 3))
+          ((Some s) (+ (String.byte-len s) (String.scalar-len s)))
           ((None u) -1)))
       (export main)))
   (call main (: 0 Int64))
@@ -3583,7 +3567,7 @@
             (String.slice s 3 5)
             ((Some tail)
               (let
-                ((b ((. String to-bytes) tail)))
+                ((b (String.to-bytes tail)))
                 (+
                   (Int64.of (Option.expect (Bytes.at b 0) "b0"))
                   (Int64.of (Option.expect (Bytes.at b 1) "b1")))))
@@ -3616,7 +3600,7 @@
             (String.slice s 3 5)
             ((Some tail)
               (let
-                ((b (Bytes.concat ((. String to-bytes) tail) ((. String to-bytes) tail))))
+                ((b (Bytes.concat (String.to-bytes tail) (String.to-bytes tail))))
                 (+
                   (Int64.of (Option.expect (Bytes.at b 0) "b0"))
                   (Int64.of (Option.expect (Bytes.at b 3) "b3")))))
@@ -3642,11 +3626,11 @@
       (def
         (main (: start Int64))
         (let
-          ((b ((. String to-bytes) (String.concat "aé🎵" "z"))))
+          ((b (String.to-bytes (String.concat "aé🎵" "z"))))
           (match
             (Bytes.slice b start 3)
             ((Some cut)
-              (match ((. String from-bytes) cut) ((Some t) ((. String byte-len) t)) ((None _u) -1)))
+              (match (String.from-bytes cut) ((Some t) (String.byte-len t)) ((None _u) -1)))
             ((None _u) -2))))
       (export main)))
   (call main (: 2 Int64))
@@ -3663,7 +3647,7 @@
            an unspecified string with a replacement character. Pins the failure arm as an ordinary value
            the program handles (collections-and-text.md #Decoding Bytes To A String Is Total, Not
            Trapping). This is the whole point of the total decode: ill-formed input is data, not a halt.")
-  (input (= ((. String from-bytes) (Bytes.of #list(255))) None))
+  (input (= (String.from-bytes (Bytes.of #list(255))) None))
   (output (: true Bool)))
 
 (case
@@ -3678,7 +3662,7 @@
            distinction (overlong encodings have been used to smuggle forbidden bytes past naive
            validators). This is a requirement on the runtime's UTF-8 validator the reader relies on:
            the byte sequence, not the code point, must be canonical.")
-  (input (= ((. String from-bytes) (Bytes.of #list(192 128))) None))
+  (input (= (String.from-bytes (Bytes.of #list(192 128))) None))
   (output (: true Bool)))
 
 (case
@@ -3690,7 +3674,7 @@
            case (structurally-paired but non-canonical): here the byte is a valid CONTINUATION shape but
            appears with no lead to continue — the STATE-MACHINE failure mode a decoder that only rejected
            `0xFF`/overlong could miss. Pins that a stray continuation is rejected.")
-  (input (= ((. String from-bytes) (Bytes.of #list(128))) None))
+  (input (= (String.from-bytes (Bytes.of #list(128))) None))
   (output (: true Bool)))
 
 (case
@@ -3702,7 +3686,7 @@
            continuation that never arrives (a decode that ran off the end of the input). Together they pin
            BOTH state-machine failure faces — a continuation with no lead, and a lead with no continuation —
            beyond the byte-value (`0xFF`) and shortest-form (overlong) rejections above.")
-  (input (= ((. String from-bytes) (Bytes.of #list(195))) None))
+  (input (= (String.from-bytes (Bytes.of #list(195))) None))
   (output (: true Bool)))
 
 (case
@@ -3717,7 +3701,7 @@
            encoding a surrogate is not a well-formed String. Pins that the runtime validator rejects
            surrogate encodings, not only structurally-broken bytes — the same Unicode-scalar boundary
            the char surface enforces, now on the byte-decode path the reader uses.")
-  (input (= ((. String from-bytes) (Bytes.of #list(237 160 128))) None))
+  (input (= (String.from-bytes (Bytes.of #list(237 160 128))) None))
   (output (: true Bool)))
 
 (case
@@ -3731,7 +3715,7 @@
            encodings, and surrogates — a byte sequence whose STRUCTURE is valid but whose CODE POINT is out
            of range (the decode companion of the `Char.from-int 1114112` = U+110000 rejection). Pins that
            the validator checks the decoded scalar's range, not only the byte structure.")
-  (input (= ((. String from-bytes) (Bytes.of #list(244 144 128 128))) None))
+  (input (= (String.from-bytes (Bytes.of #list(244 144 128 128))) None))
   (output (: true Bool)))
 
 ; The invalid-UTF8 cases above decode CONSTANT `(Bytes.of (list …))` literals, which the fold can validate at
@@ -3755,7 +3739,7 @@
   (input
     (do
       (def (pickb (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
-      (def (validq (: b Bytes)) (match ((. String from-bytes) b) ((Some _s) 1) ((None) 0)))
+      (def (validq (: b Bytes)) (match (String.from-bytes b) ((Some _s) 1) ((None) 0)))
       (def
         (main (: sel Int64))
         (validq
@@ -3778,8 +3762,8 @@
            A String Is Total, Not Trapping, 3rd sentence).")
   (input
     (match
-      ((. String from-bytes) (Bytes.of #list(99 97 102 195 169)))
-      ((Some s) (= ((. String to-bytes) s) (Bytes.of #list(99 97 102 195 169))))
+      (String.from-bytes (Bytes.of #list(99 97 102 195 169)))
+      ((Some s) (= (String.to-bytes s) (Bytes.of #list(99 97 102 195 169))))
       ((None _) false)))
   (output (: true Bool)))
 
@@ -3795,8 +3779,8 @@
            takes encoding an export name to UTF-8 and reading it back.")
   (input
     (match
-      ((. String from-bytes) ((. String to-bytes) "café"))
-      ((Some s) (= ((. String to-bytes) s) (Bytes.of #list(99 97 102 195 169))))
+      (String.from-bytes (String.to-bytes "café"))
+      ((Some s) (= (String.to-bytes s) (Bytes.of #list(99 97 102 195 169))))
       ((None _) false)))
   (output (: true Bool)))
 
@@ -3830,7 +3814,7 @@
            is FALSE. Contrast the well-formed-decode case above (composed bytes → Some \"café\", which DOES
            equal the literal because those bytes are already NFC). Flips only when NFC is carried into the
            core; a from-bytes-raw hatch is moot while the default preserves bytes.")
-  (input (= ((. String from-bytes) (Bytes.of #list(99 97 102 101 204 129))) (Some "café")))
+  (input (= (String.from-bytes (Bytes.of #list(99 97 102 101 204 129))) (Some "café")))
   (output (: false Bool)))
 
 (case
@@ -3844,10 +3828,7 @@
     (do
       (def
         (main)
-        (match
-          ((. String from-bytes) ((. String to-bytes) "hi"))
-          ((Some s) ((. String byte-len) s))
-          (None -1)))
+        (match (String.from-bytes (String.to-bytes "hi")) ((Some s) (String.byte-len s)) (None -1)))
       (export main)))
   (output (: 2 Int64)))
 
@@ -3865,9 +3846,8 @@
       (def
         (main (: a Int64))
         (match
-          (Bytes.slice ((. String to-bytes) "caféx") a 2)
-          ((Some w)
-            (match ((. String from-bytes) w) ((Some s) ((. String byte-len) s)) ((None u) -9)))
+          (Bytes.slice (String.to-bytes "caféx") a 2)
+          ((Some w) (match (String.from-bytes w) ((Some s) (String.byte-len s)) ((None u) -9)))
           ((None u) -1)))
       (export main)))
   (call main (: 3 Int64))
@@ -3890,7 +3870,7 @@
   (input
     (do
       (def (rep (: acc Bytes) (: n Int64)) (if (= n 0) acc (rep (Bytes.concat acc b"i") (- n 1))))
-      (def (main) (Option.expect ((. String from-bytes) (rep b"h" 3)) "well-formed"))
+      (def (main) (Option.expect (String.from-bytes (rep b"h" 3)) "well-formed"))
       (export main)))
   (output (: "hiii" String))
   (live-objects known-leak))
@@ -3912,7 +3892,7 @@
         (if (= n 0) acc (rep (Bytes.concat acc b"\xff") (- n 1))))
       (def
         (main)
-        (match ((. String from-bytes) (rep b"" 2)) ((Some s) ((. String byte-len) s)) ((None _) -1)))
+        (match (String.from-bytes (rep b"" 2)) ((Some s) (String.byte-len s)) ((None _) -1)))
       (export main)))
   (output (: -1 Int64))
   (live-objects 0))
@@ -3934,10 +3914,7 @@
         (if (= n 0) acc (build (Bytes.concat acc b"\xc3\xa9") (- n 1))))
       (def
         (main)
-        (match
-          ((. String from-bytes) (build b"caf" 1))
-          ((Some s) ((. String byte-len) s))
-          ((None _) -1)))
+        (match (String.from-bytes (build b"caf" 1)) ((Some s) (String.byte-len s)) ((None _) -1)))
       (export main)))
   (output (: 5 Int64))
   (live-objects 0))
@@ -3956,9 +3933,7 @@
            round-trip case above, which matches `from-bytes` at `main`; this one crosses a call.")
   (input
     (do
-      (def
-        (dec b)
-        (match ((. String from-bytes) b) ((Some s) ((. String byte-len) s)) ((None _) -1)))
+      (def (dec b) (match (String.from-bytes b) ((Some s) (String.byte-len s)) ((None _) -1)))
       (def (main) (dec (Bytes.of #list(104 105))))
       (export main)))
   (output (: 2 Int64)))
@@ -3975,9 +3950,7 @@
            malformed input rather than trapping on it. Companion of the well-formed case above.")
   (input
     (do
-      (def
-        (dec b)
-        (match ((. String from-bytes) b) ((Some s) ((. String byte-len) s)) ((None _) -1)))
+      (def (dec b) (match (String.from-bytes b) ((Some s) (String.byte-len s)) ((None _) -1)))
       (def (main) (dec (Bytes.of #list(255))))
       (export main)))
   (output (: -1 Int64)))
@@ -4003,7 +3976,7 @@
           (Bytes.of #list((UInt8.wrap n)))))
       (def
         (main (: n Int64))
-        (match ((. String from-bytes) (mk n)) ((Some s) ((. String byte-len) s)) ((None _) (- 0 1))))
+        (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
       (export main)))
   (call main (: 33 Int64))
   (output (: 3 Int64))
@@ -4020,7 +3993,7 @@
       (def (mk (: n Int64)) (Bytes.of #list((UInt8.wrap n) (UInt8.wrap 255))))
       (def
         (main (: n Int64))
-        (match ((. String from-bytes) (mk n)) ((Some s) ((. String byte-len) s)) ((None _) (- 0 1))))
+        (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
       (export main)))
   (call main (: 104 Int64))
   (output (: -1 Int64))
@@ -4111,7 +4084,7 @@
            \"hello\" 1)` reads the scalar at scalar-position 1 — the char `#\\e` — wrapped in Some (an
            Option<Char>, the fallible read analogous to List.at and String.at). This is the operation
            that was missing: String.scalar-len counted scalars but nothing returned one.")
-  (input ((. String scalar-at) "hello" 1))
+  (input (String.scalar-at "hello" 1))
   (output (: (Some #\e) (Option Char))))
 
 (case
@@ -4121,7 +4094,7 @@
            string, so it yields None rather than trapping (collections-and-text.md #A String's Scalars
            Are Addressable — reading is total, and #Indexing And Lookup Are Fallible, Not Trapping). The
            Char analogue of the out-of-range String.at / List.at Nones.")
-  (input ((. String scalar-at) "hi" 5))
+  (input (String.scalar-at "hi" 5))
   (output (: (None unit) (Option Char))))
 
 (case
@@ -4132,7 +4105,7 @@
            encoding, so a byte offset would land mid-scalar. Pins that scalar access addresses by scalar
            value (collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), returning a
            Char — the Char companion of the scalar-indexed String.at case above.")
-  (input ((. String scalar-at) "café" 3))
+  (input (String.scalar-at "café" 3))
   (output (: (Some #\é) (Option Char))))
 
 ; The three scalar-at cases above use a CONSTANT string AND a CONSTANT index, so they fold to a
@@ -4157,7 +4130,7 @@
            reclaimed on result-teardown), pinned `known-leak 1 1 1` — to be TIGHTENED to 0 when v-rust-backend's
            `Core::StrScalarAt` Some/box reclaim fix lands. A LEAK, not a UAF (values correct on both backends;
            operator seq-278 tolerates interim over-retention).")
-  (input (do (def (main (: i Int64)) ((. String scalar-at) "café" i)) (export main)))
+  (input (do (def (main (: i Int64)) (String.scalar-at "café" i)) (export main)))
   (call main (: 3 Int64))
   (output (: (Some #\é) (Option Char)))
   (call main (: 0 Int64))
@@ -4172,7 +4145,7 @@
     "Witnesses collections-and-text.md #A Char Converts To And From An Integer Totally:
            `(Char.to-int #\\a)` is 97 — the Unicode scalar value (code point) of the char `a`. Total:
            every char is a scalar value that has an integer code point, so to-int never fails.")
-  (input ((. Char to-int) #\a))
+  (input (Char.to-int #\a))
   (output (: 97 Int64)))
 
 ; A Char compared/equated to a NUMBER (`(< c 1)`, `(= c 5)`, `(> 0 c)`) is CDZ0203 — a char and a number
@@ -4232,7 +4205,7 @@
 
 (case
   "a char summed into a NARROW int takes the int-width coercion, not Char.to-int"
-  (input (do (def (g (: n Int8)) (+ n ((. Char to-int) #\a))) (export g)))
+  (input (do (def (g (: n Int8)) (+ n (Char.to-int #\a))) (export g)))
   (error CDZ0301 (fix (kind wrap) (replacement-contains "Int8.of"))))
 
 (case
@@ -4245,7 +4218,7 @@
            Pins that a runtime char has a real scalar slot and `Char.to-int` reads it on every backend
            (upgrading the long-standing `runtime char declines pending the Char rep` boundary for this
            read path — the `if`-join char source, distinct from the still-declining runtime `Char.from-int`).")
-  (input (do (def (main (: b Bool)) ((. Char to-int) (if b #\a #\z))) (export main)))
+  (input (do (def (main (: b Bool)) (Char.to-int (if b #\a #\z))) (export main)))
   (call main (: true Bool))
   (output (: 97 Int64))
   (call main (: false Bool))
@@ -4297,7 +4270,7 @@
            so the conversion succeeds (collections-and-text.md #A Char Converts To And From An Integer
            Totally). from-int is FALLIBLE (returns an Option) because not every integer is a scalar; this
            is the success arm.")
-  (input ((. Char from-int) 97))
+  (input (Char.from-int 97))
   (output (: (Some #\a) (Option Char))))
 
 (case
@@ -4308,7 +4281,7 @@
            #A Char Converts To And From An Integer Totally, and #A Char Is A Single Unicode Scalar Value:
            surrogates are excluded). Pins that the surrogate range is rejected as data (None), never a
            trap and never an ill-formed Char. This is why from-int must be fallible.")
-  (input ((. Char from-int) 55296))
+  (input (Char.from-int 55296))
   (output (: (None unit) (Option Char))))
 
 (case
@@ -4318,7 +4291,7 @@
            is not a scalar value and from-int yields None (collections-and-text.md #A Char Converts To
            And From An Integer Totally). The high-end companion of the surrogate case; both are handled
            as data, not traps.")
-  (input ((. Char from-int) 1114112))
+  (input (Char.from-int 1114112))
   (output (: (None unit) (Option Char))))
 
 (case
@@ -4328,7 +4301,7 @@
            and the surrogate block): no negative integer is a Unicode scalar value, so `(Char.from-int -1)`
            yields None — handled as data, not a trap, and NOT wrapped to a huge unsigned value that might
            alias a valid scalar. Pins the lower bound of the valid-scalar check.")
-  (input (match ((. Char from-int) -1) ((Some c) ((. Char to-int) c)) ((None u) -1)))
+  (input (match (Char.from-int -1) ((Some c) (Char.to-int c)) ((None u) -1)))
   (output (: -1 Int64)))
 
 (case
@@ -4339,7 +4312,7 @@
            `> 0` instead of `>= 0`, or one that excluded NUL as a control character, would wrongly reject it.
            The accept-side companion of the negative-rejection case (collections-and-text.md #A Char Converts
            To And From An Integer Totally).")
-  (input (match ((. Char from-int) 0) ((Some c) ((. Char to-int) c)) ((None u) -1)))
+  (input (match (Char.from-int 0) ((Some c) (Char.to-int c)) ((None u) -1)))
   (output (: 0 Int64)))
 
 ; The cases above use U+D800 (first surrogate) and U+110000 (one PAST the max). These pin the EXACT
@@ -4355,7 +4328,7 @@
            rejection above: 10FFFF is IN range, 110000 is one PAST. Pins the exact upper boundary of the
            valid-scalar check (`<= 0x10FFFF`, not `< 0x110000` off-by-one — both reject 110000 but only the
            correct bound accepts 10FFFF).")
-  (input (match ((. Char from-int) 1114111) ((Some _) 1) ((None _) 0)))
+  (input (match (Char.from-int 1114111) ((Some _) 1) ((None _) 0)))
   (output (: 1 Int64)))
 
 (case
@@ -4365,7 +4338,7 @@
            scalar, so from-int yields None. The upper-endpoint companion of the U+D800 (55296, the FIRST
            surrogate) case: the surrogate block is [U+D800, U+DFFF] inclusive, so both endpoints reject.
            Pins the block's upper edge (a block ending at 0xDFFE would wrongly accept 0xDFFF).")
-  (input (match ((. Char from-int) 57343) ((Some _) 1) ((None _) 0)))
+  (input (match (Char.from-int 57343) ((Some _) 1) ((None _) 0)))
   (output (: 0 Int64)))
 
 (case
@@ -4375,7 +4348,7 @@
            block (which ends at U+DFFF) — is valid, so from-int yields Some. Pins that the surrogate
            exclusion ends exactly at U+DFFF: U+E000 is accepted, so the block is [D800, DFFF] and not one
            wider. The lower-boundary complement of the last-surrogate case.")
-  (input (match ((. Char from-int) 57344) ((Some _) 1) ((None _) 0)))
+  (input (match (Char.from-int 57344) ((Some _) 1) ((None _) 0)))
   (output (: 1 Int64)))
 
 (case
@@ -4384,7 +4357,7 @@
     "`(Char.to-int (Char.from-int 1114111))` recovers 1114111 — the max scalar survives the char
            round-trip intact. The extreme companion of the mid-range round-trip below: a conversion that
            truncated or mis-handled the 21-bit-wide maximum scalar would lose it.")
-  (input (= ((. Char to-int) (Option.expect ((. Char from-int) 1114111) "max scalar")) 1114111))
+  (input (= (Char.to-int (Option.expect (Char.from-int 1114111) "max scalar")) 1114111))
   (output (: true Bool)))
 
 (case
@@ -4394,7 +4367,7 @@
            `(Char.to-int #\\a)` = 97 and `(Char.from-int 97)` = `(Some #\\a)`, so matching the Some arm
            and taking to-int returns 97. Pins from-int as the inverse of to-int on a valid scalar
            (collections-and-text.md #A Char Converts To And From An Integer Totally). MUST be true.")
-  (input (match ((. Char from-int) 97) ((Some c) (= ((. Char to-int) c) 97)) ((None _) false)))
+  (input (match (Char.from-int 97) ((Some c) (= (Char.to-int c) 97)) ((None _) false)))
   (output (: true Bool)))
 
 (case
@@ -4410,9 +4383,7 @@
            `char::from_u32` path enforce, now at run time.")
   (input
     (do
-      (def
-        (main (: n Int64))
-        (match ((. Char from-int) n) ((Some c) ((. Char to-int) c)) ((None u) -1)))
+      (def (main (: n Int64)) (match (Char.from-int n) ((Some c) (Char.to-int c)) ((None u) -1)))
       (export main)))
   (call main (: 97 Int64))
   (output (: 97 Int64))
@@ -4463,13 +4434,13 @@
       (def
         (main (: k Int64))
         (match
-          ((. Char from-int) 97)
+          (Char.from-int 97)
           ((Some a)
             (match
-              ((. Char from-int) 233)
+              (Char.from-int 233)
               ((Some e)
                 (match
-                  ((. Char from-int) 128512)
+                  (Char.from-int 128512)
                   ((Some r) (+ (* 10 (if (< a e) 1 0)) (if (< e r) 1 0)))
                   (None -3)))
               (None -2)))
@@ -4594,7 +4565,7 @@
     "The Rational sibling: `(+ #\\a (Rational.of-int 5))` mixes a `Char` with a `Rational` — CDZ0301.
            The working repair is `(Rational.of-int (Char.to-int #\\a))` (Int64 scalar then lifted to the whole
            rational), completing char-with-numeric fix parity alongside the Int/Float/BigInt cases.")
-  (input (do (def (main) (+ #\a ((. Rational of-int) 5))) (export main)))
+  (input (do (def (main) (+ #\a (Rational.of-int 5))) (export main)))
   (error CDZ0301))
 
 ; --- Char-LITERAL patterns: a `match` dispatches by scalar value ----------------------------------
@@ -4709,7 +4680,7 @@
       (type Tok (Ch Char) (End))
       (def
         (main (: b Bool))
-        (match (if b (Tok.Ch #\a) (Tok.End)) ((Tok.Ch c) ((. Char to-int) c)) ((Tok.End) -1)))
+        (match (if b (Tok.Ch #\a) (Tok.End)) ((Tok.Ch c) (Char.to-int c)) ((Tok.End) -1)))
       (export main)))
   (call main (: true Bool))
   (output (: 97 Int64))
@@ -4730,7 +4701,7 @@
   (input
     (do
       (def (classify (: c Char)) (match c (#\a 1) (#\b 2) (_ 0)))
-      (def (main) (classify (Option.expect ((. Char from-int) 98) "b")))
+      (def (main) (classify (Option.expect (Char.from-int 98) "b")))
       (export main)))
   (call main)
   (output (: 2 Int64)))
@@ -4817,7 +4788,7 @@
   (input
     (do
       (def (classify (: c Char)) (match c (#\a 1) (#\b 2) (_ 0)))
-      (def (main (: n Int64)) (classify (Option.expect ((. Char from-int) n) "in range")))
+      (def (main (: n Int64)) (classify (Option.expect (Char.from-int n) "in range")))
       (export main)))
   (call main (: 97 Int64))
   (output (: 1 Int64))
@@ -4842,7 +4813,7 @@
            yielding one `String` handle whose length is not a compile-time constant. `b`=true → \"hello\"
            (5 bytes), `b`=false → \"hi\" (2 bytes). Pins that `String.byte-len` reads the runtime handle's
            length rather than folding a constant, the string companion of runtime `List.len`.")
-  (input (do (def (main (: b Bool)) ((. String byte-len) (if b "hello" "hi"))) (export main)))
+  (input (do (def (main (: b Bool)) (String.byte-len (if b "hello" "hi"))) (export main)))
   (call main (: true Bool))
   (output (: 5 Int64))
   (call main (: false Bool))
@@ -4855,7 +4826,7 @@
            the BYTE length (5) exceeds the 4 SCALARS (collections-and-text.md — byte length counts the
            UTF-8 encoding, not the scalars). Pins that the runtime byte-length op counts encoded bytes on a
            string whose content is decided at run time, not the scalar count.")
-  (input (do (def (main (: b Bool)) ((. String byte-len) (if b "café" "ab"))) (export main)))
+  (input (do (def (main (: b Bool)) (String.byte-len (if b "café" "ab"))) (export main)))
   (call main (: true Bool))
   (output (: 5 Int64))
   (call main (: false Bool))
@@ -4871,9 +4842,7 @@
            on the value heap rather than folding.")
   (input
     (do
-      (def
-        (main (: i Int64))
-        (match (String.at "abc" i) ((Some s) ((. String byte-len) s)) (None -1)))
+      (def (main (: i Int64)) (match (String.at "abc" i) ((Some s) (String.byte-len s)) (None -1)))
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
@@ -4890,7 +4859,7 @@
            join the compiler itself uses to build messages, exercised with a non-constant operand.")
   (input
     (do
-      (def (main (: b Bool)) ((. String byte-len) (String.concat (if b "ab" "abcd") "z")))
+      (def (main (: b Bool)) (String.byte-len (String.concat (if b "ab" "abcd") "z")))
       (export main)))
   (call main (: true Bool))
   (output (: 3 Int64))
@@ -4941,7 +4910,7 @@
       (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
       (def
         (cnt (: s String) (: i Int64) (: acc Int64))
-        (if (= i ((. String byte-len) s)) acc (cnt s (+ i 1) (if (= (at s i) "a") (+ acc 1) acc))))
+        (if (= i (String.byte-len s)) acc (cnt s (+ i 1) (if (= (at s i) "a") (+ acc 1) acc))))
       (def (main) (cnt "banana" 0 0))
       (export main)))
   (output (: 3 Int64))
@@ -5200,8 +5169,8 @@
       (def
         (main (: a Int64))
         (match
-          ((. String from-bytes) (Bytes.of #list((UInt8.wrap a))))
-          ((Some s) ((. String byte-len) s))
+          (String.from-bytes (Bytes.of #list((UInt8.wrap a))))
+          ((Some s) (String.byte-len s))
           ((None _) -1)))
       (export main)))
   (call main (: 128 Int64))
@@ -5221,8 +5190,8 @@
       (def
         (main (: a Int64))
         (match
-          ((. String from-bytes) (Bytes.of #list((UInt8.wrap a) (UInt8.wrap 128))))
-          ((Some s) ((. String byte-len) s))
+          (String.from-bytes (Bytes.of #list((UInt8.wrap a) (UInt8.wrap 128))))
+          ((Some s) (String.byte-len s))
           ((None _) -1)))
       (export main)))
   (call main (: 192 Int64))
@@ -5242,9 +5211,9 @@
       (def
         (main (: a Int64))
         (match
-          ((. String from-bytes)
+          (String.from-bytes
             (Bytes.concat (Bytes.of #list((UInt8.wrap a))) (Bytes.of #list((UInt8.wrap 169)))))
-          ((Some s) ((. String byte-len) s))
+          ((Some s) (String.byte-len s))
           ((None _) -1)))
       (export main)))
   (call main (: 195 Int64))
@@ -5269,7 +5238,7 @@
       (def
         (build (: s String) (: n Int64) (: acc String))
         (if (= n 0) acc (build s (- n 1) (String.concat acc s))))
-      (def (run (: n Int64)) ((. String byte-len) (build "x" n "")))
+      (def (run (: n Int64)) (String.byte-len (build "x" n "")))
       (export run)))
   (call run (: 8 Int64))
   (output (: 8 Int64))
@@ -5301,7 +5270,7 @@
         (main (: n Int64))
         (let
           ((r (build 20 "")))
-          #tuple(((. String scalar-len) r)
+          #tuple((String.scalar-len r)
             (at r 0)
             (at r 1)
             (at r 38)
@@ -5340,7 +5309,7 @@
         (main (: n Int64))
         (let
           ((r (sfold #list("ab" "c" "de") 0 "")))
-          #tuple(((. String scalar-len) r)
+          #tuple((String.scalar-len r)
             (match (String.slice r 3 4) ((Some sub) (if (= sub "d") 1 0)) ((None _u) 0))
             (if (= r "abcde") 1 0))))
       (export main)))
@@ -5366,7 +5335,7 @@
     (do
       (def
         (go (: s String) (: n Int64) (: acc Int64))
-        (if (= n 0) acc (go s (- n 1) (+ acc ((. String byte-len) (String.concat s s))))))
+        (if (= n 0) acc (go s (- n 1) (+ acc (String.byte-len (String.concat s s))))))
       (def (main (: n Int64)) (go "ab" n 0))
       (export main)))
   (call main (: 5 Int64))
@@ -5384,7 +5353,7 @@
     (do
       (def
         (go (: s String) (: n Int64) (: acc Int64))
-        (if (= n 0) acc (go s (- n 1) (+ acc ((. String byte-len) (String.concat "k" s))))))
+        (if (= n 0) acc (go s (- n 1) (+ acc (String.byte-len (String.concat "k" s))))))
       (def (main (: n Int64)) (go "abc" n 0))
       (export main)))
   (call main (: 6 Int64))
@@ -5500,7 +5469,7 @@
            path (`\"zebra\"`) falls to the tail → 3.")
   (input
     (do
-      (def (band (: s String)) (match s ((guard t (< t "m")) ((. String byte-len) t)) (_ 3)))
+      (def (band (: s String)) (match s ((guard t (< t "m")) (String.byte-len t)) (_ 3)))
       (def (main (: pick Int64)) (if (> pick 0) (band "apple") (band "zebra")))
       (export main)))
   (call main (: 1 Int64))
@@ -5524,7 +5493,7 @@
            byte length 3. The rust DRIVER now marshals the string arg as an owned `String` (`\"abc\".to_string()`),
            matching the emitted `fn main(s: String)` signature — no more E0308. (wasm declines the String
            entry arg — a sound todo; rust computes it.)")
-  (input (do (def (main (: s String)) ((. String byte-len) s)) (export main)))
+  (input (do (def (main (: s String)) (String.byte-len s)) (export main)))
   (call main (: "abc" String))
   (output (: 3 Int64)))
 
@@ -5536,7 +5505,7 @@
            and the empty string is 0. Three calls through ONE export exercise the driver's owned-String
            marshaling at ascii/multibyte/empty. (wasm declines the String entry arg — the same sound todo as
            the ascii case; rust computes.)")
-  (input (do (def (main (: s String)) ((. String byte-len) s)) (export main)))
+  (input (do (def (main (: s String)) (String.byte-len s)) (export main)))
   (call main (: "abc" String))
   (output (: 3 Int64))
   (call main (: "aéz" String))
@@ -5578,7 +5547,7 @@
             (+ i 1)
             n
             (match (String.at s i) ((Some c) (if (= c "a") (+ acc 1) acc)) ((None u) acc)))))
-      (def (main (: s String)) (walk s 0 ((. String scalar-len) s) 0))
+      (def (main (: s String)) (walk s 0 (String.scalar-len s) 0))
       (export main)))
   (call main (: "banana" String))
   (output (: 3 Int64))
@@ -5592,10 +5561,7 @@
            extra encoding bytes — \"café\" → 1 (one 2-byte scalar), \"日本語\" → 6 (three 3-byte
            scalars). A marshal that re-measured in UTF-16 units, or a scalar-len that counted bytes,
            breaks one input. (wasm declines the entry arg — sound todo; rust computes.)")
-  (input
-    (do
-      (def (main (: s String)) (- ((. String byte-len) s) ((. String scalar-len) s)))
-      (export main)))
+  (input (do (def (main (: s String)) (- (String.byte-len s) (String.scalar-len s))) (export main)))
   (call main (: "café" String))
   (output (: 1 Int64))
   (call main (: "日本語" String))
@@ -5619,11 +5585,11 @@
             (= mode 1)
             (match
               (String.slice s 1 2)
-              ((Some v) (+ (* 10 ((. String byte-len) v)) ((. String scalar-len) v)))
+              ((Some v) (+ (* 10 (String.byte-len v)) (String.scalar-len v)))
               ((None _u) -1))
             (if
               (= mode 2)
-              (match (String.slice s 0 0) ((Some v) (+ 100 ((. String byte-len) v))) ((None _u) -1))
+              (match (String.slice s 0 0) ((Some v) (+ 100 (String.byte-len v))) ((None _u) -1))
               (match (String.slice s 2 1) ((Some _v) -2) ((None _u) 7))))))
       (export main)))
   (call main (: 1 Int64))
@@ -5654,7 +5620,7 @@
           (def hi (if (= mode 1) 4 (if (= mode 2) 3 5)))
           (match
             (String.slice s lo hi)
-            ((Some v) (+ (* 10 ((. String byte-len) v)) ((. String scalar-len) v)))
+            ((Some v) (+ (* 10 (String.byte-len v)) (String.scalar-len v)))
             ((None _u) -1))))
       (export main)))
   (call main (: 1 Int64))
@@ -5685,7 +5651,7 @@
           (def hi (if (= mode 1) 3 (if (= mode 2) 3 4)))
           (match
             (String.slice outer lo hi)
-            ((Some v) (+ (* 10 ((. String byte-len) v)) ((. String scalar-len) v)))
+            ((Some v) (+ (* 10 (String.byte-len v)) (String.scalar-len v)))
             ((None _u) -1))))
       (export main)))
   (call main (: 1 Int64))
@@ -5712,7 +5678,7 @@
         (do
           (def s (String.concat "xé" "y😀z"))
           (def v (Option.expect (String.slice s 1 4) "in bounds"))
-          (match (String.at v i) ((Some c) ((. String byte-len) c)) ((None _u) -1))))
+          (match (String.at v i) ((Some c) (String.byte-len c)) ((None _u) -1))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 2 Int64))
@@ -5767,11 +5733,11 @@
         (d (: s String) (: i Int64))
         (String.concat
           (Option.expect (String.slice s 0 i) "lo")
-          (Option.expect (String.slice s (+ i 1) ((. String scalar-len) s)) "hi")))
+          (Option.expect (String.slice s (+ i 1) (String.scalar-len s)) "hi")))
       (def
         (walk (: s String) (: i Int64))
-        (if (>= i ((. String scalar-len) s)) s (walk (d s i) (+ i 1))))
-      (def (main (: mode Int64)) ((. String byte-len) (walk "aébcd" 0)))
+        (if (>= i (String.scalar-len s)) s (walk (d s i) (+ i 1))))
+      (def (main (: mode Int64)) (String.byte-len (walk "aébcd" 0)))
       (export main)))
   (call main (: 0 Int64))
   (output (: 3 Int64))
@@ -5793,13 +5759,10 @@
         (d (: s String) (: i Int64))
         (String.concat
           (Option.expect (String.slice s 0 i) "lo")
-          (Option.expect (String.slice s (+ i 1) ((. String scalar-len) s)) "hi")))
+          (Option.expect (String.slice s (+ i 1) (String.scalar-len s)) "hi")))
       (def
         (sum-lens (: s String) (: i Int64))
-        (if
-          (>= i ((. String scalar-len) s))
-          0
-          (+ ((. String byte-len) s) (sum-lens (d s i) (+ i 1)))))
+        (if (>= i (String.scalar-len s)) 0 (+ (String.byte-len s) (sum-lens (d s i) (+ i 1)))))
       (def (main (: mode Int64)) (sum-lens "aébcd" 0))
       (export main)))
   (call main (: 0 Int64))
@@ -5818,16 +5781,16 @@
            module. Second perimeter guard for 597e0ff7d.")
   (input
     (do
-      (def (tail1 (: s String)) (Option.expect (String.slice s 1 ((. String scalar-len) s)) "t"))
+      (def (tail1 (: s String)) (Option.expect (String.slice s 1 (String.scalar-len s)) "t"))
       (def
         (zip-lens (: a String) (: b String) (: acc Int64))
         (if
-          (= ((. String scalar-len) a) 0)
+          (= (String.scalar-len a) 0)
           acc
           (zip-lens
             (tail1 a)
             (String.concat (tail1 b) "x")
-            (+ acc (* ((. String byte-len) a) ((. String byte-len) b))))))
+            (+ acc (* (String.byte-len a) (String.byte-len b))))))
       (def (main (: mode Int64)) (zip-lens "aéb" "cd" 0))
       (export main)))
   (call main (: 0 Int64))
@@ -5892,16 +5855,15 @@
           acc
           (match
             (String.at s i)
-            ((Option.Some c)
-              (count-wide s (+ i 1) n (+ acc (if (> ((. String byte-len) c) 1) 1 0))))
+            ((Option.Some c) (count-wide s (+ i 1) n (+ acc (if (> (String.byte-len c) 1) 1 0))))
             ((Option.None _u) acc))))
       (def
         (main (: k Int64))
         (do
           (def s (String.concat "aé日" (if (= k 1) "𝄞b" "cc")))
           (+
-            (* 100 ((. String scalar-len) s))
-            (+ (* 10 ((. String byte-len) s)) (count-wide s 0 ((. String scalar-len) s) 0)))))
+            (* 100 (String.scalar-len s))
+            (+ (* 10 (String.byte-len s)) (count-wide s 0 (String.scalar-len s) 0)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 613 Int64))
@@ -5922,14 +5884,14 @@
             (String.at s i)
             ((Option.Some c) (rev-go s (- i 1) (String.concat acc c)))
             ((Option.None _u) acc))))
-      (def (rev (: s String)) (rev-go s (- ((. String scalar-len) s) 1) ""))
+      (def (rev (: s String)) (rev-go s (- (String.scalar-len s) 1) ""))
       (def
         (main (: k Int64))
         (do
           (def s (String.concat "hél" (if (= k 1) "lo" "la")))
           (+
             (* 100 (if (= (rev (rev s)) s) 1 0))
-            (+ (* 10 (if (= (rev s) "olléh") 1 0)) ((. String scalar-len) (rev s))))))
+            (+ (* 10 (if (= (rev s) "olléh") 1 0)) (String.scalar-len (rev s))))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 115 Int64))
@@ -5945,16 +5907,16 @@
         (main (: k Int64))
         (do
           (def s (String.concat "hé" (if (= k 1) "llo" "y")))
-          (def b ((. String to-bytes) s))
+          (def b (String.to-bytes s))
           (def cut (Option.expect (Bytes.slice b 0 2) "lo"))
           (+
             (*
               100
               (match
-                ((. String from-bytes) b)
+                (String.from-bytes b)
                 ((Option.Some s2) (if (= s s2) 1 0))
                 ((Option.None _u) -1)))
-            (match ((. String from-bytes) cut) ((Option.Some _s) 1) ((Option.None _u) 0)))))
+            (match (String.from-bytes cut) ((Option.Some _s) 1) ((Option.None _u) 0)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 100 Int64))
@@ -5970,10 +5932,7 @@
         (main (: k Int64))
         (do
           (def s (String.concat "café" (if (= k 1) "s" "")))
-          (if
-            (= ((. String byte-len) s) (Bytes.len ((. String to-bytes) s)))
-            ((. String byte-len) s)
-            -1)))
+          (if (= (String.byte-len s) (Bytes.len (String.to-bytes s))) (String.byte-len s) -1)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 6 Int64)))
@@ -5994,7 +5953,7 @@
           (do
             (def a (Fmt.wrap (String.concat "ab" (if (= k 1) "c" "d"))))
             (def b (Fmt.wrap a))
-            ((. String byte-len) b))))
+            (String.byte-len b))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 7 Int64)))
@@ -6065,7 +6024,7 @@
         (main (: k Int64))
         (do
           (def s (join-ints #list(3 5 (* k 7) 15 1) 0 ""))
-          (+ (* 100 ((. String byte-len) s)) (if (= s "FBnFn") 1 0))))
+          (+ (* 100 (String.byte-len s)) (if (= s "FBnFn") 1 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 501 Int64))
@@ -6136,8 +6095,8 @@
           (def b (Bytes.of #list(152)))
           (def c (Bytes.of #list(143)))
           (match
-            ((. String from-bytes) (Bytes.concat (Bytes.concat a b) c))
-            ((Some s) (+ (* 10 ((. String scalar-len) s)) ((. String byte-len) s)))
+            (String.from-bytes (Bytes.concat (Bytes.concat a b) c))
+            ((Some s) (+ (* 10 (String.scalar-len s)) (String.byte-len s)))
             ((None _u) -1))))
       (export main)))
   (call main (: 0 Int64))
@@ -6160,7 +6119,7 @@
         (do
           (def left (Bytes.of #list(226 152)))
           (def right (Bytes.of #list((UInt8.wrap (+ 65 k)))))
-          (match ((. String from-bytes) (Bytes.concat left right)) ((Some _s) 1) ((None _u) 0))))
+          (match (String.from-bytes (Bytes.concat left right)) ((Some _s) 1) ((None _u) 0))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 0 Int64))
@@ -6182,7 +6141,7 @@
            after the last borrow when the payload does not flow out).")
   (input
     (do
-      (def (sl (: s String)) ((. String scalar-len) (Option.expect (String.slice s 1 3) "e")))
+      (def (sl (: s String)) (String.scalar-len (Option.expect (String.slice s 1 3) "e")))
       (def
         (loop (: j Int64) (: n Int64) (: base String) (: tot Int64))
         (if (< j n) (loop (+ j 1) n base (+ tot (sl base))) tot))
@@ -6216,10 +6175,7 @@
             (- k 1)
             (+
               sum
-              (match
-                ((. String from-bytes) (rep b"h" 3))
-                ((Some s) ((. String byte-len) s))
-                ((None _) 0))))))
+              (match (String.from-bytes (rep b"h" 3)) ((Some s) (String.byte-len s)) ((None _) 0))))))
       (def (main (: n Int64)) (loop n 0))
       (export main)))
   (call main (: 5 Int64))
@@ -6246,9 +6202,9 @@
         (main (: n Int64))
         (let
           ((a (if (= n 1) "const-shared-payload!" "other"))
-            (x ((. String byte-len) a))
+            (x (String.byte-len a))
             (b "const-shared-payload!"))
-          (+ (* 100 x) (+ ((. String byte-len) b) (if (= a b) 1000 0)))))
+          (+ (* 100 x) (+ (String.byte-len b) (if (= a b) 1000 0)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 3121 Int64))
@@ -6270,7 +6226,7 @@
           0
           (let
             ((a (if (= (% k 2) 0) "const-shared-payload!" "odd-frame-string")))
-            (+ ((. String byte-len) a) (frames (- k 1))))))
+            (+ (String.byte-len a) (frames (- k 1))))))
       (def (main (: n Int64)) (frames n))
       (export main)))
   (call main (: 50 Int64))
@@ -6285,7 +6241,7 @@
   (input
     (do
       (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-      (def (main) ((. String byte-len) (rep "" 3)))
+      (def (main) (String.byte-len (rep "" 3)))
       (export main)))
   (call main)
   (output (: 3 Int64)))
@@ -6295,7 +6251,7 @@
   (input
     (do
       (def (rep (: acc Bytes) (: n Int64)) (if (= n 0) acc (rep (Bytes.concat acc b"i") (- n 1))))
-      (def (main) (Option.expect ((. String from-bytes) (rep b"h" 3)) "utf8"))
+      (def (main) (Option.expect (String.from-bytes (rep b"h" 3)) "utf8"))
       (export main)))
   (call main)
   (output (: "hiii" String))
@@ -6310,10 +6266,7 @@
         (if (= n 0) acc (rep (Bytes.concat acc b"\xff") (- n 1))))
       (def
         (main)
-        (match
-          ((. String from-bytes) (rep b"" 2))
-          ((Some s) ((. String byte-len) s))
-          ((None _) (- 0 1))))
+        (match (String.from-bytes (rep b"" 2)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
       (export main)))
   (call main)
   (output (: -1 Int64)))
@@ -6323,7 +6276,7 @@
   (input
     (do
       (def (rep (: acc String) (: n Int64)) (if (= n 0) acc (rep (String.concat acc "a") (- n 1))))
-      (def (main) (Bytes.len ((. String to-bytes) (rep "" 3))))
+      (def (main) (Bytes.len (String.to-bytes (rep "" 3))))
       (export main)))
   (call main)
   (output (: 3 Int64)))
@@ -6365,8 +6318,7 @@
       (def
         (main)
         (classify
-          #list((Option.expect ((. Char from-int) 97) "a")
-            (Option.expect ((. Char from-int) 98) "b"))))
+          #list((Option.expect (Char.from-int 97) "a") (Option.expect (Char.from-int 98) "b"))))
       (export main)))
   (call main)
   (output (: 1 Int64)))
@@ -6376,7 +6328,7 @@
   (input
     (do
       (def (classify (: xs (List Char))) (match xs (#list(#\a (.. r)) 1) (_ 0)))
-      (def (main) (classify #list((Option.expect ((. Char from-int) 122) "z"))))
+      (def (main) (classify #list((Option.expect (Char.from-int 122) "z"))))
       (export main)))
   (call main)
   (output (: 0 Int64)))
@@ -6414,7 +6366,7 @@
     (do
       (def
         (main (: n Int64))
-        ((. String byte-len)
+        (String.byte-len
           (Option.expect
             (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4)
             "in-range")))
@@ -6439,7 +6391,7 @@
                   1
                   3)
                 "in-range")))
-          (+ (* 100 ((. String byte-len) u)) (if (= u "cd") 1 0))))
+          (+ (* 100 (String.byte-len u)) (if (= u "cd") 1 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 201 Int64))
@@ -6462,7 +6414,7 @@
                 (Option.expect
                   (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4)
                   "in-range"))))
-          (+ (* 100 ((. String byte-len) (. a 1))) (+ (. b 0) (if (= a b) 10000 0)))))
+          (+ (* 100 (String.byte-len (. a 1))) (+ (. b 0) (if (= a b) 10000 0)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 10301 Int64))
@@ -6478,7 +6430,7 @@
   (input
     (do
       (def (grow (: s String) (: k Int64)) (if (= k 0) s (grow (String.concat s "x") (- k 1))))
-      (def (main (: n Int64)) ((. String byte-len) (grow (if (> n 0) "abc" "z") 50)))
+      (def (main (: n Int64)) (String.byte-len (grow (if (> n 0) "abc" "z") 50)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 53 Int64))
@@ -6492,7 +6444,7 @@
       (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
       (def
         (cnt (: s String) (: i Int64) (: acc Int64))
-        (if (= i ((. String byte-len) s)) acc (cnt s (+ i 1) (if (= (at s i) "x") (+ acc 1) acc))))
+        (if (= i (String.byte-len s)) acc (cnt s (+ i 1) (if (= (at s i) "x") (+ acc 1) acc))))
       (def (main (: n Int64)) (cnt (grow (if (> n 0) "abc" "z") 50) 0 0))
       (export main)))
   (call main (: 1 Int64))
@@ -6509,10 +6461,8 @@
         (let
           ((r (grow (if (> n 0) "abc" "z") 50)))
           (let
-            ((sl (Option.expect (String.slice r 1 (- ((. String byte-len) r) 1)) "in")))
-            (+
-              (* 100 ((. String byte-len) sl))
-              (if (= (Option.expect (String.at sl 10) "ok") "x") 1 0)))))
+            ((sl (Option.expect (String.slice r 1 (- (String.byte-len r) 1)) "in")))
+            (+ (* 100 (String.byte-len sl)) (if (= (Option.expect (String.at sl 10) "ok") "x") 1 0)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 5101 Int64))
@@ -6534,8 +6484,8 @@
         (let
           ((s (String.concat "a" (if (> n 0) "é😀" "x"))))
           (+
-            (* 100 ((. String byte-len) s))
-            (match (String.slice s 0 n) ((Some sl) ((. String byte-len) sl)) ((None) -1)))))
+            (* 100 (String.byte-len s))
+            (match (String.slice s 0 n) ((Some sl) (String.byte-len sl)) ((None) -1)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 701 Int64))
@@ -6564,14 +6514,14 @@
         (let
           ((s (rep "aé🦀" n)))
           (+
-            (* 1000 ((. String scalar-len) s))
+            (* 1000 (String.scalar-len s))
             (+
-              (* 100 ((. String byte-len) (Option.expect (String.slice s 2 3) "")))
+              (* 100 (String.byte-len (Option.expect (String.slice s 2 3) "")))
               (if
                 (=
                   (String.concat
                     (Option.expect (String.slice s 0 2) "")
-                    (Option.expect (String.slice s 2 ((. String scalar-len) s)) ""))
+                    (Option.expect (String.slice s 2 (String.scalar-len s)) ""))
                   s)
                 1
                 0)))))
@@ -6609,7 +6559,7 @@
           (def r2b (String.concat r1 (rep "y" 2 "")))
           (def keep (if (= mode 1) r2a r2b))
           (+
-            (* ((. String byte-len) keep) 10)
+            (* (String.byte-len keep) 10)
             (if (= keep (if (= mode 1) "ababababxx" "ababababyy")) 1 0))))
       (export main)))
   (call main (: 1 Int64))
@@ -6638,17 +6588,17 @@
             (def dec (String.concat "e" "́"))
             (+
               (* 100 (if (= pre dec) 1 0))
-              (+ (* 10 (Set.len #set(pre dec))) ((. String byte-len) dec))))
+              (+ (* 10 (Set.len #set(pre dec))) (String.byte-len dec))))
           (if
             (> n -3)
             (do
               (def qc (String.concat "q" "́"))
               (+
                 (* 100 (if (= qc qc) 1 0))
-                (+ (* 10 (Set.len #set(qc (String.concat "q" "́")))) ((. String byte-len) qc))))
+                (+ (* 10 (Set.len #set(qc (String.concat "q" "́")))) (String.byte-len qc))))
             (match
-              ((. String from-bytes) ((. String to-bytes) (String.concat "e" "́")))
-              ((Some s) ((. String byte-len) s))
+              (String.from-bytes (String.to-bytes (String.concat "e" "́")))
+              ((Some s) (String.byte-len s))
               ((None _u) -1)))))
       (export main)))
   (call main (: 1 Int64))
@@ -6675,10 +6625,10 @@
           (*
             1000
             (match
-              ((. String scalar-at) "café" (if (> n 0) 3 1))
-              ((Some c) ((. Char to-int) c))
+              (String.scalar-at "café" (if (> n 0) 3 1))
+              ((Some c) (Char.to-int c))
               ((None _u) -1)))
-          (match ((. String scalar-at) "ab" 5) ((Some c) ((. Char to-int) c)) ((None _u) -1))))
+          (match (String.scalar-at "ab" 5) ((Some c) (Char.to-int c)) ((None _u) -1))))
       (export main)))
   (call main (: 7 Int64))
   (output (: 232999 Int64))
@@ -6691,5 +6641,5 @@
 ; (Migrated from rcdzc a_string_annotation_checks_against_a_string_value.)
 (case
   "a string value annotated as a non-String type is a mismatch"
-  (input (do (def (main) ((. String byte-len) (: "hi" Int64))) (export main)))
+  (input (do (def (main) (String.byte-len (: "hi" Int64))) (export main)))
   (error CDZ0203))

@@ -5268,11 +5268,7 @@
       (def
         (main (: n Int64))
         (let
-          ((m
-              (Map.insert
-                (Map.empty)
-                (Qty.of ((. Float64 of-int) (* n 5000)) (Unit.base #"meter"))
-                42)))
+          ((m (Map.insert (Map.empty) (Qty.of (Float64.of-int (* n 5000)) (Unit.base #"meter")) 42)))
           (+
             (*
               100
@@ -5305,11 +5301,7 @@
       (def
         (main (: n Int64))
         (let
-          ((m
-              (Map.insert
-                (Map.empty)
-                (Qty.of ((. Float64 of-int) (* n 5000)) (Unit.base #"meter"))
-                42)))
+          ((m (Map.insert (Map.empty) (Qty.of (Float64.of-int (* n 5000)) (Unit.base #"meter")) 42)))
           (match
             (Map.lookup
               m

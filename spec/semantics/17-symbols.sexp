@@ -192,7 +192,7 @@
            content and hands it back as a String. This is the only way to observe a Symbol's content —
            together with `=` it is the whole observable surface, which is why an allocation-order id has
            nothing to attach to. The compiler uses it to render a name back for a diagnostic.")
-  (input ((. Symbol to-string) (Symbol.of "map-insert")))
+  (input (Symbol.to-string (Symbol.of "map-insert")))
   (output (: "map-insert" String)))
 
 (case
@@ -225,7 +225,7 @@
     "`(Symbol.to-string (Symbol.of \"\"))` = \"\": the empty symbol's content is the empty
            string. Pins that the round-trip through Symbol.to-string handles the zero-length content,
            not underflowing or reading a phantom scalar.")
-  (input ((. Symbol to-string) (Symbol.of "")))
+  (input (Symbol.to-string (Symbol.of "")))
   (output (: "" String)))
 
 ; ============================================================================================
@@ -591,10 +591,7 @@
         (main (: k Int64))
         (do
           (def m (Map.insert (Map.insert Map.empty 1 #"a") 2 #"bb"))
-          (match
-            (Map.lookup m k)
-            ((Some sy) ((. String byte-len) ((. Symbol to-string) sy)))
-            ((None _u) 0))))
+          (match (Map.lookup m k) ((Some sy) (String.byte-len (Symbol.to-string sy))) ((None _u) 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64))
@@ -651,8 +648,7 @@
         (match
           xs
           (#list() acc)
-          (#list(h (.. t))
-            (fold-lens t (+ (* acc 10) ((. String byte-len) ((. Symbol to-string) h)))))))
+          (#list(h (.. t)) (fold-lens t (+ (* acc 10) (String.byte-len (Symbol.to-string h)))))))
       (def
         (main (: mode Int64))
         (do
@@ -660,7 +656,7 @@
           (def
             st
             (Set.insert (Set.insert (Set.insert (Set.insert #set() #"c") (Symbol.of s)) #"aa") #"c"))
-          (+ (* (Set.len st) 1000) (fold-lens ((. Set to-list) st) 0))))
+          (+ (* (Set.len st) 1000) (fold-lens (Set.to-list st) 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 3211 Int64))
@@ -693,7 +689,7 @@
   (input
     (do
       (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-      (def (main) ((. String byte-len) ((. Symbol to-string) (Symbol.of (rep "xx" 3)))))
+      (def (main) (String.byte-len (Symbol.to-string (Symbol.of (rep "xx" 3)))))
       (export main)))
   (output (: 5 Int64)))
 
@@ -1072,7 +1068,7 @@
             sv
             (Symbol.of
               (Option.expect (String.slice (String.concat "xa" (if (> mode 0) "az" "zz")) 1 3) "in")))
-          (def xs ((. Set to-list) #set(#"b" sv #"c")))
+          (def xs (Set.to-list #set(#"b" sv #"c")))
           (def (at (: i Int64)) (Option.expect (List.at xs i) "in"))
           (+ (* 10 (if (= (at 0) #"aa") 1 0)) (if (= (at 2) #"c") 1 0))))
       (export main)))
@@ -1094,10 +1090,10 @@
         (do
           (def s (String.concat "sym-" (if (= k 1) "a" "b")))
           (def sym (Symbol.of s))
-          (def back ((. Symbol to-string) sym))
+          (def back (Symbol.to-string sym))
           (+
             (* 100 (if (= back s) 1 0))
-            (+ (* 10 (if (= (Symbol.of back) sym) 1 0)) ((. String byte-len) back)))))
+            (+ (* 10 (if (= (Symbol.of back) sym) 1 0)) (String.byte-len back)))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 115 Int64)))
@@ -1121,8 +1117,8 @@
             v
             (Option.expect (String.slice "xkeyz" (if (= mode 1) 1 0) (if (= mode 1) 4 3)) "in"))
           (+
-            (* 10 (if (= ((. Symbol to-string) #"key") v) 1 0))
-            (if (= v ((. Symbol to-string) (Symbol.of "key"))) 1 0))))
+            (* 10 (if (= (Symbol.to-string #"key") v) 1 0))
+            (if (= v (Symbol.to-string (Symbol.of "key"))) 1 0))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 11 Int64))
@@ -1212,7 +1208,7 @@
   (input
     (do
       (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-      (def (main) ((. String byte-len) ((. Symbol to-string) (Symbol.of (rep "xx" 3)))))
+      (def (main) (String.byte-len (Symbol.to-string (Symbol.of (rep "xx" 3)))))
       (export main)))
   (call main)
   (output (: 5 Int64)))
