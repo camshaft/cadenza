@@ -597,18 +597,20 @@ theorem asF64Canon_idem (v : Value) :
   have hf : ∀ f : Float, Value.asF64? (.f64 f) = some f := fun _ => rfl
   cases h : Value.asF64? v <;> simp [h, hf]
 
-/- CAPSTONE `.app` fold-step — final piece `foldConst?_canon_stable`:
+/- CAPSTONE `.app` fold-step — `foldConst?_canon_stable`:
   `foldConst? op args = some v → (match asF64? v with | some f => .f64 f | none => v) = v`
-TRUE (every fold output is `.bool`/`.f64`, both `asF64?`-canon — never `.int`/`.float`/`.floatNan`/
-`.floatInf`) and STRUCTURALLY unblocked (#6892 dodged the `foldConst?.match_10` wall — `foldConst?` reduces).
-🪤 TACTIC GAP (found 2026-08-31, Mathlib-FREE project): `split_ifs` is a MATHLIB tactic → "unknown tactic"
-here; and core `split at h` does NOT fire on the `if (bool-cond) = true then … else …` chain (`simp only
-[foldConst?] at h` leaves the whole `ite`-chain in `h`; `repeat' split at h` no-ops → the fold value is
-never constrained). NEXT FIX to try (no Mathlib): `by_cases`/`Bool.rec` on each `op == …` / `.size == …`
-Bool condition manually (or add `@[simp]` reductions so `simp … at h` collapses the `ite`s), then the
-inner `Value`/`Option` matches DO split; leaves close by `contradiction` / `injection`+`subst`+`rfl`.
-All OTHER `.app` building blocks are proven (denote{Unary,Binary}_fold, denoteApp_fold[_unary],
-denoteBinary_arith, arithmetic-identity value-chars, denote_map_normalize_args, asF64Canon_idem). -/
+TRUE (fold outputs are all `.bool`/`.f64`, both `asF64?`-canon) + structurally unblocked (#6892). 🪤 TACTIC:
+core `split at h` STILL does not case the nested `if … then … else …` chain in `h` — even after normalizing
+the conditions to Props (`beq_iff_eq`/`Bool.and_eq_true`), `repeat' split at h` leaves `h` intact
+(confirmed 2× 2026-08-31). `split_ifs` is Mathlib-only. So `h`'s if-chain must be cased by MANUAL
+`by_cases` on each condition (isNone / not∧size1 / size2 / then `op = "="`,`"<"`,… / `and` / `or`), collapsing
+via `rw [if_pos/if_neg]`; the inner `Value`/`Option`/`asF64?` matches DO `split`.
+🔑 STRATEGY REFINEMENT: `split` on the GOAL (not `h`) cases `asF64? v` — the `none` branch is `rfl`
+immediately (no `foldConst?` casing!); only the `some f` (float) branch needs `v = .f64 f`, which needs the
+by_cases-on-`h` to reach the sole float-output arm (`evalFloatOp` → `.f64`). So the by_cases only has to
+handle the float arms fully; every `.bool` arm is discharged by the goal-`none` branch. All OTHER `.app`
+building blocks proven (denote{Unary,Binary}_fold, denoteApp_fold[_unary], denoteBinary_arith, the arith
+identity value-chars, denote_map_normalize_args, asF64Canon_idem). A focused by_cases increment next. -/
 
 /-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
 `normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
