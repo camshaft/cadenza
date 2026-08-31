@@ -143,6 +143,36 @@ def resultScalarTy? (bytes : ByteArray) (entry : ByteArray) : Option ScalarTy :=
   | .ok m => resultScalarTyOfModule? m entry
   | .error _ => none
 
+/-! ### The `run_wasm` composition spine + the interpreter seam
+
+`runWasmWith` ties the two pure pieces together — `resultScalarTy?` (decode the entry's scalar type) and
+`toOutcome` (map the raw result) — behind an injectable `Driver`, the exact seam the wasm interpreter
+(talos) fills. Keeping the interpreter behind a parameter means (a) this composition + its invariants land
+and gate on the current toolchain with no talos dependency, (b) the future talos slice is just "write the
+adapter to `Driver`", and (c) v-lean-oracle's differential theorem can quantify over the driver (state it
+for the talos driver specifically). The IMPURE step (component-unbundle + `wasm-tools print` → the `coreWat`
+string, and reading the `resultTypeBytes` section) stays in the harness and feeds this pure function. -/
+
+/-- A trial to run against an emitted program: the entry export + its arguments (milestone-1 mains are
+nullary, so `args` is empty; host responses arrive in a later increment). -/
+structure Trial where
+  entry : String
+  args : Array WasmVal := #[]
+  deriving Inhabited, Repr
+
+/-- The interpreter SEAM: run a core-module WAT's entry for a trial, yielding a `WasmOutcome`. talos plugs
+in here (an adapter over `Wasm.Decoder.Wat` + `Wasm.SmallStep`) once the Lean-4.32.2 toolchain lands. -/
+abbrev Driver := (coreWat : String) → (trial : Trial) → WasmOutcome
+
+/-- The pure `run_wasm` boundary: resolve the entry's scalar result type from the `cdz-result-type` section,
+drive the interpreter on the core-module WAT, and map the result to an `Oracle.Outcome`. `none` result type
+(compound/heap/unmodeled) → `.unsupported`, so the driver is never even invoked for an unmodeled shape. -/
+def runWasmWith (drive : Driver) (coreWat : String) (resultTypeBytes : ByteArray)
+    (trial : Trial) : Outcome :=
+  match resultScalarTy? resultTypeBytes trial.entry.toUTF8 with
+  | some ty => toOutcome (drive coreWat trial) ty
+  | none => .unsupported "cdz-result-type: entry has no modeled scalar result type"
+
 /-! ### Gate witnesses — the mapping invariants (compiled = checked; no corpus case exercises this
 internal boundary, so per PRINCIPLES.md this is exactly the kind of check that belongs in Lean, not the
 corpus). Integer/bool/control cases reduce definitionally (`rfl`); float cases go through opaque `Float`
@@ -188,5 +218,25 @@ example :
       { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Int".toUTF8],
         nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
       "other".toUTF8 = none := by native_decide
+
+/-- The `cdz-result-type` section bytes for `(result-type main <tyName>)` — a real encode via `Oracle.Ast`,
+so the end-to-end `runWasmWith` witnesses exercise the actual section round-trip (encode → decode → resolve). -/
+private def rtBytes (tyName : String) : ByteArray :=
+  Ast.encode
+    { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name tyName.toUTF8],
+      nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+
+-- end-to-end `run_wasm` spine, through a STUB driver + a real result-type section round-trip.
+-- (`Outcome` derives `BEq` but not `DecidableEq`, so assert equality via `==`.)
+example : (runWasmWith (fun _ _ => .ok #[.i64 5]) "(module)" (rtBytes "Int") { entry := "main" }
+    == .value (.int 5)) = true := by native_decide
+example : (runWasmWith (fun _ _ => .ok #[.i32 1]) "(module)" (rtBytes "Bool") { entry := "main" }
+    == .value (.bool true)) = true := by native_decide
+-- interpreter trap propagates (result type resolved but the driver traps)
+example : (runWasmWith (fun _ _ => .trap "unreachable") "(module)" (rtBytes "Int") { entry := "main" }
+    == .trap "unreachable") = true := by native_decide
+-- an unmodeled result-type spelling short-circuits to `.unsupported` (driver never consulted)
+example : (runWasmWith (fun _ _ => .ok #[.i64 5]) "(module)" (rtBytes "Widget") { entry := "main" }
+    == .unsupported "cdz-result-type: entry has no modeled scalar result type") = true := by native_decide
 
 end Oracle.Wasm
