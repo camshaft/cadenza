@@ -867,6 +867,96 @@ theorem normalizeAppIdentities_allConstsCanon (op : String) (args' : Array SymEx
   rw [if_neg hsz]
   exact happ
 
+/-- `normalize` on an `.ite` PRESERVES `AllConstsCanon`, from the three sub-IHs. Every `.ite` sub-case
+(fold-select / materialize-true|false / equal-branch collapse / plain rebuild) builds the result ONLY
+from `normalize c`/`normalize t`/`normalize e` (± a `.app "not"` wrapper / a `.ite` rebuild), so its const
+leaves come from theirs. Handles ALL six `normalize.induct` `.ite` cases uniformly. -/
+theorem normalize_ite_allConstsCanon (c t e : SymExpr)
+    (ihc : AllConstsCanon (normalize c)) (iht : AllConstsCanon (normalize t))
+    (ihe : AllConstsCanon (normalize e)) :
+    AllConstsCanon (normalize (.ite c t e)) := by
+  simp only [normalize]
+  repeat' first
+    | exact ihc | exact iht | exact ihe
+    | exact ⟨ihc, iht, ihe⟩
+    | (intro x hx; simp only [Array.mem_singleton] at hx; subst hx; exact ihc)
+    | (simp only [AllConstsCanon])
+    | split
+
+/-- CAPSTONE: every `.const` produced ANYWHERE by `normalize` is `asF64?`-canonical. Proven by
+`normalize.induct`: the `.const` arm canonicalizes floats (`asF64Canon_idem`); a folded `.app` is a
+`foldConst?` output (`foldConst?_canon_stable`); the identity `.app` preserves it
+(`normalizeAppIdentities_allConstsCanon`); compounds recurse via the per-element IHs; `.ite` via
+`normalize_ite_allConstsCanon`. This is the operand-canon-invariance the `.app`-fold assembly needs. -/
+theorem normalize_allConstsCanon (e : SymExpr) : AllConstsCanon (normalize e) := by
+  refine normalize.induct (motive := fun e => AllConstsCanon (normalize e))
+    ?var ?const ?appFold ?appIdent ?tuple ?record ?ctor ?proj ?case ?localFn
+    ?iteCT ?iteCF ?iteMT ?iteMF ?iteCol ?itePlain e
+  case var => intro n; simp only [normalize, AllConstsCanon]
+  case const => intro v; simp only [normalize, AllConstsCanon]; exact asF64Canon_idem v
+  case appFold =>
+    intro op args _ v hfold _
+    rw [normalize_app_fold op args v hfold]
+    simp only [AllConstsCanon]
+    exact foldConst?_canon_stable _ _ _ hfold
+  case appIdent =>
+    intro op args _ hnone ih
+    rw [normalize_app_ident op args hnone]
+    apply normalizeAppIdentities_allConstsCanon
+    intro x hx
+    simp only [Array.mem_map] at hx
+    obtain ⟨y, _, rfl⟩ := hx
+    exact ih y
+  case tuple =>
+    intro es ih
+    simp only [normalize, AllConstsCanon]
+    intro x hx
+    simp only [Array.mem_map] at hx
+    obtain ⟨y, _, rfl⟩ := hx
+    exact ih y
+  case record =>
+    intro fs ih
+    simp only [normalize, AllConstsCanon]
+    intro k v hmem
+    simp only [Array.mem_map] at hmem
+    obtain ⟨y, _, heq⟩ := hmem
+    simp only [Prod.mk.injEq] at heq
+    obtain ⟨_, rfl⟩ := heq
+    exact ih y
+  case ctor =>
+    intro tag args ih
+    simp only [normalize, AllConstsCanon]
+    intro x hx
+    simp only [Array.mem_map] at hx
+    obtain ⟨y, _, rfl⟩ := hx
+    exact ih y
+  case proj => intro b s ih; simp only [normalize, AllConstsCanon]; exact ih
+  case case =>
+    intro s arms ihs iharms
+    simp only [normalize, AllConstsCanon]
+    refine ⟨ihs, ?_⟩
+    intro k v hmem
+    simp only [Array.mem_map] at hmem
+    obtain ⟨y, _, heq⟩ := hmem
+    simp only [Prod.mk.injEq] at heq
+    obtain ⟨_, rfl⟩ := heq
+    exact iharms y
+  case localFn => intro s b c; simp only [normalize, AllConstsCanon]
+  case iteCT => intro c t e hc ihc iht; rw [normalize_ite_condTrue c t e hc]; exact iht
+  case iteCF => intro c t e hc ihc ihe; rw [normalize_ite_condFalse c t e hc]; exact ihe
+  case iteMT => intro c t e _ _ _ _ _ _ ihc iht ihe; exact normalize_ite_allConstsCanon c t e ihc iht ihe
+  case iteMF => intro c t e _ _ _ _ _ _ ihc iht ihe; exact normalize_ite_allConstsCanon c t e ihc iht ihe
+  case iteCol => intro c t e _ _ _ _ _ _ _ ihc iht ihe; exact normalize_ite_allConstsCanon c t e ihc iht ihe
+  case itePlain => intro c t e _ _ _ _ _ _ _ ihc iht ihe; exact normalize_ite_allConstsCanon c t e ihc iht ihe
+
+/-- COROLLARY (the capstone `.app`-fold operand fact): a constant that `normalize` produces is
+`asF64?`-canonical, so it needs no further canonicalization when related to its denotation. -/
+theorem normalize_const_canon (e : SymExpr) (c : Value) (h : normalize e = .const c) :
+    (match Value.asF64? c with | some f => Value.f64 f | none => c) = c := by
+  have hac := normalize_allConstsCanon e
+  rw [h] at hac
+  simpa only [AllConstsCanon] using hac
+
 /-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
 `normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
 normalized — the structural equations above), and `denote` currently maps every compound to the SAME
