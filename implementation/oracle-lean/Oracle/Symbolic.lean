@@ -1892,6 +1892,12 @@ private def _setContainsNanExpr : Module :=
 -- (`+0.0 == -0.0`, `NaN ≠ NaN`), so collapsing a float branch via `==` is unsound; `symFloatFree` blocks it.
 #guard normalize (.ite (.var 0) (.const (.f64 1.5)) (.const (.f64 1.5)))
        == .ite (.var 0) (.const (.f64 1.5)) (.const (.f64 1.5))
+-- (4) FP-0 (v-cdz-smith sampled-FP triage): `(+ (if (mod v0 v0) a a) b)` must NOT fold to a constant —
+-- `mod v0 v0` may TRAP (v0=0), so the `if` does not collapse (mayTrap guard) and the `+` stays symbolic.
+-- This intentional conservatism is WHY the symbolic oracle flags the backend's const-fold of this shape
+-- (a fold-through-a-trapping-condition the sampler can miss at v0=0). Pinning it as CORRECT — do not "fix".
+#guard normalize (.app "+" #[.ite (.app "%" #[.var 0, .var 0]) (.const (.int (-1000000))) (.const (.int (-1000000))), .const (.int (-1000000))])
+       == .app "+" #[.ite (.app "%" #[.var 0, .var 0]) (.const (.int (-1000000))) (.const (.int (-1000000))), .const (.int (-1000000))]
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
