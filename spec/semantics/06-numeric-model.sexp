@@ -667,6 +667,24 @@
   (input  (+ (Rational.of 1 3) (Rational.of 1 6)))
   (output (: 1/2 Rational)))
 
+; Sign propagation through ARITHMETIC (the construction-sign rule #An Exact Rational Has A Canonical
+; Normalized Form applied to RESULTS, not just constructed literals #6736): a rational result carries its
+; sign on the numerator with a strictly-positive denominator and reduces to lowest terms, so `*` of two
+; negatives is positive ((-2/3)·(-3/4) = 1/2), `*` of mixed signs is negative ((-1/2)·(3/5) = -3/10), and a
+; subtraction whose exact result is negative lands the sign on the numerator (1/4 - 1/2 = -1/4). Const-folded,
+; both backends (cross-checked against the L2 symbolic oracle's mkRational).
+(case "rational multiplication of two negatives is positive and reduced: (-2/3)·(-3/4) = 1/2"
+  (input  (* (Rational.of -2 3) (Rational.of -3 4)))
+  (output (: 1/2 Rational)))
+
+(case "rational multiplication of mixed signs is a negative reduced rational (sign on numerator): (-1/2)·(3/5) = -3/10"
+  (input  (* (Rational.of -1 2) (Rational.of 3 5)))
+  (output (: -3/10 Rational)))
+
+(case "rational subtraction can produce a negative result with the sign on the numerator: 1/4 - 1/2 = -1/4"
+  (input  (- (Rational.of 1 4) (Rational.of 1 2)))
+  (output (: -1/4 Rational)))
+
 (case "a rational is normalized to lowest terms on construction"
   (doc    "`(Rational.of 2 4)` reduces to 1/2 — a Rational is kept in lowest terms (numerator and
            denominator share no common factor), so 2/4 and 1/2 are ONE value with one canonical byte
