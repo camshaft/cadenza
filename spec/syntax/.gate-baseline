@@ -461,6 +461,9 @@ pass	ml/528-empty-list-literal
 pass	ml/529-empty-map-literal
 pass	ml/53-effect-op-no-resource-marker
 pass	ml/530-empty-record-literal
+pass	ml/531-match-string-literal-pattern
+pass	ml/532-match-char-literal-pattern
+pass	ml/533-match-bool-literal-pattern
 pass	ml/54-neg-prefix-name
 pass	ml/55-neg-prefix-call
 pass	ml/56-neg-prefix-member
