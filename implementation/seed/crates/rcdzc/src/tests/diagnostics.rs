@@ -1588,19 +1588,15 @@ fn a_bogus_map_or_scalar_path_arm_head_over_a_recursive_body_is_a_coded_fault_in
 }
 
 /// A SET is matched by ELEMENT-MEMBERSHIP patterns (`lower_match_set`, the keys-only twin of
-/// `lower_match_map`): the membership form `#set(e…)` is now lowered (a `Set.contains` if-chain — covered
-/// by corpus 05-compound-types "a set membership match `#set(e…)` matches when …"). Two REST-shaped forms
-/// stay CODED, check-surfaced CDZ0201 rejects (SLICE 1): the well-formed single-`..` rest `#set(e… .. r)`
-/// is a tracked NOT-YET (its rest binder needs resolve wiring, co-owned with v-inference); the malformed
-/// two-`..` `#set(1 .. r1 .. r2)` is a rest-SHAPE fault. Both are white-box pins here (a two-`..` surface
-/// does not ML-round-trip, same as the #map two-`..` case, so it can't be a corpus input); the corpus
-/// carries the single-`..` not-yet + the missing-catch-all CDZ0210. `check` ≡ `compile` for all.
+/// `lower_match_map`). The single-`..` REST form `#set(e… .. rest)` now LOWERS (slice 2 — `rest` resolves
+/// to `Resolved::SetRest` via `binder_in` Case 6set-rest, typed `(Set E)`, and the desugar binds it to a
+/// `Set.remove` chain); behavior lives in corpus 05. Only the MALFORMED two-`..` `#set(1 .. r1 .. r2)`
+/// stays a coded, check-surfaced rest-SHAPE CDZ0201 — a white-box pin here (a two-`..` surface does not
+/// ML-round-trip, same as the #map two-`..` case, so it can't be a corpus input). `check` ≡ `compile`.
 #[test]
-fn a_set_rest_match_pattern_is_a_coded_check_surfaced_rejection_not_silent() {
+fn a_set_rest_pattern_lowers_single_dotdot_and_rejects_malformed_two_dotdot() {
     // The TWO-`..` `#set(1 .. r1 .. r2)` form is a MALFORMED rest (`..` not followed by exactly one binder)
-    // → the coded, check-surfaced rest-SHAPE CDZ0201 (the set twin of the list/map rest-shape message). It
-    // STAYS here as a white-box pin — its double-`..` surface does not ML-round-trip, so it can't be a
-    // corpus input.
+    // → the coded, check-surfaced rest-SHAPE CDZ0201 (the set twin of the list/map rest-shape message).
     let pat = "#set(1 .. r1 .. r2)";
     let src =
         format!("(module m (def (f (: s (Set Int64))) (match s ({pat} 0) (_ 9))) (export f))");
@@ -1609,24 +1605,21 @@ fn a_set_rest_match_pattern_is_a_coded_check_surfaced_rejection_not_silent() {
         all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
             && d.message.contains("exactly one binder after")),
         "the two-`..` `{pat}` set match pattern surfaces the coded CDZ0201 rest-SHAPE rejection in check \
-         (malformed `..`; the single-`..` not-yet + membership behavior live in corpus 05): {all:?}"
+         (malformed `..`; the single-`..` rest + membership behavior live in corpus 05): {all:?}"
     );
-    // DUAL-READ PIN (M3 reader-flip guard): the LEGACY name-alias spelling `(set …)` reaches the SAME
-    // coded CDZ0201 as the native `#set(…)` leaf — `compound_form_of(_, Set)` recognizes both the native
-    // ctor-leaf head AND the `as_name`/`as_str` alias, so the set matcher routes for either. A single-`..`
-    // rest is the tracked NOT-YET-supported form (SLICE 1). Pinned EVEN THOUGH it passes: the reader-flip
-    // drops legacy head recognition, and this locks the current alias→coded-CDZ0201 behavior so that
-    // transition can't silently turn the alias form back into a silent/uncoded decline. (Cannot live in
-    // corpus — the drift-guard nativizes any `(set …)` input.)
-    let alias =
-        "(module m (def (f (: s (Set Int64))) (match s ((set 1 .. r) 0) (_ 9))) (export f))";
+    // DUAL-READ PIN (M3 reader-flip guard): the LEGACY name-alias spelling `(set …)` routes to the SAME set
+    // matcher as the native `#set(…)` leaf — `compound_form_of(_, Set)` recognizes both. A WELL-FORMED
+    // single-`..` rest via the alias now LOWERS (slice 2): its `rest` binds (Case 6set-rest) and the body
+    // reads it CLEAN — NO CDZ0201 "not yet supported" (superseded), NO CDZ0101 unbound. Locks that the
+    // reader-flip transition keeps the alias routing to the working matcher, not a silent/uncoded decline.
+    let alias = "(module m (def (f (: s (Set Int64))) (match s ((set 1 .. r) (Set.len r)) (_ 9))) (export f))";
     let alias_diags = diags_of(alias);
     assert!(
-        alias_diags
+        !alias_diags
             .iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("is not yet supported")),
-        "the legacy alias `(set …)` single-`..` rest set match pattern also surfaces the coded not-yet CDZ0201 (dual-read): {alias_diags:?}"
+            .any(|d| matches!(d.code.as_deref(), Some("CDZ0201") | Some("CDZ0101"))),
+        "the legacy alias `(set 1 .. r)` single-`..` rest now LOWERS (slice 2) — its `rest` binds + the \
+         body reads it clean, no CDZ0201/CDZ0101 (dual-read routes to the working matcher): {alias_diags:?}"
     );
     // A whole-value-binder match over a HEAP-BACKED Set scrutinee (no `#set(…)` pattern) is a GENUINE
     // not-yet-built DECLINE: the compiler cannot yet emit a match over a heap-backed Set/Map scrutinee

@@ -1903,6 +1903,18 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             named: named.into(),
         });
     }
+    // Case 6set-rest: `form` is a MATCH ARM whose top-level `(set e… (.. rest))` pattern binds `name` as the
+    // REST binder — the RESIDUAL SET of the scrutinee MINUS the named elements. Resolves to a `SetRest` (the
+    // set twin of a `MapField` REST binder / `RecordRest`): `rest : (Set E)`, the SAME set type (removing
+    // elements does not narrow, UNLIKE a record). The residual VALUE is built by `desugar_runtime_set_match`
+    // (a `Set.remove` chain); this Case makes the arm's `rest` reference BIND (typed `(Set E)` by infer)
+    // instead of resolving CDZ0101-unbound. Scoped to this arm; `named` are the named element exprs.
+    if let Some((scrutinee, named)) = match_arm_set_rest_binds(db, form, from, name) {
+        return Some(Resolved::SetRest {
+            scrutinee,
+            named: named.into(),
+        });
+    }
     // Case 6rec-nested: `form` is a match arm whose pattern is a TUPLE / LIST / VARIANT compound with a
     // `(record …)` sub-pattern NESTED inside it binding `name` at a BARE-binder field — `(tuple (record (x
     // a)) c)`, `(list (record (x a)))`, `(W.Wrap (record (x a)))`. The nested walk
@@ -3234,6 +3246,55 @@ fn match_arm_record_rest_binds(
         }
     }
     Some((scrutinee, named))
+}
+
+/// Whether `form` is a match ARM `(pattern body)` (ascended from its BODY or guard cond) whose top-level
+/// `(set e… (.. rest))` pattern binds `name` as the REST binder — returning `(scrutinee, named_elems)`.
+/// The set twin of [`match_arm_record_rest_binds`], SIMPLER because a set element is an ordinary value
+/// expression (NOT a key/value pair): `named` is the leading element exprs verbatim. The rest binder must be
+/// the bare `name` (not `_`), following exactly one `..` at the tail. `None` otherwise.
+fn match_arm_set_rest_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<StructId>)> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 {
+        return None;
+    }
+    let (pattern, body) = (pb[0], pb[1]);
+    let (set_pat, guard_cond) = match db.ast.as_form(pattern, "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pattern, None),
+    };
+    if from != body && Some(from) != guard_cond {
+        return None;
+    }
+    let elems: Vec<StructId> = db
+        .ast
+        .compound_form_of(set_pat, CompoundCtor::Set)?
+        .to_vec();
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = match mtail.first() {
+        Some(&s) if s != form => s,
+        _ => return None,
+    };
+    // Split the trailing `.. rest`; its operand must be the bare binder `name`.
+    let (leads, rest): (&[StructId], StructId) = match db.ast.rest_marker(&elems) {
+        Some((k, operand, trailing_start)) if trailing_start == elems.len() => {
+            (&elems[..k], operand)
+        }
+        _ => return None,
+    };
+    if db.ast.as_name(rest) != Some(name) || name == "_" {
+        return None;
+    }
+    // A set element is a value expression (not a key/value pair) — the named elements verbatim.
+    Some((scrutinee, leads.to_vec()))
 }
 
 /// Whether `form` is a match ARM `(pattern body)` (ascended from its BODY or guard cond) whose pattern is

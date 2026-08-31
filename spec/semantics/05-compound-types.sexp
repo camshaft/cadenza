@@ -19381,6 +19381,25 @@
             (export main)))
   (output (: 111 Int64)))
 
+(case "a set REST pattern #set(e… .. rest) binds rest to the residual set (the scrutinee MINUS the named elements)"
+  (doc    "The rest binder of `#set(e… .. rest)` binds a set of the SAME type containing every element of the
+           matched set EXCEPT the named ones (core-semantics §A Set Is Matched By Element-Membership Patterns;
+           the set twin of the map/record rest, residual via `Set.remove`). `(match s (#set(1 .. r) …) (_ 99))`
+           over `{1,2,3}`: contains 1 → matches, `r` = `{2,3}` — so `Set.len r` = 2 and `Set.contains r 1` is
+           FALSE (the named element was removed) → 10·2 + 0 = 20. Over `{4,5}`: no 1 → the catch-all → 99.
+           Weighted 1000·20 + 99 = 20099. Pins that the rest binds the residual, the residual EXCLUDES the
+           named element, and a non-matching set falls through — `rest : (Set E)` (v-inference co-verified).")
+  (input  (do
+            (def (probe (: s (Set Int64)))
+              (match s
+                (#set(1 .. r) (+ (* 10 (Set.len r)) (if (Set.contains r 1) 5 0)))
+                (_ 99)))
+            (def (main)
+              (+ (* 1000 (probe #set(1 2 3)))
+                         (probe #set(4 5))))
+            (export main)))
+  (output (: 20099 Int64)))
+
 (case "a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)"
   (input  (do (def (f (: s (Set Int64))) (match s (#set(1) 0))) (export f)))
   (error  CDZ0210 (message "a set match must end in a catch-all")))
