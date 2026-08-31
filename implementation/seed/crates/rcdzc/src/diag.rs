@@ -315,6 +315,21 @@ pub enum Code {
     //= spec/capabilities/capabilities-and-effects.md#a-guard-is-side-effect-free
     //# A program that must consult an effect to decide an arm MUST perform that effect once before the `match` — binding its result to a `let` — and guard on the bound pure value, so that the effect has a single well-defined execution and the guard stays a pure decision over its result.
     EffectInGuard,
+    /// A MULTI-SHOT continuation (one resumed more than once) that SPANS AN EFFECT BOUNDARY — a `(host …)`
+    /// call, or an OUTER handler's operation (`capabilities-and-effects.md` §4.4 host-composition invariant).
+    /// Resuming a delimited continuation twice is sound ONLY when the continuation is fully LOCAL: every op it
+    /// performs is discharged BY THIS handler (folded to pure code), so re-splicing it merely re-runs pure
+    /// code. When the continuation spans a HOST call, a second resume would RE-ISSUE that host call — an
+    /// external observable effect that a re-deriving host cannot reconstruct (e.g. a run-local heap-handle
+    /// chain); when it reaches an OUTER handler's op, a second resume would DOUBLE-ADVANCE that handler's
+    /// state. Both double an effect the language must not double, so this is a PERMANENT correct-reject, NOT
+    /// a not-yet-built fold gap: no fold increment can make doubling an external/outer effect sound. DISTINCT
+    /// from `ClosureEscapesEffect` (CDZ0406): there a closure ESCAPES its handler context and is invoked
+    /// outside it; here the continuation does NOT escape — it is resumed within its handler, but it crosses a
+    /// boundary it cannot safely double. Detected + emitted by the tail-resumptive fold (v-effects), which
+    /// splits this permanent-reject subset off from the genuinely not-yet `UnsupportedConstruct` (CDZ0900)
+    /// fold-decline (a cross-function / non-tail resume that a later increment could specialize).
+    MultiShotCrossesEffectBoundary,
     /// An ILL-FORMED binary form `(bin …)` — a compile-time well-formedness defect decidable from the
     /// segment list alone (`options/binary-syntax/`): bit-fields whose widths do not close a whole byte
     /// (the whole `bin` must be byte-aligned), a non-final unsized `(bytes …)` segment, or a `bits` width
@@ -448,6 +463,7 @@ impl Code {
             Code::LatentAuthority => "CDZ0404",
             Code::ClosureEscapesEffect => "CDZ0406",
             Code::EffectInGuard => "CDZ0407",
+            Code::MultiShotCrossesEffectBoundary => "CDZ0408",
             Code::IllFormedBinary => "CDZ0220",
             Code::NonFinalSplice => "CDZ0221",
             Code::DimensionMismatch => "CDZ0501",
