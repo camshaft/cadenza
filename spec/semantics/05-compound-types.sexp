@@ -6904,6 +6904,30 @@
   (input  (do (type W (Wrap (List Int64))) (def (f (: w W)) (match w ((Wrap #list(a .. #list(b .. r))) (+ a b)) (_ 0))) (export f)))
   (error  CDZ0201 (message "rest binder of a list pattern must be a name or `_`") (no-other-errors)))
 
+; A list is OPEN (any length), so a match well-formedness cluster (migrated from rcdzc
+; a_list_match_is_well_formed_or_declines): a FIXED-ARITY-only match is non-exhaustive (a finite set of
+; lengths cannot cover every list) → CDZ0210 with an ADD-ARM insert fix; a rest pattern with MORE THAN ONE
+; tail binder after `..` is malformed → CDZ0201; and the add-arm fix is length-aware — a fixed-only match
+; appends a covering wildcard `(_ …)`, while a rest pattern that leaves only the EMPTY list uncovered
+; appends the SPECIFIC missing `((list) …)` arm.
+(case "a fixed-arity-only list match is non-exhaustive — a finite set of lengths cannot cover every list"
+  (input  (do (def (main) (match #list(1 2) (#list(a b) a))) (export main)))
+  (error  CDZ0210))
+
+(case "a list rest pattern with more than one tail binder after `..` is malformed"
+  (input  (do (def (main) (match #list(1 2 3) (#list(x .. r s) x) (_ 0))) (export main)))
+  (error  CDZ0201))
+
+(case "a fixed-only non-exhaustive list match adds a covering wildcard arm"
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list() 0) (#list(a) a))) (def (main) (f #list(1))) (export main)))
+  (error  CDZ0210 (fix (kind insert-into) (replacement-contains "(_ (trap"))))
+
+(case "a rest-pattern list match missing the empty case adds the SPECIFIC empty-list arm, not a wildcard"
+  (doc    "A rest pattern `#list(a .. r)` covers length ≥ 1, so ONLY the empty list is uncovered — the add-arm
+           fix is length-aware and appends the specific `((list) …)` arm, not a generic wildcard.")
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. r) a))) (def (main) (f #list(1))) (export main)))
+  (error  CDZ0210 (fix (kind insert-into) (replacement-contains "(list) (trap"))))
+
 (case "a wildcard in the list rest slot is a valid rest binder and matches"
   (input  (do (def (f (: xs (List Int64))) (match xs (#list(a .. _) a) (#list() 0))) (def (main) (f #list(7 8))) (export main)))
   (call   main) (output (: 7 Int64)))
