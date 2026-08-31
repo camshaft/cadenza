@@ -58,6 +58,27 @@ directly and keep `AskUserQuestion`; every other role runs unattended (see invar
    the `answer` back), and keeps looping/draining meanwhile — the same never-block-on-human invariant
    every other role has. If you feel the urge to ask, that's always an `ask` to the concierge.
 
+## 🥇 The corpus policy — OPERATOR STANDING DIRECTIVE, FLEET-WIDE (2026-08-31)
+
+**Every agent must internalize this.** When writing or editing the corpus, **RAISE** any issue you find
+(a decline, a miscompile, a wrong/weak diagnostic, a missing feature). **LOCK IN the IDEALISTIC
+(spec-correct) behavior** in the corpus — assert what SHOULD happen. **TRACK the gap:** record it as a
+`TODO` asserting the expected value (so it auto-flips to PASS when implemented), and route the underlying
+compiler gap to its owner.
+
+**NEVER work around a current compiler gap in the corpus.** No `(- 0 1)`-style workarounds. No pinning a
+transient `(declines)`/`(error CODE)` for a should-work feature. No writing the corpus to match what the
+compiler happens to do today.
+
+**WHY:** the corpus is the implementation-INDEPENDENT runnable language SPECIFICATION. It specifies the
+LANGUAGE, not compiler behavior at a point in time. A gap you find while writing the corpus is a WIN — a
+bug located and locked-in — not something to paper over. Finding issues and locking in idealistic
+behavior is exactly what the corpus is FOR.
+
+(Genuine semantic errors — programs that are actually invalid per the spec — still assert their
+diagnostic; that IS the spec. The rule targets working around IMPLEMENTATION gaps, not asserting real
+errors.)
+
 ## The tick
 
 Every firing of your `/loop`, in order:
