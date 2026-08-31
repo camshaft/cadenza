@@ -279,6 +279,22 @@
   (input  (match #set(1 2) (#set(3) 9) (_ 0)))
   (output (: 0 Int64)))
 
+; A set-pattern element is an ORDINARY VALUE EXPRESSION (the set twin of a map KEY), not a binder — the
+; pattern matches iff the scrutinee CONTAINS each element's value. So a RUNTIME in-scope name works as an
+; element: `#set(k)` for a parameter `k` matches when `k`'s value is a member, reads no binding, and is NOT
+; flagged an unused match binding (it is a value ref, not a binder — a regression guard for #6693, where
+; `arm_pattern_binders` wrongly collected an in-scope element as a binder and spuriously raised CDZ0306). A
+; bare name the scrutinee-scope does NOT bind is therefore a genuine UNBOUND VALUE reference (CDZ0101), not
+; a binder — to bind set contents, use `Set.contains` / `Set.len` instead.
+(case "a set pattern with a RUNTIME in-scope element matches by membership of its value"
+  (input  (do (def (f (: k Int64)) (match #set(1 2) (#set(k) 9) (_ 0))) (export f)))
+  (call   f (: 1 Int64)) (output (: 9 Int64))
+  (call   f (: 5 Int64)) (output (: 0 Int64)))
+
+(case "a set-pattern element that names no in-scope value is an unbound value reference (CDZ0101)"
+  (input  (do (def (main) (match #set(1 2) (#set(a) 9) (_ 0))) (export main)))
+  (error  CDZ0101 (message "unbound name `a`")))
+
 (case "the empty set has cardinality zero"
   (doc    "The degenerate cardinality boundary: `(Set.len (Set.of (list)))` is 0 — the empty set holds no
            elements. The len companion of the empty-set membership pin above, and the both-backend witness
