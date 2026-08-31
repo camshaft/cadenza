@@ -1,0 +1,6 @@
+world Reducer =
+  | export fold =
+    | apply : (event : Bytes) -> Bytes
+  | import kv =
+    | get : (key : String) -> Bytes
+    | put : (key : String, value : Bytes) -> unit

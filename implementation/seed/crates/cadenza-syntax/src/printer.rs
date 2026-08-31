@@ -4758,44 +4758,12 @@ mod tests {
     use crate::ast::Builder;
     use crate::{parser, sexpr};
 
-    #[test]
-    fn inline_world_decl_round_trips_through_the_ml_surface() {
-        // The inline `world …` surface prints back to itself and re-reads to the same AST (S2b printer,
-        // dual of the S2a parser). A full world with an export + import interface, multi-param and
-        // nullary members. `assert_roundtrip` checks print∘read∘print is idempotent + reparses clean.
-        let printed = assert_roundtrip(
-            "world Reducer = \
-             | export fold = | apply : (event : Bytes) -> Bytes \
-             | import kv = | get : (key : String) -> Bytes | put : (key : String, value : Bytes) -> Unit",
-            80,
-        );
-        // Sanity: the printed form uses the WIT-familiar surface, not the raw (world …) sexp.
-        assert!(
-            printed.contains("world Reducer ="),
-            "prints the world head: {printed}"
-        );
-        assert!(
-            printed.contains("| export fold ="),
-            "export interface: {printed}"
-        );
-        assert!(
-            printed.contains("| import kv ="),
-            "import interface: {printed}"
-        );
-        assert!(
-            printed.contains("| apply : (event : Bytes) -> Bytes"),
-            "member sig: {printed}"
-        );
-    }
-
-    #[test]
-    fn inline_world_nullary_member_round_trips() {
-        let printed = assert_roundtrip("world Clock = | export c = | now : () -> Timestamp", 80);
-        assert!(
-            printed.contains("now : () -> Timestamp"),
-            "nullary member: {printed}"
-        );
-    }
+    // `inline_world_decl_round_trips_through_the_ml_surface` (full export+import Reducer world) and
+    // `inline_world_nullary_member_round_trips` (Clock) MIGRATED to the spec/syntax corpus (inc-6):
+    // spec/syntax/ml/13-world-full-decl + ml/12-world-nullary-member pin those inline-`world` parse trees
+    // (render_sexpr) + canonical formats (fmt) language-neutrally, graded by the per-case nix check + the
+    // self-consistency test. The `contains(…)` sanity checks are subsumed by the byte-exact `format.cdz`
+    // goldens; the `assert_roundtrip` idempotence by the corpus's fmt-idempotence property.
 
     #[test]
     fn inline_world_wit_type_descriptors_round_trip() {
