@@ -48,7 +48,9 @@ pub use abi::{
 pub use closure_hash_wire::{decode_closure_hash, encode_closure_hash};
 pub use diagnostics_wire::{decode_diagnostics, encode_diagnostics};
 pub use doc_wire::{DocAnswer, decode_doc, encode_doc};
-pub use export_types_wire::{decode_export_types, encode_export_types};
+pub use export_types_wire::{
+    decode_export_types, decode_export_types_checked, encode_export_types,
+};
 pub use exports_wire::{ExportEntry, decode_exports, encode_exports};
 pub use highlight_wire::{decode_highlight, encode_highlight};
 pub use link_map::{FileSpan, KIND_LINK_MAP, decode_link_map, encode_link_map};
@@ -56,7 +58,9 @@ pub use name_wire::{decode_name, encode_name};
 pub use opt::OptLevel;
 pub use overflow::{OverflowMode, OverflowSpec};
 pub use resolve_wire::{decode_resolve, encode_resolve};
-pub use result_types_wire::{decode_result_types, encode_result_types};
+pub use result_types_wire::{
+    decode_result_types, decode_result_types_checked, encode_result_types,
+};
 pub use scope_wire::{ScopeBinding, decode_scope, encode_scope};
 pub use sidecar::{Query, Request, decode, encode};
 pub use symbols_wire::{decode_symbols, encode_symbols};
