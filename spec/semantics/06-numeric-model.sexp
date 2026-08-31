@@ -2035,6 +2035,15 @@
 ; Float32 — a malformed value) in a runtime `if`/`match` branch or reaching a narrow Float32 parameter is
 ; CDZ0302 at check, matching emit (check formerly emitted an INVALID wasm module here). Only Float32 overflows
 ; a finite Float64 literal. Migrated from rcdzc cdz_check_rejects_a_float32_overflowing_literal_in_a_runtime_if_or_match_branch.
+; The CONVERSION sibling of the Float32-overflowing-literal cases below: a `Float32.of` CONVERSION whose
+; CONSTANT result is non-finite (`(Float32.of 1.0e300)` — finite as Float64, overflows Float32 to +inf) has
+; no value form, a PERMANENT correct-reject coded CDZ0201 (the non-finite-float family: the non-finite const
+; arith fold and the `Ast.Float` ctor carry the same code). Distinct from the bare-literal CDZ0302 below
+; (an out-of-range Float32 LITERAL is a width-range check at inference); this is the conversion-fold path.
+(case
+  "a Float32-conversion whose constant result overflows to infinity is rejected (no value form)"
+  (input (do (def (main) (Float32.of 1.0e300)) (export main)))
+  (error CDZ0201))
 (case
   "a Float32-overflowing branch literal in a runtime if is rejected at check"
   (input

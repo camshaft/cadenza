@@ -1945,7 +1945,10 @@ pub(super) fn lower_float_of_int(db: &mut Db, id: StructId, args: &[StructId]) -
                     trace!(target: "rcdzc::lower", width, "folded constant of-int to a float");
                     Core::ConstFloat(d)
                 }
-                None => Core::Poison(Reject::decline(
+                // A PERMANENT correct-reject (non-finite float has no value form) — coded CDZ0201, the
+                // same family as the non-finite const arith fold (#6893) and the Ast.Float ctor (#7031).
+                None => Core::Poison(Reject::coded(
+                    crate::diag::Code::Malformed,
                     "a float conversion whose result is not finite has no value form",
                 )),
             }
@@ -2005,7 +2008,10 @@ pub(super) fn lower_float_of(db: &mut Db, id: StructId, args: &[StructId]) -> Co
                     trace!(target: "rcdzc::lower", width, "folded constant float-width conversion");
                     Core::ConstFloat(nd)
                 }
-                None => Core::Poison(Reject::decline(
+                // A PERMANENT correct-reject (non-finite float has no value form) — coded CDZ0201, the
+                // same family as the non-finite const arith fold (#6893) and the Ast.Float ctor (#7031).
+                None => Core::Poison(Reject::coded(
+                    crate::diag::Code::Malformed,
                     "a float conversion whose result is not finite has no value form",
                 )),
             }

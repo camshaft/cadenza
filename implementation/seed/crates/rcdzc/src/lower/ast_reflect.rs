@@ -630,7 +630,11 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
                         payloads: vec![payload].into(),
                     }
                 }
-                None => Core::Poison(Reject::decline(
+                // Same non-finite-float-has-no-value-form family → coded CDZ0201 (uniform with #6893/#7031).
+                // A defensive guard: `print` never emits inf/nan, so `read` cannot construct one — but code
+                // it for family uniformity rather than leave a codeless refusal.
+                None => Core::Poison(Reject::coded(
+                    crate::diag::Code::Malformed,
                     "read: a non-finite float has no Ast.Float value form",
                 )),
             }

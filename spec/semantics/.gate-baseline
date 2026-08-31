@@ -810,6 +810,7 @@ pass	a Float32 multiply with a bare right literal grounds the literal to f32
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
 pass	a Float32 set dedups NaN elements and keeps zero signs distinct
 pass	a Float32 subtract with a bare right literal grounds the literal to f32
+pass	a Float32-conversion whose constant result overflows to infinity is rejected (no value form)
 pass	a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected
 pass	a Float32-overflowing literal in a Result Err payload is rejected
 pass	a Float32-overflowing literal in a Result Ok payload is rejected
