@@ -909,7 +909,7 @@
            from the comment behavior) used to get a generic unbound-name `doc` plus a misleading
            export-names-no-definition cascade; the diagnosis now names the real placement instead.")
   (input (do (doc "the main fn" (def (main) 1)) (export main)))
-  (declines (message "documents a definition from INSIDE it")))
+  (error CDZ0201 (message "documents a definition from INSIDE it")))
 
 (case
   "a line comment wrapping a top-level form does not hide it"
