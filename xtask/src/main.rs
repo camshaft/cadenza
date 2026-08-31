@@ -154,6 +154,10 @@ enum Cmd {
         /// re-grading via `cdz` (the per-case nix aggregate's entry). Ignores `--files`/`--case`.
         #[arg(long, conflicts_with_all = ["save", "check"])]
         compare: Option<PathBuf>,
+        /// Override the baseline path (default `spec/syntax/.gate-baseline`). The per-case nix aggregate
+        /// passes this since `xtask` runs outside a repo tree. Applies to `--check`/`--compare`/`--save`.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
     },
     /// The omnibus health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
     /// the wasm runtime build, and the behavior gate. Each step's output is captured to a log file
@@ -271,6 +275,7 @@ fn main() {
             save,
             check,
             compare,
+            baseline,
         } => {
             let opts = gate_syntax::GateSyntaxOpts {
                 files,
@@ -278,6 +283,7 @@ fn main() {
                 save,
                 check,
                 compare,
+                baseline,
             };
             std::process::exit(gate_syntax::gate_syntax(&paths, &opts));
         }
