@@ -53,3 +53,12 @@
 ; STILL OPEN: the RECORD trailing-rest binding param STILL gives the spurious CDZ0203 "names field `..`"
 ; (the record half of check_binding_pattern is not yet landed). When it lands (record trailing-rest should
 ; BIND/run per #6723), v-rcdzc-ts-2 pins the record run case (-> 5) in 05 and renames this issue DONE-PINNED.
+;
+; RESOLVED (binding-rest fix-class COMPLETE): tuple half fixed #6732, record half fixed #6763. Both
+; trailing-rest binding params now BIND/run (irrefutable) per core-semantics §"A Binding Position Accepts An
+; Irrefutable Pattern" (#6723/#6750). v-ast-compound (fix-class owner) pinned BOTH corpus-05 witnesses
+; themselves (tuple @05:580 "a tuple trailing-rest is IRREFUTABLE, so it binds in a BINDING-PARAM position";
+; record @05:617 "a record pattern with a trailing rest binds the named fields and the residual record").
+; The map-rest + list-LEADING-rest reject faces correctly stay CDZ0210. No double-pin from v-rcdzc-ts-2.
+; (My batch-97 edge-hunt find → filed repro → routed → #6723 oracle ruling vindicated the irrefutability
+; hypothesis → v-ast-compound fixed both slices + pinned inline. Loop closed.)
