@@ -495,6 +495,31 @@ exhausts it → `cannotProve` (sound — proving a recursive function's equivale
 symbolic evaluator does not do). 64 comfortably covers realistic non-recursive helper nesting. -/
 def symDefaultFuel : Nat := 64
 
+/-- The body of a TOP-LEVEL VALUE def `(def name VALUE)` whose target is a BARE ATOM named `name` (exactly
+3 children: `def`, target-atom, body). A LIST target `(def (f …) …)` is a FUNCTION (even nullary → a
+closure value), NOT a value, so it is EXCLUDED — a bare ref to a function is a higher-order value we don't
+model. `some bodyId` if found. Used to resolve a bare reference to a top-level constant: `symEval` runs only
+`main`'s body, so top-level value defs are otherwise `free name` (evalNode binds them via the root do-env). -/
+def topLevelValueDefBody? (m : Module) (name : ByteArray) : Option Nat :=
+  match m.nodes[m.root]? with
+  | some (Node.list stmts) =>
+    stmts.toList.findSome? (fun sid =>
+      match asDef? m sid with
+      | some dc =>
+        if dc.size == 3 then
+          match dc[1]? with
+          | some targetId =>
+            (match m.nodes[targetId]? with
+             | some (Node.atom lid) =>
+               (match m.leaves[lid]? with
+                | some (Leaf.name b) => if b == name then dc[2]? else none
+                | _ => none)
+             | _ => none)  -- list target = a function def, not a value
+          | none => none
+        else none
+      | none => none)
+  | _ => none
+
 mutual
 /-- Symbolically evaluate the node `i` under `senv` (params → symbolic vars). Covers the ANALYZABLE SCALAR
 FRAGMENT: a bound parameter → its var; a scalar literal → `const`; `(if c t e)` → `ite`; a `(: e T)`
@@ -512,8 +537,15 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
     | some (Leaf.name b) =>
       match senv.find? (fun p => p.1 == b) with
       | some (_, e) => .sym e
-      | none => if b == "None".toUTF8 then .sym (.ctor "None".toUTF8 #[])
-                else .cannotProve "symeval: free name (not a bound parameter)"
+      | none =>
+        if b == "None".toUTF8 then .sym (.ctor "None".toUTF8 #[])
+        else match topLevelValueDefBody? m b with
+          -- a bare reference to a TOP-LEVEL VALUE def `(def b VALUE)` → its body's value (top-level defs are
+          -- in scope; evalNode binds them via the root do-env, so this matches eval). Fuel bounds def→def
+          -- reference chains. A function-shaped def / non-def name stays a free name (cannotProve).
+          | some bodyId => if fuel == 0 then .cannotProve "symeval: free-name value-def fuel exhausted"
+                           else symEval m [] (fuel - 1) defaultIntTy bodyId
+          | none => .cannotProve "symeval: free name (not a bound parameter)"
     | some l =>
       match Value.ofLeaf l with
       | some v => .sym (.const v)
@@ -1804,6 +1836,18 @@ private def _tryOkExpr : Module :=
     root := 4 }
 #guard symEval _tryOkExpr [] symDefaultFuel defaultIntTy 4
        == SymOutcome.sym (.const (.int 5))
+
+-- TOP-LEVEL VALUE-DEF bare reference: `(do (def k 7) (def (main) (+ k 1)) (export main))` — main's body
+-- references the top-level constant `k` bare; symEval resolves it to k's body (7) → `(+ 7 1)` → 8.
+private def _topDefRefProg : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "k".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[7]), Leaf.name "main".toUTF8,
+                Leaf.name "+".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]), Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 4, .list #[4], .atom 5, .atom 2, .atom 6,
+               .list #[6, 7, 8], .atom 1, .list #[10, 5, 9], .atom 7, .atom 4, .list #[12, 13],
+               .atom 0, .list #[15, 3, 11, 14]],
+    root := 16 }
+#guard symEvalMain _topDefRefProg == SymOutcome.sym (.const (.int 8))
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
