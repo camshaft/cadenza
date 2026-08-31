@@ -777,6 +777,19 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: List.concat on non-list values")
            | _, _ => .cannotProve "symeval: malformed List.concat")
+        else if q == "List".toUTF8 && mem == "len".toUTF8 then
+          -- `List.len lst` over a concrete list → the element count (`.ctor "list"` args.size). SOUND: a
+          -- LIST keeps duplicates + order, so its length IS the element count (unlike Set/Map.len, which
+          -- would need dedup — deferred). Non-list operand / unmodelable arg → cannotProve.
+          (match children[1]? with
+           | some cId =>
+             (match symEval m senv fuel ty cId with
+              | .sym (.ctor t elems) =>
+                if t == "list".toUTF8 then .sym (.const (.int (Int.ofNat elems.size)))
+                else .cannotProve "symeval: List.len on a non-list value"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: List.len on a non-list value")
+           | none => .cannotProve "symeval: malformed List.len")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1122,6 +1135,16 @@ private def _concatExpr : Module :=
     root := 10 }
 #guard symEval _concatExpr [] symDefaultFuel defaultIntTy 10
        == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2)])
+
+-- LIST.LEN member-op coverage: `((. List len) (list 1 2 3))` → `const 3` (element count).
+private def _lenExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "List".toUTF8, Leaf.name "len".toUTF8,
+                Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7], .list #[3, 8]],
+    root := 9 }
+#guard symEval _lenExpr [] symDefaultFuel defaultIntTy 9 == SymOutcome.sym (.const (.int 3))
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
