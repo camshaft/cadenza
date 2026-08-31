@@ -820,6 +820,19 @@ pub enum Prim {
     /// an ordinary runtime value (unlike a `Type` value, which is erased); the type COMPARISON is what is
     /// compile-time.
     TypeEq,
+    /// `Type.ast e` / `Type.ast-generic e` — COMPILE-TIME TYPE→AST REFLECTION: reduce `e` to its type-VALUE
+    /// (a `(Type.of x)` result or a written type), then fold to the `Ast` VALUE of that type's DEFINITION —
+    /// the verbatim `(type Name …)` declaration form (`DESIGN-type-to-ast-reflection.md`). The missing dual
+    /// of `encode_ty` (which emits only the type REFERENCE, not the shape). The `(meta apply)` of the `Type`
+    /// module's `ast` / `ast-generic` fields. `instantiated = false` (`ast-generic`) yields the GENERIC decl
+    /// verbatim (type params intact); `instantiated = true` (`ast`) substitutes the type's concrete args
+    /// into the decl (increment 3). Reuses the existing `Ast` sum variants (no encoding change), so the
+    /// result flows through `Ast.print`/`Ast.encode`/`Ast.decode` unchanged. Total over concrete types;
+    /// declines on a non-concrete type (an unresolved type variable). One prim with a bool (design OQ#2), so
+    /// the RUST-backend arm covers one new `Prim`.
+    TypeAst {
+        instantiated: bool,
+    },
     /// A SET TYPE CONSTRUCTOR — the `(meta apply)` of the `Set` prelude module. `(Set Int64)` in type
     /// position builds `Ty::Set(elem)` (ONE parameter, like `List`). The set analogue of `ListCtor`.
     SetCtor,
@@ -997,6 +1010,10 @@ impl Prim {
             "Qty" => Some(Prim::QtyCtor),
             "type-of" => Some(Prim::TypeOf),
             "type-eq" => Some(Prim::TypeEq),
+            "type-ast" => Some(Prim::TypeAst { instantiated: true }),
+            "type-ast-generic" => Some(Prim::TypeAst {
+                instantiated: false,
+            }),
             "Set" => Some(Prim::SetCtor),
             "set-of" => Some(Prim::SetOf),
             "set-to-list" => Some(Prim::SetToList),

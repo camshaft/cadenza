@@ -285,6 +285,18 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return Ty::Bool;
     }
+    // `Type.ast e` / `Type.ast-generic e` — compile-time type→AST reflection. The application's type is the
+    // built-in `Ast` prelude sum (the value it folds to, a `(type …)` decl reflected via `Ast.*` ctors),
+    // exactly as a quote / `Ast.module` types as `Ast`. A non-concrete argument declines at the LOWER fold
+    // (not here — the type is `Ast` regardless of whether the fold succeeds).
+    if args.len() == 1
+        && matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(crate::resolved::Prim::TypeAst { .. })
+        )
+    {
+        return super::ast_sum_ty(db).unwrap_or(Ty::Any);
+    }
     // `Qty.value q` — recover the underlying numeric value, DISCARDING the unit. Its result is the
     // quantity's INNER type; a non-quantity argument yields `Any` (faulted elsewhere).
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyValue)

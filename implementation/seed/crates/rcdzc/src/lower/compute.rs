@@ -2071,6 +2071,14 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                         )),
                     }
                 }
+                // `Type.ast e` / `Type.ast-generic e` — compile-time type→AST reflection FOLDS to the `Ast`
+                // VALUE of `e`'s type DEFINITION (the verbatim `(type …)` decl reflected via `Ast.*` ctors).
+                // A non-concrete / non-nominal argument declines (an ill-formed operand); a constant `Ast`
+                // value crosses the boundary + prints/encodes like any quote result.
+                Some(Prim::TypeAst { instantiated }) if args.len() == 1 => {
+                    trace!(target: "rcdzc::lower", node = id.0, instantiated, "apply: Type.ast type→AST reflection");
+                    lower_type_ast(db, args[0], instantiated)
+                }
                 // `Unit.in target q` — EXPLICIT conversion. Convert q's erased magnitude from its unit to
                 // the TARGET by `value * (q.scale / target.scale)` in the inner type T (a no-op when the
                 // units are already equal). Folds the constant case; a runtime operand declines.

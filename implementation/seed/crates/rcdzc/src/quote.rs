@@ -453,6 +453,21 @@ pub(crate) fn contains_ast_module(ast: &Arenas) -> bool {
     })
 }
 
+/// Does `ast` contain a `(. Type ast)` / `(. Type ast-generic)` member form — the type→AST reflection
+/// intrinsics (`Type.ast` / `Type.ast-generic`, `DESIGN-type-to-ast-reflection.md`)? Same cheap structural
+/// scan + snapshot-gate role as [`contains_ast_module`]: the type→AST fold reflects the type declaration's
+/// PRE-RESOLVE source (the live arena is rewritten before lowering), so a file that uses it must capture a
+/// source snapshot. Precise — matches the exact member forms, not a bare `ast` name-leaf scan.
+pub(crate) fn contains_type_ast(ast: &Arenas) -> bool {
+    (0..ast.structure.len() as u32).any(|i| {
+        let id = StructId(i);
+        matches!(ast.as_form(id, "."), Some(tail)
+            if tail.len() == 2
+                && ast.as_name(tail[0]) == Some("Type")
+                && matches!(ast.as_name(tail[1]), Some("ast" | "ast-generic")))
+    })
+}
+
 /// The shared body of `reify`, parameterized by whether an integer-literal payload is GROUNDED to
 /// `BigInt`. In VALUE position (`ground_ints` true — the reifier building an `Ast` value) a bare int
 /// literal is wrapped `(: N BigInt)` so it grounds to `Ast.Int`'s `BigInt` payload. In PATTERN position
