@@ -516,6 +516,7 @@ pass	Type.ast on a RECURSIVE generic stays finite — a nested self-reference is
 pass	a reflected type-definition AST round-trips byte-identically through Ast.encode / Ast.decode
 pass	Ast.print of a reflected type definition renders its canonical (type …) source form
 pass	Type.ast of a NON-CONCRETE type is a coded rejection — a type variable has no definition to reflect
+pass	Type.ast reflects a BUILT-IN type's definition (Option, Result) like a user type
 pass	Type.ast on a non-generic type coincides with Type.ast-generic (verbatim decl)
 todo	Type.ast-generic of a FUNCTION type reflects its arrow surface (TODO: arrow-surface reflection gap)
 pass	Type.ast-generic reflects a STRUCTURAL type's canonical type-surface AST (increment 2)
