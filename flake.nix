@@ -3990,6 +3990,36 @@
           '';
         };
 
+        # optSweepCheck — the TIERED-OPT LEVEL-EQUIVALENCE invariant (v-core-opt's OptLevel/PassManager on the
+        # shared Core column). `cargo xtask gate --opt-sweep` compiles+runs EVERY corpus case at O0/O1/O2/O3 and
+        # asserts observably-identical behavior (same value/trap/decline) — a SAME-RUN cross-level diff, NOT a
+        # baseline compare, so NO --check (the gate ignores --save/--check under --opt-sweep). Default target
+        # (wasm — the primary pipeline the Core passes' first consumer targets). It exits NON-ZERO on any O0..O3
+        # divergence (a candidate miscompile), so this derivation reds exactly when the invariant breaks. Mirrors
+        # gateCheck (same warm release-deps + store); the only difference is --opt-sweep vs --check. ~4x a corpus
+        # run (4 levels/case) — UNSHARDED because a nix check has no free-CI-runner reclaim window (the sole
+        # reason the nightly RUST gate shards); it runs to completion + caches in-store/cachix + rebuilds only on
+        # a corpus/compiler change. ADVISORY: exposed as `checks.<sys>.opt-sweep` but NOT in the localGate
+        # fail-set — v-gha-green wires it into nightly.yml (advisory, within-a-day catch, proportionate to the
+        # low-frequency Core-pass-change risk; concierge greenlit nightly-advisory 2026-08-31). Currently green
+        # (v-core-opt: 1876 cases, 0 divergences). A future `--target rust` sibling is optional (v-core-opt).
+        optSweepCheck = craneLib.mkCargoDerivation {
+          pname = "cdz-opt-sweep";
+          version = "0.0.0";
+          src = gateSrc;
+          cargoArtifacts = cargoArtifactsRelease;
+          cargoVendorDir = seedCargoVendor;
+          CARGO_PROFILE = "release";
+          doInstallCargoArtifacts = false;
+          nativeBuildInputs = [ pkgs.wasm-tools ];
+          buildPhaseCargoCommand = ''
+            cargo run --locked --package xtask --profile release -- gate --opt-sweep --store "${componentStore}"
+          '';
+          installPhaseCommand = ''
+            echo "ok: cdz-opt-sweep (cargo xtask gate --opt-sweep --store <nix store> — O0..O3 level-equivalence, all corpus cases)" > "$out"
+          '';
+        };
+
         # gateCheckVerify — a SOLO full-corpus verify path with a GENEROUS per-case timeout (v-nix, for v-effects'
         # UAF-critical #5090 SITE-B verification, concierge 2026-08-29). WHY: gateCheck (above) sets NO
         # CDZ_RUN_TIMEOUT_SECS, so `gate --check` uses run_timeout()'s 30s DEFAULT per-case deadline — a
@@ -5596,6 +5626,9 @@
             codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
             gate-check = gateCheck;
+            # ADVISORY (NOT in the localGate fail-set) — the tiered-opt O0..O3 level-equivalence sweep, wired
+            # into nightly.yml by v-gha-green. `nix build .#checks.<sys>.opt-sweep`.
+            opt-sweep = optSweepCheck;
             # gate-check-verify: SOLO full-corpus grade with a 30-min/case timeout (for v-effects' UAF-critical
             # verify past the 30s gate cap + the fleet batch cap). NOT in localGate — verify affordance only.
             gate-check-verify = gateCheckVerify;
