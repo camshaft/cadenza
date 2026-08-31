@@ -89,6 +89,8 @@
 ; SHAPE 49/50 — a tuple PARAM whose element is COMPOUND: tuple<list<u8>, s64> (a Bytes-leaf element, exercising
 ; the tuple arm's param_field_rebuild BytesLeaf recursion + the copy-in scratch) and tuple<record{a}, s64> (a
 ; nested-record element, the Nested rebuild) — each read + combined with the scalar element to prove recursion.
+; SHAPE 51 — a bare result<ok,err>/Result PARAM member (sum_params, Result shape): the (disc,payload-JOIN)
+; flattening with Ok=disc 0 is rebuilt via the Result-shaped SumArgRebuild; both Ok and Err arms exercised.
 
 (case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -400,6 +402,26 @@
   (input (do (def (f (: p (Tuple (Record (: a Int64)) Int64))) (+ (. (. p 0) a) (. p 1))) (export f)))
   (call f (: #tuple(#record((= a 7)) 100) (Tuple (Record (: a Int64)) Int64)))
   (output (: 107 Int64))
+  (live-objects known-leak))
+
+(case "a bare result<ok,err>/Result PARAM member of a typed export interface crosses (sum_params Result shape, both arms)"
+  (doc    "SHAPE 51 — a TOP-LEVEL `result<s64,s64>`/Result Int64 Int64 PARAM member of a typed export interface.
+           A `result<ok,err>` crosses as `(disc: i32, payload-JOIN)` with Ok=disc 0 (Err=1) and the payload the
+           JOIN of the ok/err leaves (`wrap_join` recovers a narrower side). The wrapper branches on the disc
+           and rebuilds the guest sum cell via the Result-shaped `SumArgRebuild` (the SAME lift used for a
+           `result<…>` record FIELD, SHAPE 17 — now reached as a TOP-LEVEL param). The bare-entry route DECLINES
+           a Result param (it synthesizes the WIT as a `variant`, a disagreeing type); here the WIT is DECLARED
+           `result<ok,err>`, matching the rebuild — so the typed-interface member route supports it. Guest
+           chk(r) = match r (Ok v)->v (Err e)->-e; BOTH arms: Ok(7)->7, Err(5)->-5 (a wrong disc — Ok/Err
+           swapped, or the option Some=1 convention — would take the wrong arm). Borrow-only (wrapper drops the
+           shell).")
+  (wit-world (world w (export iface (member chk (func (param r (result (s64) (s64))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (chk (: r (Result Int64 Int64))) (match r ((Result.Ok v) v) ((Result.Err e) (- 0 e)))) (export chk)))
+  (call chk (: (Ok 7) (Result Int64 Int64)))
+  (output (: 7 Int64))
+  (call chk (: (Err 5) (Result Int64 Int64)))
+  (output (: -5 Int64))
   (live-objects known-leak))
 
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"

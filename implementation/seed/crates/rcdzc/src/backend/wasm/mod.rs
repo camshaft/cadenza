@@ -8446,9 +8446,9 @@ fn record_interface_export(
     // `!any_record && !needs_result_wrapper && !any_mem_leaf_param` gate bails to the scalar path. The
     // param-side twin of `needs_result_wrapper`.
     let mut any_mem_leaf_param = false;
-    // Set when a member has a TOP-LEVEL `option<scalar>` param (a two-variant sum lifted via `sum_params`):
-    // the typed-interface wrapper must take over to branch on the boundary disc and build the guest sum cell
-    // even when its result is a bare scalar. The sum-param twin of `any_mem_leaf_param`.
+    // Set when a member has a TOP-LEVEL `option<scalar>`/`result<ok,err>` param (a two-variant sum lifted via
+    // `sum_params`): the typed-interface wrapper must take over to branch on the boundary disc and build the
+    // guest sum cell even when its result is a bare scalar. The sum-param twin of `any_mem_leaf_param`.
     let mut any_sum_param = false;
     // Set when a member's RESULT spills to memory (a compound result-lower): the typed-interface wrapper must
     // then take over even for an all-scalar-param member, to WRITE the result to the retptr (else the compound
@@ -8473,9 +8473,10 @@ fn record_interface_export(
         // out of linear memory into a value-heap handle, passed DIRECTLY as the def arg — the same lift the
         // plain-export bare-wrapper route emits). `None` for a scalar/record param.
         let mut mem_leaf_params: Vec<Option<(serialize::MemLeafKind, bool)>> = Vec::new();
-        // Parallel to `params`: a TOP-LEVEL `option<scalar>` param (a two-variant sum crossing as a native
-        // `option<T>`) is rebuilt via `Some((rebuild, drop_after))` — branch on the boundary disc, `sum-new`
-        // the guest cell, passed DIRECTLY as the def arg. `None` for a scalar/record/mem-leaf param.
+        // Parallel to `params`: a TOP-LEVEL `option<scalar>`/`result<ok,err>` param (a two-variant sum crossing
+        // as a native `option<T>`/`result<ok,err>`) is rebuilt via `Some((rebuild, drop_after))` — branch on the
+        // boundary disc, `sum-new` the guest cell, passed DIRECTLY as the def arg. `None` for a scalar/record/
+        // mem-leaf param.
         let mut sum_params: Vec<Option<(serialize::SumArgRebuild, bool)>> = Vec::new();
         for ((binder, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
@@ -8530,18 +8531,34 @@ fn record_interface_export(
                 // built shell after the call (the extracted payload escapes by its own copy, independent of the
                 // shell); a param whose shell ESCAPES (the def returns/stores it) declines to a later slice.
                 Ty::Sum { .. } => {
-                    let Some((_slot, vts, rebuild)) =
+                    use crate::backend::wasm::envelope::ArgSlot;
+                    let Some((slot, vts, rebuild)) =
                         crate::backend::wasm::arg_boundary::fixed_shape_option_scalar_arg(db, gty)
                     else {
                         return None; // not an option/result-shaped two-variant sum — a later slice
                     };
-                    if !matches!(wty, WitType::Option(_)) {
-                        return None; // a Result (WIT `variant`) or a WIT/guest mismatch — decline
+                    // The declared WIT must AGREE with the guest's classified sum shape: `option<T>` ↔ an
+                    // Option-shaped classification (Some=disc 1, one payload), `result<ok,err>` ↔ a Result-shaped
+                    // one (Ok=disc 0, the ok/err payload JOIN + `wrap_join`). The `SumArgRebuild` already carries
+                    // the correct per-shape disc + join (option boundary_true_disc=1, result=0), so the SAME
+                    // `emit_sum_field` lift serves both — the bare-entry route only DECLINED Result because it
+                    // SYNTHESIZED the WIT as a `variant` (a disagreeing type); here the WIT is DECLARED as
+                    // `result<ok,err>`, matching the Result rebuild (the same lift proven for a result<…> record
+                    // FIELD, SHAPE 17). A WIT/guest shape mismatch (or an unclassified sum) declines.
+                    let wit_agrees = matches!(
+                        (wty, &slot),
+                        (
+                            WitType::Option(_),
+                            ArgSlot::OptionScalar(_) | ArgSlot::OptionCompound(_)
+                        ) | (WitType::Result { .. }, ArgSlot::Result(_, _))
+                    );
+                    if !wit_agrees {
+                        return None; // WIT type disagrees with the guest sum shape — decline
                     }
                     if crate::backend::wasm::select::param_escapes_body(db, e.body, *binder) {
                         return None; // the built sum shell escapes — a later slice (borrow-only)
                     }
-                    // Canonical `option<T>` flattening: `(disc: i32, payload…)`.
+                    // Canonical `option<T>`/`result<ok,err>` flattening: `(disc: i32, payload…)`.
                     param_vts.push(crate::backend::wasm::lir::ValType::I32.byte());
                     for vt in &vts {
                         param_vts.push(vt.byte());
