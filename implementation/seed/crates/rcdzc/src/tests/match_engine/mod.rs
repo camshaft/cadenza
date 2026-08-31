@@ -2719,38 +2719,10 @@ fn a_bitwise_operator_on_a_non_integer_operand_names_the_integer_requirement() {
     }
 }
 
-#[test]
-fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
-    // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
-    // that overflows the default signed `Int64` — `9223372036854775808` (Int64.max+1),
-    // `0xFFFFFFFFFFFFFFFF` (fits unsigned-64, but a bare literal is signed) — is a MALFORMED literal
-    // (CDZ0201), a well-formedness boundary, NOT unbound (CDZ0101) and NOT out-of-range-for-a-width
-    // (CDZ0302, which is for an EXPLICIT annotation).
-    assert_eq!(
-        reject_code("(module m (def (main) 9223372036854775808) (export main))").as_deref(),
-        Some("CDZ0201")
-    );
-    assert_eq!(
-        reject_code("(module m (def (main) 0xFFFFFFFFFFFFFFFF) (export main))").as_deref(),
-        Some("CDZ0201")
-    );
-    // Int64.max EXACTLY fits — no rejection (it compiles).
-    assert_eq!(
-        reject_code("(module m (def (main) 9223372036854775807) (export main))"),
-        None
-    );
-    // An EXPLICIT over-width annotation stays CDZ0302 (out of range for a CHOSEN width), NOT CDZ0201;
-    // and a valid `UInt64.max` annotated literal is accepted (the annotation grounds the width, so the
-    // bare-literal check does not misfire on it).
-    assert_eq!(
-        reject_code("(module m (def (main) (: 256 (Int 8))) (export main))").as_deref(),
-        Some("CDZ0302")
-    );
-    assert_eq!(
-        reject_code("(module m (def (main) (: 18446744073709551615 (UInt 64))) (export main))"),
-        None
-    );
-}
+// (a_bare_literal_past_int64_is_malformed_not_out_of_range migrated to corpus: the DECIMAL bare-overflow
+// (9223372036854775808 → CDZ0201) + Int64.max-fits faces are the existing 01-literals cases; the HEX
+// bare-overflow (0xFFFFFFFFFFFFFFFF → CDZ0201) + the UInt64-max-annotated no-misfire control are added to
+// 01-literals; the explicit-width (: 256 (Int 8)) → CDZ0302 control is 06-numeric-model over-width. PASS wasm.)
 
 #[test]
 fn a_high_uint64_literal_operand_takes_uint64_from_context() {
