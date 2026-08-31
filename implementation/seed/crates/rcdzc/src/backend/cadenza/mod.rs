@@ -2556,10 +2556,60 @@ fn emit_switch_tree(
             )?;
             Ok(())
         }
-        SumCont::Guarded { .. } => Err(Reject::unsupported(
-            "the Cadenza backend does not support lowering a guarded node in a deep sum-match tree"
-                .to_string(),
-        )),
+        // A GUARDED arm on the compound destructure at this leaf — `((guard #tuple(a k) <cond>) <body>)`.
+        // Build the arm pattern for the choices/lits fixed so far (the compound destructure, which REGISTERS
+        // the slot binders `a`/`k`), THEN emit `<cond>` (it reads those binders — in scope now) wrapped as
+        // `(guard <pattern> <cond>)`, then the matched `<body>`; FOLLOWED by the fall-through `els` arms (the
+        // remaining rows of the SAME compound shape — a later guard or the covering unguarded arm), exactly as
+        // the own-discriminant arm-loop threads a false guard's else. The unguarded fall-through keeps the
+        // match exhaustive (a guarded arm does not count). Idempotent: recompiling `(guard <pat> <cond>)`
+        // re-lowers to a `Guarded` → this same arm.
+        SumCont::Guarded { cond, body, els } => {
+            // A guard's cond + body read the destructured SLOT binders, but there is no switch/lit choice
+            // forcing `build_arm_pat` to destructure the root compound — so seed a FREED-slot (`None`) marker
+            // for each top-level slot of a Tuple/Record root, exactly as the LitTest `els` fall-through does.
+            // That destructures `#tuple(a k)` / `#record((= f a)…)` and binds every slot, so the cond/body's
+            // `SumPayload[Elem(i)]` reads resolve to their binders (else they re-project the scrutinee — a
+            // value-correct but double-eval emit). Threaded to BOTH the guard arm's pattern AND the `els`
+            // fall-through (its arms read the same slots). A non-compound root (bare sum) seeds nothing → the
+            // whole value binds as one name (the guard reads it whole).
+            use crate::core::PathStep;
+            let mut lc = lit_choices.clone();
+            match root_ty {
+                Ty::Tuple(ts) => {
+                    for i in 0..ts.len() {
+                        lc.entry(vec![PathStep::Elem(i)]).or_insert(None);
+                    }
+                }
+                Ty::Record(fs) => {
+                    for i in 0..fs.len() {
+                        lc.entry(vec![PathStep::Elem(i)]).or_insert(None);
+                    }
+                }
+                _ => {}
+            }
+            let pat = build_arm_pat(
+                db,
+                b,
+                root_scrut,
+                root_ty,
+                &[],
+                &[],
+                &choices,
+                &lc,
+                env,
+                emitted,
+            )?;
+            let cond_node = emit_expr(db, b, *cond, None, env, emitted)?;
+            let guard_head = b.name("guard");
+            let guard_pat = b.list(vec![guard_head, pat, cond_node]);
+            let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+            children.push(b.list(vec![guard_pat, body_node]));
+            emit_switch_tree(
+                db, b, root_scrut, root_ty, els, choices, lc, expected, env, emitted, children,
+            )?;
+            Ok(())
+        }
     }
 }
 
@@ -2597,11 +2647,13 @@ fn emit_match_sum(
         // destructure the irrefutable compound structure down to the switched slot and dispatch THERE —
         // `(#tuple(a (Some b)) …)` / `(#record((= f (V …))) …)` (the variant-at-slot shape, e.g. #6967's
         // variant-below-record, and inner-sum-at-a-tuple-slot). A root `LitTest` (a LITERAL at a compound slot —
-        // `(#tuple(a 7) …)`) routes the same way (the tree-walk emits the literal in the pattern). The per-`decl`
+        // `(#tuple(a 7) …)`) routes the same way (the tree-walk emits the literal in the pattern), as does a root
+        // `Guarded` (a GUARD on the destructured slots — `((guard #tuple(a k) <cond>) …)`; the tree-walk builds
+        // the compound pattern, binds the slots, and wraps the arm in `(guard … <cond>)`). The per-`decl`
         // un-emitted-user-sum guard lives inside `build_arm_pat`/`ctor_pat`, and every tree leaf is enumerated so
-        // the emitted match stays exhaustive (no synthesized wildcard). A `Guarded` root, or a non-scalar
-        // `LitTest` probe, still declines (a guard-at-slot surface reconstruction is a later slice).
-        SumCont::Switch { .. } | SumCont::LitTest { .. } => {
+        // the emitted match stays exhaustive (no synthesized wildcard). A non-scalar `LitTest` probe still
+        // declines (its surface literal is a later slice).
+        SumCont::Switch { .. } | SumCont::LitTest { .. } | SumCont::Guarded { .. } => {
             let root_ty = crate::infer::type_of(db, scrutinee);
             let match_head = b.name("match");
             let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
