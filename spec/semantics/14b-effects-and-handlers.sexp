@@ -3498,7 +3498,7 @@
             (effect Log (op emit (-> Int64 Int64)))
             (effect Log (op record (-> Int64 Int64)))
             (def (main)
-              (handle Log 0 (#record((= n) s (= resume n s))) 0)) (export main)))
+              (handle Log 0 ((record (n) s (resume n s))) 0)) (export main)))
   (error  CDZ0403))
 
 (case "an effect operation returning a SUM is resumed with a sum value and matched"

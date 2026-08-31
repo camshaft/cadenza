@@ -2976,32 +2976,18 @@ fn a_wide_effect_handler_compiles_linearly() {
 }
 
 #[test]
-fn two_same_named_effects_are_distinct_not_conflated() {
-    // Two top-level effects declared with the SAME name `Log` but DIFFERENT operations. A bare `Log`
-    // reference resolves FIRST-declared (op `emit`), so a handler arm naming the OTHER's op `record`
-    // is an undeclared-operation violation (CDZ0403) — proving the two are NOT conflated into one
-    // effect. This is the invariant `db::effect_decl_by_name`'s NAME index must preserve: the index is
-    // FIRST-wins over `effect_decls` in declaration order, byte-identical to the linear `.iter().find`
-    // it replaced (the O(1) accelerator that fixed the N-sum-types O(N²) `resolve_name` scan) — it must
-    // NOT start returning the second `Log` or merging their op sets.
-    let src = "(do (effect Log (op emit (-> Int64 Int64))) \
-                   (effect Log (op record (-> Int64 Int64))) \
-                   (def (main) (handle Log 0 ((record (n) s (resume n s))) 0)) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-        "a `record` arm on the first `Log` (which declares only `emit`) must be rejected",
-    );
-    assert_eq!(
-        err.code.as_deref(),
-        Some("CDZ0403"),
-        "the arm names an operation the FIRST Log does not declare — the two Logs are distinct: {}",
-        err.message
-    );
-}
+// two_same_named_effects_are_distinct_not_conflated (two `(effect Log …)` with different ops; a handler
+// arm on the SECOND's op `record` → CDZ0403 because a bare `Log` resolves first-declared {emit}) migrated
+// to corpus 14b-effects-and-handlers "two effects declared with the same name are distinct, not one merged
+// effect" — the observable CDZ0403 is the regression signal for the first-wins effect_decl_by_name index
+// (a conflating index would ACCEPT the `record` arm). NOTE: that corpus case's handler arm was previously
+// MIS-NATIVIZED to `#record((= n) …)` (treating the arm, whose op is *named* `record`, as a record
+// literal) so it never parsed as an arm and graded todo; this batch fixes it to `(record (n) s (resume n
+// s))` → PASS. rcdzc test deleted (corpus-covered).
 
 // an_effect_reached_with_no_handler_or_delegation_is_cdz0401 (`(effect Ask …)` performed with no handler
 // nor delegation → CDZ0401) migrated to corpus 14b-effects-and-handlers "an effect operation reached with
 // neither a handler nor a delegation is rejected". rcdzc test deleted (corpus-covered, code-only).
-
 #[test]
 fn a_no_home_effect_carries_a_host_delegation_wrap_fix() {
     // CDZ0401 now carries the mechanical repair the message names: WRAP the entrypoint body in
