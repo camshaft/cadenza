@@ -1880,7 +1880,8 @@ pub(super) fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[Str
                 // A non-finite result (overflow → ±inf, 0.0/.0 → NaN) has no written value form — decline
                 // rather than emit an unrepresentable constant (the float-literal-overflow discipline).
                 None => Core::Poison(Reject::decline(
-                    "a floating-point operation whose result is not finite has no value form yet",
+                    "a floating-point operation whose constant result is not finite (±inf or NaN) \
+                     has no written value form",
                 )),
             }
         }

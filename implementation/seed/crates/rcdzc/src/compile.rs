@@ -4227,7 +4227,7 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     // A `?` on a non-fallible operand (`(try 3.14)`, `(try "hi")`) is reported by `infer` as the coded
     // CDZ0203 `TRY_NON_FALLIBLE_PREFIX` naming the real defect (the operand's type). Its non-sum CONSTANT
     // core also misses the `Resolved::Try` `SumNew` fold arm in `lower`, so the emit path ALSO returns the
-    // uncoded `TRY_RUNTIME_OPERAND_DECLINE_PREFIX` "lowers only a constant operand yet" — the same fault
+    // uncoded `TRY_RUNTIME_OPERAND_DECLINE_PREFIX` "lowers only a constant operand" — the same fault
     // reported more weakly AND misleadingly (it blames constness, but the operand IS constant; its problem
     // is the TYPE). Drop that decline whenever the CDZ0203 is present so an ill-typed `?` is ONE primary
     // `error:`. Gated on the reject existing — a genuinely-RUNTIME fallible operand (no CDZ0203) keeps its
@@ -4655,7 +4655,7 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             {
                 return false;
             }
-            // Drop the "`?`/`try` lowers only a constant operand yet" decline when a `?`-non-fallible-operand
+            // Drop the "`?`/`try` lowers only a constant operand" decline when a `?`-non-fallible-operand
             // CDZ0203 is present — the ill-typed operand's non-sum constant core missed the `SumNew` fold arm,
             // so the decline is the same defect at emit, and misleading (it blames constness, not the type).
             // A runtime fallible operand (no CDZ0203) keeps its honest BRICK-3b decline.

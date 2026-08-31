@@ -1976,7 +1976,7 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
                     "`compare` needs a total order, but a floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no three-way comparison — use the relational operators `<`, `<=`, `>`, `>=` instead",
                 )),
                 None => Core::Poison(Reject::decline(
-                    "`compare` of this value has no total order the compiler can walk yet (a float/bytes/set/map leaf, or an un-orderable shape) — compare its orderable components individually",
+                    "`compare` of this value has no total order the compiler can walk (a float/bytes/set/map leaf, or an un-orderable shape) — compare its orderable components individually",
                 )),
             }
         }
