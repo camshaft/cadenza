@@ -2680,24 +2680,7 @@ fn ordering_a_compound_with_an_unorderable_leaf_is_a_carve_out_not_a_not_yet_bui
     );
 }
 
-#[test]
-fn a_mismatched_type_ordering_stays_a_single_coded_error_not_a_double_with_the_ordering_decline() {
-    // Dedup guard: `(< 1 "x")` is a type mismatch — `infer` reports the coded CDZ0201 "different types",
-    // and the emit path ALSO declines the ordering carve-out. `dedup_faults` must drop the consequent
-    // decline (it recognizes BOTH the equality heap-walk marker AND the new ordering carve-out message),
-    // so the reader sees ONE primary fault, not a coded reject plus a misleading second decline. This
-    // pins that the message split did not regress the dedup.
-    let errs = all_errors("(module m (def (main) (if (< 1 \"x\") 1 0)) (export main))");
-    assert_eq!(
-        errs.len(),
-        1,
-        "a mismatched-type ordering is a SINGLE coded error, not a double with the ordering decline: {:?}",
-        errs.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        errs[0].code.as_deref(),
-        Some("CDZ0201"),
-        "the one primary is the coded type-mismatch: {}",
-        errs[0].message
-    );
-}
+// (a_mismatched_type_ordering_stays_a_single_coded_error_not_a_double_with_the_ordering_decline migrated to
+//  corpus 07-type-system: `(< 1 "x")` cross-kind ordering compare -> CDZ0201 "different types" with (count 1)
+//  pinning the dedup (the ordering carve-out decline is dropped, ONE fault not a double) — via the
+//  cross-diagnostic (count N) lever that reclaims a former white-box dedup test.)

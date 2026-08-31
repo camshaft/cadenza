@@ -1524,6 +1524,17 @@
   (input  (* #tuple() 0))
   (error  CDZ0201))
 
+; The COMPARISON/ordering operators share the cross-kind reject: `(< 1 "x")` compares an Int64 and a String
+; — different types, CDZ0201 "an Int64 and a String are different types … across that kind boundary". DEDUP
+; guard: the ordering carve-out ALSO declines this on the emit path, and dedup_faults must drop that
+; consequent decline so the reader sees exactly ONE coded fault, not a coded reject PLUS a misleading second
+; decline — pinned with (count 1). (Migrated from rcdzc
+; a_mismatched_type_ordering_stays_a_single_coded_error_not_a_double_with_the_ordering_decline, using the
+; cross-diagnostic (count 1) lever.)
+(case "a cross-kind ordering comparison is a single coded type error, not a double with the ordering decline"
+  (input  (do (def (main) (if (< 1 "x") 1 0)) (export main)))
+  (error  CDZ0201 (message "different types") (count 1)))
+
 (case "addition of a string and a byte sequence names both text types"
   (doc    "`(+ \"ab\" (Bytes.of (list 1)))` adds a String and a Bytes — two different text-ish types,
            both non-numeric, rejected (CDZ0201) naming both. Pins that the mismatched-pair diagnostic
