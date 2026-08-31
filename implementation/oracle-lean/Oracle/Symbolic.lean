@@ -907,8 +907,29 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               -- do-bindings (closure), with params SHADOWING same-named captures (params prepended → found
               -- first). Matches eval's eager capture (Eval.lean:1247). Fuel bounds a (self-)recursive local fn.
               if fuel == 0 then .cannotProve "symeval: local-fn call fuel exhausted (recursion?)"
-              else if lspecs.size != children.size - 1 then .cannotProve "symeval: local-fn call arity mismatch"
               else
+                let nargs := children.size - 1
+                if 0 < nargs && nargs < lspecs.size then
+                  -- PARTIAL application (CURRYING): fewer args than params. Capture the given args under the
+                  -- FIRST params (appended to the existing cap), and return a NEW `.localFn` over the REMAINING
+                  -- params — a later application completes it (full-arity → inline below). Byte-faithful to
+                  -- `applyClosure`'s partial branch (Eval.lean:1572-1577): `newCap = cap ++ (firstParams.zip args)`,
+                  -- `.closure (params.drop nargs) body newCap`. An unmodelable captured arg → cannotProve.
+                  let capExt := ((lspecs.extract 0 nargs).zip (children.extract 1 children.size)).foldl
+                    (fun (acc : Option (List (ByteArray × SymExpr))) p =>
+                      match acc with
+                      | none => none
+                      | some cap =>
+                        match paramSpec? m p.1 with
+                        | some (pnm, _) => (match symEval m senv fuel ty p.2 with
+                                            | .sym e => some (cap ++ [(pnm, e)])
+                                            | .cannotProve _ => none)
+                        | none => none) (some lcap)
+                  match capExt with
+                  | some newCap => .sym (.localFn (lspecs.extract nargs lspecs.size) lbodyId newCap)
+                  | none => .cannotProve "symeval: a curried local-fn argument is unmodelable"
+                else if lspecs.size != nargs then .cannotProve "symeval: local-fn call arity mismatch (over-application)"
+                else
                 let callEnv := (lspecs.zip (children.extract 1 children.size)).foldl
                   (fun (acc : Option SymEnv) p =>
                     match acc with
@@ -2211,6 +2232,23 @@ private def _higherOrderLambdaExpr : Module :=
     root := 21 }
 #guard symEval _higherOrderLambdaExpr [] symDefaultFuel defaultIntTy 21
        == SymOutcome.sym (.const (.int 24))
+
+-- CURRYING (v-cdz-smith cluster A): a local fn PARTIALLY applied, the closure bound, then completed —
+-- `(do (def (pa a b) (- a b)) (let ((f (pa 88))) (f 50)))` → 38. `(pa 88)` supplies 1 of 2 args → a new
+-- `.localFn` over the remaining `[b]` with `a`→88 captured; `(f 50)` completes it (full arity → inline)
+-- → `(- 88 50)` → 38. Previously the partial `(pa 88)` was `cannotProve "arity mismatch"`.
+private def _curryLocalFnExpr : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "pa".toUTF8,
+                Leaf.name "a".toUTF8, Leaf.name "b".toUTF8, Leaf.name "-".toUTF8, Leaf.name "let".toUTF8,
+                Leaf.name "f".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[88]),
+                Leaf.intLit false .dec (ByteArray.mk #[50])],
+    nodes := #[.atom 2, .atom 3, .atom 4, .list #[0, 1, 2], .atom 5, .atom 3, .atom 4, .list #[4, 5, 6],
+               .atom 1, .list #[8, 3, 7], .atom 7, .atom 2, .atom 8, .list #[11, 12], .list #[10, 13],
+               .list #[14], .atom 7, .atom 9, .list #[16, 17], .atom 6, .list #[19, 15, 18],
+               .atom 0, .list #[21, 9, 20]],
+    root := 22 }
+#guard symEval _curryLocalFnExpr [] symDefaultFuel defaultIntTy 22
+       == SymOutcome.sym (.const (.int 38))
 
 -- TRY success-unwrap: `(try (Ok 5))` → 5 (the `?` operator on a concrete Ok). leaves 0:try 1:Ok 2:(5).
 private def _tryOkExpr : Module :=
