@@ -1074,6 +1074,19 @@ pub const DIFFERENT_TYPES_COMPARISON_MARKER: &str = "are different types";
 pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not reducible by the tail-resumptive fold: it \
      requires a cross-function or non-tail resume, which the effect specializer does not lower";
 
+/// The message the emit path attaches to the coded [`Code::MultiShotCrossesEffectBoundary`] (CDZ0408) reject
+/// — the boundary-crossing subset split off from [`HANDLER_NOT_REDUCIBLE_DECLINE`]. A MULTI-SHOT resumption
+/// (the continuation resumed more than once) whose continuation spans a host call OR reaches an OUTER
+/// handler's operation is not admitted: re-running that continuation once per resume would DUPLICATE the
+/// boundary effect (the host-composition invariant, `DESIGN-effects-rcdzc.md` §4.4), and a continuation is
+/// one-shot by default (`capabilities-and-effects.md`: at most once unless a build's declared defaults enable
+/// multi-shot). seq-280 clean: this is a capability statement, not a deferral — it is a specific, coded
+/// invariant (CDZ0408 per the operator's per-invariant taxonomy), distinct from the generic CDZ0900
+/// cross-function / non-tail not-yet decline that keeps [`HANDLER_NOT_REDUCIBLE_DECLINE`].
+pub const MULTISHOT_CROSSES_BOUNDARY_DECLINE: &str = "a multi-shot resumption whose continuation crosses an \
+     effect boundary (it spans a host call or reaches an outer handler's operation) is not admitted: \
+     re-running the continuation per resume would duplicate the boundary effect";
+
 /// The CDZ0900 message the emit path attaches to a `Resolved::Resume` node lowered STANDALONE (out of its
 /// handler-fold context) — `lower/compute.rs`'s `Resolved::Resume` fallthrough. DISTINCT from
 /// [`HANDLER_NOT_REDUCIBLE_DECLINE`] (that says "this handler…"; this says "this `resume`…") so the two are

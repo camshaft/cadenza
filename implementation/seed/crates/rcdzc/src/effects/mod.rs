@@ -7182,6 +7182,79 @@ fn reaches_any_perform(db: &mut Db, node: StructId) -> bool {
 /// a recursive/unresolvable call, or a chain deeper than the bound, reports `true`. Used to gate the
 /// MULTI-shot two-hole refold: re-running the continuation per resume must not re-issue a foreign/HOST
 /// effect (the host-composition invariant), so a body reaching a foreign perform stays one-shot-only.
+/// CDZ0408 detection (the boundary-crossing MULTI-SHOT subset of the tail-resumptive-fold decline). After
+/// [`reduce_handle`] returns `None`, the emit path (`lower/compute.rs`) asks this whether the decline is the
+/// specific "multi-shot resumption crosses an effect boundary" invariant (→ [`Code::MultiShotCrossesEffectBoundary`],
+/// CDZ0408) versus the generic cross-function / non-tail not-yet decline (→ CDZ0900). TRUE iff some arm is
+/// MULTI-SHOT (`count_resumes > 1`) AND the handle body reaches a perform this handler does NOT discharge (a
+/// host call or an outer handler's op — [`body_reaches_foreign_perform`], which treats any op not in this
+/// handler's arms as foreign). This is exactly the case [`reduce::reduce_handle`]'s refold guard skips
+/// (`count_resumes == 1 || !body_reaches_foreign_perform`, reduce.rs) — re-running the continuation per
+/// resume would DOUBLE the boundary effect (§4.4). The `count_resumes > 1` gate EXCLUDES the genuinely-not-yet
+/// one-shot cross-function / non-tail forms, so they correctly keep CDZ0900. Builds a minimal `HandlerCtx`
+/// (op→arm map keyed `(decl.0, idx)`, mirroring `reduce_handle`) — only the arm-op keyset is consulted.
+pub(crate) fn handler_declines_multishot_boundary(
+    db: &mut Db,
+    arms: &[HandleArm],
+    body: StructId,
+) -> bool {
+    // THIS handler (the single-handle host-boundary shape): a multi-shot arm here whose body reaches a
+    // perform foreign to THIS handler.
+    if one_handle_multishot_reaches_foreign(db, arms, body) {
+        return true;
+    }
+    // NESTED handles in the body (the outer-handler-op shape): a one-shot OUTER handler wrapping an INNER
+    // multi-shot handler whose continuation reaches the OUTER handler's op — from the INNER handler's arm
+    // set that outer op is FOREIGN, so re-running the continuation per resume would double the outer effect.
+    // reduce_handle declines the whole (outer) handle here, so the inner handle is never lowered on its own;
+    // walk the body for any nested `Resolved::Handle` and check its own multi-shot-boundary condition.
+    body_has_nested_multishot_boundary(db, body, 0)
+}
+
+/// The single-handle multi-shot-boundary check: some arm of THIS handler is multi-shot (`count_resumes > 1`)
+/// AND `body` reaches a perform NOT discharged by this handler (a host call or an op of another effect —
+/// [`body_reaches_foreign_perform`]). Builds a minimal `HandlerCtx` (op→arm map keyed `(decl.0, idx)`,
+/// mirroring `reduce_handle`; only the arm-op keyset is consulted).
+fn one_handle_multishot_reaches_foreign(db: &mut Db, arms: &[HandleArm], body: StructId) -> bool {
+    if !arms.iter().any(|arm| count_resumes(db, arm.body) > 1) {
+        return false;
+    }
+    let mut map = HashMap::default();
+    for arm in arms {
+        match crate::eval::effect_op_of(db, arm.op) {
+            Some((decl, idx)) => {
+                map.insert((decl.0, idx), arm.clone());
+            }
+            None => return false, // malformed / non-effect-op arm — not this subset (CDZ0403/CDZ0101 elsewhere)
+        }
+    }
+    let ctx = HandlerCtx::new(db, map, Vec::new());
+    body_reaches_foreign_perform(db, body, &ctx)
+}
+
+/// Walk `node`'s subtree for a nested `Resolved::Handle` whose OWN arms+body meet the single-handle
+/// multi-shot-boundary condition (an inner multi-shot handler whose continuation reaches an op foreign to
+/// IT — e.g. an outer handler's op). Bounded depth (a backstop; handler nesting is shallow).
+fn body_has_nested_multishot_boundary(db: &mut Db, node: StructId, depth: u32) -> bool {
+    if depth > 16 {
+        return false;
+    }
+    if let Resolved::Handle { arms, body, .. } = resolved_of(db, node) {
+        if one_handle_multishot_reaches_foreign(db, &arms, body) {
+            return true;
+        }
+        if body_has_nested_multishot_boundary(db, body, depth + 1) {
+            return true;
+        }
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_nested_multishot_boundary(db, c, depth + 1)),
+        Struct::Atom(_) => false,
+    }
+}
+
 fn body_reaches_foreign_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     fn walk(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
         if depth > 16 {

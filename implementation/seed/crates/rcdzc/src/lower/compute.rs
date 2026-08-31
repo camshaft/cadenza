@@ -3043,6 +3043,20 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     });
                     match unbound_arm_op {
                         Some(op) => core_of(db, op),
+                        // SPLIT the boundary-crossing MULTI-SHOT subset off the generic CDZ0900: a multi-shot
+                        // resumption whose continuation spans a host call or reaches an outer handler's op
+                        // (would DOUBLE the boundary effect, §4.4) is a SPECIFIC coded invariant, CDZ0408 —
+                        // not a not-yet cross-function / non-tail decline. The `count_resumes > 1` gate keeps
+                        // the one-shot cross-fn / non-tail forms on the honest CDZ0900.
+                        None if crate::effects::handler_declines_multishot_boundary(
+                            db, &arms, body,
+                        ) =>
+                        {
+                            Core::Poison(Reject::coded(
+                                crate::diag::Code::MultiShotCrossesEffectBoundary,
+                                crate::diag::MULTISHOT_CROSSES_BOUNDARY_DECLINE,
+                            ))
+                        }
                         None => Core::Poison(Reject::unsupported(
                             crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
                         )),
