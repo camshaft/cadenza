@@ -545,7 +545,15 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
           -- reference chains. A function-shaped def / non-def name stays a free name (cannotProve).
           | some bodyId => if fuel == 0 then .cannotProve "symeval: free-name value-def fuel exhausted"
                            else symEval m [] (fuel - 1) defaultIntTy bodyId
-          | none => .cannotProve "symeval: free name (not a bound parameter)"
+          | none =>
+            -- a bare reference to a NULLARY user CONSTRUCTOR declared in a top-level `(type …)` (e.g. `Blue`
+            -- from `(type Color (Red)(Green)(Blue))`) → its ctor value. Mirrors `symCtorConstruct`'s erasure
+            -- for a 0-arg application: a SOLE-nullary ctor erases to `unit`; any other nullary ctor → the
+            -- tagged `.ctor name #[]`. (Newtype/struct-newtype are arity ≥1, so never a bare nullary ref.)
+            if soleNullaryCtor? m b then .sym (.const .unit)
+            else match variantCtorArity? m b with
+              | some 0 => .sym (.ctor b #[])
+              | _ => .cannotProve "symeval: free name (not a bound parameter)"
     | some l =>
       match Value.ofLeaf l with
       | some v => .sym (.const v)
@@ -1909,6 +1917,18 @@ private def _userSumProg : Module :=
                .atom 9, .atom 7, .list #[16, 17], .atom 0, .list #[19, 8, 15, 18]],
     root := 20 }
 #guard symEvalMain _userSumProg == SymOutcome.sym (.ctor "Num".toUTF8 #[.const (.int 5)])
+-- BARE NULLARY-CTOR reference (v-cdz-smith's exact free-name-20 shape): `(type Color (Red)(Green)(Blue))`
+-- + `(main)=Blue` → the bare `Blue` resolves to the nullary ctor value `.ctor "Blue" []` (3-variant enum,
+-- not sole → tagged). Ctor specs `(Red)`/`(Green)`/`(Blue)` are arity-0. Drains the free-name-20 bucket.
+private def _enumRefProg : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "Color".toUTF8,
+                Leaf.name "Red".toUTF8, Leaf.name "Green".toUTF8, Leaf.name "Blue".toUTF8,
+                Leaf.name "def".toUTF8, Leaf.name "main".toUTF8, Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[2], .atom 4, .list #[4], .atom 5, .list #[6],
+               .list #[0, 1, 3, 5, 7], .atom 7, .list #[9], .atom 5, .atom 6, .list #[12, 10, 11],
+               .atom 8, .atom 7, .list #[14, 15], .atom 0, .list #[17, 8, 13, 16]],
+    root := 18 }
+#guard symEvalMain _enumRefProg == SymOutcome.sym (.ctor "Blue".toUTF8 #[])
 -- construct-then-MATCH a user sum: `(match (Num 5) ((Num x) x))` binds x=5 via the tagged-variant pattern → 5.
 private def _matchUserProg : Module :=
   { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "E".toUTF8, Leaf.name "Num".toUTF8,
