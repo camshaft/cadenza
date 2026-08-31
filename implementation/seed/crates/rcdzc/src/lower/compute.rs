@@ -2945,6 +2945,10 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // plain `Core`). A case the tail path cannot serve (a non-tail/absent resume, a cross-function or
         // recursive perform) makes `reduce_handle` return `None` → DECLINE (a Todo, never a miscompile).
         Resolved::Handle { init, arms, body } => {
+            // Clear the fold's ill-typed-composition side-channel before the fold; it is set only when
+            // `reduce_handle` declines because a folded term fails the type checker, and read only on `None`
+            // below — so a nested fold's fault never leaks into this handle's decline.
+            db.fold_type_fault = None;
             match crate::effects::reduce_handle(db, init, &arms, body) {
                 Some(rewritten) => {
                     // The rewritten body is a synthesized subtree with root parent `None` (`push_list`).
@@ -3039,6 +3043,15 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     });
                     match unbound_arm_op {
                         Some(op) => core_of(db, op),
+                        // The fold produced a term that FAILS the type checker (an ill-typed continuation
+                        // composition — `(+ 1 (resume …))` over a Bool-typed body folds to `(+ 1 (< 10 5))`;
+                        // a `resume` types as `Ty::Any` so this is invisible at inference and appears only in
+                        // the folded term). Surface the genuine CDZ0203 `TypeMismatch` the fold recorded,
+                        // NOT the generic CDZ0900 — a coded type rejection is the strongest, most actionable
+                        // "no" (`reference-compiler.md` §Outcomes Are Ordered By Safety), so it goes first.
+                        None if db.fold_type_fault.is_some() => {
+                            Core::Poison(db.fold_type_fault.take().unwrap())
+                        }
                         // SPLIT the boundary-crossing MULTI-SHOT subset off the generic CDZ0900: a multi-shot
                         // resumption whose continuation spans a host call or reaches an outer handler's op
                         // (would DOUBLE the boundary effect, §4.4) is a SPECIFIC coded invariant, CDZ0408 —

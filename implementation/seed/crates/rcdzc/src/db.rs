@@ -1457,6 +1457,16 @@ pub struct Db {
     /// self-app structural-explosion HANG per body against [`STRUCTURAL_REDUCTION_BUDGET`].
     pub(crate) structural_reductions: u64,
 
+    /// SIDE-CHANNEL for the effect fold's ILL-TYPED-COMPOSITION decline (CDZ0203). `reduce_handle` returns
+    /// `Option` (a bare decline), so when its pure-one-hole fold produces a folded term that FAILS the type
+    /// checker — an arm consuming the continuation result at a type the handle body cannot supply, e.g.
+    /// `(+ 1 (resume …))` over a Bool-typed body folds to `(+ 1 (< 10 5))` — it records the type fault HERE
+    /// before declining, so the emit path (`lower/compute.rs`) can surface the genuine CDZ0203 `TypeMismatch`
+    /// instead of the generic CDZ0900 not-reducible decline (a `resume` types as `Ty::Any`, so this
+    /// ill-typedness is only visible POST-fold, never at inference). The caller CLEARS it before invoking
+    /// `reduce_handle` and `.take()`s it only on a `None` result, so a nested fold's fault never leaks.
+    pub(crate) fold_type_fault: Option<crate::diag::Reject>,
+
     /// The current RECURSIVE-DESCENT depth across the demand queries (`type_of`, `collect`, `core_of`)
     /// — the recursive-descent backstop. Bumped on entering a query's recursion and restored on exit;
     /// past [`DESCENT_DEPTH_LIMIT`] the query declines instead of recursing, so pathologically deep
@@ -3083,6 +3093,7 @@ impl Db {
             reduce_depth: 0,
             reduce_nodes: 0,
             structural_reductions: 0,
+            fold_type_fault: None,
             descent_depth: 0,
             walk_depth: 0,
             callee_visited: crate::fxhash::FxHashSet::default(),

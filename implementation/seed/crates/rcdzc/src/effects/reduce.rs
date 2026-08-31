@@ -637,7 +637,13 @@ pub fn reduce_handle(
         // inference, so nothing re-checks the folded term — it would reach codegen as invalid wasm. Re-run
         // the type checker on the folded result and DECLINE if it faults, so an ill-typed composition is
         // rejected (the whole program errors — the handle has no valid fold), never miscompiled.
-        if !crate::infer::type_errors(db, folded).is_empty() {
+        let folded_faults = crate::infer::type_errors(db, folded);
+        if !folded_faults.is_empty() {
+            // Record the genuine type fault so the emit path surfaces CDZ0203 instead of the generic CDZ0900
+            // (a `resume` types as `Ty::Any`, so this ill-typed composition is invisible at inference and
+            // appears only in the folded term). The caller clears `fold_type_fault` before the fold and reads
+            // it only on `None`, so a nested fold's fault never leaks.
+            db.fold_type_fault = folded_faults.into_iter().next();
             return None;
         }
         return Some(folded);
@@ -724,7 +730,13 @@ pub fn reduce_handle(
         reparent_under_handle_site(db, folded, body);
         // Type-consistency guard (as the pure-one-hole block) — the synthesized term is not re-checked
         // before codegen, so an ill-typed composition must decline, never miscompile.
-        if !crate::infer::type_errors(db, folded).is_empty() {
+        let folded_faults = crate::infer::type_errors(db, folded);
+        if !folded_faults.is_empty() {
+            // Record the genuine type fault so the emit path surfaces CDZ0203 instead of the generic CDZ0900
+            // (a `resume` types as `Ty::Any`, so this ill-typed composition is invisible at inference and
+            // appears only in the folded term). The caller clears `fold_type_fault` before the fold and reads
+            // it only on `None`, so a nested fold's fault never leaks.
+            db.fold_type_fault = folded_faults.into_iter().next();
             return None;
         }
         return Some(folded);
@@ -817,7 +829,13 @@ pub fn reduce_handle(
         reparent_under_handle_site(db, folded, body);
         // Same type-consistency guard as the pure one-hole block — the synthesized term is not otherwise
         // re-checked before codegen.
-        if !crate::infer::type_errors(db, folded).is_empty() {
+        let folded_faults = crate::infer::type_errors(db, folded);
+        if !folded_faults.is_empty() {
+            // Record the genuine type fault so the emit path surfaces CDZ0203 instead of the generic CDZ0900
+            // (a `resume` types as `Ty::Any`, so this ill-typed composition is invisible at inference and
+            // appears only in the folded term). The caller clears `fold_type_fault` before the fold and reads
+            // it only on `None`, so a nested fold's fault never leaks.
+            db.fold_type_fault = folded_faults.into_iter().next();
             return None;
         }
         return Some(folded);
