@@ -3937,91 +3937,38 @@ fn a_parameterized_recursive_walk_threads_a_list_state() {
     );
 }
 
-/// A `resume` is exactly `(resume <value> <next-state>)`. A resume with the WRONG NUMBER of operands
-/// is malformed: too FEW already rejected CDZ0201, but too MANY — `(resume v s extra)` — was SILENTLY
-/// ACCEPTED (the resolver read only the first two operands, dropping the surplus → a silent miscompile).
-/// Now a surplus operand is CDZ0201 "this resume has too many operands" with a delete-the-surplus fix
-/// (the fixed-arity surplus-delete `if`/`and`/`not` get). AND: a malformed resume INSIDE a handler arm
-/// no longer also reports the spurious "stray resume" secondary — the handle fold produces a spanless
-/// COPY of the malformed arm body that landed outside a recognizable arm structure, which the stray
-/// check wrongly flagged; gating that check on `is_user_node` drops the synthesized copy so a malformed
-/// resume in an arm reports ONE primary fault (its shape), not a misleading "it has no enclosing arm".
+// The resume ARITY + PLACEMENT rejects (too-many CDZ0201 + delete fix, too-few "no next-state", genuine
+// top-level stray "no enclosing handler arm") moved to corpus 14b-effects-and-handlers "a resume with too
+// many operands …" + siblings. Residual: the CROSS-DIAGNOSTIC suppression the corpus cannot express — a
+// malformed resume that IS in an arm must not ALSO emit the stray-resume secondary, and a STRAY+malformed
+// resume reports the PLACEMENT error as the one primary with the misleading arity message suppressed.
 #[test]
-fn a_resume_with_the_wrong_number_of_operands_is_cdz0201() {
+fn a_malformed_resume_in_an_arm_suppresses_the_stray_resume_secondary() {
     use crate::testkit::parse;
-    // (a) TOO MANY operands — was silently accepted. One CDZ0201 with a delete fix, no spurious stray.
-    let too_many = "(module m (effect E (op get (-> Unit Int64))) \
-                   (def (main) (handle E 0 ((get () s (resume 5 s 9))) (+ (E.get) 1))) (export main))";
-    let dmany = crate::diagnostics(&mut crate::db::Db::load(parse(too_many)));
-    let arity = dmany
-        .iter()
-        .find(|d| d.message.contains("too many operands"))
-        .expect("a resume with a surplus operand must be rejected");
-    assert_eq!(
-        arity.code.as_deref(),
-        Some("CDZ0201"),
-        "got: {}",
-        arity.message
-    );
-    assert_eq!(
-        arity.fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Delete),
-        "carries a delete-the-surplus fix: {:?}",
-        arity.fix
-    );
-    // The spurious "no enclosing handler arm" secondary is GONE (the resume IS in an arm, just malformed).
-    assert!(
-        !dmany
-            .iter()
-            .any(|d| d.message.contains("no enclosing handler arm")),
-        "a malformed resume in an arm must not also report the stray-resume secondary: {:?}",
-        dmany.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    // (b) TOO FEW operands — the missing-next-state CDZ0201, likewise with no spurious stray secondary.
-    let too_few = "(module m (effect E (op get (-> Unit Int64))) \
-                   (def (main) (handle E 0 ((get () s (resume 5))) (+ (E.get) 1))) (export main))";
-    let dfew = crate::diagnostics(&mut crate::db::Db::load(parse(too_few)));
-    assert!(
-        dfew.iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0201") && d.message.contains("no next-state")),
-        "a resume missing its next-state is CDZ0201: {:?}",
-        dfew.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    assert!(
-        !dfew
-            .iter()
-            .any(|d| d.message.contains("no enclosing handler arm")),
-        "the too-few case must not report the stray-resume secondary either: {:?}",
-        dfew.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    // (c) NO REGRESSION: a GENUINE top-level stray resume (a user node with no enclosing arm) is STILL
-    // flagged — the `is_user_node` gate drops only synthesized copies, not real source strays.
-    let stray = "(module m (def (main) (resume 5 6)) (export main))";
-    let dstray = crate::diagnostics(&mut crate::db::Db::load(parse(stray)));
-    assert!(
-        dstray
-            .iter()
-            .any(|d| d.message.contains("no enclosing handler arm")),
-        "a genuine top-level stray resume is still flagged: {:?}",
-        dstray.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    // (d) A STRAY resume that is ALSO malformed (missing next-state, or too many operands) reports the
-    // PLACEMENT error as the ONE primary — its placement is the root defect, so the misleading arity
-    // message ("has no next-state", which reads as if adding an argument would fix it) is suppressed.
+    // (a) too-many / (b) too-few, both IN an arm: neither also reports the stray "no enclosing handler arm".
+    for src in [
+        "(module m (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5 s 9))) (+ (E.get) 1))) (export main))",
+        "(module m (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5))) (+ (E.get) 1))) (export main))",
+    ] {
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        assert!(
+            !d.iter()
+                .any(|x| x.message.contains("no enclosing handler arm")),
+            "a malformed resume in an arm must not report the stray secondary: {:?}",
+            d.iter().map(|x| &x.message).collect::<Vec<_>>()
+        );
+    }
+    // (d) STRAY + malformed: the placement error is the one primary; the misleading arity message is dropped.
     for bad in [
-        "(module m (def (main) (resume 5)) (export main))", // missing next-state AND stray
-        "(module m (def (main) (resume 5 6 7)) (export main))", // too many AND stray
+        "(module m (def (main) (resume 5)) (export main))",
+        "(module m (def (main) (resume 5 6 7)) (export main))",
     ] {
         let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad)));
         assert!(
             d.iter()
-                .any(|x| x.message.contains("no enclosing handler arm")),
-            "a stray+malformed resume reports the placement error: {:?}",
-            d.iter().map(|x| &x.message).collect::<Vec<_>>()
-        );
-        assert!(
-            !d.iter().any(|x| x.message.starts_with("this resume has")),
-            "the misleading arity message is suppressed for a STRAY resume: {:?}",
+                .any(|x| x.message.contains("no enclosing handler arm"))
+                && !d.iter().any(|x| x.message.starts_with("this resume has")),
+            "a stray+malformed resume reports placement, suppresses arity: {:?}",
             d.iter().map(|x| &x.message).collect::<Vec<_>>()
         );
     }
