@@ -3949,7 +3949,7 @@
   (output (: 3 Int64)))
 
 (case
-  "compare on a sum whose payload is a FLOAT declines — the IEEE partial order never enters the walk"
+  "compare on a sum whose payload is a FLOAT is rejected CDZ0203 (no total order; the IEEE partial order never enters the walk)"
   (doc
     "The float sibling: a Float64 payload makes the sum un-orderable per the §319 carve-out; same-variant compare declines rather than smuggling the IEEE partial order (or the canonical byte order) into the sum walk.")
   (input
@@ -3966,12 +3966,12 @@
             ((Ordering.Equal _u) 2)
             ((Ordering.Greater _u) 3))))
       (export main)))
-  (declines))
+  (error CDZ0203))
 
 (case
-  "equality on a TUPLE containing a closure declines — the fn leaf poisons the compound walk"
+  "equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)"
   (doc
-    "Direct fn = is CDZ0203; a fn INSIDE a compound must not fall back to handle/reference eq — (= (tuple 1 f) (tuple 1 f)) holds the SAME f both sides, so a reference-eq walk would return TRUE, silently blessing identity semantics the spec forbids. Pinned as the honest decline; must NEVER flip to pass-with-1.")
+    "A fn value is NEVER equatable — CDZ0216 (NotEquatable), a PERMANENT reject (v-deferral grade). A fn INSIDE a compound must not fall back to handle/reference eq — (= (tuple 1 f) (tuple 1 f)) holds the SAME f both sides, so a reference-eq walk would return TRUE, silently blessing identity semantics the spec forbids. Distinct from the direct bare-fn = (CDZ0203 type-side); the compound-walk hits the closure leaf and rejects NotEquatable. Must NEVER flip to pass-with-1.")
   (input
     (do
       (def
@@ -3982,7 +3982,7 @@
           (def t2 #tuple(1 f))
           (if (= t1 t2) 1 0)))
       (export main)))
-  (declines))
+  (error CDZ0216))
 
 (case
   "a tuple with a Char leaf orders by codepoint — Char is a blessed compound-ordering leaf"

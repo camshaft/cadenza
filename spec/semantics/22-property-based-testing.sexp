@@ -2085,7 +2085,7 @@
 
 ; --- The NEGATIVE face: an UNGROUNDED decode has no determined target, so it declines (actionably). ---
 (case
-  "a bare Value.decode with no grounding annotation declines with an actionable unsolved-target message"
+  "a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)"
   (doc
     "The negative face of the two Value.decode round-trip cases above: where those ground the partial
            `Value.decode : forall a. Bytes -> Option a` from an inline ascription or a let-binder, an
@@ -2106,7 +2106,7 @@
         (dec (: bs Bytes))
         (match (Value.decode bs) ((Some p) (match p ((Pt.Mk r) (+ r.x r.y)))) ((None u) -1)))
       (export dec)))
-  (declines (message "target type is unsolved")))
+  (error CDZ0203))
 
 ; --- Value codec: a SCALAR-ERASED single-ctor newtype now round-trips (the boxing increment). ---
 ; APPENDED by v-runtime (owner of the R2 value-encode/decode op) at file EOF per the file-22 append+ping
