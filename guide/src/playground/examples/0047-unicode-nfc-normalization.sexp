@@ -17,4 +17,4 @@
       ((None) (trap "nfc: invalid accent bytes"))))
 
   (export main)))
-  (expected (: #tuple(1 2) (Tuple Int64 Int64))))
+  (expected (: (tuple 1 2) (Tuple Int64 Int64))))
