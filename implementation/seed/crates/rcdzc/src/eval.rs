@@ -2995,7 +2995,7 @@ pub fn reduce_ctor(
         // resolution first (`resolve_subtree` memoizes every node against its CURRENT scope), exactly as
         // β-reduction pins a call argument before splicing it; the later re-parent then cannot change
         // how any node inside an arg resolves.
-        Prim::TupleNew | Prim::RecordNew | Prim::ListNew => {
+        Prim::TupleNew | Prim::RecordNew | Prim::ListNew | Prim::SetNew => {
             // Build once per construction site. The built node is `(head-str arg…)` over the EXACT SAME
             // arg occurrences, so it is a pure function of the SITE being reduced — the same source
             // application demanded repeatedly (a `let`-bound tuple projected field-by-field: `(+ (. t 0)
@@ -3025,6 +3025,7 @@ pub fn reduce_ctor(
             let head = db.push_atom(Leaf::Ctor(match prim {
                 Prim::TupleNew => CompoundCtor::Tuple,
                 Prim::ListNew => CompoundCtor::List,
+                Prim::SetNew => CompoundCtor::Set,
                 _ => CompoundCtor::Record,
             }));
             let mut children = vec![head];

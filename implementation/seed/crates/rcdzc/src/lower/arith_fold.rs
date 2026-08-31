@@ -4050,6 +4050,7 @@ pub(super) fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::TupleSplitAt
         | Prim::TuplePop
         | Prim::ListNew
+        | Prim::SetNew
         | Prim::ListLen
         | Prim::ListPush
         | Prim::ListPrepend

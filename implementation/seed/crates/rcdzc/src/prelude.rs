@@ -122,6 +122,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     names.insert("record".to_string(), ctor_record(ast, "record-new"));
     // `list` — the list-VALUE constructor alias (`(list 1 2 3)`), variadic + homogeneous → `Ty::List`.
     names.insert("list".to_string(), ctor_record(ast, "list-new"));
+    // `set` — the SHADOWABLE name alias for set construction (operator ruling 2026-08-31: keep a shadowable
+    // name constructor for set as the string-form `("set" …)` is dropped at the M3 reader-flip). `(set 1 2)`
+    // reduces (via `set-new`) to the native `#set(1 2)`, so it denotes the same set as the unshadowable
+    // ctor-leaf literal — the set companion of the tuple/record/list/map aliases (set uniquely lacked one).
+    names.insert("set".to_string(), ctor_record(ast, "set-new"));
     // `map` — the map-VALUE constructor alias (`(map (k v) …)`), whose `(meta apply)` = `Prim::MapNew`.
     // A bare `(map …)` NAME head reduces via this alias (`reduce_ctor` rewrites it to the symbol-headed
     // `("map" …)`, resolved by `resolve_map`), exactly as `list`/`record` do — so `map` is a shadowable
