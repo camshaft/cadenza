@@ -102,6 +102,25 @@
   (input  (do (def (main) (: 5 (Qty Int64 meter))) (export main)))
   (error  CDZ0101 (message "`Qty`'s second argument is a UNIT") (fix (kind replace) (replacement "(Unit.base #\"meter\")") (unverified))))
 
+; The bare-SYMBOL twin of the bare-name unit slip above: `(Qty Float64 #"meter")` writes the unit's NAME
+; directly (as a Symbol) where a unit EXPRESSION belongs. It used to fall through the bare-name check (a
+; symbol is not a name) to the generic "requires a type, but found a non-type" — misleading (the position is
+; a UNIT) with no repair. It now names the misuse ("is a UNIT expression, not a bare symbol") and, because the
+; symbol text is in hand, carries the exact `(Unit.base #"…")` wrap fix. Fires at a parameter site, a
+; value-annotation site, and NESTED inside a `(List …)`; the generic type message is superseded. (Migrated
+; from rcdzc a_bare_symbol_in_a_qty_unit_position_names_it_a_unit_and_offers_the_wrap_fix.)
+(case "a bare SYMBOL in the Qty unit position names a unit expression, not a bare symbol, with a wrap fix"
+  (input  (do (def (g (: q (Qty Float64 #"meter"))) q) (def (main) 0) (export main)))
+  (error  CDZ0201 (message "is a UNIT expression, not a bare symbol") (not "requires a type, but found a non-type") (fix (kind replace) (replacement-contains "(Unit.base") (unverified))))
+
+(case "the bare-symbol Qty unit misuse fires at a value-annotation site"
+  (input  (do (def (main) (: 5 (Qty Int64 #"sec"))) (export main)))
+  (error  CDZ0201 (message "is a UNIT expression, not a bare symbol") (fix (kind replace) (replacement-contains "(Unit.base") (unverified))))
+
+(case "the bare-symbol Qty unit misuse fires nested inside a List type"
+  (input  (do (def (g (: xs (List (Qty Float64 #"kg")))) xs) (def (main) 0) (export main)))
+  (error  CDZ0201 (message "is a UNIT expression, not a bare symbol") (fix (kind replace) (replacement-contains "(Unit.base") (unverified))))
+
 (case "Qty.value recovers the underlying numeric value, discarding the unit"
   (doc    "`(Qty.value (Qty.of 5.0 (Unit.base #\"meter\")))` = 5.0 : Float64 — the explicit exit from
            the dimensional layer (the widening that requires no check, verification-layers.md #Refinement
