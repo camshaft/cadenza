@@ -2296,6 +2296,7 @@ pub(super) fn collect_binding_uses(
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)
+        | Resolved::Rational { .. }
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }

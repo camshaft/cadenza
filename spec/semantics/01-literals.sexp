@@ -591,3 +591,24 @@
 (case "an explicit UInt64-max annotation is in range and runs (the bare-overflow check does not misfire)"
   (input  (: 18446744073709551615 (UInt 64)))
   (output (: 18446744073709551615 UInt64)))
+
+; A BARE RATIONAL LITERAL `n/d` compiles + escapes — the literal twin of `(Rational.of n d)`. The reader emits
+; both `3/2` and the `#rational(3 2)` alias to the SAME `(RationalTag n d)` node; before this, that node had no
+; compiler fold (resolve fell to its `Leaf::Rational` head → the bare-head CDZ0201), so a bare rational literal
+; was UNCOMPILABLE on every surface incl. the binary-AST path — never caught because every corpus rational used
+; `(Rational.of n d)` in source and bare `n/d` only ever appeared in OUTPUT value position (v-ast-compound report).
+(case "a bare rational literal compiles and escapes as its normalized value"
+  (input  3/2)
+  (output (: 3/2 Rational)))
+
+(case "a bare rational literal normalizes to lowest terms (gcd-reduce), like Rational.of"
+  (input  6/4)
+  (output (: 3/2 Rational)))
+
+(case "the #rational(n d) alias reads to the same rational literal and compiles"
+  (input  #rational(6 4))
+  (output (: 3/2 Rational)))
+
+(case "a bare rational literal and Rational.of build one identical normalized value"
+  (input  (= 6/4 (Rational.of 6 4)))
+  (output (: true Bool)))

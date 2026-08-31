@@ -470,6 +470,21 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(CompoundCtor::Set) => return resolve_set(db, id),
                 None => {}
             }
+            // A native RATIONAL-LITERAL node `(RationalTag n d)` — a `Leaf::Rational` HEAD leaf with two
+            // integer children — is what the reader emits for BOTH the bare `3/2` literal and the
+            // `#rational(3 2)` alias (v-syntax #6627). Recognize it HERE (list-level, consuming the head
+            // leaf like the compound ctors above) so it resolves to a rational CONSTANT and folds to the
+            // same `Core::ConstRational` as `(Rational.of n d)`. WITHOUT this it fell to the `Resolved::Apply`
+            // path below, whose head is the `Leaf::Rational` atom → the bare-head CDZ0201 at resolve.rs:~435
+            // → a bare rational literal was uncompilable on every surface incl. the binary-AST path.
+            if children.len() == 3
+                && matches!(db.ast.get(children[0]), Struct::Atom(l) if matches!(db.ast.leaf(*l), Leaf::Rational))
+            {
+                return Resolved::Rational {
+                    num: children[1],
+                    den: children[2],
+                };
+            }
             // A native MEMBER-leaf head (`(. obj key)`, what the reader now emits for `.`/`obj.key`) —
             // recognized by leaf kind, not the `.` head text. Dispatch to member access before the
             // name-head match (the legacy `Name(".")` head is still handled by the `Some(".")` arm below).

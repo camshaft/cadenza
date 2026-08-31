@@ -1722,6 +1722,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)
+        | Resolved::Rational { .. }
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }

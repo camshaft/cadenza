@@ -1140,6 +1140,17 @@ pub enum Resolved {
     /// program declines while an int↔float MIX rejects at the type check — both decline-don't-miscompile.
     /// The exact `Decimal` is carried so a future float-arithmetic increment reads the literal value.
     Float(crate::ast::Decimal),
+    /// A RATIONAL LITERAL — a `(RationalTag n d)` node the reader emits for BOTH the bare `3/2` literal and
+    /// the `#rational(3 2)` alias (v-syntax #6627). `num`/`den` are its two integer-leaf children. Types as
+    /// `Ty::Rational`; folds to the SAME normalized `Core::ConstRational` that `Prim::RationalOf` produces
+    /// (gcd-reduce, sign on the numerator) by routing through `lower_rational_of` — so `3/2` and
+    /// `(Rational.of 3 2)` are identical downstream. WITHOUT this, the `(RationalTag …)` list fell to the
+    /// `Resolved::Apply` path, whose head is the `Leaf::Rational` atom → the bare-head CDZ0201 (resolve.rs)
+    /// → a bare rational literal was UNCOMPILABLE on every surface incl. the binary-AST path (v-ast-compound).
+    Rational {
+        num: crate::ast::StructId,
+        den: crate::ast::StructId,
+    },
     /// The unit value (`()`).
     Unit,
     /// A reference to a binding: the name at this occurrence denotes the value at `value` (the

@@ -5983,6 +5983,7 @@ fn walk_for_dead_traps(
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)
+        | Resolved::Rational { .. }
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }
@@ -6167,6 +6168,7 @@ fn walk_for_reachable_const_traps(
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)
+        | Resolved::Rational { .. }
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }
