@@ -2347,53 +2347,15 @@ fn a_rational_type_round_trips_through_encode_and_decode() {
 // fix enriches the existing "a rational operation does not silently promote an integer operand" case; the Bool/int
 // control (stays generic CDZ0203) is the existing non-numeric-operand case. All PASS wasm.)
 
-#[test]
-fn a_recursive_bigint_result_from_a_match_binder_propagates_to_a_two_self_call_arith_arm() {
-    use crate::testkit::parse;
-    // A recursive fn whose RESULT type is fixed BigInt by ONE arm's sum-payload binder, whose RECURSIVE
-    // arm is `(+ (s a) (s b))` — TWO self-calls, no anchoring literal — must type-check (result BigInt),
-    // NOT reject CDZ0203 "match arms differ: BigInt vs Int64". While `s`'s scheme solve is in flight,
-    // each self-call `(s a)` types the recursion-guard's provisional `Any`; the `+` arith arm saw two
-    // `Any` operands, failed to match the BigInt arm, and committed to the generic deferred-`Int` scheme
-    // → frozen `Int`, conflicting with the `BigInt` binder arm. Fix: an arith op with an `Any` operand
-    // WHILE a scheme solve is in flight defers to `Any` (uncached), so a clean re-solve — once the
-    // self-calls ground BigInt — types `+`-over-two-BigInts as BigInt. (v-metaprogramming's Ast.Int
-    // Int64→BigInt flip surfaced it via a recursive Ast evaluator; reduced here to a plain user sum.)
-    for src in [
-        // sum-recursion: (B a b) recurses on two sub-trees, summed
-        "(module m (type T (L BigInt) (B T T)) \
-             (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N))) \
-             (def (main) (s (T.B (T.L 3N) (T.L 4N)))) (export main))",
-        // list-recursion (v-metaprog's exact repro shape): (Branch (list a b))
-        "(module m (type Tree (Leaf BigInt) (Branch (List Tree))) \
-             (def (st (: t Tree)) \
-               (match t ((Tree.Leaf n) n) ((Tree.Branch (list a b)) (+ (st a) (st b))) (_ 0N))) \
-             (def (main) (st (Tree.Branch (list (Tree.Leaf 3N) (Tree.Leaf 4N))))) (export main))",
-    ] {
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-            "a recursive BigInt result from a match binder must reach the two-self-call `+` arm \
-                 (was CDZ0203 arms-differ): {src}"
-        );
-    }
-    // DISCIPLINE (must NOT regress): the same shape at Int64 still type-checks as Int64 (the defer only
-    // fires under an in-flight scheme solve and re-grounds to the operands' real type — Int64 here).
-    assert!(
-        compile_component(&crate::codec::encode(&parse(
-            "(module m (type T (L Int64) (B T T)) \
-                 (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0))) \
-                 (def (main) (s (T.B (T.L 3) (T.L 4)))) (export main))"
-        )))
-        .is_ok(),
-        "the Int64 recursive two-self-call fold still type-checks (defer re-grounds to Int64)"
-    );
-    // And a genuine BigInt/Int64 MIX still rejects CDZ0301 (the defer did not weaken no-promotion).
-    assert_eq!(
-        reject_code("(module m (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f))").as_deref(),
-        Some("CDZ0301"),
-        "the provisional-operand defer does not weaken the BigInt/fixed-int no-promotion rule"
-    );
-}
+// (a_recursive_bigint_result_from_a_match_binder_propagates_to_a_two_self_call_arith_arm migrated to corpus
+// 06-numeric-model via lever (c) diags-clean→RUN (the compile-clean asserts became value cases — a false
+// CDZ0203-arms-differ regression denies the output): "a recursive sum summing two self-call BigInt results
+// types the arm as BigInt and folds" ((s (T.B (T.L 3N) (T.L 4N))) → 7 BigInt), "the list-recursion shape …
+// also types and folds" (Tree.Branch #list(a b) → 7 BigInt), and "the same two-self-call recursive fold at
+// Int64 still types as Int64 (the defer re-grounds …)" (→ 7 Int64). The BigInt/fixed-int MIX no-promotion
+// reject ((+ (BigInt.of n) 1) → CDZ0301) is corpus-06 "a BigInt mixed with a fixed-width integer is the
+// numeric no-promotion error, with a BigInt.of coercion fix". (BigInt-result heap is `(live-objects
+// known-leak)`, matching the recursive-BigInt cluster.))
 
 #[test]
 fn a_unit_scale_distinguishes_type_identity_from_dimensional_compatibility() {
