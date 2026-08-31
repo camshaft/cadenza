@@ -445,6 +445,8 @@ pass	ml/512-char-literal-codepoint-control-to-name
 pass	ml/513-char-literal-non-ascii
 pass	ml/514-string-named-escapes
 pass	ml/515-byte-string-hex-escape
+pass	ml/517-lambda-zero-param
+pass	ml/518-lambda-multi-typed-param
 pass	ml/52-effect-op-resource-marker-second-param
 pass	ml/53-effect-op-no-resource-marker
 pass	ml/54-neg-prefix-name
