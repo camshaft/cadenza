@@ -1,0 +1,2 @@
+effect Fs =
+  | store : Bytes -> @resource Bytes -> Unit

@@ -5341,30 +5341,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn effect_op_resource_marker_round_trips_through_the_ml_surface() {
-        // SEC-F1 `@resource` marker (concierge-ruled, v-agent-harness coord 2026-08-13). The parser LIFTS
-        // `@resource T` off the marked param into a `(resource N)` decl-sibling (hash-clean); the printer
-        // RE-INJECTS `@resource ` before the N-th param, so the surface round-trips ML->ML. Cover the
-        // marker on the 1st + 2nd param, and confirm a no-marker effect is unchanged (regression).
-        let printed =
-            assert_roundtrip("effect Fs = | write : @resource Bytes -> Bytes -> Unit", 80);
-        assert!(
-            printed.contains("write : @resource Bytes -> Bytes -> Unit"),
-            "1st-param resource marker round-trips: {printed}"
-        );
-        let p2 = assert_roundtrip("effect Fs = | store : Bytes -> @resource Bytes -> Unit", 80);
-        assert!(
-            p2.contains("store : Bytes -> @resource Bytes -> Unit"),
-            "2nd-param resource marker round-trips: {p2}"
-        );
-        // A no-marker effect op is unaffected (no spurious @resource).
-        let plain = assert_roundtrip("effect Fs = | read : Bytes -> Bytes", 80);
-        assert!(
-            !plain.contains("@resource"),
-            "no marker => no @resource: {plain}"
-        );
-    }
+    // `effect_op_resource_marker_round_trips_through_the_ml_surface` (SEC-F1 `@resource` marker: the
+    // parser LIFTS `@resource T` off the marked param into a `(resource N)` decl-sibling; the printer
+    // RE-INJECTS `@resource ` before the N-th param) MIGRATED to the spec/syntax corpus (inc-6):
+    //   * ml/51-effect-op-resource-marker-first-param — `@resource` on param 0 →
+    //     tree `(effect Fs (op write (-> Bytes (-> Bytes Unit)) (resource 0)))`.
+    //   * ml/52-effect-op-resource-marker-second-param — on param 1 → `… (resource 1)`.
+    //   * ml/53-effect-op-no-resource-marker — no marker → NO `(resource …)` sibling (regression).
+    // The tree.sexp pins the structural `(resource N)` LIFT (stronger than the old string contains-check);
+    // each carries a `format.cdz` pinning the canonical `@resource`-reinjecting `|`-broken effect surface.
 
     #[test]
     fn ml_type_and_effect_decl_round_trip_is_faithful_over_widths() {
