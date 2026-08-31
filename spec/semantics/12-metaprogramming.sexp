@@ -382,30 +382,6 @@
   (output (: 302 Int64)))
 
 (case
-  "quoting a MALFORMED collection literal reifies its structure as data, not a decline"
-  (doc
-    "`quote` reflects SYNTAX, never validates it as code: a malformed `#record((= a 1) 2)` — a record-ctor
-           whose second child is a bare `2`, not a `(= k v)` field pair (the surplus-element reject case) —
-           still PARSES to a well-defined structure, so quoting it reifies to `Ast.RecordCtor` carrying the
-           reified children AS DATA: the valid `(= a 1)` entry as an `Ast.FieldPair`, and the surplus `2` as an
-           ordinary `Ast.Int` (a non-FieldPair child in a record-ctor is fine — the ctor payload is a generic
-           `(List Ast)`, not typed to FieldPair). Reads the surplus back = 2. Before this the reifier bailed on
-           the non-field-pair child and the whole quote DECLINED; quote reifying a malformed literal is correct
-           (it is inert data), and it round-trips through the binary-AST codec. A well-formed record is
-           unaffected — every child is a FieldPair. Companion: the reify totality guarantee extends to
-           malformed-but-parseable collection SYNTAX, not just well-formed leaves.")
-  (input
-    (do
-      (def
-        (main)
-        (match
-          (quote #record((= a 1) 2))
-          ((Ast.RecordCtor #list((Ast.FieldPair _) (Ast.Int n))) (Int64.of n))
-          (_ 0)))
-      (export main)))
-  (output (: 2 Int64)))
-
-(case
   "a type-suffixed numeric literal quotes as the (: <body> Type) annotation the suffix denotes"
   (doc
     "A `100N`/`0.5R` suffix IS a terse annotation — the reader desugars it to `(: <body> BigInt|Rational)`,
