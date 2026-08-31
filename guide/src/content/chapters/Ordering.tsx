@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -30,7 +30,7 @@ export default function Ordering() {
 
 (def (main) (clamp 0 10 42))`}
       />
-      <P><C>(min 8 3)</C> is <C>3</C>, the smaller of the two. And <C>(clamp 0 10 42)</C> is <C>10</C>: 42 is past the upper bound, so <C>clamp</C> pulls it back to <C>10</C>, and feeding it a value already inside <C>0</C>–<C>10</C> gives that value back unchanged.</P>
+      <P><Cadenza>(min 8 3)</Cadenza> is <C>3</C>, the smaller of the two. And <Cadenza>(clamp 0 10 42)</Cadenza> is <C>10</C>: 42 is past the upper bound, so <C>clamp</C> pulls it back to <C>10</C>, and feeding it a value already inside <C>0</C>–<C>10</C> gives that value back unchanged.</P>
       <H2>Three answers, not two</H2>
       <P>A single <C>&lt;</C> only tells you yes-or-no. But comparing two values really has <em>three</em> possible answers: less, equal, or greater. You <em>could</em> encode that as <C>-1</C> / <C>0</C> / <C>1</C> and nest a couple of <C>if</C>s:</P>
       <Runnable
@@ -55,7 +55,7 @@ export default function Ordering() {
         source={`(Ordering.of "apple" "banana")`}
       />
       <H2>Ordered types can be keys</H2>
-      <P><C>Bytes</C> is ordered too, lexicographically over its <em>unsigned</em> byte values, the same way Text compares in dictionary order. So <C>(Bytes.of #list(1 2))</C> comes before <C>(Bytes.of #list(1 3))</C>, decided at the first byte that differs:</P>
+      <P><C>Bytes</C> is ordered too, lexicographically over its <em>unsigned</em> byte values, the same way Text compares in dictionary order. So <Cadenza>(Bytes.of #list(1 2))</Cadenza> comes before <Cadenza>(Bytes.of #list(1 3))</Cadenza>, decided at the first byte that differs:</P>
       <Runnable
         source={`(< (Bytes.of #list(1 2)) (Bytes.of #list(1 3)))`}
       />
@@ -70,7 +70,7 @@ export default function Ordering() {
 
   (export main))`}
       />
-      <P>The lookup returns <C>(Some 42)</C>: the second <C>Bytes</C> value compares equal to the key that was inserted, so the <C>Map</C> finds it. A value you can order is a value you can organize.</P>
+      <P>The lookup returns <Cadenza>(Some 42)</Cadenza>: the second <C>Bytes</C> value compares equal to the key that was inserted, so the <C>Map</C> finds it. A value you can order is a value you can organize.</P>
       <H2>What can't be a key: a function</H2>
       <P>The flip side of that rule draws a sharp line. Keying needs equality and a total order, and a <em>function</em> has neither: two closures can compute the same results yet be different values, and there's no canonical way to compare or order them. So a function can't be a <C>Map</C> key or a <C>Set</C> element, and the compiler says so rather than inventing an answer. A <C>Set</C> of functions is rejected:</P>
       <Runnable
@@ -85,7 +85,7 @@ export default function Ordering() {
       <H2>Your turn</H2>
       <Exercise
         id="ordering:1"
-        prompt={<>Finish the predicate <C>outside</C> so it returns <C>true</C> when <C>x</C> is <em>below 0 or above 10</em>, and <C>false</C> in between. With <C>(outside 15)</C> the answer is <C>true</C>.</>}
+        prompt={<>Finish the predicate <C>outside</C> so it returns <C>true</C> when <C>x</C> is <em>below 0 or above 10</em>, and <C>false</C> in between. With <Cadenza>(outside 15)</Cadenza> the answer is <C>true</C>.</>}
         starter={`(def (outside x) (or (< x 0) ?))
 
 (def (main) (outside 15))`}
@@ -93,11 +93,11 @@ export default function Ordering() {
 
 (def (main) (outside 15))`}
         expected="true"
-        hint={<>The two ways to be outside are joined with <C>or</C>; the second is "above 10", namely <C>(&gt; x 10)</C>. <C>15</C> is above 10, so the result is <C>true</C>.</>}
+        hint={<>The two ways to be outside are joined with <C>or</C>; the second is "above 10", namely <Cadenza>{"(> x 10)"}</Cadenza>. <C>15</C> is above 10, so the result is <C>true</C>.</>}
       />
       <Exercise
         id="ordering:2"
-        prompt={<>Write <C>max</C> using <C>Ordering.of</C> and <C>match</C>, picking <C>a</C> when it's greater or equal, and <C>b</C> when <C>a</C> is less. <C>(max 8 3)</C> should give <C>8</C>.</>}
+        prompt={<>Write <C>max</C> using <C>Ordering.of</C> and <C>match</C>, picking <C>a</C> when it's greater or equal, and <C>b</C> when <C>a</C> is less. <Cadenza>(max 8 3)</Cadenza> should give <C>8</C>.</>}
         starter={`(def (max a b) (match (Ordering.of a b) ((Less _) ?) ((Equal _) a) ((Greater _) a)))
 
 (def (main) (max 8 3))`}

@@ -14,7 +14,7 @@
     (source (- 5.0 1.5)))
   (runnable
     (source (/ 7.0 2.0)))
-  (p "Notice " (c "(/ 7.0 2.0)") " is " (c "3.5") ", which is real division because the operands are floats. Give " (c "/") " two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.")
+  (p "Notice " (cdz "(/ 7.0 2.0)") " is " (c "3.5") ", which is real division because the operands are floats. Give " (c "/") " two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.")
   (h2 "Floating-point is approximate, and honest about it")
   (p "IEEE-754 floats can't represent every decimal exactly, and Cadenza doesn't pretend otherwise. The classic example: add a tenth and two tenths, and the result isn't quite three tenths.")
   (runnable
