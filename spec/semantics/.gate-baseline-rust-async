@@ -8838,3 +8838,28 @@ pass	an unbound name in a type-argument position keeps CDZ0101, not the non-type
 pass	member access on a tuple by NAME points at the numeric-index form
 pass	the bare-symbol Qty unit misuse fires at a value-annotation site
 pass	the bare-symbol Qty unit misuse fires nested inside a List type
+pass	Qty.value of a NON-NUMERIC operand names the type, not a self-contradictory plain number
+pass	Unit.in of a NON-NUMERIC operand names the type, not a self-contradictory plain number
+pass	a Bool value under a narrow-width let-binder annotation is a type clash, not a width fault
+pass	a bare wildcard used as a def body names the binding-position misuse
+pass	a close-typo handler arm op names the declared op with a replace fix
+pass	a computed out-of-range value under a narrow let-binder annotation is range-checked
+pass	a constant arithmetic operation overflowing a narrow parameter width is a const trap
+pass	a far-miss misspelled export states the fault but offers no baseless suggestion or fix
+pass	a handler arm binding too few parameters for a genuine one-param op is rejected
+pass	a handler arm binding too many parameters for a unit op is rejected
+pass	a hex bare literal that overflows signed Int64 is a malformed literal
+pass	a name-alias (map …) compared against a record is a cross-kind type error
+pass	a name-alias (map …) with a duplicate bool key is a type error
+pass	a name-alias (map …) with a duplicate unit key is a type error
+pass	a name-alias (map …) with record values of different field sets is a type error
+pass	a name-alias (map …) with tuple values of different arity is a type error
+pass	a near-miss misspelled export carries a did-you-mean and an applyable replace fix
+pass	a negative constant argument to an unsigned parameter is rejected
+pass	a wildcard used as a function argument names the binding-position misuse
+pass	a wildcard used as an operator operand names the binding-position misuse
+pass	an empty name-alias (map) compared against an empty record is a cross-kind type error
+pass	an out-of-range constant argument to a narrow parameter is range-checked at the call
+pass	an out-of-range constant argument to an inline lambda's narrow parameter is range-checked
+pass	an out-of-range literal bound under a narrow let-binder annotation is range-checked
+pass	member access on a name-alias (map …) is a type error
