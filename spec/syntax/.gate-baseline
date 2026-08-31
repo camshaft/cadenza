@@ -126,7 +126,10 @@ pass	ml/205-def-let-body-flat
 pass	ml/206-match-arm-bound-indented
 pass	ml/207-match-arm-own-line-flush
 pass	ml/208-match-arm-as-call-arg-indented
+pass	ml/209-non-last-arm-if-let-bare
 pass	ml/21-world-record-member
+pass	ml/210-non-last-arm-nested-match-parens
+pass	ml/211-non-last-arm-if-else-match-parens
 pass	ml/22-world-variant-record-payload
 pass	ml/23-world-variant-prim-payload
 pass	ml/24-world-enum-flags

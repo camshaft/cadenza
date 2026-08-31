@@ -1,0 +1,1 @@
+match x with | A => (match x with | C => 1 | _ => 2) | B => 3

@@ -1,0 +1,1 @@
+match x with | A => if x > 0 then 1 else 2 | B => let y = x in y + 1 | C => 9
