@@ -1,0 +1,6 @@
+def f(e) = match e with
+  | A => 1
+  | B => 2
+
+// section header
+def g() = 3
