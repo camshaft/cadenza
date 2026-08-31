@@ -6043,58 +6043,23 @@ mod tests {
         assert_eq!(assert_roundtrip("#price", 80), "#price");
     }
 
-    #[test]
-    fn quantity_literal_round_trips() {
-        // A quantity literal `(Qty.of <num> (Unit.of #"name"))` renders as the concise `<num> name`
-        // surface and re-parses to the same arena — the inverse of `maybe_quantity_literal`.
-        assert_eq!(assert_roundtrip("5 feet", 80), "5 feet");
-        assert_eq!(assert_roundtrip("5.0 meter", 80), "5.0 meter");
-        // It binds tighter than any operator, so `5 feet / 1 second` is a RATE — the division of two
-        // quantity literals, not `5 (feet / 1) second`.
-        assert_eq!(
-            assert_roundtrip("5 feet / 1 second", 80),
-            "5 feet / 1 second"
-        );
-        assert_eq!(
-            assert_roundtrip("3 meter + 2 meter", 80),
-            "3 meter + 2 meter"
-        );
-        assert_eq!(assert_roundtrip("dist(5 feet)", 80), "dist(5 feet)");
-        // COMPOUND / RATE units (BUG #51): a glued `/`/`*`/`^` on the unit builds a composite (bare
-        // `/`/`*`/`^` between `Unit.of` operands). The canonical printer renders the composite VERBOSE
-        // (`Qty.of(…, Unit.of(#a) / Unit.of(#b))`, since the concise `<num> a/b` sugar is DISPLAY-only),
-        // but that form is idempotent + structurally round-trips — which `assert_roundtrip` pins. (Pairs
-        // with the parser's `compound_unit_desugars_on_glued_operators`; here we pin the print side.)
-        assert_eq!(
-            assert_roundtrip("59 GiB/s", 80),
-            "Qty.of(59, Unit.of(#GiB) / Unit.of(#s))"
-        );
-        assert_eq!(
-            assert_roundtrip("9 m/s^2", 80),
-            "Qty.of(9, Unit.of(#m) / (Unit.of(#s) ^ 2))"
-        );
-        assert_eq!(
-            assert_roundtrip("3 kg*m/s^2", 80),
-            "Qty.of(3, Unit.of(#kg) * Unit.of(#m) / (Unit.of(#s) ^ 2))"
-        );
-        // The independent s-expr reader is the oracle: the canonical `(Qty.of …)` form prints concise.
-        let a = sexpr::read(r#"(Qty.of 5 (Unit.of #"meter"))"#).unwrap();
-        assert_eq!(print(&a, 80), "5 meter");
-        // Shapes the concise surface can't express fall back to the round-tripping call form: a
-        // computed unit, a non-bare-safe unit name, and `Unit.of` used outside a `Qty.of`.
-        let computed =
-            sexpr::read(r#"(Qty.of 5.0 (Unit./ (Unit.of #"meter") (Unit.of #"second")))"#).unwrap();
-        // Identifier-content symbols print with the unquoted `#name` sugar.
-        assert_eq!(
-            print(&computed, 80),
-            "Qty.of(5.0, Unit.of(#meter) / Unit.of(#second))"
-        );
-        // A non-identifier symbol (a space) keeps the explicit `#"…"` form.
-        let odd = sexpr::read(r#"(Qty.of 5 (Unit.of #"foo bar"))"#).unwrap();
-        assert_eq!(print(&odd, 80), "Qty.of(5, Unit.of(#\"foo bar\"))");
-        let bare = sexpr::read(r#"(Unit.of #"meter")"#).unwrap();
-        assert_eq!(print(&bare, 80), "Unit.of(#meter)");
-    }
+    // `quantity_literal_round_trips` (the concise `<num> name` surface for `(Qty.of <num> (Unit.of
+    // #"name"))`, its tighter-than-any-operator binding, and the VERBOSE canonicalization of compound
+    // units) MIGRATED to the spec/syntax corpus (inc-6 batch-11):
+    //   * ml/80-quantity-concise-int `5 feet`, ml/81-quantity-concise-decimal `5.0 meter` (concise surface,
+    //     fmt-idempotent → tree `((. Qty of) N ((. Unit of) #"name"))`).
+    //   * ml/82-quantity-rate-division `5 feet / 1 second` → `(/ (Qty …) (Qty …))` (a RATE: quantity binds
+    //     tighter than `/`), ml/83-quantity-arithmetic-sum `3 meter + 2 meter`, ml/84-quantity-in-call-arg
+    //     `dist(5 feet)`.
+    //   * ml/85-quantity-compound-rate-per `59 GiB/s`, ml/86-quantity-compound-accel `9 m/s^2`,
+    //     ml/87-quantity-compound-force `3 kg*m/s^2` — a glued `/`/`*`/`^` builds a composite unit; the
+    //     canonical printer renders it VERBOSE (`Qty.of(…, Unit.of(#a) / Unit.of(#b))`), pinned by each
+    //     case's format.cdz (the concise `<num> a/b` sugar is DISPLAY-only).
+    //   * ml/88-quantity-computed-unit-call `Qty.of(5.0, Unit.of(#meter) / Unit.of(#second))`,
+    //     ml/89-unit-of-nonident-symbol `Qty.of(5, Unit.of(#"foo bar"))`, ml/90-unit-of-bare
+    //     `Unit.of(#meter)` — shapes the concise surface can't express fall back to the round-tripping
+    //     call form (computed unit, non-bare-safe symbol, bare `Unit.of`).
+    // The `print((Qty.of …)) == 5 meter` sexp→ml oracles are subsumed by the ml cases' fmt-idempotence.
 
     #[test]
     fn quantity_over_a_tight_non_literal_operand_prints_concise() {

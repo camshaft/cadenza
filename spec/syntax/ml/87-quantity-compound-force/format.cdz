@@ -1,0 +1,1 @@
+Qty.of(3, Unit.of(#kg) * Unit.of(#m) / (Unit.of(#s) ^ 2))

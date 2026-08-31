@@ -76,6 +76,17 @@ pass	ml/76-type-ascription-tuple
 pass	ml/77-equality-double-equals
 pass	ml/78-equality-in-let-body
 pass	ml/79-paren-grouping-not-tuple
+pass	ml/80-quantity-concise-int
+pass	ml/81-quantity-concise-decimal
+pass	ml/82-quantity-rate-division
+pass	ml/83-quantity-arithmetic-sum
+pass	ml/84-quantity-in-call-arg
+pass	ml/85-quantity-compound-rate-per
+pass	ml/86-quantity-compound-accel
+pass	ml/87-quantity-compound-force
+pass	ml/88-quantity-computed-unit-call
+pass	ml/89-unit-of-nonident-symbol
+pass	ml/90-unit-of-bare
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
