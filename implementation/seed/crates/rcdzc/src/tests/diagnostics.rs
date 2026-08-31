@@ -2565,56 +2565,11 @@ fn a_redundant_arm_warning_anchors_to_the_dead_arms_pattern() {
     );
 }
 
-#[test]
-fn compare_on_a_float_names_the_relational_operators_as_the_fix() {
-    // `compare` reports a total order (a three-way Less/Equal/Greater), but a floating-point type offers
-    // only the IEEE PARTIAL order (a NaN is unordered) — a permanent CARVE-OUT, not a not-yet. The
-    // decline must not dead-end at "no total order"; it names the concrete route the reader takes
-    // instead: the boolean relational operators `<`/`<=`/`>`/`>=`, which DO work on floats. This pins
-    // that actionable redirect (lower.rs float-`compare` arm) so a refactor can't quietly degrade it to
-    // a terse "no total order" decline. Runtime float params so it reaches lowering (a constant `compare`
-    // would fold, not decline).
-    let d = first_error(
-        "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of x y)) (export f))",
-    );
-    // A permanent carve-out is a genuine user error, so it is a CODED rejection (CDZ0203/TypeMismatch —
-    // the "this operation is not defined on this type" class), not an uncoded decline (corpus-deprecation
-    // BUCKET-2). The actionable IEEE-partial-order message is preserved (asserted below).
-    assert_eq!(
-        d.code.as_deref(),
-        Some("CDZ0203"),
-        "a permanent float-compare carve-out is a coded CDZ0203 rejection: {}",
-        d.message
-    );
-    assert!(
-        d.message.contains("IEEE partial order")
-                && d.message.contains("no three-way comparison")
-                // the actionable redirect — the operators that DO order floats
-                && d.message.contains("`<`, `<=`, `>`, `>=`"),
-        "the decline names the IEEE-partial-order reason AND the relational-operator fix: {}",
-        d.message
-    );
-    // ROUND-TRIP witness: the named repair (a relational operator on the same float operands) compiles
-    // clean — the redirect points at a form that actually type-checks.
-    let ast = crate::testkit::parse(
-        "(module m (def (f (: x Float64) (: y Float64)) (< x y)) (export f))",
-    );
-    let out = compile(
-        &[Artifact::new(
-            Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&ast),
-        )],
-        &[Target::Wasm],
-    );
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.severity == crate::abi::Severity::Error),
-        "the suggested relational-operator repair compiles clean: {:?}",
-        out.diagnostics
-    );
-}
+// MIGRATED to corpus (03-equality-and-observation.sexp, "a runtime float compare is a coded CDZ0203"):
+// the CDZ0203 rejection + the full actionable message (IEEE-partial-order reason + the `<`/`<=`/`>`/`>=`
+// redirect, as three AND-required `(message …)` clauses) are corpus-asserted; the "named repair compiles
+// clean" witness is covered by the `(= (< a b) true)` over-Float64 case in the same chapter. Rust test
+// compare_on_a_float_names_the_relational_operators_as_the_fix deleted — language-independent + corpus-covered.
 
 #[test]
 fn compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route() {

@@ -1054,10 +1054,17 @@
           ((Ordering.Equal _) 2)
           ((Ordering.Greater _) 3)))
       (export main)))
-  ; Pin the ACTIONABLE message, not just the code: the diagnostic must NAME the IEEE-partial-order
-  ; reason so a reader reaches for the relational operators. A future wording degrade to a terse reject
-  ; flips this case (portable-diagnostic-test capability).
-  (error CDZ0203 (message "IEEE partial order")))
+  ; Pin the ACTIONABLE message IN FULL, not just the code: the diagnostic must NAME the IEEE-partial-order
+  ; reason AND redirect to the relational operators that DO order floats, so the reader takes the concrete
+  ; route instead of dead-ending at "no total order". The three `(message …)` clauses are AND-required; a
+  ; future wording degrade that drops the redirect flips this case (portable-diagnostic-test capability).
+  ; The named repair `(< a b)` over Float64 params is witnessed to compile+run clean by the `(= (< a b) true)`
+  ; case above (line ~114). (Fully mirrors the former rcdzc rust test
+  ; compare_on_a_float_names_the_relational_operators_as_the_fix, now deleted — corpus-covered.)
+  (error CDZ0203
+    (message "IEEE partial order")
+    (message "no three-way comparison")
+    (message "`<`, `<=`, `>`, `>=`")))
 
 ; A runtime COMPOUND `compare` is orderable (all-orderable leaves) but the descriptor-guided `value-cmp`
 ; three-way heap walk is not wired yet — a genuine NOT-YET (distinct from the float permanent carve-out). The
