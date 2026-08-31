@@ -13868,6 +13868,39 @@
   (output (: 7 Int64))
   (live-objects known-leak))
 
+; A recursive sum whose arm sums TWO self-call results — `((T.B a b) (+ (s a) (s b)))` — over a BigInt leaf
+; must type the `+`-of-two-BigInts arm as BigInt and compute. Each self-call `(s a)` types the recursion
+; guard's provisional `Any` while the scheme solve is in flight; an arith op with an `Any` operand must DEFER
+; (uncached) so a clean re-solve — once the self-calls ground BigInt — types the `+` as BigInt, rather than
+; freezing the generic deferred-Int scheme (which conflicted with the BigInt binder arm → a spurious
+; CDZ0203 arms-differ). (Migrated from rcdzc a_recursive_bigint_result_from_a_match_binder_propagates_to_a_two_self_call_arith_arm;
+; the BigInt/fixed-int no-promotion mix stays the CDZ0301 case above.)
+(case "a recursive sum summing two self-call BigInt results types the arm as BigInt and folds"
+  (input  (do (type T (L BigInt) (B T T))
+              (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N)))
+              (def (main) (s (T.B (T.L 3N) (T.L 4N))))
+              (export main)))
+  (call   main)
+  (output (: 7 BigInt))
+  (live-objects known-leak))
+
+(case "the list-recursion shape of the two-self-call BigInt fold also types and folds"
+  (input  (do (type Tree (Leaf BigInt) (Branch (List Tree)))
+              (def (st (: t Tree)) (match t ((Tree.Leaf n) n) ((Tree.Branch #list(a b)) (+ (st a) (st b))) (_ 0N)))
+              (def (main) (st (Tree.Branch #list((Tree.Leaf 3N) (Tree.Leaf 4N)))))
+              (export main)))
+  (call   main)
+  (output (: 7 BigInt))
+  (live-objects known-leak))
+
+(case "the same two-self-call recursive fold at Int64 still types as Int64 (the defer re-grounds to the operands' type)"
+  (input  (do (type T (L Int64) (B T T))
+              (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0)))
+              (def (main) (s (T.B (T.L 3) (T.L 4))))
+              (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
 (case
   "recursive repeated-squaring modpow over BigInt computes a Mersenne-modulus power"
   (doc
