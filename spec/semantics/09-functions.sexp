@@ -5668,10 +5668,7 @@
             (match pair (#tuple(x s2) (if (> (String.byte-len x) 2) (Some x) (firstlong s2)))))))
       (def
         (main (: n Int64))
-        (match
-          (firstlong #list("ab" "c" "abcd" "zz"))
-          ((Some s) (String.byte-len s))
-          ((None) -1)))
+        (match (firstlong #list("ab" "c" "abcd" "zz")) ((Some s) (String.byte-len s)) ((None) -1)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 4 Int64))
@@ -13154,3 +13151,29 @@
       (export g)))
   (call g (: 4 Int64) (: 5 Int64))
   (output (: 9 Int64)))
+
+(case
+  "llb1 a recursive do-local fn capturing a do-LOCAL BINDING computes (should-work: lexical capture is uniform)"
+  (doc
+    "Idealistic TODO fence (corpus policy 2026-08-31; gap = the coded CDZ0900 'a recursive local
+     function that captures a binding from its enclosing scope is not supported', routed
+     v-inference — the #6879 lambda-lift landed the enclosing-PARAM face; this pins the do-local
+     BINDING face, the staged residual): closures capture lexical scope uniformly, so `step` (a
+     do-local def) must capture exactly like the param `n` does. Derivation: climb(4,0) adds
+     (step + n) = (3 + n) four times: n=2 -> 20; n=0 -> 12. Auto-flips when the binding-capture
+     lift lands.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (do
+          (def step 3)
+          (def
+            (climb (: k Int64) (: acc Int64))
+            (if (> k 0) (climb (- k 1) (+ acc (+ step n))) acc))
+          (climb 4 0)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 20 Int64))
+  (call main (: 0 Int64))
+  (output (: 12 Int64)))

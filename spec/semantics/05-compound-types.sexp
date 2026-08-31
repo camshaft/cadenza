@@ -8641,9 +8641,7 @@
            does. Expected 77.")
   (input
     (do
-      (def
-        (f (: xs (List (Map Int64 Int64))))
-        (match xs (#list(#map((= 1 a)) (.. rest)) a) (_ -1)))
+      (def (f (: xs (List (Map Int64 Int64)))) (match xs (#list(#map((= 1 a)) (.. rest)) a) (_ -1)))
       (def (main) (f #list(#map((= 1 77)))))
       (export main)))
   (output (: 77 Int64)))
@@ -8657,9 +8655,7 @@
            irrefutable binder that always matches on length, so an arm naming an absent key is skipped.")
   (input
     (do
-      (def
-        (f (: xs (List (Map Int64 Int64))))
-        (match xs (#list(#map((= 9 a)) (.. rest)) a) (_ -1)))
+      (def (f (: xs (List (Map Int64 Int64)))) (match xs (#list(#map((= 9 a)) (.. rest)) a) (_ -1)))
       (def (main) (f #list(#map((= 1 77)))))
       (export main)))
   (output (: -1 Int64)))
@@ -34926,3 +34922,52 @@
       (def (main) (f #list((Op.Add 5))))
       (export main)))
   (error CDZ0210))
+
+(case
+  "srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)"
+  (doc
+    "Idealistic TODO fence (corpus policy 2026-08-31; gap = the coded CDZ0900 'a set rest binder's
+     residual set is built by the set-matcher desugar; a bare set-rest here is unsupported', routed
+     v-inference/set-rest slice 3): srm1 proves the residual IS a first-class (Set E) value, so
+     re-matching it with another set-rest pattern must work like the record/tuple nested gathers
+     (rrm1/trm1). Derivation: n=5 -> {5,10,20}, outer #set(10 .. r) -> r={5,20}, inner
+     #set(20 .. r2) -> r2={5}: 10*len + contains(r2,5) = 10+1 = 11. n=20 -> construction dedups to
+     {10,20}, r={20}, r2={}: 0+0 = 0. Auto-flips to PASS when the nested set-rest desugar lands.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          #set(n 10 20)
+          (#set(10 (.. r))
+            (match r (#set(20 (.. r2)) (+ (* (Set.len r2) 10) (if (Set.contains r2 n) 1 0))) (_ -2)))
+          (_ -1)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (call main (: 20 Int64))
+  (output (: 0 Int64)))
+
+(case
+  "cspr1 construction SPREAD splices a runtime list into a literal (should-work: the value twin of the rest pattern)"
+  (doc
+    "Idealistic TODO fence (corpus policy 2026-08-31; gap = the coded CDZ0201 '`..` is a rest/spread
+     marker, valid only inside a collection PATTERN', routed v-inference — construction-spread parse
+     round-trips are pinned (#6908/#6910/#6912), the LOWERING is the missing piece): `#list(1 .. xs n)`
+     with xs=[10,20] must construct [1,10,20,n] — the elementwise splice, dual to the pattern gather.
+     Derivation: (at 2)=20, (at 3)=n -> 100*20 + n. n=7 -> 2007; n=0 -> 2000. Auto-flips on the
+     spread lowering.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (do
+          (def xs #list(10 20))
+          (+
+            (* 100 (match (List.at #list(1 (.. xs) n) 2) ((Some v) v) ((None _u) -1)))
+            (match (List.at #list(1 (.. xs) n) 3) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 2007 Int64))
+  (call main (: 0 Int64))
+  (output (: 2000 Int64)))
