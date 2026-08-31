@@ -6861,38 +6861,22 @@ mod tests {
         );
     }
 
+    // `set_literal_round_trips` (the native `#(…)` = `#set(…)` set literal — basic/singleton/empty, the
+    // legacy `((. Set of) (list …))` oracle, and a same-line trailing `//` on the last element) MIGRATED to
+    // the spec/syntax corpus (inc-6 batch-60):
+    //   * ml/376-set-literal-basic `#(1, 2, 3)`→`#set(1 2 3)`, ml/377-set-literal-singleton `#(x)`→`#set(x)`,
+    //     ml/378-set-literal-empty `#()`→`#set()` (distinct from empty map `#{}` / list `[]`).
+    //   * ml/379-comment-trailing-last-set-elem `def s() -> Int64 = #(1, 2 // last`⏎`)`→
+    //     `(def (s) (: #set(1 (comment-after "last" 2)) Int64))` (comment forces the multi-line surface).
+    // The `((. Set of) (list …))` sexp→ml oracles are subsumed by 376/378's fmt; set-of call-form fallback is
+    // ml/234-236, spread sets ml/158-159, leading-comment ml/282, rest-pattern ml/333. Only the WIDTH-specific
+    // wide-set break stays Rust below (fits at the corpus width; needs width-20 to trigger the all-or-nothing break).
     #[test]
-    fn set_literal_round_trips() {
-        // `#(…)` is the native set ctor literal `#set(…)` — the third built-in collection surface. It
-        // round-trips, and the LEGACY `((. Set of) (list …))` member form still prints back to `#(…)`
-        // too (dual-support during the corpus migration; see the oracle assertion below).
-        assert_eq!(assert_roundtrip("#(1, 2, 3)", 80), "#(1, 2, 3)");
-        assert_eq!(assert_roundtrip("#(x)", 80), "#(x)");
-        // Empty set: `#()` is the empty `#set()`, distinct from the empty map `#{}` / list `[]`.
-        assert_eq!(assert_roundtrip("#()", 80), "#()");
-        // The oracle: the desugared member-access application prints as the `#(…)` surface.
-        let a = sexpr::read("((. Set of) (list 1 2 3))").unwrap();
-        assert_eq!(print(&a, 80), "#(1, 2, 3)");
-        assert_eq!(
-            print(&sexpr::read("((. Set of) (list))").unwrap(), 80),
-            "#()"
-        );
-        // Wide sets break all-or-nothing like a list.
+    fn wide_set_breaks_all_or_nothing_like_a_list() {
+        // Wide sets break all-or-nothing like a list (width-triggered layout — a fmt-width property).
         assert_eq!(
             assert_roundtrip("#(1000, 2000, 3000, 4000)", 20),
             "#(\n  1000,\n  2000,\n  3000,\n  4000\n)"
-        );
-        // A same-line trailing `//` on the LAST set element is preserved (a set `#(…)` desugars to
-        // `Set.of([…])`, so its elements are list elements rendered via the shared comment-aware path).
-        // Captured as `(comment-after …)`, printed same-line, `)` forced to its own line; round-trips.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def s() -> Int64 = #(1, 2 // last\n)").arenas),
-            "(def (s) (: #set(1 (comment-after \"last\" 2)) Int64))",
-            "a same-line trailing comment on the last set element is captured, not dropped"
-        );
-        assert_eq!(
-            assert_roundtrip("#(1, 2 // last\n)", 80),
-            "#(\n  1,\n  2 // last\n)"
         );
     }
 
