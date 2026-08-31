@@ -24551,6 +24551,16 @@
   (error CDZ0201 (message "map rest pattern is") (not "unbound name")))
 
 (case
+  "a map pattern with TWO `..` rest markers names the shape, not an unbound binder (CDZ0201)"
+  (doc
+    "The other malformation of the same rule (`exactly one binder after ..`): TWO `..` markers
+           `#map((= 1 v) (.. r1) (.. r2))` — not one binder after `..` — reports the coded CDZ0201 rest-shape,
+           with NO spurious CDZ0101 unbound-name for the value binder `v` (the disjoint-freshen / inert-binder
+           fix keeps the native form clean). Migrated from rcdzc a_map_match_pattern_with_a_malformed_rest_names_the_shape.")
+  (input (do (def (f (: mp (Map Int64 Int64))) (match mp (#map((= 1 v) (.. r1) (.. r2)) v) (_ 0))) (export f)))
+  (error CDZ0201 (message "map rest pattern is") (no-diagnostic "unbound name")))
+
+(case
   "a nested map pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
   (doc
     "The NESTED twin of the top-level malformed-map-rest case: a `(map (k v) .. rest (j w))` with a
