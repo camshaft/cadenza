@@ -2876,6 +2876,7 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::MapField { .. }
         | Resolved::RecordField { .. }
         | Resolved::RecordRest { .. }
+        | Resolved::SetRest { .. }
         | Resolved::Param { .. }
         | Resolved::Bool(_)
         | Resolved::Str(_)
