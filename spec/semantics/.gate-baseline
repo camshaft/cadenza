@@ -2637,6 +2637,7 @@ pass	a list of nominal-over-quantity newtypes is a compound Map key
 pass	a list of records in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)
 pass	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
 pass	a bare list<u8>/Bytes PARAM member of a typed export interface crosses (multi-export list<u8> param — operator §2 decode-check half)
+pass	a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)
 pass	a bare string/String PARAM member of a typed export interface crosses (mem_leaf Str-arm coverage)
 pass	a single component exports BOTH a list<u8>-result member and a list<u8>-param member of one interface (operator §2 two-export capstone)
 pass	a bare list<u8>/Bytes RESULT member of a typed export interface crosses (multi-export list<u8> result — operator §2 encode-quoted half)
