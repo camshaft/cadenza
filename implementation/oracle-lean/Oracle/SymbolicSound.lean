@@ -1345,6 +1345,34 @@ theorem denote_normalize_app_fold (ρ : Nat → Value) (w : IntTy) (op : String)
     rw [hu0, hu1, ← hcu0, ← hcu1, hfv] at h
     exact (Outcome.value.inj h).symm
 
+/-- CAPSTONE `.app` IDENT branch — PLAIN fall-through (`foldConst? = none` AND no algebraic identity fires,
+so `normalize` rebuilds `.app op (map normalize args)`). The dominant `.app` case (most applications match
+no fold/identity pattern). denote is preserved by per-argument congruence: the value hypothesis pins arity,
+each operand denotes to a value, and the argument IHs carry `denote aᵢ = denote (normalize aᵢ)`. Takes the
+plain shape as a hypothesis (`hplain`), which the eventual `denote.induct` assembly discharges in the
+fall-through sub-case. -/
+theorem denote_normalize_app_ident_plain (ρ : Nat → Value) (w : IntTy) (op : String)
+    (args : Array SymExpr) (v : Value)
+    (hplain : normalize (.app op args) = .app op (args.attach.map (fun x => normalize x.val)))
+    (ih : ∀ x ∈ args, ∀ u, denote ρ w x = .value u → denote ρ w (normalize x) = .value u)
+    (h : denote ρ w (.app op args) = .value v) :
+    denote ρ w (normalize (.app op args)) = .value v := by
+  rw [hplain]
+  rcases denote_app_value_arity ρ w op args v h with ⟨a0, rfl⟩ | ⟨a0, a1, rfl⟩
+  · rw [show (#[a0] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0] by simp]
+    rw [denote_app1] at h ⊢
+    obtain ⟨u0, hu0⟩ := denoteUnary_value_inv op _ v h
+    rw [hu0] at h
+    rw [ih a0 (by simp) u0 hu0]
+    exact h
+  · rw [show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val)
+        = #[normalize a0, normalize a1] by simp]
+    rw [denote_app2] at h ⊢
+    obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv op w _ _ v h
+    rw [hu0, hu1] at h
+    rw [ih a0 (by simp) u0 hu0, ih a1 (by simp) u1 hu1]
+    exact h
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
