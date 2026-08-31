@@ -430,6 +430,8 @@ pass	ml/483-quantity-spaced-slash-is-arithmetic
 pass	ml/484-quantity-glued-slash-before-number-is-arithmetic
 pass	ml/485-annotation-not-glued-paren-is-annotated-form
 pass	ml/486-effect-decl-two-ops
+pass	ml/487-nested-multi-arg-ctor-minimal
+pass	ml/488-nested-multi-arg-ctor-multiline-block
 pass	ml/49-const-force-eval-call
 pass	ml/50-const-force-eval-infix
 pass	ml/51-effect-op-resource-marker-first-param
