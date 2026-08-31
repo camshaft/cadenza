@@ -266,7 +266,16 @@ pass	ml/332-record-rest-pattern
 pass	ml/333-set-rest-pattern
 pass	ml/334-reserved-name-backtick-escaped
 pass	ml/335-operator-name-backtick-escaped
+pass	ml/336-def-param-tuple-destructure
+pass	ml/337-def-param-list-rest-destructure
+pass	ml/338-def-param-ctor-destructure
+pass	ml/339-def-param-qualified-ctor-destructure
 pass	ml/34-match-multi-clause-irref-first
+pass	ml/340-def-param-multi-payload-ctor-destructure
+pass	ml/341-def-param-nested-ctor-destructure
+pass	ml/342-let-tuple-binder-destructure
+pass	ml/343-let-list-rest-binder-destructure
+pass	ml/344-let-mixed-binder-destructure
 pass	ml/35-match-single-variant-wrap
 pass	ml/36-match-single-variant-nested-box
 pass	ml/37-match-multi-variant-refutable
