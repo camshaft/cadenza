@@ -28,6 +28,8 @@ pub enum DeclineId {
     MatchOverHeapCollectionScrutinee,
     ///A recursive function applied where it would need runtime specialization (the eval beta-reduction recursion guard, eval.rs); reworded off deferral wording to "which is not supported" by v-core-opt #6565.
     RecursiveFunctionRuntimeSpecialization,
+    ///A deeper compound sub-pattern below a record field — a record match pattern (resolve.rs match_arm_record_binds), a tuple/list/constructor-nested record match (resolve.rs, reclassified CDZ0201->CDZ0900 by #6850), or a record binding pattern (resolve.rs + lower/match_tree.rs, #6800/#6838). v-ast-compound is building PathStep::Field (name-keyed record-field descent) to make most such cases BIND; whatever still declines is tagged declined(id) in that build PR.
+    NestedRecordFieldPatternDescent,
 }
 impl DeclineId {
     /// The complete catalog (declared order — byte-deterministic).
@@ -42,6 +44,7 @@ impl DeclineId {
         DeclineId::TailResumptiveFoldUnhandledForm,
         DeclineId::MatchOverHeapCollectionScrutinee,
         DeclineId::RecursiveFunctionRuntimeSpecialization,
+        DeclineId::NestedRecordFieldPatternDescent,
     ];
     /// The stable kebab-case registry key (the durable referent `data/unsupported.sexp` pins).
     pub fn key(self) -> &'static str {
@@ -62,6 +65,7 @@ impl DeclineId {
             DeclineId::RecursiveFunctionRuntimeSpecialization => {
                 "recursive-function-runtime-specialization"
             }
+            DeclineId::NestedRecordFieldPatternDescent => "nested-record-field-pattern-descent",
         }
     }
     /// The umbrella code this decline carries (`Some(CDZ0900)` = coded; `None` = still codeless).
@@ -77,6 +81,7 @@ impl DeclineId {
             DeclineId::TailResumptiveFoldUnhandledForm => Some(Code::UnsupportedConstruct),
             DeclineId::MatchOverHeapCollectionScrutinee => Some(Code::UnsupportedConstruct),
             DeclineId::RecursiveFunctionRuntimeSpecialization => Some(Code::UnsupportedConstruct),
+            DeclineId::NestedRecordFieldPatternDescent => Some(Code::UnsupportedConstruct),
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.
@@ -109,6 +114,9 @@ impl DeclineId {
             }
             DeclineId::RecursiveFunctionRuntimeSpecialization => {
                 "a recursive function needs runtime specialization"
+            }
+            DeclineId::NestedRecordFieldPatternDescent => {
+                "a nested compound sub-pattern below a record field"
             }
         }
     }

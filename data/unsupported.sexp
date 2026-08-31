@@ -88,4 +88,13 @@
       (status blocked)
       (owner v-core-opt)
       (needs "runtime specialization of a recursive function")
-      (ref pr 6565))))
+      (ref pr 6565)))
+  (decline NestedRecordFieldPatternDescent
+    (code UnsupportedConstruct)
+    (reason "a nested compound sub-pattern below a record field")
+    (doc "A deeper compound sub-pattern below a record field — a record match pattern (resolve.rs match_arm_record_binds), a tuple/list/constructor-nested record match (resolve.rs, reclassified CDZ0201->CDZ0900 by #6850), or a record binding pattern (resolve.rs + lower/match_tree.rs, #6800/#6838). v-ast-compound is building PathStep::Field (name-keyed record-field descent) to make most such cases BIND; whatever still declines is tagged declined(id) in that build PR.")
+    (blocked-on
+      (status blocked)
+      (owner v-ast-compound)
+      (needs "PathStep::Field name-keyed record-field descent so a nested compound sub-pattern under a record field binds")
+      (ref pr 6850))))
