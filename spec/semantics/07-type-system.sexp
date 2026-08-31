@@ -2204,15 +2204,16 @@
   (error CDZ0201 (message "kind boundary") (message "Type") (not "Int64 and Type") (count 1)))
 
 (case
-  "a bare `=` on two identical TYPE values is not relabeled a kind boundary — type equality is Type.eq"
+  "a bare `=` on two identical TYPE values is refused with a guided CDZ0203 — type equality is Type.eq"
   (doc
-    "The no-relabel control (migrated from rcdzc): `(= Int64 Int64)` compares two TYPE values with the
-           bare `=`. Both share the Type KIND tag, so the cross-kind boundary guard does NOT fire — the bare
-           `=` on two types keeps its own path (a type error; type EQUALITY is the dedicated `Type.eq`, not
-           the bare `=`), and must NOT be relabeled a 'kind boundary'. Pins that the phantom-Int64 fix and the
-           cross-kind guard do not over-reach onto a same-kind (Type vs Type) comparison.")
+    "`(= Int64 Int64)` compares two TYPE values with the bare `=`. A type is ERASED at run time and is
+           not data; bare `=` is a runtime structural comparison, so it is the wrong tool — the dedicated
+           compile-time `Type.eq` (which folds two type-values to a constant Bool) is. Rejected with a guided
+           CDZ0203 that names `Type.eq`, NOT relabeled a 'kind boundary' (both operands share the Type kind,
+           so the cross-kind guard must NOT over-reach onto a same-kind Type-vs-Type comparison). Corpus-
+           deprecation BUCKET-2: a correct-reject asserting the CODE, replacing the former uncoded decline.")
   (input (do (def (main) (if (= Int64 Int64) 1 0)) (export main)))
-  (declines (not "kind boundary")))
+  (error CDZ0203 (message "type value") (message "Type.eq") (not "kind boundary")))
 
 (case
   "two type-value operands in arithmetic name that arithmetic is not defined on Type"

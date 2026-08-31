@@ -800,6 +800,34 @@ pub(crate) fn check_application(
             }
             return;
         }
+        // Bare `=` on TWO TYPE-VALUES (`Ty::Type` — a first-class type used as a value: `Int64`, a user sum
+        // name). A type is ERASED at run time (`type-system.md` — types are checked then erased; a type-value
+        // has no runtime representation), and there is a DEDICATED compile-time `Type.eq` (`Prim::TypeEq`, a
+        // DISTINCT prim that folds two type-values to a constant `Bool`, e.g. `(Type.eq (Type.of x) Int64)`,
+        // and never reaches this `Eq` block). So bare `=` — a RUNTIME structural comparison — is the wrong
+        // tool for two type-values: refuse it and point at `Type.eq` (v-deferral-declines corpus-deprecation
+        // BUCKET-2 — a correct-reject, not a should-work), rather than letting the two same-kind `Ty::Type`
+        // operands unify and fall to a later shape-less/uncoded decline. GATED narrowly on `Eq` with BOTH
+        // operands `Ty::Type`: a Type-vs-SCALAR `=` (different kinds) stays the cross-kind boundary reject
+        // below (its own message), and arithmetic/order on a type-value (`(+ Color 1)`, `(+ Int64 Int64)`)
+        // keeps the "kind boundary" / "not defined on Type" paths — those are not equality, so `Type.eq` is
+        // not the fix for them.
+        if matches!(a, Ty::Type)
+            && matches!(b, Ty::Type)
+            && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Eq)
+        {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: bare `=` on two type values — use Type.eq (CDZ0203)");
+            out.push(Reject::coded(
+                Code::TypeMismatch,
+                "bare `=` is not defined on a type value — a type is erased at run time and is not data; \
+                 use `Type.eq` for compile-time type equality (e.g. `(Type.eq (Type.of x) Int64)`)"
+                    .to_string(),
+            ));
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
         // `Symbol` counts as a TEXT-like atom here: it is an interned string value, comparable/equatable
         // only to another `Symbol` (like `String` to `String`), and cross-kind to a number/char/bool/
         // compound. Including it makes a `Symbol`-vs-scalar or `Symbol`-vs-compound pair take the named
