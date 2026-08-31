@@ -597,6 +597,26 @@ theorem asF64Canon_idem (v : Value) :
   have hf : ∀ f : Float, Value.asF64? (.f64 f) = some f := fun _ => rfl
   cases h : Value.asF64? v <;> simp [h, hf]
 
+/-- `evalFloatOp` yields ONLY `.f64` values: its `+`/`-`/`*`/`/` arms return `.value (.f64 …)` and `%` is
+`.unsupported`, so whenever it produces a `.value`, that value is a `.f64`. A building block the capstone
+`.app` fold case uses: the sole `foldConst?` FLOAT output flows through here, so it is canon-stable. -/
+theorem evalFloatOp_value_f64 (op : String) (a b : Float) (w : Value)
+    (h : evalFloatOp op a b = .value w) : ∃ g, w = Value.f64 g := by
+  unfold evalFloatOp at h
+  by_cases h1 : (op == "+") = true
+  · rw [if_pos h1] at h; injection h with h'; exact ⟨_, h'.symm⟩
+  rw [if_neg h1] at h
+  by_cases h2 : (op == "-") = true
+  · rw [if_pos h2] at h; injection h with h'; exact ⟨_, h'.symm⟩
+  rw [if_neg h2] at h
+  by_cases h3 : (op == "*") = true
+  · rw [if_pos h3] at h; injection h with h'; exact ⟨_, h'.symm⟩
+  rw [if_neg h3] at h
+  by_cases h4 : (op == "/") = true
+  · rw [if_pos h4] at h; injection h with h'; exact ⟨_, h'.symm⟩
+  rw [if_neg h4] at h
+  exact absurd h (by simp)
+
 /- CAPSTONE `.app` fold-step — `foldConst?_canon_stable`:
   `foldConst? op args = some v → (match asF64? v with | some f => .f64 f | none => v) = v`
 TRUE (fold outputs are all `.bool`/`.f64`, both `asF64?`-canon) + structurally unblocked (#6892). 🪤 TACTIC:
