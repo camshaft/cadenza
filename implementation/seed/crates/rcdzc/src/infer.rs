@@ -6032,6 +6032,82 @@ fn check_resume_result_type(db: &mut Db, arm: &crate::resolved::HandleArm, out: 
     }
 }
 
+/// ABORTIVE-ARM VALUE-TYPE CHECK. An arm that does NOT tail-resume ABORTS: its body value becomes the
+/// WHOLE handle's value (the continuation is discarded), so that value must fit where the handle promises
+/// to return it — it must agree with BOTH (a) the operation's declared RESULT type and (b) the HANDLE
+/// BODY's type. A mismatch — an abort yielding a scalar `Int64` under a handle whose body is a `(Tuple
+/// Int64 Int64)` — is a genuine, PERMANENT type error (`capabilities-and-effects.md` §… the abort value
+/// simply does not fit): the two syntactic shapes even infer different handle types and the hoist emits an
+/// ill-typed `if` (invalid wasm). The plain type checker misses this (a perform types by its op result, so
+/// the abort value looks fine locally), and the effect FOLD (`reduce_handle`) only DECLINES it CODELESS
+/// (CDZ0900 — a should-work-later shape) at LOWERING, AFTER type-check — a check-ordering / seq-32
+/// violation (v-effects de-risked; v-checker-lib routed → v-inference). Assert it HERE, at check time,
+/// with the coded CDZ0201 the sibling resume/next-state checks use — so the real type error is reported
+/// FIRST, instead of the fold's misleading CDZ0900. Mirrors the fold-side guard at `effects::reduce.rs`
+/// (abortive-arm value vs op-result / handle-body), by COMPATIBILITY (`agrees_with`, not `==`), skipping an
+/// undetermined side (a deferred-int literal never spuriously clashes).
+fn check_abort_arm_type(
+    db: &mut Db,
+    handle_body: StructId,
+    arm: &crate::resolved::HandleArm,
+    out: &mut Vec<Reject>,
+) {
+    // Only an ABORTIVE arm (no tail resume) makes its body value the handle result; a tail-resumptive arm
+    // is covered by `check_resume_result_type`/`check_resume_next_state_type` above.
+    let mut resumes = Vec::new();
+    collect_tail_resume_values(db, arm.body, &mut resumes);
+    if !resumes.is_empty() {
+        return;
+    }
+    let body_ty = type_of(db, arm.body);
+    if crate::effects::undetermined_ty(&body_ty) {
+        return;
+    }
+    // (a) The operation's declared RESULT type — instantiate the op value's scheme and peel the arrows
+    // (identical to `check_resume_result_type`). `None`/undetermined → skip (its own fault surfaces).
+    let mut fresh = Fresh::new();
+    if let Some(scheme) = crate::eval::scheme_of(db, arm.op, &mut fresh) {
+        let mut result = crate::unify::instantiate(&scheme, &mut fresh);
+        while let Ty::Fn(_, r) = result {
+            result = *r;
+        }
+        if !crate::effects::undetermined_ty(&result) && !body_ty.agrees_with(&result) {
+            trace!(target: "rcdzc::infer", op = arm.op.0, "fault: abortive arm value type differs from the operation's result type (CDZ0201)");
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "a handler ABORTS with a value of type {} but the operation's result type is {} — \
+                         an abort makes its value the whole handle's result, so it must match",
+                        body_ty.render_name(&db.name_ctx()),
+                        result.render_name(&db.name_ctx())
+                    ),
+                )
+                .at(arm.body),
+            );
+            return;
+        }
+    }
+    // (b) The HANDLE BODY's type — the abort value replaces the whole handle value, so it must agree with
+    // the body the handle otherwise returns (a scalar abort under a compound body is the miscompile guard).
+    let handle_body_ty = type_of(db, handle_body);
+    if !crate::effects::undetermined_ty(&handle_body_ty) && !body_ty.agrees_with(&handle_body_ty) {
+        trace!(target: "rcdzc::infer", body = arm.body.0, "fault: abortive arm value type differs from the handle body type (CDZ0201)");
+        out.push(
+            Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "a handler ABORTS with a value of type {} but the handle body has type {} — an abort \
+                     makes its value the whole handle's result, so it must match the body it replaces",
+                    body_ty.render_name(&db.name_ctx()),
+                    handle_body_ty.render_name(&db.name_ctx())
+                ),
+            )
+            .at(arm.body),
+        );
+    }
+}
+
 /// Collect EVERY tail resume value in an arm body `node` — a bare `(resume value …)`, and each branch of
 /// an `if`/`match`-JOIN (or through `do`/`let` tails) whose tail is a resume. The per-arm companion of
 /// [`tail_resume_value`], so the resume-value/result-type check ([`check_resume_result_type`]) applies to

@@ -2657,6 +2657,12 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // discrepancy, a type-confusion miscompile), the state-side companion of the resume-VALUE
                 // check above. CDZ0201, anchored at the next-state.
                 check_resume_next_state_type(db, init, arm, out);
+                // ABORTIVE-ARM VALUE-TYPE CHECK. An arm that aborts (does not tail-resume) makes its body
+                // value the whole handle's result, so it must agree with the op result type AND the handle
+                // body type — a scalar abort under a compound body is a type error. Asserted HERE (coded
+                // CDZ0201) so it is reported at check time, BEFORE the effect fold's misleading CDZ0900
+                // decline (the check-ordering fix; v-effects de-risked, v-checker-lib routed → us).
+                check_abort_arm_type(db, body, arm, out);
                 collect(db, arm.body, out);
             }
             // A HANDLER MUST DISCHARGE ITS EFFECT'S WHOLE OPERATION SET (CDZ0405,
