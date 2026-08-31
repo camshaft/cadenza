@@ -508,6 +508,7 @@ pass	sexp/38-match-to-let-native-record
 pass	sexp/39-match-native-tuple-refutable-noop
 todo	ml/08-incomplete-binding
 todo	ml/10-unterminated-call
+todo	ml/476-ambiguous-toplevel-juxtaposition-rejected
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string
