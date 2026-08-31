@@ -62,7 +62,7 @@
     (0 0)
     (_ 1)))
 (def (main) (sign -8))))
-  (p (c "(guard x (&lt; x 0))") " binds the value to " (c "x") " and fires only when " (c "x &lt; 0") ", so " (c "-8") " returns " (c "-1") "; " (c "0") " takes the literal arm, and everything else the wildcard. A guard is the bridge between \"match on shape\" and \"decide on value\", without turning the whole arm back into an arbitrary predicate.")
+  (p (cdz "(guard x (< x 0))") " binds the value to " (c "x") " and fires only when " (cdz "(< x 0)") ", so " (c "-8") " returns " (c "-1") "; " (c "0") " takes the literal arm, and everything else the wildcard. A guard is the bridge between \"match on shape\" and \"decide on value\", without turning the whole arm back into an arbitrary predicate.")
   (h2 "More than two variants")
   (p "Sums aren't limited to " (c "Some") "/" (c "None") ". A traffic light is a three-variant sum, and a " (c "match") " over it must cover all three (or the compiler complains):")
   (runnable
@@ -85,7 +85,7 @@
   (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))))
   (p "The map has a " (c "\"width\"") ", so the arm fires, binds " (c "v") " to " (c "80") ", and returns " (c "(Some 80)") ". Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns " (c "(None unit)") ". Toggle to the conventional surface and the pattern reads as " (c "#{ \"width\" = v, .. rest }") ", a map-literal shape on the left of a match arm (the " (strong "Maps &amp; sets") " chapter later builds out maps as values).")
   (h2 "Matching a tuple's shape")
-  (p "A tuple pattern takes a value apart by " (em "position") ", and a trailing rest marker " (cdz "(.. rest)") " gathers the elements you didn't name into a smaller tuple, the positional twin of a list's " (c ".. rest") ". Here " (cdz "#tuple(a b (.. rest))") " binds " (c "a") " and " (c "b") " to the first two elements and " (c "rest") " to a tuple of whatever trails, so reading " (c "rest") " back with " (c ".0") " recovers the third element:")
+  (p "A tuple pattern takes a value apart by " (em "position") ", and a trailing rest marker " (c "(.. rest)") " gathers the elements you didn't name into a smaller tuple, the positional twin of a list's " (c ".. rest") ". Here " (cdz "#tuple(a b (.. rest))") " binds " (c "a") " and " (c "b") " to the first two elements and " (c "rest") " to a tuple of whatever trails, so reading " (c "rest") " back with " (c ".0") " recovers the third element:")
   (runnable
     (source (match #tuple(3 4 5)
   (#tuple(a b (.. rest)) (+ (+ a b) (. rest 0)))
@@ -93,7 +93,7 @@
   (p "So " (c "a") " is " (c "3") ", " (c "b") " is " (c "4") ", and " (c "rest") " is the one-element tuple " (cdz "#tuple(5)") ", whose " (c ".0") " is " (c "5") ", giving " (c "3 + 4 + 5 = 12") ". Two things to hold onto: " (c "rest") " is the trailing " (em "sub-tuple") ", not a flattened list, so a " (cdz "#tuple(1 2 3 4)") " matched by " (cdz "#tuple(x (.. rest))") " leaves " (c "rest") " as " (cdz "#tuple(2 3 4)") ", indexed " (c ".0") "/" (c ".1") "/" (c ".2") "; and the arity is fixed, so " (cdz "#tuple(a b (.. rest))") " needs at least two elements, and a shorter tuple simply doesn't match that arm.")
   (note "The example above binds a rest over a tuple " (em "constructed in place") ", which is what this pattern supports. A rest binder over a fully opaque runtime tuple is " (em "not supported") " on the backends, so the compiler declines it with a clear message rather than compute a wrong answer, the same honest refusal you've seen elsewhere.")
   (h2 "Matching a record's fields")
-  (p "Records take a rest the same way, by " (em "name") " instead of position. A record pattern names the fields you care about and a trailing " (cdz "(.. rest)") " gathers the rest into a " (em "residual record") ", the record analogue of the tuple rest above. Here " (cdz "#record((= a x) (.. rest))") " binds " (c "x") " to field " (c "a") " and " (c "rest") " to a record of the remaining fields, whose own fields you read back by name:")
+  (p "Records take a rest the same way, by " (em "name") " instead of position. A record pattern names the fields you care about and a trailing " (c "(.. rest)") " gathers the rest into a " (em "residual record") ", the record analogue of the tuple rest above. Here " (cdz "#record((= a x) (.. rest))") " binds " (c "x") " to field " (c "a") " and " (c "rest") " to a record of the remaining fields, whose own fields you read back by name:")
   (runnable
     (source (match #record((= a 1) (= b 2) (= c 3))
   (#record((= a x) (.. rest)) (+ (+ x (. rest b)) (. rest c)))
@@ -101,12 +101,12 @@
   (p "So " (c "x") " is " (c "1") ", and " (c "rest") " is the residual record " (cdz "#record((= b 2) (= c 3))") ", so " (c "rest.b") " is " (c "2") " and " (c "rest.c") " is " (c "3") ", giving " (c "1 + 2 + 3 = 6") ". The key difference from the tuple case: " (c "rest") " here is a " (em "record") ", so you reach into it by field name (" (c "rest.b") ", " (c "rest.c") "), not by position.")
   (note "As with the tuple rest, this supports a record " (em "constructed in place") ". A rest binder over a fully opaque runtime record is " (em "not supported") " on the backends, so the compiler declines it with a clear message rather than a wrong answer.")
   (h2 "Matching a set's members")
-  (p "A set has no fields or positions, so a set pattern asks a different question: " (em "containment") ". " (cdz "#set(1 (.. rest))") " names the members that must be " (em "present") " and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing " (cdz "(.. rest)") " then binds " (c "rest") " to the " (em "residual set") ", the scrutinee's members minus the ones you named. Here the set contains " (c "1") ", so the arm fires and " (c "rest") " is what's left:")
+  (p "A set has no fields or positions, so a set pattern asks a different question: " (em "containment") ". " (cdz "#set(1 (.. rest))") " names the members that must be " (em "present") " and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing " (c "(.. rest)") " then binds " (c "rest") " to the " (em "residual set") ", the scrutinee's members minus the ones you named. Here the set contains " (c "1") ", so the arm fires and " (c "rest") " is what's left:")
   (runnable
     (source (match #set(1 2 3)
   (#set(1 (.. rest)) (Some rest))
   (_ (None unit)))))
-  (p "The scrutinee " (cdz "#set(1 2 3)") " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (cdz "#set(2 3)") ", making the whole expression " (cdz "(Some #set(2 3))") ", the leftover set, returned as an " (c "Option") " since a set that lacks the named member takes the " (c "None") " arm instead. Three things follow from its being a containment test: it matches a " (em "superset") " too (" (cdz "#set(1)") " matches " (cdz "#set(1 2 3)") "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (cdz "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
+  (p "The scrutinee " (cdz "#set(1 2 3)") " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (cdz "#set(2 3)") ", making the whole expression " (cdz "(Some #set(2 3))") ", the leftover set, returned as an " (c "Option") " since a set that lacks the named member takes the " (c "None") " arm instead. Three things follow from its being a containment test: it matches a " (em "superset") " too (" (cdz "#set(1)") " matches " (cdz "#set(1 2 3)") "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (c "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
   (h2 "Your turn")
   (exercise
     (id "pattern-matching:1")
@@ -137,4 +137,4 @@
     (_ 0)))
 (def (main) (grade 75)))
     (expected "1")
-    (hint "The guard binds the score to " (c "x") "; the condition for passing is \"60 or more\", namely " (c "(&gt;= x 60)") ". " (c "75") " clears it, so the first arm fires.")))
+    (hint "The guard binds the score to " (c "x") "; the condition for passing is \"60 or more\", namely " (cdz "(>= x 60)") ". " (c "75") " clears it, so the first arm fires.")))
