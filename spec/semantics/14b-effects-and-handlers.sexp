@@ -3643,6 +3643,21 @@
   (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E #tuple(0 0) ((get () s (resume 5 #tuple(1 2)))) (E.get))) (export main)))
   (call   main) (output (: 5 Int64)))
 
+; A `resume` in the TAIL of a `let` body is tail-resumptive (the let's value IS its body's value), so the
+; tail-resume peel must keep the `let` around both the value and the next-state rather than declining — the
+; shape a discrete-event `sleep` arm uses. `(do (Sim.sleep 3) 42)` under a clock handler resumes and yields
+; the continuation 42. A `ctl`-form arm that BINDS `k` but never references it (resuming via its own
+; `resume`) is an ordinary tail-resumptive arm — the vacuous `k` binder is dropped, not declined; same
+; program with the extra `(sleep (d) s k …)` binder still folds → 42. (Migrated from rcdzc
+; a_let_wrapped_tail_resume_folds / a_ctl_arm_with_an_unused_k_binder_is_an_ordinary_resumptive_arm.)
+(case "a let-wrapped tail resume in a sleep arm folds and runs"
+  (input  (do (effect Sim (op sleep (-> Int64 Unit)) (op now (-> Unit Int64))) (def (main) (handle Sim 0 ((now (u) s (resume s s)) (sleep (d) s (let ((wake (+ s d))) (resume unit wake)))) (do (Sim.sleep 3) 42))) (export main)))
+  (call   main) (output (: 42 Int64)))
+
+(case "a ctl arm with an unused k binder is an ordinary resumptive arm and runs"
+  (input  (do (effect Sim (op sleep (-> Int64 Unit)) (op now (-> Unit Int64))) (def (main) (handle Sim 0 ((now (u) s (resume s s)) (sleep (d) s k (let ((wake (+ s d))) (resume unit wake)))) (do (Sim.sleep 3) 42))) (export main)))
+  (call   main) (output (: 42 Int64)))
+
 (case "a host delegation of an effect the body never reaches is latent authority and is rejected"
   (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
            `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised
