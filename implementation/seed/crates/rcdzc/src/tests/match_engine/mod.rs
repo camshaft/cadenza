@@ -1048,77 +1048,12 @@ fn bundled_verify_kernel_asset_reads_and_declares_thm_and_licenses() {
     );
 }
 
-/// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
-/// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
-/// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),
-/// `(export (. foo A))` (`foo` a value def), and `(export (. Undeclared A))` were SILENTLY ACCEPTED.
-/// `collect_faults` now validates each: an unknown ctor of a real sum names it + a did-you-mean over
-/// the variants (with a replace fix); a non-sum head names its category; the wildcard `*` skips the
-/// per-ctor check.
-#[test]
-fn a_constructor_export_is_semantically_validated() {
-    use crate::testkit::parse;
-    // (a) an unknown ctor of a real sum → names the ctor + type; a near-miss carries a replace fix.
-    let near = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (type T (Alpha) (Beta)) (export (. T Alph)) (def (main) 1) (export main))",
-    )))
-    .into_iter()
-    .find(|d| {
-        d.message
-            .contains("is not a constructor of the sum type `T`")
-    })
-    .expect("a bad ctor-export ctor is rejected");
-    assert_eq!(
-        near.code.as_deref(),
-        Some("CDZ0201"),
-        "got: {}",
-        near.message
-    );
-    assert!(
-        near.message.contains("did you mean `Alpha`?"),
-        "names the near ctor: {}",
-        near.message
-    );
-    assert_eq!(
-        near.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
-        Some((crate::abi::FixKind::Replace, "Alpha")),
-        "carries a replace-with-the-variant fix: {:?}",
-        near.fix
-    );
-    // (b) a non-sum head (a value def) → names the category.
-    let val = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def foo 5) (export (. foo A)) (def (main) 1) (export main))",
-    )));
-    assert!(
-        val.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-            && d.message.contains("`foo` to be a sum type")
-            && d.message.contains("a value definition")),
-        "a ctor-export of a value def names the category: {:?}",
-        val.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    // (c) an undeclared type head → "not a declared type".
-    assert!(
-        crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (export (. Undeclared A)) (def (main) 1) (export main))"
-        )))
-        .iter()
-        .any(|d| d.message.contains("not a declared type")),
-        "a ctor-export of an undeclared type is rejected"
-    );
-    // NO FALSE POSITIVE: a real ctor and the wildcard are clean.
-    for ok in [
-        "(module m (type T (Alpha) (Beta)) (export (. T Alpha)) (def (main) 1) (export main))",
-        "(module m (type T (Alpha) (Beta)) (export (. T *)) (def (main) 1) (export main))",
-    ] {
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                .iter()
-                .any(|d| d.message.contains("is not a constructor")
-                    || d.message.contains("to be a sum type")),
-            "a valid ctor-export is not flagged: {ok}"
-        );
-    }
-}
+// [migrated → spec/semantics/11-modules.sexp] a_constructor_export_is_semantically_validated:
+// a SHAPE-valid constructor-export must also be SEMANTICALLY valid. Corpus 11-modules ctor-export block:
+// valid ctor/wildcard export runs; a TYPE-head near-miss suggests the declared type; a CONSTRUCTOR-name
+// near-miss (. T Alph) → CDZ0201 "is not a constructor of the sum type `T`" + "did you mean `Alpha`?" +
+// rename fix; a VALUE-def head → CDZ0201 "to be a sum type" + "a value definition"; an UNDECLARED head →
+// "to be a sum type" + "not a declared type". All PASS on a fresh dev build (message+fix pins verified).
 
 #[test]
 fn a_mistyped_top_level_keyword_suggests_the_keyword_and_carries_a_replace_fix() {
