@@ -82,6 +82,26 @@
   (call   main (: 7 Int64)) (output (: (Qty.of 7 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter"))))
   (call   main (: 42 Int64)) (output (: (Qty.of 42 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))))
 
+; `Qty`'s SECOND argument is a UNIT, not a type. A bare unbound name there — `(Qty Int64 meter)` — used to
+; draw the type-oriented guidance (lowercase → "not a type variable"; uppercase → "unknown type, declare it
+; with `(type …)`"), both NONSENSE for a unit position. It now NAMES the unit misuse ("`Qty`'s second argument
+; is a UNIT") and spells the real form `(Unit.base #"…")` as a replace fix (the name IS the intended base-unit
+; name). Both a lowercase and uppercase bare name, at a parameter site AND a value-annotation site, get the
+; unit message; the INNER (first) Qty argument stays a type position (its own type guidance — the both-bad
+; cross-diagnostic case and the valid `(Unit.base …)` control stay a rust/existing-corpus residual). (Migrated
+; from rcdzc a_bare_name_in_a_qty_unit_position_names_it_a_unit_not_a_type.)
+(case "a bare lowercase name in the Qty unit position names it a unit misuse, not a type variable"
+  (input  (do (def (g (: q (Qty Int64 meter))) q) (export g)))
+  (error  CDZ0101 (message "`Qty`'s second argument is a UNIT") (message "(Unit.base") (not "type variable") (fix (kind replace) (replacement "(Unit.base #\"meter\")") (unverified))))
+
+(case "a bare uppercase name in the Qty unit position names it a unit misuse, not an unknown type"
+  (input  (do (def (g (: q (Qty Int64 Meter))) q) (export g)))
+  (error  CDZ0101 (message "`Qty`'s second argument is a UNIT") (not "declare it with `(type") (fix (kind replace) (replacement "(Unit.base #\"Meter\")") (unverified))))
+
+(case "the Qty unit-position misuse fires at a value-annotation site too"
+  (input  (do (def (main) (: 5 (Qty Int64 meter))) (export main)))
+  (error  CDZ0101 (message "`Qty`'s second argument is a UNIT") (fix (kind replace) (replacement "(Unit.base #\"meter\")") (unverified))))
+
 (case "Qty.value recovers the underlying numeric value, discarding the unit"
   (doc    "`(Qty.value (Qty.of 5.0 (Unit.base #\"meter\")))` = 5.0 : Float64 — the explicit exit from
            the dimensional layer (the widening that requires no check, verification-layers.md #Refinement

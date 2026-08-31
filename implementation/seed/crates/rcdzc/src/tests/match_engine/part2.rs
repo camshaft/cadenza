@@ -330,53 +330,13 @@ fn a_value_juxtaposed_with_a_type_names_the_missing_colon_annotation() {
 
 #[test]
 fn a_bare_name_in_a_qty_unit_position_names_it_a_unit_not_a_type() {
-    // `Qty`'s SECOND argument is a UNIT, not a type. A bare unbound name there — `(Qty Int64 meter)` —
-    // used to draw the type-oriented guidance (lowercase → "not a type variable here, leave the
-    // parameter unannotated"; uppercase → "unknown type `Meter`, declare it with `(type …)`"), both
-    // NONSENSE for a unit position. It now names the unit misuse + the real spelling `(Unit.base
-    // #"…")`. The INNER (first) Qty argument stays a type position (keeps type guidance).
-    // Both a lowercase and an uppercase bare name in the unit position get the unit message, at a
-    // parameter site AND a value-annotation site (the nested walk handles both). Each also carries the
-    // `(Unit.base #"<name>")` wrap fix — the name IS the intended base-unit name, so the repair is
-    // spelled exactly (fix-parity with the bare-SYMBOL sibling case).
-    for (src, name) in [
-        (
-            "(module m (def (g (: q (Qty Int64 meter))) q) (export g))",
-            "meter",
-        ),
-        (
-            "(module m (def (g (: q (Qty Int64 Meter))) q) (export g))",
-            "Meter",
-        ),
-        (
-            "(module m (def (main) (: 5 (Qty Int64 meter))) (export main))",
-            "meter",
-        ),
-    ] {
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("not a unit"))
-            .unwrap_or_else(|| panic!("expected a unit-position fault for {src}"));
-        assert!(
-            d.message.contains("`Qty`'s second argument is a UNIT")
-                && d.message.contains("(Unit.base")
-                && !d.message.contains("type variable")
-                && !d.message.contains("declare it with `(type"),
-            "the unit position names a unit misuse, not a type: {}",
-            d.message
-        );
-        let fix = d
-            .fix
-            .as_ref()
-            .expect("the bare-name unit case carries a wrap fix");
-        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-        assert_eq!(
-            fix.replacement,
-            format!("(Unit.base #\"{name}\")"),
-            "the fix spells the exact base-unit wrap: {}",
-            fix.replacement
-        );
-    }
+    // Residual: the reject-NAMING facets (a bare lowercase/uppercase name in the Qty unit position →
+    // CDZ0101 "`Qty`'s second argument is a UNIT" + the `(Unit.base #"…")` replace fix, at a param + a
+    // value-annotation site) moved to corpus 18-units-of-measure "a bare lowercase name in the Qty unit
+    // position …" + siblings. What stays: the CROSS-DIAGNOSTIC position-awareness — ONE program `(Qty widget
+    // meter)` produces TWO distinct-position faults (inner=type guidance, outer=unit) — which a corpus
+    // `(error …)` (single primary message) cannot pin; the valid `(Unit.base …)` no-false-change control is
+    // covered by corpus 18's valid Qty cases.
     // The INNER (type) position still gets TYPE guidance — a bad inner type + a bad unit produce their
     // OWN distinct messages, not both-as-units.
     let both = crate::diagnostics(&mut crate::db::Db::load(parse(
