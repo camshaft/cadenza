@@ -656,6 +656,31 @@
   (input  (match #map((= 1 10)) (#map((= 1 v) (= 2 w)) v) (_ 0)))
   (output (: 0 Int64)))
 
+; List patterns in a BINDING position (a def/fn param, a let binder) — where only an IRREFUTABLE pattern is
+; legal — follow the same refutability discipline as the keyed-map binding above. A FIXED-ARITY list pattern
+; `#list(a b)` is refutable (it matches only lists of that EXACT length) → CDZ0210; a LEADING-ELEMENT rest
+; `#list(a .. rest)` is also refutable (it does not match the EMPTY list) → CDZ0210. The ONLY irrefutable
+; list form is the ZERO-LEADING rest `#list(.. rest)`, which matches EVERY list (including the empty one),
+; so it is accepted in a binding position and binds the whole list. Separately, a list rest's SHAPE is
+; fixed: exactly one binder after `..`, and it must be LAST — a leading/duplicated rest is CDZ0201. (The list
+; analogue of the map refutability + rest-shape cases above; the fixed/leading-rest refutability the map
+; case's doc cross-references. Messages captured from a fresh build.)
+(case "a fixed-arity list destructuring binding param is refutable and rejected CDZ0210"
+  (input  (do (def (get #list(a b)) a) (def (main) (get #list(1 2))) (export main)))
+  (error  CDZ0210 (message "fixed-arity list pattern is refutable")))
+
+(case "a leading-element list rest binding param is refutable (does not match empty) and rejected CDZ0210"
+  (input  (do (def (f #list(a .. rest)) a) (def (main) (f #list(1 2))) (export main)))
+  (error  CDZ0210 (message "leading-element list rest pattern")))
+
+(case "the zero-leading list rest is IRREFUTABLE — it is accepted in a binding position and binds the whole list"
+  (input  (do (def (f #list(.. rest)) (List.len rest)) (def (main) (f #list(1 2 3))) (export main)))
+  (call   main) (output (: 3 Int64)))
+
+(case "a list rest pattern with a binder BEFORE the rest (leading rest) is a malformed shape, rejected CDZ0201"
+  (input  (do (def (f (: xs (List Int64))) (match xs (#list(.. rest a) a) (_ 0))) (export f)))
+  (error  CDZ0201 (message "exactly one binder after")))
+
 (case "a tuple pattern over a non-tuple scrutinee is a type error"
   (doc    "`(match 5 ((tuple a b) a) (_ 0))` — a `(tuple …)` pattern matches a Tuple value, and the Int64
            `5` is not a Tuple, rejected CDZ0203. The pattern-position companion of `(. 5 0)` (positional
