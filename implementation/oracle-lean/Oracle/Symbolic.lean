@@ -148,11 +148,13 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
   let isB := fun (e : SymExpr) (b : Bool) => e == SymExpr.const (Value.bool b)
   match op, args' with
   | "+", #[a, b] => if isI b 0 then a else if isI a 0 then b else .app op args'
-  -- `x-0→x` PRESERVES the operand; `x-x→0` (two's-complement `x-x=0` is representable at EVERY width, so
-  -- it never overflows/traps) DROPS both operands → `!mayTrap` guard, like `x*0→0`.
-  | "-", #[a, b] => if isI b 0 then a
-                    else if a == b && !mayTrap a then SymExpr.const (Value.int 0)
-                    else .app op args'
+  -- `x-0→x` PRESERVES the operand (the `int 0` literal forces an int context; `- float int` is ill-typed).
+  -- SOUNDNESS: NO `x-x→0` here. `-` is valid on FLOATS too, and `normalize` is type-erased (a `var` may be
+  -- float), so `(- x x)` on a float `x` would wrongly fold to `.int 0` — but `x - x` is `.f64 (x-x)`
+  -- (NaN for x=NaN/inf; `.f64 0.0 ≠ .int 0` even when finite). It is NOT meaning-preserving, so it is
+  -- removed (was an unsound completeness fold). (`x^x→0` is safe: `^` is integer-only, so `^` on floats is
+  -- ill-typed and never compiles.)
+  | "-", #[a, b] => if isI b 0 then a else .app op args'
   | "*", #[a, b] => if isI b 1 then a else if isI a 1 then b
                     else if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
                     else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
@@ -852,6 +854,10 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 -- SOUND integer algebraic identities: x+0→x, x-0→x, x*1→x (operand preserved, never overflows).
 #guard normalize (.app "+" #[.var 0, .const (.int 0)]) == SymExpr.var 0
 #guard normalize (.app "-" #[.var 0, .const (.int 0)]) == SymExpr.var 0
+-- SOUNDNESS: `x - x` does NOT fold to 0 (removed) — `normalize` is type-erased, and for a FLOAT `x`,
+-- `x - x` is `.f64 (x-x)` (NaN for x=NaN/inf; not `.int 0` even when finite), so folding would be a false
+-- `proven`. It stays symbolic (`x - 0 → x` is kept: the `int 0` literal forces an int context).
+#guard normalize (.app "-" #[.var 0, .var 0]) == SymExpr.app "-" #[.var 0, .var 0]
 #guard normalize (.app "*" #[.var 0, .const (.int 1)]) == SymExpr.var 0
 -- x*0→0 ONLY when the operand is trap-free (a var here); a trapping operand keeps the multiply.
 #guard normalize (.app "*" #[.var 0, .const (.int 0)]) == SymExpr.const (.int 0)
