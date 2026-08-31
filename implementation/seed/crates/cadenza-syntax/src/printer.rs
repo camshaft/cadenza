@@ -6142,6 +6142,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_annotation_on_a_keyword_headed_form_reaches_the_prefix_keyword_arms() {
+        // GUARD for a real deletion landmine: the `prefix` fn's `Kind::Ident => match keyword(…)` arms
+        // (let/if/fn/match/handle/host — parser.rs) LOOK dead because `expr_iter` intercepts those same
+        // keywords at statement start BEFORE it ever calls `self.prefix()`. They are NOT dead: an
+        // `@annotation <form>` reads its annotated form via `self.prefix()` DIRECTLY (parser.rs
+        // "a def/OTHER KEYWORD dispatches to its full form … via self.prefix() — directly, NOT through
+        // expr"), so a keyword-headed annotated form is parsed by exactly these arms. Stripping an arm
+        // makes `keyword("fn")` fall to the `Some(_) =>` "keyword used outside its form" error, so the
+        // annotated form FAILS to parse — which `assert_roundtrip`'s `.ok()` assertion catches here.
+        // (`@… def` is separately pinned by `attr_renders_on_its_own_line_above_the_def_operator_16`.)
+        // Each form round-trips (parse → print → reparse structurally-equal + idempotent); the exact
+        // printed layout is not asserted (that is corpus-golden territory) — reachability is the contract.
+        assert_roundtrip("@ann\nlet x = 1 in x", 80); // Keyword::Let arm
+        assert_roundtrip("@ann\nif a then b else c", 80); // Keyword::If arm
+        assert_roundtrip("@ann\nfn(x) => x", 80); // Keyword::Fn arm
+        assert_roundtrip("@ann\nmatch x with | _ => 1", 80); // Keyword::Match arm
+        assert_roundtrip("@ann\nhandle E(s) with | op(st) => st in b", 80); // Keyword::Handle arm
+        assert_roundtrip("@ann\nhost E in b", 80); // Keyword::Host arm
+    }
+
     // `the_test_annotation_example_round_trips_both_directions_and_never_prints_the_backtick_at_form`
     // (regression witness for the operator's thrice-reported high-viz `@test` bug: `(@ test (def …))` must
     // print `@test` above the def and re-read to the same `(@ test …)` head, NEVER the malformed
