@@ -59,6 +59,24 @@ The formatter (`cdz fmt`) re-prints a surface canonically and is idempotent by c
 `fmt` here is "read the surface, re-print it in the SAME surface, terminate with one newline" — exactly
 what `cdz fmt` compares against.
 
+## `normalize.<pass>.<ext>` — the optional codemod golden
+
+Beyond parse + format, the corpus also pins surface **codemods** — the opt-in `cdz normalize` rewrites
+(distinct from `fmt`), so the language's canonicalizations are *specified*, not just implemented, and
+the Cadenza rewrite must reproduce them.
+
+- A `normalize.<pass>.<ext>` file (e.g. `normalize.match-to-let.sexp`) asserts `cdz normalize --<pass>
+  --stdout input.<ext> == normalize.<pass>.<ext>` (bytes). It is **same-surface** (like `format`): the
+  codemod edits the arena, never changes surface. `<pass>` is the CLI flag name (`match-to-let` →
+  `--match-to-let`); a case may carry several (one per pass it exercises).
+- A case with a codemod golden still has its ordinary `tree.sexp` (the *unchanged* parse tree of the
+  input) + optional `format` — the `normalize` golden is an *additional* comparison, not a replacement.
+  Example: `sexp/32-match-to-let-tuple` — input `(match v ((tuple a b) (+ a b)))`, `tree.sexp` that same
+  match arena, `normalize.match-to-let.sexp` = `(let (((tuple a b) v)) (+ a b))`.
+
+Graded by `gate-syntax` (+ the per-case nix gate). This is the operator-blessed **codemod corpus** — a
+follow-on that grows as more `cdz normalize` passes land.
+
 ## The gate
 
 - **`cargo xtask gate-syntax`** — the corpus grader. It drives the reference `cdz` tool over every

@@ -226,6 +226,55 @@ fn grade_case(cdz: &Path, case: &Path) -> (Verdict, String) {
         return (Verdict::Fail, format!("fmt mismatch vs {which}"));
     }
 
+    // Codemod goldens (the operator-blessed codemod corpus): for each `normalize.<pass>.<ext>` file in
+    // the case dir, run `cdz normalize --<pass> --stdout <input>` and compare byte-exact. Pins that a
+    // surface CODEMOD (`cdz normalize` pass, e.g. `--match-to-let`) produces the recorded output — the
+    // transform the Cadenza rewrite must reproduce, so the language is SPECIFIED not just implemented.
+    // Same-surface (like fmt); the pass name is the filename segment between `normalize.` and `.<ext>`.
+    for entry in std::fs::read_dir(case).into_iter().flatten().flatten() {
+        let fname = entry.file_name();
+        let Some(fname) = fname.to_str() else {
+            continue;
+        };
+        let Some(rest) = fname.strip_prefix("normalize.") else {
+            continue;
+        };
+        let Some(pass) = rest.strip_suffix(&format!(".{ext}")) else {
+            continue;
+        };
+        if pass.is_empty() {
+            continue;
+        }
+        let norm = match Command::new(cdz)
+            .args(["normalize", &format!("--{pass}"), "--stdout"])
+            .arg(&input)
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                return (
+                    Verdict::Fail,
+                    format!("running cdz normalize --{pass}: {e}"),
+                );
+            }
+        };
+        if !norm.status.success() {
+            return (
+                Verdict::Fail,
+                format!(
+                    "cdz normalize --{pass} failed: {}",
+                    String::from_utf8_lossy(&norm.stderr).trim()
+                ),
+            );
+        }
+        if norm.stdout != std::fs::read(entry.path()).unwrap_or_default() {
+            return (
+                Verdict::Fail,
+                format!("normalize --{pass} mismatch vs {fname}"),
+            );
+        }
+    }
+
     (Verdict::Pass, String::new())
 }
 
