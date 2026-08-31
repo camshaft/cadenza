@@ -275,32 +275,14 @@ fn try_match_to_let(tree: &Tree, single_ctors: &SingleVariantCtors) -> Option<Tr
 mod tests {
     use super::*;
     use crate::parser;
-    use crate::printer;
     use crate::query::Tree;
 
-    /// Parse ML, run the codemod, return the printed ML result.
-    fn normalize_ml(src: &str) -> String {
-        let a = parser::read_ml(src);
-        assert!(a.ok(), "parse {src:?}: {:?}", a.errors);
-        let tree = Tree::of(&a.arenas);
-        let (out, _) = rewrite(&tree);
-        printer::print(&out.to_arena(), 100)
-    }
-
-    /// Parse ML → the codemod's s-expr output (structure, not layout).
-    fn normalize_sexpr(src: &str) -> String {
-        let a = parser::read_ml(src);
-        assert!(a.ok(), "parse {src:?}: {:?}", a.errors);
-        let tree = Tree::of(&a.arenas);
-        let (out, n) = rewrite(&tree);
-        (crate::sexpr::print(&out.to_arena()), n).0
-    }
-
-    fn count_rewrites(src: &str) -> usize {
-        let a = parser::read_ml(src);
-        assert!(a.ok(), "parse {src:?}: {:?}", a.errors);
-        rewrite(&Tree::of(&a.arenas)).1
-    }
+    // The `normalize_ml` / `normalize_sexpr` / `count_rewrites` round-trip helpers were deleted with the
+    // last of their callers when the match_to_let behavioral tests migrated to the spec/syntax codemod
+    // corpus (inc-6) — the codemod goldens (`normalize.match-to-let.<ext>`) now drive `cdz normalize
+    // --match-to-let` through gate-syntax + the per-case nix check, so no in-crate normalize helper is
+    // needed. Only the internal PREDICATE unit tests below (`rewrite`/`is_irrefutable`/`single_variant
+    // _ctors`) still exercise this module directly.
 
     // `irrefutable_single_clause_matches_become_lets` MIGRATED to the spec/syntax codemod corpus
     // (v-syntax green-lit match_to_let; a codemod belongs in the corpus, not inc-6): ml/25-match-to-let-
