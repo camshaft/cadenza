@@ -216,6 +216,10 @@ pass	ml/287-comment-leading-def-body
 pass	ml/288-comment-leading-value-def-body
 pass	ml/289-comment-between-top-level-defs
 pass	ml/29-match-refutable-sum-ctor
+pass	ml/290-doc-line-on-def
+pass	ml/291-comment-line-on-def
+pass	ml/292-file-header-module-doc
+pass	ml/293-def-non-doc-body-fallback
 pass	ml/30-match-refutable-literal
 pass	ml/31-match-refutable-guarded
 pass	ml/32-match-refutable-nested
