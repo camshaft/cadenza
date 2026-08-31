@@ -6493,25 +6493,13 @@ mod tests {
     // `def x = (5)` / `x + 1`→`(do (def x 5) (+ x 1))`. (Both inputs are already canonical — the body
     // parens + blank separator are the fixed point — so no format.cdz.)
 
-    #[test]
-    fn greedy_tailed_statement_in_a_sequence_is_parenthesized() {
-        // A non-final `match` (greedy-tailed) inside a value-position bare sequence is wrapped so its
-        // last arm body does not swallow the following `; rest`.
-        let a = sexpr::read("(def (f) (do (match 0 (0 a) (_ 99)) (next)))").unwrap();
-        let out = print(&a, 80);
-        assert!(
-            out.contains("| _ => 99);"),
-            "the match wraps before the `;`, got: {out:?}"
-        );
-        // And a greedy-tailed form at the ROOT, before a non-keyword form, is wrapped whole (a `)`
-        // closes its tail; no `;` — the wrapping alone prevents the swallow).
-        let r = sexpr::read("(do (match 0 (0 a) (_ 99)) (next))").unwrap();
-        let rout = print(&r, 80);
-        assert!(
-            rout.starts_with("(match 0 with") && rout.contains("| _ => 99)\n"),
-            "root match wraps whole before `next()`, got: {rout:?}"
-        );
-    }
+    // `greedy_tailed_statement_in_a_sequence_is_parenthesized` (a non-final `match` — greedy-tailed — inside
+    // a value-position bare sequence is WRAPPED so its last arm body doesn't swallow the following `; rest`)
+    // MIGRATED to the spec/syntax corpus (inc-6 batch-58):
+    //   * ml/368-greedy-tailed-match-in-def-body `(def (f) (do (match 0 (0 a) (_ 99)) (next)))` — the match is
+    //     parenthesized and takes a trailing `;` (`| _ => 99);`) before `next()` (canonical, fmt-idempotent).
+    //   * ml/369-greedy-tailed-match-at-root `(do (match 0 (0 a) (_ 99)) (next))` — at the ROOT the match wraps
+    //     whole (`| _ => 99)`) with a blank line before `next()`, no `;` (the wrapping alone prevents swallow).
 
     // `module_block` (members blank-line separated, first member hugs the `{`) MIGRATED to the
     // spec/syntax corpus (inc-6 batch-15): ml/119-module-block
@@ -6606,42 +6594,17 @@ mod tests {
     // single-line arms stay inline (verified byte-identical to the deleted width-100 assert at the corpus
     // width — the break is structural: a let-in arm body always breaks).
 
-    #[test]
-    fn compound_body_indentation_is_coherent_operator_seq_86_87_89() {
-        // The operator flagged THREE examples of "funky" compound-body indentation; the coherent model:
-        // a construct's BODY indents ONE level under its header, and a flat CHAIN (let-in / else-if
-        // ladder) stays at ONE level (no per-rung deepening). Pin all three shapes.
-
-        // seq-86: a let-in CHAIN's final body is FLAT at the chain indent (not nested a level deeper).
-        assert_eq!(
-            assert_roundtrip("def f() = let a = 1 in let b = 2 in a + b", 80),
-            "def f() =\n  let a = 1 in\n  let b = 2 in\n  a + b"
-        );
-
-        // seq-87: a let that IS a match-arm body indents ONE level UNDER the `=>` arm (not flush with
-        // the `|` markers) — here forced to its own line by the `// MISS` comment trailing `=>`. The
-        // `//` comments round-trip in place.
-        let seq87 = assert_roundtrip(
-            "def demand-typed-leaf(db: Db, id: Int64) = match require-ty(db, id) with\n  | Option.Some(fact) => (db, fact) // memo HIT — no recompute\n  | Option.None(_) => // MISS — compute from source, fill, thread\n  let ty = compute-leaf-type(db-tree(db), id) in\n  (fill-ty(db, id, ty), ty)",
-            100,
-        );
-        assert_eq!(
-            seq87,
-            "def demand-typed-leaf(db: Db, id: Int64) = match require-ty(db, id) with\n  | Option.Some(fact) => (db, fact) // memo HIT — no recompute\n  | Option.None(_) => // MISS — compute from source, fill, thread\n    let ty = compute-leaf-type(db-tree(db), id) in\n    (fill-ty(db, id, ty), ty)"
-        );
-
-        // seq-89: mixed let-in + if-then-else — the let-in body (`if`) is FLAT at the let indent; each
-        // then/else BRANCH body indents one level under its `if … then` / `else` header; `else`
-        // dedents to its `if` column. The leading `//` comment round-trips.
-        let seq89 = assert_roundtrip(
-            "@test\ndef dd-miss-fills-and-returns() =\n  // a demand on an ABSENT slot computes the fact, fills the column, returns the fact.\n  let (db1, fact) = demand-typed(sample-db(), 0, mk-int(true, 64)) in\n  if is-int-ty(fact) then\n  let (s, w) = int-parts-of(fact) in\n  if s and w == 64 then\n  if typed-filled(db1) == 1 then unit else trap(\"filled 1\")\n  else trap(\"Int64\")\n  else trap(\"demand returns the fact\")",
-            100,
-        );
-        assert_eq!(
-            seq89,
-            "@test\ndef dd-miss-fills-and-returns() =\n  // a demand on an ABSENT slot computes the fact, fills the column, returns the fact.\n  let (db1, fact) = demand-typed(sample-db(), 0, mk-int(true, 64)) in\n  if is-int-ty(fact) then\n    let (s, w) = int-parts-of(fact) in\n    if s and w == 64 then\n      if typed-filled(db1) == 1 then unit else trap(\"filled 1\")\n    else\n      trap(\"Int64\")\n  else\n    trap(\"demand returns the fact\")"
-        );
-    }
+    // `compound_body_indentation_is_coherent_operator_seq_86_87_89` (the coherent model: a construct's BODY
+    // indents ONE level under its header, and a flat CHAIN — let-in / else-if ladder — stays at ONE level, no
+    // per-rung deepening) MIGRATED to the spec/syntax corpus (inc-6 batch-58):
+    //   * ml/370-let-chain-body-flat-seq86 `def f() = let a = 1 in let b = 2 in a + b`→`(def (f) (let ((a 1))
+    //     (let ((b 2)) (+ a b))))`, format.cdz pins the FLAT let-chain (final body flush at chain indent).
+    //   * ml/371-match-arm-let-body-indented-seq87 — a let that IS a match-arm body indents ONE level under the
+    //     `=>` (forced to its own line by a `// MISS` comment); the `//` comments round-trip in place.
+    //   * ml/372-if-then-else-ladder-indent-seq89 — mixed let-in + if-ladder: let-in body FLAT at the let
+    //     indent, each then/else BRANCH body indents one level, `else` dedents to its `if` column.
+    // All three are width-INVARIANT (let-in/if always break; comments force the arm layout) — blessed at the
+    // corpus width byte-identical to the deleted width-80/100 asserts.
 
     #[test]
     fn def_record_body_hugs_the_eq() {

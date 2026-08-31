@@ -1,0 +1,10 @@
+@test
+def dd-miss-fills-and-returns() =
+  // a demand on an ABSENT slot computes the fact, fills the column, returns the fact.
+  let (db1, fact) = demand-typed(sample-db(), 0, mk-int(true, 64)) in
+  if is-int-ty(fact) then
+  let (s, w) = int-parts-of(fact) in
+  if s and w == 64 then
+  if typed-filled(db1) == 1 then unit else trap("filled 1")
+  else trap("Int64")
+  else trap("demand returns the fact")

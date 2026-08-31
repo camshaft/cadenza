@@ -1,0 +1,5 @@
+def demand-typed-leaf(db: Db, id: Int64) = match require-ty(db, id) with
+  | Option.Some(fact) => (db, fact) // memo HIT — no recompute
+  | Option.None(_) => // MISS — compute from source, fill, thread
+    let ty = compute-leaf-type(db-tree(db), id) in
+    (fill-ty(db, id, ty), ty)
