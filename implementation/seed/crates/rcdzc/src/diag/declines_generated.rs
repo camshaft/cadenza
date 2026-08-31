@@ -30,6 +30,10 @@ pub enum DeclineId {
     RecursiveFunctionRuntimeSpecialization,
     ///A deeper compound sub-pattern below a record field — a record match pattern (resolve.rs match_arm_record_binds), a tuple/list/constructor-nested record match (resolve.rs, reclassified CDZ0201->CDZ0900 by #6850), or a record binding pattern (resolve.rs + lower/match_tree.rs, #6800/#6838). v-ast-compound is building PathStep::Field (name-keyed record-field descent) to make most such cases BIND; whatever still declines is tagged declined(id) in that build PR.
     NestedRecordFieldPatternDescent,
+    ///A closure crossing the host boundary whose parameter, result, or capture type has no machine representation — one family over the 3 sibling diag.rs declines CLOSURE_PARAM/RESULT/CAPTURE_NO_REPR. A fully-typed closure crosses via the host-closure resource; these are the un-built frontier (e.g. a bare `(fn (v1) v1)` in a list whose v1 solves to Any — infer recovers the param type from an enclosing higher-order arrow when it can, this face cannot). Fuzzer-surfaced (v-cdz-smith reachability sweep #6878, faces #1/#6); classified feature-gap by v-rust-backend. NUANCE: the pure-Any param subcase borders the CDZ0203 annotate-it undetermined-type reject — kept as a closure-boundary family tag; the operator may reclassify the pure-Any face to a coded CDZ0203 reject later.
+    WasmClosureBoundaryNoRepr,
+    ///A parameterized heap-return export (the make(a…)->own<t> resource-escape path) forwards scalar and fixed-shape scalar tuple/record params only; a String/Bytes/list param has no boundary representation on this path. The mem-leaf param lift that would forward it exists for the typed-interface member route (#6624/#6639) but is not wired on the bare resource-escape path. Fuzzer-surfaced (#6878 face #3); classified feature-gap (buildable-next) by v-rust-backend. Emit site backend/wasm/mod.rs:9277.
+    WasmHeapReturnParamNoBoundaryRep,
 }
 impl DeclineId {
     /// The complete catalog (declared order — byte-deterministic).
@@ -45,6 +49,8 @@ impl DeclineId {
         DeclineId::MatchOverHeapCollectionScrutinee,
         DeclineId::RecursiveFunctionRuntimeSpecialization,
         DeclineId::NestedRecordFieldPatternDescent,
+        DeclineId::WasmClosureBoundaryNoRepr,
+        DeclineId::WasmHeapReturnParamNoBoundaryRep,
     ];
     /// The stable kebab-case registry key (the durable referent `data/unsupported.sexp` pins).
     pub fn key(self) -> &'static str {
@@ -66,6 +72,8 @@ impl DeclineId {
                 "recursive-function-runtime-specialization"
             }
             DeclineId::NestedRecordFieldPatternDescent => "nested-record-field-pattern-descent",
+            DeclineId::WasmClosureBoundaryNoRepr => "wasm-closure-boundary-no-repr",
+            DeclineId::WasmHeapReturnParamNoBoundaryRep => "wasm-heap-return-param-no-boundary-rep",
         }
     }
     /// The umbrella code this decline carries (`Some(CDZ0900)` = coded; `None` = still codeless).
@@ -82,6 +90,8 @@ impl DeclineId {
             DeclineId::MatchOverHeapCollectionScrutinee => Some(Code::UnsupportedConstruct),
             DeclineId::RecursiveFunctionRuntimeSpecialization => Some(Code::UnsupportedConstruct),
             DeclineId::NestedRecordFieldPatternDescent => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmClosureBoundaryNoRepr => Some(Code::UnsupportedConstruct),
+            DeclineId::WasmHeapReturnParamNoBoundaryRep => Some(Code::UnsupportedConstruct),
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.
@@ -117,6 +127,12 @@ impl DeclineId {
             }
             DeclineId::NestedRecordFieldPatternDescent => {
                 "a nested compound sub-pattern below a record field"
+            }
+            DeclineId::WasmClosureBoundaryNoRepr => {
+                "a closure's param, result, or capture type has no machine representation"
+            }
+            DeclineId::WasmHeapReturnParamNoBoundaryRep => {
+                "a parameterized heap-return export forwards scalar params only; this param type has no boundary representation"
             }
         }
     }
