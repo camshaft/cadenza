@@ -3536,6 +3536,25 @@
   (input  (do (def (main) (handle Option 0 ((x (u) s (resume 1 s))) 5)) (export main)))
   (error  CDZ0201 (message "head must name an EFFECT") (message "is a type")))
 
+; A `resume` inside a handler arm is exactly `(resume <value> <next-state>)`. TOO MANY operands
+; (`(resume 5 s 9)`) was silently accepted — now CDZ0201 "too many operands" with a delete-the-surplus fix;
+; TOO FEW (`(resume 5)`, no next-state) is CDZ0201 "no next-state". Neither also reports the spurious
+; stray-resume "no enclosing handler arm" secondary (the resume IS in an arm, just malformed). A GENUINE
+; top-level `resume` outside any handler arm is the placement error CDZ0201 "no enclosing handler arm".
+; (Migrated from rcdzc a_resume_with_the_wrong_number_of_operands_is_cdz0201 — the arity + placement rejects;
+; the stray+malformed cross-diagnostic suppression stays a rust residual.)
+(case "a resume with too many operands is rejected with a delete-the-surplus fix"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5 s 9))) (+ (E.get) 1))) (export main)))
+  (error  CDZ0201 (message "too many operands") (fix (kind delete)) (not "no enclosing handler arm")))
+
+(case "a resume missing its next-state is rejected"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5))) (+ (E.get) 1))) (export main)))
+  (error  CDZ0201 (message "no next-state") (not "no enclosing handler arm")))
+
+(case "a genuine top-level stray resume with no enclosing handler arm is rejected"
+  (input  (do (def (main) (resume 5 6)) (export main)))
+  (error  CDZ0201 (message "no enclosing handler arm")))
+
 (case "a host delegation of an effect the body never reaches is latent authority and is rejected"
   (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
            `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised
