@@ -137,6 +137,19 @@
   (input  (do (def (f (: x Int64)) (. #record((= y x)) y)) (def (main) (f 7)) (export main)))
   (output (: 7 Int64)))
 
+(case "a do-local value-def bound to a record is projected as a bare-name binding, not misread as a destructure"
+  (doc    "A do-block value-def `(def p0 #record(…))` binds a bare NAME to a record; a later `(. p0 y)`
+           projects a field. The value-def lowers through the same let path as a `let` binding, and the
+           destructure-let fast-path must NOT misfire on it — reading the record VALUE as a destructure
+           PATTERN and routing the binding through a single-arm match of the record against itself (which the
+           match tree then rejected as a non-exhaustive sum match → a spurious CDZ0210). A do-local bare-name
+           binding is never a destructure. `(f)` builds the record and projects `y` → 2. (The direct
+           record-literal projection `(. #record((= x 1) (= y 2)) y)` is the case above → 2; this pins the
+           do-local value-def binding path. Migrated from rcdzc do_local_record_binding_projection_is_not_a_destructure.)")
+  (input  (do (def (main) (do (def p0 #record((= x 1) (= y 2))) (. p0 y))) (export main)))
+  (call   main)
+  (output (: 2 Int64)))
+
 ; --- A record's field names are a SET: each name appears at most once --------------------
 ; core-semantics.md #A Record Has A Fixed Set Of Named Fields: "A record MUST associate a fixed SET
 ; of statically-known field names each with a value." A set has each name once, so a record literal
