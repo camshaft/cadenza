@@ -143,6 +143,17 @@ selects its branch; an `if` whose branches are identical collapses. Deliberately
 reassociate ARITHMETIC (needs width/overflow-trap-aware semantics — T2.0d; an unsound fold = a FALSE
 "proven"). Folding a comparison/boolean CONDITION composes with `if`-selection to prove more of an
 optimizer's branch-elimination rewrites. -/
+-- 🛡️ SOUNDNESS RULE FOR ADDING AN IDENTITY HERE (distilled from two false-`proven` bugs the Lean
+-- capstone audit caught — collapse #6533, `x-x→0` #6541): a rewrite MUST be meaning-preserving
+-- (`denote(rewrite) = denote(orig)`) for EVERY input INCLUDING floats and traps. `normalize` is
+-- TYPE-ERASED (a `var`/subexpr may be int OR float). The trap is an identity that fires on `a == b`
+-- (or produces `.int 0`) for an operator that is ALSO valid on FLOATS and has NO int-literal operand
+-- forcing an int context: e.g. `x - x → 0` is WRONG for a float `x` (`NaN-NaN=NaN`; `.f64 0.0 ≠ .int 0`),
+-- and `SymExpr`'s derived `==` uses IEEE float equality (`+0.0 == -0.0` is `true`) so it must NOT gate a
+-- structural-identity collapse over float branches. SAFE patterns: an `int`-literal operand forces int
+-- typing (`x+0`,`x*0`,`x/1`,`x%1` — `float ⊕ int` is ill-typed, never compiles); integer-only ops
+-- (`&`,`|`,`^`,`<<`,`>>` — bitwise on floats is ill-typed); bool-only ops (`and`/`or`/`not`); comparing a
+-- concrete value with `Value.valueEqSpec` (bit-faithful) instead of the derived `==`.
 def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
   let isI := fun (e : SymExpr) (n : Int) => e == SymExpr.const (Value.int n)
   let isB := fun (e : SymExpr) (b : Bool) => e == SymExpr.const (Value.bool b)
