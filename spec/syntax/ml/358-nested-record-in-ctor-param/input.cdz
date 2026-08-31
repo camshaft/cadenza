@@ -1,0 +1,1 @@
+def f(Some({ x = a })) = a
