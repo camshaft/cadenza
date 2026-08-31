@@ -1181,30 +1181,12 @@ fn a_malformed_leading_def_forall_recovers_without_panic() {
 //   (Tuple has no rest-only form — a rest needs a leading element + comma; the map rest-only `#{ .. rest }`
 //   is covered elsewhere.)
 
-#[test]
-fn parameterized_annotation_name_takes_a_glued_application() {
-    use crate::sexpr;
-    // `@tag("slow")` — a call-style annotation argument: a `(` GLUED to the annotation name makes
-    // the name slot the application `(tag "slow")`, so the tree is `(@ (tag "slow") form)`.
-    assert_eq!(
-        sexpr::print(&parse_ok("@tag(\"slow\")\ndef f() = 1")),
-        "(@ (tag \"slow\") (def (f) 1))"
-    );
-    // A bare `@test` (no glued paren) keeps the plain-name slot.
-    assert_eq!(
-        sexpr::print(&parse_ok("@test\ndef f() = 1")),
-        "(@ test (def (f) 1))"
-    );
-    // GLUING GUARD: a `(` NOT glued to the name (whitespace/newline between) is the annotated FORM,
-    // not the name's call args — `@test` then `(g)` on the next line is `(@ test g)`, NOT
-    // `(@ (test g) …)`. (postfix's LParen arm doesn't check adjacency; the `@`-arm guard does.)
-    assert_eq!(sexpr::print(&parse_ok("@test\n(g)")), "(@ test g)");
-    // Multiple args + stacking with a bare annotation.
-    assert_eq!(
-        sexpr::print(&parse_ok("@test\n@cfg(\"a\", \"b\")\ndef f() = 1")),
-        "(@ test (@ (cfg \"a\" \"b\") (def (f) 1)))"
-    );
-}
+// `parameterized_annotation_name_takes_a_glued_application` (a `(` GLUED to an annotation name makes the name
+// slot a call `(tag "slow")` → `(@ (tag "slow") form)`; a `(` NOT glued — whitespace/newline between — is the
+// annotated FORM) MIGRATED to the spec/syntax corpus (inc-6 batch-87): parameterized `@tag("slow")`=ml/94-
+// annotation-parameterized, bare `@test`=ml/92-annotation-sigil-name-agnostic, stacked bare+param=ml/95 /
+// multi-arg=ml/96; new ml/485-annotation-not-glued-paren-is-annotated-form `@test`⏎`(g)`→`(@ test g)` (the
+// gluing guard — a non-glued `(` is the annotated form, NOT the annotation's call args).
 
 // `paren_comma_in_type_position_is_a_tuple_type` (a paren-comma `(A, B)` in TYPE position — RHS of a `:` —
 // is the tuple TYPE `(Tuple A B)`, NOT the tuple VALUE ctor `#tuple(A B)` the prefix path builds in

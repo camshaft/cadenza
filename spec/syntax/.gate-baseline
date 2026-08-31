@@ -428,6 +428,7 @@ pass	ml/481-comment-multiline-trailing-type-variant
 pass	ml/482-quantity-single-unit-exponent
 pass	ml/483-quantity-spaced-slash-is-arithmetic
 pass	ml/484-quantity-glued-slash-before-number-is-arithmetic
+pass	ml/485-annotation-not-glued-paren-is-annotated-form
 pass	ml/49-const-force-eval-call
 pass	ml/50-const-force-eval-infix
 pass	ml/51-effect-op-resource-marker-first-param
