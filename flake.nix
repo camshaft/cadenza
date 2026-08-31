@@ -5683,6 +5683,18 @@
                   # advisory via checks.guide-examples; real fix = engine upgrade (Path B, v-guide-infra) or a
                   # binaryen-117 pin (Path A).)
                   guideExamplesShredded
+                  # guideManifestDriftAssert FOLDED IN (v-guide-infra 2026-08-31): the committed
+                  # guide/examples-manifest.json MUST equal a fresh guideShred manifest. It was exposed as
+                  # checks.guide-manifest-drift-assert but NOT gated, so #6898 (removed a MapsSets runnable →
+                  # shifted the shred enumeration) landed a STALE manifest → guideExamplesShredded's per-case
+                  # builds then cp-failed on the renumbered dirs, cascading a CONFUSING red fleet-wide (v-guide-
+                  # editor #6960 had to hand-regen). Folding the assert in makes a forgotten manifest regen fail
+                  # FAST + LOCAL at the authoring PR with the CLEAR "regen: nix build .#guide-shred && cp …"
+                  # message (#6961), not a downstream cp cascade. Near-ZERO gate cost: it reuses the SAME
+                  # guideShred derivation guideExamplesShredded already builds (just a jq -S diff on top).
+                  # Green-confirmed on current main before the fold (committed == fresh, count=412/emitted=405/
+                  # deferred=7). Teeth a required-status can't give under self-merge.
+                  guideManifestDriftAssert
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
                   # cdzFmtCheck FOLDED IN (v-code-cleanliness seq-282, v-nix 2026-08-30): the AUTHORITATIVE
                   # fleet-wide `cdz fmt --check` gate on the 6 canonical domain src dirs. Cheap front-end
