@@ -518,6 +518,8 @@ pass	sexp/36-comment-lead-compound-literal
 pass	sexp/37-match-to-let-native-tuple
 pass	sexp/38-match-to-let-native-record
 pass	sexp/39-match-native-tuple-refutable-noop
+pass	sexp/40-comment-in-quasiquote
+pass	sexp/41-comment-in-quote
 todo	ml/08-incomplete-binding
 todo	ml/10-unterminated-call
 todo	ml/476-ambiguous-toplevel-juxtaposition-rejected
