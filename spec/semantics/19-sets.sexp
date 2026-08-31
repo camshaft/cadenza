@@ -5696,7 +5696,7 @@
            nothing determines — no canonical key shape can be baked. Rejected at compile time with CDZ0203
            'not fully determined — annotate it', the determination-fault code (mirrors the unannotated
            escaping-result reject), rather than the former codeless key-canonicalization decline.")
-  (input (do (def (main) (Set.len (Set.of (list (list))))) (export main)))
+  (input (do (def (main) (Set.len (Set.of #list(#list())))) (export main)))
   (error CDZ0203 (message "not fully determined")))
 
 (case
@@ -5706,7 +5706,7 @@
            element type to `Int64`, so `(Set (List (List Int64)))` bakes a canonical key shape and compiles —
            `Set.len` of a one-member set is 1. Pins that the CDZ0203 fires ONLY on a genuinely undetermined
            key, never on a determined one.")
-  (input (do (def (main) (Set.len (Set.of (list (list 1))))) (export main)))
+  (input (do (def (main) (Set.len (Set.of #list(#list(1))))) (export main)))
   (output (: 1 Int64)))
 
 (case
@@ -5715,7 +5715,7 @@
     "The annotation fix the CDZ0203 hint points at: `(: (list) (List Int64))` determines the empty
            inner list's element type, so the key shape bakes and it compiles (`Set.len` 1). Pins that the
            annotation clears the determination fault by construction.")
-  (input (do (def (main) (Set.len (Set.of (list (: (list) (List Int64)))))) (export main)))
+  (input (do (def (main) (Set.len (Set.of #list((: #list() (List Int64)))))) (export main)))
   (output (: 1 Int64)))
 
 (case
@@ -5729,6 +5729,6 @@
   (input
     (do
       (def (dup s) (Set.union s s))
-      (def (main) (Set.len (dup (Set.of (list (list 1))))))
+      (def (main) (Set.len (dup (Set.of #list(#list(1))))))
       (export main)))
   (output (: 1 Int64)))
