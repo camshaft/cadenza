@@ -8131,7 +8131,6 @@ mod tests {
         }
     }
 
-    #[test]
     // `type_ascription_round_trips` (`e : T` → arena `(: e T)`, ascription binds loosest so it wraps the
     // whole expression) MIGRATED to the spec/syntax corpus (inc-6 batch-10): ml/74-type-ascription-literal
     // `42 : Int64`→`(: 42 Int64)`, ml/75-type-ascription-over-sum `2 + 2 : Int64`→`(: (+ 2 2) Int64)`
