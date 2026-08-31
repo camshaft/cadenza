@@ -1,0 +1,3 @@
+match s with
+  | #(1, .. rest) => rest
+  | _ => s

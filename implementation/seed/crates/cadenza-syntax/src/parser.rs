@@ -10359,67 +10359,17 @@ mod tests {
         assert_eq!(sexpr::print(&a), "(and 5 mask)");
     }
 
-    #[test]
-    fn a_set_pattern_parses() {
-        use crate::sexpr;
-        // A `#(`-led SET PATTERN — the pattern twin of the `#(…)` set literal, completing spread-in-pattern
-        // for the set compound type (operator: the `(.. v)` initiative covers construction AND patterns for
-        // all compounds). Head is the native set ctor leaf; elements are sub-patterns; a `.. rest` binds the
-        // remaining set to the wrapped `(.. rest)` node (the set-rest MATCH lowering is v-inference's slice).
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(#(a, b)) = a")),
-            "(def (f #set(a b)) a)"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(#(a, .. rest)) = a")),
-            "(def (f #set(a (.. rest))) a)"
-        );
-        // Empty set pattern `#()` — the empty-set match.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(#()) = 0")),
-            "(def (f #set()) 0)"
-        );
-    }
-
-    #[test]
-    fn a_set_rest_pattern_parses_in_a_match_arm() {
-        use crate::sexpr;
-        // The set-rest pattern in a real `match … with | #(a, .. rest) => …` ARM (not just `def`-param
-        // position) — the exact surface v-ast-compound made first-class (#6711/#6722, #6852/#6856) and
-        // v-guide-editor verified runs e2e (#6877: `match #set(1 2 3) with | #(1, .. rest) => Set.len(rest)
-        // | _ => 0` ⇒ 2, residual `#set(2 3)`). Twin of the binary-pattern match-arm test above; pins that
-        // the set-rest surface reads identically in arm position — head is the native set ctor leaf, `.. rest`
-        // binds the residual set to the wrapped `(.. rest)` node, and a following `_` catch-all arm coexists.
-        assert_eq!(
-            sexpr::print(&parse_ok("match s with | #(a, .. rest) => a | _ => 0")),
-            "(match s (#set(a (.. rest)) a) (_ 0))"
-        );
-        // The concrete residual-binding form (a literal element + the rest, returning the residual) —
-        // structurally the tree behind the runnable e2e example.
-        assert_eq!(
-            sexpr::print(&parse_ok("match s with | #(1, .. rest) => rest | _ => s")),
-            "(match s (#set(1 (.. rest)) rest) (_ s))"
-        );
-        // Round-trips cleanly through the printer (the `#(a, .. rest)` surface survives, no `` `..` ``
-        // quoted-op fallback) and re-parses structurally-equal.
-        let a = parse_ok("match s with | #(a, .. rest) => a | _ => 0");
-        let printed = crate::printer::print(&a, 80);
-        assert!(
-            printed.contains("#(a, .. rest)"),
-            "expected the clean set-rest surface in the ML print\n ml: {printed}"
-        );
-        assert!(
-            !printed.contains("`..`"),
-            "the set-rest arm fell back to the quoted-op `..`(…) surface\n ml: {printed}"
-        );
-        let back = read_ml(&printed);
-        assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
-        assert!(
-            a.structurally_eq(&back.arenas),
-            "set-rest match arm lost in round-trip\n ml:   {printed}\n back: {}",
-            sexpr::print(&back.arenas)
-        );
-    }
+    // `a_set_pattern_parses` + `a_set_rest_pattern_parses_in_a_match_arm` (a `#(`-led SET PATTERN — the pattern
+    // twin of the `#(…)` set literal: native set ctor leaf head, sub-pattern elements, a `.. rest` binding the
+    // residual set to `(.. rest)`; in def-param AND match-arm position) MIGRATED to the spec/syntax corpus
+    // (inc-6 batch-65):
+    //   * ml/398-set-pattern-param `def f(#(a, b)) = a`→`(def (f #set(a b)) a)`, ml/399-set-pattern-rest-param
+    //     `def f(#(a, .. rest)) = a`→`(def (f #set(a (.. rest))) a)`, ml/400-set-pattern-empty-param `def f(#())
+    //     = 0`→`(def (f #set()) 0)`.
+    //   * ml/333-set-rest-pattern already pins the match-arm `#(a, .. rest)` + `_` catch-all; ml/401-set-rest-
+    //     match-arm-literal-element `match s with | #(1, .. rest) => rest | _ => s`→`(match s (#set(1 (.. rest))
+    //     rest) (_ s))` adds the literal-element residual-binding form (the tree behind the #6877 e2e example).
+    //   The clean-surface round-trip (no `` `..` `` fallback) is each case's fmt-idempotence.
 
     #[test]
     fn a_destructuring_pattern_parameter_parses() {

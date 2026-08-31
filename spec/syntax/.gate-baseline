@@ -334,7 +334,11 @@ pass	ml/394-bin-literal-dependent-size
 pass	ml/395-bin-literal-as-operand
 pass	ml/396-bin-pattern-empty
 pass	ml/397-bin-pattern-le-modifier
+pass	ml/398-set-pattern-param
+pass	ml/399-set-pattern-rest-param
 pass	ml/40-match-open-sum-refutable
+pass	ml/400-set-pattern-empty-param
+pass	ml/401-set-rest-match-arm-literal-element
 pass	ml/41-match-closed-single-variant
 pass	ml/42-match-already-lowered-noop
 pass	ml/43-match-nested-bottom-up
