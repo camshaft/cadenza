@@ -6711,16 +6711,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn function_definition() {
-        // a named def uses `def`; an anonymous lambda uses `fn` — distinct surfaces.
-        assert_eq!(
-            assert_roundtrip("def add(a, b) = a + b", 80),
-            "def add(a, b) = a + b"
-        );
-        assert_eq!(assert_roundtrip("def main() = 42", 80), "def main() = 42");
-        assert_eq!(assert_roundtrip("fn(x) => x * 2", 80), "fn(x) => x * 2");
-    }
+    // `function_definition` (named `def` vs anonymous `fn` — distinct surfaces) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-15): ml/111-function-def-with-params `def add(a, b) = a + b`→
+    // `(def (add a b) (+ a b))`, ml/112-function-def-nullary `def main() = 42`→`(def (main) 42)`,
+    // ml/113-lambda-anonymous `fn(x) => x * 2`→`(fn (x) (* x 2))`.
 
     #[test]
     fn an_annotated_def_juxtaposes_without_a_spurious_semicolon() {
@@ -6742,46 +6736,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn value_definition() {
-        // `def name = value` is a value definition (hoisting, so `def` not `let`).
-        assert_eq!(assert_roundtrip("def x = 5", 80), "def x = 5");
-        assert_eq!(
-            assert_roundtrip("def pt = { x = 1, y = 2 }", 80),
-            "def pt = { x = 1, y = 2 }"
-        );
-        // the underlying AST is `(def name value)` — a name atom, not a signature list.
-        let a = sexpr::read("(def x 5)").unwrap();
-        assert_eq!(print(&a, 80), "def x = 5");
-    }
-
-    #[test]
-    fn sum_type_declaration() {
-        // Each variant on its own line, led by `| ` (including the first) — symmetric with a match's
-        // `|`-arms. Nullary = a bare ctor, a payload variant = `Ctor(T, …)`. The `|` is a surface
-        // separator, never a tree atom.
-        assert_eq!(
-            assert_roundtrip("type N = | I(Int64) | J(Int64)", 80),
-            "type N =\n  | I(Int64)\n  | J(Int64)"
-        );
-        assert_eq!(
-            assert_roundtrip("type Sign = | Neg | Zero | Pos", 80),
-            "type Sign =\n  | Neg\n  | Zero\n  | Pos"
-        );
-        // nullary + payload mix.
-        assert_eq!(
-            assert_roundtrip("type FL = | FNil | FCons(Tuple(Int64, FL))", 80),
-            "type FL =\n  | FNil\n  | FCons(Tuple(Int64, FL))"
-        );
-        // the arena is `(type NAME variant…)` — nullary = a bare name, payload = a `(Ctor T…)` list.
-        let a = sexpr::read("(type N (I Int64) (J Int64))").unwrap();
-        assert_eq!(print(&a, 80), "type N =\n  | I(Int64)\n  | J(Int64)");
-        let a = sexpr::read("(type FL FNil (FCons (Tuple Int64 FL)))").unwrap();
-        assert_eq!(
-            print(&a, 80),
-            "type FL =\n  | FNil\n  | FCons(Tuple(Int64, FL))"
-        );
-    }
+    // `value_definition` (`def name = value` — hoisting, so `def` not `let`; AST `(def name value)`, a
+    // name atom not a signature list) MIGRATED to the spec/syntax corpus (inc-6 batch-15):
+    // ml/114-value-def `def x = 5`→`(def x 5)`, ml/115-value-def-record `def pt = { x = 1, y = 2 }`→
+    // `(def pt #record((= x 1) (= y 2)))`.
+    // `sum_type_declaration` (each variant on its own line led by `| `, symmetric with a match's arms;
+    // nullary = bare ctor, payload = `Ctor(T, …)`; `|` is a surface separator, never a tree atom) MIGRATED:
+    // ml/116-sum-type-payload-variants `type N = | I(Int64) | J(Int64)`→`(type N (I Int64) (J Int64))`,
+    // ml/117-sum-type-nullary-variants `type Sign = | Neg | Zero | Pos`→`(type Sign Neg Zero Pos)`,
+    // ml/118-sum-type-mixed-variants `type FL = | FNil | FCons(Tuple(Int64, FL))`→
+    // `(type FL FNil (FCons (Tuple Int64 FL)))`. Each sum-type case's format.cdz pins the one-variant-per-
+    // line `type … =`⏎`  | …` canonical surface; the sexp→ml `print((type …))`/`print((def x 5))` oracles
+    // are subsumed by the ml cases' format goldens.
 
     #[test]
     fn a_multiline_type_doc_header_prints_every_line_flush_not_indented() {
@@ -7155,19 +7121,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn module_block() {
-        // Members are blank-line separated so a wall of defs reads with breathing room; the first
-        // member still hugs the `{`.
-        let out = assert_roundtrip(
-            "module math { def add(a, b) = a + b def main() = add(2, 3) }",
-            80,
-        );
-        assert_eq!(
-            out,
-            "module math {\n  def add(a, b) = a + b\n\n  def main() = add(2, 3)\n}"
-        );
-    }
+    // `module_block` (members blank-line separated, first member hugs the `{`) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-15): ml/119-module-block
+    // `module math { def add(a, b) = a + b def main() = add(2, 3) }` → tree
+    // `(module math (def (add a b) (+ a b)) (def (main) (add 2 3)))`, format.cdz pins the canonical
+    // `module math {`⏎`  def …`⏎⏎`  def …`⏎`}` blank-separated surface.
 
     #[test]
     fn top_level_defs_are_blank_separated() {

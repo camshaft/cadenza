@@ -19,6 +19,15 @@ pass	ml/108-lambda-return-type
 pass	ml/109-return-type-curried
 pass	ml/11-nested-list
 pass	ml/110-return-type-from-body-ascription
+pass	ml/111-function-def-with-params
+pass	ml/112-function-def-nullary
+pass	ml/113-lambda-anonymous
+pass	ml/114-value-def
+pass	ml/115-value-def-record
+pass	ml/116-sum-type-payload-variants
+pass	ml/117-sum-type-nullary-variants
+pass	ml/118-sum-type-mixed-variants
+pass	ml/119-module-block
 pass	ml/12-world-nullary-member
 pass	ml/13-world-full-decl
 pass	ml/14-world-wit-prim-list-option

@@ -1,0 +1,4 @@
+(module math
+  (def (add a b) (+ a b))
+
+  (def (main) (add 2 3)))
