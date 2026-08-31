@@ -1216,7 +1216,8 @@
               (sched-step (pins (PQ.PQNil ()) wake (KBox.KBox (fn (_u) (resume unit wake)))))))
           (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now)))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 5000000000 UInt64)))
 
 (case
   "a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry"
@@ -1271,7 +1272,8 @@
                   (KBox.KBox (fn (_u) (resume unit wake)))))))
           (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now)))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 1 UInt64)))
 
 (case
   "a two-entry directly-built pqueue pops the HEAD continuation, not the tail"
@@ -2679,7 +2681,8 @@
           ((get (u) s (resume s (+ s 1))))
           (handle B 0 ((step (u) t (resume t (+ t (A.get))))) (+ (* 10 (B.step)) (A.get)))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 6 Int64)))
 
 (case
   "an outer effect in a nested arm's RESUME-VALUE slot is served (as3)"
@@ -2807,7 +2810,8 @@
             ((step (u) t (resume t (+ t (A.get)))))
             (+ (* 100 (B.step)) (+ (* 10 (B.step)) (B.step))))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 61 Int64)))
 
 (case
   "an outer effect in BOTH the resume value and next-state slot declines cleanly (asb)"
@@ -2830,7 +2834,8 @@
           ((get (u) s (resume s (+ s 1))))
           (handle B 0 ((step (u) t (resume (A.get) (A.get)))) (+ (* 10 (B.step)) (A.get)))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 57 Int64)))
 
 (case
   "a handler arm forwarding an effect its enclosing scope does not hold is rejected"
@@ -10867,7 +10872,8 @@
       (def (bad (: x Int64)) (+ x (Amb.flip)))
       (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (bad (Amb.flip))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 22 Int64)))
 
 (case
   "a NON-tail outer handler reduces a reducible inner handle first, then folds its own perform"
@@ -10929,7 +10935,8 @@
           ((a (u) s (+ 1 (resume 10 s))))
           (handle B 0 ((b (u) t (+ 2 (resume 20 t)))) (+ (A.a) (B.b)))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 33 Int64)))
 
 (case
   "a recursive builder PERFORMS per step and a recursive pure fold consumes the built list"
@@ -12713,7 +12720,8 @@
       (effect Bail (op bail (-> Int64 Int64)))
       (def (main) (handle Bail 0 ((bail (n) s n)) (+ (if (< 3 5) (Bail.bail 7) 0) (Bail.bail 9))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 7 Int64)))
 
 (case
   "a handle whose body is a closure is applyable (the handle result IS that closure)"
@@ -12742,7 +12750,8 @@
       (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1))))
       (def (main) (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 2) 999999)) 7))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 507 Int64)))
 
 (case
   "the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)"
@@ -12756,7 +12765,8 @@
       (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1))))
       (def (main) (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 0) 999999)) 7))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 507 Int64)))
 
 (case
   "a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly"
@@ -12784,7 +12794,10 @@
             (* 10 (handle Bail 0 ((out (v) t (+ 500 v))) (let ((a (unwrap (E.fetch) 11))) (* a 2))))
             3)))
       (export main)))
-  (declines))
+  (call main (: 2 Int64))
+  (output (: 43 Int64))
+  (call main (: 3 Int64))
+  (output (: 5113 Int64)))
 
 (case
   "a non-tail cross-function conditional abort declines cleanly"
@@ -12800,7 +12813,8 @@
       (def (check (: n Int64)) (if (< n 0) (Bail.bail 99) n))
       (def (main) (handle Bail 0 ((bail (n) s n)) (+ 10 (check -1))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 99 Int64)))
 
 (case
   "a non-tail recursive abort declines rather than miscompiles"
@@ -12816,7 +12830,8 @@
       (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (+ 1 (walk (- n 1)))))
       (def (main) (handle Bail 0 ((bail (n) s n)) (walk 3)))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 99 Int64)))
 
 (case
   "a scalar abort in a TUPLE-typed handle body declines (type-consistency)"
