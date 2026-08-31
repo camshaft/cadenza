@@ -6052,11 +6052,14 @@ fn check_abort_arm_type(
     arm: &crate::resolved::HandleArm,
     out: &mut Vec<Reject>,
 ) {
-    // Only an ABORTIVE arm (no tail resume) makes its body value the handle result; a tail-resumptive arm
-    // is covered by `check_resume_result_type`/`check_resume_next_state_type` above.
-    let mut resumes = Vec::new();
-    collect_tail_resume_values(db, arm.body, &mut resumes);
-    if !resumes.is_empty() {
+    // Only a TRULY-ABORTIVE arm — one that resumes NOWHERE — makes its body value the handle result; an
+    // arm that resumes is covered by `check_resume_result_type`/`check_resume_next_state_type` above. The
+    // resume need NOT be in TAIL position: a NESTED resume (`(+ 1 (resume x))`, `(not (resume x))`) is
+    // still resumptive — its value flows through the continuation, so the arm body value is NOT the handle
+    // result and must NOT be abort-checked. The former TAIL-only `collect_tail_resume_values` guard
+    // under-detected a nested resume and wrongly abort-rejected 9 well-typed non-tail effect folds
+    // (#7033 regression, bisected by v-effects). Gate on the canonical any-position `arm_has_resume`.
+    if crate::effects::arm_has_resume(db, arm.body) {
         return;
     }
     let body_ty = type_of(db, arm.body);
