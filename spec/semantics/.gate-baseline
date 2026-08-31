@@ -2637,6 +2637,9 @@ pass	a list of records in a record result VALUE round-trips via the run/encode e
 pass	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
 pass	a bare list<u8>/Bytes PARAM member of a typed export interface crosses (multi-export list<u8> param — operator §2 decode-check half)
 pass	a bare option<scalar>/Option PARAM member of a typed export interface crosses (sum_params option arm, both variants)
+pass	a member with TWO top-level mem-leaf params (list<u8> + list<s64>) threads the flattened cursor across both
+pass	a member with a mem-leaf param interleaved with a scalar param threads the cursor across mixed widths
+pass	a member with an option<s64> param beside a mem-leaf param composes the sum rebuild with the byte copy-in
 pass	a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)
 pass	a bare string/String PARAM member of a typed export interface crosses (mem_leaf Str-arm coverage)
 pass	a single component exports BOTH a list<u8>-result member and a list<u8>-param member of one interface (operator §2 two-export capstone)
