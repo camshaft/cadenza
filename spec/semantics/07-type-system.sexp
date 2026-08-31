@@ -3458,6 +3458,36 @@
   (call main)
   (output (: 5 Int64)))
 
+; ── an unknown type in a RECORD-type annotation FIELD names the type, never the field LABEL ──
+;    (migrated from rcdzc an_unknown_type_in_a_record_parameter_annotation_names_only_the_type_not_the_field_label)
+; A record-type annotation `(Record (x T) …)` validates each field's TYPE `T` but must NOT treat the
+; field LABEL (`x`) as a value name. A bad field type is CDZ0101 naming the unknown type (`Nonesuch`),
+; and the label is NEVER reported "unbound name `x`". This holds across every annotation SITE — a
+; parameter annotation, a value annotation `(: value T)`, and a let-binder annotation — which share the
+; record-aware type-position validator. Before, a naive value-`collect` fallback mis-resolved the label
+; as an unbound value name alongside the real fault.
+
+(case "an unknown type in a record parameter annotation names the type, not the field label"
+  (input (do (def (g (: r (Record (x Nonesuch)))) r) (export g)))
+  (error CDZ0101 (message "Nonesuch") (not "unbound name `x`")))
+
+(case "an unknown type in a NESTED record parameter annotation field names only the deep type"
+  (input (do (def (g (: r (Record (a (Record (b Nonesuch)))))) r) (export g)))
+  (error CDZ0101 (message "Nonesuch") (not "unbound name `a`") (not "unbound name `b`")))
+
+(case "an unknown type in a record VALUE annotation names the type, not the field label"
+  (input (do (def (main) (: 5 (Record (x Nonesuch)))) (export main)))
+  (error CDZ0101 (message "Nonesuch") (not "unbound name `x`")))
+
+(case "an unknown type in a record LET-BINDER annotation names the type, not the field label"
+  (input (do (def (main) (let (((: r (Record (x Nonesuch))) #record((= x 5)))) r)) (export main)))
+  (error CDZ0101 (message "Nonesuch") (not "unbound name `x`")))
+
+(case "a well-formed record parameter annotation compiles and the field reads back"
+  (input (do (def (g (: r (Record (x Int64)))) (. r x)) (def (main) (g #record((= x 7)))) (export main)))
+  (call main)
+  (output (: 7 Int64)))
+
 ; ── let-binder annotation MISMATCH offers the SAME coercion fix as a value annotation / argument position
 ;    (migrated from rcdzc an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix +
 ;    a_known_type_let_binder_mismatch_keeps_its_coercion_fix) ──

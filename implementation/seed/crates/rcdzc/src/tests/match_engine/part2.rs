@@ -3673,57 +3673,12 @@ fn shadowing_a_prelude_payload_type_name_is_a_plain_rebind_not_a_phantom_variant
     );
 }
 
-/// A `(Record (field Type)…)` PARAMETER ANNOTATION whose field TYPE is unknown — `(: r (Record (x
-/// Nonesuch)))` — reports ONLY the bad type `Nonesuch`, not the field LABEL `x`. `param_annotation_faults`
-/// used to `collect` the whole record type expression as a VALUE, mis-resolving the label `x` as an
-/// unbound NAME (a misleading "unbound name `x`") alongside the real "unbound name `Nonesuch`". Now it
-/// uses the record-aware type-position split (the same `push_payload_type_positions` /
-/// `validate_type_position` the variant-payload check uses), which skips field labels and validates only
-/// the field TYPES.
-#[test]
-fn an_unknown_type_in_a_record_parameter_annotation_names_only_the_type_not_the_field_label() {
-    use crate::testkit::parse;
-    // All THREE annotation sites — a PARAMETER annotation, a VALUE annotation `(: value T)`, and a
-    // LET-BINDER annotation — share the record-aware validator, so a record-type annotation with a bad
-    // field TYPE names only the type (`Nonesuch`), never the field LABEL (`x`/`a`/`b`). Before, each
-    // site's naive value-`collect` fallback mis-resolved the label as an unbound value name.
-    for src in [
-        // parameter annotation
-        "(module m (def (g (: r (Record (x Nonesuch)))) r) (export g))",
-        // nested: the deep field type is the only fault, no labels flagged.
-        "(module m (def (g (: r (Record (a (Record (b Nonesuch)))))) r) (export g))",
-        // value annotation `(: value T)`
-        "(module m (def (main) (: 5 (Record (x Nonesuch)))) (export main))",
-        // let-binder annotation
-        "(module m (def (main) (let (((: r (Record (x Nonesuch))) (record (x 5)))) r)) (export main))",
-    ] {
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("`Nonesuch`")),
-            "the unknown field type is named: {src} -> {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-        // The field LABELS (`x` / `a` / `b`) must NOT be reported unbound — they are labels, not values.
-        assert!(
-            !diags.iter().any(|d| d.message.contains("unbound name `x`")
-                || d.message.contains("unbound name `a`")
-                || d.message.contains("unbound name `b`")),
-            "a record-type field LABEL must not be reported unbound: {src} -> {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-    // NO false positive: a well-formed record annotation compiles clean.
-    assert!(
-        !crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (g (: r (Record (x Int64) (y Bool)))) r) (export g))"
-        )))
-        .iter()
-        .any(|d| d.severity == crate::abi::Severity::Error),
-        "a well-formed record parameter annotation is clean"
-    );
-}
+// (Migrated to corpus 07-type-system: "an unknown type in a record parameter annotation names the type,
+// not the field label" + the NESTED / VALUE-annotation / LET-BINDER site variants (CDZ0101 names Nonesuch,
+// (not "unbound name `x`"/`a`/`b`) — the field-label-is-not-a-value anti-regression across the shared
+// record-aware type-position validator), plus "a well-formed record parameter annotation compiles and the
+// field reads back" (value 7, no false positive). Was
+// an_unknown_type_in_a_record_parameter_annotation_names_only_the_type_not_the_field_label.)
 
 /// A match every UNGUARDED arm of which yields the SAME value COLLAPSES to that value — the probe
 /// chain is dropped (the match analogue of `(if c x x)` → `x`). `(match a (1 x) (2 x) (_ x))` always
