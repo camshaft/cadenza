@@ -4417,7 +4417,12 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
         && matches!(&ast_disc.ty, crate::ty::Ty::Sum { decl, .. }
             if crate::eval::variant_owner_decl(db, head).is_some_and(|d| d == *decl))
     {
-        return Core::Poison(Reject::decline(
+        // A PERMANENT correct-reject (operator-ruled A): a non-canonical float has no value form, so this
+        // is a coded CDZ0201 (Malformed) — the SAME family the non-finite float LITERAL (resolve.rs
+        // `FloatInf`/`FloatNan`) and the non-finite const FOLD (arith_fold.rs, #6893) carry, not a codeless
+        // decline. (v-cdz-smith/v-corpus-declines seq-286 ledger.)
+        return Core::Poison(Reject::coded(
+            crate::diag::Code::Malformed,
             "an `Ast.Float` node cannot carry a non-canonical float (a NaN or infinity has no canonical \
              value form); a finite float reifies, matching how `,@` of a non-canonical-float list and \
              `Ast.Float` of a NaN/infinity decline",

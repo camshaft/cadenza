@@ -2179,7 +2179,7 @@ c")))
            construction guard rejects a non-canonical constant float payload, so the node is never built.
            Pins the uniform-decline fix (adv-ast-float-nan differential); a bare NaN value still crosses.")
   (input (do (def (main) (Ast.Float Float64.nan)) (export main)))
-  (declines))
+  (error CDZ0201))
 
 (case
   "reifying a positive-infinity float into an Ast.Float declines"
@@ -2188,7 +2188,7 @@ c")))
            form (declines upstream), so the reify never gets a canonical payload. Pins that ALL
            non-canonical floats (NaN and infinities) are uniformly kept out of an `Ast.Float` node.")
   (input (do (def (main) (Ast.Float (/ 1.0 0.0))) (export main)))
-  (declines))
+  (error CDZ0201))
 
 (case
   "reifying a finite float into an Ast.Float is unaffected by the non-canonical guard"
@@ -2208,7 +2208,7 @@ c")))
            closing the same wasm-traps/rust-accepts split via the `ast-lift` path (not just the ctor path).
            A finite unquote (`,2.5`) and a runtime finite float still lift — the guard is surgical.")
   (input (do (def (main) (quasiquote (f (unquote Float64.nan)))) (export main)))
-  (declines))
+  (error CDZ0201))
 
 (case
   "an active unquote of a finite float lifts to Ast.Float (ast-lift control)"
@@ -2238,7 +2238,7 @@ c")))
         (main)
         (match (tagged-template bad (chunks "x") (holes)) ((Ast.Float f) (= f 1.0)) (_ false)))
       (export main)))
-  (declines))
+  (error CDZ0201))
 
 (case
   "a tagged-template tag returning a finite Ast.Float expands normally (expander control)"
