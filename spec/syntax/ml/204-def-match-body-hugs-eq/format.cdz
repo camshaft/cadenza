@@ -1,0 +1,3 @@
+def describe(s) = match s with
+  | A(_) => 1
+  | B(_) => 2

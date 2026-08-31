@@ -118,6 +118,10 @@ pass	ml/198-record-type-fields-single
 pass	ml/199-multi-statement-function-body
 pass	ml/20-world-result-bare
 pass	ml/200-top-level-no-semicolons
+pass	ml/201-bare-body-before-open-form-parenthesized
+pass	ml/202-bare-expr-before-open-form-semicolon
+pass	ml/203-top-level-value-defs-blank-separated
+pass	ml/204-def-match-body-hugs-eq
 pass	ml/21-world-record-member
 pass	ml/22-world-variant-record-payload
 pass	ml/23-world-variant-prim-payload

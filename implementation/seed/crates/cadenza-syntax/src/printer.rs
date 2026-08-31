@@ -6827,31 +6827,14 @@ mod tests {
     //     `(do (def (f) 1) (def (g) 2) (export f))` (format.cdz = blank-separated, no `;`).
     // Each carries a format.cdz for the canonical surface; the sexp→ml `print(…)` oracles are subsumed.
 
-    #[test]
-    fn bare_body_before_open_next_form_is_delimited() {
-        // A def whose plain body is followed by a NON-keyword form (`f(9)`) parenthesizes the body, so
-        // the trailing token cannot fuse with the next form (`1 f` would re-lex as a quantity literal).
-        // The `def`'s greedy body cannot instead take a `;` (it would swallow it), hence body parens.
-        let a = sexpr::read("(do (def (f n) (+ n 1)) (f 9))").unwrap();
-        assert_eq!(print(&a, 80), "def f(n) = (n + 1)\n\nf(9)");
-        assert_eq!(
-            assert_roundtrip("def f(n) = (n + 1)\n\nf(9)", 80),
-            "def f(n) = (n + 1)\n\nf(9)"
-        );
-    }
-
-    #[test]
-    fn bare_expression_before_open_next_form_takes_a_semicolon() {
-        // Two bare top-level expressions where the second could fuse onto the first take a `;` — which
-        // re-parses as a stmt-level `(do …)` the root splices flat, preserving the tree. (Parens would
-        // be wrong: `(5)` then `(x)` re-lexes `)(` as application.)
-        let a = sexpr::read("(do (def x 5) (+ x 1))").unwrap();
-        assert_eq!(print(&a, 80), "def x = (5)\n\nx + 1");
-        assert_eq!(
-            assert_roundtrip("def x = (5)\n\nx + 1", 80),
-            "def x = (5)\n\nx + 1"
-        );
-    }
+    // `bare_body_before_open_next_form_is_delimited` (a def whose plain body is followed by a NON-keyword
+    // form parenthesizes the body so the trailing token can't fuse with the next form — `1 f` would re-lex
+    // as a quantity literal) MIGRATED to the spec/syntax corpus (inc-6 batch-27): ml/201-bare-body-before-
+    // open-form-parenthesized `def f(n) = (n + 1)` / `f(9)`→`(do (def (f n) (+ n 1)) (f 9))`.
+    // `bare_expression_before_open_next_form_takes_a_semicolon` (two bare top-level exprs where the second
+    // could fuse take a `;`/paren guard) MIGRATED: ml/202-bare-expr-before-open-form-semicolon
+    // `def x = (5)` / `x + 1`→`(do (def x 5) (+ x 1))`. (Both inputs are already canonical — the body
+    // parens + blank separator are the fixed point — so no format.cdz.)
 
     #[test]
     fn greedy_tailed_statement_in_a_sequence_is_parenthesized() {
@@ -6879,16 +6862,10 @@ mod tests {
     // `(module math (def (add a b) (+ a b)) (def (main) (add 2 3)))`, format.cdz pins the canonical
     // `module math {`⏎`  def …`⏎⏎`  def …`⏎`}` blank-separated surface.
 
-    #[test]
-    fn top_level_defs_are_blank_separated() {
-        // Consecutive top-level definitions are JUXTAPOSED — blank-line separated, NO `;` between them
-        // (`;` is the within-body sequencing operator, not a top-level separator) — and the layout
-        // round-trips (blank lines are whitespace).
-        assert_eq!(
-            assert_roundtrip("def a = 1 def b = 2 def c = 3", 80),
-            "def a = 1\n\ndef b = 2\n\ndef c = 3"
-        );
-    }
+    // `top_level_defs_are_blank_separated` (consecutive top-level definitions are JUXTAPOSED — blank-line
+    // separated, NO `;`) MIGRATED to the spec/syntax corpus (inc-6 batch-27): ml/203-top-level-value-defs-
+    // blank-separated — space-juxtaposed input `def a = 1 def b = 2 def c = 3`→`(do (def a 1) (def b 2)
+    // (def c 3))`, format.cdz canonicalizes to the blank-line-separated layout.
 
     #[test]
     fn doc_line_hugs_its_def_no_blank() {
@@ -6900,16 +6877,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn def_match_body_hugs_the_eq() {
-        // A `match … with` body stays on the `=` line; its `|`-arms break one per line, indented one
-        // level under the def.
-        let out = assert_roundtrip("def describe(s) = match s with | A(_) => 1 | B(_) => 2", 80);
-        assert_eq!(
-            out,
-            "def describe(s) = match s with\n  | A(_) => 1\n  | B(_) => 2"
-        );
-    }
+    // `def_match_body_hugs_the_eq` (a `match … with` body stays on the `=` line; its `|`-arms break one per
+    // line, indented one level under the def) MIGRATED to the spec/syntax corpus (inc-6 batch-27):
+    // ml/204-def-match-body-hugs-eq `def describe(s) = match s with | A(_) => 1 | B(_) => 2`→
+    // `(def (describe s) (match s ((A _) 1) ((B _) 2)))`, format.cdz pins the `= match s with`⏎`  | …` surface.
 
     #[test]
     fn def_let_body_drops_flat_at_the_let_column() {
