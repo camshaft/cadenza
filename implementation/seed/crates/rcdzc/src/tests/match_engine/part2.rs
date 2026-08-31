@@ -3187,24 +3187,13 @@ fn an_inlined_nested_match_in_a_fused_arm_re_resolves_both_backends() {
         .expect("PR1030 probe2: inlined-nested-match-in-fused-arm must emit rust");
 }
 
-#[test]
-fn a_string_payload_variant_is_not_misjudged_nullary() {
-    // REGRESSION: a variant carrying a `String` payload — `(type Tag (Named String) Anon)` — must
-    // construct, not be misjudged NULLARY. `eval::encode_ty` (the `Ty → type-value AST` round-trip a
-    // constructor scheme takes) had NO `Ty::String` arm, so it hit the `_ => Unit` catch-all: the
-    // `Named` ctor's `(-> String Tag)` scheme round-tripped to `(-> Unit Tag)`, and applying `Named`
-    // to a `String` arg then unified "cannot unify Unit with String". (The strings vertical added
-    // `Ty::String` + `decode_ty`'s `"String"` arm but forgot the `encode_ty` side — the exact hole the
-    // `Bytes` arm's comment warned about.) Fixed by `Ty::String => push_name("String")`. Compile-only:
-    // a runtime String projection needs the composed runtime (the corpus 13-strings cases run it).
-    let src = "(module m (type Tag (Named String) Anon) \
-                     (def (main) (match (Tag.Named \"hi\") ((Tag.Named s) 1) (Tag.Anon 0))) \
-                   (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a String-payload variant must COMPILE — not reject Named as nullary (encode_ty must round-trip String)"
-    );
-}
+// a_string_payload_variant_is_not_misjudged_nullary (a String-payload variant `(type Tag (Named String)
+// Anon)` must CONSTRUCT via its ctor, not be misjudged nullary — the encode_ty `Ty::String` round-trip
+// regression) migrated to corpus 13-strings "a string carried as a sum-variant payload is bound and
+// measured at run time": that case constructs `(Node.NSym "hello")` (a String-payload variant via its
+// ctor) + matches → 8, which REQUIRES the ctor scheme (-> String Node) to round-trip correctly (else NSym
+// is misjudged nullary and construction fails). rcdzc compile-validity pin deleted (the corpus value-run
+// subsumes it).
 
 #[test]
 fn a_quantity_type_round_trips_through_encode_and_decode() {
