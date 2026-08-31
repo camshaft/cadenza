@@ -1799,6 +1799,21 @@ mod tests {
             (0, 1),
             "trailing ; after a multi-line string still counts"
         );
+        // A `;` INSIDE a `#\…` char literal (`#\;` — the semicolon character, a real Cadenza s-expr datum)
+        // is NOT a comment; miscounting it would falsely refuse (or, if it flipped in_str, mask a real
+        // drop). The `#\` skip consumes the char, so the following real `; c` is what counts.
+        assert_eq!(
+            comment_counts("(f #\\;) ; c", Semicolon),
+            (0, 1),
+            "; in a #\\; char literal is not a comment; the trailing ; is"
+        );
+        // A `#\"` char literal is the QUOTE character — it must NOT open a string (else a following `;`
+        // would be swallowed as string content). The `#\` skip consumes it, so the trailing `; c` counts.
+        assert_eq!(
+            comment_counts("(f #\\\") ; c", Semicolon),
+            (0, 1),
+            "#\\\" is a char literal, not a string opener"
+        );
         assert_eq!(
             comment_counts("(f x) // not a sexpr comment", Semicolon),
             (0, 0)
