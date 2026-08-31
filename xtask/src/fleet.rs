@@ -7490,11 +7490,6 @@ fn window_is_working(session: &str, agent: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Parse the "% context used" indicator Claude Code renders in its status line (e.g. "97% context
-/// used", or just "100% context" mid-render) out of a captured pane. Returns the integer percent, or
-/// `None` if no such marker is present (the agent isn't near any threshold, or the pane didn't render
-/// it this capture). Pure so the parse is unit-testable. Takes the LAST match (the live status line is
-/// at the bottom; an older value may linger higher in the visible buffer).
 /// Did a prior `/compact` DECLINE because the context is one huge turn with nothing to summarize?
 /// Claude's REPL answers `/compact` with "Not enough messages to compact." when the window is
 /// dominated by a SINGLE giant turn (a huge build/read/reasoning turn) rather than many messages —
@@ -7508,7 +7503,41 @@ fn compact_was_declined(pane_text: &str) -> bool {
         .contains("not enough messages to compact")
 }
 
+/// Does the pane show a JUST-COMPLETED `/compact` (or auto-compaction)? Claude Code prints a
+/// `Compacted (ctrl+o to see full summary)` banner right after a compaction and leaves it in the
+/// visible pane until the agent's next turn scrolls it away. CRUCIALLY, while that banner is up the
+/// status-line `% context` indicator is STALE — it still shows the PRE-compaction size (the fresh
+/// window's true usage is tiny) and only re-renders to the new low value when the agent next takes a
+/// turn. So a freshly-compacted agent (esp. an IDLE one at a low cadence) reads as still at-the-wall
+/// for several watchdog sweeps, risking a spurious auto-restart of a HEALTHY window — worst of all the
+/// concierge, which IS the watchdog driver (concierge report 2026-08-31: read 97-99% for several sweeps
+/// right after a compaction to a ~4K window). Presence of the banner ⟹ the compaction was recent
+/// (nothing has pushed it off-screen yet), which is EXACTLY the stale-% window; once the agent ticks,
+/// the banner scrolls away AND the % refreshes, so this self-clears. Matches the STABLE chrome
+/// (`compacted` + `see full summary`), case-insensitive; tracks CC's status-line vocabulary (a future
+/// UI change is the known maintenance point, same as `pane_shows_working`).
+fn pane_shows_recent_compaction(pane_text: &str) -> bool {
+    let lower = pane_text.to_ascii_lowercase();
+    lower.contains("compacted") && lower.contains("see full summary")
+}
+
+/// Parse the "% context used" indicator Claude Code renders in its status line (e.g. "97% context
+/// used", or just "100% context" mid-render) out of a captured pane. Returns the integer percent, or
+/// `None` if no such marker is present (the agent isn't near any threshold, or the pane didn't render
+/// it this capture). Pure so the parse is unit-testable. Takes the LAST match (the live status line is
+/// at the bottom; an older value may linger higher in the visible buffer).
+///
+/// `None` ALSO when the pane shows a just-completed compaction ([`pane_shows_recent_compaction`]): the
+/// visible `% context` is then the PRE-compaction stale value (the window just reset to a tiny size but
+/// the status line hasn't re-rendered), so reporting it would falsely read a fresh window as saturated
+/// and could spuriously auto-restart it. A stale reading is worse than "unknown" here, so suppress it
+/// to `None` (every saturation/restart/compact gate treats `None` as "not near any threshold") until
+/// the agent's next turn refreshes the indicator.
 fn parse_context_pct(pane_text: &str) -> Option<u8> {
+    // A freshly-compacted pane's visible % is stale (pre-compaction) — treat as unknown, not saturated.
+    if pane_shows_recent_compaction(pane_text) {
+        return None;
+    }
     let mut found: Option<u8> = None;
     for (i, _) in pane_text.match_indices("% context") {
         // Walk back over the digits immediately preceding the '%'.
@@ -18273,6 +18302,37 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         );
         // Clamp a nonsense over-100 reading to 100 (never trust a status line above the wall).
         assert_eq!(parse_context_pct("140% context"), Some(100));
+        // A JUST-COMPACTED pane suppresses the (stale, pre-compaction) % → None, so a fresh window is
+        // not read as saturated. The lingering status line still shows the old 97%, but the banner is up.
+        assert_eq!(
+            parse_context_pct("97% context used\nCompacted (ctrl+o to see full summary)\n❯ "),
+            None
+        );
+        // Even at a literal "100% context" — a freshly-compacted window is NOT at the wall.
+        assert_eq!(
+            parse_context_pct("100% context used\n… Compacted (ctrl+o to see full summary) …"),
+            None
+        );
+    }
+
+    #[test]
+    fn pane_shows_recent_compaction_gates_the_stale_context_pct() {
+        // The post-compaction banner Claude Code leaves in the pane while the % indicator is stale.
+        assert!(pane_shows_recent_compaction(
+            "Compacted (ctrl+o to see full summary)"
+        ));
+        // Case-insensitive + tolerant of surrounding chrome.
+        assert!(pane_shows_recent_compaction(
+            "  … COMPACTED (CTRL+O TO SEE FULL SUMMARY) …  "
+        ));
+        // A normal working / idle / saturated pane does NOT match (so a real saturation still flags).
+        assert!(!pane_shows_recent_compaction("97% context used\n❯ "));
+        assert!(!pane_shows_recent_compaction("esc to interrupt"));
+        assert!(!pane_shows_recent_compaction(""));
+        // "compacted" alone (e.g. a scrollback commit message) without the banner tail does NOT trip it.
+        assert!(!pane_shows_recent_compaction(
+            "fix: store components compacted into one entry"
+        ));
     }
 
     #[test]
