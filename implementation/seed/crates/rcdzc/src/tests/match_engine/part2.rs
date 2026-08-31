@@ -3671,12 +3671,10 @@ fn a_unit_conflict_anchors_to_a_user_node() {
     );
 }
 
-#[test]
 // unit_in_across_dimensions_is_cdz0501 (`(Unit.in meter (Qty.of 3.0 second))` → CDZ0501 naming both
 // "second" + "meter") migrated to corpus 18-units-of-measure "Unit.in to a unit of a different dimension
 // is a compile-time error" — enriched that case with (message "second") (message "meter"). rcdzc test
 // deleted (corpus-covered).
-#[test]
 // chaining_two_unit_in_conversions_is_a_clean_cdz0501_not_a_terse_runtime_decline migrated to corpus
 // 18-units-of-measure "chaining two Unit.in conversions is a compile-time error — the inner one already
 // unwrapped": enriched that case with (message "converts a QUANTITY") (message "which is not a quantity")
