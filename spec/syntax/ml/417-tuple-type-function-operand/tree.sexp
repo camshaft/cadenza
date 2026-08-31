@@ -1,0 +1,1 @@
+(def (g (: f (-> (Tuple Int64 Bool) Int64))) f)

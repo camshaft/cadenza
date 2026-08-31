@@ -353,7 +353,13 @@ pass	ml/411-def-param-map
 pass	ml/412-def-param-nested-tuple-in-list-rest
 pass	ml/413-def-param-mixed-plain-and-list-rest
 pass	ml/414-def-param-bin
+pass	ml/415-tuple-type-param-annotation
+pass	ml/416-tuple-type-paren-equals-explicit
+pass	ml/417-tuple-type-function-operand
+pass	ml/418-tuple-type-nested
+pass	ml/419-paren-single-type-transparent
 pass	ml/42-match-already-lowered-noop
+pass	ml/420-paren-empty-unit-type
 pass	ml/43-match-nested-bottom-up
 pass	ml/44-world-deeply-nested-aggregate
 pass	ml/45-world-headed-non-decl-fallback
