@@ -6254,33 +6254,13 @@ mod tests {
     // literally in the tree), ml/172-tagged-template-empty `def m() = e""`→`(chunks "")`. The
     // `print((tagged-template …))` sexp→ml oracle is subsumed by the ml cases' fmt-idempotence.
 
-    #[test]
-    fn tagged_template_non_bare_tag_falls_back_to_call_form() {
-        // PR #405: the `tag"…"` sugar glues the tag directly before the quote, and the lexer only
-        // re-lexes a BARE ident (not a backtick-escaped name) glued to `"`. A non-bare-safe tag (here
-        // `a+b`, which `emit_name` would backtick-quote) must NOT sugar — `` `a+b`"…" `` would not
-        // re-lex, a garbage render. It falls back to the generic `(tagged-template …)` call form, which
-        // round-trips (the tag is backtick-escaped in call-head position and re-reads as a name).
-        let a = sexpr::read("(tagged-template a+b (chunks \"hi\") (holes))").unwrap();
-        let ml = print(&a, 80);
-        assert!(
-            !ml.starts_with('`') && ml.contains("tagged-template("),
-            "a non-bare tag must print as the generic call form, not garbage sugar; got {ml:?}"
-        );
-        // And it round-trips: re-reading the ML yields the same tree.
-        assert!(
-            parser::read_ml(&ml).arenas.structurally_eq(&a),
-            "the call-form fallback must round-trip; ml = {ml:?}"
-        );
-        // A BARE-safe tag still sugars to `tag"…"`.
-        assert_eq!(
-            print(
-                &sexpr::read("(tagged-template jsx (chunks \"hi\") (holes))").unwrap(),
-                80
-            ),
-            "jsx\"hi\""
-        );
-    }
+    // `tagged_template_non_bare_tag_falls_back_to_call_form` (PR #405: the `tag"…"` sugar only re-lexes a
+    // BARE ident glued to `"`; a non-bare-safe tag like `a+b` — which `emit_name` would backtick-quote —
+    // must NOT sugar (`` `a+b`"…" `` would not re-lex, garbage), it falls back to the generic
+    // `tagged-template(…)` call form which round-trips) MIGRATED to the spec/syntax corpus (inc-6 batch-52):
+    // ml/325-tagged-template-non-bare-tag-call-fallback ``def m() = tagged-template(`a+b`, chunks("hi"),
+    // holes())``→`(def (m) (tagged-template a+b (chunks "hi") (holes)))` (canonical — the call-form round-trip
+    // witness). The BARE-safe-tag sugar contrast (`jsx"hi"`) is already pinned by ml/170-tagged-template-hole-free.
 
     // `tagged_template_holes_round_trip` (B2: `{expr}` interpolation holes — a body with N holes has N+1
     // chunks, each hole an ordinary parsed expression) MIGRATED to the spec/syntax corpus (inc-6 batch-22):
@@ -6829,43 +6809,15 @@ mod tests {
     //     routes to the plain comment-aware path).
     // Clean calls are already pinned (ml/04). v-syntax-comments' rule confirms these attachment points.
 
-    #[test]
-    fn an_own_line_comment_before_a_list_element_is_preserved_not_dropped() {
-        // An OWN-LINE `//` comment LEADING a list element (`[\n // note\n 1, …]` or between elements) used
-        // to be DROPPED — `list_literal` parses each element via `expr`, which (unlike `stmt`/`body_expr`)
-        // does not drain the element's leading-comment slot, so the comment was stranded (→ `cdz fmt`
-        // refused the file). list_literal now captures it via `take_comments_here` + wraps the element in a
-        // LEADING `(comment "text" elem)` (distinct from the same-line trailing `(comment-after …)`). The
-        // printer already renders a leading `(comment …)` as a `// …` line above the element; strip_comments
-        // peels it (compiles to wasm). This is the interior (own-line) half of the collection-comment gap.
-        //
-        // Before the FIRST element:
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def l() -> List(Int64) = [\n  // lead\n  1, 2]").arenas),
-            "(def (l) (: #list((comment \"lead\" 1) 2) (List Int64)))",
-            "an own-line comment before the first element is captured, not dropped"
-        );
-        // BETWEEN elements (own-line before a non-first element) — safe (no swallow hazard, unlike a
-        // same-line trailing mid-element comment which stays refused):
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def l() -> List(Int64) = [1,\n  // mid\n  2]").arenas),
-            "(def (l) (: #list(1 (comment \"mid\" 2)) (List Int64)))",
-            "an own-line comment between elements is captured, not dropped"
-        );
-        // Round-trips (leading `//` prints on its own line above the element).
-        assert_eq!(
-            assert_roundtrip("[\n  // lead\n  1, 2]", 80),
-            "[\n  // lead\n  1,\n  2\n]"
-        );
-        // Leading (own-line) AND trailing (same-line, last element) compose.
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def l() -> List(Int64) = [\n  // lead\n  1, 2 // last\n]").arenas
-            ),
-            "(def (l) (: #list((comment \"lead\" 1) (comment-after \"last\" 2)) (List Int64)))",
-            "leading own-line + trailing same-line comments compose"
-        );
-    }
+    // `an_own_line_comment_before_a_list_element_is_preserved_not_dropped` (an own-line `//` LEADING a list
+    // element used to be DROPPED — `list_literal` parses elements via `expr`, which doesn't drain the
+    // leading-comment slot; it now captures via `take_comments_here` + wraps the element in a LEADING
+    // `(comment "text" elem)`) MIGRATED to the spec/syntax corpus (inc-6 batch-52, comment-node block):
+    //   * ml/326-comment-leading-first-list-elem `[`⏎`  // lead`⏎`  1, 2]`→`#list((comment "lead" 1) 2)`.
+    //   * ml/327-comment-leading-nonfirst-list-elem `[1,`⏎`  // mid`⏎`  2]`→`#list(1 (comment "mid" 2))`.
+    //   * ml/328-comment-leading-and-trailing-list-elem `[`⏎`  // lead`⏎`  1, 2 // last`⏎`]`→
+    //     `#list((comment "lead" 1) (comment-after "last" 2))` — leading own-line + trailing same-line compose.
+    // Each carries the List(Int64)-ascribed def wrapper; format.cdz pins the one-per-line commented surface.
 
     // The tuple/set element-comment tests MIGRATED to the spec/syntax corpus (inc-6 batch-43, comment-node
     // block):
@@ -7405,44 +7357,17 @@ mod tests {
     // a trailing comment compose on one arm) → `(match x (comment-after "t" (comment "lead" (0 0))) (_ 1))`
     // — the trailing `comment-after` wraps the leading `comment` wraps the arm. Each carries a format.cdz.
 
-    #[test]
-    fn an_own_line_comment_leading_a_type_variant_is_preserved_not_dropped() {
-        // An own-line `//` above a sum-type variant (`type T =\n  // note\n  | A\n  | B`) used to be
-        // DROPPED (it sat in the variant's `|` leading slot, which the variant loop didn't drain →
-        // `is_type_shape` rejected the wrapped variant → the type fell to the backtick call form).
-        // type_expr now drains it before the `|` (like match arms) and wraps `(comment "text" variant)`;
-        // `is_type_shape` unwraps via `strip_field_comments` and `print_type` renders it above the `| `.
-        // Distinct from a leading `///` DOC header (a `(doc)` on the whole decl). Own-line, no swallow
-        // hazard → any variant. `strip_comments` peels it; compiles to wasm.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("type T =\n  // note\n  | A\n  | B").arenas),
-            "(type T (comment \"note\" A) B)",
-            "own-line comment before the first variant is captured, not dropped"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml("type T =\n  | A\n  // mid\n  | B").arenas),
-            "(type T A (comment \"mid\" B))",
-            "own-line comment before a non-first variant is captured"
-        );
-        // Renders above the `| ` and round-trips (idempotent).
-        let src = "type T =\n  // note\n  | A\n  | B";
-        let printed = print(&parser::read_ml(src).arenas, 80);
-        assert_eq!(
-            printed, "type T =\n  // note\n  | A\n  | B",
-            "leading comment prints on its own line above the variant"
-        );
-        assert_eq!(
-            print(&parser::read_ml(&printed).arenas, 80),
-            printed,
-            "idempotent"
-        );
-        // A leading `///` DOC header (a `(doc)` on the decl) is DISTINCT and unchanged.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("/// doc\ntype T = | A | B").arenas),
-            "(type T (doc \"doc\") A B)",
-            "a leading /// doc header stays a (doc) on the decl, not a variant comment"
-        );
-    }
+    // `an_own_line_comment_leading_a_type_variant_is_preserved_not_dropped` (an own-line `//` above a sum-
+    // type variant used to be DROPPED — it sat in the variant's `|` leading slot which the loop didn't
+    // drain → `is_type_shape` rejected the wrapped variant → backtick call-form fallback; type_expr now
+    // drains it and wraps `(comment "text" variant)`) MIGRATED to the spec/syntax corpus (inc-6 batch-52,
+    // comment-node block):
+    //   * ml/329-comment-leading-first-type-variant `type T =`⏎`  // note`⏎`  | A`⏎`  | B`→
+    //     `(type T (comment "note" A) B)` (canonical — renders above the `| `, idempotent).
+    //   * ml/330-comment-leading-nonfirst-type-variant `type T =`⏎`  | A`⏎`  // mid`⏎`  | B`→
+    //     `(type T A (comment "mid" B))`.
+    // The DISTINCT leading `///` DOC header (`(type T (doc …) A B)`, NOT a variant comment) is already pinned
+    // by ml/299-multiline-doc-header-on-type — a doc stays a `(doc)` on the decl, never a `(comment)`.
 
     // `minimal_parens` (precedence: `*` binds tighter than `+`, so no parens; `(1 + 2) * 3` needs them)
     // is fully subsumed by existing corpus cases — MIGRATED (inc-6 batch-24): `(1 + 2) * 3` =

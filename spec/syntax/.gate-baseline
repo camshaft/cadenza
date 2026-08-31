@@ -254,7 +254,13 @@ pass	ml/321-annotation-operand-infix-simple
 pass	ml/322-annotation-operand-infix-compound
 pass	ml/323-annotation-ascription-match-scrutinee
 pass	ml/324-annotation-ascription-arrow-type
+pass	ml/325-tagged-template-non-bare-tag-call-fallback
+pass	ml/326-comment-leading-first-list-elem
+pass	ml/327-comment-leading-nonfirst-list-elem
+pass	ml/328-comment-leading-and-trailing-list-elem
+pass	ml/329-comment-leading-first-type-variant
 pass	ml/33-match-multi-clause
+pass	ml/330-comment-leading-nonfirst-type-variant
 pass	ml/34-match-multi-clause-irref-first
 pass	ml/35-match-single-variant-wrap
 pass	ml/36-match-single-variant-nested-box
