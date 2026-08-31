@@ -1047,6 +1047,7 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
     let mut cdz: Option<PathBuf> = None;
     let mut oracle: Option<PathBuf> = None;
     let mut false_positives_dir: Option<PathBuf> = None;
+    let mut dump_boundary: Option<PathBuf> = None;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1060,6 +1061,9 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
             // Where to write the (orig, program1) render pairs for symbolic FALSE-POSITIVES (sampled
             // values agree, oracle normal forms differ) — the hand-off for v-lean-oracle's normalizer.
             "--false-positives-dir" => false_positives_dir = it.next().map(PathBuf::from),
+            // Where to write each BOUNDARY (cannotProve) program source, prefixed with its skip reason —
+            // so v-lean-oracle can see the ACTUAL constructs (e.g. which free-name) behind a category.
+            "--dump-boundary" => dump_boundary = it.next().map(PathBuf::from),
             other => {
                 eprintln!("cdz-smith cadenza-equiv: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -1122,7 +1126,7 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
         findings_dir.display()
     );
     let mut false_positives: Vec<(String, String)> = Vec::new();
-    let mut boundary_reasons: Vec<String> = Vec::new();
+    let mut boundary_samples: Vec<(String, String)> = Vec::new(); // (reason, source)
     match driver::equiv_cadenza_sweep(
         &cfg,
         &store,
@@ -1130,7 +1134,7 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
         &oracle,
         count,
         &mut false_positives,
-        &mut boundary_reasons,
+        &mut boundary_samples,
     ) {
         Ok(stats) => {
             eprintln!(
@@ -1146,10 +1150,10 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
             );
             // Histogram the boundary (cannotProve) skip REASONS, most-frequent first — the coverage-
             // prioritization signal for v-lean-oracle (which unmodeled category to model next).
-            if !boundary_reasons.is_empty() {
+            if !boundary_samples.is_empty() {
                 let mut hist: std::collections::HashMap<String, u64> =
                     std::collections::HashMap::new();
-                for r in &boundary_reasons {
+                for (r, _src) in &boundary_samples {
                     // Normalize the reason to its CATEGORY: strip leading framing words ("equiv:",
                     // "boundary:", "symeval:") so the DISTINGUISHING head survives, drop any trailing
                     // "(…)" specifics, and keep the first ~70 chars so near-identical reasons bucket.
@@ -1173,6 +1177,34 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
                 for (cat, n) in ranked.iter().take(12) {
                     eprintln!("  {n:>5}  {cat}");
                 }
+            }
+            // Optionally DUMP each boundary program source, one file per sample, name-prefixed with a
+            // sanitized skip-reason category — so v-lean-oracle can read the ACTUAL programs behind a
+            // category (e.g. inspect the free-name programs to see which identifier is unmodeled).
+            if let Some(dir) = &dump_boundary
+                && !boundary_samples.is_empty()
+            {
+                let _ = std::fs::create_dir_all(dir);
+                let mut wrote = 0u64;
+                for (i, (reason, src)) in boundary_samples.iter().enumerate() {
+                    let tag: String = reason
+                        .chars()
+                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                        .collect::<String>()
+                        .split('-')
+                        .filter(|s| !s.is_empty())
+                        .take(6)
+                        .collect::<Vec<_>>()
+                        .join("-");
+                    let path = dir.join(format!("boundary-{tag}-{i}.sexp"));
+                    if std::fs::write(&path, format!("; reason: {reason}\n{src}\n")).is_ok() {
+                        wrote += 1;
+                    }
+                }
+                eprintln!(
+                    "[cdz-smith] dumped {wrote} boundary program(s) → {} (reason-tagged; grep by category)",
+                    dir.display()
+                );
             }
             // Write the symbolic-false-positive (orig, program1) pairs for v-lean-oracle's normalizer triage.
             if let Some(dir) = &false_positives_dir
