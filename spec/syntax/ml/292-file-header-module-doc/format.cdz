@@ -1,0 +1,5 @@
+/// Header one.
+/// Header two.
+import { x } from "dep"
+
+def f() = 1

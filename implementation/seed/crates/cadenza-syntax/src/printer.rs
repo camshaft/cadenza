@@ -7465,46 +7465,16 @@ mod tests {
     // the `{…}` surface; falls back to the generic call form) MIGRATED: ml/127-record-key-non-name-falls-back
     // `record(1(v))`→`(record (1 v))`. The sexp→ml oracles are subsumed by these ml cases' fmt-idempotence.
 
-    #[test]
-    fn documented_def_prints_doc_line() {
-        // A def carrying `(doc …)` forms renders them as `/// …` lines above the `def`.
-        let a = sexpr::read("(def (f x) (doc \"hi\") (+ x 1))").unwrap();
-        let printed = print(&a, 80);
-        assert_eq!(printed, "/// hi\ndef f(x) = x + 1");
-        let b = parser::read_ml(&printed);
-        assert!(
-            b.ok() && b.arenas.structurally_eq(&a),
-            "printed:\n{printed}"
-        );
-    }
-
-    #[test]
-    fn non_doc_multi_form_def_falls_back() {
-        // A def whose extra body form is NOT a doc (here a `(: type)` annotation) has no dedicated
-        // surface; it falls back to the generic call form and still round-trips. `def` is now a
-        // reserved keyword, so as a bare call head it is backtick-escaped (`` `def` ``).
-        let a = sexpr::read("(def (f x) (: Int64) (+ x 1))").unwrap();
-        let printed = print(&a, 80);
-        assert_eq!(printed, "`def`(f(x), `:`(Int64), x + 1)");
-        let b = parser::read_ml(&printed);
-        assert!(
-            b.ok() && b.arenas.structurally_eq(&a),
-            "printed:\n{printed}"
-        );
-    }
-
-    #[test]
-    fn doc_and_comment_round_trip() {
-        // `///` doc attaches inside the def; `//` comment wraps it.
-        assert_eq!(
-            assert_roundtrip("/// Adds.\ndef add(a, b) = a + b", 80),
-            "/// Adds.\ndef add(a, b) = a + b"
-        );
-        assert_eq!(
-            assert_roundtrip("// note\ndef main() = 42", 80),
-            "// note\ndef main() = 42"
-        );
-    }
+    // The def doc/comment surface tests MIGRATED to the spec/syntax corpus (inc-6 batch-45, comment-node
+    // block):
+    //   * `documented_def_prints_doc_line` (a def carrying `(doc …)` renders `/// …` above the `def`) +
+    //     the doc half of `doc_and_comment_round_trip` → ml/290-doc-line-on-def `/// hi`⏎`def f(x) = x + 1`→
+    //     `(def (f x) (doc "hi") (+ x 1))`.
+    //   * the comment half of `doc_and_comment_round_trip` (a `//` wraps the def) →
+    //     ml/291-comment-line-on-def `// note`⏎`def main() = 42`→`(comment "note" (def (main) 42))`.
+    //   * `non_doc_multi_form_def_falls_back` (a def whose extra body form is NOT a doc falls back to the
+    //     backtick-`def` generic call form) → ml/293-def-non-doc-body-fallback
+    //     `` `def`(f(x), `:`(Int64), x + 1) ``→`(def (f x) (: Int64) (+ x 1))`.
 
     // `comment_leading_a_def_body_is_preserved_not_dropped` (a `//` on its own line at the START of a def
     // body → `(comment "text" body)`, not dropped) MIGRATED to the spec/syntax corpus (inc-6 batch-44,
@@ -7516,53 +7486,12 @@ mod tests {
     // `// between defs`⏎`def b() -> Int64 = 2`→`(do (def (a) (: 1 Int64)) (comment "between defs"
     // (def (b) (: 2 Int64))))`.
 
-    #[test]
-    fn file_header_doc_before_a_non_documentable_form_becomes_a_module_doc() {
-        // A `///` file header before a NON-documentable form (an `import` — not a def/type/effect/module
-        // that drains its own docs) is preserved as a top-level `(module-doc …)` node, re-printing as
-        // `///` — NOT downgraded to `//`. (Before the module-doc node, `stmt`'s leftover-doc path wrapped
-        // it as `(comment …)` → `//`, the file-header doc-loss that blocked ~56 files from fmt-apply.)
-        let src = "/// Header one.\n/// Header two.\nimport { x } from \"dep\"\ndef f() = 1";
-        let a = parser::read_ml(src);
-        assert!(a.ok(), "parse: {:?}", a.errors);
-        let sexpr = crate::sexpr::print(&a.arenas);
-        assert_eq!(
-            sexpr.matches("(module-doc ").count(),
-            2,
-            "both header lines are `(module-doc …)` nodes: {sexpr}"
-        );
-        assert_eq!(
-            sexpr.matches("(comment ").count(),
-            0,
-            "no header line downgraded to `(comment …)`: {sexpr}"
-        );
-        // They re-print as `///` (count preserved), and the whole thing is idempotent + structurally
-        // round-trips (a `(module-doc)` re-reads to the same node).
-        let printed = print(&a.arenas, 100);
-        let doc_lines = printed
-            .lines()
-            .filter(|l| l.trim_start().starts_with("///"))
-            .count();
-        let comment_lines = printed
-            .lines()
-            .filter(|l| {
-                let t = l.trim_start();
-                t.starts_with("//") && !t.starts_with("///")
-            })
-            .count();
-        assert_eq!(doc_lines, 2, "both headers re-print as `///`: {printed}");
-        assert_eq!(comment_lines, 0, "no header downgraded to `//`: {printed}");
-        let b = parser::read_ml(&printed);
-        assert!(b.ok(), "reparse: {:?}", b.errors);
-        assert_eq!(print(&b.arenas, 100), printed, "not idempotent");
-        assert_eq!(
-            crate::sexpr::print(&b.arenas)
-                .matches("(module-doc ")
-                .count(),
-            2,
-            "the `(module-doc)` nodes survive the round-trip"
-        );
-    }
+    // `file_header_doc_before_a_non_documentable_form_becomes_a_module_doc` (a `///` file header before a
+    // NON-documentable form — an `import` — is preserved as a top-level `(module-doc …)` node, re-printing
+    // as `///`, NOT downgraded to `//`) MIGRATED to the spec/syntax corpus (inc-6 batch-45, comment-node
+    // block): ml/292-file-header-module-doc `/// Header one.`⏎`/// Header two.`⏎`import { x } from "dep"`⏎
+    // `def f() = 1`→`(do (module-doc "Header one.") (module-doc "Header two.") (import "dep" (x)) (def (f) 1))`
+    // — two `(module-doc …)` nodes, no `(comment …)` downgrade.
 
     #[test]
     fn doc_before_effect_stays_a_doc_not_downgraded_to_comment() {
