@@ -979,27 +979,33 @@ fn bare_world_is_still_an_ordinary_name_not_a_world_decl() {
 // 2))` (body stops at `def g`); the def-juxtaposition `def a = 1 def b = 2`→`(do (def a 1) (def b 2))` is
 // subsumed by ml/203-top-level-value-defs-blank-separated. (`top_level_semicolon_folds…` stays Rust — GAP note below.)
 
-// STAYS RUST pending v-syntax's READER-IMPL landing (corpus-policy: never pin an unsettled spec question).
-// OPERATOR RULED (2026-08-31, via v-syntax): top-level `;` is a SEPARATOR required ONLY to disambiguate an
-// ambiguous expr boundary (the `f() g()`→Qty fold); ALL declarations are exempt and a lone expr needs none.
-// So `f(); g()` → `(do (f) (g))` (two forms, pinned ml/432), and `f() g()` (no `;`) is the AMBIGUOUS case that
-// now REQUIRES `;` (an error/diagnostic — no longer a silent Qty fold). name/call/member-magnitude quantities
-// stay goldened (ml/242-245); the narrowing is to the `;`-optional claim, not the quantity sugar. v-syntax is
-// coordinating the reader change with v-syntax-nonrec-reader and will PING v-parser-corpus with the exact
-// goldens to migrate once it lands. HOLD the pinning until then; this `len == 2` check remains until reconciled.
-// (inc-6 batch-72 flagged → operator ruled; awaiting reader impl.)
+// OPERATOR RULED (2026-08-31, via v-syntax) + IMPLEMENTED: top-level `;` is a SEPARATOR required ONLY to
+// disambiguate an ambiguous expr boundary (the `f() g()`→Qty fold); ALL declarations are exempt and a lone
+// expr needs none. `f(); g()` → `(do (f) (g))` (two forms); `f() g()` (no `;`) is the AMBIGUOUS case — the
+// reader now REJECTS it (was a silent bogus `(Qty.of (f) (Unit.of g))` fold, because `g(` is a call-followed
+// name, never a unit). name/call/member-magnitude quantities stay goldened (ml/242-245); the change is to
+// the `;`-optional claim (via declining the unit-suffix on a call-followed name), not the quantity sugar.
 #[test]
-fn top_level_semicolon_folds_and_flattens_to_the_same_root() {
-    // A `;` between top-level forms is optional: it folds a stmt-level `(do …)` that the root
-    // then splices flat, so `a; b` and `a  b` at the root yield the IDENTICAL tree.
+fn top_level_semicolon_separates_and_ambiguous_juxtaposition_is_rejected() {
+    // `;` SEPARATES top-level expressions: `f(); g()` folds a stmt-level `(do …)` the root splices flat.
     let with = parse_ok("f(); g()");
-    let without = parse_ok("f() g()");
     let wt = with.as_form(with.root, "do").unwrap();
-    let wo = without.as_form(without.root, "do").unwrap();
     assert_eq!(wt.len(), 2);
-    assert_eq!(wo.len(), 2);
     assert_eq!(with.head_name(wt[0]), Some("f"));
     assert_eq!(with.head_name(wt[1]), Some("g"));
+    // But whitespace-juxtaposing two top-level exprs on ONE line — `f() g()` — is AMBIGUOUS (the sugar
+    // would fold `g` as a unit into a bogus quantity), so it is now a parse ERROR that suggests `;`.
+    let without = read_ml("f() g()");
+    assert!(
+        !without.ok(),
+        "juxtaposed top-level exprs `f() g()` must require `;`, got: {}",
+        crate::sexpr::print(&without.arenas)
+    );
+    assert!(
+        without.errors.iter().any(|e| e.message.contains(';')),
+        "the ambiguous-juxtaposition error suggests `;`: {:?}",
+        without.errors
+    );
 }
 
 // `semicolon_in_argument_position_needs_parens` (a call argument is a single expression, so a `;` inside must

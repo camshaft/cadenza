@@ -4204,6 +4204,24 @@ impl<'a> Parser<'a> {
         if self.src[num_span.end..unit_span.start].contains('\n') {
             return num;
         }
+        // A candidate unit name that is IMMEDIATELY (GLUED) CALL-FOLLOWED — `name(` with no space — is a
+        // function CALL, never a unit (a unit is a bare name): so a same-line juxtaposition like `f() g()`
+        // is TWO expressions the sugar was silently folding into a bogus quantity `(Qty.of (f) (Unit.of g))`.
+        // DECLINE the unit-suffix and ERROR — where a whitespace juxtaposition of two forms is AMBIGUOUS
+        // (one expr's end vs the next's start), a `;` is required to separate them (operator 2026-08-31:
+        // "`;` is for scenarios where it is ambiguous where one expr ends and the other starts"). The number/
+        // name quantity path is UNAFFECTED (`5 meter`, `f(x) meter` — `meter` is a bare name, not call-followed).
+        if self
+            .tokens
+            .get(self.pos + 1)
+            .is_some_and(|next| next.kind == Kind::LParen && next.span.start == unit_span.end)
+        {
+            self.error(
+                "`name(…)` is a function call, not a unit — a unit suffix is a bare name; separate \
+                 juxtaposed expressions with `;` (e.g. `f(); g()`, not `f() g()`)",
+            );
+            return num;
+        }
         let name = text.to_string();
         self.bump(); // the unit name
         // (Unit.of #"name"), then extend into a COMPOUND / RATE unit across glued operators.
