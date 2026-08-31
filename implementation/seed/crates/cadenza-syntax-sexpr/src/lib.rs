@@ -549,7 +549,7 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
                     // stack. Emit nothing now; queue `obj` `.` `key` (reversed → source order on pop).
                     if !structural
                         && let Some((obj, key)) = a.member_parts(id)
-                        && is_plain_ident_name(a, key)
+                        && is_dotted_segment_name(a, key)
                         && is_dotted_operand_sugarable(a, obj)
                     {
                         stack.push(Work::Node(key, false));
@@ -702,20 +702,26 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
     }
 }
 
-/// Whether `id` is a Name whose text is a PLAIN IDENTIFIER — non-empty, first char alphabetic or `_`,
-/// every char alphanumeric or `_`. This is the strict subset of names that re-lex CLEANLY as a dotted-name
-/// SEGMENT: it excludes any operator/delimiter/whitespace char (and a leading digit) that would break the
-/// `obj.key` sugar's round-trip (e.g. a fuzzed name `":.*}7中3-x"` — printing `obj.:.*}7中3-x` would NOT
-/// re-read to the same `Member`). CJK etc. is alphabetic, so a Unicode identifier still qualifies. Kept
-/// STRICTER than the reader's `is_dotted_name` (which checks only each segment's first char) so the sugar
-/// is round-trip-safe over ARBITRARY arenas (the `sexpr_printer_is_total` totality property) — a name that
-/// is not a plain ident simply keeps the canonical `(. obj key)`, never a mis-rendered sugar.
-fn is_plain_ident_name(a: &Arenas, id: StructId) -> bool {
+/// Whether `id` is a Name whose text is a valid DOTTED-NAME SEGMENT — one that re-lexes cleanly as a
+/// segment of the `obj.key` sugar so the member round-trips. MIRRORS what the reader accepts as a dotted
+/// segment ([`is_dotted_name`]: each segment's FIRST char is alphabetic or `_`), plus the two conditions
+/// that keep the CONCATENATED `obj.key` a single well-formed dotted token: no embedded `.` (an interior dot
+/// would split into spurious segments — a key "a.b" would read `(. (. obj a) b)`, not `Member(obj,"a.b")`)
+/// and none of the sexpr TOKEN TERMINATORS (whitespace / `(` / `)` / `;`, which would split the token).
+/// Kebab-case (`to-list`), Unicode (`中3`), and operator-ish INTERIOR chars are FINE — the reader keys a
+/// dotted token only on each segment's FIRST char. This is exactly the set that round-trips, so the sugar
+/// stays TOTAL over arbitrary/fuzzed arenas (`sexpr_printer_is_total`): a fuzzed name like `":.*}7中3-x"`
+/// (non-alpha first char AND an embedded `.`) is excluded → keeps canonical `(. obj key)`. (An earlier
+/// all-ALPHANUMERIC rule was too strict — it dropped kebab-case member keys like `Set.to-list`, diverging
+/// from the fmt-canonical corpus (#6818) and redding the merge-required cdz-fmt-check (#6819).)
+fn is_dotted_segment_name(a: &Arenas, id: StructId) -> bool {
     a.as_name(id).is_some_and(|n| {
         n.chars()
             .next()
             .is_some_and(|c| c.is_alphabetic() || c == '_')
-            && n.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && !n
+                .chars()
+                .any(|c| c == '.' || c.is_whitespace() || matches!(c, '(' | ')' | ';'))
     })
 }
 
@@ -726,9 +732,9 @@ fn is_plain_ident_name(a: &Arenas, id: StructId) -> bool {
 /// stays the canonical `(. …)` — which keeps the printer TOTAL (flat/pretty agree structurally) over
 /// arbitrary arenas. Used by the pretty printer's member arm: `obj.key` (seq-282 B) vs `(. obj key)`.
 fn is_dotted_operand_sugarable(a: &Arenas, id: StructId) -> bool {
-    is_plain_ident_name(a, id)
+    is_dotted_segment_name(a, id)
         || a.member_parts(id).is_some_and(|(obj, key)| {
-            is_plain_ident_name(a, key) && is_dotted_operand_sugarable(a, obj)
+            is_dotted_segment_name(a, key) && is_dotted_operand_sugarable(a, obj)
         })
 }
 
