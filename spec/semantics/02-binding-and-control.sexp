@@ -5362,6 +5362,23 @@
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 40 Int64)) (output (: 0 Int64)))
 
+; A TUPLE-pattern parameter MAY end in a trailing `.. rest`: a tuple's arity is fixed and statically known,
+; so a leading-element-plus-rest tuple pattern is IRREFUTABLE in a binding position (it matches every tuple
+; of the parameter's type) and is ACCEPTED — binding the leading element(s) and the trailing sub-tuple to
+; `rest`. Witnesses core-semantics.md §"A Binding Position Accepts An Irrefutable Pattern" (v-spec-oracle
+; #6723): unlike a LEADING-rest list pattern (which does not match the empty list → CDZ0210) or a keyed-map
+; pattern (refutable → CDZ0210), a tuple trailing-rest is total. `(def (f #tuple(a .. rest)) …)` over
+; `#tuple(3 4 5)` binds `a`=3 and `rest`=`(tuple 4 5)`. (Formerly the binding-position path did not recognize
+; a tuple-with-rest head and gave a spurious CDZ0201 "not a tuple/record/constructor"; fixed by
+; v-ast-compound's check_binding_pattern. The MATCH-arm form is pinned in 05.)
+(case "a tuple trailing-rest parameter binds the leading element (irrefutable binding position)"
+  (input  (do (def (f #tuple(a .. rest)) a) (def (main) (f #tuple(3 4 5))) (export main)))
+  (call   main) (output (: 3 Int64)))
+
+(case "a tuple trailing-rest parameter binds the trailing sub-tuple to rest"
+  (input  (do (def (f #tuple(a .. rest)) (. rest 0)) (def (main) (f #tuple(3 4 5))) (export main)))
+  (call   main) (output (: 4 Int64)))
+
 (case "a signature mixing a plain parameter and a tuple-pattern parameter binds both"
   (doc    "A def signature may MIX an ordinary name parameter with a destructuring tuple-pattern parameter:
            `(def (f x (tuple a b)) (+ x (+ a b)))` — `x` is a plain binder and `(tuple a b)` destructures
