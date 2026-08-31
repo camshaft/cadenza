@@ -1995,52 +1995,10 @@ fn a_value_position_type_fault_anchors_at_the_sub_expression() {
     }
 }
 
-/// An ANONYMOUS-lambda `(fn (x) …)` parameter never referenced in the body is unused — like an unused
-/// DEF parameter (CDZ0306 + `_`-prefix fix). A lambda is not in `db.defs`, so the def-param loop missed
-/// it; a dedicated `head_name == "fn"` pass (using the same name-based `used_param_names` check) covers
-/// it, without double-reporting a DEF's own signature-lambda params.
-#[test]
-fn an_unused_anonymous_lambda_parameter_warns() {
-    // An unused lambda param → one CDZ0306 with a `_x` fix.
-    let d = unused_diags(
-        "(module m (def (main) (let ((f (fn ((: x Int64)) 5))) (f 3))) (export main))",
-    );
-    assert_eq!(d.len(), 1, "the unused lambda param x warns: {d:?}");
-    assert!(
-        d[0].message.contains("`x`") && d[0].message.contains("parameter"),
-        "{d:?}"
-    );
-    assert_eq!(
-        d[0].fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("_x"),
-        "carries the `_`-prefix fix: {d:?}"
-    );
-    // An exported closure's unused param warns too.
-    assert!(
-        unused_of("(module m (def (main) (fn ((: x Int64)) 5)) (export main))")
-            .iter()
-            .any(|m| m.contains("`x`")),
-        "an exported closure's unused param warns"
-    );
-    // NO false positive: a used lambda param, an `_`-prefixed one, and a def-with-params (whose
-    // signature-lambda params are covered by the def-param loop, NOT double-reported here) are clean.
-    for ok in [
-        "(module m (def (main) (let ((f (fn ((: x Int64)) x))) (f 3))) (export main))",
-        "(module m (def (main) (let ((f (fn ((: _x Int64)) 5))) (f 3))) (export main))",
-    ] {
-        assert!(
-            unused_of(ok).is_empty(),
-            "a used/underscored lambda param must not warn: {ok} -> {:?}",
-            unused_of(ok)
-        );
-    }
-    // A def-with-unused-param warns EXACTLY once (the lambda pass does not also fire on its signature).
-    assert_eq!(
-        unused_of("(module m (def (g (: x Int64) (: y Int64)) x) (export g))").len(),
-        1,
-        "a def's unused param warns once, not doubled by the lambda pass"
-    );
-}
+// MIGRATED to corpus (09-functions.sexp): the anonymous-lambda unused-parameter warning + `_x` fix, the
+// used/`_`-prefixed clean cases, and the def-param "warns exactly once (not doubled by the lambda pass)"
+// facet (a `(count 1)` on the def-parameter case). Rust test an_unused_anonymous_lambda_parameter_warns
+// deleted — language-independent + corpus-covered.
 
 #[test]
 fn a_wide_parameter_list_flags_exactly_the_unused_parameters() {
