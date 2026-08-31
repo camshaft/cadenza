@@ -830,7 +830,7 @@
       (def
         (build (: i Int64) (: n Int64) (: acc String))
         (if (< i n) (build (+ i 1) n (String.concat acc "ab")) acc))
-      (def (main) (Option.expect (Bytes.at (String.to-bytes (build 0 3 "")) 1) "v"))
+      (def (main) (Option.expect (Bytes.at ((. String to-bytes) (build 0 3 "")) 1) "v"))
       (export main)))
   (call main)
   (output (: 98 Int64))
@@ -874,7 +874,8 @@
         (main (: a Int64))
         (match
           (Bytes.slice (Bytes.of #list(120 97 98 121)) a 2)
-          ((Some s) (match (String.from-bytes s) ((Some str) (String.byte-len str)) ((None u) -3)))
+          ((Some s)
+            (match ((. String from-bytes) s) ((Some str) ((. String byte-len) str)) ((None u) -3)))
           ((None u) -1)))
       (export main)))
   (call main (: 1 Int64))
@@ -1674,7 +1675,7 @@
           (def bs (Bytes.of #list(0 15 n 171 255)))
           (def s (hex bs))
           (+
-            (* (String.byte-len s) 100)
+            (* ((. String byte-len) s) 100)
             (if
               (=
                 s
@@ -1724,7 +1725,7 @@
                 (def v (find-at "0123456789abcdef" c 0 16))
                 (if (< v 0) -1 (dec-go s (+ i 1) len (+ (* acc 16) v)))))
             ((None _u) acc))))
-      (def (hexdec (: s String)) (dec-go s 0 (String.scalar-len s) 0))
+      (def (hexdec (: s String)) (dec-go s 0 ((. String scalar-len) s) 0))
       (def
         (main (: n Int64))
         (do
@@ -2624,8 +2625,8 @@
             (Bytes.slice b st ln)
             ((Some s)
               (match
-                (String.from-bytes s)
-                ((Some str) (+ 100 (String.byte-len str)))
+                ((. String from-bytes) s)
+                ((Some str) (+ 100 ((. String byte-len) str)))
                 ((None _u) -1)))
             ((None _u) -2))))
       (export main)))
@@ -2674,8 +2675,8 @@
       (def
         (main (: n Int64))
         (match
-          (String.from-bytes (build n (Bytes.of #list())))
-          ((Some s) (String.byte-len s))
+          ((. String from-bytes) (build n (Bytes.of #list())))
+          ((Some s) ((. String byte-len) s))
           ((None u) -1)))
       (export main)))
   (call main (: 200 Int64))
@@ -2734,7 +2735,8 @@
           (def ln (if (= mode 1) 3 4))
           (match
             (Bytes.slice b lo ln)
-            ((Some w) (match (String.from-bytes w) ((Some s) (String.scalar-len s)) ((None _u) -1)))
+            ((Some w)
+              (match ((. String from-bytes) w) ((Some s) ((. String scalar-len) s)) ((None _u) -1)))
             ((None _u) -2))))
       (export main)))
   (call main (: 1 Int64))
@@ -2792,7 +2794,7 @@
         (main (: mode Int64))
         (do
           (def s (String.concat "ab" (if (< mode 100) "cd" "zz")))
-          (def bs (String.to-bytes s))
+          (def bs ((. String to-bytes) s))
           (if
             (= mode 1)
             (Bytes.len bs)
@@ -3463,7 +3465,7 @@
             (String.slice s 3 5)
             ((Some tail)
               (let
-                ((b (String.to-bytes tail)))
+                ((b ((. String to-bytes) tail)))
                 (+
                   (Int64.of (Option.expect (Bytes.at b 0) "b0"))
                   (Int64.of (Option.expect (Bytes.at b 1) "b1")))))
@@ -3485,7 +3487,7 @@
             (String.slice s (+ 3 k) (+ 5 k))
             ((Some tail)
               (let
-                ((b (Bytes.concat (String.to-bytes tail) (String.to-bytes tail))))
+                ((b (Bytes.concat ((. String to-bytes) tail) ((. String to-bytes) tail))))
                 (+
                   (Int64.of (Option.expect (Bytes.at b 0) "b0"))
                   (Int64.of (Option.expect (Bytes.at b 3) "b3")))))

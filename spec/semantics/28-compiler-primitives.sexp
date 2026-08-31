@@ -743,7 +743,7 @@
     (do
       (def
         (walk (const (: n Int64)) (const (: c Char)))
-        (if (= n 0) (Char.to-int c) (+ 1 (walk (- n 1) c))))
+        (if (= n 0) ((. Char to-int) c) (+ 1 (walk (- n 1) c))))
       (def (main) (const (walk 3 #\a)))
       (export main)))
   (output (: 100 Int64)))
@@ -771,7 +771,7 @@
     (do
       (def
         (f (const (: n Int64)))
-        (match (Char.from-int n) ((Option.Some c) (Char.to-int c)) ((Option.None) -1)))
+        (match ((. Char from-int) n) ((Option.Some c) ((. Char to-int) c)) ((Option.None) -1)))
       (def (main) (const (f 97)))
       (export main)))
   (output (: 97 Int64)))
@@ -786,7 +786,7 @@
     (do
       (def
         (f (const (: n Int64)))
-        (match (Char.from-int n) ((Option.Some c) (Char.to-int c)) ((Option.None) -1)))
+        (match ((. Char from-int) n) ((Option.Some c) ((. Char to-int) c)) ((Option.None) -1)))
       (def (main) (const (f 55296)))
       (export main)))
   (output (: -1 Int64)))
@@ -820,7 +820,9 @@
            path (no `(const …)` block), folding a Char threaded through the recursion.")
   (input
     (do
-      (def (f (const (: c Char)) (const (: n Int64))) (if (= n 0) (Char.to-int c) (f c (- n 1))))
+      (def
+        (f (const (: c Char)) (const (: n Int64)))
+        (if (= n 0) ((. Char to-int) c) (f c (- n 1))))
       (def (main) (f #\a 3))
       (export main)))
   (output (: 97 Int64)))
@@ -1193,7 +1195,7 @@
            (Map.to-list …)))` folds to 2 — no longer a REJECT. The Map twin of the Set.to-list fold.")
   (input
     (do
-      (def (main) (const (List.len (Map.to-list (Map.insert (Map.insert #map() 2 20) 1 10)))))
+      (def (main) (const (List.len ((. Map to-list) (Map.insert (Map.insert #map() 2 20) 1 10)))))
       (export main)))
   (output (: 2 Int64)))
 
@@ -1209,7 +1211,9 @@
         (main)
         (const
           (match
-            (List.at (Map.to-list (Map.insert (Map.insert (Map.insert #map() 3 30) 1 10) 2 20)) 0)
+            (List.at
+              ((. Map to-list) (Map.insert (Map.insert (Map.insert #map() 3 30) 1 10) 2 20))
+              0)
             ((Option.Some #tuple(k v)) (+ (* 100 k) v))
             ((Option.None) -1))))
       (export main)))
@@ -1226,7 +1230,7 @@
         (main)
         (const
           (match
-            (List.at (Map.to-list (Map.insert (Map.insert #map() 5 50) 2 20)) 1)
+            (List.at ((. Map to-list) (Map.insert (Map.insert #map() 5 50) 2 20)) 1)
             ((Option.Some #tuple(k v)) (+ k v))
             ((Option.None) -1))))
       (export main)))
@@ -1243,7 +1247,7 @@
         (main)
         (const
           (match
-            (List.at (Map.to-list (Map.insert (Map.insert #map() "bb" 2) "ab" 1)) 0)
+            (List.at ((. Map to-list) (Map.insert (Map.insert #map() "bb" 2) "ab" 1)) 0)
             ((Option.Some #tuple(k v)) v)
             ((Option.None) -1))))
       (export main)))
@@ -1261,8 +1265,8 @@
       (def
         (run (: n Int64))
         (=
-          #tuple(1 (Map.to-list (Map.insert (Map.insert #map() n 10) (+ n 1) 20)))
-          #tuple(1 (const (Map.to-list (Map.insert (Map.insert #map() 3 10) 4 20))))))
+          #tuple(1 ((. Map to-list) (Map.insert (Map.insert #map() n 10) (+ n 1) 20)))
+          #tuple(1 (const ((. Map to-list) (Map.insert (Map.insert #map() 3 10) 4 20))))))
       (export run)))
   (call run 3)
   (output (: true Bool)))
@@ -1274,7 +1278,7 @@
            the runtime `set-to-list` op's order), so `(const (List.len (Set.to-list (Set.of (list 1 2 3)))))`
            folds to 3 — no longer a REJECT. Was the CHAMP-order soundness negative; now a fold, sound because
            `const_key_order` byte-matches the runtime op (v-runtime contract + breaker #3749 witnesses).")
-  (input (do (def (main) (const (List.len (Set.to-list #set(1 2 3))))) (export main)))
+  (input (do (def (main) (const (List.len ((. Set to-list) #set(1 2 3))))) (export main)))
   (output (: 3 Int64)))
 
 (case
@@ -1283,7 +1287,7 @@
     "`(Set.of (list 3 1 2 3))` folds to the 3-member set `{1,2,3}`; `Set.to-list` materializes them in
            canonical value order `(1 2 3)` — insertion order and the duplicate `3` are both erased. Pins that
            the const fold's element ORDER is the canonical numeric-ascending order.")
-  (input (const (= (Set.to-list #set(3 1 2 3)) #list(1 2 3))))
+  (input (const (= ((. Set to-list) #set(3 1 2 3)) #list(1 2 3))))
   (output (: true Bool)))
 
 (case
@@ -1291,7 +1295,7 @@
   (doc
     "Negatives sort by NUMERIC value (`-3 < 0 < 2 < 5`), not a two's-complement byte order — the canonical
            value order is numeric. `(Set.to-list (Set.of (list 5 -3 0 -3 2)))` folds to `(-3 0 2 5)`.")
-  (input (const (= (Set.to-list #set(5 -3 0 -3 2)) #list(-3 0 2 5))))
+  (input (const (= ((. Set to-list) #set(5 -3 0 -3 2)) #list(-3 0 2 5))))
   (output (: true Bool)))
 
 (case
@@ -1299,7 +1303,8 @@
   (doc
     "String elements sort lexicographically (the canonical String value order). `(Set.to-list (Set.of
            (list \"banana\" \"apple\" \"cherry\")))` folds to `(\"apple\" \"banana\" \"cherry\")`.")
-  (input (const (= (Set.to-list #set("banana" "apple" "cherry")) #list("apple" "banana" "cherry"))))
+  (input
+    (const (= ((. Set to-list) #set("banana" "apple" "cherry")) #list("apple" "banana" "cherry"))))
   (output (: true Bool)))
 
 (case
@@ -1311,7 +1316,9 @@
            (runtime) agree, catching any implementation drift between the two impls of the one spec'd order.")
   (input
     (do
-      (def (run (: n Int64)) (= (Set.to-list (Set.insert #set(3 1) n)) (Set.to-list #set(1 2 3))))
+      (def
+        (run (: n Int64))
+        (= ((. Set to-list) (Set.insert #set(3 1) n)) ((. Set to-list) #set(1 2 3))))
       (export run)))
   (call run 2)
   (output (: true Bool)))
@@ -1336,9 +1343,9 @@
           (+
             (*
               1000
-              (List.len (Set.to-list #set(#tuple(3 30) #tuple(1 99) #tuple(1 10) #tuple(1 10)))))
+              (List.len ((. Set to-list) #set(#tuple(3 30) #tuple(1 99) #tuple(1 10) #tuple(1 10)))))
             (match
-              (List.at (Set.to-list #set(#tuple(3 30) #tuple(1 99) #tuple(1 10))) 0)
+              (List.at ((. Set to-list) #set(#tuple(3 30) #tuple(1 99) #tuple(1 10))) 0)
               ((Option.Some #tuple(k v)) (+ (* 100 k) v))
               ((Option.None) -1)))))
       (export main)))
@@ -1355,8 +1362,8 @@
       (def
         (run (: n Int64))
         (=
-          (Set.to-list (Set.insert #set(#tuple(1 10) #tuple(3 30)) #tuple(2 n)))
-          (const (Set.to-list #set(#tuple(1 10) #tuple(2 20) #tuple(3 30))))))
+          ((. Set to-list) (Set.insert #set(#tuple(1 10) #tuple(3 30)) #tuple(2 n)))
+          (const ((. Set to-list) #set(#tuple(1 10) #tuple(2 20) #tuple(3 30))))))
       (export run)))
   (call run 20)
   (output (: true Bool)))
@@ -1381,9 +1388,10 @@
             (*
               1000
               (List.len
-                (Set.to-list #set((Option.Some 5) (Option.None) (Option.Some 1) (Option.Some 1)))))
+                ((. Set to-list)
+                  #set((Option.Some 5) (Option.None) (Option.Some 1) (Option.Some 1)))))
             (match
-              (List.at (Set.to-list #set((Option.Some 5) (Option.None) (Option.Some 1))) 0)
+              (List.at ((. Set to-list) #set((Option.Some 5) (Option.None) (Option.Some 1))) 0)
               ((Option.Some (Option.Some v)) v)
               ((Option.Some (Option.None)) -100)
               ((Option.None) -1)))))
@@ -1401,8 +1409,8 @@
       (def
         (run (: n Int64))
         (=
-          (Set.to-list (Set.insert #set((Option.Some 1) (Option.None)) (Option.Some n)))
-          (const (Set.to-list #set((Option.Some 1) (Option.Some 5) (Option.None))))))
+          ((. Set to-list) (Set.insert #set((Option.Some 1) (Option.None)) (Option.Some n)))
+          (const ((. Set to-list) #set((Option.Some 1) (Option.Some 5) (Option.None))))))
       (export run)))
   (call run 5)
   (output (: true Bool)))
@@ -1432,12 +1440,14 @@
             (*
               1000
               (List.len
-                (Set.to-list
+                ((. Set to-list)
                   #set(#record((= lo 9) (= hi 1))
                     #record((= lo 0) (= hi 2))
                     #record((= lo 9) (= hi 1))))))
             (match
-              (List.at (Set.to-list #set(#record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2)))) 0)
+              (List.at
+                ((. Set to-list) #set(#record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2))))
+                0)
               ((Option.Some r) r.lo)
               ((Option.None) -1)))))
       (export main)))
@@ -1456,8 +1466,8 @@
       (def
         (run (: n Int64))
         (=
-          (Set.to-list (Set.insert #set(#record((= lo 9) (= hi 1))) #record((= lo 0) (= hi n))))
-          (const (Set.to-list #set(#record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2)))))))
+          ((. Set to-list) (Set.insert #set(#record((= lo 9) (= hi 1))) #record((= lo 0) (= hi n))))
+          (const ((. Set to-list) #set(#record((= lo 9) (= hi 1)) #record((= lo 0) (= hi 2)))))))
       (export run)))
   (call run 2)
   (output (: true Bool)))
@@ -1790,10 +1800,12 @@
             (*
               1000
               (List.len
-                (Set.to-list #set((Bytes.of #list(128)) (Bytes.of #list(5)) (Bytes.of #list(127))))))
+                ((. Set to-list)
+                  #set((Bytes.of #list(128)) (Bytes.of #list(5)) (Bytes.of #list(127))))))
             (match
               (List.at
-                (Set.to-list #set((Bytes.of #list(128)) (Bytes.of #list(5)) (Bytes.of #list(127))))
+                ((. Set to-list)
+                  #set((Bytes.of #list(128)) (Bytes.of #list(5)) (Bytes.of #list(127))))
                 2)
               ((Option.Some h) (match (Bytes.at h 0) ((Option.Some v) v) ((Option.None) -1)))
               ((Option.None) -2)))))
@@ -1811,8 +1823,8 @@
       (def
         (run (: n Int64))
         (=
-          (Set.to-list (Set.insert #set((Bytes.of #list(5))) (Bytes.of #list((UInt8.wrap n)))))
-          (const (Set.to-list #set((Bytes.of #list(5)) (Bytes.of #list(9)))))))
+          ((. Set to-list) (Set.insert #set((Bytes.of #list(5))) (Bytes.of #list((UInt8.wrap n)))))
+          (const ((. Set to-list) #set((Bytes.of #list(5)) (Bytes.of #list(9)))))))
       (export run)))
   (call run 9)
   (output (: true Bool)))
@@ -1835,10 +1847,10 @@
         (main)
         (const
           (+
-            (* 1000 (List.len (Set.to-list #set(#\c #\a #\b #\a))))
+            (* 1000 (List.len ((. Set to-list) #set(#\c #\a #\b #\a))))
             (match
-              (List.at (Set.to-list #set(#\c #\a #\b #\a)) 0)
-              ((Option.Some h) (Char.to-int h))
+              (List.at ((. Set to-list) #set(#\c #\a #\b #\a)) 0)
+              ((Option.Some h) ((. Char to-int) h))
               ((Option.None) -1)))))
       (export main)))
   (output (: 3097 Int64)))
@@ -1859,7 +1871,7 @@
   (input
     (do
       (def (acc (const (: n Int64))) (if (= n 0) #set() (Set.insert (acc (- n 1)) n)))
-      (def (main) (const (= (Set.to-list (acc 3)) #list(1 2 3))))
+      (def (main) (const (= ((. Set to-list) (acc 3)) #list(1 2 3))))
       (export main)))
   (output (: true Bool)))
 
@@ -1872,7 +1884,7 @@
   (input
     (do
       (def (f (const (: xs (List Int64)))) (List.len xs))
-      (def (main) (const (f (Set.to-list #set(3 1 2)))))
+      (def (main) (const (f ((. Set to-list) #set(3 1 2)))))
       (export main)))
   (output (: 3 Int64)))
 
@@ -1910,7 +1922,7 @@
       (def
         (grow (const (: s (Set Int64))) (const (: k Int64)))
         (if (= k 0) s (grow (Set.insert s (* k 7)) (- k 1))))
-      (def (main) (const (List.len (Set.to-list (grow #set() 3)))))
+      (def (main) (const (List.len ((. Set to-list) (grow #set() 3)))))
       (export main)))
   (output (: 3 Int64)))
 
@@ -2111,7 +2123,7 @@
           (handle
             E
             "x"
-            ((tick () s (resume (String.byte-len s) (String.concat s "y"))))
+            ((tick () s (resume ((. String byte-len) s) (String.concat s "y"))))
             (+ (* 10 (E.tick)) (E.tick)))))
       (export main)))
   (output (: 12 Int64)))
@@ -2579,7 +2591,7 @@
           (handle
             E
             "x"
-            ((tick () s (resume (String.byte-len s) (String.concat s "y"))))
+            ((tick () s (resume ((. String byte-len) s) (String.concat s "y"))))
             (+ (* 10 (E.tick)) (E.tick)))))
       (export main)))
   (output (: 12 Int64)))
@@ -2829,12 +2841,13 @@
 ; (k v). Same-hour pins of the bonus fix that rode the Map.to-list fold.
 (case
   "le1 a SINGLE-element const Set.to-list folds"
-  (input (do (def (main) (const (List.len (Set.to-list #set(42))))) (export main)))
+  (input (do (def (main) (const (List.len ((. Set to-list) #set(42))))) (export main)))
   (output (: 1 Int64)))
 
 (case
   "le2 an EMPTY const Set.to-list folds to the empty list"
-  (input (do (def (main) (const (List.len (Set.to-list (: #set() (Set Int64)))))) (export main)))
+  (input
+    (do (def (main) (const (List.len ((. Set to-list) (: #set() (Set Int64)))))) (export main)))
   (output (: 0 Int64)))
 
 (case
@@ -2845,7 +2858,7 @@
         (main)
         (const
           (match
-            (List.at (Map.to-list (Map.insert #map() 7 70)) 0)
+            (List.at ((. Map to-list) (Map.insert #map() 7 70)) 0)
             ((Option.Some #tuple(k v)) (+ k v))
             ((Option.None) -1))))
       (export main)))
@@ -2863,7 +2876,7 @@
         orderability. A tuple carrying a FLOAT is genuinely non-orderable (`const_key_order` declines a float),
         so the per-element pre-check keeps the runtime op → the const demand REJECTS. (A tuple of orderable
         scalars now folds — see the tuple-order cases above; this pins the LONE-non-orderable soundness face.)")
-  (input (do (def (main) (const (List.len (Set.to-list #set(#tuple(1.5 2)))))) (export main)))
+  (input (do (def (main) (const (List.len ((. Set to-list) #set(#tuple(1.5 2)))))) (export main)))
   (error CDZ0201 (message "compile-time constant")))
 
 (case
@@ -2873,7 +2886,7 @@
         keeps the runtime op and the const demand REJECTS.")
   (input
     (do
-      (def (main) (const (List.len (Map.to-list (Map.insert #map() #tuple(1.5 2) 10)))))
+      (def (main) (const (List.len ((. Map to-list) (Map.insert #map() #tuple(1.5 2) 10)))))
       (export main)))
   (error CDZ0201 (message "compile-time constant")))
 
@@ -2881,7 +2894,7 @@
   "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
   (input
     (do
-      (def (main) (const (List.len (Set.to-list (: #set() (Set (Tuple Int64 Int64)))))))
+      (def (main) (const (List.len ((. Set to-list) (: #set() (Set (Tuple Int64 Int64)))))))
       (export main)))
   (output (: 0 Int64)))
 
@@ -2900,7 +2913,7 @@
         (main)
         (const
           (match
-            (List.at (Set.to-list (grow #set() 4)) 0)
+            (List.at ((. Set to-list) (grow #set() 4)) 0)
             ((Option.Some v) (if (= v 7) (trap "cst1 sorted head seven") (trap "cst1 WRONG")))
             ((Option.None) (trap "cst1 EMPTY")))))
       (export main)))
@@ -2913,7 +2926,7 @@
       (def
         (suml (const (: xs (List Int64))) (const (: i Int64)))
         (match (List.at xs i) ((Option.Some v) (+ v (suml xs (+ i 1)))) ((Option.None) 0)))
-      (def (main) (const (suml (Set.to-list #set(5 1 3)) 0)))
+      (def (main) (const (suml ((. Set to-list) #set(5 1 3)) 0)))
       (export main)))
   (output (: 9 Int64)))
 
@@ -3153,7 +3166,7 @@
         (main)
         (const
           (match
-            (List.at (Map.to-list (Map.insert (Map.insert #map() #\c 3) #\a 1)) 0)
+            (List.at ((. Map to-list) (Map.insert (Map.insert #map() #\c 3) #\a 1)) 0)
             ((Option.Some #tuple(k v)) (if (= k #\a) v -2))
             ((Option.None) -1))))
       (export main)))
@@ -3167,7 +3180,7 @@
         (main)
         (const
           (match
-            (List.at (Set.to-list #set(#\q #\b #\z)) 0)
+            (List.at ((. Set to-list) #set(#\q #\b #\z)) 0)
             ((Option.Some ch) (if (= ch #\b) (trap "chm2 head is b") (trap "chm2 WRONG")))
             ((Option.None) (trap "chm2 EMPTY")))))
       (export main)))
