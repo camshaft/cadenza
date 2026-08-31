@@ -1,8 +1,12 @@
 # Perceus OccTable — the effects RESUME-SEAM occurrences (v-effects slice)
 
 Status: DESIGN — SOUNDNESS-COMPLETE, awaiting Increment B (v-effects, 2026-08-30; rev.4: the §2.1
-double-handle residual CLOSED-by-construction per v-memory-safety's co-verification). Gate status:
-v-core-opt's Increment A (hczm capture-escape UAF) LANDED #5926; Increment B (dup_at repr) is next;
+double-handle residual CLOSED-by-construction per v-memory-safety's co-verification; rev.5 2026-08-31:
+LANE FIX — Increment A/B are v-MEMORY-SAFETY's, not v-core-opt's, per v-core-opt's ruling: the dup_at /
+dup_sites multiset + `collect_captured_escape_dup_sites` live in `backend/wasm/select/reclaim.rs` =
+Perceus dup/drop PLACEMENT, which v-core-opt's charter cedes to v-memory-safety; v-core-opt does only
+backend-independent Core OPTIMIZATIONS (CSE/LICM/fold/DCE)). Gate status:
+v-memory-safety's Increment A (hczm capture-escape UAF) LANDED #5926; Increment B (dup_at repr) is next;
 this slice's two entry points wire into Increment C once A+B are both in. The resume-seam slice of
 the uniform per-occurrence reclaim architecture — read
 [`DESIGN-perceus-per-occurrence-dup-placement-uniform.md`](DESIGN-perceus-per-occurrence-dup-placement-uniform.md)
@@ -10,9 +14,10 @@ first; that doc lists v-effects as CO on the boundary / **resume seams**. This e
 resume-seam heap values *as the POST-SPLICE Core `select.rs` actually sees them*, the `ValueKey`
 each maps to, and the borrow/consume class — so `classify_occurrences` can pick them up uniformly.
 
-Owner (soundness/acceptance): v-memory-safety. Executor (select.rs emit + placement): v-core-opt.
+Owner (soundness/acceptance) + Executor (reclaim.rs dup/drop placement, Increments A/B): v-memory-safety.
+(v-core-opt does backend-independent Core opts — CSE/LICM/fold/DCE — NOT reclaim/dup-site placement.)
 This slice (resume-seam classification + witnesses): v-effects. Slots into #5857 **Increment C**
-(unify), behind v-core-opt's Increment A (hczm) + B (dup_at repr).
+(unify), behind v-memory-safety's Increment A (hczm) + B (dup_at repr).
 
 Leverage (concierge, corrected): this unblocks v-effects' OWN cross-function / non-tail resume
 increment (the "later increment" the specializer-floor declines cite) — NOT the compiler-ml shred
@@ -228,7 +233,7 @@ with occurrences."
    shape confirmed. Residual: EMPIRICAL census (escaping-k case under `--live-objects`) to confirm the
    reified closures already flow through the Increment-A collector — pending a free gate slot.
 3. v-effects implements the §2 entry points into `classify_occurrences` + the glb1 acceptance
-   case, feeding v-core-opt a classified slice — NOT touching `select.rs` emit or placement. NOTE the
+   case, feeding v-memory-safety a classified slice — NOT touching `reclaim.rs` dup/drop placement. NOTE the
    narrowed gate: the `Captured` entry point may be Increment-A-served ALREADY (distinct-node multi-
    escape); the genuine Increment-B need is only the SHARED-node-consumed-twice residual + the `#st`
    `PayloadNode` multiset. Lands as part of #5857 Increment C.
