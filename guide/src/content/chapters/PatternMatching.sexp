@@ -92,6 +92,14 @@
   (_ 0))))
   (p "So " (c "a") " is " (c "3") ", " (c "b") " is " (c "4") ", and " (c "rest") " is the one-element tuple " (c "#tuple(5)") ", whose " (c ".0") " is " (c "5") ", giving " (c "3 + 4 + 5 = 12") ". Two things to hold onto: " (c "rest") " is the trailing " (em "sub-tuple") ", not a flattened list, so a " (c "#tuple(1 2 3 4)") " matched by " (c "#tuple(x (.. rest))") " leaves " (c "rest") " as " (c "#tuple(2 3 4)") ", indexed " (c ".0") "/" (c ".1") "/" (c ".2") "; and the arity is fixed, so " (c "#tuple(a b (.. rest))") " needs at least two elements, and a shorter tuple simply doesn't match that arm.")
   (note "The example above binds a rest over a tuple " (em "constructed in place") ", which is what this pattern supports. A rest binder over a fully opaque runtime tuple is " (em "not supported") " on the backends, so the compiler declines it with a clear message rather than compute a wrong answer, the same honest refusal you've seen elsewhere.")
+  (h2 "Matching a record's fields")
+  (p "Records take a rest the same way, by " (em "name") " instead of position. A record pattern names the fields you care about and a trailing " (c "(.. rest)") " gathers the rest into a " (em "residual record") ", the record analogue of the tuple rest above. Here " (c "#record((= a x) (.. rest))") " binds " (c "x") " to field " (c "a") " and " (c "rest") " to a record of the remaining fields, whose own fields you read back by name:")
+  (runnable
+    (source (match #record((= a 1) (= b 2) (= c 3))
+  (#record((= a x) (.. rest)) (+ (+ x (. rest b)) (. rest c)))
+  (_ 0))))
+  (p "So " (c "x") " is " (c "1") ", and " (c "rest") " is the residual record " (c "#record((= b 2) (= c 3))") ", so " (c "rest.b") " is " (c "2") " and " (c "rest.c") " is " (c "3") ", giving " (c "1 + 2 + 3 = 6") ". The key difference from the tuple case: " (c "rest") " here is a " (em "record") ", so you reach into it by field name (" (c "rest.b") ", " (c "rest.c") "), not by position.")
+  (note "As with the tuple rest, this supports a record " (em "constructed in place") ". A rest binder over a fully opaque runtime record is " (em "not supported") " on the backends, so the compiler declines it with a clear message rather than a wrong answer.")
   (h2 "Your turn")
   (exercise
     (id "pattern-matching:1")

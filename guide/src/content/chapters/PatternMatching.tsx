@@ -80,6 +80,16 @@ export default function PatternMatching() {
       />
       <P>So <C>a</C> is <C>3</C>, <C>b</C> is <C>4</C>, and <C>rest</C> is the one-element tuple <C>#tuple(5)</C>, whose <C>.0</C> is <C>5</C>, giving <C>3 + 4 + 5 = 12</C>. Two things to hold onto: <C>rest</C> is the trailing <em>sub-tuple</em>, not a flattened list, so a <C>#tuple(1 2 3 4)</C> matched by <C>#tuple(x (.. rest))</C> leaves <C>rest</C> as <C>#tuple(2 3 4)</C>, indexed <C>.0</C>/<C>.1</C>/<C>.2</C>; and the arity is fixed, so <C>#tuple(a b (.. rest))</C> needs at least two elements, and a shorter tuple simply doesn't match that arm.</P>
       <Note>The example above binds a rest over a tuple <em>constructed in place</em>, which is what this pattern supports. A rest binder over a fully opaque runtime tuple is <em>not supported</em> on the backends, so the compiler declines it with a clear message rather than compute a wrong answer, the same honest refusal you've seen elsewhere.</Note>
+      <H2>Matching a record's fields</H2>
+      <P>Records take a rest the same way, by <em>name</em> instead of position. A record pattern names the fields you care about and a trailing <C>(.. rest)</C> gathers the rest into a <em>residual record</em>, the record analogue of the tuple rest above. Here <C>#record((= a x) (.. rest))</C> binds <C>x</C> to field <C>a</C> and <C>rest</C> to a record of the remaining fields, whose own fields you read back by name:</P>
+      <Runnable
+        source={`(match
+  #record((= a 1) (= b 2) (= c 3))
+  (#record((= a x) (.. rest)) (+ (+ x (. rest b)) (. rest c)))
+  (_ 0))`}
+      />
+      <P>So <C>x</C> is <C>1</C>, and <C>rest</C> is the residual record <C>#record((= b 2) (= c 3))</C>, so <C>rest.b</C> is <C>2</C> and <C>rest.c</C> is <C>3</C>, giving <C>1 + 2 + 3 = 6</C>. The key difference from the tuple case: <C>rest</C> here is a <em>record</em>, so you reach into it by field name (<C>rest.b</C>, <C>rest.c</C>), not by position.</P>
+      <Note>As with the tuple rest, this supports a record <em>constructed in place</em>. A rest binder over a fully opaque runtime record is <em>not supported</em> on the backends, so the compiler declines it with a clear message rather than a wrong answer.</Note>
       <H2>Your turn</H2>
       <Exercise
         id="pattern-matching:1"
