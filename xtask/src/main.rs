@@ -5644,13 +5644,18 @@ fn check(paths: &Paths, profile: &str) {
     // seq-96/97 flush), and the trailing PRs re-fmt'd the corpus, so all 6 domain src dirs are canonical under
     // the frozen printer (verified `cdz fmt --check` exit 0 + a fresh fmt-all is a NO-OP). v-nix un-holds + wires
     // the merge-required nix `cdzFmtCheck` (#6323) in lockstep with this flip.
+    // WIDENED to `.sexp` 2026-08-31: the operator (ruling B) required the fmt printer preserve readability FIRST —
+    // both dependencies landed: multi-line comment preservation (#6808 v-syntax-comments) + member-access-sugar
+    // print arm (#6816 v-syntax, emits dotted `X.Y` not `(. X Y)`). So `cdz fmt` over spec/semantics/*.sexp is now
+    // comment-safe + idempotent + READABLE (sugar + multi-line docs kept). Fmt-normalized the 34 spec .sexp + added
+    // `spec/semantics` to the gate. (B) cdz-platform stays out (v-platform zone).
     const CDZ_FMT_CHECK_ENFORCE: bool = true;
     if CDZ_FMT_CHECK_ENFORCE {
         log.step(
             "cdz-fmt-check",
             "cargo run -q -p cdz -- fmt --check implementation/compiler-ml/src implementation/cad/src \
              implementation/music/src implementation/des/src implementation/iterators/src \
-             implementation/choreography/src",
+             implementation/choreography/src spec/semantics",
             repo,
         );
     }
