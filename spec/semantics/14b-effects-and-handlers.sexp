@@ -3679,6 +3679,19 @@
   (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (match (> s -1) (true (do 99 (resume (+ s 5) s))) (false (resume 0 s))))) (E.get))) (export main)))
   (call   main) (output (: 5 Int64)))
 
+; The composition also holds at DEPTH THREE (a let around a match around a do around the resume), and the
+; NEXT-STATE slot may itself be a `match` over the state that threads a transition across performs: seeded 0,
+; arm `(resume s (match (> s 0) (true (- s 1)) (false (+ s 1))))` steps state 0 -> 1 (then 1 -> 0), so
+; `(+ (E.get) (E.get))` reads 0 then 1 = 1. (Edge-probed by v-wasmtime-migration; extends the nested-wrapping
+; cases above.)
+(case "a tail resume under a three-level let-match-do nesting folds and runs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (let ((x s)) (match (> x -1) (true (do 7 (resume (+ x 4) s))) (false (resume 0 s)))))) (E.get))) (export main)))
+  (call   main) (output (: 4 Int64)))
+
+(case "a next-state computed by a match over the state threads a transition across performs"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (resume s (match (> s 0) (true (- s 1)) (false (+ s 1)))))) (+ (E.get) (E.get)))) (export main)))
+  (call   main) (output (: 1 Int64)))
+
 (case "a host delegation of an effect the body never reaches is latent authority and is rejected"
   (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
            `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised
