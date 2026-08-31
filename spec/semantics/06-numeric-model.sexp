@@ -530,15 +530,15 @@
 ; a_suffixed_bigint_literal_annotated_or_passed_to_int64_faults_once_as_a_type_mismatch.)
 (case "a suffixed BigInt literal annotated Int64 is a type mismatch, not a range-fit fault"
   (input  (do (def (main) (: 999999999999999999999999N Int64)) (export main)))
-  (error  CDZ0203 (message "BigInt") (message "must be the same type") (not "does not fit")))
+  (error  CDZ0203 (message "BigInt") (message "does not match value type") (not "does not fit")))
 
 (case "a suffixed BigInt literal passed to an Int64 parameter is the same type mismatch"
   (input  (do (def (g (: x Int64)) x) (def (main) (g 999999999999999999999999N)) (export main)))
-  (error  CDZ0203 (message "BigInt") (message "must be the same type") (not "does not fit")))
+  (error  CDZ0203 (message "BigInt") (message "value of type Int64 is expected") (not "does not fit")))
 
 (case "a suffixed BigInt literal that FITS Int64's range is still a type mismatch (the fault is the type, not the magnitude)"
   (input  (do (def (main) (: 5N Int64)) (export main)))
-  (error  CDZ0203 (message "BigInt") (message "must be the same type") (not "does not fit")))
+  (error  CDZ0203 (message "BigInt") (message "does not match value type") (not "does not fit")))
 
 (case "the BARE (unsuffixed) over-Int64 counterpart still range-checks as CDZ0302 (a grounding, not a mismatch)"
   (input  (do (def (main) (: 999999999999999999999999 Int64)) (export main)))
