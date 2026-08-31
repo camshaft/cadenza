@@ -825,6 +825,29 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: List.at on non-list / non-const-int index")
            | _, _ => .cannotProve "symeval: malformed List.at")
+        else if (q == "String".toUTF8 && mem == "concat".toUTF8) then
+          -- `String.concat a b` over two concrete strings → the concatenated string `.const (.str (x ++ y))`,
+          -- byte-faithful to `evalNode` (Eval.lean:1754-1756). PURELY STRUCTURAL over scalar const leaves
+          -- (no equality/dedup/float). Non-string operand / unmodelable arg → cannotProve.
+          (match children[1]?, children[2]? with
+           | some aId, some bId =>
+             (match symEval m senv fuel ty aId, symEval m senv fuel ty bId with
+              | .sym (.const (.str x)), .sym (.const (.str y)) => .sym (.const (.str (x ++ y)))
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: String.concat on non-string values")
+           | _, _ => .cannotProve "symeval: malformed String.concat")
+        else if (q == "Bytes".toUTF8 && mem == "concat".toUTF8) then
+          -- `Bytes.concat a b` over two concrete byte-strings → `.const (.bytes (x ++ y))`, byte-faithful to
+          -- `evalNode` (Eval.lean:1615-1617). Same purely-structural scalar-concat shape as String.concat.
+          (match children[1]?, children[2]? with
+           | some aId, some bId =>
+             (match symEval m senv fuel ty aId, symEval m senv fuel ty bId with
+              | .sym (.const (.bytes x)), .sym (.const (.bytes y)) => .sym (.const (.bytes (x ++ y)))
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Bytes.concat on non-bytes values")
+           | _, _ => .cannotProve "symeval: malformed Bytes.concat")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1216,6 +1239,24 @@ private def _atOobExpr : Module :=
     root := 10 }
 #guard symEval _atOobExpr [] symDefaultFuel defaultIntTy 10
        == SymOutcome.sym (.ctor "None".toUTF8 #[])
+
+-- STRING.CONCAT member-op coverage: `((. String concat) "ab" "cd")` → `.const (.str "abcd")`.
+private def _strConcatExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "String".toUTF8, Leaf.name "concat".toUTF8,
+                Leaf.str "ab".toUTF8, Leaf.str "cd".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
+    root := 6 }
+#guard symEval _strConcatExpr [] symDefaultFuel defaultIntTy 6
+       == SymOutcome.sym (.const (.str "abcd".toUTF8))
+
+-- BYTES.CONCAT member-op coverage: `((. Bytes concat) #{1,2} #{3})` → `.const (.bytes #{1,2,3})`.
+private def _bytesConcatExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Bytes".toUTF8, Leaf.name "concat".toUTF8,
+                Leaf.bytesLit (ByteArray.mk #[1, 2]), Leaf.bytesLit (ByteArray.mk #[3])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
+    root := 6 }
+#guard symEval _bytesConcatExpr [] symDefaultFuel defaultIntTy 6
+       == SymOutcome.sym (.const (.bytes (ByteArray.mk #[1, 2, 3])))
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
