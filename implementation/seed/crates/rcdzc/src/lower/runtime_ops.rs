@@ -859,9 +859,13 @@ pub(super) fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: S
             disc_some,
             disc_none,
         },
-        _ => Core::Poison(Reject::decline(
+        // A non-String operand is a TYPE error (`infer` reports the authoritative CDZ0203); defer to it
+        // via the neutral, coded-reject-deferring decline rather than an uncoded "needs a String operand".
+        _ => runtime_string_op_decline(
+            db,
+            string,
             "String.at needs a String operand (its runtime read walks the UTF-8 buffer)",
-        )),
+        ),
     }
 }
 
