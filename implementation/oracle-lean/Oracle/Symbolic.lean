@@ -1245,6 +1245,14 @@ partial def symCtorConstruct (m : Module) (senv : SymEnv) (fuel : Nat) (ty : Int
     -- `none` for an erasing ctor) — mirror `evalNode`'s ctorConstruct order. If none of these AND
     -- `variantCtorArity?` is `none`, the head is NOT a declared ctor → fall through (`none`).
     else if !(newtypeCtor? m cname || structNewtypeCtor? m cname || soleNullaryCtor? m cname || (variantCtorArity? m cname).isSome) then none
+    -- NULLARY ctors dispatch on the DECLARED arity and IGNORE any actual args — `evalVariantCtor` returns
+    -- `.unit` / `.variant cname .unit` for arity 0 regardless of `children` (Eval.lean:1830-1834; the args
+    -- are evaluated only to poison and DISCARDED, so even a trapping arg is inert). The cadenza backend
+    -- lowers every nullary ctor to `(Ctor unit)` — a unit PLACEHOLDER payload, not a real field — so we must
+    -- NOT fold that arg. Handle nullary here, BEFORE the arg-fold, so `(Blue unit)` (round-trip form) and
+    -- bare `Blue` (atom path) both give the canonical nullary value. SOLE-nullary erases to `unit`.
+    else if soleNullaryCtor? m cname then some (SymOutcome.sym (.const .unit))
+    else if variantCtorArity? m cname == some 0 then some (SymOutcome.sym (.ctor cname #[]))
     else
       let argsOpt := (children.extract 1 children.size).foldl (fun (acc : Option (Array SymExpr)) aid =>
         match acc with
@@ -1255,11 +1263,9 @@ partial def symCtorConstruct (m : Module) (senv : SymEnv) (fuel : Nat) (ty : Int
         | some args =>
           if newtypeCtor? m cname then (match args[0]? with | some e => .sym e | none => .cannotProve "symeval: newtype ctor missing payload")
           else if structNewtypeCtor? m cname then .sym (.tuple args)
-          else if soleNullaryCtor? m cname then .sym (.const .unit)
           else match variantCtorArity? m cname with
             | some ar =>
               if args.size != ar then .cannotProve "symeval: constructor arity mismatch (partial application?)"
-              else if ar == 0 then .sym (.ctor cname #[])
               else if ar == 1 then .sym (.ctor cname args)
               else .sym (.ctor cname #[.tuple args])
             | none => .cannotProve "symeval: erasing-ctor arity resolution failed")
@@ -1940,6 +1946,20 @@ private def _enumApplyProg : Module :=
                .list #[13, 10, 12], .atom 8, .atom 7, .list #[15, 16], .atom 0, .list #[18, 8, 14, 17]],
     root := 19 }
 #guard symEvalMain _enumApplyProg == SymOutcome.sym (.ctor "Blue".toUTF8 #[])
+-- ROUND-TRIP form (v-cdz-smith P'): the cadenza backend lowers a nullary ctor to `(: (Ctor unit) T)` — a
+-- unit-PLACEHOLDER payload under a type ascription. `(def (main) (: (Blue unit) Color))` → the ascription
+-- unwraps, then `(Blue unit)` is the NULLARY construction (unit arg ignored, per evalVariantCtor) → .ctor "Blue" [].
+private def _enumRoundtripProg : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "Color".toUTF8,
+                Leaf.name "Red".toUTF8, Leaf.name "Green".toUTF8, Leaf.name "Blue".toUTF8,
+                Leaf.name "def".toUTF8, Leaf.name "main".toUTF8, Leaf.name "export".toUTF8,
+                Leaf.name ":".toUTF8, Leaf.name "unit".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[2], .atom 4, .list #[4], .atom 5, .list #[6],
+               .list #[0, 1, 3, 5, 7], .atom 5, .atom 10, .list #[9, 10], .atom 2, .atom 9,
+               .list #[13, 11, 12], .atom 7, .list #[15], .atom 6, .list #[17, 16, 14],
+               .atom 8, .atom 7, .list #[19, 20], .atom 0, .list #[22, 8, 18, 21]],
+    root := 23 }
+#guard symEvalMain _enumRoundtripProg == SymOutcome.sym (.ctor "Blue".toUTF8 #[])
 -- construct-then-MATCH a user sum: `(match (Num 5) ((Num x) x))` binds x=5 via the tagged-variant pattern → 5.
 private def _matchUserProg : Module :=
   { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "E".toUTF8, Leaf.name "Num".toUTF8,
