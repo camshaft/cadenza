@@ -256,6 +256,21 @@ theorem normalize_case (s : SymExpr) (arms : Array (ByteArray × SymExpr)) :
       = .case (normalize s) (arms.attach.map (fun x => (x.val.1, normalize x.val.2))) := by
   simp [normalize]
 
+/-! ### `normalize`-`app` branch equations (conditional — the hypothesis concretizes the `foldConst?`
+match, dodging the bare-restatement match-motive wall). `normalize` on an `.app` first normalizes the
+args, then FOLDS them (`foldConst? = some v` ⇒ `.const v`) or applies the algebraic identities
+(`foldConst? = none` ⇒ `normalizeAppIdentities`). These expose the two `.app` branches for the capstone
+`.app` case (fold branch → `denoteBinary_fold`; identity branch → the arith value-characterizations). -/
+theorem normalize_app_fold (op : String) (args : Array SymExpr) (v : Value)
+    (h : foldConst? op (args.attach.map (fun x => normalize x.val)) = some v) :
+    normalize (.app op args) = .const v := by
+  simp only [normalize, h]
+
+theorem normalize_app_ident (op : String) (args : Array SymExpr)
+    (h : foldConst? op (args.attach.map (fun x => normalize x.val)) = none) :
+    normalize (.app op args) = normalizeAppIdentities op (args.attach.map (fun x => normalize x.val)) := by
+  simp only [normalize, h]
+
 /-! ### `normalize`-`ite` fold-SELECT equations: a condition that normalizes to a bool literal collapses.
 When `normalize c` folds to `.const (.bool b)`, the whole `ite` collapses to the normal form of the
 selected branch (`normalize`'s `.ite` arm short-circuits before the materialize/collapse/rebuild logic).
