@@ -79,4 +79,13 @@
       (status blocked)
       (owner v-inference)
       (needs "match lowering that emits a heap walk over a Set/Map scrutinee (even a whole-value binder)")
-      (ref pr 6417))))
+      (ref pr 6417)))
+  (decline RecursiveFunctionRuntimeSpecialization
+    (code UnsupportedConstruct)
+    (reason "a recursive function needs runtime specialization")
+    (doc "A recursive function applied where it would need runtime specialization (the eval beta-reduction recursion guard, eval.rs); reworded off deferral wording to \"which is not supported\" by v-core-opt #6565.")
+    (blocked-on
+      (status blocked)
+      (owner v-core-opt)
+      (needs "runtime specialization of a recursive function")
+      (ref pr 6565))))
