@@ -3318,6 +3318,7 @@ pass	a reader→writer PUMP then a LET-bound flush reads the FULL accumulation (
 pass	a reciprocal dimension renders as Unit.one over the unit
 pass	a recognized pragma with a malformed argument list is rejected
 pass	a recognized string escape denotes its one scalar value
+pass	a returned String with a backslash and a quote RENDERS re-escaped (canonical value form)
 pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the field value
 pass	a record STATE with a Set field rebuilt per dispatch — dedup observed through the field
 pass	a record TYPE with a duplicate field name is a type error

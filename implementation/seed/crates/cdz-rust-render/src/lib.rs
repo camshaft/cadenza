@@ -973,19 +973,42 @@ pub fn cdz_render_at(
         return format!("({path}).to_display_string()");
     }
     // A `String` value is the Rust `String` the backend emits — render it as cdz-run's canonical
-    // `"<content>"` form: the RAW UTF-8 content wrapped in double quotes, with NO escaping (matching the
-    // runtime's `Shape::Str => format!("\"{}\"", …)` — a raw passthrough). `{path}` is a `String`/`&String`;
-    // `format!` displays it verbatim between the quotes.
+    // `"<content>"` form, ESCAPING the content with the SAME rules as `cadenza_syntax::literal::escape_string`
+    // (the wasm renderer's `Leaf::Str` path applies it): `\n`/`\t`/`\r` named, `\` → `\\`, `"` → `\"`, every
+    // other char verbatim. A raw passthrough (the old behavior) left a backslash or an embedded double-quote
+    // UNescaped — diverging from the wasm canonical render and (for a `"`) emitting a malformed, non-reparseable
+    // literal (v-cdz-smith wasm-vs-rust differential, witnesses `"\\"` and `"i\""`). The emitted block folds
+    // the chars into the `"…"` string, mirroring the `Bytes` arm's `b"…"` fold. `{path}` is a `String`/`&String`.
     if ty == "String" {
-        return format!("format!(\"\\\"{{}}\\\"\", {path})");
+        return format!(
+            "{{ let mut __s = String::from(\"\\\"\"); for __c in ({path}).chars() {{ match __c {{ \
+             '\\n' => __s.push_str(\"\\\\n\"), \
+             '\\t' => __s.push_str(\"\\\\t\"), \
+             '\\r' => __s.push_str(\"\\\\r\"), \
+             '\\\\' => __s.push_str(\"\\\\\\\\\"), \
+             '\\\"' => __s.push_str(\"\\\\\\\"\"), \
+             __c => __s.push(__c), \
+             }} }} __s.push('\\\"'); __s }}"
+        );
     }
     // A `Symbol` value is the Rust `String` the backend emits (a Symbol IS its canonical text) — render it
     // as cdz-run's canonical CONSTRUCTION form `((. Symbol of) "<content>")` (`lower::const_value_ast`'s
     // Symbol surface; the gate accepts the bare value or the `(: value type)` form, so the value form
-    // suffices). The content is the raw UTF-8 between quotes, no escaping (matching the `String` render's
-    // raw passthrough). `{path}` is a `String`/`&String`.
+    // suffices). The inner content is ESCAPED with the SAME `escape_string` rules as the `String` arm (the
+    // wasm renderer applies `escape_string` to a `Leaf::Sym` too — render.rs), so a Symbol containing a
+    // backslash or quote is a well-formed, canonical literal rather than the old raw passthrough. `{path}` is
+    // a `String`/`&String`.
     if ty == "Symbol" {
-        return format!("format!(\"((. Symbol of) \\\"{{}}\\\")\", {path})");
+        return format!(
+            "{{ let mut __s = String::from(\"((. Symbol of) \\\"\"); for __c in ({path}).chars() {{ match __c {{ \
+             '\\n' => __s.push_str(\"\\\\n\"), \
+             '\\t' => __s.push_str(\"\\\\t\"), \
+             '\\r' => __s.push_str(\"\\\\r\"), \
+             '\\\\' => __s.push_str(\"\\\\\\\\\"), \
+             '\\\"' => __s.push_str(\"\\\\\\\"\"), \
+             __c => __s.push(__c), \
+             }} }} __s.push('\\\"'); __s.push(')'); __s }}"
+        );
     }
     // A `Char` value is the Rust `char` the backend emits — render it as cdz-run's canonical `#\<…>` form,
     // matching `cadenza-syntax`'s `literal::render_char`: the named specials (`#\space`/`#\newline`/`#\tab`/
