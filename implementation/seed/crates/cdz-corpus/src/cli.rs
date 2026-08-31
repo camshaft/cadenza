@@ -111,6 +111,22 @@ enum CorpusCmd {
         #[arg(long)]
         strict: bool,
     },
+    /// Check no case pins a CAPABILITY/implementation-limit code as an `(error …)` — FAST, no compile/run.
+    ///
+    /// The corpus is the impl-INDEPENDENT runnable spec (standing operator directive 2026-08-31): a program
+    /// that SHOULD work per spec but the compiler does not YET implement must be a TODO — recorded as
+    /// `(output <spec value>)` (grades Todo now, AUTO-LOCKS to Pass once implemented, no corpus edit) — or
+    /// pinned as `(declines CDZ0900 …)`, NEVER as `(error CDZ0900 …)`. `CDZ0900`
+    /// (`Code::UnsupportedConstruct`) is the DECLINE umbrella for a not-yet-built construct; pinning it as an
+    /// `(error …)` REJECTION asserts the program is ILL-FORMED when it is actually well-formed-but-unrealized
+    /// — baking a transient compiler limitation into the spec (and forcing a corpus edit when the feature
+    /// lands). This lint FLAGs any `(error <capability-limit code>)` pin. Currently ~0 (a going-forward
+    /// guard). Exits NON-ZERO on any hit (convert to `(output V)` / `(declines CDZ0900)`).
+    CapabilityErrorCheck {
+        /// Corpus `.sexp` files to check (typically the full `spec/semantics/*.sexp` glob).
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
 }
 
 /// Run a corpus command per `args`, returning the process exit code. `prog` names the tool in
@@ -132,6 +148,7 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
         } => check_baseline_drift(files, baseline, *list_missing),
         CorpusCmd::NativizeCheck { files } => check_nativize_idempotence(files),
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
+        CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -250,6 +267,71 @@ fn check_nativize_idempotence(files: &[String]) -> Result<(), String> {
         Err(format!(
             "{} file(s) have classic-form input compounds — corpus must use native #ctor form (operator M3)",
             non_native.len()
+        ))
+    }
+}
+
+/// Diagnostic codes that are CAPABILITY / implementation-LIMITS (a not-yet-built construct), NOT semantic
+/// spec-errors. Pinning one as `(error …)` is the anti-pattern the operator directive forbids (a well-formed-
+/// but-unrealized program pinned as an ill-formed REJECTION). `CDZ0900` (`Code::UnsupportedConstruct`) is the
+/// canonical decline umbrella (`(declines CDZ0900 …)`); it must never be an `(error …)`. Kept as a DATA const
+/// so the set can grow if new capability-limit codes surface (semantic-error codes — CDZ0201/0203/0304/0101/…
+/// — are DELIBERATELY absent: those ARE the spec and correctly pin as `(error …)`).
+const CAPABILITY_LIMIT_CODES: &[&str] = &["CDZ0900"];
+
+/// The `(desc, code)` of every case in `records` that pins a [`CAPABILITY_LIMIT_CODES`] code as an
+/// `Expect::Error` (the anti-pattern). Pure over parsed records so it is unit-testable; a `(declines
+/// CDZ0900 …)` (`Expect::Declines`) or a semantic-error `(error CDZ0201 …)` is correctly NOT flagged.
+fn capability_error_hits(records: &[Record]) -> Vec<(String, String)> {
+    let mut hits = Vec::new();
+    for rec in records {
+        for trial in &rec.trials {
+            if let Expect::Error(code, ..) = &trial.expect
+                && CAPABILITY_LIMIT_CODES.contains(&code.as_str())
+            {
+                hits.push((rec.description.clone(), code.clone()));
+            }
+        }
+    }
+    hits
+}
+
+/// `capability-error-check FILE…`: flag any case that pins a [`CAPABILITY_LIMIT_CODES`] code as an
+/// `(error …)`. Parser-based (uses `crate::read`, so comments / multi-line / `(declines CDZ0900)` are handled
+/// correctly — only a genuine `Expect::Error` with a capability-limit code is flagged). A hit should be
+/// converted to `(output <spec value>)` (Todo-now, auto-Pass-when-implemented) or `(declines CDZ0900 …)`.
+fn check_capability_error_pins(files: &[String]) -> Result<(), String> {
+    let mut hits: Vec<(String, String, String)> = Vec::new(); // (file, case description, code)
+    for path in files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+        // Only compiler-case files pin `(error …)`; platform-genre files are a distinct genre (skip).
+        if crate::is_platform_genre(&text) {
+            continue;
+        }
+        let records = crate::read(&text).map_err(|e| format!("{path}: {e}"))?;
+        for (desc, code) in capability_error_hits(&records) {
+            hits.push((path.clone(), desc, code));
+        }
+    }
+    if hits.is_empty() {
+        println!(
+            "capability-error-check: OK — no case pins a capability-limit code ({}) as an (error …) in {} file(s)",
+            CAPABILITY_LIMIT_CODES.join("/"),
+            files.len()
+        );
+        Ok(())
+    } else {
+        for (path, desc, code) in &hits {
+            eprintln!(
+                "capability-error-check: {path}: case {desc:?} pins {code} as an (error …) — {code} is a \
+                 not-yet-implemented DECLINE umbrella, not a semantic error. The corpus is the impl-independent \
+                 spec: record this as (output <spec value>) [Todo now, auto-Pass when implemented] or \
+                 (declines {code} …), NEVER (error {code} …) (operator directive: should-work-unimplemented = Todo)"
+            );
+        }
+        Err(format!(
+            "{} case(s) pin a capability-limit code as an (error …) — convert to (output V)/(declines …) (operator: corpus is the impl-independent spec)",
+            hits.len()
         ))
     }
 }
@@ -1233,6 +1315,29 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
     /// seq-29: a `(not "phrase")` message-ABSENCE pin reaches the shredded `test-run.ast` as a `(not …)`
     /// sub-form INSIDE the `expect-error` / `expect-declines` form — distinguishable from the bare-string
     /// positive `(message …)` substring leaves, exactly the wire `cdz_corpus_grade` decodes.
+    #[test]
+    fn capability_error_check_flags_error_cdz0900_only() {
+        // (error CDZ0900) = the anti-pattern (a not-yet-built umbrella pinned as an ill-formed REJECTION) → FLAG.
+        // (declines CDZ0900) = correct (a well-formed-but-unrealized decline) → NOT flagged.
+        // (error CDZ0201) = a genuine semantic spec-error → NOT flagged (that IS the spec).
+        // (output …) for a should-work case → NOT flagged (grades Todo now, auto-Pass when implemented).
+        let recs = crate::read(
+            r#"(case "wrongly pins the not-yet umbrella as an error" (input 1_) (error CDZ0900))
+               (case "correctly declines a not-yet construct" (input 1_) (declines CDZ0900))
+               (case "a genuine malformed spec error" (input 1_) (error CDZ0201))
+               (case "should-work recorded as output" (input (do (def (main) 0) (export main))) (output (: 0 Int64)))"#,
+        )
+        .unwrap();
+        let hits = capability_error_hits(&recs);
+        assert_eq!(
+            hits.len(),
+            1,
+            "only the (error CDZ0900) case is flagged: {hits:?}"
+        );
+        assert_eq!(hits[0].0, "wrongly pins the not-yet umbrella as an error");
+        assert_eq!(hits[0].1, "CDZ0900");
+    }
+
     #[test]
     fn not_message_reaches_shredded_test_run() {
         let recs = crate::read(
