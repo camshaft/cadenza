@@ -533,7 +533,7 @@ pub fn equiv_cadenza_sweep(
     oracle: &std::path::Path,
     count: u64,
     false_positives: &mut Vec<(String, String)>,
-    boundary_reasons: &mut Vec<String>,
+    boundary_samples: &mut Vec<(String, String)>,
 ) -> std::io::Result<EquivStats> {
     use crate::cadenza_diff::{ConfirmOutcome, cadenza_confirm, equiv_trial_for};
     use crate::lean::{BatchItem, judge_batch_items};
@@ -596,7 +596,9 @@ pub fn equiv_cadenza_sweep(
                         // "boundary: unmodeled head set" / "…recursion") so the caller can histogram the
                         // biggest cannotProve category — the coverage-prioritization signal v-lean-oracle wants.
                         if let crate::lean::Verdict::Skip(r) = v {
-                            boundary_reasons.push(r.clone());
+                            // Keep the SOURCE too so the caller can name the specific unmodeled construct
+                            // (e.g. WHICH free-name) — the reason string alone often lacks the identifier.
+                            boundary_samples.push((r.clone(), src.clone()));
                         }
                     }
                     EquivClass::SuspectedDivergence => {
