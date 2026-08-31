@@ -1356,8 +1356,14 @@ impl<'a> Parser<'a> {
                 pending_leading: Vec<Lead>,
                 // `items` is empty while the FIRST sub-expr is still being read (grouping-vs-tuple undecided);
                 // once tuple mode is entered it holds `[ "tuple"-head, first, … ]`. `items.is_empty()` IS the
-                // mode flag on deliver — no separate bool needed.
+                // mode flag on deliver — no separate bool needed. (A LEADING `.. a` spread pre-populates
+                // `items` with the tuple head, so it enters tuple mode immediately — never `is_empty`.)
                 items: Vec<StructId>,
+                // The delivered sub-expr is a `.. a` CONSTRUCTION SPREAD operand — wrap it `(.. operand)`
+                // (head = `rest_head`, pre-created before the descent, matching `rest_marker`'s order)
+                // before pushing it as a tuple element. `false` for an ordinary element/grouping.
+                spread: bool,
+                rest_head: StructId,
             },
             // A `[ … ]` list literal awaiting an element sub-expr. `items` = `[ "list"-head, … ]`. Each
             // element is either a `.. rest` spread (`is_rest`: wrap `(.. binder)` with `dd_span`) or an
@@ -1676,6 +1682,29 @@ impl<'a> Parser<'a> {
                             pf_pending = true;
                             pf_num = prefix_is_number;
                             pf_spine = 0;
+                        } else if self.at(Kind::DotDot) {
+                            // A LEADING `.. a` spread forces the tuple path (no grouping meaning): create the
+                            // tuple head THEN the `..` head (matching the recursive `ctor_head` -> `rest_marker`
+                            // struct-id order), then descend the spread operand (at PREC_SEQ+1, as
+                            // `rest_marker` reads it). `items` starts NON-empty (tuple mode).
+                            let head = self.ctor_head("tuple", cur_start);
+                            let dd = self.cur_span();
+                            self.bump(); // `..`
+                            let rest_head = self.name("..", dd);
+                            pending.push(Cont::Paren {
+                                start: cur_start,
+                                min_prec: cur_min_prec,
+                                spine,
+                                entered,
+                                prefix_is_number,
+                                arm_bar,
+                                pending_leading: Vec::new(),
+                                items: vec![head],
+                                spread: true,
+                                rest_head,
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            continue; // descend: read the spread operand as a fresh level
                         } else {
                             let first_leading = self.take_comments_here();
                             pending.push(Cont::Paren {
@@ -1687,6 +1716,8 @@ impl<'a> Parser<'a> {
                                 arm_bar,
                                 pending_leading: first_leading,
                                 items: Vec::new(),
+                                spread: false,
+                                rest_head: StructId(0),
                             });
                             cur_min_prec = 0; // `first = self.expr(0)`
                             continue; // descend: read `first` as a fresh level
@@ -2488,17 +2519,33 @@ impl<'a> Parser<'a> {
                     arm_bar,
                     pending_leading,
                     mut items,
+                    spread,
+                    rest_head,
                 }) => {
                     // Assemble the paren operand from the delivered sub-expr, restore state, and resume the
-                    // parent level's infix loop with it as the operand (postfix + unit-suffix apply). A
-                    // macro-free helper would obscure the borrow flow, so the close/finish is written inline.
-                    if items.is_empty() {
-                        // `left` is the delivered FIRST sub-expr — decide grouping `(e)` vs tuple `(a, …)`.
-                        let first = self.wrap_comments(pending_leading, left);
-                        if self.at(Kind::Comma) {
-                            let head = self.ctor_head("tuple", start);
-                            let mut items = vec![head, first];
-                            if self.sep_continue(Kind::RParen) {
+                    // parent level's infix loop with it as the operand (postfix + unit-suffix apply).
+                    // START-NEXT-ELEMENT (after a `,`): a `.. a` element descends as a spread (wrap on
+                    // deliver, `finish_tuple`'s rest_marker twin); else an ordinary element with its own-line
+                    // leading comments. Diverges via `continue`.
+                    macro_rules! next_tuple_elem {
+                        ($items:expr) => {{
+                            if self.at(Kind::DotDot) {
+                                let dd = self.cur_span();
+                                self.bump(); // `..`
+                                let rest_head = self.name("..", dd);
+                                pending.push(Cont::Paren {
+                                    start,
+                                    min_prec: parent_min_prec,
+                                    spine: parent_spine,
+                                    entered: parent_entered,
+                                    prefix_is_number,
+                                    arm_bar,
+                                    pending_leading: Vec::new(),
+                                    items: $items,
+                                    spread: true,
+                                    rest_head,
+                                });
+                            } else {
                                 let elem_leading = self.take_comments_here();
                                 pending.push(Cont::Paren {
                                     start,
@@ -2508,11 +2555,39 @@ impl<'a> Parser<'a> {
                                     prefix_is_number,
                                     arm_bar,
                                     pending_leading: elem_leading,
-                                    items,
+                                    items: $items,
+                                    spread: false,
+                                    rest_head: StructId(0),
                                 });
-                                cur_min_prec = crate::token::PREC_SEQ + 1;
-                                reading = true;
-                                continue; // read the next tuple element as a fresh level
+                            }
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            reading = true;
+                            continue; // read the next tuple element as a fresh level
+                        }};
+                    }
+                    if spread {
+                        // `left` is a `.. a` spread operand — wrap `(.. operand)` (head pre-created at
+                        // `rest_head`, whose span is the `..`'s) and push it as a tuple element (`items`
+                        // already holds `[ "tuple"-head, … ]`), then close or read the next element.
+                        let dd_span = self.spans.get(rest_head).unwrap_or_else(|| Span::new(0, 0));
+                        let span = dd_span.merge(self.prev_span());
+                        items.push(self.list(vec![rest_head, left], span));
+                        if self.sep_continue(Kind::RParen) {
+                            next_tuple_elem!(items);
+                        }
+                        self.drain_closer_comment_onto_last(&mut items, 1);
+                        self.expect(Kind::RParen, "`)`");
+                        let span = start.merge(self.prev_span());
+                        self.arm_bar_terminates = arm_bar;
+                        left = self.list(items, span);
+                    } else if items.is_empty() {
+                        // `left` is the delivered FIRST sub-expr — decide grouping `(e)` vs tuple `(a, …)`.
+                        let first = self.wrap_comments(pending_leading, left);
+                        if self.at(Kind::Comma) {
+                            let head = self.ctor_head("tuple", start);
+                            let mut items = vec![head, first];
+                            if self.sep_continue(Kind::RParen) {
+                                next_tuple_elem!(items);
                             }
                             // `(a,)` — trailing comma, no further element.
                             self.drain_closer_comment_onto_last(&mut items, 1);
@@ -2527,7 +2602,7 @@ impl<'a> Parser<'a> {
                             left = first;
                         }
                     } else {
-                        // `left` is the delivered subsequent TUPLE element.
+                        // `left` is the delivered subsequent ORDINARY tuple element.
                         let mut elem = self.wrap_comments(pending_leading, left);
                         if self.at(Kind::RParen) {
                             let trailing = self.take_trailing_comment_here();
@@ -2535,20 +2610,7 @@ impl<'a> Parser<'a> {
                         }
                         items.push(elem);
                         if self.sep_continue(Kind::RParen) {
-                            let elem_leading = self.take_comments_here();
-                            pending.push(Cont::Paren {
-                                start,
-                                min_prec: parent_min_prec,
-                                spine: parent_spine,
-                                entered: parent_entered,
-                                prefix_is_number,
-                                arm_bar,
-                                pending_leading: elem_leading,
-                                items,
-                            });
-                            cur_min_prec = crate::token::PREC_SEQ + 1;
-                            reading = true;
-                            continue;
+                            next_tuple_elem!(items);
                         }
                         self.drain_closer_comment_onto_last(&mut items, 1);
                         self.expect(Kind::RParen, "`)`");
@@ -4321,6 +4383,16 @@ impl<'a> Parser<'a> {
             let span = start.merge(self.prev_span());
             return self.name("unit", span);
         }
+        // A LEADING `.. a` spread forces the tuple path — a spread has no meaning as a grouping — and
+        // builds the `#tuple((.. a) …)` construction-spread node (the tuple twin of the list/set/map/record
+        // construction spread; the printer already renders `(.. a, …)`). The `..` head is created via
+        // `rest_marker`, exactly as the other compounds do.
+        if self.at(Kind::DotDot) {
+            let head = self.ctor_head("tuple", start);
+            let mut items = vec![head];
+            self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1));
+            return self.finish_tuple(items, start);
+        }
         // Own-line `//` comment(s) leading the first element (`(\n // note\n 1, 2)` or a grouped `(\n
         // // note\n e)`) sit in its first-token leading slot, which `expr` does not drain — capture +
         // wrap `(comment "text" first)` so they round-trip (the printer renders a leading comment on its
@@ -4329,22 +4401,28 @@ impl<'a> Parser<'a> {
         let first = self.expr(0);
         let first = self.wrap_comments(first_leading, first);
         if self.at(Kind::Comma) {
-            // a tuple: gather the rest, recovering from a missing `,` between elements. The head is the
-            // STRING primitive `"tuple"` (not the name), so the literal builds the unshadowable tuple
-            // constructor even where the name `tuple` is rebound. A tuple element is a single expression
-            // at `PREC_SEQ + 1` (not a sequence): a `;` inside would belong to an enclosing block, not
-            // the element, and `,` separates elements — so `(a; b, c)` is not a legal tuple element here.
+            // a tuple: gather the rest. The head is the STRING primitive `"tuple"` (not the name), so the
+            // literal builds the unshadowable tuple constructor even where the name `tuple` is rebound.
             let head = self.ctor_head("tuple", start);
-            // NOTE: only a LAST-element same-line comment is captured (gated on `at(RParen)`), for the same
-            // reason as `list_literal` — the comment sits in the NEXT token's leading slot, so a non-last
-            // element's comment (next token `,`) would print `x // note, …` swallowing the `, …` into the
-            // comment line → invalid re-parse (PR#758). The `first` element is only the last one in a
-            // 1-tuple `(e,)`, which reaches `)` via the `,`-then-`)` path below, NOT here — so `first`
-            // never needs its own capture (a `(e // c,)` comment sits after the structural comma anyway,
-            // an unrepresentable slot left to the drop-guard). A mid-tuple comment is left stranded → the
-            // comment-drop guard refuses the format (no corruption).
-            let mut items = vec![head, first];
-            while self.sep_continue(Kind::RParen) {
+            let items = vec![head, first];
+            return self.finish_tuple(items, start);
+        }
+        self.expect(Kind::RParen, "`)`");
+        first // grouping (or the folded `(do …)` sequence) is transparent in the arena
+    }
+
+    /// Gather the remaining `,`-separated tuple elements onto `items` (already holding `[ "tuple"-head,
+    /// … ]`), recovering from a missing `,`, then close `)` and build the tuple node. Each element is a
+    /// single expression at `PREC_SEQ + 1` (not a sequence — a `;` belongs to an enclosing block) OR a
+    /// `.. a` CONSTRUCTION SPREAD (`(.. operand)`, via `rest_marker` — the tuple twin of the list/set/
+    /// map/record spread, so `(1, .. a)` / `(.. a, 1)` round-trip). Only a LAST-element same-line comment
+    /// is captured (gated on `at(RParen)`, the PR#758 rule — a non-last element's comment sits before the
+    /// `,` with no faithful slot). `rest_marker` returns false on a non-`..` element, so an ORDINARY tuple
+    /// is byte-identical — this is pure ADDITIVE acceptance of a previously-rejected spread. Shared by the
+    /// recursive `paren` and the iterative `Cont::Paren` path (kept in sync by the differential oracle).
+    fn finish_tuple(&mut self, mut items: Vec<StructId>, start: Span) -> StructId {
+        while self.sep_continue(Kind::RParen) {
+            if !self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1)) {
                 // Own-line leading comment before this element (own-line has no swallow hazard — see
                 // `list_literal`), then the element, then a same-line trailing comment on the LAST element.
                 let leading = self.take_comments_here();
@@ -4357,14 +4435,12 @@ impl<'a> Parser<'a> {
                     items.push(elem);
                 }
             }
-            // Own-line `//` before `)` (`(1, 2\n // note\n)`) → attach to the last element (see the helper).
-            self.drain_closer_comment_onto_last(&mut items, 1);
-            self.expect(Kind::RParen, "`)`");
-            let span = start.merge(self.prev_span());
-            return self.list(items, span);
         }
+        // Own-line `//` before `)` (`(1, 2\n // note\n)`) → attach to the last element (see the helper).
+        self.drain_closer_comment_onto_last(&mut items, 1);
         self.expect(Kind::RParen, "`)`");
-        first // grouping (or the folded `(do …)` sequence) is transparent in the arena
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
     }
 
     // ---- keyword forms ----
@@ -7278,6 +7354,15 @@ mod tests {
             "(a, b, c)",
             "(a,)",
             "(a, b,)",
+            // tuple CONSTRUCTION spread `(.. a)` (the tuple twin of list/set/map/record spread) — leading,
+            // trailing, mid, multi, and nested; a leading `..` forces the tuple path (no grouping).
+            "(.. a)",
+            "(.. a, 1)",
+            "(1, .. a)",
+            "(a, .. b, c)",
+            "(a, b, .. c)",
+            "(.. a, .. b)",
+            "((.. a, 1), 2)",
             "((a))",
             "((a, b), c)",
             "(a + b) * c",
