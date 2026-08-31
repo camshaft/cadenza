@@ -1,0 +1,1 @@
+def f(r: {p: {x: Int64}, pair: (Int64, Bool)}) = r

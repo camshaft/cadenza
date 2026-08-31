@@ -1,0 +1,1 @@
+(def (f (: g (Record (: describe (-> Int64 Int64))))) g)

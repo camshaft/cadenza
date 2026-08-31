@@ -11250,76 +11250,20 @@ mod tests {
 
     // ---- record-type annotation surface: `{field: T, …}` ----
 
-    #[test]
-    fn brace_record_type_annotation_equals_the_explicit_record_form() {
-        // The reported gap (v-inference / concierge): a `{field: T}` record-type annotation failed to
-        // parse ("expected `,`" at the `:`) even for CONCRETE field types, because `{ … }` in type
-        // position fell to the record-VALUE literal path (fields are `name = value`). Fixed: `type_ref`
-        // parses a brace in type position as a record TYPE, producing the SAME `(Record (: field T) …)`
-        // node the explicit `Record(field: T, …)` application builds — pure surface sugar for it.
-        use crate::sexpr;
-        // The brace form and the explicit Record(...) form must produce structurally-identical arenas.
-        for (brace, explicit) in [
-            ("def f(r: {x: Int64}) = r", "def f(r: Record(x: Int64)) = r"),
-            (
-                "def f(r: {x: Int64, y: Int64}) = r",
-                "def f(r: Record(x: Int64, y: Int64)) = r",
-            ),
-        ] {
-            let b = parse_ok(brace);
-            let e = parse_ok(explicit);
-            assert!(
-                b.structurally_eq(&e),
-                "brace record type != explicit Record form:\n  brace={}\n  explicit={}",
-                sexpr::print(&b),
-                sexpr::print(&e),
-            );
-        }
-        // The exact canonical shape.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(r: {x: Int64, y: Int64}) = r")),
-            "(def (f (: r (Record (: x Int64) (: y Int64)))) r)"
-        );
-        // An empty record type is `(Record)`.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(r: {}) = r")),
-            "(def (f (: r (Record))) r)"
-        );
-    }
-
-    #[test]
-    fn brace_record_type_nests_and_carries_function_and_tuple_field_types() {
-        use crate::sexpr;
-        // A field type is a full type_ref: function arrows, tuples, and nested record types all work —
-        // the capability-dict shape the operator wrote (`{describe: Int64 -> Int64}`) parses.
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(g: {describe: Int64 -> Int64}) = g")),
-            "(def (f (: g (Record (: describe (-> Int64 Int64))))) g)"
-        );
-        // Nested record + tuple field types.
-        assert_eq!(
-            sexpr::print(&parse_ok(
-                "def f(r: {p: {x: Int64}, pair: (Int64, Bool)}) = r"
-            )),
-            "(def (f (: r (Record (: p (Record (: x Int64))) (: pair (Tuple Int64 Bool))))) r)"
-        );
-    }
-
-    #[test]
-    fn brace_record_type_round_trips_through_the_printer() {
-        // The record-type annotation survives print → re-read structurally (the ML surface contract).
-        let a = parse_ok("def f(r: {x: Int64, y: Bool}) = r");
-        let printed = crate::printer::print(&a, 80);
-        let back = read_ml(&printed);
-        assert!(
-            back.ok(),
-            "printed record-type annotation re-parses: {printed:?}"
-        );
-        assert!(
-            back.arenas.structurally_eq(&a),
-            "record-type annotation round-trips: {printed:?}"
-        );
-    }
+    // The brace record-type PARSE-TREE + round-trip tests (`brace_record_type_annotation_equals_the_explicit_
+    // record_form`, `brace_record_type_nests_and_carries_function_and_tuple_field_types`,
+    // `brace_record_type_round_trips_through_the_printer`) MIGRATED to the spec/syntax corpus (inc-6 batch-62,
+    // FIRST parser.rs migration). A `{x: T}` type-position brace is sugar the printer canonicalizes to the
+    // explicit `Record(x : T)` form (same arena):
+    //   * ml/386-brace-record-type-annotation `def f(r: {x: Int64, y: Int64}) = r`→`(def (f (: r (Record (: x
+    //     Int64) (: y Int64)))) r)`, format.cdz = the explicit `Record(x : Int64, y : Int64)` canonicalization.
+    //   * ml/387-brace-record-type-empty `{}`→`(Record)`, ml/388-brace-record-type-function-field `{describe:
+    //     Int64 -> Int64}`→`(Record (: describe (-> Int64 Int64)))`, ml/389-brace-record-type-nested-and-tuple
+    //     `{p: {x: Int64}, pair: (Int64, Bool)}`→nested `(Record …)`/`(Tuple …)`.
+    //   * ml/390-explicit-record-type-annotation `Record(x: Int64, y: Int64)` — BYTE-IDENTICAL tree.sexp to
+    //     ml/386, pinning the brace==explicit equivalence; the round-trip is each case's fmt-idempotence.
+    // The REJECT/steering tests below (head-app field, malformed WIT member type) stay Rust — diagnostic-
+    // quality assertions, out of the parse-tree/fmt corpus scope.
 
     #[test]
     fn a_head_app_record_type_field_is_rejected_steering_to_the_colon_form() {

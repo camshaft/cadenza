@@ -1,0 +1,1 @@
+(def (f (: r (Record (: p (Record (: x Int64))) (: pair (Tuple Int64 Bool))))) r)
