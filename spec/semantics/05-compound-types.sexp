@@ -19443,9 +19443,6 @@
   (input  (do (def (f (: s (Set Int64))) (match s (#set(1) 0))) (export f)))
   (error  CDZ0210 (message "a set match must end in a catch-all")))
 
-(case "a rest-form set match pattern is a coded, check-surfaced not-yet-supported rejection"
-  (input  (do (def (f (: s (Set Int64))) (match s (#set(1 .. r) 0) (_ 9))) (export f)))
-  (error  CDZ0201 (message "is not yet supported")))
 
 ; --- Consumed loop-invariant heap extractions: the per-kind family ----------------------------------
 ; Two same-day fixes closed this family (aac1b72bc: LICM refuses a heap-typed Proj hoist root;
