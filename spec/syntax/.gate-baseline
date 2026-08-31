@@ -437,7 +437,12 @@ pass	ml/50-const-force-eval-infix
 pass	ml/506-integer-underscore-separators
 pass	ml/507-float-scientific-notation
 pass	ml/508-float-scientific-negative-exponent
+pass	ml/509-char-literal-ascii
 pass	ml/51-effect-op-resource-marker-first-param
+pass	ml/510-char-literal-named-newline
+pass	ml/511-char-literal-codepoint-printable-to-char
+pass	ml/512-char-literal-codepoint-control-to-name
+pass	ml/513-char-literal-non-ascii
 pass	ml/52-effect-op-resource-marker-second-param
 pass	ml/53-effect-op-no-resource-marker
 pass	ml/54-neg-prefix-name
