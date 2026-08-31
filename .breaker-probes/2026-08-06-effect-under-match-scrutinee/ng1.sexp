@@ -2,7 +2,7 @@
   (input  (do
             (effect St (op dip (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle St (- 0 100)
+              (handle St -100
                 ((dip (v) s (resume (+ v s) (- s 10))))
                 (+ (St.dip (- 0 n)) (St.dip 3))))
             (export main)))

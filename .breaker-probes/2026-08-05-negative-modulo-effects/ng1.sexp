@@ -2,7 +2,7 @@
   (input  (do
             (effect St (op step (-> Unit Int64)))
             (def (main (: n Int64))
-              (handle St (- 0 7)
+              (handle St -7
                 ((step (u) s (resume (% s 3) (/ s 2))))
                 (+ (* 100 (St.step)) (+ (* 10 (St.step)) (St.step)))))
             (export main)))

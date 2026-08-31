@@ -52,7 +52,7 @@
   (input  (do
             (def (f (const (: n Int64)))
               (if (= n 0)
-                  (if (= (% (- 0 7) 3) -1)
+                  (if (= (% -7 3) -1)
                       (trap "cc06 truncated remainder")
                       (trap "cc06 WRONG remainder sign"))
                   (f (- n 1))))
