@@ -5814,6 +5814,28 @@
   (output (: 9 Int64)))
 
 (case
+  "a DOTTED nullary-variant arm binds nothing and never warns unused (a ctor, not a binder)"
+  (doc
+    "A dotted nullary-variant arm `(. C R)` is a CONSTRUCTOR pattern that binds NOTHING — it must not be
+           mis-collected as a binder and spuriously warned CDZ0306 unused on the type/variant name. Runs
+           `(match C.R …)` → 1. (Migrated from rcdzc a_dotted_nullary_variant_arm_pattern_binds_nothing_and_never_warns_unused.)")
+  (input (do (type C R G B) (def (main) (match C.R (C.R 1) (C.G 2) (C.B 3))) (export main)))
+  (output (: 1 Int64))
+  (no-diagnostic "unused"))
+
+(case
+  "a BARE nested nullary-variant arm is a ctor, not a binder — never warns unused or unreachable"
+  (doc
+    "A BARE nullary-variant arm name (`TInt`, no dot) nested inside another arm's body is a CONSTRUCTOR
+           pattern binding nothing — not a fresh binder (no spurious CDZ0306 unused) and the distinct arms are
+           not redundant (no spurious CDZ0213 unreachable). Runs `(match TInt (TInt 1) (TBool 2))` → 1.
+           (Migrated from rcdzc a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns.)")
+  (input (do (type Ty TInt TBool) (def (main) (match TInt (TInt 1) (TBool 2))) (export main)))
+  (output (: 1 Int64))
+  (no-diagnostic "unused")
+  (no-diagnostic "unreachable"))
+
+(case
   "a dotted nullary arm whose body nests a same-type sum match dispatches correctly"
   (doc
     "The organic form of the nested-nullary resolver bug (hit building a `'(' Num ')'` grammar rule):

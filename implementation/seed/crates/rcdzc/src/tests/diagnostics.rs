@@ -1245,77 +1245,15 @@ fn a_bin_segment_size_operand_name_is_counted_used_not_flagged_cdz0306() {
     );
 }
 
-/// A `.`-MEMBER pattern `C.R` (a NULLARY variant used as a whole arm pattern, printed `(. C R)`) binds
-/// NOTHING — its segments are the TYPE and VARIANT names, not binders. The unused-binding pass must not
-/// treat the first segment (`C`) as a spuriously-unused binder. (Regression: `collect_arm_binder_leaves`
-/// recursed a compound's args generically, collecting `C` from `(. C R)` → a bogus CDZ0306 "unused
-/// binding `C`" with a nonsense `_C` rename on every nullary-variant match arm.)
-#[test]
-fn a_dotted_nullary_variant_arm_pattern_binds_nothing_and_never_warns_unused() {
-    // A total match over a three-nullary-variant sum, each arm a bare `C.x` member — no binders, so
-    // NO CDZ0306 at all.
-    let clean =
-        "(module m (type C R G B) (def (f (: c C)) (match c (C.R 1) (C.G 2) (C.B 3))) (export f))";
-    assert!(
-        unused_of(clean).is_empty(),
-        "a dotted nullary-variant arm binds nothing — no spurious `C` warning: {:?}",
-        unused_of(clean)
-    );
-    // The suppression is SURGICAL — it silences only the member HEAD, not real binders. A genuinely
-    // unused payload binder alongside a dotted arm still warns (only `n`, never `C`).
-    let mixed = "(module m (type C R G B) (def (f (: c C) (: o (Option Int64))) (match o ((Some n) (match c (C.R 1) (C.G 2) (C.B 3))) ((None) 0))) (export f))";
-    let u = unused_of(mixed);
-    assert_eq!(u.len(), 1, "only the unused payload binder n warns: {u:?}");
-    assert!(u[0].contains("`n`"), "warns n, not C: {u:?}");
-}
-
-/// A BARE (un-dotted) nullary-variant arm pattern (`TInt` in `(match a (TInt …) (TBool …))`) is the
-/// CONSTRUCTOR, not a binder — even when the match is NESTED inside another match's arm. `match_arm_binds`
-/// treated a bare-name arm pattern as introducing a binding of that name; scope resolution is
-/// scope-FIRST, so a NESTED `(match b (TInt 1) (TBool 2))` under an outer `(TInt …)` arm had its inner
-/// `TInt` resolve to the "binder" the outer arm appeared to introduce instead of to the variant ctor.
-/// That mis-resolution drew spurious CDZ0306 "unused binding `TInt`" + CDZ0213 "unreachable arm" on the
-/// inner arms — though the program compiled and ran correctly (the runtime value was the ctor's). A bare
-/// variant name never binds, so `match_arm_binds` now returns `None` for one (via `variant_ctor_by_name`,
-/// the same index `resolve_name`'s bare-variant step consults), at every nesting depth.
-#[test]
-fn a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns() {
-    // The queue repro (mlrepro-false-warning-nested-nullary-match-unused-binding): the INNER bare
-    // nullary match drew CDZ0306 + CDZ0213. Now CLEAN — no warnings, exit 0.
-    let nested = "(module m (type Ty TInt TBool) \
-            (def (classify (: a Ty) (: b Ty)) \
-              (match a (TInt (match b (TInt 1) (TBool 2))) (TBool 3))) \
-            (export classify))";
-    let all = diags_of(nested);
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0306")),
-        "no spurious 'unused binding' on a bare nested nullary-variant arm: {all:?}"
-    );
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0213")),
-        "no spurious 'unreachable arm' on a bare nested nullary-variant arm: {all:?}"
-    );
-    // BEHAVIOR PRESERVED: the inner `TInt` is a CTOR, so `classify(TInt, TBool)` selects the `TBool => 2`
-    // arm (a catch-all binder would have matched `TBool` at the FIRST inner arm and returned 1). The
-    // dispatch VALUE (=2) is ordinary nested nullary-variant match, covered by the corpus; here we only
-    // need the program to COMPILE (the warning regression must not block it).
-    let prog = "(module m (type Ty TInt TBool) \
-            (def (classify (: a Ty) (: b Ty)) \
-              (match a (TInt (match b (TInt 1) (TBool 2))) (TBool 3))) \
-            (def (main) (classify TInt TBool)) (export main))";
-    crate::compile::compile_component(&crate::codec::encode(&parse(prog)))
-        .expect("the nested nullary-variant program compiles");
-    // The SAME inner match at TOP LEVEL was always clean — pin it stays clean (no regression the other way).
-    let top = "(module m (type Ty TInt TBool) \
-            (def (classify2 (: b Ty)) (match b (TInt 1) (TBool 2))) (export classify2))";
-    assert!(
-        diags_of(top)
-            .iter()
-            .all(|d| d.code.as_deref() != Some("CDZ0306") && d.code.as_deref() != Some("CDZ0213")),
-        "a top-level bare nullary-variant match stays clean: {:?}",
-        diags_of(top)
-    );
-}
+// MIGRATED to corpus (05-compound-types.sexp): a nullary-variant arm (DOTTED `C.R` or BARE `TInt`) is a
+// CONSTRUCTOR pattern binding NOTHING — never a spuriously-unused binder (CDZ0306) nor a spurious unreachable
+// arm (CDZ0213). Cases "a DOTTED nullary-variant arm binds nothing and never warns unused …" (runs 1,
+// `(no-diagnostic "unused")`) + "a BARE nested nullary-variant arm is a ctor … never warns unused or
+// unreachable" (runs 1, `(no-diagnostic "unused")`/`(no-diagnostic "unreachable")`). The unused-payload-binder
+// -alongside facet (only `n` warns) is covered by the migrated variant-payload-binder warning cases; the
+// nested dispatch VALUE is covered by "a dotted nullary arm whose body nests a same-type sum match …". Rust
+// tests a_dotted_nullary_variant_arm_pattern_binds_nothing_and_never_warns_unused +
+// a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns deleted.
 
 /// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r
 /// b)` with a binder after the rest) must NOT also emit consequent CDZ0306 "unused binding" warnings
