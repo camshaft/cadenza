@@ -1,0 +1,3 @@
+match e with
+  | Some(n) => n
+  | _ => 0

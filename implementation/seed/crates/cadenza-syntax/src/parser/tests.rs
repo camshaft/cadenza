@@ -1455,56 +1455,14 @@ fn arena_shapes() {
     assert_eq!(tail.len(), 2); // bindings + body
 }
 
-#[test]
-fn match_arm_is_pattern_body_pair() {
-    // `match e with | Some(n) => n | _ => 0` -> (match e ((Some n) n) (_ 0))
-    let a = parse_ok("match e with | Some(n) => n | _ => 0");
-    let tail = a.as_form(a.root, "match").unwrap();
-    assert_eq!(tail.len(), 3); // scrutinee + 2 arms
-    // first arm is a 2-element list (pattern, body); pattern is (Some n)
-    let crate::ast::Struct::List(arm0) = a.get(tail[1]) else {
-        panic!()
-    };
-    assert_eq!(arm0.len(), 2);
-    assert_eq!(a.head_name(arm0[0]), Some("Some"));
-}
-
-#[test]
-fn prefix_unary_minus_is_arity_one_subtraction() {
-    // `-x` (prefix minus on a NAME) -> the arity-1 subtraction `(- x)` (negation, read as such by
-    // `lower`), NOT a binary `-` and NOT a signed literal (only `-<digit>` lexes as a literal).
-    let a = parse_ok("-x");
-    let tail = a.as_form(a.root, "-").unwrap();
-    assert_eq!(tail.len(), 1, "prefix `-x` is one operand");
-    assert_eq!(a.as_name(tail[0]), Some("x"));
-    // Negation binds TIGHTER than `+`: `-x + 1` is `(+ (- x) 1)` — the `-x` is the left addend.
-    let b = parse_ok("-x + 1");
-    let plus = b.as_form(b.root, "+").unwrap();
-    assert_eq!(plus.len(), 2);
-    let neg = b.as_form(plus[0], "-").unwrap();
-    assert_eq!(neg.len(), 1, "the left addend is the negation `(- x)`");
-    assert_eq!(b.as_name(neg[0]), Some("x"));
-    // A parenthesized operand `-(x + 1)` negates the whole sum: `(- (+ x 1))`.
-    let c = parse_ok("-(x + 1)");
-    let neg = c.as_form(c.root, "-").unwrap();
-    assert_eq!(neg.len(), 1);
-    assert_eq!(c.head_name(neg[0]), Some("+"));
-    // Binary subtraction is unchanged: `a - b` -> the arity-2 `(- a b)`.
-    let d = parse_ok("a - b");
-    let sub = d.as_form(d.root, "-").unwrap();
-    assert_eq!(sub.len(), 2, "binary `a - b` stays arity-2 subtraction");
-}
-
-#[test]
-fn guarded_arm_wraps_pattern() {
-    // `match n with | x if x < 0 => neg | _ => pos`: first arm pattern is (guard x (< x 0))
-    let a = parse_ok("match n with | x if x < 0 => neg | _ => pos");
-    let tail = a.as_form(a.root, "match").unwrap();
-    let crate::ast::Struct::List(arm0) = a.get(tail[1]) else {
-        panic!()
-    };
-    assert_eq!(a.head_name(arm0[0]), Some("guard"));
-}
+// `match_arm_is_pattern_body_pair` (a match arm is a `(pattern body)` pair) + `prefix_unary_minus_is_arity_one_
+// subtraction` (prefix `-x` is the arity-1 negation `(- x)`, binding tighter than `+`, distinct from binary
+// `a - b` = arity-2 `(- a b)`) + `guarded_arm_wraps_pattern` (a guarded arm pattern is `(guard pat cond)`)
+// MIGRATED to the spec/syntax corpus (inc-6 batch-80):
+//   * ml/470-match-basic-two-arm `match e with | Some(n) => n | _ => 0`→`(match e ((Some n) n) (_ 0))`.
+//   * prefix negation: `(- x)`=ml/54-neg-prefix-name, `(+ (- x) 1)`=ml/57-neg-tighter-than-plus, `(- (+ x 1))`=
+//     ml/58-neg-parenthesized-operand; new ml/469-binary-subtraction `a - b`→`(- a b)` (arity-2 contrast).
+//   * guarded arm `(match n ((guard x (< x 0)) neg) (_ pos))`=ml/149-match-guarded-arm.
 
 #[test]
 fn effect_op_resource_marker_lifts_to_a_hash_clean_sibling() {

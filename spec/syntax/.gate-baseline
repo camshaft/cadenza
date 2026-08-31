@@ -411,7 +411,9 @@ pass	ml/465-quantity-sugar-no-cross-newline
 pass	ml/466-quantity-same-line-then-next-stmt
 pass	ml/467-as-conversion-same-line-then-next-stmt
 pass	ml/468-bare-backtick-reserved-word
+pass	ml/469-binary-subtraction
 pass	ml/47-import-named-list
+pass	ml/470-match-basic-two-arm
 pass	ml/48-import-per-name-rename
 pass	ml/49-const-force-eval-call
 pass	ml/50-const-force-eval-infix
