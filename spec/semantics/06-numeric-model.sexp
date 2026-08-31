@@ -6516,7 +6516,7 @@
 ; The cases above pin nan-propagation and float `/0 → ±inf`. The IEEE INDETERMINATE forms — an operation on
 ; an actual INFINITY whose result IEEE leaves undefined — are the companion: `inf − inf` and `inf × 0.0` are
 ; both NaN (not 0, not inf). A genuine +inf is produced at RUN TIME by dividing a runtime finite by 0.0 (a
-; const inf would hit the "not finite (±inf or NaN) has no written value form" decline; the runtime `x` keeps `x/0.0` off the
+; const inf would hit the "not finite (±inf or NaN) has no written value form" CDZ0201 rejection; the runtime `x` keeps `x/0.0` off the
 ; fold), then fed to the indeterminate op. Pins that the runtime float ops compute the IEEE indeterminate
 ; result rather than trapping or folding, both backends — the inf-operand companion of the existing
 ; `0.0 * nan = nan` case (which tests a NaN operand, never an inf one) and of `inf` being nowhere subtracted.
@@ -14905,7 +14905,7 @@
 ; -- breaker batch 400 (2026-08-26): Float64.Infinity arithmetic identities (inf-inf=nan by canonical
 ; byte equality, 1/inf=0, -inf ordering, saturating +), runtime div-by-zero inf crossing the export
 ; boundary, and the NAMED Infinity constant threading as an effect handler seed (isolates the fse3d
-; computed-seed decline to const-folding of non-finite-producing division, not non-finite state).
+; computed-seed CDZ0201 rejection of const-folding a non-finite-producing division, not non-finite state).
 (case
   "if1 Float64.Infinity minus itself is NaN (canonical-byte equal to nan)"
   (input
@@ -16767,12 +16767,22 @@
   (output (: 17 Int64))
   (live-objects 0))
 
+; fi0: the CONST-fold twin of the runtime fi1-fi4 cells. A const float op whose result is non-finite
+; (±inf or NaN) has no written value form, so it is a coded CDZ0201 REJECTION — a PERMANENT correct-reject
+; (seq-32), the same fault the non-finite float LITERAL gives (resolve.rs FloatInf/FloatNan). Const-ness is
+; type/reject-irrelevant: this is why fi1-fi4 keep the operands RUNTIME (to exercise IEEE semantics rather
+; than reject). Reclassified off a codeless decline for the v-cdz-smith reachability fuzz (#6878).
+(case
+  "fi0 a const float operation whose result is non-finite is a coded CDZ0201, not a codeless decline"
+  (input (do (def (main) (/ (: 159.24 Float32) (: 0.0 Float32))) (export main)))
+  (error CDZ0201))
 (case
   "fi1 runtime float division by zero produces +infinity (huge, self-equal, positive)"
   (doc
-    "Non-finite RUNTIME float semantics (the const-fold path rejects non-finite results with an
-           honest decline — a fold reaching 0.0/0.0 errors 'not finite (±inf or NaN) has no written value form'; these cells keep the
-           operands runtime so the IEEE semantics execute). fi3/fi4 pin that runtime-PRODUCED NaNs are
+    "Non-finite RUNTIME float semantics (the const-fold path REJECTS a non-finite result with a coded
+           CDZ0201 — a fold reaching 0.0/0.0 rejects with 'not finite (±inf or NaN) has no written value
+           form', the const fi0 twin above; these cells keep the operands runtime so the IEEE semantics
+           execute). fi3/fi4 pin that runtime-PRODUCED NaNs are
            CANONICALIZED: byte-equal to the Float64.nan literal, self-equal under canonical-byte =, and
            found in a Set by the literal probe — the collection/eq contract holds for every NaN source.")
   (input

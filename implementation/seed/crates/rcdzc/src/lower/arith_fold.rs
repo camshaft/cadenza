@@ -1877,9 +1877,15 @@ pub(super) fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[Str
                     trace!(target: "rcdzc::lower", op = intrinsic_name(op), width, "folded constant float op");
                     Core::ConstFloat(d)
                 }
-                // A non-finite result (overflow → ±inf, 0.0/.0 → NaN) has no written value form — decline
-                // rather than emit an unrepresentable constant (the float-literal-overflow discipline).
-                None => Core::Poison(Reject::decline(
+                // A non-finite result (overflow → ±inf, 0.0/.0 → NaN) has no written value form. This is
+                // a PERMANENT correct-reject (one of the operator-ruled sound refusals), not a not-yet
+                // feature gap — so per seq-32 it is a CODED REJECTION, not a codeless decline. Reuse the
+                // CDZ0201 the non-finite float LITERAL sibling gives (resolve.rs, `Leaf::FloatInf`/`FloatNan`
+                // "non-finite float value has no source literal form"): the same fault, surfacing from a
+                // const FOLD instead of a source atom. (Reclassified off a codeless decline for the
+                // v-cdz-smith reachability fuzz #6878; verdict from v-deferral-declines.)
+                None => Core::Poison(Reject::coded(
+                    crate::diag::Code::Malformed,
                     "a floating-point operation whose constant result is not finite (±inf or NaN) \
                      has no written value form",
                 )),
