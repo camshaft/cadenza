@@ -4062,8 +4062,18 @@ pub(super) fn emit(
         // layout's emission order). The callee is reachable (`layout` added it), so its index exists; a
         // callee not in the emission order is a compiler bug (reachability missed it) → decline.
         Core::Call { callee, args } => {
+            let mut drop_slots: Vec<u32> = Vec::new();
             emit_call_args(
-                db, callee, &args, slots, base, high, scratch_ty, layout, out,
+                db,
+                callee,
+                &args,
+                slots,
+                base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                Some(&mut drop_slots),
             )?;
             // OPTION C (consumer emit): a CROSS-EDGE callee is NOT a local emitted func — it lives in the
             // shared-closure PROVIDER component, imported through the peer interface. Emit a
@@ -4075,18 +4085,26 @@ pub(super) fn emit(
             if let Some(&pos) = layout.cross_edge_import.get(&callee) {
                 trace!(target: "rcdzc::select", callee, pos, args = args.len(), "emit cross-edge extern call");
                 out.push(Lir::CallExternImport(pos));
-                return Ok(());
-            }
-            match layout.abs(callee) {
-                Some(idx) => {
-                    trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit runtime call");
-                    out.push(Lir::Call(idx));
-                    Ok(())
+            } else {
+                match layout.abs(callee) {
+                    Some(idx) => {
+                        trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit runtime call");
+                        out.push(Lir::Call(idx));
+                    }
+                    None => {
+                        return Err(Reject::decline(
+                            "a called function is not in the emission order (reachability gap)",
+                        ));
+                    }
                 }
-                None => Err(Reject::decline(
-                    "a called function is not in the emission order (reachability gap)",
-                )),
             }
+            // Caller-side reclaim: `drop` each owned-temporary arg the borrowing (boundary-owned, non-looped)
+            // callee left live. Result is on TOS; each `local.get slot ; drop` pushes+drops below it.
+            for slot in drop_slots {
+                out.push(Lir::LocalGet(slot));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            Ok(())
         }
         // A runtime comparison: emit both operands, then the machine comparison selected from the
         // operands' width AND signedness (`_s` for a signed type, `_u` for an unsigned one; `eq` is

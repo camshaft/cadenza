@@ -2906,7 +2906,7 @@ fn emit_tail(
                 return Ok(());
             }
             emit_call_args(
-                db, callee, &args, slots, base, high, scratch_ty, layout, out,
+                db, callee, &args, slots, base, high, scratch_ty, layout, out, None,
             )?;
             // OPTION C: a CROSS-EDGE callee in TAIL position — it's an imported peer func, and there is no
             // `return_call` to an import (`ReturnCall` targets a local func index only). Emit the extern call
@@ -8495,6 +8495,73 @@ fn callee_param_int_tys(db: &mut Db, callee: usize) -> Vec<Option<IntTy>> {
 /// A non-integer parameter, or an argument past the known parameters, emits normally. Shared by the
 /// tail (`return_call`) and non-tail (`call`) emit paths.
 #[allow(clippy::too_many_arguments)]
+/// Whether the caller must `drop` the OWNED-TEMPORARY arg `arg` (the callee's param at `param_index`) AFTER a
+/// NON-TAIL call to `callee`. CALLER-owns-args holds ONLY for a BOUNDARY-OWNED callee (export-entry or lifted)
+/// whose params are drop_after'd at the call boundary. Gate — all conjuncts conservative toward NOT dropping
+/// (wrong ⇒ leak, never double-free):
+///   1. boundary-owned callee;  2. heap param;  3. Owned arg;  4. callee BORROWS the param (`!param_escapes`);
+///   5. NON-LOOPED callee (`mutual_loop_group` empty) — a LOOPED callee handles its own params (a fold
+///      CONSUMES them; an invariant borrow is epilogue-dropped; a varying borrow → at-worst leak), so a
+///      caller-drop there double-frees (the 5000-sum/brd1 consuming-fold class). The consuming folds are
+///      exactly the looped ones, so `!looped` subsumes the spine-consume exclusion.
+fn call_arg_caller_drops(
+    db: &mut Db,
+    callee: usize,
+    arg: StructId,
+    param_index: usize,
+    layout: &Layout,
+) -> bool {
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return false;
+    };
+    if !(layout.exports.iter().any(|e| e.body == body) || db.lifted.iter().any(|l| l.body == body))
+    {
+        return false; // (1)
+    }
+    if !mutual_loop_group(db, callee).is_empty() {
+        return false; // (5) looped callee handles its own params
+    }
+    let params = match layout.export_plan(callee) {
+        Some(e) => e.params.clone(),
+        None => crate::layout::def_params(db, callee),
+    };
+    let Some((param_binder, param_ty)) = params.get(param_index).cloned() else {
+        return false;
+    };
+    if !is_heap_type(&param_ty) {
+        return false; // (2)
+    }
+    if !matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned)) {
+        return false; // (3)
+    }
+    if param_escapes_body(db, body, param_binder) {
+        return false; // (4)
+    }
+    true
+}
+
+/// Whether `body` contains a `Core::Call` whose arg triggers a caller-drop ([`call_arg_caller_drops`]) — the
+/// import-side companion of the `Core::Call` emit, so `collect_module_used_ops` imports `drop` iff the emit
+/// actually emits a caller-drop (precise import/emit agreement, like `def_drops_owned_param`). Cycle-guarded.
+pub fn body_has_caller_drop(db: &mut Db, body: StructId, layout: &Layout) -> bool {
+    fn walk(db: &mut Db, id: StructId, layout: &Layout, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::Call { callee, args } = core_of(db, id) {
+            for (i, &a) in args.iter().enumerate() {
+                if call_arg_caller_drops(db, callee, a, i, layout) {
+                    return true;
+                }
+            }
+        }
+        crate::backend::wasm::select::reclaim::core_child_ids(db, id)
+            .into_iter()
+            .any(|c| walk(db, c, layout, seen))
+    }
+    walk(db, body, layout, &mut HashSet::new())
+}
+
 fn emit_call_args(
     db: &mut Db,
     callee: usize,
@@ -8505,7 +8572,16 @@ fn emit_call_args(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
+    caller_drop_slots: Option<&mut Vec<u32>>,
 ) -> Result<(), Reject> {
+    let drops: Vec<bool> = if caller_drop_slots.is_some() {
+        (0..args.len())
+            .map(|i| call_arg_caller_drops(db, callee, args[i], i, layout))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut recorded: Vec<u32> = Vec::new();
     let param_its = callee_param_int_tys(db, callee);
     // Each arg after the first starts its scratch ABOVE the running high-water (`arg_base = *high`): the
     // args are all simultaneously live on the operand stack before the `call`, so a later arg reusing an
@@ -8523,7 +8599,17 @@ fn emit_call_args(
             // handle. `emit` does the right thing for both — the fix is at that single choke point.
             None => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
         }
+        if drops.get(i).copied().unwrap_or(false) {
+            let slot = *high;
+            *high += 1;
+            scratch_ty.insert(slot, ValType::I32);
+            out.push(Lir::LocalTee(slot));
+            recorded.push(slot);
+        }
         arg_base = *high;
+    }
+    if let Some(sink) = caller_drop_slots {
+        *sink = recorded;
     }
     Ok(())
 }

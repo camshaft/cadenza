@@ -575,10 +575,18 @@ fn binding_escapes_dup_aware_inner(
             binding_escapes_dup_aware(db, scrutinee, binder, true, dup_sites)
                 || cont_binding_escapes(db, &root, binder, dup_sites)
         }
-        // A list match: escapes if the binding escapes the scrutinee (CONSUMING — a rest arm's `vec-split`
-        // consumes the list handle) or any arm body.
+        // A list match: escapes if the binding escapes the scrutinee or any arm body. The SCRUTINEE position
+        // is CONSUMING iff an arm REST-MINTS it (a `(.. r)` → `SumPayload` with a trailing `RestFrom` over the
+        // scrutinee binder → a `vec-drop` that CONSUMES the spine), else it only BORROWS the scrutinee. Borrow-
+        // classify (`true`) a bare-binding scrutinee NO arm rest-mints — a borrow-only list match (05:18721 `f`:
+        // rest DEAD, arms return scalars) then does NOT mark its owned list escaping, so its owner (a caller
+        // drop_after of a boundary-owned helper's arg, or the let-drop) reclaims it. A CONSUMING fold (`sum-l`:
+        // `(.. t)` threaded into the tail-recursive call → `vec-drop` consumes the spine) keeps `false`
+        // (consuming), so it is NOT mis-borrow-marked (which would double-free — the fold already reclaims the
+        // spine). A payload/element that genuinely escapes an ARM is still caught by `arms.any(body)`.
         Core::MatchList { scrutinee, arms } => {
-            binding_escapes_dup_aware(db, scrutinee, binder, false, dup_sites)
+            let scrutinee_tail_borrowed = !matchlist_scrutinee_consumed(db, scrutinee, &arms);
+            binding_escapes_dup_aware(db, scrutinee, binder, scrutinee_tail_borrowed, dup_sites)
                 || arms
                     .iter()
                     .any(|a| binding_escapes_dup_aware(db, a.body, binder, false, dup_sites))
@@ -877,6 +885,56 @@ fn binder_must_escape(db: &mut Db, id: StructId, binder: StructId, tail_borrowed
         | Core::TrapOverflow
         | Core::Poison(_) => false,
     }
+}
+
+/// Whether a `Core::MatchList`'s scrutinee is CONSUMED (not merely borrowed) by its arms — true iff the
+/// scrutinee is a bare binding an arm REST-MINTS (a `(.. r)` → a `SumPayload` whose path's last step is a
+/// `RestFrom` over the scrutinee binder → a `vec-drop` that CONSUMES the scrutinee spine, returning the fresh
+/// tail). A match with no such rest-mint only BORROWS its scrutinee (reads len/elements). A NON-ref scrutinee
+/// (a producer) is conservatively CONSUMED (a fresh owned scrutinee is consumed/reclaimed by the match; the
+/// borrow-relaxation only helps a param/let scrutinee). Used by the `MatchList` arm of
+/// [`binding_escapes_dup_aware_inner`] so a borrow-only list match (05:18721 `f`) borrow-classifies its
+/// scrutinee while a consuming fold (`sum-l`) keeps consuming.
+fn matchlist_scrutinee_consumed(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[crate::core::ListArm],
+) -> bool {
+    let sb = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => binder,
+        _ => return true, // non-ref scrutinee → keep the conservative consuming classification
+    };
+    let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
+    bodies
+        .into_iter()
+        .any(|b| body_rest_mints_binder(db, b, sb, &mut HashSet::new()))
+}
+
+/// Whether subtree `id` REST-MINTS binder `sb` — contains a `SumPayload` whose path's last step is a
+/// `RestFrom` and whose scrutinee is a direct ref to `sb` (the `(.. r)` tail-extraction that `vec-drop`-
+/// CONSUMES `sb`'s spine). Recurses all children (cycle-guarded).
+fn body_rest_mints_binder(
+    db: &mut Db,
+    id: StructId,
+    sb: StructId,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if let Core::SumPayload { scrutinee, path } = core_of(db, id) {
+        if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+            && matches!(
+                core_of(db, scrutinee),
+                Core::Param { binder } | Core::LocalRef { binder } if binder == sb
+            )
+        {
+            return true;
+        }
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| body_rest_mints_binder(db, c, sb, seen))
 }
 
 /// Whether `binder` reaches `arm`'s RESULT exclusively as a MOVE-OUT (the arm's result IS the binder) or as
