@@ -238,6 +238,18 @@ pub(crate) fn read_ml_recursive(src: &str) -> Parsed {
 /// order: name/key then value subtree, THEN the `=` atom, then the field `list`). A record SHORTHAND
 /// field (`{ x }` → `(= x x)`) needs NO descent, so `advance_fields` completes it inline and never yields
 /// a `FieldPhase` for it.
+/// What advancing an `@!param` config kv list needs next (via `advance_param_config`): either DESCEND a
+/// `key: value` entry's VALUE on the worklist (`colon`/`label`/`kv_start` are the pre-read kv preamble, to
+/// rebuild `(: key value)` once the value is delivered), or the list is DONE (the closing `)` consumed).
+enum ParamKvStep {
+    Descend {
+        colon: StructId,
+        label: StructId,
+        kv_start: Span,
+    },
+    Done,
+}
+
 enum FieldPhase {
     /// A `.. rest` spread: `head` is the pre-created `..` name; the pending descent is its operand.
     RestOperand { dd_span: Span, rest_head: StructId },
@@ -1623,6 +1635,27 @@ impl<'a> Parser<'a> {
                 lvl_entered: bool,
                 lvl_num: bool,
             },
+            // An `@!param( … )` config kv `key:` awaiting its VALUE. The config values of `@!param(k: v, …)`
+            // descend on the worklist (one value per level) instead of recursing `param_pragma_payload ->
+            // expr` — so a nested `@!param(k: @!param(…)) n: T` no longer grows the native stack. `config`
+            // holds `[param-head, kv…]` so far; `colon`/`label`/`kv_start` are the current kv's pre-read
+            // preamble (rebuilt `(: label value)` on deliver); `config_start` the config node's start (for
+            // its span). `head`/`key`/`at_span` + the `lvl_*` are the enclosing `@!param` state, replayed to
+            // assemble `(pragma param config-node binder)` once the config + binder are read.
+            ParamConfig {
+                config: Vec<StructId>,
+                colon: StructId,
+                label: StructId,
+                kv_start: Span,
+                config_start: Span,
+                head: StructId,
+                key: StructId,
+                at_span: Span,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+                lvl_num: bool,
+            },
             // A `def` declaration awaiting its value/body. `target` is the name (value def `def x = …`) or
             // the built signature `(name p …)` (function def `def f(…) = …`); `ret_ty` the optional `-> R`
             // (None for a value def) applied to the body via `ascribe` on deliver — so both branches unify.
@@ -2336,8 +2369,8 @@ impl<'a> Parser<'a> {
                         // + a `name : Type` binder), assembled INLINE (it returns directly, no descending
                         // arg). Every other key takes a single TIGHT TYPE arg (prefix+postfix, no unit;
                         // descended at TIGHT_PREC). The `@!`'s own depth guard trips INLINE like `@`.
-                        // (NOTE: `@!param`'s config kv VALUES still use inline recursive `self.expr` — a
-                        // minor remaining vector, sibling to the `@tag(...)` glued-args, to convert before I8.)
+                        // `@!param`'s config kv VALUES descend on the worklist via Cont::ParamConfig (below),
+                        // so a nested `@!param(k: @!param(…)) n: T` no longer recurses.
                         self.bump(); // `@!`
                         let head = self.name("pragma", cur_start);
                         let mut key_text = String::new();
@@ -2353,7 +2386,46 @@ impl<'a> Parser<'a> {
                             self.error_node(self.cur_span())
                         };
                         if key_text == "param" {
-                            let payload = self.param_pragma_payload();
+                            // `@!param(k: v, …) name : Type` — de-recurse the config kv VALUES onto the
+                            // worklist (Cont::ParamConfig) instead of the recursive `param_pragma_payload ->
+                            // expr`, so a nested `@!param(k: @!param(…)) n: T` no longer grows the stack. The
+                            // `param` config head is created up front; `advance_param_config` reads bare kvs
+                            // inline and stops at the first `key:` needing its value (descend). If the config
+                            // has no value to descend (empty / no glued `(` / all-bare), finish inline.
+                            let config_start = self.cur_span();
+                            let config_head = self.name("param", config_start);
+                            let mut config = vec![config_head];
+                            if self.at(Kind::LParen)
+                                && self.prev_span().end == self.cur_span().start
+                            {
+                                self.bump(); // `(`
+                                if let ParamKvStep::Descend {
+                                    colon,
+                                    label,
+                                    kv_start,
+                                } = self.advance_param_config(&mut config, true)
+                                {
+                                    pending.push(Cont::ParamConfig {
+                                        config,
+                                        colon,
+                                        label,
+                                        kv_start,
+                                        config_start,
+                                        head,
+                                        key,
+                                        at_span: cur_start,
+                                        lvl_min_prec: cur_min_prec,
+                                        lvl_spine: spine,
+                                        lvl_entered: entered,
+                                        lvl_num: prefix_is_number,
+                                    });
+                                    cur_min_prec = crate::token::PREC_SEQ + 1;
+                                    continue; // descend: read the first config value
+                                }
+                                // else: ParamKvStep::Done — config fully read inline (empty / all-bare).
+                            }
+                            // No value descended — finish the payload (config node + binder) inline.
+                            let payload = self.finish_param_config(config, config_start);
                             let full = cur_start.merge(self.prev_span());
                             let mut items = vec![head, key];
                             items.extend(payload);
@@ -3681,6 +3753,72 @@ impl<'a> Parser<'a> {
                     reading = false;
                     continue;
                 }
+                Some(Cont::ParamConfig {
+                    mut config,
+                    colon,
+                    label,
+                    kv_start,
+                    config_start,
+                    head,
+                    key,
+                    at_span,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                    lvl_num,
+                }) => {
+                    // `left` is the delivered config kv VALUE — build `(: label value)` + push it, then the
+                    // recursive loop's bottom `sep_continue`: another `key:` descends (re-push), else close.
+                    let kv_span = kv_start.merge(self.prev_span());
+                    config.push(self.list(vec![colon, label, left], kv_span));
+                    if self.sep_continue(Kind::RParen) {
+                        // More config entries — read bare kvs inline, stop to descend the next `key:` value.
+                        if let ParamKvStep::Descend {
+                            colon,
+                            label,
+                            kv_start,
+                        } = self.advance_param_config(&mut config, false)
+                        {
+                            pending.push(Cont::ParamConfig {
+                                config,
+                                colon,
+                                label,
+                                kv_start,
+                                config_start,
+                                head,
+                                key,
+                                at_span,
+                                lvl_min_prec,
+                                lvl_spine,
+                                lvl_entered,
+                                lvl_num,
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            reading = true;
+                            continue; // descend: read the next config value
+                        }
+                        // else: ParamKvStep::Done — `advance_param_config` closed the `)`.
+                    } else {
+                        // No more entries — close the config `)`.
+                        self.expect(Kind::RParen, "`)`");
+                    }
+                    // Config complete — finish the payload (config node + `name : Type` binder) and assemble
+                    // `(pragma param config-node binder)`, replaying the enclosing `@!param` level state.
+                    let payload = self.finish_param_config(config, config_start);
+                    let full = at_span.merge(self.prev_span());
+                    let mut items = vec![head, key];
+                    items.extend(payload);
+                    left = self.list(items, full);
+                    cur_start = at_span;
+                    cur_min_prec = lvl_min_prec;
+                    spine = lvl_spine;
+                    entered = lvl_entered;
+                    pf_pending = true;
+                    pf_num = lvl_num;
+                    pf_spine = 0;
+                    reading = false;
+                    continue;
+                }
                 Some(Cont::Def {
                     def_head,
                     target,
@@ -4557,11 +4695,55 @@ impl<'a> Parser<'a> {
             }
             self.expect(Kind::RParen, "`)`");
         }
+        self.finish_param_config(config, config_start)
+    }
+
+    /// Advance an `@!param` config kv list, reading bare (malformed) `key` entries INLINE (error + keep the
+    /// label) and returning [`ParamKvStep::Descend`] the moment a `key:` needs its VALUE read — so the
+    /// iterative reader ([`Self::expr_iter`]'s `Cont::ParamConfig`) reads that value on the worklist instead
+    /// of the recursive `self.expr`, and a nested `@!param(k: @!param(…)) n: T` no longer grows the native
+    /// stack. Returns [`ParamKvStep::Done`] (having consumed the closing `)`) when the list ends. `is_start`
+    /// is true only for the FIRST call after `(` (so an immediate `)` is the empty config, matching the
+    /// recursive loop's `if !at RParen` guard); subsequent calls (after a value + `sep_continue`) read a kv
+    /// directly. Mirrors the recursive `param_pragma_payload` kv loop EXACTLY (no arm-bar / comment handling,
+    /// per that loop), so the two readers stay byte-identical.
+    fn advance_param_config(&mut self, config: &mut Vec<StructId>, is_start: bool) -> ParamKvStep {
+        if is_start && self.at(Kind::RParen) {
+            self.expect(Kind::RParen, "`)`");
+            return ParamKvStep::Done;
+        }
+        loop {
+            let kv_start = self.cur_span();
+            let label = self.binder();
+            if self.at(Kind::Colon) {
+                self.bump(); // `:`
+                let colon = self.name(":", kv_start);
+                return ParamKvStep::Descend {
+                    colon,
+                    label,
+                    kv_start,
+                };
+            }
+            // A bare key with no `: value` is malformed config; keep the label so the shape is visible and
+            // recover, then the loop bottom `sep_continue` decides continue-vs-close (as in the recursive loop).
+            self.error("expected `key: value` in an `@!param` config");
+            config.push(label);
+            if !self.sep_continue(Kind::RParen) {
+                self.expect(Kind::RParen, "`)`");
+                return ParamKvStep::Done;
+            }
+        }
+    }
+
+    /// Close an `@!param` payload: build the `(param <kv>…)` config node from the collected `config`, then
+    /// read the REQUIRED `name : Type` binder. Returns `[config_node, binder]` to append after the `pragma
+    /// param` head. The binder's `name` is a plain binder and `: Type` a [`Self::type_ref`] (NOT the general
+    /// `expr`) so the trailing `name` is not eaten as a unit-suffix on the pragma and `: Type` is a type, not
+    /// a value ascription. Shared by the recursive [`Self::param_pragma_payload`] and the iterative
+    /// [`Self::expr_iter`] (`Cont::ParamConfig`) so the config-node + binder shape can't drift.
+    fn finish_param_config(&mut self, config: Vec<StructId>, config_start: Span) -> Vec<StructId> {
         let config_span = config_start.merge(self.prev_span());
         let config_node = self.list(config, config_span);
-        // The `name : Type` binder — REQUIRED. `name` is a plain binder; `: Type` is a `type_ref`. Parsed
-        // directly (NOT the general `expr`) so the trailing `name` is not eaten as a unit-suffix on the
-        // pragma (the bug this whole branch fixes) and `: Type` is a type, not a value ascription.
         let binder_start = self.cur_span();
         let name = self.binder();
         let binder = if self.at(Kind::Colon) {

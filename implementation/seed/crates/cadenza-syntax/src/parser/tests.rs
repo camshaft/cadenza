@@ -324,6 +324,15 @@ fn expr_iter_matches_recursive_expr() {
         "@!param(widget: slider) width: Int64",
         "@!param() x: Bool",
         "@!param(min: 0, max: 10) n: Int64",
+        // `@!param` config kv VALUES now descend on the worklist (Cont::ParamConfig): no glued `(`, a
+        // compound value expr, a call-valued value, a nested `@`-annotated value (the de-recursion target),
+        // a tuple/range value, and a trailing comma.
+        "@!param width: Int64",
+        "@!param(range: (1, 10)) width: Int64",
+        "@!param(default: f(g(1))) x: Int64",
+        "@!param(w: @tag(\"x\") slider) width: Int64",
+        "@!param(a: 1, b: 2, c: 3) n: Int64",
+        "@!param(min: 0,) n: Int64",
         // `def` declaration (now on the worklist) — value def / function def / return type / forall /
         // nested (def value = def, the de-recursion target) / sequence / leading doc / annotated def.
         "def x = 1",
