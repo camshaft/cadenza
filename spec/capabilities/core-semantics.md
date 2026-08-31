@@ -202,6 +202,8 @@ The empty tuple MUST be the unit value, so that unit and `()` are the same value
 
 A tuple MUST be deconstructible by pattern matching, so that `(tuple a b)` in pattern position binds the elements.
 
+A tuple pattern MAY name some number of leading positions and end in a rest binder — `(tuple a .. rest)` — binding the leading positions to the corresponding elements and the rest binder to a tuple of the remaining elements in order, so that a fixed-size positional product is deconstructed positionally without naming every element. Because a tuple's arity is fixed by its type, a tuple pattern naming no more leading positions than the tuple's arity matches every tuple of that type and is therefore irrefutable in the sense of *A Binding Position Accepts An Irrefutable Pattern*, while a pattern naming more leading positions than the tuple's arity MUST be a compile-time arity error (`CDZ0201`) rather than a runtime non-match.
+
 ## Sum Types
 
 ### A Sum Type Constructor Is A Single-Arity Function Producing The Tagged Variant
@@ -233,6 +235,8 @@ A record MUST associate a fixed set of statically-known field names each with a 
 A record MUST be deconstructible by pattern matching on its field names, binding each named field's sub-value.
 
 A record pattern MAY name a subset of the fields, ignoring the rest.
+
+A record pattern that names a subset of the fields MAY end in a rest binder — `(record (= x a) .. rest)` — binding the rest binder to a record of exactly the fields the pattern does not name, so the unnamed fields are available as a record value rather than only ignored. Because a record's field set is fixed by its type, a record pattern that names only fields the type has and binds the remainder matches every record of that type and is therefore irrefutable in the sense of *A Binding Position Accepts An Irrefutable Pattern*.
 
 A map MUST associate keys with values as a dynamic homogeneous collection whose set of keys is not fixed by the value's form, distinct from a record's fixed field set.
 
