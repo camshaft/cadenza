@@ -1750,38 +1750,22 @@ fn a_refutable_list_element_dead_arm_with_a_runtime_leaf_compiles_across_the_fam
 
 #[test]
 fn a_native_structural_pattern_over_a_wrong_kind_scrutinee_is_cdz0203() {
-    // SOUNDNESS guard (05-compound-types "a tuple pattern over a non-tuple scrutinee is a type error",
-    // and its list/map siblings): the match scrutinee-KIND check (lower_match) reads a pattern's
-    // structural kind to reject a `(list …)`/`(tuple …)`/`(map …)` pattern over a scrutinee of a
-    // DIFFERENT kind (CDZ0203). It read `head_name(pat)` (NAME-alias only), so after M3 nativized corpus
-    // patterns to `#tuple`/`#list`/`#map`, a NATIVE pattern (Ctor-leaf head → head_name None) slipped the
-    // check and fell through to a misleading generic CDZ0201. Now reads `compound_form_of` — native AND
-    // alias must both surface the SAME CDZ0203. (corpus_roundtrip is structural + could not catch this;
-    // the behavioral grade did — the grade-not-just-roundtrip discipline.)
-    for (label, src) in [
-        (
-            "native #tuple over Int64",
-            "(module m (def (main) (match 5 (#tuple(a b) a) (_ 0))) (export main))",
-        ),
-        (
-            "name-alias (tuple …) over Int64",
-            "(module m (def (main) (match 5 ((tuple a b) a) (_ 0))) (export main))",
-        ),
-        (
-            "native #list over Int64",
-            "(module m (def (main) (match 5 (#list(a b) a) (_ 0))) (export main))",
-        ),
-        (
-            "native #tuple over Map",
-            "(module m (def (main) (match (Map.insert (Map.empty) 1 2) (#tuple(a b) a) (_ 0))) (export main))",
-        ),
-    ] {
-        assert_eq!(
-            reject_code(src).as_deref(),
-            Some("CDZ0203"),
-            "{label}: a structural pattern over a wrong-kind scrutinee must reject CDZ0203 (native ≡ alias)"
-        );
-    }
+    // ALIAS-SPELLING RESIDUE. The NATIVE faces of this soundness guard migrated to corpus
+    // 05-compound-types: "a tuple pattern over an Int64 scrutinee" (`#tuple` over Int64), "a list pattern
+    // over an Int64 scrutinee naming both kinds" (`#list` over Int64), and "a tuple pattern over a Map
+    // scrutinee" (`#tuple` over Map) — each a CDZ0203 wrong-kind reject. The scrutinee-KIND check
+    // (lower_match) reads `compound_form_of`, which recognizes BOTH the native `#tuple`/`#list`/`#map` head
+    // AND the NAME-ALIAS `(tuple …)`/`(list …)`/`(map …)` head — after M3 nativized corpus patterns, a
+    // native head that read only `head_name` slipped the check into a misleading CDZ0201, so both spellings
+    // must now surface the SAME CDZ0203. The corpus surface is native-only (nativize-check forbids a
+    // `(tuple …)` alias INPUT), so the alias-recognition arm below is the irreducible white-box residue the
+    // corpus cannot express; the native twins are graded there.
+    assert_eq!(
+        reject_code("(module m (def (main) (match 5 ((tuple a b) a) (_ 0))) (export main))")
+            .as_deref(),
+        Some("CDZ0203"),
+        "a name-alias `(tuple …)` pattern over a wrong-kind (Int64) scrutinee rejects CDZ0203, like its native `#tuple` twin"
+    );
 }
 
 #[test]
