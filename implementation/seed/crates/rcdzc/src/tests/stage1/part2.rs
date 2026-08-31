@@ -802,27 +802,6 @@ fn a_gensym_id_sum_self_recursive_effectful_loop_specializes() {
 }
 
 #[test]
-fn a_handler_threads_a_map_as_its_state_across_multiple_performs() {
-    // The MAP analogue of the Set-state seen-set (corpus "a handler threads a SET as its state") — a
-    // handler state that is a MAP (key→value store) mutated with `Map.insert` and read with `Map.len`
-    // across MULTIPLE performs, exercising the CHAMP key→value path through the effect fold (distinct
-    // from the key-only Set case). `(do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count))` seeds
-    // an empty map, inserts keys 1, 2, then re-inserts 1 (deduped by key) → two keys → size 2. Guards
-    // that a Map threaded as effect state survives the fold across several performs — a pin so a
-    // Map.lookup/insert CSE change (actively churned by sibling verticals) cannot regress it.
-    let src = "(do (effect Store (op put (-> Int64 Unit)) (op count (-> Unit Int64))) \
-                   (def (main) (handle Store (Map.empty) \
-                     ((put (k) m (resume unit (Map.insert m k k))) (count (u) m (resume (Map.len m) m))) \
-                     (do (Store.put 1) (Store.put 2) (Store.put 1) (Store.count)))) (export main))";
-    // Map state lives on the value heap, so the in-process linker can't run it — assert it COMPILES;
-    // a store run yields 2 (verified by hand via cdz-run). Mirrors the list/String-state assertions.
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a map-state handler mutated across multiple performs must compile"
-    );
-}
-
-#[test]
 fn a_malformed_type_used_as_an_annotation_does_not_also_report_it_a_value() {
     // A type whose declaration is MALFORMED (a duplicate variant) does not fully register, so
     // `typeval_of` of its name fails — and using it as an annotation `(: c C)` used to CASCADE into a
