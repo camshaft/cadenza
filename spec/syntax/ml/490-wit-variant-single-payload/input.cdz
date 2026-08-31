@@ -1,0 +1,1 @@
+world W = | export i = | m : (x : u8) -> variant(Ok, Bad(u8, string))
