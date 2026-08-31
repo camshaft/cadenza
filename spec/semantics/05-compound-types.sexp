@@ -24313,10 +24313,12 @@
 ; CDZ0210). Lowered by `lower_match_set` (a `Set.contains` presence-test if-chain). This SUPERSEDES the
 ; earlier "set match is unsupported" reject (#6339): the surface (#6616) + the § (v-spec-oracle-blessed,
 ; no-rest = superset/contains, map parity) now make membership matching first-class. The REST form
-; `#set(e… .. rest)` (binding `rest` to the set minus the named elements) is a tracked not-yet increment —
-; its rest binder needs resolve wiring (co-owned with v-inference) — so it stays a coded, check-surfaced
-; CDZ0201 naming the supported subset. The two-`..` `#set(1 .. r1 .. r2)` facet stays a rust pin — its
-; malformed double-`..` surface does not ML-round-trip, same as the #map two-`..` case.
+; `#set(e… .. rest)` (binding `rest` to the set MINUS the named elements) is now FIRST-CLASS too:
+; `Resolved::SetRest` + `(Set E)` typing (#6698) lowered via a `Set.remove` residual chain (#6711) — its
+; behaviour is pinned in `19-sets.sexp` (§Set rest patterns: residual = scrutinee minus named, empty
+; residual when every element is named, absent-named refutes). Only the two-`..` `#set(1 .. r1 .. r2)`
+; facet stays a rust pin — its malformed double-`..` surface does not ML-round-trip, same as the #map
+; two-`..` case.
 (case
   "a set membership match `#set(e…)` matches when the set contains every named element (with fall-through + catch-all)"
   (doc
