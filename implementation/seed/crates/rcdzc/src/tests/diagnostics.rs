@@ -1379,39 +1379,13 @@ fn a_well_formed_pattern_still_warns_its_genuinely_unused_binders() {
     );
 }
 
-/// A LIST-scrutinee match arm whose head is a NAME used as a pattern constructor — `(Zorp x)` (unbound)
-/// or `(List.Cons h t)` (`List` has no such member) — is a CODED fault surfaced by `cdz check` in EVERY
-/// body, including a PARAMETERIZED / self-RECURSIVE one. A list scrutinee has no user constructors, so
-/// such a head can never be a valid list pattern; it used to reach `lower_match_list`'s generic UNCODED
-/// "a list match arm that is not an element pattern or a binder is not yet supported" decline. That
-/// uncoded decline is produced ONLY by the emit-path lowering walk (`collect_reached_poisons`), which
-/// runs on nullary-EXPORTED bodies alone (a recursive function is emitted once, never inlined into an
-/// exported body's reduction), so `cdz check` was SILENT (exit 0) while `cdz compile` declined — a
-/// check≡compile discrepancy, and the very "did you mean?" message hidden from the fast path. The list
-/// matcher now propagates the head's OWN coded poison (CDZ0101 unbound / CDZ0201 non-member) — the LIST
-/// twin of the sum matcher's `variant_disc_of`-miss path — so `type_errors`' `match_pattern_fault`
-/// accessor surfaces it. `diags_of` runs the exact `crate::diagnostics` (check) path.
-#[test]
-fn a_well_formed_recursive_list_fold_checks_clean_not_a_false_arm_head_fault() {
-    // WHITE-BOX residual. The reject halves — an UNBOUND arm head (`Zorp`) → CDZ0101 and a NON-MEMBER
-    // intrinsic-module arm head (`(. List Nil)`/`(. List Cons)`) → CDZ0201, both surfaced by `check` even
-    // over a self-recursive body — migrated to corpus 05-compound-types ("an unbound match arm head over a
-    // recursive body …" + "a non-member intrinsic-module arm head …"). What stays here (corpus-inexpressible:
-    // a `(List …)` entry param has no scalar boundary → declines at the export path, not a clean value case):
-    // the no-false-alarm control that a WELL-FORMED recursive list fold (element + rest binder patterns)
-    // stays clean — this path fires only on a ctor-shaped head, never a legitimate `(list …)` pattern or binder.
-    let ok = "(module m (def (go (: acc Int64) (: rest (List Int64))) \
-                  (match rest ((list) acc) ((list h .. t) (go (+ acc h) t)))) (export go))";
-    // Bind once — `diags_of` recompiles the module, so evaluating it in both the predicate and the
-    // failure message would double the compile cost (PR #1167 review).
-    let ok_diags = diags_of(ok);
-    assert!(
-        ok_diags
-            .iter()
-            .all(|d| d.severity != crate::abi::Severity::Error),
-        "a well-formed recursive list fold still checks clean: {ok_diags:?}"
-    );
-}
+// The well-formed-recursive-list-fold no-false-arm-head-fault CONTROL is corpus-covered: the reject halves
+// (unbound / non-member intrinsic arm head over a recursive body) were migrated to 05-compound-types, and
+// the WELL-FORMED control — a recursive fold `(match rest (#list() acc) (#list(h (.. t)) (go … t)))` staying
+// clean — is exercised by 04-capabilities.sexp:359 (`sum-l`), which RUNS (so it compiled clean, no false
+// fault). The old "corpus-inexpressible `(List …)` entry param" note was wrong: 04:359 uses a nullary main
+// calling the internal fold with a literal list. Rust test
+// a_well_formed_recursive_list_fold_checks_clean_not_a_false_arm_head_fault deleted — corpus-covered.
 
 /// The MAP + SCALAR-path twins of the list gap above: a match arm whose head is a name-as-constructor
 /// over a MAP scrutinee, or over a scrutinee that ROUTED TO THE SCALAR PATH (a Map/List with no
