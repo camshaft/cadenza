@@ -805,6 +805,26 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: List.push on a non-list value")
            | _, _ => .cannotProve "symeval: malformed List.push")
+        else if q == "List".toUTF8 && (mem == "at".toUTF8 || mem == "get".toUTF8) then
+          -- `List.at lst i` / `List.get lst i` (concrete list + concrete int index) → `Some lst[i]` when
+          -- `0 ≤ i < len`, else `None` — byte-faithful to `evalNode` (Eval.lean:1737-1745). PURELY
+          -- STRUCTURAL: no key-equality decision (unlike Set.contains/Map.lookup, which need bit-faithful
+          -- `cmpValue`, NOT SymExpr-beq) and no dedup. A symbolic (non-const) index → cannotProve.
+          (match children[1]?, children[2]? with
+           | some lId, some iId =>
+             (match symEval m senv fuel ty lId, symEval m senv fuel ty iId with
+              | .sym (.ctor t elems), .sym (.const (.int i)) =>
+                if t == "list".toUTF8 then
+                  (if 0 ≤ i && i < Int.ofNat elems.size then
+                     (match elems[i.toNat]? with
+                      | some e => .sym (.ctor "Some".toUTF8 #[e])
+                      | none => .sym (.ctor "None".toUTF8 #[]))
+                   else .sym (.ctor "None".toUTF8 #[]))
+                else .cannotProve "symeval: List.at on a non-list value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: List.at on non-list / non-const-int index")
+           | _, _ => .cannotProve "symeval: malformed List.at")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1172,6 +1192,30 @@ private def _pushExpr : Module :=
     root := 9 }
 #guard symEval _pushExpr [] symDefaultFuel defaultIntTy 9
        == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2), .const (.int 3)])
+
+-- LIST.AT/GET member-op coverage: indexed access → Option. `((. List at) (list 10 20 30) 1)` → `Some 20`
+-- (in-bounds); `((. List at) (list 10 20 30) 5)` → `None` (out-of-bounds). Purely structural (no equality).
+private def _atInExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "List".toUTF8, Leaf.name "at".toUTF8,
+                Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[10]),
+                Leaf.intLit false .dec (ByteArray.mk #[20]), Leaf.intLit false .dec (ByteArray.mk #[30]),
+                Leaf.intLit false .dec (ByteArray.mk #[1])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7], .atom 7, .list #[3, 8, 9]],
+    root := 10 }
+#guard symEval _atInExpr [] symDefaultFuel defaultIntTy 10
+       == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.int 20)])
+
+private def _atOobExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "List".toUTF8, Leaf.name "at".toUTF8,
+                Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[10]),
+                Leaf.intLit false .dec (ByteArray.mk #[20]), Leaf.intLit false .dec (ByteArray.mk #[30]),
+                Leaf.intLit false .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7], .atom 7, .list #[3, 8, 9]],
+    root := 10 }
+#guard symEval _atOobExpr [] symDefaultFuel defaultIntTy 10
+       == SymOutcome.sym (.ctor "None".toUTF8 #[])
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
