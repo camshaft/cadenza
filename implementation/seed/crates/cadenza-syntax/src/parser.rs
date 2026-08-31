@@ -8965,31 +8965,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pipeline_operator_builds_a_real_node() {
-        // `|>` is a REAL infix operator, not parse-time sugar: it builds an arena node `(|> L R)`.
-        // The rewrite into an application happens later (in the resolver), so the surface tree keeps
-        // the operator and round-trips.
-        let a = parse_ok("x |> f");
-        assert_eq!(a.head_name(a.root), Some("|>"));
-        let pipe = a.as_form(a.root, "|>").unwrap();
-        assert_eq!(pipe.len(), 2);
-        assert_eq!(a.as_name(pipe[0]), Some("x"));
-        assert_eq!(a.as_name(pipe[1]), Some("f"));
-
-        // Left-associative: `x |> f |> g` -> (|> (|> x f) g), a left-to-right pipeline.
-        let a = parse_ok("x |> f |> g");
-        let outer = a.as_form(a.root, "|>").unwrap();
-        assert_eq!(a.head_name(outer[0]), Some("|>")); // the left operand is the inner pipe
-        assert_eq!(a.as_name(outer[1]), Some("g"));
-
-        // Looser than arithmetic: `total + tax |> round` -> (|> (+ total tax) round). The whole left
-        // expression is the value threaded into the right.
-        let a = parse_ok("total + tax |> round");
-        let pipe = a.as_form(a.root, "|>").unwrap();
-        assert_eq!(a.head_name(pipe[0]), Some("+"));
-        assert_eq!(a.as_name(pipe[1]), Some("round"));
-    }
+    // `pipeline_operator_builds_a_real_node` (`|>` is a REAL infix operator building an arena node `(|> L R)`,
+    // left-associative, looser than arithmetic — the resolver's application-rewrite happens later, so the
+    // surface tree keeps the operator) is fully subsumed by the spec/syntax corpus (inc-6 batch-63, confirmed):
+    // ml/61-pipeline-basic `x |> f`→`(|> x f)`, ml/63-pipeline-chain `x |> f |> g`→`(|> (|> x f) g)` (left-
+    // assoc), ml/64-pipeline-looser-than-plus `total + tax |> round`→`(|> (+ total tax) round)` (precedence);
+    // ml/62-pipeline-call-rhs `x |> f(a)`→`(|> x (f a))` covers the call RHS. No new cases needed — the parser
+    // `parse_ok` tree assertions here are byte-identical to those goldens' trees.
 
     #[test]
     fn arena_shapes() {
@@ -10011,24 +9993,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn set_literal_desugars() {
-        use crate::sexpr;
-        // `#(1, 2, 3)` is the native set ctor literal `#set(1 2 3)` (head `Leaf::Ctor(Set)`), uniform
-        // with `#list`/`#tuple`/`#record`/`#map`. (Was sugar for a `Set.of([…])` member call.)
-        let a = parse_ok("#(1, 2, 3)");
-        assert_eq!(sexpr::print(&a), r#"#set(1 2 3)"#);
-        // The empty set is `#set()`.
-        let e = parse_ok("#()");
-        assert_eq!(sexpr::print(&e), r#"#set()"#);
-        // A single-element set, and nested elements (an expression element parses fully).
-        assert_eq!(sexpr::print(&parse_ok("#(x + 1)")), r#"#set((+ x 1))"#);
-        // It composes as an ordinary operand: a call argument.
-        assert_eq!(
-            sexpr::print(&parse_ok("contains(#(1, 2), 1)")),
-            r#"(contains #set(1 2) 1)"#
-        );
-    }
+    // `set_literal_desugars` (`#(…)` is the native set ctor literal `#set(…)`, head `Leaf::Ctor(Set)`, uniform
+    // with `#list`/`#tuple`/`#record`/`#map`) MIGRATED to the spec/syntax corpus (inc-6 batch-63):
+    // ml/376-set-literal-basic `#(1, 2, 3)`→`#set(1 2 3)`, ml/378-set-literal-empty `#()`→`#set()`,
+    // ml/391-set-literal-expr-element `#(x + 1)`→`#set((+ x 1))` (an expression element parses fully),
+    // ml/392-set-literal-as-call-arg `contains(#(1, 2), 1)`→`(contains #set(1 2) 1)` (composes as an operand).
 
     #[test]
     fn bin_literal_desugars() {

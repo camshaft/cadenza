@@ -327,6 +327,8 @@ pass	ml/388-brace-record-type-function-field
 pass	ml/389-brace-record-type-nested-and-tuple
 pass	ml/39-match-unrelated-ctor-refutable
 pass	ml/390-explicit-record-type-annotation
+pass	ml/391-set-literal-expr-element
+pass	ml/392-set-literal-as-call-arg
 pass	ml/40-match-open-sum-refutable
 pass	ml/41-match-closed-single-variant
 pass	ml/42-match-already-lowered-noop
