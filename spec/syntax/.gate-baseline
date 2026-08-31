@@ -192,7 +192,13 @@ pass	ml/265-comment-leading-and-trailing-match-arm
 pass	ml/266-comment-leading-match-arm-body
 pass	ml/267-comment-leading-let-value
 pass	ml/268-comment-leading-let-body
+pass	ml/269-comment-trailing-last-record-field
 pass	ml/27-match-to-let-wildcard
+pass	ml/270-comment-trailing-last-map-entry
+pass	ml/271-comment-leading-first-record-field
+pass	ml/272-comment-leading-nonfirst-record-field
+pass	ml/273-comment-leading-map-entry
+pass	ml/274-comment-record-field-lead-and-trail
 pass	ml/28-match-to-let-record
 pass	ml/29-match-refutable-sum-ctor
 pass	ml/30-match-refutable-literal
