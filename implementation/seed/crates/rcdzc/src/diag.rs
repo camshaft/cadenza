@@ -1099,6 +1099,18 @@ pub const NULLARY_LAMBDA_NO_CLOSURE_DECLINE: &str = "a nullary lambda has no run
 pub const PRIM_AS_VALUE_DECLINE: &str =
     "a built-in operation used as a value needs a runtime closure";
 
+// A RECURSIVE local function that CAPTURES a binding from its enclosing scope — `(def (f n) (do (def
+// (rec x) (if (< x 0) n (rec (- x 1)))) (rec 5)))`, where `rec` both calls itself AND reads `f`'s `n`.
+// Supporting it requires LAMBDA-LIFTING the local function with its captured environment (hoisting `rec`
+// and threading `n` as an explicit parameter); that feature is not yet built. A NON-recursive capturing
+// local inlines at its use (the captured binding flows in), and a non-capturing recursive local compiles
+// standalone — only the RECURSION + CAPTURE combination needs the lift, so it is declined here (a safe
+// reject-not-miscompile coded decline, CDZ0900). The message names the two mechanical work-arounds. (The
+// emit surfaces this at `backend/wasm/select/emit.rs`'s `Core::Param` no-slot arm: a captured enclosing
+// param has no local slot in the recursively-emitted local function's frame.) seq-280 clean wording.
+pub const RECURSIVE_LOCAL_CAPTURE_DECLINE: &str = "a recursive local function that captures a binding from its enclosing scope is not supported — \
+     pass the captured value in as an explicit parameter, or lift the function to the top level";
+
 /// A stable SUBSTRING of the coded CDZ0201 type-export reject (`export <name> is a TYPE, not a runtime
 /// value …`). `dedup_faults` matches this to recognize the reject that makes the type-value decline family
 /// redundant, without pinning the whole (name-bearing) text.

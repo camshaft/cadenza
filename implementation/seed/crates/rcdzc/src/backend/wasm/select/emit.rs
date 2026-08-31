@@ -3753,17 +3753,26 @@ pub(super) fn emit(
             }
             Ok(())
         }
-        // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
-        // reference to a binder with no slot is either a `Unit` param (elided from the signature — Unit
-        // occupies no slot, so reading it pushes nothing, the read analogue of `Core::Unit`) or a
-        // compiler bug (a represented param not in the signature), so decline in the latter case rather
-        // than emit a wrong `local.get`.
+        // A parameter reference — read its local slot. The slot was assigned in `select_function`. A
+        // reference to a binder with NO slot is one of: (1) a `Unit` param (elided from the signature —
+        // Unit occupies no slot, so reading it pushes nothing, the read analogue of `Core::Unit`); (2) a
+        // CAPTURED ENCLOSING param — a param of a DIFFERENT def than the one being emitted, reached inside
+        // a LOCAL function that could not be inlined (a RECURSIVE local function that captures its
+        // enclosing scope). The current function's OWN params are all slotted here, so a `Core::Param`
+        // with no slot whose binder belongs to another def is definitionally such a capture; a
+        // non-recursive capturing local inlines (the binding flows in) so never reaches here — only the
+        // recursion+capture combination does. Lambda-lifting that case is not yet built, so decline it with
+        // the coded recursive-local-capture message (CDZ0900, reject-not-miscompile — item3 interim). (3)
+        // Otherwise a genuine represented-param-not-in-signature compiler bug — the plain internal decline.
         Core::Param { binder } => match slots.get(&binder) {
             Some(&slot) => {
                 emit_binder_ref(id, slot, out);
                 Ok(())
             }
             None if matches!(type_of(db, binder).strip_nominal(), Ty::Unit) => Ok(()),
+            None if crate::infer::def_of_param(db, binder).is_some() => Err(Reject::unsupported(
+                crate::diag::RECURSIVE_LOCAL_CAPTURE_DECLINE,
+            )),
             None => Err(Reject::decline("parameter reference has no local slot")),
         },
         // An A-normal binding sequence: give each binding a PERSISTENT local slot (unlike the reused
