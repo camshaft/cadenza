@@ -1201,6 +1201,20 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | .cannotProve r => .cannotProve r
               | _ => .cannotProve "symeval: Option.expect on None / non-Option (trap-message not modeled)")
            | none => .cannotProve "symeval: malformed Option.expect")
+        else if q == "Rational".toUTF8 && mem == "of".toUTF8 then
+          -- `Rational.of n d` → the normalized exact rational n/d (`mkRational`: sign-normalize + gcd-reduce);
+          -- a ZERO denominator TRAPS (unreachable) → cannotProve. Byte-faithful to evalNode (Eval.lean:1635-1647).
+          (match children[1]?, children[2]? with
+           | some nId, some dId =>
+             (match symEval m senv fuel ty nId, symEval m senv fuel ty dId with
+              | .sym (.const (.int n)), .sym (.const (.int d)) =>
+                (match mkRational n d with
+                 | some v => .sym (.const v)
+                 | none => .cannotProve "symeval: Rational.of with zero denominator (traps)")
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Rational.of on non-integer operands")
+           | _, _ => .cannotProve "symeval: malformed Rational.of")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1766,6 +1780,14 @@ private def _optExpectExpr : Module :=
                .list #[3, 6]],
     root := 7 }
 #guard symEval _optExpectExpr [] symDefaultFuel defaultIntTy 7 == SymOutcome.sym (.const (.int 5))
+
+-- RATIONAL.OF member-op coverage: `((. Rational of) 6 4)` → the normalized rational 3/2 (gcd-reduced).
+private def _ratOfExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Rational".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[6]), Leaf.intLit false .dec (ByteArray.mk #[4])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
+    root := 6 }
+#guard symEval _ratOfExpr [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.const (.rational 3 2))
 
 -- BYTES len/at/slice member-op coverage over #{10,20,30,40} (byte-indexed; slice is start/LENGTH).
 private def _bytesLenExpr : Module :=
