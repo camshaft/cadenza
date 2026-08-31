@@ -176,6 +176,10 @@ pass	ml/250-annotation-property-example
 pass	ml/251-multi-line-match-arm-body
 pass	ml/252-comment-after-if-then-branch
 pass	ml/253-comment-after-let-in
+pass	ml/254-comment-before-then
+pass	ml/255-comment-before-else
+pass	ml/256-comment-trailing-sum-variant
+pass	ml/257-comment-trailing-match-arm
 pass	ml/26-match-to-let-var
 pass	ml/27-match-to-let-wildcard
 pass	ml/28-match-to-let-record

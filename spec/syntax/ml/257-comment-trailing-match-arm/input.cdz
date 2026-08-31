@@ -1,0 +1,5 @@
+def f(x) =
+  match x with
+  | 0 => 1 // zero
+  | _ => 2 // other
+def g() = 9
