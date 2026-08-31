@@ -18,7 +18,7 @@ export default function PlatformState() {
   (match
     log
     (#list() acc)
-    (#list(e .. rest)
+    (#list(e (.. rest))
       (match e ((Deposit n) (replay rest (+ acc n))) ((Withdraw n) (replay rest (- acc n)))))))
 
 (def (main) (replay #list((Deposit 100) (Withdraw 30) (Deposit 5)) 0))`}

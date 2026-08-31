@@ -17,7 +17,7 @@ export default function WhatsNext() {
       <Runnable
         source={`(def (max a b) (if (> a b) a b))
 
-(def (main) (let ((p #record((= x 3) (= y 8)))) (* 2 (max (. p x) (. p y)))))`}
+(def (main) (let ((p #record((= x 3) (= y 8)))) (* 2 (max p.x p.y))))`}
       />
       <P>Edit it, changing the point or the factor, or swapping <C>max</C> for <C>min</C>, and Run. Then flip the syntax toggle in the header and watch the very same program re-appear in the other surface.</P>
       <H2>Keep exploring</H2>

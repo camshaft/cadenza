@@ -34,7 +34,7 @@ export default function Modules() {
 
     (export area))
 
-  (def (main) ((. Circle area) 10))
+  (def (main) (Circle.area 10))
 
   (export main))`}
       />
@@ -53,7 +53,7 @@ export default function Modules() {
 
     (export g))
 
-  (def (main) ((. Scale g) ((. Inc f) 4)))
+  (def (main) (Scale.g (Inc.f 4)))
 
   (export main))`}
       />
@@ -70,7 +70,7 @@ export default function Modules() {
 
     (export Square))
 
-  (def (main) ((. (. Geometry Square) area) 5))
+  (def (main) (Geometry.Square.area 5))
 
   (export main))`}
       />
@@ -107,7 +107,7 @@ export default function Modules() {
 
     (export add))
 
-  (def (main) ((. Tax add) (?.cents 2)))
+  (def (main) (Tax.add (?.cents 2)))
 
   (export main))`}
         solution={`(do
@@ -121,7 +121,7 @@ export default function Modules() {
 
     (export add))
 
-  (def (main) ((. Tax add) ((. Money cents) 2)))
+  (def (main) (Tax.add (Money.cents 2)))
 
   (export main))`}
         expected="205"
@@ -151,7 +151,7 @@ export default function Modules() {
 
     (export Double))
 
-  (def (main) ((. (. Mathy Double) f) 8))
+  (def (main) (Mathy.Double.f 8))
 
   (export main))`}
         expected="16"

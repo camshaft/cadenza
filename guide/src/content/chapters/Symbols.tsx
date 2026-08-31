@@ -27,7 +27,7 @@ export default function Symbols() {
       <H2>From a string, explicitly</H2>
       <P>When a name arrives as text, whether parsed from input or assembled at run time, <C>Symbol.of</C> interns it into a symbol. The result is the very same value as writing the literal: a symbol built from the pieces <C>"ye"</C> and <C>"s"</C> equals <C>#"yes"</C>:</P>
       <Runnable
-        source={`(= ((. Symbol of) ((. String concat) "ye" "s")) #"yes")`}
+        source={`(= (Symbol.of (String.concat "ye" "s")) #"yes")`}
       />
       <Note>Text-to-symbol is an explicit step (<C>Symbol.of</C>), just like <C>String.to-bytes</C>, so the one place you cross between the two types is spelled out, and a symbol and a string never silently stand in for each other.</Note>
       <P>That's the last of the everyday value shapes: numbers, text, bytes, symbols, and the collections that hold them. Now we look harder at <em>one</em> of them: how Cadenza models numbers, and why it refuses to convert them behind your back. <em>The numeric model</em>, next.</P>

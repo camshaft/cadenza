@@ -12,7 +12,7 @@ export default function BinaryMatching() {
       <H2>Building bytes from segments</H2>
       <P>A <C>(bin …)</C> expression lays out fixed-width fields. <C>(u16 258)</C> is a 16-bit unsigned integer, two bytes, most-significant first (big-endian, the network default), while <C>(u8 …)</C> is one byte. Return it and you see the exact octets it lays down:</P>
       <Runnable
-        source={`(bin (u16 258) (u8 ((. UInt8 wrap) 5)))`}
+        source={`(bin (u16 258) (u8 (UInt8.wrap 5)))`}
       />
       <P><C>b"\x01\x02\x05"</C> is three bytes: <C>258</C> is <C>0x0102</C>, written big-endian as <C>\x01</C> then <C>\x02</C>, followed by the <C>u8</C> byte <C>\x05</C>. Each fixed-width segment contributes exactly its width, so a <C>u16</C> is always two bytes and a <C>u32</C> always four, whatever value it carries, and you can read the layout straight off the result.</P>
       <H2>Taking bytes apart</H2>
@@ -27,43 +27,41 @@ export default function BinaryMatching() {
       <H2>A literal segment dispatches</H2>
       <P>A literal in a segment matches by equality, the binary analogue of a literal value pattern. That's how you dispatch on a tag byte, then read the fields behind it. Here a leading <C>1</C> guards the arm, and the following <C>u16</C> is read as <C>n</C>:</P>
       <Runnable
-        source={`(match ((. Bytes of) #list(1 1 2)) ((bin (u8 1) (u16 n)) (Some n)) (_ (None unit)))`}
+        source={`(match (Bytes.of #list(1 1 2)) ((bin (u8 1) (u16 n)) (Some n)) (_ (None unit)))`}
       />
       <P>Written as a hex literal, the same idea reads a magic-number header legibly, so a <C>u32</C> equal to <C>0x89504E47</C> is the PNG signature, and a trailing <C>(bytes rest)</C> absorbs the payload after it. Here the question is only <em>is this a PNG</em>, so the arms return a <C>Bool</C> directly, the matched header being <C>true</C>:</P>
       <Runnable
-        source={`(match ((. Bytes of) #list(137 80 78 71 1 2)) ((bin (u32 0x89504e47) (bytes rest)) true) (_ false))`}
+        source={`(match (Bytes.of #list(137 80 78 71 1 2)) ((bin (u32 0x89504e47) (bytes rest)) true) (_ false))`}
       />
       <H2>A pattern accounts for the whole value</H2>
       <P>A <C>bin</C> pattern must describe the <em>entire</em> byte sequence, so leftover bytes are a non-match. Three bytes against a pattern that names only two doesn't fire, so this falls to the catch-all and gives <C>(None unit)</C>, honestly reporting that the read failed rather than a stand-in number:</P>
       <Runnable
-        source={`(match ((. Bytes of) #list(1 2 3)) ((bin (u16 n)) (Some n)) (_ (None unit)))`}
+        source={`(match (Bytes.of #list(1 2 3)) ((bin (u16 n)) (Some n)) (_ (None unit)))`}
       />
       <P>The fix is a trailing unsized <C>(bytes rest)</C>, which absorbs the variable-length remainder, so now the <C>u16</C> reads the first two bytes and <C>rest</C> takes the third, the arm matches, and the result is <C>(Some 258)</C>:</P>
       <Runnable
-        source={`(match ((. Bytes of) #list(1 2 3)) ((bin (u16 n) (bytes rest)) (Some n)) (_ (None unit)))`}
+        source={`(match (Bytes.of #list(1 2 3)) ((bin (u16 n) (bytes rest)) (Some n)) (_ (None unit)))`}
       />
       <Note>Because a <C>bin</C> pattern never covers every possible byte sequence, a <C>match</C> over a <C>Bytes</C> needs a catch-all <C>_</C> arm, the same exhaustiveness rule as a sum match. Without one it's a compile error (CDZ0210).</Note>
       <H2>A segment's size can be a value</H2>
       <P>Here is what that enables: a segment's <em>length</em> can be a name bound earlier in the same pattern, the length-prefixed frame that every wire format is built on. Read a count <C>n</C>, then bind exactly <C>n</C> bytes to <C>body</C>, and let a final <C>rest</C> take what's left:</P>
       <Runnable
         source={`(match
-  ((. Bytes of) #list(2 10 20 99))
-  ((bin (u8 n) (bytes body n) (bytes rest)) (Some ((. Bytes len) body)))
+  (Bytes.of #list(2 10 20 99))
+  ((bin (u8 n) (bytes body n) (bytes rest)) (Some (Bytes.len body)))
   (_ (None unit)))`}
       />
       <P>The first byte is <C>2</C>, so <C>body</C> is the next two bytes (length <C>2</C>) and <C>rest</C> is the trailing <C>99</C>. Building the same frame is the mirror image, so write the length as a prefix, then splice the payload:</P>
       <Runnable
-        source={`((. Bytes len)
-  (bin
-    (u16 ((. UInt16 of) ((. Bytes len) ((. Bytes of) #list(10 20 30)))))
-    (bytes ((. Bytes of) #list(10 20 30)))))`}
+        source={`(Bytes.len
+  (bin (u16 (UInt16.of (Bytes.len (Bytes.of #list(10 20 30))))) (bytes (Bytes.of #list(10 20 30)))))`}
       />
       <P>A two-byte length prefix plus a three-byte payload is five bytes. The length is computed and narrowed to the segment's width with <C>UInt16.of</C>, a checked narrow, so a payload too long to frame in 16 bits is a real error, not a silent wrap.</P>
       <H2>Sub-byte fields</H2>
       <P>Not every field is a whole number of bytes. A <C>(bits name k)</C> segment reads exactly <C>k</C> bits, so you can split a single byte into smaller fields. Bits are read most-significant first, which means the first segment takes the high bits. Here one byte splits into a 3-bit field and a 5-bit field, and <C>165</C> is <C>0b101_00101</C>, so <C>a</C> reads the high <C>0b101 = 5</C> and <C>b</C> the low <C>0b00101 = 5</C>:</P>
       <Runnable
         source={`(match
-  ((. Bytes of) #list(((. UInt8 wrap) 165)))
+  (Bytes.of #list((UInt8.wrap 165)))
   ((bin (bits a 3) (bits b 5)) (Some (+ (* 100 a) b)))
   (_ (None unit)))`}
       />
@@ -83,12 +81,12 @@ export default function BinaryMatching() {
         id="binary-matching:2"
         prompt={<>A dependent-size frame: the first byte says how many bytes of body follow. Fill the size of the <C>body</C> segment so it binds exactly the count the leading <C>u8</C> named, and the answer is the body's length, <C>3</C>.</>}
         starter={`(match
-  ((. Bytes of) #list(3 10 20 30 99))
-  ((bin (u8 n) (bytes body ?) (bytes rest)) ((. Bytes len) body))
+  (Bytes.of #list(3 10 20 30 99))
+  ((bin (u8 n) (bytes body ?) (bytes rest)) (Bytes.len body))
   (_ 0))`}
         solution={`(match
-  ((. Bytes of) #list(3 10 20 30 99))
-  ((bin (u8 n) (bytes body n) (bytes rest)) ((. Bytes len) body))
+  (Bytes.of #list(3 10 20 30 99))
+  ((bin (u8 n) (bytes body n) (bytes rest)) (Bytes.len body))
   (_ 0))`}
         expected="3"
         hint={<>The size is the name bound by the earlier segment, <C>n</C>, read from the first byte (<C>3</C>). So <C>(bytes body n)</C> binds the next three bytes, and <C>rest</C> takes the trailing <C>99</C>.</>}

@@ -16,7 +16,7 @@ export default function Strings() {
       <H2>Joining strings</H2>
       <P><C>String.concat</C> joins two strings into a new one (strings are immutable, so it returns a fresh value). Chain it, or wrap it in a function:</P>
       <Runnable
-        source={`(def (greet name) ((. String concat) "Hello, " name))
+        source={`(def (greet name) (String.concat "Hello, " name))
 
 (def (main) (greet "Cadenza"))`}
       />
@@ -33,13 +33,13 @@ export default function Strings() {
       <H2>Reaching in safely</H2>
       <P>Like <C>List.at</C>, <C>String.at</C> returns an <C>Option</C>, either the one-character string at a given position or <C>None</C> if the index is past the end. You never read off the end by accident. And it indexes by <em>character</em>, not byte, so in <C>"café"</C> the character at index <C>3</C> is the <C>é</C>, even though that <C>é</C> starts at byte 3 and spans two bytes:</P>
       <Runnable
-        source={`(def (main) (match ((. String at) "café" 3) ((Some ch) ch) ((None _) "?")))`}
+        source={`(def (main) (match (String.at "café" 3) ((Some ch) ch) ((None _) "?")))`}
       />
       <Note>The compiler itself builds its diagnostics and export names out of strings this way, so string handling isn't a separate library but part of how Cadenza describes itself.</Note>
       <H2>Compared by value</H2>
       <P>Two strings are equal when they hold the same characters, which is structural equality, not identity. So a string you <em>built</em> equals a literal with the same content: <C>(String.concat "ab" "c")</C> equals <C>"abc"</C>, however each was made.</P>
       <Runnable
-        source={`(= ((. String concat) "ab" "c") "abc")`}
+        source={`(= (String.concat "ab" "c") "abc")`}
       />
       <H2>Crossing to bytes and back</H2>
       <P>Text and raw bytes are different types (the next chapter, <strong>Bytes</strong>, is all about the raw side), and the crossing is explicit. <C>String.to-bytes</C> gives a string's UTF-8 encoding, so <C>"café"</C> is five bytes, the two-byte <C>é</C> included. Going back is <C>String.from-bytes</C>, which returns an <C>Option</C>, because not every byte sequence is valid UTF-8, and a round-trip of well-formed text succeeds:</P>
@@ -55,9 +55,7 @@ export default function Strings() {
       <H2>Slicing out a substring</H2>
       <P>To take a run of characters rather than a single one, <C>String.slice</C> selects a half-open range <C>[start, end)</C>, from <C>start</C> up to <em>but not including</em> <C>end</C>. Like <C>at</C>, the range might fall outside the string, so it returns an <C>Option</C>. The first five characters of <C>"hello world"</C> are <C>"hello"</C>, which is 5 characters long:</P>
       <Runnable
-        source={`(def
-  (main)
-  ((. String scalar-len) ((. Option expect) ((. String slice) "hello world" 0 5) "in range")))`}
+        source={`(def (main) ((. String scalar-len) (Option.expect (String.slice "hello world" 0 5) "in range")))`}
       />
       <P>The bounds count <em>characters</em>, the same as <C>at</C>, so slicing <C>"café"</C> from <C>0</C> to <C>3</C> gives the three characters <C>"caf"</C>, never splitting the two-byte <C>é</C> down the middle. A range where <C>start</C> equals <C>end</C> is a valid, empty slice (<C>Some ""</C>); one that runs off the end is <C>None</C>, not a trap.</P>
       <H2>Characters</H2>
@@ -67,11 +65,11 @@ export default function Strings() {
       />
       <P><C>String.scalar-at</C> reads the character at a scalar position, the single-character companion of <C>slice</C>. Like <C>at</C> and <C>slice</C> it's fallible, returning an <C>Option Char</C>, so an out-of-range position is <C>None</C> rather than a trap. The character at position <C>1</C> of <C>"hello"</C> is <C>#\e</C>, whose scalar value is <C>101</C>:</P>
       <Runnable
-        source={`(def (main) ((. Char to-int) ((. Option expect) ((. String scalar-at) "hello" 1) "in range")))`}
+        source={`(def (main) ((. Char to-int) (Option.expect ((. String scalar-at) "hello" 1) "in range")))`}
       />
       <P><C>Char.to-int</C> reads a character's Unicode scalar value (its code point) as an <C>Int64</C>. It's <em>total</em>: every character has a code point, so it never fails. Going the other way, <C>Char.from-int</C> is <em>fallible</em>, since not every integer is a valid scalar, so it returns an <C>Option Char</C>. Code point <C>97</C> is <C>#\a</C>:</P>
       <Runnable
-        source={`(def (main) ((. Char to-int) ((. Option expect) ((. Char from-int) 97) "valid scalar")))`}
+        source={`(def (main) ((. Char to-int) (Option.expect ((. Char from-int) 97) "valid scalar")))`}
       />
       <P>Because <C>from-int</C> is fallible, the invalid cases are data, not crashes. Code point <C>55296</C> is <C>U+D800</C>, a surrogate that is never a standalone scalar, so <C>from-int</C> gives <C>None</C>, and this match takes the <C>None</C> arm to return <C>0</C>:</P>
       <Runnable
@@ -96,16 +94,16 @@ export default function Strings() {
       <Exercise
         id="strings:2"
         prompt={<>Now a slice, and the half-open range is the whole trick. Pull the first three characters, <C>"cad"</C>, out of <C>"cadenza"</C> by filling in the <em>end</em> index. The check compares the slice against <C>"cad"</C>, so getting the boundary right gives <C>true</C>.</>}
-        starter={`(def (main) (= ((. Option expect) ((. String slice) "cadenza" 0 ?) "in range") "cad"))`}
-        solution={`(def (main) (= ((. Option expect) ((. String slice) "cadenza" 0 3) "in range") "cad"))`}
+        starter={`(def (main) (= (Option.expect (String.slice "cadenza" 0 ?) "in range") "cad"))`}
+        solution={`(def (main) (= (Option.expect (String.slice "cadenza" 0 3) "in range") "cad"))`}
         expected="true"
         hint={<>The range is <C>[start, end)</C>, so <C>end</C> is <em>excluded</em>. To keep characters at indices <C>0</C>, <C>1</C>, <C>2</C> (the <C>"cad"</C>) and stop before index <C>3</C>, the end is <C>3</C>, not <C>2</C>. Write <C>2</C> and you'd get only <C>"ca"</C>.</>}
       />
       <Exercise
         id="strings:3"
         prompt={<>Now a character. Read the first character of <C>"Zebra"</C> and give its Unicode code point. The letter <C>Z</C> is code point <C>90</C>, so pick the operation that turns a character into its integer and the answer is <C>90</C>.</>}
-        starter={`(def (main) (Char.?-int ((. Option expect) ((. String scalar-at) "Zebra" 0) "in range")))`}
-        solution={`(def (main) ((. Char to-int) ((. Option expect) ((. String scalar-at) "Zebra" 0) "in range")))`}
+        starter={`(def (main) (Char.?-int (Option.expect ((. String scalar-at) "Zebra" 0) "in range")))`}
+        solution={`(def (main) ((. Char to-int) (Option.expect ((. String scalar-at) "Zebra" 0) "in range")))`}
         expected="90"
         hint={<><C>String.scalar-at</C> hands you the character (an <C>Option Char</C>, unwrapped here by <C>Option.expect</C>), and <C>Char.to-int</C> reads its code point. The total direction is <C>to-int</C>; <C>from-int</C> is the fallible reverse.</>}
       />

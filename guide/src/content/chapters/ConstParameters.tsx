@@ -23,7 +23,7 @@ export default function ConstParameters() {
       <Runnable
         source={`(def
   (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
-  (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+  (if (= n 0) acc (fold-n d (- n 1) (d.op acc))))
 
 (def
   (main)
@@ -33,7 +33,7 @@ export default function ConstParameters() {
       <H2>A const type parameter</H2>
       <P>The const argument can even be a <em>type</em>. A <C>(const (: t Type))</C> parameter takes a type-value at compile time (types are ordinary values, as shown in <em>Types as values</em>), and the body can branch on it with <C>Type.eq</C>, folding to a constant per specialization. Here <C>is-int</C> asks whether the type it was handed is <C>Int64</C>:</P>
       <Runnable
-        source={`(def (is-int (const (: t Type)) (: x Int64)) ((. Type eq) t Int64))
+        source={`(def (is-int (const (: t Type)) (: x Int64)) (Type.eq t Int64))
 
 (def (main) (is-int Int64 5))`}
       />
@@ -58,12 +58,12 @@ export default function ConstParameters() {
         prompt={<>The const dictionary decides the operation. Fill the body of <C>op</C> so that folding it three times from <C>0</C>, adding the same amount each step, reaches <C>15</C>.</>}
         starter={`(def
   (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
-  (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+  (if (= n 0) acc (fold-n d (- n 1) (d.op acc))))
 
 (def (main) (fold-n #record((= op (fn (x) (+ x ?)))) 3 0))`}
         solution={`(def
   (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
-  (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+  (if (= n 0) acc (fold-n d (- n 1) (d.op acc))))
 
 (def (main) (fold-n #record((= op (fn (x) (+ x 5)))) 3 0))`}
         expected="15"
