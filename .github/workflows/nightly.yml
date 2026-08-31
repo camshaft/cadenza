@@ -204,6 +204,37 @@ jobs:
           CDZ_GATE_JOBS: "2"
         run: cargo xtask gate --check --target rust --shard ${{ matrix.shard }}/24
 
+  # opt-sweep — the TIERED-OPT LEVEL-EQUIVALENCE gate (v-core-opt's OptLevel/PassManager on the shared Core
+  # column), NIGHTLY ADVISORY (v-nix #6779, concierge-greenlit). `checks.aarch64-linux.opt-sweep` is a craneLib
+  # derivation running `cargo xtask gate --opt-sweep` against the nix component store: it compiles + runs EVERY
+  # corpus case at O0/O1/O2/O3 and asserts all four optimization levels agree (level-equivalence), exiting
+  # non-zero on any divergence.
+  #
+  # UNSHARDED single nix build — deliberately NOT matrix-sharded like rust-gate-full. Sharding was the fix for
+  # the ~15-min free-runner reclaim window (exit-143) that killed the NATIVE-cargo whole-corpus rust gate
+  # mid-build; a NIX build has no such window — it runs to completion and caches in-store/cachix (it PULLS the
+  # cache-warm release-deps + component store), so one build suffices (~4x a corpus run cold, but cached +
+  # rebuilds only on a corpus/compiler change). If a cold build ever risks the runner window, v-core-opt can
+  # make `--opt-sweep` shardable and v-nix will add mkOptSweepShard (same shape as the rust-gate shards).
+  #
+  # ADVISORY: eyeballed, NOT merge-gating (the ruleset lists only checks.yml contexts). A red = a candidate
+  # O0..O3 miscompile for v-core-opt to triage. aarch64 — the opt-sweep default target resolves the per-arch
+  # value-heap runtime hash (same reason the codegen/gate/bench jobs pin aarch64).
+  opt-sweep:
+    name: opt-sweep O0..O3 level-equivalence (advisory)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # ca-derivations for the content-addressed store; accept-flake-config + the camshaft.cachix.org
+          # substituter/trusted-key at the DAEMON level (the #6370-correct vJQM+ key) so this build PULLS the
+          # cache-warm closure (release-deps + component store) instead of cold-rebuilding the world.
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      - uses: ./.github/actions/nix-store-cache
+      - name: opt-sweep (via nix — O0..O3 level-equivalence over the full corpus)
+        run: nix build .#checks.aarch64-linux.opt-sweep --print-build-logs
+
   publish:
     name: rolling nightly prerelease
     runs-on: ubuntu-latest
