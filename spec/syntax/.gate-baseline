@@ -10,6 +10,9 @@ pass	ml/09-bang-comment
 pass	ml/11-nested-list
 pass	ml/12-world-nullary-member
 pass	ml/13-world-full-decl
+pass	ml/14-world-wit-prim-list-option
+pass	ml/15-world-wit-list-result
+pass	ml/16-world-unit-tuple
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let

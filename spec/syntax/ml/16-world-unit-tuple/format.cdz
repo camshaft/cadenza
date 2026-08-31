@@ -1,0 +1,4 @@
+world W =
+  | export i =
+    | put : (v : list(u8)) -> unit
+    | scan : (p : list(u8)) -> list(tuple(list(u8), list(u8)))
