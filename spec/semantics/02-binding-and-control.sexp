@@ -2285,6 +2285,18 @@
   (input  (do 1 unit))
   (output (: unit Unit)))
 
+; A `do` block must END IN A VALUE FORM: an empty `(do)` has no value, and a `do` whose last form is a
+; DECLARATION (a `def`) is valueless — both are CDZ0201 well-formedness faults, caught even in a
+; parameterized (non-exported-nullary) body. (Migrated from rcdzc
+; a_malformed_do_block_surfaces_in_the_diagnostics_query_on_any_body — the observable-reject faces.)
+(case "an empty do block in a parameterized def body is rejected as valueless"
+  (input  (do (def (g (: n Int64)) (do)) (export g)))
+  (error  CDZ0201 (message "empty `do` block has no value")))
+
+(case "a do block whose last form is a declaration rather than a value form is rejected"
+  (input  (do (def (g) (do (def x 5))) (export g)))
+  (error  CDZ0201 (message "must end in a value form, not a declaration")))
+
 (case "a let body of unit yields unit"
   (doc    "Witnesses core-semantics.md #An Effect-Only Expression Yields The Unit Value: binding a
            value and then yielding `unit` produces the unit value as the program result. Unit is an
