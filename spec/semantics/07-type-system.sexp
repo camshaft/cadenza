@@ -4163,12 +4163,16 @@
   "an unbound FIELD type in a never-constructed record type declaration is rejected"
   (doc
     "The record-decl face of the payload-type validation walk (the sum-ctor face is pinned above):
-           the field type atom sits one paren level down inside (record (: field NoSuchField)), so a
+           the field type atom sits one paren level down inside `(Record (: field NoSuchField))`, so a
            validator that only checks top-level payload atoms misses it. rcdzc rejects CDZ0101. The
            self-hosted front-end had exactly this gap — its narrow slice checked flat sum-ctor payloads
            but skipped the record group as nested — until the one-level record descent (1d4aaee7d);
-           pinned so the descent doesn't regress.")
-  (input (do (type R #record((= : field NoSuchField))) (def (main) 42) (export main)))
+           pinned so the descent doesn't regress. (A record TYPE is the `(Record (: name Type))` form — the
+           prior `#record((= : field …))` input was a nativization artifact: `#record(…)` is a record VALUE
+           ctor, not a type, so it hit the malformed-variant CDZ0201 before the field-type check; the
+           canonical `(Record (: field NoSuchField))` reaches the descent and rejects the unbound field type
+           CDZ0101 as this case intends.)")
+  (input (do (type R (Record (: field NoSuchField))) (def (main) 42) (export main)))
   (error CDZ0101))
 
 ; -- a GENERIC same-name constructor inlined into a caller resolves to the constructor, not the type
