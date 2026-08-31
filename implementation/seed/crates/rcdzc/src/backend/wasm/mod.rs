@@ -2281,7 +2281,8 @@ fn emit_runtime_resource(
     // once) — decline. Only the pure-host, scalar case is emitted here.
     if !host_imports.is_empty() {
         if !extern_imports.is_empty() {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmHostPeerResourceFusion,
                 "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
                  resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
                  alongside the resource escape",
@@ -4383,12 +4384,15 @@ fn emit_mixed_closure_resource(
             })
             .collect::<Result<_, _>>()?;
         let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
-            Reject::unsupported(format!(
-                "a plain export `{}` returning {} has no scalar host-boundary representation \
+            Reject::declined(
+                crate::diag::DeclineId::WasmCompoundResultWithClosureExport,
+                format!(
+                    "a plain export `{}` returning {} has no scalar host-boundary representation \
                  (a compound result alongside a closure export needs the compound-boundary emit)",
-                e.name,
-                e.result.render_name(&db.name_ctx())
-            ))
+                    e.name,
+                    e.result.render_name(&db.name_ctx())
+                ),
+            )
         })?;
         plain_specs.push(PlainSpec {
             def: e.def,
@@ -5212,12 +5216,15 @@ fn emit_distinct_sig_resource(
             })
             .collect::<Result<_, _>>()?;
         let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
-            Reject::unsupported(format!(
-                "a plain export `{}` returning {} has no scalar host-boundary representation \
+            Reject::declined(
+                crate::diag::DeclineId::WasmCompoundResultWithClosureExport,
+                format!(
+                    "a plain export `{}` returning {} has no scalar host-boundary representation \
                  (a compound result alongside a closure export needs the compound-boundary emit)",
-                e.name,
-                e.result.render_name(&db.name_ctx())
-            ))
+                    e.name,
+                    e.result.render_name(&db.name_ctx())
+                ),
+            )
         })?;
         plain_specs.push(PlainSpec {
             def: e.def,
@@ -5566,13 +5573,16 @@ fn emit_roundtrip_resource(
                 .iter()
                 .any(|(_, p)| matches!(p, crate::ty::Ty::Fn(_, _)))
     }) {
-        return Err(Reject::unsupported(format!(
-            "the export `{}` both RECEIVES a closure (a parameter) and RETURNS one (its result) — a \
+        return Err(Reject::declined(
+            crate::diag::DeclineId::WasmClosureTransformer,
+            format!(
+                "the export `{}` both RECEIVES a closure (a parameter) and RETURNS one (its result) — a \
              closure transformer. That is not supported: the host would pass a closure in and get one \
              out of the same call, which needs the closure to cross as `own<t>` in both directions of one \
              boundary function (DESIGN-closure-host-resource-rcdzc.md, closure transformers)",
-            t.name
-        )));
+                t.name
+            ),
+        ));
     }
     let sig = producers
         .first()
@@ -6457,7 +6467,8 @@ fn emit_runtime_bytes_resource(
     // one host effect, is a further fusion — decline cleanly (mirrors the Flat/Sum/RecursiveSum host arms).
     if !host_imports.is_empty() {
         if !extern_imports.is_empty() {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmHostPeerResourceFusion,
                 "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
                  resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
                  alongside the resource escape",
@@ -6781,7 +6792,8 @@ fn emit_runtime_sum_resource(
     // host-alongside-peer shape declines.
     if !host_imports.is_empty() {
         if !extern_imports.is_empty() {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmHostPeerResourceFusion,
                 "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
                  resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
                  alongside the resource escape",
@@ -7089,7 +7101,8 @@ fn emit_recursive_sum_resource(
     // host ops compose via `assemble_host_runtime_resource`; a String-param or host-alongside-peer declines.
     if !host_imports.is_empty() {
         if !extern_imports.is_empty() {
-            return Err(Reject::unsupported(
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmHostPeerResourceFusion,
                 "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
                  resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
                  alongside the resource escape",
