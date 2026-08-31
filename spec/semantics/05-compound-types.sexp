@@ -7494,6 +7494,20 @@
   (live-objects 0))
 
 (case
+  "a single-variant newtype's own constructor pattern matches and binds its inner value"
+  (doc
+    "A newtype `(type UserId (Mk Int64))` is matched by its OWN constructor pattern `(Mk n)`, binding the
+           inner value — the base case of the recursive-newtype match below. Runs: `(f (Mk 7))` = 7. (Migrated
+           from rcdzc a_newtype_scrutinees_own_ctor_pattern_still_matches.)")
+  (input
+    (do
+      (type UserId (Mk Int64))
+      (def (f (: u UserId)) (match u ((Mk n) n)))
+      (def (main) (f (Mk 7)))
+      (export main)))
+  (output (: 7 Int64)))
+
+(case
   "a folded recursive-newtype ANNOTATION unifies with the unfolded value type"
   (doc
     "The annotation-ascription face of the recursive-newtype fold/unfold unify (the traversal at 4983 hits it at the recursive-CALL site; this hits it at an explicit `(: value Lst)` ascription). The annotation `(: (Mk (Some (tuple 42 (Mk None)))) Lst)` gives a FOLDED type where `Lst` at the recursion point collapses to a `Ty::Sum{Lst}` μ back-edge, while the value's own type is `Ty::Nominal{Lst}` there — because `Ty::Nominal` is compared by decl+args (NOT inner), the two unify and the ascription type-checks (was 'annotation type Lst does not match value type Lst' pre-fix). Match out the `Mk`, then the head `(. t 0)` = 42.")
