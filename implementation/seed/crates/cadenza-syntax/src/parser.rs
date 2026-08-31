@@ -7840,6 +7840,15 @@ impl<'a> Parser<'a> {
             /// read eagerly (via [`Self::read_type_record_field_label`]) and its type descends onto the
             /// worklist, rebuilt as `(: label ty)` by a [`TCont::Label`] continuation stacked above this one.
             Brace { start: Span, items: Vec<StructId> },
+            /// A `forall <binders> .` awaiting its body type. `head` is the pre-created `forall` name;
+            /// `binder_list` the `(binders…)` node; `start` the `forall` span. On resume the body becomes
+            /// `(forall (binders…) body)`. A nested `forall a. forall b. …` stacks these on the heap instead
+            /// of recursing `forall_type -> type_ref -> forall_type`.
+            Forall {
+                start: Span,
+                head: StructId,
+                binder_list: StructId,
+            },
         }
         // The driver's next action.
         enum Next {
@@ -7863,13 +7872,19 @@ impl<'a> Parser<'a> {
                 Next::Read => {
                     let node_start = self.cur_span();
                     if self.at_keyword(Keyword::Forall) {
-                        // `forall` early-returns in the recursive `type_ref` (no unit-infix, no postfix): the
-                        // binder body already consumed any arrow chain, so it reduces directly.
-                        let n = self.forall_type(node_start);
-                        next = Next::Reduce {
+                        // `forall <binders> . body` — de-recursed onto the worklist (I5 part 5): the preamble
+                        // (head + binders + `.`) is read inline, then the BODY (a full type) descends here
+                        // instead of recursing `forall_type -> type_ref`. A nested `forall a. forall b. …`
+                        // stacks `TCont::Forall`s on the heap. `forall` early-returns in the recursive
+                        // `type_ref` (no unit-infix / no postfix / no arrow at the forall's own level — the
+                        // body already consumed any arrow chain), so on resume the built node reduces directly.
+                        let (head, binder_list) = self.read_forall_preamble(node_start);
+                        stack.push(TCont::Forall {
                             start: node_start,
-                            value: n,
-                        };
+                            head,
+                            binder_list,
+                        });
+                        next = Next::Read;
                     } else if self.at(Kind::LParen) {
                         // Parenthesized / tuple / unit type — de-recursed onto the worklist (I5 part 3): the
                         // interior element(s) are full types, so each descends here instead of recursing
@@ -8101,6 +8116,18 @@ impl<'a> Parser<'a> {
                                     next = Next::Reduce { start, value: n };
                                 }
                             }
+                            Some(TCont::Forall {
+                                start,
+                                head,
+                                binder_list,
+                            }) => {
+                                // `value` is the forall body → `(forall (binders…) body)`. No unit-infix /
+                                // arrow at the forall's own level (the body already consumed any arrow chain),
+                                // matching the recursive `type_ref` early-return for `forall`.
+                                let span = start.merge(self.prev_span());
+                                let node = self.list(vec![head, binder_list, value], span);
+                                next = Next::Reduce { start, value: node };
+                            }
                             Some(TCont::App {
                                 node_start,
                                 head,
@@ -8323,6 +8350,18 @@ impl<'a> Parser<'a> {
     /// A missing binder or missing `.` records an error and recovers by treating what follows as the
     /// type (so a malformed `forall` never panics — the crate's never-panic contract).
     fn forall_type(&mut self, start: Span) -> StructId {
+        let (head, binder_list) = self.read_forall_preamble(start);
+        let body = self.type_ref();
+        let span = start.merge(self.prev_span());
+        self.list(vec![head, binder_list, body], span)
+    }
+
+    /// Read a `forall <name>+ .` preamble — the `forall` keyword, the one-or-more binder names, and the `.`
+    /// terminator — returning `(forall-head-node, binder-list-node)`. A missing binder / missing `.` records
+    /// an error and recovers (never-panic). Shared by the recursive [`Self::forall_type`] and the iterative
+    /// [`Self::type_ref_iter`] (which then reads the body on the worklist via [`TCont::Forall`]) so the
+    /// head → binders → binder-list node-creation order can't drift between the two readers.
+    fn read_forall_preamble(&mut self, start: Span) -> (StructId, StructId) {
         self.expect_keyword(Keyword::Forall, "`forall`");
         let head = self.name("forall", start);
         // Binder names: one-or-more bare identifiers before the `.`. `type`/other keywords are not names.
@@ -8345,9 +8384,7 @@ impl<'a> Parser<'a> {
         } else {
             self.error("expected `.` after the `forall` binders, e.g. `forall a. T`");
         }
-        let body = self.type_ref();
-        let span = start.merge(self.prev_span());
-        self.list(vec![head, binder_list, body], span)
+        (head, binder_list)
     }
 
     /// A leading `forall a b .` clause in a DEF SIGNATURE (`def forall a b. f(x: a) = …`) — the P1
