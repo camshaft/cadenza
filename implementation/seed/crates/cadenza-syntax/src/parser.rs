@@ -106,8 +106,11 @@ struct Lead {
     span: Span,
 }
 
-/// Parse `src` (in file `file`) to arenas + spans.
-pub fn parse(src: &str, file: FileId) -> Parsed {
+/// Build a [`Parser`] over `src` — tokenize + split out the `leading` doc/comment side-table — WITHOUT
+/// running the grammar. Extracted from [`parse`] so the recursive [`parse`] and the iterative rewrite
+/// (`parse_iterative`, and the `expr`-vs-`expr_iter` differential unit tests) share the identical
+/// lexing/leading setup and differ ONLY in which grammar driver they run.
+fn build_parser(src: &str, file: FileId) -> Parser<'_> {
     // Split the lexer stream into grammar tokens (everything the parser already handled) and a
     // parallel `leading` side-table: `leading[i]` is the run of doc/comment tokens that immediately
     // preceded grammar token `i`. The parser proper sees ONLY grammar tokens (unchanged); it
@@ -151,7 +154,7 @@ pub fn parse(src: &str, file: FileId) -> Parsed {
     // attaches to the virtual end position.
     let trailing = pending;
 
-    let mut p = Parser {
+    Parser {
         src,
         tokens,
         leading,
@@ -163,7 +166,15 @@ pub fn parse(src: &str, file: FileId) -> Parsed {
         arm_bar_terminates: false,
         depth: 0,
         depth_exceeded: false,
-    };
+        iterative: false,
+    }
+}
+
+/// Parse `src` (in file `file`) to arenas + spans — the RECURSIVE-descent parser. Kept as the frozen
+/// reference the differential oracle diffs the iterative rewrite against (see [`read_ml_recursive`]);
+/// deleted once the rewrite is complete.
+pub fn parse(src: &str, file: FileId) -> Parsed {
+    let mut p = build_parser(src, file);
     let root = p.program();
     Parsed {
         arenas: p.builder.finish(root),
@@ -179,9 +190,32 @@ fn strip_comment(raw: &str, doc: bool) -> String {
     body.strip_prefix(' ').unwrap_or(body).to_string()
 }
 
+/// The ITERATIVE parse entry point (v-syntax-nonrec-reader I3) — the explicit-worklist replacement for
+/// the recursive-descent parser, being built up construct-by-construct. [`read_ml`] routes here; the
+/// frozen recursive [`parse`] stays as the differential-oracle reference ([`read_ml_recursive`]) until
+/// the rewrite is complete. WHILE the iterative engine is incomplete this delegates to [`parse`] so its
+/// output is byte-identical (the oracle + corpus stay green); each increment replaces more of the
+/// delegation with explicit-stack control flow, verified against the recursive reference over the
+/// differential oracle + `corpus_roundtrip`. When complete, `parse` and its recursive methods are
+/// deleted and this becomes the sole parser.
+pub fn parse_iterative(src: &str, file: FileId) -> Parsed {
+    let mut p = build_parser(src, file);
+    // Route every `expr` through the iterative `expr_iter` shunting-yard. Operand reads still go through
+    // the (recursive) prefix/postfix, so bracket/keyword operand NESTING still recurses until those forms
+    // are pulled onto the worklist in a later increment — but the infix / right-operand / right-assoc
+    // chains are now iterative, and expr_iter is exercised end-to-end by the differential oracle + corpus.
+    p.iterative = true;
+    let root = p.program();
+    Parsed {
+        arenas: p.builder.finish(root),
+        spans: p.spans,
+        errors: p.errors,
+    }
+}
+
 /// Parse `src` as an anonymous single file (`FileId(0)`).
 pub fn read_ml(src: &str) -> Parsed {
-    parse(src, FileId::default())
+    parse_iterative(src, FileId::default())
 }
 
 /// The FROZEN RECURSIVE-parser reference for the differential oracle (see
@@ -195,6 +229,134 @@ pub fn read_ml(src: &str) -> Parsed {
 #[cfg(test)]
 pub(crate) fn read_ml_recursive(src: &str) -> Parsed {
     parse(src, FileId::default())
+}
+
+/// A record/map field-pair the iterative `expr_iter` has started reading but must SUSPEND on to descend
+/// into a sub-expr (the worklist twin of `record_literal`/`map_literal`'s inline field loop). It records
+/// which sub-expr the pending descent will deliver, plus the partial field state to reassemble once it
+/// does — the `(= name value)` `FieldPair` node is built on DELIVER (matching the recursive struct-id
+/// order: name/key then value subtree, THEN the `=` atom, then the field `list`). A record SHORTHAND
+/// field (`{ x }` → `(= x x)`) needs NO descent, so `advance_fields` completes it inline and never yields
+/// a `FieldPhase` for it.
+enum FieldPhase {
+    /// A `.. rest` spread: `head` is the pre-created `..` name; the pending descent is its operand.
+    RestOperand { dd_span: Span, rest_head: StructId },
+    /// A map `key = value` entry whose KEY is being read; on deliver, expect `=` then descend the value.
+    MapKey { leading: Vec<Lead>, e_start: Span },
+    /// A map entry whose VALUE is being read; `key` is the already-read key node.
+    MapValue {
+        leading: Vec<Lead>,
+        e_start: Span,
+        key: StructId,
+    },
+    /// A record `name = value` field whose VALUE is being read; `name` is the already-read binder node.
+    RecordValue {
+        leading: Vec<Lead>,
+        f_start: Span,
+        name: StructId,
+    },
+}
+
+/// The sub-expr an `if c then t else e` form is reading when it SUSPENDS on the worklist (the twin of
+/// `if_expr`'s three sequential `expr` calls). Each phase carries the already-built branches plus the
+/// own-line leading comments captured for the branch currently being read (`expr` does not drain a
+/// sub-expr's own leading slot). On deliver, `expr_iter` wraps the branch (leading + a same-line trailing
+/// comment on then/else), then either advances to the next `then`/`else` keyword + descends, or (after
+/// `else`) assembles `(if c t e)`. Byte-identical to `if_expr` (node order: head, then cond/then/else
+/// subtrees + their comment wrappers in turn, then the `list`).
+enum IfPhase {
+    /// Reading the condition; `c_lead` is its own-line leading comment run (captured before the descent).
+    Cond { c_lead: Vec<Lead> },
+    /// Reading the then-branch; `c` is the built condition, `t_lead` the then-branch's leading comments.
+    Then { c: StructId, t_lead: Vec<Lead> },
+    /// Reading the else-branch; `c`/`t` are the built condition/then, `e_lead` the else leading comments.
+    Else {
+        c: StructId,
+        t: StructId,
+        e_lead: Vec<Lead>,
+    },
+}
+
+/// The sub-expr a `let b = v, … in body` form is reading when it SUSPENDS on the worklist (the twin of
+/// `let_expr`'s per-binding value `expr` + the body `expr`). Every binding's VALUE is a descent (no
+/// inline-completable binding, unlike a record shorthand); the pattern/name binder is read INLINE (a flat
+/// leaf, or the recursive `pattern()` for a destructuring binder — its own separate depth guard, I4). On
+/// deliver, `expr_iter` builds the `(binder value)` pair, then either starts the next `,`-binding (inline
+/// preamble + descend) or finishes the binding list, consumes `in`, and descends the body. Byte-identical
+/// to `let_expr` (node order: head, per-binding binder then value subtree then the pair, the `binds` list,
+/// then the body subtree, then the outer `list`).
+enum LetPhase {
+    /// Reading a binding's value; `bindings` are the built pairs so far, `n` the just-read binder, and
+    /// `leading`/`b_start`/`e_lead` the binding's own-line leading comments / start span / value-leading
+    /// comments captured before the descent.
+    BindingValue {
+        bindings: Vec<StructId>,
+        n: StructId,
+        leading: Vec<Lead>,
+        b_start: Span,
+        e_lead: Vec<Lead>,
+    },
+    /// Reading the body; `binds` is the assembled `(… bindings)` list, `body_lead` its leading comments.
+    Body {
+        binds: StructId,
+        body_lead: Vec<Lead>,
+    },
+}
+
+/// The sub-expr a `match scrut with | pat [if g] => body | …` form is reading when it SUSPENDS on the
+/// worklist (the twin of `match_expr`/`match_arm`'s `expr` calls — scrutinee, each arm's optional guard,
+/// each arm's body). The pattern is read INLINE via `match_arm_pat` (recursive `pattern()`, I4's separate
+/// guard). Arms are sibling iteration (a `Vec` in the cont's `items`), not recursion. Byte-identical to
+/// `match_expr` node order + comment handling (`arm_bar_terminates` forced true only around each body).
+enum MatchPhase {
+    /// Reading the scrutinee; on deliver: push it, consume `with`, drain the first arm's leading comments
+    /// + optional leading `|`, then start the first arm.
+    Scrut,
+    /// Reading an arm's guard expr; on deliver: fold `(guard pat g)`, then read the body preamble + descend
+    /// the body. `arm_leading` is the arm's own-line leading comment run.
+    ArmGuard {
+        arm_start: Span,
+        arm_leading: Vec<Lead>,
+        pat: StructId,
+        guard_head: StructId,
+        g_start: Span,
+    },
+    /// Reading an arm's body expr (`arm_bar_terminates` forced true; `saved_arm_bar` restores it on
+    /// deliver). On deliver: assemble `(pat body)`, wrap comments, append; then either start the next arm
+    /// (on `|`) or finish the match.
+    ArmBody {
+        arm_start: Span,
+        arm_leading: Vec<Lead>,
+        pat: StructId,
+        body_lead: Vec<Lead>,
+        saved_arm_bar: bool,
+    },
+}
+
+/// The sub-expr a `handle E[(seed)] with | op(…, s) => body | … in body` form is reading when it SUSPENDS
+/// on the worklist (the twin of `handle_expr`/`handle_arm`'s `expr` calls — the optional seed, each arm's
+/// body, the final `in` body). The effect name + each arm's `op(binder…, state)` header are read INLINE
+/// (binders only, no expr descent); arms are sibling iteration (a `Vec` in the phase). Byte-identical to
+/// `handle_expr` node order + the `arm_bar_terminates`-true-around-each-body discipline. `head`/`effect`
+/// live in the `Cont::Handle` (known at dispatch); `seed`/`arms`/`arms_start` flow through the phases.
+enum HandlePhase {
+    /// Reading the seed expr of `E(seed)`; on deliver: consume `)`, then `with` + first arm.
+    Seed,
+    /// Reading an arm's body (`arm_bar_terminates` forced true; `saved_arm_bar` restores it). On deliver:
+    /// assemble `(op params state body)`, append; then start the next arm (on `|`) or descend the `in` body.
+    ArmBody {
+        seed: StructId,
+        arms_start: Span,
+        arms: Vec<StructId>,
+        arm_start: Span,
+        op: StructId,
+        params: StructId,
+        state: StructId,
+        saved_arm_bar: bool,
+    },
+    /// Reading the final `in` body; `arms_list` is the assembled `(arm…)`. On deliver: assemble
+    /// `(handle effect seed (arm…) body)`.
+    Body { seed: StructId, arms_list: StructId },
 }
 
 struct Parser<'a> {
@@ -227,6 +389,12 @@ struct Parser<'a> {
     /// reports end-of-input: every parse loop (`program`, `paren`, arg lists, …) terminates immediately
     /// and the stack unwinds without reprocessing the deep tail. One diagnostic, clean termination.
     depth_exceeded: bool,
+    /// I3 (v-syntax-nonrec-reader): when true, [`Self::expr`] dispatches to the iterative
+    /// [`Self::expr_iter`] (the explicit-stack shunting-yard) instead of recursing. [`parse`] (=
+    /// `read_ml_recursive`, the frozen oracle reference) leaves it `false`; [`parse_iterative`] (=
+    /// `read_ml`) sets it `true`. Every OTHER method is shared, so the differential oracle diffs the two
+    /// expr strategies over the whole corpus + generated sweep. Removed once the rewrite is complete.
+    iterative: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -990,6 +1158,11 @@ impl<'a> Parser<'a> {
 
     /// Parse an expression whose infix operators bind at least `min_prec`.
     fn expr(&mut self, min_prec: u8) -> StructId {
+        // I3: route to the iterative shunting-yard when `parse_iterative` set the flag (`read_ml`); the
+        // recursive body below stays for `parse` = `read_ml_recursive` (the frozen oracle reference).
+        if self.iterative {
+            return self.expr_iter(min_prec);
+        }
         let start = self.cur_span();
         // DEPTH GUARD: every nested sub-expression funnels through `expr` (bracket/keyword forms and the
         // infix right operand all call it), so bounding this recursion bounds the native stack. Past the
@@ -1129,6 +1302,2004 @@ impl<'a> Parser<'a> {
         }
         self.depth -= 1;
         left
+    }
+
+    /// Iterative precedence-climbing — the explicit-stack replacement for the recursive [`Self::expr`]'s
+    /// `self.expr(right_min)` right-operand recursion (v-syntax-nonrec-reader I3). Byte-identical to
+    /// `expr` (verified by the differential oracle in `roundtrip_tests::generative_roundtrip`): it mirrors
+    /// every arm — the `as`-conversion, the `:`+`forall` intercept, same-line + own-line comment attach,
+    /// the unit suffix, the spine + depth guards, and the `min_prec == PREC_SEQ` `finish_sequence`.
+    ///
+    /// HYBRID STAGE: operands are still read via the (recursive) [`Self::prefix`]/[`Self::postfix`], so
+    /// this de-recurses the infix / right-operand / right-assoc-arrow chains; bracket/keyword operand
+    /// NESTING still recurses through `prefix` until those forms are pulled onto the worklist in a later
+    /// increment. It reuses `expr`'s exact helpers, so the output arena + span table + errors match.
+    fn expr_iter(&mut self, min_prec: u8) -> StructId {
+        // A pending continuation on the explicit stack — the worklist that replaces native recursion.
+        enum Cont {
+            // A SUSPENDED expr level awaiting its infix RIGHT operand (replaces `self.expr(right_min)`);
+            // on deliver, combine `(head left right)` and resume THIS level's infix loop.
+            Op {
+                left: StructId,
+                head: StructId,
+                right_leading: Vec<Lead>,
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+            },
+            // A quasiquote `` `{ <expr> } `` awaiting its braced inner expr (an OPERAND-position form —
+            // the level that opened it was reading its operand). On deliver: consume `}`, wrap
+            // `(quasiquote inner)`, then that node IS the parent level's operand (so postfix + unit-suffix
+            // apply), and the parent's infix loop resumes. Carries the parent LEVEL state to restore.
+            QuasiQuote {
+                head: StructId,
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+            },
+            // A `( … )` paren awaiting a sub-expr (an OPERAND-position form). It is a multi-phase
+            // collector: the FIRST sub-expr (`self.expr(0)`) decides grouping `(e)` vs tuple `(a, b, …)`;
+            // in tuple mode it then collects `,`-separated elements (`self.expr(PREC_SEQ+1)`). On the final
+            // close it assembles the operand (transparent grouping = the first expr; tuple = `("tuple" …)`),
+            // which becomes the parent level's operand (postfix + unit-suffix apply). `arm_bar` restores
+            // `arm_bar_terminates` (mirrors `bracketed_bars`). `pending_leading` is the own-line comment run
+            // captured before the sub-expr currently being read (`first_leading`, or a tuple element's).
+            Paren {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                arm_bar: bool,
+                pending_leading: Vec<Lead>,
+                // `items` is empty while the FIRST sub-expr is still being read (grouping-vs-tuple undecided);
+                // once tuple mode is entered it holds `[ "tuple"-head, first, … ]`. `items.is_empty()` IS the
+                // mode flag on deliver — no separate bool needed.
+                items: Vec<StructId>,
+            },
+            // A `[ … ]` list literal awaiting an element sub-expr. `items` = `[ "list"-head, … ]`. Each
+            // element is either a `.. rest` spread (`is_rest`: wrap `(.. binder)` with `dd_span`) or an
+            // ordinary element (`pending_leading` own-line comments; a same-line trailing comment on the
+            // LAST element). `before` is the pos at the element's loop-iteration start (the missing-`,`
+            // progress guard). `arm_bar` restores `arm_bar_terminates`. On the close it assembles
+            // `("list" …)` as the parent level's operand.
+            List {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                arm_bar: bool,
+                // The closer that ends this comma-list. `]` for `[…]` list / `b[…]` bin / `#[…]` raw-list;
+                // `)` for a `#(…)` set. These families are the SAME skeleton (optional head in `items[0]`
+                // + `,`-separated elements read at `PREC_SEQ+1`), differing only in delimiters, the head,
+                // and three per-family behaviors captured by the flags below:
+                //   - `allow_rest`   — a `.. binder` spread element is legal (list/set; NOT bin/hash).
+                //   - `allow_comments` — own-line leading + last-element trailing comment slots are
+                //                        captured+wrapped (list/set/bin; NOT hash, whose elements are bare).
+                //   - `drain_closer` — an own-line `//` just before the closer attaches to the last element
+                //                      (list/set; NOT bin/hash).
+                closer: Kind,
+                allow_rest: bool,
+                allow_comments: bool,
+                drain_closer: bool,
+                items: Vec<StructId>,
+                pending_leading: Vec<Lead>,
+                is_rest: bool,
+                dd_span: Span,
+                // The `..` head node, created BEFORE the binder descends (matching `rest_marker`'s
+                // head-then-operand order, so the span table's struct-id order is byte-identical).
+                rest_head: StructId,
+                before: usize,
+            },
+            // A `{ … }` record or `#{ … }` map awaiting a field sub-expr (an OPERAND-position form). It is
+            // the field-pair analogue of `List`: `items` = `[ ctor-head, … ]`; `phase` says what the pending
+            // descent delivers (rest operand / map key / map|record value) and carries the partial field
+            // state to reassemble it (see `FieldPhase` + `advance_fields`). `is_map` selects record vs map
+            // reassembly; `before` is the current field's start pos (the missing-`,` progress guard). On the
+            // close it assembles `("record"|"map" …)` as the parent level's operand (postfix + unit-suffix).
+            Fields {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                arm_bar: bool,
+                is_map: bool,
+                items: Vec<StructId>,
+                phase: FieldPhase,
+                before: usize,
+            },
+            // An `if c then t else e` keyword form awaiting one of its three branch sub-exprs (an
+            // OPERAND-position form; NOT bracketed_bars — `arm_bar_terminates` is left untouched, unlike
+            // the collections). `head` is the pre-created `if` keyword head; `phase` says which branch is
+            // being read + carries the already-built branches. On the final (else) deliver it assembles
+            // `(if c t e)` as the parent level's operand (postfix + unit-suffix apply).
+            If {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                head: StructId,
+                phase: IfPhase,
+            },
+            // A `let b = v, … in body` keyword form awaiting a binding value or the body (an OPERAND-position
+            // form; NOT bracketed_bars — arm_bar_terminates untouched). `head` is the pre-created `let` head;
+            // `phase` carries the built bindings + which sub-expr is pending. On the body deliver it assembles
+            // `(let (binds) body)` as the parent level's operand (postfix + unit-suffix apply).
+            Let {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                head: StructId,
+                phase: LetPhase,
+            },
+            // A `match scrut with | … | …` keyword form awaiting the scrutinee, an arm guard, or an arm
+            // body (an OPERAND-position form; NOT bracketed_bars). `items` = `[ "match"-head, scrut, arm… ]`
+            // grows as arms complete; `phase` carries the in-progress arm state. On the final arm's body
+            // deliver (no more `|`) it assembles `(match scrut arm…)` as the parent's operand.
+            Match {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                items: Vec<StructId>,
+                phase: MatchPhase,
+            },
+            // A `fn(p, …) [-> R] => body` lambda awaiting its body (single descent — the param list + return
+            // type are read INLINE at dispatch; those are separate grammars, param/type de-recursion is
+            // I4/I5). On deliver: ascribe the body with `ret_ty`, assemble `(fn (params) body)`.
+            Fn {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                head: StructId,
+                param_list: StructId,
+                ret_ty: Option<StructId>,
+            },
+            // A `host E, … in body` delegation awaiting its body (single descent — the effect name list is
+            // read INLINE at dispatch). On deliver: assemble `(host (E …) body)`.
+            Host {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                head: StructId,
+                effects_list: StructId,
+            },
+            // A `handle E[(seed)] with | … in body` form awaiting the seed, an arm body, or the final body
+            // (an OPERAND-position form; NOT bracketed_bars). `head`/`effect` are known at dispatch; `phase`
+            // carries the seed/arms/arms_start + in-progress arm state. On the final `in` body deliver it
+            // assembles `(handle effect seed (arm…) body)` as the parent's operand.
+            Handle {
+                start: Span,
+                min_prec: u8,
+                spine: u32,
+                entered: bool,
+                prefix_is_number: bool,
+                head: StructId,
+                effect: StructId,
+                phase: HandlePhase,
+            },
+            // A call `callee( arg, … )` awaiting an argument sub-expr — the worklist twin of `arg_exprs`
+            // (the last recursion site). `callee` is the base being applied; `args` the built args so far;
+            // `leading` the current arg's own-line leading comments. `call_start` is the base operand's
+            // start (the whole `callee(…)` span). `saved_arm_bar` restores `arm_bar_terminates` (cleared
+            // for the call interior, like `arg_exprs`). `pf_spine`/`pf_num` carry the postfix-layer counter
+            // + unit-suffix gate so the postfix funnel RESUMES on the built call node (folding further
+            // `.member`/`(args)`); `lvl_*` restore the owning expr level's infix state on completion.
+            Call {
+                callee: StructId,
+                call_start: Span,
+                args: Vec<StructId>,
+                leading: Vec<Lead>,
+                saved_arm_bar: bool,
+                pf_spine: u32,
+                pf_num: bool,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+            },
+            // A prefix UNARY MINUS `- <tight-operand>` awaiting its operand. The operand is a TIGHT unary
+            // (`prefix + postfix`, NO trailing infix, NO unit suffix) — read as a fresh level descended at
+            // `TIGHT_PREC` (suppresses infix; the funnel skips the unit suffix at that min_prec). On deliver
+            // build `(- operand)`, which becomes the owning level's operand (so the OUTER postfix + unit
+            // suffix apply, mirroring `expr`). `neg_start` is the `-`'s span (the whole negation's start);
+            // `lvl_*` restore the owning level's infix state; `lvl_num` is its `prefix_is_number` (false for
+            // a `-`-led operand, so the outer unit suffix applies). No `guard_prefix`/`depth` bookkeeping
+            // here — the tight level's own reading-block depth guard replaces it, keeping depth identical.
+            Neg {
+                neg_start: Span,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+                lvl_num: bool,
+            },
+            // An `,e` / `,{e}` unquote or `,@e` / `,@{e}` unquote-splicing awaiting its inner. `head` (the
+            // `unquote`/`unquote-splicing` name) is created at dispatch — BEFORE the inner — matching
+            // `unquote`'s struct-id order (head, then inner subtree). `braced`: the `{ … }` form reads a
+            // FULL `expr(0)` inner (infix + unit suffix + sequencing) and consumes `}` on deliver; the bare
+            // form reads a TIGHT operand (descended at TIGHT_PREC, no unit suffix, no infix — same depth
+            // treatment as unary minus). On deliver build `(head inner)`, then the OUTER postfix/unit suffix
+            // apply. `lvl_*` restore the owning level's infix state.
+            Unquote {
+                head: StructId,
+                unq_start: Span,
+                braced: bool,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+                lvl_num: bool,
+            },
+            // An `@ann <form>` annotation awaiting its annotated FORM. `head` = the `@` name; `name` = the
+            // annotation name (bare, or a glued call `(tag "x")` read inline at dispatch). The form is read
+            // PREFIX-ONLY (descended at PREFIX_ONLY_PREC). `at_pos`/`form_pos` are the token slots the
+            // `carry_docs` doc-shuffle uses (the leading `///` docs belong to the item below the `@`): the
+            // at->form carry ran at dispatch; the form->at carry-back runs on deliver (only reached on the
+            // NON-guard-trip path, matching `@`'s early return). On deliver build `(@ name form)` + apply the
+            // OUTER postfix/unit suffix. `at_span` is the `@`'s span for the whole node.
+            At {
+                head: StructId,
+                name: StructId,
+                at_pos: usize,
+                form_pos: usize,
+                at_span: Span,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+                lvl_num: bool,
+            },
+            // An `@!key <arg>` pragma awaiting its (non-`param`) TYPE arg — read as a TIGHT operand
+            // (prefix+postfix, no unit suffix; descended at TIGHT_PREC). `head` = `pragma`, `key` = the
+            // pragma key. On deliver build `(pragma key arg)` + apply the OUTER postfix/unit suffix. (The
+            // `@!param` payload form is assembled inline at dispatch — it takes no descending arg.)
+            Pragma {
+                head: StructId,
+                key: StructId,
+                at_span: Span,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+                lvl_num: bool,
+            },
+        }
+        // A sentinel precedence higher than every real infix/`as`/ascription/arrow precedence: a level
+        // descended at `TIGHT_PREC` folds its operand + postfix but no infix, and the postfix funnel skips
+        // the unit suffix — exactly the "tight operand" a unary minus / bare unquote reads. It is carried
+        // through the operand's conts as their `min_prec`, so a paren/call tight operand suppresses its
+        // OUTER unit suffix while its interior (read at a normal min_prec) is unaffected.
+        const TIGHT_PREC: u8 = u8::MAX;
+        // A second sentinel for a PREFIX-ONLY operand: `self.prefix()` with NO postfix, NO unit suffix, NO
+        // infix — what the `@` annotation reads for its annotated form (so a juxtaposed `.member`/`(args)`
+        // is NOT folded onto the form; it belongs to the enclosing `(@ …)`). The funnel is skipped ENTIRELY
+        // at this min_prec (vs `TIGHT_PREC`, which still folds postfix). Same carried-through-conts scoping.
+        const PREFIX_ONLY_PREC: u8 = u8::MAX - 1;
+        let mut pending: Vec<Cont> = Vec::new();
+        let mut cur_min_prec = min_prec;
+        let mut cur_start = self.cur_span();
+        let mut left: StructId = StructId(0); // placeholder; always assigned before use (reading=true first)
+        let mut spine: u32 = 0;
+        let mut entered = false; // did THIS level increment self.depth (mirrors `expr`'s guarded entry)?
+        // `reading`: begin a FRESH level by reading its operand; else `left` already holds a completed
+        // sub-level combined into the resumed parent, and we re-enter its infix loop directly.
+        let mut reading = true;
+        // POSTFIX FUNNEL (I3 arg_exprs de-recursion): once an operand is produced, apply its `.member` /
+        // `(args)` postfix chain iteratively before the infix loop, so a call ARGUMENT is read on THIS
+        // worklist (a `Cont::Call` descent) rather than recursing through `postfix -> arg_exprs -> expr`.
+        // A site that has produced a bare operand sets `pf_pending = true` (with `pf_num` = whether the
+        // operand began with a number, gating the unit suffix, and `pf_spine` the postfix-layer depth
+        // counter) and leaves `left`/`cur_start` at the operand; the funnel below folds the chain. Sites
+        // NOT yet converted still call the recursive `self.postfix` directly — both produce byte-identical
+        // arenas, so the conversion is incremental + oracle-green at every step.
+        let mut pf_pending = false;
+        let mut pf_num = false;
+        let mut pf_spine: u32 = 0;
+        loop {
+            if reading {
+                cur_start = self.cur_span();
+                // DEPTH GUARD (mirrors `expr` entry): past the limit this level's value is an `error_node`
+                // WITHOUT incrementing depth (as `expr` early-returns before its `self.depth += 1`).
+                if self.depth >= crate::sexpr::MAX_NESTING_DEPTH {
+                    if !self.depth_exceeded {
+                        self.error("expression nests too deeply to parse");
+                        self.depth_exceeded = true;
+                    }
+                    left = self.error_node(cur_start);
+                    spine = 0;
+                    entered = false;
+                } else {
+                    self.depth += 1;
+                    entered = true;
+                    let prefix_is_number = matches!(self.kind(), Kind::Int | Kind::Float);
+                    // OPERAND DISPATCH (I3, family-by-family): a worklist-handled operand family pushes a
+                    // `Cont` and DESCENDS (read its sub-expr as a fresh level) rather than recursing through
+                    // `prefix`; every OTHER operand falls back to the (recursive) `prefix` — so each stage
+                    // stays byte-identical (oracle-green) as families are pulled onto the worklist one at a
+                    // time. quasiquote `` `{ e } `` is the first family (a clean single braced sub-expr).
+                    if self.kind() == Kind::Backtick {
+                        let head = self.name("quasiquote", cur_start);
+                        self.bump(); // `` ` ``
+                        self.expect(Kind::LBrace, "`{`");
+                        pending.push(Cont::QuasiQuote {
+                            head,
+                            start: cur_start,
+                            min_prec: cur_min_prec,
+                            spine,
+                            entered,
+                            prefix_is_number,
+                        });
+                        cur_min_prec = 0; // the braced inner is `self.expr(0)`
+                        continue; // descend: read the inner as a fresh level (reading stays true)
+                    } else if self.kind() == Kind::LParen {
+                        // `( … )` — mirror `bracketed_bars(paren)`: clear `arm_bar_terminates` for the
+                        // interior (restored on assemble). `()` is unit (inline, no sub-expr); otherwise
+                        // descend to read the FIRST sub-expr (`expr(0)`) — the Paren cont then decides
+                        // grouping vs tuple on deliver.
+                        let arm_bar = self.arm_bar_terminates;
+                        self.arm_bar_terminates = false;
+                        self.expect(Kind::LParen, "`(`");
+                        if self.at(Kind::RParen) {
+                            self.bump();
+                            let span = cur_start.merge(self.prev_span());
+                            self.arm_bar_terminates = arm_bar;
+                            left = self.name("unit", span);
+                            spine = 0;
+                            pf_pending = true;
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                        } else {
+                            let first_leading = self.take_comments_here();
+                            pending.push(Cont::Paren {
+                                start: cur_start,
+                                min_prec: cur_min_prec,
+                                spine,
+                                entered,
+                                prefix_is_number,
+                                arm_bar,
+                                pending_leading: first_leading,
+                                items: Vec::new(),
+                            });
+                            cur_min_prec = 0; // `first = self.expr(0)`
+                            continue; // descend: read `first` as a fresh level
+                        }
+                    } else if self.kind() == Kind::LBracket
+                        || self.kind() == Kind::BinOpen
+                        || (self.kind() == Kind::Hash
+                            && matches!(self.nth_kind(1), Kind::LParen | Kind::LBracket))
+                    {
+                        // A `,`-separated comma-list operand family — one iterative skeleton shared by four
+                        // recursive bodies (mirror `bracketed_bars(list_literal/set_literal/bin_literal/
+                        // hash_list)`): head created BEFORE elements (span-order), then elements read at
+                        // `PREC_SEQ+1`. The head + closer + three behavior flags select the family:
+                        //   `[…]`  list → ctor "list" head, `]`, rest + comments + drain
+                        //   `b[…]` bin  → name "bin" head,  `]`, comments only (NO rest, NO drain)
+                        //   `#[…]` raw  → NO head,          `]`, none (bare elements)
+                        //   `#(…)` set  → ctor "set" head,  `)`, rest + comments + drain
+                        let arm_bar = self.arm_bar_terminates;
+                        self.arm_bar_terminates = false;
+                        let (mut items, closer, allow_rest, allow_comments, drain_closer) = if self
+                            .kind()
+                            == Kind::LBracket
+                        {
+                            self.bump(); // '['
+                            (
+                                vec![self.ctor_head("list", cur_start)],
+                                Kind::RBracket,
+                                true,
+                                true,
+                                true,
+                            )
+                        } else if self.kind() == Kind::BinOpen {
+                            self.bump(); // `b[`
+                            (
+                                vec![self.name("bin", cur_start)],
+                                Kind::RBracket,
+                                false,
+                                true,
+                                false,
+                            )
+                        } else if self.kind() == Kind::Hash && self.nth_kind(1) == Kind::LBracket {
+                            self.bump(); // '#'
+                            self.bump(); // '['
+                            (Vec::new(), Kind::RBracket, false, false, false)
+                        } else {
+                            self.bump(); // '#'
+                            self.bump(); // '('
+                            (
+                                vec![self.ctor_head("set", cur_start)],
+                                Kind::RParen,
+                                true,
+                                true,
+                                true,
+                            )
+                        };
+                        if self.at(closer) {
+                            if drain_closer {
+                                self.drain_closer_comment_onto_last(&mut items, 1);
+                            }
+                            self.expect(closer, "comma-list closer");
+                            let span = cur_start.merge(self.prev_span());
+                            self.arm_bar_terminates = arm_bar;
+                            left = self.list(items, span);
+                            spine = 0;
+                            pf_pending = true;
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                        } else {
+                            let before = self.pos;
+                            // A `.. rest` spread (list/set only): create the `..` head NOW (before the binder
+                            // descends, matching `rest_marker`'s head-then-operand order). Else an ordinary
+                            // element, with its own-line leading comments captured when the family allows.
+                            let (is_rest, dd_span, rest_head) =
+                                if allow_rest && self.at(Kind::DotDot) {
+                                    let dd = self.cur_span();
+                                    self.bump(); // `..`
+                                    (true, dd, self.name("..", dd))
+                                } else {
+                                    (false, cur_start, StructId(0))
+                                };
+                            let pending_leading = if allow_comments && !is_rest {
+                                self.take_comments_here()
+                            } else {
+                                Vec::new()
+                            };
+                            pending.push(Cont::List {
+                                start: cur_start,
+                                min_prec: cur_min_prec,
+                                spine,
+                                entered,
+                                prefix_is_number,
+                                arm_bar,
+                                closer,
+                                allow_rest,
+                                allow_comments,
+                                drain_closer,
+                                items,
+                                pending_leading,
+                                is_rest,
+                                dd_span,
+                                rest_head,
+                                before,
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            continue; // descend: read the first element as a fresh level
+                        }
+                    } else if self.kind() == Kind::LBrace
+                        || (self.kind() == Kind::Hash && self.nth_kind(1) == Kind::LBrace)
+                    {
+                        // `{ … }` record OR `#{ … }` map — the field-pair operand families (mirror
+                        // `bracketed_bars(record_literal/map_literal)`): ctor head first, then fields via
+                        // `advance_fields`. Empty is inline; a field needing a sub-expr descends (Cont::Fields);
+                        // a run of record shorthands completes inline. On close, assemble as the operand.
+                        let arm_bar = self.arm_bar_terminates;
+                        self.arm_bar_terminates = false;
+                        let is_map = self.kind() == Kind::Hash;
+                        let head = if is_map {
+                            let h = self.ctor_head("map", cur_start);
+                            self.bump(); // '#'
+                            self.bump(); // '{'
+                            h
+                        } else {
+                            let h = self.ctor_head("record", cur_start);
+                            self.bump(); // '{'
+                            h
+                        };
+                        let mut items = vec![head];
+                        // `advance_fields` returns None (closed inline: `{}`, or all-shorthand `{x, y}`) or a
+                        // pending field descent. Assemble on None; push Cont::Fields + descend otherwise.
+                        let step = if self.at(Kind::RBrace) {
+                            self.drain_closer_comment_onto_last(&mut items, 1);
+                            self.expect(Kind::RBrace, "`}`");
+                            None
+                        } else {
+                            self.advance_fields(&mut items, is_map, Kind::RBrace)
+                        };
+                        match step {
+                            None => {
+                                let span = cur_start.merge(self.prev_span());
+                                self.arm_bar_terminates = arm_bar;
+                                left = self.list(items, span);
+                                spine = 0;
+                                pf_pending = true;
+                                pf_num = prefix_is_number;
+                                pf_spine = 0;
+                            }
+                            Some((phase, before)) => {
+                                pending.push(Cont::Fields {
+                                    start: cur_start,
+                                    min_prec: cur_min_prec,
+                                    spine,
+                                    entered,
+                                    prefix_is_number,
+                                    arm_bar,
+                                    is_map,
+                                    items,
+                                    phase,
+                                    before,
+                                });
+                                cur_min_prec = crate::token::PREC_SEQ + 1;
+                                continue; // descend: read the field's sub-expr as a fresh level
+                            }
+                        }
+                    } else if self.at_keyword(Keyword::If) {
+                        // `if c then t else e` — the first keyword form pulled onto the worklist. NOT
+                        // bracketed_bars (arm_bar_terminates untouched). Create the head, capture the
+                        // condition's own-line leading comments, then descend to read the condition; the
+                        // Cont::If phase machine handles `then`/`else` + assembly on deliver.
+                        let head = self.keyword_head("if", cur_start);
+                        self.bump(); // `if`
+                        let c_lead = self.take_comments_here();
+                        pending.push(Cont::If {
+                            start: cur_start,
+                            min_prec: cur_min_prec,
+                            spine,
+                            entered,
+                            prefix_is_number,
+                            head,
+                            phase: IfPhase::Cond { c_lead },
+                        });
+                        cur_min_prec = crate::token::PREC_SEQ + 1;
+                        continue; // descend: read the condition as a fresh level
+                    } else if self.at_keyword(Keyword::Let) {
+                        // `let b = v, … in body` — NOT bracketed_bars. Create the head, then read the FIRST
+                        // binding's inline preamble (leading comments + binder [flat name or recursive
+                        // `pattern()`] + `=` + value-leading comments) and descend its value. The Cont::Let
+                        // phase machine handles the `,`-binding loop, `in`, the body, and assembly.
+                        let head = self.keyword_head("let", cur_start);
+                        self.bump(); // `let`
+                        let leading = self.take_comments_here();
+                        let b_start = self.cur_span();
+                        let n = self.read_let_binder(b_start);
+                        self.expect(Kind::Eq, "`=`");
+                        let e_lead = self.take_comments_here();
+                        pending.push(Cont::Let {
+                            start: cur_start,
+                            min_prec: cur_min_prec,
+                            spine,
+                            entered,
+                            prefix_is_number,
+                            head,
+                            phase: LetPhase::BindingValue {
+                                bindings: Vec::new(),
+                                n,
+                                leading,
+                                b_start,
+                                e_lead,
+                            },
+                        });
+                        cur_min_prec = crate::token::PREC_SEQ + 1;
+                        continue; // descend: read the first binding's value as a fresh level
+                    } else if self.at_keyword(Keyword::Match) {
+                        // `match scrut with | … ` — NOT bracketed_bars. Create the head + descend the
+                        // scrutinee; the Cont::Match phase machine handles `with`, the arm loop (pattern
+                        // inline, guard/body descents), and assembly.
+                        let head = self.keyword_head("match", cur_start);
+                        self.bump(); // `match`
+                        pending.push(Cont::Match {
+                            start: cur_start,
+                            min_prec: cur_min_prec,
+                            spine,
+                            entered,
+                            prefix_is_number,
+                            items: vec![head],
+                            phase: MatchPhase::Scrut,
+                        });
+                        cur_min_prec = crate::token::PREC_SEQ + 1;
+                        continue; // descend: read the scrutinee as a fresh level
+                    } else if self.at_keyword(Keyword::Fn) {
+                        // `fn(p, …) [-> R] => body` — read the param list + optional return type INLINE
+                        // (separate grammars), consume `=>`, then descend the body (`expr(0)`). NOT
+                        // bracketed_bars. Cont::Fn ascribes + assembles on deliver.
+                        let head = self.keyword_head("fn", cur_start);
+                        self.bump(); // `fn`
+                        let param_list = self.param_list();
+                        let ret_ty = self.opt_return_type();
+                        self.expect(Kind::FatArrow, "`=>`");
+                        pending.push(Cont::Fn {
+                            start: cur_start,
+                            min_prec: cur_min_prec,
+                            spine,
+                            entered,
+                            prefix_is_number,
+                            head,
+                            param_list,
+                            ret_ty,
+                        });
+                        cur_min_prec = 0; // the body is `expr(0)` (a sequence position)
+                        continue; // descend: read the body as a fresh level
+                    } else if self.at_keyword(Keyword::Host) {
+                        // `host E, … in body` — read the comma-separated effect name list INLINE, consume
+                        // `in`, then descend the body (`expr(0)`). Cont::Host assembles on deliver.
+                        let head = self.keyword_head("host", cur_start);
+                        self.bump(); // `host`
+                        let effects_start = self.cur_span();
+                        let mut effects = vec![self.binder()];
+                        while self.at(Kind::Comma) {
+                            self.bump(); // `,`
+                            effects.push(self.binder());
+                        }
+                        let effects_span = effects_start.merge(self.prev_span());
+                        let effects_list = self.list(effects, effects_span);
+                        self.expect_keyword(Keyword::In, "`in`");
+                        pending.push(Cont::Host {
+                            start: cur_start,
+                            min_prec: cur_min_prec,
+                            spine,
+                            entered,
+                            prefix_is_number,
+                            head,
+                            effects_list,
+                        });
+                        cur_min_prec = 0; // the body is `expr(0)`
+                        continue; // descend: read the body as a fresh level
+                    } else if self.at_keyword(Keyword::Handle) {
+                        // `handle E[(seed)] with | op(…, s) => body | … in body` — NOT bracketed_bars. Read
+                        // the effect name + seed head INLINE; the seed of `E(seed)` descends (Cont::Handle
+                        // Seed), while `E`/`E()` seeds are the inline `unit`. The Cont::Handle phase machine
+                        // handles `with`, the arm loop (header inline, body descents with arm_bar=true), `in`,
+                        // and assembly.
+                        let head = self.keyword_head("handle", cur_start);
+                        self.bump(); // `handle`
+                        let effect = self.binder();
+                        // The seed: `E(seed)` descends; `E()` is a `unit` at the `)`'s span; bare `E` is a
+                        // `unit` at the handle start. Only the descending case suspends; the others start the
+                        // first arm inline (mirrors `handle_expr`).
+                        let inline_seed = if self.at(Kind::LParen) {
+                            self.bump(); // `(`
+                            if self.at(Kind::RParen) {
+                                let sp = self.cur_span();
+                                let seed = self.name("unit", sp);
+                                self.expect(Kind::RParen, "`)`");
+                                Some(seed)
+                            } else {
+                                None // a real seed expr — descend it
+                            }
+                        } else {
+                            Some(self.name("unit", cur_start))
+                        };
+                        match inline_seed {
+                            Some(seed) => {
+                                let arms_start = self.handle_after_seed();
+                                let (arm_start, op, params, state, saved_arm_bar) =
+                                    self.handle_arm_header();
+                                pending.push(Cont::Handle {
+                                    start: cur_start,
+                                    min_prec: cur_min_prec,
+                                    spine,
+                                    entered,
+                                    prefix_is_number,
+                                    head,
+                                    effect,
+                                    phase: HandlePhase::ArmBody {
+                                        seed,
+                                        arms_start,
+                                        arms: Vec::new(),
+                                        arm_start,
+                                        op,
+                                        params,
+                                        state,
+                                        saved_arm_bar,
+                                    },
+                                });
+                                cur_min_prec = 0; // the arm body is `expr(0)`
+                                continue; // descend: read the first arm's body
+                            }
+                            None => {
+                                pending.push(Cont::Handle {
+                                    start: cur_start,
+                                    min_prec: cur_min_prec,
+                                    spine,
+                                    entered,
+                                    prefix_is_number,
+                                    head,
+                                    effect,
+                                    phase: HandlePhase::Seed,
+                                });
+                                cur_min_prec = 0; // the seed is `expr(0)`
+                                continue; // descend: read the seed
+                            }
+                        }
+                    } else if self.kind() == Kind::At {
+                        // `@ann <form>` annotation -> `(@ name form)`. Read the annotation name (bare, or a
+                        // GLUED call `@tag("x")` -> `(tag "x")` via inline arg_exprs), shuffle any leading
+                        // `///` docs down to the form slot (carry_docs), then read the FORM prefix-only
+                        // (descended at PREFIX_ONLY_PREC — no postfix/unit/infix). The `@`'s OWN depth guard
+                        // is handled INLINE (byte-identical to `@`'s early return) so a `@a @b @c … def`
+                        // stack declines at the same point/shape; the form level's own guard covers a deep
+                        // form. (NOTE: the glued-call name args still use the recursive inline arg_exprs — a
+                        // minor remaining vector for a pathological `@tag(f(g(…)))`, to convert before I8.)
+                        let at_pos = self.pos;
+                        self.bump(); // `@`
+                        let head = self.name("@", cur_start);
+                        let name = if self.at(Kind::Ident) {
+                            let name_span = self.cur_span();
+                            let t = self.bump().unwrap();
+                            let bare = self.name(self.text(t), name_span);
+                            if self.at(Kind::LParen)
+                                && self.prev_span().end == self.cur_span().start
+                            {
+                                let call_args = self.arg_exprs();
+                                let call_span = name_span.merge(self.prev_span());
+                                let mut items = Vec::with_capacity(call_args.len() + 1);
+                                items.push(bare);
+                                items.extend(call_args);
+                                self.list(items, call_span)
+                            } else {
+                                bare
+                            }
+                        } else {
+                            self.error("expected an annotation name after `@`");
+                            self.error_node(self.cur_span())
+                        };
+                        let form_pos = self.pos;
+                        self.carry_docs(at_pos, form_pos);
+                        if self.depth >= crate::sexpr::MAX_NESTING_DEPTH {
+                            // `@`'s own guard trips: `(@ name <error>)` at the `@`'s span, no form, no
+                            // carry-back (matches `guard_prefix`'s early return in the `@` arm).
+                            if !self.depth_exceeded {
+                                self.error("expression nests too deeply to parse");
+                                self.depth_exceeded = true;
+                            }
+                            let err = self.error_node(cur_start);
+                            left =
+                                self.list(vec![head, name, err], cur_start.merge(self.prev_span()));
+                            spine = 0;
+                            pf_pending = true;
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                        } else {
+                            pending.push(Cont::At {
+                                head,
+                                name,
+                                at_pos,
+                                form_pos,
+                                at_span: cur_start,
+                                lvl_min_prec: cur_min_prec,
+                                lvl_spine: spine,
+                                lvl_entered: entered,
+                                lvl_num: prefix_is_number,
+                            });
+                            cur_min_prec = PREFIX_ONLY_PREC;
+                            continue; // descend: read the annotated form prefix-only
+                        }
+                    } else if self.kind() == Kind::AtBang {
+                        // `@!key <arg>` pragma -> `(pragma key arg)`. `@!param` takes a payload (config kvs
+                        // + a `name : Type` binder), assembled INLINE (it returns directly, no descending
+                        // arg). Every other key takes a single TIGHT TYPE arg (prefix+postfix, no unit;
+                        // descended at TIGHT_PREC). The `@!`'s own depth guard trips INLINE like `@`.
+                        // (NOTE: `@!param`'s config kv VALUES still use inline recursive `self.expr` — a
+                        // minor remaining vector, sibling to the `@tag(...)` glued-args, to convert before I8.)
+                        self.bump(); // `@!`
+                        let head = self.name("pragma", cur_start);
+                        let mut key_text = String::new();
+                        let key = if self.at(Kind::Ident) {
+                            let key_span = self.cur_span();
+                            let t = self.bump().unwrap();
+                            key_text = self.text(t).to_string();
+                            self.name(key_text.as_str(), key_span)
+                        } else {
+                            self.error(
+                                "expected a pragma key after `@!` (e.g. `@!default-float Float32`)",
+                            );
+                            self.error_node(self.cur_span())
+                        };
+                        if key_text == "param" {
+                            let payload = self.param_pragma_payload();
+                            let full = cur_start.merge(self.prev_span());
+                            let mut items = vec![head, key];
+                            items.extend(payload);
+                            left = self.list(items, full);
+                            spine = 0;
+                            pf_pending = true;
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                        } else if self.depth >= crate::sexpr::MAX_NESTING_DEPTH {
+                            if !self.depth_exceeded {
+                                self.error("expression nests too deeply to parse");
+                                self.depth_exceeded = true;
+                            }
+                            let err = self.error_node(cur_start);
+                            left =
+                                self.list(vec![head, key, err], cur_start.merge(self.prev_span()));
+                            spine = 0;
+                            pf_pending = true;
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                        } else {
+                            pending.push(Cont::Pragma {
+                                head,
+                                key,
+                                at_span: cur_start,
+                                lvl_min_prec: cur_min_prec,
+                                lvl_spine: spine,
+                                lvl_entered: entered,
+                                lvl_num: prefix_is_number,
+                            });
+                            cur_min_prec = TIGHT_PREC;
+                            continue; // descend: read the pragma arg as a tight operand
+                        }
+                    } else if self.kind() == Kind::Comma || self.kind() == Kind::UnquoteSplice {
+                        // `,e`/`,{e}` unquote or `,@e`/`,@{e}` unquote-splicing (a prefix-position comma —
+                        // a separator comma is consumed by `sep_continue`, never read as an operand). Head
+                        // created NOW (before the inner). Braced form reads a full `expr(0)` (min_prec 0) +
+                        // consumes `}`; bare form reads a TIGHT operand at TIGHT_PREC.
+                        let head_name = if self.kind() == Kind::Comma {
+                            "unquote"
+                        } else {
+                            "unquote-splicing"
+                        };
+                        let head = self.name(head_name, cur_start);
+                        self.bump(); // `,` or `,@`
+                        let braced = self.at(Kind::LBrace);
+                        if braced {
+                            self.bump(); // `{`
+                        }
+                        pending.push(Cont::Unquote {
+                            head,
+                            unq_start: cur_start,
+                            braced,
+                            lvl_min_prec: cur_min_prec,
+                            lvl_spine: spine,
+                            lvl_entered: entered,
+                            lvl_num: prefix_is_number,
+                        });
+                        cur_min_prec = if braced { 0 } else { TIGHT_PREC };
+                        continue; // descend: read the unquote inner as a fresh level
+                    } else if self.kind() == Kind::Minus {
+                        // PREFIX UNARY MINUS `- <tight-operand>` -> `(- operand)`. The operand is a TIGHT
+                        // unary — descend it at TIGHT_PREC (no infix, unit suffix suppressed); Cont::Neg
+                        // wraps it + applies the OUTER postfix/unit suffix on deliver. No `guard_prefix`
+                        // here: the tight level's own reading-block depth guard replaces it (identical
+                        // depth accounting), so a `- - - … x` run declines at the same point + shape.
+                        self.bump(); // `-`
+                        pending.push(Cont::Neg {
+                            neg_start: cur_start,
+                            lvl_min_prec: cur_min_prec,
+                            lvl_spine: spine,
+                            lvl_entered: entered,
+                            lvl_num: prefix_is_number,
+                        });
+                        cur_min_prec = TIGHT_PREC;
+                        continue; // descend: read the tight operand as a fresh level
+                    } else {
+                        left = self.prefix();
+                        spine = 0;
+                        // Enter the postfix funnel (iterative `.member`/`(args)` folding) instead of the
+                        // recursive `self.postfix` + `maybe_unit_suffix`.
+                        pf_pending = true;
+                        pf_num = prefix_is_number;
+                        pf_spine = 0;
+                    }
+                }
+            }
+            // POSTFIX FUNNEL: fold `.member` layers inline (no descent) and `(args)` call layers via the
+            // worklist (`Cont::Call` — each argument is a fresh level, so a call ARGUMENT no longer recurses
+            // `postfix -> arg_exprs -> expr`). Runs after an operand is produced (a site set `pf_pending`)
+            // and before this level's infix loop. Byte-identical to `postfix` + the trailing
+            // `maybe_unit_suffix` (guard, member/call order, empty-call `(callee)`, arg comment slots).
+            if pf_pending && cur_min_prec == PREFIX_ONLY_PREC {
+                // A PREFIX-ONLY operand (the `@` annotated form): no postfix + no unit suffix at all.
+                pf_pending = false;
+            }
+            if pf_pending {
+                pf_pending = false;
+                let mut pf_descended = false; // set if a Cont::Call was pushed (an arg must be read)
+                loop {
+                    match self.kind() {
+                        Kind::Dot if self.dot_is_member() => {
+                            left = self.member_access(left, cur_start);
+                            pf_spine += 1;
+                            if !self.depth_exceeded
+                                && self.depth + pf_spine >= crate::sexpr::MAX_NESTING_DEPTH
+                            {
+                                self.error("expression nests too deeply to parse");
+                                self.depth_exceeded = true;
+                                break; // postfix stops (mirrors `postfix`'s early return)
+                            }
+                        }
+                        Kind::LParen => {
+                            self.expect(Kind::LParen, "`(`");
+                            // A call `( … )` is a bracket boundary — `|` inside an arg is bitwise-or, so
+                            // clear `arm_bar_terminates` for the call interior (restored after), like
+                            // `arg_exprs`/`bracketed_bars`.
+                            let saved_arm_bar = self.arm_bar_terminates;
+                            self.arm_bar_terminates = false;
+                            if self.at(Kind::RParen) {
+                                // Empty call `f()` -> `(callee)` (a one-element list), no arg descent.
+                                self.expect(Kind::RParen, "`)`");
+                                self.arm_bar_terminates = saved_arm_bar;
+                                let span = cur_start.merge(self.prev_span());
+                                left = self.list(vec![left], span);
+                                pf_spine += 1;
+                                if !self.depth_exceeded
+                                    && self.depth + pf_spine >= crate::sexpr::MAX_NESTING_DEPTH
+                                {
+                                    self.error("expression nests too deeply to parse");
+                                    self.depth_exceeded = true;
+                                    break;
+                                }
+                                continue; // fold further postfix onto the call result
+                            }
+                            // A real argument list — descend the first arg on the worklist.
+                            let leading = self.take_comments_here();
+                            pending.push(Cont::Call {
+                                callee: left,
+                                call_start: cur_start,
+                                args: Vec::new(),
+                                leading,
+                                saved_arm_bar,
+                                pf_spine,
+                                pf_num,
+                                lvl_min_prec: cur_min_prec,
+                                lvl_spine: spine,
+                                lvl_entered: entered,
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            reading = true; // read the argument as a fresh level
+                            pf_descended = true;
+                            break;
+                        }
+                        _ => break, // no more postfix layers
+                    }
+                }
+                if pf_descended {
+                    continue; // go descend the call argument; Cont::Call resumes the funnel
+                }
+                // Postfix chain complete — apply the unit suffix (unless this is a TIGHT operand, which
+                // omits it), then fall into the infix loop.
+                if !pf_num && cur_min_prec != TIGHT_PREC {
+                    left = self.maybe_unit_suffix(left, cur_start);
+                }
+            }
+            // The infix loop for the current level (on `left` / `cur_min_prec` / `cur_start` / `spine`).
+            let mut suspended = false;
+            loop {
+                if self.at_keyword(Keyword::As)
+                    && crate::token::PREC_AS >= cur_min_prec
+                    && !self.src[self.prev_span().end..self.cur_span().start].contains('\n')
+                {
+                    left = self.as_conversion(left, cur_start);
+                    continue;
+                }
+                let Some(op_name) = self.infix_op() else {
+                    break;
+                };
+                let prec = infix_prec(op_name).expect("infix_op returns only infix names");
+                if prec < cur_min_prec {
+                    break;
+                }
+                let op_span = self.cur_span();
+                let left_trailing = self.take_trailing_comment_here();
+                left = self.wrap_comment_after(left_trailing, left);
+                let right_leading = self.take_comments_here();
+                self.bump(); // operator
+                let head = self.name(op_name, op_span);
+                // `:`+`forall` intercept: the RIGHT operand is a `forall_type`, NOT a sub-`expr` level —
+                // compute + combine it inline (no descent), exactly as `expr`.
+                if op_name == ":" && self.at_keyword(Keyword::Forall) {
+                    let right = self.forall_type(self.cur_span());
+                    let right = self.wrap_comments(right_leading, right);
+                    let span = cur_start.merge(self.prev_span());
+                    left = self.list(vec![head, left, right], span);
+                    spine += 1;
+                    if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH
+                    {
+                        self.error("expression nests too deeply to parse");
+                        self.depth_exceeded = true;
+                        break;
+                    }
+                    continue;
+                }
+                // Otherwise SUSPEND this level and DESCEND: the right operand is `expr(right_min)`.
+                let right_min = if is_right_assoc(op_name) {
+                    prec
+                } else {
+                    prec + 1
+                };
+                pending.push(Cont::Op {
+                    left,
+                    head,
+                    right_leading,
+                    start: cur_start,
+                    min_prec: cur_min_prec,
+                    spine,
+                });
+                cur_min_prec = right_min;
+                suspended = true;
+                break;
+            }
+            if suspended {
+                reading = true;
+                continue; // read the right operand as a fresh level
+            }
+            // COMPLETE this level — `left` is `expr(cur_min_prec)`'s value (mirrors `expr`'s tail).
+            if cur_min_prec == crate::token::PREC_SEQ && self.at(Kind::Semi) {
+                left = self.finish_sequence(left, cur_start);
+            }
+            if entered {
+                self.depth -= 1;
+            }
+            // REDUCE into the parent continuation, then resume the parent level's infix loop.
+            match pending.pop() {
+                None => return left,
+                Some(Cont::Op {
+                    left: parent_left,
+                    head,
+                    right_leading,
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                }) => {
+                    let right = self.wrap_comments(right_leading, left);
+                    let span = start.merge(self.prev_span());
+                    left = self.list(vec![head, parent_left, right], span);
+                    cur_start = start;
+                    cur_min_prec = parent_min_prec;
+                    spine = parent_spine + 1;
+                    entered = true; // a suspended parent had read its operand, so it incremented depth
+                    if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH
+                    {
+                        self.error("expression nests too deeply to parse");
+                        self.depth_exceeded = true;
+                        // The parent completes: its infix loop below breaks immediately (`at_end`).
+                    }
+                    reading = false; // re-enter the parent's infix loop on the combined `left`
+                    continue;
+                }
+                Some(Cont::QuasiQuote {
+                    head,
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                }) => {
+                    // `left` is the braced inner expr; close `}`, wrap, and it becomes the PARENT level's
+                    // operand — so postfix + unit-suffix apply, then the parent's infix loop resumes.
+                    self.expect(Kind::RBrace, "`}`");
+                    let span = start.merge(self.prev_span());
+                    left = self.list(vec![head, left], span);
+                    cur_start = start;
+                    cur_min_prec = parent_min_prec;
+                    spine = parent_spine;
+                    entered = parent_entered;
+                    pf_pending = true; // postfix funnel applies the `.member`/`(args)` chain + unit suffix
+                    pf_num = prefix_is_number;
+                    pf_spine = 0;
+                    reading = false; // re-enter the parent level's infix loop with the quasiquote operand
+                    continue;
+                }
+                Some(Cont::Paren {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    arm_bar,
+                    pending_leading,
+                    mut items,
+                }) => {
+                    // Assemble the paren operand from the delivered sub-expr, restore state, and resume the
+                    // parent level's infix loop with it as the operand (postfix + unit-suffix apply). A
+                    // macro-free helper would obscure the borrow flow, so the close/finish is written inline.
+                    if items.is_empty() {
+                        // `left` is the delivered FIRST sub-expr — decide grouping `(e)` vs tuple `(a, …)`.
+                        let first = self.wrap_comments(pending_leading, left);
+                        if self.at(Kind::Comma) {
+                            let head = self.ctor_head("tuple", start);
+                            let mut items = vec![head, first];
+                            if self.sep_continue(Kind::RParen) {
+                                let elem_leading = self.take_comments_here();
+                                pending.push(Cont::Paren {
+                                    start,
+                                    min_prec: parent_min_prec,
+                                    spine: parent_spine,
+                                    entered: parent_entered,
+                                    prefix_is_number,
+                                    arm_bar,
+                                    pending_leading: elem_leading,
+                                    items,
+                                });
+                                cur_min_prec = crate::token::PREC_SEQ + 1;
+                                reading = true;
+                                continue; // read the next tuple element as a fresh level
+                            }
+                            // `(a,)` — trailing comma, no further element.
+                            self.drain_closer_comment_onto_last(&mut items, 1);
+                            self.expect(Kind::RParen, "`)`");
+                            let span = start.merge(self.prev_span());
+                            self.arm_bar_terminates = arm_bar;
+                            left = self.list(items, span);
+                        } else {
+                            // Grouping: transparent — `first` IS the operand.
+                            self.expect(Kind::RParen, "`)`");
+                            self.arm_bar_terminates = arm_bar;
+                            left = first;
+                        }
+                    } else {
+                        // `left` is the delivered subsequent TUPLE element.
+                        let mut elem = self.wrap_comments(pending_leading, left);
+                        if self.at(Kind::RParen) {
+                            let trailing = self.take_trailing_comment_here();
+                            elem = self.wrap_comment_after(trailing, elem);
+                        }
+                        items.push(elem);
+                        if self.sep_continue(Kind::RParen) {
+                            let elem_leading = self.take_comments_here();
+                            pending.push(Cont::Paren {
+                                start,
+                                min_prec: parent_min_prec,
+                                spine: parent_spine,
+                                entered: parent_entered,
+                                prefix_is_number,
+                                arm_bar,
+                                pending_leading: elem_leading,
+                                items,
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            reading = true;
+                            continue;
+                        }
+                        self.drain_closer_comment_onto_last(&mut items, 1);
+                        self.expect(Kind::RParen, "`)`");
+                        let span = start.merge(self.prev_span());
+                        self.arm_bar_terminates = arm_bar;
+                        left = self.list(items, span);
+                    }
+                    cur_start = start;
+                    cur_min_prec = parent_min_prec;
+                    spine = parent_spine;
+                    entered = parent_entered;
+                    pf_pending = true; // postfix funnel applies the `.member`/`(args)` chain + unit suffix
+                    pf_num = prefix_is_number;
+                    pf_spine = 0;
+                    reading = false; // resume the parent level's infix loop with the paren operand
+                    continue;
+                }
+                Some(Cont::List {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    arm_bar,
+                    closer,
+                    allow_rest,
+                    allow_comments,
+                    drain_closer,
+                    mut items,
+                    pending_leading,
+                    is_rest,
+                    dd_span,
+                    rest_head,
+                    before,
+                }) => {
+                    // Push the delivered element: a `.. rest` spread `(.. binder)` (head pre-created), or
+                    // an ordinary element with own-line leading + LAST-element same-line trailing comments
+                    // (comment slots only when the family allows them — bare elements otherwise).
+                    if is_rest {
+                        let span = dd_span.merge(self.prev_span());
+                        items.push(self.list(vec![rest_head, left], span));
+                    } else if allow_comments {
+                        let mut elem = self.wrap_comments(pending_leading, left);
+                        if self.at(closer) {
+                            let trailing = self.take_trailing_comment_here();
+                            elem = self.wrap_comment_after(trailing, elem);
+                        }
+                        items.push(elem);
+                    } else {
+                        items.push(left);
+                    }
+                    if !self.sep_continue(closer) {
+                        if drain_closer {
+                            self.drain_closer_comment_onto_last(&mut items, 1);
+                        }
+                        self.expect(closer, "comma-list closer");
+                        let span = start.merge(self.prev_span());
+                        self.arm_bar_terminates = arm_bar;
+                        left = self.list(items, span);
+                        cur_start = start;
+                        cur_min_prec = parent_min_prec;
+                        spine = parent_spine;
+                        entered = parent_entered;
+                        pf_pending = true; // postfix funnel applies the `.member`/`(args)` chain + unit suffix
+                        pf_num = prefix_is_number;
+                        pf_spine = 0;
+                        reading = false; // resume the parent level's infix loop with the list operand
+                        continue;
+                    }
+                    // Missing-`,` progress guard (mirrors `list_literal`), then start the next element.
+                    if self.pos == before {
+                        self.bump();
+                    }
+                    let before = self.pos;
+                    let (is_rest, dd_span, rest_head) = if allow_rest && self.at(Kind::DotDot) {
+                        let dd = self.cur_span();
+                        self.bump(); // `..`
+                        (true, dd, self.name("..", dd))
+                    } else {
+                        (false, start, StructId(0))
+                    };
+                    let pending_leading = if allow_comments && !is_rest {
+                        self.take_comments_here()
+                    } else {
+                        Vec::new()
+                    };
+                    pending.push(Cont::List {
+                        start,
+                        min_prec: parent_min_prec,
+                        spine: parent_spine,
+                        entered: parent_entered,
+                        prefix_is_number,
+                        arm_bar,
+                        closer,
+                        allow_rest,
+                        allow_comments,
+                        drain_closer,
+                        items,
+                        pending_leading,
+                        is_rest,
+                        dd_span,
+                        rest_head,
+                        before,
+                    });
+                    cur_min_prec = crate::token::PREC_SEQ + 1;
+                    reading = true;
+                    continue; // read the next element as a fresh level
+                }
+                Some(Cont::Fields {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    arm_bar,
+                    is_map,
+                    mut items,
+                    phase,
+                    before,
+                }) => {
+                    // Reassemble the delivered sub-expr per phase. `MapKey` is mid-entry: it does NOT append
+                    // a field — it expects `=` and descends the value. The others append a completed field,
+                    // then fall through to the shared separator + next-field advance below. The `=` FieldPair
+                    // atom is created HERE (after the value), matching the recursive struct-id order.
+                    match phase {
+                        FieldPhase::RestOperand { dd_span, rest_head } => {
+                            let span = dd_span.merge(self.prev_span());
+                            items.push(self.list(vec![rest_head, left], span));
+                        }
+                        FieldPhase::MapKey { leading, e_start } => {
+                            self.expect(Kind::Eq, "`=`");
+                            pending.push(Cont::Fields {
+                                start,
+                                min_prec: parent_min_prec,
+                                spine: parent_spine,
+                                entered: parent_entered,
+                                prefix_is_number,
+                                arm_bar,
+                                is_map,
+                                items,
+                                phase: FieldPhase::MapValue {
+                                    leading,
+                                    e_start,
+                                    key: left,
+                                },
+                                before,
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            reading = true;
+                            continue; // read the map value as a fresh level
+                        }
+                        FieldPhase::MapValue {
+                            leading,
+                            e_start,
+                            key,
+                        } => {
+                            let e_span = e_start.merge(self.prev_span());
+                            let eq = self.atom(Leaf::FieldPair, e_start);
+                            let entry = self.list(vec![eq, key, left], e_span);
+                            let entry = self.wrap_comments(leading, entry);
+                            if self.at(Kind::RBrace) {
+                                let trailing = self.take_trailing_comment_here();
+                                items.push(self.wrap_comment_after(trailing, entry));
+                            } else {
+                                items.push(entry);
+                            }
+                        }
+                        FieldPhase::RecordValue {
+                            leading,
+                            f_start,
+                            name,
+                        } => {
+                            let f_span = f_start.merge(self.prev_span());
+                            let eq = self.atom(Leaf::FieldPair, f_start);
+                            let field = self.list(vec![eq, name, left], f_span);
+                            let field = self.wrap_comments(leading, field);
+                            if self.at(Kind::RBrace) {
+                                let trailing = self.take_trailing_comment_here();
+                                items.push(self.wrap_comment_after(trailing, field));
+                            } else {
+                                items.push(field);
+                            }
+                        }
+                    }
+                    // A field was appended. Advance the separator; on close assemble the operand, else run
+                    // the missing-`,` progress guard + start the next field(s) via `advance_fields`.
+                    let closed = if !self.sep_continue(Kind::RBrace) {
+                        self.drain_closer_comment_onto_last(&mut items, 1);
+                        self.expect(Kind::RBrace, "`}`");
+                        true
+                    } else {
+                        if self.pos == before {
+                            self.bump(); // no field token consumed — avoid a missing-`,` spin
+                        }
+                        match self.advance_fields(&mut items, is_map, Kind::RBrace) {
+                            None => true,
+                            Some((phase, before)) => {
+                                pending.push(Cont::Fields {
+                                    start,
+                                    min_prec: parent_min_prec,
+                                    spine: parent_spine,
+                                    entered: parent_entered,
+                                    prefix_is_number,
+                                    arm_bar,
+                                    is_map,
+                                    items,
+                                    phase,
+                                    before,
+                                });
+                                cur_min_prec = crate::token::PREC_SEQ + 1;
+                                reading = true;
+                                continue; // read the next field's sub-expr as a fresh level
+                            }
+                        }
+                    };
+                    debug_assert!(closed);
+                    let span = start.merge(self.prev_span());
+                    self.arm_bar_terminates = arm_bar;
+                    left = self.list(items, span);
+                    cur_start = start;
+                    cur_min_prec = parent_min_prec;
+                    spine = parent_spine;
+                    entered = parent_entered;
+                    pf_pending = true; // postfix funnel applies the `.member`/`(args)` chain + unit suffix
+                    pf_num = prefix_is_number;
+                    pf_spine = 0;
+                    reading = false; // resume the parent level's infix loop with the record/map operand
+                    continue;
+                }
+                Some(Cont::If {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    head,
+                    phase,
+                }) => {
+                    match phase {
+                        IfPhase::Cond { c_lead } => {
+                            // `left` is the condition. Wrap its leading comments; capture own-line comments
+                            // before `then` (+ same after) so they print above the then-branch; descend it.
+                            let c = self.wrap_comments(c_lead, left);
+                            let mut t_lead = self.take_comments_here();
+                            self.expect_keyword(Keyword::Then, "`then`");
+                            t_lead.extend(self.take_comments_here());
+                            pending.push(Cont::If {
+                                start,
+                                min_prec: parent_min_prec,
+                                spine: parent_spine,
+                                entered: parent_entered,
+                                prefix_is_number,
+                                head,
+                                phase: IfPhase::Then { c, t_lead },
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            reading = true;
+                            continue; // read the then-branch as a fresh level
+                        }
+                        IfPhase::Then { c, t_lead } => {
+                            // `left` is the then-branch. Wrap leading + a same-line trailing `//` on it,
+                            // capture own-line comments around `else`, descend the else-branch.
+                            let t = self.wrap_comments(t_lead, left);
+                            let t_trail = self.take_trailing_comment_here();
+                            let t = self.wrap_comment_after(t_trail, t);
+                            let mut e_lead = self.take_comments_here();
+                            self.expect_keyword(Keyword::Else, "`else`");
+                            e_lead.extend(self.take_comments_here());
+                            pending.push(Cont::If {
+                                start,
+                                min_prec: parent_min_prec,
+                                spine: parent_spine,
+                                entered: parent_entered,
+                                prefix_is_number,
+                                head,
+                                phase: IfPhase::Else { c, t, e_lead },
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            reading = true;
+                            continue; // read the else-branch as a fresh level
+                        }
+                        IfPhase::Else { c, t, e_lead } => {
+                            // `left` is the else-branch — assemble `(if c t e)` as the parent's operand.
+                            let e = self.wrap_comments(e_lead, left);
+                            let e_trail = self.take_trailing_comment_here();
+                            let e = self.wrap_comment_after(e_trail, e);
+                            let span = start.merge(self.prev_span());
+                            left = self.list(vec![head, c, t, e], span);
+                            cur_start = start;
+                            cur_min_prec = parent_min_prec;
+                            spine = parent_spine;
+                            entered = parent_entered;
+                            pf_pending = true; // postfix funnel: `.member`/`(args)` chain + unit suffix
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                            reading = false; // resume the parent level's infix loop with the if operand
+                            continue;
+                        }
+                    }
+                }
+                Some(Cont::Let {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    head,
+                    phase,
+                }) => {
+                    match phase {
+                        LetPhase::BindingValue {
+                            mut bindings,
+                            n,
+                            leading,
+                            b_start,
+                            e_lead,
+                        } => {
+                            // `left` is this binding's value — build `(n value)`, wrap comments, append.
+                            let e = self.wrap_comments(e_lead, left);
+                            let b_span = b_start.merge(self.prev_span());
+                            let binding = self.list(vec![n, e], b_span);
+                            bindings.push(self.wrap_comments(leading, binding));
+                            if self.at(Kind::Comma) {
+                                self.bump(); // `,` — another binding follows; read its inline preamble.
+                                let leading = self.take_comments_here();
+                                let b_start = self.cur_span();
+                                let n = self.read_let_binder(b_start);
+                                self.expect(Kind::Eq, "`=`");
+                                let e_lead = self.take_comments_here();
+                                pending.push(Cont::Let {
+                                    start,
+                                    min_prec: parent_min_prec,
+                                    spine: parent_spine,
+                                    entered: parent_entered,
+                                    prefix_is_number,
+                                    head,
+                                    phase: LetPhase::BindingValue {
+                                        bindings,
+                                        n,
+                                        leading,
+                                        b_start,
+                                        e_lead,
+                                    },
+                                });
+                                cur_min_prec = crate::token::PREC_SEQ + 1;
+                                reading = true;
+                                continue; // descend the next binding's value
+                            }
+                            // No more bindings — assemble the `binds` list, consume `in`, capture the body's
+                            // same-line-trailing + own-line-leading comments, then descend the body.
+                            let binds_span = start.merge(self.prev_span());
+                            let binds = self.list(bindings, binds_span);
+                            self.expect_keyword(Keyword::In, "`in`");
+                            let in_trail = self.take_trailing_comment_here();
+                            let binds = self.wrap_comment_after(in_trail, binds);
+                            let body_lead = self.take_comments_here();
+                            pending.push(Cont::Let {
+                                start,
+                                min_prec: parent_min_prec,
+                                spine: parent_spine,
+                                entered: parent_entered,
+                                prefix_is_number,
+                                head,
+                                phase: LetPhase::Body { binds, body_lead },
+                            });
+                            cur_min_prec = 0; // the body is `expr(0)` (a sequence position)
+                            reading = true;
+                            continue; // descend the body
+                        }
+                        LetPhase::Body { binds, body_lead } => {
+                            // `left` is the body — assemble `(let binds body)` as the parent's operand.
+                            let body = self.wrap_comments(body_lead, left);
+                            let span = start.merge(self.prev_span());
+                            left = self.list(vec![head, binds, body], span);
+                            cur_start = start;
+                            cur_min_prec = parent_min_prec;
+                            spine = parent_spine;
+                            entered = parent_entered;
+                            pf_pending = true; // postfix funnel: `.member`/`(args)` chain + unit suffix
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                            reading = false; // resume the parent level's infix loop with the let operand
+                            continue;
+                        }
+                    }
+                }
+                Some(Cont::Match {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    mut items,
+                    phase,
+                }) => {
+                    // START-ARM macro-free inline (used after the scrutinee + after each completed arm on a
+                    // `|`): read the pattern + optional guard head (inline), then descend the guard OR the
+                    // body. `$arm_leading` is the arm's own-line leading comment run. Both sub-arms diverge
+                    // via `continue`, so no path falls through.
+                    macro_rules! start_arm {
+                        ($arm_leading:expr) => {{
+                            let arm_leading = $arm_leading;
+                            let (arm_start, pat, guard) = self.match_arm_pat();
+                            match guard {
+                                Some((guard_head, g_start)) => {
+                                    pending.push(Cont::Match {
+                                        start,
+                                        min_prec: parent_min_prec,
+                                        spine: parent_spine,
+                                        entered: parent_entered,
+                                        prefix_is_number,
+                                        items,
+                                        phase: MatchPhase::ArmGuard {
+                                            arm_start,
+                                            arm_leading,
+                                            pat,
+                                            guard_head,
+                                            g_start,
+                                        },
+                                    });
+                                    cur_min_prec = crate::token::PREC_SEQ + 1;
+                                    reading = true;
+                                    continue; // descend the guard expr
+                                }
+                                None => {
+                                    let (body_lead, saved_arm_bar) = self.match_arm_body_preamble();
+                                    pending.push(Cont::Match {
+                                        start,
+                                        min_prec: parent_min_prec,
+                                        spine: parent_spine,
+                                        entered: parent_entered,
+                                        prefix_is_number,
+                                        items,
+                                        phase: MatchPhase::ArmBody {
+                                            arm_start,
+                                            arm_leading,
+                                            pat,
+                                            body_lead,
+                                            saved_arm_bar,
+                                        },
+                                    });
+                                    cur_min_prec = 0; // the body is `expr(0)` (a sequence position)
+                                    reading = true;
+                                    continue; // descend the body expr
+                                }
+                            }
+                        }};
+                    }
+                    match phase {
+                        MatchPhase::Scrut => {
+                            // `left` is the scrutinee. Append it, consume `with`, drain the first arm's
+                            // own-line leading comments + optional leading `|`, then start the first arm.
+                            items.push(left);
+                            self.expect_keyword(Keyword::With, "`with`");
+                            let arm_leading = self.take_comments_here();
+                            if self.at(Kind::Pipe) {
+                                self.bump(); // optional leading `|`
+                            }
+                            start_arm!(arm_leading);
+                        }
+                        MatchPhase::ArmGuard {
+                            arm_start,
+                            arm_leading,
+                            pat,
+                            guard_head,
+                            g_start,
+                        } => {
+                            // `left` is the guard expr — fold `(guard pat g)`, then descend the body.
+                            let g_span = g_start.merge(self.prev_span());
+                            let pat = self.list(vec![guard_head, pat, left], g_span);
+                            let (body_lead, saved_arm_bar) = self.match_arm_body_preamble();
+                            pending.push(Cont::Match {
+                                start,
+                                min_prec: parent_min_prec,
+                                spine: parent_spine,
+                                entered: parent_entered,
+                                prefix_is_number,
+                                items,
+                                phase: MatchPhase::ArmBody {
+                                    arm_start,
+                                    arm_leading,
+                                    pat,
+                                    body_lead,
+                                    saved_arm_bar,
+                                },
+                            });
+                            cur_min_prec = 0;
+                            reading = true;
+                            continue; // descend the body expr
+                        }
+                        MatchPhase::ArmBody {
+                            arm_start,
+                            arm_leading,
+                            pat,
+                            body_lead,
+                            saved_arm_bar,
+                        } => {
+                            // `left` is the arm body. Restore arm_bar, assemble `(pat body)`, wrap the arm's
+                            // own-line leading + same-line trailing comments, append.
+                            self.arm_bar_terminates = saved_arm_bar;
+                            let body = self.wrap_comments(body_lead, left);
+                            let arm_span = arm_start.merge(self.prev_span());
+                            let arm = self.list(vec![pat, body], arm_span);
+                            let arm = self.wrap_comments(arm_leading, arm);
+                            let trailing = self.take_trailing_comment_here();
+                            items.push(self.wrap_comment_after(trailing, arm));
+                            let mut pending_leading = self.take_comments_here();
+                            if self.at(Kind::Pipe) {
+                                self.bump(); // `|` before the next arm
+                                start_arm!(pending_leading);
+                            }
+                            // No more arms. Own-line comment(s) we drained lead whatever FOLLOWS the match,
+                            // not a (nonexistent) next arm — restore them to the current token's leading slot
+                            // so the enclosing parser picks them up (the seq-277 reader-attachment gap).
+                            if !pending_leading.is_empty() && self.pos < self.leading.len() {
+                                let mut restored = std::mem::take(&mut pending_leading);
+                                restored.append(&mut self.leading[self.pos]);
+                                self.leading[self.pos] = restored;
+                            }
+                            let span = start.merge(self.prev_span());
+                            left = self.list(items, span);
+                            cur_start = start;
+                            cur_min_prec = parent_min_prec;
+                            spine = parent_spine;
+                            entered = parent_entered;
+                            pf_pending = true; // postfix funnel: `.member`/`(args)` chain + unit suffix
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                            reading = false; // resume the parent level's infix loop with the match operand
+                            continue;
+                        }
+                    }
+                }
+                Some(Cont::Fn {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    head,
+                    param_list,
+                    ret_ty,
+                }) => {
+                    // `left` is the body — ascribe it with the return type, assemble `(fn (params) body)`.
+                    let body = self.ascribe(left, ret_ty);
+                    let span = start.merge(self.prev_span());
+                    left = self.list(vec![head, param_list, body], span);
+                    cur_start = start;
+                    cur_min_prec = parent_min_prec;
+                    spine = parent_spine;
+                    entered = parent_entered;
+                    pf_pending = true; // postfix funnel: `.member`/`(args)` chain + unit suffix
+                    pf_num = prefix_is_number;
+                    pf_spine = 0;
+                    reading = false; // resume the parent level's infix loop with the fn operand
+                    continue;
+                }
+                Some(Cont::Host {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    head,
+                    effects_list,
+                }) => {
+                    // `left` is the body — assemble `(host (E …) body)`.
+                    let span = start.merge(self.prev_span());
+                    left = self.list(vec![head, effects_list, left], span);
+                    cur_start = start;
+                    cur_min_prec = parent_min_prec;
+                    spine = parent_spine;
+                    entered = parent_entered;
+                    pf_pending = true; // postfix funnel: `.member`/`(args)` chain + unit suffix
+                    pf_num = prefix_is_number;
+                    pf_spine = 0;
+                    reading = false; // resume the parent level's infix loop with the host operand
+                    continue;
+                }
+                Some(Cont::Handle {
+                    start,
+                    min_prec: parent_min_prec,
+                    spine: parent_spine,
+                    entered: parent_entered,
+                    prefix_is_number,
+                    head,
+                    effect,
+                    phase,
+                }) => {
+                    // START-ARM inline (after the seed + after each arm on `|`): read the arm header
+                    // (`op(binder…, state) =>`, sets arm_bar=true) then descend the body. Diverges via
+                    // `continue`.
+                    macro_rules! start_handle_arm {
+                        ($seed:expr, $arms_start:expr, $arms:expr) => {{
+                            let (arm_start, op, params, state, saved_arm_bar) =
+                                self.handle_arm_header();
+                            pending.push(Cont::Handle {
+                                start,
+                                min_prec: parent_min_prec,
+                                spine: parent_spine,
+                                entered: parent_entered,
+                                prefix_is_number,
+                                head,
+                                effect,
+                                phase: HandlePhase::ArmBody {
+                                    seed: $seed,
+                                    arms_start: $arms_start,
+                                    arms: $arms,
+                                    arm_start,
+                                    op,
+                                    params,
+                                    state,
+                                    saved_arm_bar,
+                                },
+                            });
+                            cur_min_prec = 0; // the arm body is `expr(0)`
+                            reading = true;
+                            continue; // descend the arm body
+                        }};
+                    }
+                    match phase {
+                        HandlePhase::Seed => {
+                            // `left` is the seed expr — consume `)`, then `with` + start the first arm.
+                            let seed = left;
+                            self.expect(Kind::RParen, "`)`");
+                            let arms_start = self.handle_after_seed();
+                            start_handle_arm!(seed, arms_start, Vec::new());
+                        }
+                        HandlePhase::ArmBody {
+                            seed,
+                            arms_start,
+                            mut arms,
+                            arm_start,
+                            op,
+                            params,
+                            state,
+                            saved_arm_bar,
+                        } => {
+                            // `left` is the arm body — restore arm_bar, assemble `(op params state body)`.
+                            self.arm_bar_terminates = saved_arm_bar;
+                            let arm_span = arm_start.merge(self.prev_span());
+                            arms.push(self.list(vec![op, params, state, left], arm_span));
+                            if self.at(Kind::Pipe) {
+                                self.bump(); // `|` before the next arm
+                                start_handle_arm!(seed, arms_start, arms);
+                            }
+                            // No more arms — assemble the arm list, consume `in`, descend the final body.
+                            let arms_span = arms_start.merge(self.prev_span());
+                            let arms_list = self.list(arms, arms_span);
+                            self.expect_keyword(Keyword::In, "`in`");
+                            pending.push(Cont::Handle {
+                                start,
+                                min_prec: parent_min_prec,
+                                spine: parent_spine,
+                                entered: parent_entered,
+                                prefix_is_number,
+                                head,
+                                effect,
+                                phase: HandlePhase::Body { seed, arms_list },
+                            });
+                            cur_min_prec = 0; // the body is `expr(0)`
+                            reading = true;
+                            continue; // descend the final body
+                        }
+                        HandlePhase::Body { seed, arms_list } => {
+                            // `left` is the final body — assemble `(handle effect seed (arm…) body)`.
+                            let span = start.merge(self.prev_span());
+                            left = self.list(vec![head, effect, seed, arms_list, left], span);
+                            cur_start = start;
+                            cur_min_prec = parent_min_prec;
+                            spine = parent_spine;
+                            entered = parent_entered;
+                            pf_pending = true; // postfix funnel: `.member`/`(args)` chain + unit suffix
+                            pf_num = prefix_is_number;
+                            pf_spine = 0;
+                            reading = false; // resume the parent level's infix loop with the handle operand
+                            continue;
+                        }
+                    }
+                }
+                Some(Cont::Call {
+                    callee,
+                    call_start,
+                    mut args,
+                    leading,
+                    saved_arm_bar,
+                    pf_spine: saved_pf_spine,
+                    pf_num: saved_pf_num,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                }) => {
+                    // `left` is the delivered argument — wrap its leading comment + a same-line trailing
+                    // comment on the LAST arg (gated on `at(RParen)`, the PR#758 rule), matching `arg_exprs`.
+                    let arg = self.wrap_comments(leading, left);
+                    if self.at(Kind::RParen) {
+                        let trailing = self.take_trailing_comment_here();
+                        args.push(self.wrap_comment_after(trailing, arg));
+                    } else {
+                        args.push(arg);
+                    }
+                    if self.sep_continue(Kind::RParen) {
+                        // Another argument follows — capture its leading comments + descend it.
+                        let leading = self.take_comments_here();
+                        pending.push(Cont::Call {
+                            callee,
+                            call_start,
+                            args,
+                            leading,
+                            saved_arm_bar,
+                            pf_spine: saved_pf_spine,
+                            pf_num: saved_pf_num,
+                            lvl_min_prec,
+                            lvl_spine,
+                            lvl_entered,
+                        });
+                        cur_min_prec = crate::token::PREC_SEQ + 1;
+                        reading = true;
+                        continue; // read the next argument as a fresh level
+                    }
+                    // Arguments done — close `)`, restore arm_bar, build `(callee arg…)`.
+                    self.expect(Kind::RParen, "`)`");
+                    self.arm_bar_terminates = saved_arm_bar;
+                    let span = call_start.merge(self.prev_span());
+                    let mut items = Vec::with_capacity(args.len() + 1);
+                    items.push(callee);
+                    items.extend(args);
+                    left = self.list(items, span);
+                    // Restore the owning expr level; the built call is its (in-progress) operand.
+                    cur_start = call_start;
+                    cur_min_prec = lvl_min_prec;
+                    spine = lvl_spine;
+                    entered = lvl_entered;
+                    reading = false;
+                    // Guard the call layer just folded (mirrors `postfix`); on trip, postfix stops.
+                    let new_pf_spine = saved_pf_spine + 1;
+                    if !self.depth_exceeded
+                        && self.depth + new_pf_spine >= crate::sexpr::MAX_NESTING_DEPTH
+                    {
+                        self.error("expression nests too deeply to parse");
+                        self.depth_exceeded = true;
+                        if !saved_pf_num && cur_min_prec != TIGHT_PREC {
+                            left = self.maybe_unit_suffix(left, call_start);
+                        }
+                        continue; // reading=false -> next iteration runs the infix loop
+                    }
+                    // RE-ENTER the postfix funnel on the built call node (fold further `.member`/`(args)`).
+                    pf_pending = true;
+                    pf_num = saved_pf_num;
+                    pf_spine = new_pf_spine;
+                    continue;
+                }
+                Some(Cont::Neg {
+                    neg_start,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                    lvl_num,
+                }) => {
+                    // `left` is the tight operand — build `(- operand)` (the `-` head created AFTER the
+                    // operand, matching the recursive minus arm's struct-id order), then apply the OUTER
+                    // postfix + unit suffix via the funnel and resume the owning level's infix loop.
+                    let full = neg_start.merge(self.prev_span());
+                    let head = self.name("-", neg_start);
+                    left = self.list(vec![head, left], full);
+                    cur_start = neg_start;
+                    cur_min_prec = lvl_min_prec;
+                    spine = lvl_spine;
+                    entered = lvl_entered;
+                    pf_pending = true; // OUTER postfix/unit suffix apply to `(- operand)` (as `expr` does)
+                    pf_num = lvl_num;
+                    pf_spine = 0;
+                    reading = false;
+                    continue;
+                }
+                Some(Cont::Unquote {
+                    head,
+                    unq_start,
+                    braced,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                    lvl_num,
+                }) => {
+                    // `left` is the inner (braced: full expr; bare: tight operand). Close `}` for the braced
+                    // form, then build `(head inner)` and apply the OUTER postfix/unit suffix via the funnel.
+                    if braced {
+                        self.expect(Kind::RBrace, "`}`");
+                    }
+                    let span = unq_start.merge(self.prev_span());
+                    left = self.list(vec![head, left], span);
+                    cur_start = unq_start;
+                    cur_min_prec = lvl_min_prec;
+                    spine = lvl_spine;
+                    entered = lvl_entered;
+                    pf_pending = true;
+                    pf_num = lvl_num;
+                    pf_spine = 0;
+                    reading = false;
+                    continue;
+                }
+                Some(Cont::At {
+                    head,
+                    name,
+                    at_pos,
+                    form_pos,
+                    at_span,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                    lvl_num,
+                }) => {
+                    // `left` is the prefix-only annotated form. Carry any docs that stayed at the form slot
+                    // back to the `@` slot (so an un-documentable form downgrades them, not drops), then
+                    // build `(@ name form)` and apply the OUTER postfix/unit suffix.
+                    self.carry_docs(form_pos, at_pos);
+                    let full = at_span.merge(self.prev_span());
+                    left = self.list(vec![head, name, left], full);
+                    cur_start = at_span;
+                    cur_min_prec = lvl_min_prec;
+                    spine = lvl_spine;
+                    entered = lvl_entered;
+                    pf_pending = true;
+                    pf_num = lvl_num;
+                    pf_spine = 0;
+                    reading = false;
+                    continue;
+                }
+                Some(Cont::Pragma {
+                    head,
+                    key,
+                    at_span,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                    lvl_num,
+                }) => {
+                    // `left` is the tight pragma arg — build `(pragma key arg)` + OUTER postfix/unit suffix.
+                    let full = at_span.merge(self.prev_span());
+                    left = self.list(vec![head, key, left], full);
+                    cur_start = at_span;
+                    cur_min_prec = lvl_min_prec;
+                    spine = lvl_spine;
+                    entered = lvl_entered;
+                    pf_pending = true;
+                    pf_num = lvl_num;
+                    pf_spine = 0;
+                    reading = false;
+                    continue;
+                }
+            }
+        }
     }
 
     /// Fold a `;`-separated run starting after `first` into a flat `(do first e2 e3 …)`. Each following
@@ -2069,6 +4240,28 @@ impl<'a> Parser<'a> {
     /// `in`, which SELF-DELIMITS the `let` — its body is a full expression, so a `let` at the tail of
     /// a def body cannot swallow following top-level forms (the dangling-let fix). The body is a plain
     /// expression, not a `;`-sequence (a multi-statement body parenthesizes as `(a; b)`).
+    /// Read a single `let` binder position: a plain name, a destructuring `pattern()` (irrefutable
+    /// binding-position patterns, like `param`), each with an OPTIONAL type annotation `x: T` folded to
+    /// `(: binder T)` (the s-expr binder-annotation shape; closes the `let x: T = …` surface). `b_start` is
+    /// the span at the binder start (drained of leading comments), used for the `:`/annotation spans.
+    /// Shared by the recursive `let_expr` and the iterative `Cont::Let` path so the two never drift.
+    fn read_let_binder(&mut self, b_start: Span) -> StructId {
+        let n = if self.at_pattern_param_start() {
+            self.pattern()
+        } else {
+            self.binder()
+        };
+        if self.at(Kind::Colon) {
+            self.bump(); // `:`
+            let colon = self.name(":", b_start);
+            let ty = self.type_ref();
+            let ann_span = b_start.merge(self.prev_span());
+            self.list(vec![colon, n, ty], ann_span)
+        } else {
+            n
+        }
+    }
+
     fn let_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let let_head = self.keyword_head("let", start);
@@ -2083,31 +4276,9 @@ impl<'a> Parser<'a> {
             // swallow hazard.
             let leading = self.take_comments_here();
             let b_start = self.cur_span();
-            // A `let` binder is normally a plain name, but a binder that OPENS a destructuring pattern
-            // (`(a, b)` / `[x, .. rest]` / `#{ k = p }` / `b[u16(n)]`) binds by pattern — the same
-            // irrefutable-in-a-binding-position patterns `param` accepts, so `let (a, b) = p in …` and
-            // `def f((a, b)) = …` agree. The compiler already lowers a pattern let-binder (it desugars
-            // to the same destructuring form); this lets the ML reader round-trip it.
-            let n = if self.at_pattern_param_start() {
-                self.pattern()
-            } else {
-                self.binder()
-            };
-            // An optional TYPE ANNOTATION on the binder: `let x: T = v in …` -> the binder-position
-            // annotation `(: x T)` (the shape the s-expr surface writes + the compiler validates), exactly
-            // like an annotated `param`. A plain name / un-annotated pattern keeps its form. This closes the
-            // annotated-let-binder surface gap: `(let (((: x T) v)) …)` — widely used in the corpus — had NO
-            // ML surface (the reader rejected `let x: T = …`), so it only round-tripped via the degenerate
-            // `` `let`(…) `` quoted-op fallback.
-            let n = if self.at(Kind::Colon) {
-                self.bump(); // `:`
-                let colon = self.name(":", b_start);
-                let ty = self.type_ref();
-                let ann_span = b_start.merge(self.prev_span());
-                self.list(vec![colon, n, ty], ann_span)
-            } else {
-                n
-            };
+            // The binder: a plain name / destructuring pattern, with an optional `: T` annotation folded to
+            // `(: binder T)` — see `read_let_binder` (shared with the iterative reader).
+            let n = self.read_let_binder(b_start);
             self.expect(Kind::Eq, "`=`");
             // An own-line `//` comment BETWEEN `=` and the value (`let y =<newline> // note<newline>
             // x + 1`) sits at the value's first-token leading slot, which `expr` does not drain — capture
@@ -3167,6 +5338,55 @@ impl<'a> Parser<'a> {
         self.list(vec![op, params, state, body], span)
     }
 
+    /// Iterative-reader helper: after a handle's seed, consume `with` + an optional leading `|`, and return
+    /// the arms' start span (`cur_span` after the `|`). Mirrors the `with` head of `handle_expr`.
+    fn handle_after_seed(&mut self) -> Span {
+        self.expect_keyword(Keyword::With, "`with`");
+        if self.at(Kind::Pipe) {
+            self.bump(); // optional leading `|`
+        }
+        self.cur_span()
+    }
+
+    /// Iterative-reader helper (the head of `handle_arm`, minus the descending body expr): read one handle
+    /// arm's `op(binder…, state) =>` header. Returns `(arm_start, op, params, state, saved_arm_bar)` — the
+    /// caller then descends the body (`expr(0)`) with `arm_bar_terminates` forced true (set here), folding
+    /// `(op params state body)` on deliver + restoring the flag via `saved_arm_bar`.
+    fn handle_arm_header(&mut self) -> (Span, StructId, StructId, StructId, bool) {
+        let arm_start = self.cur_span();
+        let op = self.binder(); // bare operation name (resolved against the handle's effect)
+        let binders_start = self.cur_span();
+        self.expect(Kind::LParen, "`(`");
+        let mut binders = Vec::new();
+        if !self.at(Kind::RParen) {
+            loop {
+                let before = self.pos;
+                binders.push(self.binder());
+                if !self.sep_continue(Kind::RParen) {
+                    break;
+                }
+                if self.pos == before {
+                    self.bump(); // no binder consumed — avoid a missing-`,` spin
+                }
+            }
+        }
+        self.expect(Kind::RParen, "`)`");
+        // The last binder is the STATE; the rest are the operation's parameters.
+        let state = if let Some(s) = binders.pop() {
+            s
+        } else {
+            let sp = self.cur_span();
+            self.error("a handle arm needs a state binder: `op(…, state)`");
+            self.error_node(sp)
+        };
+        let params_span = binders_start.merge(self.prev_span());
+        let params = self.list(binders, params_span);
+        self.expect(Kind::FatArrow, "`=>`");
+        let saved = self.arm_bar_terminates;
+        self.arm_bar_terminates = true;
+        (arm_start, op, params, state, saved)
+    }
+
     /// `host E, … in body`  ->  `(host (E …) body)` — an entrypoint delegation of one or more effects
     /// to the component boundary. The effects are a comma-separated name list; the body is the delegated
     /// computation. Mirrors `handle`'s `… in body` tail (reusing the `in` keyword as the body delimiter).
@@ -3493,6 +5713,36 @@ impl<'a> Parser<'a> {
         let body = self.wrap_comments(body_lead, body);
         let span = start.merge(self.prev_span());
         self.list(vec![pat, body], span)
+    }
+
+    /// Iterative-reader helper (the head of `match_arm`, minus the descending guard/body exprs): read an
+    /// arm's pattern + optional `if`-guard opener. Returns `(arm_start, pat, guard)`, where `guard` is
+    /// `Some((guard_head, g_start))` iff an `if` guard is present (its `if` already consumed) — the caller
+    /// then descends the guard expr on the worklist and folds `(guard pat g)` on deliver. `pattern()` is
+    /// read inline (its own separate depth guard; pattern de-recursion is I4).
+    fn match_arm_pat(&mut self) -> (Span, StructId, Option<(StructId, Span)>) {
+        let arm_start = self.cur_span();
+        let pat = self.pattern();
+        if self.at_keyword(Keyword::If) {
+            let g_start = self.cur_span();
+            let guard_head = self.keyword_head("guard", g_start);
+            self.bump(); // `if`
+            (arm_start, pat, Some((guard_head, g_start)))
+        } else {
+            (arm_start, pat, None)
+        }
+    }
+
+    /// Iterative-reader helper (the body head of `match_arm`): consume `=>`, drain the body's own-line
+    /// leading comments, and force `arm_bar_terminates = true` for the upcoming body descent. Returns
+    /// `(body_lead, saved_arm_bar)` so the caller restores the flag once the body delivers. Mirrors the
+    /// `expect(=>)` + `arm_bar` dance in `match_arm`.
+    fn match_arm_body_preamble(&mut self) -> (Vec<Lead>, bool) {
+        self.expect(Kind::FatArrow, "`=>`");
+        let body_lead = self.take_comments_here();
+        let saved = self.arm_bar_terminates;
+        self.arm_bar_terminates = true;
+        (body_lead, saved)
     }
 
     // ---- structural pattern grammar ----
@@ -4100,6 +6350,101 @@ impl<'a> Parser<'a> {
         self.list(items, span)
     }
 
+    /// The iterative field-pair driver shared by `expr_iter`'s `{ … }` record and `#{ … }` map operands
+    /// (the worklist twin of the `record_literal` / `map_literal` inline field loops). Starting at a field
+    /// position, it processes fields — appending each completed one to `items` — until either:
+    ///   - the field list CLOSES (the closer is consumed here): returns `None`; or
+    ///   - a field needs a SUB-EXPR read (a `..` rest operand, a map key, a record/map value): returns
+    ///     `Some((phase, before))` so `expr_iter` can push a `Cont::Fields` for `phase` and DESCEND. On
+    ///     deliver, `expr_iter` builds the field, runs the same `sep_continue` + missing-`,` progress guard
+    ///     (`before` is the pos at that field's start), then calls this again for the next field.
+    ///
+    /// Record SHORTHAND fields (`{ x }` → `(= x x)`) read no sub-expr, so they are completed INLINE here in
+    /// a loop (sibling iteration, NOT recursion — bounded by field count, never nesting depth). The two
+    /// families differ only where `record_literal`/`map_literal` do: map drains own-line leading comments
+    /// BEFORE the `..`-rest check (dropped on a rest), record checks rest FIRST (no leading on that path);
+    /// map reads a `key` expr where record reads a flat `binder` + optional `= value` / pun. Byte-identical
+    /// to the recursive bodies (arena order, span table, errors) — the `expr_iter` oracle diffs it.
+    fn advance_fields(
+        &mut self,
+        items: &mut Vec<StructId>,
+        is_map: bool,
+        closer: Kind,
+    ) -> Option<(FieldPhase, usize)> {
+        loop {
+            let before = self.pos;
+            if is_map {
+                // map: leading comments drained FIRST (dropped if the entry turns out to be a `..` rest).
+                let leading = self.take_comments_here();
+                if self.at(Kind::DotDot) {
+                    let dd_span = self.cur_span();
+                    self.bump(); // `..`
+                    let rest_head = self.name("..", dd_span);
+                    return Some((FieldPhase::RestOperand { dd_span, rest_head }, before));
+                }
+                let e_start = self.cur_span();
+                return Some((FieldPhase::MapKey { leading, e_start }, before));
+            }
+            // record: `..`-rest checked FIRST (no leading comment drain on that path).
+            if self.at(Kind::DotDot) {
+                let dd_span = self.cur_span();
+                self.bump(); // `..`
+                let rest_head = self.name("..", dd_span);
+                return Some((FieldPhase::RestOperand { dd_span, rest_head }, before));
+            }
+            let leading = self.take_comments_here();
+            let f_start = self.cur_span();
+            // Capture the name spelling BEFORE the binder consumes the token (a shorthand puns it).
+            let pun = self.binder_spelling();
+            let name = self.binder();
+            if self.at(Kind::Eq) {
+                self.bump(); // `=`
+                return Some((
+                    FieldPhase::RecordValue {
+                        leading,
+                        f_start,
+                        name,
+                    },
+                    before,
+                ));
+            }
+            if let Some(n) = pun {
+                // Field SHORTHAND `{ x }` → `(= x x)`: the value is a SECOND `x` occurrence, no sub-expr —
+                // completed inline (matches `record_literal`). Build + append, then advance the separator.
+                let value = self.name(n, f_start);
+                let eq = self.atom(Leaf::FieldPair, f_start);
+                let f_span = f_start.merge(self.prev_span());
+                let field = self.list(vec![eq, name, value], f_span);
+                let field = self.wrap_comments(leading, field);
+                if self.at(closer) {
+                    let trailing = self.take_trailing_comment_here();
+                    items.push(self.wrap_comment_after(trailing, field));
+                } else {
+                    items.push(field);
+                }
+                if !self.sep_continue(closer) {
+                    self.drain_closer_comment_onto_last(items, 1);
+                    self.expect(closer, "`}`");
+                    return None;
+                }
+                if self.pos == before {
+                    self.bump(); // no field token consumed — avoid a missing-`,` spin
+                }
+                continue; // next field, inline
+            }
+            // A non-name field with no `=` — record the missing `=` (as `record_literal` does), read value.
+            self.expect(Kind::Eq, "`=`");
+            return Some((
+                FieldPhase::RecordValue {
+                    leading,
+                    f_start,
+                    name,
+                },
+                before,
+            ));
+        }
+    }
+
     /// `#[ e, … ]`  ->  a `List` of the forms (the raw list escape).
     fn hash_list(&mut self) -> StructId {
         let start = self.cur_span();
@@ -4701,6 +7046,284 @@ mod tests {
             p.errors
         );
         p.arenas
+    }
+
+    #[test]
+    fn expr_iter_matches_recursive_expr() {
+        // I3 differential check at the EXPR level: the iterative shunting-yard `expr_iter` must produce a
+        // BYTE-IDENTICAL result to the recursive `expr` for every input — arena (structural eq), span
+        // table, and errors. Verified directly here (the whole-program oracle covers it end-to-end once
+        // `read_ml` routes through the iterative driver). Covers the tricky arms: left/right-assoc chains,
+        // right-assoc arrows, ascription + the `:`/`forall` intercept, pipeline, `as` conversion, the unit
+        // suffix, member/call postfix operands, and bracket/keyword operands (still recursive this stage).
+        use crate::token::PREC_SEQ;
+        let cases = [
+            "a + b + c",
+            "a + b * c - d",
+            "a - b - c",
+            "a : T",
+            "a : forall x. x",
+            "f(1) + g(2, 3)",
+            "x.a.b + y",
+            "a |> f |> g",
+            "(a + b) * c",
+            "a + (b - c) * d",
+            "if a then b else c",
+            "a + (if x then 1 else 2)",
+            "x meters + 1",
+            "10 meters",
+            "a == b",
+            "t : a -> b -> c",
+            "1; 2; 3",
+            "a + b; c",
+            "-a + b",
+            "- - a",
+            // quasiquote `{ e } — the first operand family pulled onto the worklist.
+            "`{x}",
+            "`{a + b}",
+            "`{x} + 1",
+            "`{`{x}}",
+            "`{if a then b else c}",
+            "f(`{x}, y)",
+            // paren family: unit / grouping / tuple (+ nesting, trailing comma, as-operand).
+            "()",
+            "(a)",
+            "(a + b)",
+            "(a, b)",
+            "(a, b, c)",
+            "(a,)",
+            "(a, b,)",
+            "((a))",
+            "((a, b), c)",
+            "(a + b) * c",
+            "(a) + 1",
+            "(a; b)",
+            "-(a + b)",
+            "(if a then b else c) + 1",
+            // list family: empty / elements / trailing comma / nesting / rest spread / as-operand.
+            "[]",
+            "[1]",
+            "[1, 2, 3]",
+            "[1, 2,]",
+            "[a + b, c]",
+            "[[1], [2, 3]]",
+            "[.. rest]",
+            "[1, 2, .. xs]",
+            "[(a, b), c]",
+            "[x]",
+            // set family `#( … )` — same comma-list cont as list (closer `)`).
+            "#()",
+            "#(1, 2, 3)",
+            "#(a + b, c)",
+            "#(1, .. s)",
+            "#(x) + y",
+            // raw-list family `#[ … ]` — same cont, NO head / NO rest / NO comment slots (bare elements).
+            "#[]",
+            "#[1]",
+            "#[1, 2, 3]",
+            "#[a + b, c]",
+            "#[[1], 2]",
+            "#[x] + y",
+            // bin family `b[ … ]` — same cont, "bin" name head + comment slots, NO rest / NO drain.
+            "b[]",
+            "b[u8(1)]",
+            "b[u16(258), bits(1, 1)]",
+            "b[bytes(payload)]",
+            "b[u8(1)] + x",
+            // record family `{ … }` — FIELD-PAIRS: `name = value`, shorthand pun `{ x }`, `.. rest` spread,
+            // trailing comma, nesting, comment slots, as-operand + unit-suffix.
+            "{}",
+            "{ a = 1 }",
+            "{ a = 1, b = 2 }",
+            "{ x }",
+            "{ x, y }",
+            "{ a = 1, b }",
+            "{ a = 1, }",
+            "{ .. base, a = 1 }",
+            "{ a = { b = 2 } }",
+            "{ a = 1 + 2, b = f(3) }",
+            "{ a = 1 } + x",
+            // map family `#{ … }` — FIELD-PAIRS with arbitrary-expr keys: `key = value`, `.. rest`, nesting.
+            "#{}",
+            "#{ 1 = a }",
+            "#{ 1 = a, 2 = b }",
+            "#{ k = v, .. rest }",
+            "#{ (a + b) = c }",
+            "#{ 1 = #{ 2 = 3 } }",
+            "#{ 1 = a } + x",
+            // `if` keyword form (now on the worklist) — nesting in each slot, infix branches, as-operand.
+            "if a then b else c",
+            "if a + b then c * d else e",
+            "if a then if b then c else d else e",
+            "if (if p then q else r) then s else t",
+            "if a then b else c + 1",
+            "1 + if a then b else c",
+            "[if a then b else c, d]",
+            "if a then b else c |> f",
+            "if x then -a else -b",
+            // `let … in …` keyword form (now on the worklist) — single/multi binding, pattern binder,
+            // value expr, body sequencing, nesting, as-operand.
+            "let x = 1 in x",
+            "let x = 1, y = 2 in x + y",
+            "let x = a + b in x * 2",
+            "let x = 1 in let y = 2 in x + y",
+            "let x = if a then b else c in x",
+            "let (a, b) = p in a",
+            "let x = 1 in (x; x)",
+            "1 + let x = 2 in x",
+            "let f = fn(a) => a in f(1)",
+            // annotated let binder `let x: T = v` -> `(: x T)` binder (shared read_let_binder path).
+            "let x: Int64 = 1 in x",
+            "let x: Int64 = 1, y: Bool = true in x",
+            // `match … with …` keyword form (now on the worklist) — single/multi arm, guard, ctor patterns,
+            // infix arm body, nesting in scrutinee/body, as-operand.
+            "match x with | 0 => a | _ => b",
+            "match x with | Some(y) => y | None => 0",
+            "match x with | n if n > 0 => a | _ => b",
+            "match x with | a => a + 1",
+            "match a + b with | 0 => x | _ => y",
+            "match x with | _ => match y with | 0 => a | _ => b",
+            "match x with | 0 => a + b | _ => c * d",
+            "1 + match x with | _ => 2",
+            "match p with | (a, b) => a | _ => 0",
+            // `fn` lambda (now on the worklist) — params, typed params, return type, body sequencing,
+            // nesting, as-operand.
+            "fn(x) => x + 1",
+            "fn() => 0",
+            "fn(x: Int64, y: Int64) => x + y",
+            "fn(x) -> Int64 => x",
+            "fn(x) => fn(y) => x + y",
+            "fn(x) => (a; b)",
+            "map(xs, fn(x) => x * 2)",
+            "fn((a, b)) => a",
+            // `host` delegation (now on the worklist) — single/multi effect, body, as-operand.
+            "host E in x",
+            "host E, F in x + y",
+            "host E in if a then b else c",
+            // `handle` form (now on the worklist) — bare/unit/seeded effect, single/multi arm, arm params +
+            // state, body, nesting, as-operand.
+            "handle E with | op(s) => resume(1, s) in body",
+            "handle E() with | op(s) => resume(1, s) in body",
+            "handle E(0) with | op(s) => resume(1, s) in body",
+            "handle E with | get(s) => resume(s, s) | put(x, s) => resume((), x) in body",
+            "handle E(a + b) with | op(x, s) => resume(x, s) in run()",
+            "handle E with | op(s) => s in x + 1",
+            "1 + handle E with | op(s) => s in x",
+            "handle E with | op(s) => resume(x | 8, s) in body",
+            // call/postfix funnel (arg_exprs on the worklist) — empty/single/multi args, nested calls,
+            // chained calls, member+call chains, calls-of-keyword-operands.
+            "f()",
+            "f(1)",
+            "f(1, 2, 3)",
+            "f(g(h(x)))",
+            "f(1)(2)(3)",
+            "x.a.b.c",
+            "obj.method(1, 2)",
+            "a.b(c).d(e)",
+            "f(a + b, c * d)",
+            "f(g(1), h(2)) + k(3)",
+            "m.f().g().h()",
+            "f(if a then b else c)",
+            "outer(let x = 1 in x, y)",
+            "f(x).y + z",
+            "-f(x)",
+            "f(fn(a) => a, 2)",
+            // postfix on NON-prefix (reduce-produced) operands — now funneled at every site.
+            "(a + b)(x)",
+            "(f)(1)(2)",
+            "(a, b).0",
+            "[1, 2, 3].len()",
+            "#(1, 2).contains(x)",
+            "{ x = 1 }.x",
+            "#{ 1 = a }.get(1)",
+            "(if a then f else g)(x)",
+            "(match x with | _ => f)(y)",
+            "(fn(a) => a)(1)",
+            "`{x}.field",
+            "b[u8(1)].len",
+            "(let x = f in x)(1)",
+            // unary minus (now on the worklist) — tight operand (prefix+postfix, NO unit suffix, no infix),
+            // nesting, member/call operands, the outer unit-suffix distinction, as infix operand.
+            "-a",
+            "- - a",
+            "- - - a",
+            "-a + b",
+            "a + -b",
+            "-f(x)",
+            "-x.a.b",
+            "-(a + b)",
+            "-(a + b) meters",
+            "- x meters",
+            "-a * -b",
+            "[-a, -b]",
+            "f(-1, -2)",
+            "-if a then b else c",
+            // unquote / unquote-splicing (now on the worklist) — bare (tight operand) + braced (full expr),
+            // splice, tight member/call operands, the outer unit suffix, nested inside a quasiquote.
+            ",x",
+            ",{a + b}",
+            ",@xs",
+            ",@{items}",
+            ",f(x)",
+            ",x.a.b",
+            ",{a; b}",
+            "`{,x + ,y}",
+            "`{f(,x, ,@rest)}",
+            ",x meters",
+            // `@ann` annotation (now on the worklist) — bare / glued-call name / stacked / prefix-only form
+            // (a following `.member`/`(args)` binds to the OUTER `(@ …)`, not the form) / annotated keyword.
+            "@test x",
+            "@tag(\"slow\") x",
+            "@a @b x",
+            "@ann (a + b)",
+            "@ann f(y)",
+            "@ann x.field",
+            "@a @b @c y",
+            "@doc(\"hi\") let x = 1 in x",
+            // `@!key` pragma (now on the worklist) — tight type arg (bare / member / ctor app) + the param
+            // payload form (config kvs + name:Type binder, assembled inline).
+            "@!default-float Float32",
+            "@!k Int(8)",
+            "@!k Foo.Bar",
+            "@!param(widget: slider) width: Int64",
+            "@!param() x: Bool",
+            "@!param(min: 0, max: 10) n: Int64",
+        ];
+        for src in cases {
+            let mut rec = build_parser(src, FileId::default());
+            let rec_root = rec.expr(PREC_SEQ);
+            let rec_arenas = rec.builder.finish(rec_root);
+
+            let mut it = build_parser(src, FileId::default());
+            let it_root = it.expr_iter(PREC_SEQ);
+            let it_arenas = it.builder.finish(it_root);
+
+            assert!(
+                it_arenas.structurally_eq(&rec_arenas),
+                "expr_iter arena diverged for {src:?}\n  recursive: {}\n  iterative: {}",
+                crate::sexpr::print(&rec_arenas),
+                crate::sexpr::print(&it_arenas),
+            );
+            assert_eq!(
+                rec.spans.len(),
+                it.spans.len(),
+                "expr_iter span-table length diverged for {src:?}"
+            );
+            for i in 0..rec.spans.len() as u32 {
+                assert_eq!(
+                    rec.spans.get(StructId(i)),
+                    it.spans.get(StructId(i)),
+                    "expr_iter span[{i}] diverged for {src:?}"
+                );
+            }
+            assert_eq!(
+                rec.errors.len(),
+                it.errors.len(),
+                "expr_iter error count diverged for {src:?}\n  rec: {:?}\n  it: {:?}",
+                rec.errors,
+                it.errors
+            );
+        }
     }
 
     #[test]
