@@ -139,6 +139,15 @@ pass	ml/217-let-annotated-pattern-binder
 pass	ml/218-let-annotated-tuple-rest-pattern-binder
 pass	ml/219-let-function-type-binder
 pass	ml/22-world-variant-record-payload
+pass	ml/220-as-conversion-basic
+pass	ml/221-as-conversion-quantity
+pass	ml/222-as-conversion-below-arithmetic
+pass	ml/223-as-conversion-in-pipeline
+pass	ml/224-as-conversion-chained
+pass	ml/225-as-conversion-call-arg
+pass	ml/226-as-conversion-member-operand-parens
+pass	ml/227-unit-in-compound-target-call-form
+pass	ml/228-unit-in-nonbare-target-call-form
 pass	ml/23-world-variant-prim-payload
 pass	ml/24-world-enum-flags
 pass	ml/25-match-to-let-tuple

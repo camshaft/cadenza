@@ -6153,50 +6153,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unit_conversion_as_round_trips() {
-        // `value as name` renders `(Unit.in (Unit.of #"name") value)` and re-parses to the same arena
-        // — the inverse of the parser's `as_conversion`.
-        assert_eq!(assert_roundtrip("q as meter", 80), "q as meter");
-        assert_eq!(
-            assert_roundtrip("2.0 kilometer as meter", 80),
-            "2.0 kilometer as meter"
-        );
-        // It binds below arithmetic, so the whole quotient converts: `a / b as u` is `(a / b) as u`.
-        assert_eq!(
-            assert_roundtrip("240.0 meter / 8.0 second as meter", 80),
-            "240.0 meter / 8.0 second as meter"
-        );
-        // …and threads into a pipeline as one converted value.
-        assert_eq!(assert_roundtrip("q as meter |> f", 80), "q as meter |> f");
-        // Left-associative: a chained conversion groups left and needs no parens.
-        assert_eq!(
-            assert_roundtrip("q as meter as foot", 80),
-            "q as meter as foot"
-        );
-        // As a call argument it needs no parens (an argument parses at the loosest precedence), but as
-        // the OPERAND of a tighter context (member access) it does — member/app binds tighter than `as`.
-        assert_eq!(assert_roundtrip("f(q as meter)", 80), "f(q as meter)");
-        assert_eq!(
-            assert_roundtrip("(q as meter).value", 80),
-            "(q as meter).value"
-        );
-        // The s-expr oracle: the canonical `(Unit.in (Unit.of …) …)` prints as the concise `as` surface.
-        let a = sexpr::read(r#"(Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"kilometer")))"#)
-            .unwrap();
-        assert_eq!(print(&a, 80), "2.0 kilometer as meter");
-        // A COMPOUND target has no bare-name surface, so it falls back to the `Unit.in(target, value)`
-        // call form — a faithful round-trip either way.
-        let compound =
-            sexpr::read(r#"(Unit.in (Unit./ (Unit.of #"meter") (Unit.of #"hour")) q)"#).unwrap();
-        assert_eq!(
-            print(&compound, 80),
-            "Unit.in(Unit.of(#meter) / Unit.of(#hour), q)"
-        );
-        // A non-bare-safe target name likewise keeps the call form.
-        let odd = sexpr::read(r#"(Unit.in (Unit.of #"foo bar") q)"#).unwrap();
-        assert_eq!(print(&odd, 80), "Unit.in(Unit.of(#\"foo bar\"), q)");
-    }
+    // `unit_conversion_as_round_trips` (`value as name` renders `(Unit.in (Unit.of #"name") value)`, the
+    // inverse of the parser's `as_conversion`; binds below arithmetic, left-associative, threads into a
+    // pipeline; a compound / non-bare-safe target falls back to the `Unit.in(target, value)` call form)
+    // MIGRATED to the spec/syntax corpus (inc-6 batch-32):
+    //   * ml/220-as-conversion-basic `q as meter`→`((. Unit in) ((. Unit of) #"meter") q)`,
+    //   * ml/221-as-conversion-quantity `2.0 kilometer as meter`,
+    //   * ml/222-as-conversion-below-arithmetic `240.0 meter / 8.0 second as meter` (the whole `/`
+    //     quotient converts — `as` binds below arithmetic),
+    //   * ml/223-as-conversion-in-pipeline `q as meter |> f`,
+    //   * ml/224-as-conversion-chained `q as meter as foot` (left-assoc, no parens),
+    //   * ml/225-as-conversion-call-arg `f(q as meter)` (arg parses loosest, no parens),
+    //   * ml/226-as-conversion-member-operand-parens `(q as meter).value` (member binds tighter → parens),
+    //   * ml/227-unit-in-compound-target-call-form `Unit.in(Unit.of(#meter) / Unit.of(#hour), q)` and
+    //     ml/228-unit-in-nonbare-target-call-form `Unit.in(Unit.of(#"foo bar"), q)` (targets with no concise
+    //     `as` surface keep the call form).
+    // All fmt-idempotent (canonical inputs); the sexp→ml oracles are subsumed. (`as_conversion_does_not_
+    // break_before_as…` STAYS Rust — that one is a width-specific line-break regression.)
 
     // The positional/named member-access surface MIGRATED to the spec/syntax corpus (inc-6 batch-18):
     //   * `positional_member_access` (`(. obj N)` positional tuple access → `obj.N`, numeric sibling of
