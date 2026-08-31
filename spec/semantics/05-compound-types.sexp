@@ -5555,6 +5555,31 @@
   (input  (do (type Box (Mk a)) (def (main) (= (Mk 1) 1)) (export main)))
   (error  CDZ0202))
 
+; The ACTIONABLE-FIX half of the nominal-boundary comparison. On a newtype PARAMETER (a NAME the fix can
+; unwrap), the CDZ0202 carries a heuristic WRAP fix that unwraps via the total single-variant
+; `(match … ((Mk n) n))` — the same "did you mean?"-with-fix the Symbol.of / annotate sites give. It is
+; HEURISTIC (the author might have meant to keep the value wrapped), hence unverified; that the suggested
+; unwrap is real is pinned by the run case that APPLIES it and compares clean. A MULTI-variant sum has no
+; single unambiguous unwrap and is not an erasable newtype, so its comparison to a bare value stays the
+; GENERIC kind mismatch (CDZ0201) with NO misleading unwrap fix. (Migrated from rcdzc
+; comparing_a_newtype_to_its_underlying_type_is_a_nominal_boundary_error's actionable-fix half.)
+(case "the newtype-vs-inner comparison on a newtype parameter carries the heuristic unwrap fix"
+  (input  (do (type UserId (Mk Int64)) (def (f (: u UserId)) (= u 5)) (export f)))
+  (error  CDZ0202 (message "nominal boundary")
+                  (fix (kind wrap) (replacement-contains "((Mk n) n)") (unverified))))
+
+(case "the suggested unwrap type-checks and runs — the fix is total for a single-variant newtype"
+  (input  (do (type UserId (Mk Int64))
+              (def (f (: u UserId)) (= (match u ((Mk n) n)) 5))
+              (def (main) (f (UserId.Mk 5)))
+              (export main)))
+  (call   main)
+  (output (: true Bool)))
+
+(case "a multi-variant sum compared to a bare value is a generic kind mismatch with no misleading unwrap fix"
+  (input  (do (type W (A Int64) (B Int64)) (def (f (: w W)) (= w 5)) (export f)))
+  (error  CDZ0201 (message "different types") (no-fix)))
+
 (case "a generic newtype at two DIFFERENT instantiations stays distinct"
   (doc    "`Box Int64` and `Box Bool` are DISTINCT types (same `decl`, different `inner`), so comparing them
            is a type error — the nominal-over-generic analogue of `Option Int64 ≠ Option Bool`, confirming the
