@@ -1,0 +1,4 @@
+def l() -> List(Int64) = [
+  // lead
+  1, 2 // last
+]

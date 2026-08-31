@@ -1,0 +1,1 @@
+def m() = tagged-template(`a+b`, chunks("hi"), holes())
