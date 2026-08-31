@@ -239,6 +239,19 @@
   (input  (do (def (main) 1) (export zzzz)))
   (error  CDZ0101 (message "names no definition") (not "not a value")))
 
+; An export naming no definition that is a NEAR-MISS of a defined name (`computee` for `compute`) is a typo:
+; CDZ0101 names the candidate ("did you mean `compute`?") AND carries a Replace fix on the export's name atom
+; (the export-position analogue of the unbound-name did-you-mean rename). A FAR-miss (nothing close enough)
+; states the fault but carries NO fix and no baseless suggestion (a wrong "did you mean?" is worse than none).
+; (Migrated from rcdzc a_misspelled_export_carries_a_replace_fix_not_just_a_did_you_mean_string.)
+(case "a near-miss misspelled export carries a did-you-mean and an applyable replace fix"
+  (input  (do (def (compute) 1) (export computee)))
+  (error  CDZ0101 (message "did you mean `compute`?") (fix (kind replace) (replacement "compute") (unverified))))
+
+(case "a far-miss misspelled export states the fault but offers no baseless suggestion or fix"
+  (input  (do (def (compute) 1) (export zzzzzzzz)))
+  (error  CDZ0101 (message "names no definition") (not "did you mean")))
+
 (case "a module member named by the export clause is reachable"
   (doc    "The visible companion of the private case: `pub` IS named by `(export pub)`, so it is a field
            of the module's record and `(. m pub)` reaches it — pub(5) = 6. Pins that filtering the record
