@@ -637,6 +637,19 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
       else if h == "do".toUTF8 then
         -- an inline `(do stmt… last)` expression → sequential def-bindings + discarded non-defs + last.
         symDo m senv fuel ty children
+      else if h == "fn".toUTF8 then
+        -- a LAMBDA `(fn (param…) body)` → a `.localFn` symbolic CLOSURE over the def-site `senv`, exactly like
+        -- the `do`-def local-fn binding (below) — so a later application (a param bound to it, then applied)
+        -- INLINES it via the local-fn call path. Byte-faithful to `evalFn` (Eval.lean:1554): its params are
+        -- the WHOLE param-list node's children (NOT `paramSpecNodes`, which drops the leading name of a NAMED
+        -- def target — a lambda's param list `(y)` has no leading name to drop), body = `children[2]`, capture
+        -- = the current env. Closes v-cdz-smith's HIGHER-ORDER cluster (a `(fn …)` passed to a local fn and
+        -- applied): the arg previously symEval'd to `cannotProve` ("argument unmodelable"); now it is a closure.
+        (match children[1]?, children[2]? with
+         | some paramListId, some bodyId =>
+           let specs := match m.nodes[paramListId]? with | some (Node.list ps) => ps | _ => #[]
+           .sym (.localFn specs bodyId senv)
+         | _, _ => .cannotProve "symeval: malformed fn")
       else if h == "try".toUTF8 then
         -- `(try e)` — the `?` operator. Model only the SUCCESS unwrap: a concrete `Ok v` / `Some v` → `v`
         -- (byte-faithful to evalTry, Eval.lean:1487-1494). The FAILURE cases (`Err`/`None`) short-circuit to
@@ -2181,6 +2194,23 @@ private def _doLocalFnCaptureExpr : Module :=
     root := 17 }
 #guard symEval _doLocalFnCaptureExpr [] symDefaultFuel defaultIntTy 17
        == SymOutcome.sym (.const (.int 15))
+
+-- HIGHER-ORDER (v-cdz-smith cluster B): a `(fn …)` LAMBDA passed to a local fn and applied —
+-- `(do (def (apply f x) (f x)) (apply (fn (y) (+ y 15)) 9))` → 24. `apply` binds to a localFn; the arg
+-- `(fn (y) (+ y 15))` now symEvals to a `.localFn` closure (the new `fn` arm) instead of `cannotProve`;
+-- inlining `apply` binds `f`→that closure, `x`→9, then `(f x)` inlines the closure (y→9) → `(+ 9 15)` → 24.
+private def _higherOrderLambdaExpr : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "apply".toUTF8,
+                Leaf.name "f".toUTF8, Leaf.name "x".toUTF8, Leaf.name "fn".toUTF8, Leaf.name "y".toUTF8,
+                Leaf.name "+".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[15]),
+                Leaf.intLit false .dec (ByteArray.mk #[9])],
+    nodes := #[.atom 2, .atom 3, .atom 4, .list #[0, 1, 2], .atom 3, .atom 4, .list #[4, 5],
+               .atom 1, .list #[7, 3, 6], .atom 2, .atom 6, .list #[10], .atom 7, .atom 6, .atom 8,
+               .list #[12, 13, 14], .atom 5, .list #[16, 11, 15], .atom 9, .list #[9, 17, 18],
+               .atom 0, .list #[20, 8, 19]],
+    root := 21 }
+#guard symEval _higherOrderLambdaExpr [] symDefaultFuel defaultIntTy 21
+       == SymOutcome.sym (.const (.int 24))
 
 -- TRY success-unwrap: `(try (Ok 5))` → 5 (the `?` operator on a concrete Ok). leaves 0:try 1:Ok 2:(5).
 private def _tryOkExpr : Module :=
