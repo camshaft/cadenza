@@ -178,18 +178,29 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             scrutinee,
             path,
             key,
+            sub_path,
             heads,
         } => {
             // CONSTANT FOLD: reach the nested record Core (a constant scrutinee folds its `Elem`/`Payload`
-            // steps to the inner `Core::Record`); the field folds to its value by name.
+            // steps to the inner `Core::Record`); the field folds to its value `fv` by name. Then fold the
+            // `sub_path` descent BELOW the field over `fv` (§235 deeper-nesting binder) — an EMPTY sub_path
+            // (bare-binder field) yields `fv` directly. A runtime field value (sub_path fold `None`) falls
+            // through to the runtime walk below.
             if let Some(Core::Record { fields }) = fold_sum_path(db, scrutinee, &path)
                 && let Some(&fv) = fields.get(&key)
             {
-                return core_of(db, fv);
+                if sub_path.is_empty() {
+                    return core_of(db, fv);
+                }
+                if let Some(c) = fold_sum_path(db, fv, &sub_path) {
+                    return c;
+                }
             }
             // RUNTIME: the field's SORTED slot in the record type at the path end (the same slot
-            // `runtime_member_index` computes for a top-level member read). Read it as an `arr-get` `Elem`
-            // step off the `SumPayload` walk to the record.
+            // `runtime_member_index` computes for a top-level member read). A record is a flat array read
+            // by `arr-get` at the slot, so the field read is an `Elem(slot)` step; the `sub_path` descent
+            // BELOW the field appends more `Elem`/`Payload` steps the `SumPayload` walker already handles.
+            // Walk = `path ++ [Elem(slot)] ++ sub_path`.
             let rec_ty = crate::infer::record_field_at_path(db, scrutinee, &path, &heads);
             let crate::ty::Ty::Record(rec_fields) = rec_ty else {
                 return Core::Poison(Reject::unsupported(
@@ -204,6 +215,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             };
             let mut walk = path.to_vec();
             walk.push(crate::core::PathStep::Elem(slot));
+            walk.extend(sub_path.iter().copied());
             Core::SumPayload {
                 scrutinee,
                 path: walk.into(),

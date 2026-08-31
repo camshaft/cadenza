@@ -1309,11 +1309,19 @@ pub enum Resolved {
         scrutinee: StructId,
         path: std::rc::Rc<[crate::core::PathStep]>,
         key: Symbol,
-        /// The variant-constructor head at EACH `Payload` step in `path`, in order — so inference can walk
-        /// the scrutinee's type level by level through a variant payload to reach the nested `Ty::Record`
-        /// (a record nested UNDER a variant, `(Wrap (record (= x a)))`). One entry per `Payload` step;
-        /// EMPTY for the common tuple/list-only nesting (all `Elem` steps). The record-field twin of
-        /// `SumPayload.heads`.
+        /// The descent BELOW the field value, when the field value is ITSELF a compound sub-pattern binding
+        /// `name` deeper — `(record (= x (tuple c d)))` binds `c` at `sub_path = [Elem(0)]` of field `x`'s
+        /// value (§235: a record field value binder may be any nested pattern to any depth). EMPTY for a
+        /// BARE-binder field (the common case — `name` IS field `x`). A record field read lowers to an
+        /// `Elem(<sorted-slot>)` step (records are flat arrays read by slot), so the runtime walk is
+        /// `path ++ [Elem(slot_of_key)] ++ sub_path` — all ordinary `Elem`/`Payload` steps the `SumPayload`
+        /// walker already handles; no new `PathStep` kind. `sub_heads` covers any `Payload` step in `sub_path`.
+        sub_path: std::rc::Rc<[crate::core::PathStep]>,
+        /// The variant-constructor head at EACH `Payload` step in `path` THEN in `sub_path`, in order — so
+        /// inference can walk the scrutinee's type level by level through a variant payload to reach the
+        /// nested `Ty::Record` (a record nested UNDER a variant, `(Wrap (record (= x a)))`) and any variant
+        /// below the field. One entry per `Payload` step; EMPTY for the common tuple/list-only nesting (all
+        /// `Elem` steps). The record-field twin of `SumPayload.heads`.
         heads: std::rc::Rc<[StructId]>,
     },
     /// The RESIDUAL RECORD a record REST pattern's `.. rest` binder binds — `(match r ((record (= a x)

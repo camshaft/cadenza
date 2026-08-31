@@ -398,11 +398,19 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             scrutinee,
             path,
             key,
+            sub_path,
             heads,
-        } => match record_field_at_path(db, scrutinee, &path, &heads) {
-            Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
-            _ => Ty::Any,
-        },
+        } => {
+            // Reach the nested record's field type (path → `Ty::Record`, then field `key`).
+            let field_ty = match record_field_at_path(db, scrutinee, &path, &heads) {
+                Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
+                _ => Ty::Any,
+            };
+            // Then project the descent BELOW the field (`sub_path` — the §235 deeper-nesting binder). An
+            // EMPTY sub_path (bare-binder field) returns `field_ty` unchanged. `sub_path` is all-`Elem`
+            // (slice 1: tuple/list below a field — a variant below a field is deferred), so no `heads`.
+            project_path_type(db, field_ty, &sub_path, &[])
+        }
         // A RECORD REST binder — the RESIDUAL RECORD of the scrutinee's fields MINUS the `named` ones. A
         // record's field set is static, so drop the named fields (by spelling) from the scrutinee's record
         // type and re-wrap the remainder. `Ty::Any` (poison-safe) if the scrutinee is not a record — the

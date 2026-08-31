@@ -1040,17 +1040,18 @@ fn diags_of(src: &str) -> Vec<crate::abi::Diagnostic> {
 /// A RECORD sub-pattern NESTED inside a tuple/list/constructor match pattern whose field value is itself
 /// a further COMPOUND — `(tuple (record (x (tuple a b))) c)` — is not yet wired (a record field projects
 /// by NAME and there is no name-keyed `PathStep` to compose a FURTHER descent below the field). It must
-/// NAME that unimplemented feature, NOT leak a misleading CDZ0101 "unbound name `a`" for the deeper
-/// binder (the deeper-nesting twin of the now-wired bare-binder case, Case 6rec-nested-decline). `cdz
-/// check` on a PARAMETERIZED body (via match_pattern_fault, not only the emit walk) must surface the
-/// feature decline and NO CDZ0101 cascade. Found by v-patterns probing (Inc-76). The BARE-binder cases
-/// (`(tuple (record (x a)) c)`, `(list (record (x a)))`) now WIRE (a `Resolved::RecordField` read) — see
-/// `a_nested_record_match_binder_resolves_to_the_field`; only the deeper compound-field-value declines.
+/// BIND — NOT leak a misleading CDZ0101 "unbound name `a`" AND NOT decline CDZ0900 (§235: a record field
+/// value binder may be any nested pattern to any depth). A binder BELOW a nested-record field value in a
+/// tuple match arm — `(tuple (record (x (tuple a b))) c)`, field `x`'s value the further `(tuple a b)` —
+/// now WIRES via a `Resolved::RecordField` reading field `x` then descending `sub_path = [Elem(0/1)]` into
+/// the tuple (a record field read lowers to `Elem(<sorted-slot>)`, so the descent is positional `Elem`
+/// steps — no new `PathStep`). `cdz check` on a PARAMETERIZED body (via match_pattern_fault, not only the
+/// emit walk) must be CLEAN. The BARE-binder cases (`(tuple (record (x a)) c)`) wire via an empty sub_path;
+/// this is the DEEPER (compound-field-value) twin, formerly the CDZ0900 gap #6838/#6850.
 #[test]
-fn a_nested_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
+fn a_deeper_nested_record_match_field_binds_via_sub_path() {
     // Body references the deeper binder `a` below a nested-record field's own compound value. `f` is
-    // parameterized (non-nullary), so this exercises the check≡compile path — the diagnostic must NAME
-    // the feature, no CDZ0101.
+    // parameterized (non-nullary), so this exercises the check≡compile path — it must CHECK CLEAN now.
     let src = "(module m (def (f (: t (Tuple (Record (x (Tuple Int64 Int64))) Int64))) \
                (match t ((tuple (record (x (tuple a b))) c) (+ (+ a b) c)))) (export f))";
     let all = diags_of(src);
@@ -1059,13 +1060,11 @@ fn a_nested_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder(
         "no misleading 'unbound name' for a deeper nested-record binder: {all:?}"
     );
     assert!(
-        all.iter().any(|d| d.code.as_deref() == Some("CDZ0900")
-            && d.message.contains(
-                "record sub-pattern nested inside a tuple/list/constructor match pattern"
-            )),
-        "check names the unimplemented deeper-nesting feature as a CODED decline (CDZ0900, not the old \
-         CDZ0201 malformed-reject — a record field value binder is spec-valid per §235, so this is a \
-         graceful deferral): {all:?}"
+        all.iter().all(|d| !d
+            .message
+            .contains("record sub-pattern nested inside a tuple/list/constructor match pattern")),
+        "the deeper nested-compound MATCH field binder now BINDS via the RecordField sub_path (§235) — \
+         no CDZ0900 'not supported' decline: {all:?}"
     );
 }
 

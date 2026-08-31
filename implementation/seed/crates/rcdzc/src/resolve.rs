@@ -1829,13 +1829,14 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // `match_arm_nested_record_binds_path` cannot fire for a guard-cond reference (its `from == guard_cond`
     // check misses). Without this, a guard reading a nested-record binder was a spurious CDZ0101 while the
     // body reading the same binder compiled (breaker's s3).
-    if let Some((scrutinee, path, key, heads)) =
+    if let Some((scrutinee, path, key, sub_path, heads)) =
         guard_cond_nested_record_binds_path(db, form, from, name)
     {
         return Some(Resolved::RecordField {
             scrutinee,
             path: path.into(),
             key,
+            sub_path: sub_path.into(),
             heads: heads.into(),
         });
     }
@@ -1876,17 +1877,25 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // a))` resolves to a PROJECTION of the scrutinee at field `x` — `Resolved::Member { operand: scrutinee,
     // key: x }`, the same `(. scrutinee x)` form that folds to a `Core::Proj` at the field's sorted slot
     // (records have no discriminant, so a top-level record arm needs no probe — the binder read is the
-    // ordinary member access, zero new IR). A binder NESTED in a compound field value cannot yet be wired
-    // (a record field projects by NAME and `PathStep` has no name-keyed step to compose a further descent),
-    // so `match_arm_record_binds` returns `None` for the key and we decline cleanly, naming the feature
-    // rather than emitting a misleading CDZ0101.
-    if let Some((scrutinee, key)) = match_arm_record_binds(db, form, from, name) {
-        return Some(match key {
-            Some(key) => Resolved::Member {
+    // ordinary member access, zero new IR). A binder NESTED in a positional (tuple/list) field value now
+    // WIRES too (§235): it resolves to a `RecordField` with an EMPTY path (the record IS the whole arm
+    // pattern) reading field `key`, then descending `sub_path` into the field value — the record field
+    // read lowers to `Elem(slot)`, and the positional descent appends more `Elem` steps. A record/variant
+    // BELOW the field (`Unwireable`) still declines cleanly, naming the feature.
+    if let Some((scrutinee, bind)) = match_arm_record_binds(db, form, from, name) {
+        return Some(match bind {
+            RecordArmBind::Bare(key) => Resolved::Member {
                 operand: scrutinee,
                 key,
             },
-            None => Resolved::Poison(Reject::unsupported(
+            RecordArmBind::Deeper(key, sub_path) => Resolved::RecordField {
+                scrutinee,
+                path: Vec::new().into(),
+                key,
+                sub_path: sub_path.into(),
+                heads: Vec::new().into(),
+            },
+            RecordArmBind::Unwireable => Resolved::Poison(Reject::unsupported(
                 "a nested compound sub-pattern inside a record match pattern is not supported \
                  (a record match binds its fields to bare names; destructure a nested field with a \
                  further `match` or `let`)",
@@ -1925,13 +1934,14 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // for it — the slot resolves at fold from `key`), so `path` reaches the RECORD, not the field. A
     // TOP-LEVEL record arm is Case 6rec's job (`match_arm_record_binds` → `Member`), so a non-empty path is
     // required here. Complements Case 6rec; wireable BEFORE the deeper-nesting decline below.
-    if let Some((scrutinee, path, key, heads)) =
+    if let Some((scrutinee, path, key, sub_path, heads)) =
         match_arm_nested_record_binds_path(db, form, from, name)
     {
         return Some(Resolved::RecordField {
             scrutinee,
             path: path.into(),
             key,
+            sub_path: sub_path.into(),
             heads: heads.into(),
         });
     }
@@ -2859,7 +2869,13 @@ fn guard_cond_nested_record_binds_path(
     form: StructId,
     from: StructId,
     name: &str,
-) -> Option<(StructId, Vec<crate::core::PathStep>, Symbol, Vec<StructId>)> {
+) -> Option<(
+    StructId,
+    Vec<crate::core::PathStep>,
+    Symbol,
+    Vec<crate::core::PathStep>,
+    Vec<StructId>,
+)> {
     let g = db.ast.as_form(form, "guard")?;
     if g.len() != 2 || g[1] != from {
         return None;
@@ -2883,11 +2899,11 @@ fn guard_cond_nested_record_binds_path(
     // required (a TOP-LEVEL record guard is Case 6recg's).
     let mut path = Vec::new();
     let mut heads = Vec::new();
-    let key = find_record_binder_in_pattern(db, pattern, name, &mut path, &mut heads)?;
+    let (key, sub_path) = find_record_binder_in_pattern(db, pattern, name, &mut path, &mut heads)?;
     if path.is_empty() {
         return None; // the record is the whole guard pattern → Case 6recg's job
     }
-    Some((scrutinee, path, key, heads))
+    Some((scrutinee, path, key, sub_path, heads))
 }
 
 /// If `form` is a guard `(guard (list p… [.. rest]) <cond>)` ascended from its `<cond>`, and the LIST
@@ -3131,12 +3147,21 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
 /// bound by this record pattern (a genuinely-unbound reference falls through to its real CDZ0101). GATED to
 /// a genuine match arm over a record pattern, so a `(record …)` VALUE expression (not a pattern) is
 /// untouched.
+/// How a top-level `(record …)` match arm binds `name`: a BARE field (→ a `Member` projection), a DEEPER
+/// positional field value (→ a `RecordField` reading field `key` then descending `sub_path`, §235), or an
+/// UNWIREABLE deeper field (a record/variant BELOW the field — not yet composable, → the coded decline).
+enum RecordArmBind {
+    Bare(Symbol),
+    Deeper(Symbol, Vec<crate::core::PathStep>),
+    Unwireable,
+}
+
 fn match_arm_record_binds(
     db: &Db,
     form: StructId,
     from: StructId,
     name: &str,
-) -> Option<(StructId, Option<Symbol>)> {
+) -> Option<(StructId, RecordArmBind)> {
     let Struct::List(pb) = db.ast.get(form) else {
         return None;
     };
@@ -3169,18 +3194,22 @@ fn match_arm_record_binds(
             && name != "_"
             && let Some(key) = read_key(db, key_id)
         {
-            return Some((scrutinee, Some(key)));
+            return Some((scrutinee, RecordArmBind::Bare(key)));
         }
     }
-    // Otherwise: is `name` bound NESTED inside a field's compound value? (The not-yet-wired case — the
-    // caller declines naming the feature. A name bound by NO field returns `None` → its real CDZ0101.)
+    // Otherwise: is `name` bound NESTED inside a field's compound value (§235)? A TUPLE/LIST field value is
+    // positional — the binder descends by `Elem` (+ `Payload` for a variant), which composes into a
+    // `RecordField` `sub_path` (Deeper). A nested RECORD field value would need a deferred name-keyed slot,
+    // and a variant below the field needs a `sub_heads` entry `RecordField` does not carry — both are NOT
+    // yet wired (Unwireable → the caller's coded decline). A name bound by NO field returns `None` → its
+    // real CDZ0101.
     for &pair in fields {
-        if let Some((_key_id, value_pat)) = record_pattern_field_kv(db, pair) {
-            let (mut path, mut heads) = (Vec::new(), Vec::new());
+        if let Some((key_id, value_pat)) = record_pattern_field_kv(db, pair) {
+            let (mut sub_path, mut sub_heads) = (Vec::new(), Vec::new());
             let bound = if is_tuple_pattern(db, value_pat) {
-                find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
+                find_binder_in_tuple(db, value_pat, name, &mut sub_path, &mut sub_heads)
             } else if is_list_pattern(db, value_pat) {
-                find_binder_in_list(db, value_pat, name, &mut path, &mut heads)
+                find_binder_in_list(db, value_pat, name, &mut sub_path, &mut sub_heads)
             } else if db
                 .ast
                 .compound_form_of(value_pat, crate::ast::CompoundCtor::Record)
@@ -3188,10 +3217,16 @@ fn match_arm_record_binds(
             {
                 record_pattern_binds_name(db, value_pat, name)
             } else {
-                find_binder_in_pattern(db, value_pat, name, &mut path, &mut heads)
+                find_binder_in_pattern(db, value_pat, name, &mut sub_path, &mut sub_heads)
             };
             if bound {
-                return Some((scrutinee, None));
+                // Wireable iff the descent is all-`Elem` (no `Payload` → empty `sub_heads`) and the field
+                // key resolves — the tuple/list-below-field case. Else Unwireable (record/variant below).
+                let bind = match read_key(db, key_id) {
+                    Some(key) if sub_heads.is_empty() => RecordArmBind::Deeper(key, sub_path),
+                    _ => RecordArmBind::Unwireable,
+                };
+                return Some((scrutinee, bind));
             }
         }
     }
@@ -4674,7 +4709,13 @@ fn match_arm_nested_record_binds_path(
     form: StructId,
     from: StructId,
     name: &str,
-) -> Option<(StructId, Vec<crate::core::PathStep>, Symbol, Vec<StructId>)> {
+) -> Option<(
+    StructId,
+    Vec<crate::core::PathStep>,
+    Symbol,
+    Vec<crate::core::PathStep>,
+    Vec<StructId>,
+)> {
     let Struct::List(pb) = db.ast.get(form) else {
         return None;
     };
@@ -4700,11 +4741,11 @@ fn match_arm_nested_record_binds_path(
     // A TOP-LEVEL record is Case 6rec's, not here — descend the compound for a nested record sub-pattern.
     let mut path = Vec::new();
     let mut heads = Vec::new();
-    let key = find_record_binder_in_pattern(db, arm_pat, name, &mut path, &mut heads)?;
+    let (key, sub_path) = find_record_binder_in_pattern(db, arm_pat, name, &mut path, &mut heads)?;
     if path.is_empty() {
         return None; // the record is the whole pattern → Case 6rec's job
     }
-    Some((scrutinee, path, key, heads))
+    Some((scrutinee, path, key, sub_path, heads))
 }
 
 /// Descend a COMPOUND pattern (tuple/list/variant) looking for a `(record …)` sub-pattern that binds `name`
@@ -4722,9 +4763,12 @@ fn find_record_binder_in_pattern(
     name: &str,
     path: &mut Vec<crate::core::PathStep>,
     heads: &mut Vec<StructId>,
-) -> Option<Symbol> {
-    // A RECORD pattern here: does a BARE-binder field `(= key name)` bind `name`? (`path` reaches THIS
-    // record; the field is name-keyed, no step pushed.)
+) -> Option<(Symbol, Vec<crate::core::PathStep>)> {
+    // A RECORD pattern here: `path` reaches THIS record. Return the field `key` that binds `name`, plus the
+    // `sub_path` — the descent BELOW that field's value (empty for a BARE-binder field). A record field is
+    // name-keyed (its sorted slot resolves at fold), so no step is pushed onto `path` for the field itself;
+    // the `sub_path` is the further `Elem`/`Payload` walk INTO the field value when it is a compound
+    // sub-pattern (§235: a field value binder may be any nested pattern).
     if db
         .ast
         .compound_form_of(pattern, CompoundCtor::Record)
@@ -4732,15 +4776,39 @@ fn find_record_binder_in_pattern(
     {
         let fields = db.ast.compound_form_of(pattern, CompoundCtor::Record)?;
         for &pair in fields {
-            if let Some((key_id, sub)) = record_pattern_field_kv(db, pair)
-                && db.ast.as_name(sub) == Some(name)
-                && name != "_"
-                && let Some(key) = read_key(db, key_id)
-            {
-                return Some(key);
+            let Some((key_id, sub)) = record_pattern_field_kv(db, pair) else {
+                continue;
+            };
+            let Some(key) = read_key(db, key_id) else {
+                continue;
+            };
+            if name == "_" {
+                continue;
             }
-            // A field value that is a further COMPOUND binding `name` is out of scope (deeper nesting is not
-            // yet wired — the caller's coded decline names the feature).
+            // BARE-binder field `(= key name)` — `name` IS this field, no descent.
+            if db.ast.as_name(sub) == Some(name) {
+                return Some((key, Vec::new()));
+            }
+            // DEEPER: the field VALUE is a compound sub-pattern binding `name` — descend it positionally,
+            // collecting the `sub_path` (§235). A TUPLE/LIST field value is positional (resolve-time
+            // `Elem`), and a variant descends by `Payload`. A nested RECORD field value would need a
+            // deferred name-keyed slot (not a resolve-time step) — NOT yet wired here, so it stays declined
+            // (the caller's coded decline names it). A `Payload` step below a field needs a `sub_heads`
+            // entry the `RecordField` does not yet carry, so a variant BELOW the field is also deferred:
+            // accept ONLY an all-`Elem` sub_path (the tuple/list nesting — the #tuple(c d)-below-field case).
+            let (mut sub_path, mut sub_heads) = (Vec::new(), Vec::new());
+            let bound = if is_tuple_pattern(db, sub) {
+                find_binder_in_tuple(db, sub, name, &mut sub_path, &mut sub_heads)
+            } else if is_list_pattern(db, sub) {
+                find_binder_in_list(db, sub, name, &mut sub_path, &mut sub_heads)
+            } else if db.ast.compound_form_of(sub, CompoundCtor::Record).is_some() {
+                false // nested record below a field: deferred name-keyed slot — follow-up
+            } else {
+                find_binder_in_pattern(db, sub, name, &mut sub_path, &mut sub_heads)
+            };
+            if bound && sub_heads.is_empty() {
+                return Some((key, sub_path));
+            }
         }
         return None;
     }
@@ -5107,7 +5175,7 @@ fn last_binder_named(
             // the match path). Placed AFTER the shape cases so a directly-bound name resolves first.
             {
                 let (mut path, mut heads) = (Vec::new(), Vec::new());
-                if let Some(key) =
+                if let Some((key, sub_path)) =
                     find_record_binder_in_pattern(db, lhs, name, &mut path, &mut heads)
                     && !path.is_empty()
                 {
@@ -5115,6 +5183,7 @@ fn last_binder_named(
                         scrutinee: kv[1],
                         path: path.into(),
                         key,
+                        sub_path: sub_path.into(),
                         heads: heads.into(),
                     });
                 }
