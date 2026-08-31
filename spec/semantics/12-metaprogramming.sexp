@@ -2602,12 +2602,16 @@ c")))
   (error CDZ0201))
 
 (case
-  "read of the empty string declines"
+  "read of the empty string rejects with CDZ0201 (no s-expression, coded like its malformed siblings)"
   (doc
-    "`(Ast.read \"\")` — no s-expression at all. The empty string parses to no node, so `read` declines
-           (never a trap or an empty/garbage AST). Pins the zero-input edge of the reader's totality.")
+    "`(Ast.read \"\")` — no s-expression at all. The empty string parses to no node, so `read` REJECTS with
+           CDZ0201 (`lower_read`'s coded parse-failure arm) — never a trap or an empty/garbage AST. The
+           zero-input edge of the reader's totality: like the unbalanced `\"(((\"` and trailing `\"1 2\"`
+           siblings above, ill-formed/absent input is a coded rejection, not a codeless decline. (Corpus is
+           the impl-independent spec: a user-facing reject asserts its code — v-corpus-harness spot-confirmed
+           the same CDZ0201 + message as the sibling.)")
   (input (Ast.read ""))
-  (declines))
+  (error CDZ0201))
 
 (case
   "read classifies a lone punctuation token as an Ast.Name and it round-trips"
