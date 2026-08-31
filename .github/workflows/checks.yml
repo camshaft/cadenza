@@ -160,6 +160,11 @@ jobs:
       # (checks.<sys>.decline-professionalism). cwd = repo root, so the scan resolves rcdzc/src from CWD.
       - name: decline-message professionalism lint
         run: cargo run -q -p xtask-mandates -- declines
+      # capability-error (v-fleet-tooling gate-wiring 2026-08-31; scan v-corpus-harness #6924): no corpus
+      # case pins a capability-limit code (CDZ0900) as an (error …) — the impl-independent-spec guard.
+      # ADVISORY here; the TEETH are the localGate fold (checks.<sys>.capability-error).
+      - name: capability-error corpus lint
+        run: cargo run -q -p cdz-corpus -- capability-error-check spec/semantics/*.sexp
 
   # ── standalone-crate gate ───────────────────────────────────────────────────
   # `fleet/slack-bridge` is its OWN cargo workspace (its slack-morphism/tokio async tree is kept out of
