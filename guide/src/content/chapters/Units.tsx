@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { AppLink } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
@@ -99,12 +99,12 @@ export default function Units() {
     (Unit.in (Unit.of #"millimeter") (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
     (Rational.of 127 20)))`}
       />
-      <P>That reads <C>true</C>: the converted value is the exact rational <C>127/20</C>, not a float approximation of 6.35. The exactness comes from the <em>value</em> type: the same conversion with a rational never accumulates the drift a float would. Sum a third of a millimetre three times and you land back on exactly <C>1</C>, so the comparison against <C>(Rational.of 1 1)</C> is <C>true</C>, which floating point can't promise:</P>
+      <P>That reads <C>true</C>: the converted value is the exact rational <C>127/20</C>, not a float approximation of 6.35. The exactness comes from the <em>value</em> type: the same conversion with a rational never accumulates the drift a float would. Sum a third of a millimetre three times and you land back on exactly <C>1</C>, so the comparison against <Cadenza>(Rational.of 1 1)</Cadenza> is <C>true</C>, which floating point can't promise:</P>
       <Runnable
         source={`(def (main) (let ((t (Rational.of 1 3))) (= (+ (+ t t) t) (Rational.of 1 1))))`}
       />
       <P>This is the split that makes the CAD model trustworthy: the <em>model</em> (coordinates, dimensions, bolt positions) stays exact in rationals and units, so a bounding box reports true dimensions and a metric-plus-imperial assembly is precise to the fraction. Float only appears at the very end, in the <em>mesh</em> the renderer draws (an arbitrary-angle rotation needs sine and cosine, which aren't rational). Exact where it matters, float only at the geometry kernel, and the <AppLink to="/cad"> CAD page </AppLink> lets you see a model like this rendered. The <AppLink to="/calculator"> calculator </AppLink> works in dimensioned quantities too, if you'd rather just do unit arithmetic at a prompt.</P>
-      <Why tenet="Dimensions are checked, then erased">Units live entirely at compile time. <C>(Qty.of 5.0 meter)</C> and the bare <C>5.0</C> emit <em>byte-identical</em> code: the unit is a static claim the checker verifies and then throws away, so a dimensional mismatch is always a compile error (CDZ0501) and never a runtime trap. You get the discipline of dimensional analysis (a length never adds to a time, a velocity is length over time) with zero runtime cost. It's the same principle as the rest of the numeric model: Cadenza refuses to guess what you meant, and here it refuses at the moment you write it.</Why>
+      <Why tenet="Dimensions are checked, then erased">Units live entirely at compile time. <Cadenza>(Qty.of 5.0 meter)</Cadenza> and the bare <C>5.0</C> emit <em>byte-identical</em> code: the unit is a static claim the checker verifies and then throws away, so a dimensional mismatch is always a compile error (CDZ0501) and never a runtime trap. You get the discipline of dimensional analysis (a length never adds to a time, a velocity is length over time) with zero runtime cost. It's the same principle as the rest of the numeric model: Cadenza refuses to guess what you meant, and here it refuses at the moment you write it.</Why>
       <H2>A quantity is a value you can key by</H2>
       <P>That erasure is also why a quantity works as a value in its own right: the unit is gone at run time, but the magnitude is a perfectly good map key. Build a map under a five-kilometre quantity, then look it up with a separately-constructed but equal key, and it hits, because quantities compare by content like every other value:</P>
       <Runnable
@@ -169,7 +169,7 @@ export default function Units() {
     (Unit.in (Unit.of #"millimeter") (Qty.of (Rational.of 1 4) (Unit.of #"inch")))
     (Rational.of 127 20)))`}
         expected="true"
-        hint={<>A quarter inch is <C>(Rational.of 1 4)</C>, numerator <C>1</C>. One inch is <C>25.4</C> mm, so a quarter is <C>6.35</C> mm, which as an exact fraction is <C>127/20</C>. The check confirms the conversion landed on that rational exactly.</>}
+        hint={<>A quarter inch is <Cadenza>(Rational.of 1 4)</Cadenza>, numerator <C>1</C>. One inch is <C>25.4</C> mm, so a quarter is <C>6.35</C> mm, which as an exact fraction is <C>127/20</C>. The check confirms the conversion landed on that rational exactly.</>}
       />
     </article>
   );
