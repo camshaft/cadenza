@@ -1146,9 +1146,12 @@ pub fn emit(
                 // now that the shared-`Reject` block is split, this branch is an independent site
                 // v-deferral-declines can tag with `DeclineId::WasmValueFormWalkerRecursive` (their catalog +
                 // drift-check ownership) without touching its three siblings.
-                return Err(Reject::unsupported(format!(
-                    "{prefix}: rendering this value as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / runtime-collection result); folding it to a scalar is supported"
-                )));
+                return Err(Reject::declined(
+                    crate::diag::DeclineId::WasmValueFormWalkerRecursive,
+                    format!(
+                        "{prefix}: rendering this value as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / runtime-collection result); folding it to a scalar is supported"
+                    ),
+                ));
             }
         }
         let result =
@@ -8866,11 +8869,14 @@ fn emit_bytes_provider_member(
     for &def in &layout.order {
         let body = def_body(db, def)?;
         if let Some((op, _, ty)) = host::first_unrepresentable_host_op(db, body, true) {
-            return Err(Reject::unsupported(format!(
-                "a bytes-crossing member calls host op `{op}` whose `{ty}` signature has no host-boundary \
-                 form (a compound host result like `option<list<u8>>` needs the host compound-result \
-                 ABI); a representable host op is emitted"
-            )));
+            return Err(Reject::declined(
+                crate::diag::DeclineId::WasmBytesCrossingHostOpNoBoundaryForm,
+                format!(
+                    "a bytes-crossing member calls host op `{op}` whose `{ty}` signature has no host-boundary \
+                     form (a compound host result like `option<list<u8>>` needs the host compound-result \
+                     ABI); a representable host op is emitted"
+                ),
+            ));
         }
     }
     // Reuse the up-front host-import probe (same walk) that decided the static-strip above.
