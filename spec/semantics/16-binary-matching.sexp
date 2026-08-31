@@ -104,6 +104,30 @@
   (input  (do (def (main) (bin (i8 200))) (export main)))
   (error  CDZ0304 (message "Int8") (message "-128..=127")))
 
+; A fixed-width integer bin segment is a BYTE-ALIGNED width — u8/u16/u32/u64 or i8/i16/i32/i64. A uNN/iNN
+; head with any OTHER width (u24, u7, u128, i0) is rejected (CDZ0201) naming the supported widths AND
+; pointing a non-byte-aligned width at the `(bits v k)` segment (not the generic "unrecognized kind" which
+; told the author to write what they wrote). A CONFIDENT near-miss (u166→u16, same signedness) carries a
+; rename fix; a width too far (u128) keeps the guidance but no misleading rename. A genuinely unrecognized
+; head (frob, u, i) keeps the generic message. (migrated from rcdzc
+; a_non_byte_aligned_int_bin_segment_names_the_supported_widths.)
+
+(case "a non-byte-aligned integer bin segment width names the supported widths and the bits alternative"
+  (input  (do (def (main) (bin (u24 1))) (export main)))
+  (error  CDZ0201 (message "u8/u16/u32/u64") (message "(bits v k)") (message "u24")))
+
+(case "a genuinely unrecognized bin segment kind keeps the generic message, not the width guidance"
+  (input  (do (def (main) (bin (frob 1))) (export main)))
+  (error  CDZ0201 (message "unrecognized bin segment kind")))
+
+(case "a near-miss integer bin segment width carries a rename fix to the byte-aligned width"
+  (input  (do (def (main) (bin (u166 1))) (export main)))
+  (error  CDZ0201 (fix (kind replace) (replacement "u16") (unverified))))
+
+(case "a bin segment width too far from a byte-aligned kind keeps the bits guidance but carries no rename fix"
+  (input  (do (def (main) (bin (u128 1))) (export main)))
+  (error  CDZ0201 (message "u8/u16/u32/u64") (message "(bits v k)") (no-fix)))
+
 (case "a u16 segment encodes an integer big-endian by default"
   (doc    "`(bin (u16 258))` encodes 258 (0x0102) as two bytes, most-significant first — big-endian is
            the default byte order, so the result is `(Bytes.of (list 1 2))`. Pins the default-endianness
