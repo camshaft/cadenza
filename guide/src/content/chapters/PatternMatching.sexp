@@ -35,14 +35,14 @@
 (def (main) (is-vowel #\e))))
   (p (c "#\\e") " takes its arm, so the answer is " (c "true") ". Change it to a consonant like " (c "#\\z") " and the wildcard arm answers " (c "false") ". As with numbers and strings, the " (c "_") " arm is required, since " (c "Char") " has far too many values for the compiler to see them all listed.")
   (h2 "Sum types")
-  (p "A sum type is a set of tagged variants. You declare it with " (c "type") ", build a value with one of its constructors, and take it apart by matching each variant. Here " (c "Opt") " is either " (c "Some") " carrying an " (c "Int64") ", or " (c "None") ". The " (c "(Some x)") " arm " (em "binds") " the payload to " (c "x") ":")
+  (p "A sum type is a set of tagged variants. You declare it with " (c "type") ", build a value with one of its constructors, and take it apart by matching each variant. Here " (c "Opt") " is either " (c "Some") " carrying an " (c "Int64") ", or " (c "None") ". The " (cdz "(Some x)") " arm " (em "binds") " the payload to " (c "x") ":")
   (runnable
     (source (type Opt (Some Int64) (None unit))
 (def (main)
   (match (Some 7)
     ((Some x) x)
     ((None _) 0)))))
-  (p "Swap " (c "(Some 7)") " for " (c "(None unit)") " and Run to take the other arm, which returns " (c "0") ".")
+  (p "Swap " (cdz "(Some 7)") " for " (cdz "(None unit)") " and Run to take the other arm, which returns " (c "0") ".")
   (h2 "The compiler checks you covered every case")
   (p "Exhaustiveness is what this buys you. Drop the " (c "None") " arm and the compiler " (em "refuses") " to compile, because it can see, from the type, that a case is unhandled:")
   (note "This one is " (strong "meant to be refused") ". Run it and read the status bar: " (c "non-exhaustive match") ", the missing variant named for you, before the program ever runs.")
@@ -75,7 +75,7 @@
 (def (main) (wait (Red unit)))))
   (note "This is the typed cousin of the symbol dispatch from the Symbols chapter. A symbol tag is checked with " (c "=") " and any typo compiles; a sum's variants are checked by the compiler, so a forgotten or misspelled case is caught. Reach for a sum when the set of cases is fixed and worth enforcing.")
   (h2 "Matching a map by key")
-  (p "A " (c "match") " can also look " (em "inside a collection") ". A map pattern, " (c "#map((= key binder) (.. rest))") ", fires when the map contains that key, binding the associated value to " (c "binder") " (and the leftover entries to " (c "rest") "). It's the pattern-matching counterpart to a " (c "Map.lookup") ": here " (c "setting") " reads the " (c "\"width\"") " from a config map, returning " (c "(Some v)") " when the key is present and " (c "(None unit)") " when it's absent, because a missing key is an absence, not a magic number:")
+  (p "A " (c "match") " can also look " (em "inside a collection") ". A map pattern, " (cdz "#map((= key binder) (.. rest))") ", fires when the map contains that key, binding the associated value to " (c "binder") " (and the leftover entries to " (c "rest") "). It's the pattern-matching counterpart to a " (c "Map.lookup") ": here " (c "setting") " reads the " (c "\"width\"") " from a config map, returning " (cdz "(Some v)") " when the key is present and " (cdz "(None unit)") " when it's absent, because a missing key is an absence, not a magic number:")
   (runnable
     (source (def (setting m)
   (match m
@@ -83,7 +83,7 @@
     (_ (None unit))))
 (def (main)
   (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))))
-  (p "The map has a " (c "\"width\"") ", so the arm fires, binds " (c "v") " to " (c "80") ", and returns " (c "(Some 80)") ". Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns " (c "(None unit)") ". Toggle to the conventional surface and the pattern reads as " (c "#{ \"width\" = v, .. rest }") ", a map-literal shape on the left of a match arm (the " (strong "Maps &amp; sets") " chapter later builds out maps as values).")
+  (p "The map has a " (c "\"width\"") ", so the arm fires, binds " (c "v") " to " (c "80") ", and returns " (cdz "(Some 80)") ". Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns " (cdz "(None unit)") ". The " (strong "Maps &amp; sets") " chapter later builds out maps as values.")
   (h2 "Matching a tuple's shape")
   (p "A tuple pattern takes a value apart by " (em "position") ", and a trailing rest marker " (c "(.. rest)") " gathers the elements you didn't name into a smaller tuple, the positional twin of a list's " (c ".. rest") ". Here " (cdz "#tuple(a b (.. rest))") " binds " (c "a") " and " (c "b") " to the first two elements and " (c "rest") " to a tuple of whatever trails, so reading " (c "rest") " back with " (c ".0") " recovers the third element:")
   (runnable
@@ -125,7 +125,7 @@
     (hint "The missing case is " (c "None") "; an arm is a " (c "(pattern body)") " pair: " (c "((None _) 0)") "."))
   (exercise
     (id "pattern-matching:2")
-    (prompt "Write the " (em "guard condition") " so " (c "grade") " returns " (c "1") " for a passing score of " (c "60") " or more, and " (c "0") " otherwise. With " (c "(grade 75)") " the answer is " (c "1") ".")
+    (prompt "Write the " (em "guard condition") " so " (c "grade") " returns " (c "1") " for a passing score of " (c "60") " or more, and " (c "0") " otherwise. With " (cdz "(grade 75)") " the answer is " (c "1") ".")
     (starter (def (grade s)
   (match s
     ((guard x ?) 1)
