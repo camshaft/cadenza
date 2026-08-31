@@ -1,6 +1,6 @@
 ; Bytes — the byte-sequence value form the seed realizes so the Cadenza-authored
 ; compiler can construct a component's wasm bytes as an ordinary value
-; (bootstrap.md §"The Compiler Is Authored In Cadenza, Not In The Seed";
+; (bootstrap.md §"The Self-Hosted Compiler Is Authored In Cadenza";
 ; self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous";
 ; options/realized-capability-set/seed-ignition-set.md). The
 ; seed realizes the Bytes capability, so it runs these cases; a generation that does not
