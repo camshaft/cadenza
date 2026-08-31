@@ -9490,3 +9490,35 @@ pass	an out-of-range literal bound under a narrow let-binder annotation is range
 pass	member access on a name-alias (map …) is a type error
 pass	the elided-unit one-binder handler arm for a unit op compiles and runs
 pass	the elided-unit zero-binder handler arm for a unit op compiles and runs
+pass	a bare literal effect clause is a malformed effect declaration
+pass	a coercible mistyped resume value carries an of-conversion wrap fix
+pass	a constant value out of range for a non-aliased bit-field bin segment names the (UInt k) type and range
+pass	a constant value out of range for a signed bin segment names the signed type and negative-inclusive range
+pass	a constant value out of range for its unsigned bin segment is a provable trap naming value, type, range
+pass	a genuine top-level stray resume with no enclosing handler arm is rejected
+pass	a handle head that is a prelude scalar type names the head must be an effect
+pass	a handle head that is a prelude sum type names the head must be an effect
+pass	a handle head that is a type names the head must be an effect
+pass	a handle head that is a value def names the head must be an effect
+pass	a host with too many operands is rejected with a delete-the-surplus fix, no consequent no-home error
+pass	a non-canonical effect-name-less handle is rejected, with no consequent no-home error
+pass	a non-coercible mistyped resume value carries no coercion fix
+pass	a non-op list effect clause is a malformed effect declaration
+pass	a non-performing guard under a handle compiles and selects
+pass	a perform in an arm BODY (not the guard) under a handle folds and runs
+pass	a performing guard on a refutable inner pattern is CDZ0407 too
+pass	a performing guard on an irrefutable inner pattern is CDZ0407
+pass	a resume missing its next-state is rejected
+pass	a resume with too many operands is rejected with a delete-the-surplus fix
+pass	a scalar-mismatched perform argument names the operation with no structural-delta tail
+pass	a structurally-mismatched perform argument names the operation and the field-level delta
+pass	a suffixed BigInt literal annotated Int64 is a type mismatch, not a range-fit fault
+pass	a suffixed BigInt literal passed to an Int64 parameter is the same type mismatch
+pass	a suffixed BigInt literal that FITS Int64's range is still a type mismatch (the fault is the type, not the magnitude)
+pass	a value juxtaposed with a COMPOUND type names the shape but carries no fix
+pass	a value juxtaposed with a type without the colon names the missing-colon annotation with an add-: fix
+pass	an effect declaration with a leading doc clause is well-formed and its op handles + runs
+pass	an op clause with a non-name keeps the specific must-be-named reject, not the generic clause one
+pass	an unbound handle head keeps its own unbound-name error
+pass	applying a value to a NON-type value keeps the generic not-a-function message, not missing-colon
+pass	the BARE (unsuffixed) over-Int64 counterpart still range-checks as CDZ0302 (a grounding, not a mismatch)
