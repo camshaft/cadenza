@@ -6190,54 +6190,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_test_annotation_example_round_trips_both_directions_and_never_prints_the_backtick_at_form()
-     {
-        // REGRESSION for the operator's thrice-reported high-viz `@test` bug (concierge issue): a
-        // `(@ test (def …))` annotation on the ML surface must PRINT as `@test` above the def and PARSE
-        // that back to the same `(@ test …)` head — NOT the malformed `` `@`(test, <def>) `` backtick-quoted-
-        // symbol CALL that was reported (which broke every `@test`/`@property` example in both directions).
-        // Pin the operator's EXACT example (a `@test` def with an `assert-eq` body) so the specific case can
-        // never regress; the general annotation surface is covered above, but this thrice-reported case
-        // deserves its own witness. Both directions + a NEGATIVE assertion against the malformed form.
-        let sx =
-            r#"(@ test (def (two-plus-two-is-four) (assert-eq (+ 2 2) 4 "arithmetic is broken")))"#;
-        // s-expr → ML: prints `@test` on its own line above the def, no backtick-`@`-call.
-        let ml = print(&sexpr::read(sx).unwrap(), 80);
-        assert_eq!(
-            ml, "@test\ndef two-plus-two-is-four() = assert-eq(2 + 2, 4, \"arithmetic is broken\")",
-            "the @test annotation must print above the def, not as a backtick-@ call"
-        );
-        // The regression signature: the malformed output was a backtick-quoted `@` applied as a call.
-        assert!(
-            !ml.contains("`@`"),
-            "must not print the annotation as a backtick-quoted `@` symbol call: {ml}"
-        );
-        // ML → s-expr: `@test`-above-the-def parses back to the canonical `(@ test …)` head.
-        let back = parser::read_ml(&ml);
-        assert!(
-            back.ok(),
-            "the printed @test form must re-parse: {:?}",
-            back.errors
-        );
-        assert_eq!(
-            sexpr::print(&back.arenas),
-            sx,
-            "the ML @test form must re-read to the same (@ test …) head"
-        );
-        // The full s-expr↔ML round-trip is structurally faithful (what the guide/testing page relies on).
-        assert!(
-            sexpr::read(sx)
-                .unwrap()
-                .structurally_eq(&parser::read_ml(&ml).arenas),
-            "the operator's @test example must round-trip s-expr ⇄ ML structurally"
-        );
-        // `@property` — the other broken example — behaves the same way.
-        let prop = "(@ property (def (p x) (assert-eq x x \"reflexive\")))";
-        let prop_ml = print(&sexpr::read(prop).unwrap(), 80);
-        assert!(prop_ml.starts_with("@property\n"), "{prop_ml}");
-        assert_eq!(sexpr::print(&parser::read_ml(&prop_ml).arenas), prop);
-    }
+    // `the_test_annotation_example_round_trips_both_directions_and_never_prints_the_backtick_at_form`
+    // (regression witness for the operator's thrice-reported high-viz `@test` bug: `(@ test (def …))` must
+    // print `@test` above the def and re-read to the same `(@ test …)` head, NEVER the malformed
+    // `` `@`(test, <def>) `` backtick-quoted-symbol call) MIGRATED to the spec/syntax corpus (inc-6
+    // batch-36): ml/249-annotation-test-example
+    // `@test def two-plus-two-is-four() = assert-eq(2 + 2, 4, "arithmetic is broken")`→
+    // `(@ test (def (two-plus-two-is-four) (assert-eq (+ 2 2) 4 "arithmetic is broken")))`,
+    // ml/250-annotation-property-example `@property def p(x) = assert-eq(x, x, "reflexive")`→
+    // `(@ property (def (p x) (assert-eq x x "reflexive")))`. Each tree is a proper `(@ …)` head (subsuming
+    // the negative `` `@` `` assertion); the format.cdz pins the own-line-above `@test`/`@property` surface.
 
     #[test]
     fn annotation_on_a_compound_expression_parenthesizes_so_it_round_trips() {
@@ -6823,19 +6785,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn multi_line_match_arm_body_breaks_to_its_own_indented_line() {
-        // Operator follow-on to seq-86/87/89: a MULTI-LINE match-arm body goes on a NEW line indented
-        // one level under `=>` (a let-in chain / a body that wraps); a SINGLE-LINE body stays inline.
-        let out = assert_roundtrip(
-            "def profile-half-extent(p: Profile(Rational)) = match p with\n  | Profile.Rect(sz) => let Vec2.V2(w, h) = sz in Vec2.V2(rhalf(w), rhalf(h))\n  | Profile.Circle(r) => Vec2.V2(r, r)\n  | Profile.PathProfile(pth) => path-half-extent(pth)",
-            100,
-        );
-        assert_eq!(
-            out,
-            "def profile-half-extent(p: Profile(Rational)) = match p with\n  | Profile.Rect(sz) =>\n    let Vec2.V2(w, h) = sz in\n    Vec2.V2(rhalf(w), rhalf(h))\n  | Profile.Circle(r) => Vec2.V2(r, r)\n  | Profile.PathProfile(pth) => path-half-extent(pth)"
-        );
-    }
+    // `multi_line_match_arm_body_breaks_to_its_own_indented_line` (operator follow-on to seq-86/87/89: a
+    // MULTI-LINE match-arm body goes on a new line indented one level under `=>`; a SINGLE-LINE body stays
+    // inline) MIGRATED to the spec/syntax corpus (inc-6 batch-36): ml/251-multi-line-match-arm-body
+    // `def profile-half-extent(p: Profile(Rational)) = match p with | Profile.Rect(sz) => let Vec2.V2(w,
+    // h) = sz in … | …`. The format.cdz breaks the let-in arm body to its own indented lines while the
+    // single-line arms stay inline (verified byte-identical to the deleted width-100 assert at the corpus
+    // width — the break is structural: a let-in arm body always breaks).
 
     #[test]
     fn compound_body_indentation_is_coherent_operator_seq_86_87_89() {

@@ -1,0 +1,1 @@
+(@ test (def (two-plus-two-is-four) (assert-eq (+ 2 2) 4 "arithmetic is broken")))

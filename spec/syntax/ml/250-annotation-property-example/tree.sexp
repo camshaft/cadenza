@@ -1,0 +1,1 @@
+(@ property (def (p x) (assert-eq x x "reflexive")))
