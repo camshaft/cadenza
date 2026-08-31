@@ -1544,7 +1544,16 @@ pub(super) fn lower_negate(db: &mut Db, id: StructId, operand: StructId) -> Core
             );
             lower_rational_arith(db, Prim::Sub, zero, value)
         }
-        // FIXED-WIDTH INTEGER — `0 - e` via `lower_arith`, which folds a constant (a `0 - MIN` overflow →
+        // An UNSIGNED integer has no negation — `infer` authoritatively rejects it as CDZ0310 (v-inference's
+        // negate-operand check). Folding `0 - e` here would ALSO fire a redundant, MISLEADING CDZ0304
+        // ("overflows its integer type") — two errors for one fault. Emit the SAME CDZ0310 so the node-keyed
+        // dedup collapses it with infer's, leaving ONE primary error (unsigned negation is a type error, not
+        // an overflow). A definite unsigned type only: a DEFERRED sign grounds to signed (the default).
+        Ty::Int(it) if !it.ground_signed() => Core::Poison(Reject::coded(
+            crate::diag::Code::UnsignedNegation,
+            "negation is not defined on an unsigned integer type",
+        )),
+        // FIXED-WIDTH SIGNED INTEGER — `0 - e` via `lower_arith`, which folds a constant (a `0 - MIN` overflow →
         // CDZ0304) and otherwise emits the checked runtime subtract (its `x == MIN` guard is negation's).
         Ty::Int(_) => {
             let zero = synth_core(db, Core::ConstInt(IntValue::zero()), inner.clone());
