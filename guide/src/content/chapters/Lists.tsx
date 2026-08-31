@@ -54,15 +54,15 @@ export default function Lists() {
 (def (main) (count #list(10 20 30 40)))`}
       />
       <P>Four elements in, so <C>4</C> out, and you never wrote the element type: <C>count</C> works on a list of anything, because <C>List.len</C> doesn't care what the elements are.</P>
-      <P>To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two cases: the empty list <C>#list()</C>, and a non-empty one <C>#list(x .. rest)</C>, which binds the first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C> and you fold over the whole list. Here <C>sum</C> adds the elements:</P>
+      <P>To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two cases: the empty list <Cadenza>#list()</Cadenza>, and a non-empty one <Cadenza>#list(x .. rest)</Cadenza>, which binds the first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C> and you fold over the whole list. Here <C>sum</C> adds the elements:</P>
       <Runnable
         source={`(def (sum xs) (match xs (#list() 0) (#list(x (.. rest)) (+ x (sum rest)))))
 
 (def (main) (sum #list(10 20 30)))`}
       />
-      <P>The empty case is the base case, <C>0</C>, the sum of nothing, and each step peels off one element and sums the rest, so <Cadenza>#list(10 20 30)</Cadenza> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>. Toggle to the ML surface and the pattern reads as <C>[x, .. rest]</C>, the shape spelled out. You didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over a list of <C>Int64</C>.</P>
+      <P>The empty case is the base case, <C>0</C>, the sum of nothing, and each step peels off one element and sums the rest, so <Cadenza>#list(10 20 30)</Cadenza> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>. You didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over a list of <C>Int64</C>.</P>
       <P>The <C>rest</C> after <C>..</C> is special: it binds the <em>whole tail</em> as one sublist, so it must be a plain name (or <C>_</C>), not another pattern. You can destructure the leading elements as deeply as you like, but you can't nest a pattern in the rest slot itself. This tries to, and the compiler stops you:</P>
-      <Note>This one is <strong>meant to be rejected</strong>: <C>#list(b .. r)</C> in the rest position asks to match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it, then match it.</Note>
+      <Note>This one is <strong>meant to be rejected</strong>: <Cadenza>#list(b .. r)</Cadenza> in the rest position asks to match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it, then match it.</Note>
       <Runnable
         source={`(match #list(1 2 3) (#list(a (.. #list(b (.. r)))) a) (_ 0))`}
         expect="error"
@@ -74,7 +74,7 @@ export default function Lists() {
   (#list(a (.. rest)) (match rest (#list(b (.. r)) b) (#list() 0)))
   (#list() 0))`}
       />
-      <P>A leading element can still be any pattern, so <C>#list(#tuple(x y) .. rest)</C> is fine, only the rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.</P>
+      <P>A leading element can still be any pattern, so <Cadenza>#list(#tuple(x y) .. rest)</Cadenza> is fine, only the rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.</P>
       <P>A list holds every element at once. Sometimes you want the elements without ever building the whole sequence, even an endless one. That's an <em>iterator</em>, next.</P>
       <H2>Your turn</H2>
       <Exercise

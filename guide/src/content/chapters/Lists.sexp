@@ -46,16 +46,16 @@
     (source (def (count xs) (List.len xs))
 (def (main) (count #list(10 20 30 40)))))
   (p "Four elements in, so " (c "4") " out, and you never wrote the element type: " (c "count") " works on a list of anything, because " (c "List.len") " doesn't care what the elements are.")
-  (p "To visit " (em "every") " element, match the list by shape. A " (c "match") " on a list has two cases: the empty list " (c "#list()") ", and a non-empty one " (c "#list(x .. rest)") ", which binds the first element to " (c "x") " and the " (em "rest") " of the list to " (c "rest") ". Recurse on " (c "rest") " and you fold over the whole list. Here " (c "sum") " adds the elements:")
+  (p "To visit " (em "every") " element, match the list by shape. A " (c "match") " on a list has two cases: the empty list " (cdz "#list()") ", and a non-empty one " (cdz "#list(x .. rest)") ", which binds the first element to " (c "x") " and the " (em "rest") " of the list to " (c "rest") ". Recurse on " (c "rest") " and you fold over the whole list. Here " (c "sum") " adds the elements:")
   (runnable
     (source (def (sum xs)
   (match xs
     (#list() 0)
     (#list(x .. rest) (+ x (sum rest)))))
 (def (main) (sum #list(10 20 30)))))
-  (p "The empty case is the base case, " (c "0") ", the sum of nothing, and each step peels off one element and sums the rest, so " (cdz "#list(10 20 30)") " is " (c "10 + (20 + (30 + 0))") " = " (c "60") ". Toggle to the ML surface and the pattern reads as " (c "[x, .. rest]") ", the shape spelled out. You didn't declare the element type either: it flows from the " (c "+") ", so " (c "sum") " is inferred over a list of " (c "Int64") ".")
+  (p "The empty case is the base case, " (c "0") ", the sum of nothing, and each step peels off one element and sums the rest, so " (cdz "#list(10 20 30)") " is " (c "10 + (20 + (30 + 0))") " = " (c "60") ". You didn't declare the element type either: it flows from the " (c "+") ", so " (c "sum") " is inferred over a list of " (c "Int64") ".")
   (p "The " (c "rest") " after " (c "..") " is special: it binds the " (em "whole tail") " as one sublist, so it must be a plain name (or " (c "_") "), not another pattern. You can destructure the leading elements as deeply as you like, but you can't nest a pattern in the rest slot itself. This tries to, and the compiler stops you:")
-  (note "This one is " (strong "meant to be rejected") ": " (c "#list(b .. r)") " in the rest position asks to match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it, then match it.")
+  (note "This one is " (strong "meant to be rejected") ": " (cdz "#list(b .. r)") " in the rest position asks to match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it, then match it.")
   (runnable
     (source (match #list(1 2 3)
   (#list(a .. #list(b .. r)) a)
@@ -69,7 +69,7 @@
      (#list(b .. r) b)
      (#list() 0)))
   (#list() 0))))
-  (p "A leading element can still be any pattern, so " (c "#list(#tuple(x y) .. rest)") " is fine, only the rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.")
+  (p "A leading element can still be any pattern, so " (cdz "#list(#tuple(x y) .. rest)") " is fine, only the rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.")
   (p "A list holds every element at once. Sometimes you want the elements without ever building the whole sequence, even an endless one. That's an " (em "iterator") ", next.")
   (h2 "Your turn")
   (exercise
