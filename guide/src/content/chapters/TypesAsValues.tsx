@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -39,25 +39,25 @@ export default function TypesAsValues() {
       <Runnable
         source={`(if (Type.eq (Type.of 5) Int64) 100 200)`}
       />
-      <P>A written type (<C>Int64</C>) and a reflected one (<C>(Type.of 5)</C>) are the same kind of value, so they compare freely. This is the point where inference and first-class types meet: the compiler computes a type, you compare it, and the answer picks the code, all before the program runs.</P>
+      <P>A written type (<C>Int64</C>) and a reflected one (<Cadenza>(Type.of 5)</Cadenza>) are the same kind of value, so they compare freely. This is the point where inference and first-class types meet: the compiler computes a type, you compare it, and the answer picks the code, all before the program runs.</P>
       <Note>This is the surface the compiler's own generic machinery is built on: a type passed as a value drives <em>ad-hoc polymorphism</em> (one name, a per-type implementation chosen at compile time), and a <C>const</C> parameter lets a caller fix a compile-time-known argument that's then erased. Both compile to specialized, type-free code, and the observable <em>value</em> is identical to the hand-written monomorphic version, so the abstraction costs nothing at runtime.</Note>
       <Why tenet="Types are first-class values, decided then erased">Most languages put types in a separate universe, a grammar you can't compute with, gone by the time anything runs. Cadenza keeps the erasure but drops the separation: a type is a value of type <C>Type</C>, computed and compared with ordinary code, so reflection (<C>Type.of</C>), type equality (<C>Type.eq</C>), and compile-time type branches need no new machinery. And because a type-value never flows from runtime data, all of it settles at compile time and vanishes, so you get the expressiveness of computing with types and the zero cost of erasing them.</Why>
       <H2>Your turn</H2>
       <Exercise
         id="types-as-values:1"
-        prompt={<>Compare two types at compile time. Fill the type to compare against so that <C>(Type.of true)</C> matches, making the comparison <C>true</C>, not <C>false</C>.</>}
+        prompt={<>Compare two types at compile time. Fill the type to compare against so that <Cadenza>(Type.of true)</Cadenza> matches, making the comparison <C>true</C>, not <C>false</C>.</>}
         starter={`(Type.eq (Type.of true) ?)`}
         solution={`(Type.eq (Type.of true) Bool)`}
         expected="true"
-        hint={<><C>(Type.of true)</C> is the type <C>Bool</C>, so comparing it against <C>Bool</C> is <C>true</C>. (Compare against <C>Int64</C> and you'd get <C>false</C>.)</>}
+        hint={<><Cadenza>(Type.of true)</Cadenza> is the type <C>Bool</C>, so comparing it against <C>Bool</C> is <C>true</C>. (Compare against <C>Int64</C> and you'd get <C>false</C>.)</>}
       />
       <Exercise
         id="types-as-values:2"
-        prompt={<>Two type-values are equal only when the types match exactly. Fill the value so its reflected type equals <C>(Type.of 5)</C>, an <C>Int64</C>, making the check <C>true</C>.</>}
+        prompt={<>Two type-values are equal only when the types match exactly. Fill the value so its reflected type equals <Cadenza>(Type.of 5)</Cadenza>, an <C>Int64</C>, making the check <C>true</C>.</>}
         starter={`(Type.eq (Type.of 5) (Type.of ?))`}
         solution={`(Type.eq (Type.of 5) (Type.of 99))`}
         expected="true"
-        hint={<><C>(Type.of 5)</C> is <C>Int64</C>, so you need another value whose type is <C>Int64</C>, any integer literal, e.g. <C>99</C>. A <C>true</C> or a <C>1.0</C> would be a different type and give <C>false</C>.</>}
+        hint={<><Cadenza>(Type.of 5)</Cadenza> is <C>Int64</C>, so you need another value whose type is <C>Int64</C>, any integer literal, e.g. <C>99</C>. A <C>true</C> or a <C>1.0</C> would be a different type and give <C>false</C>.</>}
       />
     </article>
   );
