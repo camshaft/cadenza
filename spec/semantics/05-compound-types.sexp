@@ -893,6 +893,65 @@
   (call main (: -1 Int64))
   (output (: 0 Int64)))
 
+; DEEP LITERAL MATCHING (operator-directed): a LITERAL value matched at DEPTH in a nested pattern — a
+; refutable literal-equality test at a sub-path leaf, composing with the record/tuple/variant descent. The
+; descent machinery (`pattern_constraints` recursing into a field's value at `Elem(<slot>)`) already lowers a
+; literal sub-pattern to a gated `LitTest` at that path, so a literal at any depth matches by value with a
+; same-shape fall-through. These pin it across kinds + depths (each a match HIT + a fall-through), per the
+; corpus-as-spec directive. (A literal kind that declined at depth would be a TODO with the expected value;
+; all pin PASS.)
+(case
+  "a deep INT literal matches at a record field (hit + fall-through)"
+  (input
+    (do
+      (def (f (: t (Record (: x Int64)))) (match t (#record((= x 1)) 100) (_ 0)))
+      (def (main (: n Int64)) (f #record((= x n))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 100 Int64))
+  (call main (: 2 Int64))
+  (output (: 0 Int64)))
+
+(case
+  "a deep NEGATIVE int literal matches a record field nested in a tuple (hit + fall-through)"
+  (input
+    (do
+      (def
+        (f (: t (Tuple (Record (: y Int64)) Int64)))
+        (match t (#tuple(#record((= y -1)) b) b) (_ 0)))
+      (def (main (: n Int64)) (f #tuple(#record((= y n)) 5)))
+      (export main)))
+  (call main (: -1 Int64))
+  (output (: 5 Int64))
+  (call main (: 3 Int64))
+  (output (: 0 Int64)))
+
+(case
+  "a deep STRING literal matches at a record field (hit + fall-through)"
+  (input
+    (do
+      (def (f (: t (Record (: s String)))) (match t (#record((= s "foo")) 7) (_ 0)))
+      (def (main (: n Int64)) (f #record((= s (if (> n 0) "foo" "bar")))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 7 Int64))
+  (call main (: -1 Int64))
+  (output (: 0 Int64)))
+
+(case
+  "a deep BOOL literal matches a record field nested in a tuple (hit + fall-through)"
+  (input
+    (do
+      (def
+        (f (: t (Tuple (Record (: p Bool)) Int64)))
+        (match t (#tuple(#record((= p true)) k) k) (_ 0)))
+      (def (main (: n Int64)) (f #tuple(#record((= p (> n 0))) 42)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (call main (: -1 Int64))
+  (output (: 0 Int64)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`
