@@ -6303,80 +6303,20 @@ mod tests {
         assert_eq!(print(&sexpr::read("(. (f a) 0)").unwrap(), 80), "f(a).0");
     }
 
-    #[test]
-    fn annotation_sigil_round_trips() {
-        // `@name form` is the general-purpose annotation sigil, canonically `(@ name form)` — the same
-        // sigil↔head pattern as `.` member-access and `,@` unquote-splicing. The annotation prints on its
-        // OWN line, ABOVE the form it modifies (the Rust `#[attr]\nfn …` convention), and re-reads to the
-        // same head form. `inline-never`/`inline-always` are the two names the compiler consumes today; the
-        // surface is name-agnostic.
-        assert_eq!(
-            assert_roundtrip("@inline-never def big(x) = x * 7", 80),
-            "@inline-never\ndef big(x) = x * 7"
-        );
-        // ML surface desugars to the `@`-headed canonical form; the s-expr surface reads it directly. The
-        // parser reads `@name` and the form below it across the line break (the form parses in prefix
-        // position), so the on-its-own-line print round-trips.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("@inline-never\ndef big(x) = x * 7").arenas),
-            "(@ inline-never (def (big x) (* x 7)))"
-        );
-        assert_eq!(
-            print(
-                &sexpr::read("(@ inline-always (def (f x) (+ x 1)))").unwrap(),
-                80
-            ),
-            "@inline-always\ndef f(x) = x + 1"
-        );
-        // A name-agnostic annotation (not an inline-policy name) round-trips just the same.
-        assert_eq!(
-            assert_roundtrip("@deprecated def old(x) = x", 80),
-            "@deprecated\ndef old(x) = x"
-        );
-        // Stacked annotations each get their own line, since the annotated form parses in prefix position.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("@a\n@b\ndef f(x) = x").arenas),
-            "(@ a (@ b (def (f x) x)))"
-        );
-        assert_eq!(
-            assert_roundtrip("@a @b def f(x) = x", 80),
-            "@a\n@b\ndef f(x) = x"
-        );
-    }
-
-    #[test]
-    fn parameterized_annotation_round_trips() {
-        // `@tag("slow")` — a CALL-STYLE annotation ARGUMENT (the operator's `@tag` surface): the `@`
-        // name slot is an APPLICATION glued to the name, canonically `(@ (tag "slow") form)`. It prints
-        // on its own line above the form, like a bare annotation, and re-reads to the same head form.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("@tag(\"slow\")\ndef f() = 1").arenas),
-            "(@ (tag \"slow\") (def (f) 1))"
-        );
-        assert_eq!(
-            assert_roundtrip("@tag(\"slow\") def f() = 1", 80),
-            "@tag(\"slow\")\ndef f() = 1"
-        );
-        // The canonical s-expr application-name shape prints back to the `@name(arg)` surface.
-        assert_eq!(
-            print(&sexpr::read("(@ (tag \"slow\") (def (f) 1))").unwrap(), 80),
-            "@tag(\"slow\")\ndef f() = 1"
-        );
-        // A parameterized annotation STACKS with a bare one, each on its own line.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("@test\n@tag(\"foo\")\ndef f() = 1").arenas),
-            "(@ test (@ (tag \"foo\") (def (f) 1)))"
-        );
-        assert_eq!(
-            assert_roundtrip("@test @tag(\"foo\") def f() = 1", 80),
-            "@test\n@tag(\"foo\")\ndef f() = 1"
-        );
-        // Multiple args round-trip too (the name slot is a general application).
-        assert_eq!(
-            assert_roundtrip("@cfg(\"a\", \"b\") def f() = 1", 80),
-            "@cfg(\"a\", \"b\")\ndef f() = 1"
-        );
-    }
+    // The annotation-sigil surface round-trips MIGRATED to the spec/syntax corpus (inc-6 batch-12):
+    //   * `annotation_sigil_round_trips` (`@name form` → canonical `(@ name form)`, printed on its OWN
+    //     line ABOVE the form — the Rust `#[attr]\nfn …` convention) → ml/91-annotation-sigil-inline-never
+    //     `@inline-never def big(x) = x * 7` → `(@ inline-never (def (big x) (* x 7)))`,
+    //     ml/92-annotation-sigil-name-agnostic `@deprecated …` (surface is name-agnostic),
+    //     ml/93-annotation-sigil-stacked `@a @b def f(x) = x` → `(@ a (@ b (def (f x) x)))` (each own line).
+    //   * `parameterized_annotation_round_trips` (`@tag("slow")` — a CALL-STYLE annotation whose name slot
+    //     is an application, canonical `(@ (tag "slow") form)`) → ml/94-annotation-parameterized,
+    //     ml/95-annotation-parameterized-stacked-with-bare `@test @tag("foo") …` →
+    //     `(@ test (@ (tag "foo") (def (f) 1)))`, ml/96-annotation-parameterized-multi-arg
+    //     `@cfg("a", "b") …` → `(@ (cfg "a" "b") (def (f) 1))`.
+    // Each case's format.cdz pins the own-line-above canonicalization; the sexp→ml `print((@ …))` oracles
+    // are subsumed by the ml cases' format goldens. (`attr_renders_on_its_own_line_above_the_def_operator_16`
+    // — the guide-derived EXACT `@test`/`@tag` cases + never-inline anti-case — stays Rust for now.)
 
     #[test]
     fn attr_renders_on_its_own_line_above_the_def_operator_16() {
