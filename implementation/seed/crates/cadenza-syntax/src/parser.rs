@@ -10233,33 +10233,12 @@ mod tests {
     // ml/391-set-literal-expr-element `#(x + 1)`→`#set((+ x 1))` (an expression element parses fully),
     // ml/392-set-literal-as-call-arg `contains(#(1, 2), 1)`→`(contains #set(1 2) 1)` (composes as an operand).
 
-    #[test]
-    fn bin_literal_desugars() {
-        use crate::sexpr;
-        // `b[u16(258), u8(1)]` desugars to the `(bin …)` grammar form — each segment is an ordinary
-        // call-shaped expression wrapped under the `bin` head.
-        assert_eq!(
-            sexpr::print(&parse_ok("b[u16(258), u8(1)]")),
-            "(bin (u16 258) (u8 1))"
-        );
-        // `b[]` is the zero-length Bytes value `(bin)`.
-        assert_eq!(sexpr::print(&parse_ok("b[]")), "(bin)");
-        // The `le` modifier and a `bits(v, k)` field carry through as ordinary call args.
-        assert_eq!(
-            sexpr::print(&parse_ok("b[u16(258, le), bits(1, 1)]")),
-            "(bin (u16 258 le) (bits 1 1))"
-        );
-        // A dependent-size `bytes(payload)` segment and a computed size expression parse fully.
-        assert_eq!(
-            sexpr::print(&parse_ok("b[u16(Bytes.len(payload)), bytes(payload)]")),
-            "(bin (u16 ((. Bytes len) payload)) (bytes payload))"
-        );
-        // It composes as an ordinary operand: a call argument and an equality operand.
-        assert_eq!(
-            sexpr::print(&parse_ok("b[u8(1)] == other")),
-            "(= (bin (u8 1)) other)"
-        );
-    }
+    // `bin_literal_desugars` (`b[…]` desugars to the `(bin …)` grammar form — each segment an ordinary
+    // call-shaped expression under the `bin` head) MIGRATED to the spec/syntax corpus (inc-6 batch-64):
+    // ml/237-bin-literal-typed-segments `b[u16(258), u8(1)]`→`(bin (u16 258) (u8 1))`, ml/239-bin-literal-empty
+    // `b[]`→`(bin)`, ml/393-bin-literal-le-modifier `b[u16(258, le), bits(1, 1)]`→`(bin (u16 258 le) (bits 1
+    // 1))`, ml/394-bin-literal-dependent-size `b[u16(Bytes.len(payload)), bytes(payload)]`→`(bin (u16 ((. Bytes
+    // len) payload)) (bytes payload))`, ml/395-bin-literal-as-operand `b[u8(1)] == other`→`(= (bin (u8 1)) other)`.
 
     #[test]
     fn a_def_parameter_may_be_a_destructuring_pattern() {
@@ -10311,25 +10290,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bin_pattern_desugars() {
-        use crate::sexpr;
-        // In pattern position `b[u16(n), bytes(rest)]` desugars to the same `(bin …)` head, but its
-        // segments are sub-PATTERNS: `u16(n)` binds `n`, `bytes(rest)` binds the tail.
-        assert_eq!(
-            sexpr::print(&parse_ok("match x with | b[u16(n), bytes(rest)] => n")),
-            "(match x ((bin (u16 n) (bytes rest)) n))"
-        );
-        // The empty binary pattern and a `le` modifier in a pattern segment.
-        assert_eq!(
-            sexpr::print(&parse_ok("match x with | b[] => 0")),
-            "(match x ((bin) 0))"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("match x with | b[u16(n, le)] => n")),
-            "(match x ((bin (u16 n le)) n))"
-        );
-    }
+    // `bin_pattern_desugars` (in pattern position `b[…]` desugars to the same `(bin …)` head with sub-PATTERN
+    // segments — `u16(n)` binds `n`, `bytes(rest)` binds the tail) MIGRATED to the spec/syntax corpus (inc-6
+    // batch-64): ml/240-bin-pattern-match `match x with | b[u16(n), bytes(rest)] => n`→`(match x ((bin (u16 n)
+    // (bytes rest)) n))`, ml/396-bin-pattern-empty `b[]`→`(match x ((bin) 0))`, ml/397-bin-pattern-le-modifier
+    // `b[u16(n, le)]`→`(match x ((bin (u16 n le)) n))`. (Single-segment `b[u16(n)]` is ml/241.)
 
     #[test]
     fn number_before_keyword_is_not_a_quantity() {

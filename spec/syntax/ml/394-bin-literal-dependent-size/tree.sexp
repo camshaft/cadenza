@@ -1,0 +1,1 @@
+(bin (u16 ((. Bytes len) payload)) (bytes payload))
