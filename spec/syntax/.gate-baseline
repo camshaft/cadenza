@@ -23,6 +23,10 @@ pass	sexp/13-match
 pass	sexp/14-doc-node
 pass	sexp/15-multi-comment
 pass	sexp/16-comment-in-list
+pass	sexp/21-comment-do-trailing
+pass	sexp/22-comment-do-leading
+pass	sexp/23-comment-call-arg
+pass	sexp/24-comment-compound-literal
 todo	ml/08-incomplete-binding
 todo	ml/10-unterminated-call
 todo	sexp/17-unterminated-list
