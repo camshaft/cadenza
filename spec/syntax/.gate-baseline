@@ -9,7 +9,16 @@ pass	ml/07-doc-comment
 pass	ml/09-bang-comment
 pass	ml/100-export-constructor-and-name
 pass	ml/101-member-wildcard
+pass	ml/102-param-type-annotation
+pass	ml/103-lambda-param-type-annotation
+pass	ml/104-fn-type-arrow-in-param
+pass	ml/105-fn-type-arrow-right-assoc
+pass	ml/106-fn-type-arrow-left-nested-parens
+pass	ml/107-return-type-annotation
+pass	ml/108-lambda-return-type
+pass	ml/109-return-type-curried
 pass	ml/11-nested-list
+pass	ml/110-return-type-from-body-ascription
 pass	ml/12-world-nullary-member
 pass	ml/13-world-full-decl
 pass	ml/14-world-wit-prim-list-option

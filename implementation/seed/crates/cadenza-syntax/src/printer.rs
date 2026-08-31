@@ -7043,68 +7043,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn type_annotated_parameter() {
-        // A `(: name Type)` binder in a signature prints as `name: Type` and round-trips.
-        assert_eq!(
-            assert_roundtrip("def annotated(a: Int64, b) = a + b", 80),
-            "def annotated(a: Int64, b) = a + b"
-        );
-        // and in a lambda parameter list
-        assert_eq!(assert_roundtrip("fn(x: Bool) => x", 80), "fn(x: Bool) => x");
-        // the underlying AST is the binder-position annotation `(: a Int64)`
-        let a = sexpr::read("(def (f (: a Int64)) a)").unwrap();
-        assert_eq!(print(&a, 80), "def f(a: Int64) = a");
-    }
-
-    #[test]
-    fn function_type_arrow() {
-        // `(-> A B)` prints as the ML infix `A -> B` and round-trips (the inverse of the reader).
-        assert_eq!(
-            print(&sexpr::read("(-> Int64 Bool)").unwrap(), 80),
-            "Int64 -> Bool"
-        );
-        // RIGHT-associative: `A -> B -> C` is `(-> A (-> B C))`, printed without inner parens.
-        let a = sexpr::read("(-> Int64 (-> Int64 Bool))").unwrap();
-        assert_eq!(print(&a, 80), "Int64 -> Int64 -> Bool");
-        // A left-nested arrow (a function-typed ARGUMENT) parenthesizes: `(A -> B) -> C`.
-        let a = sexpr::read("(-> (-> Int64 Int64) Bool)").unwrap();
-        assert_eq!(print(&a, 80), "(Int64 -> Int64) -> Bool");
-        // An arrow type in a parameter annotation round-trips.
-        assert_eq!(
-            assert_roundtrip("def apply(g: Int64 -> Bool, n: Int64) = g(n)", 80),
-            "def apply(g: Int64 -> Bool, n: Int64) = g(n)"
-        );
-    }
-
-    #[test]
-    fn return_type_annotation() {
-        // A def return type `-> R` desugars to a body ascription `(: body R)` and prints back in
-        // signature position. It round-trips and the underlying AST is the ascription form.
-        assert_eq!(
-            assert_roundtrip("def add(x: Int64, y: Int64) -> Int64 = x + y", 80),
-            "def add(x: Int64, y: Int64) -> Int64 = x + y"
-        );
-        let a = parser::read_ml("def add(x: Int64) -> Int64 = x + 1");
-        assert_eq!(
-            sexpr::print(&a.arenas),
-            "(def (add (: x Int64)) (: (+ x 1) Int64))"
-        );
-        // A lambda return type behaves the same way.
-        assert_eq!(
-            assert_roundtrip("fn(x: Int64) -> Int64 => x * 2", 80),
-            "fn(x: Int64) -> Int64 => x * 2"
-        );
-        // A return type that IS a function type (curried) reads as one arrow chain.
-        assert_eq!(
-            assert_roundtrip("def mk(k: Int64) -> Int64 -> Int64 = fn(x) => x + k", 80),
-            "def mk(k: Int64) -> Int64 -> Int64 = fn(x) => x + k"
-        );
-        // A body written as a bare value ascription `(: e R)` canonicalizes to the return-type form —
-        // one AST, printed in the cleaner spelling.
-        let a = sexpr::read("(def (main) (: (f x) Int64))").unwrap();
-        assert_eq!(print(&a, 80), "def main() -> Int64 = f(x)");
-    }
+    // The type-surface round-trips MIGRATED to the spec/syntax corpus (inc-6 batch-14):
+    //   * `type_annotated_parameter` (`(: name Type)` binder → `name: Type`) → ml/102-param-type-annotation
+    //     `def annotated(a: Int64, b) = a + b`→`(def (annotated (: a Int64) b) (+ a b))`,
+    //     ml/103-lambda-param-type-annotation `fn(x: Bool) => x`→`(fn ((: x Bool)) x)`.
+    //   * `function_type_arrow` (`(-> A B)` → infix `A -> B`, RIGHT-associative, left-nested arg parens) →
+    //     ml/104-fn-type-arrow-in-param `Int64 -> Bool` in a param, ml/105-fn-type-arrow-right-assoc
+    //     `Int64 -> Int64 -> Bool`→`(-> Int64 (-> Int64 Bool))`, ml/106-fn-type-arrow-left-nested-parens
+    //     `(Int64 -> Int64) -> Bool`→`(-> (-> Int64 Int64) Bool)`.
+    //   * `return_type_annotation` (`-> R` desugars to a body ascription `(: body R)`) →
+    //     ml/107-return-type-annotation, ml/108-lambda-return-type `fn(x: Int64) -> Int64 => x * 2`,
+    //     ml/109-return-type-curried (curried return type is one arrow chain), and
+    //     ml/110-return-type-from-body-ascription `def main() = f(x) : Int64` (tree
+    //     `(def (main) (: (f x) Int64))`, format.cdz canonicalizes to `def main() -> Int64 = f(x)` — one
+    //     AST, the cleaner spelling).
+    // The bare-arrow `print((-> …))` sexp→ml oracles are subsumed by the ml cases' fmt goldens.
 
     #[test]
     fn record_type_fields_print_as_colon_ascription_and_round_trip() {
