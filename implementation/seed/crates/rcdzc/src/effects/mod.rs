@@ -6839,7 +6839,7 @@ fn splice_context(db: &mut Db, node: StructId, perform: StructId, filler: Struct
 /// Whether the arm body at `node` contains a `resume` anywhere (structural walk). An arm with NO resume
 /// is ABORTIVE (E4): performing it abandons the computation and yields the arm body's value. Used to
 /// classify a `HandlerCtx`'s arms; the tail-resume EXTRACTION (bare or do-wrapped) is separate.
-fn arm_has_resume(db: &mut Db, node: StructId) -> bool {
+pub(crate) fn arm_has_resume(db: &mut Db, node: StructId) -> bool {
     if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
         return true;
     }
