@@ -1655,37 +1655,14 @@ fn a_variant_name_colliding_with_a_prelude_name_does_not_shadow_it() {
     );
 }
 
-#[test]
-fn a_bare_prelude_colliding_variant_matches_as_the_local_variant() {
-    // In a MATCH the scrutinee's type is known, so a BARE variant-name pattern head that COLLIDES with
-    // a prelude entry (`(Int n)` on `(type T (Int Int64))`, `(Some n)` on a user `(type … (Some …))`)
-    // resolves against the SCRUTINEE sum's variant set FIRST — reaching the LOCAL variant, not the
-    // prelude `Int`/`Some`. Without this, the bare head resolved (scope→def→prelude) to the prelude
-    // entry and the ctor check rejected CDZ0203, so an AST sum with prelude-colliding variant names
-    // could only be matched QUALIFIED. `pattern_constraints` remaps a bare head to the scrutinee decl's
-    // cached ctor for that name. (The CONSTRUCT half now shadows too — see
-    // `a_type_name_colliding_variant_constructs_as_the_local_variant` below.)
-    let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
-    // Single-variant nominal newtype, bare `Int` pattern (qualified construct).
-    ok(
-        "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((Int n) n))) (def (main) (f (T.Int 42))) (export main))",
-    );
-    // Multi-variant sum, bare `Int` pattern beside a nullary arm.
-    ok(
-        "(module m (type T (Int Int64) (Nil)) (def (f (: t T)) (match t ((Int n) n) ((Nil) 0))) (def (main) (f (T.Int 42))) (export main))",
-    );
-    // `Some`-colliding variant, bare pattern.
-    ok(
-        "(module m (type T (Some Int64) (Nada)) (def (f (: t T)) (match t ((Some n) n) ((Nada) 0))) (def (main) (f (T.Some 42))) (export main))",
-    );
-    // NO OVER-ACCEPTANCE: a bare variant of a DIFFERENT sum (`Bar` of `U`) over a `T` scrutinee still
-    // rejects CDZ0203 (the remap only reaches T's OWN variants; a foreign name is left to the check).
-    assert_eq!(
-            reject_code("(module m (type T (Int Int64)) (type U (Bar Int64)) (def (f (: t T)) (match t ((Bar n) n))) (def (main) (f (T.Int 42))) (export main))").as_deref(),
-            Some("CDZ0203"),
-            "a foreign variant name in a pattern still rejects"
-        );
-}
+// (a_bare_prelude_colliding_variant_matches_as_the_local_variant fully migrated/redundant — corpus
+// 05-compound-types already covers: the single-variant bare `Int` match ("a bare prelude-colliding variant
+// name matches as the local variant" → 42); the MULTI-variant Int+Nil flavor ("… in a MULTI-variant sum
+// beside a nullary arm", added here); the prelude-DATA-ctor-colliding `Some`/`Other` match ("a bare variant
+// reusing a prelude DATA-constructor name constructs and matches as the local variant" + its OTHER-arm
+// discriminant control); and the NO-over-acceptance guard — a foreign variant of a different sum in a
+// pattern → CDZ0203 — is covered richly by the corpus-05 "not a variant of the matched type" did-you-mean
+// cluster. Redundant, removed.)
 
 #[test]
 fn the_builtin_ast_sum_type_checks_its_variant_payloads() {
