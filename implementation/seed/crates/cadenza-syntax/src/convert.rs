@@ -646,11 +646,10 @@ mod tests {
         assert_eq!(bin, again);
     }
 
-    #[test]
-    fn ml_to_sexpr() {
-        let out = convert(b"f(a, b)", Format::Ml, Format::Sexpr).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "(f a b)");
-    }
+    // `ml_to_sexpr` (ml `f(a, b)` → `(f a b)`) MIGRATED to the spec/syntax corpus (inc-6): the ML
+    // parse-direction it asserted is pinned language-neutrally by `spec/syntax/ml/04-call` (input
+    // `f(a, b)` → tree.sexp `(f a b)`), graded by the per-case nix check + the self-consistency test.
+    // Deleted here so the behavior lives in ONE neutral place, not a Rust-only assertion.
 
     #[test]
     fn ml_to_binary_roundtrips_via_sexpr() {
