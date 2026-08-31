@@ -480,7 +480,7 @@ pass	Ast.print of a reflected type definition renders its canonical (type …) s
 pass	Type.ast of a NON-CONCRETE type is a coded rejection — a type variable has no definition to reflect
 pass	Type.ast reflects a BUILT-IN type's definition (Option, Result) like a user type
 pass	Type.ast on a non-generic type coincides with Type.ast-generic (verbatim decl)
-todo	Type.ast-generic of a FUNCTION type reflects its arrow surface (TODO: arrow-surface reflection gap)
+pass	Type.ast-generic of a FUNCTION type reflects its arrow surface (-> …)
 pass	Type.ast-generic reflects a STRUCTURAL type's canonical type-surface AST (increment 2)
 pass	Type.ast-generic reflects a nominal sum type's verbatim declaration AST
 pass	Type.eq branches on a type-valued parameter, monomorphized per passed type

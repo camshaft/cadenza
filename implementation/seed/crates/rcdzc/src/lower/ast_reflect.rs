@@ -1316,14 +1316,11 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
             // Scope the `NameCtx` borrow of `db` so the mutable `arenas_to_ast_value(db, …)` below is free.
             let surface = {
                 let ncx = db.name_ctx();
-                super::type_ast(&mut b, &ty, &ncx)
+                type_surface_ast(&mut b, &ty, &ncx)
             };
             let Some(node) = surface else {
-                // Arrow-surface reflection (of a function/continuation type) is a future increment; that
-                // not-yet intent stays in this comment, NOT the user-facing message (operator seq-280).
                 return Core::Poison(Reject::decline(
-                    "Type.ast: this type has no canonical surface form to reflect (a function or \
-                     continuation type — arrow-surface reflection is not supported)",
+                    "Type.ast: this type has no canonical surface form to reflect (a continuation type)",
                 ));
             };
             let arenas = b.finish(node);
@@ -1405,16 +1402,14 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
         {
             let ncx = db.name_ctx();
             for (p, arg) in params.iter().zip(ty_args.iter()) {
-                match super::type_ast(&mut b, arg, &ncx) {
+                match type_surface_ast(&mut b, arg, &ncx) {
                     Some(surf) => {
                         param_surface.insert(p.clone(), surf);
                     }
                     None => {
-                        // Arrow-surface reflection is a future increment; the not-yet intent stays in this
-                        // comment, NOT the user-facing message (operator seq-280).
                         return Core::Poison(Reject::decline(
                             "Type.ast: a type argument has no canonical surface form to substitute (a \
-                             function type — arrow-surface reflection is not supported)",
+                             continuation type)",
                         ));
                     }
                 }
@@ -1455,6 +1450,27 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
             "Type.ast: the declaration has a node with no Ast variant",
         )),
     }
+}
+
+/// Render a `Ty` to its canonical type-SURFACE AST node in `b` — the reflection surface for a structural
+/// type / a type argument. A function type `Ty::Fn(p, r)` renders `(-> <surface p> <surface r>)` (matching
+/// `Ty::render_name`'s arrow form; a curried multi-arg fn nests, `(-> p0 (-> p1 r))`); everything else
+/// delegates to `super::type_ast` (the value-form surface renderer — scalars/collections/Sum/Nominal/…).
+/// `None` for a type with no surface even here (a `Cont`, or a bare `Var`/`Any` — the latter are rejected
+/// upstream by the concreteness check). This lets `Type.ast` reflect a function type's arrow surface, which
+/// `type_ast` alone declines (a function is not a value-form).
+fn type_surface_ast(
+    b: &mut crate::ast::Builder,
+    ty: &crate::ty::Ty,
+    ncx: &crate::ty::NameCtx,
+) -> Option<StructId> {
+    if let crate::ty::Ty::Fn(p, r) = ty {
+        let arrow = b.name("->");
+        let ps = type_surface_ast(b, p, ncx)?;
+        let rs = type_surface_ast(b, r, ncx)?;
+        return Some(b.list(vec![arrow, ps, rs]));
+    }
+    super::type_ast(b, ty, ncx)
 }
 
 /// Copy a generic `(type Name param… variant…)` source declaration into `b` with its type params
