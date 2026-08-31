@@ -101,6 +101,11 @@ def denote (ρ : Nat → Value) (w : IntTy) : SymExpr → Outcome
     | .value _ => .unsupported "denote: non-boolean ite condition"
     | o => o
   | .app op args => denoteApp op w (args.attach.map (fun x => denote ρ w x.val))
+  -- a TUPLE denotes to a tuple VALUE: each element is stored via `outcomeToValue` (a trapping/diverging
+  -- element becomes a deferred `poison`, surfaced only when that element is OBSERVED) — byte-identical to
+  -- `evalNode`'s tuple construction (spec core: "a trap occurs when observed"). So tuple CONSTRUCTION is a
+  -- value (never traps here), matching the concrete evaluator; coverage for compound-valued programs.
+  | .tuple es => .value (.tuple (es.attach.map (fun x => outcomeToValue (denote ρ w x.val))))
   | _ => .unsupported "denote: unmodeled construct (compound shape — later increment)"
 termination_by e => sizeOf e
 decreasing_by
@@ -535,8 +540,11 @@ These discharge the compound cases of the eventual `denote (normalize e) = denot
 theorem hold only for WELL-TYPED `e` — `denote (+ bool 0)` is `.unsupported` while `normalize (+ bool 0)`
 = `bool`; a typing predicate/hypothesis is the design point for that increment, not an oracle bug since
 ill-typed programs never reach the differential). -/
-theorem denote_normalize_tuple (ρ : Nat → Value) (w : IntTy) (es : Array SymExpr) :
-    denote ρ w (normalize (.tuple es)) = denote ρ w (.tuple es) := by simp only [normalize, denote]
+-- NOTE: `denote_normalize_tuple` was removed — `denote` now MODELS `.tuple` (evaluates each element via
+-- `outcomeToValue`, matching `evalNode`), so the tuple case is no longer a trivial `unsupported = unsupported`
+-- congruence: `denote (normalize (.tuple es)) = denote (.tuple es)` now needs the per-element IH
+-- (`denote (normalize eᵢ) = denote eᵢ`), i.e. it is subsumed into the eventual capstone induction's tuple
+-- case (an `Array.map` congruence over the element IHs). `ctor`/`proj`/`case` remain `unsupported` (below).
 theorem denote_normalize_ctor (ρ : Nat → Value) (w : IntTy) (tag : ByteArray) (args : Array SymExpr) :
     denote ρ w (normalize (.ctor tag args)) = denote ρ w (.ctor tag args) := by simp only [normalize, denote]
 theorem denote_normalize_proj (ρ : Nat → Value) (w : IntTy) (b : SymExpr) (s : ByteArray) :
