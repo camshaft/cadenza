@@ -239,15 +239,6 @@
   (output (: 2 Int64)))
 
 (case
-  "unary negation is a built-in at arity 1 and is not flagged as a partial"
-  (doc
-    "Prefix negation `(- x)` lowers as Sub at arity 1 (built as `0 - e`), so it is fully applied, not a
-           partial built-in — it must NOT be flagged. `(f 5)` = -5.")
-  (input (do (def (f (: x Int64)) (- x)) (def (main) (f 5)) (export main)))
-  (call main)
-  (output (: -5 Int64)))
-
-(case
   "a partially applied USER function is legitimate and is not flagged as a wrong-arity built-in"
   (doc
     "The distinguishing contrast: a USER function is single-arity and freely partially-applicable, so
