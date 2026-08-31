@@ -512,6 +512,21 @@
   (output (: true Bool)))
 
 (case
+  "a returned String with a backslash and a quote RENDERS re-escaped (canonical value form)"
+  (doc
+    "Returning a String whose content contains a backslash and a double-quote renders the value in the
+           canonical `\"…\"` form with those characters RE-ESCAPED (`\\` -> `\\\\`, `\"` -> `\\\"`), matching
+           `cadenza_syntax::literal::escape_string` — the same closed escape set the reader recognizes (above).
+           The content `a\\b\"c` (5 scalars: a, backslash, b, quote, c) renders `\"a\\\\b\\\"c\"`. This pins the
+           VALUE-RENDER escaping on BOTH backends: the wasm renderer already applied `escape_string`; the rust
+           renderer's string/symbol arms were a RAW passthrough that left backslash + quote unescaped (a
+           non-canonical, non-reparseable literal) until the fix — a wasm-vs-rust value differential the fuzzer
+           flagged. A plain string with no special scalar renders unchanged.")
+  (input (do (def (main) "a\\b\"c") (export main)))
+  (call main)
+  (output (: "a\\b\"c" String)))
+
+(case
   "an unrecognized string escape is rejected"
   (doc
     "`\"\\q\"` uses a backslash before `q`, which begins none of the recognized escape sequences,
