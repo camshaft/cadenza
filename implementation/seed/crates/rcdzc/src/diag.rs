@@ -114,6 +114,13 @@ pub enum Code {
     /// component that traps at run time (`reference-compiler.md` §A Compile-Provable Trap Fails The
     /// Build).
     ConstTrap,
+    /// Negating an UNSIGNED integer type — an unsigned type has no sign, so negation is not defined on
+    /// its domain. A COMPILE-TIME reject (`(Num.neg (: 5 UInt8))` / a unary `-` on an unsigned value),
+    /// NOT the `ConstTrap` const-overflow / runtime trap it degrades to today. Distinct from its numeric
+    /// neighbours: not `ConstTrap` (CDZ0304, a VALUE overflow of a signed width) and not `NumericMismatch`
+    /// (CDZ0301, two operands of DIFFERENT numeric types) — here a SINGLE unsigned operand's type admits no
+    /// negation at all. (A negate of a NON-number operand is `Malformed`/CDZ0201, the unary-`-` invariant.)
+    UnsignedNegation,
     /// A `match` that does not cover its scrutinee — a coverage defect (the pattern engine's
     /// non-exhaustiveness rejection, distinct from a shape defect). For a scalar scrutinee this is a
     /// match with no wildcard tail; for a sum it is a missing variant (a later increment).
@@ -421,6 +428,7 @@ impl Code {
             Code::IntOutOfRange => "CDZ0302",
             Code::NonIntegerDefault => "CDZ0303",
             Code::ConstTrap => "CDZ0304",
+            Code::UnsignedNegation => "CDZ0310",
             Code::DeadTrap => "CDZ0305",
             Code::ReachableTrap => "CDZ0309",
             Code::UnusedBinding => "CDZ0306",

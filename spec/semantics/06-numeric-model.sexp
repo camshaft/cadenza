@@ -7258,6 +7258,25 @@
   (input (do (def (main) (= (Num.neg (Rational.of 3 4)) (Rational.of -3 4))) (export main)))
   (call main)
   (output (: true Bool)))
+(case
+  "Num.neg on an UNSIGNED integer is a compile-time type error — unsigned has no negate (CDZ0310)"
+  (doc
+    "The `Num` shape EXCLUDES unsigned integers: an unsigned type has no sign, so negation is not
+           defined on its domain. `(Num.neg (: 5 UInt8))` is REJECTED at compile time with the dedicated
+           CDZ0310 (UnsignedNegation) — NOT the CDZ0304 const-overflow / runtime trap it degraded to before
+           the static check. The witness of the type-checker's unsigned-negation rule (v-inference), landing
+           with it; distinct from CDZ0304 (a value overflow of a SIGNED width) — here the operand's TYPE
+           admits no negation at all. The signed/float/BigInt/Rational cases above still negate.")
+  (input (do (def (main) (Num.neg (: 5 UInt8))) (export main)))
+  (error CDZ0310 (message "unsigned integer has no sign")))
+(case
+  "Num.neg on a NON-number operand is a compile-time type error (CDZ0201)"
+  (doc
+    "`Num.neg` is over the number shape; a non-number operand (`\"hi\"`) has no negation and Cadenza
+           never coerces it to a number — CDZ0201, the same invariant the unary `-`/binary-arithmetic
+           non-number reject uses.")
+  (input (do (def (main) (Num.neg "hi")) (export main)))
+  (error CDZ0201 (message "never coerces")))
 
 (case
   "a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum"
