@@ -677,6 +677,24 @@
   (call main)
   (output (: 7 Int64)))
 
+; A LITERAL at a tuple SLOT dispatches: `(#tuple(a 7) …)` is refutable on slot 1 (a per-slot LitTest at
+; `Elem(1)`), with the binder arm `(#tuple(a b) …)` as the fall-through. The scrutinee is a RUNTIME tuple
+; (built from a boundary param through an if-join), so the match reads slot 1 and tests it against 7 while
+; binding slot 0 to `a`. Over `#tuple(1 7)` slot 1 == 7 → the first arm binds a=1 → 1; over `#tuple(-1 8)`
+; it falls to the binder arm → a + b = -1 + 8 = 7. The tuple-slot twin of the deep-INT-literal-at-a-record-
+; field case above (there the LitTest sub-path is a record `Field`, here a tuple `Elem`).
+(case
+  "a literal at a tuple slot dispatches with a binder-arm fall-through (runtime tuple)"
+  (input
+    (do
+      (def (f (: t (Tuple Int64 Int64))) (match t (#tuple(a 7) a) (#tuple(a b) (+ a b))))
+      (def (main (: n Int64)) (f #tuple(n (if (> n 0) 7 8))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (call main (: -1 Int64))
+  (output (: 7 Int64)))
+
 ; A tuple pattern MAY end in a trailing `.. rest` — unlike the old rejection ("a tuple has fixed arity, so
 ; `..` has no place here"), a tuple rest binds the TRAILING SUB-TUPLE (a NEW tuple of the elements from the
 ; rest position onward). A tuple's arity is fixed and statically known, so `(tuple a .. rest)` over a
