@@ -1697,47 +1697,36 @@ fn a_native_record_destructuring_binding_param_binds_like_the_classic_spelling()
 
 #[test]
 fn a_narrow_width_overflow_in_a_native_map_or_set_literal_element_is_rejected_cdz0302() {
-    // SOUNDNESS guard (06-numeric-model): a literal MAP VALUE / MAP KEY / SET element that overflows its
-    // annotated narrow width must be rejected CDZ0302, not silently truncated. The width-fit annotation
-    // DESCENT (`nested_literal_width_faults_against`) stopped reaching the M2 native ctor leaves: a
-    // name-alias `(map (= k v))` resolves to `Apply(MapNew)` whose entry is a native `FieldPair` `(= k v)`
-    // (3-element, not the legacy 2-element `(k v)` the descent read), and a `#set(e…)` literal resolves to
-    // `Resolved::Set` (which had no descent arm at all) — so `(: (map (= 1 999)) (Map Int64 Int8))`,
-    // `(: (map (= 999 1)) (Map Int8 Int64))`, and `(: #set(200) (Set Int8))` COMPILED and truncated
-    // (999→-25, 200→-56). The descent now reads FieldPair map entries + descends the native Set literal.
+    // ALIAS-SPELLING RESIDUE. The NATIVE faces of this width-fit soundness guard migrated to corpus
+    // 06-numeric-model: `(: #map((= 1 999)) (Map Int64 Int8))` (map value), `(: #map((= 999 1)) (Map Int8
+    // Int64))` (map key), and `(: #set(200) (Set Int8))` (set element) each overflow the annotated narrow
+    // width → CDZ0302 (plus fitting/builder-chain siblings). What STAYS here is the NAME-ALIAS `(map (= k
+    // v))` spelling: it resolves to `Apply(MapNew)` whose entry is a native `FieldPair` `(= k v)` (3-element,
+    // not the legacy 2-element `(k v)` the descent read), a distinct descent path the native-only corpus
+    // cannot exercise. `(: (map (= 1 999)) (Map Int64 Int8))` and `(: (map (= 999 1)) (Map Int8 Int64))`
+    // formerly COMPILED and truncated (999→-25); both must reject CDZ0302, and a fitting alias literal must
+    // still compile.
     for (label, src) in [
         (
-            "map value",
+            "alias map value",
             "(module m (def (main) (: (map (= 1 999)) (Map Int64 Int8))) (export main))",
         ),
         (
-            "map key",
+            "alias map key",
             "(module m (def (main) (: (map (= 999 1)) (Map Int8 Int64))) (export main))",
-        ),
-        (
-            "native #map value",
-            "(module m (def (main) (: #map((= 1 999)) (Map Int64 Int8))) (export main))",
-        ),
-        (
-            "set literal element",
-            "(module m (def (main) (: #set(200) (Set Int8))) (export main))",
         ),
     ] {
         assert_eq!(
             reject_code(src).as_deref(),
             Some("CDZ0302"),
-            "{label}: an out-of-range native map/set literal element must reject CDZ0302, not truncate"
+            "{label}: an out-of-range alias-spelling map literal element must reject CDZ0302, not truncate"
         );
     }
-    // A FITTING native map/set literal still compiles (no false reject).
+    // A FITTING alias-spelling map literal still compiles (no false reject).
     assert!(
         reject_code("(module m (def (main) (: (map (= 1 5)) (Map Int64 Int8))) (export main))")
             .is_none(),
-        "a fitting map value is accepted"
-    );
-    assert!(
-        reject_code("(module m (def (main) (: #set(5) (Set Int8))) (export main))").is_none(),
-        "a fitting set element is accepted"
+        "a fitting alias-spelling map value is accepted"
     );
 }
 
