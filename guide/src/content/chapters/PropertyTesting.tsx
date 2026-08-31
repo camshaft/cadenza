@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, P } from "../../components/Prose.tsx";
 import { Ch } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
@@ -92,7 +92,7 @@ export default function PropertyTesting() {
 
 (def (main) (round-trips 21))`}
         expected="true"
-        hint={<>Doubling then halving gets you back where you started, so <C>(/ (* n 2) 2)</C> equals <C>n</C>. Fill the blank with <C>n</C>; a <C>@test</C> would <C>assert-eq</C> these two.</>}
+        hint={<>Doubling then halving gets you back where you started, so <Cadenza>(/ (* n 2) 2)</Cadenza> equals <C>n</C>. Fill the blank with <C>n</C>; a <C>@test</C> would <C>assert-eq</C> these two.</>}
       />
       <Exercise
         id="property-testing:2"
