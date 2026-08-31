@@ -531,6 +531,34 @@ fn reify_inner(
                 let payload = push_atom(ast, leaf);
                 Some(ast_ctor(ast, "Symbol", payload))
             }
+            // A TYPE-SUFFIXED numeric literal (`5N`/`0.5R`, a `Leaf::Suffixed`). The reader represents such a
+            // literal as the annotation `(: <this Suffixed leaf> BigInt|Rational)` — the leaf carries the
+            // numeric value AND its suffix (so the printer re-emits `5N`, not `(: 5 BigInt)`). It has no
+            // dedicated `Ast` variant, so reify its BODY as the matching numeric leaf (an integer body ->
+            // `Ast.Int`, a float body -> `Ast.Float`). The suffix marker is redundant with the enclosing
+            // `(: … BigInt)` annotation the reader already produced, so `(quote 5N)` reifies to the SAME
+            // `Ast` value as `(quote (: 5 BigInt))` and `(quote 0.5R)` as `(quote (: 0.5 Rational))` — the
+            // metaprogramming face of the reader's suffix-is-an-annotation rule. Mirrors the body extraction
+            // in `suffixed::normalize`, so the quoted + non-quoted spellings agree. Without this arm the
+            // whole quote declined ("quote produces an AST value, not supported") on the un-reifiable leaf.
+            Leaf::Suffixed { value, .. } => {
+                let body_leaf = match value {
+                    crate::ast::SuffixBody::Int { value, radix } => Leaf::Int { value, radix },
+                    crate::ast::SuffixBody::Float(d) => Leaf::Float(d),
+                };
+                if let Leaf::Int { .. } = body_leaf {
+                    let payload = push_atom(ast, body_leaf);
+                    let payload = if ground_ints {
+                        ast_bigint_payload(ast, payload)
+                    } else {
+                        payload
+                    };
+                    Some(ast_ctor(ast, "Int", payload))
+                } else {
+                    let payload = push_atom(ast, body_leaf);
+                    Some(ast_ctor(ast, "Float", payload))
+                }
+            }
             // A reader ERROR-RECOVERY marker leaf (`BadChar`/`BadEscape`) has no `Ast` variant — it only
             // arises from MALFORMED source (which does not compile), so leaving it un-reifiable is not a
             // real reflection gap: bail (decline) rather than miscompile.
