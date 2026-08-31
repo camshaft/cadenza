@@ -45,54 +45,13 @@ use super::*;
 // its total-conversion wrap fix" (CDZ0203 (fix (kind wrap))). The int-vs-float→CDZ0301 control is 07's
 // "ordering an integer against a float" case. All PASS wasm.)
 
-#[test]
-fn a_list_match_is_well_formed_or_declines() {
-    // A list is OPEN (any length): a match with only fixed-arity arms and no catch-all is
-    // NON-EXHAUSTIVE (CDZ0210) — a finite set of lengths cannot cover every list.
-    assert_eq!(
-        reject_code("(module m (def (main) (match (list 1 2) ((list a b) a))) (export main))")
-            .as_deref(),
-        Some("CDZ0210")
-    );
-    // A malformed rest pattern — more than one binder after `..` — is CDZ0201 (a rest pattern is
-    // `(list p… .. rest)`, exactly one tail binder).
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (match (list 1 2 3) ((list x .. r s) x) (_ 0))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0201")
-    );
-    // The non-exhaustive list match now carries an ADD-ARM fix, like the scalar/sum case. FIXED-only
-    // (no catch-all) → append a wildcard `(_ (trap "TODO"))` covering every remaining length.
-    let find = |body: &str| {
-        let src = format!("(module m (def (f (: xs (List Int64))) {body}) (export f))");
-        crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
-            .into_iter()
-            .find(|d| d.code.as_deref() == Some("CDZ0210"))
-            .unwrap_or_else(|| panic!("expected CDZ0210 for {body}"))
-    };
-    let no_catchall = find("(match xs ((list) 0) ((list a) a))");
-    assert_eq!(
-        no_catchall.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("(_ (trap \"TODO\"))"),
-        "fixed-only list match adds a wildcard arm: {}",
-        no_catchall.message
-    );
-    assert_eq!(
-        no_catchall.fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::InsertInto)
-    );
-    // A REST pattern that leaves the EMPTY list uncovered (`(list a .. r)` covers length ≥ 1) →
-    // append the specific missing arm `((list) (trap "TODO"))`.
-    let missing_empty = find("(match xs ((list a .. r) a))");
-    assert_eq!(
-        missing_empty.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("((list) (trap \"TODO\"))"),
-        "a rest pattern missing the empty case adds `((list) …)`: {}",
-        missing_empty.message
-    );
-}
+// (a_list_match_is_well_formed_or_declines migrated to corpus 05-compound-types, the list-match
+// well-formedness cluster after the malformed-rest cases: "a fixed-arity-only list match is non-exhaustive"
+// (CDZ0210), "a list rest pattern with more than one tail binder after `..` is malformed" (CDZ0201), "a
+// fixed-only non-exhaustive list match adds a covering wildcard arm" (CDZ0210 (fix (kind insert-into)
+// (replacement-contains "(_ (trap"))), and "a rest-pattern list match missing the empty case adds the
+// SPECIFIC empty-list arm, not a wildcard" (CDZ0210 (fix (kind insert-into) (replacement-contains "(list)
+// (trap"))) — the length-aware add-arm fix.)
 
 #[test]
 fn a_list_pattern_must_be_linear_and_refutable_elements_decline() {
