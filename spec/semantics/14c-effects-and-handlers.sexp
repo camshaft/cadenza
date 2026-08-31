@@ -8599,7 +8599,7 @@
   (output (: 74 Int64))
   (call main (: 0 Int64))
   (output (: 54 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an inner match on a LOCALLY-BUILT Option from the payload (scalar state) — a non-state inner scrutinee beside the dispatch"
@@ -11832,7 +11832,7 @@
   (output (: 5 Int64))
   (call main (: 7 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "dgn1 digit-peel of a NEGATIVE state — truncated division and dividend-sign remainder agree through the thread, three negative digits"
@@ -14776,7 +14776,12 @@
   (output (: 7000900 Int64))
   (call main (: 12 Int64))
   (output (: 7080009 Int64))
-  (live-objects 0))
+  ; RE-PINNED known-leak (v-memory-safety, faithful-nix-confirmed on current main + stale-rev, both got-1;
+  ; an earlier native debug-runtime screen FALSE-CLEANED it at 0 — the native-can-be-unfaithful caveat). The
+  ; debounce gate's pending/last-fire slot over-retains one value across dispatches: a REAL interim leak of the
+  ; resume-seam-pending class (sibling of the 6364 set), NOT a regression to chase — the resume-seam OccTable
+  ; fix is routed to v-effects Increment B. Ideal is (live-objects 0); pinned known-leak to track the gap.
+  (live-objects known-leak))
 
 (case
   "rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds"
@@ -18650,7 +18655,7 @@
   (output (: 3006063 Int64))
   (call main (: 0 Int64))
   (output (: 3002023 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── Golf scorecard, vending machine, pagination cursor (breaker batch 294) ──
 (case
@@ -19871,7 +19876,7 @@
   (output (: 18122012040529 Int64))
   (call main (: 0 Int64))
   (output (: 8052012040522 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── Perfect shuffle, order book, tug of war (breaker batch 302) ──
 (case
@@ -20371,7 +20376,7 @@
   (output (: 1010100 Int64))
   (call main (: 0 Int64))
   (output (: 101000200 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for the minimum of its indexed duration and the remaining tank (shortfalls accumulated), refill restores the seed-shaped capacity answering the shortfall so far, and the small tank starves two zones in the first pass and one in the second while the large tank never starves"
@@ -21546,7 +21551,7 @@
   (output (: 210310030411301201 Int64))
   (call main (: 0 Int64))
   (output (: 110210020310411301 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── Johnson twisted-ring two-Bool state, balance-scale arg-vs-arg, organ state-indexed arg select (breaker batch 313) ──
 (case
