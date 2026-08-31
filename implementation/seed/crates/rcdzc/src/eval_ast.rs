@@ -452,10 +452,19 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
             let elems = list_elems(ast, payload)?;
             let mut children = vec![push_atom(ast, Leaf::Ctor(ctor))];
             for fp in elems {
-                let (k, v) = reconstruct_field_pair(ast, fp)?;
-                let eq = push_atom(ast, Leaf::FieldPair);
-                let entry = push_list(ast, vec![eq, k, v]);
-                children.push(entry);
+                // A genuine `Ast.FieldPair` rebuilds to a `(= k v)` entry. A NON-FieldPair child is a
+                // reflected `(.. rest)` REST MARKER (reified as an `Ast.List [Ast.Name "..", <binder>]`) —
+                // reconstruct it directly so the native `#map`/`#record` pattern stays OPEN (the map-rest
+                // face of the #6855 fix; without this a quoted map/record-rest pattern closed and its match
+                // fell through to the catch-all).
+                if ast_ctor_arg(ast, fp, "FieldPair").is_some() {
+                    let (k, v) = reconstruct_field_pair(ast, fp)?;
+                    let eq = push_atom(ast, Leaf::FieldPair);
+                    let entry = push_list(ast, vec![eq, k, v]);
+                    children.push(entry);
+                } else {
+                    children.push(reconstruct(ast, fp)?);
+                }
             }
             return Some(push_list(ast, children));
         }
