@@ -3110,75 +3110,10 @@ fn a_float_literal_that_overflows_float32_is_out_of_range() {
     assert!(reject_full("(module m (def (main) (: 1.0e300 Float64)) (export main))").is_none());
 }
 
-#[test]
-fn a_constant_argument_is_range_checked_against_a_narrow_parameter_width() {
-    // A CONSTANT argument passed to a NARROW-typed parameter must be range-checked against the
-    // parameter's declared width, exactly as a direct `(: 200 Int8)` is — β-reduction now carries the
-    // parameter's annotation onto the substituted argument (`(: arg T)`), so an out-of-range constant
-    // is rejected CDZ0302 instead of being spliced raw and run to a value the type cannot hold. The
-    // hole was `apply_lambda_uncached` keying substitution on the param NAME occurrence, which sees
-    // THROUGH the `(: name T)` binder and discarded the annotation.
-    // Out of range (200 > Int8.max 127) — a `def` call.
-    assert_eq!(
-        reject_code("(module m (def (f (: a Int8)) a) (def (main) (f 200)) (export main))")
-            .as_deref(),
-        Some("CDZ0302")
-    );
-    // A negative constant to an unsigned parameter — a sign UInt8 cannot hold at all.
-    assert_eq!(
-        reject_code("(module m (def (f (: a UInt8)) a) (def (main) (f -1)) (export main))")
-            .as_deref(),
-        Some("CDZ0302")
-    );
-    // An inline `fn` lambda shares the substitution path.
-    assert_eq!(
-        reject_code("(module m (def (main) ((fn ((: a Int8)) a) 200)) (export main))").as_deref(),
-        Some("CDZ0302")
-    );
-    // Arithmetic on an in-range constant arg that OVERFLOWS the width folds and is proven a constant
-    // OPERATION with no value → CDZ0304 (ConstTrap), like the wide `(+ Int64.max 1)` — NOT CDZ0302
-    // (which is a LITERAL that doesn't fit; here 100 fits Int8, it is `100 + 100` that overflows).
-    assert_eq!(
-        reject_code("(module m (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main))")
-            .as_deref(),
-        Some("CDZ0304")
-    );
-    // The annotated LET BINDER path range-checks its bound value the same way — a bare out-of-range
-    // LITERAL bound value is still CDZ0302 (a literal that doesn't fit the annotated width).
-    assert_eq!(
-        reject_code("(module m (def (main) (let (((: a Int8) 200)) a)) (export main))").as_deref(),
-        Some("CDZ0302")
-    );
-    // A COMPUTED out-of-range value under a binder annotation folds and is caught too — here the
-    // operands `100`/`100` are UNANNOTATED (Int64), so `(+ 100 100)` folds to 200 at Int64 and the
-    // BINDER ANNOTATION `(: a Int8)` rejects the folded VALUE as not fitting Int8 → CDZ0302 (a
-    // value-fit at the annotation, exactly like `(: 200 Int8)`). This is DISTINCT from `(+ (: 100
-    // Int8) (: 100 Int8))`, whose `+` node is itself typed Int8 so the operation overflow is CDZ0304.
-    assert_eq!(
-        reject_code("(module m (def (main) (let (((: a Int8) (+ 100 100))) a)) (export main))")
-            .as_deref(),
-        Some("CDZ0302")
-    );
-    // IN-RANGE constants are NOT over-rejected: `(f 127)` (boundary) and an in-range-fitting op
-    // `(+ a 10)` = 110 both compile. A `(: a Bool) 5` still faults CDZ0203 (a genuine type clash,
-    // not a width fault). And a bare (un-annotated) parameter is unaffected.
-    assert_eq!(
-        reject_code("(module m (def (f (: a Int8)) a) (def (main) (f 127)) (export main))"),
-        None
-    );
-    assert_eq!(
-        reject_code("(module m (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))"),
-        None
-    );
-    assert_eq!(
-        reject_code("(module m (def (main) (let (((: a Bool) 5)) a)) (export main))").as_deref(),
-        Some("CDZ0203")
-    );
-    assert_eq!(
-        reject_code("(module m (def (f a) (+ a 1)) (def (main) (f 41)) (export main))"),
-        None
-    );
-}
+// (a_constant_argument_is_range_checked_against_a_narrow_parameter_width migrated to corpus 06-numeric-model:
+// an out-of-range constant arg to a narrow param is range-checked (CDZ0302) through the def-call / inline-lambda
+// / annotated-let-binder paths; a const arith overflow is CDZ0304; in-range runs; a Bool-vs-narrow clash is
+// CDZ0203. 9 cases; bare-param control covered by generic bare-param cases. All PASS wasm.)
 
 #[test]
 fn an_argument_fault_is_reported_whether_or_not_the_parameter_is_used() {

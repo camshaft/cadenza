@@ -14728,3 +14728,37 @@
   (call main (: 7 Int64)) (output (: 5 Int64))
   (call main (: 0 Int64)) (output (: 5 Int64))
   (live-objects known-leak))
+
+; A CONSTANT argument passed to a NARROW-typed parameter is range-checked against the parameter's declared
+; width, exactly as a direct `(: 200 Int8)` is — β-reduction carries the parameter's annotation onto the
+; substituted argument, so an out-of-range constant rejects CDZ0302 (a literal that doesn't fit) rather than
+; being spliced raw. This fires through the def-call, inline-lambda, and annotated-let-binder substitution
+; paths. A constant ARITHMETIC operation that overflows the width is CDZ0304 (a const operation with no value,
+; distinct from a literal that doesn't fit). In-range constants are NOT over-rejected; a Bool-vs-narrow clash
+; stays the generic CDZ0203. (Migrated from rcdzc a_constant_argument_is_range_checked_against_a_narrow_parameter_width.)
+(case "an out-of-range constant argument to a narrow parameter is range-checked at the call"
+  (input (do (def (f (: a Int8)) a) (def (main) (f 200)) (export main))) (error CDZ0302))
+
+(case "a negative constant argument to an unsigned parameter is rejected"
+  (input (do (def (f (: a UInt8)) a) (def (main) (f -1)) (export main))) (error CDZ0302))
+
+(case "an out-of-range constant argument to an inline lambda's narrow parameter is range-checked"
+  (input (do (def (main) ((fn ((: a Int8)) a) 200)) (export main))) (error CDZ0302))
+
+(case "a constant arithmetic operation overflowing a narrow parameter width is a const trap"
+  (input (do (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main))) (error CDZ0304))
+
+(case "an out-of-range literal bound under a narrow let-binder annotation is range-checked"
+  (input (do (def (main) (let (((: a Int8) 200)) a)) (export main))) (error CDZ0302))
+
+(case "a computed out-of-range value under a narrow let-binder annotation is range-checked"
+  (input (do (def (main) (let (((: a Int8) (+ 100 100))) a)) (export main))) (error CDZ0302))
+
+(case "an in-range boundary constant argument to a narrow parameter runs (no over-rejection)"
+  (input (do (def (f (: a Int8)) a) (def (main) (f 127)) (export main))) (call main) (output (: 127 Int8)))
+
+(case "an in-range constant arithmetic through a narrow parameter runs (no over-rejection)"
+  (input (do (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))) (call main) (output (: 110 Int8)))
+
+(case "a Bool value under a narrow-width let-binder annotation is a type clash, not a width fault"
+  (input (do (def (main) (let (((: a Bool) 5)) a)) (export main))) (error CDZ0203))
