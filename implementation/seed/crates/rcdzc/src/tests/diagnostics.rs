@@ -1689,28 +1689,12 @@ fn an_underscore_prefix_silences_the_unused_warning() {
     );
 }
 
-#[test]
-fn an_unused_nonexported_definition_warns_but_a_used_or_exported_one_does_not() {
-    // A nullary def nothing references (and not exported) is unused.
-    let unused = "(module m (def (helper) (: 9 Int64)) (def (main) 42) (export main))";
-    let u = unused_of(unused);
-    assert_eq!(u.len(), 1, "helper is unused: {u:?}");
-    assert!(
-        u[0].contains("`helper`") && u[0].contains("definition"),
-        "{u:?}"
-    );
-    // A def that IS referenced does not warn.
-    assert!(
-        unused_of("(module m (def (helper) (: 9 Int64)) (def (main) helper) (export main))")
-            .is_empty(),
-        "a used def must not warn"
-    );
-    // An EXPORTED def is part of the interface — never flagged.
-    assert!(
-        unused_of("(module m (def (helper) (: 9 Int64)) (export helper))").is_empty(),
-        "an exported def must not warn"
-    );
-}
+// MIGRATED to corpus (09-functions.sexp): an unused non-exported top-level `def` → CDZ0306
+// `(message "unused definition")` + `_helper` fix (case "an unused non-exported definition compiles and runs
+// but the build surfaces a CDZ0306 unused-definition warning", runs 42, count 1); a REFERENCED def
+// (case "a REFERENCED non-exported definition is used …", runs 9) and an EXPORTED def (case "an EXPORTED
+// definition is a reachable entry …", runs 9) do not warn (`(no-diagnostic "unused definition")`). Rust test
+// an_unused_nonexported_definition_warns_but_a_used_or_exported_one_does_not deleted.
 
 // ── Redundant-arm warning (CDZ0213) — a match arm an earlier arm already covers. A WARNING that
 // rides alongside a produced component (the program is well-formed; first-match-wins makes the
