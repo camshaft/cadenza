@@ -39,9 +39,19 @@ open Eval
 /-! ## `denote` — the concrete meaning of a `SymExpr` under a valuation (soundness spec).
 `denote ρ w e` evaluates the symbolic expression `e` to a concrete `Outcome`, with each symbolic
 variable `.var n` bound to the value `ρ n` and integer arithmetic performed at ambient width `w`. It is
-the SEMANTICS the normalizer must preserve: the capstone soundness goal is
-`denote ρ w (normalize e) = denote ρ w e` for all ρ, w — i.e. `normalize` never changes what a program
-computes on any input, so a `proven`-equivalent verdict is never false.
+the SEMANTICS the normalizer must preserve: the capstone soundness goal is that `normalize` never changes
+what a program computes on any input, so a `proven`-equivalent verdict is never false.
+
+⚠ CAPSTONE FORM (design note, established while assembling the induction): the goal is proven in
+VALUE-FORM — `denote ρ w e = .value v → denote ρ w (normalize e) = .value v` — NOT the naive full equality
+`denote (normalize e) = denote e`. The full equality is FALSE on ill-typed `e`: `normalize`'s `.ite`
+MATERIALIZE (`if c true false → c`, #6450) fires unconditionally on the branch shape, so for a NON-bool `c`
+`denote (.ite c true false) = .unsupported` (non-bool condition) while `denote (normalize …) = denote c`
+(a value) — they differ. Value-form neatly excludes this: a non-bool `c` makes the `ite` non-value, so the
+hypothesis `denote e = .value v` never fires there (equivalently, equality holds under well-typedness, which
+value-form encodes implicitly). All the `_step` lemmas are value-form for this reason; the equality-form
+case lemmas that DO hold unconditionally (var/const/tuple/record/ctor/proj/case, ite fold-select) are
+strictly stronger and feed the value-form induction directly (equality ⟹ the value-form implication).
 
 Faithfulness (so the eventual theorem is MEANINGFUL, not a toy): the `.app` case REUSES the exact ops
 the oracle/normalizer use — `foldConst?` for the comparison/boolean/float/equality ops (byte-identical
