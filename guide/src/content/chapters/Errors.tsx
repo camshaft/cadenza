@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -9,7 +9,7 @@ export default function Errors() {
     <article>
       <H1>Errors & absence</H1>
       <Lede>What happens when there's no answer, and how Cadenza makes you deal with it.</Lede>
-      <P>Not every operation has an answer, and a language has to do something when you look past the end of a list or look up a missing key or ask for a result that doesn't fit. Cadenza represents a value that might be missing with the <C>Option</C> type, which is either <C>(Some x)</C> with a value or <C>(None unit)</C> with nothing, so the type system makes a caller acknowledge both cases rather than return a bogus default. A genuinely undefined operation like dividing by zero is a different story that halts rather than inventing a value, as you saw in <strong>The numeric model</strong>, so this chapter is about the kind of absence you can handle.</P>
+      <P>Not every operation has an answer, and a language has to do something when you look past the end of a list or look up a missing key or ask for a result that doesn't fit. Cadenza represents a value that might be missing with the <C>Option</C> type, which is either <Cadenza>(Some x)</Cadenza> with a value or <Cadenza>(None unit)</Cadenza> with nothing, so the type system makes a caller acknowledge both cases rather than return a bogus default. A genuinely undefined operation like dividing by zero is a different story that halts rather than inventing a value, as you saw in <strong>The numeric model</strong>, so this chapter is about the kind of absence you can handle.</P>
       <H2>Returning an Option</H2>
       <P>Here's safe division: it returns <C>None</C> when the divisor is zero, and <C>Some</C> of the quotient otherwise. The caller <C>match</C>es on the result and can't forget the empty case.</P>
       <Runnable
@@ -44,7 +44,7 @@ export default function Errors() {
       />
       <P>That's <C>Int64</C>'s largest value times 2, which can't fit, so you get the <C>None</C> arm.</P>
       <H2>Chaining fallible steps: the <C>?</C> operator</H2>
-      <P>Match on one <C>Option</C> and you write two arms. Chain several (add two checked results, each of which might overflow) and the nested matches pile up, burying the happy path. The <C>?</C> operator (written <C>(try …)</C>) collapses that: on a <C>Some</C> it unwraps the value and carries on; on a <C>None</C> it <em>short-circuits</em>, making the whole function's result that <C>None</C>. Here two checked-adds both succeed, so <C>x</C> and <C>y</C> unwrap and the function returns <C>(Some 84)</C>:</P>
+      <P>Match on one <C>Option</C> and you write two arms. Chain several (add two checked results, each of which might overflow) and the nested matches pile up, burying the happy path. The <C>?</C> operator (written <C>(try …)</C>) collapses that: on a <C>Some</C> it unwraps the value and carries on; on a <C>None</C> it <em>short-circuits</em>, making the whole function's result that <C>None</C>. Here two checked-adds both succeed, so <C>x</C> and <C>y</C> unwrap and the function returns <Cadenza>(Some 84)</Cadenza>:</P>
       <Runnable
         source={`(def
   (main)
@@ -60,17 +60,17 @@ export default function Errors() {
     ((x (try (Int64.checked-add Int64.max 1))))
     (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))`}
       />
-      <P>The overflowing add is <C>None</C>, so <C>main</C> is <C>(None unit)</C>. The enclosing function must itself return the matching kind (an <C>Option</C> here, or a <C>Result</C>): <C>?</C> needs a fallible boundary to short-circuit <em>to</em>, and it doesn't convert between <C>Option</C> and <C>Result</C>: the kinds have to line up.</P>
+      <P>The overflowing add is <C>None</C>, so <C>main</C> is <Cadenza>(None unit)</Cadenza>. The enclosing function must itself return the matching kind (an <C>Option</C> here, or a <C>Result</C>): <C>?</C> needs a fallible boundary to short-circuit <em>to</em>, and it doesn't convert between <C>Option</C> and <C>Result</C>: the kinds have to line up.</P>
       <H2>Matching on the value inside</H2>
-      <P>A pattern can look <em>inside</em> a variant, not just name it. Here the first arm only fires for exactly <C>(Some 0)</C>; a different <C>Some</C> falls through to the binding arm.</P>
+      <P>A pattern can look <em>inside</em> a variant, not just name it. Here the first arm only fires for exactly <Cadenza>(Some 0)</Cadenza>; a different <C>Some</C> falls through to the binding arm.</P>
       <Runnable
         source={`(def (describe o) (match o ((Some 0) 100) ((Some x) x) ((None _) -1)))
 
 (def (main) (describe (Some 0)))`}
       />
-      <P><C>(Some 0)</C> matches the literal-<C>0</C> arm, so this is <C>100</C>. Feed it <C>(Some 7)</C> instead and the second arm binds <C>x</C> and returns <C>7</C>; <C>(None unit)</C> takes the last.</P>
+      <P><Cadenza>(Some 0)</Cadenza> matches the literal-<C>0</C> arm, so this is <C>100</C>. Feed it <Cadenza>(Some 7)</Cadenza> instead and the second arm binds <C>x</C> and returns <C>7</C>; <Cadenza>(None unit)</Cadenza> takes the last.</P>
       <H2>Failing with a reason: <C>Result</C></H2>
-      <P>An <C>Option</C> says <em>whether</em> there's an answer; sometimes you also want to say <em>why</em> there isn't. <C>Result</C> is the sum for that: <C>(Ok value)</C> when it worked, <C>(Err e)</C> carrying a reason when it didn't, and you take it apart with <C>match</C> exactly like an <C>Option</C>. Here <C>safe-div</C> reports the offending divisor on failure:</P>
+      <P>An <C>Option</C> says <em>whether</em> there's an answer; sometimes you also want to say <em>why</em> there isn't. <C>Result</C> is the sum for that: <Cadenza>(Ok value)</Cadenza> when it worked, <Cadenza>(Err e)</Cadenza> carrying a reason when it didn't, and you take it apart with <C>match</C> exactly like an <C>Option</C>. Here <C>safe-div</C> reports the offending divisor on failure:</P>
       <Runnable
         source={`(def (safe-div a b) (if (= b 0) (Err b) (Ok (/ a b))))
 
@@ -80,7 +80,7 @@ export default function Errors() {
       <H2>Your turn</H2>
       <Exercise
         id="errors:1"
-        prompt={<><C>check</C> returns <C>(Err 8)</C> for this input. Finish the <C>Err</C> arm to hand back the reason it carries, so the result is <C>8</C>.</>}
+        prompt={<><C>check</C> returns <Cadenza>(Err 8)</Cadenza> for this input. Finish the <C>Err</C> arm to hand back the reason it carries, so the result is <C>8</C>.</>}
         starter={`(def (check n) (if (= n 0) (Ok n) (Err n)))
 
 (def (main) (match (check 8) ((Ok v) v) ((Err e) ?)))`}
@@ -100,7 +100,7 @@ export default function Errors() {
 
 (def (main) (match (take-from 3 10) ((Some left) left) ((None _) -1)))`}
         expected="-1"
-        hint={<>The <C>Some</C> branch already carries a value; the empty branch carries nothing, which you write as <C>(None unit)</C>, the same <C>None</C> the <C>match</C> below is waiting for.</>}
+        hint={<>The <C>Some</C> branch already carries a value; the empty branch carries nothing, which you write as <Cadenza>(None unit)</Cadenza>, the same <C>None</C> the <C>match</C> below is waiting for.</>}
       />
       <P><C>Option</C>, <C>Result</C>, and <C>?</C> all answer the same question, what happens when a step might not deliver, by making the outcome a <em>value the caller must handle</em>. The next chapter turns that inside out: with <em>effects &amp; handlers</em>, a function <em>performs</em> an operation and lets whoever runs it decide what it means, so the caller answers instead of just inspecting a returned value. It's the pivot from the fundamentals into what makes Cadenza its own language.</P>
     </article>
