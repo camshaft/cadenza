@@ -32,6 +32,13 @@ pub enum Category {
     /// ran to a value where the other trapped) — a wrong-value miscompile the crash/validity oracles
     /// are blind to. `detail` carries the `wasm=… rust=…` disagreement (dedup key + note body).
     Differential,
+    /// A generated program that PASSED the compiler's coded well-formedness checks nonetheless
+    /// REACHED a CODELESS `Reject::decline` — the class-2 / assumed-unreachable set (operator
+    /// directive, 2026-08-31). Either the decline is a defense-in-depth backstop the type checker
+    /// was supposed to make unreachable (so reaching it = the invariant is FALSE = a bug), or it is
+    /// a reachable-but-uncoded feature gap that should be CODED. Both are findings routed to
+    /// v-deferral-declines to triage. `detail` carries the codeless decline message (dedup key).
+    ReachabilityInvariant,
 }
 
 impl Category {
@@ -41,6 +48,7 @@ impl Category {
             Category::Timeout => "timeout",
             Category::InvalidWasm => "invalid-wasm",
             Category::Differential => "differential",
+            Category::ReachabilityInvariant => "reachability-invariant",
         }
     }
 }
@@ -89,6 +97,12 @@ impl Finding {
                 format!("differential::{}", mask_message(d))
             }
             (None, Category::Timeout) => "timeout".to_string(),
+            // Bucket by the (masked) codeless-decline message, so each distinct assumed-unreachable
+            // SITE gets one bucket regardless of how many programs reach it.
+            (None, Category::ReachabilityInvariant) => {
+                let d = self.detail.as_deref().unwrap_or("reachability-invariant");
+                format!("reachability-invariant::{}", mask_message(d))
+            }
             (None, _) => "unknown".to_string(),
         };
         slugify(&raw)
@@ -127,6 +141,10 @@ impl Finding {
             (None, Category::Timeout) => {
                 "compiler timeout (no result inside the budget)".to_string()
             }
+            (None, Category::ReachabilityInvariant) => format!(
+                "REACHED an assumed-unreachable (codeless) decline: {}",
+                first_line(self.detail.as_deref().unwrap_or("codeless decline"))
+            ),
             (None, _) => "compiler finding".to_string(),
         }
     }
@@ -221,6 +239,28 @@ impl FindingStore {
             s.push_str("(one emits, one rejects). They share the front-end, so a divergence below the emit\n");
             s.push_str("seam is a lowering bug on one side. Triage, fix, then rename this file `.RESOLVED.md`\n");
             s.push_str("(or `.REJECTED.md` with a rationale) so it is not re-triaged._\n\n");
+        } else if finding.category == Category::ReachabilityInvariant {
+            s.push_str(
+                "_Filed by `cdz-smith` (the compiler fuzzer). This is an auto-generated finding: a\n",
+            );
+            s.push_str(
+                "generated program that PASSED the compiler's coded well-formedness checks then REACHED\n",
+            );
+            s.push_str(
+                "a CODELESS `Reject::decline` (the class-2 / assumed-unreachable set). Operator directive:\n",
+            );
+            s.push_str(
+                "reaching such a decline is a BUG — either the decline is a defense-in-depth backstop the\n",
+            );
+            s.push_str(
+                "type checker was supposed to make unreachable (invariant FALSE — a soundness/reachability\n",
+            );
+            s.push_str(
+                "bug), or it is a reachable-but-uncoded feature gap that should be CODED. Route to\n",
+            );
+            s.push_str(
+                "v-deferral-declines to triage (bug vs code-it). Rename `.RESOLVED.md`/`.REJECTED.md` on triage._\n\n",
+            );
         } else {
             s.push_str(
                 "_Filed by `cdz-smith` (the compiler fuzzer). This is an auto-generated finding: a\n",
@@ -332,6 +372,32 @@ impl FindingStore {
             s.push_str(
                 "detected out of process (an in-process catch cannot interrupt a runaway loop).\n",
             );
+        } else if finding.category == Category::ReachabilityInvariant {
+            s.push_str("## Reached an assumed-unreachable (codeless) decline\n\n");
+            s.push_str(
+                "The program compiled far enough to pass every CODED well-formedness check (no\n",
+            );
+            s.push_str(
+                "`CDZ####` rejection fired), then hit a CODELESS `Reject::decline` — the class-2 set\n",
+            );
+            s.push_str(
+                "that is assumed unreachable when the type checker + earlier phases are correct. The\n",
+            );
+            s.push_str(
+                "fuzzer reaching it falsifies that assumption. v-deferral-declines triages: (a) a genuine\n",
+            );
+            s.push_str(
+                "defense-in-depth backstop → soundness/reachability BUG (route to the decline owner); or\n",
+            );
+            s.push_str(
+                "(b) a reachable-but-uncoded feature gap → it should be CODED (`declined(id)`).\n\n",
+            );
+            if let Some(d) = &finding.detail {
+                s.push_str(&format!(
+                    "- **Codeless decline message:** {}\n",
+                    first_line(d)
+                ));
+            }
         }
         s
     }
@@ -355,6 +421,17 @@ pub fn shrink(source: &str, target_site: Option<&str>) -> String {
 /// validator message, since shrinking may legitimately surface a different first error).
 pub fn shrink_invalid_wasm(source: &str) -> String {
     shrink_while(source, |v| matches!(v, Verdict::InvalidWasm { .. }))
+}
+
+/// Minimize while the program still reaches THE SAME codeless decline (`Verdict::Declined
+/// { code: None, message: target }`) — the class-2 / assumed-unreachable witness. Preserving the
+/// exact message (not merely "some uncoded decline") keeps the shrunk repro on the SAME site, so it
+/// can't drift into a different codeless decline than the one this finding is filed under.
+pub fn shrink_codeless_decline(source: &str, target_message: &str) -> String {
+    shrink_while(
+        source,
+        |v| matches!(v, Verdict::Declined { code: None, message } if message == target_message),
+    )
 }
 
 /// The shared shrink loop: greedily delete balanced sub-forms, keeping any deletion whose result
