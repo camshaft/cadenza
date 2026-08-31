@@ -6664,6 +6664,7 @@
   "a constant non-String operand to String.concat is a type mismatch, not an uncoded decline"
   (input (do (def (main) (String.concat "a" 5)) (export main)))
   (error CDZ0203))
+
 (case
   "a constant non-String operand to String.slice is a type mismatch, not an uncoded decline"
   (input (do (def (main) (String.slice 5 0 1)) (export main)))
@@ -6676,14 +6677,17 @@
   "a runtime non-String operand to String.byte-len is the same CDZ0203 as its constant twin"
   (input (do (def (f (: n Int64)) (String.byte-len n)) (export f)))
   (error CDZ0203))
+
 (case
   "a runtime non-String operand to String.at is the same CDZ0203 as its constant twin"
   (input (do (def (f (: n Int64)) (String.at n 0)) (export f)))
   (error CDZ0203))
+
 (case
   "a runtime non-String operand to String.concat is the same CDZ0203 as its constant twin"
   (input (do (def (f (: n Int64)) (String.concat "a" n)) (export f)))
   (error CDZ0203))
+
 (case
   "a runtime non-String operand to String.slice is the same CDZ0203 as its constant twin"
   (input (do (def (f (: n Int64)) (String.slice n 0 1)) (export f)))
