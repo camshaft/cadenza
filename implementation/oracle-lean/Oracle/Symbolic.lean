@@ -848,6 +848,27 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Bytes.concat on non-bytes values")
            | _, _ => .cannotProve "symeval: malformed Bytes.concat")
+        else if q == "Set".toUTF8 && mem == "contains".toUTF8 then
+          -- `Set.contains s x` → `.const (.bool (x ∈ s))`, mirroring `evalNode` (Eval.lean:1648-1650,
+          -- `es.any (valEq · x)`). Membership is dup/order-INVARIANT, so the source-order `.ctor "set"`
+          -- is faithful WITHOUT canonicalization (unlike Set.len, which needs dedup — deferred). 🪤 decide
+          -- equality with BIT-FAITHFUL `valEq`/`cmpValue` (NaN dedupes, +0.0 ≠ -0.0), NEVER SymExpr-beq —
+          -- whose IEEE float `==` (+0.0 == -0.0, NaN ≠ NaN) is the OPPOSITE and would be unsound. Only when
+          -- EVERY element AND the query are concrete consts (a symbolic element could coincide at runtime →
+          -- can't soundly conclude ∉); otherwise cannotProve.
+          (match children[1]?, children[2]? with
+           | some sId, some xId =>
+             (match symEval m senv fuel ty sId, symEval m senv fuel ty xId with
+              | .sym (.ctor t elems), .sym (.const xv) =>
+                if t == "set".toUTF8 then
+                  (if elems.all (fun e => match e with | .const _ => true | _ => false) then
+                     .sym (.const (.bool (elems.any (fun e => match e with | .const ev => valEq ev xv | _ => false))))
+                   else .cannotProve "symeval: Set.contains needs all-concrete elements")
+                else .cannotProve "symeval: Set.contains on a non-set value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Set.contains on non-set / non-const query")
+           | _, _ => .cannotProve "symeval: malformed Set.contains")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1257,6 +1278,30 @@ private def _bytesConcatExpr : Module :=
     root := 6 }
 #guard symEval _bytesConcatExpr [] symDefaultFuel defaultIntTy 6
        == SymOutcome.sym (.const (.bytes (ByteArray.mk #[1, 2, 3])))
+
+-- SET.CONTAINS member-op coverage: `((. Set contains) (set 1 2 3) q)` → `.const (.bool (q ∈ {1,2,3}))`
+-- (bit-faithful valEq membership over concrete elements). q=2 → true; q=5 → false.
+private def _setContainsTrueExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "contains".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3]),
+                Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7], .atom 7, .list #[3, 8, 9]],
+    root := 10 }
+#guard symEval _setContainsTrueExpr [] symDefaultFuel defaultIntTy 10
+       == SymOutcome.sym (.const (.bool true))
+
+private def _setContainsFalseExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "contains".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3]),
+                Leaf.intLit false .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7], .atom 7, .list #[3, 8, 9]],
+    root := 10 }
+#guard symEval _setContainsFalseExpr [] symDefaultFuel defaultIntTy 10
+       == SymOutcome.sym (.const (.bool false))
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
