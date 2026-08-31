@@ -3030,6 +3030,22 @@
   (input  (= (Rational.of 0 5) (Rational.of 0 1)))
   (output (: true Bool)))
 
+(case "a zero rational with a NEGATIVE denominator still canonicalizes to 0/1 — sign placement is moot at zero"
+  (doc    "The sign-corner of zero canonicalization (intersection of #An Exact Rational Has A Canonical
+           Normalized Form's two clauses: lowest terms AND sign on the numerator, denominator > 0). At a
+           ZERO numerator the sign is moot — `(Rational.of 0 -5)` MUST canonicalize to 0/1, not 0/-1 or a
+           signed zero. A normalizer that fixes the sign by negating both components (0 stays 0) or that
+           reduces before the sign fix must still land on 0/1: gcd(0,5)=5 sends 0/-5 to 0/-1, then the
+           denominator-positive rule sends 0/-1 to 0/1. Pairs the zero case above (positive denom) with the
+           sign cases (nonzero numerator) at their shared corner; const-folded, both backends.")
+  (input  (Rational.of 0 -5))
+  (output (: 0/1 Rational)))
+
+(case "a zero rational is the same value regardless of the denominator's sign or magnitude"
+  (input  (do (def (main) (if (and (= (Rational.of 0 -5) (Rational.of 0 1))
+                                    (= (Rational.of 0 -5) (Rational.of 0 7))) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
 (case "a zero rational produced by arithmetic is the same canonical zero"
   (doc    "`(- (Rational.of 1 2) (Rational.of 1 2))` = 0, and that computed zero equals the constructed
            `(Rational.of 0 1)`. The subtraction path produces 0/4 before normalization (cross-multiplied
