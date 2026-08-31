@@ -3254,6 +3254,74 @@
           echo "ok: corpus — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→build→exec caching graph" > "$out"
         '';
 
+        # ── SYNTAX corpus (spec/syntax/) per-case gate (DESIGN-parser-test-corpus.md §4.1, inc-3c).
+        # Unlike the semantics corpus, spec/syntax is DIRECTORY-per-case, so each case dir is ALREADY the
+        # cache-isolation unit — NO shred/count/idx dance (that is bespoke to a semantics .sexp packing many
+        # cases). ONE derivation per case dir, inputs = {that case dir, the `cdz` front-end} ONLY — NEVER the
+        # parent spec/syntax tree, or an edit to any case would rotate EVERY case (the invariant that makes
+        # the cache work). Cases enumerated at EVAL time via `readDir` (no IFD), like `corpusFileNames`.
+        syntaxSurfaces = builtins.filter
+          (n: (builtins.readDir ./spec/syntax).${n} == "directory")
+          (builtins.attrNames (builtins.readDir ./spec/syntax));
+        syntaxCases = builtins.concatMap
+          (surface:
+            let dir = ./spec/syntax + "/${surface}"; in
+            map (caseName: { inherit surface caseName; })
+              (builtins.filter (n: (builtins.readDir dir).${n} == "directory")
+                (builtins.attrNames (builtins.readDir dir))))
+          syntaxSurfaces;
+        # Per-case CLASSIFY derivation — emits ONLY the verdict line `<verdict>\t<title>`, NO baseline
+        # (kept out of the per-case inputs so a baseline edit re-runs just the cheap aggregate fold, not
+        # every case). Mirrors `gate_syntax::grade_case`: `cdz convert --to sexpr --structural` vs
+        # `tree.sexp`, `cdz fmt --stdout` vs `format.<ext>`-or-`input`; a non-zero convert is a decline →
+        # `todo`. ALWAYS exits 0 (classify, don't fail — the aggregate folds vs the baseline).
+        mkSyntaxCase = { surface, caseName }:
+          let
+            caseDir = ./spec/syntax + "/${surface}/${caseName}";
+            title = "${surface}/${caseName}";
+          in
+          pkgs.runCommand "syntax-case-${surface}-${caseName}"
+            { nativeBuildInputs = [ seedCompiler ]; } ''
+            set -uo pipefail
+            case=${caseDir}
+            input=$(echo "$case"/input.*)
+            ext=''${input##*.}
+            # Harden the single-input assumption (v-corpus-harness review): if a case dir ever lacks
+            # `input.*`, the glob stays literal → `cdz` would fail → mis-classified as a decline (todo).
+            # A missing input is a mis-authored case → fail, not a silent todo.
+            if [ ! -e "$input" ]; then
+              printf 'fail\t%s\n' "${title}" > "$out"
+              exit 0
+            fi
+            if cdz convert --to sexpr --structural "$input" > tree.actual 2>/dev/null; then
+              if [ ! -f "$case/tree.sexp" ]; then
+                verdict=fail            # parses but no golden tree (a mis-authored decline) → fail
+              elif cmp -s tree.actual "$case/tree.sexp"; then
+                if [ -f "$case/format.$ext" ]; then expected="$case/format.$ext"; else expected="$input"; fi
+                cdz fmt --stdout "$input" > fmt.actual 2>/dev/null
+                if cmp -s fmt.actual "$expected"; then verdict=pass; else verdict=fail; fi
+              else
+                verdict=fail            # wrong tree
+              fi
+            else
+              verdict=todo              # the reader DECLINES (a malformed / not-yet-realized surface)
+            fi
+            printf '%s\t%s\n' "$verdict" "${title}" > "$out"
+          '';
+        syntaxCaseDrvs = map mkSyntaxCase syntaxCases;
+        # The aggregate: force every per-case verdict, concat into a harvest file, and FOLD it vs the
+        # committed baseline through `gate-syntax --compare` — the SAME `check_baseline` the CLI `--check`
+        # uses (single-sourced; the nix path never gets a divergent/weaker fold). `--baseline` is explicit
+        # because `xtaskBin` runs outside a repo tree. A regression / vanished / failing verdict reds here.
+        syntaxCorpus = pkgs.runCommand "syntax-corpus"
+          { nativeBuildInputs = [ xtaskBin ]; } ''
+          set -euo pipefail
+          : > verdicts.txt
+          ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} >> verdicts.txt'') syntaxCaseDrvs}
+          xtask gate-syntax --compare verdicts.txt --baseline ${./spec/syntax/.gate-baseline}
+          echo "ok: syntax-corpus — ${toString (builtins.length syntaxCases)} cases via per-case classify + baseline fold" > "$out"
+        '';
+
         # ── --save HARVEST (v-xtask-decompose seq-202 gate-delete: the nix replacement for `cargo xtask gate
         # --save`). The gate `--save` regenerated `.gate-baseline` from the current corpus verdicts; instead of
         # a heavy in-process re-run, HARVEST the verdicts from the per-case nix graph (cached) + let a thin
@@ -5357,6 +5425,11 @@
             # (content-addressed `cdz-compile`) → exec (compiler-free `cdz-run --grade`). `corpus` is the
             # whole-corpus aggregate; the per-file `corpus-<file>` aggregates are spread in below.
             corpus = corpusAll;
+            # The SYNTAX corpus per-case gate (spec/syntax/, inc-3c): one classify derivation per case
+            # dir → verdicts harvested + folded vs .gate-baseline via `gate-syntax --compare`. Advisory
+            # (per the hourly-advisory land model); the authoritative correctness gate is still the
+            # `test-cadenza-syntax` self-consistency run. See DESIGN-parser-test-corpus.md §4.1.
+            syntax-corpus = syntaxCorpus;
             # The RUST-target twin of `corpus` (design gap #6): the same per-case shred → a rust build
             # (`cdz-compile -t rust`) → a rust exec (`cdz-rust-run --grade`, which compiles the emitted `.rs`'s
             # driver with `rustc` linking the pre-built `rustRlibs` + grades). `corpus-rust` is the whole-corpus
