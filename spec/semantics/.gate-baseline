@@ -812,7 +812,7 @@ pass	a GENERIC user sum ((Box Int64)) as op result — nominal tag + instantiate
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
-pass	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
+todo	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
 pass	a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket
 pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
 pass	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding
@@ -1757,7 +1757,7 @@ pass	a concat-built list = a push-built list with the same elements (element-wis
 pass	a concat-built rope of 1-, 2-, and 3-byte scalars measures and indexes at every width
 pass	a concat-of-concat chain keeps every intermediate binding readable
 pass	a concat-reached string equals a slice-reached string of the same content and not a decoy
-pass	a conditional abort hoisted alongside a second abortive sibling declines cleanly
+todo	a conditional abort hoisted alongside a second abortive sibling declines cleanly
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional let-INIT whose abort branch is NOT taken folds the non-aborting branch
@@ -1897,8 +1897,8 @@ pass	a context-typed empty float map accepts a runtime float key insert
 pass	a context-typed empty float map needs no key inserted to ground its wrapper type
 pass	a context-typed empty float set grounds its element wrapper type
 pass	a context-typed empty float32 map grounds the narrow-float wrapper
-pass	a continuation call whose body ITSELF performs is not effect-free and declines
-pass	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
+todo	a continuation call whose body ITSELF performs is not effect-free and declines
+todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
@@ -1979,7 +1979,7 @@ pass	a def parameter may be a record pattern that destructures by field
 pass	a def with a mix of annotated and unannotated parameters binds and folds
 pass	a def-bound perform composes with a recursive performing loop in one handle body
 pass	a def-boundary conditional abort with PURE arguments folds and homes to its handler
-pass	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
+todo	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-float pragma leaves a bare integer literal at its Int64 default
 pass	a default-float pragma naming a non-float integer type is rejected
@@ -3283,12 +3283,12 @@ pass	a non-tail accumulable recursion runs to a large runtime N in constant stac
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail conditional abort hoists out of a strict operand and folds per branch
 pass	a non-tail conditional abort in the untaken branch folds to the pure sibling sum
-pass	a non-tail cross-function conditional abort declines cleanly
-pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
+todo	a non-tail cross-function conditional abort declines cleanly
+todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
 pass	a non-tail list fold over a large runtime list is accumulator-transformed to constant stack
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
-pass	a non-tail recursive abort declines rather than miscompiles
+todo	a non-tail recursive abort declines rather than miscompiles
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
 pass	a non-unit base in a Unit.^ power is rejected
 pass	a non-unit factor in a Unit.* composition is rejected
@@ -3697,7 +3697,7 @@ pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and 
 pass	a recursive TLV frame walk over sliced runtime bytes decodes LE payloads per frame
 pass	a recursive TREE as a transformer op — crosses IN, the arm wraps it, crosses back OUT
 pass	a recursive abortive callee as the handle-body TAIL folds to the arm value
-pass	a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly
+todo	a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly
 pass	a recursive bool predicate types as Bool with the self-call in either branch order
 pass	a recursive builder PERFORMS per step and a recursive pure fold consumes the built list
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
@@ -5730,10 +5730,10 @@ pass	an out-of-range signed literal names its valid range in the diagnostic
 pass	an out-of-range unsigned literal names a range starting at zero
 pass	an outer Int64 let binder survives an inner String shadow of the same name
 pass	an outer definition references a sibling nested module by bare name
-pass	an outer effect in BOTH the resume value and next-state slot declines cleanly (asb)
+todo	an outer effect in BOTH the resume value and next-state slot declines cleanly (asb)
 pass	an outer effect in a nested arm's RESUME-VALUE slot is served (as3)
-pass	an outer effect in a nested arm's next-state slot across THREE chained performs declines cleanly (as1)
-pass	an outer effect performed DIRECTLY in a nested arm's next-state slot declines cleanly (as2)
+todo	an outer effect in a nested arm's next-state slot across THREE chained performs declines cleanly (as1)
+todo	an outer effect performed DIRECTLY in a nested arm's next-state slot declines cleanly (as2)
 pass	an outer op-arg match with an inner state match reading the op-arg payload threads per dispatch
 pass	an outer perform LET-LIFTED out of the next-state slot folds strict (as7 workaround)
 pass	an over-ceiling SIGNED width far past the ceiling is rejected naming the written width
@@ -8909,7 +8909,7 @@ pass	the wrapping additive and multiplicative identities preserve a boundary ope
 pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
 pass	the wrapping-mul zero annihilator does not drop a trapping operand
 pass	the x times minus-one strength reduction negates a normal operand and still traps at Int64.min
-pass	the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)
+todo	the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
 pass	three DISCARDED performs on a do-spine still advance the state
