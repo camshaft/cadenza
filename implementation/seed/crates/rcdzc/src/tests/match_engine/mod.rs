@@ -3117,38 +3117,12 @@ fn a_float_literal_that_overflows_float32_is_out_of_range() {
 // / annotated-let-binder paths; a const arith overflow is CDZ0304; in-range runs; a Bool-vs-narrow clash is
 // CDZ0203. 9 cases; bare-param control covered by generic bare-param cases. All PASS wasm.)
 
-#[test]
-fn an_argument_fault_is_reported_whether_or_not_the_parameter_is_used() {
-    // The fault walk over a call `(f arg)` must catch a fault IN `arg` — an unbound name, a malformed
-    // application — for BOTH a USED parameter (the argument is substituted into the reduced body, so
-    // the body walk sees it) AND a DEAD parameter the body ignores (the argument is absent from the
-    // reduced body, so it must be descended on its own). The redundant-descent elimination that made a
-    // deep call chain's fault walk LINEAR (drop the raw-argument descent for a USED parameter, since
-    // its argument is already in the reduced body) must NOT lose a DEAD argument's faults — those are
-    // still descended (`param_is_referenced` is false → the argument is checked).
-    // USED parameter — the fault surfaces via the reduced body.
-    assert_eq!(
-        reject_code("(module m (def (f a) (+ a 1)) (def (main) (f frobnicate)) (export main))")
-            .as_deref(),
-        Some("CDZ0101")
-    );
-    // DEAD parameter — the body ignores `a`, so the argument's fault is caught by descending the
-    // (un-substituted) argument, not the reduced body. An unbound name and a malformed application.
-    assert_eq!(
-        reject_code("(module m (def (f a) 0) (def (main) (f frobnicate)) (export main))")
-            .as_deref(),
-        Some("CDZ0101")
-    );
-    assert_eq!(
-        reject_code("(module m (def (f a) 0) (def (main) (f (5 3))) (export main))").as_deref(),
-        Some("CDZ0201")
-    );
-    // A well-formed argument to a dead parameter still compiles (no over-rejection).
-    assert_eq!(
-        reject_code("(module m (def (f a) 0) (def (main) (f 99)) (export main))"),
-        None
-    );
-}
+// [migrated → spec/semantics/09-functions.sexp] an_argument_fault_is_reported_whether_or_not_the_parameter_is_used:
+// an argument fault surfaces whether the parameter is USED or DEAD (the linear-fault-walk drops the raw-arg
+// descent for a used param, relying on the reduced body; a dead param's arg is still descended). Corpus 09
+// faces: dead-param unbound-arg → CDZ0101 ("a dead (unreferenced) argument is still checked"), dead-params
+// well-formed → runs ("a function using only its first parameter accepts…"), USED-param unbound-arg → CDZ0101
+// ("…surfaced via the reduced body"), dead-param malformed-app (5 3) → CDZ0201 ("a non-unbound fault kind"). All PASS.
 
 // (under_applying_a_unary_variant_constructor_is_a_type_error migrated to corpus 09-functions, the
 // low-arity mirror after the over-applying-a-constructor cases: `(Some)` → CDZ0201 (message "`Some` needs
