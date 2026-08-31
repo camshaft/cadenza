@@ -754,6 +754,152 @@ fn read_live_objects(
     }
 }
 
+/// The rc-trace drain interface, exported only by `world runtime-debug` of the `.#rctrace-runtime`
+/// variant (a sibling of the `heap` interface [`RUNTIME_IFACE`] in the same `cadenza:runtime` package).
+const DEBUG_TRACE_IFACE: &str = "cadenza:runtime/debug-trace";
+
+/// A drained rc-trace: the flat 20-byte-LE-record buffer (decoded by [`crate::rc_trace`]) + the
+/// overflow/truncation flag (`rc-trace-truncated`).
+pub type RcTraceDrain = (Vec<u8>, bool);
+
+/// Run the guest like [`run_with_live_objects`], but ARM the runtime's rc-trace recorder before the run
+/// and DRAIN it after — the ATTRIBUTION path for `cdz-run --rc-trace`. Returns the run outcome, the
+/// observed host-op list, and (on a clean VALUE return with a composed runtime) `Some((drain_bytes,
+/// truncated))` — the flat 20-byte-LE record buffer (decoded by [`crate::rc_trace`]) + the overflow flag.
+/// `None` when the component composes no runtime (no heap → nothing to trace) or the run trapped (the
+/// instance may be unusable post-trap, mirroring the live-objects caution). REQUIRES the runtime in
+/// `opts.runtime` to be the rc-trace variant (exports `debug-trace`); a non-rc-trace runtime errors with
+/// a build hint.
+pub fn run_with_rc_trace(
+    component_bytes: &[u8],
+    opts: &RunOpts,
+    second_call: Option<&[String]>,
+    drop_handle: bool,
+    call_member: Option<&str>,
+) -> Result<(Outcome, Vec<String>, Option<RcTraceDrain>)> {
+    use std::sync::{Arc, Mutex};
+    let engine = engine();
+    let component = load_guest(&engine, component_bytes, opts)
+        .map_err(|e| anyhow!("invalid component: {e}"))?;
+    let mut store = new_store(&engine);
+    let mut linker: Linker<()> = Linker::new(&engine);
+
+    let rt_instance = match find_runtime_req(&engine, &component) {
+        Some(req) => {
+            let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+            bind_runtime_into(
+                &engine,
+                &mut store,
+                &mut linker,
+                &req.import_name,
+                &rt_instance,
+                &heap_names,
+            )?;
+            // ARM recording BEFORE the guest runs (rc-trace-enable clears the buffer + starts appending).
+            rc_trace_enable(&mut store, &rt_instance, true)?;
+            Some(rt_instance)
+        }
+        None => None,
+    };
+
+    let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
+    let result_types = result_types_of(component_bytes, opts);
+    let result_ty = lookup_result_ty(&result_types, opts.export.as_deref());
+
+    let outcome = run_export(
+        &engine,
+        &component,
+        &mut store,
+        &linker,
+        opts,
+        second_call,
+        drop_handle,
+        call_member,
+        result_ty,
+    )?;
+    let calls = observed.lock().expect("observed calls mutex").clone();
+    // Drain only on a clean value return (a trap may leave the runtime instance unusable — same caution
+    // as `read_live_objects`; the reclaim levers this serves are all value-returning cases anyway).
+    let trace = match (&outcome, &rt_instance) {
+        (Outcome::Value(_), Some(rt)) => Some(rc_trace_drain(&mut store, rt)?),
+        _ => None,
+    };
+    Ok((outcome, calls, trace))
+}
+
+/// Resolve a func in the runtime's `debug-trace` interface (nested-instance export index, like
+/// `read_live_objects` for `heap`).
+fn debug_trace_func(
+    store: &mut Store<()>,
+    rt: &wasmtime::component::Instance,
+    name: &str,
+) -> Result<wasmtime::component::Func> {
+    let dt_idx = rt
+        .get_export_index(&mut *store, None, DEBUG_TRACE_IFACE)
+        .ok_or_else(|| {
+            anyhow!(
+                "runtime does not export {DEBUG_TRACE_IFACE} — pass the rc-trace variant via \
+                 `--runtime <.#rctrace-runtime path>` (a release/leak-check runtime has no rc-trace)"
+            )
+        })?;
+    let f_idx = rt
+        .get_export_index(&mut *store, Some(&dt_idx), name)
+        .ok_or_else(|| anyhow!("debug-trace has no `{name}` export"))?;
+    rt.get_func(&mut *store, f_idx)
+        .ok_or_else(|| anyhow!("`{name}` is not a func"))
+}
+
+/// Arm/disarm the runtime's rc-trace recorder (`rc-trace-enable(on)`).
+fn rc_trace_enable(
+    store: &mut Store<()>,
+    rt: &wasmtime::component::Instance,
+    on: bool,
+) -> Result<()> {
+    let f = debug_trace_func(store, rt, "rc-trace-enable")?;
+    f.call(&mut *store, &[Val::Bool(on)], &mut [])
+        .map_err(|e| anyhow!("calling rc-trace-enable: {e}"))?;
+    let _ = f.post_return(&mut *store);
+    Ok(())
+}
+
+/// Drain the rc-trace ring buffer (`rc-trace-drain() -> list<u8>`) + read `rc-trace-truncated() -> bool`.
+fn rc_trace_drain(
+    store: &mut Store<()>,
+    rt: &wasmtime::component::Instance,
+) -> Result<RcTraceDrain> {
+    let drain = debug_trace_func(store, rt, "rc-trace-drain")?;
+    let mut r = [Val::Bool(false)];
+    drain
+        .call(&mut *store, &[], &mut r)
+        .map_err(|e| anyhow!("calling rc-trace-drain: {e}"))?;
+    let bytes = match &r[0] {
+        Val::List(items) => items
+            .iter()
+            .map(|v| match v {
+                Val::U8(b) => Ok(*b),
+                other => Err(anyhow!(
+                    "rc-trace-drain returned a non-u8 element: {other:?}"
+                )),
+            })
+            .collect::<Result<Vec<u8>>>()?,
+        other => return Err(anyhow!("rc-trace-drain returned a non-list: {other:?}")),
+    };
+    // A `list<u8>` return owns guest memory until `post_return` — free it before the next export call.
+    drain
+        .post_return(&mut *store)
+        .map_err(|e| anyhow!("rc-trace-drain post_return: {e}"))?;
+
+    let trunc = debug_trace_func(store, rt, "rc-trace-truncated")?;
+    let mut t = [Val::Bool(false)];
+    trunc
+        .call(&mut *store, &[], &mut t)
+        .map_err(|e| anyhow!("calling rc-trace-truncated: {e}"))?;
+    let truncated = matches!(t[0], Val::Bool(true));
+    let _ = trunc.post_return(&mut *store);
+    Ok((bytes, truncated))
+}
+
 /// A component-model `list<u8>` argument value from raw bytes (each byte a `Val::U8` element).
 fn list_u8_val(bytes: &[u8]) -> Val {
     Val::List(bytes.iter().map(|b| Val::U8(*b)).collect())
