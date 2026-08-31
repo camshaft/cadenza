@@ -739,7 +739,8 @@
            two-entry map the `(= 1 v)` face binds `v`=10 and `(.. r)` binds the rest `{2:20}`, so
            `(+ v (Map.len r))` = 10 + 1 = 11. Distinguishes a correct OPEN pattern from one that just drops
            the marker.")
-  (input (eval (quote (match #map((= 1 10) (= 2 20)) (#map((= 1 v) (.. r)) (+ v (Map.len r))) (_ -1)))))
+  (input
+    (eval (quote (match #map((= 1 10) (= 2 20)) (#map((= 1 v) (.. r)) (+ v (Map.len r))) (_ -1)))))
   (output (: 11 Int64)))
 
 (case
@@ -749,7 +750,10 @@
            inside a QUASIQUOTED `#map` pattern must stay OPEN, and the arm body splices an unquoted
            enclosing value. `v`=10 (bound at key 1), `,x`=5, so `(+ v ,x)` = 15.")
   (input
-    (let ((x 5)) (eval (quasiquote (match #map((= 1 10) (= 2 20)) (#map((= 1 v) (.. r)) (+ v (unquote x))) (_ -1))))))
+    (let
+      ((x 5))
+      (eval
+        (quasiquote (match #map((= 1 10) (= 2 20)) (#map((= 1 v) (.. r)) (+ v (unquote x))) (_ -1))))))
   (output (: 15 Int64)))
 
 (case
@@ -5387,3 +5391,40 @@ c")))
   (call main (: 50 Int64))
   (output (: 100 Int64))
   (live-objects known-leak))
+
+(case
+  "eqmr1 a map-REST pattern inside a QUOTED match reifies OPEN and matches like its direct twin"
+  (doc
+    "The #6896 fence (breaker counterexample 2026-08-31 vs #6855, v-deferral HIGH-SEV route):
+     `(eval (quote (match #map((= 1 10)) (#map((= 1 v) (.. _r)) v) (_ -1))))` must fold to v=10
+     exactly as the direct (unquoted) match does — pre-fix the reified map-rest marker closed the
+     pattern (fell to the catch-all -1, a wrong-VALUE compile-time fold, worse than the decline it
+     replaced). Isolation at filing: quoted #map WITHOUT rest folded correctly, quoted #set WITH
+     rest folded correctly — only the map-rest reify was broken. The weighted pair pins the quoted
+     face against the direct twin so any future divergence shows as a pair-split.")
+  (input
+    (do
+      (def
+        (quoted (: n Int64))
+        (+ (eval (quote (match #map((= 1 10)) (#map((= 1 v) (.. _r)) v) (_ -1)))) n))
+      (def
+        (direct (: n Int64))
+        (+ (match #map((= 1 10) (= 2 20)) (#map((= 1 v) (.. _r)) v) (_ -1)) n))
+      (def (main (: n Int64)) (+ (* 100 (quoted n)) (direct n)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 1111 Int64)))
+
+(case
+  "eqmr2 a record-REST pattern inside a QUOTED match reifies OPEN (the #6896 record twin)"
+  (doc
+    "The record sibling of eqmr1, fixed by the same #6896 open-reify: a quoted match whose arm
+     carries `#record((= a v) (.. _r))` folds to the named field's value (v=5 for {a=5,b=6}; main = v+n = 6 at n=1), not the catch-all.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (+ (eval (quote (match #record((= a 5) (= b 6)) (#record((= a v) (.. _r)) v) (_ -1)))) n))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 6 Int64)))
