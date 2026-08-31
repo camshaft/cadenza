@@ -87,6 +87,12 @@ export default function PatternMatching() {
       />
       <P>So <C>x</C> is <C>1</C>, and <C>rest</C> is the residual record <C>#record((= b 2) (= c 3))</C>, so <C>rest.b</C> is <C>2</C> and <C>rest.c</C> is <C>3</C>, giving <C>1 + 2 + 3 = 6</C>. The key difference from the tuple case: <C>rest</C> here is a <em>record</em>, so you reach into it by field name (<C>rest.b</C>, <C>rest.c</C>), not by position.</P>
       <Note>As with the tuple rest, this supports a record <em>constructed in place</em>. A rest binder over a fully opaque runtime record is <em>not supported</em> on the backends, so the compiler declines it with a clear message rather than a wrong answer.</Note>
+      <H2>Matching a set's members</H2>
+      <P>A set has no fields or positions, so a set pattern asks a different question: <em>containment</em>. <C>#set(1 (.. rest))</C> names the members that must be <em>present</em> and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing <C>(.. rest)</C> then binds <C>rest</C> to the <em>residual set</em>, the scrutinee's members minus the ones you named. Here the set contains <C>1</C>, so the arm fires and <C>rest</C> is what's left:</P>
+      <Runnable
+        source={`(match #set(1 2 3) (#set(1 (.. rest)) (Set.len rest)) (_ 0))`}
+      />
+      <P>The scrutinee <C>#set(1 2 3)</C> contains the named <C>1</C>, so the arm matches and <C>rest</C> binds the residual <C>#set(2 3)</C>, whose <C>Set.len</C> is <C>2</C>. Three things follow from its being a containment test: it matches a <em>superset</em> too (<C>#set(1)</C> matches <C>#set(1 2 3)</C>), naming a member the set <em>lacks</em> refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same <C>(.. rest)</C> residual, asking "is this present?" instead of "what's at this field?".</P>
       <H2>Your turn</H2>
       <Exercise
         id="pattern-matching:1"
