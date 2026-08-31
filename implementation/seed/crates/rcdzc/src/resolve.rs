@@ -1944,15 +1944,19 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // linear pattern binds `name` once, so if it is in a nested record no earlier (wireable) case matched
     // it, making this placement safe (a genuinely-wireable binder resolved above).
     if match_arm_nested_record_binds(db, form, from, name) {
-        // CODED (`Malformed`) — NOT an uncoded `decline` — so `collect_reached_poisons` /
-        // `match_pattern_fault` surfaces it in `cdz check` on EVERY body (not only the emit-path walk over
-        // nullary-exported bodies): the PATTERN itself lowers fine (the tuple/record `Elem` descent builds
-        // valid constraints — a body that IGNORES the nested binder even compiles+runs), so the fault is
-        // reference-specific and only reachable via this body-reference resolution. An uncoded decline here
-        // would be SILENT in `check` while `compile` declines the body reference — the exact check≡compile
-        // gap the coded-head discipline (Inc 39/40, the list/map/record-match coded declines) closes.
-        return Some(Resolved::Poison(Reject::coded(
-            Code::Malformed,
+        // CODED decline (`CDZ0900`, `Reject::unsupported`) — a not-yet-built construct, NOT a REJECT. A
+        // record field's value binder MAY be ANY nested pattern to any depth (core-semantics §235, the
+        // record twin of the map/list nested-binder clauses), so a binder BELOW a nested record field is
+        // SPEC-VALID — the compiler just does not yet wire it (no name-keyed `PathStep`). This is a graceful
+        // deferral of a valid target, so it is `CDZ0900` (UnsupportedConstruct) — matching its siblings: the
+        // directly-nested record-match decline (`match_arm_record_binds` → `Reject::unsupported`) and the
+        // binding-position twin (`last_binder_named` + `check_binding_pattern`, CDZ0900). It was formerly
+        // `Reject::coded(Code::Malformed)` = CDZ0201, which wrongly told the user a spec-valid program is
+        // malformed. Still CODED (`is_decline` holds for CDZ0900), so `collect_reached_poisons` /
+        // `match_pattern_fault` surfaces it in `cdz check` on EVERY body (the check≡compile property the
+        // coded-head discipline requires — the concern that guided the old choice was an UNCODED decline,
+        // which CDZ0900 is not).
+        return Some(Resolved::Poison(Reject::unsupported(
             "a record sub-pattern nested inside a tuple/list/constructor match pattern is not \
              supported (a record match binds its fields to bare names at the top level; destructure a \
              nested record with a further `match` or `let`)",

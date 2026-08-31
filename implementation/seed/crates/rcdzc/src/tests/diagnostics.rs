@@ -1059,10 +1059,13 @@ fn a_nested_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder(
         "no misleading 'unbound name' for a deeper nested-record binder: {all:?}"
     );
     assert!(
-        all.iter().any(|d| d
-            .message
-            .contains("record sub-pattern nested inside a tuple/list/constructor match pattern")),
-        "check names the unimplemented deeper-nesting feature: {all:?}"
+        all.iter().any(|d| d.code.as_deref() == Some("CDZ0900")
+            && d.message.contains(
+                "record sub-pattern nested inside a tuple/list/constructor match pattern"
+            )),
+        "check names the unimplemented deeper-nesting feature as a CODED decline (CDZ0900, not the old \
+         CDZ0201 malformed-reject — a record field value binder is spec-valid per §235, so this is a \
+         graceful deferral): {all:?}"
     );
 }
 

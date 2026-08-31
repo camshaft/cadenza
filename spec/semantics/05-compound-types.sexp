@@ -24166,6 +24166,29 @@
   (call main)
   (output (: 15 Int64)))
 
+; A record sub-pattern nested inside a TUPLE (or list/constructor) match arm binds its BARE-binder fields
+; (the case above), but a field whose value is ITSELF a compound — `#tuple(#record((= x #tuple(c d))) e)`,
+; where field `x` of the nested record is a further `#tuple(c d)` — is the deeper nesting the compiler does
+; not yet wire (a record field projects by NAME→sorted-slot; no name-keyed `PathStep` composes a further
+; descent). It is SPEC-VALID (core-semantics §235: a record field value binder may be any nested pattern to
+; any depth), so it is DECLINED as an unbuilt construct with the seq-286 umbrella CDZ0900 (`Reject::unsupported`)
+; — NOT the old CDZ0201 "malformed" reject, which wrongly called a valid program wrong. The sibling of the
+; directly-nested record-match decline below; `(no-other-errors)` pins no unbound-name CDZ0101 cascade.
+(case
+  "a deeper compound below a record field NESTED in a tuple match arm is a coded decline (CDZ0900)"
+  (input
+    (do
+      (def
+        (f (: t (Tuple (Record (: x (Tuple Int64 Int64))) Int64)))
+        (match t (#tuple(#record((= x #tuple(c d))) e) (+ c (+ d e)))))
+      (def (main) (f #tuple(#record((= x #tuple(3 4))) 5)))
+      (export main)))
+  (declines
+    CDZ0900
+    (message "a record sub-pattern nested inside a tuple/list/constructor match pattern is not")
+    (not "unbound")
+    (no-other-errors)))
+
 ; The "separate coded decline" the case above names: a binder BELOW a nested-record field value in a MATCH
 ; arm — the field value is ITSELF a compound (`#record((= x #tuple(c d)))`) — is the not-yet-wired deeper
 ; nesting (a record field projects by NAME→sorted-slot; `PathStep` has no name-keyed step to compose a
