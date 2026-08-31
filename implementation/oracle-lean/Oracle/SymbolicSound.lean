@@ -791,6 +791,34 @@ theorem foldConst?_canon_stable (op : String) (args : Array SymExpr) (v : Value)
     (match Value.asF64? v with | some f => Value.f64 f | none => v) = v := by
   rcases foldConst?_out op args v h with ⟨b, rfl⟩ | ⟨f, rfl⟩ <;> rfl
 
+/-- `foldConst?` reads its operands ONLY through `args.map symToValue?` — so two arg arrays with the same
+`symToValue?` image fold identically. This lets the capstone `.app` fold case swap a NORMALIZED operand for
+`.const (its symToValue? value)` (they have the same image) to reach `denoteBinary_fold`/`denoteUnary_fold`. -/
+theorem foldConst?_symToValue_congr (op : String) (args1 args2 : Array SymExpr)
+    (h : args1.map symToValue? = args2.map symToValue?) :
+    foldConst? op args1 = foldConst? op args2 := by
+  simp only [foldConst?, h]
+
+/-- A binary `foldConst?` that FIRES has BOTH operands `symToValue?`-extractable (its `consts.any isNone`
+guard is false). The 2-operand form the capstone `.app` fold case needs (to invoke `denote_symToValue` on
+each operand). Proven by casing the two `symToValue?`s on the concrete 2-array (the guard reduces). -/
+theorem foldConst?_binary_operands_some (op : String) (x0 x1 : SymExpr) (v : Value)
+    (h : foldConst? op #[x0, x1] = some v) :
+    (∃ c0, symToValue? x0 = some c0) ∧ (∃ c1, symToValue? x1 = some c1) := by
+  cases h0 : symToValue? x0 with
+  | none => rw [foldConst?] at h; simp [h0] at h
+  | some c0 =>
+    cases h1 : symToValue? x1 with
+    | none => rw [foldConst?] at h; simp [h0, h1] at h
+    | some c1 => exact ⟨⟨c0, rfl⟩, ⟨c1, rfl⟩⟩
+
+/-- Unary companion: a `not`-fold that fires has its single operand `symToValue?`-extractable. -/
+theorem foldConst?_unary_operand_some (op : String) (x0 : SymExpr) (v : Value)
+    (h : foldConst? op #[x0] = some v) : ∃ c0, symToValue? x0 = some c0 := by
+  cases h0 : symToValue? x0 with
+  | none => rw [foldConst?] at h; simp [h0] at h
+  | some c0 => exact ⟨c0, rfl⟩
+
 /-- Every `.const` LEAF anywhere in a symbolic expression is `asF64?`-canonical (its float components are
 already `.f64`, never a `.float`/`.floatNan`/`.floatInf` spelling). This is the invariant `normalize`
 OUTPUTS satisfy (`normalize_allConstsCanon`): the `.const` arm canonicalizes float literals to `.f64`, and
@@ -1261,6 +1289,61 @@ theorem denote_symToValue (ρ : Nat → Value) (w : IntTy) (e : SymExpr) (c : Va
   | case4 x _ _ _ =>
     exfalso
     cases x <;> simp_all [symToValue?]
+
+/-- CAPSTONE `.app` FOLD CASE — GENERAL (arbitrary arity, scalar OR tuple/record operands). When
+`normalize` folds an application to a constant `vf`, the original application `denote`s to that same `vf`.
+Uniform over all operand shapes via the `symToValue?`↔`denote` bridge (`denote_symToValue`): each folded
+operand's `symToValue?` value equals its `denote` value (no `.const`-vs-`.tuple` split). The value hypothesis
+pins arity 1/2 (`denote_app_value_arity`), the operands are `.value` (`denote{Unary,Binary}_value_inv`) and
+`symToValue?`-extractable (`foldConst?_*_operand*_some`), and `foldConst?_symToValue_congr` swaps each
+normalized operand for `.const (its value)` to reach `denote{Unary,Binary}_fold`. This is the FULL `.app`
+fold branch of the `denote (normalize e) = denote e` capstone. -/
+theorem denote_normalize_app_fold (ρ : Nat → Value) (w : IntTy) (op : String) (args : Array SymExpr)
+    (vf v : Value)
+    (hfold : foldConst? op (args.attach.map (fun x => normalize x.val)) = some vf)
+    (ih : ∀ x ∈ args, ∀ u, denote ρ w x = .value u → denote ρ w (normalize x) = .value u)
+    (h : denote ρ w (.app op args) = .value v) :
+    denote ρ w (normalize (.app op args)) = .value v := by
+  rw [normalize_app_fold op args vf hfold]
+  simp only [denote]
+  rw [foldConst?_canon_stable op _ vf hfold]
+  suffices hv : v = vf by rw [hv]
+  rcases denote_app_value_arity ρ w op args v h with ⟨a0, rfl⟩ | ⟨a0, a1, rfl⟩
+  · -- UNARY: args = #[a0]
+    rw [show (#[a0] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0] by simp] at hfold
+    obtain ⟨c0, hc0⟩ := foldConst?_unary_operand_some op (normalize a0) vf hfold
+    have hd0 : denote ρ w (normalize a0) = .value c0 :=
+      denote_symToValue ρ w (normalize a0) c0 (normalize_allConstsCanon a0) hc0
+    rw [denote_app1] at h
+    obtain ⟨u0, hu0⟩ := denoteUnary_value_inv op _ v h
+    have hi0 : denote ρ w (normalize a0) = .value u0 := ih a0 (by simp) u0 hu0
+    have hcu0 : c0 = u0 := by rw [hd0] at hi0; exact Outcome.value.inj hi0
+    have hcongr : foldConst? op #[normalize a0] = foldConst? op #[.const c0] :=
+      foldConst?_symToValue_congr op _ _ (by simp [hc0, symToValue?_const])
+    rw [hcongr] at hfold
+    have hfv : denoteUnary op (.value c0) = .value vf := denoteUnary_fold op c0 vf hfold
+    rw [hu0, ← hcu0, hfv] at h
+    exact (Outcome.value.inj h).symm
+  · -- BINARY: args = #[a0, a1]
+    rw [show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val)
+        = #[normalize a0, normalize a1] by simp] at hfold
+    obtain ⟨⟨c0, hc0⟩, ⟨c1, hc1⟩⟩ := foldConst?_binary_operands_some op (normalize a0) (normalize a1) vf hfold
+    have hd0 : denote ρ w (normalize a0) = .value c0 :=
+      denote_symToValue ρ w (normalize a0) c0 (normalize_allConstsCanon a0) hc0
+    have hd1 : denote ρ w (normalize a1) = .value c1 :=
+      denote_symToValue ρ w (normalize a1) c1 (normalize_allConstsCanon a1) hc1
+    rw [denote_app2] at h
+    obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv op w _ _ v h
+    have hcu0 : c0 = u0 := by
+      have := ih a0 (by simp) u0 hu0; rw [hd0] at this; exact Outcome.value.inj this
+    have hcu1 : c1 = u1 := by
+      have := ih a1 (by simp) u1 hu1; rw [hd1] at this; exact Outcome.value.inj this
+    have hcongr : foldConst? op #[normalize a0, normalize a1] = foldConst? op #[.const c0, .const c1] :=
+      foldConst?_symToValue_congr op _ _ (by simp [hc0, hc1, symToValue?_const])
+    rw [hcongr] at hfold
+    have hfv : denoteBinary op w (.value c0) (.value c1) = .value vf := denoteBinary_fold op w c0 c1 vf hfold
+    rw [hu0, hu1, ← hcu0, ← hcu1, hfv] at h
+    exact (Outcome.value.inj h).symm
 
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
