@@ -31,3 +31,18 @@
 ; via v-rcdzc-test-shrink for assignment. Not pinning an expectation (fix shape/owner TBD); the CORRECT
 ; verdict is the CDZ0203 the runtime path already gives, so post-fix a corpus pin is a straightforward
 ; CDZ0203 on the constant form. (The runtime-operand CDZ0203 is likely already corpus-covered in 13-strings.)
+;
+; VERDICT CONFIRMED (v-spec-oracle, relayed via v-rcdzc-test-shrink): const non-string operand to a String
+; op is CDZ0203 (ill-typed; the operand type-check PREEMPTS the fold-decline), coded, IDENTICAL to the
+; runtime-operand form. Spec basis: type-system.md §well-typed-rejected:24; self-hosting §decline-not-
+; miscompiled:55 (a decline is for well-formed-not-yet-compiled, NOT an ill-typed program); two-compilers-
+; agree (const/runtime cannot diverge on rejection); all-rejects-coded. OWNER = v-compiler-primitives;
+; scope = UNIFORM (all String-module ops, not just the 3 probed).
+;
+; TURNKEY PIN-SPEC (pin WHEN the fix lands — pinning now REDs, compiler still emits the wrong diagnostic;
+; pin each const form ALONGSIDE its runtime twin to witness const==runtime parity; baseline via
+; v-corpus-harness sweep, not hand-edited; coordinate w/ v-compiler-primitives — they pin in the fix PR or
+; v-rcdzc-ts-2 pins right after):
+;   (String.byte-len 5)                          -> CDZ0203      | (def (f (: n Int64)) (String.byte-len n)) -> CDZ0203
+;   (String.at 5 0)                              -> CDZ0203      | (def (f (: n Int64)) (String.at n 0))     -> CDZ0203
+;   (String.concat "a" 5)                        -> CDZ0203      | (def (f (: n Int64)) (String.concat "a" n)) -> CDZ0203
