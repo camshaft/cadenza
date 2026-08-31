@@ -1800,6 +1800,28 @@
             (def (main) 1) (export main)))
   (error  CDZ0201))
 
+; An effect declaration's clauses are `(op <name> <type>)` operations (and an optional leading `(doc …)`). A
+; clause that is NOT an operation form — a bare literal `(effect E 5)`, a non-`op` list `(effect E (foo …))`,
+; or an empty `(op)` — is malformed (CDZ0201, "an effect clause must be an operation"). A well-formed `(op …)`
+; clause whose NAME is a non-name (`(op 5 …)`) is still an op clause, so it keeps the more-specific "an effect
+; operation must be named" reject, not the generic clause one. A `(doc …)` clause is legitimate. (Migrated
+; from rcdzc a_malformed_effect_clause_is_cdz0201.)
+(case "a bare literal effect clause is a malformed effect declaration"
+  (input  (do (effect E 5) (def (main) 1) (export main)))
+  (error  CDZ0201 (message "an effect clause must be an operation")))
+
+(case "a non-op list effect clause is a malformed effect declaration"
+  (input  (do (effect E (foo (-> Unit Int64))) (def (main) 1) (export main)))
+  (error  CDZ0201 (message "an effect clause must be an operation")))
+
+(case "an op clause with a non-name keeps the specific must-be-named reject, not the generic clause one"
+  (input  (do (effect E (op 5 (-> Unit Int64))) (def (main) 1) (export main)))
+  (error  CDZ0201 (message "an effect operation must be named") (not "an effect clause must be an operation")))
+
+(case "an effect declaration with a leading doc clause is well-formed and its op handles + runs"
+  (input  (do (effect E (doc "the effect") (op get (-> Unit Int64))) (def (main) (handle E 0 ((get () s (resume 5 s))) (E.get))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
 ; The DIAGNOSTIC-QUALITY half of the (spec-sanctioned, NOT rejected) two-same-named-effects situation: an
 ; effect's identity is its DECLARATION, not its name (14-effects:3129), so two `(effect E …)` are DISTINCT
 ; and a bare `E` resolves the FIRST. Naming an op declared only on a LATER same-named `E` fails "no operation
