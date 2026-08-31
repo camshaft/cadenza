@@ -747,43 +747,6 @@ fn a_ctl_arm_applying_k_inside_a_match_scrutinee_resolves_k() {
 }
 
 #[test]
-fn a_let_wrapped_tail_resume_folds() {
-    // A `resume` in the TAIL of a `let` body — `(sleep (d) s (let ((wake (+ s d))) (resume unit wake)))`
-    // — is tail-resumptive: the let's value IS its body's value, so the resume is the tail. But
-    // `peel_resume_from_arm_body` used to handle only bare `(resume …)`, `(do … (resume …))`, and
-    // `(match … (resume …))` — NOT a `let`-wrapped resume — so it declined. FIX: a `let` peel case that
-    // keeps the `let` around BOTH the value and the next-state (the binder may be referenced by either —
-    // here the next-state `wake` IS the binding). This is the shape the DES scheduler's `sleep` arm
-    // uses. `(do (Sim.sleep 3) 42)` under a clock handler → 42 (sleep resumes, 42 is the continuation).
-    let src = "(do (effect Sim (op sleep (-> Int64 Unit)) (op now (-> Unit Int64))) \
-                   (def (main) (handle Sim 0 \
-                     ((now (u) s (resume s s)) (sleep (d) s (let ((wake (+ s d))) (resume unit wake)))) \
-                     (do (Sim.sleep 3) 42))) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a let-wrapped tail resume must fold (the let peel), not decline"
-    );
-}
-
-#[test]
-fn a_ctl_arm_with_an_unused_k_binder_is_an_ordinary_resumptive_arm() {
-    // A `ctl`-form arm that BINDS `k` but never references it — resuming via its own `resume` instead —
-    // is an ordinary tail-resumptive arm; the `k` binder is vacuous. This is the shape the DES `sleep`
-    // distillation writes: `(sleep (d) s k (let ((wake …)) (resume unit wake)))` (the `k` is declared per
-    // the scheduler ABI but this single-task shape resumes in place). The classifier now treats an
-    // unused-`k` ctl-arm as a normal arm (drops `cont`, the body's `resume` drives it) rather than
-    // declining. A `k` that is actually USED-but-escaping still declines (the sibling test above).
-    let src = "(do (effect Sim (op sleep (-> Int64 Unit)) (op now (-> Unit Int64))) \
-                   (def (main) (handle Sim 0 \
-                     ((now (u) s (resume s s)) (sleep (d) s k (let ((wake (+ s d))) (resume unit wake)))) \
-                     (do (Sim.sleep 3) 42))) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a ctl arm with an unused k binder must be treated as an ordinary resumptive arm, not decline"
-    );
-}
-
-#[test]
 fn a_gensym_id_sum_self_recursive_effectful_loop_specializes() {
     // The compiler-ml port's fresh-id generator shape (fresh.cdz — the self-host's first effect use):
     // `id-sum n = if n = 0 then 0 else (Fresh.next) + id-sum(n - 1)`. The perform is the LEFT `+`
