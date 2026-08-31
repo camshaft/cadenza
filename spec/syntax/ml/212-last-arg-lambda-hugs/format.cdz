@@ -1,0 +1,3 @@
+fold(xs, zero, fn(acc, x) => match x with
+  | Some(v) => acc + v
+  | None(_) => acc)

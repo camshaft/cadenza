@@ -1,0 +1,1 @@
+(map items (fn (x) (+ x 1)))
