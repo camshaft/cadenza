@@ -87,6 +87,12 @@ pass	ml/87-quantity-compound-force
 pass	ml/88-quantity-computed-unit-call
 pass	ml/89-unit-of-nonident-symbol
 pass	ml/90-unit-of-bare
+pass	ml/91-annotation-sigil-inline-never
+pass	ml/92-annotation-sigil-name-agnostic
+pass	ml/93-annotation-sigil-stacked
+pass	ml/94-annotation-parameterized
+pass	ml/95-annotation-parameterized-stacked-with-bare
+pass	ml/96-annotation-parameterized-multi-arg
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
