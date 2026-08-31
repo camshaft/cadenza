@@ -4773,110 +4773,15 @@ mod tests {
     // descriptors these tests asserted via sexpr::print) + canonical formats, graded by the per-case
     // nix check + the self-consistency test. Round-trip idempotence ← the corpus's fmt-idempotence.
 
-    #[test]
-    fn inline_world_record_member_type_round_trips() {
-        // A record TYPE `{f: T, …}` as a world-member param/result lowers to the canonical str-head
-        // descriptor `("record" (f <T>)…)` (matching rcdzc's parse_wit_type + cadenza-ast wit_type_record)
-        // AND prints back to the brace surface, so a world binding a record member round-trips ML->ML. This
-        // is the shape a reducer guest uses for a message/request record (v-platform's reducer world).
-        let printed = assert_roundtrip(
-            "world W = | export i = \
-             | step : (msg : {id : string, payload : list(u8)}) -> {ok : bool}",
-            80,
-        );
-        assert!(
-            printed.contains("msg : {id: string, payload: list(u8)}"),
-            "record param round-trips as a brace type: {printed}"
-        );
-        assert!(
-            printed.contains("-> {ok: bool}"),
-            "record result round-trips as a brace type: {printed}"
-        );
-        // The stored descriptor is the canonical str-head record form (a `(name ty)` pair per field, field
-        // types themselves lowered), NOT the name-head `(Record (: …))` type-application node.
-        let parsed = parser::read_ml(
-            "world W = | export i = | step : (msg : {id : string, payload : list(u8)}) -> bool",
-        );
-        let sexp = sexpr::print(&parsed.arenas);
-        assert!(
-            sexp.contains("(\"record\" (id (string)) (payload (\"list\" (u8))))"),
-            "record stored as canonical str-head descriptor with lowered field types, got: {sexp}"
-        );
-        assert!(
-            !sexp.contains("(Record"),
-            "the name-head (Record (: …)) type node must be fully lowered, got: {sexp}"
-        );
-    }
+    // inline_world_record/variant/enum_and_flags member-type round-trips MIGRATED to spec/syntax (inc-6):
+    // ml/21-world-record-member ("record" (id (string)) (payload ("list" (u8)))), ml/22/23-world-variant-
+    // {record,prim}-payload ("variant" (Continue) (Break …)), ml/24-world-enum-flags ("enum" …)/("flags" …).
+    // Each tree.sexp pins the exact str-head WIT descriptor these tests asserted via sexpr::print.
 
     // `inline_world_result_member_type_round_trips` (all 4 result-arm spellings + their str-head
     // `("result" <ok> <err>)`/`("none")` descriptor storage) MIGRATED to the spec/syntax corpus
     // (inc-6): ml/17-world-result-both, ml/18-world-result-no-err, ml/19-world-result-no-ok,
     // ml/20-world-result-bare — each tree.sexp pins the exact result descriptor the test asserted.
-
-    #[test]
-    fn inline_world_variant_member_type_round_trips() {
-        // A `variant(Case, Case2(T), …)` world-member type lowers to the canonical str-head
-        // `("variant" (Case <T>?)…)` descriptor (matching rcdzc's parse_wit_type + cadenza-ast
-        // wit_type_variant) and prints back, so a world binding a variant member round-trips ML->ML. A bare
-        // case is payload-less; a `Case(T)` application carries a payload (itself lowered — here a record,
-        // the shape v-platform's `outcome { continue, break(record) }` uses).
-        let printed = assert_roundtrip(
-            "world W = | export i = \
-             | f : (x : u8) -> variant(Continue, Break({schema: string, reason: string}))",
-            120,
-        );
-        assert!(
-            printed.contains("-> variant(Continue, Break({schema: string, reason: string}))"),
-            "variant with a payload-less case + a record-payload case round-trips: {printed}"
-        );
-        // The stored descriptor is the canonical str-head variant form: a payload-less case is a 1-list
-        // `(Continue)`, a payload case is a 2-list `(Break <lowered-ty>)`.
-        let parsed = parser::read_ml(
-            "world W = | export i = | f : (x : u8) -> variant(Continue, Break(u8))",
-        );
-        let sexp = sexpr::print(&parsed.arenas);
-        assert!(
-            sexp.contains("(\"variant\" (Continue) (Break (u8)))"),
-            "variant stored as str-head with (Case)/(Case ty) entries, got: {sexp}"
-        );
-    }
-
-    #[test]
-    fn inline_world_enum_and_flags_member_types_round_trip() {
-        // `enum(A, …)` and `flags(A, …)` world-member types lower to the canonical str-head `("enum" A …)`
-        // / `("flags" A …)` descriptors (bare-NAME cases/bits, matching rcdzc's parse_wit_type +
-        // cadenza-ast wit_type_enum/wit_type_flags) and print back, so a world binding them round-trips
-        // ML->ML. They share the node shape but are DISTINCT types — the head keyword selects which.
-        let printed = assert_roundtrip(
-            "world W = | export i = \
-             | color : (x : u8) -> enum(Red, Green, Blue) \
-             | perms : (x : u8) -> flags(Read, Write)",
-            100,
-        );
-        assert!(
-            printed.contains("-> enum(Red, Green, Blue)"),
-            "enum round-trips: {printed}"
-        );
-        assert!(
-            printed.contains("-> flags(Read, Write)"),
-            "flags round-trips: {printed}"
-        );
-        // Stored as the canonical str-head descriptors with bare-NAME children (NOT the name-head `(enum …)`
-        // application), and enum vs flags stay distinct.
-        let parsed = parser::read_ml(
-            "world W = | export i = | color : (x : u8) -> enum(Red, Green) \
-             | perms : (x : u8) -> flags(Read, Write)",
-        );
-        let sexp = sexpr::print(&parsed.arenas);
-        assert!(
-            sexp.contains("(\"enum\" Red Green)"),
-            "enum stored as str-head with bare-name cases, got: {sexp}"
-        );
-        assert!(
-            sexp.contains("(\"flags\" Read Write)"),
-            "flags stored as str-head with bare-name bits, got: {sexp}"
-        );
-    }
 
     #[test]
     fn inline_world_deeply_nested_aggregate_member_type_round_trips() {

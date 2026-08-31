@@ -17,6 +17,10 @@ pass	ml/17-world-result-both
 pass	ml/18-world-result-no-err
 pass	ml/19-world-result-no-ok
 pass	ml/20-world-result-bare
+pass	ml/21-world-record-member
+pass	ml/22-world-variant-record-payload
+pass	ml/23-world-variant-prim-payload
+pass	ml/24-world-enum-flags
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
