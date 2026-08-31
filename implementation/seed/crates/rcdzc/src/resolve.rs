@@ -4968,7 +4968,46 @@ fn last_binder_named(
                 .compound_form_of(lhs, CompoundCtor::Record)
                 .map(<[_]>::to_vec)
             {
-                for pair in &fields {
+                // Split off a trailing `.. rest` — the record open-row REST binder. It binds a RECORD of the
+                // UNNAMED fields (the residual), resolving to `Resolved::RecordRest { scrutinee: V, named }`
+                // — the SAME form the match-arm Case 6rec-rest produces, just from the binding position (a
+                // destructuring param desugars to this `let`, `binding_params::lower`). `named` = the named
+                // field key occurrences (removed to form the residual). Its `type_of`/const-fold are
+                // origin-agnostic (v-inference), so the residual types + folds unchanged. The named-field
+                // Member loop below iterates only the LEADING fields (the rest field is not a `.. `-named
+                // field). Irrefutability is enforced at lowering by `check_binding_pattern`.
+                let (lead_fields, rest_binder): (&[StructId], Option<StructId>) =
+                    match db.ast.rest_marker(&fields) {
+                        Some((k, operand, trailing_start)) if trailing_start == fields.len() => {
+                            (&fields[..k], Some(operand))
+                        }
+                        _ => (&fields[..], None),
+                    };
+                if let Some(rest_b) = rest_binder
+                    && db.ast.as_name(rest_b) == Some(name)
+                    && name != "_"
+                {
+                    let named: Vec<StructId> = lead_fields
+                        .iter()
+                        .filter_map(|&p| {
+                            let Struct::List(kv2) = db.ast.get(p) else {
+                                return None;
+                            };
+                            if kv2.len() == 3 && db.ast.as_name(kv2[0]) == Some("=") {
+                                Some(kv2[1])
+                            } else if kv2.len() == 2 {
+                                Some(kv2[0])
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    return Some(Resolved::RecordRest {
+                        scrutinee: kv[1],
+                        named: named.into(),
+                    });
+                }
+                for pair in lead_fields {
                     // A record-pattern field is the canonical `(= key binder)` triple (path B — same form
                     // as a value-record field): key = child 1, binder = child 2. A legacy `(key binder)`
                     // pair is tolerated (key = child 0, binder = child 1).
