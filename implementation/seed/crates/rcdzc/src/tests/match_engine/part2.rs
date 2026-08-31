@@ -2501,47 +2501,12 @@ fn an_unknown_unit_string_literal_fix_keeps_the_string_delimiter() {
         "a string-literal unit argument keeps the \"…\" delimiter"
     );
 }
-#[test]
-fn remainder_on_same_dimension_integer_quantities_is_well_formed() {
-    use crate::testkit::parse;
-    // `%` on same-dimension INTEGER quantities is well-formed — `7m % 3m = 1m` (operator ruling
-    // 2026-08-28: same-dimension mod makes sense). It mirrors `+`/`-` (same dimension in, SAME unit out)
-    // and runs the remainder on the erased magnitudes, so `Qty.value` of `(% 7m 3m)` is `7 % 3 = 1`.
-    let ok = "(module m (def (main) ((. Qty value) \
-             (% ((. Qty of) 7 ((. Unit base) #\"meter\")) ((. Qty of) 3 ((. Unit base) #\"meter\"))))) \
-             (export main))";
-    // Compiles cleanly (the run value 7 % 3 = 1 is corpus-covered by 18-units-of-measure).
-    assert!(
-        compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
-        "same-dimension integer remainder on quantities must be well-formed (7m % 3m = 1m)"
-    );
-    // A cross-DIMENSION remainder is a dimensional error (CDZ0501), exactly like `+`/`-` across
-    // dimensions — a remainder requires equal dimensions.
-    let cross = reject_full(
-            "(module m (def (main) ((. Qty value) \
-             (% ((. Qty of) 7 ((. Unit base) #\"meter\")) ((. Qty of) 3 ((. Unit base) #\"second\"))))) \
-             (export main))",
-        )
-        .expect("cross-dimension remainder is rejected");
-    assert!(
-        cross.message.contains("incompatible dimension"),
-        "cross-dimension % names the dimensional cause: {}",
-        cross.message
-    );
-    // A FLOAT-inner quantity `%` is CDZ0301 (a remainder is an integer operation) — the SAME code a
-    // bare float `%` gets; it must NOT leak the operator's `∀a.(Int a)→…` scheme.
-    let flt = reject_full(
-            "(module m (def (main) ((. Qty value) \
-             (% ((. Qty of) 7.0 ((. Unit base) #\"meter\")) ((. Qty of) 3.0 ((. Unit base) #\"meter\"))))) \
-             (export main))",
-        )
-        .expect("float quantity remainder is rejected");
-    assert!(
-        flt.message.contains("floating-point or rational quantity"),
-        "float quantity % names the integer-only cause: {}",
-        flt.message
-    );
-}
+// (remainder_on_same_dimension_integer_quantities_is_well_formed migrated/redundant — corpus
+// 18-units-of-measure covers all three with the exact inputs: "remainder (%) on same-dimension integer
+// quantities keeps the unit (7m % 3m = 1m)" (Qty.value → 1, the RUN case subsuming the compiles-clean
+// positive), "remainder (%) of quantities of incompatible dimension is CDZ0501" (enriched here with
+// (message "incompatible dimension")), and "remainder (%) on a floating-point quantity is CDZ0301 (no float
+// remainder)" (enriched with (message "floating-point or rational quantity")).)
 
 // (an_if_join_over_different_unit_quantities_names_the_scale_not_a_shadowed_declaration migrated to corpus
 // 18-units-of-measure: an if-join over km-vs-m same-dimension quantities → CDZ0203 "SAME dimension at
