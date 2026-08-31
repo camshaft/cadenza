@@ -10590,6 +10590,41 @@
   (input      (let ((m #map((= "a" 1) (= "b" 2)))) (. m a)))
   (error      CDZ0201))
 
+; The NAME-ALIAS `(map (= k v))` seam mirror of the map-type invariants above: the compound-value / non-scalar-
+; key / cross-kind / member-access checks must fire on the alias form exactly as on native `#map` (both lower
+; to the same map through the shared FieldPair-entry recognition — a prior seam dropped the 3-element entries
+; the alias emits). value-homogeneity by SHAPE (record field-set / tuple arity), duplicate non-Int/String keys
+; (Bool, Unit), the cross-KIND map-vs-record comparison, and `.` member access on a map are all CDZ0201.
+; (Migrated from rcdzc map_compound_value_key_and_member_access_invariants_reject_cdz0201 — the alias seam; the
+; native `#map` siblings are the cases above.)
+(case "a name-alias (map …) with record values of different field sets is a type error"
+  (input  (do (def (main) (= (map (= "a" (record (= x 1))) (= "b" (record (= y 2)))) (map (= "a" (record (= x 1))) (= "b" (record (= y 2)))))) (export main)))
+  (error  CDZ0201))
+
+(case "a name-alias (map …) with tuple values of different arity is a type error"
+  (input  (do (def (main) (= (map (= "a" (tuple 1 2)) (= "b" (tuple 1 2 3))) (map (= "a" (tuple 1 2)) (= "b" (tuple 1 2 3))))) (export main)))
+  (error  CDZ0201))
+
+(case "a name-alias (map …) with a duplicate bool key is a type error"
+  (input  (do (def (main) (= (map (= true 1) (= true 2)) (map (= true 1) (= true 2)))) (export main)))
+  (error  CDZ0201))
+
+(case "a name-alias (map …) with a duplicate unit key is a type error"
+  (input  (do (def (main) (= (map (= () 1) (= () 2)) (map (= () 1) (= () 2)))) (export main)))
+  (error  CDZ0201))
+
+(case "a name-alias (map …) compared against a record is a cross-kind type error"
+  (input  (do (def (main) (= (map (= "a" 1) (= "b" 2)) (record (= a 1) (= b 2)))) (export main)))
+  (error  CDZ0201))
+
+(case "an empty name-alias (map) compared against an empty record is a cross-kind type error"
+  (input  (do (def (main) (= (map) (record))) (export main)))
+  (error  CDZ0201))
+
+(case "member access on a name-alias (map …) is a type error"
+  (input  (do (def (main) (let ((m (map (= "a" 1) (= "b" 2)))) (. m a))) (export main)))
+  (error  CDZ0201))
+
 ; --- Shape-mismatch comparisons within one kind are type errors -------------------------
 ; type-system.md #Structural Values Are Comparable Only When Their Shapes Match is stronger
 ; than the cross-KIND cases above (map vs record, list vs tuple): even two values of the SAME
