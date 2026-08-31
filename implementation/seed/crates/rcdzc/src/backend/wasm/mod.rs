@@ -655,6 +655,21 @@ pub fn emit(
                     }
                 }
             }
+            // A TOP-LEVEL `option<scalar>` PARAM (sum_params) branches on the boundary disc and builds the guest
+            // sum cell via `sum-new` plus each arm's payload box ops, and the wrapper (its owner) drops the
+            // borrowed shell after the call — register `sum-new` + the arm ops + `drop`.
+            for (rebuild, drop_after) in w.sum_params.iter().flatten() {
+                used.insert("sum-new");
+                rebuild.arm_true.collect_ops(&mut |op| {
+                    used.insert(op);
+                });
+                rebuild.arm_false.collect_ops(&mut |op| {
+                    used.insert(op);
+                });
+                if *drop_after {
+                    used.insert("drop");
+                }
+            }
         }
     }
     let imports: Vec<&runtime_abi::RtOp> = used
@@ -8408,6 +8423,10 @@ fn record_interface_export(
     // `!any_record && !needs_result_wrapper && !any_mem_leaf_param` gate bails to the scalar path. The
     // param-side twin of `needs_result_wrapper`.
     let mut any_mem_leaf_param = false;
+    // Set when a member has a TOP-LEVEL `option<scalar>` param (a two-variant sum lifted via `sum_params`):
+    // the typed-interface wrapper must take over to branch on the boundary disc and build the guest sum cell
+    // even when its result is a bare scalar. The sum-param twin of `any_mem_leaf_param`.
+    let mut any_sum_param = false;
     // Set when a member's RESULT spills to memory (a compound result-lower): the typed-interface wrapper must
     // then take over even for an all-scalar-param member, to WRITE the result to the retptr (else the compound
     // result leaks as a raw u32 handle via the provider path). The result-side twin of `any_record`.
@@ -8431,6 +8450,10 @@ fn record_interface_export(
         // out of linear memory into a value-heap handle, passed DIRECTLY as the def arg — the same lift the
         // plain-export bare-wrapper route emits). `None` for a scalar/record param.
         let mut mem_leaf_params: Vec<Option<(serialize::MemLeafKind, bool)>> = Vec::new();
+        // Parallel to `params`: a TOP-LEVEL `option<scalar>` param (a two-variant sum crossing as a native
+        // `option<T>`) is rebuilt via `Some((rebuild, drop_after))` — branch on the boundary disc, `sum-new`
+        // the guest cell, passed DIRECTLY as the def arg. `None` for a scalar/record/mem-leaf param.
+        let mut sum_params: Vec<Option<(serialize::SumArgRebuild, bool)>> = Vec::new();
         for ((binder, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
                 Ty::Record(map) => {
@@ -8446,7 +8469,41 @@ fn record_interface_export(
                     params.push(Some(rebuild));
                     param_slots.push(Some(slots));
                     mem_leaf_params.push(None);
+                    sum_params.push(None);
                     any_record = true;
+                }
+                // A TOP-LEVEL `option<scalar>` param crosses as a native component `option<T>`, flattened to
+                // `(disc, payload…)` and rebuilt into the guest sum cell via `SumArgRebuild` (branch on the
+                // boundary disc → `sum-new`), passed DIRECTLY as the def arg — the sum sibling of the mem-leaf
+                // params, mirroring `try_bare_entry_param_component`'s sum-param arm onto the typed-interface-
+                // MEMBER route. A `result<ok,err>` declines (its WIT is a `variant`, a disagreeing flatten/disc
+                // convention — a later slice, as on the bare route). BORROW-ONLY: the wrapper owns + drops the
+                // built shell after the call (the extracted payload escapes by its own copy, independent of the
+                // shell); a param whose shell ESCAPES (the def returns/stores it) declines to a later slice.
+                Ty::Sum { .. } => {
+                    let Some((_slot, vts, rebuild)) =
+                        crate::backend::wasm::arg_boundary::fixed_shape_option_scalar_arg(db, gty)
+                    else {
+                        return None; // not an option/result-shaped two-variant sum — a later slice
+                    };
+                    if !matches!(wty, WitType::Option(_)) {
+                        return None; // a Result (WIT `variant`) or a WIT/guest mismatch — decline
+                    }
+                    if crate::backend::wasm::select::param_escapes_body(db, e.body, *binder) {
+                        return None; // the built sum shell escapes — a later slice (borrow-only)
+                    }
+                    // Canonical `option<T>` flattening: `(disc: i32, payload…)`.
+                    param_vts.push(crate::backend::wasm::lir::ValType::I32.byte());
+                    for vt in &vts {
+                        param_vts.push(vt.byte());
+                    }
+                    params.push(None);
+                    param_slots.push(None);
+                    mem_leaf_params.push(None);
+                    // drop_after: the def only BORROWS the shell (matches it), so the wrapper (its owner) drops
+                    // it after the call — the shell never escapes (checked above), so no double-free.
+                    sum_params.push(Some((rebuild, true)));
+                    any_sum_param = true;
                 }
                 // A TOP-LEVEL memory-bearing leaf param — `Bytes` ↔ `list<u8>`, `String` ↔ `string`, or a
                 // `list<scalar>` ↔ `list<T>` — all flatten to `(ptr, len)` and lift via `mem_leaf_params`: the
@@ -8484,9 +8541,10 @@ fn record_interface_export(
                     params.push(None);
                     param_slots.push(None);
                     mem_leaf_params.push(Some((kind, true))); // drop_after = borrowed (checked above)
+                    sum_params.push(None);
                     any_mem_leaf_param = true;
                 }
-                Ty::Tuple(_) | Ty::Sum { .. } | Ty::Map(_, _) | Ty::Set(_) => {
+                Ty::Tuple(_) | Ty::Map(_, _) | Ty::Set(_) => {
                     return None;
                 } // needs memory / a deeper wrapper — later
                 scalar => {
@@ -8495,6 +8553,7 @@ fn record_interface_export(
                     params.push(None);
                     param_slots.push(None);
                     mem_leaf_params.push(None);
+                    sum_params.push(None);
                 }
             }
         }
@@ -8536,9 +8595,10 @@ fn record_interface_export(
             name: member.name.clone(),
             param_vts,
             result_vts,
-            // No top-level option/result param on this typed-interface-member path (a sum param crosses via
-            // the record-field `FieldRebuild::Sum` route, not a top-level direct arg).
-            sum_params: params.iter().map(|_| None).collect(),
+            // A TOP-LEVEL `option<scalar>` param lifts via `Some((rebuild, drop_after))` (built per-param in
+            // the loop above); a scalar/record/mem-leaf param is `None` (a sum INSIDE a record rides via the
+            // record-field `FieldRebuild::Sum` route instead).
+            sum_params,
             params,
             param_slots,
             mem_leaf_params,
@@ -8556,9 +8616,10 @@ fn record_interface_export(
     }
     // A pure-scalar interface (all-scalar params AND scalar/unit results) is handled (no wrapper) by
     // scalar_interface_export; take over when a member needs a wrapper — a RECORD param (rebuild), a
-    // TOP-LEVEL memory-bearing byte-leaf param (`Bytes`/`String` copy-in), OR a spilled COMPOUND result
-    // (retptr write). A scalar-param + compound-result member needs only the last.
-    if !any_record && !any_mem_leaf_param && !needs_result_wrapper {
+    // TOP-LEVEL memory-bearing byte-leaf param (`Bytes`/`String`/`list<scalar>` copy-in), a TOP-LEVEL
+    // `option<scalar>` param (sum rebuild), OR a spilled COMPOUND result (retptr write). A scalar-param +
+    // compound-result member needs only the last.
+    if !any_record && !any_mem_leaf_param && !any_sum_param && !needs_result_wrapper {
         return None;
     }
     // The exported instance must EXPORT each named (record/variant) type its funcs reference, or the
