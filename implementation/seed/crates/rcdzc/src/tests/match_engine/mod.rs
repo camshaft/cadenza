@@ -3685,40 +3685,12 @@ fn a_wrong_record_row_op_carries_the_operator_swap_fix_the_message_names() {
     );
 }
 
-#[test]
-fn tuple_cat_split_at_pop_reshape_tuples_positionally() {
-    // 15-rows tuple reshaping — the POSITIONAL analogue of the record row ops. `Tuple.concat a b`
-    // concatenates (arity = sum, each element keeps its position's type); `Tuple.split-at t k` splits
-    // at compile-time `k` into a `(prefix suffix)` pair (k=0 → prefix is unit, k out of 0..=arity →
-    // CDZ0201); `Tuple.remove t` takes element 0 off. cat/split-at/pop all compile over constant tuples.
-    for src in [
-        "(module m (def (main) (Tuple.concat (tuple 1 2) (tuple 3 4))) (export main))",
-        "(module m (def (main) (Tuple.split-at (tuple 1 2 3) 1)) (export main))",
-        "(module m (def (main) (Tuple.split-at (tuple 1 2) 0)) (export main))",
-        "(module m (def (main) (Tuple.remove (tuple 1 2 3))) (export main))",
-    ] {
-        assert_eq!(
-            reject_code(src),
-            None,
-            "a well-formed tuple reshaping must compile: {src}"
-        );
-    }
-    // A split position OUTSIDE the operand's static arity `0..=len` is CDZ0201 (the `(. x N)`
-    // static-bounds rule) — `(tuple 1 2)` has arity 2, so a split at 5 names a position it lacks.
-    assert_eq!(
-        reject_code("(module m (def (main) (Tuple.split-at (tuple 1 2) 5)) (export main))")
-            .as_deref(),
-        Some("CDZ0201"),
-        "a split beyond the tuple's arity is CDZ0201"
-    );
-    // `Tuple` is STILL the tuple-TYPE constructor in type position — the dual-shape module did not
-    // break `(: t (Tuple Int64 Bool))`.
-    assert_eq!(
-        reject_code("(module m (def (main) (: (tuple 1 true) (Tuple Int64 Bool))) (export main))"),
-        None,
-        "Tuple must still work as the tuple-type constructor in an annotation"
-    );
-}
+// [migrated → spec/semantics/15-rows-and-open-sums.sexp] tuple_cat_split_at_pop_reshape_tuples_positionally:
+// fully corpus-covered (native #tuple inputs) — Tuple.concat (@"concatenating two tuples"), Tuple.split-at
+// at 1/0/full-arity + a split BEYOND arity → CDZ0201 (@"splitting a tuple beyond its arity is rejected"),
+// and Tuple.remove (@"popping a tuple yields element zero and the remaining tuple"). Tuple-as-type-ctor in
+// an annotation ((: #tuple(1 true) (Tuple Int64 Bool))) is exercised in 05-compound-types. The reshape-op
+// behavior is native-covered; the (tuple …) alias-value-ctor recognition stays in the native≡alias cluster.
 
 #[test]
 fn a_mixed_list_anchors_at_the_outlier_element_not_the_whole_list() {
