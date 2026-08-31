@@ -790,6 +790,21 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | .cannotProve r => .cannotProve r
               | _ => .cannotProve "symeval: List.len on a non-list value")
            | none => .cannotProve "symeval: malformed List.len")
+        else if q == "List".toUTF8 && mem == "push".toUTF8 then
+          -- `List.push lst x` over a concrete list → the SAME list with `x` appended (`.ctor "list"`
+          -- with the element SymExpr pushed). SOUND: `evalNode`'s `List.push` is exactly `es.push x`
+          -- (order-preserving append of one element, #1607-1614). Non-list operand / unmodelable `x`
+          -- → cannotProve (conservative; symbolic path never poisons).
+          (match children[1]?, children[2]? with
+           | some lId, some xId =>
+             (match symEval m senv fuel ty lId, symEval m senv fuel ty xId with
+              | .sym (.ctor t elems), .sym xe =>
+                if t == "list".toUTF8 then .sym (.ctor "list".toUTF8 (elems.push xe))
+                else .cannotProve "symeval: List.push on a non-list value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: List.push on a non-list value")
+           | _, _ => .cannotProve "symeval: malformed List.push")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1145,6 +1160,18 @@ private def _lenExpr : Module :=
                .list #[4, 5, 6, 7], .list #[3, 8]],
     root := 9 }
 #guard symEval _lenExpr [] symDefaultFuel defaultIntTy 9 == SymOutcome.sym (.const (.int 3))
+
+-- LIST.PUSH member-op coverage: `((. List push) (list 1 2) 3)` → `.ctor "list" [const 1, const 2, const 3]`
+-- (order-preserving append of one element, mirrors `evalNode`'s `es.push x`).
+private def _pushExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "List".toUTF8, Leaf.name "push".toUTF8,
+                Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5,
+               .list #[4, 5, 6], .atom 6, .list #[3, 7, 8]],
+    root := 9 }
+#guard symEval _pushExpr [] symDefaultFuel defaultIntTy 9
+       == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2), .const (.int 3)])
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
