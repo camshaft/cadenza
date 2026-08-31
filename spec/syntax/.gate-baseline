@@ -70,6 +70,12 @@ pass	ml/70-symbol-leading-digit
 pass	ml/71-symbol-with-dot
 pass	ml/72-member-call-symbol-operand
 pass	ml/73-member-call-quoted-symbol-operand
+pass	ml/74-type-ascription-literal
+pass	ml/75-type-ascription-over-sum
+pass	ml/76-type-ascription-tuple
+pass	ml/77-equality-double-equals
+pass	ml/78-equality-in-let-body
+pass	ml/79-paren-grouping-not-tuple
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let

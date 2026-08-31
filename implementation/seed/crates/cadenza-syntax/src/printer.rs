@@ -8340,33 +8340,16 @@ mod tests {
     }
 
     #[test]
-    fn type_ascription_round_trips() {
-        // `e : T` -> arena (: e T); ascription binds loosest, so it wraps the whole expression.
-        assert_eq!(assert_roundtrip("42 : Int64", 80), "42 : Int64");
-        assert_eq!(assert_roundtrip("2 + 2 : Int64", 80), "2 + 2 : Int64");
-        // the arena head is `:`, matching the s-expr surface.
-        let a = sexpr::read("(: 42 Int64)").unwrap();
-        assert_eq!(print(&a, 80), "42 : Int64");
-        // a compound value/type ascription (the corpus's common output shape).
-        assert_eq!(
-            assert_roundtrip("(1, 2) : (Int64, Int64)", 80),
-            "(1, 2) : (Int64, Int64)"
-        );
-    }
-
-    #[test]
-    fn equality_is_double_equals() {
-        // `==` on the surface builds arena head `=` (matching the s-expr corpus) and prints back `==`.
-        assert_eq!(assert_roundtrip("a == b", 80), "a == b");
-        let a = sexpr::read("(= a b)").unwrap();
-        assert_eq!(print(&a, 80), "a == b");
-        // a lone `=` is only the binding separator, never equality.
-        assert_eq!(
-            assert_roundtrip("let x = 1 in x == 1", 80),
-            "let x = 1 in\nx == 1"
-        );
-    }
-
+    // `type_ascription_round_trips` (`e : T` → arena `(: e T)`, ascription binds loosest so it wraps the
+    // whole expression) MIGRATED to the spec/syntax corpus (inc-6 batch-10): ml/74-type-ascription-literal
+    // `42 : Int64`→`(: 42 Int64)`, ml/75-type-ascription-over-sum `2 + 2 : Int64`→`(: (+ 2 2) Int64)`
+    // (loosest: wraps the sum), ml/76-type-ascription-tuple `(1, 2) : (Int64, Int64)`→
+    // `(: #tuple(1 2) #tuple(Int64 Int64))`.
+    // `equality_is_double_equals` (`==` builds arena head `=`, prints back `==`; a lone `=` is only the
+    // binding separator) MIGRATED: ml/77-equality-double-equals `a == b`→`(= a b)`,
+    // ml/78-equality-in-let-body `let x = 1 in x == 1`→`(let ((x 1)) (= x 1))` (format.cdz pins the
+    // canonical `let x = 1 in`⏎`x == 1` multi-line surface). The `print((: 42 Int64))`/`print((= a b))`
+    // sexp→ml oracles are subsumed by each ml case's format-absent fmt-idempotence.
     #[test]
     fn empty_literals() {
         // Empty list and map from the s-expr surface render as `[]` / `#{}`. The compound-value
@@ -8388,11 +8371,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn paren_grouping_is_not_a_tuple() {
-        // `(1 + 2) * 3` — the parens are transparent grouping, NOT a 1-tuple.
-        assert_eq!(assert_roundtrip("(1 + 2) * 3", 80), "(1 + 2) * 3");
-    }
+    // `paren_grouping_is_not_a_tuple` (`(1 + 2) * 3` — the parens are transparent grouping, NOT a 1-tuple)
+    // MIGRATED to the spec/syntax corpus (inc-6 batch-10): ml/79-paren-grouping-not-tuple → `(* (+ 1 2) 3)`
+    // (the tree pins that the parens produce a plain `(+ 1 2)` sub-node, no tuple wrapper).
 
     #[test]
     fn name_headed_literals_sugar_like_string_heads() {
