@@ -9831,73 +9831,18 @@ mod tests {
         assert_eq!(b.as_name(b.root), Some("world"));
     }
 
-    #[test]
-    fn handle_promotes_effect_and_seed_with_state_last() {
-        // `handle Fresh(0) with | next(u, s) => resume(s, s + 1) in body` ->
-        // `(handle Fresh 0 ((next (u) s (resume s (+ s 1)))) body)`: the effect NAME and seed are the
-        // head's 1st/2nd children, the arm op is BARE, and the LAST binder `s` is the state.
-        let a = parse_ok("handle Fresh(0) with | next(u, s) => resume(s, s + 1) in Fresh.next()");
-        let tail = a.as_form(a.root, "handle").unwrap();
-        // `as_form` returns the tail (head excluded): [effect, seed, arms, body].
-        assert_eq!(tail.len(), 4, "handle E seed (arms) body");
-        assert_eq!(
-            a.as_name(tail[0]),
-            Some("Fresh"),
-            "effect name promoted to head"
-        );
-        assert_eq!(a.as_name(tail[1]), None); // seed is the int 0, not a name
-        let crate::ast::Struct::List(arms) = a.get(tail[2]) else {
-            panic!("arms list")
-        };
-        let crate::ast::Struct::List(arm0) = a.get(arms[0]) else {
-            panic!("one arm")
-        };
-        assert_eq!(arm0.len(), 4, "arm = op (params) state body");
-        assert_eq!(a.as_name(arm0[0]), Some("next"), "bare op, not Fresh.next");
-        let crate::ast::Struct::List(params) = a.get(arm0[1]) else {
-            panic!("params list")
-        };
-        assert_eq!(params.len(), 1, "one param `u` (state `s` is separate)");
-        assert_eq!(a.as_name(params[0]), Some("u"));
-        assert_eq!(a.as_name(arm0[2]), Some("s"), "last binder is the state");
-    }
-
-    #[test]
-    fn handle_stateless_seed_elides_to_unit() {
-        // `handle Choose with | pick(s) => resume(5, s) in …`: no `(seed)` → seed is `unit`; the arm's
-        // single binder is the state, so the param list is empty (a nullary operation).
-        let a = parse_ok("handle Choose with | pick(s) => resume(5, s) in Choose.pick()");
-        let tail = a.as_form(a.root, "handle").unwrap();
-        assert_eq!(a.as_name(tail[0]), Some("Choose"));
-        assert_eq!(a.as_name(tail[1]), Some("unit"), "elided seed is unit");
-        let crate::ast::Struct::List(arms) = a.get(tail[2]) else {
-            panic!()
-        };
-        let crate::ast::Struct::List(arm0) = a.get(arms[0]) else {
-            panic!()
-        };
-        let crate::ast::Struct::List(params) = a.get(arm0[1]) else {
-            panic!()
-        };
-        assert!(
-            params.is_empty(),
-            "nullary op: state consumed the only binder"
-        );
-        assert_eq!(a.as_name(arm0[2]), Some("s"));
-    }
-
-    #[test]
-    fn host_delegation_builds_effect_list() {
-        // `host ask, log in body` -> `(host (ask log) body)`.
-        let a = parse_ok("host ask, log in ask.ask()");
-        let tail = a.as_form(a.root, "host").unwrap();
-        let crate::ast::Struct::List(effects) = a.get(tail[0]) else {
-            panic!("effect list")
-        };
-        assert_eq!(effects.len(), 2);
-        assert_eq!(a.as_name(effects[0]), Some("ask"));
-        assert_eq!(a.as_name(effects[1]), Some("log"));
-    }
+    // `handle_promotes_effect_and_seed_with_state_last` + `handle_stateless_seed_elides_to_unit` +
+    // `host_delegation_builds_effect_list` (the effect-handling surface: `handle E(seed) with | op(params…) =>
+    // body in expr` promotes the effect NAME + seed to the head, the arm op is BARE, and the LAST arm binder is
+    // the state — an elided `(seed)` → `unit` with an empty param list; `host e1, e2 in body` builds an effect
+    // LIST) MIGRATED to the spec/syntax corpus (inc-6 batch-70):
+    //   * ml/421-handle-stateful-seed-state-last `handle Fresh(0) with | next(u, s) => resume(s, s + 1) in
+    //     Fresh.next()`→`(handle Fresh 0 ((next (u) s (resume s (+ s 1)))) ((. Fresh next)))`.
+    //   * ml/422-handle-stateless-seed-elides-unit `handle Choose with | pick(s) => resume(5, s) in
+    //     Choose.pick()`→`(handle Choose unit ((pick () s (resume 5 s))) ((. Choose pick)))` (elided seed=unit,
+    //     nullary op — state consumed the only binder).
+    //   * ml/423-host-delegation-effect-list `host ask, log in ask.ask()`→`(host (ask log) ((. ask ask)))`.
+    //   Each fmt pins the `handle … with`⏎`  | op(…) => …`⏎`in`⏎`body` / `host …, … in body` surface.
 
     #[test]
     fn semicolon_sequences_a_function_body() {
