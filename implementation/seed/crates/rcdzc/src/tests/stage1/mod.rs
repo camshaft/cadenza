@@ -1110,32 +1110,12 @@ fn a_scalar_member_access_reports_one_coded_error_not_a_bare_plus_rich_duplicate
     );
 }
 
-#[test]
-fn named_member_access_on_a_tuple_points_at_the_numeric_index_form() {
-    // A tuple IS a member-access operand — by POSITION, not name. `(. t x)` on a `(Tuple …)` used to
-    // give the generic "member access requires a record, found (Tuple …)", a dead end when the real
-    // fix is a numeric index. It now names the tuple's arity and spells the index form, so the reader
-    // reaches for `(. t 0)`. A SCALAR operand (no index route) keeps the plain "requires a record".
-    let d = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (g (: t (Tuple Int64 Int64))) (. t x)) (export g))",
-    )))
-    .expect_err("named access on a tuple must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message
-            .contains("a tuple is accessed by position, not by name `x`")
-            && d.message.contains("numeric index `(. <tuple> N)`")
-            && d.message.contains("0..=1")
-            && d.message.contains("has 2 elements"),
-        "names the index form + the tuple's arity range: {}",
-        d.message
-    );
-    // A scalar operand keeps the generic message (no index route exists).
-    assert!(
-        expect_decline("(. 5 x)").contains("requires a record"),
-        "a scalar member access keeps the record message"
-    );
-}
+// named_member_access_on_a_tuple_points_at_the_numeric_index_form migrated to corpus 05-compound-types:
+// the tuple-by-name rich message (`(. t x)` on (Tuple Int64 Int64) -> CDZ0201 "accessed by position, not
+// by name" + numeric-index form + arity range) is the new case "member access on a tuple by NAME points
+// at the numeric-index form"; the scalar `(. 5 x)` "requires a record" face is the existing "member
+// access on a non-record is a type error" (:240) + the call-through rich-message case (:248). rcdzc test
+// deleted (both faces corpus-covered).
 
 #[test]
 fn a_called_tuple_by_name_access_reports_the_position_message_once_not_a_call_site_cascade() {
