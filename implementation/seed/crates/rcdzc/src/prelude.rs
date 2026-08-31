@@ -1215,6 +1215,15 @@ fn bigint_module(ast: &mut Arenas) -> StructId {
         let eq = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eq, of_key, of_op])
     });
+    // `neg : BigInt → BigInt` — unary negation, TOTAL (arbitrary precision never overflows). The named
+    // first-class form of prefix `(- e)`, lowered through the same `lower_negate` (`0 - e`).
+    let neg_ty = bigint_neg_type(ast);
+    let neg_op = list_op_record(ast, "neg", neg_ty);
+    let neg_key = push_atom(ast, Leaf::Name("neg".into()));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, neg_key, neg_op])
+    });
     push_list(ast, children)
 }
 
@@ -1254,6 +1263,16 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     children.push({
         let eq = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eq, value_key, value_op])
+    });
+    // `neg : Rational → Rational` — unary negation, TOTAL (negates the numerator; exact, never traps).
+    // The named first-class form of prefix `(- e)`, lowered through the same `lower_negate` (`0 - e`).
+    // Reuses the `(fn () (-> Rational Rational))` shape of `value`.
+    let neg_ty = rational_value_type(ast);
+    let neg_op = list_op_record(ast, "neg", neg_ty);
+    let neg_key = push_atom(ast, Leaf::Name("neg".into()));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, neg_key, neg_op])
     });
     // `numerator : Rational → BigInt` / `denominator : Rational → BigInt` — read the components of the
     // normalized (lowest-terms, denominator > 0) pair. BigInt-valued (either can exceed i64); floor/round/
@@ -1365,6 +1384,18 @@ fn rational_value_type(ast: &mut Arenas) -> StructId {
     let rational = intrinsic_node(ast, "Rational");
     let rational2 = intrinsic_node(ast, "Rational");
     let body = arrow_type(ast, rational, rational2);
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// `(fn () (-> BigInt BigInt))` for `BigInt.neg` — unary negation, TOTAL (arbitrary precision never
+/// overflows). The zero-param `fn` wrapper makes `scheme_of` read a monomorphic SCHEME (like
+/// `rational_value_type`); `(meta apply)` = the `neg` intrinsic, lowered through `lower_negate` (`0 - e`).
+fn bigint_neg_type(ast: &mut Arenas) -> StructId {
+    let a = intrinsic_node(ast, "BigInt");
+    let b = intrinsic_node(ast, "BigInt");
+    let body = arrow_type(ast, a, b);
     let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
@@ -2554,8 +2585,21 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
         let colon = push_atom(ast, Leaf::Name(":".into()));
         push_list(ast, vec![colon, intrinsic, inf_ty_expr])
     };
+    // `neg : (Float width) → (Float width)` — unary negation, TOTAL (`-1.0 * e`, sign-correct for
+    // ±0.0/±inf, never traps). The named first-class form of prefix `(- e)`, lowered via `lower_negate`.
+    let neg_op = {
+        let neg_ty = float_neg_type(ast, width);
+        list_op_record(ast, "neg", neg_ty)
+    };
     let fields = vec![
         meta_field(ast, "t", ty_expr),
+        {
+            let k = push_atom(ast, Leaf::Name("neg".into()));
+            {
+                let eq = push_atom(ast, Leaf::Name("=".into()));
+                push_list(ast, vec![eq, k, neg_op])
+            }
+        },
         {
             let k = push_atom(ast, Leaf::Name("of-int".into()));
             {
@@ -2619,6 +2663,30 @@ fn float_of_type(ast: &mut Arenas, width: u32) -> StructId {
     let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> (Float width) (Float width)))` for a float module's `neg` — unary negation,
+/// TOTAL (`-1.0 * e` is sign-correct for ±0.0/±inf and never traps). The zero-param `fn` wrapper makes
+/// `scheme_of` read a monomorphic SCHEME (see [`float_of_int_type`]); `(meta apply)` = the `neg` intrinsic,
+/// lowered through `lower_negate`.
+fn float_neg_type(ast: &mut Arenas, width: u32) -> StructId {
+    let float_target = |ast: &mut Arenas| {
+        let ctor = push_atom(ast, Leaf::Name("Float".into()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let a = float_target(ast);
+    let b = float_target(ast);
+    let body = arrow_type(ast, a, b);
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
 
