@@ -3716,6 +3716,17 @@
   (input  (do (effect log (op emit (-> String Unit))) (def (main) (host (log) 42)) (export main)))
   (error  CDZ0404))
 
+(case "an intra-program handler whose body never performs its effect is inert and runs to the body value"
+  (doc    "The INTRA-PROGRAM contrast to the host-delegation latent-authority reject above: a `host`-delegated
+           effect the body never reaches is CDZ0404 (a granted-but-unexercised capability), but an in-program
+           `(handle E …)` whose body never performs `E` is NOT rejected — the handler is simply inert and the
+           expression runs to its body's value. Latent authority is a HOST-BOUNDARY property (a capability that
+           would cross to the boundary unexercised); an in-program handler installs no capability, so an
+           unexercised one is fine. Here `(handle E 99 ((get (u) s (resume s s))) 7)` never performs `E.get`, so
+           the arm never fires and the body `7` is the value. (Edge-probed by v-wasmtime-migration.)")
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 99 ((get (u) s (resume s s))) 7)) (export main)))
+  (call   main) (output (: 7 Int64)))
+
 (case "the same declared effect is handled in-program by one entrypoint and delegated by another"
   (doc    "Host-binding is a ROUTING decision made at the entrypoint, not a declaration-time property
            (capabilities-and-effects.md #Host-Binding Is A Routing Decision Made At The Entrypoint): an
