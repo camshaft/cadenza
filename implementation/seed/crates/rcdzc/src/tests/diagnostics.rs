@@ -1479,31 +1479,11 @@ fn a_set_rest_pattern_lowers_single_dotdot_and_rejects_malformed_two_dotdot() {
 // which RUNS to 9 — a false CDZ0101/CDZ0900 would deny that. Rust test
 // a_record_below_a_record_binding_field_binds_via_name_keyed_sub_path deleted.
 
-/// A `(.. operand)` spread node in a `#map`/`#record` CONSTRUCTION entry gives the CLEAR pattern-only `..`
-/// CDZ0201 that `#list`/`#set`/`#tuple` already give — NOT the misleading map/record entry-shape "add the
-/// leading `=`" (the entry-shape check would misread `(.. m)` as a malformed `(key value)` pair). Reported
-/// by v-syntax (construction-spread decline-quality); the fix recognizes the `..` node BEFORE the
-/// entry-shape rejection in `resolve_map` / `read_record_fields`.
-#[test]
-fn a_spread_in_a_map_or_record_construction_entry_names_the_pattern_only_dotdot_rule() {
-    for src in [
-        "(module m (def (main) #map((.. m) (= 3 4))) (export main))",
-        "(module m (def (main) #record((.. r) (= b 2))) (export main))",
-    ] {
-        let diags = diags_of(src);
-        assert!(
-            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("`..` is a rest/spread marker")),
-            "map/record construction spread must name the pattern-only `..` rule (like list/set/tuple): {diags:?}"
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.message.contains("add the leading `=`")),
-            "map/record construction spread must NOT misdiagnose as a malformed `(key value)` entry: {diags:?}"
-        );
-    }
-}
+// MIGRATED to corpus (05-compound-types.sexp): a `..` spread in a `#map`/`#record` CONSTRUCTION entry names
+// the pattern-only rule — CDZ0201 `(message "`..` is a rest/spread marker")` — and is NOT misdiagnosed as a
+// malformed key-value entry (`(no-diagnostic "add the leading `=`")`). Two cases ("a `..` spread in a MAP /
+// RECORD construction entry names the pattern-only rule …"). Rust test
+// a_spread_in_a_map_or_record_construction_entry_names_the_pattern_only_dotdot_rule deleted.
 
 // Corpus-covered: a RECORD match binding a field — `(match r (#record((= x a)) a))` — is 05-compound-types
 // .sexp:24120 ("a record match arm + a wildcard alternative selects by shape"), which RUNS to 3; the
