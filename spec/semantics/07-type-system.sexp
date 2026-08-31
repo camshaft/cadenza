@@ -455,8 +455,16 @@
   (error  CDZ0201 (message "juxtaposed with a type") (no-fix)))
 
 (case "applying a value to a NON-type value keeps the generic not-a-function message, not missing-colon"
+  (doc    "`(5 6)` applies a value to a non-type value — the generic not-a-function reject (CDZ0201 'cannot
+           apply a value of type Int64 — it is not a function'), NOT the missing-colon repair (which is only
+           offered when the argument resolves as a TYPE). Also pins the DEDUP (migrated from rcdzc
+           applying_a_non_function_reports_one_error_not_a_shadowing_decline): applying a non-function is
+           EXACTLY ONE error — the coded not-a-function reject — NOT that reject PLUS the emit path's uncoded
+           'value is not applyable' decline for the same node (both would surface as error:, reading as two);
+           `dedup_faults` drops the weaker decline when the coded reject is present, so the count is 1.")
   (input  (do (def (main) (5 6)) (export main)))
-  (error  CDZ0201 (message "cannot apply a value of type") (not "juxtaposed")))
+  (error  CDZ0201 (message "cannot apply a value of type") (message "it is not a function")
+          (not "juxtaposed") (count 1)))
 
 (case "applying a generic type constructor to a value names the type-argument position"
   (doc    "`(Option 5)` applies the GENERIC type constructor `Option` to a value. Its type-argument position
