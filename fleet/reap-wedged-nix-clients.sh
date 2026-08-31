@@ -40,7 +40,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAP_LOG="${REAP_LOG:-$SCRIPT_DIR/reap-wedged-nix-clients.log}"
 
 APPLY=0
-[ "${1:-}" = "--apply" ] && APPLY=1
+ORPHANS_ONLY=0
+for _arg in "$@"; do
+  case "$_arg" in
+    --apply) APPLY=1 ;;
+    # --orphans-only: run ONLY the guarded step-0 orphan-leak reap, then STOP (skip the stateful wedge-check
+    # in steps 1-3). This is the AUTO-CRON mode (concierge-greenlit 2026-08-31): a ~30min fleet-up cron runs
+    # `--orphans-only --apply` so orphaned `.#checks` leaks auto-clean, while the heavier deliberate wedge-kill
+    # (which samples builders over 300s) stays MANUAL. Safe to automate — step-0 kills only ppid=1 + own-user
+    # + .#checks + >180min-floor + non-exempt + non-leased, so a live build (live parent, <180min) is never hit.
+    --orphans-only) ORPHANS_ONLY=1 ;;
+  esac
+done
 
 # Append a timestamped audit line to REAP_LOG (best-effort; never fail the reap on a log-write error).
 log() { echo "$(date -Is) $*" >>"$REAP_LOG" 2>/dev/null || true; }
@@ -83,6 +94,13 @@ if [ -n "$orphans" ]; then
     echo "  $oinfo"
     if [ "$APPLY" = 1 ]; then kill -KILL "$p" 2>/dev/null || true; log "KILLED-ORPHAN-LEAK pid=$p ($oinfo)"; fi
   done
+fi
+
+# AUTO-CRON mode: `--orphans-only` runs ONLY the guarded step-0 orphan-leak reap above, then STOPS —
+# skipping the stateful wedge-check (steps 1-3), which is a deliberate heavy intervention (300s builder
+# sampling) that stays MANUAL. The ~30min fleet-up cron uses this so orphan `.#checks` leaks auto-clean.
+if [ "$ORPHANS_ONLY" = 1 ]; then
+  exit 0
 fi
 
 # Count active build-worker processes. NOTE: `pgrep -c` already PRINTS the count (0 when none) and
