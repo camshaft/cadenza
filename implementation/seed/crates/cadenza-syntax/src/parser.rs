@@ -257,6 +257,23 @@ enum FieldPhase {
     },
 }
 
+/// What a `{ … }` record PATTERN field needs to DESCEND (a sub-pattern) on the pattern worklist, once its
+/// inline preamble is read (via `advance_record_pat`). A `.. rest` spread descends its rest operand; a
+/// `field = <pat>` descends its value; a shorthand `{ x }` (`= x x`) needs NO descent and is completed
+/// inline. `before` is the field-loop missing-`,` progress guard.
+enum RecordPatDescend {
+    Rest {
+        dd_span: Span,
+        rest_head: StructId,
+        before: usize,
+    },
+    Value {
+        f_start: Span,
+        field: StructId,
+        before: usize,
+    },
+}
+
 /// The sub-expr an `if c then t else e` form is reading when it SUSPENDS on the worklist (the twin of
 /// `if_expr`'s three sequential `expr` calls). Each phase carries the already-built branches plus the
 /// own-line leading comments captured for the branch currently being read (`expr` does not drain a
@@ -6146,6 +6163,62 @@ impl<'a> Parser<'a> {
     /// budget unit per pattern LEVEL — atom + its whole postfix chain — decremented when the level and all
     /// its postfix complete), so a pathological nest declines at the same point/shape. Remaining atom
     /// families (tuple/list/map/set/record/bin/raw-list) convert onto the worklist in later increments.
+    /// Iterative-reader helper: advance a `{ … }` record PATTERN, appending completed SHORTHAND fields
+    /// (`{ x }` -> `(= x x)`, read inline — no sub-pattern) to `items` until either the body CLOSES (the
+    /// `}` is consumed here) -> `None`, or a field needs a sub-pattern DESCENT (a `.. rest` operand or a
+    /// `field = <pat>` value) -> `Some(descend)` for `Cont::RecordPat` to push + read on the worklist.
+    /// Mirrors the recursive `{`-pattern arm of `pattern_atom` (rest checked first, then a field-pair with
+    /// shorthand pun); `rest_marker`-free non-rest fields keep the same struct-id order.
+    fn advance_record_pat(&mut self, items: &mut Vec<StructId>) -> Option<RecordPatDescend> {
+        loop {
+            let before = self.pos;
+            if self.at(Kind::DotDot) {
+                let dd = self.cur_span();
+                self.bump(); // `..`
+                let rest_head = self.name("..", dd);
+                return Some(RecordPatDescend::Rest {
+                    dd_span: dd,
+                    rest_head,
+                    before,
+                });
+            }
+            let f_start = self.cur_span();
+            // Capture the field spelling BEFORE `binder()` consumes it (a shorthand puns it).
+            let pun = self.binder_spelling();
+            let field = self.binder();
+            if self.at(Kind::Eq) {
+                self.bump(); // `=`
+                return Some(RecordPatDescend::Value {
+                    f_start,
+                    field,
+                    before,
+                });
+            }
+            if let Some(n) = pun {
+                // Shorthand `{ x }` -> `(= x x)`: the field binds a same-named binder — no sub-pattern.
+                let value = self.name(n, f_start);
+                let eq = self.atom(Leaf::FieldPair, f_start);
+                let f_span = f_start.merge(self.prev_span());
+                items.push(self.list(vec![eq, field, value], f_span));
+                if !self.sep_continue(Kind::RBrace) {
+                    self.expect(Kind::RBrace, "`}`");
+                    return None;
+                }
+                if self.pos == before {
+                    self.bump(); // no field token consumed — avoid a missing-`,` spin
+                }
+                continue; // next field, inline
+            }
+            // A non-name field with no `=` — record the missing `=` (as the recursive arm does), descend.
+            self.expect(Kind::Eq, "`=`");
+            return Some(RecordPatDescend::Value {
+                f_start,
+                field,
+                before,
+            });
+        }
+    }
+
     fn pattern_iter(&mut self) -> StructId {
         // A pattern postfix `( arg, … )` application awaiting an argument sub-pattern. `items` = `[ base,
         // arg… ]`; `start` is the base pattern's start (the folded node's span); `entered` = whether the
@@ -6194,6 +6267,24 @@ impl<'a> Parser<'a> {
                 is_rest: bool,
                 rest_head: StructId,
                 dd_span: Span,
+                before: usize,
+            },
+            // A `{ field = p, … }` record pattern awaiting a field's VALUE sub-pattern or a `.. rest`
+            // operand (the field-pair analogue of `List`; SHORTHAND fields complete inline via
+            // `advance_record_pat`). On value deliver: build `(= field value)`; on rest deliver: `(.. binder)`.
+            // `is_rest` selects; `rest_head`/`dd_span` are the rest node's; `f_start`/`field` the value
+            // field's binder (for the `(= field value)` triple built on deliver). `brace_span` is the `{`'s;
+            // `lvl_*` the owning level (resume postfix + balance depth on close).
+            RecordPat {
+                lvl_start: Span,
+                lvl_entered: bool,
+                brace_span: Span,
+                items: Vec<StructId>,
+                is_rest: bool,
+                rest_head: StructId,
+                dd_span: Span,
+                f_start: Span,
+                field: StructId,
                 before: usize,
             },
         }
@@ -6291,6 +6382,67 @@ impl<'a> Parser<'a> {
                                     before,
                                 });
                                 continue; // reading stays true: read the element as a fresh level
+                            }
+                        } else if self.at(Kind::LBrace) {
+                            // `{ field = p, … }` record pattern — head created before fields; shorthand
+                            // fields complete inline (advance_record_pat), a value/`.. rest` descends.
+                            let brace_span = cur_start;
+                            self.bump(); // '{'
+                            let head = self.name("record", brace_span);
+                            let mut items = vec![head];
+                            let step = if self.at(Kind::RBrace) {
+                                self.expect(Kind::RBrace, "`}`");
+                                None
+                            } else {
+                                self.advance_record_pat(&mut items)
+                            };
+                            match step {
+                                None => {
+                                    node = self.list(items, brace_span.merge(self.prev_span()));
+                                    reading = false; // -> postfix phase
+                                }
+                                Some(descend) => {
+                                    let (is_rest, rest_head, dd_span, f_start, field, before) =
+                                        match descend {
+                                            RecordPatDescend::Rest {
+                                                dd_span,
+                                                rest_head,
+                                                before,
+                                            } => (
+                                                true,
+                                                rest_head,
+                                                dd_span,
+                                                brace_span,
+                                                StructId(0),
+                                                before,
+                                            ),
+                                            RecordPatDescend::Value {
+                                                f_start,
+                                                field,
+                                                before,
+                                            } => (
+                                                false,
+                                                StructId(0),
+                                                brace_span,
+                                                f_start,
+                                                field,
+                                                before,
+                                            ),
+                                        };
+                                    pending.push(PCont::RecordPat {
+                                        lvl_start: cur_start,
+                                        lvl_entered: cur_entered,
+                                        brace_span,
+                                        items,
+                                        is_rest,
+                                        rest_head,
+                                        dd_span,
+                                        f_start,
+                                        field,
+                                        before,
+                                    });
+                                    continue; // read the field value / rest sub-pattern as a fresh level
+                                }
                             }
                         } else {
                             node = self.pattern_atom();
@@ -6517,6 +6669,80 @@ impl<'a> Parser<'a> {
                     cur_entered = lvl_entered;
                     reading = false; // resume the owning level's postfix phase on the tuple/group node
                     continue;
+                }
+                Some(PCont::RecordPat {
+                    lvl_start,
+                    lvl_entered,
+                    brace_span,
+                    mut items,
+                    is_rest,
+                    rest_head,
+                    dd_span,
+                    f_start,
+                    field,
+                    before,
+                }) => {
+                    // `node` is the delivered field VALUE sub-pattern (build `(= field value)`) or the
+                    // `.. rest` operand (build `(.. binder)`); then advance the next field or close.
+                    if is_rest {
+                        let span = dd_span.merge(self.prev_span());
+                        items.push(self.list(vec![rest_head, node], span));
+                    } else {
+                        let f_span = f_start.merge(self.prev_span());
+                        let eq = self.atom(Leaf::FieldPair, f_start);
+                        items.push(self.list(vec![eq, field, node], f_span));
+                    }
+                    if !self.sep_continue(Kind::RBrace) {
+                        self.expect(Kind::RBrace, "`}`");
+                        node = self.list(items, brace_span.merge(self.prev_span()));
+                        cur_start = lvl_start;
+                        cur_entered = lvl_entered;
+                        reading = false; // resume the owning level's postfix phase on the record node
+                        continue;
+                    }
+                    if self.pos == before {
+                        self.bump(); // field didn't consume — avoid a missing-`,` spin
+                    }
+                    match self.advance_record_pat(&mut items) {
+                        None => {
+                            node = self.list(items, brace_span.merge(self.prev_span()));
+                            cur_start = lvl_start;
+                            cur_entered = lvl_entered;
+                            reading = false;
+                            continue;
+                        }
+                        Some(descend) => {
+                            let (is_rest, rest_head, dd_span, f_start, field, before) =
+                                match descend {
+                                    RecordPatDescend::Rest {
+                                        dd_span,
+                                        rest_head,
+                                        before,
+                                    } => {
+                                        (true, rest_head, dd_span, brace_span, StructId(0), before)
+                                    }
+                                    RecordPatDescend::Value {
+                                        f_start,
+                                        field,
+                                        before,
+                                    } => (false, StructId(0), brace_span, f_start, field, before),
+                                };
+                            pending.push(PCont::RecordPat {
+                                lvl_start,
+                                lvl_entered,
+                                brace_span,
+                                items,
+                                is_rest,
+                                rest_head,
+                                dd_span,
+                                f_start,
+                                field,
+                                before,
+                            });
+                            reading = true;
+                            continue; // read the next field's value / rest sub-pattern
+                        }
+                    }
                 }
             }
         }
@@ -8175,6 +8401,14 @@ mod tests {
             "#[[x], y]",
             "#[Some(a), b]",
             "{ f = p, g = q }",
+            "{}",
+            "{ x }",
+            "{ x, y }",
+            "{ a = 1, b }",
+            "{ .. rest }",
+            "{ a = Some(x), .. rest }",
+            "{ a = { b = p } }",
+            "{ p = q }.field",
             "b[u8(1)]",
             "Point(x, y).norm(z)",
             "C(C(C(C(x))))",
