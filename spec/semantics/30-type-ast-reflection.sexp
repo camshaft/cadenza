@@ -215,3 +215,17 @@
       (export main)))
   (call main)
   (output (: "(type Color (Red) (Green) (Rgb Int64 Int64 Int64))" String)))
+
+(case
+  "Type.ast of a NON-CONCRETE type is a coded rejection — a type variable has no definition to reflect"
+  (doc
+    "Increment 4 — the non-concrete rejection. Reflecting a type that still carries an unresolved type
+           variable (here `(Type.of (Nn))` for the generic `(type Opt a (Sm a) (Nn))` — the nullary variant
+           pins nothing, so its type is `Opt <var>`) is a GENUINE SEMANTIC error: a type variable has no
+           definition to reflect. So `Type.ast` REJECTS it with a specific machine-readable diagnostic
+           (CDZ0203), NOT a codeless decline — a decline is reserved for a well-formed construct the compiler
+           does-not-yet-compile, whereas an unresolved type variable is permanently ill-formed here (operator
+           corpus policy + v-spec-oracle review). The fix is to annotate the value's type so the reflection
+           has a concrete definition to render.")
+  (input (do (type Opt a (Sm a) (Nn)) (def (main) (Type.ast (Type.of (Nn)))) (export main)))
+  (error CDZ0203 (message "requires a concrete type")))

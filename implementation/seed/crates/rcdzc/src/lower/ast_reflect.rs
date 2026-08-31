@@ -1295,9 +1295,17 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
         // later refinement — the corpus TODO-pins the intended `(-> …)` form).
         _ => {
             if ty.has_free_var() {
-                return Core::Poison(Reject::decline(
-                    "Type.ast requires a concrete type; found an unresolved type variable (annotate the type)",
-                ));
+                // A type variable has NO definition to reflect, so this is a genuine SEMANTIC reject (a
+                // CODED CDZ0203), not a well-formed-but-unsupported decline (v-spec-oracle review + the
+                // operator corpus policy: a decline is reserved for a construct the compiler does-not-yet
+                // compile; an unresolved type var is permanently ill-formed here).
+                return Core::Poison(
+                    Reject::coded(
+                        Code::TypeMismatch,
+                        "Type.ast requires a concrete type; found an unresolved type variable (annotate the type)",
+                    )
+                    .at(arg),
+                );
             }
             let Some(disc) = ast_variant_discs(db) else {
                 return Core::Poison(Reject::decline(
@@ -1368,10 +1376,16 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
         // `Lst Int64` — proceeds; a concrete arg that is itself a `Fn` still declines below, as arrow
         // surfaces are a later increment.)
         if ty.has_free_var() {
-            return Core::Poison(Reject::decline(
-                "Type.ast requires a concrete type; a type argument is an unresolved type variable \
-                 (annotate the type)",
-            ));
+            // An unresolved arg has no concrete definition to substitute — a CODED semantic reject
+            // (CDZ0203), not a decline (see the structural arm above; v-spec-oracle review).
+            return Core::Poison(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    "Type.ast requires a concrete type; a type argument is an unresolved type variable \
+                     (annotate the type)",
+                )
+                .at(arg),
+            );
         }
         // Render each concrete arg to its canonical type-surface node in a fresh builder; a param appearing
         // in a payload is replaced by the matching arg surface. An arg with no surface (a `Fn`) declines.
