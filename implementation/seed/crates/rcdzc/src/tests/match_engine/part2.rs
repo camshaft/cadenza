@@ -347,43 +347,13 @@ fn a_non_unit_qty_of_arg_unbound_unit_is_not_a_double_report() {
 // naming the sum arity + fix. The correct-arity-clean + monomorphic-keeps-M108-message controls are covered by
 // the working generic-sum cases and the monomorphic-sum cases above. All 3 PASS wasm.)
 
-#[test]
-fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
-    // Applying a non-function must be ONE primary `error:` — the coded `cannot apply a value of
-    // type … — it is not a function` — NOT that reject PLUS the emit path's uncoded "value is not
-    // applyable" decline for the same node (both surfaced as `error:`, reading as two errors).
-    // `dedup_faults` drops the weaker decline when the coded not-a-function reject is present.
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse("(module m (def (main) (5 3)) (export main))")),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    let errors: Vec<&crate::abi::Diagnostic> = out
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect();
-    assert_eq!(
-        errors.len(),
-        1,
-        "applying a non-function = one error, got: {:?}",
-        out.diagnostics
-    );
-    assert!(
-        errors[0].message.contains("it is not a function"),
-        "the surviving error is the coded not-a-function reject: {}",
-        errors[0].message
-    );
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.message == crate::diag::NOT_APPLYABLE_DECLINE),
-        "the 'value is not applyable' decline must not accompany the coded reject"
-    );
-}
+// (applying_a_non_function_reports_one_error_not_a_shadowing_decline migrated to corpus 07-type-system,
+// enriched into "applying a value to a NON-type value keeps the generic not-a-function message, not
+// missing-colon" ((5 6) → CDZ0201 (message "cannot apply a value of type") (message "it is not a function")
+// (count 1)): the (count 1) pins the DEDUP — applying a non-function is exactly ONE error (the coded reject),
+// not that reject PLUS the emit path's uncoded "value is not applyable" decline for the same node (which
+// dedup_faults drops). The (count 1) corpus assertion is the dedup-migration lever for the "reports one
+// error" cluster.)
 
 #[test]
 fn an_ill_typed_try_operand_reports_one_error_not_a_shadowing_constant_decline() {
