@@ -958,6 +958,44 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, _, .cannotProve r => .cannotProve r
               | _, _, _ => .cannotProve "symeval: Bytes.slice on non-bytes / non-const args")
            | _, _, _ => .cannotProve "symeval: malformed Bytes.slice")
+        else if q == "Set".toUTF8 && mem == "len".toUTF8 then
+          -- `Set.len s` → distinct-element count. 🔑 FAITHFUL via eval's OWN `canonSet`: eval canonicalizes
+          -- the set at literal construction (sort + dedup), so its `.len` is the canonical size; I reify the
+          -- source-order const elements and run the SAME `canonSet` → identical size. Unorderable element
+          -- (canonSet `none`) → cannotProve (eval would have declined the literal too). Non-const → cannotProve.
+          (match children[1]? with
+           | some sId =>
+             (match symEval m senv fuel ty sId with
+              | .sym (.ctor t elems) =>
+                if t == "set".toUTF8 then
+                  (if elems.all (fun e => match e with | .const _ => true | _ => false) then
+                     (match canonSet (elems.filterMap (fun e => match e with | .const v => some v | _ => none)) with
+                      | some s => .sym (.const (.int (Int.ofNat s.size)))
+                      | none => .cannotProve "symeval: Set.len on unorderable elements")
+                   else .cannotProve "symeval: Set.len needs all-concrete elements")
+                else .cannotProve "symeval: Set.len on a non-set value"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Set.len on a non-set value")
+           | none => .cannotProve "symeval: malformed Set.len")
+        else if q == "Map".toUTF8 && mem == "len".toUTF8 then
+          -- `Map.len mp` → unique-key count. FAITHFUL via eval's OWN `canonMap` (last-insert-wins per key +
+          -- sort). Entries are `.tuple #[k, v]`; reify all-const (key,val) pairs, run canonMap, take size.
+          (match children[1]? with
+           | some mId =>
+             (match symEval m senv fuel ty mId with
+              | .sym (.ctor t elems) =>
+                if t == "map".toUTF8 then
+                  (match elems.mapM (fun e => match e with
+                                              | .tuple #[.const k, .const v] => some (k, v)
+                                              | _ => none) with
+                   | some kvs => (match canonMap kvs with
+                                  | some cm => .sym (.const (.int (Int.ofNat cm.size)))
+                                  | none => .cannotProve "symeval: Map.len on unorderable key")
+                   | none => .cannotProve "symeval: Map.len needs all-concrete entries")
+                else .cannotProve "symeval: Map.len on a non-map value"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Map.len on a non-map value")
+           | none => .cannotProve "symeval: malformed Map.len")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1487,6 +1525,31 @@ private def _bytesSliceExpr : Module :=
     root := 7 }
 #guard symEval _bytesSliceExpr [] symDefaultFuel defaultIntTy 7
        == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.bytes (ByteArray.mk #[20, 30]))])
+
+-- SET.LEN member-op coverage with DEDUP: `((. Set len) (set 1 2 2 3))` → 3 (distinct count via canonSet).
+private def _setLenExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "len".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7, 8], .list #[3, 9]],
+    root := 10 }
+#guard symEval _setLenExpr [] symDefaultFuel defaultIntTy 10
+       == SymOutcome.sym (.const (.int 3))
+
+-- MAP.LEN member-op coverage with DUP-KEY DEDUP: `((. Map len) (map (1 10) (1 20) (2 30)))` → 2 (key 1
+-- deduped, last-wins via canonMap).
+private def _mapLenExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Map".toUTF8, Leaf.name "len".toUTF8,
+                Leaf.name "map".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.intLit false .dec (ByteArray.mk #[20]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[30])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 4, .atom 5, .list #[4, 5],
+               .atom 4, .atom 6, .list #[7, 8], .atom 7, .atom 8, .list #[10, 11],
+               .atom 3, .list #[13, 6, 9, 12], .list #[3, 14]],
+    root := 15 }
+#guard symEval _mapLenExpr [] symDefaultFuel defaultIntTy 15
+       == SymOutcome.sym (.const (.int 2))
 
 -- INLINE `(do …)` EXPRESSION coverage: `(do (def x 5) (+ x 1))` → binds x=5, value is the last expr → 6.
 private def _inlineDoExpr : Module :=
