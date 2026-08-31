@@ -3577,36 +3577,12 @@ fn a_const_adapter_iterator_chain_fuses_to_zero_call_indirect() {
     );
 }
 
-#[test]
-fn shadowing_a_prelude_payload_type_name_is_a_plain_rebind_not_a_phantom_variant_fault() {
-    // Defining a value named after a prelude type — `(def (Int64) 1)` — must be a plain rebind, not a
-    // fault. The variant-payload validation walked ALL type declarations (INCLUDING the prelude's), so
-    // a prelude sum whose payload is typed `Int64`/`String` re-validated against the user's now-shadowed
-    // namespace, found the name bound to a nullary FUNCTION (not a type), and reported "a variant
-    // payload requires a type" — at the PRELUDE payload node, which has no source span, so the fault
-    // printed with NO `line:col` and named a "variant payload" the user never wrote. Gating the walk on
-    // `is_user_node` fixes it: a prelude decl's payloads are not re-checked against the user namespace.
-    for name in ["Int64", "String"] {
-        let src = format!("(module m (def ({name}) 1) (def (main) ({name})) (export main))");
-        assert!(
-            compile_component(&crate::codec::encode(&parse(&src))).is_ok(),
-            "shadowing prelude type `{name}` with a nullary def must compile cleanly"
-        );
-    }
-    // The check is NOT weakened: a USER variant that itself names a shadowed prelude type as a payload
-    // DOES still fault — `Int64` is genuinely bound to a value there, so `(A Int64)` is a non-type
-    // payload — and the fault lands at the USER's payload node (a real span), not the prelude's.
-    let shadow_and_use = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (Int64) 1) (type C (A Int64)) (def (main) 0) (export main))",
-    )))
-    .expect_err("using a value-shadowed `Int64` as a payload is a non-type payload");
-    assert_eq!(
-        shadow_and_use.code.as_deref(),
-        Some("CDZ0203"),
-        "got: {}",
-        shadow_and_use.message
-    );
-}
+// (shadowing_a_prelude_payload_type_name_is_a_plain_rebind_not_a_phantom_variant_fault migrated to corpus
+// 07-type-system: "a def named after a prelude type name is a plain rebind and compiles" (Int64→value 1) +
+// its String sibling, and "a USER variant naming a value-shadowed prelude type name as its payload still
+// faults CDZ0203" (the check gated on user nodes is not weakened). The spanless-prelude-payload-node facet
+// — the fault used to print with no line:col at the prelude's own payload node — is prose in the corpus
+// doc; the code+value observables are the corpus pins.)
 
 // (Migrated to corpus 07-type-system: "an unknown type in a record parameter annotation names the type,
 // not the field label" + the NESTED / VALUE-annotation / LET-BINDER site variants (CDZ0101 names Nonesuch,
