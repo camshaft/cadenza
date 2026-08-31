@@ -6979,56 +6979,19 @@ mod tests {
     // Each carries a format.cdz for the comment-above surface. The clean let/if layouts are already pinned
     // (ml/03, ml/216, ml/187).
 
+    // `destructuring_binder_patterns_round_trip` (destructuring PATTERNS in def/fn params + let binders —
+    // tuple/list-rest/ctor(bare/qualified/multi/nested), record(full/single/empty/match/partial), and nested
+    // compositions — render through the pattern surface, round-tripping instead of a backtick call-form
+    // fallback) MIGRATED to the spec/syntax corpus (inc-6 batches 54-55):
+    //   * b54 def-param + let-binder shapes → ml/336-344.
+    //   * b55 record binders ml/345-348, empty-record ml/349-350, let-ctor binders ml/351-353, nested
+    //     compositions ml/354-361 (tuple-in-record, ctor-in-tuple/record/map, record-in-list-rest/ctor,
+    //     ctor+record-in-let-tuple, record-in-record). The sexpr→ml ctor-let / record-oracle forms are
+    //     subsumed by these cases' fmt goldens; `Some(x)` bare-ctor is subsumed by ml/338 `C(c)`.
+    // ONLY the width-specific multi-binding-`let` LAYOUT assertions stay Rust (a fmt-width property, not a
+    // parse-tree fact): a 3-binding `let` breaks consistently one-per-line when it overflows, flat when it fits.
     #[test]
-    fn destructuring_binder_patterns_round_trip() {
-        // A destructuring PATTERN in a `def`/`fn` parameter or a `let` binder renders through the
-        // pattern surface (the inverse of `param`/`let_expr` routing a pattern-opening binder to
-        // `pattern`), so it round-trips instead of falling to the garbage generic-call form.
-        assert_eq!(
-            assert_roundtrip("def f((a, b)) = a + b", 80),
-            "def f((a, b)) = a + b"
-        );
-        assert_eq!(
-            assert_roundtrip("def head([x, .. rest]) = x", 80),
-            "def head([x, .. rest]) = x"
-        );
-        // CONSTRUCTOR patterns in a parameter — a single-constructor destructure binds like a tuple
-        // (the v-guide-editor issue 2026-07-18): a bare `Ctor(c)`, a qualified `Mod.Ctor(n)`, and a
-        // multi-payload / nested one all round-trip through the ML surface (parser gained the ctor-pattern
-        // binder route; printer's `pattern` already renders `Ctor(p…)` / `A.B(p…)`).
-        assert_eq!(
-            assert_roundtrip("def to-f(C(c)) = c", 80),
-            "def to-f(C(c)) = c"
-        );
-        assert_eq!(
-            assert_roundtrip("def f(Some(x)) = x", 80),
-            "def f(Some(x)) = x"
-        );
-        assert_eq!(
-            assert_roundtrip("def f(Id.Mk(n)) = n", 80),
-            "def f(Id.Mk(n)) = n"
-        );
-        assert_eq!(
-            assert_roundtrip("def f(P.Mk(a, b)) = a + b", 80),
-            "def f(P.Mk(a, b)) = a + b"
-        );
-        assert_eq!(
-            assert_roundtrip("def f(W.Wrap(Id.Mk(n))) = n", 80),
-            "def f(W.Wrap(Id.Mk(n))) = n"
-        );
-        // `let` binder patterns — tuple, list-rest, and a mix with a plain name.
-        assert_eq!(
-            assert_roundtrip("let (a, b) = p in a + b", 80),
-            "let (a, b) = p in\na + b"
-        );
-        assert_eq!(
-            assert_roundtrip("let [x, .. rest] = ys in x", 80),
-            "let [x, .. rest] = ys in\nx"
-        );
-        assert_eq!(
-            assert_roundtrip("let x = 1, (a, b) = p in x + a", 80),
-            "let x = 1, (a, b) = p in\nx + a"
-        );
+    fn multi_binding_let_breaks_consistently_by_width() {
         // A multi-binding `let` that does NOT fit breaks CONSISTENTLY: every binding drops to its own
         // line, indented under `let` — not a greedy fill that packs two bindings per line. At width 20
         // the three bindings overflow one line, so each gets its own; the first stays on the `let `
@@ -7043,133 +7006,6 @@ mod tests {
             assert_roundtrip("let aa = 1, bb = 2, cc = 3 in aa + bb + cc", 80),
             "let aa = 1, bb = 2, cc = 3 in\naa + bb + cc"
         );
-        // The oracle: a string-headed `(tuple …)` binder pattern from the s-expr surface sugars too.
-        assert_eq!(
-            print(&sexpr::read("(let (((tuple a b) p)) (+ a b))").unwrap(), 80),
-            "let (a, b) = p in\na + b"
-        );
-        // A CONSTRUCTOR-application pattern binder now sugars to the proper `let Ctor(p…) = v in …`
-        // surface (both a bare `Ctor` and a qualified `Mod.Ctor`), the parser having gained the
-        // ctor-pattern binder route — a single-constructor destructure binds like a tuple (corpus
-        // `(let (((Id.Mk n) …)) …)`), so it round-trips through the ML surface instead of the old
-        // backtick-`let` fallback. (v-guide-editor issue 2026-07-18.)
-        assert_eq!(
-            print(&sexpr::read("(let ((((. Id Mk) n) v)) n)").unwrap(), 80),
-            "let Id.Mk(n) = v in\nn"
-        );
-        assert_eq!(
-            print(&sexpr::read("(let (((C c) x)) c)").unwrap(), 80),
-            "let C(c) = x in\nc"
-        );
-        assert_eq!(
-            print(
-                &sexpr::read("(let (((P.Mk a b) (P.Mk 5 6))) (+ a b))").unwrap(),
-                80
-            ),
-            "let P.Mk(a, b) = P.Mk(5, 6) in\na + b"
-        );
-        // …and the whole thing round-trips through the ML reader (no backtick fallback).
-        for sx in [
-            "(let ((((. Id Mk) n) v)) n)",
-            "(let (((C c) x)) c)",
-            "(let (((P.Mk a b) (P.Mk 5 6))) (+ a b))",
-        ] {
-            let a = sexpr::read(sx).unwrap();
-            let ml = print(&a, 80);
-            assert!(
-                !ml.contains("`let`"),
-                "ctor-pattern let must not backtick-fallback: {ml:?}"
-            );
-            assert!(
-                parser::read_ml(&ml).arenas.structurally_eq(&a),
-                "ctor-pattern let round-trips: {ml:?}"
-            );
-        }
-        // RECORD binding patterns — the operator-ruled bare-brace surface `{ field = p, … }` (arena
-        // `(record (field p) …)`, distinct from the map `#{…}` = `(map …)`). In a param, a let binder, and
-        // a match arm; a PARTIAL pattern (fewer fields) too. (v-guide-editor issue 2026-07-18; unblocked by
-        // v-patterns' Increment-B compiler support landing.)
-        assert_eq!(
-            assert_roundtrip("def f({ x = a, y = b }) = a + b", 80),
-            "def f({ x = a, y = b }) = a + b"
-        );
-        assert_eq!(
-            assert_roundtrip("def f({ x = a }) = a", 80),
-            "def f({ x = a }) = a"
-        );
-        assert_eq!(
-            assert_roundtrip("let { x = a, y = b } = r in a + b", 80),
-            "let { x = a, y = b } = r in\na + b"
-        );
-        assert_eq!(
-            assert_roundtrip("match r with | { x = a } => a", 80),
-            "match r with\n  | { x = a } => a"
-        );
-        // The oracle: a hand-authored `(record …)` binder prints the brace surface (NOT the backtick-let
-        // fallback), in both let and param position.
-        assert_eq!(
-            print(
-                &sexpr::read("(def (main) (let (((record (= x a) (= y b)) r)) (+ a b)))").unwrap(),
-                80
-            ),
-            "def main() =\n  let { x = a, y = b } = r in\n  a + b"
-        );
-        // Both a record PATTERN binder AND a record VALUE are the canonical `(= name value)` triple
-        // (path B — full symmetry; operator ruling): patterns and literals spell the identical form.
-        for sx in [
-            "(def (main) (let (((record (= x a) (= y b)) #record((= x 3) (= y 4)))) (+ a b)))",
-            "(def (f (record (= x a))) a)",
-        ] {
-            let a = sexpr::read(sx).unwrap();
-            let ml = print(&a, 80);
-            assert!(
-                !ml.contains("`let`"),
-                "record pattern must not backtick-fallback: {ml:?}"
-            );
-            assert!(
-                parser::read_ml(&ml).arenas.structurally_eq(&a),
-                "record pattern round-trips: {ml:?}"
-            );
-        }
-        // An EMPTY record pattern `{}` (arena `(record)`, binds nothing) renders `{}` (no inner padding)
-        // in BOTH param and let-binder position — consistent, no backtick fallback — and round-trips.
-        assert_eq!(
-            print(&sexpr::read("(def (f (record)) a)").unwrap(), 80),
-            "def f({}) = a"
-        );
-        assert_eq!(
-            print(
-                &sexpr::read("(def (main) (let (((record) v)) v))").unwrap(),
-                80
-            ),
-            "def main() =\n  let {} = v in\n  v"
-        );
-        // NESTED compositions of the binding patterns (tuple/list/map/record/ctor) — the interaction of
-        // the record + ctor pattern surfaces with each other and the pre-existing tuple/list/map ones is
-        // where a printer/parser asymmetry would most likely hide, so pin the mixes: a tuple inside a
-        // record, a ctor inside a tuple / record / map-value, a record inside a ctor / list-rest / record.
-        // Assert structural round-trip (the property; layout varies by position) with no backtick fallback.
-        for src in [
-            "def f({ x = (a, b) }) = a",
-            "def f((C(c), d)) = c",
-            "def f({ p = C(c) }) = c",
-            "def f([{ x = a }, .. rest]) = a",
-            "def f(Some({ x = a })) = a",
-            "def f(#{ k = C(c) }) = c",
-            "let (C(a), { y = b }) = p in a",
-            "let { outer = { inner = a } } = r in a",
-        ] {
-            let a = parser::read_ml(src).arenas;
-            let ml = print(&a, 80);
-            assert!(
-                !ml.contains('`'),
-                "nested pattern must not backtick-fallback: {src} -> {ml:?}"
-            );
-            assert!(
-                parser::read_ml(&ml).arenas.structurally_eq(&a),
-                "nested pattern round-trips: {src} -> {ml:?}"
-            );
-        }
     }
 
     // `type_ascription_round_trips` (`e : T` → arena `(: e T)`, ascription binds loosest so it wraps the

@@ -1,0 +1,1 @@
+(def (f (record)) a)

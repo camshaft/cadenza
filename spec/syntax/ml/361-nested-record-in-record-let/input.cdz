@@ -1,0 +1,1 @@
+let { outer = { inner = a } } = r in a

@@ -1,0 +1,2 @@
+let (C(a), { y = b }) = p in
+a

@@ -1,0 +1,2 @@
+match r with
+  | { x = a } => a
