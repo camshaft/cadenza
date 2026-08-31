@@ -840,24 +840,38 @@
       (export main)))
   (output (: 7 Int64)))
 
-; The remaining residual the binding slice defers: a nested RECORD below a record binding field —
-; `#record((= x #record((= y v))))`, the field value itself a RECORD — needs a deferred name-keyed slot (not
-; a positional `Elem` step), so it is NOT yet wired in either match or binding. Declined as an unbuilt
-; construct, tagged with the `nested-record-field-pattern-descent` DeclineId (CDZ0900, seq-286). Both the
-; resolve-side `last_binder_named` and the check-side `check_binding_pattern` agree (check ≡ compile), so
-; `(no-other-errors)` pins NO spurious unbound-name CDZ0101 cascade.
+; FULL nested-record descent (§235, operator-prioritized): a nested RECORD below a record binding field —
+; `#record((= x #record((= y v))))`, the field value itself a RECORD — now BINDS. `v` resolves to a
+; `RecordField` with an EMPTY path reading field `x` then a `sub_path = [Field(y)]` (a NAME-keyed
+; `RecordSubStep`) descending into the inner record; at lowering each `Field(k)` resolves to `Elem(<sorted
+; slot>)` via the record type at that step (records are flat arrays read by slot), so the emitted walk is
+; pure `Elem`. Over `#record((= x #record((= y 9))))`: v = 9. Both faces (binding here + match below); the
+; positional tuple/list cases (above) compose with the name-keyed record cases to any depth.
 (case
-  "a nested RECORD below a record BINDING field is the deferred residual — a coded decline (CDZ0900)"
+  "a nested RECORD below a record BINDING field binds v (§235 full nested-record descent, name-keyed sub_path)"
   (input
     (do
       (def (f #record((= x #record((= y v))))) v)
       (def (main) (f #record((= x #record((= y 9))))))
       (export main)))
-  (declines
-    CDZ0900
-    (message "nested compound sub-pattern inside a record binding pattern is not supported")
-    (not "unbound")
-    (no-other-errors)))
+  (output (: 9 Int64)))
+
+; The MATCH face of the full nested-record descent: a nested RECORD below a record MATCH field binds too.
+; Over `#record((= x #record((= y 9))))`, `(match t (#record((= x #record((= y v)))) v))` reads `v` = 9 via
+; the same `RecordField` [Field(y)] sub_path. A nested record is IRREFUTABLE (static field set), so this
+; binds in both a match arm and a binding. (A VARIANT below a field is a further increment — refutable, a
+; separate switch-lowering path.)
+(case
+  "a nested RECORD below a record MATCH field binds v (§235 full nested-record descent)"
+  (input
+    (do
+      (def
+        (f (: t (Record (: x (Record (: y Int64))))))
+        (match t (#record((= x #record((= y v)))) v)))
+      (def (main) (f #record((= x #record((= y 9))))))
+      (export main)))
+  (call main)
+  (output (: 9 Int64)))
 
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).

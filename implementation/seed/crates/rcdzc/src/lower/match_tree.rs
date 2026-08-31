@@ -2405,7 +2405,28 @@ fn is_positional_field_value(db: &Db, pat: StructId) -> bool {
                     && elems.iter().all(|&e| is_positional_field_value(db, e))
             });
     }
-    false // record / variant / literal → not positionally wireable (deferred)
+    // A nested RECORD field value is IRREFUTABLE (a record has a static field set) and now WIRES in a
+    // binding position (§235 full nested descent — `RecordSubStep::Field`), so accept it if every field's
+    // value is itself irrefutably wireable. (Its `.. rest` open-row is left to the record-rest path — a
+    // bare-binder-fields record is the wireable field-value shape here.)
+    if let Some(fields) = db.ast.compound_form_of(pat, CompoundCtor::Record) {
+        return db.ast.rest_marker(fields).is_none()
+            && fields.iter().all(|&fp| {
+                // Each field `(= k sub)` — recurse into the sub-pattern `sub` (a legacy `(k sub)` too).
+                match db.ast.get(fp) {
+                    crate::ast::Struct::List(kv)
+                        if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") =>
+                    {
+                        is_positional_field_value(db, kv[2])
+                    }
+                    crate::ast::Struct::List(kv) if kv.len() == 2 => {
+                        is_positional_field_value(db, kv[1])
+                    }
+                    _ => false,
+                }
+            });
+    }
+    false // variant / literal → refutable / not wireable in a binding position (deferred)
 }
 
 /// The DISPLAY name of the constructor a `(Ctor arg…)` pattern applies — read from the pattern's SOURCE
