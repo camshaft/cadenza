@@ -799,10 +799,10 @@ fn str_leaf(b: &mut Builder, text: &str) -> StructId {
     b.atom_leaf(Leaf::Str(Arc::from(text)))
 }
 
-/// A `("list" e…)` value (string head, the canonical list constructor).
+/// A `#list(e…)` value — the M2 NATIVE list constructor (`Leaf::Ctor(CompoundCtor::List)` head). The M3
+/// reader-flip (#6528) dropped the legacy STRING-head `("list" …)` form, so fixtures build the native head.
 fn list_value(b: &mut Builder, items: Vec<StructId>) -> StructId {
-    let head = b.atom_leaf(Leaf::Str(Arc::from("list")));
-    b.list(std::iter::once(head).chain(items).collect())
+    b.compound(CompoundCtor::List, &items)
 }
 
 /// The `("record" (= name …) (= bytes …)|(= path …))` node for one blob — the inverse of [`read_blob`].
@@ -1626,10 +1626,10 @@ mod tests {
         assert_eq!(spec.registry.default, "sys");
     }
 
-    /// A `("list" e…)` value (string head, the canonical list constructor).
+    /// A `#list(e…)` value — the M2 NATIVE list constructor (`Leaf::Ctor(CompoundCtor::List)` head); the
+    /// M3 reader-flip (#6528) dropped the legacy STRING-head `("list" …)` form.
     fn list(b: &mut Builder, items: Vec<StructId>) -> StructId {
-        let head = b.atom_leaf(Leaf::Str(Arc::from("list")));
-        b.list(std::iter::once(head).chain(items).collect())
+        b.compound(cadenza_ast::ast::CompoundCtor::List, &items)
     }
 
     /// A string leaf.
@@ -2793,8 +2793,11 @@ mod tests {
     /// `Value.decode` returns `None` (the multi-contract state dispatcher's set arm decode-failed exactly so).
     #[test]
     fn resolve_references_canonicalizes_a_record_value_payload() {
-        // A string-headed ML-surface record `("record" (= value b"V") (= key b"K"))` — fields DELIBERATELY in
-        // non-canonical (value-before-key) order to prove the sort, and the STRING head to prove the rewrite.
+        // A NATIVE ctor-leaf record `#record((= value b"V") (= key b"K"))` — fields DELIBERATELY in
+        // non-canonical (value-before-key) order to prove `resolve_references` canonicalizes (sorts) them.
+        // (Was a legacy STRING-headed `("record" …)` proving the string→native rewrite; the M3 reader-flip
+        // #6528 dropped string-head recognition, so the input is built native and the test now pins the
+        // field-sort/canonicalization of a native record.)
         let arenas = built(|b| {
             let ty = s(b, "SetRequest");
             let f_value = {
@@ -2809,8 +2812,7 @@ mod tests {
                 let v = bytes_leaf(b, b"K");
                 b.list(vec![eq, name, v])
             };
-            let rec_head = s(b, "record");
-            let ml_record = b.list(vec![rec_head, f_value, f_key]);
+            let ml_record = b.compound(cadenza_ast::ast::CompoundCtor::Record, &[f_value, f_key]);
             let vref = bare_ctor(b, "Value", vec![ty, ml_record]);
             let contract = bytes_leaf(b, ContractId::of(b"c").hash().as_bytes());
             let msg = record(b, vec![("contract", contract), ("payload", vref)]);
