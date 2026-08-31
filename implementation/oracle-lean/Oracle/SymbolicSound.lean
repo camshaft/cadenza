@@ -617,4 +617,11 @@ theorem denote_ite_same_value (ρ : Nat → Value) (w : IntTy) (c a : SymExpr) (
     (h : denote ρ w (.ite c a a) = .value v) : denote ρ w a = .value v := by
   rcases denote_ite_value_inv ρ w c a a v h with ⟨_, ha⟩ | ⟨_, ha⟩ <;> exact ha
 
+/-- `symToValue?` IDEMPOTENCE: extracting a value and re-wrapping it as a `.const` round-trips —
+`symToValue? (.const v) = some v` for the `v` any expression extracts to. (A direct corollary of
+`symToValue?_const`; pins that the folder's constant-extraction is stable under re-constification, an
+invariant the fold/normalize pipeline relies on when it replaces a folded sub-term by `.const v`.) -/
+theorem symToValue?_idem (e : SymExpr) (v : Value) (h : symToValue? e = some v) :
+    symToValue? (.const v) = some v := symToValue?_const v
+
 end Oracle
