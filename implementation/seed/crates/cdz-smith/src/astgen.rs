@@ -1047,7 +1047,7 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
 fn gen_bignum_body<C: Choice>(c: &mut C, out: &mut String) {
     // Pick the FORM before consuming the operand choices — else a short entropy seed exhausts the cursor
     // on `a`/`b` and `variant` always defaults to 0 (never reaching the Rational forms).
-    let form = c.variant(5);
+    let form = c.variant(6);
     let (a, b) = (c.int_bounded(1, 9), c.int_bounded(1, 9));
     match form {
         // A BigInt literal `<n>N`.
@@ -1061,6 +1061,15 @@ fn gen_bignum_body<C: Choice>(c: &mut C, out: &mut String) {
         2 => write!(out, "{}N", "9".repeat(25)).ok(),
         // A Rational literal `<n>R` (= n/1).
         3 => write!(out, "{a}R").ok(),
+        // A BigInt/Rational COMPARISON → Bool: `(= / < / > / <= / >= x y)` over two BigInt (`N`) or
+        // two Rational (`R`) values — arbitrary-precision + exact-rational ORDERING (a Bool result),
+        // a surface the arith arms never reached (none COMPARED). Rational ordering is graded by the
+        // oracle's compareVals fold (#7106); value-comparable (the wasm-vs-rust diff grades the Bool).
+        4 => {
+            let op = ["=", "<", ">", "<=", ">="][c.variant(5)];
+            let suffix = if c.variant(2) == 0 { "N" } else { "R" };
+            write!(out, "({op} {a}{suffix} {b}{suffix})").ok()
+        }
         // A Rational binary op — `b` in `1..=9` so `/` has a nonzero denominator.
         _ => {
             let op = ["+", "-", "*", "/"][c.variant(4)];
@@ -2419,7 +2428,7 @@ mod tests {
     /// nonzero denominator — so all stay on the compile path (they SKIP in the value oracle for now).
     #[test]
     fn gen_bignum_body_reaches_bigint_and_rational_and_compiles() {
-        let (mut saw_n, mut saw_r) = (false, false);
+        let (mut saw_n, mut saw_r, mut saw_cmp) = (false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(613);
             let mut bytes = Vec::new();
@@ -2432,6 +2441,8 @@ mod tests {
             gen_bignum_body(&mut ByteCursorChoice::new(&bytes), &mut body);
             saw_n |= body.contains('N');
             saw_r |= body.contains('R');
+            // A comparison body begins with a comparison op head (arith ops are `+ - * /`).
+            saw_cmp |= body.starts_with("(=") || body.starts_with("(<") || body.starts_with("(>");
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2440,6 +2451,7 @@ mod tests {
         }
         assert!(saw_n, "should reach a BigInt (N) form");
         assert!(saw_r, "should reach a Rational (R) form");
+        assert!(saw_cmp, "should reach a BigInt/Rational comparison");
     }
 
     /// `gen_partial_application_body` REACHES all three currying forms (2-ary `let`-partial, 3-ary chained,
