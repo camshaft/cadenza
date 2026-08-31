@@ -1,0 +1,3 @@
+/// Doc before annotated def.
+@test
+def b() -> Bool = true

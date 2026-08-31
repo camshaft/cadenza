@@ -1,0 +1,3 @@
+/// Annotated module.
+@inline
+module M { def x() -> Int64 = 1 }

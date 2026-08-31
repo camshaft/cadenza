@@ -1,0 +1,3 @@
+/// Annotated effect.
+@handler
+effect E = | op : -> Unit
