@@ -2051,8 +2051,22 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
                     Code::TypeMismatch,
                     "`compare` needs a total order, but a floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no three-way comparison — use the relational operators `<`, `<=`, `>`, `>=` instead",
                 )),
+                // A COMPOUND whose type reaches a FLOAT leaf is the same permanent carve-out as a bare float
+                // operand (the float partial order composes into the compound, §319/03:626) → coded CDZ0203,
+                // FLOAT-SCOPED (matching the bare-float arm above + Set.to-list #7076). A set/map-leaf
+                // compound (no blessed order — a DISTINCT invariant) keeps the codeless decline below.
+                None if {
+                    let lhs_ty = crate::infer::type_of(db, lhs);
+                    compound_has_float_leaf(db, &lhs_ty, &mut Vec::new())
+                } =>
+                {
+                    Core::Poison(Reject::coded(
+                        Code::TypeMismatch,
+                        "`compare` of this value has no total order — a floating-point leaf offers only the IEEE partial order (a not-a-number is unordered), so the compound has no three-way comparison — compare its orderable components individually",
+                    ))
+                }
                 None => Core::Poison(Reject::decline(
-                    "`compare` of this value has no total order the compiler can walk (a float/bytes/set/map leaf, or an un-orderable shape) — compare its orderable components individually",
+                    "`compare` of this value has no total order the compiler can walk (a set/map leaf, or an un-orderable shape) — compare its orderable components individually",
                 )),
             }
         }
@@ -2721,11 +2735,25 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 // actionable route — order the orderable components individually. Keeps the shared
                 // `COMPOUND_ORDERING_NO_TOTAL_ORDER_DECLINE` substring so the mismatched-type dedup still fires.
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: ordering of a compound with an un-orderable (float/set/map) leaf — permanent carve-out");
-                Core::Poison(Reject::decline(
-                    "a compound value with a float, set, or map leaf has no total order, so it cannot be \
-                     ordered by `<`/`<=`/`>`/`>=` (a float offers only the IEEE partial order; a set/map \
-                     carries no blessed order) — order its orderable components individually",
-                ))
+                // FLOAT-SCOPE the code (matching the three-way `compare` arms + Set.to-list #7076): a FLOAT
+                // leaf means the compound carries the IEEE partial order (no total order) → coded CDZ0203.
+                // A set/map-leaf compound (no blessed order — a DISTINCT invariant) stays a codeless decline
+                // until it gets its own no-blessed-order code.
+                let arg_ty = crate::infer::type_of(db, args[0]);
+                if compound_has_float_leaf(db, &arg_ty, &mut Vec::new()) {
+                    Core::Poison(Reject::coded(
+                        Code::TypeMismatch,
+                        "a compound value with a floating-point leaf has no total order (a float offers \
+                         only the IEEE partial order), so it cannot be ordered by `<`/`<=`/`>`/`>=` — \
+                         order its orderable components individually",
+                    ))
+                } else {
+                    Core::Poison(Reject::decline(
+                        "a compound value with a set or map leaf has no total order, so it cannot be \
+                         ordered by `<`/`<=`/`>`/`>=` (a set/map carries no blessed order) — order its \
+                         orderable components individually",
+                    ))
+                }
             } else {
                 // EQUALITY (`=`) reaching here is a genuinely unbuilt canonicalization (a Set/Map leaf
                 // whose structural `=` the compiler cannot walk) — the honest heap-walk decline, now the
@@ -6059,6 +6087,62 @@ fn orderable_leaf_or_compound(
             ok
         }
         // Anything else (a bare var, a function, Any, a nominal we can't resolve) — not orderable.
+        _ => false,
+    }
+}
+
+/// Whether an un-orderable compound `ty` is un-orderable BECAUSE it reaches a FLOAT leaf (through ordinary
+/// orderable-compound structure: tuple / list / record / sum payload). Used to FLOAT-SCOPE the
+/// ordering/compare carve-out: a float leaf means the value carries the IEEE PARTIAL order (no total
+/// order) → a coded CDZ0203 (permanent, use `<`/`<=`/`>`/`>=` / component-wise), the same float-scope as
+/// the three-way `compare` operand arm and Set.to-list (#7001/#7076). A SET/MAP leaf is a DISTINCT
+/// invariant ("no blessed order at all"), so it is NOT the float carve-out — do NOT recurse into a Set/Map
+/// (the collection itself is the un-orderable reason, not its element's float); those stay a codeless
+/// decline until they get their own no-blessed-order code. Recursion is `seen`-guarded like the sibling.
+fn compound_has_float_leaf(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    seen: &mut Vec<crate::ast::StructId>,
+) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Float(_) => true,
+        Ty::Tuple(elems) => elems.iter().any(|e| compound_has_float_leaf(db, e, seen)),
+        Ty::List(elem) => compound_has_float_leaf(db, elem, seen),
+        Ty::Record(fields) => fields
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+            .iter()
+            .any(|v| compound_has_float_leaf(db, v, seen)),
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return false; // recursive back-edge — no new float leaf on this path
+            }
+            seen.push(*decl);
+            let variant_count = db.type_decl_by_occ(*decl).map(|t| t.variants.len());
+            let mut found = false;
+            if let Some(vc) = variant_count {
+                for disc in 0..vc {
+                    let ctor = db
+                        .type_decl_by_occ(*decl)
+                        .and_then(|t| t.variants.get(disc))
+                        .and_then(|v| v.ctor);
+                    if let Some(ctor) = ctor
+                        && let Some(payload_ty) =
+                            crate::infer::payload_ty_at_instantiation(db, ctor, ty)
+                        && compound_has_float_leaf(db, &payload_ty, seen)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            seen.pop();
+            found
+        }
+        // Set/Map are the DISTINCT no-blessed-order reason — not the float carve-out; don't recurse.
+        // Any other leaf/shape carries no float.
         _ => false,
     }
 }

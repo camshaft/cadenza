@@ -1900,18 +1900,21 @@ fn compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route
     let d = first_error(
         "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of (tuple x 1) (tuple y 2))) (export f))",
     );
-    // An uncoded DECLINE (the un-orderable-leaf carve-out), not a coded rejection.
+    // A FLOAT-leaf compound is the permanent float carve-out → a CODED CDZ0203 (float-scoped, matching the
+    // bare-float compare + Set.to-list; a set/map-leaf compound stays a codeless decline as a distinct
+    // no-blessed-order invariant). The message names the float reason + the component-wise route.
     assert_eq!(
-        d.code, None,
-        "an un-orderable-leaf compound compare is an uncoded decline: {}",
+        d.code.as_deref(),
+        Some("CDZ0203"),
+        "a float-leaf compound compare is the coded float carve-out: {}",
         d.message
     );
     assert!(
-        d.message.contains("no total order the compiler can walk")
-                // names WHY (the offending leaf kinds) AND the component-wise route
-                && d.message.contains("float/bytes/set/map leaf")
-                && d.message.contains("compare its orderable components individually"),
-        "the decline names the un-orderable-leaf reason AND the component-wise route: {}",
+        d.message
+            .contains("floating-point leaf offers only the IEEE partial order")
+            && d.message
+                .contains("compare its orderable components individually"),
+        "the reject names the float reason AND the component-wise route: {}",
         d.message
     );
     // ROUND-TRIP witness: the named route — comparing the orderable component (the Int field) on its
@@ -1947,18 +1950,21 @@ fn ordering_a_compound_with_an_unorderable_leaf_is_a_carve_out_not_a_not_yet_bui
     let d = first_error(
         "(module m (def (f (: x Float64) (: y Float64)) (< (tuple x 1) (tuple y 2))) (export f))",
     );
+    // A FLOAT-leaf compound is the permanent float carve-out → coded CDZ0203 (float-scoped, mirroring the
+    // three-way `compare`; a set/map-leaf compound stays a codeless decline, a distinct no-blessed-order
+    // invariant). Names the float reason + the component-wise route (NOT a misleading "not yet built").
     assert_eq!(
-        d.code, None,
-        "an un-orderable-leaf compound ordering is an uncoded decline: {}",
+        d.code.as_deref(),
+        Some("CDZ0203"),
+        "a float-leaf compound ordering is the coded float carve-out: {}",
         d.message
     );
     assert!(
-        d.message
-            .contains("has no total order, so it cannot be ordered")
-            && d.message.contains("float, set, or map leaf")
+        d.message.contains("has no total order")
+            && d.message.contains("floating-point leaf")
             && d.message
                 .contains("order its orderable components individually"),
-        "the ordering decline names the un-orderable-leaf reason + the component-wise route (NOT a \
+        "the ordering reject names the float reason + the component-wise route (NOT a \
              'not yet built' heap walk): {}",
         d.message
     );
