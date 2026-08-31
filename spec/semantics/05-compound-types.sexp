@@ -13856,6 +13856,20 @@
             (export main)))
   (output (: 42 Int64)))
 
+(case "a bare prelude-TYPE-colliding variant matches as the local variant in a MULTI-variant sum beside a nullary arm"
+  (doc    "The multi-variant flavor of the single-variant case above: `(type T (Int Int64) (Nil))` declares
+           a prelude-TYPE-name-colliding variant `Int` ALONGSIDE a nullary `Nil` sibling. A bare `((Int n) …)`
+           pattern head still resolves against T's variant set first — reaching T's `Int`, not the prelude
+           width ctor — with the `Nil` arm present, so the companion-index remap of prelude-colliding variants
+           is not a single-variant special case. `f (T.Int 42)` fires the `Int` arm → 42. (The prelude-DATA-ctor
+           multi-variant flavor is the Some/Other case below; this pins the TYPE-name-collision one.)")
+  (input  (do
+            (type T (Int Int64) (Nil))
+            (def (f (: t T)) (match t ((Int n) n) ((Nil) 0)))
+            (def (main) (f (T.Int 42)))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "a bare type-name-colliding variant name constructs as the local variant"
   (doc    "The CONSTRUCT-position analogue of the match-half case above. `(type T (Int Int64))` declares a
            variant named `Int`, colliding with the prelude `Int` TYPE constructor (the width ctor `(Int W)`
