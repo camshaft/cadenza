@@ -299,6 +299,8 @@ pass	ml/362-annotated-def-juxtapose-no-semicolon
 pass	ml/363-annotated-inline-def-juxtapose
 pass	ml/364-nullary-variant-empty-parens
 pass	ml/365-invariant-on-type-with-nullary-variant
+pass	ml/366-doc-line-hugs-def-blank-between
+pass	ml/367-parenthesized-match-arm-body-seq95
 pass	ml/37-match-multi-variant-refutable
 pass	ml/38-match-imported-ctor-refutable
 pass	ml/39-match-unrelated-ctor-refutable
