@@ -553,11 +553,21 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
         -- SymExprs — DISTINCT from `.tuple`, and ORDERED so structural equality is faithful (two list
         -- literals are equal iff same elements in order). Coverage: list literals now get a verdict instead
         -- of falling to `cannotProve` (the head was previously unmodeled → treated as a call → cannotProve).
-        -- (`set`/`map` need canonicalization — unordered / sorted-unique-by-key — a later increment.)
         let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel ty c)
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none => .sym (.ctor "list".toUTF8 (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+      else if h == "set".toUTF8 then
+        -- a SET literal → `.ctor "set"` of the element SymExprs, in SOURCE ORDER. SOUND: two set literals
+        -- with the same elements in the same order prove equal; DIFFERING order → normalized-but-different
+        -- (never a false `proven`). INCOMPLETE for set REORDERING equality (`(set a b)` vs `(set b a)`) —
+        -- canonicalization (sort+dedup by a SymExpr order) is a later increment; but this already lifts a
+        -- set-literal program from a `cannotProve` BLIND SPOT to a checked verdict (proven when order matches
+        -- the round-trip, as with list). Distinct head from `list`/`tuple`.
+        let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel ty c)
+        match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
+        | some r => .cannotProve r
+        | none => .sym (.ctor "set".toUTF8 (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
       else if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
         -- a built-in unary Option/Result constructor (lazy payload).
         match children[1]? with
@@ -1038,6 +1048,14 @@ private def _listExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
 #guard symEval _listExpr [] symDefaultFuel defaultIntTy 3
        == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2)])
+
+-- SET literal coverage: `(set 1 2)` → `.ctor "set" [const 1, const 2]` (source order; was cannotProve).
+private def _setExpr : Module :=
+  { leaves := #[Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+#guard symEval _setExpr [] symDefaultFuel defaultIntTy 3
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 1), .const (.int 2)])
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
