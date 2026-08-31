@@ -3682,109 +3682,20 @@ fn a_unit_conflict_anchors_to_a_user_node() {
 // + the absence of the terse backend 'Unit.in of a non-quantity' decline. The e2e repair (1 inch → 127/50
 // cm) is corpus "a chained Unit.in re-wrapped with Qty.of converts inch to cm exactly (127/50)". rcdzc
 // test deleted (corpus-covered).
-#[test]
-fn unit_in_of_a_non_numeric_operand_names_the_type_without_the_self_contradictory_plain_number() {
-    // Sibling of the Qty.value fix (Copilot PR#602 pattern), found by a proactive infer.rs audit: the
-    // Unit.in-non-quantity CDZ0501 message ALSO hardcoded "— a plain number, not a quantity", firing for
-    // ANY non-quantity operand → a Bool operand printed the self-contradictory "a Bool — a plain number".
-    // Now: names the real type + "which is not a quantity" generally; the "conversion unwrapped it / chain
-    // re-wrap with Qty.of" hint is appended ONLY for a NUMERIC operand (the chained-Unit.in mistake, pinned
-    // by the test above). This pins the NON-numeric path.
-    let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"meter\") true)) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("Unit.in of a Bool must reject");
-    assert_eq!(
-        err.code.as_deref(),
-        Some("CDZ0501"),
-        "coded CDZ0501: {}",
-        err.message
-    );
-    assert!(
-        err.message.contains("a Bool") && err.message.contains("which is not a quantity"),
-        "names the operand's real type (Bool) + not-a-quantity: {}",
-        err.message
-    );
-    assert!(
-        !err.message.contains("plain number") && !err.message.contains("Qty.of"),
-        "a NON-numeric operand must NOT print 'a plain number' (self-contradictory) nor the numeric-only Qty.of chain hint: {}",
-        err.message
-    );
-}
+// unit_in_of_a_non_numeric_operand_names_the_type… (`(Unit.in meter true)` → CDZ0501 "a Bool … which is
+// not a quantity", NOT "plain number"/"Qty.of") migrated to corpus 18-units-of-measure "Unit.in of a
+// NON-NUMERIC operand names the type, not a self-contradictory plain number". rcdzc test deleted.
 
-#[test]
-fn qty_value_of_a_conversion_result_is_a_clean_cdz0501_not_a_no_machine_representation_decline() {
-    // Breaker/corpus-bugfix report: `Qty.value` of a `Unit.in` conversion RESULT — `(Qty.value (Unit.in
-    // inch (Qty.of 5 foot)))` — declined "function return type has no machine representation" at the
-    // backend while `cdz check` passed (a check-vs-compile gap). ROOT: `Unit.in`/`as` UNWRAPS to a bare
-    // number (Q3), so `Qty.value` is applied to a plain Int, and its type arm returned `Ty::Any`
-    // ("faulted elsewhere") — but nothing faulted it, so the un-representable `Any` slipped to the
-    // backend. Now a `Qty.value`-of-a-non-quantity check in check_application rejects it CDZ0501 at
-    // compile, naming the operand type + the "drop the Qty.value" repair. The bare-number sibling of the
-    // chained-Unit.in reject.
-    let src = "(do (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"inch\") \
-                     ((. Qty of) 5 ((. Unit of) #\"foot\"))))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("Qty.value of a conversion result (a bare number) must reject");
-    assert_eq!(
-        err.code.as_deref(),
-        Some("CDZ0501"),
-        "Qty.value of a bare number (a Unit.in result) is a coded CDZ0501, not an uncoded no-machine-rep decline"
-    );
-    assert!(
-        err.message.contains("recovers a quantity")
-                && err.message.contains("which is not a quantity")
-                // A NUMERIC operand (this Unit.in result is a bare Int) keeps the "conversion already
-                // unwrapped it — drop the Qty.value" repair hint; a non-numeric operand does not (see the
-                // Bool sibling below, which must NOT print the self-contradictory "a plain number").
-                && err.message.contains("already UNWRAPS to a bare number"),
-        "the message names the operand type + that it is not a quantity + the numeric-operand unwrap repair hint: {}",
-        err.message
-    );
-    assert!(
-        !err.message.contains("no machine representation"),
-        "the terse backend 'no machine representation' decline must no longer surface: {}",
-        err.message
-    );
-    // The two components each compile ALONE: convert-alone (Unit.in → 60) and extract-alone
-    // (Qty.value of a genuine Qty → 5) — only the redundant composition was the gap. Guard the
-    // extract-alone still type-checks (compiles) so the reject is scoped to the non-quantity operand.
-    let extract_alone =
-        "(do (def (main) ((. Qty value) ((. Qty of) 5 ((. Unit of) #\"foot\")))) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(extract_alone))).is_ok(),
-        "Qty.value of a genuine quantity still compiles (the reject is scoped to a non-quantity operand)"
-    );
-}
+// qty_value_of_a_conversion_result… (`(Qty.value (Unit.in inch (Qty.of 5 foot)))` → CDZ0501 "recovers a
+// quantity … which is not a quantity … already UNWRAPS to a bare number", NOT "no machine representation")
+// migrated to corpus 18-units-of-measure "Qty.value of a conversion result is a compile-time error" (that
+// case enriched with those message pins). The extract-alone positive control (`(Qty.value (Qty.of 5 foot))`
+// compiles) is corpus 18 "a valid base-unit Qty.of is accepted and Qty.value recovers the magnitude". rcdzc
+// test deleted.
 
-#[test]
-fn qty_value_of_a_non_numeric_operand_names_the_type_without_the_self_contradictory_plain_number() {
-    // Copilot (PR#602): the CDZ0501 Qty.value-not-a-quantity message hardcoded "— a plain number, not a
-    // quantity", which fires for ANY non-quantity operand — so a Bool operand printed the
-    // self-contradictory "this operand is a Bool — a plain number, not a quantity". The message now names
-    // the real type + "which is not a quantity" GENERALLY, and appends the "a conversion already unwrapped
-    // it — drop the Qty.value" hint ONLY for a numeric operand (the numeric sibling test above pins that
-    // hint). This pins the NON-numeric path: a Bool operand is named + declared not-a-quantity, and must
-    // NOT be called "a plain number".
-    let src = "(do (def (main) ((. Qty value) true)) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("Qty.value of a Bool must reject");
-    assert_eq!(
-        err.code.as_deref(),
-        Some("CDZ0501"),
-        "coded CDZ0501: {}",
-        err.message
-    );
-    assert!(
-        err.message.contains("a Bool") && err.message.contains("which is not a quantity"),
-        "names the operand's real type (Bool) + not-a-quantity: {}",
-        err.message
-    );
-    assert!(
-        !err.message.contains("plain number") && !err.message.contains("UNWRAPS"),
-        "a NON-numeric operand must NOT print 'a plain number' (self-contradictory) nor the numeric-only unwrap hint: {}",
-        err.message
-    );
-}
+// qty_value_of_a_non_numeric_operand_names_the_type… (`(Qty.value true)` → CDZ0501 "a Bool … which is not
+// a quantity", NOT "plain number"/"UNWRAPS") migrated to corpus 18-units-of-measure "Qty.value of a
+// NON-NUMERIC operand names the type, not a self-contradictory plain number". rcdzc test deleted.
 
 #[test]
 fn registering_a_family_unit_twice_with_conflicting_conversions_is_an_error() {
