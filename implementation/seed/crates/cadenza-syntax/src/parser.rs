@@ -7795,7 +7795,9 @@ impl<'a> Parser<'a> {
     /// increments. (I5 part 3 added the paren-tuple/grouping/unit `(…)` interior — each element is a full
     /// type, so it descends onto the worklist via [`TCont::Paren`] instead of recursing `type_paren ->
     /// type_ref`; the `Tuple` head is created AFTER the first element's subtree, matching the recursive
-    /// struct-id order.) The `type_postfix`/`type_arg_exprs` depth-guard accounting (`self.depth + spine`,
+    /// struct-id order. I5 part 4 added the brace-record `{field: T, …}` interior via [`TCont::Brace`] — the
+    /// `Record` head is created up front and each field's type descends onto the worklist, rebuilt `(: label
+    /// ty)` by a [`TCont::Label`].) The `type_postfix`/`type_arg_exprs` depth-guard accounting (`self.depth + spine`,
     /// `spine` per operand-level postfix chain) is mirrored exactly so the deep-nesting boundary stays
     /// byte-identical.
     fn type_ref_iter(&mut self) -> StructId {
@@ -7833,6 +7835,11 @@ impl<'a> Parser<'a> {
                 items: Vec<StructId>,
                 head_made: bool,
             },
+            /// A brace-record type `{ field: T, … }` mid-read: `start` is the `{` span; `items` holds
+            /// `[Record-head, field…]` (the `Record` head is created up front). Each field's label + `:` is
+            /// read eagerly (via [`Self::read_type_record_field_label`]) and its type descends onto the
+            /// worklist, rebuilt as `(: label ty)` by a [`TCont::Label`] continuation stacked above this one.
+            Brace { start: Span, items: Vec<StructId> },
         }
         // The driver's next action.
         enum Next {
@@ -7888,13 +7895,34 @@ impl<'a> Parser<'a> {
                             next = Next::Read;
                         }
                     } else if self.at(Kind::LBrace) {
-                        // Brace record type — recursive helper (later increment); then unit-infix.
-                        let op = self.type_brace_record(node_start);
-                        let n = self.type_unit_infix(op, 0, node_start);
-                        next = Next::Reduce {
-                            start: node_start,
-                            value: n,
-                        };
+                        // Brace record type `{ field: T, … }` — de-recursed onto the worklist (I5 part 4): the
+                        // `Record` head is created up front, then each field's type descends here instead of
+                        // recursing `type_brace_record -> type_ref`. Mirrors the recursive while-condition
+                        // (`!} && !EOF`) so an empty / unclosed brace closes identically; the following
+                        // unit-infix is applied at the brace exit.
+                        self.expect(Kind::LBrace, "`{`");
+                        let head = self.name("Record", node_start);
+                        if !self.at(Kind::RBrace) && !self.at_end() {
+                            let (fstart, label) = self.read_type_record_field_label();
+                            stack.push(TCont::Brace {
+                                start: node_start,
+                                items: vec![head],
+                            });
+                            stack.push(TCont::Label {
+                                start: fstart,
+                                label,
+                            });
+                            next = Next::Read;
+                        } else {
+                            self.expect(Kind::RBrace, "`}`");
+                            let span = node_start.merge(self.prev_span());
+                            let node = self.list(vec![head], span);
+                            let n = self.type_unit_infix(node, 0, node_start);
+                            next = Next::Reduce {
+                                start: node_start,
+                                value: n,
+                            };
+                        }
                     } else {
                         // Prefix head + ITERATIVE postfix (member chain + `(…)` application): the deep
                         // nested-generic vector `Foo(Bar(Baz(…)))` descends onto this worklist.
@@ -8047,6 +8075,30 @@ impl<'a> Parser<'a> {
                                         let n = self.type_unit_infix(node, 0, start);
                                         next = Next::Reduce { start, value: n };
                                     }
+                                }
+                            }
+                            Some(TCont::Brace { start, mut items }) => {
+                                // `value` is a completed `(: label ty)` field. Mirror the recursive
+                                // `type_brace_record` loop: push the field, then `sep_continue` + re-check the
+                                // `!} && !EOF` while-condition before reading the next field's label.
+                                items.push(value);
+                                if self.sep_continue(Kind::RBrace)
+                                    && !self.at(Kind::RBrace)
+                                    && !self.at_end()
+                                {
+                                    let (fstart, label) = self.read_type_record_field_label();
+                                    stack.push(TCont::Brace { start, items });
+                                    stack.push(TCont::Label {
+                                        start: fstart,
+                                        label,
+                                    });
+                                    next = Next::Read;
+                                } else {
+                                    self.expect(Kind::RBrace, "`}`");
+                                    let span = start.merge(self.prev_span());
+                                    let node = self.list(items, span);
+                                    let n = self.type_unit_infix(node, 0, start);
+                                    next = Next::Reduce { start, value: n };
                                 }
                             }
                             Some(TCont::App {
@@ -8382,23 +8434,7 @@ impl<'a> Parser<'a> {
         let head = self.name("Record", start);
         let mut items = vec![head];
         while !self.at(Kind::RBrace) && !self.at_end() {
-            let field_start = self.cur_span();
-            // A field label: a bare name (or backtick name for a symbolic/reserved label).
-            let label = match self.kind() {
-                Kind::Ident => {
-                    let t = self.bump().unwrap();
-                    self.name(self.text(t), field_start)
-                }
-                Kind::BacktickName => {
-                    let t = self.bump().unwrap();
-                    self.name(literal::unescape_backtick_name(self.text(t)), field_start)
-                }
-                _ => {
-                    self.error("expected a record field name");
-                    self.error_node(field_start)
-                }
-            };
-            self.expect(Kind::Colon, "`:` after a record field name");
+            let (field_start, label) = self.read_type_record_field_label();
             let ty = self.type_ref();
             let colon = self.name(":", field_start);
             let field_span = field_start.merge(self.prev_span());
@@ -8410,6 +8446,32 @@ impl<'a> Parser<'a> {
         self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
+    }
+
+    /// Read a brace-record TYPE field's REQUIRED label + its `:`, returning `(field-start-span, label-node)`.
+    /// A field label is a bare name (or backtick name for a symbolic/reserved label); a missing name records
+    /// an error and recovers with an `<error>` node (never-panic). Shared by the recursive
+    /// [`Self::type_brace_record`] and the iterative [`Self::type_ref_iter`] so the label node + its `:`
+    /// consumption can't drift between the two readers (the field then becomes `(: label ty)` in both, via a
+    /// [`TCont::Label`] continuation on the iterative side).
+    fn read_type_record_field_label(&mut self) -> (Span, StructId) {
+        let field_start = self.cur_span();
+        let label = match self.kind() {
+            Kind::Ident => {
+                let t = self.bump().unwrap();
+                self.name(self.text(t), field_start)
+            }
+            Kind::BacktickName => {
+                let t = self.bump().unwrap();
+                self.name(literal::unescape_backtick_name(self.text(t)), field_start)
+            }
+            _ => {
+                self.error("expected a record field name");
+                self.error_node(field_start)
+            }
+        };
+        self.expect(Kind::Colon, "`:` after a record field name");
+        (field_start, label)
     }
 
     /// A `Name` atom for a construct keyword head, at `span`.
@@ -8973,6 +9035,20 @@ mod tests {
             "((A -> B), C)",
             "(meter) ^ 2",
             "() -> Bool",
+            // Brace-record `{field: T}` de-recursion (I5 part 4): empty, single, multi-field, nested record
+            // (as a field type + inside a paren/app), backtick label, trailing comma, arrow-/tuple-typed
+            // field, and a record carrying a following arrow.
+            "{}",
+            "{x: Int64}",
+            "{x: Int64, y: Bool}",
+            "{f: Int64 -> Bool, p: {x: Int64}}",
+            "{ inner: {a: {b: Int64}} }",
+            "(A, {x: Int64})",
+            "List({k: Int64, v: Bool})",
+            "{`type`: Int64}",
+            "{a: Int64, b: Bool,}",
+            "{fn: (A, B) -> C}",
+            "{x: Int64} -> Bool",
         ];
         for src in cases {
             let mut rec = build_parser(src, FileId::default());
