@@ -102,18 +102,29 @@ def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
     let a := (consts.filterMap id)[0]!
     let b := (consts.filterMap id)[1]!
     if op == "=" then some (.bool (Value.valueEqSpec a b))
+    -- ORDERING (`< > <= >=`): int fast-path, then the type's THREE-WAY total order (`compareVals` +
+    -- `cmpHolds` — bool/String/Char/Bytes/Rational, matching `evalCmp`), then FLOAT via `asF64?` (IEEE
+    -- partial order; `compareVals` returns `none` on floats — no total order). Byte-identical to `evalCmp`.
     else if op == "<" then (match a, b with
                             | .int x, .int y => some (.bool (decide (x < y)))
-                            | _, _ => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x < y)) | _, _ => none))
+                            | _, _ => (match compareVals a b with
+                                       | some o => some (.bool (cmpHolds "<" o))
+                                       | none => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x < y)) | _, _ => none)))
     else if op == ">" then (match a, b with
                             | .int x, .int y => some (.bool (decide (x > y)))
-                            | _, _ => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x > y)) | _, _ => none))
+                            | _, _ => (match compareVals a b with
+                                       | some o => some (.bool (cmpHolds ">" o))
+                                       | none => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x > y)) | _, _ => none)))
     else if op == "<=" then (match a, b with
                              | .int x, .int y => some (.bool (decide (x ≤ y)))
-                             | _, _ => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≤ y)) | _, _ => none))
+                             | _, _ => (match compareVals a b with
+                                        | some o => some (.bool (cmpHolds "<=" o))
+                                        | none => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≤ y)) | _, _ => none)))
     else if op == ">=" then (match a, b with
                              | .int x, .int y => some (.bool (decide (x ≥ y)))
-                             | _, _ => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≥ y)) | _, _ => none))
+                             | _, _ => (match compareVals a b with
+                                        | some o => some (.bool (cmpHolds ">=" o))
+                                        | none => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≥ y)) | _, _ => none)))
     else if op == "+" || op == "-" || op == "*" || op == "/" then
       (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
     else if op == "and" then
@@ -1466,6 +1477,14 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.app "and" #[.const (.bool true), .const (.bool false)]) == SymExpr.const (.bool false)
 #guard normalize (.app "or" #[.const (.bool false), .const (.bool true)]) == SymExpr.const (.bool true)
 #guard normalize (.app "not" #[.const (.bool true)]) == SymExpr.const (.bool false)
+-- STRING/Bool/Char/Bytes ordering (value-comparable shapes, via `compareVals`+`cmpHolds` — v-cdz-smith
+-- flagged string comparison as a new value-comparable shape; byte-faithful to `evalCmp`). Lexicographic
+-- over unsigned bytes: "ab" < "ac"; a proper prefix compares less: "ab" < "abc"; bool false < true.
+#guard normalize (.app "<" #[.const (.str "ab".toUTF8), .const (.str "ac".toUTF8)]) == SymExpr.const (.bool true)
+#guard normalize (.app ">" #[.const (.str "ab".toUTF8), .const (.str "ac".toUTF8)]) == SymExpr.const (.bool false)
+#guard normalize (.app "<" #[.const (.str "ab".toUTF8), .const (.str "abc".toUTF8)]) == SymExpr.const (.bool true)
+#guard normalize (.app ">=" #[.const (.str "abc".toUTF8), .const (.str "abc".toUTF8)]) == SymExpr.const (.bool true)
+#guard normalize (.app "<" #[.const (.bool false), .const (.bool true)]) == SymExpr.const (.bool true)
 -- KEY: a folded comparison CONDITION composes with `if`-selection → proves an optimizer's branch-elim.
 #guard normalize (.ite (.app "<" #[.const (.int 1), .const (.int 2)]) (.var 0) (.var 1)) == SymExpr.var 0
 -- a comparison with a NON-constant operand is left symbolic (not folded).

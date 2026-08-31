@@ -704,7 +704,9 @@ theorem foldConst?_out (op : String) (args : Array SymExpr) (v : Value)
       · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
       · split at h
         · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
-        · simp at h
+        · split at h
+          · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+          · simp at h
     rw [if_neg hlt] at h
     by_cases hgt : (op == ">") = true
     · rw [if_pos hgt] at h
@@ -712,7 +714,9 @@ theorem foldConst?_out (op : String) (args : Array SymExpr) (v : Value)
       · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
       · split at h
         · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
-        · simp at h
+        · split at h
+          · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+          · simp at h
     rw [if_neg hgt] at h
     by_cases hle : (op == "<=") = true
     · rw [if_pos hle] at h
@@ -720,7 +724,9 @@ theorem foldConst?_out (op : String) (args : Array SymExpr) (v : Value)
       · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
       · split at h
         · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
-        · simp at h
+        · split at h
+          · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+          · simp at h
     rw [if_neg hle] at h
     by_cases hge : (op == ">=") = true
     · rw [if_pos hge] at h
@@ -728,7 +734,9 @@ theorem foldConst?_out (op : String) (args : Array SymExpr) (v : Value)
       · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
       · split at h
         · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
-        · simp at h
+        · split at h
+          · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+          · simp at h
     rw [if_neg hge] at h
     by_cases har : (op == "+" || op == "-" || op == "*" || op == "/") = true
     · rw [if_pos har] at h
