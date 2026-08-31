@@ -315,6 +315,12 @@ pass	ml/377-set-literal-singleton
 pass	ml/378-set-literal-empty
 pass	ml/379-comment-trailing-last-set-elem
 pass	ml/38-match-imported-ctor-refutable
+pass	ml/380-construction-spread-tuple-leading
+pass	ml/381-construction-spread-tuple-trailing
+pass	ml/382-construction-spread-tuple-literal-operand
+pass	ml/383-construction-spread-set-literal-operand
+pass	ml/384-construction-spread-map-literal-operand
+pass	ml/385-construction-spread-record-literal-operand
 pass	ml/39-match-unrelated-ctor-refutable
 pass	ml/40-match-open-sum-refutable
 pass	ml/41-match-closed-single-variant
