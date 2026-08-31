@@ -3723,6 +3723,38 @@ impl<'a> Parser<'a> {
                 let mspan = span.merge(self.prev_span());
                 self.list(items, mspan)
             }
+            Kind::Hash if self.nth_kind(1) == Kind::LParen => {
+                // `#( p, … )` / `#( p, …, .. rest )` — a SET PATTERN, the pattern twin of the `#(…)` set
+                // literal (`set_literal`). Head is the NATIVE set ctor leaf `Leaf::Ctor(Set)` (`#set`) —
+                // v-ast-compound's ruling: the corpus's compound match-patterns are already native `#word`
+                // (`#tuple`/`#list`/`#map`/`#record`/`#set`), and native `#set` matches the `#set` VALUE
+                // literal + the reader's uniform Leaf::Ctor(Set) emission, so a name-head `(set …)` would be
+                // the lone odd one out. Elements are sub-patterns; an optional trailing `.. rest` binds the
+                // remaining set to the wrapped `(.. rest)` node — the twin of the map/list/tuple/record
+                // pattern rest, the canonical form the Set rest-matcher lowering (v-ast-compound / v-inference
+                // co-land) consumes. (The set-rest MATCH semantics are their slice; this is the surface.)
+                self.bump(); // '#'
+                self.bump(); // '('
+                let head = self.ctor_head("set", span);
+                let mut items = vec![head];
+                if !self.at(Kind::RParen) {
+                    loop {
+                        let before = self.pos;
+                        if !self.rest_marker(&mut items, |p| p.pattern()) {
+                            items.push(self.pattern());
+                        }
+                        if !self.sep_continue(Kind::RParen) {
+                            break;
+                        }
+                        if self.pos == before {
+                            self.bump(); // no sub-pattern token consumed — avoid a missing-`,` spin
+                        }
+                    }
+                }
+                self.expect(Kind::RParen, "`)`");
+                let sspan = span.merge(self.prev_span());
+                self.list(items, sspan)
+            }
             Kind::LBrace => {
                 // `{ field = p, … }` — a RECORD PATTERN, destructuring a record BY FIELD (the s-expr
                 // `(record (field p) …)` twin, the dual of the record-value literal). Head is the NAME
@@ -4270,16 +4302,16 @@ impl<'a> Parser<'a> {
     }
 
     /// True at a token that OPENS a destructuring pattern in a parameter (or `let`-binder) position:
-    /// `(` tuple, `[` list, `#{` map, `b[` binary. These are the compound patterns [`Self::pattern`]
-    /// deconstructs; a bare name/literal is NOT one (a name is an ordinary binder, a bare literal
-    /// param is not a destructure). Keyed here — not by delegating every token to `pattern` — so a
+    /// `(` tuple, `[` list, `#{` map, `#(` set, `b[` binary. These are the compound patterns
+    /// [`Self::pattern`] deconstructs; a bare name/literal is NOT one (a name is an ordinary binder, a bare
+    /// literal param is not a destructure). Keyed here — not by delegating every token to `pattern` — so a
     /// plain `name`/`name: Type` parameter keeps the fast [`Self::binder`] path and its diagnostics.
     fn at_pattern_param_start(&self) -> bool {
-        // `{` opens a RECORD pattern (`{ x = a }`), `#{` a MAP pattern — DISTINCT arenas ((record …) vs
-        // (map …)). The bare-brace record pattern is the operator-ruled surface (a pattern slot can't hold
-        // a value, so `{ … }` here is unambiguously a pattern, not a record VALUE literal).
+        // `{` opens a RECORD pattern (`{ x = a }`), `#{` a MAP pattern, `#(` a SET pattern — DISTINCT arenas
+        // ((record …) vs (map …) vs (set …)). The bare-brace record pattern is the operator-ruled surface (a
+        // pattern slot can't hold a value, so `{ … }` here is unambiguously a pattern, not a record VALUE literal).
         matches!(self.kind(), Kind::LParen | Kind::LBracket | Kind::BinOpen | Kind::LBrace)
-            || (self.at(Kind::Hash) && self.nth_kind(1) == Kind::LBrace)
+            || (self.at(Kind::Hash) && matches!(self.nth_kind(1), Kind::LBrace | Kind::LParen))
             // A CONSTRUCTOR pattern `Ctor(binders…)` / `Mod.Ctor(binders…)` in binding position — an
             // `Ident` that HEADS a constructor pattern, i.e. immediately followed by `(` (an application,
             // `Some(x)`) or `.` (a qualified path, `Id.Mk(n)` / `W.Wrap(…)`). This is the same
@@ -6575,6 +6607,28 @@ mod tests {
         // meaning after a number: `5 and mask` is the boolean `and`, not a quantity in unit `and`.
         let a = parse_ok("5 and mask");
         assert_eq!(sexpr::print(&a), "(and 5 mask)");
+    }
+
+    #[test]
+    fn a_set_pattern_parses() {
+        use crate::sexpr;
+        // A `#(`-led SET PATTERN — the pattern twin of the `#(…)` set literal, completing spread-in-pattern
+        // for the set compound type (operator: the `(.. v)` initiative covers construction AND patterns for
+        // all compounds). Head is the native set ctor leaf; elements are sub-patterns; a `.. rest` binds the
+        // remaining set to the wrapped `(.. rest)` node (the set-rest MATCH lowering is v-inference's slice).
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(#(a, b)) = a")),
+            "(def (f #set(a b)) a)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(#(a, .. rest)) = a")),
+            "(def (f #set(a (.. rest))) a)"
+        );
+        // Empty set pattern `#()` — the empty-set match.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(#()) = 0")),
+            "(def (f #set()) 0)"
+        );
     }
 
     #[test]
