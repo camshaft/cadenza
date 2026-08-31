@@ -1580,6 +1580,18 @@ pub struct Db {
     /// FRESH accumulator, NOT a delta vs shared `out`) — spliced via `out.extend` on a hit.
     pub(crate) payload_sites_memo:
         crate::fxhash::FxHashMap<(StructId, StructId, bool), Vec<StructId>>,
+    /// Memo of `select::reclaim::collect_captured_occurrences` — each subtree's OWN `Core::Captured`
+    /// occurrences grouped by capture-slot index, in `core_child_ids` DFS (pre-)order. Keyed by `id` ALONE:
+    /// the collector's only context is `id` (it branches solely on `Core::Captured`, no scrut/consuming/
+    /// tail_borrowed) — the simplest key in the reclaim-memo family (v-memory-safety sign-off). LINEARIZES
+    /// the ~570× DAG-as-tree re-walk (the collector runs per lifted-body → shared subtrees re-walked per
+    /// closure). Compile-lifetime (immutable graph); NO in_progress/tainted (acyclic + writes post-return).
+    /// MULTIPLICITY: the value is the node's OWN contribution (a FRESH accumulator, NOT a delta vs the shared
+    /// by_index); MERGE = APPEND on EVERY hit (never dedup, never once-per-distinct-id) so a shared subtree
+    /// reached via N paths yields N appends = the SAME per-visit multiplicity the re-walk produced; occurrence
+    /// order is DFS to match the re-walk.
+    pub(crate) captured_occ_memo:
+        crate::fxhash::FxHashMap<StructId, std::collections::HashMap<usize, Vec<StructId>>>,
 
     /// Memo of "does this compound type have a free var?" keyed by the payload's shared `Rc` address — for
     /// the `infer::type_of` memoization guard (`!t.has_free_var()`), which runs on EVERY node's solved type.
@@ -3057,6 +3069,7 @@ impl Db {
             reaches_host_call: crate::fxhash::FxHashMap::default(),
             escape_verdict_memo: crate::fxhash::FxHashMap::default(),
             payload_sites_memo: crate::fxhash::FxHashMap::default(),
+            captured_occ_memo: crate::fxhash::FxHashMap::default(),
             ty_has_free_var: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
