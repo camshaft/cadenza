@@ -4052,6 +4052,23 @@
           echo "ok: corpus-nativize — all corpus files in native #ctor compound-value input form" > "$out"
         '';
 
+        # capability-error (v-fleet-tooling gate-wiring 2026-08-31, scan v-corpus-harness #6924): the
+        # impl-independent-spec guard — a corpus case must NOT pin a CAPABILITY-LIMIT code (CDZ0900,
+        # should-work-but-unimplemented) as an `(error …)` expectation, since that bakes a current impl
+        # limit into the spec. `cdz-corpus capability-error-check` exits non-zero + names each offending
+        # case. FOLDED into the localGate fail-set below → a new CDZ0900-pin HOLDs a self-merge (teeth a GHA
+        # required-status can't give under `gh pr merge --admin`). Pure static parse (no compile/run), cheap
+        # — same shape + closure (cdzCorpus) as corpusNativizeCheck. Starts GREEN: v-corpus-harness confirmed
+        # 0 hits on the 34-file corpus, so it folds in immediately (no residue / fix-then-fold wait).
+        capabilityErrorCheck = pkgs.runCommand "capability-error-check"
+          { nativeBuildInputs = [ cdzCorpus ]; } ''
+          set -euo pipefail
+          cdz-corpus capability-error-check ${
+            pkgs.lib.concatMapStringsSep " " (f: "${./spec/semantics + "/${f}"}") corpusFileNames
+          }
+          echo "ok: capability-error — no corpus case pins a capability-limit code (CDZ0900) as an (error …)" > "$out"
+        '';
+
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
         # runtime-ABI STALENESS gate: xtask regenerates runtime_abi.rs (+ wasm_abi.rs) — reading the
         # runtime WIT + BUILDING the cdz-runtime (release + debug) and cdz-nfc components via
@@ -5688,7 +5705,12 @@
                   # ZERO — v-deferral + v-corpus-harness both verified clean/exit-0 on current main before this
                   # fold (no grandfather), and it's a cheap rcdzc/src source-scan reusing the xtask-mandates
                   # build, so no false red + ~no gate-time add. Teeth under self-merge like the corpus lints.
-                  declineProfessionalismCheck;
+                  declineProfessionalismCheck
+                  # capability-error FOLDED IN (v-fleet-tooling 2026-08-31, scan v-corpus-harness #6924): no
+                  # corpus case pins a capability-limit code (CDZ0900) as an (error …) — the impl-independent-
+                  # spec guard. Starts GREEN (v-corpus-harness confirmed 0 hits, no residue → folds immediately,
+                  # no fix-then-fold wait); cheap cdzCorpus static parse, same shape as corpusNativizeCheck.
+                  capabilityErrorCheck;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -5764,6 +5786,9 @@
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
             corpus-nativize = corpusNativizeCheck;
+            # `nix build .#checks.<sys>.capability-error` — no corpus case pins CDZ0900 as an (error …);
+            # also folded into the localGate fail-set (teeth under self-merge). Scan by v-corpus-harness #6924.
+            capability-error = capabilityErrorCheck;
             # The wasm-opt OPTIMALITY-GAP sweep (advisory, never a gate constituent): the whole-corpus
             # `wasm-opt-gaps.sexp` aggregate; the per-file `wasm-opt-gaps-<file>` aggregates are spread in below
             # so a slice (e.g. 01-literals + 10-bytes) builds in isolation. See DESIGN-wasm-opt-gap-analysis-rcdzc.md.
