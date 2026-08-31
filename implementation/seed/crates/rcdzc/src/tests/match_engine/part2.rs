@@ -2136,40 +2136,13 @@ fn a_qty_rational_magnitude_param_desugars_to_num_den_plus_a_guest_qty_of() {
         );
 }
 
-#[test]
-fn eval_of_a_non_compile_time_ast_names_the_form_not_an_unbound_eval() {
-    // `eval` desugars ONLY a compile-time-visible AST (`(quote …)` / literal `Ast.*`); a runtime /
-    // non-Ast argument does not desugar, so the `eval` head fell through to `resolve` as "unbound name
-    // `eval`" — MISLEADING (as if `eval` were a typo, even offering a did-you-mean to a near name). The
-    // message now NAMES the real situation: `eval` is a recognized form that executes only a
-    // compile-time AST, so a runtime/non-Ast argument has nothing to reconstruct.
-    let msg = |src: &str| -> String {
-        crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.code.as_deref() == Some("CDZ0101"))
-            .unwrap_or_else(|| panic!("expected CDZ0101 for {src}"))
-            .message
-    };
-    for src in [
-        "(module m (def (main) (eval 5)) (export main))", // a scalar (non-Ast)
-        "(module m (def (f (: a Ast)) (eval a)) (export f))", // a runtime Ast
-    ] {
-        let m = msg(src);
-        assert!(
-            m.contains("COMPILE-TIME-VISIBLE AST") && !m.contains("did you mean"),
-            "eval of a non-compile-time AST names the form, not an unbound-name typo: {m}"
-        );
-    }
-    // NO OVER-REACH: a bare `eval`-shaped typo that is NOT an `(eval …)` head still gets the ordinary
-    // unbound-name did-you-mean (a near def wins), not the eval-form message.
-    let typo = "(module m (def (evil) 5) (def (main) (evel)) (export main))";
-    assert!(
-        crate::diagnostics(&mut crate::db::Db::load(parse(typo)))
-            .iter()
-            .any(|d| d.message.contains("did you mean `evil`?")),
-        "a near-eval typo keeps the ordinary unbound path"
-    );
-}
+// (eval_of_a_non_compile_time_ast_names_the_form_not_an_unbound_eval migrated to corpus 12-metaprogramming:
+// the COMPILE-TIME-VISIBLE AST teaching message for eval on a runtime value is pinned across positions —
+// match scrutinee (with (count 1)), let init, arithmetic operand — plus the runtime-Ast-parameter face "eval
+// on a RUNTIME Ast parameter gives the compile-time-AST teaching message" (visibility, not Ast-ness); the
+// plain-unbound control "a genuinely unbound plain name reports its own plain unbound" and the near-eval-typo
+// over-reach control "a near-eval typo keeps the ordinary unbound did-you-mean to a near def" (did you mean
+// `evil`?, (not "COMPILE-TIME-VISIBLE AST")) cover the no-over-reach half. Redundant here, removed.)
 
 #[test]
 fn eval_reconstructs_an_ast_list_whose_payload_is_a_native_list_ctor_literal() {
