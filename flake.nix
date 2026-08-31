@@ -5366,8 +5366,11 @@
             # `Cmd::Fmt => run_fmt` delegates to cadenza-syntax) — pure front-end, NO store/runtime — so it
             # runs on the CACHED seedCompiler bin over a fileset of ONLY the 6 dirs (cheap + build-hold-safe,
             # no cargo rebuild). SCOPE = these 6 src dirs ONLY (raw recursion over manifest-less dirs);
-            # widening waits on cdz-platform (v-platform) + the .sexp reader-fix landing, in lockstep with
-            # #6321's local scope. Exits 0 today (dirs canonical via v-syntax fmt-all #6317/#6319).
+            # widening tracks v-code-cleanliness's local gate in lockstep: the .sexp reader-fix landed
+            # (v-syntax #6816 + v-syntax-comments #6808), so seq-282 #6818 fmt-normalized the 34
+            # spec/semantics/*.sexp + widened the local cdz-fmt-check to include spec/semantics — this nix
+            # gate now matches. cdz-platform stays OUT (v-platform zone). Exits 0 today (the 6 .cdz src dirs
+            # canonical via v-syntax fmt-all #6317/#6319 + the 34 .sexp canonical via #6818).
             cdzFmtCheckSrc = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions [
@@ -5377,6 +5380,7 @@
                 ./implementation/des/src
                 ./implementation/iterators/src
                 ./implementation/choreography/src
+                ./spec/semantics
               ];
             };
             cdzFmtCheck = pkgs.runCommand "cdz-fmt-check" { } ''
@@ -5384,8 +5388,9 @@
               cd ${cdzFmtCheckSrc}
               ${seedCompiler}/bin/cdz fmt --check \
                 implementation/compiler-ml/src implementation/cad/src implementation/music/src \
-                implementation/des/src implementation/iterators/src implementation/choreography/src
-              echo "ok: cdz-fmt-check (6 canonical domain src dirs — cdz fmt --check clean)" > "$out"
+                implementation/des/src implementation/iterators/src implementation/choreography/src \
+                spec/semantics
+              echo "ok: cdz-fmt-check (6 canonical domain src dirs + spec/semantics .sexp — cdz fmt --check clean)" > "$out"
             '';
             # decline-professionalism (v-fleet-tooling gate-wiring 2026-08-31; scan by v-corpus-harness #6791,
             # DEFERRAL_LEXICON owned by v-deferral-declines seq-280): `xtask-mandates declines` — a static
