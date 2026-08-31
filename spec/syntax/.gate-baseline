@@ -13,6 +13,10 @@ pass	ml/13-world-full-decl
 pass	ml/14-world-wit-prim-list-option
 pass	ml/15-world-wit-list-result
 pass	ml/16-world-unit-tuple
+pass	ml/17-world-result-both
+pass	ml/18-world-result-no-err
+pass	ml/19-world-result-no-ok
+pass	ml/20-world-result-bare
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let

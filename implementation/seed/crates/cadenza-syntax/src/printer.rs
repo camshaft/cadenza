@@ -4808,62 +4808,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn inline_world_result_member_type_round_trips() {
-        // A `result` world-member type lowers to the canonical str-head `("result" <ok> <err>)` descriptor
-        // (matching rcdzc's parse_wit_type + cadenza-ast wit_type_result) and prints back to the WIT-faithful
-        // surface, so a world binding a result member round-trips ML->ML. All four arm-presence spellings —
-        // both present, err absent, ok absent (`_`), and bare `result` — are covered; `Response.answer =
-        // result<payload, error>` (v-platform's reducer world) is the both-present shape.
-        let both = assert_roundtrip(
-            "world W = | export i = | f : (x : u8) -> result(bool, string)",
-            80,
-        );
-        assert!(
-            both.contains("-> result(bool, string)"),
-            "both arms present: {both}"
-        );
-        let no_err = assert_roundtrip("world W = | export i = | f : (x : u8) -> result(u8)", 80);
-        assert!(no_err.contains("-> result(u8)"), "err arm absent: {no_err}");
-        let no_ok = assert_roundtrip(
-            "world W = | export i = | f : (x : u8) -> result(_, string)",
-            80,
-        );
-        assert!(
-            no_ok.contains("-> result(_, string)"),
-            "ok arm absent (`_`): {no_ok}"
-        );
-        let bare = assert_roundtrip("world W = | export i = | f : (x : u8) -> result", 80);
-        assert!(
-            bare.contains("-> result") && !bare.contains("-> result("),
-            "bare result (both arms absent): {bare}"
-        );
-
-        // The stored descriptors are the canonical str-head form; an absent arm is the ("none") marker.
-        let parsed = parser::read_ml(
-            "world W = | export i = | f : (x : u8) -> result(bool, string) \
-             | g : (x : u8) -> result(u8) \
-             | h : (x : u8) -> result(_, string) \
-             | k : (x : u8) -> result",
-        );
-        let sexp = sexpr::print(&parsed.arenas);
-        assert!(
-            sexp.contains("(\"result\" (bool) (string))"),
-            "both-present stored as ('result' <ok> <err>), got: {sexp}"
-        );
-        assert!(
-            sexp.contains("(\"result\" (u8) (\"none\"))"),
-            "err-absent stored with ('none') err slot, got: {sexp}"
-        );
-        assert!(
-            sexp.contains("(\"result\" (\"none\") (string))"),
-            "ok-absent stored with ('none') ok slot, got: {sexp}"
-        );
-        assert!(
-            sexp.contains("(\"result\" (\"none\") (\"none\"))"),
-            "bare result stored with both ('none') slots, got: {sexp}"
-        );
-    }
+    // `inline_world_result_member_type_round_trips` (all 4 result-arm spellings + their str-head
+    // `("result" <ok> <err>)`/`("none")` descriptor storage) MIGRATED to the spec/syntax corpus
+    // (inc-6): ml/17-world-result-both, ml/18-world-result-no-err, ml/19-world-result-no-ok,
+    // ml/20-world-result-bare — each tree.sexp pins the exact result descriptor the test asserted.
 
     #[test]
     fn inline_world_variant_member_type_round_trips() {
