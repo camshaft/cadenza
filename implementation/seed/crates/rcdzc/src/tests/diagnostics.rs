@@ -799,29 +799,12 @@ fn diags_of(src: &str) -> Vec<crate::abi::Diagnostic> {
 // (value-heap runtime present) → output 9, and a CDZ0203 regression would deny that output. Rust test
 // two_bare_none_record_fields_do_not_cross_contaminate_via_a_let_bound_record deleted.
 
-#[test]
-fn two_bare_none_record_fields_passed_as_a_direct_arg_do_not_cross_contaminate() {
-    // REGRESSION (residual of the let-bound fix): the SAME two-bare-`None()` record, passed as a DIRECT
-    // call argument instead of `let`-bound, took a DIFFERENT type-building path. The call's arg-check
-    // types the compound-literal arg via BOTH `type_of` (step 1) AND the synthesized `(: arg paramtype)`
-    // `reflected_ty` (step 2), and each has separate compound arms. The classic `(record …)` name-alias
-    // (an `Apply(RecordNew)`) was freshened; but the NATIVE `#record((= a …) …)` resolves to a
-    // symbol-headed `Resolved::Record`, whose `type_of` arm freshened while its `reflected_ty` arm did
-    // NOT — so both `None()` fields reflected `Option(?0)` sharing var 0 and the record unify hit `Bytes`
-    // vs `Outcome` on the shared var (spurious CDZ0203), even though the let-bound twin type-checked. FIX:
-    // freshen each field into a disjoint block in `reflected_ty`'s `Resolved::Record` arm. This test uses
-    // the NATIVE `#record` form (the one that regressed); the classic form is covered by corpus.
-    let src = "(module m \
-           (type Outcome (Ok Int64) (Err Int64)) \
-           (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
-           (def (main) (apply #record((= a (None)) (= b (None)) (= c 9)))) \
-           (export main))";
-    let all = diags_of(src);
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
-        "two bare None() NATIVE #record fields passed as a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
-    );
-}
+// MIGRATED to corpus (05-compound-types.sexp): the DIRECT-ARG + NESTED bare-None cross-contamination
+// regressions now RUN (v-inference #7192 disjoint-freshened the symbol-headed Record/Tuple arg-check arms) —
+// cases "two bare-None record fields passed as a DIRECT arg …" + "a NESTED bare-None in a tuple field …"
+// (both run to 9; a CDZ0203 regression denies the output). Rust tests
+// two_bare_none_record_fields_passed_as_a_direct_arg_do_not_cross_contaminate +
+// nested_and_sibling_bare_none_compounds_in_a_direct_arg_do_not_cross_contaminate deleted.
 
 #[test]
 fn two_bare_none_native_tuple_elements_passed_as_a_direct_arg_do_not_cross_contaminate() {
@@ -845,28 +828,6 @@ fn two_bare_none_native_tuple_elements_passed_as_a_direct_arg_do_not_cross_conta
 
 // (a_wrong_typed_option_field_in_a_direct_record_arg_still_rejects migrated to corpus
 //  07-type-system "a wrong-typed Option field in a direct record arg still rejects" — CDZ0203, backend-agnostic.)
-
-#[test]
-fn nested_and_sibling_bare_none_compounds_in_a_direct_arg_do_not_cross_contaminate() {
-    // COVERAGE hardening for the direct-arg `reflected_ty` freshening: the fix freshens RECURSIVELY
-    // (each RecordNew/TupleNew arm freshens its already-reflected element), so a bare `None()` nested
-    // inside a compound-inside-a-compound must also solve independently of its siblings. The flat
-    // regression above only exercises one record level; this locks the RECURSIVE path. A record arg
-    // carries: a `(tuple (None) (None))` field (two Option siblings inside a nested TUPLE), a sibling
-    // top-level `(None)` field of a THIRD Option type, and a plain field — every `None` must ground to
-    // its own expected element type with NO CDZ0203 cross-contamination. Diagnostics-only (a
-    // `Bytes`-bearing record needs the value-heap runtime the lib-test linker doesn't stage).
-    let src = "(module m \
-           (type Outcome (Ok Int64) (Err Int64)) \
-           (def (apply (: e (Record (: pair (Tuple (Option Bytes) (Option Outcome))) (: d (Option Int64)) (: c Int64)))) (. e c)) \
-           (def (main) (apply (record (= pair (tuple (None) (None))) (= d (None)) (= c 9)))) \
-           (export main))";
-    let all = diags_of(src);
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
-        "nested + sibling bare None() compounds in a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
-    );
-}
 
 #[test]
 fn a_def_named_quote_binds_its_parameter_and_is_not_hijacked_by_reification() {

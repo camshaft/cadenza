@@ -21,9 +21,9 @@
 ; ── vars into a disjoint block. GUARD = the run itself: a CDZ0203 is an ERROR that denies the artifact, so a
 ; ── regression can't produce `9`. (This RUNS — the value-heap runtime the rcdzc lib-test linker couldn't
 ; ── stage is present in the corpus; migrated from rcdzc two_bare_none_record_fields_..._let_bound.)
-; ── NOTE: the DIRECT-ARG + NESTED variants are NOT yet corpus-migrated — the native `#record(…)` direct-arg
-; ── form STILL cross-contaminates (CDZ0203) where the classic `(record …)` form + this let-bound form do not
-; ── (routed to v-spec-oracle + the inference owner); their rcdzc rust pins stay until that native-form bug is fixed.
+; ── The DIRECT-ARG and NESTED-in-a-tuple-field variants exercise the same disjoint-freshen invariant: once
+; ── (v-inference #7192) freshened the symbol-headed `Resolved::Record`/`Tuple` arg-check arms, all three
+; ── forms (let-bound, direct-arg, nested) type-check + run to 9. GUARD = the run: a CDZ0203 regression denies `9`.
 (case
   "two bare-None record fields (let-bound) keep their distinct Option element types — no cross-contamination"
   (input
@@ -31,6 +31,26 @@
       (type Outcome (Ok Int64) (Err Int64))
       (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c))
       (def (main) (let ((evt #record((= a (None)) (= b (None)) (= c 9)))) (apply evt)))
+      (export main)))
+  (output (: 9 Int64)))
+
+(case
+  "two bare-None record fields passed as a DIRECT arg keep their distinct Option element types"
+  (input
+    (do
+      (type Outcome (Ok Int64) (Err Int64))
+      (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c))
+      (def (main) (apply #record((= a (None)) (= b (None)) (= c 9))))
+      (export main)))
+  (output (: 9 Int64)))
+
+(case
+  "a NESTED bare-None in a tuple field and a sibling bare-None field solve independently as a direct arg"
+  (input
+    (do
+      (type Outcome (Ok Int64) (Err Int64))
+      (def (apply (: e (Record (: pair (Tuple (Option Bytes) (Option Outcome))) (: d (Option Int64)) (: c Int64)))) (. e c))
+      (def (main) (apply #record((= pair #tuple((None) (None))) (= d (None)) (= c 9))))
       (export main)))
   (output (: 9 Int64)))
 
