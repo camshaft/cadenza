@@ -5387,6 +5387,21 @@
                 implementation/des/src implementation/iterators/src implementation/choreography/src
               echo "ok: cdz-fmt-check (6 canonical domain src dirs — cdz fmt --check clean)" > "$out"
             '';
+            # decline-professionalism (v-fleet-tooling gate-wiring 2026-08-31; scan by v-corpus-harness #6791,
+            # DEFERRAL_LEXICON owned by v-deferral-declines seq-280): `xtask-mandates declines` — a static
+            # source scan of rcdzc/src rust string-literals ensuring NO deferral-trash wording ("yet"/"for
+            # now"/"currently"/…) leaks into user-facing decline() messages. FOLDED into the localGate fail-set
+            # below → teeth under `gh pr merge --admin` (a GHA required-status can't gate self-merge). RATCHET-
+            # AT-ZERO, NO GRANDFATHER: turned on GREEN — v-deferral + v-corpus-harness both verified clean/exit-0
+            # on current main (all residue landed: cadenza #6743, link.rs #6751, lower/* #6767, compute+resolve
+            # +twin #6775, rust/wasm/emit reworks) — so it starts green with no allowlist. A future legit
+            # lexicon-word use is handled by v-deferral tuning the lexicon const, not a gate exception. Same
+            # cheap native source-scan shape as mandateLintCheck (reuses the xtask-mandates crate build); the
+            # `declines` subcommand runs ONLY this scan, leaving the default run (mandateLintCheck) UNCHANGED.
+            declineProfessionalismCheck = cargoWorkspaceCheck {
+              name = "cargo-xtask-declines";
+              cargoCmd = "cargo run --locked --package xtask-mandates --profile release -- declines";
+            };
             mandateLintCheck = cargoWorkspaceCheck {
               name = "cargo-xtask-lint-mandates";
               # STANDALONE crate (v-xtask-decompose): builds ONLY `xtask-mandates` (+ its sole dep syn), NOT
@@ -5466,7 +5481,13 @@
                   # (baseline title-drift; existed as checks.corpus-vanished but was NOT gated). Both cheap
                   # (cdzCorpus + a sexp scan) + green-confirmed on the corpus before the fold, so no gate-time
                   # regression + no false red. This is the teeth a required-status can't give under self-merge.
-                  corpusNativizeCheck corpusVanishedCheck;
+                  corpusNativizeCheck corpusVanishedCheck
+                  # decline-professionalism FOLDED IN (v-fleet-tooling 2026-08-31, scan #6791, lexicon
+                  # v-deferral-declines): no seq-280 deferral-trash wording in decline() messages. Ratchet-at-
+                  # ZERO — v-deferral + v-corpus-harness both verified clean/exit-0 on current main before this
+                  # fold (no grandfather), and it's a cheap rcdzc/src source-scan reusing the xtask-mandates
+                  # build, so no false red + ~no gate-time add. Teeth under self-merge like the corpus lints.
+                  declineProfessionalismCheck;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -5496,6 +5517,9 @@
             contract-hashes-valid = contractHashesValid;
             cdz-wasm-abi-match = cdzWasmAbiMatch;
             cdz-declines-match = cdzDeclinesMatch;
+            # `nix build .#checks.<sys>.decline-professionalism` — the seq-280 decline-message professionalism
+            # scan (no deferral-trash wording); also folded into the localGate fail-set (teeth under self-merge).
+            decline-professionalism = declineProfessionalismCheck;
             # wasm-abi-oracle: the operator-required derived test — every wasm-abi.sexp byte matches the
             # wasm-encoder oracle (catches a sexpr transcription typo now that the sexp is the source of truth).
             # Standalone (like cdz-wasm-abi-match); runs under `nix flake check`.
@@ -6196,6 +6220,29 @@
           {
             type = "app";
             program = "${wrapper}/bin/cdz-lint-mandates";
+          };
+
+        # apps.lint-declines — the decline-message PROFESSIONALISM scan as a nix-native app:
+        # `nix run .#lint-declines` (v-fleet-tooling gate-wiring 2026-08-31; scan #6791, lexicon
+        # v-deferral-declines seq-280). Same STANDALONE xtaskMandatesBin as apps.lint-mandates, with the
+        # `declines` subcommand baked in — a clean alias for `nix run .#lint-mandates -- declines`, giving
+        # agents a one-liner to self-check their decline() messages before landing (the same scan folded into
+        # localGate as `checks.<sys>.decline-professionalism`). Sets CDZ_REPO_ROOT to the invoking worktree.
+        apps.lint-declines =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-lint-declines";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskMandatesBin}/bin/xtask-mandates declines "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-lint-declines";
           };
 
         # apps.lint-emoji — the emoji-ban source lint as a nix-native app backed by the STANDALONE
