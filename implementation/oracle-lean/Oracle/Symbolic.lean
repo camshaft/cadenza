@@ -201,6 +201,31 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
                    | _ => .app op args'
   | _, _ => .app op args'
 
+/-- Does the expression contain NO float (`.f64`) constant anywhere? The equal-branch `ite` collapse
+(`if c then t else e` with `t == e` → `t`) compares branches with `SymExpr`'s derived `BEq`, whose float
+leaves use IEEE `==` — and `+0.0 == -0.0` is `true` though the two are OBSERVABLY distinct
+(`1.0 / +0.0 = +inf` vs `-inf`). So collapsing float-containing branches is NOT meaning-preserving (a
+false `proven`). This gate restricts the collapse to float-free branches, where the derived `BEq` is a
+faithful structural equality. (A bit-faithful float comparison would recover the float case; deferred.) -/
+def symFloatFree : SymExpr → Bool
+  | .const (.f64 _) => false
+  | .const _ => true
+  | .var _ => true
+  | .app _ args => args.attach.all (fun x => symFloatFree x.val)
+  | .ite c t e => symFloatFree c && symFloatFree t && symFloatFree e
+  | .tuple es => es.attach.all (fun x => symFloatFree x.val)
+  | .record fs => fs.attach.all (fun x => symFloatFree x.val.2)
+  | .ctor _ args => args.attach.all (fun x => symFloatFree x.val)
+  | .proj b _ => symFloatFree b
+  | .case s arms => symFloatFree s && arms.attach.all (fun x => symFloatFree x.val.2)
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have h := Array.sizeOf_lt_of_mem x.property; omega)
+    | (rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega)
+
 /-- Canonicalize a symbolic expression by SOUND rewrites; `normalizeAppIdentities` carries the
 `app`-arm algebraic identities (split out so this matcher stays simple enough for equation-lemma
 generation). -/
@@ -238,8 +263,10 @@ def normalize : SymExpr → SymExpr
       | .const (.bool true), .const (.bool false) => c'
       | .const (.bool false), .const (.bool true) => .app "not" #[c']
       -- collapse identical branches ONLY when the condition can't trap (dropping a trapping condition
-      -- would unsoundly claim `(if <trapping-c> a a)` — which traps — equal to `a`).
-      | _, _ => if t' == e' && !mayTrap c' then t' else .ite c' t' e'
+      -- would unsoundly claim `(if <trapping-c> a a)` — which traps — equal to `a`) AND the branch is
+      -- FLOAT-FREE (`symFloatFree`): the derived `==` uses IEEE float equality where `+0.0 == -0.0`, so
+      -- collapsing float branches is not meaning-preserving (`1.0/+0.0` ≠ `1.0/-0.0`) — a false `proven`.
+      | _, _ => if t' == e' && !mayTrap c' && symFloatFree t' then t' else .ite c' t' e'
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
@@ -791,6 +818,14 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 -- a false "proven" — the original traps, `a` does not). The condition survives in the normal form.
 #guard normalize (.ite (.app "/" #[.var 1, .const (.int 0)]) (.var 0) (.var 0))
        == SymExpr.ite (.app "/" #[.var 1, .const (.int 0)]) (.var 0) (.var 0)
+-- SOUNDNESS: `if c then +0.0 else -0.0` is NOT collapsed — the derived `==` uses IEEE float equality
+-- (`+0.0 == -0.0` is `true`) but +0.0 / -0.0 are OBSERVABLY distinct (`1.0/+0.0 = +inf` vs `-inf`), so
+-- collapsing would be a false `proven`. The `symFloatFree` gate keeps the float branches un-collapsed.
+#guard normalize (.ite (.var 0) (.const (.f64 (0.0 : Float))) (.const (.f64 (-0.0 : Float))))
+       == SymExpr.ite (.var 0) (.const (.f64 (0.0 : Float))) (.const (.f64 (-0.0 : Float)))
+-- a float-free `if c then a else a` still collapses (the derived `==` is faithful with no float leaves).
+#guard normalize (.ite (.var 5) (.app "+" #[.var 0, .var 1]) (.app "+" #[.var 0, .var 1]))
+       == SymExpr.app "+" #[.var 0, .var 1]
 -- BOOLEAN MATERIALIZATION: `if c then true else false → c`; `if c then false else true → not c`.
 -- A non-const symbolic condition is preserved (operand-preserving; no guard). Even a TRAPPING condition
 -- is fine to keep here (it is not dropped — c survives as the result / under the `not`).
