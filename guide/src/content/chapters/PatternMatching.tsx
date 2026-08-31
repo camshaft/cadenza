@@ -66,7 +66,7 @@ export default function PatternMatching() {
       />
       <Note>This is the typed cousin of the symbol dispatch from the Symbols chapter. A symbol tag is checked with <C>=</C> and any typo compiles; a sum's variants are checked by the compiler, so a forgotten or misspelled case is caught. Reach for a sum when the set of cases is fixed and worth enforcing.</Note>
       <H2>Matching a map by key</H2>
-      <P>A <C>match</C> can also look <em>inside a collection</em>. A map pattern, <C>#map((= key binder) .. rest)</C>, fires when the map contains that key, binding the associated value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map, returning <C>(Some v)</C> when the key is present and <C>(None unit)</C> when it's absent, because a missing key is an absence, not a magic number:</P>
+      <P>A <C>match</C> can also look <em>inside a collection</em>. A map pattern, <C>#map((= key binder) (.. rest))</C>, fires when the map contains that key, binding the associated value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map, returning <C>(Some v)</C> when the key is present and <C>(None unit)</C> when it's absent, because a missing key is an absence, not a magic number:</P>
       <Runnable
         source={`(def (setting m) (match m (#map((= "width" v) (.. rest)) (Some v)) (_ (None unit))))
 

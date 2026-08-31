@@ -75,11 +75,11 @@
 (def (main) (wait (Red unit)))))
   (note "This is the typed cousin of the symbol dispatch from the Symbols chapter. A symbol tag is checked with " (c "=") " and any typo compiles; a sum's variants are checked by the compiler, so a forgotten or misspelled case is caught. Reach for a sum when the set of cases is fixed and worth enforcing.")
   (h2 "Matching a map by key")
-  (p "A " (c "match") " can also look " (em "inside a collection") ". A map pattern, " (c "#map((= key binder) .. rest)") ", fires when the map contains that key, binding the associated value to " (c "binder") " (and the leftover entries to " (c "rest") "). It's the pattern-matching counterpart to a " (c "Map.lookup") ": here " (c "setting") " reads the " (c "\"width\"") " from a config map, returning " (c "(Some v)") " when the key is present and " (c "(None unit)") " when it's absent, because a missing key is an absence, not a magic number:")
+  (p "A " (c "match") " can also look " (em "inside a collection") ". A map pattern, " (c "#map((= key binder) (.. rest))") ", fires when the map contains that key, binding the associated value to " (c "binder") " (and the leftover entries to " (c "rest") "). It's the pattern-matching counterpart to a " (c "Map.lookup") ": here " (c "setting") " reads the " (c "\"width\"") " from a config map, returning " (c "(Some v)") " when the key is present and " (c "(None unit)") " when it's absent, because a missing key is an absence, not a magic number:")
   (runnable
     (source (def (setting m)
   (match m
-    (#map((= "width" v) .. rest) (Some v))
+    (#map((= "width" v) (.. rest)) (Some v))
     (_ (None unit))))
 (def (main)
   (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))))
