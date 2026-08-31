@@ -15,8 +15,10 @@
 ; (its arrow surface `(-> …)` is a later increment — `type_ast` has no value-form surface for a function).
 ; INCREMENT 3: `Type.ast` INSTANTIATED on a GENERIC type — substitute the decl's params by the type's
 ; concrete args (dropping the head binders), rendered finite (a nested self-reference stays a named
-; application, never unfolded). REMAINING: `Ast.print` / `Ast.encode` round-trip lock (increment 4); the
-; `Fn` arrow surface (TODO-pinned above).
+; application, never unfolded). INCREMENT 4: interop lock — a reflected definition is an ordinary `Ast`, so
+; it round-trips through `Ast.encode`/`Ast.decode` byte-identically and renders via `Ast.print`, with no
+; reflection-specific codec path. REMAINING: only the `Fn` arrow surface (TODO-pinned above) — the core
+; feature is complete.
 (case
   "Type.ast-generic reflects a nominal sum type's verbatim declaration AST"
   (doc
@@ -175,3 +177,41 @@
       (export main)))
   (call main)
   (output (: 1 Int64)))
+
+(case
+  "a reflected type-definition AST round-trips byte-identically through Ast.encode / Ast.decode"
+  (doc
+    "Increment 4 — interop lock. A reflected type definition is an ORDINARY `Ast` value, so it crosses
+           the binary-AST codec like any quote result: `Ast.encode` serializes the reflected
+           `(Type.ast-generic Color)` to its canonical `cdzast` bytes and `Ast.decode` reads them back to an
+           `Ast` equal to the original (the decode is total → `(Ok a)`). Pins that type-reflection composes
+           with the rest of the metaprogramming machinery with no new codec path — the whole point of
+           reflecting to the ordinary `Ast` sum rather than a bespoke descriptor.")
+  (input
+    (do
+      (type Color (Red) (Green) (Rgb Int64 Int64 Int64))
+      (def
+        (main)
+        (match
+          (Ast.decode (Ast.encode (Type.ast-generic Color)))
+          ((Ok a) (if (= a (Type.ast-generic Color)) 1 0))
+          ((Err _u) 0)))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
+
+(case
+  "Ast.print of a reflected type definition renders its canonical (type …) source form"
+  (doc
+    "Increment 4 — interop lock. `Ast.print` on the reflected definition renders the canonical
+           s-expression source of the `(type …)` declaration — the reflected `Ast` prints exactly as the
+           written type would, closing the loop from a `Type` value back to readable source text. Pins that
+           the reflected shape is the verbatim declaration form (head `type`, the name, one child per
+           variant), and that it flows through the ordinary `Ast.print` with no reflection-specific path.")
+  (input
+    (do
+      (type Color (Red) (Green) (Rgb Int64 Int64 Int64))
+      (def (main) (Ast.print (Type.ast-generic Color)))
+      (export main)))
+  (call main)
+  (output (: "(type Color (Red) (Green) (Rgb Int64 Int64 Int64))" String)))
