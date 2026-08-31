@@ -48,6 +48,11 @@ pub struct GateSyntaxOpts {
     /// `check_baseline` compare the live `--check` uses (single-sourced fold — the nix path never gets a
     /// divergent/weaker verdict comparison). Mutually exclusive with grading (ignores `--files`/`--case`).
     pub compare: Option<PathBuf>,
+    /// Override the baseline file path (default `spec/syntax/.gate-baseline` under the repo). The per-case
+    /// nix aggregate needs this: `xtaskBin` runs OUTSIDE a repo/git tree, so the default repo-relative
+    /// resolution can't find the committed baseline — the aggregate passes `--baseline
+    /// ${./spec/syntax/.gate-baseline}` explicitly. Applies to `--check`/`--compare`/`--save`.
+    pub baseline: Option<PathBuf>,
 }
 
 /// Parse `<verdict>\t<title>` lines (the baseline / harvested-verdict format) into `(title, verdict)`
@@ -226,14 +231,16 @@ fn grade_case(cdz: &Path, case: &Path) -> (Verdict, String) {
 
 /// Run `gate-syntax`. Returns the process exit code.
 pub fn gate_syntax(paths: &Paths, opts: &GateSyntaxOpts) -> i32 {
-    let root = corpus_root(&paths.repo);
-    if !root.is_dir() {
-        eprintln!("gate-syntax: no corpus at {}", root.display());
-        return 2;
-    }
+    // The baseline file — an explicit `--baseline` override (the per-case nix aggregate passes it, since
+    // `xtaskBin` runs outside a repo tree) else the repo-relative default.
+    let baseline = opts
+        .baseline
+        .clone()
+        .unwrap_or_else(|| baseline_path(&paths.repo));
 
     // `--compare <file>`: fold PRE-HARVESTED verdicts against the baseline, no `cdz` re-grading (the
     // per-case nix aggregate's entry). A full-corpus fold — subset=false so the vanished check applies.
+    // Resolved BEFORE the corpus-root check: the aggregate runs it with no `spec/syntax/` tree present.
     if let Some(vpath) = &opts.compare {
         let text = match std::fs::read_to_string(vpath) {
             Ok(t) => t,
@@ -250,7 +257,13 @@ pub fn gate_syntax(paths: &Paths, opts: &GateSyntaxOpts) -> i32 {
             );
             return 2;
         }
-        return check_baseline(&paths.repo, &verdicts, false);
+        return check_baseline(&baseline, &verdicts, false);
+    }
+
+    let root = corpus_root(&paths.repo);
+    if !root.is_dir() {
+        eprintln!("gate-syntax: no corpus at {}", root.display());
+        return 2;
     }
 
     let cdz = match resolve_cdz(&paths.repo) {
@@ -295,21 +308,20 @@ pub fn gate_syntax(paths: &Paths, opts: &GateSyntaxOpts) -> i32 {
         let by_desc: BTreeMap<String, Verdict> =
             verdicts.iter().map(|(d, v)| (d.clone(), *v)).collect();
         let text = serialize_baseline(&by_desc);
-        let path = baseline_path(&paths.repo);
-        if let Err(e) = std::fs::write(&path, &text) {
-            eprintln!("gate-syntax --save: writing {}: {e}", path.display());
+        if let Err(e) = std::fs::write(&baseline, &text) {
+            eprintln!("gate-syntax --save: writing {}: {e}", baseline.display());
             return 2;
         }
         println!(
             "gate-syntax --save: wrote {} ({} cases)",
-            path.display(),
+            baseline.display(),
             verdicts.len()
         );
         return 0;
     }
 
     if opts.check {
-        return check_baseline(&paths.repo, &verdicts, subset);
+        return check_baseline(&baseline, &verdicts, subset);
     }
 
     // No `--check`/`--save`: fail on an outright Fail (the miscompile guard), else succeed.
@@ -438,9 +450,8 @@ fn compare_baseline(
 
 /// Compare `verdicts` against the committed baseline file, print the report, and return the exit code.
 /// The I/O + reporting shell around the pure [`compare_baseline`].
-fn check_baseline(repo: &Path, verdicts: &[(String, Verdict)], subset: bool) -> i32 {
-    let path = baseline_path(repo);
-    let text = match std::fs::read_to_string(&path) {
+fn check_baseline(path: &Path, verdicts: &[(String, Verdict)], subset: bool) -> i32 {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(_) => {
             eprintln!(
