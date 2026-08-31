@@ -1281,6 +1281,28 @@ impl<'a, 'b> Reader<'a, 'b> {
                         Some(b'#') if self.src.get(self.pos + 1) == Some(&b'"') => {
                             next = Next::Deliver(self.read_symbol()?)
                         }
+                        Some(b'#') if self.at_rational_literal_form() => {
+                            // Open a `#rational(num den)` explicit rational ctor: head is the payloadless
+                            // `Leaf::Rational` TAG (NOT a `Leaf::Ctor`), then exactly two positional
+                            // children (numerator, denominator) — the `(RationalTag num den)` node
+                            // `Builder::rational` builds, the same one the bare `<int>/<int>` literal reads
+                            // to. Arity is enforced at the Compound close (`word == "rational"`); no rest
+                            // normalization (a rational has no rest). Its two children read verbatim as
+                            // ordinary nodes (int leaves in a well-formed rational; the compiler validates).
+                            let start = self.pos; // at '#'
+                            self.pos += 1 + "rational".len(); // '#' + "rational" are ASCII → lands on '('
+                            let head =
+                                self.mk_atom_leaf(Leaf::Rational, Span::new(start, self.pos));
+                            self.bump(); // '('
+                            stack.push(Frame::Compound {
+                                start,
+                                word: "rational",
+                                keyed: false,
+                                items: vec![head],
+                                leading: Vec::new(),
+                            });
+                            next = Next::Advance;
+                        }
                         Some(b'#') if self.compound_literal_word().is_some() => {
                             // Open a `#word(…)` collection literal: create the ctor-LEAF head NOW (before
                             // any child, matching the recursive `read_compound_literal`'s order), then
@@ -1464,7 +1486,21 @@ impl<'a, 'b> Reader<'a, 'b> {
                                     *items.last_mut().expect("items non-empty") = wrapped;
                                 }
                                 self.bump();
-                                self.normalize_rest_markers(&mut items);
+                                if word == "rational" {
+                                    // `#rational(num den)` → the native `(RationalTag num den)` node: head
+                                    // `Leaf::Rational` + EXACTLY two children. No rest normalization (a
+                                    // rational carries no `..`); a wrong arity is a read error, not a
+                                    // silently-malformed node. (`items[0]` is the head, so 2 args == len 3.)
+                                    if items.len() != 3 {
+                                        return Err(ReadError(format!(
+                                            "`#rational(…)` takes exactly two arguments \
+                                             (numerator denominator), got {}",
+                                            items.len() - 1
+                                        )));
+                                    }
+                                } else {
+                                    self.normalize_rest_markers(&mut items);
+                                }
                                 let result = self.mk_list(items, Span::new(start, self.pos));
                                 next = Next::Deliver(result);
                             }
@@ -1612,6 +1648,17 @@ impl<'a, 'b> Reader<'a, 'b> {
         ["record", "tuple", "list", "map", "set"]
             .into_iter()
             .find(|word| rest.starts_with(word.as_bytes()) && rest.get(word.len()) == Some(&b'('))
+    }
+
+    /// At a `#`, is this the explicit RATIONAL ctor form `#rational(` (the `#word(` twin for a native
+    /// rational, seq-204)? Distinct from `compound_literal_word` because a rational's head is the
+    /// `Leaf::Rational` TAG, NOT a `Leaf::Ctor` compound ctor — it reads to `(RationalTag num den)`
+    /// (== `Builder::rational`), the SAME node the bare `<int>/<int>` literal builds. `#rational` NOT
+    /// followed by `(` is an ordinary bare-atom read (the `#rational` tag marker), so gate on the `(`.
+    fn at_rational_literal_form(&self) -> bool {
+        self.src.get(self.pos + 1..).is_some_and(|rest| {
+            rest.starts_with(b"rational") && rest.get("rational".len()) == Some(&b'(')
+        })
     }
 
     /// The recorded span of an already-built node (full range), or a zero-width span at `self.pos` when
@@ -3523,6 +3570,43 @@ mod tests {
         // A token that is NOT a strict `<digits>/<digits>` is NOT a rational — these stay plain names.
         for name in ["err", "foo-bar", "list"] {
             assert_eq!(print(&read(name).unwrap()), name, "{name} stays a name");
+        }
+    }
+
+    #[test]
+    fn the_explicit_rational_ctor_reads_to_the_same_node_as_the_flat_literal() {
+        // `#rational(num den)` — the explicit `#word(` ctor twin for a rational — reads to the SAME native
+        // `(RationalTag num den)` node as the bare `<int>/<int>` literal (== `Builder::rational`; head is
+        // the payloadless `Leaf::Rational` tag, NOT a `Leaf::Ctor`). It is a READ-ONLY input alias: the
+        // CANONICAL print stays the flat `num/den` (operator/concierge ruling = option A, zero corpus
+        // churn). Arity is EXACTLY two (numerator denominator).
+        for (ctor, flat) in [
+            ("#rational(3 2)", "3/2"),
+            ("#rational(-3 2)", "-3/2"),
+            ("#rational(22 7)", "22/7"),
+        ] {
+            let a = read(ctor).unwrap();
+            assert!(
+                a.rational_parts(a.root).is_some(),
+                "{ctor} reads to a native rational node"
+            );
+            // Structurally identical to the flat literal, and prints back as the flat canonical surface.
+            let f = read(flat).unwrap();
+            assert!(a.structurally_eq(&f), "{ctor} != {flat} structurally");
+            assert_eq!(
+                print(&a),
+                flat,
+                "{ctor} prints as the canonical flat {flat}"
+            );
+            // The compact and pretty printers agree, and the node survives the binary codec.
+            assert_eq!(print_pretty(&a), flat);
+            let bytes = cadenza_ast::codec::encode(&a);
+            let b = cadenza_ast::codec::decode(&bytes).expect("decode");
+            assert!(a.structurally_eq(&b), "codec round-trip changed {ctor}");
+        }
+        // Arity must be EXACTLY two — zero / one / three args are read errors, not silently-malformed nodes.
+        for bad in ["#rational()", "#rational(3)", "#rational(1 2 3)"] {
+            assert!(read(bad).is_err(), "{bad} must be an arity error");
         }
     }
 
