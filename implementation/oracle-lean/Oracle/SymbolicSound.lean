@@ -690,4 +690,22 @@ theorem denote_normalize_ite_materializeFalse_step (ρ : Nat → Value) (w : Int
     have hve := ihe _ he; rw [hne] at hve
     simp only [denote, Value.asF64?] at hve; simpa using hve
 
+/-- Capstone `.ite` PLAIN-rebuild STEP (the fall-through case: no const-fold, no materialize, no
+collapse — `normalize` rebuilds `.ite (normalize c) (normalize t) (normalize e)`). Given that plain
+shape (`hplain`, discharged by the eventual assembly when it establishes the fall-through fires) and the
+IHs, the value-producing `ite` transports across `normalize` directly via `denote`'s own `.ite` arm: the
+condition IH pins `denote (normalize c)` to the selecting boolean, and the taken-branch IH pins its value.
+No `BEq`-agreement needed (unlike collapse) — this is the clean fall-through half. -/
+theorem denote_normalize_ite_plain_step (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr)
+    (ihc : ∀ u, denote ρ w c = .value u → denote ρ w (normalize c) = .value u)
+    (iht : ∀ u, denote ρ w t = .value u → denote ρ w (normalize t) = .value u)
+    (ihe : ∀ u, denote ρ w e = .value u → denote ρ w (normalize e) = .value u)
+    (hplain : normalize (.ite c t e) = .ite (normalize c) (normalize t) (normalize e))
+    (v : Value) (h : denote ρ w (.ite c t e) = .value v) :
+    denote ρ w (normalize (.ite c t e)) = .value v := by
+  rw [hplain]
+  rcases denote_ite_value_inv ρ w c t e v h with ⟨hc, ht⟩ | ⟨hc, he⟩
+  · simp only [denote, ihc _ hc, iht _ ht]
+  · simp only [denote, ihc _ hc, ihe _ he]
+
 end Oracle
