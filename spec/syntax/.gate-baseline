@@ -523,6 +523,10 @@ pass	sexp/41-comment-in-quote
 todo	ml/08-incomplete-binding
 todo	ml/10-unterminated-call
 todo	ml/476-ambiguous-toplevel-juxtaposition-rejected
+todo	ml/489-wit-result-at-most-two-args
+todo	ml/490-wit-variant-single-payload
+todo	ml/491-wit-enum-case-bare-name
+todo	ml/492-wit-flags-bit-bare-name
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string
