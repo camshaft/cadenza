@@ -3622,6 +3622,20 @@
   (input  (do (def (main) (resume 5 6)) (export main)))
   (error  CDZ0201 (message "no enclosing handler arm")))
 
+; The third effect-boundary type check (beside the resume ANSWER and NEXT-STATE checks): an op's ARGUMENT
+; must match the operation's PARAMETER type. `(op put (-> Int64 Unit))` takes Int64, so performing `(E.put
+; "x")` / `(E.put true)` is CDZ0203 — "operation `put` expects an argument of type Int64, but a value of type
+; <T> was performed" (the argument-position code, vs the resume-side CDZ0201; the same result-vs-arg split as
+; ordinary typing). Base-type twin of the units-mismatch op-arg case in chapter 14. (Edge-probed by
+; v-wasmtime-migration.)
+(case "performing an op with a String argument under an Int64-parameter operation is a type error"
+  (input  (do (effect E (op put (-> Int64 Unit)) (op tot (-> Unit Int64))) (def (main) (handle E 0 ((put (v) s (resume unit (+ s v))) (tot (u) s (resume s s))) (do (E.put "x") (E.tot)))) (export main)))
+  (error  CDZ0203 (message "operation `put` expects an argument of type Int64") (message "String") (message "was performed")))
+
+(case "performing an op with a Bool argument under an Int64-parameter operation is a type error"
+  (input  (do (effect E (op put (-> Int64 Unit)) (op tot (-> Unit Int64))) (def (main) (handle E 0 ((put (v) s (resume unit (+ s v))) (tot (u) s (resume s s))) (do (E.put true) (E.tot)))) (export main)))
+  (error  CDZ0203 (message "operation `put` expects an argument of type Int64") (message "Bool") (message "was performed")))
+
 ; A `resume`'s ANSWER (first operand) must match the OPERATION'S RESULT type: `(op get (-> Unit Int64))`
 ; yields Int64, so resuming with a String or Bool answer is CDZ0201 naming the answer type + "the operation's
 ; result type is Int64". This is the answer-slot twin of the next-state-slot type check below. (Edge-probed by
