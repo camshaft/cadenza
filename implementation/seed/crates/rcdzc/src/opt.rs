@@ -203,7 +203,7 @@ pub(crate) mod cse {
     /// `SumPayload`/`Lambda`/`Handle`/`Resume`/`Host`/arbitrary-`Apply`). Closed ALLOW-list — an unlisted/
     /// future variant rejects (the safe default). Uses `resolved_of`, NOT `core_of`, so the pre-check cannot
     /// poison the memo. A later slice adds SCOPE-AWARE grouping to admit binder-scoped bodies.
-    fn body_admits_cse(db: &mut Db, id: StructId) -> bool {
+    pub(crate) fn body_admits_cse(db: &mut Db, id: StructId) -> bool {
         use crate::resolved::Resolved;
         let ok = match crate::resolve::resolved_of(db, id) {
             // ADMITTED — CONTEXT-FREE-LOWERING forms: pure scalar/boolean/control leaves (`Ref`/`Param`/
@@ -983,6 +983,42 @@ mod tests {
         assert!(
             !db.has_core_overrides(),
             "distinct subexpressions are not shared — no override installed"
+        );
+    }
+
+    #[test]
+    fn body_admits_cse_gates_on_the_context_free_lowering_allow_list() {
+        // The eligibility gate (`body_admits_cse`) is the pass's correctness FENCE: it admits ONLY
+        // context-free-lowering forms (pure scalar/control leaves, field reads, heap constructors) and
+        // REJECTS the binder/continuation forms whose subtrees are not invariant for the scope-UNAWARE
+        // MVP `cse_body` (`Match`/`Try`/`SumPayload`/`Lambda`/`Handle`/`Resume`/`Host`/arbitrary-`Apply`).
+        // This pins that contract DIRECTLY (independent of the downstream candidate/dominating-frontier
+        // filters), so the scope-aware slice that will relax the fence — and #6902's heap-constructor
+        // relaxation that widened it — cannot silently regress the admit/reject sets. Two directions on
+        // prelude-free bodies (the harness cannot seed module ops; see the guard-A NOTE below):
+        // (1) ADMIT — a pure prim-scalar body `(+ (& x 7) (& x 7))` lowers context-free → eligible.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (+ (& x 7) (& x 7))) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        assert!(
+            cse::body_admits_cse(&mut db, body),
+            "a pure prim-scalar body is context-free-lowering → admitted"
+        );
+        // (2) REJECT — a body with an arbitrary (non-prim) function application `(g 5)`: the callee `g`
+        //     is a value param, so `prim_of`/`meta_apply_of` are both `None` → the `Apply` arm rejects,
+        //     and the whole body is ineligible. The callee's body could reach an effect/lift/continuation
+        //     context the scope-unaware `cse_body` cannot prove invariant across occurrences — this is the
+        //     tick-cg handler-threaded-miscompile fence, expressed at the body-eligibility level.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (ap (: g (-> Int64 Int64))) (+ (g 5) (g 5))) (def (main) 0) (export main))",
+        ));
+        let d = db.def_by_name("ap").expect("def ap");
+        let body = db.defs[d].body.expect("ap body");
+        assert!(
+            !cse::body_admits_cse(&mut db, body),
+            "a body with an arbitrary function application is NOT context-free-lowering → rejected"
         );
     }
 
