@@ -438,6 +438,26 @@
   (input  (do (def (main) (Int64 5)) (export main)))
   (error  CDZ0203 (message "is a type, not a function")))
 
+; The ARGUMENT-position twin of the type-in-head case above: a value juxtaposed with a type WITHOUT the
+; colon — `(5 Int64)` for `(: 5 Int64)`. A plain value applied to one arg that resolves as a TYPE reads as
+; applying a non-function; rather than the opaque "cannot apply a value of type Int64", CDZ0201 names the
+; missing-colon repair + carries a heuristic add-`:` fix. Compound-type has no name to splice (no fix); a
+; non-type argument stays the generic message (no false positive). (migrated from rcdzc
+; a_value_juxtaposed_with_a_type_names_the_missing_colon_annotation.)
+
+(case "a value juxtaposed with a type without the colon names the missing-colon annotation with an add-: fix"
+  (input  (do (def (main) (5 Int64)) (export main)))
+  (error  CDZ0201 (message "`(: <value> <Type>)`") (message "leading `:`") (message "juxtaposed with a type")
+          (fix (kind replace) (replacement "(: 5 Int64)") (unverified))))
+
+(case "a value juxtaposed with a COMPOUND type names the shape but carries no fix"
+  (input  (do (def (main) (5 (List Int64))) (export main)))
+  (error  CDZ0201 (message "juxtaposed with a type") (no-fix)))
+
+(case "applying a value to a NON-type value keeps the generic not-a-function message, not missing-colon"
+  (input  (do (def (main) (5 6)) (export main)))
+  (error  CDZ0201 (message "cannot apply a value of type") (not "juxtaposed")))
+
 (case "applying a generic type constructor to a value names the type-argument position"
   (doc    "`(Option 5)` applies the GENERIC type constructor `Option` to a value. Its type-argument position
            wants a TYPE, so the message names that — `Option` is a type constructor, its type argument must be
