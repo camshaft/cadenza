@@ -24,10 +24,10 @@ export default function Strings() {
       <H2>How long is a string?</H2>
       <P>Here's a question with two right answers. How long is <C>"café"</C>? Counted in <em>characters</em> it's 4; counted in <em>bytes</em> (its UTF-8 encoding) it's 5, because <C>é</C> takes two bytes. Cadenza gives you both, named so you can't confuse them:</P>
       <Runnable
-        source={`((. String scalar-len) "café")`}
+        source={`(String.scalar-len "café")`}
       />
       <Runnable
-        source={`((. String byte-len) "café")`}
+        source={`(String.byte-len "café")`}
       />
       <Why tenet="A string is Unicode characters, not bytes">A Cadenza string is a sequence of Unicode <em>scalar values</em> (characters), not a bag of bytes, so what it contains doesn't depend on how it's encoded. But real programs sometimes need the byte size (for a buffer, a protocol). Rather than pick one meaning of "length" and make the other a footgun, the language offers <em>both</em>, under names that say which you're getting: <C>scalar-len</C> counts characters, <C>byte-len</C> counts UTF-8 bytes. No silent surprise when a non-ASCII character makes the two disagree.</Why>
       <H2>Reaching in safely</H2>
@@ -47,33 +47,33 @@ export default function Strings() {
         source={`(def
   (main)
   (match
-    ((. String from-bytes) ((. String to-bytes) "café"))
-    ((Some s) ((. String scalar-len) s))
+    (String.from-bytes (String.to-bytes "café"))
+    ((Some s) (String.scalar-len s))
     ((None _) -1)))`}
       />
       <P>The bytes decode back to <C>"café"</C>, four characters, the same value we started with. The <C>Option</C> is the honest part: decoding <em>arbitrary</em> bytes can fail, so <C>from-bytes</C> hands you an <C>Option</C> to handle rather than assuming the bytes are text.</P>
       <H2>Slicing out a substring</H2>
       <P>To take a run of characters rather than a single one, <C>String.slice</C> selects a half-open range <C>[start, end)</C>, from <C>start</C> up to <em>but not including</em> <C>end</C>. Like <C>at</C>, the range might fall outside the string, so it returns an <C>Option</C>. The first five characters of <C>"hello world"</C> are <C>"hello"</C>, which is 5 characters long:</P>
       <Runnable
-        source={`(def (main) ((. String scalar-len) (Option.expect (String.slice "hello world" 0 5) "in range")))`}
+        source={`(def (main) (String.scalar-len (Option.expect (String.slice "hello world" 0 5) "in range")))`}
       />
       <P>The bounds count <em>characters</em>, the same as <C>at</C>, so slicing <C>"café"</C> from <C>0</C> to <C>3</C> gives the three characters <C>"caf"</C>, never splitting the two-byte <C>é</C> down the middle. A range where <C>start</C> equals <C>end</C> is a valid, empty slice (<C>Some ""</C>); one that runs off the end is <C>None</C>, not a trap.</P>
       <H2>Characters</H2>
       <P>A string is a sequence of <em>characters</em> (Unicode scalar values), and <C>Char</C> is the type of a single one. A character literal is written <C>#\a</C>: a <C>#\</C> followed by the scalar. Its Unicode scalar value (its code point) is read with <C>Char.to-int</C>, so <C>#\a</C> is <C>97</C>:</P>
       <Runnable
-        source={`((. Char to-int) #\\a)`}
+        source={`(Char.to-int #\\a)`}
       />
       <P><C>String.scalar-at</C> reads the character at a scalar position, the single-character companion of <C>slice</C>. Like <C>at</C> and <C>slice</C> it's fallible, returning an <C>Option Char</C>, so an out-of-range position is <C>None</C> rather than a trap. The character at position <C>1</C> of <C>"hello"</C> is <C>#\e</C>, whose scalar value is <C>101</C>:</P>
       <Runnable
-        source={`(def (main) ((. Char to-int) (Option.expect ((. String scalar-at) "hello" 1) "in range")))`}
+        source={`(def (main) (Char.to-int (Option.expect (String.scalar-at "hello" 1) "in range")))`}
       />
       <P><C>Char.to-int</C> reads a character's Unicode scalar value (its code point) as an <C>Int64</C>. It's <em>total</em>: every character has a code point, so it never fails. Going the other way, <C>Char.from-int</C> is <em>fallible</em>, since not every integer is a valid scalar, so it returns an <C>Option Char</C>. Code point <C>97</C> is <C>#\a</C>:</P>
       <Runnable
-        source={`(def (main) ((. Char to-int) (Option.expect ((. Char from-int) 97) "valid scalar")))`}
+        source={`(def (main) (Char.to-int (Option.expect (Char.from-int 97) "valid scalar")))`}
       />
       <P>Because <C>from-int</C> is fallible, the invalid cases are data, not crashes. Code point <C>55296</C> is <C>U+D800</C>, a surrogate that is never a standalone scalar, so <C>from-int</C> gives <C>None</C>, and this match takes the <C>None</C> arm to return <C>0</C>:</P>
       <Runnable
-        source={`(def (main) (match ((. Char from-int) 55296) ((Some c) ((. Char to-int) c)) ((None) 0)))`}
+        source={`(def (main) (match (Char.from-int 55296) ((Some c) (Char.to-int c)) ((None) 0)))`}
       />
       <Why tenet="A character converts to and from an integer, honestly">Every character has an integer code point, so <C>Char.to-int</C> is total. But the reverse isn't, because the surrogate range and everything past <C>U+10FFFF</C> aren't scalar values, so <C>Char.from-int</C> returns an <C>Option</C> instead of inventing an ill-formed character. The type tells you which direction can fail.</Why>
       <P>Characters compare by their code point. <C>=</C> tests two characters for equality, and <C>&lt;</C>, <C>&gt;</C>, <C>&lt;=</C>, and <C>&gt;=</C> order them by scalar value, so <C>#\a</C> (code point 97) sorts before <C>#\z</C> (122) and this comparison is <C>true</C>:</P>
@@ -87,7 +87,7 @@ export default function Strings() {
         id="strings:1"
         prompt={<>How many <em>characters</em> are in <C>"naïve"</C>? Pick the length that counts characters, so the answer is <C>5</C>.</>}
         starter={`(def (main) (String.?-len "naïve"))`}
-        solution={`(def (main) ((. String scalar-len) "naïve"))`}
+        solution={`(def (main) (String.scalar-len "naïve"))`}
         expected="5"
         hint={<>Characters (Unicode scalars), not bytes → <C>scalar-len</C>. The accented <C>ï</C> is still one character.</>}
       />
@@ -102,8 +102,8 @@ export default function Strings() {
       <Exercise
         id="strings:3"
         prompt={<>Now a character. Read the first character of <C>"Zebra"</C> and give its Unicode code point. The letter <C>Z</C> is code point <C>90</C>, so pick the operation that turns a character into its integer and the answer is <C>90</C>.</>}
-        starter={`(def (main) (Char.?-int (Option.expect ((. String scalar-at) "Zebra" 0) "in range")))`}
-        solution={`(def (main) ((. Char to-int) (Option.expect ((. String scalar-at) "Zebra" 0) "in range")))`}
+        starter={`(def (main) (Char.?-int (Option.expect (String.scalar-at "Zebra" 0) "in range")))`}
+        solution={`(def (main) (Char.to-int (Option.expect (String.scalar-at "Zebra" 0) "in range")))`}
         expected="90"
         hint={<><C>String.scalar-at</C> hands you the character (an <C>Option Char</C>, unwrapped here by <C>Option.expect</C>), and <C>Char.to-int</C> reads its code point. The total direction is <C>to-int</C>; <C>from-int</C> is the fallible reverse.</>}
       />

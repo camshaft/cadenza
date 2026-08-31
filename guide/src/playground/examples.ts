@@ -169,7 +169,7 @@ export const EXAMPLES: Example[] = [
   (def
     (main)
     (let
-      ((parts ((. Tuple split-at) #tuple(1 2 3 4 5) 2)))
+      ((parts (Tuple.split-at #tuple(1 2 3 4 5) 2)))
       (match parts (#tuple(head tail) #tuple(head tail (Tuple.concat head tail))))))
 
   (export main))`,
@@ -311,9 +311,7 @@ export const EXAMPLES: Example[] = [
     (tally xs i n mp)
     (if (= i n) mp (match (List.at xs i) ((Some x) (tally xs (+ i 1) n (bump mp x))) ((None) mp))))
 
-  (def
-    (main)
-    (let ((xs #list(3 1 3 3 1 2))) ((. Map to-list) (tally xs 0 (List.len xs) (Map.empty)))))
+  (def (main) (let ((xs #list(3 1 3 3 1 2))) (Map.to-list (tally xs 0 (List.len xs) (Map.empty)))))
 
   (export main))`,
     expected: "(: #list(#tuple(1 2) #tuple(2 1) #tuple(3 3)) (List (Tuple Int64 Int64)))",
@@ -333,7 +331,7 @@ export const EXAMPLES: Example[] = [
         (#tuple(old-apples restocked)
           (match
             (Map.take restocked 2)
-            (#tuple(gone-pears final) #tuple(old-apples gone-pears ((. Map to-list) final))))))))
+            (#tuple(gone-pears final) #tuple(old-apples gone-pears (Map.to-list final))))))))
 
   (export main))`,
     expected: "(: #tuple((Some 5) (Some 2) #list(#tuple(1 9))) (Tuple (Option Int64) (Option Int64) (List (Tuple Int64 Int64))))",
@@ -351,7 +349,7 @@ export const EXAMPLES: Example[] = [
   (def
     (main)
     (let
-      ((red ((. String to-bytes) "red")) (blue ((. String to-bytes) "blue")))
+      ((red (String.to-bytes "red")) (blue (String.to-bytes "blue")))
       (let
         ((m (bump (bump (bump (bump (Map.empty) red) blue) red) red)))
         #tuple((Map.lookup m red) (Map.lookup m blue)))))
@@ -539,7 +537,7 @@ export const EXAMPLES: Example[] = [
 
   (def
     (main)
-    (let ((a (Set.of #list(1 2 3 4))) (b (Set.of #list(3 4 5 6)))) ((. Set to-list) (sym-diff a b))))
+    (let ((a (Set.of #list(1 2 3 4))) (b (Set.of #list(3 4 5 6)))) (Set.to-list (sym-diff a b))))
 
   (export main))`,
     expected: "(: #list(1 2 5 6) (List Int64))",
@@ -550,7 +548,7 @@ export const EXAMPLES: Example[] = [
     theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
-  (def (mutual a b) ((. Set to-list) (Set.intersection (Set.of a) (Set.of b))))
+  (def (mutual a b) (Set.to-list (Set.intersection (Set.of a) (Set.of b))))
 
   (def (main) (mutual #list(1 2 3 4 5) #list(3 4 5 6 7)))
 
@@ -893,7 +891,7 @@ export const EXAMPLES: Example[] = [
 
   (def (pal bs i j) (if (>= i j) true (if (= (at bs i) (at bs j)) (pal bs (+ i 1) (- j 1)) false)))
 
-  (def (main) (let ((bs ((. String to-bytes) "racecar"))) (pal bs 0 (- (Bytes.len bs) 1))))
+  (def (main) (let ((bs (String.to-bytes "racecar"))) (pal bs 0 (- (Bytes.len bs) 1))))
 
   (export main))`,
     expected: "true",
@@ -919,7 +917,7 @@ export const EXAMPLES: Example[] = [
     (go bs i n acc)
     (if (= i n) acc (go bs (+ i 1) n (if (is-vowel (byte-at bs i)) (+ acc 1) acc))))
 
-  (def (count-vowels s) (let ((bs ((. String to-bytes) s))) (go bs 0 (Bytes.len bs) 0)))
+  (def (count-vowels s) (let ((bs (String.to-bytes s))) (go bs 0 (Bytes.len bs) 0)))
 
   (def (main) (count-vowels "education"))
 
@@ -932,14 +930,14 @@ export const EXAMPLES: Example[] = [
     theme: "algorithms",
     surface: "sexpr",
     source: `(do
-  (def (letter s) (match ((. String scalar-at) s 0) ((Some c) c) ((None) (trap "empty string"))))
+  (def (letter s) (match (String.scalar-at s 0) ((Some c) c) ((None) (trap "empty string"))))
 
   (def
     (shift c n)
     (let
-      ((code ((. Char to-int) c)))
+      ((code (Char.to-int c)))
       (match
-        ((. Char from-int) (+ 65 (% (+ (- code 65) n) 26)))
+        (Char.from-int (+ 65 (% (+ (- code 65) n) 26)))
         ((Some r) r)
         ((None) (trap "caesar: bad code point")))))
 
@@ -954,7 +952,7 @@ export const EXAMPLES: Example[] = [
     theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
-  (def (accent) ((. String from-bytes) (Bytes.of #list(204 129))))
+  (def (accent) (String.from-bytes (Bytes.of #list(204 129))))
 
   (def
     (main)
@@ -963,7 +961,7 @@ export const EXAMPLES: Example[] = [
       ((Some acc)
         (let
           ((composed (String.concat "e" acc)))
-          #tuple(((. String scalar-len) composed) ((. String byte-len) composed))))
+          #tuple((String.scalar-len composed) (String.byte-len composed))))
       ((None) (trap "nfc: invalid accent bytes"))))
 
   (export main))`,

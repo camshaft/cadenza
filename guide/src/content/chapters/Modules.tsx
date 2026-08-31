@@ -18,7 +18,7 @@ export default function Modules() {
 
     (export c-to-f))
 
-  (def (main) ((. Temp c-to-f) 100))
+  (def (main) (Temp.c-to-f 100))
 
   (export main))`}
       />

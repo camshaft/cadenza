@@ -44,7 +44,7 @@ export default function Bytes() {
       <H2>From text to bytes</H2>
       <P><C>String.to-bytes</C>, the crossing the <em>Strings</em> chapter covered, hands you a string's UTF-8 encoding as a <C>Bytes</C>, which lets us see what <C>Bytes.len</C> measures, namely octets rather than characters. Return the bytes for the 4-character <C>"café"</C> and the encoding is right there in <C>b"caf\xc3\xa9"</C>:</P>
       <Runnable
-        source={`((. String to-bytes) "café")`}
+        source={`(String.to-bytes "café")`}
       />
       <P>You can see it directly: <C>c</C>, <C>a</C>, <C>f</C> are one byte each, and the <C>é</C> is the two bytes <C>\xc3\xa9</C>, which is five octets for four characters. So <C>Bytes.len</C> of this is <C>5</C>, counting the octets it's given whatever the character count of the text that produced them.</P>
       <Why tenet="Text and bytes are different types">Many languages blur strings and byte arrays into one thing, and the encoding bugs follow. Cadenza keeps them apart: a <C>String</C> is a sequence of Unicode characters; a <C>Bytes</C> is a sequence of octets. You cross between them with a named, explicit operation (<C>String.to-bytes</C>) that says which encoding you mean, so "how long is it?" and "what's at index 2?" always have one unambiguous answer, and a byte-level concern can never silently corrupt text.</Why>

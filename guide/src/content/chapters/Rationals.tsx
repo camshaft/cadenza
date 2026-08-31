@@ -16,7 +16,7 @@ export default function Rationals() {
       />
       <P>The value comes back as <C>1/2</C> tagged with its type, which reads <C>1/2 : Rational</C> in the conventional surface and <C>(: 1/2 Rational)</C> in s-expressions. Since a whole number is just a denominator of one, <C>Rational.of-int</C> makes that explicit:</P>
       <Runnable
-        source={`((. Rational of-int) 5)`}
+        source={`(Rational.of-int 5)`}
       />
       <H2>Writing one directly: the <C>R</C> suffix</H2>
       <P>Spelling out <C>Rational.of</C> every time is wordy when you already know the number. A decimal with an <C>R</C> suffix is a rational <em>literal</em> that the compiler reads exactly and converts to a fraction, so <C>0.5R</C> is <C>1/2</C> and <C>1.25R</C> is <C>5/4</C>:</P>

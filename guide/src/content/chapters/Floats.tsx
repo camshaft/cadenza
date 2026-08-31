@@ -39,11 +39,11 @@ export default function Floats() {
       <H2>Converting on purpose</H2>
       <P>When you <em>do</em> want to turn an integer into a float, you ask for it by name with <C>Float64.of-int</C>. It's an ordinary function, visible and deliberate and exactly where you meant the conversion to happen.</P>
       <Runnable
-        source={`((. Float64 of-int) 7)`}
+        source={`(Float64.of-int 7)`}
       />
       <P>Now the number is a float, so it composes with float arithmetic using the same <C>*</C>, now multiplying two floats:</P>
       <Runnable
-        source={`(* ((. Float64 of-int) 3) 1.5)`}
+        source={`(* (Float64.of-int 3) 1.5)`}
       />
       <H2>A worked example</H2>
       <P>Putting it together, here's the area of a circle, all in floating-point. Edit the radius and Run.</P>
@@ -55,12 +55,12 @@ export default function Floats() {
       <H2>Two widths, never mixed silently</H2>
       <P>There's a 32-bit float too, <C>Float32</C>, with its own <C>Float32.of-int</C>. It's a real, runnable value, and dividing two of them gives a <C>Float32</C> back, <C>7 ÷ 2 = 3.5</C>:</P>
       <Runnable
-        source={`(/ ((. Float32 of-int) 7) ((. Float32 of-int) 2))`}
+        source={`(/ (Float32.of-int 7) (Float32.of-int 2))`}
       />
       <P>And the two widths follow the same rule as everything else: they don't blend on their own. Add a <C>Float32</C> to a <C>Float64</C> and the compiler stops you, because a <C>Float32</C> and a <C>Float64</C> have different precision, so combining them is a conversion you must write, not one the language guesses:</P>
       <Note>This one is <strong>meant to be refused</strong>. Run it and the diagnostic is <C>CDZ0301</C>, "floating-point precisions differ", the same no-silent-widening rule that keeps <C>Int64</C> and <C>Float64</C> apart, now between the two float sizes.</Note>
       <Runnable
-        source={`(+ ((. Float32 of-int) 1) ((. Float64 of-int) 2))`}
+        source={`(+ (Float32.of-int 1) (Float64.of-int 2))`}
         expect="error"
       />
       <P>A float trades exactness for speed, and is honest about it. But when a rounding error would be a <em>bug</em>, as with money or exact ratios, you want the opposite trade. That's <em>exact fractions</em>, next.</P>
@@ -76,8 +76,8 @@ export default function Floats() {
       <Exercise
         id="floats:2"
         prompt={<>The two floats here must be the <em>same width</em> to divide. One operand is already a <C>Float32</C>, so convert the <C>5</C> at the matching width for <C>/</C> to work and <C>5 ÷ 2</C> to give <C>2.5</C>. Which of <C>Float32</C> / <C>Float64</C> goes in the blank?</>}
-        starter={`(/ ((. Float? of-int) 5) ((. Float32 of-int) 2))`}
-        solution={`(/ ((. Float32 of-int) 5) ((. Float32 of-int) 2))`}
+        starter={`(/ (Float?.of-int 5) (Float32.of-int 2))`}
+        solution={`(/ (Float32.of-int 5) (Float32.of-int 2))`}
         expected="2.5"
         hint={<>The other operand is a <C>Float32</C>, and widths don't mix, so convert at <C>Float32</C> too. Pick <C>Float64</C> instead and the compiler declines (<C>CDZ0301</C>, precisions differ).</>}
       />
