@@ -2577,10 +2577,13 @@ fn compare_on_a_float_names_the_relational_operators_as_the_fix() {
     let d = first_error(
         "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of x y)) (export f))",
     );
-    // An uncoded DECLINE (a carve-out the compiler will never realize), not a coded rejection.
+    // A permanent carve-out is a genuine user error, so it is a CODED rejection (CDZ0203/TypeMismatch —
+    // the "this operation is not defined on this type" class), not an uncoded decline (corpus-deprecation
+    // BUCKET-2). The actionable IEEE-partial-order message is preserved (asserted below).
     assert_eq!(
-        d.code, None,
-        "a permanent carve-out is an uncoded decline: {}",
+        d.code.as_deref(),
+        Some("CDZ0203"),
+        "a permanent float-compare carve-out is a coded CDZ0203 rejection: {}",
         d.message
     );
     assert!(

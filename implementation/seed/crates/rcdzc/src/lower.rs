@@ -1975,7 +1975,14 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
                 }
                 //= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
                 //# A floating-point type MUST NOT be treated as offering an ordering in the sense of this section, because its relational operators are the IEEE partial order defined for the floating-point type rather than a total order — so the requirement that an offered ordering be total does not apply to the floating-point relational operators.
-                None if float_operand(db, &operands) => Core::Poison(Reject::decline(
+                // A floating-point three-way `compare` is a PERMANENT carve-out (float offers only the IEEE
+                // PARTIAL order — a NaN is unordered — not the total order `compare` reports), so it is a
+                // genuine user error, not a not-yet decline: coded CDZ0203 (the same "this operation is not
+                // defined on this type" class as bare `=` on a function/type value), keeping the actionable
+                // IEEE-partial-order message that points at `<`/`<=`/`>`/`>=`. (v-corpus-declines corpus-
+                // deprecation BUCKET-2: assert the code, replacing the former codeless decline.)
+                None if float_operand(db, &operands) => Core::Poison(Reject::coded(
+                    Code::TypeMismatch,
                     "`compare` needs a total order, but a floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no three-way comparison — use the relational operators `<`, `<=`, `>`, `>=` instead",
                 )),
                 None => Core::Poison(Reject::decline(

@@ -1034,14 +1034,16 @@
 ; three-way twin of the float-compound `<` decline; distinct from it in that a BARE float `<` COMPUTES (the
 ; IEEE partial order) while a bare float `compare` cannot exist (there is no total order to report).
 (case
-  "a runtime float compare declines — a float offers the IEEE partial order, not a total three-way"
+  "a runtime float compare is a coded CDZ0203 — a float offers the IEEE partial order, not a total three-way"
   (doc
     "`(Ordering.of a b)` over runtime Float64 params asks for a THREE-WAY total-order comparison, but a
            floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no
-           `compare` — it DECLINES on all backends (reject-don't-miscompile, §319). Contrast the runtime scalar/
-           String/BigInt/Rational `compare` cases, which compute: those types offer a total order, float does
-           not. The actionable path is the relational operators `<`/`<=`/`>`/`>=`, which DO work on floats
-           (the IEEE partial order). The three-way twin of the float-compound ordering decline above.")
+           `compare` — a PERMANENT carve-out, so it is REJECTED with a coded CDZ0203 (reject-don't-miscompile,
+           §319), NOT a codeless not-yet decline. Contrast the runtime scalar/String/BigInt/Rational `compare`
+           cases, which compute: those types offer a total order, float does not. The actionable path is the
+           relational operators `<`/`<=`/`>`/`>=`, which DO work on floats (the IEEE partial order). The
+           three-way twin of the float-compound ordering decline above. (Corpus-deprecation BUCKET-2: assert
+           the code + the actionable message, replacing the former codeless decline.)")
   (input
     (do
       (def
@@ -1052,10 +1054,10 @@
           ((Ordering.Equal _) 2)
           ((Ordering.Greater _) 3)))
       (export main)))
-  ; Pin the ACTIONABLE message, not just the decline: the diagnostic must NAME the IEEE-partial-order
-  ; reason so a reader reaches for the relational operators. A future wording degrade to a terse decline
-  ; flips this case (portable-diagnostic-test capability, the first real (message ..) use).
-  (declines (message "IEEE partial order")))
+  ; Pin the ACTIONABLE message, not just the code: the diagnostic must NAME the IEEE-partial-order
+  ; reason so a reader reaches for the relational operators. A future wording degrade to a terse reject
+  ; flips this case (portable-diagnostic-test capability).
+  (error CDZ0203 (message "IEEE partial order")))
 
 ; A runtime COMPOUND `compare` is orderable (all-orderable leaves) but the descriptor-guided `value-cmp`
 ; three-way heap walk is not wired yet — a genuine NOT-YET (distinct from the float permanent carve-out). The
