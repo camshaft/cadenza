@@ -2268,7 +2268,14 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             let fn_tail =
                                 if wrap.is_none() && option_tail.is_none() && record_tail.is_none()
                                 {
-                                    fn_not_applied_hint(&annot_ty, &expr_ty, &db.name_ctx())
+                                    // Prefer the suggest-NEG hint when the value is a partial subtraction
+                                    // `(- e)` (the user most likely meant to NEGATE `e`) over the generic
+                                    // "apply it to N more arguments" — `(- e)` curries to `(-> T T)` but
+                                    // reads as negation. Falls back to the generic fn-not-applied hint for
+                                    // any other unapplied function.
+                                    suggest_neg_hint(db, expr).or_else(|| {
+                                        fn_not_applied_hint(&annot_ty, &expr_ty, &db.name_ctx())
+                                    })
                                 } else {
                                     None
                                 };

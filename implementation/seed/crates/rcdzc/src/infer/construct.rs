@@ -2392,6 +2392,31 @@ pub(crate) fn fn_not_applied_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> 
     ))
 }
 
+/// A suggest-NEGATION message TAIL when `node` is an arity-1 subtraction `(- e)` used where a NON-function
+/// value is expected. Since the operator removed unary-`-`-as-negation, `(- e)` is a PARTIALLY-applied
+/// binary subtraction that CURRIES to `(-> T T)` (like `(+ 1)`), NOT negation — so a user who wrote `-e`
+/// expecting to negate `e` gets the generic "unapplied function" clash, which never names the likely
+/// intent. Detect the arity-1-`Prim::Sub` shape (the ONE case where "you probably meant to negate" is the
+/// right story) and point at the real negation operators `Num.neg` / `<T>.neg`. Node-aware (the type-only
+/// `fn_not_applied_hint` cannot tell a partial subtraction from any other `(-> T T)`), so it is a distinct
+/// tail wired at the value-position mismatch sites that carry the offending node. `None` for anything else
+/// (a genuine partial like `(+ 1)`, a bare fn name, `String.slice s` — those keep the plain
+/// `fn_not_applied_hint`). Tail only, no mechanical fix (whether the author wants `Num.neg e` or `(- a e)`
+/// is their intent to resolve).
+pub(crate) fn suggest_neg_hint(db: &mut Db, node: StructId) -> Option<String> {
+    let Resolved::Apply { head, args } = resolved_of(db, node) else {
+        return None;
+    };
+    if args.len() != 1 || crate::eval::meta_apply_of(db, head) != Some(crate::resolved::Prim::Sub) {
+        return None;
+    }
+    Some(
+        " — this is `(- e)`, a partially-applied subtraction (a function `(-> T T)`), not negation; \
+         to NEGATE a value use `Num.neg` (or the per-type `<T>.neg`, e.g. `Int64.neg`)"
+            .to_string(),
+    )
+}
+
 /// The `(prefix, suffix, verb)` of a prelude CONVERSION that turns a value of type `actual` into the
 /// `expected` type in ONE shot — the coercion-wrap repair for a mismatch the numeric model / text model
 /// has a total conversion for. Today: `String` where `Bytes` is wanted → `(String.to-bytes …)` (the total
