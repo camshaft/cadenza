@@ -205,6 +205,11 @@ pass	ml/277-comment-leading-nonfirst-call-arg
 pass	ml/278-comment-trailing-last-call-arg
 pass	ml/279-comment-trailing-hugged-lambda-call-arg
 pass	ml/28-match-to-let-record
+pass	ml/280-comment-leading-first-tuple-elem
+pass	ml/281-comment-leading-nonfirst-tuple-elem
+pass	ml/282-comment-leading-first-set-elem
+pass	ml/283-comment-leading-grouped-expr
+pass	ml/284-comment-trailing-last-tuple-elem
 pass	ml/29-match-refutable-sum-ctor
 pass	ml/30-match-refutable-literal
 pass	ml/31-match-refutable-guarded
