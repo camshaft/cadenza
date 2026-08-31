@@ -19221,6 +19221,26 @@
             (export main)))
   (output (: 750 Int64)))
 
+(case "a set membership element may be a RUNTIME value expression, and compound elements match by value equality"
+  (doc    "The named elements of a `#set(…)` pattern are ORDINARY value expressions (not binders), so an
+           element may be a runtime name — `(match s (#set(k) 1) (_ 0))` with `k` a parameter tests whether
+           the set contains the runtime value `k`, exactly as a constant element would (the set twin of the
+           map-key-is-a-value rule). And a compound element is compared by the set's own value equality:
+           `#set(#tuple(1 2))` matches a set that contains that tuple regardless of the set's node layout.
+           `has(#set(3,4),3)`=1 (runtime 3 present), `has(#set(3,4),7)`=0 (7 absent), `pair-has` over a set
+           CONTAINING `#tuple(1 2)`=1, over one WITHOUT it=0 → weighted 1000+0+10+0 = 1010. Pins the runtime
+           element expression + compound-element value-equality paths distinct from the constant-Int case above.")
+  (input  (do
+            (def (has (: s (Set Int64)) (: k Int64)) (match s (#set(k) 1) (_ 0)))
+            (def (pair-has (: s (Set (Tuple Int64 Int64)))) (match s (#set(#tuple(1 2)) 1) (_ 0)))
+            (def (main)
+              (+ (* 1000 (has #set(3 4) 3))
+              (+ (* 100  (has #set(3 4) 7))
+              (+ (* 10   (pair-has #set(#tuple(1 2) #tuple(3 4))))
+                         (pair-has #set(#tuple(3 4)))))))
+            (export main)))
+  (output (: 1010 Int64)))
+
 (case "a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)"
   (input  (do (def (f (: s (Set Int64))) (match s (#set(1) 0))) (export f)))
   (error  CDZ0210 (message "a set match must end in a catch-all")))
