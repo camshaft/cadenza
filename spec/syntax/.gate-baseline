@@ -225,7 +225,10 @@ pass	ml/295-comment-trailing-infix-operand
 pass	ml/296-comment-trailing-match-arm-whole
 pass	ml/297-comment-after-match-bodied-def-leads-next
 pass	ml/298-comment-mid-expr-between-infix-operands
+pass	ml/299-multiline-doc-header-on-type
 pass	ml/30-match-refutable-literal
+pass	ml/300-multiline-doc-header-on-effect
+pass	ml/301-doc-before-effect-two-ops
 pass	ml/31-match-refutable-guarded
 pass	ml/32-match-refutable-nested
 pass	ml/33-match-multi-clause
