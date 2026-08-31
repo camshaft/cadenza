@@ -3536,40 +3536,12 @@ fn a_record_row_op_over_a_non_record_names_the_kind() {
     }
 }
 
-#[test]
-fn a_tuple_row_op_over_a_non_tuple_names_the_kind() {
-    // The tuple twin of the record-row-op kind check: `Tuple.concat`/`split-at`/`pop` over a definite
-    // non-tuple operand (`(Tuple.remove n)` for `n : Int64`) was check-invisible and compiled to a
-    // misleading "Tuple.<op> over a runtime tuple is not yet built" (the operand is not a tuple at
-    // all). Now CDZ0201 names the op + the non-tuple type.
-    let msg = |src: &str| -> String {
-        crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.message.contains("requires a tuple"))
-            .unwrap_or_else(|| panic!("no non-tuple-operand fault for {src}"))
-            .message
-    };
-    for (op, rest) in [("concat", "n"), ("remove", ""), ("split-at", "1")] {
-        let src = format!("(module m (def (g (: n Int64)) (Tuple.{op} n {rest})) (export g))");
-        let m = msg(&src);
-        assert!(
-            m.contains(&format!("`Tuple.{op}` requires a tuple")) && m.contains("Int64"),
-            "{op}: {m}"
-        );
-    }
-    // NO false positive: a real tuple operand, and a bare (unconstrained `Any`) parameter, are clean.
-    for ok in [
-        "(module m (def (g (: t (Tuple Int64 Int64))) (Tuple.remove t)) (export g))",
-        "(module m (def (f t) (Tuple.remove t)) (def (main) 1) (export main))",
-    ] {
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                .iter()
-                .any(|d| d.message.contains("requires a tuple")),
-            "a tuple / unconstrained operand is not flagged: {ok}"
-        );
-    }
-}
+// [migrated → spec/semantics/15-rows-and-open-sums.sexp] a_tuple_row_op_over_a_non_tuple_names_the_kind:
+// a tuple reshape op over a DEFINITE non-tuple operand names the op + the non-tuple type — CDZ0201
+// "`Tuple.concat`/`Tuple.remove`/`Tuple.split-at` requires a tuple, found Int64" (corpus 15-rows). The
+// no-false-positive faces (a real (Tuple …) operand, and an unconstrained Any parameter whose reshape
+// check defers to the call site) are the bare-parameter helper cases in 09-functions. All PASS on a fresh
+// dev build (message pins fresh-build-verified).
 
 // [migrated → spec/semantics/15-rows-and-open-sums.sexp] record_extend_with_pop_are_derived_row_ops_with_presence_checks:
 // the DERIVED row ops (extend/with/pop). Presence-check faces are the extend/with/pop cases in 15-rows:
