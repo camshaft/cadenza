@@ -933,6 +933,14 @@ pub enum ResultLower {
     /// [`emit_bytes_roundtrip_apply_body`], but the buffer + retarea come from `cabi_realloc` like
     /// [`ResultLower::SpillRecord`]). `result_vts = [i32]` (the retptr). Needs memory + `cabi_realloc`.
     CopyBytes,
+    /// A payloadless-`enum` result whose guest decl case-order DIFFERS from the WIT case-order (same case
+    /// NAMES, permuted). The def returns the guest's raw i32 disc; the boundary WIT `enum` reads the wire disc
+    /// per its OWN order, so the wrapper REMAPS guest-disc → WIT-disc by name before returning it (`perm[i]` =
+    /// the WIT case index of the guest's `i`th case). An IDENTITY permutation is just `Passthrough`; this
+    /// variant is used only for a genuine reorder (the name-keyed enum-boundary remap — the disc analogue of
+    /// the record RESULT's write-by-name field reorder). `result_vts = [i32]`; no memory. (v-rust-backend
+    /// WIT-semantics ruling: an enum case-order mismatch is a should-work name-keyed remap, SHAPE 64.)
+    EnumRemap { perm: Vec<u32> },
 }
 
 /// A recursive plan for writing ONE value-heap value's canonical-ABI form into linear memory — the reducer
@@ -1503,6 +1511,38 @@ fn core_module_impl(
                 let retptr = next_local + 1;
                 next_local += 2;
                 emit_result_copy_bytes(rec, retptr, &mut next_local, realloc_abs, &imp, &mut inner);
+            }
+            // A reordered payloadless-enum result: the def left its GUEST disc on the stack; remap it to the
+            // WIT disc by name (`perm[guest] = wit`) via a nested-if chain, leaving the WIT disc as the return
+            // value. `perm` is only present for a genuine reorder (identity is `Passthrough`), so the chain has
+            // ≥2 arms. Pure wasm (compare/select on i32) — no runtime op, no memory.
+            if let ResultLower::EnumRemap { perm } = &wrap.result {
+                let d = next_local;
+                next_local += 1;
+                inner.push(op::LOCAL_SET);
+                uleb128(d as u64, &mut inner); // d = guest disc (consumes the def result)
+                let n = perm.len();
+                for (i, &wit) in perm.iter().enumerate() {
+                    if i + 1 == n {
+                        // The final `else` value: perm[last].
+                        inner.push(op::I32_CONST);
+                        crate::backend::wasm::encode::sleb128(wit as i64, &mut inner);
+                    } else {
+                        // `if d == i { perm[i] } else { …next… }`
+                        inner.push(op::LOCAL_GET);
+                        uleb128(d as u64, &mut inner);
+                        inner.push(op::I32_CONST);
+                        crate::backend::wasm::encode::sleb128(i as i64, &mut inner);
+                        inner.push(op::I32_EQ);
+                        inner.push(op::IF);
+                        inner.push(wasm_abi::CORE_I32); // block returns i32
+                        inner.push(op::I32_CONST);
+                        crate::backend::wasm::encode::sleb128(wit as i64, &mut inner);
+                        inner.push(op::ELSE);
+                    }
+                }
+                // Close each nested `if` (one END per arm but the last): append `n-1` END bytes.
+                inner.resize(inner.len() + n.saturating_sub(1), op::END);
             }
             inner.push(op::END);
             let n_locals = next_local - p;

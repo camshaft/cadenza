@@ -8410,13 +8410,23 @@ fn record_interface_export(
                     .map(|v| kebab_extern_name(&v.name))
                     .collect()
             };
-            if guest_cases != wit_cases {
-                return None; // a case REORDER would need a runtime disc remap — later increment
+            if guest_cases.len() != wit_cases.len() {
+                return None; // a genuinely different case set (not just a reorder) — decline
             }
-            return Some((
-                ResultLower::Passthrough,
-                vec![crate::backend::wasm::lir::ValType::I32.byte()],
-            ));
+            // `perm[guest_disc] = wit_disc` (the WIT index of the guest's `i`th case, matched by name). A guest
+            // case with no WIT name-match declines (`?` on `position`). Identity → Passthrough (order matches);
+            // a genuine reorder → EnumRemap, which remaps the disc by name in the wrapper (SHAPE 64, the
+            // name-keyed enum-boundary remap — the disc analogue of the record RESULT's write-by-name reorder).
+            let mut perm: Vec<u32> = Vec::with_capacity(guest_cases.len());
+            for gc in &guest_cases {
+                perm.push(wit_cases.iter().position(|wc| wc == gc)? as u32);
+            }
+            let lower = if perm.iter().enumerate().all(|(i, &p)| p == i as u32) {
+                ResultLower::Passthrough
+            } else {
+                ResultLower::EnumRemap { perm }
+            };
+            return Some((lower, vec![crate::backend::wasm::lir::ValType::I32.byte()]));
         }
         // Otherwise a compound that SPILLS to memory (flat count > MAX_FLAT_RESULTS): build the recursive
         // canonical writer. A flat 1-value record (a single-scalar-field record) is a later slice — the core
