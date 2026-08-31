@@ -2584,11 +2584,14 @@
 (case
   "a record field with no value expression is rejected, not a crash"
   (doc
-    "A record entry `(a)` names the field `a` but supplies no value: `(record (a))` is ill-formed
-           — a record entry is a `(name value)` pair. The compiler rejects it (CDZ0201), never
+    "A record entry `(= a)` names the field `a` but supplies no value: `#record((= a))` is ill-formed
+           — a record entry is a `(= name value)` pair. The compiler rejects it (CDZ0201), never
            panicking reaching for the absent value node. Same never-crash class as the `(let ((x)) x)`
-           binding-with-no-value case above, for a record entry.")
-  (input #record((= = a)))
+           binding-with-no-value case above, for a record entry. (The prior `#record((= = a))` input was a
+           nativization artifact — a well-formed `=`-keyed field whose value `a` is merely unbound, which
+           tests CDZ0101 unbound, not the no-value shape this case is for; `#record((= a))` is the genuine
+           missing-value field.)")
+  (input #record((= a)))
   (error CDZ0201))
 
 (case
