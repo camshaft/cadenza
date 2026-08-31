@@ -387,7 +387,6 @@ pass	Set.to-list over a BORROWED param source reused across a loop borrows it (n
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list over an all-nullary sum enumerates in discriminant order
-pass	Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	Set.to-list places a NaN element after the positives but before the negatives, by canonical byte order
 pass	Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)
@@ -3764,7 +3763,6 @@ pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float absent from a Set is not found
 pass	a runtime float addition emits the machine add
 pass	a runtime float addition with nan propagates the nan
-pass	a runtime float compare declines — a float offers the IEEE partial order, not a total three-way
 pass	a runtime float divide by zero yields a non-trapping infinity
 pass	a runtime float divided by ITSELF is not folded to 1.0 — 0.0/0.0 is nan, no trap
 pass	a runtime float division rounds under the fixed mode
@@ -6077,7 +6075,6 @@ pass	eval does not execute an Ast selected from a collection at run time
 pass	eval does not execute the result of a nested eval — no runtime AST interpreter
 pass	eval does not execute the result of read — even over a constant string
 pass	eval does not forge a private constructor NESTED in a compound
-pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval materializes a heap LIST from a spliced quasiquote
 pass	eval of a NAME bound to a quote is rejected — the binding hides the construction
@@ -7178,7 +7175,6 @@ pass	read normalizes numeric token spellings to canonical float values
 pass	read of a bare b token is an Ast.Name, not a byte-literal
 pass	read of a leading-'+' BEYOND-i64 integer token is an Ast.Name too (both sides of the boundary)
 pass	read of a leading-'+' integer token is an Ast.Name, not an Ast.Int (within i64)
-pass	read of the empty string declines
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a field of a record built from runtime elements folds to the field
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
