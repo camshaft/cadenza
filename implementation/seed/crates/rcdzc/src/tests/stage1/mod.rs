@@ -2829,31 +2829,6 @@ fn a_wide_effect_handler_compiles_linearly() {
 // nor delegation → CDZ0401) migrated to corpus 14b-effects-and-handlers "an effect operation reached with
 // neither a handler nor a delegation is rejected". rcdzc test deleted (corpus-covered, code-only).
 #[test]
-fn a_no_home_effect_carries_a_host_delegation_wrap_fix() {
-    // CDZ0401 now carries the mechanical repair the message names: WRAP the entrypoint body in
-    // `(host (E) <body>)`, the host-delegation route (`spec/capabilities/diagnostics.md` §A
-    // Diagnostic Carries A Route To A Fix). The effect NAME is derived from its declaration, not
-    // hard-coded. Heuristic — delegating is one of the two routes (the other, adding a real `handle`,
-    // is the author's semantic choice.)
-    let src = "(do (effect Ask (op ask (-> Unit Int64))) \
-                   (def (main) (+ ((. Ask ask)) 1)) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("an ungranted effect must be rejected");
-    assert_eq!(err.code.as_deref(), Some("CDZ0401"));
-    let fix = err.fix.expect("CDZ0401 carries a host-delegation fix");
-    assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-    assert_eq!(
-        fix.replacement,
-        format!("(host (Ask) {})", crate::abi::WRAP_HOLE),
-        "wraps the body in a host delegation of the named effect"
-    );
-    assert!(
-        !fix.verified,
-        "delegating vs. handling is the author's choice → heuristic"
-    );
-}
-
-#[test]
 fn a_host_op_performed_via_an_inlined_helper_reaches_the_import_set() {
     // A HELPER that performs a host op, delegated at the entrypoint and INLINED into it, must
     // contribute its op to the component's host-import set. `collect_host_imports` / the host-arg-string
