@@ -50,6 +50,13 @@ pass	ml/50-const-force-eval-infix
 pass	ml/51-effect-op-resource-marker-first-param
 pass	ml/52-effect-op-resource-marker-second-param
 pass	ml/53-effect-op-no-resource-marker
+pass	ml/54-neg-prefix-name
+pass	ml/55-neg-prefix-call
+pass	ml/56-neg-prefix-member
+pass	ml/57-neg-tighter-than-plus
+pass	ml/58-neg-parenthesized-operand
+pass	ml/59-neg-signed-literal
+pass	ml/60-mul-of-signed-literals
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
