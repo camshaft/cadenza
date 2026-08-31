@@ -1571,6 +1571,27 @@ impl<'a> Parser<'a> {
                 lvl_entered: bool,
                 lvl_num: bool,
             },
+            // An `@tag( … )` annotation GLUED-CALL name mid-read: the arg list of `@tag(a, b)` (whose result
+            // `(tag a b)` becomes the annotation `name`) descends on the worklist, one arg per level, instead
+            // of recursing `arg_exprs -> expr` — so a nested `@a(@b(@c(…)))` no longer grows the native stack.
+            // `head` = the `@` name; `bare` = the `tag` name; `name_span` its span (for the `(tag …)` span);
+            // `args` the collected args; `leading` the current arg's leading comments; `saved_arm_bar` the
+            // arm-bar flag to restore after the `)`. `at_pos`/`at_span` + the `lvl_*` are the enclosing `@`
+            // state, replayed to build the `TCont`/`Cont::At` form-descent once the name is complete.
+            AtArgs {
+                head: StructId,
+                bare: StructId,
+                name_span: Span,
+                args: Vec<StructId>,
+                leading: Vec<Lead>,
+                saved_arm_bar: bool,
+                at_pos: usize,
+                at_span: Span,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+                lvl_num: bool,
+            },
             // An `@ann <form>` annotation awaiting its annotated FORM. `head` = the `@` name; `name` = the
             // annotation name (bare, or a glued call `(tag "x")` read inline at dispatch). The form is read
             // PREFIX-ONLY (descended at PREFIX_ONLY_PREC). `at_pos`/`form_pos` are the token slots the
@@ -2226,8 +2247,8 @@ impl<'a> Parser<'a> {
                         // (descended at PREFIX_ONLY_PREC — no postfix/unit/infix). The `@`'s OWN depth guard
                         // is handled INLINE (byte-identical to `@`'s early return) so a `@a @b @c … def`
                         // stack declines at the same point/shape; the form level's own guard covers a deep
-                        // form. (NOTE: the glued-call name args still use the recursive inline arg_exprs — a
-                        // minor remaining vector for a pathological `@tag(f(g(…)))`, to convert before I8.)
+                        // form. The glued-call name args (`@tag(a, b)`) descend on the worklist via
+                        // Cont::AtArgs (below), so a nested `@a(@b(@c(…)))` no longer recurses.
                         let at_pos = self.pos;
                         self.bump(); // `@`
                         let head = self.name("@", cur_start);
@@ -2238,12 +2259,40 @@ impl<'a> Parser<'a> {
                             if self.at(Kind::LParen)
                                 && self.prev_span().end == self.cur_span().start
                             {
-                                let call_args = self.arg_exprs();
-                                let call_span = name_span.merge(self.prev_span());
-                                let mut items = Vec::with_capacity(call_args.len() + 1);
-                                items.push(bare);
-                                items.extend(call_args);
-                                self.list(items, call_span)
+                                // GLUED call `@tag(a, b)` -> name `(tag a b)`. De-recurse the arg list onto
+                                // the worklist (Cont::AtArgs, mirroring `arg_exprs`'s arm-bar + comment
+                                // handling) instead of the recursive `arg_exprs` -> `expr`, so a nested
+                                // `@a(@b(@c(…)))` no longer grows the native stack.
+                                self.expect(Kind::LParen, "`(`");
+                                let saved_arm_bar = self.arm_bar_terminates;
+                                self.arm_bar_terminates = false;
+                                if self.at(Kind::RParen) {
+                                    // Empty glued call `@tag()` -> `(tag)` (one-element list), no descent.
+                                    self.expect(Kind::RParen, "`)`");
+                                    self.arm_bar_terminates = saved_arm_bar;
+                                    let call_span = name_span.merge(self.prev_span());
+                                    self.list(vec![bare], call_span)
+                                } else {
+                                    // Descend the FIRST argument as a fresh level; Cont::AtArgs collects the
+                                    // rest, builds `(tag args)`, then runs the `@` form descent on resume.
+                                    let leading = self.take_comments_here();
+                                    pending.push(Cont::AtArgs {
+                                        head,
+                                        bare,
+                                        name_span,
+                                        args: Vec::new(),
+                                        leading,
+                                        saved_arm_bar,
+                                        at_pos,
+                                        at_span: cur_start,
+                                        lvl_min_prec: cur_min_prec,
+                                        lvl_spine: spine,
+                                        lvl_entered: entered,
+                                        lvl_num: prefix_is_number,
+                                    });
+                                    cur_min_prec = crate::token::PREC_SEQ + 1;
+                                    continue; // descend: read the first glued-call argument
+                                }
                             } else {
                                 bare
                             }
@@ -3490,6 +3539,98 @@ impl<'a> Parser<'a> {
                     pf_spine = 0;
                     reading = false;
                     continue;
+                }
+                Some(Cont::AtArgs {
+                    head,
+                    bare,
+                    name_span,
+                    mut args,
+                    leading,
+                    saved_arm_bar,
+                    at_pos,
+                    at_span,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                    lvl_num,
+                }) => {
+                    // `left` is a delivered glued-call argument — wrap its leading comment + a same-line
+                    // trailing comment on the LAST arg (gated on `at(RParen)`, the PR#758 rule), matching
+                    // `arg_exprs` (and the postfix `Cont::Call`).
+                    let arg = self.wrap_comments(leading, left);
+                    if self.at(Kind::RParen) {
+                        let trailing = self.take_trailing_comment_here();
+                        args.push(self.wrap_comment_after(trailing, arg));
+                    } else {
+                        args.push(arg);
+                    }
+                    if self.sep_continue(Kind::RParen) {
+                        // Another argument follows — capture its leading comments + descend it.
+                        let leading = self.take_comments_here();
+                        pending.push(Cont::AtArgs {
+                            head,
+                            bare,
+                            name_span,
+                            args,
+                            leading,
+                            saved_arm_bar,
+                            at_pos,
+                            at_span,
+                            lvl_min_prec,
+                            lvl_spine,
+                            lvl_entered,
+                            lvl_num,
+                        });
+                        cur_min_prec = crate::token::PREC_SEQ + 1;
+                        reading = true;
+                        continue; // read the next glued-call argument as a fresh level
+                    }
+                    // Arguments done — close `)`, restore arm_bar, build the annotation name `(tag arg…)`.
+                    self.expect(Kind::RParen, "`)`");
+                    self.arm_bar_terminates = saved_arm_bar;
+                    let call_span = name_span.merge(self.prev_span());
+                    let mut items = Vec::with_capacity(args.len() + 1);
+                    items.push(bare);
+                    items.extend(args);
+                    let name = self.list(items, call_span);
+                    // Now the `@` form descent — identical to the inline `@` setup, but with the enclosing
+                    // level state replayed from the saved `lvl_*`: carry any docs from the `@` slot to the
+                    // form slot, then either trip the `@`'s own guard inline (`(@ name <error>)`) or push
+                    // Cont::At and read the annotated FORM prefix-only.
+                    let form_pos = self.pos;
+                    self.carry_docs(at_pos, form_pos);
+                    if self.depth >= crate::sexpr::MAX_NESTING_DEPTH {
+                        if !self.depth_exceeded {
+                            self.error("expression nests too deeply to parse");
+                            self.depth_exceeded = true;
+                        }
+                        let err = self.error_node(at_span);
+                        left = self.list(vec![head, name, err], at_span.merge(self.prev_span()));
+                        cur_start = at_span;
+                        cur_min_prec = lvl_min_prec;
+                        spine = lvl_spine;
+                        entered = lvl_entered;
+                        pf_pending = true;
+                        pf_num = lvl_num;
+                        pf_spine = 0;
+                        reading = false;
+                        continue;
+                    }
+                    pending.push(Cont::At {
+                        head,
+                        name,
+                        at_pos,
+                        form_pos,
+                        at_span,
+                        lvl_min_prec,
+                        lvl_spine,
+                        lvl_entered,
+                        lvl_num,
+                    });
+                    cur_start = at_span;
+                    cur_min_prec = PREFIX_ONLY_PREC;
+                    reading = true;
+                    continue; // descend: read the annotated form prefix-only
                 }
                 Some(Cont::At {
                     head,
