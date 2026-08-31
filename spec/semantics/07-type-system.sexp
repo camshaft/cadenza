@@ -1712,6 +1712,34 @@
   (input  (do (def (main) (+ Int64 1)) (export main)))
   (error  CDZ0201 (message "kind boundary") (not "Int64 and Type")))
 
+; --- DEF-shadowing a prelude TYPE name is a plain rebind; the shadowed name as a payload still faults ---
+;    (migrated from rcdzc shadowing_a_prelude_payload_type_name_is_a_plain_rebind_not_a_phantom_variant_fault)
+; Defining a value named after a prelude type — `(def (Int64) 1)` — is a plain rebind, not a fault: it
+; shadows the prelude type name in value/binding position and compiles cleanly. The variant-payload
+; validation must NOT re-check the PRELUDE's own sum payloads against the user's now-shadowed namespace
+; (a prelude payload typed `Int64` is not re-validated to find the name bound to a nullary function — that
+; produced a spurious "variant payload requires a type" at the prelude payload node, which has no source
+; span). The check is gated on user nodes, so it is NOT weakened: a USER variant that names the
+; value-shadowed `Int64` as its payload DOES still fault CDZ0203 (a non-type payload), at the user's node.
+
+(case "a def named after a prelude type name is a plain rebind and compiles"
+  (input  (do (def (Int64) 1) (def (main) (Int64)) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
+(case "a def shadowing the prelude String type name is likewise a plain rebind"
+  (input  (do (def (String) 1) (def (main) (String)) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
+(case "a USER variant naming a value-shadowed prelude type name as its payload still faults CDZ0203"
+  (doc    "The check is not weakened by gating on user nodes: with `Int64` shadowed by `(def (Int64) 1)`,
+           a user variant `(A Int64)` names a VALUE (the def) as its payload type — a non-type payload —
+           so it still faults CDZ0203, landing at the user's own payload node (a real span), not the
+           prelude's spanless node.")
+  (input  (do (def (Int64) 1) (type C (A Int64)) (def (main) 0) (export main)))
+  (error  CDZ0203))
+
 (case "comparing a user sum against a record (different compound kinds) names the kind boundary"
   (input  (do (type Color (Red)) (def (g (: c Color) (: r (Record (: x Int64)))) (= c r)) (export g)))
   (error  CDZ0201 (message "kind boundary")))
