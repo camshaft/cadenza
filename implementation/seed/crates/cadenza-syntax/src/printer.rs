@@ -4932,18 +4932,17 @@ mod tests {
     }
 
     #[test]
-    fn construction_spread_round_trips_for_list_set_map_record() {
+    fn construction_spread_round_trips_for_all_compounds() {
         // The `.. operand` CONSTRUCTION spread (value position, the twin of the pattern-rest) reads to a
-        // wrapped `(.. operand)` element and MUST round-trip through the ML surface for every compound that
-        // supports it — the construction side of the operator's "(.. v) everywhere" ruling. Pin the ML tree
-        // AND the parse→print→reparse round-trip so a printer/reader refactor can't silently break the
-        // spread surface (the class of round-trip hole that bit annotated-let #6676 / rationals #6678).
+        // wrapped `(.. operand)` element and MUST round-trip through the ML surface for every compound —
+        // the construction side of the operator's "(.. v) everywhere" ruling. Pin the ML tree AND the
+        // parse→print→reparse round-trip so a printer/reader refactor can't silently break the spread
+        // surface (the class of round-trip hole that bit annotated-let #6676 / rationals #6678).
         //
-        // NOTE: TUPLE construction spread `(.. a, 1)` is a KNOWN GAP — the printer renders it (`(.. a, 1)`)
-        // but neither reader accepts it back (it garbles to a `(. Qty of) <error>`), so it is NOT pinned
-        // here. Fixing it is a dual-path reader change (recursive `fn paren` + iterative `Cont::Paren`, kept
-        // in sync by the differential oracle) routed to v-syntax-nonrec-reader who owns the iterative
-        // machinery; add the tuple row here once that lands.
+        // TUPLE construction spread (`(.. a, 1)` leading, `(1, .. a)` trailing) closed the last gap: the
+        // printer always rendered it but neither reader accepted it back until the dual-path reader fix
+        // (recursive `fn paren` + iterative `Cont::Paren`, #6912) — landed by v-syntax-nonrec-reader with
+        // the differential oracle proving both readers agree. All 5 compounds now round-trip here.
         for (src, want_tree) in [
             ("def f(a) = [..a, 1]", "(def (f a) #list((.. a) 1))"),
             ("def f(a) = #(..a, 1)", "(def (f a) #set((.. a) 1))"),
@@ -4955,6 +4954,8 @@ mod tests {
                 "def f(b) = { ..b, a = 1 }",
                 "(def (f b) #record((.. b) (= a 1)))",
             ),
+            ("def f(a) = (..a, 1)", "(def (f a) #tuple((.. a) 1))"),
+            ("def f(a) = (1, ..a)", "(def (f a) #tuple(1 (.. a)))"),
         ] {
             let p = parser::read_ml(src);
             assert!(
