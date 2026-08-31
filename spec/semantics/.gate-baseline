@@ -9623,18 +9623,18 @@ pass	a set-pattern element that names no in-scope value is an unbound value refe
 pass	a top-level-do module member's Bool/Int mix is type-checked and rejected CDZ0203
 pass	the zero-leading list rest is IRREFUTABLE — it is accepted in a binding position and binds the whole list
 pass	unary negation is a built-in at arity 1 and is not flagged as a partial
-todo	a GUARDED set membership arm threads its guard, and a false guard falls through to a later arm
+pass	a GUARDED set membership arm threads its guard, and a false guard falls through to a later arm
 todo	a partial built-in operation (at at 1 of 2 args) returned from an exported def is rejected
 todo	a partial built-in operation (slice at 2 of 3 args) as an unconsumed value is rejected
 todo	a partial built-in operation spelled as a NESTED spine is rejected identically to the flat form
 todo	a record pattern with a trailing rest binds the named fields and the residual record
-todo	a set membership element may be a RUNTIME value expression, and compound elements match by value equality
-todo	a set membership match `#set(e…)` matches when the set contains every named element (with fall-through + catch-all)
-todo	a set pattern disjoint from the scrutinee does not match
-todo	a set pattern is order-independent (a set is unordered)
-todo	a set pattern matches a scrutinee set with the SAME elements
-todo	a set pattern naming a SUBSET matches by containment, not equality
-todo	a set pattern naming an element the scrutinee lacks does NOT match
-todo	a set pattern with a RUNTIME in-scope element matches by membership of its value
-todo	an empty membership pattern #set() matches ANY set, and a duplicate element is idempotent
-todo	the empty set pattern matches every set
+pass	a set membership element may be a RUNTIME value expression, and compound elements match by value equality
+pass	a set membership match `#set(e…)` matches when the set contains every named element (with fall-through + catch-all)
+pass	a set pattern disjoint from the scrutinee does not match
+pass	a set pattern is order-independent (a set is unordered)
+pass	a set pattern matches a scrutinee set with the SAME elements
+pass	a set pattern naming a SUBSET matches by containment, not equality
+pass	a set pattern naming an element the scrutinee lacks does NOT match
+pass	a set pattern with a RUNTIME in-scope element matches by membership of its value
+pass	an empty membership pattern #set() matches ANY set, and a duplicate element is idempotent
+pass	the empty set pattern matches every set
