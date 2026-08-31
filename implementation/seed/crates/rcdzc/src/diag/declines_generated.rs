@@ -24,6 +24,8 @@ pub enum DeclineId {
     PrimAsValueNeedsClosure,
     ///An effect handler in a form the tail-resumptive fold does not specialize (cross-function / non-tail resume) — v-effects #6219.
     TailResumptiveFoldUnhandledForm,
+    ///Matching over a heap-backed Set/Map scrutinee — even a whole-value binder — needs a heap walk the compiler does not yet emit; surfaced by the dedup self-suppression fix (#6417).
+    MatchOverHeapCollectionScrutinee,
 }
 impl DeclineId {
     /// The complete catalog (declared order — byte-deterministic).
@@ -36,6 +38,7 @@ impl DeclineId {
         DeclineId::WasmMapPatternRuntimeMap,
         DeclineId::PrimAsValueNeedsClosure,
         DeclineId::TailResumptiveFoldUnhandledForm,
+        DeclineId::MatchOverHeapCollectionScrutinee,
     ];
     /// The stable kebab-case registry key (the durable referent `data/unsupported.sexp` pins).
     pub fn key(self) -> &'static str {
@@ -52,6 +55,7 @@ impl DeclineId {
             DeclineId::WasmMapPatternRuntimeMap => "wasm-map-pattern-runtime-map",
             DeclineId::PrimAsValueNeedsClosure => "prim-as-value-needs-closure",
             DeclineId::TailResumptiveFoldUnhandledForm => "tail-resumptive-fold-unhandled-form",
+            DeclineId::MatchOverHeapCollectionScrutinee => "match-over-heap-collection-scrutinee",
         }
     }
     /// The umbrella code this decline carries (`Some(CDZ0900)` = coded; `None` = still codeless).
@@ -65,6 +69,7 @@ impl DeclineId {
             DeclineId::WasmMapPatternRuntimeMap => Some(Code::UnsupportedConstruct),
             DeclineId::PrimAsValueNeedsClosure => Some(Code::UnsupportedConstruct),
             DeclineId::TailResumptiveFoldUnhandledForm => Some(Code::UnsupportedConstruct),
+            DeclineId::MatchOverHeapCollectionScrutinee => Some(Code::UnsupportedConstruct),
         }
     }
     /// A canonical one-line reason, independent of the runtime `format!` message's specifics.
@@ -91,6 +96,9 @@ impl DeclineId {
             DeclineId::PrimAsValueNeedsClosure => "a built-in operation used as a runtime value",
             DeclineId::TailResumptiveFoldUnhandledForm => {
                 "an effect handler in a form the tail-resumptive fold does not specialize"
+            }
+            DeclineId::MatchOverHeapCollectionScrutinee => {
+                "matching over a heap-backed Set or Map scrutinee"
             }
         }
     }

@@ -1350,10 +1350,11 @@ fn a_beta_reduced_name_copy_traces_back_to_its_source_user_node_for_diagnostics(
 #[test]
 fn an_import_form_is_named_as_unmodeled_not_a_typo_of_export() {
     // `import` is a KNOWN surface keyword (the ML reader parses `import { … } from "…"` → an
-    // `(import …)` top-level form) that this compiler does not yet model. Because `import`→`export` is
-    // only 2 edits, the generic keyword-typo path would suggest "did you mean `export`?" — an actively
-    // MISLEADING fix (an author who wrote `import` never meant its opposite). It now gets a specific
-    // "not yet modeled" message with NO export swap.
+    // `(import …)` top-level form) that the MODULE LINKER resolves, not this single-module compile path
+    // (a structural boundary — cross-module imports ARE realized via the linker; concierge seq-286
+    // ruling). Because `import`→`export` is only 2 edits, the generic keyword-typo path would suggest
+    // "did you mean `export`?" — an actively MISLEADING fix (an author who wrote `import` never meant its
+    // opposite). It now gets a specific linker-boundary message with NO export swap.
     let find = |src: &str| {
         crate::diagnostics(&mut crate::db::Db::load(parse(src)))
             .into_iter()
@@ -1366,8 +1367,8 @@ fn an_import_form_is_named_as_unmodeled_not_a_typo_of_export() {
     ] {
         let d = find(src);
         assert!(
-            d.message.contains("does not yet model") && d.message.contains("`import`"),
-            "names import as an unmodeled form: {}",
+            d.message.contains("module linker") && d.message.contains("`import`"),
+            "names import as a linker-boundary form: {}",
             d.message
         );
         assert!(
