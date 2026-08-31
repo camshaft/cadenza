@@ -19255,6 +19255,27 @@
             (export main)))
   (output (: 1010 Int64)))
 
+(case "a GUARDED set membership arm threads its guard, and a false guard falls through to a later arm"
+  (doc    "A `(guard #set(e…) cond)` arm matches when the set contains every named element AND the guard
+           holds; a false guard falls through to the SAME later arm as a missing element (the set twin of the
+           map/list guard threading). The guard reads the whole scrutinee — here `(> (Set.len s) 2)`. Over
+           `{1,2,3}`: contains 1 AND size 3 > 2 → the guarded arm → 100. Over `{1,2}`: contains 1 but size 2
+           is not > 2 → guard false → falls to the narrower `#set(1)` arm → 10. Over `{5,6}`: no 1 → the
+           catch-all → 1. Weighted 10000·100 + 100·10 + 1 = 1001001. Pins guard threading + guard-false
+           fall-through to a later membership arm + the mandatory catch-all.")
+  (input  (do
+            (def (g (: s (Set Int64)))
+              (match s
+                ((guard #set(1) (> (Set.len s) 2)) 100)
+                (#set(1) 10)
+                (_ 1)))
+            (def (main)
+              (+ (* 10000 (g #set(1 2 3)))
+              (+ (* 100   (g #set(1 2)))
+                          (g #set(5 6)))))
+            (export main)))
+  (output (: 1001001 Int64)))
+
 (case "a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)"
   (input  (do (def (f (: s (Set Int64))) (match s (#set(1) 0))) (export f)))
   (error  CDZ0210 (message "a set match must end in a catch-all")))
