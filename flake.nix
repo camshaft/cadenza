@@ -3367,6 +3367,65 @@
           echo "ok: quote-corpus — ${toString (builtins.length corpusFileNames)} files, per-case quote binary-AST round-trip (design-quote-corpus-roundtrip-pass)" > "$out"
         '';
 
+        # ── quote-corpus VERDICT harvest (inc-4, mirrors mkCorpusVerdict/`.#corpus-verdicts`; v-corpus-harness
+        # reviews for parity) — the `.quote-gate-baseline` regenerator input. Per eligible case, CLASSIFY the
+        # verdict (compile-declined → `todo`; else the round-trip's `cdz-run --quote-roundtrip --emit-verdict`
+        # tag `pass`/`fail`), write `<tag>\t<description>`, ALWAYS exit 0 (classify, not compare). An INELIGIBLE
+        # (quote-skip) case emits NO line (it is not a quote-corpus case → absent from the baseline; the header
+        # documents the single-component eligibility so an absence is not read as drift).
+        mkQuoteCorpusVerdict = { name, build, idx }:
+          pkgs.runCommand "quote-corpus-verdict-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRun ];
+            } ''
+            set -euo pipefail
+            : > "$out"
+            if [ -e ${build}/quote-skip ]; then
+              exit 0   # ineligible (module/peer/not-shredded) → no verdict line
+            fi
+            desc=$(cat ${build}/description)
+            if [ ! -e ${build}/emit.wasm ]; then
+              # compile DECLINED (quote-reify gap) → todo (the pass DRIVES this; flips to pass as reify broadens)
+              printf 'todo\t%s\n' "$desc" > "$out"
+              exit 0
+            fi
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            # CLASSIFY the round-trip: `pass` (both trials) / `fail` (a trial broke) — cdz-run writes the tag,
+            # ALWAYS exit 0 (a fail emits its verdict, does not fail the derivation — the whole-corpus check
+            # compares against the baseline). A rare `fail` is a real quote/codec/decode regression.
+            cdz-run ${build}/emit.wasm --quote-roundtrip "$(cat ${build}/component-name)" \
+              --emit-verdict "$TMPDIR/tag" --runtime ${runtimeDebug}
+            printf '%s\t%s\n' "$(cat "$TMPDIR/tag")" "$desc" > "$out"
+          '';
+
+        quoteCorpusVerdictsFileAgg = { name, file }:
+          let
+            shred = mkQuoteCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+            cases = map
+              (idx: mkQuoteCorpusVerdict { inherit name idx; build = mkQuoteCorpusBuild { inherit name shred idx; }; })
+              idxs;
+          in
+          pkgs.runCommand "quote-corpus-verdicts-${name}" { } ''
+            : > "$out"
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} >> "$out"'') cases}
+          '';
+
+        # `.#quote-corpus-verdicts` — the WHOLE-pass harvest (`<tag>\t<description>`, tag ∈ pass/todo; a `fail`
+        # is a regression signal). The input a `save`/regenerator writes `.quote-gate-baseline` from. Eligibility:
+        # single-component cases only (module/peer skipped) — record that in the baseline header so a "missing"
+        # case is not mistaken for drift. 🚨 A `--save` MUST reject a `fail`-SPIKE (nix build-phase starvation
+        # contamination, v-corpus-harness #6835) — check `grep -c '^fail' new` vs committed before baking.
+        quoteCorpusVerdictsAll = pkgs.runCommand "quote-corpus-verdicts" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${quoteCorpusVerdictsFileAgg { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+        '';
+
         # A corpus file's per-case check MAP `{ "<idx>" = execDrv; … }` — shred once, then one build+exec
         # chain per case. `pipeline`-style (no barrier): each case is an independent chain.
         corpusCaseChecks = { name, file }:
@@ -5038,6 +5097,12 @@
         # `<tag>\t<description>` line per case, concatenated across the whole corpus. `apps.save-baseline`
         # (pending v-xtask's xtask-save-baseline leaf on main) feeds this to the leaf to regenerate .gate-baseline.
         packages.corpus-verdicts = corpusVerdictsAll;
+
+        # `.#quote-corpus-verdicts` — the quote-corpus round-trip verdict harvest (inc-4; mirrors
+        # `.#corpus-verdicts`). `<tag>\t<description>` per eligible case (declined→todo, round-trip-ok→pass,
+        # fail→fail); the regenerator input a `save` writes `.quote-gate-baseline` from (single-component
+        # eligibility → module/peer cases absent by design). 🚨 reject a fail-SPIKE (starvation) before baking.
+        packages.quote-corpus-verdicts = quoteCorpusVerdictsAll;
 
         # The standalone baseline pruner bin (v-xtask-decompose). `nix build .#xtask-prune-baselines` →
         # result/bin/xtask-prune-baselines. Backs `apps.prune-baselines`; caches independently of xtask.
