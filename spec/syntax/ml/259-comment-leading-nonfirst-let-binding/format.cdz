@@ -1,0 +1,5 @@
+def f() -> Int64 =
+  let x = 1,
+    // note
+    y = 2 in
+  x + y

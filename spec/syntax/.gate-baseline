@@ -180,7 +180,12 @@ pass	ml/254-comment-before-then
 pass	ml/255-comment-before-else
 pass	ml/256-comment-trailing-sum-variant
 pass	ml/257-comment-trailing-match-arm
+pass	ml/258-comment-leading-first-let-binding
+pass	ml/259-comment-leading-nonfirst-let-binding
 pass	ml/26-match-to-let-var
+pass	ml/260-comment-leading-if-then-branch
+pass	ml/261-comment-leading-if-else-branch
+pass	ml/262-comment-leading-if-condition
 pass	ml/27-match-to-let-wildcard
 pass	ml/28-match-to-let-record
 pass	ml/29-match-refutable-sum-ctor

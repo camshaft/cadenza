@@ -7347,97 +7347,18 @@ mod tests {
         assert_eq!(assert_roundtrip("b[]", 80), "b[]");
     }
 
-    #[test]
-    fn an_own_line_comment_leading_a_let_binding_is_preserved_not_dropped() {
-        // An own-line `//` above a `let` binding (`let\n // note\n x = 1 in …`, or before a `,`-separated
-        // later binding) used to be DROPPED — the binding is a `(binder value)` pair, and the leading slot
-        // sat unfrained, so `is_let_shape` rejected the `(comment … (n e))`-wrapped binding → the whole
-        // `let` fell to the backtick call form. let_expr now captures it (wrap `(comment "text" binding)`),
-        // `is_let_shape` peels via `strip_field_comments`, and `print_let` renders the comment above the
-        // binding (forcing the bindings to break). `strip_comments` peels it; compiles to wasm.
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def f() -> Int64 = let\n  // note\n  x = 1 in x").arenas
-            ),
-            "(def (f) (: (let ((comment \"note\" (x 1))) x) Int64))",
-            "own-line comment before the first let binding is captured, not dropped"
-        );
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def f() -> Int64 = let x = 1,\n  // note\n  y = 2 in x + y")
-                    .arenas
-            ),
-            "(def (f) (: (let ((x 1) (comment \"note\" (y 2))) (+ x y)) Int64))",
-            "own-line comment before a non-first let binding is captured"
-        );
-        // Round-trips + idempotent (the layout is faithful even if the comment renders on the `let` line).
-        let src = "def f() -> Int64 = let\n  // note\n  x = 1 in x";
-        let printed = print(&parser::read_ml(src).arenas, 80);
-        assert_eq!(
-            print(&parser::read_ml(&printed).arenas, 80),
-            printed,
-            "idempotent"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml(&printed).arenas),
-            "(def (f) (: (let ((comment \"note\" (x 1))) x) Int64))",
-            "the let-binding comment round-trips"
-        );
-        // Clean lets (incl. multi-binding + pattern binder) keep their layout.
-        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
-        assert_eq!(
-            assert_roundtrip("let x = 1, y = 2 in x + y", 80),
-            "let x = 1, y = 2 in\nx + y"
-        );
-    }
-
-    #[test]
-    fn an_own_line_comment_leading_an_if_branch_is_preserved_not_dropped() {
-        // An own-line `//` above an `if` sub-expression — the condition (`if\n // note\n c then …`), the
-        // then-branch (`if c then\n // note\n t else …`), or the else-branch (`else\n // note\n e`) — used
-        // to be DROPPED (each sub-expr is a single `expr`, whose leading slot `if_expr` didn't drain).
-        // if_expr now captures + wraps each `(comment "text" expr)`; the printer already renders a leading
-        // `(comment …)` on its own line above the expr, so no printer change is needed. `strip_comments`
-        // peels it; compiles to wasm. This is the LAST filed comment surface — the `//` surface is now
-        // complete across all element/branch positions.
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def f(b: Bool) -> Int64 = if b then\n  // note\n  1 else 2")
-                    .arenas
-            ),
-            "(def (f (: b Bool)) (: (if b (comment \"note\" 1) 2) Int64))",
-            "own-line comment before the then-branch is captured, not dropped"
-        );
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def f(b: Bool) -> Int64 = if b then 1 else\n  // note\n  2")
-                    .arenas
-            ),
-            "(def (f (: b Bool)) (: (if b 1 (comment \"note\" 2)) Int64))",
-            "own-line comment before the else-branch is captured"
-        );
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def f(b: Bool) -> Int64 = if\n  // note\n  b then 1 else 2")
-                    .arenas
-            ),
-            "(def (f (: b Bool)) (: (if (comment \"note\" b) 1 2) Int64))",
-            "own-line comment before the condition is captured"
-        );
-        // Round-trips + idempotent.
-        let src = "def f(b: Bool) -> Int64 = if b then\n  // note\n  1 else 2";
-        let printed = print(&parser::read_ml(src).arenas, 80);
-        assert_eq!(
-            print(&parser::read_ml(&printed).arenas, 80),
-            printed,
-            "idempotent"
-        );
-        // A clean `if` keeps its layout.
-        assert_eq!(
-            assert_roundtrip("if b then 1 else 2", 80),
-            "if b then 1 else 2"
-        );
-    }
+    // Two own-line-leading-comment tests MIGRATED to the spec/syntax corpus (inc-6 batch-39, comment-node
+    // block; an own-line `//` → `(comment "text" node)` LEADING the node it precedes):
+    //   * `an_own_line_comment_leading_a_let_binding_is_preserved_not_dropped` →
+    //     ml/258-comment-leading-first-let-binding `def f() -> Int64 = let`⏎`  // note`⏎`  x = 1 in x`→
+    //     `(def (f) (: (let ((comment "note" (x 1))) x) Int64))`, ml/259-comment-leading-nonfirst-let-binding
+    //     (comment before a `,`-separated later binding → `(let ((x 1) (comment "note" (y 2))) …)`).
+    //   * `an_own_line_comment_leading_an_if_branch_is_preserved_not_dropped` →
+    //     ml/260-comment-leading-if-then-branch `(if b (comment "note" 1) 2)`,
+    //     ml/261-comment-leading-if-else-branch `(if b 1 (comment "note" 2))`,
+    //     ml/262-comment-leading-if-condition `(if (comment "note" b) 1 2)`.
+    // Each carries a format.cdz for the comment-above surface. The clean let/if layouts are already pinned
+    // (ml/03, ml/216, ml/187).
 
     #[test]
     fn destructuring_binder_patterns_round_trip() {
