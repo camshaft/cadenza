@@ -28,8 +28,20 @@
 ; to chase a phantom field. v-ast-compound's native-compound-pattern domain (sibling of the #set-element
 ; binding-path CDZ0306 they fixed in #6693, and the wrong-kind-scrutinee binding-path class).
 ;
-; NOT pinning an expectation here (fix shape TBD by v-ast-compound + v-spec-oracle, per the #set precedent
-; where my initial hypothesis was spec-corrected). Post-fix, v-rcdzc-ts-2 pins the ruled behavior in 05.
+; INTENT RULING LANDED — v-spec-oracle #6723, core-semantics §"A Binding Position Accepts An Irrefutable
+; Pattern". The binding-path fix-class (record trailing `.. rest`, tuple trailing `.. rest`, #set-element
+; #6693) resolves as follows (my initial "should be accepted as irrefutable, like list #list(.. rest)"
+; hypothesis was VINDICATED for the trailing-rest cases):
+;   - record TRAILING `(.. rest)` binding param  → BINDS, runs (an ACCEPT/output case, NOT a reject)
+;   - tuple TRAILING `.. rest` binding param      → BINDS, runs (ACCEPT/output)
+;   - map-rest + list-LEADING-rest binding param  → CDZ0210 (stays a refutable-reject)
+;   - a genuine arity/shape mismatch              → CDZ0201
 ;
-; (No graded (case …) — the intended code/message is undecided; this is a routed-bug record. The MATCH-arm
-; open-row rest is already pinned at 05 "a record pattern MAY end in a trailing `.. rest`".)
+; STILL BLOCKED: v-ast-compound has NOT yet landed the `check_binding_pattern` fix (as of trunk ff4a9668bd
+; the record form still gives the spurious CDZ0203 "names field `..`" and the tuple form CDZ0201 "not a
+; tuple/record/constructor"). POST-FIX, v-rcdzc-ts-2 pins the RUN cases in 05 (record + tuple trailing-rest
+; binding params bind + run, output the bound value), citing §"A Binding Position Accepts An Irrefutable
+; Pattern" / #6723. The MATCH-arm open-row rest is already pinned at 05 ("a record pattern MAY end in a
+; trailing `.. rest`"). Turnkey post-fix pin targets:
+;   (def (get #record((= x a) (.. rest))) a) applied to #record((= x 5) (= y 6))   → 5
+;   (def (f #tuple(a .. rest)) a) applied to #tuple(3 4 5)                          → 3
