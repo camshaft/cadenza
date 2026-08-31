@@ -855,17 +855,48 @@ theorem foldConst?_none_of_fst_symbolic (op : String) (a b : SymExpr)
     (ha : symToValue? a = none) : foldConst? op #[a, b] = none := by
   rw [foldConst?]; simp [ha]
 
--- ⚠ ASSEMBLY BLOCKER (confirmed 2026-08-31) — the companion syntactic equation lemma the `.app`-identity
--- capstone cases need (`normalizeAppIdentities "+" #[a, .const (.int 0)] = a`, and its `*`/`-`/`/`/bitwise
--- siblings) is NOT cleanly provable: `normalizeAppIdentities`'s identity arms fire on `isI b 0`
--- (`b == .const (.int 0)`), and reducing that concrete `SymExpr` BEq requires unfolding the DERIVED `BEq`
--- of a NESTED inductive (`SymExpr` recurses through `Array SymExpr`), which the kernel will not reduce —
--- `rfl`/`decide`/`simp`/`unfold instBEqSymExpr.beq` all fail; only `native_decide` reduces it, and that
--- pulls the `Lean.ofReduceBool` compiler-trust axiom (breaks this file's clean {propext, Classical.choice,
--- Quot.sound} axiom set). Note `∀ e, (e == e) = true` is even FALSE for `SymExpr` (`.const (.f64 nan)`),
--- so no general reflexivity lemma exists. Unblocking needs either a hand-proven int-const-BEq equation
--- (`(SymExpr.const (.int m) == SymExpr.const (.int n)) = decide (m = n)`, via the generated beq's structural
--- recursion) or a `@[simp]` normal form for the derived beq's `.const` arm — tracked for a later tick.
+/-! ### `.app`-IDENTITY capstone bridge — UNBLOCKED (2026-08-31).
+The `.app`-identity soundness cases were blocked because `normalizeAppIdentities`'s const-identity guards
+fired on `e == .const (.int n)`, whose `SymExpr` derived `BEq` is `opaque` (kernel-irreducible — only
+`native_decide` reduces it, which is axiom-dirty). Fixed at the source: those guards now use the REDUCIBLE
+structural checker `isConstInt` (Symbolic.lean), byte-identical to the `==` form. So (a) the syntactic
+identity-EQUATION lemmas below now REDUCE, and (b) `isConstInt_eq` supplies the `e = .const (.int n)`
+fact — the LawfulBEq-on-int-consts fragment the opaque `==` could never give. -/
+
+/-- `isConstInt e n = true` ⇒ `e` is SYNTACTICALLY the literal `.const (.int n)` (structural, reducible). -/
+theorem isConstInt_eq (e : SymExpr) (n : Int) (h : isConstInt e n = true) : e = .const (.int n) := by
+  unfold isConstInt at h; split at h
+  · rename_i m; simp only [beq_iff_eq] at h; subst h; rfl
+  · exact absurd h (by simp)
+
+/-- Bool companion: `isConstBool e b = true` ⇒ `e = .const (.bool b)`. -/
+theorem isConstBool_eq (e : SymExpr) (b : Bool) (h : isConstBool e b = true) : e = .const (.bool b) := by
+  unfold isConstBool at h; split at h
+  · rename_i c; simp only [beq_iff_eq] at h; subst h; rfl
+  · exact absurd h (by simp)
+
+-- The operand-PRESERVING const-identity EQUATION lemmas: `normalizeAppIdentities` returns the surviving
+-- operand unchanged on these shapes (no `!mayTrap` guard — they preserve the operand incl. its traps). Each
+-- reduces now that the guards are `isConstInt` (was structurally impossible under the opaque `==`). These
+-- compose with the `denoteBinary_{add_zero,sub_zero,mul_one,div_one}_value` characterizations (@ ~600-650)
+-- for the capstone `.app`-identity denote-soundness assembly. (Operand-DROPPING `x*0`/`x%1`/`x&0`/`x^x` are
+-- conditional on `!mayTrap` → a separate follow-up.)
+theorem normalizeAppIdentities_add_zero_r (a : SymExpr) :
+    normalizeAppIdentities "+" #[a, .const (.int 0)] = a := by simp [normalizeAppIdentities, isConstInt]
+theorem normalizeAppIdentities_add_zero_l (b : SymExpr) (hb : isConstInt b 0 = false) :
+    normalizeAppIdentities "+" #[.const (.int 0), b] = b := by
+  have h2 : isConstInt (.const (.int 0)) 0 = true := rfl
+  simp [normalizeAppIdentities, hb, h2]
+theorem normalizeAppIdentities_sub_zero_r (a : SymExpr) :
+    normalizeAppIdentities "-" #[a, .const (.int 0)] = a := by simp [normalizeAppIdentities, isConstInt]
+theorem normalizeAppIdentities_mul_one_r (a : SymExpr) :
+    normalizeAppIdentities "*" #[a, .const (.int 1)] = a := by simp [normalizeAppIdentities, isConstInt]
+theorem normalizeAppIdentities_mul_one_l (b : SymExpr) (hb : isConstInt b 1 = false) :
+    normalizeAppIdentities "*" #[.const (.int 1), b] = b := by
+  have h2 : isConstInt (.const (.int 1)) 1 = true := rfl
+  simp [normalizeAppIdentities, hb, h2]
+theorem normalizeAppIdentities_div_one_r (a : SymExpr) :
+    normalizeAppIdentities "/" #[a, .const (.int 1)] = a := by simp [normalizeAppIdentities, isConstInt]
 
 /-- Every `.const` LEAF anywhere in a symbolic expression is `asF64?`-canonical (its float components are
 already `.f64`, never a `.float`/`.floatNan`/`.floatInf` spelling). This is the invariant `normalize`

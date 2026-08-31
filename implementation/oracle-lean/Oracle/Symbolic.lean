@@ -170,6 +170,16 @@ decreasing_by
       | (have h := Array.sizeOf_lt_of_mem x.property; omega)
       | (rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega)
 
+/-- Is `e` the literal `.const (.int n)`? A REDUCIBLE STRUCTURAL check (a `match` + `Int` `==`, which is
+NOT opaque), unlike `e == .const (.int n)` whose `SymExpr` derived `BEq` is `opaque` (kernel-irreducible).
+Behavior-identical to `e == .const (.int n)` for every `e` (both true iff `e` is exactly that const int).
+This lets the `normalizeAppIdentities` const-IDENTITY guards REDUCE in proofs and gives the syntactic
+`e = .const (.int n)` fact (`isConstInt_eq`) the capstone `.app`-identity soundness needs — which the opaque
+`==` could not supply. -/
+def isConstInt (e : SymExpr) (n : Int) : Bool := match e with | .const (.int m) => m == n | _ => false
+/-- Bool companion of `isConstInt` (reducible; for the `and`/`or` identity guards). -/
+def isConstBool (e : SymExpr) (b : Bool) : Bool := match e with | .const (.bool c) => c == b | _ => false
+
 /-- Canonicalize a symbolic expression by SOUND rewrites only: recurse into subterms; SOUND constant
 folding of comparison/boolean ops (`foldConst?`); an `if` on a (now possibly-folded) constant boolean
 selects its branch; an `if` whose branches are identical collapses. Deliberately does NOT fold or
@@ -195,8 +205,8 @@ optimizer's branch-elimination rewrites. -/
 -- proofs (`by_cases hop : (op == "…") = true; rw [if_pos/if_neg]`, the #6997 tactic). BYTE-IDENTICAL to the
 -- former arms — verified by the full `#guard` identity suite below + the nix `oracle-lean-smoke`.
 def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
-  let isI := fun (e : SymExpr) (n : Int) => e == SymExpr.const (Value.int n)
-  let isB := fun (e : SymExpr) (b : Bool) => e == SymExpr.const (Value.bool b)
+  let isI := isConstInt
+  let isB := isConstBool
   -- DOUBLE-NEGATION `not (not x) → x`: the two `not`s evaluate `x` once and cancel (bool involution),
   -- with the same trap behavior as `x` — operand-preserving, no guard (matches the identity discipline
   -- below: sound for well-typed bool `x`; an ill-typed `x` never compiles into the differential).
