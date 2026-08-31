@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Ch } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
@@ -61,7 +61,7 @@ export default function RecordsTuples() {
 
 (def (main) (swap #tuple(3 7)))`}
       />
-      <P>The result is <C>#tuple(7 3)</C>, both elements in their new positions, returned as one value you could pass along or reach into further.</P>
+      <P>The result is <Cadenza>#tuple(7 3)</Cadenza>, both elements in their new positions, returned as one value you could pass along or reach into further.</P>
       <P>And just as <C>Record.merge</C> combined two records, <C>Tuple.concat</C> joins two tuples end to end into one wider tuple. It's the positional version, so there's no disjointness rule, and the second tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and index <C>3</C> of the result is the first element of the second tuple, <C>4</C>:</P>
       <Runnable
         source={`(. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 3)`}
@@ -87,19 +87,19 @@ export default function RecordsTuples() {
 
 (def (main) (perimeter #record((= w 4) (= h 5))))`}
         expected="18"
-        hint={<>Mirror the width term for the height: <C>(* 2 (. r h))</C>.</>}
+        hint={<>Mirror the width term for the height: <Cadenza>(* 2 (. r h))</Cadenza>.</>}
       />
       <Exercise
         id="records-tuples:2"
-        prompt={<>Concatenating shifts the second tuple's indices up by the first's length. Cat <C>#tuple(1 2)</C> onto <C>#tuple(3 4 5)</C> and reach the <em>last</em> element, <C>5</C>, by its index in the joined tuple. Which index is it?</>}
+        prompt={<>Concatenating shifts the second tuple's indices up by the first's length. Cat <Cadenza>#tuple(1 2)</Cadenza> onto <Cadenza>#tuple(3 4 5)</Cadenza> and reach the <em>last</em> element, <C>5</C>, by its index in the joined tuple. Which index is it?</>}
         starter={`(. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) ?)`}
         solution={`(. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 4)`}
         expected="5"
-        hint={<>The joined tuple is <C>#tuple(1 2 3 4 5)</C>, five elements with indices <C>0</C> to <C>4</C>. The <C>5</C> is last, so its index is <C>4</C>, not <C>2</C>, because the first tuple pushed it two slots over.</>}
+        hint={<>The joined tuple is <Cadenza>#tuple(1 2 3 4 5)</Cadenza>, five elements with indices <C>0</C> to <C>4</C>. The <C>5</C> is last, so its index is <C>4</C>, not <C>2</C>, because the first tuple pushed it two slots over.</>}
       />
       <Exercise
         id="records-tuples:3"
-        prompt={<><C>#record((= x 10) (= y 20))</C> has no <C>z</C> field. Add one, <C>z = 30</C>, then read it back for the answer <C>30</C>. Which operation adds a <em>new</em> field, <C>with</C> or <C>extend</C>? Fill in the blank.</>}
+        prompt={<><Cadenza>#record((= x 10) (= y 20))</Cadenza> has no <C>z</C> field. Add one, <C>z = 30</C>, then read it back for the answer <C>30</C>. Which operation adds a <em>new</em> field, <C>with</C> or <C>extend</C>? Fill in the blank.</>}
         starter={`(. (Record.? #record((= x 10) (= y 20)) #"z" 30) z)`}
         solution={`(. (Record.extend #record((= x 10) (= y 20)) #"z" 30) z)`}
         expected="30"

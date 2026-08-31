@@ -46,7 +46,7 @@
   (runnable
     (source (def (swap p) #tuple((. p 1) (. p 0)))
 (def (main) (swap #tuple(3 7)))))
-  (p "The result is " (c "#tuple(7 3)") ", both elements in their new positions, returned as one value you could pass along or reach into further.")
+  (p "The result is " (cdz "#tuple(7 3)") ", both elements in their new positions, returned as one value you could pass along or reach into further.")
   (p "And just as " (c "Record.merge") " combined two records, " (c "Tuple.concat") " joins two tuples end to end into one wider tuple. It's the positional version, so there's no disjointness rule, and the second tuple's elements simply follow the first, their indices shifting up. Cat a pair onto a triple and index " (c "3") " of the result is the first element of the second tuple, " (c "4") ":")
   (runnable
     (source (. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 3)))
@@ -68,17 +68,17 @@
   (+ (* 2 (. r w)) (* 2 (. r h))))
 (def (main) (perimeter #record((= w 4) (= h 5)))))
     (expected "18")
-    (hint "Mirror the width term for the height: " (c "(* 2 (. r h))") "."))
+    (hint "Mirror the width term for the height: " (cdz "(* 2 (. r h))") "."))
   (exercise
     (id "records-tuples:2")
-    (prompt "Concatenating shifts the second tuple's indices up by the first's length. Cat " (c "#tuple(1 2)") " onto " (c "#tuple(3 4 5)") " and reach the " (em "last") " element, " (c "5") ", by its index in the joined tuple. Which index is it?")
+    (prompt "Concatenating shifts the second tuple's indices up by the first's length. Cat " (cdz "#tuple(1 2)") " onto " (cdz "#tuple(3 4 5)") " and reach the " (em "last") " element, " (c "5") ", by its index in the joined tuple. Which index is it?")
     (starter (. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) ?))
     (solution (. (Tuple.concat #tuple(1 2) #tuple(3 4 5)) 4))
     (expected "5")
-    (hint "The joined tuple is " (c "#tuple(1 2 3 4 5)") ", five elements with indices " (c "0") " to " (c "4") ". The " (c "5") " is last, so its index is " (c "4") ", not " (c "2") ", because the first tuple pushed it two slots over."))
+    (hint "The joined tuple is " (cdz "#tuple(1 2 3 4 5)") ", five elements with indices " (c "0") " to " (c "4") ". The " (c "5") " is last, so its index is " (c "4") ", not " (c "2") ", because the first tuple pushed it two slots over."))
   (exercise
     (id "records-tuples:3")
-    (prompt (c "#record((= x 10) (= y 20))") " has no " (c "z") " field. Add one, " (c "z = 30") ", then read it back for the answer " (c "30") ". Which operation adds a " (em "new") " field, " (c "with") " or " (c "extend") "? Fill in the blank.")
+    (prompt (cdz "#record((= x 10) (= y 20))") " has no " (c "z") " field. Add one, " (c "z = 30") ", then read it back for the answer " (c "30") ". Which operation adds a " (em "new") " field, " (c "with") " or " (c "extend") "? Fill in the blank.")
     (starter (. (Record.? #record((= x 10) (= y 20)) #"z" 30) z))
     (solution (. (Record.extend #record((= x 10) (= y 20)) #"z" 30) z))
     (expected "30")
