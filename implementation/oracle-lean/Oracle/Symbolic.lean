@@ -1215,6 +1215,23 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Rational.of on non-integer operands")
            | _, _ => .cannotProve "symeval: malformed Rational.of")
+        else if q == "Bytes".toUTF8 && mem == "of".toUTF8 then
+          -- `Bytes.of (list i…)` builds a Bytes value from a list of byte-valued ints (0..255); an element
+          -- outside 0..255 or non-int → evalNode `.unsupported` → cannotProve. Byte-faithful (Eval.lean:1672-1679).
+          (match children[1]? with
+           | some lId =>
+             (match symEval m senv fuel ty lId with
+              | .sym (.ctor t elems) =>
+                if t == "list".toUTF8 then
+                  (match elems.mapM (fun e => match e with
+                                              | .const (.int n) => if 0 ≤ n && n < 256 then some (UInt8.ofNat n.toNat) else none
+                                              | _ => none) with
+                   | some bytes => .sym (.const (.bytes (ByteArray.mk bytes)))
+                   | none => .cannotProve "symeval: Bytes.of element not a 0..255 const int")
+                else .cannotProve "symeval: Bytes.of on a non-list value"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Bytes.of on a non-list value")
+           | none => .cannotProve "symeval: malformed Bytes.of")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1788,6 +1805,17 @@ private def _ratOfExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[3, 4, 5]],
     root := 6 }
 #guard symEval _ratOfExpr [] symDefaultFuel defaultIntTy 6 == SymOutcome.sym (.const (.rational 3 2))
+
+-- BYTES.OF member-op coverage: `((. Bytes of) (list 10 20 30))` → `.const (.bytes #{10,20,30})`.
+private def _bytesOfExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Bytes".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[10]),
+                Leaf.intLit false .dec (ByteArray.mk #[20]), Leaf.intLit false .dec (ByteArray.mk #[30])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7], .list #[3, 8]],
+    root := 9 }
+#guard symEval _bytesOfExpr [] symDefaultFuel defaultIntTy 9
+       == SymOutcome.sym (.const (.bytes (ByteArray.mk #[10, 20, 30])))
 
 -- BYTES len/at/slice member-op coverage over #{10,20,30,40} (byte-indexed; slice is start/LENGTH).
 private def _bytesLenExpr : Module :=
