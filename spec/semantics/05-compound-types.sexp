@@ -19183,20 +19183,40 @@
               (export f)))
   (error CDZ0201 (message "must be the final element") (not "unbound name")))
 
-; A structural SET match pattern `#set(…)` is UNSUPPORTED — a set is unordered with no positional structure
-; to destructure — so it is a coded, CHECK-surfaced CDZ0201 whose message names the fix (bind the whole set
-; with a name or `_`, and query it with Set.contains / Set.size). This was once a silent-in-check +
-; uncoded-in-compile fall-through: the SET matcher path was the fourth left uncovered after the list/map/
-; scalar-fallthrough coded-fault fixes (v-rcdzc-ts-1 edge-hunt → queue/48 → v-ast-compound fix #6339). The
-; two-`..` `#set(1 .. r1 .. r2)` facet stays a rust pin — its malformed double-`..` surface does not
-; ML-round-trip, same as the #map two-`..` case.
-(case "a bare structural set match pattern is a coded, check-surfaced rejection"
-  (input  (do (def (f (: s (Set Int64))) (match s (#set(1) 0) (_ 9))) (export f)))
-  (error  CDZ0201 (message "set match pattern is not supported")))
+; A SET is matched by ELEMENT-MEMBERSHIP patterns (`core-semantics.md` §A Set Is Matched By Element-Membership
+; Patterns): a `#set(e…)` arm matches when the set CONTAINS every named element (each an ordinary value
+; expression compared by the set's own value equality) — a membership QUERY, the keys-only twin of the map
+; matcher — and, a set's element set being unbounded, the match MUST end in a whole-set catch-all (else
+; CDZ0210). Lowered by `lower_match_set` (a `Set.contains` presence-test if-chain). This SUPERSEDES the
+; earlier "set match is unsupported" reject (#6339): the surface (#6616) + the § (v-spec-oracle-blessed,
+; no-rest = superset/contains, map parity) now make membership matching first-class. The REST form
+; `#set(e… .. rest)` (binding `rest` to the set minus the named elements) is a tracked not-yet increment —
+; its rest binder needs resolve wiring (co-owned with v-inference) — so it stays a coded, check-surfaced
+; CDZ0201 naming the supported subset. The two-`..` `#set(1 .. r1 .. r2)` facet stays a rust pin — its
+; malformed double-`..` surface does not ML-round-trip, same as the #map two-`..` case.
+(case "a set membership match `#set(e…)` matches when the set contains every named element (with fall-through + catch-all)"
+  (doc    "`(match s (#set(1 2) 7) (#set(1) 5) (_ 0))` over three sets witnesses all three outcomes: `#set(1 2)`
+           over `{1,2,3}` contains BOTH → 7; `#set(1 9)`… wait, `{1,9}` fails `#set(1 2)` (no 2) and falls to
+           `#set(1)` (has 1) → 5; `{8,9}` matches neither membership arm → the catch-all → 0. Weighted
+           100·7 + 10·5 + 0 = 750. Pins that a membership arm matches iff the set contains every named element,
+           a lacking element falls through to a later (narrower) arm, and the mandatory catch-all covers the
+           rest — the keys-only twin of the map matcher, observing the set only through membership.")
+  (input  (do
+            (def (kmatch (: s (Set Int64))) (match s (#set(1 2) 7) (#set(1) 5) (_ 0)))
+            (def (main)
+              (+ (* 100 (kmatch #set(1 2 3)))
+              (+ (*  10 (kmatch #set(1 9)))
+                        (kmatch #set(8 9)))))
+            (export main)))
+  (output (: 750 Int64)))
 
-(case "a rest-form set match pattern is likewise a coded rejection (a set has no positional structure)"
+(case "a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)"
+  (input  (do (def (f (: s (Set Int64))) (match s (#set(1) 0))) (export f)))
+  (error  CDZ0210 (message "a set match must end in a catch-all")))
+
+(case "a rest-form set match pattern is a coded, check-surfaced not-yet-supported rejection"
   (input  (do (def (f (: s (Set Int64))) (match s (#set(1 .. r) 0) (_ 9))) (export f)))
-  (error  CDZ0201 (message "set match pattern is not supported")))
+  (error  CDZ0201 (message "is not yet supported")))
 
 ; --- Consumed loop-invariant heap extractions: the per-kind family ----------------------------------
 ; Two same-day fixes closed this family (aac1b72bc: LICM refuses a heap-typed Proj hoist root;
