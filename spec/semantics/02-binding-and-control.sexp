@@ -7894,6 +7894,41 @@
   (output (: 7 Int64))
   (warning CDZ0309 (message "potentially reachable trap") (message "out of range")))
 
+(case
+  "an unused NON-NORMALIZING let init is eliminated but earns a CDZ0305 warning"
+  (doc
+    "The dead-computation warning fires for a DIVERGING (non-terminating / explosively-growing) init too,
+           not only a provably-trapping one: `_y`'s init is an omega-style self-application that never reduces
+           to a value; since `_y` is unused the init is eliminated (the program runs to 0), but the build
+           surfaces the non-error CDZ0305 `does not reduce to a value` warning — a dead non-normalizing
+           computation is likely a bug. `_y` (underscore) silences the unused-BINDING CDZ0306 so only the
+           CDZ0305 remains. (Migrated from rcdzc an_unused_non_normalizing_let_init_warns_but_still_compiles.)")
+  (input (do (def (main) (let ((_y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0)) (export main)))
+  (output (: 0 Int64))
+  (count 1)
+  (warning CDZ0305 (message "does not reduce to a value")))
+
+(case
+  "a USED non-normalizing binding is a hard CDZ0999 error, not merely warned"
+  (doc
+    "DCE consistency's other side: the SAME omega-style non-normalizing term, when its value IS used, is
+           not dead code that can be elided — the reduction hits the compiler's limit and the component is
+           DENIED with the hard CDZ0999 error (not a warning). Caught by the reduction limit, so it errors
+           cleanly rather than overflowing. (Migrated from rcdzc a_non_normalizing … USED-term facet.)")
+  (input (do (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) y)) (export main)))
+  (error CDZ0999 (message "does not reduce to a value")))
+
+(case
+  "a NORMAL unused let init is elided with NO dead-computation warning"
+  (doc
+    "The false-positive guard: a NORMALIZING unused init (`(+ 1 2)`) is ordinary dead code — elided, the
+           program runs to 0, and NO CDZ0305 dead-computation warning fires (only a non-normalizing / trapping
+           dead init earns CDZ0305). `_y` silences the unused-binding CDZ0306. (Migrated from rcdzc
+           a_non_normalizing … no-false-positive facet.)")
+  (input (do (def (main) (let ((_y (+ 1 2))) 0)) (export main)))
+  (output (: 0 Int64))
+  (no-diagnostic "does not reduce to a value"))
+
 ; The dead-trap warning fires for EVERY provably-trapping constant, not only integer ÷0 — the trap-
 ; observation elision + its CDZ0305 diagnostic are about WHETHER the value is observed, not WHICH trap the
 ; dead computation would raise. These two pin the other trap kinds as unprojected tuple elements (the clean
