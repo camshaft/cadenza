@@ -1034,7 +1034,7 @@ pub(crate) fn check_binding_pattern(
             if !is_bare_binder_or_wild {
                 return Err(Reject::decline(
                     "a nested compound sub-pattern inside a record binding pattern is not supported \
-                     (Increment B binds a record's fields to bare names; destructure a nested field with \
+                     (a record binding binds fields to bare names; destructure a nested field with \
                      a further `let`)",
                 ));
             }
