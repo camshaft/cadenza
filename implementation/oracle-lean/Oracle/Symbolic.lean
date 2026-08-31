@@ -43,10 +43,11 @@ inductive SymExpr where
   -- (or `proj`s) are equal iff structurally equal — so P and its cadenza round-trip with the SAME match prove.
   | proj (base : SymExpr) (sel : ByteArray)
   | case (scrut : SymExpr) (arms : Array (ByteArray × SymExpr))
-  -- a LOCAL FUNCTION bound in a `(do …)` (a `(def (f params) body)`): carries its param-spec node ids and
-  -- body node id, so a later `(f args)` call INLINES it (params-only env — see `symDo`/the call path). Not a
-  -- comparable value; two localFns are BEq iff same specs+body (round-trip-stable).
-  | localFn (specs : Array Nat) (bodyId : Nat)
+  -- a LOCAL FUNCTION bound in a `(do …)` (a `(def (f params) body)`): carries its param-spec node ids, body
+  -- node id, and the CAPTURED def-site env (`cap`), so a later `(f args)` call INLINES it in `params ++ cap`
+  -- (see `symDo`/the call path) — modeling a closure over enclosing do-bindings. `cap` uses the raw
+  -- `List (ByteArray × SymExpr)` type since `SymEnv` is defined below. Inert under normalize; BEq structural.
+  | localFn (specs : Array Nat) (bodyId : Nat) (cap : List (ByteArray × SymExpr))
   deriving BEq, Inhabited
 
 /-- The symbolic OUTCOME of evaluating a program with symbolic inputs. `cannotProve` records WHY so the
@@ -132,7 +133,7 @@ def mayTrap : SymExpr → Bool
   | .ctor _ args => args.attach.any (fun x => mayTrap x.val)
   | .proj b _ => mayTrap b
   | .case s arms => mayTrap s || arms.attach.any (fun x => mayTrap x.val.2)
-  | .localFn _ _ => false  -- binding a local fn is a pure value construction; it never traps
+  | .localFn _ _ _ => false  -- binding a local fn is a pure value construction; it never traps
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
@@ -236,7 +237,7 @@ def symFloatFree : SymExpr → Bool
   | .ctor _ args => args.attach.all (fun x => symFloatFree x.val)
   | .proj b _ => symFloatFree b
   | .case s arms => symFloatFree s && arms.attach.all (fun x => symFloatFree x.val.2)
-  | .localFn _ _ => true  -- a local-fn binding carries no float leaf of its own
+  | .localFn _ _ _ => true  -- a local-fn binding carries no float leaf of its own
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
@@ -264,7 +265,7 @@ def normalize : SymExpr → SymExpr
   | .ctor tag args => .ctor tag (args.attach.map (fun x => normalize x.val))
   | .proj b s => .proj (normalize b) s
   | .case s arms => .case (normalize s) (arms.attach.map (fun x => (x.val.1, normalize x.val.2)))
-  | .localFn s b => .localFn s b  -- a local-fn binding is inert under normalization (it is inlined at call sites)
+  | .localFn s b c => .localFn s b c  -- inert under normalization (inlined at call sites; cap kept as-is)
   | .ite c t e =>
     match normalize c with
     | .const (.bool true) => normalize t
@@ -762,11 +763,11 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
             -- bounds recursion: a recursive `f` exhausts it → cannotProve (proving a recursive function's
             -- equivalence needs induction, not modeled). A partial application (arity mismatch) → boundary.
             match senv.find? (fun p => p.1 == h) with
-            | some (_, .localFn lspecs lbodyId) =>
-              -- INLINE a LOCAL FN bound in an enclosing `(do …)`. Same discipline as a top-level call, but a
-              -- PARAMS-ONLY fresh env (no capture): a body referencing an ENCLOSING do-binding hits free-name
-              -- → cannotProve (SOUND — eval captures the enclosing env, so params-only is conservatively
-              -- incomplete, never wrong). Fuel bounds a (self-)recursive local fn → cannotProve.
+            | some (_, .localFn lspecs lbodyId lcap) =>
+              -- INLINE a LOCAL FN bound in an enclosing `(do …)`. Same discipline as a top-level call, but the
+              -- fresh env is `params ++ lcap` — the CAPTURED def-site env — so the body may reference enclosing
+              -- do-bindings (closure), with params SHADOWING same-named captures (params prepended → found
+              -- first). Matches eval's eager capture (Eval.lean:1247). Fuel bounds a (self-)recursive local fn.
               if fuel == 0 then .cannotProve "symeval: local-fn call fuel exhausted (recursion?)"
               else if lspecs.size != children.size - 1 then .cannotProve "symeval: local-fn call arity mismatch"
               else
@@ -779,7 +780,7 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
                       | some (pnm, _) => (match symEval m senv fuel ty p.2 with
                                           | .sym e => some ((pnm, e) :: env)
                                           | .cannotProve _ => none)
-                      | none => none) (some ([] : SymEnv))
+                      | none => none) (some lcap)
                 match callEnv with
                 | some ce => symEval m ce (fuel - 1) defaultIntTy lbodyId
                 | none => .cannotProve "symeval: a local-fn call argument is unmodelable"
@@ -1164,7 +1165,7 @@ partial def symDo (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (childr
               (match m.nodes[targetId]? with
                | some tnode =>
                  (match m.headName? tnode with
-                  | some fname => bind ((fname, SymExpr.localFn (paramSpecNodes m targetId) valId) :: senv) rest
+                  | some fname => bind ((fname, SymExpr.localFn (paramSpecNodes m targetId) valId senv) :: senv) rest
                   | none => .error (.cannotProve "symeval: malformed do local-fn def target"))
                | none => .error (.cannotProve "symeval: malformed do local-fn def target"))
           | _, _ => .error (.cannotProve "symeval: malformed do def")
@@ -1768,6 +1769,19 @@ private def _doLocalFnExpr : Module :=
     root := 13 }
 #guard symEval _doLocalFnExpr [] symDefaultFuel defaultIntTy 13
        == SymOutcome.sym (.const (.int 10))
+
+-- do LOCAL-FN CAPTURE (inc-2): `(do (def n 10) (def (addN x) (+ x n)) (addN 5))` — `addN` CLOSES over the
+-- enclosing binding `n`; the call inlines in `params ++ cap` (x=5, n=10 captured) → `(+ 5 10)` → 15.
+private def _doLocalFnCaptureExpr : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "n".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.name "addN".toUTF8,
+                Leaf.name "x".toUTF8, Leaf.name "+".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 4, .atom 5, .list #[4, 5],
+               .atom 6, .atom 5, .atom 2, .list #[7, 8, 9], .atom 1, .list #[11, 6, 10],
+               .atom 4, .atom 7, .list #[13, 14], .atom 0, .list #[16, 3, 12, 15]],
+    root := 17 }
+#guard symEval _doLocalFnCaptureExpr [] symDefaultFuel defaultIntTy 17
+       == SymOutcome.sym (.const (.int 15))
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
