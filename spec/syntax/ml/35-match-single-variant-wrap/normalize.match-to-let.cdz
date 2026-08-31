@@ -1,0 +1,6 @@
+type Wrapper =
+  | Wrap(Int64)
+
+def f(w) =
+  let Wrap(x) = w in
+  x

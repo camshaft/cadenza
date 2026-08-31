@@ -1,0 +1,2 @@
+type Box = | Box(Int64)
+def f(p) = match p with | (a, Box(x)) => a + x

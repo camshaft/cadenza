@@ -1,0 +1,4 @@
+def f(p) = match p with
+  | (a, b) =>
+    match b with
+    | (c, d) => a + c + d

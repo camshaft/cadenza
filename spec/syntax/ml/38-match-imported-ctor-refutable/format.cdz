@@ -1,0 +1,2 @@
+def f(w) = match w with
+  | Wrap(x) => x

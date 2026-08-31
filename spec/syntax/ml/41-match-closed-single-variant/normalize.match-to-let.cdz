@@ -1,0 +1,6 @@
+type C =
+  | Wrap(Int64)
+
+def f(o) =
+  let Wrap(x) = o in
+  x

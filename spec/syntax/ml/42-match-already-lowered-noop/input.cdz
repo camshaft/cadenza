@@ -1,0 +1,1 @@
+def f(p) = let (a, b) = p in a + b
