@@ -871,42 +871,12 @@ fn an_eliminated_provable_trap_warns_but_still_compiles() {
     }
 }
 
-#[test]
-fn a_reachable_const_trap_warning_names_the_specific_trap_kind() {
-    // CDZ0309 (potentially-reachable const trap) must say WHICH trap kind the demoted operation will
-    // raise (operator 2026-08-27: "we want to say what kind of trap it is"). Each of these puts a
-    // compile-provable trap of a distinct kind in a RUNTIME-guarded `if` else branch; the warning names
-    // the kind (parenthesized) while keeping the "potentially reachable trap" wording the corpus grades on.
-    for (trap_expr, kind) in [
-        ("(/ 1 0)", "divide by zero"),
-        (
-            "(* 9223372036854775807 9223372036854775807)",
-            "overflows Int64",
-        ),
-        ("(<< 1 100)", "out of range"),
-    ] {
-        let src =
-            format!("(module m (def (main (: n Int64)) (if (> n 0) 7 {trap_expr})) (export main))");
-        let warns: Vec<_> = warnings_of(&src)
-            .into_iter()
-            .filter(|d| d.code.as_deref() == Some("CDZ0309"))
-            .collect();
-        assert_eq!(
-            warns.len(),
-            1,
-            "exactly one CDZ0309 for `{trap_expr}`, got {warns:?}"
-        );
-        let msg = &warns[0].message;
-        assert!(
-            msg.contains("potentially reachable trap"),
-            "keeps the corpus-graded wording: {msg}"
-        );
-        assert!(
-            msg.contains(kind),
-            "names the specific trap kind `{kind}` for `{trap_expr}`: {msg}"
-        );
-    }
-}
+// MIGRATED to corpus (02-binding-and-control.sexp): a reachable CONSTANT trap in a runtime-guarded `if`
+// branch earns a CDZ0309 "potentially reachable trap" warning that NAMES the specific trap kind. Three
+// cases ("a reachable constant divide-by-zero / overflow / shift-out-of-range in a runtime branch earns a
+// CDZ0309 warning naming the trap kind"), each `(warning CDZ0309 (message "potentially reachable trap")
+// (message "<kind>"))` over a nullary-main + helper form (runs to 7). Rust test
+// a_reachable_const_trap_warning_names_the_specific_trap_kind deleted.
 
 #[test]
 fn an_unused_non_normalizing_let_init_warns_but_still_compiles() {
