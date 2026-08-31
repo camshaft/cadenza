@@ -2835,11 +2835,15 @@ impl<'a> Printer<'a> {
             && ops.iter().all(|&op| match self.a.as_form(self.a.peel_comments(op), "op") {
                 // `(op <name> <ty>)` OR `(op <name> <ty> (resource N))` — the optional trailing
                 // `(resource N)` is the SEC-F1 marker the op printer resugars as `@resource` (it must not
-                // knock the effect decl back to the generic call form).
+                // knock the effect decl back to the generic call form). The `o.len()` gate MUST precede the
+                // `o[0]` index: a malformed `(op)` with ZERO children yields `o == []`, so an `o[0]` before
+                // the length check panics (index-out-of-bounds) on the ML round-trip. With the length check
+                // first and short-circuiting, a zero/one-child op returns false here → the whole effect
+                // degrades to the generic call form (round-trips), preserving printer totality.
                 Some(o) => {
-                    self.head_name(o[0]).is_some()
-                        && (o.len() == 2
-                            || (o.len() == 3 && self.a.as_form(o[2], "resource").is_some()))
+                    (o.len() == 2
+                        || (o.len() == 3 && self.a.as_form(o[2], "resource").is_some()))
+                        && self.head_name(o[0]).is_some()
                 }
                 None => false,
             })
@@ -7178,6 +7182,30 @@ mod tests {
             assert_roundtrip("/// one\n/// two\neffect E = | emit : -> Unit", 80),
             "/// one\n/// two\neffect E =\n  | emit : -> Unit"
         );
+    }
+
+    #[test]
+    fn a_malformed_empty_op_effect_clause_degrades_to_generic_form_without_panic() {
+        // REGRESSION (reported by v-wasmtime-migration, hit delanguaging a CDZ0201 reject case): a
+        // malformed `(effect E (op))` — a bare `(op)` with ZERO children (no name/type) — must NOT panic
+        // the ML printer. `is_effect_shape` indexed `o[0]` BEFORE its `o.len()` gate, so the empty op's
+        // `o == []` panicked index-out-of-bounds on print. With the length gate reordered to short-circuit
+        // first, the malformed op fails the shape check and the whole effect degrades to the generic call
+        // form — the printer-totality guarantee (`print` never panics on a well-formed arena, whatever the
+        // surface shape).
+        let a = sexpr::read("(effect E (op))").expect("reads the malformed effect node");
+        let printed = print(&a, 80);
+        assert!(
+            !printed.is_empty(),
+            "degrades to a non-empty generic form: {printed:?}"
+        );
+        // NOT the `effect Name = | …` surface (the path that panicked) — the generic call form instead.
+        assert!(
+            !printed.contains("effect E ="),
+            "a malformed op does NOT use the |-led effect surface: {printed:?}"
+        );
+        // Totality: the printed generic form re-reads to a valid arena (round-trip stays total).
+        let _ = parser::read_ml(&printed);
     }
 
     #[test]
