@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { AppLink } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
@@ -11,7 +11,7 @@ export default function Metaprogramming() {
       <H1>Metaprogramming</H1>
       <Lede>What if a program could read and rewrite another program, with no macro language to learn, just the tools you already have? In Cadenza, code is data: <C>quote</C> hands you a program's structure as an ordinary value you can inspect, take apart, build up, and (if you like) run. There's no separate macro system; the AST is a sum type like any other, so you already know how to work with it.</Lede>
       <H2>Quote: a program as a value</H2>
-      <P>Normally <C>(+ 1 2)</C> evaluates to <C>3</C>. Wrap it in <C>quote</C> and it doesn't run at all. You get back the <em>structure</em> of the expression instead: a list whose head is the name <C>+</C> and whose arguments are the integers <C>1</C> and <C>2</C>.</P>
+      <P>Normally <Cadenza>(+ 1 2)</Cadenza> evaluates to <C>3</C>. Wrap it in <C>quote</C> and it doesn't run at all. You get back the <em>structure</em> of the expression instead: a list whose head is the name <C>+</C> and whose arguments are the integers <C>1</C> and <C>2</C>.</P>
       <Runnable
         source={`(quote (+ 1 2))`}
       />
@@ -26,7 +26,7 @@ export default function Metaprogramming() {
         source={`(match (quote (+ 1 2)) ((Ast.List elems) (Ast.List elems)) (_ (quote nil)))`}
       />
       <P>The result reads <C>Ast.List([Ast.Name("+"), Ast.Int(1), Ast.Int(2)])</C>: the operator name and its two arguments, each still an <C>Ast</C> node. And since <C>Ast</C> is an ordinary sum, its match obeys the same exhaustiveness rule as any other: a match that inspects one form carries a catch-all <C>_</C> for the rest (here it hands back a harmless <C>(quote nil)</C>).</P>
-      <Note>You can build an AST directly with its constructors, too, and the two routes agree. A quoted literal produces the same node written by hand, so <C>(quote 42)</C> and <C>(Ast.Int 42)</C> both read <C>Ast.Int(42)</C>. Quote is just a convenient way to write down a tree you could also assemble constructor by constructor.</Note>
+      <Note>You can build an AST directly with its constructors, too, and the two routes agree. A quoted literal produces the same node written by hand, so <C>(quote 42)</C> and <Cadenza>(Ast.Int 42)</Cadenza> both read <C>Ast.Int(42)</C>. Quote is just a convenient way to write down a tree you could also assemble constructor by constructor.</Note>
       <Runnable
         source={`(quote 42)`}
       />
@@ -50,7 +50,7 @@ export default function Metaprogramming() {
       <Runnable
         source={`(match (quote b"hi") ((Ast.Bytes b) (Ast.Bytes b)) (_ (quote nil)))`}
       />
-      <P>That completes the literal set: integers, floats, strings, booleans, names, and byte strings each reify to their own variant. And because a constructor is type-checked like any other, <C>(Ast.Bool 5)</C> is a compile error: the payload must be a <C>Bool</C>, not an integer.</P>
+      <P>That completes the literal set: integers, floats, strings, booleans, names, and byte strings each reify to their own variant. And because a constructor is type-checked like any other, <Cadenza>(Ast.Bool 5)</Cadenza> is a compile error: the payload must be a <C>Bool</C>, not an integer.</P>
       <Runnable
         source={`(Ast.Bool 5)`}
         expect="error"
@@ -63,11 +63,11 @@ export default function Metaprogramming() {
       <P>Constructing by hand is what you reach for when the pieces come from <em>values</em> rather than being written out: a computed argument, a name chosen at run time.</P>
       <Note>The ML surface has lighter sugar for this: a <em>quasiquote</em> is a backtick-brace template, and an <em>unquote</em> (a comma) drops a value into a hole. <C>{"`{ ,x + 10 }"}</C> with <C>x = 2</C> builds the AST for <C>(+ 2 10)</C>, i.e. <C>Ast.List([Ast.Name("+"), Ast.Int(2), Ast.Int(10)])</C>. It's exactly the constructor call above, written as a template. This is construction, not execution: the <C>,x</C> evaluates <em>x</em> to get a value to embed, not the whole form.</Note>
       <H2>Eval: run a tree</H2>
-      <P>An AST is inert data until you <C>eval</C> it, which executes the tree as code. Evaluating the quoted <C>(+ 1 2)</C> finally gives <C>3</C>:</P>
+      <P>An AST is inert data until you <C>eval</C> it, which executes the tree as code. Evaluating the quoted <Cadenza>(+ 1 2)</Cadenza> finally gives <C>3</C>:</P>
       <Runnable
         source={`(def (main) (eval (quote (+ 1 2))))`}
       />
-      <P>And a tree you <em>built</em> runs the same way. Assemble a call to <C>double</C> on the argument <C>21</C> and eval it: the reconstructed <C>(double 21)</C> folds to <C>42</C>. That's the shape of a macro: build a form, then run it.</P>
+      <P>And a tree you <em>built</em> runs the same way. Assemble a call to <C>double</C> on the argument <C>21</C> and eval it: the reconstructed <Cadenza>(double 21)</Cadenza> folds to <C>42</C>. That's the shape of a macro: build a form, then run it.</P>
       <Runnable
         source={`(def (double x) (* 2 x))
 
@@ -108,7 +108,7 @@ export default function Metaprogramming() {
         source={`(match (Ast.read "b") ((Ast.Name _n) true) (_ false))`}
       />
       <H2>Interpolating a computed subtree</H2>
-      <P>The point of a template is a hole you fill at run time. Here the argument isn't written out; it's a <em>computed</em> value (<C>(* 3 7)</C> = 21) spliced into the tree, which is then evaluated. The built <C>(+ 21 4)</C> runs to <C>25</C>:</P>
+      <P>The point of a template is a hole you fill at run time. Here the argument isn't written out; it's a <em>computed</em> value (<Cadenza>(* 3 7)</Cadenza> = 21) spliced into the tree, which is then evaluated. The built <Cadenza>(+ 21 4)</Cadenza> runs to <C>25</C>:</P>
       <Runnable
         source={`(def (main) (let ((x (* 3 7))) (eval (Ast.List #list((Ast.Name "+") (Ast.Int x) (Ast.Int 4))))))`}
       />
@@ -143,7 +143,7 @@ export default function Metaprogramming() {
 
 (def (main) (eval-expr (quote (* (+ 1 2) 4))))`}
       />
-      <P>The quoted <C>(* (+ 1 2) 4)</C> is a real tree, and <C>eval-expr</C> walks it: the outer <C>*</C> arm binds <C>x</C> to the sub-tree <C>(+ 1 2)</C> and <C>y</C> to <C>4</C>, recurses into each, and multiplies to <C>(1 + 2) * 4 = 12</C>. This is exactly how the compiler and a macro take apart the code handed to them: the same <C>match</C> you use on any sum type, with a template-shaped pattern for the syntax you care about. Note the arms dispatch on the operator too (the <C>+</C> arm won't match a <C>*</C> form), so distinguishing one operator from another is just two arms.</P>
+      <P>The quoted <Cadenza>(* (+ 1 2) 4)</Cadenza> is a real tree, and <C>eval-expr</C> walks it: the outer <C>*</C> arm binds <C>x</C> to the sub-tree <Cadenza>(+ 1 2)</Cadenza> and <C>y</C> to <C>4</C>, recurses into each, and multiplies to <C>(1 + 2) * 4 = 12</C>. This is exactly how the compiler and a macro take apart the code handed to them: the same <C>match</C> you use on any sum type, with a template-shaped pattern for the syntax you care about. Note the arms dispatch on the operator too (the <C>+</C> arm won't match a <C>*</C> form), so distinguishing one operator from another is just two arms.</P>
       <Why tenet="One representation for code, and it's an ordinary value">Many languages bolt on a separate macro system: a second little language, with its own rules, for programs that write programs. Cadenza doesn't. The AST is a sum type declared like any other, so the tools you already have (<C>match</C>, constructors, <C>=</C>, lists) are the whole metaprogramming toolkit. The compiler itself operates on these AST values natively rather than poking at string-tagged reflection, and <C>eval</C> is an optional extra (for macros and the REPL), not something the core depends on. Code as data, with no new machinery to learn.</Why>
       <P>You can watch a program become an <C>Ast</C> value, and see the WebAssembly and Rust it compiles to, in the <AppLink to="/playground"> playground </AppLink> , where code-as-data stops being an abstraction and becomes something you can poke at.</P>
       <H2>Your turn</H2>
@@ -153,11 +153,11 @@ export default function Metaprogramming() {
         starter={`(match (quote (f 1 2 3)) ((Ast.List elems) ?) (_ 0))`}
         solution={`(match (quote (f 1 2 3)) ((Ast.List elems) (List.len elems)) (_ 0))`}
         expected="4"
-        hint={<>The <C>Ast.List</C> arm binds <C>elems</C> to the list of child nodes. Its length is <C>(List.len elems)</C>: one for the name <C>f</C> and one for each argument, so <C>4</C>.</>}
+        hint={<>The <C>Ast.List</C> arm binds <C>elems</C> to the list of child nodes. Its length is <Cadenza>(List.len elems)</Cadenza>: one for the name <C>f</C> and one for each argument, so <C>4</C>.</>}
       />
       <Exercise
         id="metaprogramming:2"
-        prompt={<>Build a call and run it. The tree is a <C>(triple 14)</C> form assembled by hand, an <C>Ast.List</C> of the name <C>triple</C> and one argument. Fill the argument node so <C>eval</C> runs <C>(triple 14)</C> and gives <C>42</C>.</>}
+        prompt={<>Build a call and run it. The tree is a <Cadenza>(triple 14)</Cadenza> form assembled by hand, an <C>Ast.List</C> of the name <C>triple</C> and one argument. Fill the argument node so <C>eval</C> runs <Cadenza>(triple 14)</Cadenza> and gives <C>42</C>.</>}
         starter={`(def (triple x) (* 3 x))
 
 (def (main) (eval (Ast.List #list((Ast.Name "triple") ?))))`}
@@ -165,7 +165,7 @@ export default function Metaprogramming() {
 
 (def (main) (eval (Ast.List #list((Ast.Name "triple") (Ast.Int 14)))))`}
         expected="42"
-        hint={<>The argument is the integer <C>14</C> as an AST node, an <C>Ast.Int</C>, the same kind <C>(quote 14)</C> would give. So the hole is <C>(Ast.Int 14)</C>, and <C>eval</C> then runs <C>(triple 14)</C>.</>}
+        hint={<>The argument is the integer <C>14</C> as an AST node, an <C>Ast.Int</C>, the same kind <C>(quote 14)</C> would give. So the hole is <Cadenza>(Ast.Int 14)</Cadenza>, and <C>eval</C> then runs <Cadenza>(triple 14)</Cadenza>.</>}
       />
       <Exercise
         id="metaprogramming:3"
