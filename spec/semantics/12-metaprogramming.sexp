@@ -1456,17 +1456,18 @@
   (output (: 7 Int64)))
 
 (case
-  "eval does not see through a splice whose operand is itself an Ast value"
+  "eval through a splice whose operand is itself an Ast value is rejected with CDZ0201 (Ast in a numeric position)"
   (doc
-    "The boundary of the optional eval surface: `(eval `(+ ,(quote (* 2 3)) 1))` DECLINES. The
-           unquote operand `(quote (* 2 3))` is itself an `Ast` value, so eval's static source
-           reconstruction produces `(+ <Ast-value> 1)` — an `Ast` in a numeric position (CDZ0201).
-           Evaluating it would need a nested RUNTIME AST interpreter (metaprogramming.md marks runtime eval
-           OPTIONAL; the seed folds at compile time). Sound decline, NOT a bug — the construction splices the
-           subtree fine (case above) and eval of the hand-built equal tree works; only the static
-           reconstruction does not see through a spliced Ast value. Breaker-found; ruled a deliberate limit.")
+    "The boundary of the optional eval surface: `(eval `(+ ,(quote (* 2 3)) 1))` is REJECTED with CDZ0201.
+           The unquote operand `(quote (* 2 3))` is itself an `Ast` value, so eval's static source
+           reconstruction produces `(+ <Ast-value> 1)` — an `Ast` in a numeric position, a type error
+           (CDZ0201). Evaluating it would need a nested RUNTIME AST interpreter (metaprogramming.md marks
+           runtime eval OPTIONAL; the seed folds at compile time). A genuine user-facing reject with a code
+           (corpus = impl-independent spec) — the construction splices the subtree fine (case above) and eval
+           of the hand-built equal tree works; only the static reconstruction does not see through a spliced
+           Ast value. Breaker-found; ruled a deliberate limit; v-deferral grade-confirmed the emitted CDZ0201.")
   (input (eval (quasiquote (+ (unquote (quote (* 2 3))) 1))))
-  (declines (message "compile-time metadata") (message "runtime splice") (not "a Ast and")))
+  (error CDZ0201))
 
 (case
   "a bare Ast literal used as an arithmetic operand names the compile-time-metadata misuse"
