@@ -1867,6 +1867,18 @@ private def _setContainsNanExpr : Module :=
 #guard symEval _setContainsNanExpr [] symDefaultFuel defaultIntTy 8
        == SymOutcome.sym (.const (.bool true))
 
+-- NORMALIZE-level soundness regression guards — pin the two CAUGHT false-proven bugs + a collapse invariant:
+-- (1) `x - x` must NOT fold to `0` (#6541): if `x` traps, `x - x` traps, so it is not `0`. Stays symbolic.
+#guard normalize (.app "-" #[.var 0, .var 0]) == .app "-" #[.var 0, .var 0]
+-- (2) `(if c a a)` must NOT collapse to `a` when the CONDITION may trap — dropping a trapping `c` would
+-- unsoundly claim `(if <trapping> a a)` (which traps) equals `a`. Here `c = (/ 1 x)` mayTraps → no collapse.
+#guard normalize (.ite (.app "/" #[.const (.int 1), .var 0]) (.var 1) (.var 1))
+       == .ite (.app "/" #[.const (.int 1), .var 0]) (.var 1) (.var 1)
+-- (3) `(if c v v)` with identical FLOAT branches must NOT collapse (#6533): SymExpr's derived `==` is IEEE
+-- (`+0.0 == -0.0`, `NaN ≠ NaN`), so collapsing a float branch via `==` is unsound; `symFloatFree` blocks it.
+#guard normalize (.ite (.var 0) (.const (.f64 1.5)) (.const (.f64 1.5)))
+       == .ite (.var 0) (.const (.f64 1.5)) (.const (.f64 1.5))
+
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
 private def _matchExpr : Module :=
