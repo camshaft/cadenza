@@ -1028,7 +1028,14 @@
       (def (mk (: n Int64)) #tuple(1 (Float64.of-int n)))
       (def (main) (if (< (mk 2) (mk 3)) 1 0))
       (export main)))
-  (error CDZ0203))
+  ; the CDZ0203 NAMES the carve-out + the actionable route (component-wise ordering), not just the code
+  ; (migrated the message facets from rcdzc ordering_a_compound_with_an_unorderable_leaf_…).
+  (error CDZ0203
+    (message "has no total order, so it cannot be ordered")
+    (message "float, set, or map leaf")
+    (message "order its orderable components individually"))
+  ; it is a PERMANENT carve-out, so the message must NOT read as a temporary "not yet built" limitation.
+  (no-diagnostic "not yet built"))
 
 ; The two carve-outs above are on the BOOLEAN `<` path; the three-way `compare` mirrors them. A float
 ; `compare` DECLINES because a floating-point type is the IEEE PARTIAL order (§319 / numeric-model: the
