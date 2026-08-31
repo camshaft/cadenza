@@ -27,7 +27,7 @@ use crate::lexer::{Lexer, Token};
 use crate::literal;
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
-use crate::token::{Keyword, Kind, PREC_AS, infix_prec, is_right_assoc, keyword, word_op};
+use crate::token::{Keyword, Kind, infix_prec, is_right_assoc, keyword, word_op};
 
 /// A parse error: a message anchored to a source span.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,9 +107,7 @@ struct Lead {
 }
 
 /// Build a [`Parser`] over `src` — tokenize + split out the `leading` doc/comment side-table — WITHOUT
-/// running the grammar. Extracted from [`parse`] so the recursive [`parse`] and the iterative rewrite
-/// (`parse_iterative`, and the `expr`-vs-`expr_iter` differential unit tests) share the identical
-/// lexing/leading setup and differ ONLY in which grammar driver they run.
+/// running the grammar. Extracted from [`parse`] so callers share the identical lexing/leading setup.
 fn build_parser(src: &str, file: FileId) -> Parser<'_> {
     // Split the lexer stream into grammar tokens (everything the parser already handled) and a
     // parallel `leading` side-table: `leading[i]` is the run of doc/comment tokens that immediately
@@ -166,13 +164,16 @@ fn build_parser(src: &str, file: FileId) -> Parser<'_> {
         arm_bar_terminates: false,
         depth: 0,
         depth_exceeded: false,
-        iterative: false,
     }
 }
 
-/// Parse `src` (in file `file`) to arenas + spans — the RECURSIVE-descent parser. Kept as the frozen
-/// reference the differential oracle diffs the iterative rewrite against (see [`read_ml_recursive`]);
-/// deleted once the rewrite is complete.
+/// Parse `src` (in file `file`) to arenas + spans. The ML reader is a FULLY ITERATIVE (explicit-worklist)
+/// recursive-descent replacement (v-syntax-nonrec-reader): every grammar layer — the expr shunting-yard
+/// (`expr_iter`), patterns (`pattern_iter`), types (`type_ref_iter`), and the declaration / keyword-form /
+/// annotation-arg descents — runs on a heap worklist, so no input can overflow the native stack (deep
+/// nesting reaches the `MAX_NESTING_DEPTH` guard with O(1) native frames). The former recursive reference
+/// (`read_ml_recursive`) + its differential oracle were retired once the rewrite was complete and soaked;
+/// the corpus round-trip, the spec/syntax goldens, and the surface-totality fuzz property are the standing net.
 pub fn parse(src: &str, file: FileId) -> Parsed {
     let mut p = build_parser(src, file);
     let root = p.program();
@@ -190,44 +191,8 @@ fn strip_comment(raw: &str, doc: bool) -> String {
     body.strip_prefix(' ').unwrap_or(body).to_string()
 }
 
-/// The ITERATIVE parse entry point (v-syntax-nonrec-reader I3) — the explicit-worklist replacement for
-/// the recursive-descent parser, being built up construct-by-construct. [`read_ml`] routes here; the
-/// frozen recursive [`parse`] stays as the differential-oracle reference ([`read_ml_recursive`]) until
-/// the rewrite is complete. WHILE the iterative engine is incomplete this delegates to [`parse`] so its
-/// output is byte-identical (the oracle + corpus stay green); each increment replaces more of the
-/// delegation with explicit-stack control flow, verified against the recursive reference over the
-/// differential oracle + `corpus_roundtrip`. When complete, `parse` and its recursive methods are
-/// deleted and this becomes the sole parser.
-pub fn parse_iterative(src: &str, file: FileId) -> Parsed {
-    let mut p = build_parser(src, file);
-    // Route every `expr` through the iterative `expr_iter` shunting-yard. Operand reads still go through
-    // the (recursive) prefix/postfix, so bracket/keyword operand NESTING still recurses until those forms
-    // are pulled onto the worklist in a later increment — but the infix / right-operand / right-assoc
-    // chains are now iterative, and expr_iter is exercised end-to-end by the differential oracle + corpus.
-    p.iterative = true;
-    let root = p.program();
-    Parsed {
-        arenas: p.builder.finish(root),
-        spans: p.spans,
-        errors: p.errors,
-    }
-}
-
 /// Parse `src` as an anonymous single file (`FileId(0)`).
 pub fn read_ml(src: &str) -> Parsed {
-    parse_iterative(src, FileId::default())
-}
-
-/// The FROZEN RECURSIVE-parser reference for the differential oracle (see
-/// `roundtrip_tests::generative_roundtrip`), used while the ML parser is converted from recursive
-/// descent to an explicit worklist. At present it is identical to [`read_ml`] (both run the recursive
-/// `parse`), so the oracle is a green passthrough. When a later increment makes [`read_ml`]/`parse`
-/// ITERATIVE (adding iterative methods ALONGSIDE the recursive ones, not rewriting in place), this is
-/// repointed to the preserved recursive entry so it stays the recursive baseline the oracle diffs the
-/// new iterative output against byte-for-byte (arenas + span table + errors). Removed once the rewrite
-/// is complete and soaked. Test-only — it never ships in a non-test build.
-#[cfg(test)]
-pub(crate) fn read_ml_recursive(src: &str) -> Parsed {
     parse(src, FileId::default())
 }
 
@@ -418,12 +383,6 @@ struct Parser<'a> {
     /// reports end-of-input: every parse loop (`program`, `paren`, arg lists, …) terminates immediately
     /// and the stack unwinds without reprocessing the deep tail. One diagnostic, clean termination.
     depth_exceeded: bool,
-    /// I3 (v-syntax-nonrec-reader): when true, [`Self::expr`] dispatches to the iterative
-    /// [`Self::expr_iter`] (the explicit-stack shunting-yard) instead of recursing. [`parse`] (=
-    /// `read_ml_recursive`, the frozen oracle reference) leaves it `false`; [`parse_iterative`] (=
-    /// `read_ml`) sets it `true`. Every OTHER method is shared, so the differential oracle diffs the two
-    /// expr strategies over the whole corpus + generated sweep. Removed once the rewrite is complete.
-    iterative: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -1195,150 +1154,7 @@ impl<'a> Parser<'a> {
 
     /// Parse an expression whose infix operators bind at least `min_prec`.
     fn expr(&mut self, min_prec: u8) -> StructId {
-        // I3: route to the iterative shunting-yard when `parse_iterative` set the flag (`read_ml`); the
-        // recursive body below stays for `parse` = `read_ml_recursive` (the frozen oracle reference).
-        if self.iterative {
-            return self.expr_iter(min_prec);
-        }
-        let start = self.cur_span();
-        // DEPTH GUARD: every nested sub-expression funnels through `expr` (bracket/keyword forms and the
-        // infix right operand all call it), so bounding this recursion bounds the native stack. Past the
-        // limit, record ONE error and return an `<error>` node WITHOUT recursing — a clean diagnostic
-        // instead of a stack overflow (SIGABRT). Shares the s-expr reader's limit (see `MAX_NESTING_DEPTH`).
-        if self.depth >= crate::sexpr::MAX_NESTING_DEPTH {
-            // Record ONE error and POISON the parser (fatal): further parsing would spin on the deep
-            // unconsumed tail. `depth_exceeded` makes `at_end` true, so all enclosing loops stop.
-            if !self.depth_exceeded {
-                self.error("expression nests too deeply to parse");
-                self.depth_exceeded = true;
-            }
-            return self.error_node(start);
-        }
-        self.depth += 1;
-        // A numeric literal handles its OWN unit suffix in the prefix arm (preserving the `Suffixed`
-        // exemption: `100N feet` is NOT a quantity). Every OTHER prefix gets the unit suffix generally,
-        // after `postfix`, so a variable / call / parenthesized expression takes a unit too.
-        let prefix_is_number = matches!(self.kind(), Kind::Int | Kind::Float);
-        let mut left = self.prefix();
-        left = self.postfix(left, start);
-        // UNIT SUFFIX (general postfix): an adjacent same-line unit name applies to ANY non-literal
-        // expression — `x meters`, `f(5) meters`, `(a + b) meters` all read as a quantity. This binds
-        // TIGHTER than every infix operator (applied here, before the infix loop below), so `x + 1 meters`
-        // = `x + (1 meters)` and `(x + 1) meters` needs the parens (operator-confirmed). Generalizes the
-        // former literal-only sugar. Fixes a real miscompile: `x meters` previously SILENTLY parsed as a
-        // two-statement sequence `(do x meters)`. (Typing — the operand must be a DIMENSIONLESS number; a
-        // Quantity operand is a type error — is enforced by v-quantity/v-inference, not the parser: the
-        // parse is the uniform `(Qty.of <expr> (Unit.of #name))` regardless of the operand's type.) A
-        // number is EXCLUDED here — it already took (or, if suffixed, declined) its unit in the prefix arm,
-        // so re-applying would double-wrap a `10 meters` or wrongly unit-suffix a `100N`.
-        if !prefix_is_number {
-            left = self.maybe_unit_suffix(left, start);
-        }
-        // The number of left-associative layers this loop has folded onto `left`. Added to `self.depth`
-        // (the recursion depth) it is the arena-tree depth built so far, which the guard below bounds.
-        let mut spine: u32 = 0;
-        loop {
-            // `expr as UNIT` — the unit-conversion operator, handled here rather than via `infix_op`
-            // because its right operand is a UNIT denotation (a bare name reads as `(Unit.of #"name")`,
-            // and `*`/`/`/`^` compose units), not an ordinary expression. It binds at `PREC_AS` (above
-            // the pipeline, below arithmetic), so `a / b as u` converts the quotient `(a / b)` and
-            // `q as u |> f` threads the conversion into the pipeline. Left-associative — the loop
-            // re-checks, so `q as m as m` chains left. Checked inside the shared loop so it interleaves
-            // with the arithmetic operators (`/` binds tighter, so it is consumed first).
-            // The `as` conversion must not cross a STATEMENT/NEWLINE boundary: a leading `as` on a new line
-            // would reach BACK across the newline and absorb the previous statement's (or a def RHS's)
-            // trailing expression — `def a() = 5.0 <newline> as meter` silently becoming `def a() = (5.0 as
-            // meter)`, changing a's type from a number to Qty(meter) on a mere line break. Statement
-            // sequencing (`539f7712`: forms juxtapose across lines) takes precedence, so an `as` separated
-            // from its left operand by a newline is a SEPARATE statement, not a continuation. Same
-            // boundary the quantity sugar draws (`f57c4a53`); the `as` operator landed alongside it without
-            // the guard. A genuine same-line `q as u` has no intervening newline and still converts.
-            if self.at_keyword(Keyword::As)
-                && PREC_AS >= min_prec
-                && !self.src[self.prev_span().end..self.cur_span().start].contains('\n')
-            {
-                left = self.as_conversion(left, start);
-                continue;
-            }
-            let Some(op_name) = self.infix_op() else {
-                break;
-            };
-            let prec = infix_prec(op_name).expect("infix_op returns only infix names");
-            if prec < min_prec {
-                break;
-            }
-            let op_span = self.cur_span();
-            // A SAME-LINE trailing `//` comment on the LEFT operand sits at this operator token's leading
-            // slot (`a  // note` newline `and b`), tagged trailing. Attach it to `left` as
-            // `(comment-after …)` so it re-prints — otherwise it is stranded at the operator's slot and
-            // NEVER drained (the mid-infix-chain comment-loss, seq-277/C3). Only the same-line PREFIX is
-            // taken; an own-line comment before the operator stays (it leads the right operand). The infix
-            // PRINTER must re-emit a comment-after-wrapped operand with a break before the operator (else
-            // the `// note` would swallow the trailing ` op right`). `strip_comments` peels it.
-            let left_trailing = self.take_trailing_comment_here();
-            left = self.wrap_comment_after(left_trailing, left);
-            // OWN-LINE `//` comment(s) sitting BEFORE this operator (`a\n  // note\n  and b`, or a block
-            // between operands of a multi-line `and`/`|>` chain) lead the RIGHT operand — they remain at
-            // the operator token's leading slot after the same-line trailing prefix is taken. Drain them
-            // here + attach to `right` below, else they are stranded at the op slot and DROPPED (seq-277/C3:
-            // sread-eval.cdz's mid-chain own-line comment blocks). The infix printer emits them own-line
-            // BEFORE the operator. `strip_comments` peels them.
-            let right_leading = self.take_comments_here();
-            self.bump(); // operator
-            let head = self.name(op_name, op_span);
-            // A `:` ascription whose RHS OPENS with `forall` is a type-position `forall` (`e : forall a. T`):
-            // parse it via `forall_type`, the same path the structural `:` sites (param/return/field/effect-op)
-            // reach through `type_ref`. `forall` is a CONTEXTUAL keyword recognized only in type position, so
-            // the general `expr` RHS below would misread it as an ordinary name and let the unit-suffix postfix
-            // eat the following binder (`forall a` → `(Qty.of forall (Unit.of #"a"))`) — the printer emits
-            // `e : forall a. T` (the type surface), so without this the round-trip breaks. Only `forall` needs
-            // the intercept: every OTHER type form (`Int64`, `List(a)`, `a -> b`, `M.T`, `Tuple(a, b)`) already
-            // round-trips through the general `expr` RHS, so the ascription's value/expression RHS is otherwise
-            // unchanged (`x : a + b` stays `(: x (+ a b))`).
-            let right = if op_name == ":" && self.at_keyword(Keyword::Forall) {
-                self.forall_type(self.cur_span())
-            } else {
-                // Left-assoc: the right operand binds one tighter (`prec + 1`), so a same-precedence run
-                // groups left. The type arrow `->` is right-associative — it recurses at `prec`, so
-                // `A -> B -> C` groups as `A -> (B -> C)` (the curried reading).
-                let right_min = if is_right_assoc(op_name) {
-                    prec
-                } else {
-                    prec + 1
-                };
-                self.expr(right_min)
-            };
-            // Attach the own-line comment(s) that preceded the operator as leading on the right operand.
-            let right = self.wrap_comments(right_leading, right);
-            let span = start.merge(self.prev_span());
-            left = self.list(vec![head, left, right], span);
-            // DEPTH GUARD for the LEFT SPINE. A left-associative run (`a + b + c + …`) is parsed by
-            // this LOOP, not by recursion, so `self.depth` does not grow with it — but each iteration
-            // deepens the produced arena on its LEFT (`(op (op a b) c)`), so a long flat run yields an
-            // arbitrarily deep TREE that a recursive CONSUMER (the s-expr printer, `canon`) then walks
-            // to a stack overflow (SIGABRT), even though the PARSE never recursed. Count each folded
-            // layer against the same limit so a pathologically long chain produces one clean
-            // "nests too deeply" diagnostic instead of a downstream crash. `depth_exceeded` poisons the
-            // parse (⇒ `at_end`), so the loop's next `infix_op`/`at_keyword` check stops it.
-            spine += 1;
-            if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH {
-                self.error("expression nests too deeply to parse");
-                self.depth_exceeded = true;
-                break;
-            }
-        }
-        // Sequencing `;` is the LOOSEST operator (looser than every infix op above), so it is folded
-        // here AFTER the Pratt loop rather than through it: a `;`-run collapses to a single flat
-        // `(do a b c)` (not the nested `(; a (; b c))` a generic right-assoc fold would give), with the
-        // last element the sequence's value — modelling `a; b` as `let _ = a in b`. It is collected only
-        // when the CALLER permits sequencing (`min_prec == PREC_SEQ`, i.e. a body/statement position);
-        // a sub-expression parsed at any tighter level leaves the `;` for its enclosing sequence, so a
-        // `;` inside a call arg / list / tuple element does not escape into the element.
-        if min_prec == crate::token::PREC_SEQ && self.at(Kind::Semi) {
-            left = self.finish_sequence(left, start);
-        }
-        self.depth -= 1;
-        left
+        self.expr_iter(min_prec)
     }
 
     /// Iterative precedence-climbing — the explicit-stack replacement for the recursive [`Self::expr`]'s
@@ -6425,68 +6241,7 @@ impl<'a> Parser<'a> {
     /// the printer exactly, so constructor patterns (`Some(x)`), dotted constructors (`Sign.Neg`),
     /// literal-headed forms (`1(v)`), and quoted patterns (`quasiquote(…)`) all parse uniformly.
     fn pattern(&mut self) -> StructId {
-        // I4: route to the iterative pattern driver when `read_ml` set the flag; the recursive body below
-        // stays for `read_ml_recursive` (the frozen oracle reference). Incremental — the iterative driver
-        // de-recurses one pattern family at a time, staying byte-identical (differential oracle) each step.
-        if self.iterative {
-            return self.pattern_iter();
-        }
-        let start = self.cur_span();
-        // DEPTH GUARD: patterns recurse (a tuple/list/ctor sub-pattern re-enters `pattern`) on a path
-        // ENTIRELY separate from `expr`, so `expr`'s guard never covers them — a pathologically deep
-        // pattern (`((((…` / `[[[[…` / `C(C(C(…`) overflowed the native stack (SIGABRT). Count each
-        // pattern level against the shared depth budget via `guard_prefix` (clean diagnostic). The single
-        // `node` exit below decrements to keep the budget balanced.
-        if let Some(err) = self.guard_prefix(start) {
-            return err;
-        }
-        let mut node = self.pattern_atom();
-        loop {
-            match self.kind() {
-                Kind::Dot if matches!(self.nth_kind(1), Kind::Ident | Kind::BacktickName) => {
-                    self.bump(); // '.'
-                    let seg_span = self.cur_span();
-                    let seg_t = self.bump().unwrap();
-                    let seg = match seg_t.kind {
-                        Kind::BacktickName => {
-                            self.name(literal::unescape_backtick_name(self.text(seg_t)), seg_span)
-                        }
-                        _ => self.name(self.text(seg_t), seg_span),
-                    };
-                    let dot_span = start.merge(self.prev_span());
-                    // M2: `.` is a native Member leaf head (kind identity), matching `member_access` /
-                    // `member_head` and the s-expr reader's `memberize` — a dotted CONSTRUCTOR pattern
-                    // (`Sign.Neg`, `Id.Mk(n)`) round-trips against the same Member head every other surface
-                    // produces (was `self.name(".")`, which mismatched the reader's `Leaf::Member`).
-                    let dot = self.atom(Leaf::Member, dot_span);
-                    node = self.list(vec![dot, node, seg], dot_span);
-                }
-                Kind::LParen => {
-                    self.bump();
-                    let mut items = vec![node];
-                    if !self.at(Kind::RParen) {
-                        loop {
-                            let before = self.pos;
-                            items.push(self.pattern());
-                            if !self.sep_continue(Kind::RParen) {
-                                break;
-                            }
-                            // A pattern at a stop token records an error without consuming; skip it
-                            // so the missing-`,` branch can't loop forever.
-                            if self.pos == before {
-                                self.bump();
-                            }
-                        }
-                    }
-                    self.expect(Kind::RParen, "`)`");
-                    let span = start.merge(self.prev_span());
-                    node = self.list(items, span);
-                }
-                _ => break,
-            }
-        }
-        self.depth -= 1;
-        node
+        self.pattern_iter()
     }
 
     /// Iterative pattern reader (I4) — the explicit-worklist replacement for the recursive [`Self::pattern`]
@@ -8057,46 +7812,7 @@ impl<'a> Parser<'a> {
     /// `expr`) so a type position admits `->` and application without also admitting arithmetic or a
     /// bare `:` re-ascription. `A -> B -> C` right-associates to `(-> A (-> B C))`.
     fn type_ref(&mut self) -> StructId {
-        // I5: route to the iterative type driver when `read_ml` set the flag; the recursive body below
-        // stays for `read_ml_recursive` (the frozen oracle reference). Incremental — de-recurses one type
-        // layer at a time, staying byte-identical (the type differential oracle) each step.
-        if self.iterative {
-            return self.type_ref_iter();
-        }
-        let start = self.cur_span();
-        // `forall a b. TYPE` — an explicit generic binder heading a type. Binds the lowercase names
-        // `a`/`b` so they resolve as bound type variables inside TYPE instead of erroring CDZ0101
-        // (unbound). It builds the canonical `(forall (binders…) TYPE)` node; a later lowering desugars
-        // that to the pinned "generics are type-valued parameters" model — a `forall a.` becomes an
-        // implicit `(: a Type)` binding — so it introduces no new ∀ engine (v-inference's I2). Contextual:
-        // `forall` is only a keyword at the START of a type, so a plain name `forall` elsewhere is free.
-        if self.at_keyword(Keyword::Forall) {
-            return self.forall_type(start);
-        }
-        // A parenthesized form in TYPE position is a tuple TYPE (or a grouping), NOT the tuple VALUE
-        // constructor the shared `prefix`/`paren` path would build. `(A, B)` here is `Tuple(A, B)` and
-        // `(A)` is just `A` (a grouping) — the same surface `(a, b)` a tuple VALUE/pattern uses, but on
-        // the RHS of a `:` the reader knows it denotes a type. Handled directly so no value ctor
-        // (`("tuple" …)`) is ever emitted in type position (which resolved to a value → CDZ0203).
-        let left = self.type_operand();
-        // A DERIVED-UNIT type annotation composes unit factors with the infix operators `^`/`*`/`/`
-        // (`Qty(Int64, meter / second ^ 2)`) — the surface the printer emits for the arena heads
-        // `Unit.^`/`Unit.*`/`Unit./` (via `infix_glyph`). The value grammar reads these (in a quantity
-        // literal / general expr), but type position had NO infix layer beyond `->`, so a derived-unit
-        // annotation printed a form that failed re-parse (`expected ,` at the exponent — breaker's
-        // report). Fold them here, tighter than the `->` below, matching the value side's bare-glyph
-        // heads + `infix_prec` so the ML print→parse cycle round-trips. `->` stays the loosest type
-        // constructor (folded after).
-        let left = self.type_unit_infix(left, 0, start);
-        if self.at(Kind::Arrow) {
-            self.bump(); // `->`
-            let arrow = self.name("->", start);
-            let right = self.type_ref(); // right-associative
-            let span = start.merge(self.prev_span());
-            self.list(vec![arrow, left, right], span)
-        } else {
-            left
-        }
+        self.type_ref_iter()
     }
 
     /// Iterative type reader (I5) — the explicit-worklist replacement for the recursive [`Self::type_ref`]
@@ -8679,148 +8395,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A single TYPE OPERAND — the atom the `->` arrow and the unit-composition infix operators
-    /// (`^`/`*`/`/`) compose over: a parenthesized/tuple type, a brace record type, or a `prefix` head
-    /// extended by [`Self::type_postfix`] (member chain + `(…)` application). Factored out of
-    /// [`Self::type_ref`] so [`Self::type_unit_infix`] can parse each operand the same way — WITHOUT
-    /// re-consuming a `forall` (only legal at the head of a type) or an `->`.
-    fn type_operand(&mut self) -> StructId {
-        let start = self.cur_span();
-        if self.at(Kind::LParen) {
-            self.type_paren(start)
-        } else if self.at(Kind::LBrace) {
-            self.type_brace_record(start)
-        } else {
-            let head = self.prefix();
-            self.type_postfix(head, start)
-        }
-    }
-
-    /// Fold the unit-composition infix operators `^`/`*`/`/` in TYPE position into bare-glyph-headed
-    /// nodes (`(^ base 2)`, `(/ m s)`), a Pratt climb sharing the value grammar's [`infix_prec`] so a
-    /// derived-unit annotation round-trips through the ML print→parse cycle. `*`/`/` are the
-    /// multiplicative tier (11) and left-associative; `^` is tier 7 (looser than `*`/`/`, matching the
-    /// glyph's general-expression binding), so the printer parenthesizes `s ^ 2` under a `/` and this
-    /// re-reads that parenthesized operand via [`Self::type_operand`] (→ [`Self::type_paren`] grouping).
-    /// These operators are meaningless in a non-unit type, so folding them here adds no ambiguity: a
-    /// type that previously reached one of them errored (`expected ,`/`)`), so nothing that parsed
-    /// before changes. Bare-glyph heads (not `Unit.*`/`Unit.^`) match what the value side emits and what
-    /// the printer round-trips (`has_canonicalizing_head` holds the `Unit.^` INPUT to idempotence-only).
-    /// The `spine` depth guard mirrors the value infix loop (a long flat `m/s/s/…` chain deepens the
-    /// arena on its left, which a recursive consumer would overflow — so bound it to a clean diagnostic).
-    fn type_unit_infix(&mut self, mut left: StructId, min_prec: u8, start: Span) -> StructId {
-        let mut spine: u32 = 0;
-        loop {
-            let op_name = match self.kind() {
-                Kind::Caret => "^",
-                Kind::Star => "*",
-                Kind::Slash => "/",
-                _ => break,
-            };
-            let prec = infix_prec(op_name).expect("unit infix op has a precedence");
-            if prec < min_prec {
-                break;
-            }
-            let op_span = self.cur_span();
-            self.bump(); // operator
-            let head = self.name(op_name, op_span);
-            let rhs_start = self.cur_span();
-            let right = self.type_operand();
-            // Left-associative: the right operand binds one tighter, so a same-tier run (`a * b * c`)
-            // groups left, and `^` (tier 7) captured on the right of `/` (tier 11) stays isolated.
-            let right = self.type_unit_infix(right, prec + 1, rhs_start);
-            let span = start.merge(self.prev_span());
-            left = self.list(vec![head, left, right], span);
-            spine += 1;
-            if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH {
-                self.error("expression nests too deeply to parse");
-                self.depth_exceeded = true;
-                break;
-            }
-        }
-        left
-    }
-
-    /// The TYPE-position mirror of [`Self::postfix`]: a member/`.` chain plus `(…)` APPLICATION, but each
-    /// application argument is parsed as a TYPE ([`Self::type_ref`]), not a value [`Self::arg_exprs`].
-    /// A type-application argument may itself be any type — including a `forall` or an arrow — which the
-    /// value `arg_exprs` path could NOT parse: `forall` is a contextual keyword recognized only in type
-    /// position, so `Tuple(forall b. L)` routed through the value `expr` misread `forall` as a name and
-    /// let the unit-suffix postfix eat the binder (`(Qty.of forall (Unit.of #"b"))` + `<error>`). Member
-    /// access (`M.T` — a qualified type name) reuses the same `.`-key handling as the value postfix. The
-    /// depth guard mirrors [`Self::postfix`] (a `Foo(Bar(Baz(…)))` chain deepens the tree per layer).
-    fn type_postfix(&mut self, mut node: StructId, start: Span) -> StructId {
-        let mut spine: u32 = 0;
-        loop {
-            match self.kind() {
-                Kind::Dot if self.dot_is_member() => {
-                    node = self.member_access(node, start);
-                }
-                Kind::LParen => {
-                    // A `Record(…)` type-constructor takes ONLY named fields — each canonical `(: name T)`
-                    // ascription (from the `name: T` label surface). RT1 (DESIGN-record-type-syntax OQ-A):
-                    // reject the obsolete head-application field spelling `Record(field(T))` — where
-                    // `field(T)` parsed as a positional application arg `(field T)` — and steer to the
-                    // colon form `field: T`. A record type never takes a POSITIONAL type argument (unlike
-                    // `List(a)`/`Tuple(A, B)`), so a non-ascription arg here is unambiguously a malformed
-                    // field, not a legitimate application — no false-reject on generic type-apps.
-                    let head_is_record = self.builder.as_name(node) == Some("Record");
-                    let args = self.type_arg_exprs();
-                    if head_is_record {
-                        for &arg in &args {
-                            if self.is_head_app_record_field(arg) {
-                                self.error(
-                                    "a record-type field is written `field: T`, not `field(T)` — \
-                                     use the colon form, e.g. `Record(x: Int64)`",
-                                );
-                            }
-                        }
-                    }
-                    let span = start.merge(self.prev_span());
-                    let mut items = Vec::with_capacity(args.len() + 1);
-                    items.push(node);
-                    items.extend(args);
-                    node = self.list(items, span);
-                }
-                _ => break,
-            }
-            spine += 1;
-            if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH {
-                self.error("expression nests too deeply to parse");
-                self.depth_exceeded = true;
-                return node;
-            }
-        }
-        node
-    }
-
-    /// Parse `( arg, … )` in TYPE-application-argument position. Each argument is either:
-    ///   - a LABELED field `name: T` → `(: name T)` — the shape the explicit record TYPE `Record(x: Int64,
-    ///     …)` uses (the canonical `(Record (: x Int64) …)` the brace `{x: Int64}` sugar also builds), or
-    ///   - a bare TYPE [`Self::type_ref`] — a positional type argument (`List(a)`, `Tuple(A, B)`), which
-    ///     may itself be a `forall`/arrow/nested application.
-    ///
-    /// Unlike the value [`Self::arg_exprs`] (which parses each arg with the general `expr`), a bare arg
-    /// here is a TYPE: `forall` is a contextual keyword recognized only in type position, so a value-`expr`
-    /// arg would misread `Tuple(forall b. L)` as a name + unit-suffix. The labeled `name: T` form is kept
-    /// so the explicit `Record(field: T)` application still parses (it produced `(: field T)` via the value
-    /// path's infix `:`). A label is an `Ident`/backtick-name IMMEDIATELY followed by `:` — otherwise the
-    /// arg is a plain type (so a bare `M.T` / `List(a)` positional arg is unaffected).
-    fn type_arg_exprs(&mut self) -> Vec<StructId> {
-        self.expect(Kind::LParen, "`(`");
-        let mut args = Vec::new();
-        if !self.at(Kind::RParen) {
-            loop {
-                args.push(self.type_arg());
-                if !self.sep_continue(Kind::RParen) {
-                    break;
-                }
-            }
-        }
-        self.expect(Kind::RParen, "`)`");
-        args
-    }
-
     /// `forall a b . TYPE`  ->  `(forall (a b) TYPE)`. The binder list is one-or-more lowercase names,
     /// terminated by `.`; TYPE is an ordinary [`Self::type_ref`] (so the arrow `forall a. a -> a` binds
     /// looser than `->` and reads as `forall a. (a -> a)`, the natural curried generic). The binder
@@ -8905,62 +8479,6 @@ impl<'a> Parser<'a> {
             })
             .collect();
         Some(params)
-    }
-
-    /// `( T, … )` in TYPE position → the tuple TYPE node `(Tuple T …)` (head is the `Tuple` type name,
-    /// the same node `Tuple(A, B)` builds — one canonical type spelling). A single `( T )` is a grouping
-    /// (returns `T`); `()` is the `unit` type. Each element is parsed by `type_ref`, so a nested tuple
-    /// type (`(A, (B, C))`) and a function-type element (`((A) -> B, C)`) work. This makes the natural
-    /// `def f(p: (Int64, Int64))` an accepted pair type instead of the CDZ0203 the value-ctor lowering
-    /// produced — tuple values/patterns and tuple TYPES now share the `(…)` spelling (as lists do).
-    fn type_paren(&mut self, start: Span) -> StructId {
-        self.expect(Kind::LParen, "`(`");
-        if self.at(Kind::RParen) {
-            self.bump();
-            let span = start.merge(self.prev_span());
-            return self.name("unit", span);
-        }
-        let first = self.type_ref();
-        if !self.at(Kind::Comma) {
-            // A single parenthesized type is a transparent grouping — `(A)` is `A`.
-            self.expect(Kind::RParen, "`)`");
-            return first;
-        }
-        let head = self.name("Tuple", start);
-        let mut items = vec![head, first];
-        while self.sep_continue(Kind::RParen) {
-            items.push(self.type_ref());
-        }
-        self.expect(Kind::RParen, "`)`");
-        let span = start.merge(self.prev_span());
-        self.list(items, span)
-    }
-
-    /// `{ field: T, … }` in TYPE position → the record TYPE node `(Record (: field T) …)` — the SAME
-    /// canonical node the explicit `Record(field: T, …)` application builds, so the brace form is pure
-    /// surface sugar for it (one type spelling, both surfaces agree). Handled directly in `type_ref`
-    /// because the shared `prefix`/`paren` path would read `{ … }` as a record VALUE literal (whose
-    /// fields are `name = value`), so a `field: T` there errors "expected `,`" at the `:` — the reported
-    /// gap. A trailing comma is allowed. `{}` is the empty record type `(Record)`. Each field type is
-    /// parsed by `type_ref`, so a field may itself be a function/tuple/nested-record type
-    /// (`{f: Int64 -> Bool, p: {x: Int64}}`).
-    fn type_brace_record(&mut self, start: Span) -> StructId {
-        self.expect(Kind::LBrace, "`{`");
-        let head = self.name("Record", start);
-        let mut items = vec![head];
-        while !self.at(Kind::RBrace) && !self.at_end() {
-            let (field_start, label) = self.read_type_record_field_label();
-            let ty = self.type_ref();
-            let colon = self.name(":", field_start);
-            let field_span = field_start.merge(self.prev_span());
-            items.push(self.list(vec![colon, label, ty], field_span));
-            if !self.sep_continue(Kind::RBrace) {
-                break;
-            }
-        }
-        self.expect(Kind::RBrace, "`}`");
-        let span = start.merge(self.prev_span());
-        self.list(items, span)
     }
 
     /// Read a brace-record TYPE field's REQUIRED label + its `:`, returning `(field-start-span, label-node)`.
