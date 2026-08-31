@@ -2196,7 +2196,7 @@
            dimensions — so it is CDZ0501. Unit.in converts WITHIN a dimension (meter↔km), never ACROSS
            one; there is no scale relating a length to a time.")
   (input  (Unit.in (Unit.of #"meter") (Qty.of 3.0 (Unit.of #"second"))))
-  (error  CDZ0501))
+  (error  CDZ0501 (message "second") (message "meter")))
 
 (case "chaining two Unit.in conversions is a compile-time error — the inner one already unwrapped"
   (doc    "`(Unit.in centimeter (Unit.in millimeter (Qty.of 1 inch)))` — the INNER `Unit.in` UNWRAPS to a
@@ -2207,7 +2207,11 @@
            semantic surfacing as a clean type error rather than a runtime failure.")
   (input  (Unit.in (Unit.of #"centimeter")
             (Unit.in (Unit.of #"millimeter") (Qty.of (Rational.of 1 1) (Unit.of #"inch")))))
-  (error  CDZ0501))
+  (error  CDZ0501
+          (message "converts a QUANTITY")
+          (message "which is not a quantity")
+          (message "Qty.of")
+          (not "of a non-quantity")))
 
 (case "Qty.value of a conversion result is a compile-time error — the conversion already unwrapped"
   (doc    "`(Qty.value (Unit.in inch (Qty.of 5 foot)))` — the `Unit.in` UNWRAPS to a bare number (Q3: 60,
