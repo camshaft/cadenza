@@ -85,6 +85,25 @@
   (input  (do (def (g (: n Int64)) (bin (utf8 n 3))) (export g)))
   (error  CDZ0220 (message "utf8 segment takes a String")))
 
+; A CONSTANT literal segment value that does not fit its width grounds to the segment's width type and
+; range-checks: it has no encoding, so the build FAILS (CDZ0304) rather than truncating (256/-1 into u8,
+; 256 into an 8-bit field, etc). The message is ACTIONABLE — it names the offending VALUE, the segment's
+; width TYPE, and the VALID RANGE, mirroring an annotation-position `(: 300 UInt8)` over-range. (A
+; NON-literal value that does not fit is a type error, CDZ0203, not this provable fit-trap.) (migrated from
+; rcdzc a_bin_value_out_of_range_for_its_segment_is_a_provable_trap.)
+
+(case "a constant value out of range for its unsigned bin segment is a provable trap naming value, type, range"
+  (input  (do (def (main) (bin (u8 300))) (export main)))
+  (error  CDZ0304 (message "300") (message "UInt8") (message "0..=255")))
+
+(case "a constant value out of range for a non-aliased bit-field bin segment names the (UInt k) type and range"
+  (input  (do (def (main) (bin (bits 20 4) (bits 0 4))) (export main)))
+  (error  CDZ0304 (message "20") (message "(UInt 4)") (message "0..=15")))
+
+(case "a constant value out of range for a signed bin segment names the signed type and negative-inclusive range"
+  (input  (do (def (main) (bin (i8 200))) (export main)))
+  (error  CDZ0304 (message "Int8") (message "-128..=127")))
+
 (case "a u16 segment encodes an integer big-endian by default"
   (doc    "`(bin (u16 258))` encodes 258 (0x0102) as two bytes, most-significant first — big-endian is
            the default byte order, so the result is `(Bytes.of (list 1 2))`. Pins the default-endianness

@@ -638,60 +638,11 @@ fn a_runtime_list_literal_bulk_builds_via_vec_of_arr() {
 // (a_mixed_element_list_is_rejected was already covered by corpus 05-compound-types "a list mixing
 // integer and boolean elements is a type error" (`#list(1 true)` → CDZ0201) — redundant, removed.)
 
-#[test]
-fn a_bin_value_out_of_range_for_its_segment_is_a_provable_trap() {
-    // A constant LITERAL segment value that does not fit its width grounds to the segment's width type
-    // and range-checks: it has no encoding → the build fails (CDZ0304), rather than truncating. `(u8
-    // 256)` needs 9 bits; `(u8 -1)` is negative into unsigned. A bit-field value wider than its width
-    // (`(bits 256 8)`) is the sub-byte companion, also a provable rejection. (A non-literal value that
-    // does not fit is a type error, CDZ0203 — see the sibling test.)
-    for src in [
-        "(module m (def (main) (Bytes.len (bin (u8 256)))) (export main))",
-        "(module m (def (main) (Bytes.len (bin (u8 -1)))) (export main))",
-    ] {
-        assert_eq!(reject_code(src).as_deref(), Some("CDZ0304"), "src: {src}");
-    }
-    // A byte-aligned bit-field whose value overflows its width is the CDZ0304 fit-trap (aligned, so
-    // the well-formedness check passes and the value-fit check fires): `(bits 256 8)` needs 9 bits.
-    assert_eq!(
-        reject_code("(module m (def (main) (Bytes.len (bin (bits 256 8)))) (export main))")
-            .as_deref(),
-        Some("CDZ0304"),
-    );
-    // The message is ACTIONABLE, not the terse "binary value does not fit segment": it names the
-    // offending VALUE, the segment's width TYPE, and the VALID RANGE (mirroring the annotation-position
-    // CDZ0302), so a bin over-range reads as clearly as a `(: 300 UInt8)` annotation over-range.
-    let d = reject_full("(module m (def (main) (Bytes.len (bin (u8 300)))) (export main))")
-        .expect("`(u8 300)` over-range rejects");
-    assert!(
-        d.message.contains("300") && d.message.contains("UInt8") && d.message.contains("0..=255"),
-        "the bin over-range message names the value, width type, and range: {}",
-        d.message
-    );
-    // A NON-ALIASED bit-field width spells its type as the `(UInt k)` ctor form (a bare `UInt4` is
-    // unbound), and names the k-bit range — `(bits 20 4)` → "the value 20 does not fit … 4-bit
-    // (UInt 4) field (the valid range is 0..=15)".
-    let bits = reject_full(
-        "(module m (def (main) (Bytes.len (bin (bits 20 4) (bits 0 4)))) (export main))",
-    )
-    .expect("`(bits 20 4)` over-range rejects");
-    assert!(
-        bits.message.contains("20")
-            && bits.message.contains("(UInt 4)")
-            && bits.message.contains("0..=15"),
-        "a non-aliased bit-field over-range names the `(UInt k)` type + range: {}",
-        bits.message
-    );
-    // A SIGNED segment names the signed type + its (negative-inclusive) range — `(i8 200)` overflows
-    // Int8's -128..=127.
-    let signed = reject_full("(module m (def (main) (Bytes.len (bin (i8 200)))) (export main))")
-        .expect("`(i8 200)` over-range rejects");
-    assert!(
-        signed.message.contains("Int8") && signed.message.contains("-128..=127"),
-        "a signed segment names the signed type + range: {}",
-        signed.message
-    );
-}
+// a_bin_value_out_of_range_for_its_segment_is_a_provable_trap (a constant bin segment value that doesn't
+// fit its width → CDZ0304 provable fit-trap, message naming value+type+range) migrated to corpus
+// 16-binary-matching (3 cases after the kind-mismatch cases): unsigned `(u8 300)` → "300"/"UInt8"/"0..=255"
+// (covers the u8 256/-1 class), non-aliased bit-field `(bits 20 4)` → "20"/"(UInt 4)"/"0..=15" (covers the
+// bits 256 8 class), signed `(i8 200)` → "Int8"/"-128..=127". rcdzc test deleted (corpus-covered).
 
 // (an_ill_formed_bin_form_is_rejected_cdz0220 migrated to corpus 16-binary-matching, the structural
 // well-formedness reject block after the CDZ0304 value-fit case: bit-fields not closing to a whole byte
