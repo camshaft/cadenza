@@ -650,17 +650,31 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // review; matches the file's "anchor the specific offending element" pattern). Without
                         // the explicit `.at(e)`, `collect`'s `set_origin_if_absent(id)` would stamp the whole
                         // `(list …)` node, highlighting the entire list rather than the one bad element.
-                        out.push(
-                            Reject::coded(
-                                code,
-                                format!(
-                                    "list elements must share one type: {} and {}{delta}",
-                                    first_ty.render_name(&db.name_ctx()),
-                                    et.render_name(&db.name_ctx())
-                                ),
-                            )
-                            .at(e),
-                        );
+                        // Attach the one-shot repair the peer-clash sites (if-branch, map axis) give, so a
+                        // NATIVE `#list(…)`/`#set(…)` element clash proposes a fix exactly as the name-alias
+                        // `(list …)` did pre-M3 (the M3 nativization routed these literals to this
+                        // `Resolved::List | Resolved::Set` arm, which lacked the fix — a corpus fix-quality
+                        // regression). An INT-LITERAL-vs-FLOAT clash retypes whichever element IS the int
+                        // literal (`#list(1.0 2)` → `2.0`, `#list(1 2.0)` → `1.0`, sign preserved); a
+                        // records-differing-by-a-misspelled-field clash renames the typo'd field on whichever
+                        // element carries it. Mirrors the if-branch peer-clash fix chain above.
+                        let mut reject = Reject::coded(
+                            code,
+                            format!(
+                                "list elements must share one type: {} and {}{delta}",
+                                first_ty.render_name(&db.name_ctx()),
+                                et.render_name(&db.name_ctx())
+                            ),
+                        )
+                        .at(e);
+                        if let Some(fix) = float_literal_retype_fix(db, e, &et, &first_ty)
+                            .or_else(|| float_literal_retype_fix(db, first, &first_ty, &et))
+                            .or_else(|| record_field_typo_fix(db, &first_ty, &et, e))
+                            .or_else(|| record_field_typo_fix(db, &et, &first_ty, first))
+                        {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
                     }
                 }
                 // RANGE-CHECK each element against the SETTLED element type — the sibling-unification twin of
