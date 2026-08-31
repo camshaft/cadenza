@@ -1,0 +1,5 @@
+def f() =
+  (match 0 with
+    | 0 => a
+    | _ => 99);
+  next()
