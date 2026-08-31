@@ -43,23 +43,51 @@ pub fn encode_result_types(entries: &[(String, Arenas)]) -> Vec<u8> {
     cadenza_ast::codec::encode(&b.finish(root))
 }
 
-/// Decode the `KIND_RESULT_TYPES` bytes back into export name → standalone type-arena pairs — the inverse
-/// of [`encode_result_types`], read via the shared `cadenza_ast::codec`. Each returned `Arenas` is a fresh
-/// standalone arena whose ROOT is that export's full type payload subtree (so a consumer grafts/walks it
-/// directly — the FULL structured `Ty`, no projection). TOTAL: a malformed tree / wrong-shape form is
-/// skipped rather than failing the whole decode.
-pub fn decode_result_types(bytes: &[u8]) -> Vec<(String, Arenas)> {
-    let Some(a) = cadenza_ast::codec::decode(bytes) else {
-        return Vec::new();
-    };
+/// Decode the `KIND_RESULT_TYPES` bytes, DISTINGUISHING a legitimately-ABSENT section from a PRESENT-but-
+/// MALFORMED one — the decode-validity contract (operator directive): wherever an expected value IS a
+/// cadenza-AST, a decode failure means the compiler emitted a malformed/mismatched AST — a BUG the caller
+/// must fail LOUD on, never silently degrade (e.g. `cdz-run` rendering TYPE-BLIND, the Qty-erases-to-raw-
+/// bytes class). Contract:
+///   * EMPTY `bytes` → `Ok(vec![])` — no result-types section was emitted (a legitimately typeless program).
+///   * NON-EMPTY `bytes` whose `codec::decode` fails → `Err` (malformed binary AST — a compiler bug).
+///   * decoded but ROOT is not a `result-types` form → `Err` (present-but-wrong-shape — a compiler bug).
+///   * a valid `result-types` root → `Ok(entries)` (a wrong-shape *inner* `result-type` form is still
+///     skipped by `decode_one`, matching the per-entry tolerance; the SECTION-level shape is what's checked).
+///
+/// The `Err` carries an actionable message for the fail-loud path. See the lenient [`decode_result_types`].
+pub fn decode_result_types_checked(bytes: &[u8]) -> Result<Vec<(String, Arenas)>, String> {
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let a = cadenza_ast::codec::decode_detailed(bytes).map_err(|e| {
+        format!(
+            "result-types section is present ({} bytes) but failed to decode ({e:?}) — the compiler \
+             emitted a malformed/mismatched binary AST (decode-validity bug), not a typeless program",
+            bytes.len()
+        )
+    })?;
     let Some(forms) = a.as_form(a.root, "result-types") else {
-        return Vec::new();
+        return Err(
+            "result-types section decoded but its root is not a `result-types` form — \
+             present-but-wrong-shape compiler output (decode-validity bug)"
+                .to_string(),
+        );
     };
-    forms
+    Ok(forms
         .to_vec()
         .iter()
         .filter_map(|&f| decode_one(&a, f))
-        .collect()
+        .collect())
+}
+
+/// Decode the `KIND_RESULT_TYPES` bytes back into export name → standalone type-arena pairs — the inverse
+/// of [`encode_result_types`], read via the shared `cadenza_ast::codec`. Each returned `Arenas` is a fresh
+/// standalone arena whose ROOT is that export's full type payload subtree (so a consumer grafts/walks it
+/// directly — the FULL structured `Ty`, no projection). LENIENT/TOTAL: a malformed section yields no
+/// entries. A consumer that must tell PRESENT-but-MALFORMED from legitimately-ABSENT (to fail loud per the
+/// decode-validity contract) uses [`decode_result_types_checked`] instead.
+pub fn decode_result_types(bytes: &[u8]) -> Vec<(String, Arenas)> {
+    decode_result_types_checked(bytes).unwrap_or_default()
 }
 
 fn decode_one(a: &Arenas, form: StructId) -> Option<(String, Arenas)> {
@@ -182,5 +210,49 @@ mod tests {
         let decoded = decode_result_types(&bytes);
         assert_eq!(decoded.len(), 1, "the bogus form is skipped");
         assert_eq!(decoded[0].0, "g");
+    }
+
+    #[test]
+    fn checked_distinguishes_absent_malformed_and_valid() {
+        // The decode-validity contract: EMPTY = legitimately absent (Ok empty); NON-EMPTY that fails
+        // codec::decode = malformed (Err); decoded-but-wrong-root = malformed (Err); valid = Ok(entries).
+        // ABSENT: no section → Ok(empty), NOT an error.
+        assert_eq!(decode_result_types_checked(&[]), Ok(Vec::new()));
+
+        // MALFORMED (non-empty garbage that codec::decode rejects) → Err, NOT a silent empty.
+        let garbage = b"not a binary AST at all".to_vec();
+        assert!(
+            cadenza_ast::codec::decode(&garbage).is_none(),
+            "precondition: garbage doesn't decode"
+        );
+        assert!(
+            decode_result_types_checked(&garbage).is_err(),
+            "present-but-malformed must be an Err (fail-loud), not a silent typeless fallback"
+        );
+        // and the lenient variant still swallows it (unchanged behavior for total callers).
+        assert!(decode_result_types(&garbage).is_empty());
+
+        // PRESENT-but-WRONG-ROOT: a valid binary AST whose root is not a `result-types` form → Err.
+        let mut b = Builder::new();
+        let head = b.name("something-else");
+        let root = b.list(vec![head]);
+        let wrong = cadenza_ast::codec::encode(&b.finish(root));
+        assert!(
+            decode_result_types_checked(&wrong).is_err(),
+            "decoded-but-wrong-root must be an Err (present-but-wrong-shape compiler output)"
+        );
+
+        // VALID: a real round-trip decodes to Ok(entries) via the checked path too.
+        let mut b = Builder::new();
+        let rt_head = b.name("result-types");
+        let e_head = b.name("result-type");
+        let e_name = b.atom_leaf(Leaf::Str("x".into()));
+        let e_ty = b.name("Bytes");
+        let e = b.list(vec![e_head, e_name, e_ty]);
+        let root = b.list(vec![rt_head, e]);
+        let bytes = cadenza_ast::codec::encode(&b.finish(root));
+        let ok = decode_result_types_checked(&bytes).expect("valid section decodes Ok");
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].0, "x");
     }
 }
