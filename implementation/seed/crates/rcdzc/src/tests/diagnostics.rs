@@ -1673,14 +1673,21 @@ fn a_set_membership_element_is_a_value_expression_not_a_binder() {
         "an in-scope `#set(k)` membership element (a value expression, not a binder) must NOT warn CDZ0306 \
          unused-binding on `k`: {ok_diags:?}"
     );
-    // (2) An unbound element is a plain unbound value reference (CDZ0101) — a set element is not a binder.
+    // (2) An unbound element is a plain unbound value reference (CDZ0101) — a set element is not a binder —
+    // carrying a STEER that names the membership semantics (a diagnostic-quality note requested by
+    // v-rcdzc-test-shrink + blessed by v-spec-oracle ruling #6685: code stays CDZ0101, message guides).
     let unb = "(module m (def (main) (match #set(1 2) (#set(a) 9) (_ 0))) (export main))";
     let unb_diags = diags_of(unb);
     assert!(
-        unb_diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
-            && d.message.contains("unbound name `a`")),
-        "an unbound `#set(a)` element resolves as an unbound value expression (CDZ0101), the element being \
-         a value expression not a binder: {unb_diags:?}"
+        unb_diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0101")
+                && d.message.contains("unbound name `a`")
+                && d.message.contains("does not bind")
+                && d.message.contains("Set.contains")),
+        "an unbound `#set(a)` element resolves as an unbound value expression (CDZ0101, NOT a CDZ0201 \
+         kind-reject per ruling #6685), with a steer that a set names members by value and does not bind: \
+         {unb_diags:?}"
     );
 }
 

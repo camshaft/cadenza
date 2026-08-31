@@ -3685,7 +3685,7 @@ pub(super) fn lower_match_set(
             Some(g) if g.len() == 2 => g[0],
             _ => pat,
         };
-        let Some((_elems, rest)) = set_pattern_of(db, inner) else {
+        let Some((elems, rest)) = set_pattern_of(db, inner) else {
             if set_form_is_malformed_rest(db, inner) {
                 return Core::Poison(
                     Reject::coded(
@@ -3700,6 +3700,34 @@ pub(super) fn lower_match_set(
                 "a set match arm that is not a `(set …)` pattern or a binder is not supported",
             ));
         };
+        // A bare-NAME element that resolves UNBOUND (`#set(a b)` with `a` not in scope). A set element is an
+        // ordinary membership VALUE expression, NOT a binder (a set has no positional structure to bind —
+        // core-semantics §A Set Is Matched By Element-Membership Patterns, v-spec-oracle ruling #6685), so the
+        // CODE stays CDZ0101 (unbound value) — but a user who wrote `#set(a b)` INTENDING to bind gets a bare
+        // "unbound name `a`" that reads like a typo. STEER them here (BEFORE the fold reuses + reparents the
+        // element out of its set-pattern position, which is why the resolver's generic unbound path can't add
+        // this context). An IN-SCOPE element resolves cleanly (#6693); only a genuinely-unbound name is caught.
+        for &e in &elems {
+            if let Some(nm) = db.ast.as_name(e).map(str::to_string)
+                && matches!(
+                    crate::resolve::resolved_of(db, e),
+                    crate::resolved::Resolved::Poison(ref rj) if rj.code == Some(Code::Unbound)
+                )
+            {
+                return Core::Poison(
+                    Reject::coded(
+                        Code::Unbound,
+                        format!(
+                            "unbound name `{nm}` — a set pattern names its members BY VALUE and does not bind \
+                             them (a set has no positional structure to destructure). Use an in-scope value to \
+                             test membership, or bind the whole set with `_` / a name and query it with \
+                             `Set.contains` / `Set.len`."
+                        ),
+                    )
+                    .at(e),
+                );
+            }
+        }
         // SLICE 1 lowers the MEMBERSHIP form `(set e…)` (a `Set.contains` presence-test chain). The REST form
         // `(set e… .. rest)` — binding `rest` to the set MINUS the named elements — needs the rest binder to
         // resolve to the residual (a `Set.remove` chain), which the initial resolve pass does not yet wire (a
