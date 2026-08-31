@@ -77,6 +77,14 @@ struct Cli {
     /// fails the grade (exit 1), the per-case analogue of `xtask gate --check --target rust` (gap #7).
     #[arg(long, value_name = "PATH")]
     baseline: Option<PathBuf>,
+
+    /// CLASSIFY mode (`--emit-verdict PATH`, the nix `.#corpus-verdicts-rust[-async]` harvest / `gate --save`
+    /// replacement): write this case's current verdict (`<tag>\t<description>`, tag ∈ pass/todo/fail from
+    /// `Grade::verdict` — the coarse vocab `.gate-baseline-rust*` records) to `<PATH>` and ALWAYS exit 0.
+    /// Independent of `--baseline` and takes precedence over it (a save/harvest run classifies the CURRENT
+    /// state; it never regression-fails). The rust/rust-async analogue of `cdz-run --emit-verdict`.
+    #[arg(long = "emit-verdict", value_name = "PATH")]
+    emit_verdict: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -136,5 +144,6 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         diag_wire.as_deref(),
         &workdir,
         baseline.as_deref(),
+        cli.emit_verdict.as_deref(),
     )
 }
