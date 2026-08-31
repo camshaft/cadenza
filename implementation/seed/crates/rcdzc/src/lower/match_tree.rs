@@ -2401,7 +2401,7 @@ fn is_positional_field_value(db: &Db, pat: StructId) -> bool {
             .ast
             .compound_form_of(pat, CompoundCtor::List)
             .is_some_and(|elems| {
-                db.ast.rest_marker(&elems).is_none()
+                db.ast.rest_marker(elems).is_none()
                     && elems.iter().all(|&e| is_positional_field_value(db, e))
             });
     }
