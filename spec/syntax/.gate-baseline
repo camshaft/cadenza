@@ -31,6 +31,15 @@ pass	ml/31-match-refutable-guarded
 pass	ml/32-match-refutable-nested
 pass	ml/33-match-multi-clause
 pass	ml/34-match-multi-clause-irref-first
+pass	ml/35-match-single-variant-wrap
+pass	ml/36-match-single-variant-nested-box
+pass	ml/37-match-multi-variant-refutable
+pass	ml/38-match-imported-ctor-refutable
+pass	ml/39-match-unrelated-ctor-refutable
+pass	ml/40-match-open-sum-refutable
+pass	ml/41-match-closed-single-variant
+pass	ml/42-match-already-lowered-noop
+pass	ml/43-match-nested-bottom-up
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let

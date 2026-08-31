@@ -1,0 +1,6 @@
+type Box =
+  | Box(Int64)
+
+def f(p) =
+  let (a, Box(x)) = p in
+  a + x

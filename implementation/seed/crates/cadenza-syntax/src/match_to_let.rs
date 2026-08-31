@@ -315,69 +315,12 @@ mod tests {
     // no-op) + ml/29-34 (refutable sum-ctor/literal/guarded/nested + 2 multi-clause) — each pins the
     // `cdz normalize --match-to-let` output (a rewrite, or unchanged for a left-alone match).
 
-    #[test]
-    fn single_variant_sum_ctor_is_irrefutable_and_rewrites() {
-        // A ctor pattern on a SINGLE-variant sum can't fail → the type-aware scan accepts it. Payload
-        // variant and nullary-payload forms both.
-        assert!(
-            normalize_sexpr("type Wrapper = | Wrap(Int64)\ndef f(w) = match w with | Wrap(x) => x")
-                .contains("(let (((Wrap x) w)) x)"),
-            "single-variant Wrap(x) should lower to a let"
-        );
-        // A ctor pattern nested inside an irrefutable tuple, on a single-variant type, also lowers.
-        assert_eq!(
-            count_rewrites(
-                "type Box = | Box(Int64)\ndef f(p) = match p with | (a, Box(x)) => a + x"
-            ),
-            1,
-            "single-variant ctor nested in a tuple is irrefutable"
-        );
-    }
-
-    #[test]
-    fn multi_variant_or_imported_ctor_stays_refutable() {
-        // A MULTI-variant sum's ctor can fall through → must NOT rewrite even single-clause.
-        assert_eq!(
-            count_rewrites(
-                "type Opt = | Some(Int64) | None\ndef f(o) = match o with | Some(x) => x"
-            ),
-            0,
-            "multi-variant Some(x) is refutable"
-        );
-        // A ctor with NO visible type decl (as if imported) — can't prove single-variant → refutable.
-        assert_eq!(
-            count_rewrites("def f(w) = match w with | Wrap(x) => x"),
-            0,
-            "a ctor with no same-program type decl stays refutable (conservative)"
-        );
-        // A single-variant type declared, but a DIFFERENT ctor matched → not in the set → refutable.
-        assert_eq!(
-            count_rewrites("type Wrapper = | Wrap(Int64)\ndef f(o) = match o with | Other(x) => x"),
-            0,
-            "an unrelated ctor is not single-variant"
-        );
-    }
-
-    #[test]
-    fn open_sum_sole_ctor_stays_refutable() {
-        // An OPEN sum `(type O (Wrap Int64) .. r)` has ONE listed variant but the `.. r` row var stands
-        // for unnamed variants — so `Wrap` is NOT the sole variant and its pattern is REFUTABLE (a match
-        // needs an open-tail `_`). The codemod must NOT lower `match o with | Wrap(x) => x` here (that
-        // would erase the refutability the compiler's `newtype_underlying` explicitly refuses to erase).
-        // (reviewer catch on 1254f4aa8: the peel-then-insert path wrongly marked the open sum's ctor
-        // single-variant.) Contrast with the CLOSED single-variant type, which DOES lower.
-        assert_eq!(
-            count_rewrites("type O = | Wrap(Int64) .. r\ndef f(o) = match o with | Wrap(x) => x"),
-            0,
-            "an OPEN sum's sole listed ctor is refutable — must NOT lower"
-        );
-        // The closed twin still lowers (sanity: the fix didn't over-restrict).
-        assert_eq!(
-            count_rewrites("type C = | Wrap(Int64)\ndef f(o) = match o with | Wrap(x) => x"),
-            1,
-            "the CLOSED single-variant twin still lowers"
-        );
-    }
+    // single_variant_sum / multi_variant_or_imported / open_sum_sole_ctor (type-aware irrefutability:
+    // a CLOSED single-variant ctor lowers, a multi-variant / no-decl / open-sum / unrelated ctor stays
+    // refutable), rewrite_is_idempotent, and nested_match_bottom_up MIGRATED to the spec/syntax codemod
+    // corpus: ml/35-43 — each pins the `cdz normalize --match-to-let` output (rewrite / unchanged /
+    // nested double-lower / already-lowered no-op). The is_irrefutable + single_variant_ctors PREDICATE
+    // unit tests below stay Rust (internal). match_to_let behavioral tests fully delanguaged now.
 
     #[test]
     fn single_variant_ctors_scan_direct() {
@@ -397,31 +340,6 @@ mod tests {
         assert!(
             !set.contains("Lone"),
             "an OPEN sum's sole ctor is excluded (row var → not statically sole)"
-        );
-    }
-
-    #[test]
-    fn rewrite_is_semantically_shaped_and_idempotent() {
-        // The lowered `let` re-reads + re-prints stably (idempotent), and running the codemod on the
-        // already-lowered form is a no-op (0 further rewrites).
-        let once = normalize_ml("def f(p) = match p with | (a, b) => a + b");
-        let twice = normalize_ml(&once);
-        assert_eq!(once, twice, "codemod output must be idempotent: {once:?}");
-        assert_eq!(
-            count_rewrites(&once),
-            0,
-            "already-lowered form must not re-rewrite"
-        );
-    }
-
-    #[test]
-    fn nested_match_in_body_is_rewritten_bottom_up() {
-        // A single-clause irrefutable match inside another's body is also lowered (2 rewrites).
-        let src = "def f(p) = match p with | (a, b) => match b with | (c, d) => a + c + d";
-        assert_eq!(
-            count_rewrites(src),
-            2,
-            "both nested single-clause matches lower"
         );
     }
 

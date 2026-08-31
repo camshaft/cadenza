@@ -1,0 +1,6 @@
+type Opt =
+  | Some(Int64)
+  | None
+
+def f(o) = match o with
+  | Some(x) => x

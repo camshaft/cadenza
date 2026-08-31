@@ -1,0 +1,4 @@
+def f(p) =
+  let (a, b) = p in
+  let (c, d) = b in
+  a + c + d

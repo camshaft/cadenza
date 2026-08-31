@@ -1,0 +1,6 @@
+type O =
+  | Wrap(Int64)
+  .. r
+
+def f(o) = match o with
+  | Wrap(x) => x
