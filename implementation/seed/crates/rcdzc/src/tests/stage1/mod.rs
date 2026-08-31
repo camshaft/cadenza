@@ -3297,54 +3297,6 @@ fn a_mistyped_resume_reports_one_error_with_a_coercion_fix_when_applicable() {
 }
 
 #[test]
-fn a_noncanonical_handle_is_rejected_as_one_cdz0201() {
-    // The retired effect-name-less shape `(handle <seed> (arm…) body)` — no effect in the head, the
-    // arm op written dotted — is NOT the canonical handler form. `effects::desugar_handles` re-spells
-    // only the canonical 5-child form to the internal head, so this leftover stays headed `handle`
-    // and `resolve_noncanonical_handle` rejects it (CDZ0201, pointing at the canonical shape). The
-    // rejected handle never resolves AS a handler, so its perform would ALSO trip the entrypoint
-    // no-home check (CDZ0401) — a CONSEQUENCE, not an independent defect. `dedup_faults` drops that
-    // CDZ0401 so the author sees ONE primary "make it canonical" error, not a misdirecting "you have
-    // no handler" (they DO have one — it is just written in the old shape).
-    let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ (Bail.bail 7) 100))) (export main))";
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse(src)),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    let errors: Vec<&crate::abi::Diagnostic> = out
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect();
-    assert_eq!(
-        errors.len(),
-        1,
-        "a non-canonical handle = one error, got: {:?}",
-        out.diagnostics
-    );
-    assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
-    assert!(
-        errors[0]
-            .message
-            .starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX),
-        "the primary error names the non-canonical handle: {:?}",
-        errors[0].message
-    );
-    // The consequent no-home CDZ0401 is suppressed — the author has a handler, just not canonical.
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("CDZ0401")),
-        "the consequent CDZ0401 must not accompany the non-canonical reject"
-    );
-}
-
-#[test]
 fn a_handle_with_an_unbound_effect_name_reports_one_error_not_a_shadowing_decline() {
     // `handle Nope …` where `Nope` is not a declared effect: the unbound name is CDZ0101 (with a
     // did-you-mean fix), and the handle can't fold → the emit path would ALSO return the "not yet

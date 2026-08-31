@@ -2927,6 +2927,16 @@
   (input  (do (effect Ask (op get (-> Int64))) (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 (n (Ask.get))))) (export main)))
   (call   main) (output (: 5 Int64)))
 
+; The retired effect-name-less handle shape `(handle <seed> (arm…) body)` — no effect in the head, the arm
+; op written dotted — is NOT the canonical handler form, so it is rejected CDZ0201 ("this handle is not in
+; canonical form"), pointing at the canonical shape. The rejected handle never resolves AS a handler, so its
+; body-perform would ALSO trip the entrypoint no-home CDZ0401 — a CONSEQUENCE, deduped so the author sees the
+; ONE "make it canonical" error, not a misdirecting "you have no handler" (they do — it is just the old shape).
+; (Migrated from rcdzc a_noncanonical_handle_is_rejected_as_one_cdz0201.)
+(case "a non-canonical effect-name-less handle is rejected, with no consequent no-home error"
+  (input  (do (effect Bail (op bail (-> Int64 Int64))) (def (main) (handle 0 ((Bail.bail (n) s n)) (+ (Bail.bail 7) 100))) (export main)))
+  (error  CDZ0201 (message "this handle is not in canonical form") (no-other-errors)))
+
 ; The perform-argument check must fire for EVERY declared parameter type, not only Int64. An operation
 ; declared `(-> String Unit)` performed on an Int64 argument — `(E.emit 42)` — is the same type mismatch
 ; as the Int64-parameter case above and MUST be rejected (CDZ0203). This is the STRING-parameter sibling:
