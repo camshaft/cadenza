@@ -2636,6 +2636,7 @@ pass	a list of maps: a runtime index then looks a runtime key up in the found ma
 pass	a list of nominal-over-quantity newtypes is a compound Map key
 pass	a list of records in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)
 pass	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
+pass	a bare list<u8>/Bytes PARAM member of a typed export interface crosses (multi-export list<u8> param — operator §2 decode-check half)
 pass	a bare list<u8>/Bytes RESULT member of a typed export interface crosses (multi-export list<u8> result — operator §2 encode-quoted half)
 pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
