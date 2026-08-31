@@ -457,7 +457,10 @@ pass	ml/524-mixed-additive-left-associative
 pass	ml/525-unit-value-literal
 pass	ml/526-boolean-literal-true
 pass	ml/527-boolean-literal-false
+pass	ml/528-empty-list-literal
+pass	ml/529-empty-map-literal
 pass	ml/53-effect-op-no-resource-marker
+pass	ml/530-empty-record-literal
 pass	ml/54-neg-prefix-name
 pass	ml/55-neg-prefix-call
 pass	ml/56-neg-prefix-member
