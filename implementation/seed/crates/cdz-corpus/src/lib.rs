@@ -114,6 +114,16 @@ pub struct Record {
     /// pins "exactly this one code, nothing else". ERRORS ONLY (warnings are orthogonal — a separate
     /// `(no-other-warnings)` would split them if ever needed). `false` for a case without the clause.
     pub no_other_errors: bool,
+    /// `(no-diagnostic "phrase")` clauses — a CASE-LEVEL, PROGRAM-SCOPED, CROSS-KIND message-ABSENCE
+    /// assertion: the phrase must appear in NO diagnostic the compiler emits for this program — ANY kind
+    /// (coded/uncoded error, decline, warning). Distinct from a trial's `(not "phrase")`, which is
+    /// KIND-scoped to its own matched diagnostic's message (first-error / matched-warning) and so cannot
+    /// assert the absence of a SIBLING diagnostic of another kind. Repeatable (each is an independent
+    /// required-absence, AND). Empty for a case without the clause. (concierge-greenlit 2026-08-31; closes
+    /// the cross-kind false-green gap `(not …)`/`(no-other-errors)` leave — e.g. "a mismatched compare
+    /// must NOT also leak an uncoded heap-walk decline", "a malformed pattern must NOT also warn its dead
+    /// binders unused".)
+    pub no_diagnostic: Vec<String>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -929,6 +939,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut live_objects_known_leak = false;
     let mut live_objects_per_call: Option<Vec<u32>> = None;
     let mut no_other_errors = false;
+    let mut no_diagnostic: Vec<String> = Vec::new();
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -1211,6 +1222,19 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
             // `(no-other-errors)` — a bare CASE-LEVEL no-cascade assertion: no error-severity diagnostic
             // outside the case's own `(error CODE …)` codes. Errors only (see the `Record` field doc).
             Some("no-other-errors") => no_other_errors = true,
+            // `(no-diagnostic "phrase")` — a CASE-LEVEL program-scoped cross-kind message-ABSENCE pin: the
+            // phrase must appear in NO diagnostic emitted for the program (any kind). Repeatable (each an
+            // independent required-absence). See the `Record` field doc. Non-string / empty children are
+            // ignored (a malformed clause pins nothing rather than falsely passing).
+            Some("no-diagnostic") => {
+                if let Some(phrase) = a
+                    .as_form(clause, "no-diagnostic")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| string_leaf(a, id))
+                {
+                    no_diagnostic.push(phrase);
+                }
+            }
             // `(wit-world <world-sexpr>)` — an explicit WIT world the export boundary is DECLARED by (the
             // general WIT-ABI shape), vs synthesized from the guest. Store the world subtree as one-line
             // s-expr text; the gate driver converts it to a `wit-world` binary-AST artifact for `cdz compile`.
@@ -1294,6 +1318,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         live_objects_known_leak,
         live_objects_per_call,
         no_other_errors,
+        no_diagnostic,
     })
 }
 

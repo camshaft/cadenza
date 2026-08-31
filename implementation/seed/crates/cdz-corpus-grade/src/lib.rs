@@ -256,6 +256,12 @@ pub struct TestRun {
     /// `(error CODE)` codes (FAIL on any unasserted error code). Errors only. Composes with per-code
     /// `(count …)`; only enforced when the diagnostics wire was captured (`diag_wire` `Some`).
     pub no_other_errors: bool,
+    /// `(no-diagnostic "phrase")` clauses — CASE-LEVEL, PROGRAM-SCOPED, CROSS-KIND message-ABSENCE pins:
+    /// each phrase must appear in NO diagnostic the compiler emits for the program (ANY kind — coded/uncoded
+    /// error, decline, warning). Graded by scanning the FULL raw `compile_diag` text (not a single matched
+    /// diagnostic), which is what distinguishes it from a trial's KIND-scoped `(not "phrase")` and from the
+    /// coded-error-only `(no-other-errors)`. Repeatable (AND — every phrase must be absent). Empty = no clause.
+    pub no_diagnostic: Vec<String>,
 }
 
 /// The combined grade of a case + whether any runnable trial actually ran (a pure error/declines case runs
@@ -546,6 +552,21 @@ where
                 )));
                 break;
             }
+        }
+    }
+
+    // CASE-LEVEL `(no-diagnostic "phrase")` — PROGRAM-SCOPED, CROSS-KIND message-absence: each pinned phrase
+    // must appear in NO diagnostic emitted for the program. Scans the FULL raw `compile_diag` (all lines, any
+    // kind: coded/uncoded error, decline, warning) — the capability a trial's `(not "phrase")` (kind-scoped to
+    // its own matched diagnostic) and `(no-other-errors)` (coded-error-only) cannot express. Always checkable
+    // (the diag text is captured on every case); a present phrase is a FAIL (the forbidden diagnostic leaked).
+    for phrase in &test_run.no_diagnostic {
+        if compile_diag.contains(phrase.as_str()) {
+            worst = worst.worse(Grade::Fail(format!(
+                "(no-diagnostic {phrase:?}): the forbidden phrase appears in a diagnostic, but the case \
+                 asserts it must appear in NONE"
+            )));
+            break;
         }
     }
 
@@ -1085,6 +1106,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut live_objects_known_leak = false;
     let mut live_objects_per_call: Option<Vec<u32>> = None;
     let mut no_other_errors = false;
+    let mut no_diagnostic: Vec<String> = Vec::new();
 
     for &clause in children(&a, root) {
         match a.head_name(clause) {
@@ -1159,6 +1181,17 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
             }
             // `(no-other-errors)` — the bare case-level no-cascade flag (shredded from the case clause).
             Some("no-other-errors") => no_other_errors = true,
+            // `(no-diagnostic "phrase")` — a case-level program-scoped cross-kind absence pin (one per form,
+            // repeatable). Read the phrase as the first string leaf; ignore a malformed/empty clause.
+            Some("no-diagnostic") => {
+                if let Some(phrase) = a
+                    .as_form(clause, "no-diagnostic")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| str_leaf(&a, id))
+                {
+                    no_diagnostic.push(phrase);
+                }
+            }
             _ => {}
         }
     }
@@ -1173,6 +1206,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         live_objects_known_leak,
         live_objects_per_call,
         no_other_errors,
+        no_diagnostic,
     })
 }
 
@@ -2099,6 +2133,7 @@ mod tests {
             live_objects_known_leak: false,
             live_objects_per_call: None,
             no_other_errors: false,
+            no_diagnostic: vec![],
         };
         // The compile refused with the right code (so grade_compile_error passes) + the stderr line the
         // code-check reads.
@@ -2180,6 +2215,7 @@ mod tests {
             live_objects_known_leak: false,
             live_objects_per_call: None,
             no_other_errors: no_other,
+            no_diagnostic: vec![],
         };
         let diag = "cdz: error [CDZ0201] (node 1): bad thing";
         use cadenza_compile_abi::Severity as S;
@@ -2224,6 +2260,68 @@ mod tests {
                 .grade,
             Grade::Pass,
             "a warning is orthogonal to no-other-errors"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_is_program_scoped_and_cross_kind() {
+        let never =
+            |_: &GTrial| -> Result<Outcome> { panic!("compile-outcome case runs no trial") };
+        // A case that refuses with CDZ0201 (graded from the diag, no run) AND pins that the phrase "needs a
+        // heap walk" must appear in NO diagnostic — the cross-kind program-scoped absence `(not …)` can't do.
+        let mk = |phrases: Vec<String>| TestRun {
+            description: "no-diagnostic".into(),
+            trials: vec![GTrial {
+                call: None,
+                expect: GExpect::Error("CDZ0201".into(), vec![], vec![]),
+                diag: None,
+            }],
+            host_responses: vec![],
+            host_calls: vec![],
+            warns: vec![],
+            live_objects: None,
+            live_objects_known_leak: false,
+            live_objects_per_call: None,
+            no_other_errors: false,
+            no_diagnostic: phrases,
+        };
+        let pin = || mk(vec!["needs a heap walk".into()]);
+
+        // (a) the pinned CDZ0201 error alone, phrase ABSENT anywhere → Pass.
+        let diag_clean = "cdz: error [CDZ0201] (node 1): bad separator";
+        assert_eq!(
+            grade_run(&pin(), 1, diag_clean, None, never).unwrap().grade,
+            Grade::Pass
+        );
+        // (b) the phrase leaked as a SEPARATE uncoded decline line (a sibling of the matched error — the exact
+        // case `(not …)` misses because it's kind-scoped to the first-error message) → Fail.
+        let diag_uncoded = "cdz: error [CDZ0201] (node 1): bad separator\ncdz: error: needs a heap walk (not yet built)";
+        assert!(
+            matches!(
+                grade_run(&pin(), 1, diag_uncoded, None, never)
+                    .unwrap()
+                    .grade,
+                Grade::Fail(_)
+            ),
+            "a sibling uncoded-decline carrying the forbidden phrase must fail (cross-kind, program-scoped)"
+        );
+        // (c) the phrase leaked in a WARNING line (another kind an error's `(not …)` never scans) → Fail.
+        let diag_warn = "cdz: error [CDZ0201] (node 1): bad separator\ncdz: warning [CDZ0306] (node 2): needs a heap walk";
+        assert!(
+            matches!(
+                grade_run(&pin(), 1, diag_warn, None, never).unwrap().grade,
+                Grade::Fail(_)
+            ),
+            "a warning carrying the forbidden phrase must fail (cross-kind)"
+        );
+        // (d) WITHOUT the pin the same leaking diag is NOT flagged by this facet → Pass (additive: no clause,
+        // no new failure — nothing regresses for cases that don't author it).
+        assert_eq!(
+            grade_run(&mk(vec![]), 1, diag_warn, None, never)
+                .unwrap()
+                .grade,
+            Grade::Pass,
+            "no clause → the phrase is not graded"
         );
     }
 

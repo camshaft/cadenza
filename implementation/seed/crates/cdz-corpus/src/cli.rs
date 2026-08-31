@@ -690,6 +690,12 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
     if rec.no_other_errors {
         kids.push(form(&mut b, "no-other-errors", vec![]));
     }
+    // `(no-diagnostic "phrase")` — each case-level program-scoped absence pin carried verbatim (the phrase
+    // as one string leaf); `decode_test_run` collects them into `TestRun::no_diagnostic`. One form per pin.
+    for phrase in &rec.no_diagnostic {
+        let leaf = str_leaf(&mut b, phrase);
+        kids.push(form(&mut b, "no-diagnostic", vec![leaf]));
+    }
 
     let root = b.list(kids);
     codec::encode(&b.finish(root))
@@ -1001,6 +1007,35 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         assert!(
             dec_tr.contains(r#"(not "panic")"#) && dec_tr.contains("CDZ0900"),
             "expect-declines carries the code + the (not …) absence pin: {dec_tr}"
+        );
+    }
+
+    /// A CASE-LEVEL `(no-diagnostic "phrase")` (program-scoped cross-kind absence) is PARSED onto the Record
+    /// and SHREDDED verbatim into `test-run.ast` — one form per pin, repeatable — exactly what
+    /// `cdz_corpus_grade::decode_test_run` collects into `TestRun::no_diagnostic`. Distinct from a trial's
+    /// `(not …)`; this rides alongside the trials at the case level (like `(no-other-errors)`).
+    #[test]
+    fn no_diagnostic_reaches_shredded_test_run() {
+        let recs = crate::read(
+            r#"(case "cross" (input 1_)
+                 (error CDZ0201)
+                 (no-diagnostic "needs a heap walk")
+                 (no-diagnostic "unused binding"))"#,
+        )
+        .unwrap();
+        assert_eq!(
+            recs[0].no_diagnostic,
+            vec![
+                "needs a heap walk".to_string(),
+                "unused binding".to_string()
+            ],
+            "both (no-diagnostic …) pins parse onto the Record in order"
+        );
+        let tr = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
+        assert!(
+            tr.contains(r#"(no-diagnostic "needs a heap walk")"#)
+                && tr.contains(r#"(no-diagnostic "unused binding")"#),
+            "both pins shred into the test-run as their own forms: {tr}"
         );
     }
 
