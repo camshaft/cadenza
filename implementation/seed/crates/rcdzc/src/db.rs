@@ -2038,6 +2038,17 @@ pub struct Db {
     /// uniformly. Cleared whenever the core column would be (incremental re-lower), since an override is a
     /// derived fact over the same input.
     pub(crate) core_override: crate::fxhash::FxHashMap<StructId, Core>,
+    /// Memo for LOCAL LAMBDA-LIFT (a recursive do-local function that CAPTURES an enclosing parameter):
+    /// callee def index → the ordered capture REFERENCE occurrences appended as extra trailing call
+    /// arguments (whose signature entries were appended to `defs[callee].params`, so `select_function`
+    /// slots the captured param in the callee's own frame and the body's otherwise slot-less `Core::Param`
+    /// resolves without a rewrite). Computed ONCE the first time a recursive call to the callee is lowered,
+    /// then memoized: recomputing AFTER the params were extended would classify the captures as OWN params
+    /// and drop them, corrupting the self-call's arity. EMPTY for a non-internal callee, one with no
+    /// captures, or an unsupported (non-parameter) capture → no extra args → byte-identical to before, and
+    /// the honest CDZ0900 recursive-local-capture decline still fires for the unsupported shapes. Tied to
+    /// the `defs[].params` mutation (both persist together, neither reset on a core-column re-lower).
+    pub(crate) local_lift_captures: crate::fxhash::FxHashMap<usize, Vec<StructId>>,
     /// Memo of RECURSIVE-EFFECTFUL SPECIALIZATIONS (`crate::effects` E3): a recursive function called
     /// under a handler context is emitted ONCE per `(def-body-occ, handler-context-key)` as a synthesized
     /// `f#ctx` def — its state threaded as trailing parameters (`DESIGN-effects-rcdzc.md` §4.3). The key
@@ -3120,6 +3131,7 @@ impl Db {
             typeval_memo_live: false,
             core: Column::new(),
             core_override: crate::fxhash::FxHashMap::default(),
+            local_lift_captures: crate::fxhash::FxHashMap::default(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
             multivalue_specs: std::collections::HashSet::new(),
             effect_spec_captures: std::collections::HashMap::new(),
