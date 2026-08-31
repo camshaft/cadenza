@@ -2643,6 +2643,7 @@ pass	a member with an option<s64> param beside a mem-leaf param composes the sum
 pass	a bare tuple<scalar,scalar>/Tuple PARAM member of a typed export interface crosses (positional cell rebuild)
 pass	a tuple PARAM member whose element is a list<u8>/Bytes leaf rebuilds the compound element in-cell
 pass	a tuple PARAM member whose element is a nested record rebuilds the compound element in-cell
+pass	a bare result<ok,err>/Result PARAM member of a typed export interface crosses (sum_params Result shape, both arms)
 pass	a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)
 pass	a bare string/String PARAM member of a typed export interface crosses (mem_leaf Str-arm coverage)
 pass	a single component exports BOTH a list<u8>-result member and a list<u8>-param member of one interface (operator §2 two-export capstone)
