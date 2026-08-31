@@ -591,6 +591,21 @@
             (export main)))
   (output (: 78 Int64)))
 
+(case "a record open-row rest is IRREFUTABLE, so it binds in a BINDING-PARAM position (not only a match arm)"
+  (doc    "A record has a STATIC field set, so `#record((= x a) (.. rest))` over a record HAVING field x
+           ALWAYS matches — it is irrefutable (core-semantics §A Binding Position Accepts An Irrefutable
+           Pattern + the record rest clause, #6750) and binds directly in a fn PARAMETER destructure, exactly
+           as in a match arm. `a` = field x; `rest` = a record of the UNNAMED fields (residual), read back by
+           name. `sum-rec(#record((= x 7)(= y 8)(= z 9)))` = a + rest.y + rest.z = 7 + 8 + 9 = 24. Pins that a
+           record rest-param binds the named field + the residual record (was a spurious CDZ0203 'names field
+           `..`' — the binding-path resolver mis-reading the native `.. rest` marker as a field), the binding
+           twin of the record-rest match cases below; residual reuses RecordRest.")
+  (input  (do
+            (def (sum-rec #record((= x a) (.. rest))) (+ a (+ (. rest y) (. rest z))))
+            (def (main) (sum-rec #record((= x 7) (= y 8) (= z 9))))
+            (export main)))
+  (output (: 24 Int64)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`

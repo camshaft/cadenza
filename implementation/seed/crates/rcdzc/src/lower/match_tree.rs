@@ -939,11 +939,41 @@ pub(crate) fn check_binding_pattern(
             crate::ty::Ty::Record(fs) => Some(fs.clone()),
             _ => None,
         };
+        // Split off a trailing `.. rest`: a record open-row rest binding pattern `#record((= x a) .. rest)`
+        // is IRREFUTABLE — a record has a STATIC field set, so over any record HAVING the named fields it
+        // ALWAYS matches, binding the named field values + `rest` to a record of the UNNAMED fields
+        // (core-semantics §A Binding Position Accepts An Irrefutable Pattern lines 135-139 + the tuple/record
+        // rest MATCH clauses #6750; v-spec-oracle ruling). The rest binder resolves to a `Resolved::RecordRest`
+        // in the binding position (mirroring the match-arm Case 6rec-rest); its type_of/const-fold are
+        // origin-agnostic (v-inference). Only the NAMED field sub-patterns are recursed for irrefutability;
+        // the rest binder is a bare binder / `_` (itself irrefutable). Without this split the `(.. rest)` node
+        // was read as a field named `..` → the misclassified CDZ0203 "names field `..`".
+        let (lead_fields, rest): (&[StructId], Option<StructId>) = match db.ast.rest_marker(&fields)
+        {
+            Some((k, operand, trailing_start)) if trailing_start == fields.len() => {
+                (&fields[..k], Some(operand))
+            }
+            _ => (&fields[..], None),
+        };
+        // A malformed `..` (not followed by exactly one binder) → the rest-shape CDZ0201 (the record twin of
+        // the list/map/set/tuple rest-shape message), not the misleading "names field `..`".
+        if rest.is_none()
+            && fields
+                .iter()
+                .any(|&f| db.ast.as_name(f) == Some("..") || db.ast.as_form(f, "..").is_some())
+        {
+            return Err(Reject::coded(
+                Code::Malformed,
+                "a record rest pattern is `#record((= f p)… .. rest)` — exactly one binder after `..`",
+            )
+            .at(pat));
+        }
+        let _ = rest;
         // Each `(key value)` field pair: the KEY is a field LABEL (never a binder), the VALUE sub-pattern is
         // a binder position — recurse `check_binding_pattern` into it with the field's own type, exactly as
         // the tuple arm recurses each element. A literal value → CDZ0210, a multi-variant-ctor value →
         // CDZ0210, a bare-binder / nested-irrefutable value → Ok, at any depth.
-        for &pair in &fields {
+        for &pair in lead_fields {
             let crate::ast::Struct::List(kv) = db.ast.get(pair) else {
                 continue; // a malformed field pair is faulted by `pattern_constraints` below
             };
