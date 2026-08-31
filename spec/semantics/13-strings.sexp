@@ -3721,6 +3721,17 @@
   (input  (match "hi" ("hi" 1) ("yo" 2)))
   (error  CDZ0210))
 
+(case "a RUNTIME String match with no wildcard is non-exhaustive — the if-chain desugar does not relax the check"
+  (doc    "The runtime-scrutinee companion of the constant case above (migrated from rcdzc
+           a_runtime_string_match_without_a_wildcard_is_non_exhaustive): a `match` on a runtime String
+           PARAMETER whose arms are string literals with no wildcard `_` tail is still CDZ0210. A runtime
+           String match lowers to a chain of `(= s literal)` value-eq tests, and that desugar must NOT relax
+           exhaustiveness — the total-cover obligation is checked on the arms before/independent of the
+           lowering, exactly as for the constant scrutinee. The with-wildcard form compiles and runs (the
+           `(_ …)` cases elsewhere in this file).")
+  (input  (do (def (op (: s String)) (match s ("add" 1) ("sub" 2))) (export op)))
+  (error  CDZ0210))
+
 (case "an Int-literal pattern over a String scrutinee is a type error"
   (doc    "`(match \"hi\" (5 1) (_ 0))` — an Int64 pattern over a String scrutinee — is a shape/type error
            rejected CDZ0201, checked structurally before the fold: the pattern's type (Int64) must agree with

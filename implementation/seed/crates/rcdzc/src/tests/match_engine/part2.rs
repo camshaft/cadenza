@@ -1067,40 +1067,12 @@ fn a_non_tail_list_fold_is_accumulator_transformed_into_a_constant_stack_loop() 
     );
 }
 
-#[test]
-fn a_runtime_string_match_without_a_wildcard_is_non_exhaustive() {
-    // A String is OPEN (like Int) — no finite literal set exhausts it — so a string match MUST end in a
-    // wildcard, else CDZ0210 (the same rule an open-Int match follows). This holds for a runtime string
-    // too (the desugar-to-if-chain does not relax exhaustiveness).
-    let code = |body: &str| -> Option<String> {
-        let src = format!("(module m (def (op (: s String)) {body}) (export op))");
-        let out = crate::compile::compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "m",
-                crate::codec::encode(&parse(&src)),
-            )],
-            &[crate::backend::Target::Wasm],
-        );
-        if out
-            .artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_some()
-        {
-            return None;
-        }
-        out.diagnostics
-            .iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
-            .and_then(|d| d.code.clone())
-    };
-    assert_eq!(
-        code("(match s (\"add\" 1) (\"sub\" 2))").as_deref(),
-        Some("CDZ0210"),
-        "a wildcard-less string match is non-exhaustive"
-    );
-    // With a wildcard it compiles.
-    assert_eq!(code("(match s (\"add\" 1) (\"sub\" 2) (_ 0))"), None);
-}
+// (a_runtime_string_match_without_a_wildcard_is_non_exhaustive migrated to corpus 13-strings: the reject
+// half is "a RUNTIME String match with no wildcard is non-exhaustive — the if-chain desugar does not relax
+// the check" ((match s ("add" 1) ("sub" 2)) → CDZ0210), companion to the constant-scrutinee "a String match
+// with no wildcard is non-exhaustive"; the with-wildcard positive ((match s ("add" 1) ("sub" 2) (_ 0)) runs)
+// is covered by the runtime-String match cases elsewhere in 13-strings (the via-match/via-chain equivalence
+// and dispatch cases).)
 
 #[test]
 fn a_guarded_list_arm_does_not_count_toward_exhaustiveness() {
