@@ -1,0 +1,4 @@
+def f(x) = match x with
+  | A() => // note
+    1
+  | _ => 2

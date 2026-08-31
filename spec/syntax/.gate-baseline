@@ -186,6 +186,12 @@ pass	ml/26-match-to-let-var
 pass	ml/260-comment-leading-if-then-branch
 pass	ml/261-comment-leading-if-else-branch
 pass	ml/262-comment-leading-if-condition
+pass	ml/263-comment-leading-first-match-arm
+pass	ml/264-comment-leading-nonfirst-match-arm
+pass	ml/265-comment-leading-and-trailing-match-arm
+pass	ml/266-comment-leading-match-arm-body
+pass	ml/267-comment-leading-let-value
+pass	ml/268-comment-leading-let-body
 pass	ml/27-match-to-let-wildcard
 pass	ml/28-match-to-let-record
 pass	ml/29-match-refutable-sum-ctor

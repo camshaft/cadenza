@@ -1,0 +1,4 @@
+def f(x: Int64) -> Int64 = match x with
+  | 0 => 0
+  // mid
+  | _ => 1
