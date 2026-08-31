@@ -1616,40 +1616,13 @@ fn eval_reconstructs_an_ast_list_whose_payload_is_a_native_list_ctor_literal() {
     );
 }
 
-#[test]
-fn a_record_field_key_colliding_with_a_param_stays_beta_immune_through_a_native_field_pair() {
-    // M2b regression guard (§9 flagship reducer blast radius): a record field KEY is a LABEL, β-IMMUNE to
-    // argument substitution. `is_binder_occurrence`'s field-key arm recognized only the transitional
-    // name-head `(= …)` ascription; post-M2b a record's fields carry the NATIVE `FieldPair` leaf, whose
-    // head is NOT `Name("=")`. So inlining a def whose record has a field key equal to a param
-    // (`(def (make (: id …) (: name …)) (record (= id id) (= name name)))`, then `(. (make 3 4) id)`)
-    // β-substituted the argument for the KEY `id` → `(record (= 3 3) …)` → CDZ0201 "record field key must
-    // be a name". This reds reducer.cdz/verdict.cdz/checker-lib.cdz/check.cdz (field keys collide with
-    // params). The arm now recognizes BOTH FieldPair spellings via field_pair_parts/field_pair, so the key
-    // stays immune and the projection folds to 3.
-    assert!(
-        reject_code(
-            "(module m \
-                   (def (make (: id Int64) (: name Int64)) #record((= id id) (= name name))) \
-                   (def (main) (. (make 3 4) id)) \
-                 (export main))"
-        )
-        .is_none(),
-        "a record field key colliding with a param is β-immune (native FieldPair), no spurious CDZ0201"
-    );
-    // The field VALUE (second child) is NOT immune — it legitimately references the param, so it IS
-    // substituted: `(make 3 4).name` folds to 4 (value `name` → arg 4), key `name` stays the label.
-    assert!(
-        reject_code(
-            "(module m \
-                   (def (make (: id Int64) (: name Int64)) #record((= id id) (= name name))) \
-                   (def (main) (. (make 3 4) name)) \
-                 (export main))"
-        )
-        .is_none(),
-        "the field VALUE still substitutes (references the param) while the KEY stays the label"
-    );
-}
+// (a_record_field_key_colliding_with_a_param_stays_beta_immune_through_a_native_field_pair redundant —
+// corpus 06-numeric-model "bsi1 β-substitution discriminates KEYS from VALUES in a NATIVE #record — keys
+// immune, values substituted" is the native-#record run case ((. #record((= x 5) (= y x)) x) → 5 with the
+// KEY x β-immune to the param x, and (. … y) → the arg with the VALUE substituted; runs to 507/498). A green
+// value there requires the inlined record to compile WITHOUT the spurious "record field key must be a name"
+// CDZ0201 — exactly the M2b FieldPair-key β-immunity this test guarded. (Also 05-compound-types "a record
+// field key that coincides with a parameter name survives the call".) Redundant, removed.)
 
 #[test]
 fn eval_of_a_quote_with_a_non_reifiable_leaf_names_the_literal_not_nothing_to_reconstruct() {
