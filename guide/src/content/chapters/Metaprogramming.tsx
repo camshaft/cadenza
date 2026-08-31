@@ -25,8 +25,8 @@ export default function Metaprogramming() {
       <Runnable
         source={`(match (quote (+ 1 2)) ((Ast.List elems) (Ast.List elems)) (_ (quote nil)))`}
       />
-      <P>The result reads <C>Ast.List([Ast.Name("+"), Ast.Int(1), Ast.Int(2)])</C>: the operator name and its two arguments, each still an <C>Ast</C> node. And since <C>Ast</C> is an ordinary sum, its match obeys the same exhaustiveness rule as any other: a match that inspects one form carries a catch-all <C>_</C> for the rest (here it hands back a harmless <C>(quote nil)</C>).</P>
-      <Note>You can build an AST directly with its constructors, too, and the two routes agree. A quoted literal produces the same node written by hand, so <C>(quote 42)</C> and <Cadenza>(Ast.Int 42)</Cadenza> both read <C>Ast.Int(42)</C>. Quote is just a convenient way to write down a tree you could also assemble constructor by constructor.</Note>
+      <P>The result reads <C>Ast.List([Ast.Name("+"), Ast.Int(1), Ast.Int(2)])</C>: the operator name and its two arguments, each still an <C>Ast</C> node. And since <C>Ast</C> is an ordinary sum, its match obeys the same exhaustiveness rule as any other: a match that inspects one form carries a catch-all <C>_</C> for the rest (here it hands back a harmless <Cadenza>(quote nil)</Cadenza>).</P>
+      <Note>You can build an AST directly with its constructors, too, and the two routes agree. A quoted literal produces the same node written by hand, so <Cadenza>(quote 42)</Cadenza> and <Cadenza>(Ast.Int 42)</Cadenza> both read <C>Ast.Int(42)</C>. Quote is just a convenient way to write down a tree you could also assemble constructor by constructor.</Note>
       <Runnable
         source={`(quote 42)`}
       />
@@ -42,7 +42,7 @@ export default function Metaprogramming() {
       <Runnable
         source={`(match (quote "hi") ((Ast.Str s) (Ast.Str s)) (_ (quote nil)))`}
       />
-      <P>A float has its own variant too, <C>Ast.Float</C>, distinct from <C>Ast.Int</C>, so <C>(quote 2.5)</C> matches the float arm and hands its node back as <C>Ast.Float(2.5)</C>:</P>
+      <P>A float has its own variant too, <C>Ast.Float</C>, distinct from <C>Ast.Int</C>, so <Cadenza>(quote 2.5)</Cadenza> matches the float arm and hands its node back as <C>Ast.Float(2.5)</C>:</P>
       <Runnable
         source={`(match (quote 2.5) ((Ast.Float f) (Ast.Float f)) (_ (quote nil)))`}
       />
@@ -56,7 +56,7 @@ export default function Metaprogramming() {
         expect="error"
       />
       <H2>Building a tree yourself</H2>
-      <P>Since the AST is just a sum, you can assemble a form node by node with the constructors: an <C>Ast.List</C> over the operator name and its arguments. This builds the very same tree that <C>(quote (+ 1 2))</C> gives, so the two are equal:</P>
+      <P>Since the AST is just a sum, you can assemble a form node by node with the constructors: an <C>Ast.List</C> over the operator name and its arguments. This builds the very same tree that <Cadenza>(quote (+ 1 2))</Cadenza> gives, so the two are equal:</P>
       <Runnable
         source={`(= (quote (+ 1 2)) (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))`}
       />
@@ -112,9 +112,9 @@ export default function Metaprogramming() {
       <Runnable
         source={`(def (main) (let ((x (* 3 7))) (eval (Ast.List #list((Ast.Name "+") (Ast.Int x) (Ast.Int 4))))))`}
       />
-      <P>The <C>(Ast.Int x)</C> lifts the runtime value <C>x</C> into a leaf of the tree. This is interpolation: the shape is fixed, one piece comes from a computation. The ML surface writes exactly this with a quasiquote and an unquote, <C>{"`{ ,x + 4 }"}</C>, the comma marking the spot the value <C>x</C> drops into. Template with holes, holes filled by values.</P>
+      <P>The <Cadenza>(Ast.Int x)</Cadenza> lifts the runtime value <C>x</C> into a leaf of the tree. This is interpolation: the shape is fixed, one piece comes from a computation. The ML surface writes exactly this with a quasiquote and an unquote, <C>{"`{ ,x + 4 }"}</C>, the comma marking the spot the value <C>x</C> drops into. Template with holes, holes filled by values.</P>
       <H2>Splicing a whole list of elements</H2>
-      <P>Where an unquote drops in <em>one</em> value, an <em>unquote-splicing</em> drops in a whole list of them, each element becoming its own node in the surrounding form. In the conventional surface it's the <C>`,@</C> marker; here we write it <C>(unquote-splicing xs)</C>. The lift is type-directed: a list of integers splices to <C>Ast.Int</C> leaves, floats to <C>Ast.Float</C>, booleans to <C>Ast.Bool</C>, strings to <C>Ast.Str</C>, so the leaf matches the element. Splice a list of floats into a call and the resulting <C>Ast.List</C> has the head plus one node per element: here <C>f</C> and two floats, so <C>3</C> children:</P>
+      <P>Where an unquote drops in <em>one</em> value, an <em>unquote-splicing</em> drops in a whole list of them, each element becoming its own node in the surrounding form. In the conventional surface it's the <C>`,@</C> marker; here we write it <Cadenza>(unquote-splicing xs)</Cadenza>. The lift is type-directed: a list of integers splices to <C>Ast.Int</C> leaves, floats to <C>Ast.Float</C>, booleans to <C>Ast.Bool</C>, strings to <C>Ast.Str</C>, so the leaf matches the element. Splice a list of floats into a call and the resulting <C>Ast.List</C> has the head plus one node per element: here <C>f</C> and two floats, so <C>3</C> children:</P>
       <Runnable
         source={`(def
   (main)
@@ -130,7 +130,7 @@ export default function Metaprogramming() {
       />
       <P>The head's name is <C>"+"</C>, so the check reads <C>true</C>. The pattern binds <C>op</C> to that name and <C>rest</C> to the arguments, so a macro can dispatch on what a form <em>is</em> before rewriting it. There's also a quasiquote <em>pattern</em> for the common shapes: a <C>quasiquote</C> form with <C>unquote</C> holes as a match arm binds the operands directly, the mirror image of building with a quasiquote template. The next section puts it to work.</P>
       <H2>A quasiquote pattern, and an interpreter</H2>
-      <P>That quasiquote pattern is the whole game for an interpreter or a macro. In a <C>match</C> arm, a <C>quasiquote</C> form with <C>unquote</C> holes matches a tree of that shape and <em>binds</em> what's in each hole. <C>(unquote x)</C> in a pattern is a binder, the dual of <C>(unquote x)</C> in a template (which embeds a value). Match a runtime <C>Ast</C> against <C>(quasiquote (+ (unquote x) (unquote y)))</C> and you get its two operands as sub-trees, ready to recurse on. Here's a complete little evaluator over an arithmetic <C>Ast</C>: integers evaluate to themselves, and each operator shape recurses into its operands:</P>
+      <P>That quasiquote pattern is the whole game for an interpreter or a macro. In a <C>match</C> arm, a <C>quasiquote</C> form with <C>unquote</C> holes matches a tree of that shape and <em>binds</em> what's in each hole. <Cadenza>(unquote x)</Cadenza> in a pattern is a binder, the dual of <Cadenza>(unquote x)</Cadenza> in a template (which embeds a value). Match a runtime <C>Ast</C> against <Cadenza>(quasiquote (+ (unquote x) (unquote y)))</Cadenza> and you get its two operands as sub-trees, ready to recurse on. Here's a complete little evaluator over an arithmetic <C>Ast</C>: integers evaluate to themselves, and each operator shape recurses into its operands:</P>
       <Runnable
         source={`(def
   (eval-expr (: a Ast))
@@ -149,7 +149,7 @@ export default function Metaprogramming() {
       <H2>Your turn</H2>
       <Exercise
         id="metaprogramming:1"
-        prompt={<><C>quote</C> reifies a form without running it, so a quoted compound is an <C>Ast.List</C> of its parts. Fill the arm so this counts the elements of <C>(quote (f 1 2 3))</C>, its operator plus three arguments, giving <C>4</C>.</>}
+        prompt={<><C>quote</C> reifies a form without running it, so a quoted compound is an <C>Ast.List</C> of its parts. Fill the arm so this counts the elements of <Cadenza>(quote (f 1 2 3))</Cadenza>, its operator plus three arguments, giving <C>4</C>.</>}
         starter={`(match (quote (f 1 2 3)) ((Ast.List elems) ?) (_ 0))`}
         solution={`(match (quote (f 1 2 3)) ((Ast.List elems) (List.len elems)) (_ 0))`}
         expected="4"
@@ -165,7 +165,7 @@ export default function Metaprogramming() {
 
 (def (main) (eval (Ast.List #list((Ast.Name "triple") (Ast.Int 14)))))`}
         expected="42"
-        hint={<>The argument is the integer <C>14</C> as an AST node, an <C>Ast.Int</C>, the same kind <C>(quote 14)</C> would give. So the hole is <Cadenza>(Ast.Int 14)</Cadenza>, and <C>eval</C> then runs <Cadenza>(triple 14)</Cadenza>.</>}
+        hint={<>The argument is the integer <C>14</C> as an AST node, an <C>Ast.Int</C>, the same kind <Cadenza>(quote 14)</Cadenza> would give. So the hole is <Cadenza>(Ast.Int 14)</Cadenza>, and <C>eval</C> then runs <Cadenza>(triple 14)</Cadenza>.</>}
       />
       <Exercise
         id="metaprogramming:3"
