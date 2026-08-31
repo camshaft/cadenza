@@ -6260,23 +6260,22 @@ impl<'a> Parser<'a> {
                 items: Vec<StructId>,
                 before: usize,
             },
-            // A `[ p, … ]` list pattern awaiting an element sub-pattern (an ATOM-position form). `items` =
-            // `[ "list"-head, … ]`; each element is a `.. rest` spread (`is_rest`: wrap `(.. binder)` with
-            // `dd_span`/`rest_head`, created before the descent) or an ordinary sub-pattern. `bracket_span`
-            // is the `[`'s span; `before` the element-loop progress guard. `lvl_start`/`lvl_entered` are the
-            // OWNING pattern level's start + depth-entered flag — restored on the close so the list node's
-            // OWN postfix chain (`.member`/`(args)`) resumes + the depth budget balances once.
             // A comma-list pattern atom awaiting an element sub-pattern — the shared skeleton for `[ … ]`
-            // list (head `list`, closer `]`, rest), `#( … )` set (head `#set` ctor, closer `)`, rest), and
-            // `#[ … ]` raw-list (NO head, closer `]`, NO rest — a bare `(p …)`). `open_span` is the opener's
-            // span; `closer`/`allow_rest` select the family; `items` holds the (optional) head + elements;
-            // `lvl_*` the owning level (resume postfix + balance depth on close).
+            // list (head `list`, closer `]`, rest), `#( … )` set (head `#set` ctor, closer `)`, rest),
+            // `#[ … ]` raw-list (NO head, closer `]`, NO rest — a bare `(p …)`), and `b[ … ]` bin (head
+            // `bin` NAME, closer `]`, NO rest, WITH comment slots — the only pattern comma-list carrying
+            // own-line-leading + last-segment-trailing comments). `open_span` is the opener's span;
+            // `closer`/`allow_rest`/`allow_comments` select the family; `leading` holds the current segment's
+            // own-line leading comments (bin only, captured before the descent); `items` the (optional) head
+            // + elements; `lvl_*` the owning level (resume postfix + balance depth on close).
             List {
                 lvl_start: Span,
                 lvl_entered: bool,
                 open_span: Span,
                 closer: Kind,
                 allow_rest: bool,
+                allow_comments: bool,
+                leading: Vec<Lead>,
                 items: Vec<StructId>,
                 is_rest: bool,
                 rest_head: StructId,
@@ -6365,26 +6364,46 @@ impl<'a> Parser<'a> {
                                 continue; // reading stays true: read the first sub-pattern
                             }
                         } else if self.at(Kind::LBracket)
+                            || self.at(Kind::BinOpen)
                             || (self.kind() == Kind::Hash
                                 && matches!(self.nth_kind(1), Kind::LBracket | Kind::LParen))
                         {
-                            // `[ … ]` list / `#[ … ]` raw-list / `#( … )` set — the comma-list pattern
-                            // atoms (mirror `pattern_atom`'s `[`/`#[`/`#(` arms): (optional) head created
-                            // BEFORE elements, then sub-patterns read on the worklist. Family selects head +
-                            // closer + rest.
+                            // `[ … ]` list / `#[ … ]` raw-list / `#( … )` set / `b[ … ]` bin — the comma-list
+                            // pattern atoms (mirror `pattern_atom`'s `[`/`#[`/`#(`/`b[` arms): (optional) head
+                            // created BEFORE elements, then sub-patterns read on the worklist. Family selects
+                            // head + closer + rest + comment slots (bin only).
                             let open_span = cur_start;
-                            let (items, closer, allow_rest) = if self.kind() == Kind::LBracket {
-                                self.bump(); // '['
-                                (vec![self.name("list", open_span)], Kind::RBracket, true)
-                            } else if self.nth_kind(1) == Kind::LBracket {
-                                self.bump(); // '#'
-                                self.bump(); // '['
-                                (Vec::new(), Kind::RBracket, false) // raw-list: NO head, NO rest
-                            } else {
-                                self.bump(); // '#'
-                                self.bump(); // '('
-                                (vec![self.ctor_head("set", open_span)], Kind::RParen, true)
-                            };
+                            let (items, closer, allow_rest, allow_comments) =
+                                if self.kind() == Kind::LBracket {
+                                    self.bump(); // '['
+                                    (
+                                        vec![self.name("list", open_span)],
+                                        Kind::RBracket,
+                                        true,
+                                        false,
+                                    )
+                                } else if self.kind() == Kind::BinOpen {
+                                    self.bump(); // `b[`
+                                    (
+                                        vec![self.name("bin", open_span)],
+                                        Kind::RBracket,
+                                        false,
+                                        true,
+                                    )
+                                } else if self.nth_kind(1) == Kind::LBracket {
+                                    self.bump(); // '#'
+                                    self.bump(); // '['
+                                    (Vec::new(), Kind::RBracket, false, false) // raw-list: NO head/rest/cmnt
+                                } else {
+                                    self.bump(); // '#'
+                                    self.bump(); // '('
+                                    (
+                                        vec![self.ctor_head("set", open_span)],
+                                        Kind::RParen,
+                                        true,
+                                        false,
+                                    )
+                                };
                             if self.at(closer) {
                                 self.expect(closer, "comma-list pattern closer");
                                 node = self.list(items, open_span.merge(self.prev_span()));
@@ -6399,12 +6418,20 @@ impl<'a> Parser<'a> {
                                     } else {
                                         (false, open_span, StructId(0))
                                     };
+                                // bin captures own-line leading comments before the (non-rest) segment.
+                                let leading = if allow_comments && !is_rest {
+                                    self.take_comments_here()
+                                } else {
+                                    Vec::new()
+                                };
                                 pending.push(PCont::List {
                                     lvl_start: cur_start,
                                     lvl_entered: cur_entered,
                                     open_span,
                                     closer,
                                     allow_rest,
+                                    allow_comments,
+                                    leading,
                                     items,
                                     is_rest,
                                     rest_head,
@@ -6585,17 +6612,27 @@ impl<'a> Parser<'a> {
                     open_span,
                     closer,
                     allow_rest,
+                    allow_comments,
+                    leading,
                     mut items,
                     is_rest,
                     rest_head,
                     dd_span,
                     before,
                 }) => {
-                    // `node` is the delivered element (or `.. rest` operand). Push it, then read the next
-                    // element or close and resume the OWNING level's postfix on the assembled node.
+                    // `node` is the delivered element (or `.. rest` operand). Push it (bin wraps the segment
+                    // with its own-line leading + a last-segment same-line trailing comment), then read the
+                    // next element or close and resume the OWNING level's postfix on the assembled node.
                     if is_rest {
                         let span = dd_span.merge(self.prev_span());
                         items.push(self.list(vec![rest_head, node], span));
+                    } else if allow_comments {
+                        let mut seg = self.wrap_comments(leading, node);
+                        if self.at(closer) {
+                            let trailing = self.take_trailing_comment_here();
+                            seg = self.wrap_comment_after(trailing, seg);
+                        }
+                        items.push(seg);
                     } else {
                         items.push(node);
                     }
@@ -6618,12 +6655,19 @@ impl<'a> Parser<'a> {
                     } else {
                         (false, open_span, StructId(0))
                     };
+                    let leading = if allow_comments && !is_rest {
+                        self.take_comments_here()
+                    } else {
+                        Vec::new()
+                    };
                     pending.push(PCont::List {
                         lvl_start,
                         lvl_entered,
                         open_span,
                         closer,
                         allow_rest,
+                        allow_comments,
+                        leading,
                         items,
                         is_rest,
                         rest_head,
@@ -8464,6 +8508,10 @@ mod tests {
             "{ a = { b = p } }",
             "{ p = q }.field",
             "b[u8(1)]",
+            "b[]",
+            "b[u16(n), bits(1, x)]",
+            "b[bytes(rest)]",
+            "b[u8(1)].len",
             "Point(x, y).norm(z)",
             "C(C(C(C(x))))",
         ];
