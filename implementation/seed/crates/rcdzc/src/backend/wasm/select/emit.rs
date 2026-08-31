@@ -1503,6 +1503,20 @@ pub(super) fn emit(
         // `Set`-rooted shape (NOT the value-form `Framed` wrapper), which is what `op_set_to_list` resolves.
         Core::SetToList { set, elem_ty } => {
             let Some(desc) = crate::lower::set_shape_descriptor(db, &elem_ty) else {
+                // Float-scope the no-descriptor reject: a FLOAT leaf makes the element un-orderable by a
+                // PERMANENT no-total-order carve-out (a floating-point type offers only the IEEE partial
+                // order — a NaN is unordered), so it is a coded CDZ0203 that points at the relational ops —
+                // the Set.to-list face of the float three-way-compare reject. A Set/Map leaf (no blessed
+                // order at all) stays a codeless decline (a separate not-yet/carve-out class).
+                if crate::lower::type_has_float_leaf(db, &elem_ty, &mut Vec::new()) {
+                    return Err(Reject::coded(
+                        crate::diag::Code::TypeMismatch,
+                        "Set.to-list enumerates elements in a total order, but this element type has a \
+                         floating-point leaf, which offers only the IEEE partial order (a not-a-number is \
+                         unordered) — it has no total order; compare its orderable components with the \
+                         relational operators `<`, `<=`, `>`, `>=` instead",
+                    ));
+                }
                 return Err(Reject::decline(
                     "Set.to-list element shape has no orderable descriptor",
                 ));
