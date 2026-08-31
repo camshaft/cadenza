@@ -1936,64 +1936,12 @@ fn compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route
     );
 }
 
-#[test]
-fn ordering_a_compound_with_an_unorderable_leaf_is_a_carve_out_not_a_not_yet_built_decline() {
-    // The RELATIONAL-operator (`<`/`<=`/`>`/`>=`) sibling of the compound-`compare` carve-out. A
-    // relational op reaching the compound decline ALWAYS has an un-orderable leaf: an all-orderable
-    // compound already took the runtime `ValueCmp` ordering arm. So a `<` over a float-leaf tuple is a
-    // PERMANENT carve-out (a float has only the IEEE partial order), NOT the "needs a heap walk (not yet
-    // built)" the equality path names — that message MISLED (read as a temporary limit a later slice
-    // lifts). The message mirrors `compare`: names the un-orderable leaf + the component-wise route, and
-    // because it is PERMANENT it is now a coded CDZ0203 (`Code::TypeMismatch`) — the SAME no-total-order
-    // family as the pure-float three-way `compare` carve-out (#7001), Set.to-list over a float leaf
-    // (#7076), and the sum-payload float leaf (v-inference/v-corpus-declines reconcile; was uncoded).
-    let d = first_error(
-        "(module m (def (f (: x Float64) (: y Float64)) (< (tuple x 1) (tuple y 2))) (export f))",
-    );
-    assert_eq!(
-        d.code.as_deref(),
-        Some("CDZ0203"),
-        "an un-orderable-leaf compound ordering is a coded CDZ0203 carve-out (no-total-order family): {}",
-        d.message
-    );
-    assert!(
-        d.message
-            .contains("has no total order, so it cannot be ordered")
-            && d.message.contains("float, set, or map leaf")
-            && d.message
-                .contains("order its orderable components individually"),
-        "the ordering decline names the un-orderable-leaf reason + the component-wise route (NOT a \
-             'not yet built' heap walk): {}",
-        d.message
-    );
-    // It must NOT claim the misleading "not yet built" the equality path uses — this is permanent.
-    assert!(
-        !d.message.contains("not yet built"),
-        "an ordering carve-out must not read as a temporary limitation: {}",
-        d.message
-    );
-    // EQUALITY (`=`) over a float-leaf compound is SUPPORTED (the ValueEqShaped path) — no decline; so the
-    // "needs a heap walk (not yet built)" message stays reachable only for genuinely-unbuilt cases.
-    // ROUND-TRIP witness: the named route — ordering the orderable Int component alone — compiles clean.
-    let ast = crate::testkit::parse(
-        "(module m (def (f (: x Float64) (: y Float64)) (< 1 2)) (export f))",
-    );
-    let out = compile(
-        &[Artifact::new(
-            Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&ast),
-        )],
-        &[Target::Wasm],
-    );
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.severity == crate::abi::Severity::Error),
-        "the component-wise route (order the Int component) compiles clean: {:?}",
-        out.diagnostics
-    );
-}
+// MIGRATED to corpus (03-equality-and-observation.sexp, "a runtime compound containing a float leaf is
+// rejected CDZ0203 for ordering …"): a compound with an unorderable (float/set/map) leaf ordered by
+// `<`/`<=`/`>`/`>=` is a PERMANENT CDZ0203 carve-out that NAMES the reason + the component-wise route and
+// is NOT a "not yet built" temporary limit (message facets + `(no-diagnostic "not yet built")` added
+// there); the component-wise route (a bare Int `<`) compiles clean broadly. Rust test
+// ordering_a_compound_with_an_unorderable_leaf_is_a_carve_out_not_a_not_yet_built_decline deleted.
 
 // (a_mismatched_type_ordering_stays_a_single_coded_error_not_a_double_with_the_ordering_decline migrated to
 //  corpus 07-type-system: `(< 1 "x")` cross-kind ordering compare -> CDZ0201 "different types" with (count 1)
