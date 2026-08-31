@@ -12,7 +12,7 @@
 //! as the bare glyph `^`); for those the contract is idempotence only, not structural equality — see
 //! [`has_canonicalizing_head`].
 
-use crate::ast::{Arenas, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, Struct, StructId};
 use crate::{codec, parser, printer, sexpr, token};
 use std::collections::BTreeMap;
 
@@ -59,6 +59,69 @@ fn has_rational(a: &Arenas) -> bool {
     (0..a.structure.len() as u32)
         .map(StructId)
         .any(|id| a.rational_parts(id).is_some())
+}
+
+/// Does this tree contain a `Set.of(<list literal>)` CALL — `((. Set of) (list …))`? The ML printer
+/// CANONICALIZES this to the concise set-literal surface `#(…)` (its `set_literal` sugar), which — since
+/// the M3 native-ctor reader-flip (#6528) — re-reads to the native `#set(…)` CTOR, NOT back to the
+/// `Set.of` call. So `Set.of([1,2,3])` prints `#(1,2,3)` and re-reads `#set(1 2 3)`: the SAME set VALUE
+/// (the sugar's whole point — a set-of-a-literal-list IS a set literal) but a structurally different
+/// tree (call → ctor). Exactly like `Unit.^` → `^`, this is a deliberate value-canonicalization the
+/// surface performs, so structural equality cannot hold; it is held to parse-ok + IDEMPOTENCE only
+/// (`#(…)` reprints `#(…)`), and the codec/s-expr paths preserve the `Set.of` call node EXACTLY. Mirrors
+/// the printer's `set_literal` guard (member `(. Set of)`, single `list`-headed arg). See
+/// [`has_canonicalizing_head`].
+fn has_set_of_list_literal(a: &Arenas) -> bool {
+    (0..a.structure.len() as u32).map(StructId).any(|id| {
+        let Struct::List(items) = a.get(id) else {
+            return false;
+        };
+        if items.len() != 2 {
+            return false;
+        }
+        // items[0] is the member access `(. Set of)` (a `Leaf::Member`-headed list).
+        let is_set_of = a.member_parts(items[0]).is_some_and(|(obj, key)| {
+            a.as_name(obj) == Some("Set") && a.as_name(key) == Some("of")
+        });
+        // items[1] is a `list` literal — the native ctor-leaf `#list`, or a str/name `list` head.
+        let arg_is_list = a.compound_ctor_leaf(items[1]) == Some(CompoundCtor::List)
+            || a.head_ctor(items[1]) == Some("list")
+            || a.head_name(items[1]) == Some("list");
+        is_set_of && arg_is_list
+    })
+}
+
+/// Does this tree contain a MALFORMED `record`/`map` compound-ctor literal — one whose direct element
+/// list carries a BARE ATOM (a non-`(= key value)`, non-`(.. rest)` element)? A record/map field MUST be
+/// a `(= k v)` pair (or a `(.. rest)` spread); a bare atom (e.g. `#record((= a 1) 2)`) is malformed and
+/// has NO faithful ML surface — the `{ … }` / `#{ … }` literal can only spell `k = v` fields, so the
+/// printer falls back to the name-head `record(…)` / `map(…)` CALL form, which re-reads as a name-head
+/// list (NOT the `#record`/`#map` ctor). Exactly like a rejected (error) program or a rational literal,
+/// such a malformed literal's only meaningful ML contract is PARSE-OK; the codec/s-expr paths keep it
+/// EXACT. These arise as reify/quote TEST DATA (v-metaprog's malformed-collection cases, #6921) —
+/// deliberately-malformed AST carried as data, whose identity the binary AST preserves. See
+/// [`has_canonicalizing_head`] / `no_ml_source_form`.
+fn has_malformed_compound_ctor(a: &Arenas) -> bool {
+    (0..a.structure.len() as u32).map(StructId).any(|id| {
+        // A record/map — the native ctor-leaf `#record`/`#map`, or a str/name `record`/`map` head.
+        let is_rec_or_map = matches!(
+            a.compound_ctor_leaf(id),
+            Some(CompoundCtor::Record) | Some(CompoundCtor::Map)
+        ) || matches!(a.head_ctor(id), Some("record") | Some("map"))
+            || matches!(a.head_name(id), Some("record") | Some("map"));
+        if !is_rec_or_map {
+            return false;
+        }
+        let Struct::List(items) = a.get(id) else {
+            return false;
+        };
+        // Skip the ctor head (items[0]); a bare ATOM element is definitively malformed (a valid field is
+        // the `(= k v)` field-pair LIST or a `(.. rest)` spread LIST — never a bare scalar).
+        items
+            .iter()
+            .skip(1)
+            .any(|&e| matches!(a.get(e), Struct::Atom(_)))
+    })
 }
 
 /// A hint for the commonest round-trip authoring mistake: a `record` literal whose fields are written
@@ -201,8 +264,9 @@ fn ml_surface_round_trips_the_corpus() {
 
             // A head the surface canonicalizes away (`Unit.^` → `^`) cannot satisfy structural equality,
             // so it is held to the weaker parse-ok + idempotence contract only.
-            let structural_required =
-                !has_canonicalizing_head(&input) && !has_compound_key_member(&input);
+            let structural_required = !has_canonicalizing_head(&input)
+                && !has_compound_key_member(&input)
+                && !has_set_of_list_literal(&input);
 
             // A REJECTED program (an error case) is MALFORMED, so the ML surface has no faithful
             // rendering of it — a valueless construct in a value position (e.g. a trailing `type`
@@ -214,7 +278,8 @@ fn ml_surface_round_trips_the_corpus() {
             // `num/den`, which the ML surface RE-READS as integer division `(/ num den)` — structurally
             // different AND non-idempotent. So, exactly like a rejected (error) program, a rational-bearing
             // input's only meaningful ML contract is PARSE-OK; the codec/s-expr paths keep it exact.
-            let no_ml_source_form = is_error || has_rational(&input);
+            let no_ml_source_form =
+                is_error || has_rational(&input) || has_malformed_compound_ctor(&input);
             let ok = reparsed.ok()
                 && (no_ml_source_form
                     || ((!structural_required || reparsed.arenas.structurally_eq(&input))
@@ -373,9 +438,12 @@ fn all_surface_paths_round_trip_the_corpus() {
             total += 1;
             let bucket = input.head_name(input.root).unwrap_or("<leaf>").to_string();
 
-            // A canonicalizing head (`Unit.^` → `^`) collapses under the ML surface, so Path A
-            // (ml→binary→ml) is held to the idempotence contract, not structural equality.
-            let structural = !has_canonicalizing_head(&input) && !has_compound_key_member(&input);
+            // A canonicalizing head (`Unit.^` → `^`) or a `Set.of(<list literal>)` (canonicalized to the
+            // set-literal `#(…)`) collapses under the ML surface, so Path A (ml→binary→ml) is held to the
+            // idempotence contract, not structural equality.
+            let structural = !has_canonicalizing_head(&input)
+                && !has_compound_key_member(&input)
+                && !has_set_of_list_literal(&input);
 
             // Path A: ml → binary → ml. Print ML, read it back to an arena, encode, decode, print ML
             // again — the two ML renderings must be byte-identical (and structurally equal to the input
@@ -394,6 +462,10 @@ fn all_surface_paths_round_trip_the_corpus() {
                 Some(a) => {
                     is_error
                         || has_rational(&input)
+                        // A malformed record/map ctor (a bare non-field element) has no faithful ML
+                        // surface (prints name-head), so Path A is held to composition-succeeds, like an
+                        // error/rational case; Path B below keeps its identity exact via the s-expr codec.
+                        || has_malformed_compound_ctor(&input)
                         || (printer::print(a, WIDTH) == ml
                             && (!structural || a.structurally_eq(&input)))
                 }
