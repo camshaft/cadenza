@@ -2864,6 +2864,7 @@ fn guard_cond_variant_binds(
 /// walks variant/tuple/list compounds into a nested record; a bare `find_binder_in_pattern`, which
 /// `guard_cond_variant_binds` uses, skips the `record` head, which is why the plain variant guard case misses
 /// this and it needs its own twin.)
+#[allow(clippy::type_complexity)]
 fn guard_cond_nested_record_binds_path(
     db: &Db,
     form: StructId,
@@ -4704,6 +4705,7 @@ fn find_map_binder_in_pattern(
 /// [`match_arm_nested_map_binds`]. A non-empty path is required — a TOP-LEVEL record is Case 6rec's job.
 /// `heads` carries the variant-constructor head at each `Payload` step in `path` (empty for tuple/list-only
 /// nesting), so inference can walk a variant payload down to the nested record.
+#[allow(clippy::type_complexity)]
 fn match_arm_nested_record_binds_path(
     db: &Db,
     form: StructId,
