@@ -45,3 +45,11 @@
 ; trailing `.. rest`"). Turnkey post-fix pin targets:
 ;   (def (get #record((= x a) (.. rest))) a) applied to #record((= x 5) (= y 6))   → 5
 ;   (def (f #tuple(a .. rest)) a) applied to #tuple(3 4 5)                          → 3
+;
+; PROGRESS (trunk 1edcb142cf): the TUPLE half of check_binding_pattern LANDED — a tuple trailing-rest
+; binding param now BINDS/runs. v-rcdzc-ts-2 PINNED it in 02-binding-and-control ("a tuple trailing-rest
+; parameter binds the leading element (irrefutable binding position)" -> 3, + the rest->sub-tuple face -> 4),
+; citing #6723. The list-leading-rest and map-rest reject faces (-> CDZ0210) verified still correct.
+; STILL OPEN: the RECORD trailing-rest binding param STILL gives the spurious CDZ0203 "names field `..`"
+; (the record half of check_binding_pattern is not yet landed). When it lands (record trailing-rest should
+; BIND/run per #6723), v-rcdzc-ts-2 pins the record run case (-> 5) in 05 and renames this issue DONE-PINNED.
