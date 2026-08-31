@@ -78,6 +78,14 @@ traps = a FALSE "proven", the one outcome worse than `cannotProve`. -/
 def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
   let consts := args.map symToValue?
   if consts.any (·.isNone) then none
+  else
+  -- UNARY `not` handled via a leading size-dispatch (NOT an array-literal pattern) so `foldConst? "not"`
+  -- REDUCES cleanly in proofs — the `#[…]` literal patterns below compile to a `_sparseCasesOn` matcher
+  -- that `simp`/`split` cannot reduce (same blocker the `denoteApp` size-dispatch refactor dodged). This
+  -- is behavior-identical to the former `| "not", #[.bool b] => some (.bool (!b))` arm (a `not` over one
+  -- boolean folds; any other `not` shape falls through to `none`, exactly as before).
+  if op == "not" && (consts.filterMap id).size == 1 then
+    (match (consts.filterMap id)[0]? with | some (Value.bool b) => some (.bool (!b)) | _ => none)
   else match op, consts.filterMap id with
     | "=",  #[a, b] => some (.bool (Value.valueEqSpec a b))
     | "<",  #[.int x, .int y] => some (.bool (decide (x < y)))
@@ -98,7 +106,7 @@ def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
     | ">",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x > y)) | _, _ => none)
     | "<=", #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≤ y)) | _, _ => none)
     | ">=", #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≥ y)) | _, _ => none)
-    | "not", #[.bool b] => some (.bool (!b))
+    -- (`not` is handled by the leading size-dispatch above.)
     | "and", vs => if vs.all (· == .bool true) then some (.bool true)
                    else if vs.any (· == .bool false) then some (.bool false) else none
     | "or",  vs => if vs.any (· == .bool true) then some (.bool true)
