@@ -6643,3 +6643,22 @@
   "a string value annotated as a non-String type is a mismatch"
   (input (do (def (main) (String.byte-len (: "hi" Int64))) (export main)))
   (error CDZ0203))
+
+; A CONSTANT non-String operand to a String op reaches the const-fold path BEFORE the operand type-check.
+; It must still surface the SAME CDZ0203 "expects an argument of type String" the RUNTIME operand gets — NOT
+; a misleading const-fold decline about UTF-8 decoding / const-ASCII folding, and never an UNCODED reject.
+; (Was a bug: `(String.byte-len 5)` → misleading CDZ0900; `(String.at 5 0)` / `(String.concat "a" 5)` → uncoded.
+; Fixed by routing the const-fold decline through `runtime_string_op_decline`, whose neutral decline `dedup_faults`
+; drops when the coded type error is present. Repro from v-rcdzc-ts-2; verdict = the runtime CDZ0203 above.)
+(case
+  "a constant non-String operand to String.byte-len is a type mismatch, not a const-fold decline"
+  (input (do (def (main) (String.byte-len 5)) (export main)))
+  (error CDZ0203))
+(case
+  "a constant non-String operand to String.at is a type mismatch, not an uncoded decline"
+  (input (do (def (main) (String.at 5 0)) (export main)))
+  (error CDZ0203))
+(case
+  "a constant non-String operand to String.concat is a type mismatch, not an uncoded decline"
+  (input (do (def (main) (String.concat "a" 5)) (export main)))
+  (error CDZ0203))

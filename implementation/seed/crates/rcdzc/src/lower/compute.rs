@@ -2697,10 +2697,25 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                             );
                             Core::NfcNormalize { string: concat }
                         }
-                        _ => Core::Poison(Reject::decline(
-                            "a string concatenation is only folded for constant ASCII operands (the \
-                             normalizing byte-rope join arrives with the runtime string heap)",
-                        )),
+                        _ => {
+                            // Defer to the authoritative CDZ0203 when an operand is a definite non-String
+                            // (`(String.concat "a" 5)` — the fault is the type, not const-ASCII folding);
+                            // a genuine runtime-String operand keeps the honest const-ASCII-only note.
+                            let arg = if matches!(
+                                crate::infer::type_of(db, args[0]),
+                                crate::ty::Ty::String
+                            ) {
+                                args[1]
+                            } else {
+                                args[0]
+                            };
+                            runtime_string_op_decline(
+                                db,
+                                arg,
+                                "a string concatenation is only folded for constant ASCII operands (the \
+                                 normalizing byte-rope join arrives with the runtime string heap)",
+                            )
+                        }
                     }
                 }
                 // `Map.insert` — add-or-replace `key ↦ val`, returning the new map. For M1 the map operand

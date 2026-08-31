@@ -285,9 +285,14 @@ fn lower_runtime_str_len(
 ) -> Core {
     use crate::resolved::Prim;
     if !matches!(crate::infer::type_of(db, operand), crate::ty::Ty::String) {
-        return Core::Poison(Reject::unsupported(
+        // A non-String operand is a TYPE error (`infer` already reports the authoritative CDZ0203
+        // "expects an argument of type String"); defer to it via the neutral decline rather than the
+        // misleading "runtime string / UTF-8 walk" wording — a constant `5` is not a string at all.
+        return runtime_string_op_decline(
+            db,
+            operand,
             "a runtime string's scalar length needs a UTF-8 decoding walk (byte-len works)",
-        ));
+        );
     }
     match prim {
         Prim::StrByteLen => {
