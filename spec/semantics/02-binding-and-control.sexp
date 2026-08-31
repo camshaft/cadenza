@@ -3246,6 +3246,21 @@
   (error  CDZ0210 (message "`B`") (message "`C`")
                   (fix (kind insert-into) (replacement "(B (trap \"TODO: B\")) (C (trap \"TODO: C\"))"))))
 
+; A BOOL scrutinee is a FINITE two-value gap, so a non-exhaustive Bool match names the missing LITERAL
+; (`false`/`true`) and inserts exactly that arm — `(false (trap "TODO: false"))`, not a generic wildcard —
+; the same precision as a missing sum variant above. The `trap` body inhabits any type, so the completed
+; match type-checks against a sibling arm's non-Unit result (a `unit` body would clash). Symmetric on which
+; literal is missing. (Migrated from rcdzc a_bool_match_missing_a_literal_offers_the_specific_missing_arm.)
+(case "a non-exhaustive Bool match names the missing literal and inserts exactly that arm"
+  (input  (do (def (f (: b Bool)) (match b (true 1))) (export f)))
+  (error  CDZ0210 (message "`false`") (message "not covered")
+                  (fix (kind insert-into) (replacement "(false (trap \"TODO: false\"))"))))
+
+(case "the non-exhaustive Bool match arm-insert is symmetric on the missing literal"
+  (input  (do (def (f (: b Bool)) (match b (false 2))) (export f)))
+  (error  CDZ0210 (message "`true`") (message "not covered")
+                  (fix (kind insert-into) (replacement "(true (trap \"TODO: true\"))"))))
+
 (case "a false variant guard shields its arm's trapping body"
   (doc    "A guarded arm's body runs only when the guard holds (core-semantics.md #Boolean Connectives
            Short-Circuit, applied to a guard): `(Some x) if x > 0` over `(Some 0)` must NOT evaluate its
