@@ -723,7 +723,7 @@
       (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b))
       (def (le (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b))
       ; the param environment: a name → its Var index. Minimal here (only `x` at index 0).
-      (def (var-of (: name String)) (if (= name "x") 0 -1))
+      (def (var-of (: name String)) (if (= name "x") 0 (- 0 1)))
       ; DENOTE a leaf: a name → Var, an int → Num. (A non-arith leaf is out of the fragment; here total.)
       (def
         (denote-leaf (: a Ast))
@@ -731,7 +731,7 @@
           a
           ((Ast.AName nm) (Term.Var (var-of nm)))
           ((Ast.AInt n) (Term.Num n))
-          ((Ast.AList _) (Term.Num -1))))
+          ((Ast.AList _) (Term.Num (- 0 1)))))
       ; DENOTE a predicate Ast → an obligation Term (the §1A shallow embedding, arith fragment).
       ; `(<= a b)` → `le`, `(+ a b)` → `add`; operands denote via denote-leaf (or recurse for nesting).
       (def
@@ -744,8 +744,8 @@
               (#list((Ast.AName op) l r)
                 (let
                   ((lt (denote-leaf l)) (rt (denote-leaf r)))
-                  (if (= op "<=") (le lt rt) (if (= op "+") (add lt rt) (Term.Num -1)))))
-              (_ (Term.Num -1))))
+                  (if (= op "<=") (le lt rt) (if (= op "+") (add lt rt) (Term.Num (- 0 1))))))
+              (_ (Term.Num (- 0 1)))))
           (_ (denote-leaf a))))
       (export Term.*)
       (export HeadOp.*)
@@ -3102,7 +3102,7 @@
     "A cross-seam composition pin (v-patterns seam): the def BODY is a `match`, and @ensures must wrap the
            WHOLE match expression, not one arm. The injected `(let ((ret (match x …))) (if (>= ret 0) ret
            (trap …)))` binds `ret` to whichever arm the scrutinee selects, then checks the postcondition over
-           that result. `(f x) = (match x (0 -1) (_ x))`: `(f 5)` takes the wildcard arm → `ret = 5`, `(>=
+           that result. `(f x) = (match x (0 (- 0 1)) (_ x))`: `(f 5)` takes the wildcard arm → `ret = 5`, `(>=
            5 0)` holds → returns `5`; `(f 0)` takes the `0` arm → `ret = -1`, `(>= -1 0)` is FALSE → the check
            traps `unreachable`. Pins that the enforcement rewrite composes with a match-bodied def (the `let`
            binds the match's value, the check sees the selected arm's result) — a future pattern-matching change
@@ -3110,7 +3110,7 @@
            `main`'s param so neither arm folds away.")
   (input
     (do
-      (@ (ensures (>= ret 0)) (def (f (: x Int64)) (match x (0 -1) (_ x))))
+      (@ (ensures (>= ret 0)) (def (f (: x Int64)) (match x (0 (- 0 1)) (_ x))))
       (def (main (: k Int64)) (f k))
       (export main)))
   (call main (: 5 Int64))

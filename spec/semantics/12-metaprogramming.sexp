@@ -3488,7 +3488,7 @@ c")))
               ((g (peel h)) (tail (collect t)))
               (if (= (head-name g) "type") (List.prepend tail g) tail)))))
       (def (forms-of (const (: mm Ast))) (match mm ((Ast.List fs) fs) (_ (: #list() (List Ast)))))
-      (def (main) (> (Bytes.len (Ast.encode (Ast.List (collect (forms-of Ast.module))))) -1))
+      (def (main) (> (Bytes.len (Ast.encode (Ast.List (collect (forms-of Ast.module))))) (- 0 1)))
       (export main)))
   (output (: true Bool)))
 
@@ -3534,7 +3534,7 @@ c")))
         (main)
         (>
           (Bytes.len (Ast.encode (Ast.List (keep-types (unwrap-all (forms-of Ast.module))))))
-          -1))
+          (- 0 1)))
       (export main)))
   (output (: true Bool)))
 

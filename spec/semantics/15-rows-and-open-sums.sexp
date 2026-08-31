@@ -1594,7 +1594,7 @@
   (input
     (do
       (type V (A Int64) (B Int64) .. r)
-      (def (extract (: v V)) (match v ((B m) m) (_ -1)))
+      (def (extract (: v V)) (match v ((B m) m) (_ (- 0 1))))
       (def (classify (: v V)) (match v ((A n) n) (rest (extract rest))))
       (def (main) (classify (B 42)))
       (export main)))
@@ -1609,7 +1609,7 @@
   (input
     (do
       (type V (A Int64) (B Int64) .. r)
-      (def (extract (: v V)) (match v ((B m) m) (_ -1)))
+      (def (extract (: v V)) (match v ((B m) m) (_ (- 0 1))))
       (def (classify (: v V)) (match v ((A n) n) (rest (extract rest))))
       (def (main) (classify (A 7)))
       (export main)))
@@ -1625,7 +1625,7 @@
   (input
     (do
       (type V (A Int64) (B Int64) (C Int64) .. r)
-      (def (extract (: v V)) (match v ((B m) m) (_ -1)))
+      (def (extract (: v V)) (match v ((B m) m) (_ (- 0 1))))
       (def (classify (: v V)) (match v ((A n) n) (rest (extract rest))))
       (def (main) (classify (C 99)))
       (export main)))
@@ -1857,7 +1857,7 @@
         (do
           (def ops #record((= add (fn ((: x Int64)) (+ x k))) (= dbl (fn ((: x Int64)) (* x 2)))))
           (def r2 (Record.extend ops #"neg" (fn ((: x Int64)) (- 0 x))))
-          (+ (* 100 (r2.add 5)) (+ (* 10 (r2.dbl 5)) (r2.neg -7)))))
+          (+ (* 100 (r2.add 5)) (+ (* 10 (r2.dbl 5)) (r2.neg (- 0 7))))))
       (export main)))
   (call main (: 3 Int64))
   (output (: 907 Int64))
