@@ -24,40 +24,14 @@ fn parse_ok(src: &str) -> Arenas {
 //   * ml/475-comment-leading-first-of-multi-form `// lead`⏎`def a = 1`⏎`def b = 2`→`(do (comment "lead" (def a
 //     1)) (def b 2))`. Single-form trailing/leading `def main() = 42`⏎`// note`=ml/291-comment-line-on-def.
 
-#[test]
-fn an_own_line_comment_before_a_collection_closer_attaches_to_the_last_element() {
-    use crate::sexpr;
-    // An own-line `//` after the last element, before the closer, was dropped (the reader left it in
-    // the closer's leading slot). Now it attaches to the LAST element as a leading `(comment …)` —
-    // the same attach-to-last shape a trailing top-level comment gets (its printed position moves
-    // ABOVE the last element, the accepted v1 limitation; the point is it is PRESERVED, not dropped).
-    // list:
-    assert_eq!(
-        sexpr::print(&parse_ok("def l() = [1, 2\n // c\n]")),
-        "(def (l) #list(1 (comment \"c\" 2)))"
-    );
-    // tuple:
-    assert_eq!(
-        sexpr::print(&parse_ok("def t() = (1, 2\n // c\n)")),
-        "(def (t) #tuple(1 (comment \"c\" 2)))"
-    );
-    // record (field is a `(= name value)` triple; the comment wraps the whole field):
-    assert_eq!(
-        sexpr::print(&parse_ok("def r() = { a = 1, b = 2\n // c\n }")),
-        "(def (r) #record((= a 1) (comment \"c\" (= b 2))))"
-    );
-    // set desugars to `Set.of([…])` — the comment wraps the last list element:
-    assert_eq!(
-        sexpr::print(&parse_ok("def s() = #(1, 2\n // c\n)")),
-        "(def (s) #set(1 (comment \"c\" 2)))"
-    );
-    // map (native `#map(…)` ctor head; an entry is the canonical `(= key value)` `FieldPair` triple,
-    // unified with a record field per the M2 native-compound-data migration):
-    assert_eq!(
-        sexpr::print(&parse_ok("def m() = #{ a = 1\n // c\n }")),
-        "(def (m) #map((comment \"c\" (= a 1))))"
-    );
-}
+// `an_own_line_comment_before_a_collection_closer_attaches_to_the_last_element` (an own-line `//` after the
+// last element, before the closer, attaches to the LAST element as a leading `(comment …)` — same shape as a
+// between-elements own-line comment, preserved not dropped) MIGRATED to the spec/syntax corpus (inc-6 batch-84):
+// list `#list(1 (comment "c" 2))`=ml/327-comment-leading-nonfirst-list-elem, tuple `#tuple(1 (comment "c" 2))`=
+// ml/281-comment-leading-nonfirst-tuple-elem (the before-closer surface yields the same last-element-leading
+// tree as the between-elements input); new — ml/477-comment-before-closer-set `#set(1 (comment "c" 2))`,
+// ml/478-comment-before-closer-record `#record((= a 1) (comment "c" (= b 2)))`, ml/479-comment-before-closer-map
+// `#map((comment "c" (= a 1)))`.
 
 #[test]
 fn a_closer_comment_does_not_reorder_when_the_last_element_already_has_a_comment() {
