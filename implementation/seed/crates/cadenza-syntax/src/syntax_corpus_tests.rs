@@ -216,3 +216,65 @@ fn syntax_corpus_goldens_are_self_consistent() {
         failures.join("\n  ")
     );
 }
+
+/// Surface-independence gate (DESIGN-parser-test-corpus.md §2): a case named `<NN>-<slug>` present in
+/// MORE THAN ONE surface (`ml/05-list-literal` + `sexp/09-list-literal`, matched by SLUG — the ordinal
+/// may differ) is a parity twin, and all six surfaces build the *same* `cadenza-ast` arena, so their
+/// `tree.sexp` goldens MUST be byte-identical. This is the corpus's headline property made a GATE, not
+/// just auditable-by-inspection: a reader change that made one surface parse a construct differently
+/// from another would red here. (Distinct slugs across surfaces are non-parity by construction and are
+/// not compared.)
+#[test]
+fn matching_slug_cases_are_surface_independent() {
+    let root = corpus_root();
+    if !root.is_dir() {
+        eprintln!(
+            "syntax_corpus: SKIP — corpus root {} absent",
+            root.display()
+        );
+        return;
+    }
+    // slug (dir name minus the leading `NN-`) → list of (surface/name, tree.sexp bytes).
+    let mut by_slug: std::collections::BTreeMap<String, Vec<(String, Vec<u8>)>> =
+        std::collections::BTreeMap::new();
+    for case in enumerate_cases(&root) {
+        let name = case.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Strip a leading `NN-` ordinal to get the slug.
+        let slug = name
+            .split_once('-')
+            .map(|(_, rest)| rest)
+            .unwrap_or(name)
+            .to_string();
+        let label = case
+            .strip_prefix(&root)
+            .unwrap_or(&case)
+            .display()
+            .to_string();
+        // A decline case carries no tree.sexp — skip (nothing to compare).
+        if let Ok(tree) = std::fs::read(case.join("tree.sexp")) {
+            by_slug.entry(slug).or_default().push((label, tree));
+        }
+    }
+    let mut failures: Vec<String> = Vec::new();
+    for (slug, cases) in &by_slug {
+        if cases.len() < 2 {
+            continue; // single-surface case — no parity twin to compare
+        }
+        let (ref_label, ref_tree) = &cases[0];
+        for (label, tree) in &cases[1..] {
+            if tree != ref_tree {
+                failures.push(format!(
+                    "slug {slug:?}: {label} and {ref_label} have DIFFERENT tree.sexp — same-slug cases \
+                     across surfaces must be surface-independent (identical arenas). Rename one to a \
+                     distinct slug if they are intentionally different constructs."
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "surface-independence failures ({}):\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}

@@ -31,6 +31,11 @@ spec/syntax/<surface>/NN-name/
   representation for *all* surfaces, which is what makes the corpus language-agnostic. An `ml/` case
   and an equivalent `sexp/` case have **byte-identical** `tree.sexp` (compare `ml/02-arith-precedence`
   and `sexp/02-arith-precedence`).
+- **Surface-independence convention (gated):** a case with the SAME slug (the dir name minus its
+  leading `NN-` ordinal) in more than one surface is a **parity twin**, and its `tree.sexp` MUST be
+  byte-identical across those surfaces — enforced by `matching_slug_cases_are_surface_independent` in
+  `syntax_corpus_tests`. So two cases that are *intentionally different* constructs must use *distinct
+  slugs*; a shared slug is a promise of identical parse trees.
 
 ## `tree.sexp` — the structural parse-tree golden
 
