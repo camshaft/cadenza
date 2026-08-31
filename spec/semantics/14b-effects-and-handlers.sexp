@@ -2937,6 +2937,20 @@
   (input  (do (effect Bail (op bail (-> Int64 Int64))) (def (main) (handle 0 ((Bail.bail (n) s n)) (+ (Bail.bail 7) 100))) (export main)))
   (error  CDZ0201 (message "this handle is not in canonical form") (no-other-errors)))
 
+; A `resume` value whose type mismatches the operation's RESULT type is CDZ0201. When the mismatch is a
+; numeric COERCION (`(resume x s)` with x:Int8, op result Int64), it carries the `(Int64.of …)` wrap fix —
+; the resume position joins the argument / annotation / let-binder / ctor-payload sites that offer the same
+; of-conversion. A NON-coercible mismatch (Bool where Int64) carries no fix (no conversion applies). (Migrated
+; from rcdzc a_mistyped_resume_reports_one_error_with_a_coercion_fix_when_applicable — the reject + fix facets;
+; the "exactly ONE error" dedup of the UNCODED not-yet-reducible decline stays a rust residual.)
+(case "a coercible mistyped resume value carries an of-conversion wrap fix"
+  (input  (do (effect E (op a (-> Int64 Int64))) (def (main (: x Int8)) (handle E unit ((a (n) s (resume x s))) (E.a 1))) (export main)))
+  (error  CDZ0201 (fix (kind wrap) (replacement-contains "(Int64.of "))))
+
+(case "a non-coercible mistyped resume value carries no coercion fix"
+  (input  (do (effect E (op a (-> Int64 Int64))) (def (main) (handle E unit ((a (n) s (resume true s))) (E.a 1))) (export main)))
+  (error  CDZ0201 (no-fix)))
+
 ; The perform-argument check must fire for EVERY declared parameter type, not only Int64. An operation
 ; declared `(-> String Unit)` performed on an Int64 argument — `(E.emit 42)` — is the same type mismatch
 ; as the Int64-parameter case above and MUST be rejected (CDZ0203). This is the STRING-parameter sibling:
