@@ -4967,21 +4967,7 @@ impl<'a> Parser<'a> {
     /// (annotation position, e.g. `Record(x: Int64)`) and [`Self::variant`] (a record-payload variant,
     /// e.g. `record(field : Ty)`), so both accept the label form identically.
     fn type_arg(&mut self) -> StructId {
-        let start = self.cur_span();
-        let is_label = matches!(self.kind(), Kind::Ident | Kind::BacktickName)
-            && self.nth_kind(1) == Kind::Colon;
-        if is_label {
-            let label = match self.kind() {
-                Kind::BacktickName => {
-                    let t = self.bump().unwrap();
-                    self.name(literal::unescape_backtick_name(self.text(t)), start)
-                }
-                _ => {
-                    let t = self.bump().unwrap();
-                    self.name(self.text(t), start)
-                }
-            };
-            self.expect(Kind::Colon, "`:`");
+        if let Some((start, label)) = self.type_arg_label() {
             let ty = self.type_ref();
             let colon = self.name(":", start);
             let span = start.merge(self.prev_span());
@@ -4989,6 +4975,32 @@ impl<'a> Parser<'a> {
         } else {
             self.type_ref()
         }
+    }
+
+    /// If the cursor is at a LABELED type-application argument `name:` (an `Ident`/backtick-name
+    /// IMMEDIATELY followed by `:`), consume the label + the `:` and return `(label-start-span, label-node)`;
+    /// otherwise consume nothing and return `None` (a bare positional type argument). Shared by the
+    /// recursive [`Self::type_arg`] and the iterative [`Self::type_ref_iter`] so the label-then-type node
+    /// creation order can't drift between the two readers (the completed type becomes `(: label ty)` in both).
+    fn type_arg_label(&mut self) -> Option<(Span, StructId)> {
+        let start = self.cur_span();
+        let is_label = matches!(self.kind(), Kind::Ident | Kind::BacktickName)
+            && self.nth_kind(1) == Kind::Colon;
+        if !is_label {
+            return None;
+        }
+        let label = match self.kind() {
+            Kind::BacktickName => {
+                let t = self.bump().unwrap();
+                self.name(literal::unescape_backtick_name(self.text(t)), start)
+            }
+            _ => {
+                let t = self.bump().unwrap();
+                self.name(self.text(t), start)
+            }
+        };
+        self.expect(Kind::Colon, "`:`");
+        Some((start, label))
     }
 
     /// `module name { form… }`  ->  `(module name doc… form…)`.
@@ -7765,46 +7777,284 @@ impl<'a> Parser<'a> {
     }
 
     /// Iterative type reader (I5) — the explicit-worklist replacement for the recursive [`Self::type_ref`]
-    /// (byte-identical, verified by the differential oracle). HYBRID STAGE: the arrow-LHS (a `forall`, or a
-    /// `type_operand` + `type_unit_infix` run) is read via the recursive helpers — so a nested generic
-    /// `List(List(…))` / paren-tuple / brace-record / `forall` body still recurses through a nested
-    /// `type_ref_iter` for now — but the `->` ARROW chain is de-recursed onto this worklist: `->` is
-    /// right-associative (`A -> B -> C` = `A -> (B -> C)`), so each right operand is read as a fresh
-    /// arrow-LHS and the chain folds on the way back, so a deep curried function type no longer grows the
-    /// native stack. The `->` head node is created BEFORE descending the right (matching the recursive
-    /// struct-id order). Remaining layers (operand postfix-application, paren-tuple, brace-record, forall,
-    /// unit-infix) convert onto the worklist in later increments.
+    /// (byte-identical, verified by the differential oracle). Two grammar layers are de-recursed onto the
+    /// worklist here:
+    ///   - the `->` ARROW chain — right-associative (`A -> B -> C` = `A -> (B -> C)`), so each right operand
+    ///     is read as a fresh arrow-LHS and the chain folds on the way back; and
+    ///   - the postfix `(…)` APPLICATION arguments — the deep nested-generic vector `Foo(Bar(Baz(…)))` (a
+    ///     type-application argument is a full [`Self::type_ref`], so it descends onto this worklist instead
+    ///     of recursing `type_operand -> type_postfix -> type_arg -> type_ref`). Labeled record-type
+    ///     arguments `name: T` build `(: name T)` via a [`TCont::Label`] continuation (shared node order with
+    ///     the recursive [`Self::type_arg`] via [`Self::type_arg_label`]).
+    ///
+    /// Nodes are created in the SAME order as the recursive body (the `->` head before the right operand; a
+    /// labeled arg's `label` before its type before the `:`), so the arena AND the span table match. HYBRID
+    /// STAGE: the non-postfix operand kinds (`forall` body, paren-tuple, brace-record) and the unit-infix
+    /// (`^`/`*`/`/`) composition are still read via the recursive helpers — a `(A, B)` / `{x: T}` / `forall`
+    /// body element re-enters a nested `type_ref_iter` for now — and convert onto the worklist in later
+    /// increments. The `type_postfix`/`type_arg_exprs` depth-guard accounting (`self.depth + spine`, `spine`
+    /// per operand-level postfix chain) is mirrored exactly so the deep-nesting boundary stays byte-identical.
     fn type_ref_iter(&mut self) -> StructId {
-        // A pending `LHS ->` awaiting its right type (right-associative). `arrow` is the pre-created `->`
-        // name; `left` the arrow's left operand; `start` its span (for the folded node).
-        struct Arrow {
-            start: Span,
-            arrow: StructId,
-            left: StructId,
+        // Pending continuations on the explicit worklist (replacing the native recursion of `type_ref` /
+        // `type_operand` / `type_postfix` / `type_arg_exprs`). Each holds only Copy ids/spans + the
+        // in-progress argument vector.
+        enum TCont {
+            /// A pending `LHS ->` awaiting its right type (right-associative arrow chain). `arrow` is the
+            /// pre-created `->` name; `left` the arrow's left operand; `start` the LHS start span.
+            Arrow {
+                start: Span,
+                arrow: StructId,
+                left: StructId,
+            },
+            /// A pending LABELED type-application argument `name:` awaiting its type; on resume the completed
+            /// type becomes `(: label ty)`. `start` is the label span (for the `:` name + node span).
+            Label { start: Span, label: StructId },
+            /// A postfix `(…)` type application mid-read: `head` (+ any member/app chain so far) is built,
+            /// some `args` collected, currently descending into one argument (a fresh type). `node_start` is
+            /// the operand start (app-node span + the following unit-infix/arrow start); `spine` the postfix
+            /// depth counter (mirrors [`Self::type_postfix`]); `head_is_record` gates the record-field check.
+            App {
+                node_start: Span,
+                head: StructId,
+                head_is_record: bool,
+                args: Vec<StructId>,
+                spine: u32,
+            },
         }
-        let mut pending: Vec<Arrow> = Vec::new();
+        // The driver's next action.
+        enum Next {
+            /// Read a fresh arrow-LHS operand (forall / paren / brace / prefix-head) from the cursor.
+            Read,
+            /// Continue the postfix loop on a partially-built prefix-head operand, then run the unit-infix
+            /// composition and reduce. `node_start` is the operand start; `spine` the postfix depth counter.
+            Postfix {
+                node_start: Span,
+                node: StructId,
+                spine: u32,
+            },
+            /// An operand (or a folded sub-node) is complete: check for a trailing `->` (arrow chain) and
+            /// otherwise deliver `value` to the nearest continuation. `start` is the operand start span.
+            Reduce { start: Span, value: StructId },
+        }
+        let mut stack: Vec<TCont> = Vec::new();
+        let mut next = Next::Read;
         loop {
-            let start = self.cur_span();
-            // Read one arrow-LHS: a head `forall`, else an operand + the unit-composition infix run.
-            let left = if self.at_keyword(Keyword::Forall) {
-                self.forall_type(start)
-            } else {
-                let l = self.type_operand();
-                self.type_unit_infix(l, 0, start)
-            };
-            if self.at(Kind::Arrow) {
-                self.bump(); // `->`
-                let arrow = self.name("->", start);
-                pending.push(Arrow { start, arrow, left });
-                continue; // descend: read the right operand as a fresh arrow-LHS (right-associative)
+            match next {
+                Next::Read => {
+                    let node_start = self.cur_span();
+                    if self.at_keyword(Keyword::Forall) {
+                        // `forall` early-returns in the recursive `type_ref` (no unit-infix, no postfix): the
+                        // binder body already consumed any arrow chain, so it reduces directly.
+                        let n = self.forall_type(node_start);
+                        next = Next::Reduce {
+                            start: node_start,
+                            value: n,
+                        };
+                    } else if self.at(Kind::LParen) {
+                        // Parenthesized / tuple type — recursive helper (later increment); then unit-infix.
+                        let op = self.type_paren(node_start);
+                        let n = self.type_unit_infix(op, 0, node_start);
+                        next = Next::Reduce {
+                            start: node_start,
+                            value: n,
+                        };
+                    } else if self.at(Kind::LBrace) {
+                        // Brace record type — recursive helper (later increment); then unit-infix.
+                        let op = self.type_brace_record(node_start);
+                        let n = self.type_unit_infix(op, 0, node_start);
+                        next = Next::Reduce {
+                            start: node_start,
+                            value: n,
+                        };
+                    } else {
+                        // Prefix head + ITERATIVE postfix (member chain + `(…)` application): the deep
+                        // nested-generic vector `Foo(Bar(Baz(…)))` descends onto this worklist.
+                        let head = self.prefix();
+                        next = Next::Postfix {
+                            node_start,
+                            node: head,
+                            spine: 0,
+                        };
+                    }
+                }
+                Next::Postfix {
+                    node_start,
+                    mut node,
+                    mut spine,
+                } => match self.kind() {
+                    Kind::Dot if self.dot_is_member() => {
+                        node = self.member_access(node, node_start);
+                        spine += 1;
+                        if !self.depth_exceeded
+                            && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH
+                        {
+                            self.error("expression nests too deeply to parse");
+                            self.depth_exceeded = true;
+                            let n = self.type_unit_infix(node, 0, node_start);
+                            next = Next::Reduce {
+                                start: node_start,
+                                value: n,
+                            };
+                        } else {
+                            next = Next::Postfix {
+                                node_start,
+                                node,
+                                spine,
+                            };
+                        }
+                    }
+                    Kind::LParen => {
+                        self.expect(Kind::LParen, "`(`");
+                        if self.at(Kind::RParen) {
+                            // Empty application `Foo()`.
+                            self.expect(Kind::RParen, "`)`");
+                            let span = node_start.merge(self.prev_span());
+                            node = self.list(vec![node], span);
+                            spine += 1;
+                            if !self.depth_exceeded
+                                && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH
+                            {
+                                self.error("expression nests too deeply to parse");
+                                self.depth_exceeded = true;
+                                let n = self.type_unit_infix(node, 0, node_start);
+                                next = Next::Reduce {
+                                    start: node_start,
+                                    value: n,
+                                };
+                            } else {
+                                next = Next::Postfix {
+                                    node_start,
+                                    node,
+                                    spine,
+                                };
+                            }
+                        } else {
+                            // Descend into the first argument (a fresh type, possibly labeled). Compute
+                            // `head_is_record` here (at the `(`, on the current head) as the recursive
+                            // `type_postfix` does, before reading any argument.
+                            let head_is_record = self.builder.as_name(node) == Some("Record");
+                            let label = self.type_arg_label();
+                            stack.push(TCont::App {
+                                node_start,
+                                head: node,
+                                head_is_record,
+                                args: Vec::new(),
+                                spine,
+                            });
+                            if let Some((lstart, lbl)) = label {
+                                stack.push(TCont::Label {
+                                    start: lstart,
+                                    label: lbl,
+                                });
+                            }
+                            next = Next::Read;
+                        }
+                    }
+                    _ => {
+                        // No more postfix — run the unit-composition infix, then reduce.
+                        let n = self.type_unit_infix(node, 0, node_start);
+                        next = Next::Reduce {
+                            start: node_start,
+                            value: n,
+                        };
+                    }
+                },
+                Next::Reduce { start, value } => {
+                    if self.at(Kind::Arrow) {
+                        // `value` is an arrow LHS. Create the `->` head BEFORE descending the right operand
+                        // (matching the recursive struct-id order), then read the right as a fresh arrow-LHS.
+                        self.bump(); // `->`
+                        let arrow = self.name("->", start);
+                        stack.push(TCont::Arrow {
+                            start,
+                            arrow,
+                            left: value,
+                        });
+                        next = Next::Read;
+                    } else {
+                        match stack.pop() {
+                            None => return value,
+                            Some(TCont::Arrow { start, arrow, left }) => {
+                                let span = start.merge(self.prev_span());
+                                let node = self.list(vec![arrow, left, value], span);
+                                next = Next::Reduce { start, value: node };
+                            }
+                            Some(TCont::Label { start, label }) => {
+                                let colon = self.name(":", start);
+                                let span = start.merge(self.prev_span());
+                                let node = self.list(vec![colon, label, value], span);
+                                next = Next::Reduce { start, value: node };
+                            }
+                            Some(TCont::App {
+                                node_start,
+                                head,
+                                head_is_record,
+                                mut args,
+                                spine,
+                            }) => {
+                                args.push(value);
+                                if self.sep_continue(Kind::RParen) {
+                                    // More arguments: descend into the next (a fresh type, possibly labeled).
+                                    let label = self.type_arg_label();
+                                    stack.push(TCont::App {
+                                        node_start,
+                                        head,
+                                        head_is_record,
+                                        args,
+                                        spine,
+                                    });
+                                    if let Some((lstart, lbl)) = label {
+                                        stack.push(TCont::Label {
+                                            start: lstart,
+                                            label: lbl,
+                                        });
+                                    }
+                                    next = Next::Read;
+                                } else {
+                                    self.expect(Kind::RParen, "`)`");
+                                    // RT1: a record TYPE takes only `field: T` ascriptions — flag the
+                                    // obsolete head-application field spelling `Record(field(T))`.
+                                    if head_is_record {
+                                        for &arg in &args {
+                                            if self.is_head_app_record_field(arg) {
+                                                self.error(
+                                                    "a record-type field is written `field: T`, not \
+                                                     `field(T)` — use the colon form, e.g. \
+                                                     `Record(x: Int64)`",
+                                                );
+                                            }
+                                        }
+                                    }
+                                    let span = node_start.merge(self.prev_span());
+                                    let mut items = Vec::with_capacity(args.len() + 1);
+                                    items.push(head);
+                                    items.extend(args);
+                                    let node = self.list(items, span);
+                                    let spine = spine + 1;
+                                    if !self.depth_exceeded
+                                        && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH
+                                    {
+                                        self.error("expression nests too deeply to parse");
+                                        self.depth_exceeded = true;
+                                        let n = self.type_unit_infix(node, 0, node_start);
+                                        next = Next::Reduce {
+                                            start: node_start,
+                                            value: n,
+                                        };
+                                    } else {
+                                        // Continue the postfix loop on the new node (more `.member`/`(…)`).
+                                        next = Next::Postfix {
+                                            node_start,
+                                            node,
+                                            spine,
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            // No `->`: `left` is complete. Fold the pending arrows (innermost right first).
-            let mut node = left;
-            while let Some(Arrow { start, arrow, left }) = pending.pop() {
-                let span = start.merge(self.prev_span());
-                node = self.list(vec![arrow, left, node], span);
-            }
-            return node;
         }
     }
 
@@ -8632,6 +8882,19 @@ mod tests {
             "meter / second",
             "(A -> B) -> C",
             "Fn(Int64) -> Fn(Bool) -> Int64",
+            // Postfix-application de-recursion (I5 part 2): the deep nested-generic vector, mixed
+            // member+application chains, empty applications, multi-arg + trailing comma, labeled record
+            // fields nested inside an application arg, and a `forall`/arrow inside an application arg.
+            "List(List(List(List(List(a)))))",
+            "Map(Int64, Map(Bool, List(Option(a))))",
+            "M.N.Codec(a).Encoder(b)",
+            "List()",
+            "Tuple(A, B, C,)",
+            "Record(x: Int64, y: List(Bool))",
+            "Encoder(Record(x: Int64, inner: Record(y: Bool)))",
+            "Tuple(forall b. List(b), a -> b)",
+            "List(A -> B -> C)",
+            "Point(x, y).norm(z).scale(w)",
         ];
         for src in cases {
             let mut rec = build_parser(src, FileId::default());
