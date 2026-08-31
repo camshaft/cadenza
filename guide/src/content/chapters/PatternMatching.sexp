@@ -104,9 +104,9 @@
   (p "A set has no fields or positions, so a set pattern asks a different question: " (em "containment") ". " (c "#set(1 (.. rest))") " names the members that must be " (em "present") " and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing " (c "(.. rest)") " then binds " (c "rest") " to the " (em "residual set") ", the scrutinee's members minus the ones you named. Here the set contains " (c "1") ", so the arm fires and " (c "rest") " is what's left:")
   (runnable
     (source (match #set(1 2 3)
-  (#set(1 (.. rest)) (Set.len rest))
-  (_ 0))))
-  (p "The scrutinee " (c "#set(1 2 3)") " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (c "#set(2 3)") ", whose " (c "Set.len") " is " (c "2") ". Three things follow from its being a containment test: it matches a " (em "superset") " too (" (c "#set(1)") " matches " (c "#set(1 2 3)") "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (c "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
+  (#set(1 (.. rest)) (Some rest))
+  (_ (None unit)))))
+  (p "The scrutinee " (c "#set(1 2 3)") " contains the named " (c "1") ", so the arm matches and " (c "rest") " binds the residual " (c "#set(2 3)") ", making the whole expression " (c "(Some #set(2 3))") " — the leftover set itself, not merely how many elements it has. Three things follow from its being a containment test: it matches a " (em "superset") " too (" (c "#set(1)") " matches " (c "#set(1 2 3)") "), naming a member the set " (em "lacks") " refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same " (c "(.. rest)") " residual, asking \"is this present?\" instead of \"what's at this field?\".")
   (h2 "Your turn")
   (exercise
     (id "pattern-matching:1")
