@@ -533,6 +533,7 @@ pub fn equiv_cadenza_sweep(
     oracle: &std::path::Path,
     count: u64,
     false_positives: &mut Vec<(String, String)>,
+    boundary_reasons: &mut Vec<String>,
 ) -> std::io::Result<EquivStats> {
     use crate::cadenza_diff::{ConfirmOutcome, cadenza_confirm, equiv_trial_for};
     use crate::lean::{BatchItem, judge_batch_items};
@@ -591,6 +592,12 @@ pub fn equiv_cadenza_sweep(
                     EquivClass::Boundary => {
                         stats.trials += 1;
                         stats.boundary += 1;
+                        // Capture the oracle's skip REASON (carries the boundary category, e.g.
+                        // "boundary: unmodeled head set" / "…recursion") so the caller can histogram the
+                        // biggest cannotProve category — the coverage-prioritization signal v-lean-oracle wants.
+                        if let crate::lean::Verdict::Skip(r) = v {
+                            boundary_reasons.push(r.clone());
+                        }
                     }
                     EquivClass::SuspectedDivergence => {
                         stats.trials += 1;

@@ -1122,7 +1122,16 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
         findings_dir.display()
     );
     let mut false_positives: Vec<(String, String)> = Vec::new();
-    match driver::equiv_cadenza_sweep(&cfg, &store, &cdz, &oracle, count, &mut false_positives) {
+    let mut boundary_reasons: Vec<String> = Vec::new();
+    match driver::equiv_cadenza_sweep(
+        &cfg,
+        &store,
+        &cdz,
+        &oracle,
+        count,
+        &mut false_positives,
+        &mut boundary_reasons,
+    ) {
         Ok(stats) => {
             eprintln!(
                 "[cdz-smith] cadenza-equiv done: {} trials | {} proven, {} boundary, {} confirmed-divergence, {} symbolic-false-positive, {} uncomparable, {} not-comparable ({} new buckets)",
@@ -1135,6 +1144,36 @@ fn cmd_cadenza_equiv(args: &[String]) -> ExitCode {
                 stats.not_comparable,
                 stats.new_buckets,
             );
+            // Histogram the boundary (cannotProve) skip REASONS, most-frequent first — the coverage-
+            // prioritization signal for v-lean-oracle (which unmodeled category to model next).
+            if !boundary_reasons.is_empty() {
+                let mut hist: std::collections::HashMap<String, u64> =
+                    std::collections::HashMap::new();
+                for r in &boundary_reasons {
+                    // Normalize the reason to its CATEGORY: strip leading framing words ("equiv:",
+                    // "boundary:", "symeval:") so the DISTINGUISHING head survives, drop any trailing
+                    // "(…)" specifics, and keep the first ~70 chars so near-identical reasons bucket.
+                    let mut cat = r.trim();
+                    for pfx in [
+                        "equiv:",
+                        "boundary:",
+                        "symeval:",
+                        "cannotProve",
+                        "cannot prove",
+                    ] {
+                        cat = cat.trim().trim_start_matches(pfx);
+                    }
+                    let cat = cat.trim().split('(').next().unwrap_or(cat).trim();
+                    let cat: String = cat.chars().take(70).collect();
+                    *hist.entry(cat).or_insert(0) += 1;
+                }
+                let mut ranked: Vec<(String, u64)> = hist.into_iter().collect();
+                ranked.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+                eprintln!("[cdz-smith] boundary categories (top, most-frequent first):");
+                for (cat, n) in ranked.iter().take(12) {
+                    eprintln!("  {n:>5}  {cat}");
+                }
+            }
             // Write the symbolic-false-positive (orig, program1) pairs for v-lean-oracle's normalizer triage.
             if let Some(dir) = &false_positives_dir
                 && !false_positives.is_empty()
