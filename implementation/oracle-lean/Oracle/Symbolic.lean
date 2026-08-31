@@ -123,13 +123,16 @@ def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
       (if a == .bool true || b == .bool true then some (.bool true)
        else if a == .bool false && b == .bool false then some (.bool false) else none)
     else none
-  -- non-binary `and`/`or` (variadic arity ≠ 2) keep their fold; any other shape → `none`.
-  else match op, consts.filterMap id with
-    | "and", vs => if vs.all (· == .bool true) then some (.bool true)
-                   else if vs.any (· == .bool false) then some (.bool false) else none
-    | "or",  vs => if vs.any (· == .bool true) then some (.bool true)
-                   else if vs.all (· == .bool false) then some (.bool false) else none
-    | _, _ => none
+  -- non-binary `and`/`or` (variadic arity ≠ 2) keep their fold; any other shape → `none`. Via `if op == …`
+  -- (NOT a `match op with "and"/"or"` string-literal matcher, which — like `match_10` — would compile to a
+  -- non-reducible sparse matcher and re-block `split`/`simp`); byte-identical to the former string match.
+  else if op == "and" then
+    (if (consts.filterMap id).all (· == .bool true) then some (.bool true)
+     else if (consts.filterMap id).any (· == .bool false) then some (.bool false) else none)
+  else if op == "or" then
+    (if (consts.filterMap id).any (· == .bool true) then some (.bool true)
+     else if (consts.filterMap id).all (· == .bool false) then some (.bool false) else none)
+  else none
 
 /-- Conservatively: could EVALUATING this expression trap (divide-by-zero / overflow / shift-out-of-range)?
 True if it contains ANY arithmetic or bitwise application anywhere (`+ - * / %`, shifts) — those can trap;
