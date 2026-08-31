@@ -2119,47 +2119,14 @@ fn a_record_payload_variant_parses_the_labeled_field_form() {
     );
 }
 
-#[test]
-fn derived_unit_infix_operators_parse_in_type_annotation_position() {
-    use crate::sexpr;
-    // ARM-EXTENT sibling (breaker report): a DERIVED-UNIT type annotation composes unit factors with
-    // the infix operators `^`/`*`/`/` — the surface the printer emits for `Unit.^`/`Unit.*`/`Unit./`
-    // (via `infix_glyph`). Type position had NO infix layer beyond `->`, so `Qty(Int64, meter ^ 2)`
-    // failed re-parse (`expected ,` at the exponent). Now the type grammar folds them into bare-glyph
-    // heads, sharing the value grammar's `infix_prec` so the ML print→parse cycle round-trips.
-    // A single `^` exponent — breaker's minimal case (`(Unit.^ (Unit.base #meter) 2)` prints `meter ^ 2`).
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(x: Qty(Int64, meter ^ 2)) = x")),
-        r#"(def (f (: x (Qty Int64 (^ meter 2)))) x)"#
-    );
-    // A product `*` and a rate `/`.
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(x: Qty(Int64, meter * second)) = x")),
-        r#"(def (f (: x (Qty Int64 (* meter second)))) x)"#
-    );
-    // `/`/`*` are left-associative and share the multiplicative tier (`a / b / c` → `((a/b)/c)`).
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(x: Qty(Int64, gram / meter / second)) = x")),
-        r#"(def (f (: x (Qty Int64 (/ (/ gram meter) second)))) x)"#
-    );
-    // `^` (tier 7) is LOOSER than `/`/`*` (tier 11) — matching the general-expression glyph binding —
-    // so an UNPARENTHESIZED `meter / second ^ 2` groups as `(meter / second) ^ 2`, and the printer
-    // parenthesizes the physical `meter / (second ^ 2)` reading (verified round-trip in the corpus
-    // test, which holds `Unit.^` inputs to idempotence since the surface drops the `Unit.` qualifier).
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(x: Qty(Int64, meter / second ^ 2)) = x")),
-        r#"(def (f (: x (Qty Int64 (^ (/ meter second) 2)))) x)"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("def f(x: Qty(Int64, meter / (second ^ 2))) = x")),
-        r#"(def (f (: x (Qty Int64 (/ meter (^ second 2))))) x)"#
-    );
-    // A derived-unit annotation in RESULT position (`-> Qty(…)`) parses the same way.
-    assert_eq!(
-        sexpr::print(&parse_ok("def f() -> Qty(Int64, meter / second ^ 2) = x")),
-        r#"(def (f) (: x (Qty Int64 (^ (/ meter second) 2))))"#
-    );
-}
+// `derived_unit_infix_operators_parse_in_type_annotation_position` (a DERIVED-UNIT type annotation composes
+// unit factors with the infix glyphs `^`/`*`/`/` — the type grammar folds them into bare-glyph heads sharing
+// the value grammar's precedence, so `Qty(Int64, meter ^ 2)` round-trips) MIGRATED to the spec/syntax corpus
+// (inc-6 batch-75): ml/442-derived-unit-exponent `meter ^ 2`→`(^ meter 2)`, ml/443-derived-unit-product
+// `meter * second`→`(* meter second)`, ml/444-derived-unit-rate-left-assoc `gram / meter / second`→`(/ (/ gram
+// meter) second)`, ml/445-derived-unit-exponent-looser-than-rate `meter / second ^ 2`→`(^ (/ meter second) 2)`
+// (`^` tier-7 LOOSER than `/`/`*` tier-11), ml/446-derived-unit-parenthesized-exponent `meter / (second ^ 2)`→
+// `(/ meter (^ second 2))`, ml/447-derived-unit-in-result-position (`-> Qty(…)` parses identically).
 
 #[test]
 fn at_bang_param_carries_a_config_and_a_name_type_binder() {
