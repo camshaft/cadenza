@@ -574,7 +574,7 @@
 ; CDZ0900 "not yet lowered" for now — the const/inline-structural fold ships first, the runtime residual-
 ; record construction is a follow-up, mirroring the tuple-rest staging above.)
 (case "a record pattern with a trailing rest binds the named fields and the residual record"
-  (input  (do (def (main) (match (record (= a 1) (= b 2) (= c 3)) ((record (= a x) (.. rest)) (+ x (+ (. rest b) (. rest c)))) (_ 0))) (export main)))
+  (input  (do (def (main) (match #record((= a 1) (= b 2) (= c 3)) (#record((= a x) (.. rest)) (+ x (+ (. rest b) (. rest c)))) (_ 0))) (export main)))
   (call   main) (output (: 6 Int64)))
 
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
