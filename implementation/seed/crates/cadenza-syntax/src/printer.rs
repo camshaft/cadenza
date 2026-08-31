@@ -6201,67 +6201,20 @@ mod tests {
     // `(@ property (def (p x) (assert-eq x x "reflexive")))`. Each tree is a proper `(@ …)` head (subsuming
     // the negative `` `@` `` assertion); the format.cdz pins the own-line-above `@test`/`@property` surface.
 
-    #[test]
-    fn annotation_on_a_compound_expression_parenthesizes_so_it_round_trips() {
-        // The parser re-reads an annotated form in PREFIX position, so an annotated INFIX / APPLICATION /
-        // MEMBER-access form (the shapes the Pratt/postfix loops build AFTER the prefix atom) must be
-        // PARENTHESIZED by the printer — else `@inline a + 1` re-reads as `(+ (@ inline a) 1)` (the `@`
-        // binding only the leading atom), NOT the intended `(@ inline (+ a 1))`. Pin each post-prefix shape.
-        for form_sx in [
-            "(+ a 1)",           // infix
-            "(f x)",             // application (call)
-            "((g y) x)",         // computed-callee application
-            "(. a b)",           // member access
-            "(. (. a b) c)",     // member chain
-            "(+ (* a b) (f x))", // nested infix + call
-        ] {
-            let sx = format!("(def (main) (@ inline {form_sx}))");
-            let a = sexpr::read(&sx).unwrap();
-            let ml = print(&a, 80);
-            // The annotated form prints parenthesized (a `(` on the line below the `@inline`).
-            let back = parser::read_ml(&ml);
-            assert!(
-                back.ok(),
-                "annotated compound re-parses: {ml:?} errs={:?}",
-                back.errors
-            );
-            assert!(
-                back.arenas.structurally_eq(&a),
-                "annotated compound round-trips (parens keep the `@` on the WHOLE form):\n  ml: {ml}\n  back: {}",
-                sexpr::print(&back.arenas)
-            );
-        }
-        // A SELF-DELIMITING annotated form (keyword form, bracketed literal, nested `@`) is NOT
-        // parenthesized — it round-trips bare (and parens would be ugly/needless).
-        for (form_sx, want_no_paren) in [
-            ("(if a b c)", "@inline\nif a then b else c"),
-            ("#list(1 2)", "@inline\n[1, 2]"),
-            ("(def (f) 1)", "@inline\ndef f() = 1"),
-        ] {
-            let sx = format!("(def (main) (@ inline {form_sx}))");
-            // For the def case the wrapper is a module-ish do; just assert the annotated-form render + round-trip.
-            let a = sexpr::read(&format!("(@ inline {form_sx})")).unwrap();
-            let ml = print(&a, 80);
-            assert_eq!(
-                ml, want_no_paren,
-                "self-delimiting annotated form must not be parenthesized"
-            );
-            assert!(
-                parser::read_ml(&ml).arenas.structurally_eq(&a),
-                "self-delimiting annotated form round-trips: {ml}"
-            );
-            let _ = sx;
-        }
-        // A PARAMETERIZED annotation on a compound form round-trips too — the `@tag("t")` name-call takes
-        // ONLY its glued arg, leaving the parenthesized form as the annotated target.
-        let a = sexpr::read(r#"(def (main) (@ (tag "t") (+ a 1)))"#).unwrap();
-        let ml = print(&a, 80);
-        assert!(
-            parser::read_ml(&ml).arenas.structurally_eq(&a),
-            "parameterized annotation on a compound form round-trips:\n  ml: {ml}\n  back: {}",
-            sexpr::print(&parser::read_ml(&ml).arenas)
-        );
-    }
+    // `annotation_on_a_compound_expression_parenthesizes_so_it_round_trips` (an annotated post-prefix form
+    // — infix / application / member-access, the shapes the Pratt/postfix loops build AFTER the prefix atom
+    // — must be PARENTHESIZED so `@inline (a + 1)` keeps the `@` on the WHOLE form, not just the leading
+    // atom `(+ (@ inline a) 1)`; a SELF-DELIMITING form — keyword `if`, bracketed literal, `def` — prints
+    // bare) MIGRATED to the spec/syntax corpus (inc-6 batch-50, annotation-parenthesize block):
+    //   * ml/315-annotation-on-infix-parenthesized `def main() = @inline (a + 1)`→
+    //     `(def (main) (@ inline (+ a 1)))` — the compound is parenthesized (format.cdz pins `@inline`⏎`(a + 1)`).
+    //   * ml/316-annotation-on-call-parenthesized `@inline (f(x))`→`(@ inline (f x))`.
+    //   * ml/317-annotation-on-member-access-parenthesized `@inline (a.b)`→`(@ inline (. a b))`.
+    //   * ml/318-annotation-on-if-self-delimiting `@inline`⏎`if a then b else c`→`(@ inline (if a b c))` — bare,
+    //     canonical (no paren); ml/319-annotation-on-list-self-delimiting `@inline`⏎`[1, 2]`→`(@ inline #list(1 2))`.
+    //   * ml/320-parameterized-annotation-on-compound `@tag("t") (a + 1)`→`(def (main) (@ (tag "t") (+ a 1)))`.
+    // The deeper post-prefix variants (computed-callee `((g y) x)`, member-chain `(. (. a b) c)`, nested
+    // `(+ (* a b) (f x))`) and the self-delimiting `def` are deeper instances of the SAME two rules — subsumed.
 
     #[test]
     fn annotation_in_an_operand_position_parenthesizes_the_whole_annotation() {

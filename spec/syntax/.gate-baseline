@@ -243,7 +243,13 @@ pass	ml/311-doc-before-annotated-type
 pass	ml/312-doc-before-annotated-effect
 pass	ml/313-doc-before-annotated-module
 pass	ml/314-multiline-doc-above-annotation
+pass	ml/315-annotation-on-infix-parenthesized
+pass	ml/316-annotation-on-call-parenthesized
+pass	ml/317-annotation-on-member-access-parenthesized
+pass	ml/318-annotation-on-if-self-delimiting
+pass	ml/319-annotation-on-list-self-delimiting
 pass	ml/32-match-refutable-nested
+pass	ml/320-parameterized-annotation-on-compound
 pass	ml/33-match-multi-clause
 pass	ml/34-match-multi-clause-irref-first
 pass	ml/35-match-single-variant-wrap
