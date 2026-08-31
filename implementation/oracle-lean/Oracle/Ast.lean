@@ -63,6 +63,10 @@ inductive Leaf where
   | setCtor                          -- 24
   | fieldPair                        -- 25
   | member                           -- 26
+  -- The native RATIONAL head (rcdzc codec `KIND_RATIONAL` = 27): the payloadless head of a
+  -- `(RationalTag <num> <den>)` two-child node (children = ordinary int value leaves) — a distinct data
+  -- type recognized by kind (operator seq-204/207), payloadless like `fieldPair`/`member`.
+  | rational                         -- 27
   deriving Inhabited
 
 /-- A structure-arena node. -/
@@ -198,6 +202,7 @@ def readLeaf (c : Cursor) : Except String (Leaf × Cursor) := do
   else if k == 24 then .ok (.setCtor, c)
   else if k == 25 then .ok (.fieldPair, c)
   else if k == 26 then .ok (.member, c)
+  else if k == 27 then .ok (.rational, c)
   else
     .error s!"ast: unknown leaf kind {k.toNat}"
 
@@ -327,6 +332,7 @@ def writeLeaf (acc : ByteArray) (leaf : Leaf) : ByteArray :=
   | .setCtor => acc.push 24
   | .fieldPair => acc.push 25
   | .member => acc.push 26
+  | .rational => acc.push 27
 
 /-- Append one node. -/
 def writeNode (acc : ByteArray) (node : Node) : ByteArray :=

@@ -129,17 +129,40 @@ def ofLeaf : Leaf → Option Value
 compound value is not leaf-encoded here (the scalar round-trip gate never encodes one); it degenerates
 to an empty module. -/
 def toModule (v : Value) : Module :=
-  match v.toLeaf? with
-  | Option.some l => { leaves := #[l], nodes := #[Node.atom 0], root := 0 }
-  | Option.none => { leaves := #[], nodes := #[], root := 0 }
+  match v with
+  -- a RATIONAL is a `(RationalTag <num> <den>)` two-child NODE (rcdzc `KIND_RATIONAL` = 27): the payloadless
+  -- rational head leaf + two ordinary int value leaves. Root is the list node over [head, num, den] atoms.
+  | .rational num den =>
+    { leaves := #[Leaf.rational,
+                  Leaf.intLit (num < 0) .dec (natToBeBytes num.natAbs),
+                  Leaf.intLit (den < 0) .dec (natToBeBytes den.natAbs)],
+      nodes := #[Node.atom 0, Node.atom 1, Node.atom 2, Node.list #[0, 1, 2]],
+      root := 3 }
+  | _ =>
+    match v.toLeaf? with
+    | Option.some l => { leaves := #[l], nodes := #[Node.atom 0], root := 0 }
+    | Option.none => { leaves := #[], nodes := #[], root := 0 }
 
-/-- Interpret a module whose root is an atom → leaf as a scalar value. -/
+/-- Interpret a module whose root is an atom → scalar leaf (or a `(RationalTag num den)` node) as a value. -/
 def ofModule? (m : Module) : Option Value :=
   match m.nodes[m.root]? with
   | Option.some (Node.atom lid) =>
     match m.leaves[lid]? with
     | Option.some l => ofLeaf l
     | Option.none => Option.none
+  -- RATIONAL node: a list `[head, num, den]` whose head-atom is the `.rational` leaf and whose two other
+  -- atoms are int leaves → the exact rational `num/den`.
+  | Option.some (Node.list cs) =>
+    match cs[0]?, cs[1]?, cs[2]?, cs.size with
+    | Option.some hn, Option.some nn, Option.some dn, 3 =>
+      match m.nodes[hn]?, m.nodes[nn]?, m.nodes[dn]? with
+      | Option.some (Node.atom hl), Option.some (Node.atom nl), Option.some (Node.atom dl) =>
+        match m.leaves[hl]?, (m.leaves[nl]?.bind ofLeaf), (m.leaves[dl]?.bind ofLeaf) with
+        | Option.some Leaf.rational, Option.some (.int num), Option.some (.int den) =>
+          Option.some (.rational num den)
+        | _, _, _ => Option.none
+      | _, _, _ => Option.none
+    | _, _, _, _ => Option.none
   | _ => Option.none
 
 /-- The `f64` a float VALUE denotes — the KEY correction (v-cdz-smith L2 differential, 2026-08-28): a
