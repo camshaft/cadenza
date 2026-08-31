@@ -166,6 +166,55 @@
   (call   main (: 5 Int64))
   (output (: 15 Int64)))
 
+; --- A BUILT-IN OPERATION partially applied as an unconsumed value is REJECTED (a user fn is not) ---
+;    (migrated from rcdzc a_partial_builtin_operation_as_an_unconsumed_value_is_rejected_not_silently_shipped)
+; Unlike a USER function — which is single-arity and freely curries (the partial-application cases above) — a
+; BUILT-IN OPERATION must be applied to EXACTLY its arguments: a partial application would require a
+; synthesized runtime closure, which is not supported. A partial built-in op as an UNCONSUMED value (a dead
+; def body, or an exported def returning the op) is rejected with "applied at the wrong arity", however the
+; spine is spelled (flat `(String.slice s 0)` or nested `((String.slice s) 0)` — the spine is flattened to its
+; bottom head). The completion test is LOCAL, so full application, unary negation (prefix `-` = Sub at arity
+; 1), a completing constructor spine, and legitimate USER-fn / module-member currying are all NOT flagged.
+
+(case "a partial built-in operation (slice at 2 of 3 args) as an unconsumed value is rejected"
+  (input  (do (def (f (: s String)) (String.slice s 0)) (def (main) 0) (export main)))
+  (declines (message "applied at the wrong arity")))
+
+(case "a partial built-in operation (at at 1 of 2 args) returned from an exported def is rejected"
+  (input  (do (def (f (: s String)) (String.at s)) (export f)))
+  (declines (message "applied at the wrong arity")))
+
+(case "a partial built-in operation spelled as a NESTED spine is rejected identically to the flat form"
+  (doc    "`((String.slice s) 0)` is the same application as the flat `(String.slice s 0)` (`(f a b)` desugars
+           to `((f a) b)`), so it must reject identically. The immediate head is the inner Apply
+           `(String.slice s)`; the arity check flattens the spine to its bottom head first, so the nested and
+           flat surfaces are treated the same.")
+  (input  (do (def (f (: s String)) ((String.slice s) 0)) (def (main) 0) (export main)))
+  (declines (message "applied at the wrong arity")))
+
+(case "a FULLY applied built-in operation is not flagged as a partial"
+  (doc    "The no-false-positive control: a built-in op applied to exactly its arguments is fine.
+           `(String.byte-len \"hi\")` (arity 1, fully applied) → 2.")
+  (input  (do (def (main) (String.byte-len "hi")) (export main)))
+  (call   main)
+  (output (: 2 Int64)))
+
+(case "unary negation is a built-in at arity 1 and is not flagged as a partial"
+  (doc    "Prefix negation `(- x)` lowers as Sub at arity 1 (built as `0 - e`), so it is fully applied, not a
+           partial built-in — it must NOT be flagged. `(f 5)` = -5.")
+  (input  (do (def (f (: x Int64)) (- x)) (def (main) (f 5)) (export main)))
+  (call   main)
+  (output (: -5 Int64)))
+
+(case "a partially applied USER function is legitimate and is not flagged as a wrong-arity built-in"
+  (doc    "The distinguishing contrast: a USER function is single-arity and freely partially-applicable, so
+           `(g 1)` held in `h` (a residual closure over the first argument) is legitimate and must NOT draw
+           the built-in-operation wrong-arity reject. The program compiles; `main` returns 0. A module-member
+           partial `((. lib g) 1)` is the same mechanism and is likewise fine.")
+  (input  (do (def (g (: x Int64) (: y Int64)) (+ x y)) (def (h) (g 1)) (def (main) 0) (export main)))
+  (call   main)
+  (output (: 0 Int64)))
+
 (case "an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program"
   (doc    "The mixed scalar-heap instantiation face: swap p = (b a) at (Int64, String-rope) AND
            ((List Int64), Int64) in one program — the specializer must produce two layouts where the

@@ -332,55 +332,14 @@ fn a_non_unit_qty_of_arg_unbound_unit_is_not_a_double_report() {
     );
 }
 
-#[test]
-fn a_partial_builtin_operation_as_an_unconsumed_value_is_rejected_not_silently_shipped() {
-    use crate::testkit::parse;
-    // M227 (co-designed with v-inference): a BUILT-IN OPERATION applied at FEWER args than it takes —
-    // a partial application `(String.slice s 0)` (slice takes 3), `(String.at s)` (takes 2) — as an
-    // UNCONSUMED value (a dead/unexported def body, or an exported def returning the fn) reached
-    // NEITHER `collect_reached_poisons` (nullary+exported only) NOR the lower reject, so it shipped
-    // unflagged by BOTH `cdz check` and `cdz compile`. Now rejected in the all-bodies `type_errors`
-    // walk (a built-in operation needs a runtime closure to be partial — not yet built). The
-    // completion test is LOCAL (spine-top via the parent), so an inner partial an outer application
-    // saturates is NOT flagged.
-    let reject = |src: &str| {
-        crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.message.contains("applied at the wrong arity"))
-    };
-    for src in [
-        "(module m (def (f (: s String)) (String.slice s 0)) (def (main) 0) (export main))",
-        "(module m (def (f (: s String)) (String.at s)) (export f))",
-        // NESTED-PARENS spine `((String.slice s) 0)` — the SAME application as the flat form (`(f a b)`
-        // desugars to `((f a) b)`), so it must reject identically. The immediate head here is the inner
-        // `Apply` `(String.slice s)` (whose `meta_apply_of` is `None`), which formerly SKIPPED the check
-        // — the PR#491 hole (Copilot-flagged, v-inference-verified). The predicate now flattens the
-        // spine to its bottom head first, so the nested and flat surfaces are treated identically.
-        "(module m (def (f (: s String)) ((String.slice s) 0)) (def (main) 0) (export main))",
-    ] {
-        assert!(
-            reject(src).is_some(),
-            "a partial built-in operation as an unconsumed value must reject: {src}"
-        );
-    }
-    // NO false positive — the tick-108 regression set + the sharp edges v-inference flagged, all must
-    // stay clean: a FULL builtin application; a curried CONSTRUCTOR spine that completes; user-function
-    // and module-member CURRYING (legitimate — a user fn is partially applicable); UNARY NEGATION
-    // (`Sub` at arity 1, the prefix-neg `lower` builds as `0 - e`); ordinary arithmetic.
-    for ok in [
-        "(module m (def (f (: s String)) (String.slice s 0 1)) (def (main) (f \"hi\")) (export main))",
-        "(module m (type P (Mk Int64 Int64)) (def (main) (match ((P.Mk 3) 4) ((P.Mk a b) (+ a b)))) (export main))",
-        "(module m (def (g (: x Int64) (: y Int64)) (+ x y)) (def (h) (g 1)) (def (main) 0) (export main))",
-        "(do (module lib (def (g (: x Int64) (: y Int64)) (+ x y)) (export g)) (def (h) ((. lib g) 1)) (def (main) 0) (export main))",
-        "(module m (def (f (: x Int64)) (- x)) (def (main) (f 5)) (export main))",
-        "(module m (def (main) (+ 1 2)) (export main))",
-    ] {
-        assert!(
-            reject(ok).is_none(),
-            "a completed / partial-applicable / unary-neg form must NOT be flagged: {ok}"
-        );
-    }
-}
+// (a_partial_builtin_operation_as_an_unconsumed_value_is_rejected_not_silently_shipped migrated to corpus
+// 09-functions, the built-in-operation-partial cluster after the currying-capture cases: the three declines
+// ((String.slice s 0), (String.at s), and the nested spine ((String.slice s) 0)) each "declines (message
+// \"applied at the wrong arity\")", and the no-false-positive controls are "a FULLY applied built-in
+// operation is not flagged" (→2), "unary negation is a built-in at arity 1 and is not flagged" (→-5), and "a
+// partially applied USER function is legitimate and is not flagged" (→0, module-member currying noted as the
+// same mechanism). The completion test is local, so a completing ctor spine / ordinary arithmetic are
+// covered by the working full-application + ctor cases elsewhere in the corpus.)
 
 // (a_user_generic_sum_with_the_wrong_type_arg_count_names_its_expected_arity migrated to corpus 07-type-system,
 // the "USER generic sum wrong-arity" block: `(Box Int64 Bool)` over-applied (takes 1, 2 supplied), `(Pair Int64)`
