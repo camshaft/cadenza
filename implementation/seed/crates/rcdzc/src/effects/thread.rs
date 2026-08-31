@@ -1516,14 +1516,32 @@ pub(crate) fn thread_bounded(
                 let Struct::List(kv) = db.ast.get(entry).clone() else {
                     return None;
                 };
-                if kv.len() != 2 {
-                    return None;
-                }
+                // An entry is the canonical `(= key value)` triple (M3-nativized `#map`) — key = child 1,
+                // value = child 2, rebuilt WITH the `=` head — or a legacy `(key value)` pair. (Mirrors the
+                // record-field arm above; UNLIKE a record label, the map KEY is a value to THREAD — it may
+                // perform.) A prior `kv.len() != 2 => None` handled ONLY the legacy pair, so a perform in a
+                // nativized `(= k v)` entry declined — the map-literal companion of the record dual-form,
+                // missed in the M3 `=`-marker migration (baseline-pass regression caught by the 14b gate).
+                let (eq_head, key_id, value_id) =
+                    if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") {
+                        (Some(kv[0]), kv[1], kv[2])
+                    } else if kv.len() == 2 {
+                        (None, kv[0], kv[1])
+                    } else {
+                        return None;
+                    };
                 // KEY then VALUE, both threaded (either may perform), in evaluation order.
-                let (rkey, next_k) = thread_bounded(db, kv[0], cur, ctx, inline_depth)?;
-                let (rvalue, next_v) = thread_bounded(db, kv[1], next_k, ctx, inline_depth)?;
+                let (rkey, next_k) = thread_bounded(db, key_id, cur, ctx, inline_depth)?;
+                let (rvalue, next_v) = thread_bounded(db, value_id, next_k, ctx, inline_depth)?;
                 cur = next_v;
-                rentries.push(db.push_list(vec![rkey, rvalue]));
+                let rebuilt = match eq_head {
+                    Some(eq) => {
+                        let eq_copy = copy_pure(db, eq);
+                        db.push_list(vec![eq_copy, rkey, rvalue])
+                    }
+                    None => db.push_list(vec![rkey, rvalue]),
+                };
+                rentries.push(rebuilt);
             }
             let head = db.push_atom(Leaf::Ctor(CompoundCtor::Map));
             let mut children = vec![head];
