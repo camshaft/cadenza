@@ -4046,21 +4046,27 @@ fn render_closure_call_result(v: Option<&Val>) -> String {
                     Ok(arenas) => {
                         return cadenza_syntax::sexpr::print(&arenas).trim().to_string();
                     }
-                    // DIAGNOSTIC (value-encode<->codec skew hunt): a buffer carrying the `cdzast` header
-                    // that DECLINES to decode means a compound VALUE doc the codec can't parse — we then
-                    // fall through to the raw byte-rope render (the "renders as raw bytes" bug). `decode`
-                    // is total, so surface WHY: the `DecodeError` class + a hex dump so the offending
-                    // kind/offset is inspectable in a composed-runtime gate log. Gated on the header so a
-                    // GENUINE byte-rope value (not a value doc — the intended fall-through) stays quiet.
+                    // DECODE-VALIDITY INVARIANT (operator directive 2026-08-31): a buffer carrying the
+                    // `cdzast` header IS an expected cadenza-AST value-encode doc, so a `codec::decode`
+                    // FAILURE is a COMPILER BUG — the compiler emitted a malformed/mismatched AST — NOT a
+                    // genuine raw byte-rope. Do NOT silently fall through to the raw-byte render (the Qty
+                    // "renders as raw bytes" class): that papers over the bug and can falsely pass/fail the
+                    // grade. FAIL LOUDLY — emit the detailed diagnostic (the `DecodeError` class + a hex
+                    // dump, inspectable in a composed-runtime gate log) AND return a distinctive,
+                    // un-matchable marker so the value comparison fails visibly and the emit owner is
+                    // routed the bug. Gated on the header so a GENUINE byte-rope value (no `cdzast` header
+                    // — the intended raw-list fall-through below) stays quiet.
                     Err(e) => {
                         if bytes.len() >= 8 && &bytes[..6] == b"cdzast" {
                             eprintln!(
-                                "cdz-run: a cdzast value-encode doc was DECLINED by codec::decode \
-                                 ({e:?}) — falling back to the raw byte render (value-encode<->codec \
-                                 skew). buffer[{}] = {:02x?}",
+                                "cdz-run: a cdzast value-encode doc FAILED codec::decode ({e:?}) — the \
+                                 compiler emitted a malformed/mismatched AST (a bug); FAILING the case \
+                                 loudly instead of the raw-byte fallback (value-encode<->codec skew). \
+                                 buffer[{}] = {:02x?}",
                                 bytes.len(),
                                 bytes
                             );
+                            return format!("<cdzast-decode-error {e:?}>");
                         }
                     }
                 }
@@ -4518,6 +4524,36 @@ fn parse_tuple_fields(s: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DECODE-VALIDITY INVARIANT (operator directive 2026-08-31): when a closure-call result is a `cdzast`-
+    /// HEADED value-encode doc that FAILS `codec::decode` (the compiler emitted a malformed/mismatched AST),
+    /// `render_closure_call_result` must FAIL LOUDLY — return a distinctive un-matchable `<cdzast-decode-error
+    /// …>` marker so the grade comparison fails visibly — NOT silently fall through to the raw-byte render
+    /// (the Qty "renders as raw bytes" bug). A GENUINE raw byte-rope (no `cdzast` header) still renders raw.
+    #[test]
+    fn cdzast_headed_decode_failure_fails_loudly_not_raw_byte_fallback() {
+        // A `cdzast`-headed buffer (>=8 bytes, header matches) whose body is junk the codec can't parse.
+        let bad = b"cdzast\x00\x00\x01\x02\x03\x04".to_vec();
+        // Precondition: the codec genuinely REJECTS this buffer (self-validating, not brittle to internals).
+        assert!(
+            cadenza_syntax::codec::decode_detailed(&bad).is_err(),
+            "test fixture must be a cdzast-headed buffer that codec::decode rejects"
+        );
+        let v = Val::List(bad.iter().map(|b| Val::U8(*b)).collect());
+        let rendered = render_closure_call_result(Some(&v));
+        assert!(
+            rendered.starts_with("<cdzast-decode-error"),
+            "a cdzast-headed decode failure must return the loud marker, not raw bytes; got: {rendered}"
+        );
+
+        // A GENUINE byte-rope (no `cdzast` header) is the intended raw-list fall-through — stays quiet.
+        let rope = Val::List(vec![Val::U8(5), Val::U8(6)]);
+        let rope_rendered = render_closure_call_result(Some(&rope));
+        assert!(
+            !rope_rendered.starts_with("<cdzast-decode-error"),
+            "a header-less byte-rope must render raw, not trip the decode-error marker; got: {rope_rendered}"
+        );
+    }
 
     /// `corrupt_bytes` (the quote-roundtrip NEGATIVE trial) truncates canonical binary-AST bytes to their
     /// first byte so the framing breaks and the decoder can't reproduce `quote E` — and it MUST differ from
