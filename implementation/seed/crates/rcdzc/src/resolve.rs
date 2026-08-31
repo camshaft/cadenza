@@ -5043,8 +5043,22 @@ fn last_binder_named(
                     let Struct::List(kv2) = db.ast.get(*pair) else {
                         continue;
                     };
-                    if kv2.len() == 2 {
-                        let value_pat = kv2[1];
+                    // Read the field's VALUE sub-pattern from BOTH the canonical 3-element `(= key value)`
+                    // FieldPair (the M3-nativized `#record((= x …))` form) AND the legacy 2-element
+                    // `(key value)` pair. Handling only `kv2.len() == 2` MISSED the native `=`-form (the same
+                    // `=`-migration miss class as the map effects-fold #6790): a deeper binder below a native
+                    // nested field then fell through to a MISLEADING CDZ0101 "unbound name" at the body ref
+                    // INSTEAD of this clean decline — while `check_binding_pattern` (and the match-arm Case
+                    // 6rec-nested-decline) already declined it, so `check` disagreed with the body-ref
+                    // resolution. Now both native + legacy forms reach the decline, suppressing the cascade.
+                    let value_pat = if kv2.len() == 3 && db.ast.as_name(kv2[0]) == Some("=") {
+                        kv2[2]
+                    } else if kv2.len() == 2 {
+                        kv2[1]
+                    } else {
+                        continue;
+                    };
+                    {
                         let (mut path, mut heads) = (Vec::new(), Vec::new());
                         let bound = if is_tuple_pattern(db, value_pat) {
                             find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)

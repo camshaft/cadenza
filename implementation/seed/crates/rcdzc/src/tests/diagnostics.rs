@@ -1641,6 +1641,35 @@ fn a_set_membership_element_is_a_value_expression_not_a_binder() {
     );
 }
 
+/// A binder BELOW a NESTED record field in a BINDING pattern — `#record((= x #tuple(c d)))` binds `c`/`d`
+/// inside the record field `x`'s tuple value — is a not-yet-wired composition (a record field projects by
+/// NAME, and there is no name-keyed `PathStep` to compose a projection with a further descent; the match
+/// arm's Case 6rec-nested-decline declines the SAME shape). The binding path MUST give that clean decline —
+/// NOT a misleading CDZ0101 "unbound `c`" at the body reference. The bug: the binding-path nested-decline
+/// loop read only the LEGACY 2-element `(x value)` field form and MISSED the M3-nativized 3-element
+/// `(= x value)` FieldPair (an `=`-migration miss, the sibling of the map effects-fold #6790), so a NATIVE
+/// nested field's deeper binder fell through to a spurious CDZ0101 while `check` declined — a check≡compile
+/// diagnostic split. Now both forms reach the decline; no cascade CDZ0101.
+#[test]
+fn a_deeper_binder_below_a_native_nested_record_field_declines_cleanly_not_cdz0101() {
+    let src = "(module m (def (f #record((= x #tuple(c d)))) (+ c d)) (export f))";
+    let diags = diags_of(src);
+    // NO misleading "unbound name `c`"/`d` cascade — the deeper binder resolves to the clean decline.
+    assert!(
+        !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
+            && (d.message.contains("unbound name `c`") || d.message.contains("unbound name `d`"))),
+        "a deeper binder below a NATIVE nested record field must NOT leak a spurious CDZ0101 unbound (the \
+         `=`-FieldPair form was missed by the binding-path nested-decline): {diags:?}"
+    );
+    // The clean not-yet-wired decline IS present (check ≡ compile).
+    assert!(
+        diags.iter().any(|d| d
+            .message
+            .contains("nested compound sub-pattern inside a record binding pattern")),
+        "the deeper nested-compound binder gives the clean 'not supported' decline: {diags:?}"
+    );
+}
+
 /// A RECORD match pattern is now IMPLEMENTED (record match landed — the match twin of the record
 /// binding pattern). A field-binder reference in the body must CHECK CLEAN (resolve to a scrutinee
 /// projection, Case 6rec), NOT leak the old misleading "unbound name" CDZ0101 nor the superseded "not
