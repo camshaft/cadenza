@@ -215,6 +215,23 @@
   (call   main)
   (output (: 0 Int64)))
 
+; --- An OVER-applied built-in operation is ONE coded reject with a delete-surplus fix; UNDER stays a decline ---
+;    (migrated from rcdzc over_applying_a_builtin_operation_reports_one_error_with_the_delete_fix)
+; A built-in operation over-applied (too many args — `(Map.len m 99)`, size takes one) draws BOTH the uncoded
+; wrong-arity decline (from lower) AND the coded CDZ0203 over-application (from infer, with a delete-surplus
+; fix). They are the SAME defect, so `dedup_faults` drops the weaker decline when the coded reject is present:
+; the program reports EXACTLY ONE primary error, the CDZ0203 carrying the delete fix. An UNDER-application
+; (`(List.at l)`, missing the index) has NO coded sibling, so the wrong-arity decline is KEPT (the only report,
+; nothing to delete → no fix).
+
+(case "an over-applied built-in operation is ONE CDZ0203 with a delete-surplus fix, not doubled with the wrong-arity decline"
+  (input  (do (def (main) ((. Map len) #map((= 1 2)) 99)) (export main)))
+  (error  CDZ0203 (fix (kind delete)) (count 1)))
+
+(case "an under-applied built-in operation keeps the wrong-arity decline — no coded sibling to dedup against"
+  (input  (do (def (main) ((. List at) #list(1))) (export main)))
+  (declines (message "applied at the wrong arity")))
+
 (case "an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program"
   (doc    "The mixed scalar-heap instantiation face: swap p = (b a) at (Int64, String-rope) AND
            ((List Int64), Int64) in one program — the specializer must produce two layouts where the

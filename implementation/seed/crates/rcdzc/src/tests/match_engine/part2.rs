@@ -434,70 +434,13 @@ fn over_applying_a_function_reports_one_error_not_a_shadowing_decline() {
     );
 }
 
-#[test]
-fn over_applying_a_builtin_operation_reports_one_error_with_the_delete_fix() {
-    // A BUILT-IN operation over-applied (`(Map.len m x)` — size takes one operand) is the built-in
-    // analogue of the user-function case above: `lower` emits the uncoded "`Map.len` is applied at
-    // the wrong arity — a built-in operation must be applied to exactly its arguments" decline AND
-    // `infer` the coded CDZ0203 over-application (with its delete-surplus fix). They are the same
-    // defect — `dedup_faults` now drops the weaker decline WHEN the coded reject is present, so the
-    // program reports ONE primary error carrying the fix. (An UNDER-application keeps the decline —
-    // no coded sibling — tested separately below.)
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse(
-                "(module m (def (main) ((. Map len) (map (1 2)) 99)) (export main))",
-            )),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    let errors: Vec<&crate::abi::Diagnostic> = out
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect();
-    assert_eq!(
-        errors.len(),
-        1,
-        "built-in over-application = one error, got: {:?}",
-        out.diagnostics
-    );
-    assert_eq!(errors[0].code.as_deref(), Some("CDZ0203"));
-    assert_eq!(
-        errors[0].fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Delete),
-        "the surviving over-application error carries the delete-surplus fix: {:?}",
-        errors[0].fix
-    );
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.message.contains(crate::diag::BUILTIN_WRONG_ARITY_DECLINE)),
-        "the built-in wrong-arity decline must not accompany the coded reject"
-    );
-    // An UNDER-application (`(List.at l)`, missing the index) has NO coded sibling — the wrong-arity
-    // decline is KEPT (it is the only report; nothing to delete, so no fix).
-    let under = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&parse(
-                "(module m (def (main) ((. List at) (list 1))) (export main))",
-            )),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    assert!(
-        under
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains(crate::diag::BUILTIN_WRONG_ARITY_DECLINE)),
-        "an under-application keeps the wrong-arity decline: {:?}",
-        under.diagnostics
-    );
-}
+// (over_applying_a_builtin_operation_reports_one_error_with_the_delete_fix migrated to corpus 09-functions,
+// after the built-in-op-partial cluster: "an over-applied built-in operation is ONE CDZ0203 with a
+// delete-surplus fix, not doubled with the wrong-arity decline" (((. Map len) #map((= 1 2)) 99) → CDZ0203
+// (fix (kind delete)) (count 1) — the (count 1) pins the dedup: infer's coded over-application drops lower's
+// uncoded wrong-arity decline for the same node), and "an under-applied built-in operation keeps the
+// wrong-arity decline — no coded sibling to dedup against" (((. List at) #list(1)) → declines "applied at
+// the wrong arity"; nothing to delete, no fix).)
 
 #[test]
 fn applying_an_applyable_head_is_not_flagged_as_a_non_function() {
