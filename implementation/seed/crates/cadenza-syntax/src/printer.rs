@@ -9233,74 +9233,23 @@ mod tests {
         assert_eq!(print(&a, 80), "[a, b, .. c, d, .. e]");
     }
 
-    #[test]
-    fn exact_numbers_print_and_reparse() {
-        // Hex is canonicalized to lowercase digits (case is not preserved in the leaf); the value
-        // and base round-trip, and the printed form is idempotent.
-        assert_eq!(assert_roundtrip("0x2A", 80), "0x2a");
-        assert_eq!(assert_roundtrip("0x2a", 80), "0x2a");
-        assert_eq!(assert_roundtrip("1.5", 80), "1.5");
-        assert_eq!(assert_roundtrip("1000000", 80), "1000000");
-        assert_eq!(assert_roundtrip("0b1010", 80), "0b1010");
-    }
-
-    #[test]
-    fn ml_has_no_rational_literal_slash_is_int64_division() {
-        // seq-204: the operator DROPPED the `r` rational glyph, and there is NO bare `<num>/<den>` rational
-        // literal on the ML surface — unspaced `3/2` is Int64 integer division `(/ 3 2)`, identical to the
-        // spaced `3 / 2`. (A rational VALUE node still renders `num/den` — see the sexpr-sourced
-        // `display_surface_renders_values_readably`; ML SOURCE reaches a rational via `(/ n d)`-style
-        // construction, never a scalar literal, per the operator's "native value, no sugar/desugar".)
-        let spaced = assert_roundtrip("3 / 2", 80);
-        let unspaced = assert_roundtrip("3/2", 80);
-        assert_eq!(
-            spaced, unspaced,
-            "unspaced `3/2` is the same Int64 division as `3 / 2`, not a rational literal"
-        );
-    }
-
-    #[test]
-    fn forall_param_binder_desugars_and_round_trips() {
-        // `forall a b. TYPE` in a PARAMETER annotation is INPUT-ONLY sugar (like the brace-record `{…}`):
-        // it DESUGARS at parse time to leading `(: a Type)` params, so it PRINTS BACK as `a: Type` (the
-        // canonical form), NOT `forall`. The ML→sexpr→ML round-trip is idempotent at that canonical form.
-        // (A standalone `(forall …)` node that is NOT hoisted still prints as `forall a. T` — the printer
-        // arm from increment 1 — but a def-param forall lowers here.)
-        assert_eq!(
-            assert_roundtrip("def id(x: forall a. a) = x", 80),
-            "def id(a: Type, x: a) = x"
-        );
-        assert_eq!(
-            assert_roundtrip("def apply(f: forall a b. a -> b, x: a) = f(x)", 80),
-            "def apply(a: Type, b: Type, f: a -> b, x: a) = f(x)"
-        );
-        // Idempotent: the desugared form re-prints identically (the sugar is gone after the first parse).
-        assert_eq!(
-            assert_roundtrip("def id(a: Type, x: a) = x", 80),
-            "def id(a: Type, x: a) = x"
-        );
-        // A forall in a RETURN-TYPE position (`-> forall a. …`) is NOT hoisted (it is not a parameter
-        // annotation) — it stays a `(forall …)` node in the return ascription and prints back verbatim
-        // via increment 1's printer arm. This round-trips (confirming the earlier "return-type follow-up"
-        // concern was a false alarm — it was a wrong `fn(x) -> x` test spelling; the lambda arrow is `=>`).
-        assert_eq!(
-            assert_roundtrip("def mk() -> forall a. a -> a = fn(x) => x", 80),
-            "def mk() -> forall a. a -> a = fn(x) => x"
-        );
-    }
-
-    #[test]
-    fn def_sig_leading_forall_prints_as_canonical_type_params() {
-        // The P1 ergonomic spelling `def forall a b. f(…)` is also INPUT-ONLY sugar: it desugars to leading
-        // `(: a Type)` params at parse time, so it PRINTS BACK as `f(a: Type, …)` (the canonical form), not
-        // `def forall`. Round-trip is idempotent at that canonical form.
-        assert_eq!(
-            assert_roundtrip("def forall a. id(x: a) = x", 80),
-            "def id(a: Type, x: a) = x"
-        );
-        assert_eq!(
-            assert_roundtrip("def forall a b. apply(f: a -> b, x: a) = f(x)", 80),
-            "def apply(a: Type, b: Type, f: a -> b, x: a) = f(x)"
-        );
-    }
+    // The numeric-literal + forall-sugar surface round-trips MIGRATED to the spec/syntax corpus
+    // (inc-6 batch-17):
+    //   * `exact_numbers_print_and_reparse` (hex canonicalizes to lowercase; value+base round-trip) →
+    //     ml/128-hex-uppercase-canonicalizes `0x2A` (format.cdz `0x2a`), ml/129-hex-lowercase `0x2a`,
+    //     ml/130-decimal-float `1.5`, ml/131-large-integer `1000000`, ml/132-binary-literal `0b1010`.
+    //   * `ml_has_no_rational_literal_slash_is_int64_division` (seq-204: NO bare `<num>/<den>` rational
+    //     literal; unspaced `3/2` is Int64 division `(/ 3 2)`, identical to spaced `3 / 2`) →
+    //     ml/133-slash-is-int-division-spaced `3 / 2`→`(/ 3 2)`, ml/134-slash-is-int-division-unspaced
+    //     `3/2` (tree `(/ 3 2)`, format.cdz canonicalizes to `3 / 2`).
+    //   * `forall_param_binder_desugars_and_round_trips` (`forall a b. TYPE` in a PARAM annotation is
+    //     INPUT-ONLY sugar → desugars to leading `(: a Type)` params, prints back as `a: Type`; a
+    //     RETURN-position forall is NOT hoisted, stays `(forall …)`) → ml/135-forall-param-desugars
+    //     (format.cdz `def id(a: Type, x: a) = x`), ml/136-forall-param-multi-desugars,
+    //     ml/137-forall-param-already-canonical (idempotent), ml/138-forall-return-type-not-hoisted
+    //     `def mk() -> forall a. a -> a = fn(x) => x`→`(def (mk) (: (fn (x) x) (forall (a) (-> a a))))`.
+    //   * `def_sig_leading_forall_prints_as_canonical_type_params` (the P1 `def forall a b. f(…)` spelling
+    //     is also input-only sugar → same canonical params) → ml/139-def-leading-forall-desugars,
+    //     ml/140-def-leading-forall-multi. Each sugar case's format.cdz pins the desugared canonical form;
+    //     the idempotent cases carry no format.cdz. (135/137/139 share one tree, distinct slugs — OK.)
 }

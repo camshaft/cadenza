@@ -1,0 +1,1 @@
+def apply(f: forall a b. a -> b, x: a) = f(x)
