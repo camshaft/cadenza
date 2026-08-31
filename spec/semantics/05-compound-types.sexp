@@ -988,6 +988,28 @@
   (call main (: -1 Int64))
   (output (: 0 Int64)))
 
+; A LIST pattern nested at a TUPLE slot dispatches on the list's LENGTH, and a leading-element binder reads
+; that list's element — the list matcher meeting the tuple destructure. The scrutinee `t` is a tuple whose
+; slot 1 is a `(List Int64)`; the arms match `#tuple(a #list())` (empty) and `#tuple(a #list(h .. t2))`
+; (non-empty, binding `h` = element 0). The binder `h` reads at path `[Elem(1), Elem(0)]` — the FIRST Elem
+; is a tuple slot (a field access) but the SECOND is a LIST element (an index), not another tuple field. (The
+; Rust backend once MISCOMPILED this: its top-level tuple-pattern read rendered every `Elem(i)` as a `.i`
+; field access, so the list element became `((t).1).0` on a `Vec` — rustc E0609 "no field 0 on Vec<i64>".
+; Fixed by walking the container type per step so a list element renders `[i]`; wasm always ran it.)
+(case
+  "a list pattern at a tuple slot dispatches on list length and binds an element (empty + non-empty)"
+  (input
+    (do
+      (def
+        (f (: t (Tuple Int64 (List Int64))))
+        (match t (#tuple(a #list()) a) (#tuple(a #list(h (.. t2))) (+ a h))))
+      (def (main (: n Int64)) (f #tuple(n (if (> n 0) #list(10) #list()))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 11 Int64))
+  (call main (: -1 Int64))
+  (output (: -1 Int64)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`

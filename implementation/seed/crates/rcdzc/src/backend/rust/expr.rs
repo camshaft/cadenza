@@ -7638,9 +7638,35 @@ fn emit_sum_payload(
         )
     {
         let mut expr = emit_scrutinee(db, scrutinee, env, ctx)?;
+        // Walk the scrutinee TYPE alongside `path` so each `Elem(i)` renders per its CONTAINER: a TUPLE or
+        // RECORD element is a field access `.i` (a record erases to a sorted-field tuple), but a LIST element
+        // is an INDEX `[i]` — a `Vec` has no `.i` field (rustc E0609). A tuple whose slot is a `(List …)`
+        // and whose pattern binds a list element (`(match t ((tuple a (list h .. r)) …))`, `t: (Tuple Int64
+        // (List Int64))`) reaches here with a pure-`Elem` path `[Elem(1), Elem(0)]`; the old loop rendered
+        // BOTH as `.i` → `((t).1).0` on a `Vec` (no field 0). Mirrors `emit_sum_payload`'s per-container walk.
+        let mut cur_ty = type_of(db, scrutinee);
         for step in path {
             if let crate::core::PathStep::Elem(i) = step {
-                expr = format!("({expr}).{i}");
+                match cur_ty.strip_nominal() {
+                    Ty::List(elem) => {
+                        cur_ty = (**elem).clone();
+                        expr = format!("({expr})[{i}]");
+                    }
+                    Ty::Tuple(elems) => {
+                        cur_ty = elems.get(*i).cloned().unwrap_or(Ty::Any);
+                        expr = format!("({expr}).{i}");
+                    }
+                    // A record is a Rust tuple in SORTED field-name order; `Elem(i)` is the i-th sorted slot.
+                    Ty::Record(fields) => {
+                        cur_ty = fields.values().nth(*i).cloned().unwrap_or(Ty::Any);
+                        expr = format!("({expr}).{i}");
+                    }
+                    // Unknown/other — keep the historical tuple-field form.
+                    _ => {
+                        cur_ty = Ty::Any;
+                        expr = format!("({expr}).{i}");
+                    }
+                }
             }
         }
         // CLONE a non-Copy field read (a `Vec`/`String`/sum/nested-tuple field): reading it by value MOVES
