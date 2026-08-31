@@ -295,6 +295,17 @@
   (input  (do (def (main) (match #set(1 2) (#set(a) 9) (_ 0))) (export main)))
   (error  CDZ0101 (message "unbound name `a`")))
 
+; A set match must END IN A CATCH-ALL (`_` or a whole-set binder): a set's element set is UNBOUNDED, so
+; membership patterns — including the matches-any `#set()` — never exhaust it, and the exhaustiveness checker
+; conservatively rejects a set match without a terminal catch-all (CDZ0210). This is the set analogue of the
+; map rule (05 "the exhaustiveness checker conservatively rejects `(map)` as a match's terminal catch-all").
+; Note `#set()` DOES match any set WHEN REACHED (pinned above) — but it is not accepted AS the exhaustiveness
+; witness. The batch-97/#6693 set-pattern cases above all pair a membership arm with a `_`, exactly as this
+; rule requires.
+(case "a set match with no terminal catch-all is rejected as non-exhaustive (CDZ0210)"
+  (input  (do (def (f (: s (Set Int64))) (match s (#set() 1))) (export f)))
+  (error  CDZ0210 (message "a set match must end in a catch-all") (message "unbounded")))
+
 (case "the empty set has cardinality zero"
   (doc    "The degenerate cardinality boundary: `(Set.len (Set.of (list)))` is 0 — the empty set holds no
            elements. The len companion of the empty-set membership pin above, and the both-backend witness
