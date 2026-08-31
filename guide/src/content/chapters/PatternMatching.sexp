@@ -84,6 +84,14 @@
 (def (main)
   (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))))
   (p "The map has a " (c "\"width\"") ", so the arm fires, binds " (c "v") " to " (c "80") ", and returns " (c "(Some 80)") ". Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns " (c "(None unit)") ". Toggle to the conventional surface and the pattern reads as " (c "#{ \"width\" = v, .. rest }") ", a map-literal shape on the left of a match arm (the " (strong "Maps &amp; sets") " chapter later builds out maps as values).")
+  (h2 "Matching a tuple's shape")
+  (p "A tuple pattern takes a value apart by " (em "position") ", and a trailing rest marker " (c "(.. rest)") " gathers the elements you didn't name into a smaller tuple, the positional twin of a list's " (c ".. rest") ". Here " (c "#tuple(a b (.. rest))") " binds " (c "a") " and " (c "b") " to the first two elements and " (c "rest") " to a tuple of whatever trails, so reading " (c "rest") " back with " (c ".0") " recovers the third element:")
+  (runnable
+    (source (match #tuple(3 4 5)
+  (#tuple(a b (.. rest)) (+ (+ a b) (. rest 0)))
+  (_ 0))))
+  (p "So " (c "a") " is " (c "3") ", " (c "b") " is " (c "4") ", and " (c "rest") " is the one-element tuple " (c "#tuple(5)") ", whose " (c ".0") " is " (c "5") ", giving " (c "3 + 4 + 5 = 12") ". Two things to hold onto: " (c "rest") " is the trailing " (em "sub-tuple") ", not a flattened list, so a " (c "#tuple(1 2 3 4)") " matched by " (c "#tuple(x (.. rest))") " leaves " (c "rest") " as " (c "#tuple(2 3 4)") ", indexed " (c ".0") "/" (c ".1") "/" (c ".2") "; and the arity is fixed, so " (c "#tuple(a b (.. rest))") " needs at least two elements, and a shorter tuple simply doesn't match that arm.")
+  (note "This lowers today for a tuple you " (em "construct") " in place, the common case, like the literal above. A rest binder over a fully opaque runtime tuple isn't lowered yet, so the compiler declines it with a plain \"not yet\" rather than a wrong answer, the same honest refusal you've seen elsewhere.")
   (h2 "Your turn")
   (exercise
     (id "pattern-matching:1")

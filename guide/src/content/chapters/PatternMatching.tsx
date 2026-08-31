@@ -68,11 +68,18 @@ export default function PatternMatching() {
       <H2>Matching a map by key</H2>
       <P>A <C>match</C> can also look <em>inside a collection</em>. A map pattern, <C>#map((= key binder) .. rest)</C>, fires when the map contains that key, binding the associated value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map, returning <C>(Some v)</C> when the key is present and <C>(None unit)</C> when it's absent, because a missing key is an absence, not a magic number:</P>
       <Runnable
-        source={`(def (setting m) (match m (#map((= "width" v) .. rest) (Some v)) (_ (None unit))))
+        source={`(def (setting m) (match m (#map((= "width" v) (.. rest)) (Some v)) (_ (None unit))))
 
 (def (main) (setting ((. Map insert) ((. Map insert) ((. Map empty)) "width" 80) "height" 50)))`}
       />
       <P>The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns <C>(Some 80)</C>. Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns <C>(None unit)</C>. Toggle to the conventional surface and the pattern reads as <C>{"#{ \"width\" = v, .. rest }"}</C>, a map-literal shape on the left of a match arm (the <strong>Maps &amp; sets</strong> chapter later builds out maps as values).</P>
+      <H2>Matching a tuple's shape</H2>
+      <P>A tuple pattern takes a value apart by <em>position</em>, and a trailing rest marker <C>(.. rest)</C> gathers the elements you didn't name into a smaller tuple, the positional twin of a list's <C>.. rest</C>. Here <C>#tuple(a b (.. rest))</C> binds <C>a</C> and <C>b</C> to the first two elements and <C>rest</C> to a tuple of whatever trails, so reading <C>rest</C> back with <C>.0</C> recovers the third element:</P>
+      <Runnable
+        source={`(match #tuple(3 4 5) (#tuple(a b (.. rest)) (+ (+ a b) (. rest 0))) (_ 0))`}
+      />
+      <P>So <C>a</C> is <C>3</C>, <C>b</C> is <C>4</C>, and <C>rest</C> is the one-element tuple <C>#tuple(5)</C>, whose <C>.0</C> is <C>5</C>, giving <C>3 + 4 + 5 = 12</C>. Two things to hold onto: <C>rest</C> is the trailing <em>sub-tuple</em>, not a flattened list, so a <C>#tuple(1 2 3 4)</C> matched by <C>#tuple(x (.. rest))</C> leaves <C>rest</C> as <C>#tuple(2 3 4)</C>, indexed <C>.0</C>/<C>.1</C>/<C>.2</C>; and the arity is fixed, so <C>#tuple(a b (.. rest))</C> needs at least two elements, and a shorter tuple simply doesn't match that arm.</P>
+      <Note>This lowers today for a tuple you <em>construct</em> in place, the common case, like the literal above. A rest binder over a fully opaque runtime tuple isn't lowered yet, so the compiler declines it with a plain "not yet" rather than a wrong answer, the same honest refusal you've seen elsewhere.</Note>
       <H2>Your turn</H2>
       <Exercise
         id="pattern-matching:1"
