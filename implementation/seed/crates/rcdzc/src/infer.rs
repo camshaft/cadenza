@@ -423,6 +423,14 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             }
             _ => Ty::Any,
         },
+        // A SET REST binder — the residual set is the SAME set type `(Set E)` as the scrutinee (removing
+        // elements does not change the element type), the set twin of a `MapField` REST binder. `Ty::Any`
+        // (poison-safe) if the scrutinee is not a set. The residual VALUE is built by the set-matcher
+        // desugar (`Set.remove` chain); this arm just supplies the binder's TYPE for the body's type-check.
+        Resolved::SetRest { scrutinee, .. } => match type_of(db, scrutinee).strip_nominal() {
+            Ty::Set(elem) => Ty::Set(elem.clone()),
+            _ => Ty::Any,
+        },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
         // A bare decimal literal: a `(pragma default-fraction Rational)` module grounds it to the EXACT

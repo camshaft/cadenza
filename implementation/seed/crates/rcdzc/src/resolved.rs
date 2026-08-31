@@ -1331,6 +1331,22 @@ pub enum Resolved {
         /// residual record `rest`. Read for their spellings (`read_key`) at fold/type time.
         named: std::rc::Rc<[StructId]>,
     },
+    /// The RESIDUAL SET a set REST pattern's `.. rest` binder binds — `(match s (#set(e1 (.. rest)) …))`
+    /// binds `rest` to the scrutinee set MINUS the named ELEMENTS (`Set.remove(s, e1)`). The set twin of a
+    /// `MapField` REST binder / `RecordRest`. UNLIKE a record (whose residual NARROWS to fewer fields), a
+    /// set's residual is the SAME set TYPE `(Set E)` — removing elements does not change the element type,
+    /// exactly like a `MapField` rest keeps the map type. `scrutinee` is the match scrutinee; `named` are
+    /// the element VALUE-expression occurrences the pattern names (removed to form the residual). The
+    /// residual VALUE is built by the set-matcher desugar (`desugar_runtime_set_match`, a `Set.remove`
+    /// chain — v-ast-compound's slice); this variant carries the TYPE (v-inference's slice), so a body
+    /// reference to `rest` type-checks as `(Set E)`.
+    SetRest {
+        scrutinee: StructId,
+        /// The element VALUE-expression occurrences the pattern NAMES — removed (via `Set.remove`) to form
+        /// the residual set. Unused for TYPING (the residual set type is the scrutinee's set type); read by
+        /// the set-matcher desugar to build the `Set.remove` chain.
+        named: std::rc::Rc<[StructId]>,
+    },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
     /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a

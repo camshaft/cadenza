@@ -2271,7 +2271,8 @@ pub(super) fn collect_binding_uses(
         | Resolved::BinField { scrutinee, .. }
         | Resolved::MapField { scrutinee, .. }
         | Resolved::RecordField { scrutinee, .. }
-        | Resolved::RecordRest { scrutinee, .. } => {
+        | Resolved::RecordRest { scrutinee, .. }
+        | Resolved::SetRest { scrutinee, .. } => {
             *out.count.entry(scrutinee).or_insert(0) += 1;
         }
         Resolved::Handle {

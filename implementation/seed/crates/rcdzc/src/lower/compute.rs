@@ -236,6 +236,14 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 "a runtime record rest binder (residual-record construction) is not supported (a constant/inline record-rest is)",
             ))
         }
+        // A SET REST binder reaching lowering here is a FALLBACK: the set-matcher desugar
+        // (`desugar_runtime_set_match`) rewrites a set-rest arm into a `Set.remove` residual binding BEFORE
+        // this point, so a bare `SetRest` core is only reached if that desugar did not fire — decline
+        // gracefully (never a miscompile). The residual-set VALUE construction is the desugar's slice;
+        // this variant carries only the binder's TYPE (`infer` → `(Set E)`).
+        Resolved::SetRest { .. } => Core::Poison(Reject::unsupported(
+            "a set rest binder's residual set is built by the set-matcher desugar; a bare set-rest here is unsupported",
+        )),
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where

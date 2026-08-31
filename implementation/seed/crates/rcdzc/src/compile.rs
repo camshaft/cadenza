@@ -5994,6 +5994,7 @@ fn walk_for_dead_traps(
         | Resolved::MapField { .. }
         | Resolved::RecordField { .. }
         | Resolved::RecordRest { .. }
+        | Resolved::SetRest { .. }
         | Resolved::Poison(_) => {}
     }
 }
@@ -6180,6 +6181,7 @@ fn walk_for_reachable_const_traps(
         | Resolved::MapField { .. }
         | Resolved::RecordField { .. }
         | Resolved::RecordRest { .. }
+        | Resolved::SetRest { .. }
         | Resolved::Poison(_) => {}
     }
 }
