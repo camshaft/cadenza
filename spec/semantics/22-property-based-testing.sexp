@@ -1942,6 +1942,117 @@
   (output (: 0 Int64))
   (live-objects known-leak))
 
+; --- High-coverage value-codec gaps, slice 2 (operator-directed): the remaining SCALAR leaves (CHAR /
+; BYTES / SYMBOL) + the other EMPTY-collection edges (map / set). Each a `Value.decode (Value.encode v)
+; == Some v` round-trip through the canonical ctor-leaf codec (encode_value's KIND_CHAR / KIND_STR-bytes /
+; KIND_SYM / KIND_*_CTOR paths). Runs on wasm. ---
+(case
+  "a Value.encode/Value.decode round-trip preserves a CHAR element of a compound"
+  (doc
+    "Extends the round-trips to a `(Tuple Int64 Char)` — the R2 value-form KIND_CHAR leaf (a Unicode scalar).
+           `Value.decode (Value.encode (tuple n #\\A)) == Some (tuple n #\\A)`; the match returns `n` when the
+           char round-tripped as `#\\A`, else -1. `main 5` -> 5, `main 8` -> 8. A dropped/garbled Char leaf
+           would give -1. Pins the Char leaf of the canonical codec round-trips faithfully.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          (: (Value.decode (Value.encode #tuple(n #\A))) (Option (Tuple Int64 Char)))
+          ((Some m) (match m (#tuple(k c) (if (= c #\A) k (- 0 1)))))
+          ((None u) (- 0 1))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 Int64))
+  (call main (: 8 Int64))
+  (output (: 8 Int64))
+  (live-objects 0))
+
+(case
+  "a Value.encode/Value.decode round-trip preserves a BYTES element of a compound"
+  (doc
+    "Extends the round-trips to a `(Tuple Int64 Bytes)` — the R2 value-form Bytes leaf (a variable-length
+           byte string). `Value.decode (Value.encode (tuple n b\"ABC\")) == Some (tuple n b\"ABC\")`; returns `n`
+           when the bytes survived as `b\"ABC\"`, else -1. `main 4` -> 4, `main 6` -> 6. Pins the Bytes leaf of
+           the canonical codec round-trips faithfully.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          (: (Value.decode (Value.encode #tuple(n b"ABC"))) (Option (Tuple Int64 Bytes)))
+          ((Some m) (match m (#tuple(k v) (if (= v b"ABC") k (- 0 1)))))
+          ((None u) (- 0 1))))
+      (export main)))
+  (call main (: 4 Int64))
+  (output (: 4 Int64))
+  (call main (: 6 Int64))
+  (output (: 6 Int64))
+  (live-objects known-leak))
+
+(case
+  "a Value.encode/Value.decode round-trip preserves a SYMBOL element of a compound"
+  (doc
+    "Extends the round-trips to a `(Tuple Int64 Symbol)` — the R2 value-form KIND_SYM leaf (a `#\"…\"` symbol
+           literal). `Value.decode (Value.encode (tuple n #\"kg\")) == Some (tuple n #\"kg\")`; returns `n` when
+           the symbol round-tripped as `#\"kg\"`, else -1. `main 3` -> 3, `main 7` -> 7. Pins the Symbol leaf of
+           the canonical codec round-trips faithfully.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          (: (Value.decode (Value.encode #tuple(n #"kg"))) (Option (Tuple Int64 Symbol)))
+          ((Some m) (match m (#tuple(k s) (if (= s #"kg") k (- 0 1)))))
+          ((None u) (- 0 1))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 3 Int64))
+  (call main (: 7 Int64))
+  (output (: 7 Int64))
+  (live-objects known-leak))
+
+(case
+  "a Value.encode/Value.decode round-trip preserves the EMPTY map (zero-entry collection edge)"
+  (doc
+    "The empty-map edge: `Value.decode (Value.encode (: (Map.empty) (Map Int64 Int64))) == Some {}` — a
+           zero-entry `(map)` value form. Returns `(Map.len m)` = 0 when the round-tripped map is empty. Pins
+           that an empty map round-trips through the canonical codec (a mishandled zero-entry header would
+           fault or fabricate an entry).")
+  (input
+    (do
+      (def
+        (main)
+        (match
+          (:
+            (Value.decode (Value.encode (: (Map.empty) (Map Int64 Int64))))
+            (Option (Map Int64 Int64)))
+          ((Some m) (Map.len m))
+          ((None u) (- 0 1))))
+      (export main)))
+  (call main)
+  (output (: 0 Int64))
+  (live-objects known-leak))
+
+(case
+  "a Value.encode/Value.decode round-trip preserves the EMPTY set (zero-element collection edge)"
+  (doc
+    "The empty-set edge: `Value.decode (Value.encode (: (Set.of #list()) (Set Int64))) == Some {}` — a
+           zero-element set value form (`Set.of` over the empty list). Returns `(Set.len s)` = 0 when the
+           round-tripped set is empty. Pins that an empty set round-trips through the canonical codec.")
+  (input
+    (do
+      (def
+        (main)
+        (match
+          (: (Value.decode (Value.encode (: (Set.of #list()) (Set Int64)))) (Option (Set Int64)))
+          ((Some s) (Set.len s))
+          ((None u) (- 0 1))))
+      (export main)))
+  (call main)
+  (output (: 0 Int64))
+  (live-objects known-leak))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 (case
   "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"
