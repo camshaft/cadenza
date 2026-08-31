@@ -6774,11 +6774,21 @@
                 # Build each backend's whole-corpus verdict harvest (uses the ambient nix the caller ran with),
                 # then write its .gate-baseline* via the xtask-save-baseline leaf. All 3 = the faithful nix
                 # re-baseline; the cached per-case graphs mean an unchanged corpus is a store cache hit.
-                harvest="$(nix build "$root#corpus-verdicts" --no-link --print-out-paths)"
+                # `--option substitute false`: the harvest is a huge CONTENT-ADDRESSED graph (tens of thousands
+                # of per-case CA outputs); with substitution ON, nix fires a REALISATION (`.doi`) query per CA
+                # output PER substituter (camshaft + the determinate-nix system defaults install.determinate.
+                # systems + cache.nixos.org, the latter two ALWAYS 404 for our CA realisations) → hundreds of
+                # thousands of tiny HTTP GETs that build NOTHING → the daemon "wedges live-but-sleeping" even
+                # SOLO at low load (network-bound, v-nix -L repro 2026-08-31). substitute=false skips that
+                # realisation-substitution phase entirely; it is verdict-SAFE (build-vs-fetch, not what-outputs —
+                # deterministic per-case verdicts are byte-identical local vs substituted; v-corpus-harness
+                # sign-off) and a fresh re-baseline substitutes nothing anyway. Only the harvest path is affected;
+                # the gate keeps normal substitution. Durable fix (per-file coarsening) tracked separately.
+                harvest="$(nix build "$root#corpus-verdicts" --no-link --print-out-paths --option substitute false)"
                 ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$root/spec/semantics/.gate-baseline"
-                harvest_rust="$(nix build "$root#corpus-verdicts-rust" --no-link --print-out-paths)"
+                harvest_rust="$(nix build "$root#corpus-verdicts-rust" --no-link --print-out-paths --option substitute false)"
                 ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust" "$root/spec/semantics/.gate-baseline-rust"
-                harvest_rust_async="$(nix build "$root#corpus-verdicts-rust-async" --no-link --print-out-paths)"
+                harvest_rust_async="$(nix build "$root#corpus-verdicts-rust-async" --no-link --print-out-paths --option substitute false)"
                 exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust_async" "$root/spec/semantics/.gate-baseline-rust-async"
               '';
             };
