@@ -673,6 +673,45 @@
   (input  (do (def (main) (match #record((= a 1) (= b 2) (= c 3)) (#record((= a x) (.. rest)) (+ x (+ (. rest b) (. rest c)))) (_ 0))) (export main)))
   (call   main) (output (: 6 Int64)))
 
+(case "trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element"
+  (doc    "The #6631 slice-1 breadth fence (breaker battery 2026-08-31): the rest binder is a real
+           first-class sub-tuple — `#tuple(n 7 8 9)` peeled by `#tuple(x (.. r))` then `r` re-matched
+           by `#tuple(y (.. r2))` reads `(. r2 1)` = 9 through TWO gather layers, with the leading
+           element RUNTIME (the in-place construction folds around it) → 1000n + 70 + 9. The second
+           call routes the scrutinee through an IF-JOIN (`(if (> n 0) #tuple(1 2 3) #tuple(4 5 6))`,
+           still structurally known per-branch): n=1 picks #tuple(1 2 3) → a=1, (. rest 1)=3 → 103.
+           Rust-parity and cadenza-hop verified (hop byte-idempotent, value identical) at promotion.")
+  (input  (do
+            (def (nested (: n Int64))
+              (match #tuple(n 7 8 9)
+                (#tuple(x (.. r))
+                  (match r (#tuple(y (.. r2)) (+ (* x 1000) (+ (* y 10) (. r2 1)))) (_ -2)))
+                (_ -1)))
+            (def (sel (: n Int64))
+              (match (if (> n 0) #tuple(1 2 3) #tuple(4 5 6))
+                (#tuple(a (.. rest)) (+ (* a 100) (. rest 1)))
+                (_ -1)))
+            (def (main (: n Int64)) (+ (nested n) (sel n)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2182 Int64))
+  (call   main (: -1 Int64)) (output (: -515 Int64)))
+
+(case "trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple"
+  (doc    "Two boundary faces of the tuple-rest gather: (1) a 2-tuple matched by `#tuple(a b (.. rest))`
+           (minimum arity met exactly) MATCHES with `rest` the EMPTY tuple — the arm runs, no
+           fall-through; (2) the degenerate rest-only `#tuple((.. r))` (the #6640 no-panic parse face)
+           gathers the WHOLE tuple, `(. r 0)` reading element 0. n=4: exact-arity arm → 40; rest-only
+           → n → 44 total.")
+  (input  (do
+            (def (exact (: n Int64))
+              (match #tuple(n 2) (#tuple(a b (.. rest)) (* a 10)) (_ -1)))
+            (def (whole (: n Int64))
+              (match #tuple(n 2) (#tuple((.. r)) (. r 0)) (_ -1)))
+            (def (main (: n Int64)) (+ (exact n) (whole n)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 44 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
 ; an exact key-set match — see the list-arm map-element cases below). With ZERO named keys, `(map)` is that
 ; presence test made VACUOUS, so it matches ANY map — empty OR non-empty. This is the opposite of `(list)`,
