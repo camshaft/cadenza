@@ -163,12 +163,36 @@ enum CorpusCmd {
         /// baselined case look vanished (a false positive).
         #[arg(long, required = true, num_args = 1..)]
         corpus: Vec<String>,
+        /// Suppress the per-baseline `OK — … 0 vanished` lines; emit output ONLY on a vanished hit (for a
+        /// terse pre-commit hook). Errors + the vanished lines still print.
+        #[arg(long)]
+        quiet: bool,
     },
 }
 
 /// Run a corpus command per `args`, returning the process exit code. `prog` names the tool in
 /// diagnostics (`cdz-corpus` for the standalone bin, `cdz` for the unified one).
 pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
+    // `vanished-check` uses DISTINCT exit codes (a stable contract for the pre-commit baseline-guard hook,
+    // v-fleet-tooling #7197): 0 = OK (no vanished), 3 = a VANISHED title was DETECTED (the BLOCK signal),
+    // 2 = a tooling/usage error (unreadable file, &c. — the hook FAILS OPEN on this, never blocking a commit
+    // on a broken tool). This lets the hook key on exit 3 rather than a fragile output-string grep. The
+    // `VANISHED baseline` output token is ALSO kept stable for the current grep-based hook.
+    if let CorpusCmd::VanishedCheck {
+        baselines,
+        corpus,
+        quiet,
+    } = &args.command
+    {
+        return match vanished_across(baselines, corpus, *quiet) {
+            Ok(0) => ExitCode::SUCCESS,
+            Ok(_) => ExitCode::from(3), // vanished detected → BLOCK
+            Err(msg) => {
+                eprintln!("{prog}: {msg}");
+                ExitCode::from(2) // tooling/usage error → fail-open in the hook
+            }
+        };
+    }
     let result = match &args.command {
         CorpusCmd::Records {
             files,
@@ -187,7 +211,9 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
         CorpusCmd::DeclinesDeprecatedCheck { files } => check_declines_deprecated(files),
-        CorpusCmd::VanishedCheck { baselines, corpus } => check_vanished(baselines, corpus),
+        CorpusCmd::VanishedCheck { .. } => {
+            unreachable!("vanished-check is handled above with distinct exit codes")
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -277,11 +303,18 @@ fn check_baseline_drift(
 
 /// `vanished-check <baseline…> --corpus FILE…`: flag VANISHED titles (baseline descriptions with no corpus
 /// case) across ONE OR MORE baselines — the reusable primitive for the pre-commit baseline-guard. Builds the
-/// corpus title set ONCE (shared across baselines) and set-diffs each baseline against it; exits NON-ZERO
-/// listing every vanished title. A faithful harvest has vanished==0 by construction, so this never
-/// false-positives a real re-baseline; it catches the `#7176`/`#6835` contamination class (a non-harvest
-/// bulk re-pin re-injecting stale titles, or a title-changing conversion without co-removal).
-fn check_vanished(baselines: &[String], corpus_files: &[String]) -> Result<(), String> {
+/// corpus title set ONCE (shared across baselines) and set-diffs each baseline against it, printing each
+/// vanished title (token `VANISHED baseline`, kept STABLE for the hook's grep). Returns the TOTAL vanished
+/// count on success, or `Err` on a tooling error (unreadable/unparseable file). The caller (`run`) maps this
+/// to the DISTINCT exit codes the hook keys on: 0 (count 0) / 3 (count>0 = detected) / 2 (Err = fail-open).
+/// A faithful harvest has vanished==0 by construction, so this never false-positives a real re-baseline; it
+/// catches the `#7176`/`#6835` contamination class (a non-harvest bulk re-pin re-injecting stale titles, or a
+/// title-changing conversion without co-removal). `quiet` suppresses the per-baseline OK lines.
+fn vanished_across(
+    baselines: &[String],
+    corpus_files: &[String],
+    quiet: bool,
+) -> Result<usize, String> {
     let mut corpus: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for path in corpus_files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
@@ -293,13 +326,17 @@ fn check_vanished(baselines: &[String], corpus_files: &[String]) -> Result<(), S
         let descs = baseline_descriptions(&text);
         let (vanished, _missing) = baseline_drift(&corpus, &descs);
         if vanished.is_empty() {
-            println!(
-                "vanished-check: OK — {bl}: 0 vanished ({} baseline titles vs {} corpus titles)",
-                descs.len(),
-                corpus.len()
-            );
+            if !quiet {
+                println!(
+                    "vanished-check: OK — {bl}: 0 vanished ({} baseline titles vs {} corpus titles)",
+                    descs.len(),
+                    corpus.len()
+                );
+            }
         } else {
             for v in &vanished {
+                // `VANISHED baseline` is the STABLE token the pre-commit hook greps (v-fleet-tooling #7197);
+                // do not reword it without coordinating (a reword silently degrades the hook to fail-open).
                 eprintln!(
                     "vanished-check: {bl}: VANISHED baseline title has no corpus case (reds `gate --check`): {v:?}"
                 );
@@ -307,17 +344,17 @@ fn check_vanished(baselines: &[String], corpus_files: &[String]) -> Result<(), S
             total_vanished += vanished.len();
         }
     }
-    if total_vanished == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "{total_vanished} vanished baseline title(s) across {} baseline file(s) — a renamed/removed case \
-             left the baseline stale (a contaminated non-harvest bulk re-pin, cf #7176/#6835; or a \
-             title-changing conversion without co-removal). Regenerate via `nix run .#save-baseline` or drop \
-             the stale title(s) — do NOT land a bulk baseline diff from a non-harvest source.",
+    if total_vanished > 0 {
+        eprintln!(
+            "vanished-check: {total_vanished} vanished baseline title(s) across {} baseline file(s) — a \
+             renamed/removed case left the baseline stale (a contaminated non-harvest bulk re-pin, cf \
+             #7176/#6835; or a title-changing conversion without co-removal). Regenerate via `nix run \
+             .#save-baseline` or drop the stale title(s) — do NOT land a bulk baseline diff from a \
+             non-harvest source.",
             baselines.len()
-        ))
+        );
     }
+    Ok(total_vanished)
 }
 
 /// `nativize-check FILE…`: assert each corpus file is ALREADY in native compound-value input form — i.e.
@@ -1402,11 +1439,11 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         assert!(descs.contains(&"second case".to_string()), "got {descs:?}");
     }
 
-    /// `check_vanished` (the pre-commit baseline-guard primitive) errs iff ANY of the given baselines has a
-    /// title with no corpus case, across MULTIPLE baselines; a baseline matching the corpus is clean. This is
-    /// the #7176/#6835 contamination guard.
+    /// `vanished_across` (the pre-commit baseline-guard primitive) returns the TOTAL vanished-title count
+    /// across N baselines (0 = clean, >0 = detected → the caller maps to exit 3), and `Err` only on a tooling
+    /// error (unreadable file → exit 2, fail-open). This is the #7176/#6835 contamination guard.
     #[test]
-    fn check_vanished_errs_on_any_baseline_with_a_stale_title() {
+    fn vanished_across_counts_stale_titles_and_errs_only_on_io() {
         let dir = std::env::temp_dir().join(format!("vanished-check-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let w = |name: &str, body: &str| {
@@ -1426,14 +1463,31 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         let stale = w("stale.gate-baseline", "pass\talpha\npass\tgamma\n");
 
         let corpus_files = [corpus];
-        // All-clean → Ok.
-        assert!(check_vanished(std::slice::from_ref(&clean), &corpus_files).is_ok());
-        // Any stale baseline → Err naming the vanished count.
-        let err = check_vanished(&[clean, stale.clone()], &corpus_files)
-            .expect_err("a stale title must err");
-        assert!(err.contains("1 vanished"), "got: {err}");
-        // A single stale baseline alone also errs.
-        assert!(check_vanished(std::slice::from_ref(&stale), &corpus_files).is_err());
+        // All-clean → Ok(0).
+        assert_eq!(
+            vanished_across(std::slice::from_ref(&clean), &corpus_files, false).unwrap(),
+            0
+        );
+        // A mix → Ok(count) counting only the stale baseline's vanished title ("gamma").
+        assert_eq!(
+            vanished_across(&[clean, stale.clone()], &corpus_files, true).unwrap(),
+            1
+        );
+        // A single stale baseline → Ok(1) (vanished is NOT an Err — the caller maps count>0 to exit 3).
+        assert_eq!(
+            vanished_across(std::slice::from_ref(&stale), &corpus_files, false).unwrap(),
+            1
+        );
+        // A tooling error (nonexistent baseline file) → Err (the caller maps to exit 2, fail-open).
+        let missing = dir.join("does-not-exist.gate-baseline");
+        assert!(
+            vanished_across(
+                &[missing.to_str().unwrap().to_string()],
+                &corpus_files,
+                false
+            )
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
