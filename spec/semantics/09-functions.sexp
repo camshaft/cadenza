@@ -10154,9 +10154,11 @@
     (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
-  ; pre-INC1 main measures 2 (breaker census 2026-08-30, debug 05mPZxve); INC1 (v-core-opt
-  ; sumcont-folded-leaf-disc) collapses this to 0 — tighten to (live-objects 0) on its land
-  ; (#5766 tolerate-fewer bridges the flip).
+  ; main measures 2 (breaker census 2026-08-30, debug 05mPZxve). INC1 v1 was RETRACTED
+  ; 2026-08-31 (captures.is_empty() double-freed at DIRECT-call boundaries — 67 A/B-proven
+  ; regressions; this case pins the INDIRECT face, which stayed sound; the direct-boundary
+  ; face lives in corpus 21). Tighten to (live-objects 0) only when a SOUND reclaim
+  ; discriminator lands, with the owning lane's sign-off + a fresh census.
   (live-objects known-leak))
 
 (case "hc2 a CAPTURING closure boxed as a value stays EXCLUDED from the combinator shell-reclaim (leak, never double-free)"
