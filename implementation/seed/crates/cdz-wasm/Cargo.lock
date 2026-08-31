@@ -424,6 +424,7 @@ dependencies = [
  "blake3",
  "cadenza-ast",
  "cadenza-compile-abi",
+ "cadenza-syntax",
  "tracing",
 ]
 
