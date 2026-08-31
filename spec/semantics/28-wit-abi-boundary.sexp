@@ -68,6 +68,9 @@
 ; payload), both Some(5)->(1,5) and None->(0,0) arms + invoked e2e.
 ; SHAPE 39 — a list<record{option<s64>, n}> host-op ARG (sink.push): each record element written in place, its
 ; option field via emit_option_to_mem (Some + None across two elements) + invoked e2e.
+; SHAPE 40 — a TOP-LEVEL bare list<u8>/Bytes PARAM member of a typed export interface (decode-check(list<u8>)
+; -> bool): the wrapper copies the incoming (ptr,len) out of memory into a value-heap Bytes (mem_leaf_params
+; lift) and reclaims it after the call — the decode-check half of the operator §2 two-export shape.
 
 (case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -209,6 +212,23 @@
   (input (do (def (encodeQuoted) (Bytes.of #list(104 105))) (export encodeQuoted)))
   (call encode-quoted)
   (output #list(104 105))
+  (live-objects known-leak))
+
+(case "a bare list<u8>/Bytes PARAM member of a typed export interface crosses (multi-export list<u8> param — operator §2 decode-check half)"
+  (doc    "SHAPE 40 — a TOP-LEVEL bare `list<u8>`/Bytes PARAM member of a DECLARED export interface (not a
+           record leaf like SHAPE 22, nor a single bare export like the plain-export entry-param route). The
+           typed-interface wrapper copies the incoming `(ptr,len)` `list<u8>` out of linear memory into a
+           value-heap Bytes handle (the `mem_leaf_params` lift — `bytes-alloc`/`bytes-set` copy-in), passes it
+           to the def, and reclaims the borrowed handle after the call (`drop`). This is the `decode-check`
+           half of the operator-mandated single-component TWO-export shape (§2, seq-107/108) — the inverse of
+           the `encode-quoted` bytes-RESULT member (`ResultLower::CopyBytes`). Guest decodeCheck(x: Bytes) =
+           Bytes.len(x) > 0; calling with `#list(104 105)` returns true, proving the byte-leaf param copy-in +
+           the borrow reclaim end to end. Guards the bytes-PARAM-member lift against regression.")
+  (wit-world (world w (export iface (member decode-check (func (param x (list (u8))) (result (bool)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (decodeCheck (: x Bytes)) (> (Bytes.len x) 0)) (export decodeCheck)))
+  (call decode-check (: #list(104 105) Bytes))
+  (output (: true Bool))
   (live-objects known-leak))
 
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"

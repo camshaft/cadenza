@@ -632,6 +632,19 @@ pub fn emit(
                 used.insert("bytes-get");
                 used.insert("drop");
             }
+            // A TOP-LEVEL memory-bearing byte-leaf PARAM (`Bytes`/`String`) copies the incoming `(ptr, len)`
+            // out of linear memory via a `bytes-alloc` + `bytes-set` loop, and the wrapper (its owner) drops
+            // the borrowed handle after the call — register those so the wrapper body resolves them.
+            for m in w.mem_leaf_params.iter().flatten() {
+                if let (serialize::MemLeafKind::Str | serialize::MemLeafKind::Bytes, drop_after) = m
+                {
+                    used.insert("bytes-alloc");
+                    used.insert("bytes-set");
+                    if *drop_after {
+                        used.insert("drop");
+                    }
+                }
+            }
         }
     }
     let imports: Vec<&runtime_abi::RtOp> = used
@@ -8366,6 +8379,12 @@ fn record_interface_export(
     let mut wrappers = Vec::new();
     let mut funcs = Vec::new();
     let mut any_record = false;
+    // Set when a member has a TOP-LEVEL memory-bearing byte-leaf param (`Bytes`/`String` lifted via
+    // `mem_leaf_params`): the typed-interface wrapper must take over to COPY that param out of linear memory
+    // even when its result is a bare scalar (the `decode-check(list<u8>) -> bool` shape) — else the
+    // `!any_record && !needs_result_wrapper && !any_mem_leaf_param` gate bails to the scalar path. The
+    // param-side twin of `needs_result_wrapper`.
+    let mut any_mem_leaf_param = false;
     // Set when a member's RESULT spills to memory (a compound result-lower): the typed-interface wrapper must
     // then take over even for an all-scalar-param member, to WRITE the result to the retptr (else the compound
     // result leaks as a raw u32 handle via the provider path). The result-side twin of `any_record`.
@@ -8384,7 +8403,12 @@ fn record_interface_export(
         let mut param_vts: Vec<u8> = Vec::new();
         let mut params: Vec<Option<Vec<FieldRebuild>>> = Vec::new();
         let mut param_slots: Vec<Option<Vec<u32>>> = Vec::new();
-        for ((_, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
+        // Parallel to `params`: a TOP-LEVEL memory-bearing byte-leaf param (a `Bytes` crossing as `list<u8>`,
+        // a `String` crossing as `string`) is lifted via `mem_leaf_params` (copy the boundary `(ptr, len)`
+        // out of linear memory into a value-heap handle, passed DIRECTLY as the def arg — the same lift the
+        // plain-export bare-wrapper route emits). `None` for a scalar/record param.
+        let mut mem_leaf_params: Vec<Option<(serialize::MemLeafKind, bool)>> = Vec::new();
+        for ((binder, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
                 Ty::Record(map) => {
                     // Build the record's per-field rebuild in WIT ORDER + the name-lex SLOTS the wrapper
@@ -8398,20 +8422,46 @@ fn record_interface_export(
                     let (rebuild, slots) = record_fields_rebuild(db, map, wfs, &mut param_vts)?;
                     params.push(Some(rebuild));
                     param_slots.push(Some(slots));
+                    mem_leaf_params.push(None);
                     any_record = true;
                 }
-                Ty::Tuple(_)
-                | Ty::Sum { .. }
-                | Ty::List(_)
-                | Ty::Map(_, _)
-                | Ty::Set(_)
-                | Ty::String
-                | Ty::Bytes => return None, // needs memory / a deeper wrapper — later
+                // A TOP-LEVEL memory-bearing byte-leaf param (`Bytes` ↔ `list<u8>`, `String` ↔ `string`): copy
+                // the incoming `(ptr, len)` out of linear memory into a value-heap byte-leaf handle and pass it
+                // DIRECTLY as the def arg (`mem_leaf_params`, the host→guest mirror of the import-side `list<u8>`
+                // marshal — the `decode-check(list<u8>) -> bool` half of the operator's two-export shape §2).
+                // BORROW-ONLY slice: the def must not consume/escape the param, so the wrapper (its sole owner)
+                // reclaims the lifted handle after the call — a guaranteed 0-leak lift; a consuming/escaping
+                // byte-leaf param needs a reclaim the wrapper cannot guarantee here → decline (a later slice,
+                // mirroring `try_bare_entry_param_component`'s borrow-only rung). WIT type must match the guest.
+                Ty::Bytes | Ty::String => {
+                    let kind = match (gty, wty) {
+                        (Ty::Bytes, WitType::List(inner)) if matches!(**inner, WitType::U8) => {
+                            serialize::MemLeafKind::Bytes
+                        }
+                        (Ty::String, WitType::String) => serialize::MemLeafKind::Str,
+                        _ => return None, // a Bytes vs `string` (or String vs `list<u8>`) mismatch — decline
+                    };
+                    if crate::backend::wasm::select::param_escapes_body(db, e.body, *binder) {
+                        return None; // a consumed/escaping byte-leaf param — a later slice
+                    }
+                    // A byte-leaf param flattens to `(ptr, len)` = two i32 core values.
+                    let i32b = crate::backend::wasm::lir::ValType::I32.byte();
+                    param_vts.push(i32b);
+                    param_vts.push(i32b);
+                    params.push(None);
+                    param_slots.push(None);
+                    mem_leaf_params.push(Some((kind, true))); // drop_after = borrowed (checked above)
+                    any_mem_leaf_param = true;
+                }
+                Ty::Tuple(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) => {
+                    return None;
+                } // needs memory / a deeper wrapper — later
                 scalar => {
                     // a scalar param passes straight through (no rebuild).
                     param_vts.push(valtype_of(scalar)?.byte());
                     params.push(None);
                     param_slots.push(None);
+                    mem_leaf_params.push(None);
                 }
             }
         }
@@ -8446,10 +8496,9 @@ fn record_interface_export(
             needs_result_wrapper = true;
         }
         let def_abs = layout.abs(e.def)?;
-        // No TOP-LEVEL memory-bearing leaf params on the typed-interface RECORD-param route (a String/Bytes
-        // leaf there rides inside a record via `FieldRebuild::BytesLeaf`); the plain-export bare-wrapper route
-        // (which lifts a top-level String/Bytes param directly) is the producer of `Some(..)` here.
-        let mem_leaf_params = vec![None; params.len()];
+        // `mem_leaf_params` was built per-param in the loop above: a TOP-LEVEL `Bytes`/`String` leaf param
+        // lifts via `Some((kind, drop_after))`; a scalar/record param is `None` (a String/Bytes leaf INSIDE a
+        // record rides via `FieldRebuild::BytesLeaf` instead).
         wrappers.push(serialize::WrapperDesc {
             name: member.name.clone(),
             param_vts,
@@ -8473,9 +8522,10 @@ fn record_interface_export(
         });
     }
     // A pure-scalar interface (all-scalar params AND scalar/unit results) is handled (no wrapper) by
-    // scalar_interface_export; take over when a member needs a wrapper — either a RECORD param (rebuild) OR a
-    // spilled COMPOUND result (retptr write). A scalar-param + compound-result member needs only the latter.
-    if !any_record && !needs_result_wrapper {
+    // scalar_interface_export; take over when a member needs a wrapper — a RECORD param (rebuild), a
+    // TOP-LEVEL memory-bearing byte-leaf param (`Bytes`/`String` copy-in), OR a spilled COMPOUND result
+    // (retptr write). A scalar-param + compound-result member needs only the last.
+    if !any_record && !any_mem_leaf_param && !needs_result_wrapper {
         return None;
     }
     // The exported instance must EXPORT each named (record/variant) type its funcs reference, or the
