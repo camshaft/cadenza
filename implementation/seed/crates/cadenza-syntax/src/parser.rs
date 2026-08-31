@@ -924,6 +924,14 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let comments = self.take_comments_here();
         let node = self.expr(0);
+        self.finish_stmt(node, start, comments)
+    }
+
+    /// The post-expr half of [`Self::stmt`]: given the parsed form `node`, the statement's START token
+    /// index, and the leading `//` `comments` captured before it, attach any leftover trivia and return
+    /// the statement node. Shared by the recursive `stmt` and the iterative `Cont::Module` member loop so
+    /// the two never drift. `start` is a TOKEN INDEX (into `self.leading`), not a span.
+    fn finish_stmt(&mut self, node: StructId, start: usize, comments: Vec<Lead>) -> StructId {
         // Docs still sitting at the statement's start slot were NOT consumed (the form was not a
         // def/type/effect/module, which drain their own docs) — so they document the FILE/MODULE, not a
         // definition. Emit them as `(module-doc …)` siblings so they re-print as `///` (a
@@ -1597,6 +1605,23 @@ impl<'a> Parser<'a> {
                 lvl_entered: bool,
                 lvl_num: bool,
             },
+            // A `module Name { member… }` declaration reading its member statements. `items` holds
+            // `[ "module"-head, name, leading-doc…, member… ]`; `members_start` the index members begin at;
+            // `stmt_start`/`comments` the current member's start token index + pre-captured leading `//`
+            // comments (for `finish_stmt` on deliver). Each member's form is an expr(0) descent — so a
+            // NESTED `module` is read on THIS worklist (no native recursion). On the last member (or an
+            // empty body) `finish_module_body` closes `}` + assembles `(module …)`.
+            Module {
+                start: Span,
+                items: Vec<StructId>,
+                members_start: usize,
+                stmt_start: usize,
+                comments: Vec<Lead>,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+                lvl_num: bool,
+            },
         }
         // A sentinel precedence higher than every real infix/`as`/ascription/arrow precedence: a level
         // descended at `TIGHT_PREC` folds its operand + postfix but no infix, and the postfix funnel skips
@@ -2073,6 +2098,43 @@ impl<'a> Parser<'a> {
                         });
                         cur_min_prec = 0; // the function body is `expr(0)` (a sequence position)
                         continue; // descend: read the body
+                    } else if self.at_keyword(Keyword::Module) {
+                        // `module Name { member… }` — read the preamble (docs, name, leading (doc…), `{`)
+                        // INLINE, then read members via the worklist: each member's form is an expr(0)
+                        // descent (Cont::Module), so a NESTED module de-recurses. On close, finish_module_body
+                        // drains the trailing `}` slot + assembles. Empty body finishes inline.
+                        let start = cur_start;
+                        let docs = self.take_docs_here();
+                        let head = self.keyword_head("module", start);
+                        self.bump(); // `module`
+                        let name = self.binder();
+                        let mut items = vec![head, name];
+                        items.extend(self.doc_nodes(docs));
+                        self.expect(Kind::LBrace, "`{`");
+                        let members_start = items.len();
+                        if !self.at(Kind::RBrace) && !self.at_end() {
+                            let stmt_start = self.pos;
+                            let comments = self.take_comments_here();
+                            pending.push(Cont::Module {
+                                start,
+                                items,
+                                members_start,
+                                stmt_start,
+                                comments,
+                                lvl_min_prec: cur_min_prec,
+                                lvl_spine: spine,
+                                lvl_entered: entered,
+                                lvl_num: prefix_is_number,
+                            });
+                            cur_min_prec = 0; // a member form is a statement = `expr(0)`
+                            continue; // descend: read the first member
+                        }
+                        // Empty body (`module M {}`) — no member descent; finish inline.
+                        left = self.finish_module_body(items, members_start, start);
+                        spine = 0;
+                        pf_pending = true;
+                        pf_num = prefix_is_number;
+                        pf_spine = 0;
                     } else if self.at_keyword(Keyword::Handle) {
                         // `handle E[(seed)] with | op(…, s) => body | … in body` — NOT bracketed_bars. Read
                         // the effect name + seed head INLINE; the seed of `E(seed)` descends (Cont::Handle
@@ -3493,6 +3555,54 @@ impl<'a> Parser<'a> {
                     reading = false;
                     continue;
                 }
+                Some(Cont::Module {
+                    start,
+                    mut items,
+                    members_start,
+                    stmt_start,
+                    comments,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                    lvl_num,
+                }) => {
+                    // `left` is the delivered member FORM — finish the statement (leftover-doc/comment
+                    // attach) and append it, then start the next member or close the body.
+                    let member = self.finish_stmt(left, stmt_start, comments);
+                    items.push(member);
+                    if self.pos == stmt_start {
+                        self.bump(); // forward-progress guard (a stray token that begins no member)
+                    }
+                    if !self.at(Kind::RBrace) && !self.at_end() {
+                        let stmt_start = self.pos;
+                        let comments = self.take_comments_here();
+                        pending.push(Cont::Module {
+                            start,
+                            items,
+                            members_start,
+                            stmt_start,
+                            comments,
+                            lvl_min_prec,
+                            lvl_spine,
+                            lvl_entered,
+                            lvl_num,
+                        });
+                        cur_min_prec = 0;
+                        reading = true;
+                        continue; // descend: read the next member
+                    }
+                    // No more members — close `}` + assemble `(module …)`.
+                    left = self.finish_module_body(items, members_start, start);
+                    cur_start = start;
+                    cur_min_prec = lvl_min_prec;
+                    spine = lvl_spine;
+                    entered = lvl_entered;
+                    pf_pending = true;
+                    pf_num = lvl_num;
+                    pf_spine = 0;
+                    reading = false; // resume the parent level's infix loop with the module operand
+                    continue;
+                }
             }
         }
     }
@@ -4888,22 +4998,26 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
         }
-        // A `///` doc or `//` comment on the last line(s) BEFORE the closing `}` (no following member)
-        // sits in the `}` token's leading slot — the loop above exits at `}` without ever draining it, so
-        // it would be STRANDED and DROPPED (a genuine comment/doc LOSS: `cdz fmt` then REFUSES the file via
-        // the comment-drop guard, so such a module can't be formatted at all). Drain that slot here and
-        // re-attach, mirroring the top-level `program()` trailing handler:
-        //   • a `///` doc becomes a trailing `(doc …)` MODULE MEMBER (docs are members here — the printer
-        //     already renders it as a `/// …` line before `}`); this is the common, valuable case and it
-        //     works for both empty and non-empty bodies (a `(doc …)` stands alone).
-        //   • a leftover `//` comment wraps the LAST member as `(comment …)`, so the module still
-        //     round-trips (its printed position moves above the last member — the same v1 limitation a
-        //     mid-comment already has — but nothing is lost).
-        // A `//` comment in an EMPTY body has no member to wrap and no standalone carrier that re-reads as
-        // a comment (a bare `(comment "t")` prints as a `comment("t")` CALL; a `unit` placeholder prints a
-        // phantom `unit` member) — so it is left in the slot for the comment-drop guard to catch (`cdz fmt`
-        // refuses, byte-identical, no corruption). That is the pre-existing safe behavior for this rare
-        // curiosity (an empty module whose only content is a plain comment); the doc case is preserved.
+        self.finish_module_body(items, members_start, start)
+    }
+
+    /// Close a `module { … }` body: drain any `///` doc / `//` comment stranded in the closing `}` slot
+    /// (re-attaching per the rules below), consume `}`, and build the `(module …)` node. `items` already
+    /// holds `[ "module"-head, name, leading-doc…, member… ]`; `members_start` is the index where members
+    /// begin (the trailing-comment wrap must never pop below it — the name is not a member); `start` is the
+    /// module's span. Shared by the recursive `module_expr` and the iterative `Cont::Module` path.
+    ///
+    /// A `///` doc / `//` comment on the last line(s) before `}` sits in the `}` token's leading slot (the
+    /// member loop exits at `}` without draining it) and would be STRANDED + DROPPED (a comment/doc LOSS →
+    /// `cdz fmt` refuses the file). Re-attach, mirroring `program()`'s trailing handler: a `///` doc becomes
+    /// a trailing `(doc …)` module MEMBER; a leftover `//` wraps the LAST member as `(comment …)`; a `//` in
+    /// an EMPTY body is left in the slot for the drop-guard (no standalone carrier round-trips).
+    fn finish_module_body(
+        &mut self,
+        mut items: Vec<StructId>,
+        members_start: usize,
+        start: Span,
+    ) -> StructId {
         let (docs, comments): (Vec<Lead>, Vec<Lead>) = {
             let leads: Vec<Lead> = if self.pos < self.leading.len() {
                 std::mem::take(&mut self.leading[self.pos])
@@ -4914,14 +5028,10 @@ impl<'a> Parser<'a> {
         };
         if !comments.is_empty() {
             if items.len() > members_start {
-                // Wrap the LAST member (never the name / a leading doc, which sit below members_start).
                 let last = items.pop().unwrap();
                 items.push(self.wrap_comments(comments, last));
-            } else {
-                // Empty body: put the comment back so the drop-guard sees it (fmt refuses, no corruption).
-                if self.pos < self.leading.len() {
-                    self.leading[self.pos] = comments;
-                }
+            } else if self.pos < self.leading.len() {
+                self.leading[self.pos] = comments;
             }
         }
         // A trailing `///` doc becomes a `(doc …)` member at the END of the module body (empty or not).
@@ -7571,6 +7681,16 @@ mod tests {
             "/// the answer\ndef x = 42",
             "def f(a) =\n  // note\n  a + 1",
             "@test def f(a) = a",
+            // `module … { … }` (now on the worklist) — empty / single / multi member / NESTED (the
+            // de-recursion target) / leading doc / trailing comment before `}`.
+            "module M {}",
+            "module M { def x = 1 }",
+            "module M { def a = 1 def b = 2 }",
+            "module A { module B { def x = 1 } }",
+            "module A { module B { module C { def x = 1 } } }",
+            "/// mod doc\nmodule M { def x = 1 }",
+            "module M {\n  def x = 1\n  // trailing\n}",
+            "module M { def f(a) = a + 1 export { f } }",
         ];
         for src in cases {
             let mut rec = build_parser(src, FileId::default());
