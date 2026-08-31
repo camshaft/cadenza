@@ -239,6 +239,46 @@
   (input  (Set.contains #set() 1))
   (output (: false Bool)))
 
+; --- Set patterns match by CONTAINMENT ------------------------------------------------------
+; A `#set(e…)` PATTERN in a match matches iff the scrutinee set CONTAINS every listed element — a subset
+; test, NOT set equality. This mirrors the map pattern (`#map((= k v)…)` matches any map containing the
+; listed keys, binding their values) and the open-row record pattern (a subset of fields): a collection
+; pattern names a REQUIRED SUBSTRUCTURE, ignoring the rest. So `#set(1)` matches `{1,2}`, the empty pattern
+; `#set()` matches every set, an order-permuted pattern matches (a set is unordered), and a pattern naming
+; an element the scrutinee lacks (a superset, or a disjoint element) does NOT match and falls to the next
+; arm. Element order and duplicates in the pattern are immaterial (it denotes a set). All const-folded here.
+(case "a set pattern matches a scrutinee set with the SAME elements"
+  (input  (match #set(1 2) (#set(1 2) 9) (_ 0)))
+  (output (: 9 Int64)))
+
+(case "a set pattern is order-independent (a set is unordered)"
+  (input  (match #set(1 2) (#set(2 1) 9) (_ 0)))
+  (output (: 9 Int64)))
+
+(case "a set pattern naming a SUBSET matches by containment, not equality"
+  (doc    "`#set(1)` over `{1,2}` MATCHES — a set pattern is a containment (subset) test: the scrutinee
+           contains the listed element, so it matches even though the sets are not equal. This is the set
+           analogue of the map pattern matching a map that contains the named key.")
+  (input  (match #set(1 2) (#set(1) 9) (_ 0)))
+  (output (: 9 Int64)))
+
+(case "the empty set pattern matches every set"
+  (doc    "`#set()` names no required element, so it matches any scrutinee set (the empty set is a subset of
+           every set) — the containment identity, the set twin of a bare wildcard for the membership axis.")
+  (input  (match #set(1 2) (#set() 9) (_ 0)))
+  (output (: 9 Int64)))
+
+(case "a set pattern naming an element the scrutinee lacks does NOT match"
+  (doc    "The containment test is directional: `#set(1 2 3)` over `{1,2}` does NOT match (the scrutinee
+           lacks 3), and a disjoint `#set(3)` does not either — both fall to the `_` arm → 0. Pins that a
+           set pattern requires its elements to be PRESENT, so a superset or disjoint pattern is refuted.")
+  (input  (match #set(1 2) (#set(1 2 3) 9) (_ 0)))
+  (output (: 0 Int64)))
+
+(case "a set pattern disjoint from the scrutinee does not match"
+  (input  (match #set(1 2) (#set(3) 9) (_ 0)))
+  (output (: 0 Int64)))
+
 (case "the empty set has cardinality zero"
   (doc    "The degenerate cardinality boundary: `(Set.len (Set.of (list)))` is 0 — the empty set holds no
            elements. The len companion of the empty-set membership pin above, and the both-backend witness
