@@ -113,7 +113,11 @@ pass	ml/193-hash-prefixed-name-backtick
 pass	ml/194-hash-prefixed-name-in-def
 pass	ml/195-open-sum-row-variable
 pass	ml/196-open-sum-zero-variant
+pass	ml/197-record-type-fields-multi
+pass	ml/198-record-type-fields-single
+pass	ml/199-multi-statement-function-body
 pass	ml/20-world-result-bare
+pass	ml/200-top-level-no-semicolons
 pass	ml/21-world-record-member
 pass	ml/22-world-variant-record-payload
 pass	ml/23-world-variant-prim-payload

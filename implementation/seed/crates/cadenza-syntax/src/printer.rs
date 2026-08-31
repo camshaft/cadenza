@@ -6813,55 +6813,19 @@ mod tests {
     //     AST, the cleaner spelling).
     // The bare-arrow `print((-> …))` sexp→ml oracles are subsumed by the ml cases' fmt goldens.
 
-    #[test]
-    fn record_type_fields_print_as_colon_ascription_and_round_trip() {
-        // DESIGN-record-type-syntax RT2 (operator PR #2794): the canonical record-TYPE field is the
-        // `(: name T)` ascription node — the SAME node as a param binder / `e: T`, not a bespoke pair.
-        // A `Record` type head prints each `(: field T)` child through the infix `:` path as
-        // `field : T`, and the printed surface re-parses back to the identical ascription arena. This
-        // pins the canonical-form behavior BEFORE Phase A migrates the ~141 head-app `(field T)` cases,
-        // so the atomic RT1+RT3+RT4 land cannot silently regress the ascription round-trip.
-        //
-        // Arena -> surface: the ascription children print as `a : Int64` (infix `:`, spaced), never as
-        // the head-app spelling `a(Int64)`.
-        let a = sexpr::read("(type R (Record (: a Int64) (: b Bool)))").unwrap();
-        let out = print(&a, 80);
-        assert_eq!(out, "type R =\n  | Record(a : Int64, b : Bool)");
-        assert!(
-            !out.contains("a(Int64)"),
-            "field must not print as head-app: {out:?}"
-        );
-        // Surface -> arena -> surface: the printed colon form re-parses to the same ascription arena
-        // and reprints identically (round-trip fixed point).
-        assert_eq!(
-            assert_roundtrip("type R =\n  | Record(a : Int64, b : Bool)", 80),
-            "type R =\n  | Record(a : Int64, b : Bool)"
-        );
-        // Single field, same shape.
-        let a = sexpr::read("(type R (Record (: a Int64)))").unwrap();
-        assert_eq!(print(&a, 80), "type R =\n  | Record(a : Int64)");
-    }
-
-    #[test]
-    fn multi_statement_function_body_prints_bare() {
-        // A `(do …)` FUNCTION body prints as a bare `;`-separated statement run under the `=` — the
-        // exact surface the parser folds back into that `(do …)`. No wrapping parens.
-        let a = sexpr::read("(def (f) (do (g 20) (g 5) (h)))").unwrap();
-        assert_eq!(print(&a, 80), "def f() =\n  g(20);\n  g(5);\n  h()");
-        // and it round-trips from that ML surface
-        assert_eq!(
-            assert_roundtrip("def f() =\n  g(20);\n  g(5);\n  h()", 80),
-            "def f() =\n  g(20);\n  g(5);\n  h()"
-        );
-    }
-
-    #[test]
-    fn top_level_forms_have_no_semicolons_between_keyword_forms() {
-        // An all-declaration program (every next form keyword-led) prints with NO `;` at all — `;` is
-        // the within-body sequencer, not a top-level separator.
-        let a = sexpr::read("(do (def (f) 1) (def (g) 2) (export f))").unwrap();
-        assert_eq!(print(&a, 80), "def f() = 1\n\ndef g() = 2\n\nexport { f }");
-    }
+    // Three body/field-surface round-trips MIGRATED to the spec/syntax corpus (inc-6 batch-26):
+    //   * `record_type_fields_print_as_colon_ascription_and_round_trip` (RT2: a record-TYPE field is the
+    //     `(: name T)` ascription node, printed `field : T` via the infix `:` path, never the head-app
+    //     `a(Int64)`) → ml/197-record-type-fields-multi `type R = | Record(a : Int64, b : Bool)`→
+    //     `(type R (Record (: a Int64) (: b Bool)))`, ml/198-record-type-fields-single (single field).
+    //   * `multi_statement_function_body_prints_bare` (a `(do …)` FUNCTION body prints as a bare
+    //     `;`-separated statement run under `=`, no wrapping parens) → ml/199-multi-statement-function-body
+    //     `def f() = g(20); g(5); h()`→`(def (f) (do (g 20) (g 5) (h)))` (format.cdz breaks the `;`-run).
+    //   * `top_level_forms_have_no_semicolons_between_keyword_forms` (an all-declaration program prints with
+    //     NO `;`; `;` is the within-body sequencer, not a top-level separator) →
+    //     ml/200-top-level-no-semicolons `def f() = 1` / `def g() = 2` / `export { f }`→
+    //     `(do (def (f) 1) (def (g) 2) (export f))` (format.cdz = blank-separated, no `;`).
+    // Each carries a format.cdz for the canonical surface; the sexp→ml `print(…)` oracles are subsumed.
 
     #[test]
     fn bare_body_before_open_next_form_is_delimited() {
