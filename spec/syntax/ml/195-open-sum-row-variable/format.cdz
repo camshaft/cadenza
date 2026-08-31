@@ -1,0 +1,4 @@
+type T =
+  | Known(Int64)
+  | Unknown(String)
+  .. r

@@ -109,6 +109,10 @@ pass	ml/19-world-result-no-ok
 pass	ml/190-match-nested-tuple-pattern
 pass	ml/191-match-ctor-tuple-pattern
 pass	ml/192-match-one-tuple-pattern
+pass	ml/193-hash-prefixed-name-backtick
+pass	ml/194-hash-prefixed-name-in-def
+pass	ml/195-open-sum-row-variable
+pass	ml/196-open-sum-zero-variant
 pass	ml/20-world-result-bare
 pass	ml/21-world-record-member
 pass	ml/22-world-variant-record-payload
