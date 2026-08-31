@@ -3561,7 +3561,7 @@
             (effect Ask (op ask (-> Unit Int64)))
             (def (main)
               (+ (Ask.ask) 1)) (export main)))
-  (error  CDZ0401))
+  (error  CDZ0401 (fix (kind wrap) (replacement-contains "(host (Ask) ") (unverified))))
 
 ; A `host` is exactly `(host (<effect>…) <body>)`. A host with TOO MANY operands — `(host (E) <body> extra)` —
 ; was silently accepted (the surplus dropped, a silent miscompile). It is now CDZ0201 "too many operands"
