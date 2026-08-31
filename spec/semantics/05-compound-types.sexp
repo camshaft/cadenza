@@ -245,6 +245,21 @@
   (input     (. 5 x))
   (error     CDZ0201))
 
+(case "member access on a tuple by NAME points at the numeric-index form"
+  (doc    "A tuple IS a member-access operand — by POSITION, not name. `(. t x)` on a `(Tuple Int64 Int64)`
+           rejects CDZ0201, and (unlike the bare non-record scalar above) the message NAMES the tuple's
+           arity and spells the numeric-index form so the reader reaches for `(. t 0)` rather than hitting
+           the dead-end generic 'requires a record'. Pins the tuple-specific enrichment: 'a tuple is
+           accessed by position, not by name', the index form `(. <tuple> N)`, the range `0..=1`, and the
+           element count. (migrated from rcdzc named_member_access_on_a_tuple_points_at_the_numeric_index_form;
+           the scalar-operand generic-message face is the non-record case above.)")
+  (input  (do (def (g (: t (Tuple Int64 Int64))) (. t x)) (export g)))
+  (error  CDZ0201
+          (message "a tuple is accessed by position, not by name `x`")
+          (message "numeric index `(. <tuple> N)`")
+          (message "0..=1")
+          (message "has 2 elements")))
+
 ; A scalar member access reached through a CALL — `(def (main) ((. 5 x)))` used as the entry — surfaces
 ; `infer`'s RICH "member access requires a record, found Int64", which NAMES the operand type (Int64), not
 ; the bare "member access requires a record" (no ", found <T>"). Pins the type-naming message on the
