@@ -421,6 +421,19 @@ theorem denoteApp_fold (op : String) (w : IntTy) (va vb v : Value)
       = denoteBinary op w (.value va) (.value vb) := rfl
   rw [hred]; exact denoteBinary_fold op w va vb v h
 
+/-- UNARY fold-soundness (the arity-1 companion of `denoteBinary_fold`/`denoteApp_fold`, for `not`):
+`denoteUnary` reuses `foldConst? op #[.const va]`, so when that folds to `v`, the combiner yields `.value v`. -/
+theorem denoteUnary_fold (op : String) (va v : Value)
+    (h : foldConst? op #[.const va] = some v) :
+    denoteUnary op (.value va) = .value v := by
+  simp only [denoteUnary, h]
+
+theorem denoteApp_fold_unary (op : String) (w : IntTy) (va v : Value)
+    (h : foldConst? op #[.const va] = some v) :
+    denoteApp op w #[.value va] = .value v := by
+  have hred : denoteApp op w #[.value va] = denoteUnary op (.value va) := rfl
+  rw [hred]; exact denoteUnary_fold op va v h
+
 /-- The deferred integer-arithmetic path: when `foldConst?` declines (int `+ - * / %` are not folded —
 their overflow-trap conditions are width-dependent) and the op is arithmetic, `denote`'s combiner falls
 through to the REAL width-`w` `evalArithOp` (byte-identical to `evalNode`), so its trap/overflow
