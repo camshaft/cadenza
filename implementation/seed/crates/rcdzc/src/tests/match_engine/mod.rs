@@ -3726,104 +3726,12 @@ fn a_tuple_row_op_over_a_non_tuple_names_the_kind() {
     }
 }
 
-#[test]
-fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
-    // 15-rows extend/with/pop — the DERIVED row ops (rewrites of merge/without). `Record.extend r
-    // #z v` ADDS an absent field (present → CDZ0211); `Record.with r #z v` REPLACES a present field
-    // (absent → CDZ0212), retyping to the new value's type; `Record.pop r z` yields `(value,
-    // remaining-record)` (absent → CDZ0212). extend/with take a `#z` field LABEL and a value operand
-    // (DESIGN-record-update-syntax.md, 3-operand); pop takes a bare name.
-    // extend adds an ABSENT field (well-formed); a PRESENT field is CDZ0211.
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (Record.extend (record (= a 1)) #\"b\" 2)) (export main))"
-        ),
-        None,
-        "extend of an absent field is well-formed"
-    );
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (Record.extend (record (= a 1)) #\"a\" 2)) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0211"),
-        "extend of a present field is CDZ0211 (use with)"
-    );
-    // with replaces a PRESENT field (well-formed, may retype); an ABSENT field is CDZ0212.
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (Record.with (record (= a 1) (= b 2)) #\"b\" true)) (export main))"
-        ),
-        None,
-        "with of a present field (even retyping) is well-formed"
-    );
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (Record.with (record (= a 1)) #\"z\" 5)) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0212"),
-        "with of an absent field is CDZ0212 (use extend)"
-    );
-    // pop of a PRESENT field is well-formed; an ABSENT field is CDZ0212.
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (Record.pop (record (= a 1) (= b 2)) a)) (export main))"
-        ),
-        None,
-        "pop of a present field is well-formed"
-    );
-    assert_eq!(
-        reject_code("(module m (def (main) (Record.pop (record (= a 1)) z)) (export main))")
-            .as_deref(),
-        Some("CDZ0212"),
-        "pop of an absent field is CDZ0212"
-    );
-    // A mistyped `pop`/`with` field near a real one carries a did-you-mean — the closed-set
-    // suggestion `without`/`project` already give, over the operand record's fields.
-    let dp = reject_full(
-        "(module m (def (main) (Record.pop (record (= alpha 1) (= beta 2)) alpa)) (export main))",
-    )
-    .expect("pop of an absent field is CDZ0212");
-    assert!(
-        dp.message.contains("did you mean `alpha`?"),
-        "a mistyped popped field suggests the near one; got {}",
-        dp.message
-    );
-    let dw = reject_full(
-            "(module m (def (main) (Record.with (record (= alpha 1) (= beta 2)) #\"alpa\" 9)) (export main))",
-        )
-        .expect("with of an absent field is CDZ0212");
-    assert!(
-        dw.message.contains("did you mean `alpha`?") && dw.message.contains("use `Record.extend`"),
-        "a mistyped `with` field suggests the near one AND keeps the extend hint; got {}",
-        dw.message
-    );
-    // Both near-misses also carry an APPLICABLE replace fix on the field occurrence (`alpa`→`alpha`),
-    // the same closed-set fix `without`/`project` labels get (M63/M64) — not just the message hint.
-    assert_eq!(
-        dp.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
-        Some((crate::abi::FixKind::Replace, "alpha")),
-        "pop near-miss carries a replace fix: {:?}",
-        dp.fix
-    );
-    assert_eq!(
-        dw.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
-        Some((crate::abi::FixKind::Replace, "alpha")),
-        "with near-miss carries a replace fix: {:?}",
-        dw.fix
-    );
-    // NO OVERREACH: a far-miss field keeps the message but carries no fix.
-    let far = reject_full(
-        "(module m (def (main) (Record.pop (record (= alpha 1)) zzzzzz)) (export main))",
-    )
-    .expect("pop of an absent field is CDZ0212");
-    assert!(
-        far.fix.is_none(),
-        "no fix without a plausible near field: {:?}",
-        far.fix
-    );
-}
+// [migrated → spec/semantics/15-rows-and-open-sums.sexp] record_extend_with_pop_are_derived_row_ops_with_presence_checks:
+// the DERIVED row ops (extend/with/pop). Presence-check faces are the extend/with/pop cases in 15-rows:
+// extend absent→runs / present→CDZ0211, with present-replace+retype→runs / absent→CDZ0212, pop present→runs
+// / absent→CDZ0212. The did-you-mean faces on a near-miss field were added there too: Record.pop → CDZ0212
+// (message "did you mean `alpha`?") + replace fix; Record.with → same + the "use `Record.extend`" hint.
+// All PASS on a fresh dev build (message + fix pins fresh-build-verified per the stale-cache gotcha).
 
 #[test]
 fn a_wrong_record_row_op_carries_the_operator_swap_fix_the_message_names() {
