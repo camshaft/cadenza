@@ -1084,11 +1084,27 @@ pub fn emit(
                     ),
                 ));
             }
-            let why = if multi_export {
+            // Each of the four whys below is a DISTINCT decline family that happens to share the
+            // `returning a <T> from `<name>`: <reason>` shape. They are constructed as SEPARATE `Reject`s (a
+            // shared `prefix` + a per-branch reason) rather than one shared `Reject::unsupported(format!(…{why}))`,
+            // so a catalogued family can later carry its OWN `DeclineId` without mis-tagging its siblings — the
+            // recursive-sum / runtime-collection walker branch is the `WasmValueFormWalkerRecursive` decline
+            // (v-deferral-declines tags it now that this shared block is split; the other three — multi-export
+            // arity, compound-param, parameterized-heap-return — are distinct reasons that would mis-tag if they
+            // shared one `Reject`). The message text is BYTE-IDENTICAL to the prior shared `format!` (so any
+            // reason-matched decline corpus case is unaffected) — this is purely a construction split.
+            let prefix = format!(
+                "returning a {} from `{}`",
+                e.result.render_name(&db.name_ctx()),
+                e.name
+            );
+            if multi_export {
                 // THE ARITY constraint — the real reason a compound/heap export declines here. Names it as
                 // such (a compound crosses as the SOLE export), NOT "the type has no boundary
                 // representation" (false — it crosses fine alone via the resource escape).
-                "a heap value (a compound, string, or collection) crosses the host boundary only as the program's SINGLE export; this program has multiple exports (make it the only export, or return a scalar)"
+                return Err(Reject::unsupported(format!(
+                    "{prefix}: a heap value (a compound, string, or collection) crosses the host boundary only as the program's SINGLE export; this program has multiple exports (make it the only export, or return a scalar)"
+                )));
             } else if !e.params.is_empty()
                 && e.params.iter().any(|(_, ty)| {
                     !matches!(ty, crate::ty::Ty::Unit)
@@ -1104,7 +1120,9 @@ pub fn emit(
                 // which `make` cannot yet forward — that widening is a later increment. (Guarded on a param
                 // genuinely lacking a scalar valtype so a scalar-param heap return whose RESULT is the real
                 // constraint is NOT misdiagnosed as a param fault — see the result-constraint arm below.)
-                "a heap value escapes to the host as a resource with SCALAR parameters only; this export has a parameter with no scalar boundary type (a compound-parameter heap return is not supported)"
+                return Err(Reject::unsupported(format!(
+                    "{prefix}: a heap value escapes to the host as a resource with SCALAR parameters only; this export has a parameter with no scalar boundary type (a compound-parameter heap return is not supported)"
+                )));
             } else if !e.params.is_empty() {
                 // A single PARAMETERIZED export whose params are ALL scalar (an Int64, say) but whose heap
                 // RESULT reached here: the param is fine — the RESULT is the constraint. Its value-form is
@@ -1113,7 +1131,9 @@ pub fn emit(
                 // the runtime has no `Shape::Sym` and renders it as a String, not its canonical `(Symbol.of …)`
                 // form the constant bake produces — so admitting it would cross a NON-canonical value). Name
                 // the RESULT truthfully rather than blaming the scalar param.
-                "a parameterized export cannot return this heap type — its value form is emitted only for a nullary (constant) export, and a runtime value-encode render for it is not available (the scalar parameters are fine)"
+                return Err(Reject::unsupported(format!(
+                    "{prefix}: a parameterized export cannot return this heap type — its value form is emitted only for a nullary (constant) export, and a runtime value-encode render for it is not available (the scalar parameters are fine)"
+                )));
             } else {
                 // A single NULLARY export whose heap result reached here — the resource-escape path above
                 // TRIED and its value-form template was `None`: the result has no runtime value form yet.
@@ -1122,14 +1142,14 @@ pub fn emit(
                 // the `encode()` walker would need to LOOP to a runtime-determined depth — the analogue of
                 // the runtime-`Bytes` looping walker, a later increment). The honest reason is the missing
                 // walker; consuming such a value to a scalar already works, only rendering it as the
-                // boundary result is deferred.
-                "rendering this value as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / runtime-collection result); folding it to a scalar is supported"
-            };
-            return Err(Reject::unsupported(format!(
-                "returning a {} from `{}`: {why}",
-                e.result.render_name(&db.name_ctx()),
-                e.name
-            )));
+                // boundary result is deferred. This is the `WasmValueFormWalkerRecursive` decline family —
+                // now that the shared-`Reject` block is split, this branch is an independent site
+                // v-deferral-declines can tag with `DeclineId::WasmValueFormWalkerRecursive` (their catalog +
+                // drift-check ownership) without touching its three siblings.
+                return Err(Reject::unsupported(format!(
+                    "{prefix}: rendering this value as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / runtime-collection result); folding it to a scalar is supported"
+                )));
+            }
         }
         let result =
             serialize::export_result(&e.result, &db.name_ctx()).map_err(Reject::decline)?;
