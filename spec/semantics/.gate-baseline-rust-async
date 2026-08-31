@@ -4281,7 +4281,6 @@ pass	a tagged template's TAG resolves through an import and expands at the impor
 pass	a tagged template's hole is threaded to the tag function and read
 pass	a tagged template's spliced result folds through the ordinary path
 pass	a tagged-template tag returning a finite Ast.Float expands normally (expander control)
-pass	a tagged-template tag returning a non-canonical Ast.Float declines (the guard fires through the expander)
 pass	a tail list fold reads its scrutinee handle from its own parameter slot
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
 pass	a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple
@@ -4858,7 +4857,6 @@ pass	an active unquote of a BigInt lifts to Ast.Int (the payload type, no widen)
 pass	an active unquote of a RUNTIME BigInt (from arithmetic) lifts to Ast.Int
 pass	an active unquote of a boolean literal lifts to an Ast.Bool node
 pass	an active unquote of a computed boolean expression lifts to Ast.Bool
-pass	an active unquote of a constant NaN declines (the ast-lift path, consistent with the ctor)
 pass	an active unquote of a finite float lifts to Ast.Float (ast-lift control)
 pass	an active unquote of a float literal lifts to an Ast.Float node
 pass	an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type
@@ -7205,9 +7203,7 @@ pass	red1 the SHADOW-INIT DRAW composed with one shadowed draw — the inner han
 pass	red2 the SHADOW-INIT DRAW with a PURE inner region — the control for the composition law: with no shadowed draw the outer toll fires exactly once per outer frame and the value matches the naive deep-handler model
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
-pass	reifying a constant NaN into an Ast.Float declines (no canonical value form)
 pass	reifying a finite float into an Ast.Float is unaffected by the non-canonical guard
-pass	reifying a positive-infinity float into an Ast.Float declines
 pass	rejection sampling draws until the refinement holds — an only-even generator produces an even value
 pass	rejection sampling into a narrow range refinement produces only in-range values
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
@@ -8778,10 +8774,6 @@ pass	two DIFFERENT user sums keep the generic same-kind mismatch, not the kind b
 pass	two distinct called zero-arm scalar matches each report (no false-merge to one)
 pass	two distinct occurrences of the same unbound name are each reported, not merged to one
 pass	using an Option where its bare payload is expected says to match it, with no mechanical fix
-todo	a multi-shot continuation reaching an outer effect via an if branch declines cleanly
-todo	a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it
-todo	a multi-shot continuation spanning a host call declines cleanly, never doubling the host call
-todo	a multi-shot continuation spanning a host call inside a do declines cleanly
 todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
 todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted

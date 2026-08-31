@@ -2172,7 +2172,7 @@ c")))
 ; whose non-finite arithmetic operand declines upstream). A FINITE float still reifies. These pin the
 ; CONSTANT half of that fix (a runtime-produced NaN payload is caught at the escape boundary separately).
 (case
-  "reifying a constant NaN into an Ast.Float declines (no canonical value form)"
+  "reifying a constant NaN into an Ast.Float is rejected (no canonical value form)"
   (doc
     "`(Ast.Float Float64.nan)` — wrapping a NaN, which has no canonical value form — DECLINES at
            compile time rather than trapping on one backend and returning a value on the other. The
@@ -2182,7 +2182,7 @@ c")))
   (error CDZ0201))
 
 (case
-  "reifying a positive-infinity float into an Ast.Float declines"
+  "reifying a positive-infinity float into an Ast.Float is rejected"
   (doc
     "The +inf companion: `(Ast.Float (/ 1.0 0.0))` declines — the non-finite division has no value
            form (declines upstream), so the reify never gets a canonical payload. Pins that ALL
@@ -2200,7 +2200,7 @@ c")))
   (output (: true Bool)))
 
 (case
-  "an active unquote of a constant NaN declines (the ast-lift path, consistent with the ctor)"
+  "an active unquote of a constant NaN is rejected (the ast-lift path, consistent with the ctor)"
   (doc
     "The active-unquote lift `,expr` shares the non-canonical-float rule with the direct `Ast.Float`
            ctor: `(quasiquote (f (unquote Float64.nan)))` EVALUATES the NaN and would lift it into an
@@ -2224,7 +2224,7 @@ c")))
   (output (: 2.5 Float64)))
 
 (case
-  "a tagged-template tag returning a non-canonical Ast.Float declines (the guard fires through the expander)"
+  "a tagged-template tag returning a non-canonical Ast.Float is rejected (the guard fires through the expander)"
   (doc
     "The non-canonical-float guard fires on EVERY path that constructs an `Ast.Float`, including the
            tagged-template expander: a tag function returning `(Ast.Float Float64.nan)` is β-reduced through
