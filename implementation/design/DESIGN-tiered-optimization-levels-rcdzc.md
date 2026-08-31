@@ -255,36 +255,57 @@ coverage (which is what actually protects the emitted-code quality both backends
    `Core::CheckedArith` node speculatively yet** — coordinate with v-verification as their pre/post design
    firms up — but SHAPE any checked/bounds/guard op so a proof obligation can be attached and discharged.
 
-### 9a. The REAL blocker to registering a pass: the core column has NO override/rewrite seam yet
-`CorePass::run(&mut Db)` is documented to "transform the core column in place", but the core column is a
-DEMAND-DRIVEN MEMOIZED query (`lower::core_of`), not a mutable store — there is no `Db::set_core`/
-`override_core`. So a pass cannot today rewrite what `core_of` returns; the backends read `core_of`
-directly. **Before any real Core pass can fire, we need a core-override layer the `core_of` query consults**
-(e.g. `Db` holds an `Option<HashMap<Id, Core>>` of pass-installed overrides; `core_of` returns the override
-if present, else computes as now; `PassManager::run` populates it). This is the first implementation slice —
-without it the pass seam is inert. Design constraints: overrides must be keyed by the same `Id` space
-`core_of` uses; the override must be visited-consistently by the poison/escape walks (compile.rs:3601 VISITED-set);
-and installing an override must NOT break incremental re-lowering (clear overrides on input change).
+### 9a. The core-override/rewrite seam — ✅ LANDED
+`CorePass::run(&mut Db)` transforms the core column in place, but `core_of` (`lower::core_of`) is a
+DEMAND-DRIVEN MEMOIZED query, not a mutable store — so a pass needs a core-override layer that `core_of`
+consults. **This seam is now IMPLEMENTED** (this section previously described it as the not-yet-done first
+slice; it is done — do NOT re-implement):
+- `Db::core_override: FxHashMap<StructId, Core>` (`db.rs`) holds pass-installed overrides, keyed by the same
+  `StructId` space `core_of` uses.
+- `Db::install_core_override(id, core)` / `Db::has_core_overrides()` are the write + probe API a pass calls.
+- `core_of` (`lower.rs`, top of the fn) returns the override if `!db.core_override.is_empty()` and one is
+  present for `id`, else computes as before — so an un-overridden node is byte-identical to pre-seam.
+- `PassManager::run` (`opt.rs`, driven at `compile.rs`) populates the overrides by running each enabled pass.
+Remaining design constraints to respect when adding passes: the override must be visited-consistently by the
+poison/escape walks (compile.rs VISITED-set), and installing an override must NOT break incremental
+re-lowering (overrides clear on input change).
 
-### 9b. First concrete pass proposal — Core-level algebraic simplification of a REDUNDANT guarded/if shape
-Once 9a exists, the first `CorePass` (O1) should be one whose win BOTH backends keep and that `lower.rs`
-does NOT already do eagerly. Candidate: a Core-tier **redundant-`if`/select canonicalization** that my
-corpus family already proves behavior-preserving (identical-branch collapse over a trap-free cond,
-double-negation unwind, `(= b true)`→b coercion) — LIFTED from being only witnessed in the corpus to
-actually FIRING as a registered pass, so the rewrite happens once at Core and both emits inherit it.
-Precondition to check first: confirm `lower.rs` does NOT already collapse these (my pins witness the
-OUTCOME is correct, not necessarily that a Core pass does it vs the backend). If lower already folds them,
-pick a transform it does not — the proof-guided-elision (9.2) is the eventual flagship, but a smaller
-value-numbering / redundant-compare-elimination that rustc-and-wasm both keep is the safe first pass.
+### 9b. The first REAL pass — ✅ LANDED: global CSE (O2). Next-pass candidates below.
+The first registered `CorePass` is **`GlobalCsePass` (O2)** in `opt.rs`: whole-function global common-
+subexpression elimination on the Core column (the backend-independent lift of the wasm backend's Lir-slot
+CSE), installing `Core::Let` overrides so BOTH backends compute a repeated trap-free subexpression once.
+Its three soundness guards (SCALAR-ONLY, FRONTIER, TRAP-FREE-OR-FRONTIER) are replicated verbatim from
+v-wasm-opt's `select.rs` analysis.
+- **⚠ MVP LIMITATION (the load-bearing next follow-up).** `PassManager::run` currently fires BEFORE lazy
+  lowering, so a pass-time `core_of` is the FIRST demand of a node — and a node whose correct lowering needs
+  a context established at lower time (lambda-lift / handler-lift / contract-desugar / `?`-try / pattern
+  binder) would lower WITHOUT it and MEMO-POISON `db.core` (→ "reference has no local slot" at emit). So
+  `GlobalCsePass` is gated to `body_is_pure_scalar` bodies. The proper fix is **TIMING — run passes over an
+  already-lowered+lifted column (a `force-lower-all` before the `PassManager`)**; that Option-A follow-up
+  lets CSE (and every future pass) cover capturing/effectful bodies too. This is the highest-value next
+  OptLevel slice (expands the shipped pass's reach; backend-independent; no cross-vertical coordination).
+- **Other next-pass candidates** (once the timing fix lands, or for pure-scalar-safe shapes now): a Core-tier
+  **redundant-`if`/select canonicalization** (identical-branch collapse over a trap-free cond, double-negation
+  unwind, `(= b true)`→b). Precondition to check first: confirm `lower.rs` does NOT already fold these (the
+  corpus pins witness the OUTCOME is correct, not that a Core pass vs the backend does it). If lower already
+  folds them, pick a transform it does not. The proof-guided-elision (9.2) is the eventual flagship.
 
 ### 9c. Near-term plan (one gated slice per tick, under the §5 level-equivalence gate)
-- **Slice 1 (next):** implement 9a — the `core_of` override seam + `PassManager::run` populating it +
-  a trivial identity pass (a no-op override that reinstalls the same Core) to prove the seam is
-  behavior-preserving end-to-end (byte-identical emit, both backends). This de-risks the mechanism before
-  any real rewrite.
-- **Slice 2+:** register the first REAL simplification pass (9b), gated, with a level-equivalence + both-backend
-  corpus witness. Each pass lands with its `min_level` + a gate case proving O0-vs-O_n behavior identity.
+- ~~**Slice 1:** the `core_of` override seam + `PassManager::run` populating it.~~ ✅ **DONE** (§9a).
+- ~~**Slice 2:** register the first REAL pass.~~ ✅ **DONE** — `GlobalCsePass` (O2), MVP pure-scalar (§9b).
+- **Slice 3 (NEXT, highest-value):** the **pass-timing fix** — force-lower+lift the column BEFORE the
+  `PassManager` runs, so a pass-time `core_of` is not a first-demand (removes the `body_is_pure_scalar`
+  gate; lets CSE + every future pass cover capturing/effectful bodies). Gate: byte-identical emit on both
+  backends for the pure-scalar bodies already covered + newly-covered bodies stay behavior-identical
+  (`--opt-sweep` + `gate --check`). Backend-independent, no cross-vertical coordination.
+- **Slice 4+:** more registered passes (§9b redundant-`if`/boolean canonicalization pending the `lower.rs`
+  precondition check; then lift dominator-CSE / accumulator-intro from `backend/wasm/`, each `note`-
+  coordinated with v-wasm-opt per §4's ordering rule). Each pass lands with its `min_level` + a
+  level-equivalence gate case.
 - **Ongoing design:** coordinate the proof-guided-elision seam (9.2) with v-verification; when their
   pre/post-condition query exists, add the checked-op-with-discharged-proof → unchecked-op pass.
-This section supersedes §8's "hold" — the framework is no longer empty by choice; it is being FILLED per
-the operator mandate, starting with the override seam (9a) that makes a pass able to fire at all.
+- **Standing coverage gap (flagged to v-nix):** `--opt-sweep` (the level-equivalence check) is manual-only —
+  not in the nix gate battery — so the tiered-opt invariant is unprotected fleet-wide. Proposed adding it to
+  the hourly-advisory run (4× cost, shardable). Until wired, run it manually when touching a pass.
+This section supersedes §8's "hold" — the framework is FILLED and operational (seam + one real pass) per the
+operator mandate; Slice 3 (the timing fix) is the next unit.
