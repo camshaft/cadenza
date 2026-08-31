@@ -864,18 +864,12 @@ fn a_dead_trap_warning_anchors_to_a_user_node() {
 //  CDZ0304 compile-deny rule is covered by 28-compiler-primitives "(error CDZ0304 (message
 //  \"division by zero\"))"; the observed-tuple-element instance exercised no distinct path.)
 
-#[test]
-fn a_clean_program_and_an_unprovable_trap_do_not_warn() {
-    // A clean projection warns not at all; a RUNTIME (unprovable) trap in a dropped position is not
-    // flagged either — the warning fires only on a PROVABLE trap, so no false positive on code the
-    // compiler cannot prove traps.
-    assert!(warnings_of("(module m (def (main) (. (tuple 42 7) 0)) (export main))").is_empty());
-    assert!(
-        warnings_of("(module m (def (main (: x Int64)) (. (tuple 42 (/ 100 x)) 0)) (export main))")
-            .is_empty(),
-        "a runtime (unprovable) trap in a dropped position must NOT warn"
-    );
-}
+// MIGRATED to corpus (02-binding-and-control.sexp): the complement of the dead-trap CDZ0305 warning — a
+// clean program, and an UNPROVABLE (runtime-valued) trap in a dropped position, earn NO dead-trap warning
+// (the warning fires only on a PROVABLY-trapping dropped computation, so no false positive on runtime code
+// the fold cannot prove traps). Cases "a clean program with no dead computation earns no dead-trap warning"
+// + "an UNPROVABLE (runtime) trap in a dropped position earns NO dead-trap warning" (both run to 42,
+// `(no-diagnostic "always traps")`). Rust test a_clean_program_and_an_unprovable_trap_do_not_warn deleted.
 
 /// The CDZ0306 unused-binding warning messages from `src`. Uses `diagnostics()` directly (the
 /// export-independent fault+warning set `cdz check` drives) rather than `warnings_of` — a program
