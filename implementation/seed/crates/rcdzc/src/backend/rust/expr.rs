@@ -7565,7 +7565,7 @@ fn emit_sum_payload(
                         // lowered by the Rust backend — decline (slice 1: const folds; wasm/rust runtime
                         // are follow-up slices). A graceful not-yet, never a miscompile.
                         return Err(Reject::unsupported(
-                            "a tuple rest binder is not yet lowered by the Rust backend",
+                            "a runtime tuple rest binder is not supported by the Rust backend (a constant tuple-rest is)",
                         ));
                     }
                     crate::core::PathStep::RestFrom(k) => {

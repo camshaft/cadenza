@@ -2998,7 +2998,7 @@ pub(super) fn emit(
                         // before emit and never reaches here; the wasm runtime gather is a follow-up slice).
                         // A graceful not-yet decline, never a miscompile.
                         return Err(Reject::unsupported(
-                            "a runtime tuple rest binder is not yet lowered to wasm",
+                            "a runtime tuple rest binder is not supported on the wasm backend (a constant tuple-rest is)",
                         ));
                     }
                     crate::core::PathStep::RestFrom(k) => {
