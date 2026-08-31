@@ -4886,47 +4886,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tuple_or_record_rest_pattern_prints_the_clean_dotdot_surface_and_round_trips() {
-        // A tuple-rest / record-rest PATTERN must print the clean `.. rest` surface (like the list/map
-        // patterns), NOT the generic quoted-operator fallback `` `..`(rest) ``. The fallback re-parses
-        // (so the round-trip is structurally correct) but is an ugly, misleading surface — and the tuple
-        // pattern printer used to hit it because it rendered elements with a bare loop instead of the
-        // rest-aware `print_pattern_seq`. Pin BOTH the clean surface AND structural round-trip so a future
-        // printer change can't silently regress to the fallback.
-        for (src, want_surface) in [
-            (
-                "(do (def (f t) (match t ((tuple a b (.. rest)) a) (_ 0))) (export f))",
-                "(a, b, .. rest)",
-            ),
-            (
-                "(do (def (f r) (match r ((record (= a x) (.. rest)) x) (_ 0))) (export f))",
-                "{ a = x, .. rest }",
-            ),
-            (
-                "(do (def (f s) (match s (#set(a (.. rest)) a) (_ 0))) (export f))",
-                "#(a, .. rest)",
-            ),
-        ] {
-            let a = sexpr::read(src).expect("sexpr parses");
-            let printed = print(&a, 80);
-            assert!(
-                printed.contains(want_surface),
-                "expected the clean rest surface {want_surface:?} in the ML print\n src: {src}\n ml:  {printed}"
-            );
-            assert!(
-                !printed.contains("`..`"),
-                "the rest pattern fell back to the quoted-op `..`(…) surface\n src: {src}\n ml:  {printed}"
-            );
-            let back = parser::read_ml(&printed);
-            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
-            assert!(
-                a.structurally_eq(&back.arenas),
-                "rest pattern lost in round-trip\n src:  {src}\n ml:   {printed}\n back: {}",
-                sexpr::print(&back.arenas)
-            );
-        }
-    }
+    // `a_tuple_or_record_rest_pattern_prints_the_clean_dotdot_surface_and_round_trips` (a tuple-rest /
+    // record-rest / set-rest PATTERN prints the clean `.. rest` surface — like the list/map patterns — NOT
+    // the generic quoted-operator fallback `` `..`(rest) ``; the tuple printer used to hit the fallback via a
+    // bare element loop instead of the rest-aware `print_pattern_seq`) MIGRATED to the spec/syntax corpus
+    // (inc-6 batch-53, rest-pattern block):
+    //   * ml/331-tuple-rest-pattern `(a, b, .. rest)` match arm→`(match t ((tuple a b (.. rest)) a) (_ 0))`.
+    //   * ml/332-record-rest-pattern `{ a = x, .. rest }`→`(match r ((record (= a x) (.. rest)) x) (_ 0))`.
+    //   * ml/333-set-rest-pattern `#(a, .. rest)`→`(match s (#set(a (.. rest)) a) (_ 0))`.
+    // All canonical (fmt-idempotent = the clean-surface round-trip witness, no `` `..` `` fallback). The
+    // list/map pattern-rest are already pinned (ml/160-162), the let-binder tuple-rest at ml/218.
 
     #[test]
     fn degenerate_construction_spreads_round_trip() {
@@ -7528,28 +7497,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reserved_name_backtick_escaped() {
-        // A name literally "let" must print backtick-escaped so it round-trips as a name.
-        let a = sexpr::read("(f let)").unwrap(); // s-expr: `let` is an ordinary atom here
-        let printed = print(&a, 80);
-        assert!(printed.contains("`let`"), "got: {printed}");
-        // and it re-parses to the same arena
-        let b = parser::read_ml(&printed);
-        assert!(b.ok());
-    }
-
-    #[test]
-    fn operator_name_backtick_escaped() {
-        // `(+ )` used as a bare name (not infix, wrong arity) prints escaped.
-        let a = sexpr::read("(list + -)").unwrap();
-        let printed = print(&a, 80);
-        // + and - as ordinary list elements -> backtick-escaped names
-        assert!(
-            printed.contains("`+`") && printed.contains("`-`"),
-            "got: {printed}"
-        );
-    }
+    // `reserved_name_backtick_escaped` (a name literally "let" must print backtick-escaped so it round-trips
+    // as a name) + `operator_name_backtick_escaped` (`+`/`-` used as bare names, not infix, print escaped)
+    // MIGRATED to the spec/syntax corpus (inc-6 batch-53, name-escape block):
+    //   * ml/334-reserved-name-backtick-escaped ``f(`let`)``→`(f let)` (canonical — the escape round-trips).
+    //   * ml/335-operator-name-backtick-escaped ``[`+`, `-`]``→`#list(+ -)` (operator glyphs as bare list
+    //     elements are backtick-escaped names, canonical). The generated NAME-round-trip sweep
+    //     (`emit_name_round_trips_through_the_lexer_over_generated_names`) stays a Rust property-test.
 
     #[test]
     fn emit_name_round_trips_through_the_lexer_over_generated_names() {
