@@ -4651,6 +4651,7 @@
               npm run check:calculator
               npm run check:worker-stack
               npm run check:tuple-collection
+              npm run check:parameterized-entry
               npm run check:cad-preload
               npm run check:music-preload
               npm run build
