@@ -561,23 +561,29 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
         | some r => .cannotProve r
         | none => .sym (.ctor "list".toUTF8 (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
       else if h == "set".toUTF8 then
-        -- a SET literal → `.ctor "set"` of the element SymExprs, in SOURCE ORDER. SOUND: two set literals
-        -- with the same elements in the same order prove equal; DIFFERING order → normalized-but-different
-        -- (never a false `proven`). INCOMPLETE for set REORDERING equality (`(set a b)` vs `(set b a)`) —
-        -- canonicalization (sort+dedup by a SymExpr order) is a later increment; but this already lifts a
-        -- set-literal program from a `cannotProve` BLIND SPOT to a checked verdict (proven when order matches
-        -- the round-trip, as with list). Distinct head from `list`/`tuple`.
+        -- a SET literal → `.ctor "set"`. When ALL elements are concrete `.const`, CANONICALIZE via eval's own
+        -- `canonSet` (sort + dedup) so the symbolic value matches eval's canonicalized set AND set-REORDER
+        -- equality proves (`(set 1 2)` ≡ `(set 2 1)` ≡ `(set 1 2 2)`) — previously a blind spot. Symbolic
+        -- (non-const) elements → keep SOURCE ORDER (sound; reorder-equality stays incomplete there). An
+        -- unorderable all-const set (canonSet `none`) is one `evalNode` DECLINES at construction → keep source
+        -- order (the differential skips the declined program anyway). Distinct head from `list`/`tuple`.
         let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel ty c)
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
-        | none => .sym (.ctor "set".toUTF8 (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+        | none =>
+          let elems := outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)
+          if elems.all (fun e => match e with | .const _ => true | _ => false) then
+            (match canonSet (elems.filterMap (fun e => match e with | .const v => some v | _ => none)) with
+             | some s => .sym (.ctor "set".toUTF8 (s.map (fun v => SymExpr.const v)))
+             | none => .sym (.ctor "set".toUTF8 elems))
+          else .sym (.ctor "set".toUTF8 elems)
       else if h == "map".toUTF8 then
         -- a MAP literal: each entry is `(k v)` or `(= k v)` (mirrors `evalMapLiteral`'s key/value parse).
-        -- Model as `.ctor "map"` of one `.tuple #[key, value]` per entry, in SOURCE ORDER. SOUND: same-order
-        -- maps prove equal; differing order → normalized-but-different (never false `proven`). INCOMPLETE for
-        -- map key-REORDERING equality (`evalNode` canonicalizes maps sorted-by-key; canonicalization here
-        -- needs a SymExpr order — later increment). Still lifts map-literal programs out of the cannotProve
-        -- blind spot. A malformed / unmodelable entry sinks the whole map.
+        -- Model as `.ctor "map"` of one `.tuple #[key, value]` per entry. When ALL entries are const (key AND
+        -- value), CANONICALIZE via eval's own `canonMap` (last-insert-wins per key + sort-by-key) so the
+        -- symbolic value matches eval's canonicalized map AND key-REORDER / dup-key equality proves. Symbolic
+        -- entries → keep SOURCE ORDER (sound; reorder-equality stays incomplete). Unorderable key (canonMap
+        -- `none`, `evalNode` DECLINES) → keep source order (declined program is skipped). Malformed entry sinks.
         let entryOuts := (children.extract 1 children.size).map (fun j =>
           match m.nodes[j]? with
           | some (Node.list ec) =>
@@ -594,7 +600,16 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
           | _ => .cannotProve "symeval: malformed map entry")
         match entryOuts.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
-        | none => .sym (.ctor "map".toUTF8 (entryOuts.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+        | none =>
+          let entries := entryOuts.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)
+          (match entries.mapM (fun e => match e with
+                                        | .tuple #[.const k, .const v] => some (k, v)
+                                        | _ => none) with
+           | some kvs =>
+             (match canonMap kvs with
+              | some cm => .sym (.ctor "map".toUTF8 (cm.map (fun kv => SymExpr.tuple #[.const kv.1, .const kv.2])))
+              | none => .sym (.ctor "map".toUTF8 entries))
+           | none => .sym (.ctor "map".toUTF8 entries))
       else if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
         -- a built-in unary Option/Result constructor (lazy payload).
         match children[1]? with
@@ -1370,7 +1385,7 @@ private def _listExpr : Module :=
 #guard symEval _listExpr [] symDefaultFuel defaultIntTy 3
        == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2)])
 
--- SET literal coverage: `(set 1 2)` → `.ctor "set" [const 1, const 2]` (source order; was cannotProve).
+-- SET literal coverage: `(set 1 2)` → `.ctor "set" [const 1, const 2]` (canonicalized; already sorted).
 private def _setExpr : Module :=
   { leaves := #[Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
                 Leaf.intLit false .dec (ByteArray.mk #[2])],
@@ -1378,7 +1393,16 @@ private def _setExpr : Module :=
 #guard symEval _setExpr [] symDefaultFuel defaultIntTy 3
        == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 1), .const (.int 2)])
 
--- MAP literal coverage: `(map (1 10) (2 20))` → `.ctor "map" [tuple[1,10], tuple[2,20]]` (source order).
+-- SET literal CANONICALIZATION (reorder equality): `(set 2 1)` canonicalizes to the SAME `[1,2]` as
+-- `(set 1 2)` — so a set literal and its round-trip reordering now PROVE equal (was a blind spot).
+private def _setReorderExpr : Module :=
+  { leaves := #[Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[2]),
+                Leaf.intLit false .dec (ByteArray.mk #[1])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+#guard symEval _setReorderExpr [] symDefaultFuel defaultIntTy 3
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 1), .const (.int 2)])
+
+-- MAP literal coverage: `(map (1 10) (2 20))` → `.ctor "map" [tuple[1,10], tuple[2,20]]` (canonicalized).
 private def _mapExpr : Module :=
   { leaves := #[Leaf.name "map".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
                 Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.intLit false .dec (ByteArray.mk #[2]),
@@ -1386,6 +1410,18 @@ private def _mapExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[1, 2], .atom 3, .atom 4, .list #[4, 5], .list #[0, 3, 6]],
     root := 7 }
 #guard symEval _mapExpr [] symDefaultFuel defaultIntTy 7
+       == SymOutcome.sym (.ctor "map".toUTF8 #[.tuple #[.const (.int 1), .const (.int 10)],
+                                               .tuple #[.const (.int 2), .const (.int 20)]])
+
+-- MAP literal CANONICALIZATION (key-reorder equality): `(map (2 20) (1 10))` sorts-by-key to the SAME
+-- `[(1,10),(2,20)]` as `(map (1 10) (2 20))`.
+private def _mapReorderExpr : Module :=
+  { leaves := #[Leaf.name "map".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[2]),
+                Leaf.intLit false .dec (ByteArray.mk #[20]), Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[10])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[1, 2], .atom 3, .atom 4, .list #[4, 5], .list #[0, 3, 6]],
+    root := 7 }
+#guard symEval _mapReorderExpr [] symDefaultFuel defaultIntTy 7
        == SymOutcome.sym (.ctor "map".toUTF8 #[.tuple #[.const (.int 1), .const (.int 10)],
                                                .tuple #[.const (.int 2), .const (.int 20)]])
 
