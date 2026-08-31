@@ -559,11 +559,23 @@
 ; 3-tuple binds `a` to element 0 and `rest` to the trailing `(Tuple Int64 Int64)` — a fixed gather, not a
 ; runtime slice (the tuple analogue of a list `(list a .. rest)`). Here `a=3`, `rest=(tuple 4 5)`, so
 ; `(+ a (. rest 1))` = 3 + 5 = 8. Over a CONSTANT tuple the rest folds to a `Core::Tuple` of the trailing
-; elements. (A runtime OPAQUE tuple scrutinee — an exported boundary param — declines CDZ0900 "not yet
-; lowered to wasm" for now: the const/inline-structural fold ships first, the runtime gather is a follow-up.)
+; elements; over a RUNTIME tuple (an element from a boundary parameter) the trailing sub-tuple is gathered
+; on the value heap — the runtime gather follow-up has since landed (this position formerly declined CDZ0900
+; "not yet lowered to wasm"), so both the const-fold and the runtime paths now compute.
 (case "a tuple pattern with a trailing rest binds the leading elements and the trailing sub-tuple"
   (input  (do (def (main) (match #tuple(3 4 5) (#tuple(a (.. rest)) (+ a (. rest 1))) (_ 0))) (export main)))
   (call   main) (output (: 8 Int64)))
+
+(case "a tuple trailing-rest match gathers the trailing sub-tuple over a RUNTIME tuple"
+  (doc    "The runtime companion of the const case above (the CDZ0900 'not yet lowered' follow-up, now
+           landed): a RUNTIME element `x` in the scrutinee `#tuple(x 20 30)` means the `#tuple(a (.. rest))`
+           arm cannot const-fold, so `rest` is a value-heap gather of the trailing `(Tuple Int64 Int64)` =
+           `(tuple 20 30)`; reading `(. rest 1)` = 30. Pins that the runtime tuple-rest gather computes (no
+           longer declines) and lands the trailing elements in a fresh sub-tuple read back by projection.")
+  (input  (do (def (f (: t (Tuple Int64 Int64 Int64))) (match t (#tuple(a (.. rest)) (. rest 1)) (_ 0)))
+              (def (main (: x Int64)) (f #tuple(x 20 30)))
+              (export main)))
+  (call   main (: 5 Int64)) (output (: 30 Int64)))
 
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
