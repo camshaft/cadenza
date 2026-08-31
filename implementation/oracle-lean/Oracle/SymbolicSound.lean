@@ -723,4 +723,24 @@ theorem denote_normalize_ite_plain_step (ρ : Nat → Value) (w : IntTy) (c t e 
   · simp only [denote, ihc _ hc, iht _ ht]
   · simp only [denote, ihc _ hc, ihe _ he]
 
+/-- Capstone `.ite` equal-branch COLLAPSE STEP (`if c then t else e` with `t' == e' → t'`). Given the
+collapse shape (`hcollapse`, discharged when the guard fires) and the BRANCH-AGREEMENT
+`denote (normalize t) = denote (normalize e)` (`hagree` — the semantic content of `t' == e'` on the
+FLOAT-FREE branches the guard requires; see #6533), a value-producing `ite` transports across `normalize`
+regardless of which branch it took. This completes the FIFTH and last `.ite` sub-case step; the ONLY
+remaining capstone `.ite` gap is discharging `hagree` from the float-free `BEq` (a conditional-`LawfulBEq`
+Array induction — the isolated obstacle). Note: NO `!mayTrap` needed here — `denote (ite c t e) = .value v`
+already witnesses the condition did not trap/diverge in this valuation. -/
+theorem denote_normalize_ite_collapse_step (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr)
+    (iht : ∀ u, denote ρ w t = .value u → denote ρ w (normalize t) = .value u)
+    (ihe : ∀ u, denote ρ w e = .value u → denote ρ w (normalize e) = .value u)
+    (hcollapse : normalize (.ite c t e) = normalize t)
+    (hagree : denote ρ w (normalize t) = denote ρ w (normalize e))
+    (v : Value) (h : denote ρ w (.ite c t e) = .value v) :
+    denote ρ w (normalize (.ite c t e)) = .value v := by
+  rw [hcollapse]
+  rcases denote_ite_value_inv ρ w c t e v h with ⟨_, ht⟩ | ⟨_, he⟩
+  · exact iht v ht
+  · rw [hagree]; exact ihe v he
+
 end Oracle
