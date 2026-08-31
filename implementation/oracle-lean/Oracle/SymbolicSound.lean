@@ -999,6 +999,68 @@ theorem normalize_const_canon (e : SymExpr) (c : Value) (h : normalize e = .cons
   rw [h] at hac
   simpa only [AllConstsCanon] using hac
 
+/-! ### Capstone `.app`-fold SOUNDNESS CORE (scalar/const-operand case). When `normalize` folds an
+application to a constant `vf` (its operands normalize to CONSTANTS and `foldConst?` fires), the ORIGINAL
+application `denote`s to that SAME `vf`. These are stated at the `denoteBinary`/`denoteUnary` level (the
+`.app` case reduces `denote (.app …)` to these via `denoteApp`); they carry the operand-value inversion +
+the argument IHs + `normalize_const_canon` (a normalized constant is `asF64?`-canonical, so the folded
+operand value EQUALS the denoted operand value) into `denoteBinary_fold`/`denoteUnary_fold`. This is the
+heart of the capstone `.app` fold branch; the general (tuple/record-operand) fold needs the additional
+`symToValue?`↔`denote` bridge (a later increment). -/
+theorem denoteApp_normalize_fold_binary (ρ : Nat → Value) (w : IntTy) (op : String)
+    (a0 a1 : SymExpr) (v c0 c1 vf : Value)
+    (hn0 : normalize a0 = .const c0) (hn1 : normalize a1 = .const c1)
+    (hfold : foldConst? op #[.const c0, .const c1] = some vf)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denoteBinary op w (denote ρ w a0) (denote ρ w a1) = .value v) : v = vf := by
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv op w _ _ v h
+  -- each folded operand value equals its denoted operand value (via IH + canon-stability)
+  have hcu0 : c0 = u0 := by
+    have hc := ih0 u0 hu0
+    rw [hn0] at hc
+    simp only [denote] at hc
+    have hcanon : (match Value.asF64? c0 with | some f => Value.f64 f | none => c0) = c0 :=
+      normalize_const_canon a0 c0 hn0
+    rw [hcanon] at hc
+    exact Outcome.value.inj hc
+  have hcu1 : c1 = u1 := by
+    have hc := ih1 u1 hu1
+    rw [hn1] at hc
+    simp only [denote] at hc
+    have hcanon : (match Value.asF64? c1 with | some f => Value.f64 f | none => c1) = c1 :=
+      normalize_const_canon a1 c1 hn1
+    rw [hcanon] at hc
+    exact Outcome.value.inj hc
+  -- the fold outcome equals the denoted binary outcome
+  have hfoldv : denoteBinary op w (.value u0) (.value u1) = .value vf := by
+    rw [← hcu0, ← hcu1]; exact denoteBinary_fold op w c0 c1 vf hfold
+  rw [hu0, hu1] at h
+  rw [h] at hfoldv
+  exact (Outcome.value.inj hfoldv)
+
+theorem denoteApp_normalize_fold_unary (ρ : Nat → Value) (w : IntTy) (op : String)
+    (a0 : SymExpr) (v c0 vf : Value)
+    (hn0 : normalize a0 = .const c0)
+    (hfold : foldConst? op #[.const c0] = some vf)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (h : denoteUnary op (denote ρ w a0) = .value v) : v = vf := by
+  obtain ⟨u0, hu0⟩ := denoteUnary_value_inv op _ v h
+  have hcu0 : c0 = u0 := by
+    have hc := ih0 u0 hu0
+    rw [hn0] at hc
+    simp only [denote] at hc
+    have hcanon : (match Value.asF64? c0 with | some f => Value.f64 f | none => c0) = c0 :=
+      normalize_const_canon a0 c0 hn0
+    rw [hcanon] at hc
+    exact Outcome.value.inj hc
+  have hfoldv : denoteUnary op (.value u0) = .value vf := by
+    rw [← hcu0]; exact denoteUnary_fold op c0 vf hfold
+  rw [hu0] at h
+  rw [h] at hfoldv
+  exact (Outcome.value.inj hfoldv)
+
+
 /-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
 `normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
 normalized — the structural equations above), and `denote` currently maps every compound to the SAME
