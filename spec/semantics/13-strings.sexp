@@ -6654,10 +6654,12 @@
   "a constant non-String operand to String.byte-len is a type mismatch, not a const-fold decline"
   (input (do (def (main) (String.byte-len 5)) (export main)))
   (error CDZ0203))
+
 (case
   "a constant non-String operand to String.at is a type mismatch, not an uncoded decline"
   (input (do (def (main) (String.at 5 0)) (export main)))
   (error CDZ0203))
+
 (case
   "a constant non-String operand to String.concat is a type mismatch, not an uncoded decline"
   (input (do (def (main) (String.concat "a" 5)) (export main)))
