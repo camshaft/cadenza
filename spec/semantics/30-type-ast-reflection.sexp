@@ -9,11 +9,12 @@
 ; nominal/sum types; a non-concrete / non-nominal argument declines. See README.md for the case vocabulary.
 ;
 ; STAGE STATUS (2026-08-31). INCREMENT 1: `Type.ast-generic` for nominal/sum types (the full spine on the
-; simplest shape), plus `Type.ast` on a NON-generic type (coincides with `-generic`). REMAINING: total
-; coverage for structural record/tuple/List/Map/Set/primitive/Fn + the non-concrete decline (increment 2);
-; the instantiated-substitution variant of `Type.ast` on a GENERIC type (increment 3); Ast.print / Ast.encode
-; round-trip lock (increment 4).
-
+; simplest shape), plus `Type.ast` on a NON-generic type (coincides with `-generic`). INCREMENT 2: total
+; coverage for structural record/tuple/List/Map/Set/primitive via the `type_ast` surface fallback (they have
+; no `TypeDecl`, so `-generic` == `-ast` == the canonical type-surface AST); a `Fn` type is TODO-pinned
+; (its arrow surface `(-> …)` is a later increment — `type_ast` has no value-form surface for a function).
+; REMAINING: the instantiated-substitution variant of `Type.ast` on a GENERIC type (increment 3); Ast.print /
+; Ast.encode round-trip lock (increment 4); the `Fn` arrow surface + the non-concrete-`Var` decline.
 (case
   "Type.ast-generic reflects a nominal sum type's verbatim declaration AST"
   (doc
@@ -33,8 +34,7 @@
   (output
     (:
       (Ast.List
-        #list(
-          (Ast.Name "type")
+        #list((Ast.Name "type")
           (Ast.Name "Color")
           (Ast.List #list((Ast.Name "Red")))
           (Ast.List #list((Ast.Name "Green")))
@@ -51,19 +51,74 @@
            that a value's reflected type reflects its DEFINITION. Pins the increment-1 promise that the
            common `Type.ast` works today for the monomorphic case (the generic-substitution variant is a
            later increment).")
-  (input
-    (do
-      (type Sign (Neg) (Zero) (Pos))
-      (def (main) (Type.ast (Type.of (Zero))))
-      (export main)))
+  (input (do (type Sign (Neg) (Zero) (Pos)) (def (main) (Type.ast (Type.of (Zero)))) (export main)))
   (call main)
   (output
     (:
       (Ast.List
-        #list(
-          (Ast.Name "type")
+        #list((Ast.Name "type")
           (Ast.Name "Sign")
           (Ast.List #list((Ast.Name "Neg")))
           (Ast.List #list((Ast.Name "Zero")))
           (Ast.List #list((Ast.Name "Pos")))))
       Ast)))
+
+(case
+  "Type.ast-generic reflects a STRUCTURAL type's canonical type-surface AST (increment 2)"
+  (doc
+    "A structural type — a tuple / `List` / record / `Map` / `Set` / primitive with NO user `(type …)`
+           declaration — has no `TypeDecl` to reify, so `Type.ast-generic` reflects its CANONICAL
+           type-surface AST via the same `type_ast` renderer the value-form / `encode_ty` use. There are no
+           type params, so `Type.ast` and `Type.ast-generic` COINCIDE. Equivalently: reflecting a value's
+           type equals QUOTING that type's surface form — so each shape is checked
+           `(= (Type.ast-generic (Type.of <value>)) (quote <type-surface>))`, weighted by position; the
+           self-witness sum is 1+2+3+4+5+6 = 21. A shape that reflected to a wrong surface (or a
+           name-headed node instead of the ctor) drops its term and shifts the total.")
+  (input
+    (do
+      (def
+        (main)
+        (+
+          (* 1 (if (= (Type.ast-generic (Type.of #tuple(1 true))) (quote (Tuple Int64 Bool))) 1 0))
+          (+
+            (* 2 (if (= (Type.ast-generic (Type.of #list(1 2 3))) (quote (List Int64))) 1 0))
+            (+
+              (*
+                3
+                (if
+                  (=
+                    (Type.ast-generic (Type.of #record((= a 1) (= b true))))
+                    (quote (Record (: a Int64) (: b Bool))))
+                  1
+                  0))
+              (+
+                (*
+                  4
+                  (if
+                    (= (Type.ast-generic (Type.of #map((= 1 true)))) (quote (Map Int64 Bool)))
+                    1
+                    0))
+                (+
+                  (* 5 (if (= (Type.ast-generic (Type.of #set(1 2 3))) (quote (Set Int64))) 1 0))
+                  (* 6 (if (= (Type.ast-generic (Type.of 42)) (quote Int64)) 1 0))))))))
+      (export main)))
+  (call main)
+  (output (: 21 Int64)))
+
+(case
+  "Type.ast-generic of a FUNCTION type reflects its arrow surface (TODO: arrow-surface reflection gap)"
+  (doc
+    "IDEAL (corpus-as-spec, operator corpus policy — assert the should-happen + track the gap, never
+           work around): reflecting a `Fn` type yields its arrow type-surface AST `(-> Param… Result)`,
+           just as a structural type reflects its surface. It currently DECLINES — `type_ast` has no
+           value-form surface for a function (a function is not a boundary value), so `Type.ast-generic`
+           has no arrow surface to reflect yet. This case therefore grades TODO: it pins the intended value
+           (`(-> Int64 Int64)`) and tracks the arrow-surface-reflection gap (a later type-reflection
+           increment, owned by v-metaprogramming), rather than pinning the transient decline.")
+  (input
+    (do
+      (def (id (: x Int64)) x)
+      (def (main) (if (= (Type.ast-generic (Type.of id)) (quote (-> Int64 Int64))) 1 0))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
