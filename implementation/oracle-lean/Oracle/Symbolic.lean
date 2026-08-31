@@ -568,6 +568,30 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none => .sym (.ctor "set".toUTF8 (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+      else if h == "map".toUTF8 then
+        -- a MAP literal: each entry is `(k v)` or `(= k v)` (mirrors `evalMapLiteral`'s key/value parse).
+        -- Model as `.ctor "map"` of one `.tuple #[key, value]` per entry, in SOURCE ORDER. SOUND: same-order
+        -- maps prove equal; differing order → normalized-but-different (never false `proven`). INCOMPLETE for
+        -- map key-REORDERING equality (`evalNode` canonicalizes maps sorted-by-key; canonicalization here
+        -- needs a SymExpr order — later increment). Still lifts map-literal programs out of the cannotProve
+        -- blind spot. A malformed / unmodelable entry sinks the whole map.
+        let entryOuts := (children.extract 1 children.size).map (fun j =>
+          match m.nodes[j]? with
+          | some (Node.list ec) =>
+            let kv := match m.headName? (Node.list ec) with
+              | some hh => if hh == "=".toUTF8 && ec.size == 3 then (ec[1]?, ec[2]?) else (ec[0]?, ec[1]?)
+              | none => (ec[0]?, ec[1]?)
+            (match kv with
+             | (some kId, some vId) =>
+               (match symEval m senv fuel ty kId, symEval m senv fuel ty vId with
+                | .sym ke, .sym ve => SymOutcome.sym (.tuple #[ke, ve])
+                | .cannotProve r, _ => .cannotProve r
+                | _, .cannotProve r => .cannotProve r)
+             | _ => .cannotProve "symeval: malformed map entry")
+          | _ => .cannotProve "symeval: malformed map entry")
+        match entryOuts.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
+        | some r => .cannotProve r
+        | none => .sym (.ctor "map".toUTF8 (entryOuts.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
       else if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
         -- a built-in unary Option/Result constructor (lazy payload).
         match children[1]? with
@@ -1056,6 +1080,17 @@ private def _setExpr : Module :=
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
 #guard symEval _setExpr [] symDefaultFuel defaultIntTy 3
        == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 1), .const (.int 2)])
+
+-- MAP literal coverage: `(map (1 10) (2 20))` → `.ctor "map" [tuple[1,10], tuple[2,20]]` (source order).
+private def _mapExpr : Module :=
+  { leaves := #[Leaf.name "map".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.intLit false .dec (ByteArray.mk #[2]),
+                Leaf.intLit false .dec (ByteArray.mk #[20])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[1, 2], .atom 3, .atom 4, .list #[4, 5], .list #[0, 3, 6]],
+    root := 7 }
+#guard symEval _mapExpr [] symDefaultFuel defaultIntTy 7
+       == SymOutcome.sym (.ctor "map".toUTF8 #[.tuple #[.const (.int 1), .const (.int 10)],
+                                               .tuple #[.const (.int 2), .const (.int 20)]])
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
