@@ -46,6 +46,17 @@ fn main() {
         return;
     }
 
+    // --refactor --select <head> --to {ast|string} [--check] <file.sexp>: the GENERAL select-on-pattern +
+    // convert primitive (operator directive). v1 selector = by HEAD-NAME (recursive over the whole arena);
+    // `--to ast` embeds every `(<head> "sexpr-string")` form as `(<head> <forms>)` (parse-at-build, the
+    // string->AST direction — generalizes the seq-213/214 `--migrate`). `--to string` (AST->string, render
+    // the selected subtree via the canonical printer) is render-ty-gated + not yet wired. This lives here
+    // (the parser+codec+span machinery) for v1; a `cargo xtask refactor` wrapper is a thin follow-up.
+    if args.iter().any(|a| a == "--refactor") {
+        run_refactor(&args);
+        return;
+    }
+
     let path = match args.iter().find(|a| !a.starts_with("--")) {
         Some(p) => p.clone(),
         None => {
@@ -296,6 +307,19 @@ fn collect_embed(
     let Some(holder) = named_node(a, node, name) else {
         return;
     };
+    try_embed_string_child(a, spans, holder, out);
+}
+
+/// If `holder`'s sole child is a STRING atom whose content re-parses as s-expr, queue a replacement of that
+/// string LITERAL's span (quotes included) with the raw (unescaped) content — turning `(<head> "…")` into
+/// `(<head> <forms>)`. The shared core of both the source/starter/solution `--migrate` and the general
+/// `--refactor --select <head>` (which passes the matched `(<head> …)` form itself as `holder`).
+fn try_embed_string_child(
+    a: &Arenas,
+    spans: &SpanTable,
+    holder: StructId,
+    out: &mut Vec<(usize, usize, String)>,
+) {
     let kids = children(a, holder);
     if kids.len() != 1 {
         return; // already embedded (forms) or empty — nothing to migrate
@@ -326,6 +350,115 @@ fn collect_embed(
         return;
     };
     out.push((sp.start, sp.end, content.to_string()));
+}
+
+/// Recursively collect every List node whose head is `head` (the general `--refactor --select <head>`
+/// pattern). Walks the whole arena — inline `(cdz …)` spans nest deep in prose, unlike the runnable/exercise
+/// sub-forms `--migrate` targets — so a top-level-only scan would miss them.
+fn collect_head_forms(a: &Arenas, id: StructId, head: &str, out: &mut Vec<StructId>) {
+    if matches!(a.get(id), Struct::List(_)) && a.head_name(id) == Some(head) {
+        out.push(id);
+    }
+    for &c in children(a, id) {
+        collect_head_forms(a, c, head, out);
+    }
+}
+
+/// `--refactor --select <head> --to ast`: embed every `(<head> "sexpr-string")` form's string child as
+/// `(<head> <forms>)` (string->AST). Returns the rewritten text + count, or None if nothing was embeddable.
+fn refactor_embed_head(
+    text: &str,
+    a: &Arenas,
+    spans: &SpanTable,
+    head: &str,
+) -> Option<(String, usize)> {
+    let mut forms = Vec::new();
+    collect_head_forms(a, a.root, head, &mut forms);
+    let mut repls: Vec<(usize, usize, String)> = Vec::new();
+    for f in forms {
+        try_embed_string_child(a, spans, f, &mut repls);
+    }
+    if repls.is_empty() {
+        return None;
+    }
+    let n = repls.len();
+    repls.sort_by_key(|r| std::cmp::Reverse(r.0)); // right-to-left so earlier spans stay valid
+    let mut out = text.to_string();
+    for (s, e, content) in repls {
+        out.replace_range(s..e, &content);
+    }
+    Some((out, n))
+}
+
+/// Driver for `--refactor --select <head> --to {ast|string} [--check] <file.sexp>`.
+fn run_refactor(args: &[String]) {
+    let flag_val = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let check = args.iter().any(|a| a == "--check");
+    let Some(head) = flag_val("--select") else {
+        eprintln!("xtask-codegen-guide --refactor: missing --select <head>");
+        std::process::exit(2);
+    };
+    let to = flag_val("--to").unwrap_or_else(|| "ast".to_string());
+    let Some(path) = args
+        .iter()
+        .skip(1)
+        .find(|a| !a.starts_with("--") && a.ends_with(".sexp"))
+        .cloned()
+    else {
+        eprintln!("xtask-codegen-guide --refactor: missing <file.sexp>");
+        std::process::exit(2);
+    };
+    if to == "string" {
+        // AST->string is render-ty-gated (render the selected subtree via the canonical binary-AST->surface
+        // printer). Not yet wired — fail loudly rather than silently no-op.
+        eprintln!(
+            "xtask-codegen-guide --refactor --to string: AST->string is not yet implemented \
+             (blocked on the canonical render-from-binary-AST entry, v-syntax-render-ty). Use --to ast for now."
+        );
+        std::process::exit(2);
+    }
+    if to != "ast" {
+        eprintln!("xtask-codegen-guide --refactor: --to must be `ast` or `string` (got `{to}`)");
+        std::process::exit(2);
+    }
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!("xtask-codegen-guide --refactor: read {path}: {e}");
+        std::process::exit(1);
+    });
+    let (a, spans) = cadenza_syntax_sexpr::read_all_spanned(&text).unwrap_or_else(|e| {
+        eprintln!("xtask-codegen-guide --refactor: parse {path}: {e:?}");
+        std::process::exit(1);
+    });
+    match refactor_embed_head(&text, &a, &spans, &head) {
+        Some((new_text, n)) => {
+            if check {
+                eprintln!(
+                    "✗ {path}: {n} `({head} \"…\")` string span(s) NOT yet embedded — run \
+                     `xtask-codegen-guide --refactor --select {head} --to ast {path}`"
+                );
+                std::process::exit(1);
+            }
+            std::fs::write(&path, &new_text).unwrap_or_else(|e| {
+                eprintln!("xtask-codegen-guide --refactor: write {path}: {e}");
+                std::process::exit(1);
+            });
+            println!("refactor --select {head} --to ast: embedded {n} span(s) in {path}");
+        }
+        None => {
+            if check {
+                println!(
+                    "✓ {path}: no embeddable `({head} \"…\")` string span (all embedded/clean)"
+                );
+            } else {
+                println!("{path}: no eligible `({head} \"…\")` string span to embed");
+            }
+        }
+    }
 }
 
 /// A block in document order — prose (h2/p/note) or an example (runnable/exercise/why).
@@ -999,5 +1132,30 @@ mod tests {
             render_runnable(&a, r).contains("source={`(def (main) (f 5))`}"),
             "runnable renders the canonical embedded source"
         );
+    }
+
+    #[test]
+    fn refactor_embed_head_embeds_selected_head_only_and_is_idempotent() {
+        // General --refactor --select <head> --to ast: embed every `(cdz "…")` string span (recursively,
+        // deep in prose) as `(cdz <forms>)`, leaving other heads (`c`) untouched; idempotent.
+        let text = "(chapter (slug \"x\") (p \"a \" (cdz \"(. Map insert)\") \" b \" (cdz \"#tuple(1 2)\") \" c \" (c \"cdz fmt\")))";
+        let (a, spans) = parse(text);
+        let (new_text, n) = refactor_embed_head(text, &a, &spans, "cdz").expect("embeds cdz spans");
+        assert_eq!(n, 2, "both (cdz \"…\") spans embedded");
+        assert!(
+            new_text.contains("(cdz (. Map insert))"),
+            "member form embedded"
+        );
+        assert!(
+            new_text.contains("(cdz #tuple(1 2))"),
+            "tuple form embedded"
+        );
+        assert!(
+            new_text.contains("(c \"cdz fmt\")"),
+            "the (c …) span is left untouched (not selected)"
+        );
+        // Idempotent + re-parses: a second pass over the embedded text finds nothing.
+        let (a2, spans2) = parse(&new_text);
+        assert!(refactor_embed_head(&new_text, &a2, &spans2, "cdz").is_none());
     }
 }
