@@ -552,6 +552,20 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
       else if h == "do".toUTF8 then
         -- an inline `(do stmt… last)` expression → sequential def-bindings + discarded non-defs + last.
         symDo m senv fuel ty children
+      else if h == "try".toUTF8 then
+        -- `(try e)` — the `?` operator. Model only the SUCCESS unwrap: a concrete `Ok v` / `Some v` → `v`
+        -- (byte-faithful to evalTry, Eval.lean:1487-1494). The FAILURE cases (`Err`/`None`) short-circuit to
+        -- the function boundary via `errReturn`, which symEval does not thread → cannotProve (conservative).
+        -- A symbolic operand (can't tell success from failure) → cannotProve.
+        (match children[1]? with
+         | some eId =>
+           (match symEval m senv fuel ty eId with
+            | .sym (.ctor t #[v]) =>
+              if t == "Ok".toUTF8 || t == "Some".toUTF8 then .sym v
+              else .cannotProve "symeval: try on a failing ctor (errReturn short-circuit not modeled)"
+            | .cannotProve r => .cannotProve r
+            | _ => .cannotProve "symeval: try operand not a concrete Ok/Some (short-circuit/symbolic not modeled)")
+         | none => .cannotProve "symeval: malformed try")
       else if h == "tuple".toUTF8 then
         -- a tuple value (lazy elements). Build `.tuple` of the element SymExprs; an unmodelable element
         -- sinks the whole tuple (conservative — the value can't be fully compared).
@@ -1782,6 +1796,14 @@ private def _doLocalFnCaptureExpr : Module :=
     root := 17 }
 #guard symEval _doLocalFnCaptureExpr [] symDefaultFuel defaultIntTy 17
        == SymOutcome.sym (.const (.int 15))
+
+-- TRY success-unwrap: `(try (Ok 5))` → 5 (the `?` operator on a concrete Ok). leaves 0:try 1:Ok 2:(5).
+private def _tryOkExpr : Module :=
+  { leaves := #[Leaf.name "try".toUTF8, Leaf.name "Ok".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 1, .atom 2, .list #[0, 1], .atom 0, .list #[3, 2]],
+    root := 4 }
+#guard symEval _tryOkExpr [] symDefaultFuel defaultIntTy 4
+       == SymOutcome.sym (.const (.int 5))
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
