@@ -741,6 +741,132 @@ theorem foldConst?_canon_stable (op : String) (args : Array SymExpr) (v : Value)
     (match Value.asF64? v with | some f => Value.f64 f | none => v) = v := by
   rcases foldConst?_out op args v h with ⟨b, rfl⟩ | ⟨f, rfl⟩ <;> rfl
 
+/-- Every `.const` LEAF anywhere in a symbolic expression is `asF64?`-canonical (its float components are
+already `.f64`, never a `.float`/`.floatNan`/`.floatInf` spelling). This is the invariant `normalize`
+OUTPUTS satisfy (`normalize_allConstsCanon`): the `.const` arm canonicalizes float literals to `.f64`, and
+every folded constant is canon-stable (`foldConst?_canon_stable`). Stated over ALL const leaves (not just
+the root) so it survives the `not (not x) → x` rewrite, which returns a GRANDCHILD of a normalized arg. A
+`.localFn` capture list is ignored (a `localFn` is never a fold operand — `symToValue?` rejects it). -/
+def AllConstsCanon : SymExpr → Prop
+  | .const c => (match Value.asF64? c with | some f => Value.f64 f | none => c) = c
+  | .var _ => True
+  | .app _ args => ∀ x ∈ args, AllConstsCanon x
+  | .ite c t e => AllConstsCanon c ∧ AllConstsCanon t ∧ AllConstsCanon e
+  | .tuple es => ∀ x ∈ es, AllConstsCanon x
+  | .record fs => ∀ k e, (k, e) ∈ fs → AllConstsCanon e
+  | .ctor _ args => ∀ x ∈ args, AllConstsCanon x
+  | .proj b _ => AllConstsCanon b
+  | .case s arms => AllConstsCanon s ∧ ∀ k e, (k, e) ∈ arms → AllConstsCanon e
+  | .localFn _ _ _ => True
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals
+    first
+      | omega
+      | (have h := Array.sizeOf_lt_of_mem ‹_›; omega)
+      | (rename_i hmem; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega)
+
+/-- A literal int/bool constant is trivially `asF64?`-canonical (`asF64?` is `none` on it). -/
+theorem allConstsCanon_int (n : Int) : AllConstsCanon (.const (.int n)) := by
+  simp only [AllConstsCanon, Value.asF64?]
+theorem allConstsCanon_bool (b : Bool) : AllConstsCanon (.const (.bool b)) := by
+  simp only [AllConstsCanon, Value.asF64?]
+
+/-- `normalizeAppIdentities` PRESERVES `AllConstsCanon`: if every operand's const leaves are canonical, so
+are the result's. Every arm returns an OPERAND (`a`/`b`/the double-neg grandchild `inner`), a literal
+`.const (.int 0)`/`.const (.bool _)`, or the rebuilt `.app op args'` — all canon-canonical given `h`.
+Provable now that the def is a REDUCIBLE size-dispatch + `if op == …` chain (#7028): `split` cases the
+goal-position `if` chains, and each leaf closes by the operand/literal facts. This discharges the `.app`
+IDENTITY sub-case of `normalize_allConstsCanon`. -/
+theorem normalizeAppIdentities_allConstsCanon (op : String) (args' : Array SymExpr)
+    (h : ∀ x ∈ args', AllConstsCanon x) :
+    AllConstsCanon (normalizeAppIdentities op args') := by
+  have happ : AllConstsCanon (SymExpr.app op args') := by simp only [AllConstsCanon]; exact h
+  have mem0 : 0 < args'.size → args'[0]! ∈ args' := fun h0 => by
+    rw [getElem!_pos args' 0 h0]; exact args'.getElem_mem h0
+  have mem1 : 1 < args'.size → args'[1]! ∈ args' := fun h1 => by
+    rw [getElem!_pos args' 1 h1]; exact args'.getElem_mem h1
+  unfold normalizeAppIdentities
+  by_cases hnot : (op == "not" && args'.size == 1) = true
+  · rw [if_pos hnot]
+    have h0 : 0 < args'.size := by
+      simp only [Bool.and_eq_true, beq_iff_eq] at hnot; omega
+    have hA0 : AllConstsCanon args'[0]! := h _ (mem0 h0)
+    split
+    · -- args'[0]! = .app o oa ; result = if o=="not" && oa.size==1 then oa[0]! else .app op args'
+      rename_i o oa heq
+      rw [heq] at hA0
+      simp only [AllConstsCanon] at hA0
+      split
+      · rename_i hcond
+        have hoa0 : 0 < oa.size := by
+          simp only [Bool.and_eq_true, beq_iff_eq] at hcond; omega
+        rw [getElem!_pos oa 0 hoa0]
+        exact hA0 _ (oa.getElem_mem hoa0)
+      · exact happ
+    · exact happ
+  rw [if_neg hnot]
+  by_cases hsz : (args'.size == 2) = true
+  · rw [if_pos hsz]
+    have hs2 : args'.size = 2 := by simpa using hsz
+    have hAa : AllConstsCanon args'[0]! := h _ (mem0 (by omega))
+    have hAb : AllConstsCanon args'[1]! := h _ (mem1 (by omega))
+    dsimp only
+    -- Every op arm's leaves are `a`/`b`/a literal const/`.app op args'`; `split` cases the (SymExpr-==)
+    -- inner `if`s and each leaf closes. `by_cases` on the op string (core `split` won't case a String-== if).
+    by_cases h1 : (op == "+") = true
+    · rw [if_pos h1]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h1]
+    by_cases h2 : (op == "-") = true
+    · rw [if_pos h2]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h2]
+    by_cases h3 : (op == "*") = true
+    · rw [if_pos h3]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h3]
+    by_cases h4 : (op == "/") = true
+    · rw [if_pos h4]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h4]
+    by_cases h5 : (op == "%") = true
+    · rw [if_pos h5]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h5]
+    by_cases h6 : (op == "or") = true
+    · rw [if_pos h6]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h6]
+    by_cases h7 : (op == "and") = true
+    · rw [if_pos h7]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h7]
+    by_cases h8 : (op == "&") = true
+    · rw [if_pos h8]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h8]
+    by_cases h9 : (op == "|") = true
+    · rw [if_pos h9]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h9]
+    by_cases h10 : (op == "^") = true
+    · rw [if_pos h10]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h10]
+    by_cases h11 : (op == "<<") = true
+    · rw [if_pos h11]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h11]
+    by_cases h12 : (op == ">>") = true
+    · rw [if_pos h12]
+      repeat' (first | exact hAa | exact hAb | exact happ | exact allConstsCanon_int 0 | exact allConstsCanon_bool true | exact allConstsCanon_bool false | split)
+    rw [if_neg h12]
+    exact happ
+  rw [if_neg hsz]
+  exact happ
+
 /-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
 `normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
 normalized — the structural equations above), and `denote` currently maps every compound to the SAME
