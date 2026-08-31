@@ -306,6 +306,33 @@
   (input  (do (def (f (: s (Set Int64))) (match s (#set() 1))) (export f)))
   (error  CDZ0210 (message "a set match must end in a catch-all") (message "unbounded")))
 
+; --- Set rest patterns ---------------------------------------------------------------------
+; A set membership pattern MAY end in a REST BINDER — `#set(e… .. rest)` — which binds `rest` to a set of
+; the same element type containing every element of the scrutinee EXCEPT the named ones, so the named
+; elements are consumed and the remainder is available (core-semantics.md §"A Set Is Matched By Element-
+; Membership Patterns"). The rest binder is the ONLY binder position in a set pattern (the named elements
+; stay ordinary value expressions per the containment pins above); the residual is a genuine Set value —
+; equal to the scrutinee with the named elements removed, and to the empty set when every element is named.
+; Containment is unrelaxed by a rest binder: the arm still fires only when the scrutinee CONTAINS every
+; named element, so a rest arm naming an absent element is refuted and falls through. Const-folded here (the
+; residual is compared by set equality, so these cases are runtime-independent). Landed #6711 (matcher) atop
+; #6698 (Resolved::SetRest + (Set E) typing); the set twin of the map / record rest binder.
+(case "a set rest pattern binds the residual = scrutinee MINUS the named element"
+  (input  (match #set(1 2 3) (#set(2 .. rest) (if (= rest #set(1 3)) 1 0)) (_ -1)))
+  (output (: 1 Int64)))
+
+(case "the set rest binder holds exactly the scrutinee elements minus the named ones"
+  (input  (match #set(1 2 3) (#set(1 .. rest) (if (= rest #set(2 3)) 100 -100)) (_ -1)))
+  (output (: 100 Int64)))
+
+(case "a set rest pattern naming every element binds the EMPTY residual set"
+  (input  (match #set(1 2 3) (#set(1 2 3 .. rest) (if (= rest #set()) 7 -7)) (_ -1)))
+  (output (: 7 Int64)))
+
+(case "a set rest pattern still requires the named elements PRESENT (absent named refutes the arm)"
+  (input  (match #set(1 2) (#set(3 .. rest) 9) (_ -1)))
+  (output (: -1 Int64)))
+
 (case "the empty set has cardinality zero"
   (doc    "The degenerate cardinality boundary: `(Set.len (Set.of (list)))` is 0 — the empty set holds no
            elements. The len companion of the empty-set membership pin above, and the both-backend witness
