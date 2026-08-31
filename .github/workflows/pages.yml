@@ -74,6 +74,20 @@ jobs:
           extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
       - uses: ./.github/actions/nix-store-cache
 
+      # PRE-DEPLOY FAIL-FAST on cdz-wasm lock drift (v-cdz-crate-split, durable close for the recurring
+      # guide-deploy break: #6328 (removed deps) + #6546 (an added cadenza-syntax edge) staled cdz-wasm's
+      # SEPARATE Cargo.lock, and the guide-site build below then exited 101 with an OPAQUE nix error).
+      # cdz-wasm-native runs the SAME `cargo --locked` resolve over the cdz-wasm standalone workspace, so
+      # it reds on exactly the drift the guide-site build would hit — but caught HERE with a clear,
+      # actionable message BEFORE the deploy. cachix-warmed (near-instant on a cache hit; rebuilds only
+      # when cdz-wasm actually changes). Empirically confirmed to fail-fast on an added-edge drift.
+      - name: Fail fast on cdz-wasm lock drift (pre-deploy guard)
+        run: |
+          if ! nix build .#checks.aarch64-linux.cdz-wasm-native --print-build-logs; then
+            echo "::error title=cdz-wasm lock drift::The cdz-wasm gate failed before the guide-site deploy. MOST LIKELY cdz-wasm/Cargo.lock is STALE vs its Cargo.tomls — cdz-wasm is a SEPARATE workspace with its OWN lock, so a cross-workspace dep edge (a cadenza-syntax/rcdzc change) needs its lock regenerated. FIX: cd implementation/seed/crates/cdz-wasm && cargo update (or cargo generate-lockfile), then commit the updated Cargo.lock. (If it is NOT lock drift, this is a cdz-wasm clippy/test regression — see the check log above.)"
+            exit 1
+          fi
+
       # Build the DEPLOYABLE guide site through nix (v-nix #5809 packages.guide-site / flake guideSite).
       # This one derivation replaces the former cargo-xtask-build + guide-wasm + npm-build pipeline: it
       # produces guide/dist/ (index.html + assets + 404 + version.json) with VITE_BASE=/cadenza/ baked
