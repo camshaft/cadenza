@@ -1313,41 +1313,17 @@ fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {
 }
 
 #[test]
-fn an_inferred_width_cdz0302_names_the_range_but_offers_no_value_rewriting_fix() {
-    // ADVICE-VALIDITY: an out-of-range literal whose width came from a SOLVED/INFERRED `Ty` (a nested
-    // compound payload, OR — since #1766 — a sibling list element's annotation) must NOT carry a retype
-    // fix. There is no written type-node on the literal to retype; the shared `int_out_of_range_reject`
-    // would attach `replace <literal> with <TypeName>`, rewriting the VALUE `-41` into a TYPE name
-    // (`(list (: 1 UInt64) Int8)` — a type in value position, and `Int8` for an UNSIGNED list): a
-    // machine-applicable fix that CORRUPTS the source. The message still names the valid range (the
-    // actionable fact); it just carries NO fix. A DIRECT annotation `(: v T)` DOES have a type-node and
-    // keeps its retype fix (asserted below), so the value-position sites lose the fix WITHOUT regressing
-    // the direct-annotation route.
-    let fixless = |src: &str| {
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-        let d = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("CDZ0302"))
-            .unwrap_or_else(|| panic!("expected CDZ0302 for: {src}"));
-        assert!(
-            d.message.contains("the valid range is"),
-            "still names the actionable range: {}",
-            d.message
-        );
-        assert!(
-            d.fix.is_none(),
-            "an inferred-width CDZ0302 must NOT carry a source-corrupting value→type fix, got: {:?}",
-            d.fix
-        );
-    };
-    // Sibling-inferred element width (the #1766 path) — negative-in-unsigned, both orders, and over-max.
-    fixless("(module m (def (main) (list (: 1 UInt64) -41)) (export main))");
-    fixless("(module m (def (main) (list -41 (: 1 UInt64))) (export main))");
-    fixless("(module m (def (main) (list (: 1 UInt8) 300)) (export main))");
-    // Nested Sum payload — the pre-#1766 path through the same reject.
-    fixless("(module m (def (main) (: (Some -41) (Option UInt64))) (export main))");
-    // CONTRAST: a DIRECT value annotation retains its retype fix, and it targets the TYPE spelling
-    // (`UInt64`→`Int8` for the negative-in-unsigned sign-flip), NOT the value literal.
+fn a_direct_value_annotation_cdz0302_keeps_a_retype_fix_targeting_the_type_node() {
+    // WHITE-BOX RESIDUAL of the inferred-width no-fix advice. The INFERRED-width sites (an out-of-range
+    // literal whose width came from a solved/inferred `Ty` — a sibling list element's annotation or a
+    // nested compound payload) name the valid range but carry NO value→type fix (a retype would rewrite
+    // the VALUE into a type name, corrupting the source); those are now corpus 06-numeric-model ("a list
+    // element out of range for a SIBLING element's annotated width is rejected" + its order-independent /
+    // over-max / NESTED SUM payload siblings, each pinning `(message "the valid range is") (no-fix)`).
+    // This keeps the facet the corpus fix grade cannot see: the CONTRAST — a DIRECT value annotation
+    // `(: -41 UInt64)` DOES have a type-node, so it KEEPS a retype fix, and that fix targets the TYPE
+    // spelling (`UInt64`→`Int8`, a sign-flip to the smallest signed width), NOT the value literal —
+    // verified by the fix.node SPAN resolving to `UInt64`.
     let (arenas, span) =
         crate::testkit::parse_spanned("(module m (def (main) (: -41 UInt64)) (export main))");
     let diags = crate::diagnostics(&mut crate::db::Db::load(arenas));
@@ -3679,12 +3655,6 @@ fn shadowing_a_prelude_payload_type_name_is_a_plain_rebind_not_a_phantom_variant
 // record-aware type-position validator), plus "a well-formed record parameter annotation compiles and the
 // field reads back" (value 7, no false positive). Was
 // an_unknown_type_in_a_record_parameter_annotation_names_only_the_type_not_the_field_label.)
-
-/// A match every UNGUARDED arm of which yields the SAME value COLLAPSES to that value — the probe
-/// chain is dropped (the match analogue of `(if c x x)` → `x`). `(match a (1 x) (2 x) (_ x))` always
-/// returns `x`, so it lowers to just `x` with no `i64.eq`/branch on `a`. Sound because the scrutinee
-/// here is a trap-free parameter (nothing to preserve by evaluating it); a trapping scrutinee is
-/// covered by `a_trapping_scrutinee_of_an_all_same_match_is_still_evaluated`.
 
 // (a_non_wildcard_pattern_after_a_literal_still_needs_a_wildcard migrated to corpus 02-binding-and-control:
 // two literal arms with no wildcard → non-exhaustive CDZ0210. PASS wasm.)

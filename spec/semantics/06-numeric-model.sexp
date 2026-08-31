@@ -1382,17 +1382,32 @@
 ; (wasm) / emitted invalid (rust) — a backend-divergent miscompile. Order-independent; fires on over-max as
 ; well as negatives; an IN-RANGE element and a plain (no narrow/unsigned sibling) list are unaffected.
 ; (Migrated from rcdzc a_list_element_literal_out_of_range_for_a_sibling_inferred_width_is_cdz0302.)
+; ADVICE-VALIDITY (enriched from rcdzc an_inferred_width_cdz0302_names_the_range_but_offers_no_value_rewriting_fix):
+; an out-of-range literal whose width came from a SOLVED/INFERRED Ty (a sibling element's annotation, or a
+; nested compound payload) must NOT carry a retype fix — there is no written type-node on the literal to
+; retype, so a `replace <literal> with <TypeName>` fix would rewrite the VALUE into a type name (source
+; corruption). The message still names the valid range (the actionable fact); it just carries NO fix. The
+; CONTRAST — a DIRECT annotation `(: v T)` HAS a type-node and keeps a retype fix targeting the TYPE spelling
+; — stays a white-box span-anchor pin in rcdzc (the corpus fix grade cannot see which node the fix targets).
 (case "a list element out of range for a SIBLING element's annotated width is rejected"
   (input  (do (def (main) #list((: 1 UInt64) -41)) (export main)))
-  (error  CDZ0302))
+  (error  CDZ0302 (message "the valid range is") (no-fix)))
 
 (case "the sibling-inferred list-element width check is order-independent (the bare element first)"
   (input  (do (def (main) #list(-41 (: 1 UInt64))) (export main)))
-  (error  CDZ0302))
+  (error  CDZ0302 (message "the valid range is") (no-fix)))
 
 (case "a list element over the max of a SIBLING-inferred narrow width is rejected"
   (input  (do (def (main) #list((: 1 UInt8) 300)) (export main)))
-  (error  CDZ0302))
+  (error  CDZ0302 (message "the valid range is") (no-fix)))
+
+(case "an out-of-range literal in a NESTED SUM payload takes the annotated inferred width and carries no retype fix"
+  (doc    "The nested-compound-payload face of the inferred-width no-fix advice: `(: (Some -41) (Option UInt64))`
+           annotates the Option, so the Some payload literal `-41` takes width UInt64 and is out of range. Like
+           the sibling-inferred list cases, the literal has no written type-node to retype, so CDZ0302 names the
+           valid range but carries NO source-corrupting value→type fix.")
+  (input  (do (def (main) (: (Some -41) (Option UInt64))) (export main)))
+  (error  CDZ0302 (message "the valid range is") (no-fix)))
 
 (case "an in-range list element under a sibling-inferred width compiles and runs (no over-rejection)"
   (input  (do (def (main) #list((: 1 UInt64) 41)) (export main)))
