@@ -5503,7 +5503,7 @@ pub(super) fn emit(
         // `br` to that block's label. BRICK 1 lays down the node + its non-emit arms; until BRICK 3 fills
         // the `block`/`br` bytes, emitting one is a clean decline (never wrong code).
         Core::Block { .. } | Core::Break { .. } => Err(Reject::decline(
-            "the `?`/try boundary block/break does not emit yet (block/br lowering is the next brick)",
+            "the `?`/try boundary block/break is not supported on the wasm backend (the block/br lowering is unimplemented)",
         )),
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
