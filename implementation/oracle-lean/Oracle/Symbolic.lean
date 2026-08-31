@@ -869,6 +869,29 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Set.contains on non-set / non-const query")
            | _, _ => .cannotProve "symeval: malformed Set.contains")
+        else if q == "String".toUTF8 && mem == "byte-len".toUTF8 then
+          -- `String.byte-len s` over a concrete string → the UTF-8 BYTE count (`.const (.int b.size)`),
+          -- byte-faithful to `evalNode` (Eval.lean:1761-1762). Purely structural. Non-string → cannotProve.
+          (match children[1]? with
+           | some sId =>
+             (match symEval m senv fuel ty sId with
+              | .sym (.const (.str b)) => .sym (.const (.int (Int.ofNat b.size)))
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: String.byte-len on a non-string value")
+           | none => .cannotProve "symeval: malformed String.byte-len")
+        else if q == "String".toUTF8 && mem == "scalar-len".toUTF8 then
+          -- `String.scalar-len s` → the Unicode SCALAR (code-point) count, `evalNode` decodes UTF-8 then
+          -- `s.toList.length` (Eval.lean:1764-1766); invalid UTF-8 traps `.unsupported` → cannotProve here.
+          (match children[1]? with
+           | some sId =>
+             (match symEval m senv fuel ty sId with
+              | .sym (.const (.str b)) =>
+                (match String.fromUTF8? b with
+                 | some s => .sym (.const (.int (Int.ofNat s.toList.length)))
+                 | none => .cannotProve "symeval: String.scalar-len on invalid UTF-8")
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: String.scalar-len on a non-string value")
+           | none => .cannotProve "symeval: malformed String.scalar-len")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1302,6 +1325,23 @@ private def _setContainsFalseExpr : Module :=
     root := 10 }
 #guard symEval _setContainsFalseExpr [] symDefaultFuel defaultIntTy 10
        == SymOutcome.sym (.const (.bool false))
+
+-- STRING.BYTE-LEN / SCALAR-LEN member-op coverage over "café" (é = 2 UTF-8 bytes → byte-len 5, scalar-len 4).
+private def _byteLenExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "String".toUTF8, Leaf.name "byte-len".toUTF8,
+                Leaf.str "café".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .list #[3, 4]],
+    root := 5 }
+#guard symEval _byteLenExpr [] symDefaultFuel defaultIntTy 5
+       == SymOutcome.sym (.const (.int 5))
+
+private def _scalarLenExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "String".toUTF8, Leaf.name "scalar-len".toUTF8,
+                Leaf.str "café".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .list #[3, 4]],
+    root := 5 }
+#guard symEval _scalarLenExpr [] symDefaultFuel defaultIntTy 5
+       == SymOutcome.sym (.const (.int 4))
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
