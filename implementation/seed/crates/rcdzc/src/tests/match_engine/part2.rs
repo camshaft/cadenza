@@ -225,41 +225,13 @@ fn a_list_pattern_must_be_linear_and_refutable_elements_decline() {
 // correct-arity no-fault + genuine-non-type "requires a type" controls are covered by the working
 // List/Int/Qty/arrow cases across the corpus. All 10 reject cases graded PASS on wasm.)
 
-#[test]
-fn a_bare_name_in_a_qty_unit_position_names_it_a_unit_not_a_type() {
-    // Residual: the reject-NAMING facets (a bare lowercase/uppercase name in the Qty unit position →
-    // CDZ0101 "`Qty`'s second argument is a UNIT" + the `(Unit.base #"…")` replace fix, at a param + a
-    // value-annotation site) moved to corpus 18-units-of-measure "a bare lowercase name in the Qty unit
-    // position …" + siblings. What stays: the CROSS-DIAGNOSTIC position-awareness — ONE program `(Qty widget
-    // meter)` produces TWO distinct-position faults (inner=type guidance, outer=unit) — which a corpus
-    // `(error …)` (single primary message) cannot pin; the valid `(Unit.base …)` no-false-change control is
-    // covered by corpus 18's valid Qty cases.
-    // The INNER (type) position still gets TYPE guidance — a bad inner type + a bad unit produce their
-    // OWN distinct messages, not both-as-units.
-    let both = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (g (: q (Qty widget meter))) q) (export g))",
-    )));
-    assert!(
-        both.iter()
-            .any(|d| d.message.contains("not a type variable")),
-        "the inner Qty position keeps type guidance: {:?}",
-        both.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    assert!(
-        both.iter().any(|d| d.message.contains("not a unit")),
-        "the unit Qty position gets the unit message: {:?}",
-        both.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    // NO false change: a VALID `(Qty Float64 (Unit.base #"meter"))` raises no unit fault.
-    assert!(
-        !crate::diagnostics(&mut crate::db::Db::load(parse(
-            "(module m (def (g (: q (Qty Float64 (Unit.base #\"meter\")))) q) (export g))"
-        )))
-        .iter()
-        .any(|d| d.message.contains("not a unit")),
-        "a well-formed Qty unit is not flagged"
-    );
-}
+// (a_bare_name_in_a_qty_unit_position_names_it_a_unit_not_a_type migrated to corpus 18-units-of-measure: the
+// reject-NAMING facets are the "bare lowercase/uppercase name in the Qty unit position" + value-annotation-site
+// cases; the CROSS-DIAGNOSTIC position-awareness — ONE program (Qty widget meter) produces TWO distinct-position
+// faults (inner type "not a type variable" + outer "not a unit") — is "a Qty with a bad inner TYPE and a bad
+// unit gets position-aware guidance" ((error CDZ0101 (message "not a type variable") (message "not a unit"));
+// corpus (message …) pins match ACROSS all diagnostics, not just the primary, so this cross-diagnostic
+// assertion IS expressible). The valid-Qty no-false-change control is covered by corpus 18's valid Qty cases.)
 
 // (a_non_unit_qty_of_arg_unbound_unit_is_not_a_double_report migrated to corpus 18-units-of-measure "an
 // UNBOUND unit name in Qty.of's second-arg position surfaces its own unbound error, not ALSO the not-a-unit

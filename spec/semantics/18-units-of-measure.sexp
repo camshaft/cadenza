@@ -102,6 +102,17 @@
   (input  (do (def (main) (: 5 (Qty Int64 meter))) (export main)))
   (error  CDZ0101 (message "`Qty`'s second argument is a UNIT") (fix (kind replace) (replacement "(Unit.base #\"meter\")") (unverified))))
 
+(case "a Qty with a bad inner TYPE and a bad unit gets position-aware guidance — type guidance inner, unit guidance outer"
+  (doc    "The cross-diagnostic position-awareness (migrated from rcdzc
+           a_bare_name_in_a_qty_unit_position_names_it_a_unit_not_a_type): `(Qty widget meter)` has BOTH a bad
+           inner TYPE argument (`widget`) and a bad unit (`meter`). Each position gets its OWN guidance in the
+           same program — the inner type position keeps the TYPE-oriented message (`widget` is not a type
+           variable), and the unit position gets the UNIT-oriented `not a unit` guidance — they do NOT
+           cross-contaminate into both-as-units. Pins that the unit-position redirect is scoped to the second
+           argument and does not swallow a genuine inner-type fault.")
+  (input  (do (def (g (: q (Qty widget meter))) q) (export g)))
+  (error  CDZ0101 (message "not a type variable") (message "not a unit")))
+
 ; The bare-SYMBOL twin of the bare-name unit slip above: `(Qty Float64 #"meter")` writes the unit's NAME
 ; directly (as a Symbol) where a unit EXPRESSION belongs. It used to fall through the bare-name check (a
 ; symbol is not a name) to the generic "requires a type, but found a non-type" — misleading (the position is
