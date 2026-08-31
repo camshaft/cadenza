@@ -523,22 +523,26 @@
 ; parameter) is a genuine TYPE MISMATCH (CDZ0203, BigInt ≠ Int64), never the range-fit CDZ0302 that a bare
 ; over-width literal takes. The width fit-check sees through the suffix's `(: 999 BigInt)` desugar to the
 ; inner literal and USED to ALSO fire CDZ0302 — double-reporting the same slip with the misleading "does not
-; fit the width" framing. The mismatch is the sole diagnostic: the `(not "does not fit")` pins the ABSENCE of
-; the range-fit second framing. The FITS-Int64 case (`5N`) proves the fault is about the TYPE, not magnitude:
+; fit the width" framing. The mismatch is the sole diagnostic: a `(no-diagnostic "does not fit")` clause pins the
+; PROGRAM-WIDE ABSENCE of the range-fit second framing (the earlier `(not …)` form checked only the first error, a
+; first-error-only false-green closed by the cross-kind message-absence assertion #6765). The FITS-Int64 case (`5N`) proves the fault is about the TYPE, not magnitude:
 ; 5 fits Int64's range, yet a `BigInt` there is still the wrong type. The BARE counterpart still range-checks
 ; (it types as the Int64 default → a grounding → CDZ0302), pinned last. (Migrated from rcdzc
 ; a_suffixed_bigint_literal_annotated_or_passed_to_int64_faults_once_as_a_type_mismatch.)
 (case "a suffixed BigInt literal annotated Int64 is a type mismatch, not a range-fit fault"
   (input  (do (def (main) (: 999999999999999999999999N Int64)) (export main)))
-  (error  CDZ0203 (message "BigInt") (message "does not match value type") (not "does not fit")))
+  (error  CDZ0203 (message "BigInt") (message "does not match value type"))
+  (no-diagnostic "does not fit"))
 
 (case "a suffixed BigInt literal passed to an Int64 parameter is the same type mismatch"
   (input  (do (def (g (: x Int64)) x) (def (main) (g 999999999999999999999999N)) (export main)))
-  (error  CDZ0203 (message "BigInt") (message "value of type Int64 is expected") (not "does not fit")))
+  (error  CDZ0203 (message "BigInt") (message "value of type Int64 is expected"))
+  (no-diagnostic "does not fit"))
 
 (case "a suffixed BigInt literal that FITS Int64's range is still a type mismatch (the fault is the type, not the magnitude)"
   (input  (do (def (main) (: 5N Int64)) (export main)))
-  (error  CDZ0203 (message "BigInt") (message "does not match value type") (not "does not fit")))
+  (error  CDZ0203 (message "BigInt") (message "does not match value type"))
+  (no-diagnostic "does not fit"))
 
 (case "the BARE (unsuffixed) over-Int64 counterpart still range-checks as CDZ0302 (a grounding, not a mismatch)"
   (input  (do (def (main) (: 999999999999999999999999 Int64)) (export main)))
