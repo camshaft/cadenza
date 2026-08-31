@@ -1,0 +1,4 @@
+def f(x) =
+  g(match x with
+    | A => 1
+    | B => 2)

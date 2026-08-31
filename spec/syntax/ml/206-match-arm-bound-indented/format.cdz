@@ -1,0 +1,3 @@
+def t(id) = match g(id) with
+  | S(t) => t
+  | N(_) => c(id)

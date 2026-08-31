@@ -6882,14 +6882,11 @@ mod tests {
     // ml/204-def-match-body-hugs-eq `def describe(s) = match s with | A(_) => 1 | B(_) => 2`→
     // `(def (describe s) (match s ((A _) 1) ((B _) 2)))`, format.cdz pins the `= match s with`⏎`  | …` surface.
 
-    #[test]
-    fn def_let_body_drops_flat_at_the_let_column() {
-        // A non-brace body (let) is not hugged: it drops to an indented continuation line. The `let`
-        // and its FINAL body share one indent — the body is FLAT at the `let` column, not nested a
-        // level deeper (operator seq-86: "why is the last statement indented").
-        let out = assert_roundtrip("def f(x) = let y = x + 1 in y * y", 80);
-        assert_eq!(out, "def f(x) =\n  let y = x + 1 in\n  y * y");
-    }
+    // `def_let_body_drops_flat_at_the_let_column` (a non-brace `let` body is not hugged: it drops to an
+    // indented continuation, and the `let` + its FINAL body share one indent — the body is FLAT at the
+    // `let` column, operator seq-86) MIGRATED to the spec/syntax corpus (inc-6 batch-28):
+    // ml/205-def-let-body-flat `def f(x) = let y = x + 1 in y * y`→`(def (f x) (let ((y (+ x 1))) (* y y)))`,
+    // format.cdz `def f(x) =`⏎`  let y = x + 1 in`⏎`  y * y`. (Structural, width-invariant.)
 
     #[test]
     fn single_expression_arm_body_stays_bare_no_unneeded_parens_seq101() {
@@ -6907,34 +6904,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn match_arm_flush_is_conditional_on_own_line_seq96_97() {
-        // Operator seq-96/97: match arms FLUSH with the `match` keyword when `match` starts its OWN line
-        // (a let/if body-tail, a statement); they stay INDENTED one level when `match` is BOUND inline
-        // to a preceding token (`def f = match …`, a call arg).
-
-        // BOUND — `match` on the `def … =` line → arms INDENTED.
-        assert_eq!(
-            assert_roundtrip(
-                "def t(id) = match g(id) with | S(t) => t | N(_) => c(id)",
-                80
-            ),
-            "def t(id) = match g(id) with\n  | S(t) => t\n  | N(_) => c(id)"
-        );
-        // OWN-LINE — the `match` is a `let` in-body on its own line → arms FLUSH with `match`.
-        assert_eq!(
-            assert_roundtrip(
-                "def f(x) = let y = p(x) in match y with | A => 1 | B => 2",
-                80
-            ),
-            "def f(x) =\n  let y = p(x) in\n  match y with\n  | A => 1\n  | B => 2"
-        );
-        // BOUND — a `match` as a call ARG stays INDENTED (value position, not a statement).
-        assert_eq!(
-            assert_roundtrip("def f(x) = g(match x with | A => 1 | B => 2)", 40),
-            "def f(x) =\n  g(match x with\n    | A => 1\n    | B => 2)"
-        );
-    }
+    // `match_arm_flush_is_conditional_on_own_line_seq96_97` (operator seq-96/97: match arms FLUSH with the
+    // `match` keyword when `match` starts its OWN line — a let/if body-tail; they stay INDENTED one level
+    // when `match` is BOUND inline to a preceding token — `def f = match …`, a call arg) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-28):
+    //   * ml/206-match-arm-bound-indented `def t(id) = match g(id) with | S(t) => t | N(_) => c(id)` (BOUND
+    //     on the `def … =` line → arms indented),
+    //   * ml/207-match-arm-own-line-flush `def f(x) = let y = p(x) in match y with | A => 1 | B => 2` (the
+    //     `match` is a `let` in-body on its own line → arms FLUSH with `match`),
+    //   * ml/208-match-arm-as-call-arg-indented `def f(x) = g(match x with | A => 1 | B => 2)` (BOUND as a
+    //     call arg → arms indented; width-invariant since `match` always breaks its arms one-per-line).
+    // Each carries a format.cdz pinning the exact flush-vs-indent surface; the layouts are structural
+    // (verified byte-identical to the deleted asserts at the corpus width).
 
     #[test]
     fn parenthesized_arm_body_opens_paren_on_the_arm_line_seq95() {
