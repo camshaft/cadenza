@@ -8,6 +8,8 @@ pass	ml/06-tuple-literal
 pass	ml/07-doc-comment
 pass	ml/09-bang-comment
 pass	ml/11-nested-list
+pass	ml/12-world-nullary-member
+pass	ml/13-world-full-decl
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
