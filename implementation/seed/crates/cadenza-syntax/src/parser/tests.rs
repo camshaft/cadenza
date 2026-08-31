@@ -1369,18 +1369,19 @@ fn combined_recursion_plus_postfix_depth_is_bounded() {
     });
 }
 
-/// Run `f` on a thread with a stack large enough to reach the parser's depth guard (the same
-/// 64 MB the compiler sizes its deep-walk worker at), re-raising a panic so an assertion failure
-/// inside still fails the test. The default `cargo test` worker stack is too small to DESCEND to
-/// the depth limit before overflowing (macOS especially), which would mask the guarded behavior.
-fn run_deep(f: impl FnOnce() + Send + 'static) {
-    let h = std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .spawn(f)
-        .expect("spawn deep-parse worker");
-    if let Err(payload) = h.join() {
-        std::panic::resume_unwind(payload);
-    }
+/// Run `f` directly on the current test worker's stack. HISTORICAL: this used to spawn a 64 MB-stack
+/// worker because the RECURSIVE ML reader descended one native frame per nesting level, so a deep input
+/// overflowed a default `cargo test` worker's ~2 MB stack before REACHING the depth guard
+/// (`MAX_NESTING_DEPTH`). `read_ml` is now fully ITERATIVE (explicit worklist — every grammar layer:
+/// expr, pattern, type, and the annotation/pragma arg descents), so a deep input reaches the guard with
+/// O(1) native stack: the deep-diagnostic tests below run on the DEFAULT stack and this big-stack worker
+/// is retired. Kept as a thin passthrough so the tests' bodies (which assert the clean depth-limit
+/// diagnostic) are unchanged — and so this is the standing proof that the reader needs no oversized stack.
+/// (NOTE: tests that exercise a RECURSIVE downstream CONSUMER on a deep tree — the ML/s-expr printer,
+/// `codec`, the codemod `Tree`/`Builder` drop — still provision their own big stack; that recursion is
+/// not the reader's and is out of this vertical's scope.)
+fn run_deep(f: impl FnOnce()) {
+    f();
 }
 
 #[test]
