@@ -3736,11 +3736,15 @@ pub(super) fn lower_match_set(
             taken = db.push_list(vec![if_head, g, taken, else_node]);
         }
         // Nest a `Set.contains` presence test per named element: `(if (Set.contains s e) <inner> <else>)`,
-        // INNERMOST last so the FIRST element is the OUTERMOST test.
+        // INNERMOST last so the FIRST element is the OUTERMOST test. Each element is used EXACTLY ONCE (slice
+        // 1 has no residual), so the element node is REUSED VERBATIM — NOT `clone_key_expr`'d. A cloned NAME
+        // atom is re-parented under the synthesized `Set.contains` call and loses its pattern-position scope
+        // ancestry → an in-scope name element (`#set(k)`, `k` a param) re-resolves UNBOUND; reused, it keeps
+        // its already-resolved memo (the element resolved as an ordinary value expression at its pattern
+        // position — the set twin of the map-key-is-a-value rule). A literal element is a constant either way.
         let mut chain = taken;
         for &e in elems.iter().rev() {
-            let e_copy = clone_key_expr(db, e);
-            let contains = set_member_call(db, "contains", scrutinee, e_copy);
+            let contains = set_member_call(db, "contains", scrutinee, e);
             let if_head = db.push_name("if");
             chain = db.push_list(vec![if_head, contains, chain, else_node]);
         }
