@@ -190,8 +190,11 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
   -- with the same trap behavior as `x` — operand-preserving, no guard (matches the identity discipline
   -- below: sound for well-typed bool `x`; an ill-typed `x` never compiles into the differential).
   if op == "not" && args'.size == 1 then
-    (match args'[0]? with
-     | some (SymExpr.app "not" #[inner]) => inner
+    -- `not (not x) → x`. Cased via constructor + `oa.size == 1` dispatch (NOT a `some (.app "not" #[inner])`
+    -- array-literal pattern, which — like the former op-matcher — compiles to a non-reducible sparse matcher
+    -- `split`/`by_cases` cannot case). Byte-identical: fires iff the sole arg is `.app "not"` of one element.
+    (match args'[0]! with
+     | SymExpr.app o oa => if o == "not" && oa.size == 1 then oa[0]! else .app op args'
      | _ => .app op args')
   else if args'.size == 2 then
     let a := args'[0]!
