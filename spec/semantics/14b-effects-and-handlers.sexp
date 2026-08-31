@@ -3510,6 +3510,32 @@
   (input  (do (effect E (op get (-> Unit Int64))) (def (main) (host (E) (E.get) 99)) (export main)))
   (error  CDZ0201 (message "too many operands") (fix (kind delete)) (no-other-errors)))
 
+; A `handle`'s HEAD must name an EFFECT (the arms ARE that effect's operations). A head that is a VALUE def
+; (`(handle foo …)`, foo a value) or a TYPE (`(handle C …)`, C a sum) is CDZ0201 naming the head as a value /
+; a type ("head must name an EFFECT"), not the leaky member-access / fold-decline cascade the desugared
+; `(. head op)` once produced. An UNBOUND head keeps its own CDZ0101 (the resolver's primary). (Migrated from
+; rcdzc a_handle_head_naming_a_value_reports_one_clear_diagnostic — the head-naming facets; the "exactly ONE
+; diagnostic" dedup of the UNCODED member-access/fold cascades stays a rust residual.)
+(case "a handle head that is a value def names the head must be an effect"
+  (input  (do (def foo 5) (def (main) (handle foo 0 ((x (u) s (resume 1 s))) 5)) (export main)))
+  (error  CDZ0201 (message "head must name an EFFECT") (message "foo")))
+
+(case "a handle head that is a type names the head must be an effect"
+  (input  (do (type C (Red)) (def (main) (handle C 0 ((a (u) s (resume 1 s))) 5)) (export main)))
+  (error  CDZ0201 (message "head must name an EFFECT") (message "a type")))
+
+(case "an unbound handle head keeps its own unbound-name error"
+  (input  (do (def (main) (handle Nonesuch 0 ((x (u) s (resume 1 s))) 5)) (export main)))
+  (error  CDZ0101))
+
+(case "a handle head that is a prelude scalar type names the head must be an effect"
+  (input  (do (def (main) (handle Int64 0 ((x (u) s (resume 1 s))) 5)) (export main)))
+  (error  CDZ0201 (message "head must name an EFFECT") (message "is a type")))
+
+(case "a handle head that is a prelude sum type names the head must be an effect"
+  (input  (do (def (main) (handle Option 0 ((x (u) s (resume 1 s))) 5)) (export main)))
+  (error  CDZ0201 (message "head must name an EFFECT") (message "is a type")))
+
 (case "a host delegation of an effect the body never reaches is latent authority and is rejected"
   (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
            `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised
