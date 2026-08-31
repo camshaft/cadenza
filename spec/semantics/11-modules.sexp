@@ -80,6 +80,18 @@
             (export main)))
   (error  CDZ0301))
 
+(case "a top-level-do module member's Bool/Int mix is type-checked and rejected CDZ0203"
+  (doc    "The non-numeric face of the same member-body type-check: a top-level-do module member `(def (bad)
+           (+ true 1))` mixes a Bool and an Int64 operand — not a numeric no-promotion clash (CDZ0301) but a
+           genuine type mismatch on the `+` operator scheme (CDZ0203), confirming the member-body check
+           surfaces EVERY ill-typing, not only the numeric-mix one the Float/Int case above pins. (Migrated
+           from rcdzc a_module_in_a_top_level_do_type_checks_its_members.)")
+  (input  (do
+            (module m (def (bad) (+ true 1)))
+            (def (main) 5)
+            (export main)))
+  (error  CDZ0203))
+
 (case "a top-level module is named by a top-level def's body"
   (doc    "Witnesses core-semantics.md #A Module Binds Its Name In Its Enclosing Scope from a NEW position:
            a `(module Temp …)` that is a top-level `(do …)` SEQUENCE ELEMENT — a sibling of the top-level
