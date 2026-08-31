@@ -485,10 +485,14 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
                         doc.word(format!("#{}(", compound_ctor_word(ctor)));
                         stack.push(Work::CloseParen);
                         // children `items[1..]`: the first hugs the `#word(` opener (no leading space), the
-                        // rest get an inter-child break. Push in REVERSE for source order.
+                        // rest get an inter-child break. Push in REVERSE for source order. A separator whose
+                        // PRECEDING entry is a `(comment-after …)` wrapper is DROPPED — the wrapper already
+                        // ends in a forced hardbreak, so an added break would be a spurious blank line.
                         for (i, &child) in items.iter().enumerate().skip(1).rev() {
                             stack.push(Work::Node(child, false));
-                            if i > 1 {
+                            // Drop the separator after a comment-after entry ONLY in the FMT surface (where
+                            // it emitted a forced hardbreak); structural keeps the generic-list spacing.
+                            if i > 1 && (structural || !is_comment_after_wrapped(a, items[i - 1])) {
                                 stack.push(Work::OpenSpace);
                             }
                         }
@@ -579,7 +583,7 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
                     stack.push(Work::CloseParen);
                     for (i, &child) in items.iter().enumerate().skip(1).rev() {
                         stack.push(Work::Node(child, false));
-                        stack.push(if i > blank_sep_from {
+                        let sep = if i > blank_sep_from {
                             Work::OpenBlank
                         } else if i == blank_sep_from {
                             // The head→FIRST-DEFINITION separator of a top-level `do`/`module`
@@ -595,7 +599,25 @@ fn pretty_node(a: &Arenas, root: StructId, doc: &mut Doc, root_top: bool, struct
                             Work::OpenAttach
                         } else {
                             Work::OpenSpace
-                        });
+                        };
+                        // If the PRECEDING element is a `(comment-after …)` wrapper, it already ends in a
+                        // FORCED hardbreak (` ;text` + break). Stacking this separator's break on top would
+                        // emit a spurious blank line (and TWO blanks after a `do`-member's blank separator).
+                        // Downgrade by one break level: a blank separator becomes a single hard break (→ one
+                        // blank total = comment-break + this), and a plain space is dropped entirely (the
+                        // comment's own hardbreak is the single inter-element break, at the right indent).
+                        // Only in the FMT (`!structural`) surface does a comment-after emit the ` ;text` +
+                        // forced hardbreak; the STRUCTURAL render prints it as a generic `(comment-after …)`
+                        // list with NO break, so no downgrade there (else tree.sexp whitespace would drift).
+                        if !structural && is_comment_after_wrapped(a, items[i - 1]) {
+                            match sep {
+                                Work::OpenBlank => stack.push(Work::OpenHardBreak),
+                                Work::OpenSpace => {}
+                                other => stack.push(other),
+                            }
+                        } else {
+                            stack.push(sep);
+                        }
                     }
                     stack.push(Work::Node(items[0], false));
                 }
@@ -617,6 +639,16 @@ fn blank_line(doc: &mut Doc) {
 /// True if `id` is an `Atom` holding a `Str` leaf — the shape of a comment wrapper's text child.
 fn is_string_leaf(a: &Arenas, id: StructId) -> bool {
     matches!(a.get(id), Struct::Atom(l) if matches!(a.leaf(*l), Leaf::Str(_)))
+}
+
+/// Whether `id` is a trailing-comment wrapper `(comment-after "text" node)` — the shape the PRETTY
+/// printer emits as ` ;text` followed by a FORCED hardbreak (so a following sibling / the enclosing `)`
+/// isn't swallowed into the comment line). Used to DOWNGRADE the separator that follows such an element
+/// by one break level: the wrapper already broke the line, so an additional inter-element break would
+/// stack into a spurious blank line (two blanks for a `do`-member's blank separator).
+fn is_comment_after_wrapped(a: &Arenas, id: StructId) -> bool {
+    a.as_form(id, "comment-after")
+        .is_some_and(|t| t.len() == 2 && is_string_leaf(a, t[0]))
 }
 
 /// The body text of a comment wrapper's string leaf, prefixed with a space when non-empty so it renders
@@ -3242,6 +3274,47 @@ mod tests {
                 rendered,
                 "render_sexpr is idempotent for {src:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_comment_after_followed_by_a_sibling_has_no_spurious_blank_line() {
+        // A `(comment-after …)` element emits ` ;text` + a FORCED hardbreak (so a following sibling / the
+        // enclosing `)` is not swallowed into the comment line). When a sibling FOLLOWS, that hardbreak
+        // used to STACK with the parent's inter-element separator break -> a spurious blank line mid-form
+        // (and TWO blanks after a `do`-member's blank separator). The fmt surface now downgrades the
+        // following separator by one break level. Pins: no blank in a plain list / compound; exactly ONE
+        // blank between do-members; the last-element `)` is still not swallowed. All round-trip + idempotent.
+        let cases: &[(&str, &str)] = &[
+            // plain list: comment-after head, then siblings — no blank line.
+            ("(f ; c\n a b)", "(f ; c\n  a\n  b)"),
+            // compound literal: comment-after entry, then sibling — no blank line.
+            ("#list(1 ; one\n 2)", "#list(1 ; one\n  2)"),
+            // match pattern (the routed sexp/42 case): no blank inside the pattern.
+            (
+                "(match e ((Some ; c\n n) n))",
+                "(match\n  e\n  ((Some ; c\n      n)\n    n))",
+            ),
+            // do-members: EXACTLY one blank line between the two defs (not two).
+            (
+                "(do (def (f) 1) ; c\n (def (g) 2))",
+                "(do\n  (def (f) 1) ; c\n\n  (def (g) 2))",
+            ),
+            // last element comment-after: the `)` drops to its own line (not swallowed), no blank.
+            ("(f a ; c\n)", "(f\n  a ; c\n  )"),
+        ];
+        for (src, want) in cases {
+            let a = read(src).unwrap();
+            let got = print_pretty(&a);
+            assert_eq!(&got, want, "fmt of {src:?}");
+            assert!(
+                !got.contains("\n\n\n"),
+                "no double-blank in {src:?}: {got:?}"
+            );
+            // Round-trips + idempotent.
+            let b = read(&got).unwrap();
+            assert!(a.structurally_eq(&b), "round-trips: {src:?}");
+            assert_eq!(&print_pretty(&b), want, "idempotent: {src:?}");
         }
     }
 
