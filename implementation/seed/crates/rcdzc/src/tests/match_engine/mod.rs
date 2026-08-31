@@ -3582,64 +3582,13 @@ fn a_default_fraction_pragma_takes_precedence_over_default_float() {
     );
 }
 
-#[test]
-fn a_default_integer_pragma_runs_the_narrow_literal_fit_check() {
-    // SOUNDNESS: a `(pragma default-integer <NarrowT>)` grounds a bare literal to `<NarrowT>`, so the
-    // SAME literal-fit range check an explicit `(: v <NarrowT>)` runs must apply — else an out-of-range
-    // literal is silently admitted into a narrow-typed slot (`x : Int8 = 300`), a value the type forbids.
-    // The pragma path now reuses `literal_width_fault` (via `default_int_literals`), so a narrowing
-    // default rejects an out-of-range literal CDZ0302, exactly as the annotation path does.
-    let m = |body: &str| {
-        format!(
-            "(module top (def (main) (do (module m (pragma default-integer Int8) (def (x) {body})) (Int64.of ((. m x) unit)))) (export main))"
-        )
-    };
-    // Out of Int8 range → CDZ0302 (was silently accepted, holding the full value).
-    assert_eq!(
-        reject_code(&m("300")).as_deref(),
-        Some("CDZ0302"),
-        "300 does not fit Int8"
-    );
-    assert_eq!(
-        reject_code(&m("128")).as_deref(),
-        Some("CDZ0302"),
-        "128 (one past max) does not fit Int8"
-    );
-    assert_eq!(
-        reject_code(&m("-129")).as_deref(),
-        Some("CDZ0302"),
-        "-129 (one past min) does not fit Int8"
-    );
-    // In-range boundary values fit — no fault.
-    assert_eq!(reject_code(&m("127")).as_deref(), None, "127 is Int8 max");
-    assert_eq!(reject_code(&m("-128")).as_deref(), None, "-128 is Int8 min");
-    assert_eq!(reject_code(&m("100")).as_deref(), None, "100 fits Int8");
-    // A UInt8 narrowing default: 300 and a negative both overflow; 255 (max) fits.
-    let u = |body: &str| {
-        format!(
-            "(module top (def (main) (do (module m (pragma default-integer UInt8) (def (x) {body})) (Int64.of ((. m x) unit)))) (export main))"
-        )
-    };
-    assert_eq!(
-        reject_code(&u("300")).as_deref(),
-        Some("CDZ0302"),
-        "300 does not fit UInt8"
-    );
-    assert_eq!(
-        reject_code(&u("-1")).as_deref(),
-        Some("CDZ0302"),
-        "a negative does not fit UInt8"
-    );
-    assert_eq!(reject_code(&u("255")).as_deref(), None, "255 is UInt8 max");
-    // A WIDENING default (BigInt) is unaffected — every literal fits, no fit-check fault.
-    assert_eq!(
-        reject_code(
-            "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 100000000000000000000)) ((. m x) unit))) (export main))"
-        ),
-        None,
-        "a widening BigInt default admits any literal (no narrow fit-check)"
-    );
-}
+// [migrated → spec/semantics/06-numeric-model.sexp] a_default_integer_pragma_runs_the_narrow_literal_fit_check:
+// a (pragma default-integer <NarrowT>) grounds a bare literal to NarrowT, so the SAME literal-fit range
+// check an explicit (: v NarrowT) runs applies (soundness: no out-of-range literal silently admitted).
+// Corpus 06 default-integer pragma section: well-past-range Int8 300 → CDZ0302 (pre-existing); + added
+// boundary/sign faces: Int8 128 (one past max) → CDZ0302, Int8 127 (max) → runs 127, UInt8 -1 (negative)
+// → CDZ0302; the UInt8/300 magnitude twin + widening-BigInt-never-faults control stay covered by those
+// cases and the earlier default-integer BigInt cases. All PASS on wasm.
 
 #[test]
 fn a_nullary_module_member_body_is_type_checked() {

@@ -4417,6 +4417,38 @@
             (Int64.of ((. m x) unit))))
   (error  CDZ0302))
 
+; The BOUNDARY faces of the narrowing-default fit-check (the `300` case above is well past the range; these
+; pin the EXACT inclusive boundary and the SIGN face). `128` is one past Int8.max (127) → CDZ0302; the
+; in-range `127` (Int8.max itself) still grounds and RUNS, proving the fit-check does not over-reject at the
+; boundary. A narrowing UNSIGNED default (`UInt8`) rejects a NEGATIVE literal `-1` (CDZ0302) — the sign face,
+; distinct from a magnitude overflow: UInt8 has no negative values, exactly as `(: -1 UInt8)` rejects.
+; (Migrated from rcdzc a_default_integer_pragma_runs_the_narrow_literal_fit_check; the well-past-range `300`
+; face and the UInt8/300 magnitude + widening-BigInt-never-faults controls stay covered by the case above and
+; the `default-integer BigInt` cases earlier in this section.)
+(case "a bare literal one past the narrow default's max is rejected at the exact boundary"
+  (input  (do
+            (module m
+              (pragma default-integer Int8)
+              (def (x) 128))
+            (Int64.of ((. m x) unit))))
+  (error  CDZ0302))
+
+(case "a bare literal at the narrow default's max fits and runs (no over-reject at the boundary)"
+  (input  (do
+            (module m
+              (pragma default-integer Int8)
+              (def (x) 127))
+            (Int64.of ((. m x) unit))))
+  (output (: 127 Int64)))
+
+(case "a negative bare literal under an unsigned narrow default is rejected (the sign face)"
+  (input  (do
+            (module m
+              (pragma default-integer UInt8)
+              (def (x) -1))
+            (Int64.of ((. m x) unit))))
+  (error  CDZ0302))
+
 (case "a default-integer pragma naming an unbound type is rejected as unbound, like an annotation"
   (doc    "`(pragma default-integer Nope)` names a type `Nope` that does not exist — no prelude type, no
            declared type. The SAME name in a type-annotation position (`(: x Nope)`) is CDZ0101 'unbound
