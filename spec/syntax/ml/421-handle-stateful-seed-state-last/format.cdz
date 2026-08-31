@@ -1,0 +1,4 @@
+handle Fresh(0) with
+  | next(u, s) => resume(s, s + 1)
+in
+Fresh.next()

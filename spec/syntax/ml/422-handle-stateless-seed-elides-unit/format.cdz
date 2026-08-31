@@ -1,0 +1,4 @@
+handle Choose with
+  | pick(s) => resume(5, s)
+in
+Choose.pick()
