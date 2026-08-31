@@ -3249,6 +3249,19 @@ impl<'a> Printer<'a> {
             self.doc.word(",)");
             return;
         }
+        // A tuple CONSTRUCTION spread (`(a, .. rest)`) carries a `..` rest/spread marker — render through
+        // the rest-aware path (`.. rest`), the twin of the list/map/record/set spread, so it doesn't fall
+        // to the generic quoted-op `` `..`(rest) `` element render. No marker ⇒ the ordinary path.
+        if self.has_rest_marker(elems) {
+            return self.bracketed_rest(
+                "(",
+                ")",
+                false,
+                elems,
+                |p, e| p.print_elem_maybe_commented(e),
+                |p, e| p.print_elem_maybe_commented(e),
+            );
+        }
         self.bracketed_comment_aware("(", ")", false, elems);
     }
 
@@ -3645,17 +3658,19 @@ impl<'a> Printer<'a> {
                 // grouping.
                 if pat_head.as_deref() == Some("tuple") && items.len() >= 2 {
                     let subs = &items[1..];
-                    self.doc.word("(");
-                    for (i, &sub) in subs.iter().enumerate() {
-                        if i > 0 {
-                            self.doc.word(", ");
-                        }
-                        self.pattern(sub);
-                    }
                     if subs.len() == 1 {
-                        self.doc.word(","); // 1-tuple: trailing comma
+                        // 1-tuple: trailing comma (never carries a rest — a `.. rest` needs a leading
+                        // element + comma, so a rest tuple always has >= 2 sub-slots).
+                        self.doc.word("(");
+                        self.pattern(subs[0]);
+                        self.doc.word(",)");
+                        return;
                     }
-                    self.doc.word(")");
+                    // A trailing `.. rest` binds the remaining positional elements; render via the
+                    // rest-aware seq (the SAME path the list/map/record patterns use) so a wrapped
+                    // `(.. rest)` element prints the clean `.. rest`, not the generic quoted-op fallback
+                    // `` `..`(rest) ``. Ordinary elements print unchanged.
+                    self.print_pattern_seq("(", ")", subs, |p, e| p.pattern(e));
                     return;
                 }
                 // list pattern `(list p… .. rest)` -> `[p, …, .. rest]`, the value list literal's twin
@@ -4852,6 +4867,44 @@ mod tests {
                 a.structurally_eq(&back.arenas),
                 "nested-do block boundary lost in round-trip\n src:  {src}\n ml:   {printed}\n \
                  back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
+    }
+
+    #[test]
+    fn a_tuple_or_record_rest_pattern_prints_the_clean_dotdot_surface_and_round_trips() {
+        // A tuple-rest / record-rest PATTERN must print the clean `.. rest` surface (like the list/map
+        // patterns), NOT the generic quoted-operator fallback `` `..`(rest) ``. The fallback re-parses
+        // (so the round-trip is structurally correct) but is an ugly, misleading surface — and the tuple
+        // pattern printer used to hit it because it rendered elements with a bare loop instead of the
+        // rest-aware `print_pattern_seq`. Pin BOTH the clean surface AND structural round-trip so a future
+        // printer change can't silently regress to the fallback.
+        for (src, want_surface) in [
+            (
+                "(do (def (f t) (match t ((tuple a b (.. rest)) a) (_ 0))) (export f))",
+                "(a, b, .. rest)",
+            ),
+            (
+                "(do (def (f r) (match r ((record (= a x) (.. rest)) x) (_ 0))) (export f))",
+                "{ a = x, .. rest }",
+            ),
+        ] {
+            let a = sexpr::read(src).expect("sexpr parses");
+            let printed = print(&a, 80);
+            assert!(
+                printed.contains(want_surface),
+                "expected the clean rest surface {want_surface:?} in the ML print\n src: {src}\n ml:  {printed}"
+            );
+            assert!(
+                !printed.contains("`..`"),
+                "the rest pattern fell back to the quoted-op `..`(…) surface\n src: {src}\n ml:  {printed}"
+            );
+            let back = parser::read_ml(&printed);
+            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
+            assert!(
+                a.structurally_eq(&back.arenas),
+                "rest pattern lost in round-trip\n src:  {src}\n ml:   {printed}\n back: {}",
                 sexpr::print(&back.arenas)
             );
         }
