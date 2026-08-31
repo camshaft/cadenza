@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Ch } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 
@@ -49,7 +49,7 @@ export default function WritingAReducer() {
 
 (def (main) (apply #record((= family "message") (= version 1)) (None) (None)))`}
       />
-      <P>The result is <C>[]</C>, the empty list: no effects, for any event. To turn this program into something the kernel can run, you compile it as a <em>component</em> bound to the reducer interface, naming that interface on the command line:</P>
+      <P>The result is <Cadenza>#list()</Cadenza>, the empty list: no effects, for any event. To turn this program into something the kernel can run, you compile it as a <em>component</em> bound to the reducer interface, naming that interface on the command line:</P>
       <Note>cdz compile reducer.cdz --target wasm --component-name cadenza:agent-kernel/fold</Note>
       <P>The <C>--component-name</C> flag is the whole difference between an ordinary program and a component the kernel can load: it exports <C>apply</C> through the named <C>cadenza:agent-kernel/fold</C> interface the kernel expects, so the kernel can marshal each event into the call and read the effect-requests back out. (That marshalling and the component export are the kernel's side of the boundary; the examples on this page run <C>apply</C>'s logic directly, the way you'd unit-test it, rather than through the component interface.)</P>
       <P>That reducer interface is one interface of a WIT <em>world</em>, the target the component compiles against: it <em>exports</em> the <C>fold</C> interface (this <C>apply</C>) and <em>imports</em> the host interfaces it uses, like the key-value store below. A module can name that world inline with a <Ch to="/modules"> <C>world</C> declaration </Ch> (its example is exactly a <C>world Reducer</C>), so the compile target is spelled out in the source instead of supplied separately.</P>
