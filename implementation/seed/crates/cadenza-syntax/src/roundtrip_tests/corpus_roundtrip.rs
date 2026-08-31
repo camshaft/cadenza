@@ -47,6 +47,20 @@ fn has_compound_key_member(a: &Arenas) -> bool {
     })
 }
 
+/// Does this tree contain a native RATIONAL literal `(RationalTag num den)`? Per seq-204 the ML surface
+/// has NO rational literal — a rational is a DISPLAY value form (`num/den`), and on the ML surface an
+/// unspaced `num/den` LEXES as integer DIVISION `(/ num den)`, not a rational. So a rational prints to
+/// `num/den` but re-reads to a `/`-division node — structurally DIFFERENT *and* non-idempotent (`(/ n d)`
+/// re-prints spaced as `n / d`, not `n/d`). A rational thus has no faithful ML SOURCE round-trip; like a
+/// rejected (error) program, its only meaningful ML contract is PARSE-OK — the codec (binary) and s-expr
+/// paths preserve the rational EXACTLY (its program identity). A rational reaches ML *source* via a
+/// `(/ n d)` / `Rational.of` construction, never a literal. See `cadenza-syntax` lexer (seq-204).
+fn has_rational(a: &Arenas) -> bool {
+    (0..a.structure.len() as u32)
+        .map(StructId)
+        .any(|id| a.rational_parts(id).is_some())
+}
+
 /// A hint for the commonest round-trip authoring mistake: a `record` literal whose fields are written
 /// POSITIONAL `(name value)` instead of `(= name value)`. `structurally_eq` collapses a ctor HEAD
 /// (`record` ↔ `"record"`, `list` ↔ `"list"`, …), so a name-head compound literal is fine — but the ML
@@ -196,8 +210,13 @@ fn ml_surface_round_trips_the_corpus() {
             // equality AND idempotence. Its only meaningful ML-surface contract is PARSE-OK: the printed
             // ML re-parses. (Surface FIDELITY is the contract for VALID programs; the codec/s-expr paths
             // stay exact regardless.)
+            // A native RATIONAL literal has no faithful ML SOURCE form (seq-204): it prints to the display
+            // `num/den`, which the ML surface RE-READS as integer division `(/ num den)` — structurally
+            // different AND non-idempotent. So, exactly like a rejected (error) program, a rational-bearing
+            // input's only meaningful ML contract is PARSE-OK; the codec/s-expr paths keep it exact.
+            let no_ml_source_form = is_error || has_rational(&input);
             let ok = reparsed.ok()
-                && (is_error
+                && (no_ml_source_form
                     || ((!structural_required || reparsed.arenas.structurally_eq(&input))
                         // idempotence: printing the reparsed tree is byte-identical
                         && printer::print(&reparsed.arenas, WIDTH) == ml));
@@ -365,11 +384,16 @@ fn all_surface_paths_round_trip_the_corpus() {
             // ml→binary→decode composition SUCCEEDS, not fidelity — matching the ML-only test's parse-ok
             // contract for error cases. (Path B below stays exact: the s-expr oracle and codec are
             // bijections independent of semantic validity.)
+            // A rational literal has no faithful ML SOURCE form (seq-204: `num/den` prints for display but
+            // re-reads as integer division), so Path A — which routes THROUGH ML — is held to the same
+            // composition-succeeds contract as an error case. Path B below (sexpr→binary→sexpr) stays EXACT
+            // for a rational: the s-expr surface + codec are lossless bijections for `(RationalTag n d)`.
             let ml = printer::print(&input, WIDTH);
             let via_bin = codec::decode(&codec::encode(&parser::read_ml(&ml).arenas));
             let path_a = match &via_bin {
                 Some(a) => {
                     is_error
+                        || has_rational(&input)
                         || (printer::print(a, WIDTH) == ml
                             && (!structural || a.structurally_eq(&input)))
                 }
