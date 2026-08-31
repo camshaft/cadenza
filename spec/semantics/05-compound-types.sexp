@@ -11232,6 +11232,20 @@
   (input (do (type C (Alpha) (Beta)) (type D (Alph Int64)) (def (main) (match (C.Alpha) ((D.Alph x) x) (_ 2))) (export main)))
   (error CDZ0203 (message "did you mean") (fix (kind replace) (replacement "Alpha"))))
 
+; A BARE-NAME match arm that is edit-distance-close to a variant of the scrutinee's sum is read as a variant
+; TYPO, not a catch-all binder: `(match c (Rd 1) …)` with `c : Color {Red,Green}` rejects CDZ0201 naming the
+; near variant + a replace fix to `Red`. The consequent CDZ0213 "unreachable" (the typo'd arm mis-read as a
+; catch-all) and CDZ0306 "unused binding" are suppressed — one clean primary. A bare name NOT near any
+; variant stays a genuine catch-all binder (an intentional `x` binds and the match runs). (Migrated from rcdzc
+; a_bare_variant_typo_arm_suggests_the_variant_not_a_binder.)
+(case "a bare-name match arm near a variant is a typo suggesting the variant, not a binder"
+  (input  (do (type Color Red Green) (def (f (: c Color)) (match c (Rd 1) (_ 2))) (export f)))
+  (error  CDZ0201 (message "did you mean `Red`?") (fix (kind replace) (replacement "Red")) (no-other-errors)))
+
+(case "a bare-name match arm far from any variant is a genuine catch-all binder and runs"
+  (input  (do (type Color Red Green) (def (f (: c Color)) (match c (Red 1) (x 2))) (def (main) (f (Green))) (export main)))
+  (call   main) (output (: 2 Int64)))
+
 ; The same pattern-head enrichment reaches a SINGLE-VARIANT NEWTYPE scrutinee (`(type A (Xyz))` erases to a
 ; Ty::Nominal newtype, once a separate reject path with no suggestion): a wrong ctor over a newtype scrutinee
 ; gets the same two-tier — near→did-you-mean+fix to the sole variant, far→"closest matches" listing it. Both

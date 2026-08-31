@@ -1457,60 +1457,6 @@ fn a_bare_nested_nullary_variant_arm_is_a_ctor_not_a_binder_and_never_warns() {
     );
 }
 
-/// A BARE (un-dotted) arm pattern name that is a TYPO of a scrutinee-sum variant — `Rd` over `(type
-/// Color Red Green)` — is almost certainly a misspelled nullary-variant pattern, NOT a catch-all
-/// binder. Treating it as a binder silently turns the arm into a wildcard (a later real-variant arm
-/// reads "unreachable" CDZ0213) and draws a misleading CDZ0306 "unused binding `Rd`". Now it gets the
-/// SAME did-you-mean the DOTTED form (`Color.Rd`) already gives: CDZ0201 "not a variant of the matched
-/// type Color — did you mean `Red`?" + a replace fix on the name, and the consequent CDZ0213/CDZ0306
-/// are suppressed (the match's `core_of` poisons, so the redundant-arm + unused-binding passes skip it).
-#[test]
-fn a_bare_variant_typo_arm_suggests_the_variant_not_a_binder() {
-    let src =
-        "(module m (type Color Red Green) (def (f (: c Color)) (match c (Rd 1) (_ 2))) (export f))";
-    let d = first_error(src);
-    assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-    assert!(
-        d.message.contains("`Rd`")
-            && d.message.contains("Color")
-            && d.message.contains("did you mean `Red`?"),
-        "names the typo + the near variant: {}",
-        d.message
-    );
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("Red"),
-        "carries the replace-with-`Red` fix: {}",
-        d.message
-    );
-    // The consequent CDZ0213 "unreachable" (the typo'd arm was mis-read as a catch-all) and CDZ0306
-    // "unused binding `Rd`" are SUPPRESSED — one clean primary error, not a pile of consequent noise.
-    let all = diags_of(src);
-    assert!(
-        all.iter()
-            .all(|x| x.code.as_deref() != Some("CDZ0213") && x.code.as_deref() != Some("CDZ0306")),
-        "no consequent unreachable/unused-binding noise on a typo arm: {all:?}"
-    );
-    // NO false positive on a GENUINE binder: a bare name UNLIKE any variant (`zzzptql`) stays a
-    // catch-all binder — the usual CDZ0306 unused-binding warning, never the typo CDZ0201.
-    let far = "(module m (type Color Red Green) (def (f (: c Color)) (match c (Red 1) (zzzptql 2))) (export f))";
-    let fd = diags_of(far);
-    assert!(
-        fd.iter().all(|x| x.code.as_deref() != Some("CDZ0201")),
-        "a far-miss bare name is a genuine binder, not a typo reject: {fd:?}"
-    );
-    // A lowercase binder near a variant is still a binder — the typo heuristic is edit-distance-gated,
-    // and an intentional catch-all `x` is nowhere near `Red`/`Green`, so it binds cleanly (no reject).
-    let bind = "(module m (type Color Red Green) (def (f (: c Color)) (match c (Red 1) (x 2))) (export f))";
-    assert!(
-        diags_of(bind)
-            .iter()
-            .all(|x| x.severity != crate::abi::Severity::Error),
-        "an intentional catch-all binder still compiles: {:?}",
-        diags_of(bind)
-    );
-}
-
 /// A match whose PATTERN is malformed (rejected — a `(tuple a b c)` against a 2-tuple, a `(list … .. r
 /// b)` with a binder after the rest) must NOT also emit consequent CDZ0306 "unused binding" warnings
 /// for the binders inside that rejected pattern: those binders never bind, so their "unusedness" is a
