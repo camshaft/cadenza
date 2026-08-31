@@ -24166,16 +24166,15 @@
   (call main)
   (output (: 15 Int64)))
 
-; A record sub-pattern nested inside a TUPLE (or list/constructor) match arm binds its BARE-binder fields
-; (the case above), but a field whose value is ITSELF a compound — `#tuple(#record((= x #tuple(c d))) e)`,
-; where field `x` of the nested record is a further `#tuple(c d)` — is the deeper nesting the compiler does
-; not yet wire (a record field projects by NAME→sorted-slot; no name-keyed `PathStep` composes a further
-; descent). It is SPEC-VALID (core-semantics §235: a record field value binder may be any nested pattern to
-; any depth), so it is DECLINED as an unbuilt construct with the seq-286 umbrella CDZ0900 (`Reject::unsupported`)
-; — NOT the old CDZ0201 "malformed" reject, which wrongly called a valid program wrong. The sibling of the
-; directly-nested record-match decline below; `(no-other-errors)` pins no unbound-name CDZ0101 cascade.
+; A record sub-pattern nested inside a TUPLE match arm binds its BARE-binder fields (the case above); a
+; field whose value is ITSELF a compound — `#tuple(#record((= x #tuple(c d))) e)`, where field `x` of the
+; nested record is a further `#tuple(c d)` — now BINDS too (§235: a record field value binder may be any
+; nested pattern to any depth). The binder descends via `RecordField` with `path = [Elem(0)]` (reach the
+; record at tuple-slot 0) + field `x` + `sub_path` into the tuple — all positional `Elem` steps. Over
+; `#tuple(#record((= x #tuple(3 4))) 5)`: c=3, d=4, e=5 → 12. Formerly a CDZ0900 decline (#6850); now wired
+; via the `RecordField.sub_path` descent below a field, composing with the enclosing-tuple `path`.
 (case
-  "a deeper compound below a record field NESTED in a tuple match arm is a coded decline (CDZ0900)"
+  "a deeper compound below a record field NESTED in a tuple match arm binds (§235 sub_path descent)"
   (input
     (do
       (def
@@ -24183,21 +24182,19 @@
         (match t (#tuple(#record((= x #tuple(c d))) e) (+ c (+ d e)))))
       (def (main) (f #tuple(#record((= x #tuple(3 4))) 5)))
       (export main)))
-  (declines
-    CDZ0900
-    (message "a record sub-pattern nested inside a tuple/list/constructor match pattern is not")
-    (not "unbound")
-    (no-other-errors)))
+  (call main)
+  (output (: 12 Int64)))
 
-; The "separate coded decline" the case above names: a binder BELOW a nested-record field value in a MATCH
-; arm — the field value is ITSELF a compound (`#record((= x #tuple(c d)))`) — is the not-yet-wired deeper
-; nesting (a record field projects by NAME→sorted-slot; `PathStep` has no name-keyed step to compose a
-; further sub-path). Declined as an unbuilt construct with the seq-286 umbrella CDZ0900 (`Reject::unsupported`
-; at `match_arm_record_binds`). The binding twin above pins the SAME code from the binding position; this
-; pins the match face so the two stay symmetric (a regression to an uncoded decline on either would flip its
-; case). `(no-other-errors)` pins no unbound-name CDZ0101 cascade rides alongside.
+; A binder BELOW a nested-record field value in a MATCH arm — the field value is ITSELF a compound
+; (`#record((= x #tuple(c d)))`, `c`/`d` in the tuple at field `x`) — now BINDS (§235: a record field value
+; binder may be any nested pattern to any depth). It resolves to a `RecordField` with an EMPTY `path` (the
+; record IS the whole arm pattern) reading field `x` then descending `sub_path = [Elem(0)]`/`[Elem(1)]` into
+; the tuple — a record field read lowers to `Elem(<sorted-slot>)` (records are flat arrays), so the whole
+; descent is positional `Elem` steps the `SumPayload` walker handles (no new `PathStep`). Over
+; `#record((= x #tuple(3 4)))`: c=3, d=4 → 7. Formerly a CDZ0900 decline (the deeper-nesting gap #6838);
+; now wired via the `RecordField.sub_path`. (A record/variant BELOW the field still declines — deferred.)
 (case
-  "a deeper nested compound below a record MATCH field is a coded decline (CDZ0900, no unbound cascade)"
+  "a deeper compound below a record MATCH field binds via the RecordField sub_path (§235)"
   (input
     (do
       (def
@@ -24205,11 +24202,8 @@
         (match t (#record((= x #tuple(c d))) (+ c d))))
       (def (main) (f #record((= x #tuple(3 4)))))
       (export main)))
-  (declines
-    CDZ0900
-    (message "nested compound sub-pattern inside a record match pattern is not supported")
-    (not "unbound")
-    (no-other-errors)))
+  (call main)
+  (output (: 7 Int64)))
 
 (case
   "a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"

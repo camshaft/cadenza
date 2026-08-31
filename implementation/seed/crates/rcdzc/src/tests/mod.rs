@@ -4608,18 +4608,17 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
         "one primary for an absent record-pattern field (the pattern CDZ0201), no redundant member CDZ0212: {field_faults:?}"
     );
     assert_eq!(field_faults[0].code.as_deref(), Some("CDZ0201"));
-    // nested compound field value → clean decline, NOT CDZ0101
-    let nested = compile_component(&crate::codec::encode(&parse(
+    // A nested compound field value — `(record (p (tuple a b)))`, field `p`'s value the further
+    // `(tuple a b)` — now BINDS (§235: a record field value binder may be any nested pattern to any depth),
+    // via a `Resolved::RecordField` reading field `p` then descending `sub_path` into the tuple (a record
+    // field read lowers to `Elem(<sorted-slot>)`, so the descent is positional). Over the CONSTANT scrutinee
+    // `(record (= p (tuple 1 2)))` it const-folds: a=1, b=2 → `a + b` compiles clean (formerly the CDZ0900
+    // deeper-nesting decline #6838; now wired). A record/variant BELOW the field is still deferred.
+    compile_component(&crate::codec::encode(&parse(
         "(module m (def (main) \
            (match (record (= p (tuple 1 2))) ((record (p (tuple a b))) (+ a b)))) (export main))",
     )))
-    .expect_err("nested compound record match field declines");
-    assert_ne!(nested.code.as_deref(), Some("CDZ0101"));
-    assert!(
-        nested.message.contains("nested compound sub-pattern"),
-        "nested-field decline should name the feature, got: {}",
-        nested.message
-    );
+    .expect("nested compound record match field binds via the RecordField sub_path (§235)");
 }
 
 // (a_record_match_pattern_typo_field_suggests_the_nearest_field migrated to corpus 05-compound-types:
