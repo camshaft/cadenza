@@ -5940,38 +5940,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn quasiquote_family_round_trips() {
-        // The metaprogramming surface: a `` `{…} `` quasiquote block with `,x` unquotes and `,@xs`
-        // splices. The lexer has `quasiquote_sigils` (token level) and the printer has the `(unquote ())`
-        // panic guard, but the FULL ML round-trip of the quasiquote/unquote/unquote-splicing family was
-        // unpinned. Each must re-parse to a structurally-equal arena (heads `quasiquote`/`unquote`/
-        // `unquote-splicing`) and print idempotently.
-        assert_eq!(assert_roundtrip("`{a + b}", 80), "`{ a + b }");
-        assert_eq!(assert_roundtrip("`{,x}", 80), "`{ ,x }");
-        assert_eq!(assert_roundtrip("`{,a + ,b}", 80), "`{ ,a + ,b }");
-        assert_eq!(assert_roundtrip("`{f(,@xs)}", 80), "`{ f(,@xs) }");
-        assert_eq!(
-            assert_roundtrip("`{f(,@args, last)}", 80),
-            "`{ f(,@args, last) }"
-        );
-        // The s-expr oracle's canonical heads print back to the `` `{…} `` / `,` / `,@` ML sugar.
-        assert_eq!(
-            print(&sexpr::read("(quasiquote (+ a b))").unwrap(), 80),
-            "`{ a + b }"
-        );
-        assert_eq!(
-            print(&sexpr::read("(quasiquote (unquote x))").unwrap(), 80),
-            "`{ ,x }"
-        );
-        assert_eq!(
-            print(
-                &sexpr::read("(quasiquote (f (unquote-splicing xs)))").unwrap(),
-                80
-            ),
-            "`{ f(,@xs) }"
-        );
-    }
+    // `quasiquote_family_round_trips` (the metaprogramming surface: a `` `{…} `` quasiquote block with
+    // `,x` unquotes and `,@xs` splices; heads `quasiquote`/`unquote`/`unquote-splicing`) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-23). Each case's format.cdz pins the canonical `` `{ … } `` spacing:
+    //   * ml/181-quasiquote-block `` `{a + b} ``→`(quasiquote (+ a b))`,
+    //   * ml/182-quasiquote-unquote `` `{,x} ``→`(quasiquote (unquote x))`,
+    //   * ml/183-quasiquote-unquote-infix `` `{,a + ,b} ``→`(quasiquote (+ (unquote a) (unquote b)))`,
+    //   * ml/184-quasiquote-unquote-splicing `` `{f(,@xs)} ``→`(quasiquote (f (unquote-splicing xs)))`,
+    //   * ml/185-quasiquote-splicing-with-trailing `` `{f(,@args, last)} ``→
+    //     `(quasiquote (f (unquote-splicing args) last))`.
+    // The `print((quasiquote …))` sexp→ml oracles are subsumed by these ml cases' format goldens.
 
     #[test]
     fn small_forms_inline() {
