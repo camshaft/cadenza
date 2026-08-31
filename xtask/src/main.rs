@@ -3687,6 +3687,23 @@ fn gate_inprocess_reason(has_case: bool, inprocess_env: bool) -> &'static str {
     }
 }
 
+/// Total corpus CASE count across the requested files (all of `spec/semantics/*.sexp` when empty), counted
+/// cheaply by matching top-level `(case "` lines (no shred/nix eval). Used to scale the nix-cache build's
+/// wall-clock cap to the real work: a cold / compiler-changed build rebuilds ONE derivation per case, so a
+/// flat cap starves the fleet's mega-chapters (615/928 cases) while a case-count-proportional cap stays a
+/// meaningful hang bound for every chapter size.
+fn nix_gate_case_count(paths: &Paths, files: &[PathBuf]) -> u64 {
+    let list: Vec<PathBuf> = if files.is_empty() {
+        default_corpus_files(&paths.repo)
+    } else {
+        files.to_vec()
+    };
+    list.iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok())
+        .map(|s| s.lines().filter(|l| l.starts_with("(case \"")).count() as u64)
+        .sum()
+}
+
 /// Run the corpus gate through the CACHED per-case nix corpus (`.#checks.<sys>.corpus[-rust][-<stem>]`)
 /// instead of recompiling every case in-process — the operator's "don't rebuild the world on every gate"
 /// (2026-08-26; ships the #3363 per-case caching as the gate agents run). A corpus-only edit re-runs ONLY
@@ -3745,20 +3762,39 @@ fn gate_via_nix_cache(paths: &Paths, files: &[PathBuf], target: GateTarget) -> O
             return None;
         }
     };
-    // Bound the build so a hung nix builder can't freeze an agent's gate forever — but GENEROUSLY: a COLD
-    // whole-corpus build (first run / after a compiler change re-emits every case) is heavy, so default to
-    // 45min (a hang bound, not a throttle; a warm `--files` run finishes in seconds-to-minutes far under it).
-    // `CDZ_GATE_NIX_TIMEOUT_SECS` overrides.
-    let cap = std::env::var("CDZ_GATE_NIX_TIMEOUT_SECS")
+    // Bound the build so a hung nix builder can't freeze an agent's gate forever — but GENEROUSLY, and
+    // PROPORTIONAL TO WORK: a COLD build (first run / after a compiler change re-emits every case) rebuilds
+    // one derivation per case, so the honest wall-clock scales with the CASE COUNT. A flat cap starved the
+    // fleet's mega-chapters (14=615, 14b=502, 14c=928 cases): under load a full re-gate of one legitimately
+    // exceeds a flat 45min and gets killed mid-build (v-effects blocked, concierge 2026-08-31), so no
+    // run-value change in a 500+-case chapter could be full-chapter-gated. Scale the cap by the requested
+    // files' total case count (≈10s/case, a generous per-case rebuild+exec budget under contention) with a
+    // 45min FLOOR for small runs — the cap stays a MEANINGFUL hang bound (a true hang still fails, just at a
+    // work-proportional deadline), it is not a throttle. `CDZ_GATE_NIX_TIMEOUT_SECS` still overrides
+    // explicitly (wins over the scaled value). NOTE: this raises the LOCAL agent hang-bound; PARALLEL
+    // case-sharding into multiple cap-fitting jobs (splitting one chapter's case derivations across builds)
+    // is a heavier flake+xtask follow-up (co-owned with v-nix) if the proportional bound proves insufficient.
+    let cap = match std::env::var("CDZ_GATE_NIX_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|&s| s > 0)
-        .map(std::time::Duration::from_secs)
-        .unwrap_or_else(|| std::time::Duration::from_secs(45 * 60));
+    {
+        Some(explicit) => std::time::Duration::from_secs(explicit),
+        None => {
+            let cases = nix_gate_case_count(paths, files);
+            let secs = (cases.saturating_mul(10)).max(45 * 60);
+            std::time::Duration::from_secs(secs)
+        }
+    };
     match wait_with_timeout(child, cap) {
         Ok(Some(output)) => Some(output.status.code().unwrap_or(1)),
         Ok(None) => {
-            eprintln!("gate: nix cached corpus build exceeded its wall-clock cap (killed)");
+            eprintln!(
+                "gate: nix cached corpus build exceeded its wall-clock cap ({}s, scaled by case count; \
+                 killed). Override with CDZ_GATE_NIX_TIMEOUT_SECS if this is a legitimately-heavy build \
+                 under load, not a hang.",
+                cap.as_secs()
+            );
             Some(1)
         }
         Err(e) => {
