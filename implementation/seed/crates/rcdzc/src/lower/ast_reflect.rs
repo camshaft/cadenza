@@ -324,16 +324,15 @@ fn bake_ast_discs(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
     bytes.into()
 }
 
-/// Bake the descriptor for the runtime `ast-encode`/`ast-decode` ops — SIXTEEN ULEB `u32` discs in the fixed
+/// Bake the descriptor for the runtime `ast-encode`/`ast-decode` ops — SEVENTEEN ULEB `u32` discs in the fixed
 /// slot order `[int, float, bool, str, name, list, bytes, char, symbol, list_ctor, tuple_ctor, record_ctor,
-/// map_ctor, set_ctor, field_pair, member]` (the `AstDiscs` struct field order, matching the runtime's
-/// `read_ast_enc_discs` for ops 93/94). The scalar/name/list/bytes/char/symbol NINE plus the SEVEN M2
-/// native-collection reflected ctors (Option B): a compound decoded from a ctor-leaf head reflects to the
-/// DISTINCT `Ast` ctor variant, so encode/decode MUST round-trip all 16. (`ast-print` bakes a separate 7-disc
-/// descriptor.) The runtime reader is TOTAL over exactly 16 discs and returns `None` on a shorter descriptor —
-/// so baking fewer than 16 truncates the read and yields an EMPTY runtime `Ast.encode` (the M2-flag-day
-/// regression this restores: the runtime was updated to 16, the compiler baker was left at 9). By-name lookup,
-/// same LEB layout.
+/// map_ctor, set_ctor, field_pair, member, rational]` (the `AstDiscs` struct field order, matching the runtime's
+/// `read_ast_enc_discs` for ops 93/94). The scalar/name/list/bytes/char/symbol NINE, the SEVEN M2
+/// native-collection reflected ctors (Option B), then the native RATIONAL literal (`3/2`): a compound decoded
+/// from a ctor-leaf head reflects to the DISTINCT `Ast` ctor variant and a rational literal to `Ast.Rational`,
+/// so encode/decode MUST round-trip all 17. (`ast-print` bakes a separate 7-disc descriptor.) The runtime
+/// reader is TOTAL over exactly 17 discs and returns `None` on a shorter descriptor — so baking fewer than 17
+/// truncates the read and yields an EMPTY runtime `Ast.encode`. By-name lookup, same LEB layout.
 fn bake_ast_discs_9(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
     let mut bytes = Vec::new();
     for d in [
@@ -353,6 +352,7 @@ fn bake_ast_discs_9(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
         disc.set_ctor,
         disc.field_pair,
         disc.member,
+        disc.rational,
     ] {
         crate::leb128::write_u64(&mut bytes, d as u64);
     }
@@ -953,6 +953,8 @@ pub(super) struct AstDiscs {
     pub(super) set_ctor: u32,
     pub(super) field_pair: u32,
     pub(super) member: u32,
+    // The native RATIONAL literal (`3/2`) reflected variant — payload is a `(Tuple Ast Ast)` of num/den.
+    pub(super) rational: u32,
     pub(super) ty: crate::ty::Ty,
 }
 /// Whether a `Core::SumNew { disc }` at result type `ty` constructs the reify `Ast` sum's `Float` variant
@@ -996,6 +998,7 @@ pub(super) fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
         set_ctor: variant_disc_by_name(db, &ty, "SetCtor")?,
         field_pair: variant_disc_by_name(db, &ty, "FieldPair")?,
         member: variant_disc_by_name(db, &ty, "Member")?,
+        rational: variant_disc_by_name(db, &ty, "Rational")?,
         ty,
     })
 }
@@ -1128,6 +1131,19 @@ fn encode_ast_value(
         } else {
             b.member(x, y)
         })
+    } else if d == disc.rational && payloads.len() == 1 {
+        // Ast.Rational `3/2` — payload is a `(Tuple Ast Ast)` of the numerator/denominator (each an
+        // `Ast.Int`); emit the native `(RationalTag <num> <den>)` node via `Builder::rational` (the two
+        // children encode to ordinary Int leaves, exactly the wire shape `rational_parts` reads back).
+        let Core::Tuple { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        if elems.len() != 2 {
+            return None;
+        }
+        let num = encode_ast_value(db, elems[0], disc, b)?;
+        let den = encode_ast_value(db, elems[1], disc, b)?;
+        Some(b.rational(num, den))
     } else {
         None
     }
@@ -1307,6 +1323,27 @@ pub(super) fn arenas_to_ast_value(
                     db,
                     Core::SumNew {
                         disc: disc_pair,
+                        payloads: vec![payload].into(),
+                    },
+                    disc.ty.clone(),
+                ));
+            }
+            // Native RATIONAL (`(RationalTag <num> <den>)`) head → Ast.Rational of a `(Tuple Ast Ast)` of the
+            // two reflected Int children — the decode twin of the `Builder::rational` encode above.
+            if let Some((num, den)) = arenas.rational_parts(sid) {
+                let an = arenas_to_ast_value(db, arenas, num, disc)?;
+                let ad = arenas_to_ast_value(db, arenas, den, disc)?;
+                let payload = synth_core(
+                    db,
+                    Core::Tuple {
+                        elems: vec![an, ad].into(),
+                    },
+                    crate::ty::Ty::Tuple(vec![disc.ty.clone(), disc.ty.clone()].into()),
+                );
+                return Some(synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc.rational,
                         payloads: vec![payload].into(),
                     },
                     disc.ty.clone(),

@@ -223,6 +223,8 @@ The abstract syntax tree type MUST carry a distinct first-class variant for each
 
 The abstract syntax tree type MUST additionally carry a distinct variant for a key-value field pair (`Ast.FieldPair`, a key and a value abstract syntax tree) and a distinct variant for a member access (`Ast.Member`, an operand and a key abstract syntax tree), so that a record's and a map's child abstract syntax trees are field-pair variants and the reflected form of `(= key value)` and of `(. obj key)` is likewise a first-class variant rather than a name-headed node.
 
+The abstract syntax tree type MUST additionally carry a distinct variant for a rational literal (`Ast.Rational`, a numerator and a denominator abstract syntax tree), so that the reflected form of a rational literal such as `3/2` is a first-class variant carrying its two integer child nodes rather than a name-headed node, and reflection stays total over every well-formed literal leaf.
+
 The generic child-node-list variant MUST remain, carrying the syntactic forms that are not collections — a name-headed form such as a conditional, a function, a match, or an application, whose head reflects as a name — so that giving collections their own variants removes string- and name-headed *collections* without removing the generic node for the name-headed forms that keep it.
 
 The AST sum type MUST be constructed and deconstructed by the same variant-construction and match mechanisms as any other sum type, so that a compiler written in the language walks a program as data with no reflection primitive.
