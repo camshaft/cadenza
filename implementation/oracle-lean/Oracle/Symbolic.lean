@@ -996,6 +996,32 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | .cannotProve r => .cannotProve r
               | _ => .cannotProve "symeval: Map.len on a non-map value")
            | none => .cannotProve "symeval: malformed Map.len")
+        else if q == "Map".toUTF8 && mem == "lookup".toUTF8 then
+          -- `Map.lookup mp k` → `Some v` (k's value) or `None`, mirroring `evalNode`'s find over the
+          -- CANONICALIZED map (Eval.lean:1664-1667, `es.find? (valEq ·.1 k) |>.map (·.2)`). 🔑 must `canonMap`
+          -- FIRST so a DUP key resolves LAST-insert-wins (source-order first-match would diverge). The result
+          -- is a VALUE (not a map structure) → no source/canonical order-consistency concern. Equality via
+          -- BIT-FAITHFUL valEq. All-const entries + const key required; else cannotProve.
+          (match children[1]?, children[2]? with
+           | some mId, some kId =>
+             (match symEval m senv fuel ty mId, symEval m senv fuel ty kId with
+              | .sym (.ctor t elems), .sym (.const kq) =>
+                if t == "map".toUTF8 then
+                  (match elems.mapM (fun e => match e with
+                                              | .tuple #[.const k, .const v] => some (k, v)
+                                              | _ => none) with
+                   | some kvs =>
+                     (match canonMap kvs with
+                      | some cm => (match (cm.find? (fun kv => valEq kv.1 kq)).map (·.2) with
+                                    | some v => .sym (.ctor "Some".toUTF8 #[.const v])
+                                    | none => .sym (.ctor "None".toUTF8 #[]))
+                      | none => .cannotProve "symeval: Map.lookup on unorderable key")
+                   | none => .cannotProve "symeval: Map.lookup needs all-concrete entries")
+                else .cannotProve "symeval: Map.lookup on a non-map value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Map.lookup on non-map / non-const key")
+           | _, _ => .cannotProve "symeval: malformed Map.lookup")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1550,6 +1576,28 @@ private def _mapLenExpr : Module :=
     root := 15 }
 #guard symEval _mapLenExpr [] symDefaultFuel defaultIntTy 15
        == SymOutcome.sym (.const (.int 2))
+
+-- MAP.LOOKUP member-op coverage. DUP-KEY LAST-WINS: `((. Map lookup) (map (1 10) (1 99)) 1)` → Some 99
+-- (canonMap dedups key 1 keeping the LAST value). NOT-FOUND: `((. Map lookup) (map (1 10)) 5)` → None.
+private def _mapLookupDupExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Map".toUTF8, Leaf.name "lookup".toUTF8,
+                Leaf.name "map".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.intLit false .dec (ByteArray.mk #[99])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 4, .atom 5, .list #[4, 5],
+               .atom 4, .atom 6, .list #[7, 8], .atom 3, .list #[10, 6, 9], .atom 4, .list #[3, 11, 12]],
+    root := 13 }
+#guard symEval _mapLookupDupExpr [] symDefaultFuel defaultIntTy 13
+       == SymOutcome.sym (.ctor "Some".toUTF8 #[.const (.int 99)])
+
+private def _mapLookupNoneExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Map".toUTF8, Leaf.name "lookup".toUTF8,
+                Leaf.name "map".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.intLit false .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 4, .atom 5, .list #[4, 5],
+               .atom 3, .list #[7, 6], .atom 6, .list #[3, 8, 9]],
+    root := 10 }
+#guard symEval _mapLookupNoneExpr [] symDefaultFuel defaultIntTy 10
+       == SymOutcome.sym (.ctor "None".toUTF8 #[])
 
 -- INLINE `(do …)` EXPRESSION coverage: `(do (def x 5) (+ x 1))` → binds x=5, value is the last expr → 6.
 private def _inlineDoExpr : Module :=
