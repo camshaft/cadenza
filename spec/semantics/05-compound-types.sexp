@@ -10441,27 +10441,27 @@
 ; checks silently skipped.) The equality forces the literal to be built, exercising the check. (Migrated from
 ; rcdzc a_map_literal_with_mixed_types_or_a_duplicate_key_is_rejected_cdz0201.)
 (case "a name-alias (map …) literal with values of two different types is a type error"
-  (input  (do (def (main) (= (map (= "a" 1) (= "b" true)) (map (= "a" 1) (= "b" true)))) (export main)))
+  (input  (do (def (main) (= #map((= "a" 1) (= "b" true)) #map((= "a" 1) (= "b" true)))) (export main)))
   (error  CDZ0201))
 
 (case "a name-alias (map …) literal mixing integer and float values is a type error"
-  (input  (do (def (main) (= (map (= "a" 1) (= "b" 1.5)) (map (= "a" 1) (= "b" 1.5)))) (export main)))
+  (input  (do (def (main) (= #map((= "a" 1) (= "b" 1.5)) #map((= "a" 1) (= "b" 1.5)))) (export main)))
   (error  CDZ0201))
 
 (case "a name-alias (map …) literal with keys of two different types is a type error"
-  (input  (do (def (main) (= (map (= "a" 1) (= 2 3)) (map (= "a" 1) (= 2 3)))) (export main)))
+  (input  (do (def (main) (= #map((= "a" 1) (= 2 3)) #map((= "a" 1) (= 2 3)))) (export main)))
   (error  CDZ0201))
 
 (case "a name-alias (map …) literal with a duplicate string key is a type error"
-  (input  (do (def (main) (= (map (= "a" 1) (= "a" 2)) (map (= "a" 1) (= "a" 2)))) (export main)))
+  (input  (do (def (main) (= #map((= "a" 1) (= "a" 2)) #map((= "a" 1) (= "a" 2)))) (export main)))
   (error  CDZ0201))
 
 (case "a name-alias (map …) literal with a duplicate integer key is a type error"
-  (input  (do (def (main) (= (map (= 1 10) (= 1 20)) (map (= 1 10) (= 1 20)))) (export main)))
+  (input  (do (def (main) (= #map((= 1 10) (= 1 20)) #map((= 1 10) (= 1 20)))) (export main)))
   (error  CDZ0201))
 
 (case "a homogeneous distinct-key name-alias (map …) literal is accepted and compares equal"
-  (input  (do (def (main) (= (map (= "a" 1) (= "b" 2)) (map (= "a" 1) (= "b" 2)))) (export main)))
+  (input  (do (def (main) (= #map((= "a" 1) (= "b" 2)) #map((= "a" 1) (= "b" 2)))) (export main)))
   (output (: true Bool)))
 
 ; As with a list (the compound-shape homogeneity cases above), map value-homogeneity is by value TYPE:
