@@ -144,6 +144,12 @@ const CDZ_CWASM_RTYPES_MAGIC: &[u8; 8] = b"CDZRTYP1";
 /// Frame a serialized guest `.cwasm` with its `cdz-result-type` section: `MAGIC ‖ len(u32-le) ‖ rtypes ‖
 /// cwasm`. `None` rtypes (a component with no section — the runtime/store precompiles) → the raw `cwasm`
 /// unframed, so those artifacts are byte-identical to before. See [`CDZ_CWASM_RTYPES_MAGIC`].
+///
+/// `cranelift`-gated: the ONLY caller is `--precompile-out` (`cli::precompile_to`, itself
+/// `#[cfg(feature = "cranelift")]` — precompilation needs the compiler). The cranelift-FREE build reaches
+/// artifacts only via `unframe_precompiled` (deserialize side, ungated), so without this cfg `frame_precompiled`
+/// is dead code in the `--no-default-features` config (delegate-compile / syntax-roundtrip) and trips `-D warnings`.
+#[cfg(feature = "cranelift")]
 pub(crate) fn frame_precompiled(cwasm: Vec<u8>, rtypes: Option<Vec<u8>>) -> Vec<u8> {
     match rtypes {
         None => cwasm,
@@ -4501,6 +4507,9 @@ mod tests {
         assert_ne!(a, "0", "not the old perma-wt0 constant");
     }
 
+    // `cranelift`-gated: exercises `frame_precompiled`, which is `#[cfg(feature = "cranelift")]` (its only
+    // caller is `--precompile-out`). `unframe_precompiled` (ungated) is covered by the run-path tests.
+    #[cfg(feature = "cranelift")]
     #[test]
     fn precompiled_cwasm_framing_round_trips_and_raw_is_passthrough() {
         // The self-framed guest `.cwasm` (`frame_precompiled`) carries the `cdz-result-type` section THROUGH
