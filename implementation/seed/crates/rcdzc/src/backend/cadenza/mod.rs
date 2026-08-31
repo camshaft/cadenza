@@ -691,8 +691,8 @@ fn emit_expr_viewed(
     match &eff_ty {
         Ty::Sum { decl, .. } if db.is_user_node(*decl) && !emitted.contains(decl) => {
             return Err(Reject::unsupported(
-                "the Cadenza backend does not support re-emitting this user sum value (generic / open sum — \
-                 its `(type …)` declaration is not emitted) — a later slice"
+                "the Cadenza backend does not support re-emitting a generic / open user sum value; only a \
+                 monomorphic, closed sum re-emits its `(type …)` declaration"
                     .to_string(),
             ));
         }
@@ -1034,7 +1034,7 @@ fn emit_expr_viewed(
                 _ => {
                     return Err(Reject::unsupported(
                         "the Cadenza backend does not support lowering a non-numeric Convert (e.g. a boolean \
-                         coercion) — a later slice"
+                         coercion); only numeric conversions are lowered"
                             .to_string(),
                     ));
                 }
