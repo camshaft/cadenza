@@ -1132,7 +1132,10 @@ impl Gen<'_> {
     /// A STRING-KEYED map (numeric values), 1..=3 entries with distinct string-literal keys. Exercises the
     /// string hash/equality map-key path that [`num_map`] (numeric keys) never reaches.
     fn str_map(&mut self, depth: u32) {
-        const KEYS: [&str; 4] = ["\"a\"", "\"b\"", "\"c\"", "\"d\""];
+        // Distinct string keys mixing ASCII, an ESCAPED (\n) key, and a UNICODE (multi-byte) key — so the
+        // string-key hash/equality path is exercised on special-char keys (verified value-correct), not
+        // just a-z. Innermost insert uses KEYS[0] (ASCII), keeping the `Map.empty "` reach marker intact.
+        const KEYS: [&str; 4] = ["\"a\"", "\"b\\nc\"", "\"α\"", "\"d\""];
         let n = 1 + self.cur.choice(3); // 1..=3 entries (distinct keys from KEYS)
         for _ in 0..n {
             self.out.push_str("(Map.insert ");
