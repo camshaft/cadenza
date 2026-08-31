@@ -14,54 +14,15 @@ fn parse_ok(src: &str) -> Arenas {
     p.arenas
 }
 
-#[test]
-fn a_trailing_comment_attaches_to_the_last_form_not_the_whole_program() {
-    use crate::sexpr;
-    // A `//` comment after the LAST top-level form has no following form to precede. It must attach
-    // to the LAST form (the same `(comment "text" node)` wrapper a mid/leading comment gets), NOT
-    // wrap the whole root. Wrapping the root buried every top-level def inside the comment's child
-    // when the root is a multi-form `(do …)`, so a top-level walk (`cdz metadata`/exports/manifest)
-    // saw ZERO defs though a leading comment parsed fine (v-cdz-tooling bug: a `Project.cdz` ending
-    // in `//` read as name:null deps:[]). Regression guard: the trailing comment stays INSIDE the
-    // do-block on the last form, keeping each def a direct root child.
-    assert_eq!(
-        sexpr::print(&parse_ok("def a = 1\ndef b = 2\n// end")),
-        "(do (def a 1) (comment \"end\" (def b 2)))",
-        "trailing comment must wrap the LAST form, not the whole (do …) — else top-level defs vanish"
-    );
-    // Multiple trailing comments stack on the last form, outermost first (mirrors `wrap_comments`).
-    assert_eq!(
-        sexpr::print(&parse_ok("def a = 1\ndef b = 2\n// x\n// y")),
-        "(do (def a 1) (comment \"x\" (comment \"y\" (def b 2))))"
-    );
-    // Contrast (must stay correct): a MID comment attaches to its following form, a LEADING comment
-    // to the first form — the trailing case now matches this same shape.
-    assert_eq!(
-        sexpr::print(&parse_ok("def a = 1\n// mid\ndef b = 2")),
-        "(do (def a 1) (comment \"mid\" (def b 2)))"
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("// lead\ndef a = 1\ndef b = 2")),
-        "(do (comment \"lead\" (def a 1)) (def b 2))"
-    );
-    // A SINGLE-form program: trailing and leading both wrap that one form (root stays bare, no `do`),
-    // so the def is reachable either way — the multi-form case is the one that regressed.
-    assert_eq!(
-        sexpr::print(&parse_ok("def main() = 42\n// note")),
-        "(comment \"note\" (def (main) 42))"
-    );
-    // The bijection that matters to walkers: for the buggy input, the top-level form set (the direct
-    // children of the root `do`, unwrapping any comment) is exactly {a, b} — two defs, not zero.
-    let a = parse_ok("def a = 1\ndef b = 2\n// end");
-    let elems = a
-        .as_form(a.root, "do")
-        .expect("multi-form root is a do-block");
-    assert_eq!(
-        elems.len(),
-        2,
-        "two top-level forms survive the trailing comment"
-    );
-}
+// `a_trailing_comment_attaches_to_the_last_form_not_the_whole_program` (a `//` after the LAST top-level form
+// wraps that FORM — `(comment "text" last)` — NOT the whole root `do`, keeping each top-level def a direct
+// root child for walkers) MIGRATED to the spec/syntax corpus (inc-6 batch-82):
+//   * ml/473-comment-trailing-last-top-level-form `def a = 1`⏎`def b = 2`⏎`// end`→`(do (def a 1) (comment
+//     "end" (def b 2)))` (the regression — trailing wraps the last form, not the root; a MID comment `// mid`
+//     before the 2nd def produces the SAME tree).
+//   * ml/474-comment-trailing-stacked-on-last-form `// x`⏎`// y`→`(comment "x" (comment "y" (def b 2)))`.
+//   * ml/475-comment-leading-first-of-multi-form `// lead`⏎`def a = 1`⏎`def b = 2`→`(do (comment "lead" (def a
+//     1)) (def b 2))`. Single-form trailing/leading `def main() = 42`⏎`// note`=ml/291-comment-line-on-def.
 
 #[test]
 fn an_own_line_comment_before_a_collection_closer_attaches_to_the_last_element() {

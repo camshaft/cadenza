@@ -416,6 +416,9 @@ pass	ml/47-import-named-list
 pass	ml/470-match-basic-two-arm
 pass	ml/471-comment-trailing-effect-op
 pass	ml/472-comment-own-line-after-last-sum-variant
+pass	ml/473-comment-trailing-last-top-level-form
+pass	ml/474-comment-trailing-stacked-on-last-form
+pass	ml/475-comment-leading-first-of-multi-form
 pass	ml/48-import-per-name-rename
 pass	ml/49-const-force-eval-call
 pass	ml/50-const-force-eval-infix
