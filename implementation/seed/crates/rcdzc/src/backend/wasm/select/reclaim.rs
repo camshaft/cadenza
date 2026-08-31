@@ -626,6 +626,259 @@ fn binding_escapes_dup_aware_inner(
     }
 }
 
+/// SOUND UNDER-APPROXIMATION of "the binder is CONSUMED on EVERY control-flow path through `id`" (must-escape),
+/// used ONLY by the `Core::Proj` dup-suppression gate to distinguish an UNCONDITIONAL straight-line consume
+/// (dqe7/8: `a` inserted into a `Map`/`Set` on every path — its consume has its OWN dup, so the compound-
+/// projection keep-alive dup is SURPLUS → SUPPRESS) from a CONDITIONAL arm-escape (dqe17: `a` consumed only in
+/// one `if`/match arm — the projection dup is NEEDED for the other path's reclaim → KEEP). Both are
+/// `never_escapes == false` (they escape on SOME path), so the may-escape query alone cannot tell them apart;
+/// this all-paths query is the discriminator.
+///
+/// Because a `true` verdict SUPPRESSES a dup (a WRONG `true` → under-retain → UAF), this MUST under-approximate.
+/// It credits a consume ONLY on the STRAIGHT-LINE SPINE (constructors, collection ops, calls, and the
+/// `let`/seq/block sequencing that is always evaluated); it does NOT descend ANY branch (`if`/match/list-match/
+/// sum-match) — an arm-guarded consume is CONDITIONAL, so every branch node falls to `_ => false` (keep the
+/// dup, the SAFE leak-not-UAF direction). The `tail_borrowed` flags for the arms handled here are copied
+/// EXACTLY from [`binding_escapes_dup_aware`]'s arms; for a single-path (non-branch) node may-escape == must-
+/// escape, so matching the trusted may classification is exact. Any arm not proven consuming-on-this-path
+/// (borrow reads, numeric/compare ops, closures, and every branch) falls to `_ => false` — that only forgoes a
+/// dup-suppression, it never suppresses a needed dup. Runs once per binder in `collect_dup_sites` (like the
+/// `never_escapes` query); the O(1) occurrence-oracle prune bounds the walk.
+fn binder_must_escape(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: bool) -> bool {
+    // A binder that PROVABLY does not occur in this subtree cannot be consumed in it — O(1) oracle prune
+    // (the same lever as `binding_escapes_dup_aware_inner`; `false` = no oracle / not-memoized ⇒ full walk).
+    if binder_absent_in_subtree(binder, id) {
+        return false;
+    }
+    // This MIRRORS `binding_escapes_dup_aware_inner`'s per-node BORROW classification EXACTLY (same
+    // `tail_borrowed` flags), so for a single-path (non-branch) node must-escape == may-escape and matching the
+    // trusted may arms is precise. The ONLY divergence is at the FOUR branch nodes (`If`/`Match`/`MatchList`/
+    // `MatchSum`): the may query ORs the arm/cont disjuncts (escapes on SOME path); the must query DROPS them
+    // and credits ONLY the always-evaluated scrutinee/cond (an arm-guarded consume is conditional ⇒ not
+    // must-escape). Dropping the arm disjuncts makes must STRICTLY ≤ may (the required soundness direction: a
+    // wrong-small must-escape ⇒ keep the dup ⇒ leak-not-UAF). The `dup_sites`/`Node`-target machinery of the
+    // may query is irrelevant here (must is always a `Binder` all-paths query), so it is omitted.
+    match core_of(db, id) {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => b == binder && !tail_borrowed,
+        Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
+            binder_must_escape(db, operand, binder, true)
+        }
+        Core::Blake3Of { operand }
+        | Core::AstPrint { operand, .. }
+        | Core::AstEncode { operand, .. }
+        | Core::AstDecode { operand, .. } => binder_must_escape(db, operand, binder, true),
+        Core::Proj { operand, .. } => {
+            let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+            binder_must_escape(db, operand, binder, scalar_element || tail_borrowed)
+        }
+        Core::ListAt { list, index, .. } => {
+            binder_must_escape(db, list, binder, true)
+                || binder_must_escape(db, index, binder, false)
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            binder_must_escape(db, bytes, binder, true)
+                || binder_must_escape(db, index, binder, false)
+        }
+        Core::StrAt { string, index, .. } => {
+            binder_must_escape(db, string, binder, true)
+                || binder_must_escape(db, index, binder, false)
+        }
+        Core::StrScalarAt { operand, index, .. } => {
+            binder_must_escape(db, operand, binder, true)
+                || binder_must_escape(db, index, binder, false)
+        }
+        Core::StrSlice {
+            string, start, end, ..
+        } => {
+            binder_must_escape(db, string, binder, true)
+                || binder_must_escape(db, start, binder, false)
+                || binder_must_escape(db, end, binder, false)
+        }
+        Core::BytesConcat { lhs, rhs } => {
+            binder_must_escape(db, lhs, binder, false) || binder_must_escape(db, rhs, binder, false)
+        }
+        Core::BigIntBinOp { lhs, rhs, .. } | Core::BigIntCmp { lhs, rhs, .. } => {
+            binder_must_escape(db, lhs, binder, true) || binder_must_escape(db, rhs, binder, true)
+        }
+        Core::BigIntOfI64 { value } => binder_must_escape(db, value, binder, false),
+        Core::BigIntToI64 { operand } => binder_must_escape(db, operand, binder, true),
+        Core::ValueEncode { value: operand, .. } | Core::ValueDecode { bytes: operand, .. } => {
+            binder_must_escape(db, operand, binder, true)
+        }
+        Core::CharToInt { operand } | Core::IntToCharChecked { operand, .. } => {
+            binder_must_escape(db, operand, binder, true)
+        }
+        Core::RationalBinOp { lhs, rhs, .. } | Core::RationalCmp { lhs, rhs, .. } => {
+            binder_must_escape(db, lhs, binder, true) || binder_must_escape(db, rhs, binder, true)
+        }
+        Core::RationalOfInts { num, den } => {
+            binder_must_escape(db, num, binder, false) || binder_must_escape(db, den, binder, false)
+        }
+        Core::RationalOfIntWiden { value } => binder_must_escape(db, value, binder, false),
+        Core::RationalNum { operand } | Core::RationalDen { operand } => {
+            binder_must_escape(db, operand, binder, true)
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            binder_must_escape(db, bytes, binder, false)
+                || binder_must_escape(db, start, binder, false)
+                || binder_must_escape(db, len, binder, false)
+        }
+        Core::BytesCompact { operand } => binder_must_escape(db, operand, binder, false),
+        Core::StrFromBytes { bytes, .. } => binder_must_escape(db, bytes, binder, false),
+        Core::StrToBytes { string } => binder_must_escape(db, string, binder, false),
+        Core::NfcNormalize { string } => binder_must_escape(db, string, binder, false),
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => elems
+            .iter()
+            .any(|&e| binder_must_escape(db, e, binder, false)),
+        Core::BinBuild { segs } => segs
+            .iter()
+            .any(|s| binder_must_escape(db, s.value, binder, false)),
+        Core::BinBitsBuild { fields } => fields
+            .iter()
+            .any(|f| binder_must_escape(db, f.value, binder, false)),
+        Core::BinIntRead {
+            bytes, off_plus, ..
+        }
+        | Core::BinRestRead {
+            bytes, off_plus, ..
+        } => {
+            binder_must_escape(db, bytes, binder, true)
+                || off_plus.is_some_and(|op| binder_must_escape(db, op, binder, false))
+        }
+        Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => {
+            binder_must_escape(db, bytes, binder, true)
+                || binder_must_escape(db, len, binder, false)
+                || off_plus.is_some_and(|op| binder_must_escape(db, op, binder, false))
+        }
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
+            binder_must_escape(db, list, binder, false)
+                || binder_must_escape(db, elem, binder, false)
+        }
+        Core::ListConcat { lhs, rhs } => {
+            binder_must_escape(db, lhs, binder, false) || binder_must_escape(db, rhs, binder, false)
+        }
+        Core::ListUpdate { list, elem, .. } => {
+            binder_must_escape(db, list, binder, false)
+                || binder_must_escape(db, elem, binder, false)
+        }
+        Core::MapNew { entries, .. } => entries.iter().any(|&(k, v)| {
+            binder_must_escape(db, k, binder, false) || binder_must_escape(db, v, binder, false)
+        }),
+        Core::MapInsert { map, key, val, .. } => {
+            binder_must_escape(db, map, binder, false)
+                || binder_must_escape(db, key, binder, false)
+                || binder_must_escape(db, val, binder, false)
+        }
+        Core::MapLookup { map, key, .. } => {
+            binder_must_escape(db, map, binder, true) || binder_must_escape(db, key, binder, false)
+        }
+        Core::MapRemove { map, key, .. } => {
+            binder_must_escape(db, map, binder, false) || binder_must_escape(db, key, binder, false)
+        }
+        Core::MapSize { map } => binder_must_escape(db, map, binder, true),
+        Core::SetOf { elems, .. } => elems
+            .iter()
+            .any(|&e| binder_must_escape(db, e, binder, false)),
+        Core::SetInsert { set, elem, .. } | Core::SetRemove { set, elem, .. } => {
+            binder_must_escape(db, set, binder, false)
+                || binder_must_escape(db, elem, binder, false)
+        }
+        Core::SetContains { set, elem, .. } => {
+            binder_must_escape(db, set, binder, true) || binder_must_escape(db, elem, binder, false)
+        }
+        Core::SetLen { set } => binder_must_escape(db, set, binder, true),
+        Core::SetToList { set, .. } => binder_must_escape(db, set, binder, true),
+        Core::MapToList { map, .. } => binder_must_escape(db, map, binder, true),
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            binder_must_escape(db, lhs, binder, false) || binder_must_escape(db, rhs, binder, false)
+        }
+        Core::Call { args, .. } | Core::HostCall { args, .. } => args
+            .iter()
+            .any(|&a| binder_must_escape(db, a, binder, false)),
+        Core::Seq { stmts, tail } => {
+            stmts
+                .iter()
+                .any(|&s| binder_must_escape(db, s, binder, false))
+                || binder_must_escape(db, tail, binder, false)
+        }
+        Core::Block { body, .. } => binder_must_escape(db, body, binder, false),
+        Core::Break { value } => binder_must_escape(db, value, binder, false),
+        // BRANCH: the cond is ALWAYS evaluated ⇒ credit it (may==must). The then/else arms are CONDITIONAL ⇒
+        // DROP their disjuncts (an arm-only escape is not a must-escape) — this is the dqe17-preserving
+        // under-approximation.
+        Core::If { cond, .. } => binder_must_escape(db, cond, binder, false),
+        // BRANCH: credit the always-evaluated scrutinee ONLY; the arm bodies + guards are conditional ⇒ dropped.
+        Core::Match { scrutinee, .. } => binder_must_escape(db, scrutinee, binder, false),
+        Core::Let { bindings, body } => {
+            bindings
+                .iter()
+                .any(|(_, v)| binder_must_escape(db, *v, binder, false))
+                || binder_must_escape(db, body, binder, false)
+        }
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::FloatCompare { lhs, rhs, .. }
+        | Core::And { lhs, rhs, .. } => {
+            binder_must_escape(db, lhs, binder, false) || binder_must_escape(db, rhs, binder, false)
+        }
+        Core::ValueEq { lhs, rhs }
+        | Core::StrCmp { lhs, rhs, .. }
+        | Core::ValueCmp { lhs, rhs, .. }
+        | Core::ValueEqShaped { lhs, rhs, .. } => {
+            binder_must_escape(db, lhs, binder, true) || binder_must_escape(db, rhs, binder, true)
+        }
+        Core::Convert { operand, .. } | Core::Not { operand } => {
+            binder_must_escape(db, operand, binder, false)
+        }
+        Core::Record { fields } => fields
+            .values()
+            .any(|&v| binder_must_escape(db, v, binder, false)),
+        Core::SumNew { payloads, .. } => payloads
+            .iter()
+            .any(|&p| binder_must_escape(db, p, binder, false)),
+        // BRANCH: a sum match BORROWS its scrutinee (recurse `true`, like the may arm); the continuation arms
+        // are conditional ⇒ dropped.
+        Core::MatchSum { scrutinee, .. } => binder_must_escape(db, scrutinee, binder, true),
+        // BRANCH: credit the scrutinee ONLY (same `false` flag as the may arm); the arm bodies are dropped.
+        Core::MatchList { scrutinee, .. } => binder_must_escape(db, scrutinee, binder, false),
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
+            binder_must_escape(db, scrutinee, binder, true)
+        }
+        Core::Closure { captures, .. } => captures
+            .iter()
+            .any(|&c| binder_must_escape(db, c, binder, false)),
+        Core::CallClosure { closure, args } => {
+            binder_must_escape(db, closure, binder, false)
+                || args
+                    .iter()
+                    .any(|&a| binder_must_escape(db, a, binder, false))
+        }
+        // `Core::Captured` reads a closure env slot by INDEX, never a `Binder` id ⇒ inert for this query.
+        Core::Captured { .. }
+        | Core::ConstInt(_)
+        | Core::ConstRational(_, _)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstBytes(_)
+        | Core::ConstChar(_)
+        | Core::ConstFloat(_)
+        | Core::ConstFloatNan
+        | Core::ConstFloatInf
+        | Core::Unit
+        | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
+        | Core::Poison(_) => false,
+    }
+}
+
 /// Whether `binder` reaches `arm`'s RESULT exclusively as a MOVE-OUT (the arm's result IS the binder) or as
 /// the IN-PLACE-REUSED BASE of a persistent builder (`List.push`/`prepend`/`update`, `Map.insert`/`remove`,
 /// `Set.insert`/`remove`) — the shapes where the builder REUSES the base's storage IN PLACE at rc==1, so the
@@ -1760,6 +2013,13 @@ pub(super) fn collect_dup_sites(
         let never_escapes =
             !binding_escapes_dup_aware(db, body, EscapeTarget::Binder(binder), false, None);
         let _ne_guard = NeverEscapesGuard::install(never_escapes);
+        // The dqe7/8-vs-dqe17 discriminator: when the binder DOES escape (`!never_escapes`), does it escape on
+        // EVERY path (an unconditional straight-line consume — its own consume-dup covers the refcount, so the
+        // compound-projection keep-alive dup is SURPLUS → suppress) or only CONDITIONALLY (an arm-only escape —
+        // the dup is needed for the non-escape path → keep)? Sound under-approximation (wrong ⇒ keep the dup).
+        // Read by the `Core::Proj` arm via `binder_must_escapes`.
+        let must_escapes = binder_must_escape(db, body, binder, false);
+        let _me_guard = MustEscapesGuard::install(must_escapes);
         // The body's result position CONSUMES (the value is returned / escapes), so the top-level call is
         // `consuming: true`; nothing is used after the whole body, so `live_after: false`.
         mark_binder_dups(db, body, binder, true, false, sites);
@@ -1858,6 +2118,42 @@ impl NeverEscapesGuard {
 impl Drop for NeverEscapesGuard {
     fn drop(&mut self) {
         BINDER_NEVER_ESCAPES.with(|c| c.set(self.prev));
+    }
+}
+
+thread_local! {
+    // Whether the CURRENT `mark_binder_dups` binder PROVABLY MUST-escapes (is consumed on EVERY control path,
+    // per the sound under-approximation `binder_must_escape`) — set per-binder in `collect_dup_sites` alongside
+    // `BINDER_NEVER_ESCAPES`, consulted by `mark_binder_dups_inner`'s `Core::Proj` arm to distinguish an
+    // UNCONDITIONAL straight-line consume (dqe7/8 — suppress the surplus projection dup) from a CONDITIONAL
+    // arm-escape (dqe17 — keep the dup for the non-escape path). Thread-local for the same reason as
+    // `BINDER_NEVER_ESCAPES`. Defaults to `false` (conservative — keep the dup, the SAFE leak-not-UAF
+    // direction) outside a `collect_dup_sites` run.
+    static BINDER_MUST_ESCAPES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the active `mark_binder_dups` binder provably MUST-escapes its body (set by `collect_dup_sites`).
+/// Read by the `Core::Proj` arm for the dqe7/8-vs-dqe17 dup-suppression discriminator (see there).
+fn binder_must_escapes() -> bool {
+    BINDER_MUST_ESCAPES.with(|c| c.get())
+}
+
+/// RAII guard for [`BINDER_MUST_ESCAPES`] — sets it for one `mark_binder_dups` binder and RESTORES the prior
+/// value on drop (normal return OR panic unwind), the `NeverEscapesGuard` twin (nesting-safe).
+struct MustEscapesGuard {
+    prev: bool,
+}
+
+impl MustEscapesGuard {
+    fn install(must_escapes: bool) -> Self {
+        let prev = BINDER_MUST_ESCAPES.with(|c| c.replace(must_escapes));
+        MustEscapesGuard { prev }
+    }
+}
+
+impl Drop for MustEscapesGuard {
+    fn drop(&mut self) {
+        BINDER_MUST_ESCAPES.with(|c| c.set(self.prev));
     }
 }
 
@@ -2600,12 +2896,22 @@ pub(super) fn mark_binder_dups_inner(
             // `!scalar_element && (consuming || !never_escapes)`. borrow-only ⇒ `&& consuming` (drop the
             // spurious dup); escaping ⇒ `!scalar_element` (keep it). A genuine consuming compound proj
             // (incoming `consuming` true) is unchanged either way — no under-retain / UAF.
+            //
+            // dqe7/8 REFINEMENT: an ESCAPING binder (`!never_escapes`) that escapes UNCONDITIONALLY — consumed
+            // on EVERY path by a straight-line op (`Map.insert`-key / `Set` elem) — ALSO has a spurious
+            // projection keep-alive dup: its consume already carries its own dup, so the compound-projection
+            // dup here is surplus and LEAKS (`a` ends rc 1). Suppress it too, gated on `binder_must_escapes`
+            // (the sound all-paths under-approximation). dqe17's `a` escapes only CONDITIONALLY (one `if`/match
+            // arm), so `must_escapes == false` there → its arm-conditional dup is PRESERVED (no regression).
+            // Net gate: `!scalar_element && (consuming || (!never_escapes && !must_escapes))`. A wrong
+            // `must_escapes` under-approximates to `false` ⇒ keep the dup ⇒ leak-not-UAF (the safe direction).
             let never_escapes = binder_never_escapes();
+            let must_escapes = binder_must_escapes();
             mark_binder_dups_inner(
                 db,
                 operand,
                 binder,
-                !scalar_element && (consuming || !never_escapes),
+                !scalar_element && (consuming || (!never_escapes && !must_escapes)),
                 live_after,
                 true,
                 sites,

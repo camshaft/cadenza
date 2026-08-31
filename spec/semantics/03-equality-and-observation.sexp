@@ -4450,8 +4450,11 @@
 ; scalar-bottomed chain through compound intermediates is a pure BORROW, so a borrow-only projected
 ; binder must not mint the spurious unbalanced dup that mark_binder_dups's Proj arm minted; fixed in
 ; reclaim.rs by gating the compound-projection consuming/borrow transparency on binder_never_escapes
-; (dqe17-safe: a binder that ESCAPES an arm keeps the dup). dqe7/dqe8 (champ-key / Set membership)
-; still leak — their second use CONSUMES the operand as a KEY into a temporary collection, a distinct lever.
+; (dqe17-safe: a binder that ESCAPES an arm keeps the dup). dqe7/dqe8 (champ-key / Set membership) now
+; reclaim CLEAN too: their second use CONSUMES the operand as a KEY into a temporary collection on EVERY
+; path, so that consume already carries its own dup and the compound-projection keep-alive dup is SURPLUS —
+; suppressed by extending the Proj gate with binder_must_escape (a sound all-paths under-approximation that
+; distinguishes this UNCONDITIONAL consume from dqe17's CONDITIONAL arm-escape, which still keeps its dup).
 (case
   "dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean — the control the nested cells contrast"
   (input
@@ -4524,9 +4527,11 @@
 ; second consumer can be ANY heap walker (order / champ-key / Set.contains), not just value-eq;
 ; two walkers WITHOUT a projection are clean (dqe9). Fix must target the generic dup/drop
 ; placement for projected-and-walked nested compounds: dqe6 (ORDERING / ValueCmp, a BORROW like value-eq)
-; now reclaims clean with the same borrow-only projected-binder dup-suppression as dqe4/5. dqe7/dqe8 still
-; leak — their second use CONSUMES the operand as a KEY into a temporary Map/Set (not a borrow), a distinct
-; reclaim lever (the key-consume / collection-temp drop), tracked separately.
+; now reclaims clean with the same borrow-only projected-binder dup-suppression as dqe4/5. dqe7/dqe8 now
+; reclaim clean too — their second use CONSUMES the operand as a KEY into a temporary Map/Set on EVERY path
+; (an UNCONDITIONAL escape whose own consume-dup covers the refcount), so the compound-projection keep-alive
+; dup is surplus and is suppressed via the binder_must_escape all-paths gate; dqe17's CONDITIONAL arm-escape
+; is preserved (it still needs its dup for the non-escape path).
 (case
   "dqe6 a nested operand dual-used by projection + ORDERING walk reclaims clean — borrow-only projected binder mints no spurious dup"
   (input
@@ -4555,7 +4560,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 1042 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "dqe8 a nested operand dual-used by projection + Set membership descent leaks its tree"
@@ -4569,7 +4574,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 1100 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "dqe9 TWO walkers (equality AND ordering) on the same nested operands with no projection reclaim clean"
