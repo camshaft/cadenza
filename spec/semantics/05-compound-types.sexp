@@ -896,63 +896,82 @@
   (call main (: 0 Int64))
   (output (: 0 Int64)))
 
-(case "rrm1 a NESTED record-rest re-match peels two residual layers with a RUNTIME field value"
-  (doc    "The #6682 slice-1 breadth fence (breaker battery 2026-08-31): the residual record is a real
+(case
+  "rrm1 a NESTED record-rest re-match peels two residual layers with a RUNTIME field value"
+  (doc
+    "The #6682 slice-1 breadth fence (breaker battery 2026-08-31): the residual record is a real
            first-class record — `#record((= a n) (= b 20) (= c 30) (= d 40))` peeled by
            `#record((= a x) (.. r))` then `r` re-matched by `#record((= b y) (.. r2))` reads
            `(. r2 c)`/`(. r2 d)` through TWO residual layers, with field `a` RUNTIME →
            1000n + 20 + 30 + 40. Rust-parity and cadenza-hop verified at promotion (hop
            byte-idempotent, value identical 2090 at n=2).")
-  (input  (do
-            (def (main (: n Int64))
-              (match #record((= a n) (= b 20) (= c 30) (= d 40))
-                (#record((= a x) (.. r))
-                  (match r (#record((= b y) (.. r2)) (+ (* x 1000) (+ y (+ (. r2 c) (. r2 d))))) (_ -2)))
-                (_ -1)))
-            (export main)))
-  (call   main (: 2 Int64)) (output (: 2090 Int64))
-  (call   main (: -1 Int64)) (output (: -910 Int64)))
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          #record((= a n) (= b 20) (= c 30) (= d 40))
+          (#record((= a x) (.. r))
+            (match r (#record((= b y) (.. r2)) (+ (* x 1000) (+ y (+ r2.c r2.d)))) (_ -2)))
+          (_ -1)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 2090 Int64))
+  (call main (: -1 Int64))
+  (output (: -910 Int64)))
 
-(case "rrm2 record-rest boundary faces: if-selected scrutinee, ALL-fields-named EMPTY residual, and rest-only gathering the whole record"
-  (doc    "Three faces of the record residual: (1) an IF-JOIN-selected record scrutinee still lowers
+(case
+  "rrm2 record-rest boundary faces: if-selected scrutinee, ALL-fields-named EMPTY residual, and rest-only gathering the whole record"
+  (doc
+    "Three faces of the record residual: (1) an IF-JOIN-selected record scrutinee still lowers
            (structurally known per branch) — n=1 picks {a=1,b=2} → 10a+b = 12, else {a=5,b=6} → 56;
            (2) naming EVERY field with a trailing rest leaves the residual EMPTY and the arm still
            runs; (3) the degenerate rest-only `#record((.. r))` gathers the WHOLE record, fields read
            back by name. sel + empty + whole at n=3: 12|56 + 32 + 10 → weighted sum below.")
-  (input  (do
-            (def (sel (: n Int64))
-              (match (if (> n 0) #record((= a 1) (= b 2)) #record((= a 5) (= b 6)))
-                (#record((= a x) (.. rest)) (+ (* x 10) (. rest b)))
-                (_ -1)))
-            (def (empt (: n Int64))
-              (match #record((= a n) (= b 2))
-                (#record((= a x) (= b y) (.. rest)) (+ (* x 10) y))
-                (_ -1)))
-            (def (whole (: n Int64))
-              (match #record((= a n) (= b 7))
-                (#record((.. r)) (+ (. r a) (. r b)))
-                (_ -1)))
-            (def (main (: n Int64)) (+ (* 10000 (sel n)) (+ (* 100 (empt n)) (whole n))))
-            (export main)))
-  (call   main (: 3 Int64)) (output (: 123210 Int64))
-  (call   main (: -2 Int64)) (output (: 558205 Int64)))
+  (input
+    (do
+      (def
+        (sel (: n Int64))
+        (match
+          (if (> n 0) #record((= a 1) (= b 2)) #record((= a 5) (= b 6)))
+          (#record((= a x) (.. rest)) (+ (* x 10) rest.b))
+          (_ -1)))
+      (def
+        (empt (: n Int64))
+        (match #record((= a n) (= b 2)) (#record((= a x) (= b y) (.. rest)) (+ (* x 10) y)) (_ -1)))
+      (def
+        (whole (: n Int64))
+        (match #record((= a n) (= b 7)) (#record((.. r)) (+ r.a r.b)) (_ -1)))
+      (def (main (: n Int64)) (+ (* 10000 (sel n)) (+ (* 100 (empt n)) (whole n))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 123210 Int64))
+  (call main (: -2 Int64))
+  (output (: 558205 Int64)))
 
-(case "srm1 a set-rest residual EXCLUDES a named element even when construction DUPLICATED it, with a runtime member"
-  (doc    "The #6711 slice-2 dedup-interplay fence (breaker battery 2026-08-31): `#set(n 10 20)` with
+(case
+  "srm1 a set-rest residual EXCLUDES a named element even when construction DUPLICATED it, with a runtime member"
+  (doc
+    "The #6711 slice-2 dedup-interplay fence (breaker battery 2026-08-31): `#set(n 10 20)` with
            n RUNTIME matched by `#set(10 .. r)`. At n=5 the set is {5,10,20}: r = {5,20}, len 2,
            contains(r,5) true → 201. At n=10 construction DEDUPS to {10,20} AND the residual
            excludes the named 10: r = {20}, len 1, contains(r,10) FALSE → 100 — the residual
            exclusion holds even when the runtime member IS the named element. (Nested set-rest
            re-match of the residual is a coded CDZ0900 decline today — the matcher-desugar builds
            the residual; flip-watch armed.)")
-  (input  (do
-            (def (main (: n Int64))
-              (match #set(n 10 20)
-                (#set(10 .. r) (+ (* (Set.len r) 100) (if (Set.contains r n) 1 0)))
-                (_ -1)))
-            (export main)))
-  (call   main (: 5 Int64)) (output (: 201 Int64))
-  (call   main (: 10 Int64)) (output (: 100 Int64)))
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (match
+          #set(n 10 20)
+          (#set(10 (.. r)) (+ (* (Set.len r) 100) (if (Set.contains r n) 1 0)))
+          (_ -1)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 201 Int64))
+  (call main (: 10 Int64))
+  (output (: 100 Int64)))
 
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
 ; an exact key-set match — see the list-arm map-element cases below). With ZERO named keys, `(map)` is that
