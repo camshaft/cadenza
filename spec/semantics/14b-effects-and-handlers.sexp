@@ -3692,6 +3692,20 @@
   (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (resume s (match (> s 0) (true (- s 1)) (false (+ s 1)))))) (+ (E.get) (E.get)))) (export main)))
   (call   main) (output (: 1 Int64)))
 
+; A NON-TAIL resume and an ABORTING (non-resumptive) arm each have a well-defined handle value (v-effects
+; rulings). In `(do (resume s s) 99)` the `resume` runs as a STATEMENT — its continuation fires for effect and
+; its value is discarded — then the arm's tail `99` is the handle value (arm-tail-value-wins, the two-hole/
+; non-tail semantics; cf the 14c pyre6 capability). An arm that NEVER resumes ABORTS: the continuation (here
+; the `(+ [] 1)` around the perform) is DROPPED and the handle yields the arm's own value. (Edge-probed by
+; v-wasmtime-migration; minimal non-tail + abort coverage beside the complex pyre6/Bail cases.)
+(case "a non-tail resume runs the continuation as a statement and the arm tail is the handle value"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s (do (resume s s) 99))) (E.get))) (export main)))
+  (call   main) (output (: 99 Int64)))
+
+(case "a handler arm that never resumes aborts and the handle yields the arm's own value"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (handle E 0 ((get (u) s 42)) (+ (E.get) 1))) (export main)))
+  (call   main) (output (: 42 Int64)))
+
 (case "a host delegation of an effect the body never reaches is latent authority and is rejected"
   (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
            `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised
