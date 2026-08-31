@@ -1929,6 +1929,17 @@ private def _enumRefProg : Module :=
                .atom 8, .atom 7, .list #[14, 15], .atom 0, .list #[17, 8, 13, 16]],
     root := 18 }
 #guard symEvalMain _enumRefProg == SymOutcome.sym (.ctor "Blue".toUTF8 #[])
+-- APPLIED nullary ctor `(Blue)` (0-arg APPLICATION, vs the bare atom above) also → `.ctor "Blue" []` via
+-- symCtorConstruct (empty arg list → some #[]). Regression + diagnostic guard for the ctor-arg path.
+private def _enumApplyProg : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "Color".toUTF8,
+                Leaf.name "Red".toUTF8, Leaf.name "Green".toUTF8, Leaf.name "Blue".toUTF8,
+                Leaf.name "def".toUTF8, Leaf.name "main".toUTF8, Leaf.name "export".toUTF8],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[2], .atom 4, .list #[4], .atom 5, .list #[6],
+               .list #[0, 1, 3, 5, 7], .atom 7, .list #[9], .atom 5, .list #[11], .atom 6,
+               .list #[13, 10, 12], .atom 8, .atom 7, .list #[15, 16], .atom 0, .list #[18, 8, 14, 17]],
+    root := 19 }
+#guard symEvalMain _enumApplyProg == SymOutcome.sym (.ctor "Blue".toUTF8 #[])
 -- construct-then-MATCH a user sum: `(match (Num 5) ((Num x) x))` binds x=5 via the tagged-variant pattern → 5.
 private def _matchUserProg : Module :=
   { leaves := #[Leaf.name "do".toUTF8, Leaf.name "type".toUTF8, Leaf.name "E".toUTF8, Leaf.name "Num".toUTF8,
