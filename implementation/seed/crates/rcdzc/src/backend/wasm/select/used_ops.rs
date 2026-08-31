@@ -1522,9 +1522,14 @@ pub(super) fn collect_cont_ops_rec(
                     out.insert(OP_VALUE_EQ);
                     out.insert(OP_DROP)
                 }
-                // A char-literal probe only FOLDS (a constant char payload) — a runtime char has no machine
-                // rep, so a runtime-char payload declines at emit rather than reaching here; no op to collect.
-                crate::core::Probe::Char(_) => false,
+                // A char-literal probe over a RUNTIME char reaches emit now that `is_scalar` includes
+                // `Ty::Char` (Char-rep 2/N): a `Char` is a boxed i32 code-point (`box_op_ty(Char) =
+                // box-int`), so `emit_littest_probe`'s Char arm reads the boxed leaf with `get-int` (→ i64)
+                // then `i64.eq`s the literal code point — the SAME unbox the `Int` probe uses. Declare it,
+                // else the emitted `CallImport(OP_GET_INT)` resolves to an out-of-bounds function index
+                // (invalid module — a runtime char match at a sub-path miscompiled to `call u32::MAX`). A
+                // CONSTANT char sub-value still folds in `build_tree` and never reaches here.
+                crate::core::Probe::Char(_) => out.insert(OP_GET_INT),
                 // A byte-string-literal probe over a RUNTIME payload emits the SAME `value-eq` content
                 // compare a `Str` probe does — a Bytes is a flat byte leaf built by `bytes-alloc`+`bytes-set`
                 // and compared by `value-eq` after `bytes-compact`ing the payload handle (rope→flat). So it

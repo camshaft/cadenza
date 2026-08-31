@@ -938,6 +938,24 @@
   (call main (: -1 Int64))
   (output (: 0 Int64)))
 
+; A deep CHAR literal matches at a record field, like the other scalar kinds. A `Char` is a boxed i32
+; code-point (`box_op_ty(Char) = box-int`), so the descent reads the boxed field leaf with `get-int`
+; then compares the code point (`i64.eq`) — the same unbox the deep-INT probe uses. (This once
+; MISCOMPILED at depth: the used-ops collector did not declare `get-int` for a runtime Char probe, so
+; the emitted `get-int` unbox resolved to an out-of-bounds function index → invalid module. Fixed by
+; declaring `OP_GET_INT` for a `Probe::Char` in used_ops, mirroring the `Probe::Int` arm.)
+(case
+  "a deep CHAR literal matches at a record field (hit + fall-through)"
+  (input
+    (do
+      (def (f (: t (Record (: c Char)))) (match t (#record((= c #\A)) 9) (_ 0)))
+      (def (main (: n Int64)) (f #record((= c (if (> n 0) #\A #\B)))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 9 Int64))
+  (call main (: -1 Int64))
+  (output (: 0 Int64)))
+
 (case
   "a deep BOOL literal matches a record field nested in a tuple (hit + fall-through)"
   (input
