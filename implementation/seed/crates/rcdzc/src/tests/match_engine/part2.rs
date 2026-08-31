@@ -2318,18 +2318,19 @@ fn scan_manifest_reads_each_param_site_name_widget_range_and_type() {
 }
 
 #[test]
-fn scan_manifest_reads_a_range_with_a_string_head_list_the_ml_surface_lowers_to() {
-    // ML-vs-sexpr discrepancy (v-guide-infra): an ML `@param(range: [lo, hi])` lowers the `[lo, hi]`
-    // bracket to a STRING-literal ctor head `("list" lo hi)`, whereas the s-expr surface's `(list lo hi)`
-    // has a NAME head. `config_range` matched only the name head, so ML parametric models reported NO
-    // range (range_lo/range_hi absent) while s-expr worked. `config_range` now accepts BOTH heads
-    // (as_form for the name, as_ctor_form for the string ctor), so an ML-authored range is scanned too.
-    // Here the string-head `("list" 2 20)` IS the exact node the ML `[2, 20]` lowers to (verified via
-    // `cdz convert --from ml`), and the s-expr reader accepts it — so this exercises the ML path's shape.
+fn scan_manifest_reads_a_range_with_a_native_list_the_ml_surface_lowers_to() {
+    // ML-vs-sexpr range shape (v-guide-infra): an ML `@param(range: [lo, hi])` lowers the `[lo, hi]`
+    // bracket to a NATIVE ctor-leaf list `#list(lo hi)` (the parser's `ctor_head("list", …)` emits
+    // `Leaf::Ctor(List)`), and the s-expr surface's `(list lo hi)` has a NAME head. `config_range` reads
+    // both via `compound_form_of(_, List)` (ctor-leaf + name), so an ML-authored range and an s-expr one
+    // both scan. Here `#list(2 20)` IS the node the ML `[2, 20]` lowers to; the name-head twin below is the
+    // s-expr surface. (Historical: the ML surface once lowered brackets to a legacy STRING head `("list" …)`
+    // and this test pinned that; the reader now emits the native ctor-leaf, so the fixture is native — this
+    // also keeps the case flip-safe when the M3 reader-flip drops the legacy string-head recognizer.)
     use crate::param_sidecar::scan_manifest;
     let ast = crate::testkit::parse(
         "(module m \
-               (pragma param (param (: widget slider) (: range (\"list\" 2 20))) (: thickness Int64)) \
+               (pragma param (param (: widget slider) (: range #list(2 20))) (: thickness Int64)) \
                (def (main) 0) \
              (export main))",
     );
@@ -2338,16 +2339,16 @@ fn scan_manifest_reads_a_range_with_a_string_head_list_the_ml_surface_lowers_to(
         .iter()
         .find(|r| r.name == "thickness")
         .expect("thickness record");
-    let (lo, hi) = thickness.range.expect(
-        "a string-head (\"list\" 2 20) range — the ML-lowered shape — is scanned, not dropped",
-    );
+    let (lo, hi) = thickness
+        .range
+        .expect("a native #list(2 20) range — the ML-lowered shape — is scanned, not dropped");
     assert_eq!(
         (
             ast.as_int(lo).map(|v| v.to_decimal_string()).as_deref(),
             ast.as_int(hi).map(|v| v.to_decimal_string()).as_deref()
         ),
         (Some("2"), Some("20")),
-        "the string-head range's two element nodes are the authored bounds 2 and 20"
+        "the native #list range's two element nodes are the authored bounds 2 and 20"
     );
     // The NAME-head `(list …)` (s-expr surface) still works — the fix ADDED the string-head path, it
     // did not replace the name-head one.
