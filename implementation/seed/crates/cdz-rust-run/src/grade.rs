@@ -11,9 +11,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use cdz_corpus_grade::{
-    GTrial, GradeResult, Outcome as GradeOutcome, decode_test_run, exec_exit, grade_run,
+    GTrial, GradeResult, Outcome as GradeOutcome, Verdict, decode_test_run, exec_exit, grade_run,
 };
 
 use crate::driver::build_driver_source;
@@ -34,6 +34,11 @@ pub fn grade(
     diag_wire: Option<&[u8]>,
     workdir: &Path,
     baseline: Option<&str>,
+    // CLASSIFY mode (`--emit-verdict PATH`, the nix `.#corpus-verdicts-rust[-async]` harvest / `gate --save`
+    // replacement): when set, write this case's current verdict (`<tag>\t<description>`) to PATH and return
+    // success WITHOUT the baseline regression check — the rust analogue of `cdz-run --emit-verdict`. Takes
+    // precedence over `baseline`.
+    emit_verdict: Option<&Path>,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
     let result = grade_to_result(
@@ -50,6 +55,22 @@ pub fn grade(
     // pass→not-pass regression; a baseline-todo/absent case that is now todo/fail — e.g. an imposed-WIT-world
     // reducer the rust backend declines → todo, that this pipeline compiles-without-the-world → fail — is NOT
     // a --check failure), else fails on any outright Fail (the miscompile check).
+    //
+    // CLASSIFY mode (`--emit-verdict`): emit `<tag>\t<description>` (tag from `Grade::verdict` — the coarse
+    // pass/todo/fail vocab `.gate-baseline-rust*` records) + exit 0, skipping the baseline regression check.
+    // Precedence over `baseline`: a save/harvest run classifies the CURRENT state, it never regression-fails.
+    // Mirrors `cdz-run --emit-verdict` (the wasm harvest); the nix `.#corpus-verdicts-rust[-async]`
+    // derivations call it per case + aggregate the lines into the rust/rust-async `.gate-baseline`s.
+    if let Some(path) = emit_verdict {
+        let tag = match result.grade.verdict() {
+            Verdict::Pass => "pass",
+            Verdict::Todo => "todo",
+            Verdict::Fail => "fail",
+        };
+        std::fs::write(path, format!("{tag}\t{}\n", test_run.description))
+            .with_context(|| format!("writing verdict to {}", path.display()))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     Ok(exec_exit(&result, &test_run.description, baseline))
 }
 
