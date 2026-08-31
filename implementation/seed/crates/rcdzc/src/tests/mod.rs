@@ -3152,7 +3152,7 @@ fn a_parameterized_symbol_return_declines_with_a_truthful_message_not_blaming_th
     );
     assert!(
         msgs.iter()
-            .any(|m| m.contains("parameterized export cannot yet return this heap type")),
+            .any(|m| m.contains("parameterized export cannot return this heap type")),
         "the decline must truthfully name the Symbol RESULT as the constraint: {msgs:?}"
     );
 }

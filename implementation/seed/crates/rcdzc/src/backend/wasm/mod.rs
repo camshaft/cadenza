@@ -1066,7 +1066,7 @@ pub fn emit(
                 // which `make` cannot yet forward — that widening is a later increment. (Guarded on a param
                 // genuinely lacking a scalar valtype so a scalar-param heap return whose RESULT is the real
                 // constraint is NOT misdiagnosed as a param fault — see the result-constraint arm below.)
-                "a heap value escapes to the host as a resource with SCALAR parameters only; this export has a parameter with no scalar boundary type (a compound-parameter heap return is not yet supported)"
+                "a heap value escapes to the host as a resource with SCALAR parameters only; this export has a parameter with no scalar boundary type (a compound-parameter heap return is not supported)"
             } else if !e.params.is_empty() {
                 // A single PARAMETERIZED export whose params are ALL scalar (an Int64, say) but whose heap
                 // RESULT reached here: the param is fine — the RESULT is the constraint. Its value-form is
@@ -1075,7 +1075,7 @@ pub fn emit(
                 // the runtime has no `Shape::Sym` and renders it as a String, not its canonical `(Symbol.of …)`
                 // form the constant bake produces — so admitting it would cross a NON-canonical value). Name
                 // the RESULT truthfully rather than blaming the scalar param.
-                "a parameterized export cannot yet return this heap type — its value form is emitted only for a nullary (constant) export, and a runtime value-encode render for it is not yet available (the scalar parameters are fine)"
+                "a parameterized export cannot return this heap type — its value form is emitted only for a nullary (constant) export, and a runtime value-encode render for it is not available (the scalar parameters are fine)"
             } else {
                 // A single NULLARY export whose heap result reached here — the resource-escape path above
                 // TRIED and its value-form template was `None`: the result has no runtime value form yet.
