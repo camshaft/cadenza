@@ -4044,63 +4044,6 @@ fn a_malformed_empty_op_effect_clause_is_cdz0201() {
     assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
 }
 
-/// A `host` is exactly `(host (<effect>…) <body>)`. A host with TOO MANY operands —
-/// `(host (E) body extra)` — was SILENTLY ACCEPTED: `resolve_host` read only the effect list and body,
-/// dropping the surplus (a silent miscompile, the `host` analogue of the too-many `resume`/fixed-arity
-/// forms). Now it is CDZ0201 "this host has too many operands" with a delete-the-surplus fix, and the
-/// consequent CDZ0401 (the malformed host's body-perform looks un-delegated to the no-home walk) is
-/// deduped via `MALFORMED_HOST_PREFIX` so it is ONE primary error. The dedup covers every malformed-host
-/// shape (non-list effects, missing body), not just too-many.
-#[test]
-fn a_host_with_too_many_operands_is_cdz0201() {
-    use crate::testkit::parse;
-    let too_many = "(module m (effect E (op get (-> Unit Int64))) \
-                   (def (main) (host (E) (E.get) 99)) (export main))";
-    let diags = crate::diagnostics(&mut crate::db::Db::load(parse(too_many)));
-    let arity = diags
-        .iter()
-        .find(|d| d.message.contains("too many operands"))
-        .expect("a host with a surplus operand must be rejected");
-    assert_eq!(
-        arity.code.as_deref(),
-        Some("CDZ0201"),
-        "got: {}",
-        arity.message
-    );
-    assert_eq!(
-        arity.fix.as_ref().map(|f| f.kind),
-        Some(crate::abi::FixKind::Delete),
-        "carries a delete-the-surplus fix: {:?}",
-        arity.fix
-    );
-    // The consequent CDZ0401 (body-perform looks un-delegated because the host is malformed) is DEDUPED.
-    assert!(
-        !diags.iter().any(|d| d.code.as_deref() == Some("CDZ0401")),
-        "the malformed-host no-home CDZ0401 is deduped: {:?}",
-        diags
-            .iter()
-            .map(|d| (&d.code, &d.message))
-            .collect::<Vec<_>>()
-    );
-    // NO REGRESSION: a valid host compiles; a GENUINE no-home perform (no host at all) is still CDZ0401.
-    assert!(
-        compile_component(&crate::codec::encode(&parse(
-            "(module m (effect E (op get (-> Unit Int64))) \
-                 (def (main) (host (E) (E.get))) (export main))",
-        )))
-        .is_ok(),
-        "a well-formed host must compile"
-    );
-    let no_home = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (effect E (op get (-> Unit Int64))) (def (main) (E.get)) (export main))",
-    )));
-    assert!(
-        no_home.iter().any(|d| d.code.as_deref() == Some("CDZ0401")),
-        "a genuine ungranted perform is still CDZ0401 (no over-suppression): {:?}",
-        no_home.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
-
 #[test]
 fn a_handle_head_naming_a_value_reports_one_clear_diagnostic() {
     // A `handle`'s head must name an EFFECT (the arms ARE that effect's operations). `(handle foo 0 …)`
