@@ -1,0 +1,1 @@
+def m() = id"a\nb\"c"

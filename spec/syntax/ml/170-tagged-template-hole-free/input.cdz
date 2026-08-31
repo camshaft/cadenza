@@ -1,0 +1,1 @@
+def m() = jsx"hello world"
