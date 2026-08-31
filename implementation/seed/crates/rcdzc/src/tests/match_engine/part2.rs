@@ -261,28 +261,12 @@ fn a_bare_name_in_a_qty_unit_position_names_it_a_unit_not_a_type() {
     );
 }
 
-#[test]
-fn a_non_unit_qty_of_arg_unbound_unit_is_not_a_double_report() {
-    // The non-unit-second-arg rejects (CDZ0201 "`Qty.of`'s second argument must be a UNIT" for a bare
-    // Int / String / tuple) + the valid Unit.base/Unit.one controls migrated to corpus 18-units-of-measure
-    // (the Qty.of argument-validation reject cluster). What STAYS here is the corpus-inexpressible
-    // no-DOUBLE contrast: a bare UNBOUND unit name (`(Qty.of 5 meter)`, meter undefined) surfaces its OWN
-    // CDZ0101 (unbound), NOT ALSO the not-a-unit reject (the check is guarded on the arg being otherwise
-    // fault-free) — a no-OTHER-message assertion the corpus (error …) surface cannot express.
-    let unbound = crate::diagnostics(&mut crate::db::Db::load(parse(
-        "(module m (def (main) (Qty.of 5 meter)) (export main))",
-    )));
-    assert!(
-        unbound
-            .iter()
-            .any(|d| d.message.contains("unbound name `meter`"))
-            && !unbound
-                .iter()
-                .any(|d| d.message.contains("second argument must be a UNIT")),
-        "a bare unbound unit gets only its own unbound-name error, not a double: {:?}",
-        unbound.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
+// (a_non_unit_qty_of_arg_unbound_unit_is_not_a_double_report migrated to corpus 18-units-of-measure "an
+// UNBOUND unit name in Qty.of's second-arg position surfaces its own unbound error, not ALSO the not-a-unit
+// reject" ((Qty.of 5 meter) → CDZ0101 (message "unbound name `meter`") (not "second argument must be a
+// UNIT")): the (not …) lever expresses the no-OTHER-message assertion the earlier residual note thought the
+// corpus surface could not carry. The non-unit-arg rejects (bare Int/String/tuple → CDZ0201) are the sibling
+// cases in the same cluster.)
 
 // (a_partial_builtin_operation_as_an_unconsumed_value_is_rejected_not_silently_shipped migrated to corpus
 // 09-functions, the built-in-operation-partial cluster after the currying-capture cases: the three declines
