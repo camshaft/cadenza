@@ -42,6 +42,7 @@ function proseOnly(src: string): string {
     .replace(/\{\/\*[\s\S]*?\*\/\}/g, "") // JSX block comments
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, "")) // JSDoc/block comments, newlines kept for line#s
     .replace(/<C>[\s\S]*?<\/C>/g, "") // inline code spans
+    .replace(/<Cadenza>[\s\S]*?<\/Cadenza>/g, "") // surface-aware inline Cadenza spans ((cdz …), #7103) — code, not prose
     .replace(/`[\s\S]*?`/g, ""); // template literals (Runnable/Exercise source, Note code, trap strings)
 }
 
