@@ -6794,6 +6794,7 @@ pass	fe4 float comparisons route an integer match — the sign of the second dra
 pass	fe5 Float64 arguments HALVED in the arm — exact binary fractions cross dispatch both directions, count folds in
 pass	fe6 a Float64 TUPLE state — one slot advances additively, the other doubles, both exact across two dispatches
 pass	ffs1 a FIRST-FREE-SLOT allocator over an Int64 bitmask — alloc scans for the lowest clear bit via a recursive probe answering its index, free clears a bit answering whether it was live, and the SEED pre-occupies slots so the two runs allocate around different holes
+pass	fi0 a const float operation whose result is non-finite is a coded CDZ0201, not a codeless decline
 pass	fi1 runtime float division by zero produces +infinity (huge, self-equal, positive)
 pass	fi2 runtime float division of a negative by zero produces -infinity (self-equal)
 pass	fi3 a runtime 0.0/0.0 NaN is CANONICAL: byte-equal to the literal, self-equal, Set-findable
