@@ -2023,9 +2023,13 @@ const PRE_COMMIT_TRUNK_GUARD_SIGNATURE: &str =
     "pre-commit blocked: you are committing directly onto";
 const PRE_COMMIT_HOOK_MARKER: &str = "# fleet:pre-commit";
 
-/// The fleet `pre-commit` hook body. Two guards: (1) the TRUNK-GUARD (refuse a direct commit onto
-/// `trunk` outside the pr-sync worktree — the single-writer invariant, same as the prior hand-placed
-/// hook); (2) an AUTO-FMT of the crates owning staged `.rs` (concierge durable fix 2026-08-29). WHY the
+/// The fleet `pre-commit` hook body. Guards (two BLOCK, the rest fail-open warns): (1) the TRUNK-GUARD
+/// (refuse a direct commit onto `trunk` outside the pr-sync worktree — the single-writer invariant, same
+/// as the prior hand-placed hook); (2) an AUTO-FMT of the crates owning staged `.rs` (concierge durable
+/// fix 2026-08-29); (3) rcdzc tests.rs #[test]-growth warn; (4) cdz-run RunArgs downstream-cdz warn; (5)
+/// Cargo.toml path-dep crate-closure warn; (6) BLOCK a staged `.gate-baseline*` with a VANISHED title
+/// (`cdz-corpus vanished-check`, fail-open on a missing CLI — closes the #7176/#6835 bulk-re-pin hole).
+/// WHY the
 /// upgrade from warn-only: peers were IGNORING the warn and landing unformatted rust, which reds the
 /// REQUIRED rustfmt gate fleet-wide — it recurred 3×/3 ticks (test-deletion churn leaving a stray blank
 /// line before a `#[test]` that the pinned rustfmt strips). Now the hook AUTO-RUNS the pinned rustfmt on
@@ -2052,6 +2056,8 @@ fn pre_commit_hook_body() -> String {
 # bin (dev-gate scopes to cdz-run + misses cdz's WatchCmd::Run E0063; broke the fleet twice).
 # (5) warn (fail-open) on a Cargo.toml path-dep add/remove — nudge to run the nix crate-closure-assert +
 # update the flake.nix expected-leaf (native cargo/dev-gate are blind to a stale leaf; #5638 redded gate-local).
+# (6) BLOCK (fail-open on missing tool) a staged .gate-baseline* that has VANISHED titles — a non-harvest bulk
+# re-pin re-adding a baseline case with no corpus case reds corpus-vanished-check gate-local fleet-wide (#7176).
 set -uo pipefail
 
 # (1) TRUNK-GUARD — refuse a direct commit onto `trunk` unless in the pr-sync worktree (the integrator).
@@ -2178,6 +2184,47 @@ if [ "${{FLEET_SKIP_CLOSURE_WARN:-}}" != "1" ]; then
     echo "  a local-gate constituent; bit the fleet in #5638). Before landing, verify + update the leaf ATOMICALLY:" >&2
     echo "    nix eval .#checks.aarch64-linux.crate-closure-assert   # throws on a stale leaf (fast, no build)" >&2
     echo "  then edit the MATCHING flake.nix expected-leaf in THIS slice. (Silence: FLEET_SKIP_CLOSURE_WARN=1.)" >&2
+  fi
+fi
+
+# (6) BASELINE VANISHED-TITLE BLOCK (v-corpus-harness co-design #7191 + v-fleet-tooling; closes the
+# #7176/#6835 hole). A `.gate-baseline*` bulk re-pin from a STALE/non-harvest source can re-add VANISHED
+# titles (a baseline case whose description has no corpus case), which reds `corpus-vanished-check` in
+# gate-local FLEET-WIDE — the ONLY sanctioned baseline writer is the faithful whole-corpus `nix
+# save-baseline` harvest (vanished==0 by construction). `corpusVanishedCheck` already catches it, but only
+# in the HEAVY post-merge localGate, so a contaminated baseline LANDS and THEN reds. This runs the SAME
+# check at COMMIT time on the STAGED baselines via `cdz-corpus vanished-check` — the fast text-only CLI
+# that reuses the flake check's exact comm (zero drift) — and BLOCKS before it can land. Zero false
+# positives (a faithful harvest passes; success output is suppressed). FAIL-OPEN if the CLI is unavailable
+# (never wedge a commit on a missing tool). Runs only when a baseline is staged. Silence:
+# FLEET_SKIP_BASELINE_VANISHED_CHECK=1 (override a genuinely-intentional case).
+if [ "${{FLEET_SKIP_BASELINE_VANISHED_CHECK:-}}" != "1" ]; then
+  _staged_bl="$(git diff --cached --name-only --diff-filter=ACM -- 'spec/semantics/.gate-baseline*' 2>/dev/null)"
+  if [ -n "$_staged_bl" ]; then
+    # Resolve the CLI: standalone `cdz-corpus` OR the unified `cdz corpus` (both mount vanished-check); fail-open if neither.
+    _vc=""
+    if command -v cdz-corpus >/dev/null 2>&1; then _vc="cdz-corpus vanished-check"
+    elif command -v cdz >/dev/null 2>&1; then _vc="cdz corpus vanished-check"; fi
+    if [ -n "$_vc" ]; then
+      # Positional = staged baselines (a baseline change stages all-or-nothing); --corpus = the COMPLETE glob
+      # (a subset false-positives). The hook runs from the repo toplevel, so these relative paths resolve.
+      # ROBUSTNESS: `cdz`/`cdz-corpus` is a wrapper that can COLD-resolve (nix/cargo) + block for MINUTES under
+      # contention — a pre-commit hook must NEVER hang a commit, and must NEVER false-block on a tooling failure.
+      # So: (a) bound it with `timeout` (a missing `timeout` binary just makes this fail-open too), and (b) BLOCK
+      # ONLY on the CLI's recognizable "VANISHED baseline" detection line — a timeout / cold-resolve error / any
+      # other non-detection exit produces no such line → FAIL-OPEN (warn, never block). Bias: a real vanished
+      # title blocks; anything else lets the commit through (gate-local's corpus-vanished-check is the backstop).
+      _vout="$(timeout 60 $_vc $_staged_bl --corpus spec/semantics/*.sexp 2>&1)"
+      if printf '%s' "$_vout" | grep -q 'VANISHED baseline'; then
+        echo "✗ pre-commit blocked: a staged .gate-baseline* has a VANISHED title (a baseline case with no corpus case)." >&2
+        printf '%s\n' "$_vout" | grep 'VANISHED baseline' | sed 's/^/    /' >&2
+        echo "  This is the #7176/#6835 contamination class — a bulk re-pin from a STALE/non-harvest source reds" >&2
+        echo "  corpus-vanished-check in gate-local FLEET-WIDE. The ONLY sanctioned baseline writer is the faithful" >&2
+        echo "  whole-corpus harvest:  nix run .#save-baseline  (vanished==0 by construction). Re-harvest instead of" >&2
+        echo "  hand/bulk-editing the baseline. (Override if genuinely intentional: FLEET_SKIP_BASELINE_VANISHED_CHECK=1 git commit …)" >&2
+        exit 1
+      fi
+    fi
   fi
 fi
 exit 0
@@ -20239,7 +20286,22 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(b.contains("#[test]") && b.contains(r"grep -c '#\[test\]'"));
         assert!(b.contains("FLEET_SKIP_TESTS_RS_WARN"));
         assert!(b.contains("spec/semantics"));
-        // Fail-open: the script's LAST statement is `exit 0` (sections 2+3 never block a commit).
+        // Section (6): BLOCK a staged .gate-baseline* with a vanished title, via the `cdz-corpus vanished-check`
+        // CLI (v-corpus-harness #7191) run on the staged baselines — fail-OPEN if the CLI is absent, with the
+        // FLEET_SKIP_BASELINE_VANISHED_CHECK escape + the save-baseline re-harvest guidance.
+        assert!(b.contains("vanished-check"));
+        assert!(b.contains("FLEET_SKIP_BASELINE_VANISHED_CHECK"));
+        assert!(b.contains("spec/semantics/.gate-baseline*"));
+        assert!(b.contains("command -v cdz-corpus")); // fail-open CLI resolution
+        assert!(b.contains("save-baseline")); // re-harvest remediation pointer
+        // ROBUSTNESS: the check is `timeout`-bounded (a cold `cdz` wrapper resolve can block for minutes — a
+        // pre-commit hook must never hang a commit) and BLOCKS ONLY on the CLI's recognizable "VANISHED
+        // baseline" detection token — a timeout / tool-resolve failure / any non-detection exit FAILS OPEN
+        // (never false-blocks a commit on a tooling hiccup; gate-local's corpus-vanished-check is the backstop).
+        assert!(b.contains("timeout 60"));
+        assert!(b.contains("grep -q 'VANISHED baseline'"));
+        // Fail-open: the script's LAST statement is `exit 0` (the warn sections never block a commit; only the
+        // trunk-guard (1) and the baseline vanished-check (6) block, each on its own explicit `exit 1`).
         assert!(
             b.trim_end().ends_with("exit 0"),
             "the hook must END fail-open (exit 0) so the fmt + tests.rs-warn sections never block a commit"
