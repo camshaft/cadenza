@@ -1248,7 +1248,7 @@ fn gen_float_keyed_collection_body<C: Choice>(c: &mut C, out: &mut String) {
 fn gen_string_body<C: Choice>(c: &mut C, out: &mut String) {
     // Pick the string + FORM before writing (variant-ordering).
     let s = ["a", "ab", "abc", "hello"][c.variant(4)];
-    match c.variant(6) {
+    match c.variant(7) {
         // A byte length → Int64.
         0 => write!(out, "(String.byte-len \"{s}\")").ok(),
         // A Unicode scalar at index 0 → a scalar.
@@ -1265,6 +1265,19 @@ fn gen_string_body<C: Choice>(c: &mut C, out: &mut String) {
             let s2 = ["a", "ab", "abc", "hello"][c.variant(4)];
             let op = ["=", "<", ">", "<=", ">="][c.variant(5)];
             write!(out, "({op} \"{s}\" \"{s2}\")").ok()
+        }
+        // A CHAR (Unicode scalar) COMPARISON → Bool: compare two `String.scalar-at` results with
+        // `=`/`<`/`>`/`<=`/`>=` — Char value equality + ordering (a Bool result), graded by the
+        // oracle's Char-ordering fold (#7106). Char LITERALS aren't a surface syntax (`'a'` → CDZ0101),
+        // so `scalar-at` is the only way to obtain a Char value to compare.
+        5 => {
+            let s2 = ["a", "ab", "abc", "hello"][c.variant(4)];
+            let op = ["=", "<", ">", "<=", ">="][c.variant(5)];
+            write!(
+                out,
+                "({op} (String.scalar-at \"{s}\" 0) (String.scalar-at \"{s2}\" 0))"
+            )
+            .ok()
         }
         // A bare string literal value.
         _ => write!(out, "\"{s}\"").ok(),
@@ -2653,8 +2666,15 @@ mod tests {
     /// and every body COMPILES (S166: a String-op family the Int64/float/compound grammar never reached).
     #[test]
     fn gen_string_body_reaches_all_forms_and_compiles() {
-        let (mut saw_len, mut saw_at, mut saw_concat, mut saw_slice, mut saw_lit, mut saw_cmp) =
-            (false, false, false, false, false, false);
+        let (
+            mut saw_len,
+            mut saw_at,
+            mut saw_concat,
+            mut saw_slice,
+            mut saw_lit,
+            mut saw_cmp,
+            mut saw_char_cmp,
+        ) = (false, false, false, false, false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1657);
             let mut bytes = Vec::new();
@@ -2669,8 +2689,11 @@ mod tests {
             saw_at |= body.contains("String.scalar-at");
             saw_concat |= body.contains("String.concat");
             saw_slice |= body.contains("String.slice");
-            // A string COMPARISON body begins with an op head over two quoted strings.
-            saw_cmp |= body.starts_with("(=") || body.starts_with("(<") || body.starts_with("(>");
+            // A comparison body begins with an op head; a CHAR comparison compares two
+            // `String.scalar-at` results (contains scalar-at), a STRING comparison two literals.
+            let is_cmp = body.starts_with("(=") || body.starts_with("(<") || body.starts_with("(>");
+            saw_char_cmp |= is_cmp && body.contains("String.scalar-at");
+            saw_cmp |= is_cmp && !body.contains("String.scalar-at");
             saw_lit |= body.starts_with('"');
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
@@ -2684,6 +2707,7 @@ mod tests {
         assert!(saw_slice, "should reach String.slice");
         assert!(saw_lit, "should reach a bare string literal");
         assert!(saw_cmp, "should reach a string comparison");
+        assert!(saw_char_cmp, "should reach a char (scalar-at) comparison");
     }
 
     /// `gen_bytes_body` REACHES all five Bytes-op forms (len, at, literal, of-list, concat) and every body
