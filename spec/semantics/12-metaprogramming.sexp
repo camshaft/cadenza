@@ -719,6 +719,49 @@
   (output (: 10 Int64)))
 
 (case
+  "an eval folds a quoted match whose #map pattern carries a (.. rest) marker (OPEN pattern)"
+  (doc
+    "Regression fence for the #6855 map-rest miscompile: a `(.. _r)` rest marker inside a QUOTED `#map`
+           PATTERN must reflect + reconstruct as an OPEN pattern (a rest binder), not a `(= .. _r)` field
+           pair. `reify_inner` reified the ctor children as `Ast.FieldPair`s and ran `field_kv` on EVERY
+           child — its 2-element-list fallback mis-read `(.. _r)` as a key/value pair, CLOSING the pattern,
+           so the eval-of-quoted-match found no such field and FELL THROUGH to the catch-all, folding to the
+           WRONG value (-1 instead of the value bound at key 1) — a decline-don't-miscompile violation
+           (breaker `adv-quoted-map-rest-pattern-falls-through-after-reify-6855`). The direct (un-quoted)
+           twin binds `v`=10; the quoted form must agree. Now folds to 10.")
+  (input (eval (quote (match #map((= 1 10)) (#map((= 1 v) (.. _r)) v) (_ -1)))))
+  (output (: 10 Int64)))
+
+(case
+  "the quoted #map-rest pattern's rest binder captures the RESIDUAL entries"
+  (doc
+    "Pins that the reflected rest binder is not merely tolerated but binds the residual map: over a
+           two-entry map the `(= 1 v)` face binds `v`=10 and `(.. r)` binds the rest `{2:20}`, so
+           `(+ v (Map.len r))` = 10 + 1 = 11. Distinguishes a correct OPEN pattern from one that just drops
+           the marker.")
+  (input (eval (quote (match #map((= 1 10) (= 2 20)) (#map((= 1 v) (.. r)) (+ v (Map.len r))) (_ -1)))))
+  (output (: 11 Int64)))
+
+(case
+  "a QUASIQUOTED #map-rest pattern reflects through reify_active and splices an unquote"
+  (doc
+    "The `reify_active` (quasiquote-value) twin of the map-rest fence: the same `(.. r)` rest marker
+           inside a QUASIQUOTED `#map` pattern must stay OPEN, and the arm body splices an unquoted
+           enclosing value. `v`=10 (bound at key 1), `,x`=5, so `(+ v ,x)` = 15.")
+  (input
+    (let ((x 5)) (eval (quasiquote (match #map((= 1 10) (= 2 20)) (#map((= 1 v) (.. r)) (+ v (unquote x))) (_ -1))))))
+  (output (: 15 Int64)))
+
+(case
+  "an eval folds a quoted match whose #record pattern carries a (.. rest) marker (OPEN pattern)"
+  (doc
+    "The `#record` face of the map-rest fence — the same reflect/reconstruct path (`fieldpair_children`)
+           handles both `#map` and `#record`. A `(.. _r)` rest marker inside a QUOTED `#record` pattern
+           stays OPEN: `(= a x)` binds `x`=1 and `(.. _r)` binds the residual `{b:2}`, so the arm yields 1.")
+  (input (eval (quote (match #record((= a 1) (= b 2)) (#record((= a x) (.. _r)) x) (_ -1)))))
+  (output (: 1 Int64)))
+
+(case
   "the hygiene rename recurses into a NESTED compound match pattern"
   (doc
     "Depth companion: `(match (Some (tuple 1 2)) ((Some (tuple x y)) (+ ,x y)))` with enclosing x=10 →

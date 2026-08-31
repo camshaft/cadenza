@@ -602,7 +602,12 @@ fn reify_inner(
             {
                 let mut children = Vec::with_capacity(items.len() - 1);
                 for &child in &items[1..] {
-                    let reified = if fieldpair_children {
+                    // A `(.. rest)` REST MARKER inside a quoted record/map PATTERN (an OPEN pattern) is not a
+                    // `(= k v)` entry — reify it via the generic path (→ `Ast.List [Ast.Name "..", …]`), NOT
+                    // `reify_field_pair` (whose `field_kv` 2-list fallback would mis-read `(.. r)` as a
+                    // `(= .. r)` pair, CLOSING the pattern → the quoted map/record-rest match fell through to
+                    // the catch-all: the #6855 map-rest wrong-value fold). Reconstruct restores the marker.
+                    let reified = if fieldpair_children && ast.as_form(child, "..").is_none() {
                         reify_field_pair(ast, child, child_under_qq)?
                     } else {
                         reify(ast, child, child_under_qq)?
@@ -739,7 +744,11 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             {
                 let mut children = Vec::with_capacity(items.len() - 1);
                 for &child in &items[1..] {
-                    let reified = if fieldpair_children {
+                    // A `(.. rest)` REST MARKER inside a quasiquoted record/map PATTERN (an OPEN pattern) is
+                    // not a `(= k v)` entry — reify it via the generic active path, NOT `field_kv` (whose
+                    // 2-list fallback mis-reads `(.. r)` as a `(= .. r)` pair, CLOSING the pattern → the
+                    // map/record-rest match falls through: the quasiquote twin of the #6855 map-rest fold).
+                    let reified = if fieldpair_children && ast.as_form(child, "..").is_none() {
                         let (k, v) = field_kv(ast, child)?;
                         let rk = reify_active(ast, k, depth)?;
                         let rv = reify_active(ast, v, depth)?;
@@ -901,7 +910,7 @@ fn reify_pattern(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<Str
             {
                 let mut children = Vec::with_capacity(items.len() - 1);
                 for &child in &items[1..] {
-                    let reified = if fieldpair_children {
+                    let reified = if fieldpair_children && ast.as_form(child, "..").is_none() {
                         // A record/map entry `(= k v)` / `(k v)` → `Ast.FieldPair (tuple <pat k> <pat v>)`.
                         let (k, v) = field_kv(ast, child)?;
                         let rk = reify_pattern(ast, k, under_qq)?;
@@ -910,6 +919,15 @@ fn reify_pattern(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<Str
                         let tup = push_list(ast, vec![th, rk, rv]);
                         ast_ctor(ast, "FieldPair", tup)
                     } else {
+                        // A bare element (list/tuple/set) OR a `(.. rest)` REST MARKER inside a record/map
+                        // pattern (an OPEN pattern binding the residual entries). Reify via the generic
+                        // pattern path — for the rest marker this preserves the `..`-headed form as an
+                        // `Ast.List [Ast.Name "..", <binder>]` bare (non-`FieldPair`) child, which
+                        // reconstruct restores as the rest marker so the reflected pattern stays OPEN. Do
+                        // NOT run `field_kv` on a `(.. r)` marker: its 2-element-list fallback would mis-read
+                        // it as a `(= .. r)` field pair, CLOSING the pattern → a quoted `#map((= k v) (.. r))`
+                        // match then found no field `..` and fell through to the catch-all (a wrong-value
+                        // fold — the #6855 map-rest miscompile).
                         reify_pattern(ast, child, under_qq)?
                     };
                     children.push(reified);
