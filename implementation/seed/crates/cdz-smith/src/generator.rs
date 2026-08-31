@@ -753,11 +753,23 @@ impl Gen<'_> {
     }
 
     fn string_lit(&mut self) {
-        // Short a-z strings only — no escaping hazards, always lexes.
-        let len = self.cur.choice(4);
         self.out.push('"');
-        for _ in 0..len {
-            self.out.push((b'a' + self.cur.range(0, 25)) as char);
+        if self.cur.choice(4) == 0 {
+            // ~1/4: a UNICODE (multi-byte UTF-8) string — exercises the byte-vs-char indexing / mid-
+            // codepoint boundary paths in String.at/slice/byte-len/to-bytes that an ASCII-only literal
+            // never reaches (a String op's byte index can land MID-codepoint on these). Chars are 2–3
+            // UTF-8 bytes; all lex directly in a Cadenza string literal.
+            const UCHARS: [&str; 6] = ["α", "β", "γ", "é", "ü", "€"];
+            let len = 1 + self.cur.choice(3); // 1..=3 multi-byte chars
+            for _ in 0..len {
+                self.out.push_str(UCHARS[self.cur.choice(UCHARS.len())]);
+            }
+        } else {
+            // Short a-z ASCII (the common case) — no escaping hazards, always lexes.
+            let len = self.cur.choice(4);
+            for _ in 0..len {
+                self.out.push((b'a' + self.cur.range(0, 25)) as char);
+            }
         }
         self.out.push('"');
     }
@@ -2461,6 +2473,27 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a String builtin");
+    }
+
+    /// A UNICODE (multi-byte UTF-8) string literal is reachable — some seed emits a string containing a
+    /// multi-byte char, so String ops exercise byte-vs-char indexing / mid-codepoint boundaries (not just
+    /// ASCII). Every such program parses. Guards operator seq-23 unicode-string coverage.
+    #[test]
+    fn some_seed_emits_a_unicode_string() {
+        const UCHARS: [&str; 6] = ["α", "β", "γ", "é", "ü", "€"];
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if UCHARS.iter().any(|u| src.contains(u)) {
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a unicode string literal");
     }
 
     /// The Map/Set-builtin arm is reachable — some seed emits a `(Map.*|Set.* ...)` call over a
