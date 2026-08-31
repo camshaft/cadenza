@@ -1797,20 +1797,12 @@ impl Arenas {
         }
     }
 
-    /// The primitive compound constructor [`CompoundCtor`] this `List` node denotes, if any — the typed
-    /// TAG read from the reserved STRING head ([`head_ctor`]). Only the unshadowable STRING primitive is
-    /// a tag; a NAME head (`(record …)`, the shadowable alias) returns `None` here and resolves as an
-    /// ordinary reference. The twin of `rcdzc::ast::Arenas::compound_ctor`; see
-    /// `implementation/design/DESIGN-native-ast-compound-data.md`.
-    pub fn compound_ctor(&self, id: StructId) -> Option<CompoundCtor> {
-        CompoundCtor::from_spelling(self.head_ctor(id)?)
-    }
-
-    /// The [`CompoundCtor`] this `List` node denotes via its native ctor-LEAF-KIND head — the M2 read
+    /// The [`CompoundCtor`] this `List` node denotes via its native ctor-LEAF-KIND head — the read
     /// primitive, recognized by leaf-kind IDENTITY ([`Leaf::Ctor`]) rather than by head text. `None` if
-    /// the head is not a ctor-leaf atom. The dual of the emit primitive [`Builder::compound`]; coexists
-    /// with the transitional string-head recognizer [`compound_ctor`] during the migration (M3 removes the
-    /// latter). See `implementation/design/DESIGN-native-ast-compound-data.md`.
+    /// the head is not a ctor-leaf atom. The dual of the emit primitive [`Builder::compound`]. See
+    /// `implementation/design/DESIGN-native-ast-compound-data.md`. (The transitional string-head
+    /// recognizer `compound_ctor` this replaced was removed post-M3; native ctor-leaf recognition is the
+    /// only compound-tag read.)
     pub fn compound_ctor_leaf(&self, id: StructId) -> Option<CompoundCtor> {
         match self.get(id) {
             Struct::List(items) => match self.leaf(self.atom_leaf_id(*items.first()?)?) {
@@ -2245,23 +2237,20 @@ mod tests {
     }
 
     #[test]
-    fn compound_ctor_and_ctor_head_key_recognize_the_reserved_vocabulary() {
+    fn ctor_head_key_recognizes_the_reserved_vocabulary() {
         let mut b = Builder::new();
-        // `("record" _)` — the STRING primitive head is a compound-ctor tag.
+        // `("record" _)` — a STRING head occurrence.
         let rec_head = b.atom_leaf(Leaf::Str("record".into()));
         let payload = b.atom_leaf(Leaf::Str("_".into()));
         let rec = b.list(vec![rec_head, payload]);
-        // `(record)` — the NAME alias head: NOT the primitive tag (compound_ctor), but ctor_head_key
-        // (the node_eq head-normalizer) DOES collapse it to the same tag.
+        // `(record)` — the NAME alias head. `ctor_head_key` (the node_eq head-normalizer) collapses the
+        // NAME and STRING head spellings to the same tag.
         let alias_head = b.name("record");
         let alias = b.list(vec![alias_head]);
         // One root keeps both subtrees reachable from `finish`.
         let root = b.list(vec![rec, alias]);
         let a = b.finish(root);
 
-        // compound_ctor: only the STRING primitive on a List node.
-        assert_eq!(a.compound_ctor(rec), Some(CompoundCtor::Record));
-        assert_eq!(a.compound_ctor(alias), None);
         // ctor_head_key operates on the HEAD occurrence and collapses NAME + STRING to one tag.
         assert_eq!(a.ctor_head_key(rec_head), Some(CompoundCtor::Record));
         assert_eq!(a.ctor_head_key(alias_head), Some(CompoundCtor::Record));
@@ -2282,7 +2271,6 @@ mod tests {
             // Keep both head atoms reachable from the root so neither is pruned by `finish`.
             let node = b.list(vec![s, n]);
             let a = b.finish(node);
-            assert_eq!(a.compound_ctor(node), Some(want), "str head `{spelling}`");
             assert_eq!(
                 a.ctor_head_key(s),
                 Some(want),
@@ -2450,9 +2438,8 @@ mod tests {
         assert_eq!(a.compound_ctor_leaf(record), Some(CompoundCtor::Record));
         assert_eq!(a.compound_ctor_leaf(map), Some(CompoundCtor::Map));
         assert_eq!(a.compound_ctor_leaf(set), Some(CompoundCtor::Set));
-        // A native ctor-leaf head is NOT a string/name head, so the transitional `compound_ctor`
-        // (string-head) recognizer does not see it — the two recognizers are disjoint during migration.
-        assert_eq!(a.compound_ctor(list), None);
+        // A native ctor-leaf head is NOT a string/name head, so the string-head reader (`head_ctor`) and
+        // the name-head reader (`head_name`) do not see it — the leaf-kind and text-head reads are disjoint.
         assert_eq!(a.head_ctor(list), None);
         assert_eq!(a.head_name(list), None);
         // Field-pair / member parts read back in order.
