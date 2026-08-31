@@ -77,6 +77,8 @@
 ; SHAPE 42 — a bare string/String PARAM member (MemLeafKind::Str), the byte-leaf-copy sibling of SHAPE 40.
 ; SHAPE 43 — a bare list<scalar>/List PARAM member (MemLeafKind::List): a value-heap VEC built element-by-
 ; element from the (ptr,count) layout (distinct rep from Bytes), reading count+element to prove stride+box.
+; SHAPE 44 — a bare option<scalar>/Option PARAM member (sum_params): the (disc,payload) flattening is rebuilt
+; into the guest sum cell via sum-new (SumArgRebuild), both Some and None arms exercised, shell dropped after.
 
 (case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -286,6 +288,24 @@
   (input (do (def (readElem (: xs (List Int64))) (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some v) v) ((Option.None) -1)))) (export readElem)))
   (call read-elem (: #list(7 42 9) (List Int64)))
   (output (: 342 Int64))
+  (live-objects known-leak))
+
+(case "a bare option<scalar>/Option PARAM member of a typed export interface crosses (sum_params option arm, both variants)"
+  (doc    "SHAPE 44 — a TOP-LEVEL `option<s64>`/Option Int64 PARAM member of a typed export interface. The
+           member crosses as a native component `option<s64>` flattened to `(disc, payload)`; the wrapper
+           branches on the boundary disc and builds the guest sum cell via `sum-new` (`SumArgRebuild`), passes
+           it to the def, and drops the borrowed shell after the call (the extracted payload escapes by its own
+           copy, independent of the shell). Mirrors the bare-entry route's Option param (eo1/eo2, ch09) onto
+           the typed-interface-MEMBER route — the `sum_params` sibling of the mem_leaf param arms. Guest
+           checkOpt(x) = match x (Some v)->v (None)->-1; BOTH variants exercised: Some(42)->42, None->-1 (a
+           broken disc read or payload-cursor would take the wrong arm).")
+  (wit-world (world w (export iface (member check-opt (func (param x (option (s64))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (checkOpt (: x (Option Int64))) (match x ((Option.Some v) v) ((Option.None) -1))) (export checkOpt)))
+  (call check-opt (: (Some 42) (Option Int64)))
+  (output (: 42 Int64))
+  (call check-opt (: (None unit) (Option Int64)))
+  (output (: -1 Int64))
   (live-objects known-leak))
 
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
