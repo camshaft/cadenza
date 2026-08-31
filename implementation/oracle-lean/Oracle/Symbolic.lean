@@ -1287,6 +1287,12 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | .cannotProve r => .cannotProve r
               | _ => .cannotProve "symeval: Option.expect on None / non-Option (trap-message not modeled)")
            | none => .cannotProve "symeval: malformed Option.expect")
+        else if (q == "Float64".toUTF8 || q == "Float32".toUTF8) && (mem == "nan".toUTF8 || mem == "Infinity".toUTF8) then
+          -- prelude float CONSTANTS in a CALL/member-head position `((. Float64|Float32 nan|Infinity) …)`
+          -- (companion to the proj-form handling): a nullary constant, args (if any) irrelevant. Byte-faithful
+          -- to evalNode (Eval.lean:2052-2056). This lets a float ORDERING with a nan/inf constant operand fold
+          -- (foldConst? then folds `(<= Float64.nan 834.0)` via its asF64? path — NaN cmp → false). (v-cdz-smith.)
+          if mem == "nan".toUTF8 then .sym (.const .floatNan) else .sym (.const (.floatInf false))
         else if q == "Rational".toUTF8 && mem == "of".toUTF8 then
           -- `Rational.of n d` → the normalized exact rational n/d (`mkRational`: sign-normalize + gcd-reduce);
           -- a ZERO denominator TRAPS (unreachable) → cannotProve. Byte-faithful to evalNode (Eval.lean:1635-1647).
@@ -1955,6 +1961,15 @@ private def _float64InfExpr : Module :=
   { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Float64".toUTF8, Leaf.name "Infinity".toUTF8],
     nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
 #guard symEval _float64InfExpr [] symDefaultFuel defaultIntTy 3 == SymOutcome.sym (.const (.floatInf false))
+
+-- Float64.nan in a CALL/member-head position `((. Float64 nan))` also folds (companion to the proj form).
+private def _float64NanCallExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Float64".toUTF8, Leaf.name "nan".toUTF8],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .list #[3]], root := 4 }
+#guard symEval _float64NanCallExpr [] symDefaultFuel defaultIntTy 4 == SymOutcome.sym (.const .floatNan)
+-- and a float ORDERING with a NaN constant operand folds to `false` (IEEE: any NaN comparison is false).
+#guard normalize (.app "<=" #[.const .floatNan, .const (.f64 (834.0 : Float))]) == SymExpr.const (.bool false)
+#guard normalize (.app ">" #[.const (.floatInf false), .const (.f64 (5.0 : Float))]) == SymExpr.const (.bool true)
 
 -- OPTION.EXPECT member-op coverage: `((. Option expect) (Some 5))` → 5 (unwrap the Some payload).
 private def _optExpectExpr : Module :=
