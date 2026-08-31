@@ -548,6 +548,16 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none => .sym (.tuple (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
+      else if h == "list".toUTF8 then
+        -- a LIST literal (ordered; STRICT in its elements, #5194). Model as `.ctor "list"` of the element
+        -- SymExprs — DISTINCT from `.tuple`, and ORDERED so structural equality is faithful (two list
+        -- literals are equal iff same elements in order). Coverage: list literals now get a verdict instead
+        -- of falling to `cannotProve` (the head was previously unmodeled → treated as a call → cannotProve).
+        -- (`set`/`map` need canonicalization — unordered / sorted-unique-by-key — a later increment.)
+        let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel ty c)
+        match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
+        | some r => .cannotProve r
+        | none => .sym (.ctor "list".toUTF8 (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
       else if h == "Some".toUTF8 || h == "Ok".toUTF8 || h == "Err".toUTF8 then
         -- a built-in unary Option/Result constructor (lazy payload).
         match children[1]? with
@@ -1019,6 +1029,15 @@ private def _callProg : Module :=
                .atom 6, .atom 4, .list #[13, 14], .atom 0, .list #[16, 5, 12, 15]],
     root := 17 }
 #guard symEvalMain _callProg == SymOutcome.sym (.const (.int 42))
+
+-- LIST literal coverage: `(list 1 2)` → `.ctor "list" [const 1, const 2]` (ordered; was `cannotProve`
+-- before "list" was modeled — the head fell through to call-inlining of a non-existent def).
+private def _listExpr : Module :=
+  { leaves := #[Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+#guard symEval _listExpr [] symDefaultFuel defaultIntTy 3
+       == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2)])
 
 -- match on a CONCRETE constructor: `(match (Some 5) ((Some x) x) (None 0))` → binds x=5, takes the Some arm → const 5.
 -- leaves 0:match 1:Some 2:(5) 3:x 4:None 5:(0). nodes: 2:(Some 5), 5:(Some x) pat, 7:arm1, 10:arm2, 12:(match …).
