@@ -61,36 +61,6 @@ fn has_rational(a: &Arenas) -> bool {
         .any(|id| a.rational_parts(id).is_some())
 }
 
-/// Does this tree contain a `Set.of(<list literal>)` CALL — `((. Set of) (list …))`? The ML printer
-/// CANONICALIZES this to the concise set-literal surface `#(…)` (its `set_literal` sugar), which — since
-/// the M3 native-ctor reader-flip (#6528) — re-reads to the native `#set(…)` CTOR, NOT back to the
-/// `Set.of` call. So `Set.of([1,2,3])` prints `#(1,2,3)` and re-reads `#set(1 2 3)`: the SAME set VALUE
-/// (the sugar's whole point — a set-of-a-literal-list IS a set literal) but a structurally different
-/// tree (call → ctor). Exactly like `Unit.^` → `^`, this is a deliberate value-canonicalization the
-/// surface performs, so structural equality cannot hold; it is held to parse-ok + IDEMPOTENCE only
-/// (`#(…)` reprints `#(…)`), and the codec/s-expr paths preserve the `Set.of` call node EXACTLY. Mirrors
-/// the printer's `set_literal` guard (member `(. Set of)`, single `list`-headed arg). See
-/// [`has_canonicalizing_head`].
-fn has_set_of_list_literal(a: &Arenas) -> bool {
-    (0..a.structure.len() as u32).map(StructId).any(|id| {
-        let Struct::List(items) = a.get(id) else {
-            return false;
-        };
-        if items.len() != 2 {
-            return false;
-        }
-        // items[0] is the member access `(. Set of)` (a `Leaf::Member`-headed list).
-        let is_set_of = a.member_parts(items[0]).is_some_and(|(obj, key)| {
-            a.as_name(obj) == Some("Set") && a.as_name(key) == Some("of")
-        });
-        // items[1] is a `list` literal — the native ctor-leaf `#list`, or a str/name `list` head.
-        let arg_is_list = a.compound_ctor_leaf(items[1]) == Some(CompoundCtor::List)
-            || a.head_ctor(items[1]) == Some("list")
-            || a.head_name(items[1]) == Some("list");
-        is_set_of && arg_is_list
-    })
-}
-
 /// Does this tree contain a MALFORMED `record`/`map` compound-ctor literal — one whose direct element
 /// list carries a BARE ATOM (a non-`(= key value)`, non-`(.. rest)` element)? A record/map field MUST be
 /// a `(= k v)` pair (or a `(.. rest)` spread); a bare atom (e.g. `#record((= a 1) 2)`) is malformed and
@@ -264,9 +234,8 @@ fn ml_surface_round_trips_the_corpus() {
 
             // A head the surface canonicalizes away (`Unit.^` → `^`) cannot satisfy structural equality,
             // so it is held to the weaker parse-ok + idempotence contract only.
-            let structural_required = !has_canonicalizing_head(&input)
-                && !has_compound_key_member(&input)
-                && !has_set_of_list_literal(&input);
+            let structural_required =
+                !has_canonicalizing_head(&input) && !has_compound_key_member(&input);
 
             // A REJECTED program (an error case) is MALFORMED, so the ML surface has no faithful
             // rendering of it — a valueless construct in a value position (e.g. a trailing `type`
@@ -438,12 +407,9 @@ fn all_surface_paths_round_trip_the_corpus() {
             total += 1;
             let bucket = input.head_name(input.root).unwrap_or("<leaf>").to_string();
 
-            // A canonicalizing head (`Unit.^` → `^`) or a `Set.of(<list literal>)` (canonicalized to the
-            // set-literal `#(…)`) collapses under the ML surface, so Path A (ml→binary→ml) is held to the
-            // idempotence contract, not structural equality.
-            let structural = !has_canonicalizing_head(&input)
-                && !has_compound_key_member(&input)
-                && !has_set_of_list_literal(&input);
+            // A canonicalizing head (`Unit.^` → `^`) collapses under the ML surface, so Path A
+            // (ml→binary→ml) is held to the idempotence contract, not structural equality.
+            let structural = !has_canonicalizing_head(&input) && !has_compound_key_member(&input);
 
             // Path A: ml → binary → ml. Print ML, read it back to an arena, encode, decode, print ML
             // again — the two ML renderings must be byte-identical (and structurally equal to the input

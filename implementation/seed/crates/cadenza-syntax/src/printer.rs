@@ -396,8 +396,9 @@ impl<'a> Printer<'a> {
                 "record" if self.is_record_shape(args) => return self.print_record(args),
                 "map" if self.is_map_shape(args) => return self.print_map(args),
                 // Native `Leaf::Ctor(Set)` — elements are its direct children (the M2 native set ctor,
-                // uniform with the others); renders back to `#(…)`. The legacy `((. Set of) (list …))`
-                // member form is recognized separately below (dual-support during the corpus migration).
+                // uniform with the others); renders back to `#(…)`. (The legacy `Set.of(<list literal>)`
+                // → `#(…)` member-call sugar was REMOVED 2026-08-31 — vestigial post native `#set`; a
+                // `Set.of` call now prints faithfully as a call.)
                 // A set CONSTRUCTION spread (`#(..a, x)`) carries a flat `Name("..")` marker — render through
                 // the rest-aware path (`.. a`), the twin of the list/map/record spread; else the plain path.
                 "set" if inline_ok && self.has_rest_marker(args) => {
@@ -476,13 +477,11 @@ impl<'a> Printer<'a> {
             self.doc.end();
             return;
         }
-        // A set literal `((. Set of) (list …))` renders back to `#(…)` — the inverse of the parser's
-        // `set_literal`. Checked before the name-head dispatch since the head is the member-access LIST
-        // `(. Set of)`, not a name. Like the quantity/unit sugars, `Set` needs no shadow guard (the
-        // member access re-reads identically); the inner list IS shadow-gated via `literal_ctor`.
-        if let Some(elems) = self.set_literal(items) {
-            return self.bracketed_comment_aware("#(", ")", false, &elems);
-        }
+        // (Removed 2026-08-31, operator directive: the vestigial `Set.of(<list literal>)` → `#(…)` sugar.
+        // It predated native compound types; since the M3 native-ctor reader-flip (#6528) the `#(…)`
+        // surface belongs to the native `#set` CTOR (which has its own arm above), and re-reads to `#set`,
+        // NOT the `Set.of` CALL — so the sugar was LOSSY (call → literal). `Set.of([…])` now prints as the
+        // faithful call form, round-tripping structurally; the native `#set(…)` still prints `#(…)`.)
         // A head that is an Atom(Name) may name a construct or an operator; otherwise it is a
         // computed-callee application.
         let head = self.head_name(items[0]);
@@ -4305,38 +4304,6 @@ impl<'a> Printer<'a> {
             _ => return None,
         };
         Some((items[2], name))
-    }
-
-    /// If `items` is a set literal `((. Set of) (list e …))`, return its element occurrences — so it
-    /// prints as the concise `#(e, …)` surface (the inverse of the parser's `set_literal`). All of
-    /// these must hold, else the general `Set.of(…)` call form renders it (a faithful round-trip
-    /// either way):
-    ///   * head is the member access `(. Set of)` and there is exactly one argument;
-    ///   * that argument is a `list` LITERAL (a `("list" …)` primitive or an UNSHADOWED `(list …)`
-    ///     alias, via `literal_ctor` — a shadowed `list` is a user application, kept as a call);
-    ///   * the list carries no `.. rest` marker (the `#(…)` surface has no rest form, so a spread list
-    ///     falls back to `Set.of([…, .. rest])`).
-    fn set_literal(&self, items: &[StructId]) -> Option<Vec<StructId>> {
-        if items.len() != 2 || !self.is_member_call(items[0], "Set", "of") {
-            return None;
-        }
-        let Struct::List(list) = self.a.get(items[1]) else {
-            return None;
-        };
-        let &head = list.first()?;
-        if self.literal_ctor(head).as_deref() != Some("list") {
-            return None;
-        }
-        let elems = &list[1..];
-        if self.has_rest_marker(elems) {
-            return None;
-        }
-        // A non-last `(comment-after …)` element has no faithful `#(…)` rendering (would swallow the
-        // following `, …`) — decline so it falls to the generic `Set.of([…])` call form, which round-trips.
-        if self.has_nonlast_comment_after(elems) {
-            return None;
-        }
-        Some(elems.to_vec())
     }
 
     /// True iff `id` is the member-access head `(. obj key)` with the given object and key names.
