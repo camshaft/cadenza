@@ -6268,40 +6268,16 @@ mod tests {
         assert_eq!(print(&odd, 80), "Unit.in(Unit.of(#\"foo bar\"), q)");
     }
 
-    #[test]
-    fn positional_member_access() {
-        // `(. obj N)` (positional tuple access) renders `obj.N`, the numeric sibling of `obj.field`.
-        assert_eq!(print(&sexpr::read("(. p 0)").unwrap(), 80), "p.0");
-        assert_eq!(
-            print(&sexpr::read("(. (tuple 1 2 3) 0)").unwrap(), 80),
-            "(1, 2, 3).0"
-        );
-        // `.0` re-reads to the same `(. p 0)` head form.
-        assert_eq!(assert_roundtrip("p.0", 80), "p.0");
-        assert_eq!(assert_roundtrip("p.field", 80), "p.field");
-        // a name key with a numeric-looking segment stays a name (only a real Int key is an index).
-        let a = parser::read_ml("p.0");
-        assert_eq!(sexpr::print(&a.arenas), "(. p 0)");
-    }
-
-    #[test]
-    fn positional_member_operand_parenthesized_when_digit_adjacent() {
-        // A numeric key must not abut an operand ending in a decimal digit, or it re-lexes as a float.
-        // `(. 5 0)` → `(5).0` (not `5.0`); a chained `(. (. x 0) 1)` → `(x.0).1` (not `x.0.1`).
-        assert_eq!(assert_roundtrip("(5).0", 80), "(5).0");
-        assert_eq!(assert_roundtrip("(x.0).1", 80), "(x.0).1");
-        assert_eq!(print(&sexpr::read("(. 5 0)").unwrap(), 80), "(5).0");
-        assert_eq!(print(&sexpr::read("(. (. x 0) 1)").unwrap(), 80), "(x.0).1");
-        // both re-read to the canonical head form.
-        assert_eq!(sexpr::print(&parser::read_ml("(5).0").arenas), "(. 5 0)");
-        assert_eq!(
-            sexpr::print(&parser::read_ml("(x.0).1").arenas),
-            "(. (. x 0) 1)"
-        );
-        // a NAME operand or a `)`-terminated operand needs no parens.
-        assert_eq!(print(&sexpr::read("(. x 0)").unwrap(), 80), "x.0");
-        assert_eq!(print(&sexpr::read("(. (f a) 0)").unwrap(), 80), "f(a).0");
-    }
+    // The positional/named member-access surface MIGRATED to the spec/syntax corpus (inc-6 batch-18):
+    //   * `positional_member_access` (`(. obj N)` positional tuple access → `obj.N`, numeric sibling of
+    //     `obj.field`; a numeric-looking name segment stays a name) → ml/141-positional-member-access
+    //     `p.0`→`(. p 0)`, ml/142-named-member-access `p.field`→`(. p field)`, ml/143-positional-member-
+    //     on-tuple `(1, 2, 3).0`→`(. #tuple(1 2 3) 0)`.
+    //   * `positional_member_operand_parenthesized_when_digit_adjacent` (a numeric key must not abut an
+    //     operand ending in a digit or it re-lexes as a float) → ml/144-positional-member-digit-adjacent-
+    //     literal `(5).0`→`(. 5 0)`, ml/145-positional-member-chained `(x.0).1`→`(. (. x 0) 1)`,
+    //     ml/146-positional-member-on-call `f(a).0`→`(. (f a) 0)` (a `)`-terminated operand needs no parens).
+    // The sexp→ml `print((. …))` oracles are subsumed by these ml cases' fmt-idempotence.
 
     // The annotation-sigil surface round-trips MIGRATED to the spec/syntax corpus (inc-6 batch-12):
     //   * `annotation_sigil_round_trips` (`@name form` → canonical `(@ name form)`, printed on its OWN
@@ -9094,25 +9070,16 @@ mod tests {
         let _ = backtick_seen; // a soft coverage hint, not asserted (couples to the alphabet)
     }
 
-    #[test]
-    fn guarded_arm_prints_if() {
-        let out = assert_roundtrip("match n with | x if x < 0 => neg | _ => pos", 80);
-        assert!(out.contains("x if x < 0 =>"), "got: {out}");
-    }
-
-    #[test]
-    fn nested_if_condition_parenthesizes() {
-        // A conditional as another's CONDITION parenthesizes so `if if … ` never appears.
-        assert_eq!(
-            assert_roundtrip("if (if a then b else c) then 1 else 2", 80),
-            "if (if a then b else c) then 1 else 2"
-        );
-        // but an `else if` chain (a conditional in BRANCH position) stays bare.
-        assert_eq!(
-            assert_roundtrip("if a then 1 else if b then 2 else 3", 80),
-            "if a then 1 else if b then 2 else 3"
-        );
-    }
+    // The conditional/guard surface MIGRATED to the spec/syntax corpus (inc-6 batch-18):
+    //   * `guarded_arm_prints_if` (a match arm guard prints `pat if cond =>`) → ml/149-match-guarded-arm
+    //     `match n with | x if x < 0 => neg | _ => pos` → tree `(match n ((guard x (< x 0)) neg) (_ pos))`,
+    //     format.cdz pins the one-arm-per-line surface.
+    //   * `nested_if_condition_parenthesizes` (a conditional in another's CONDITION parenthesizes so
+    //     `if if …` never appears; but a conditional in BRANCH position — an `else if` chain — stays bare)
+    //     → ml/147-nested-if-condition-parens `if (if a then b else c) then 1 else 2`→`(if (if a b c) 1 2)`,
+    //     ml/148-else-if-chain-stays-bare `if a then 1 else if b then 2 else 3`→`(if a 1 (if b 2 3))`.
+    // (`wide_if_breaks_condition_on_if_line` below STAYS Rust — a width-40 layout regression the
+    // canonical-width fmt can't capture.)
 
     #[test]
     fn wide_if_breaks_condition_on_if_line() {
