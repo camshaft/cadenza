@@ -1188,6 +1188,19 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Map.remove on non-map / non-const key")
            | _, _ => .cannotProve "symeval: malformed Map.remove")
+        else if q == "Option".toUTF8 && mem == "expect".toUTF8 then
+          -- `Option.expect o` unwraps `Some x` → x (evalNode uses observeShallow, which is identity on a
+          -- non-poison value; a modeled symbolic payload is never poison, so → x). `None` traps with a custom
+          -- message (not modeled) → cannotProve. Byte-faithful to evalNode (Eval.lean:1622-1627).
+          (match children[1]? with
+           | some oId =>
+             (match symEval m senv fuel ty oId with
+              | .sym (.ctor t #[x]) =>
+                if t == "Some".toUTF8 then .sym x
+                else .cannotProve "symeval: Option.expect on a non-Option (Ok/Err) ctor"
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: Option.expect on None / non-Option (trap-message not modeled)")
+           | none => .cannotProve "symeval: malformed Option.expect")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1744,6 +1757,15 @@ private def _strAtOobExpr : Module :=
     root := 6 }
 #guard symEval _strAtOobExpr [] symDefaultFuel defaultIntTy 6
        == SymOutcome.sym (.ctor "None".toUTF8 #[])
+
+-- OPTION.EXPECT member-op coverage: `((. Option expect) (Some 5))` → 5 (unwrap the Some payload).
+private def _optExpectExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Option".toUTF8, Leaf.name "expect".toUTF8,
+                Leaf.name "Some".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[5])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .list #[4, 5],
+               .list #[3, 6]],
+    root := 7 }
+#guard symEval _optExpectExpr [] symDefaultFuel defaultIntTy 7 == SymOutcome.sym (.const (.int 5))
 
 -- BYTES len/at/slice member-op coverage over #{10,20,30,40} (byte-indexed; slice is start/LENGTH).
 private def _bytesLenExpr : Module :=
