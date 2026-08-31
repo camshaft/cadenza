@@ -538,6 +538,15 @@ theorem denote_ite_materialize_false (ρ : Nat → Value) (w : IntTy) (c : SymEx
   cases b <;> rfl
 
 
+/-- denote-soundness of `not`: when its operand denotes to a boolean `b`, `(not c)` denotes to `!b`.
+The denote side of the `if c then false else true → not c` materialization (#6450) — the capstone `.ite`
+materialize-false sub-case needs this. Reduces now that `foldConst?`'s `not` is a leading size-dispatch
+(the old array-literal `not` arm walled `simp`); `symToValue?_const` discharges the const extraction. -/
+theorem denote_not_bool (ρ : Nat → Value) (w : IntTy) (c : SymExpr) (b : Bool)
+    (h : denote ρ w c = .value (.bool b)) :
+    denote ρ w (.app "not" #[c]) = .value (.bool (!b)) := by
+  cases b <;> simp [denote, denoteApp, denoteUnary, foldConst?, symToValue?_const, h]
+
 /-- INVERSION for the `.ite` case: an `ite` denotes to a VALUE only via the branch its condition selects
 — the condition denotes to a boolean, and the taken branch denotes to that same value. (`denote`'s `.ite`
 arm returns a `.value` only in the `bool true`/`bool false` condition sub-cases; a non-bool value gives
