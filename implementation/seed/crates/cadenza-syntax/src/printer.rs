@@ -7384,56 +7384,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn set_literal_falls_back_to_call_form() {
-        // A shadowed `Set` (or a `Set.of` applied to a non-`list`-literal argument) is NOT a set
-        // literal — it renders as the ordinary `Set.of(…)` member call, which round-trips faithfully.
-        // A `Set.of` over a computed list (a bare `xs`, not a `list` literal) stays a call.
-        assert_eq!(assert_roundtrip("Set.of(xs)", 80), "Set.of(xs)");
-        // A shadowed inner `list` alias keeps the call form (the literal gate is `literal_ctor`).
-        let shadowed = "let list = f in Set.of(list(1, 2))";
-        let out = assert_roundtrip(shadowed, 80);
-        assert!(
-            out.contains("Set.of(list(1, 2))"),
-            "shadowed `list` must stay a call, got {out:?}"
-        );
-        // A `Set.of` over a `.. rest` spread list has no `#(…)` surface — stays the call form.
-        assert_eq!(
-            assert_roundtrip("Set.of([1, .. rest])", 80),
-            "Set.of([1, .. rest])"
-        );
-    }
-
-    #[test]
-    fn bin_literal_round_trips() {
-        // `b[…]` is the surface for the `(bin …)` grammar form — the structured sibling of `b"…"`. It
-        // round-trips in both construction and pattern position, and the s-expr oracle sugars `(bin …)`
-        // back to `b[…]`.
-        assert_eq!(
-            assert_roundtrip("b[u16(258), u8(1)]", 80),
-            "b[u16(258), u8(1)]"
-        );
-        assert_eq!(
-            assert_roundtrip("b[bits(1, 1), bits(2, 3)]", 80),
-            "b[bits(1, 1), bits(2, 3)]"
-        );
-        assert_eq!(assert_roundtrip("b[]", 80), "b[]");
-        // The oracle: a hand-authored `(bin …)` prints as the `b[…]` surface.
-        assert_eq!(
-            print(&sexpr::read("(bin (u16 258) (u8 1))").unwrap(), 80),
-            "b[u16(258), u8(1)]"
-        );
-        assert_eq!(print(&sexpr::read("(bin)").unwrap(), 80), "b[]");
-        // Pattern position: `b[…]` segments are sub-patterns (`u16(n)` binds `n`), and it round-trips.
-        assert_eq!(
-            assert_roundtrip("match x with | b[u16(n), bytes(rest)] => n", 80),
-            "match x with\n  | b[u16(n), bytes(rest)] => n"
-        );
-        assert_eq!(
-            print(&sexpr::read("(match x ((bin (u16 n)) n))").unwrap(), 80),
-            "match x with\n  | b[u16(n)] => n"
-        );
-    }
+    // `set_literal_falls_back_to_call_form` (a shadowed `Set`, or a `Set.of` over a non-`list`-literal arg,
+    // is NOT a set literal — it renders as the ordinary `Set.of(…)` member call) MIGRATED to the
+    // spec/syntax corpus (inc-6 batch-34): ml/234-set-of-computed-arg-call-form `Set.of(xs)`→
+    // `((. Set of) xs)`, ml/235-set-of-shadowed-list-call-form `let list = f in Set.of(list(1, 2))`→
+    // `(let ((list f)) ((. Set of) (list 1 2)))` (shadowed `list` stays a call), ml/236-set-of-spread-list-
+    // call-form `Set.of([1, .. rest])`→`((. Set of) #list(1 (.. rest)))` (a spread list has no `#(…)`
+    // surface).
+    // `bin_literal_round_trips` (`b[…]` is the surface for the `(bin …)` form — the structured sibling of
+    // `b"…"`; round-trips in construction + pattern position) MIGRATED: ml/237-bin-literal-typed-segments
+    // `b[u16(258), u8(1)]`→`(bin (u16 258) (u8 1))`, ml/238-bin-literal-bits-segments `b[bits(1, 1),
+    // bits(2, 3)]`, ml/239-bin-literal-empty `b[]`→`(bin)`, ml/240-bin-pattern-match
+    // `match x with | b[u16(n), bytes(rest)] => n` (segments are sub-patterns), ml/241-bin-pattern-single-
+    // segment `match x with | b[u16(n)] => n`. The sexp→ml `print((bin …))` oracles are subsumed by these
+    // ml cases' fmt goldens.
 
     #[test]
     fn a_comment_on_a_binary_segment_is_preserved_not_dropped() {

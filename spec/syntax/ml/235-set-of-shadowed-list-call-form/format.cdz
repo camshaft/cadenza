@@ -1,0 +1,2 @@
+let list = f in
+Set.of(list(1, 2))

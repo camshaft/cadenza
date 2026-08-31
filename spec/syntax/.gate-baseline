@@ -154,7 +154,15 @@ pass	ml/230-tuple-pair-value
 pass	ml/231-tuple-triple-value
 pass	ml/232-map-string-keys
 pass	ml/233-map-int-key
+pass	ml/234-set-of-computed-arg-call-form
+pass	ml/235-set-of-shadowed-list-call-form
+pass	ml/236-set-of-spread-list-call-form
+pass	ml/237-bin-literal-typed-segments
+pass	ml/238-bin-literal-bits-segments
+pass	ml/239-bin-literal-empty
 pass	ml/24-world-enum-flags
+pass	ml/240-bin-pattern-match
+pass	ml/241-bin-pattern-single-segment
 pass	ml/25-match-to-let-tuple
 pass	ml/26-match-to-let-var
 pass	ml/27-match-to-let-wildcard
