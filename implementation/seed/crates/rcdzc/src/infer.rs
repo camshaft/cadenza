@@ -403,6 +403,26 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
             _ => Ty::Any,
         },
+        // A RECORD REST binder — the RESIDUAL RECORD of the scrutinee's fields MINUS the `named` ones. A
+        // record's field set is static, so drop the named fields (by spelling) from the scrutinee's record
+        // type and re-wrap the remainder. `Ty::Any` (poison-safe) if the scrutinee is not a record — the
+        // fault surfaces at the match, never a miscompile here. The record twin of a `MapField` REST binder
+        // (whose residual is the same map type; a record's residual is a NARROWER record — fewer fields).
+        Resolved::RecordRest { scrutinee, named } => match type_of(db, scrutinee).strip_nominal() {
+            Ty::Record(fields) => {
+                let named_syms: std::collections::BTreeSet<crate::resolved::Symbol> = named
+                    .iter()
+                    .filter_map(|&k| crate::resolve::read_key(db, k))
+                    .collect();
+                let residual: std::collections::BTreeMap<crate::resolved::Symbol, Ty> = fields
+                    .iter()
+                    .filter(|(k, _)| !named_syms.contains(*k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                Ty::Record(std::rc::Rc::new(residual))
+            }
+            _ => Ty::Any,
+        },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
         // A bare decimal literal: a `(pragma default-fraction Rational)` module grounds it to the EXACT

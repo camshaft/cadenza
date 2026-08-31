@@ -681,6 +681,33 @@ fn a_non_recursive_scalar_match_scrutinee_param_is_grounded_not_declined_heap_wa
 }
 
 #[test]
+fn a_record_pattern_trailing_rest_binds_the_residual_record() {
+    // A record pattern `(record (= a x) (.. rest))` binds `rest` to the RESIDUAL RECORD of the fields NOT
+    // named — the record twin of tuple/map rest. Over a CONSTANT record it folds to a `Core::Record` of
+    // the remaining fields, read back by name off `rest`. `resolve` binds the rest to `Resolved::RecordRest`;
+    // `infer` types it a narrower record; the `..` marker is NOT mis-read as a field. Compiles clean.
+    let comp = component(
+        "(module m (def (main) (match (record (= a 1) (= b 2) (= c 3)) \
+         ((record (= a x) (.. rest)) (+ x (+ (. rest b) (. rest c)))) (_ 0))) (export main))",
+    );
+    assert!(
+        !comp.is_empty(),
+        "a const record-rest match compiles (folds the residual record)"
+    );
+    // The `..` marker must NOT be mis-read as a field name (the record_pattern_field_kv rest-skip): a
+    // record-rest naming a NONEXISTENT field still rejects CDZ0201 on that field, not a phantom `..`.
+    assert_eq!(
+        reject_code(
+            "(module m (def (main) (match (record (= a 1) (= b 2)) \
+             ((record (= zzz x) (.. rest)) x) (_ 0))) (export main))"
+        )
+        .as_deref(),
+        Some("CDZ0201"),
+        "a record-rest naming a nonexistent field rejects on that field (rest marker is not a field)"
+    );
+}
+
+#[test]
 fn a_misspelled_export_does_not_also_flag_its_intended_target_unused() {
     // A near-miss export typo (`(export mian)` for `(def (main) …)`) has ONE real defect — the export
     // names no definition (CDZ0101, "did you mean `main`?"). The intended target `main` must NOT ALSO

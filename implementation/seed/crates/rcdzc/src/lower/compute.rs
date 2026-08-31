@@ -209,6 +209,33 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 path: walk.into(),
             }
         }
+        // A RECORD REST binder — the residual record of the scrutinee's fields MINUS the `named` ones.
+        Resolved::RecordRest { scrutinee, named } => {
+            let named_syms: std::collections::BTreeSet<crate::resolved::Symbol> = named
+                .iter()
+                .filter_map(|&k| crate::resolve::read_key(db, k))
+                .collect();
+            // CONSTANT FOLD: a const record scrutinee folds (via the empty path) to a `Core::Record`; the
+            // residual is that record with the named fields removed — itself a constant `Core::Record` (a
+            // record's field set is static, so this is a fixed gather, the record twin of the map-rest fold).
+            if let Some(Core::Record { fields }) = fold_sum_path(db, scrutinee, &[]) {
+                let residual: std::collections::BTreeMap<crate::resolved::Symbol, StructId> =
+                    fields
+                        .iter()
+                        .filter(|(k, _)| !named_syms.contains(*k))
+                        .map(|(k, &v)| (k.clone(), v))
+                        .collect();
+                return Core::Record {
+                    fields: std::rc::Rc::new(residual),
+                };
+            }
+            // RUNTIME: building the residual record from an OPAQUE runtime record (a field-subset gather) is
+            // not yet lowered — decline gracefully (slice 1: the const/inline-structural case folds above;
+            // the runtime residual-record construction is a follow-up slice). Never a miscompile.
+            Core::Poison(Reject::unsupported(
+                "a runtime record rest binder (residual-record construction) is not yet lowered",
+            ))
+        }
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where

@@ -5993,6 +5993,7 @@ fn walk_for_dead_traps(
         | Resolved::BinField { .. }
         | Resolved::MapField { .. }
         | Resolved::RecordField { .. }
+        | Resolved::RecordRest { .. }
         | Resolved::Poison(_) => {}
     }
 }
@@ -6178,6 +6179,7 @@ fn walk_for_reachable_const_traps(
         | Resolved::BinField { .. }
         | Resolved::MapField { .. }
         | Resolved::RecordField { .. }
+        | Resolved::RecordRest { .. }
         | Resolved::Poison(_) => {}
     }
 }

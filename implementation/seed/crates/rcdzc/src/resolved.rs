@@ -1316,6 +1316,21 @@ pub enum Resolved {
         /// `SumPayload.heads`.
         heads: std::rc::Rc<[StructId]>,
     },
+    /// The RESIDUAL RECORD a record REST pattern's `.. rest` binder binds — `(match r ((record (= a x)
+    /// (.. rest)) …))` binds `rest` to a NEW record of the scrutinee's fields MINUS the `named` ones
+    /// (`{ b = r.b, c = r.c }` when the record is `{a,b,c}` and `a` is named). The record twin of a
+    /// `MapField` REST binder (`key = None`), and the residual counterpart of `RecordField`: a record's
+    /// field set is STATIC (from the solved scrutinee type), so the residual is a fixed field-subset GATHER
+    /// (not a runtime split) — its type is `(Record …)` over the non-named fields, and it folds over a
+    /// CONSTANT record to a `Core::Record` of those fields. `scrutinee` is the match scrutinee; `named` are
+    /// the field-name occurrences the pattern NAMES (removed to form the residual). A top-level record arm
+    /// (empty path); a nested-in-compound record rest is a later increment.
+    RecordRest {
+        scrutinee: StructId,
+        /// The field-name occurrences the pattern NAMES — removed from the scrutinee's record to form the
+        /// residual record `rest`. Read for their spellings (`read_key`) at fold/type time.
+        named: std::rc::Rc<[StructId]>,
+    },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
     /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a

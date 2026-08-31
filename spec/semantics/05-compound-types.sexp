@@ -565,6 +565,18 @@
   (input  (do (def (main) (match #tuple(3 4 5) (#tuple(a (.. rest)) (+ a (. rest 1))) (_ 0))) (export main)))
   (call   main) (output (: 8 Int64)))
 
+; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
+; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
+; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`
+; over `{a,b,c}` binds `a` to field `a` and `rest` to the residual `{b,c}` — read back by field name off
+; `rest`. Here `x=1`, `rest={b=2,c=3}`, so `x + rest.b + rest.c` = 1 + 2 + 3 = 6. Over a CONSTANT record the
+; residual folds to a `Core::Record` of the remaining fields. (A runtime OPAQUE record scrutinee declines
+; CDZ0900 "not yet lowered" for now — the const/inline-structural fold ships first, the runtime residual-
+; record construction is a follow-up, mirroring the tuple-rest staging above.)
+(case "a record pattern with a trailing rest binds the named fields and the residual record"
+  (input  (do (def (main) (match (record (= a 1) (= b 2) (= c 3)) ((record (= a x) (.. rest)) (+ x (+ (. rest b) (. rest c)))) (_ 0))) (export main)))
+  (call   main) (output (: 6 Int64)))
+
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
 ; an exact key-set match — see the list-arm map-element cases below). With ZERO named keys, `(map)` is that
 ; presence test made VACUOUS, so it matches ANY map — empty OR non-empty. This is the opposite of `(list)`,

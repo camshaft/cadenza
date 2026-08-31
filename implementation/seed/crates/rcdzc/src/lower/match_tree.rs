@@ -1809,11 +1809,22 @@ pub(super) fn pattern_constraints(
     //# A record MUST be deconstructible by pattern matching on its field names, binding each named field's sub-value.
     //= spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields
     //# A record pattern MAY name a subset of the fields, ignoring the rest.
-    if let Some(fields) = db
+    if let Some(all_fields) = db
         .ast
         .compound_form_of(pat, CompoundCtor::Record)
         .map(<[_]>::to_vec)
     {
+        // Split off a trailing `.. rest`: the rest binder binds the RESIDUAL RECORD (the fields NOT named,
+        // resolved to a `Resolved::RecordRest`), imposing NO constraint of its own — a record pattern names
+        // a SUBSET of fields and ignores the rest, so `rest` is exactly that ignored remainder made
+        // bindable. Only the leading `(= field p)` fields constrain (their sub-patterns descend); the `..`
+        // marker itself is NOT a field (without this split it was mis-read as a field name → CDZ0201).
+        let fields: Vec<StructId> = match db.ast.rest_marker(&all_fields) {
+            Some((k, _operand, trailing_start)) if trailing_start == all_fields.len() => {
+                all_fields[..k].to_vec()
+            }
+            _ => all_fields,
+        };
         // The scrutinee's record field types by name→sorted-slot. When the type is a solved record, each
         // named field must exist (CDZ0201) and descends at its sorted index; an `Any`/unsolved type descends
         // permissively (slot by written order — harmless, refutability is a pattern-shape property). A
