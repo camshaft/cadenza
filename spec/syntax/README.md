@@ -140,7 +140,7 @@ The delanguaging is tracked by module. This is a point-in-time snapshot, not a c
 truth is the corpus itself (`ml/` + `sexp/` case dirs) and the `#[test]`s that remain.
 
 - **`printer.rs` behavioral tests — COMPLETE.** Every `input → parse-tree` / `input → canonical-format`
-  / round-trip printer test has been migrated to an `ml/` case (the corpus is at ~385 cases). What
+  / round-trip printer test has been migrated to an `ml/` case (the corpus is at ~488 cases). What
   remains in `printer.rs` is *only* the out-of-scope guards this corpus deliberately does not express
   (per the list above): printer-totality / iterative-printer structural guards over arbitrary and
   sexpr-sourced arenas, generated/property sweeps (`…over_generated…`, `…over widths`, the reserved-word
@@ -150,17 +150,26 @@ truth is the corpus itself (`ml/` + `sexp/` case dirs) and the `#[test]`s that r
   `a_nonlast_comment_after_in_a_decoded_ast`), the read-OK-but-fmt-refuses edges
   (`a_same_line_comment_on_a_non_last_collection_elem`, comment-only empty module), and the
   cross-surface disambiguation oracle (`const_expression_is_distinct…`).
-- **`parser.rs` behavioral tests — IN ASSESSMENT.** The bulk stay Rust by the same rules: error-recovery
-  and diagnostic-quality assertions (recover/`does_not_bail`/`missing_*_recovers`/`*_does_not_cascade`),
-  span totality/slice guards, depth-bound "diagnosed not crashed" guards, the recursive-vs-iterative
-  reader-agreement guards, and the arena/WIT-builder codec-equivalence tests (`…encodes_identically…`,
-  `world_decl_builds…`). Many of the remaining `input → tree` assertions are **already covered** by the
-  `ml/` cases (set/bin/quantity/compound-unit desugar, rest/destructuring patterns, backtick-escape,
-  semicolon/juxtapose, negation) — those tests are redundant with the corpus and can be retired as their
-  coverage is confirmed. The genuinely-new surface features not yet in the corpus are the migration
-  frontier: **embedded `json`/`toml` regions** (the grafting + round-trip), **brace record-type
-  annotations**, the **pipeline operator**, **handle promotion / stateless-seed elision**, and a few
-  type-position parses (`forall` binders, type-application args, derived-unit infix in type position).
+- **`parser.rs` behavioral tests — COMPLETE.** Every `input → parse-tree` / round-trip assertion that
+  the migrated parser tests carried has been mirrored into an `ml/` case, including the surface features
+  that were once the frontier: **brace record-type annotations**, tuple/type-application args, `forall`
+  binders and derived-unit infix in type position, the **pipeline operator**, set/bin/quantity/compound-unit
+  desugar, construction-spread, rest/destructuring patterns, backtick-escape, effect declarations, nested
+  multi-arg constructors, and the top-level `;`-separator / ambiguous-juxtaposition rule (the
+  `f() g()` ruling — see `ml/476-ambiguous-toplevel-juxtaposition-rejected`, a `Todo` decline case). What
+  remains in `parser/tests.rs` is *only* out-of-scope guards, by the same rules the printer list uses:
+  error-recovery and diagnostic-quality assertions (`recover…`/`does_not_bail`/`missing_*_recovers`/
+  `*_does_not_cascade`/`…recovers_without_panic`), span totality/slice guards
+  (`spans_are_total…`, `every_ml_span_is_a_valid_source_slice…`, `…spans_cover_the_whole…`),
+  depth-bound "diagnosed not crashed" guards, fuzz/property sweeps (`never_panics`,
+  `exhaustive_short_token_soup…`, `recovered_arena_invariants…`), the recursive-vs-iterative
+  reader-agreement guards, the lexer unescape/NFC round-trip (`string_unescape_and_nfc`), the WIT-builder
+  codec-equivalence tests (`…encodes_identically…`, `world_decl_builds…`, `inline_world_*`), and the
+  read-OK-but-`fmt`-refuses / width-specific edges (`a_closer_comment_does_not_reorder…`,
+  `a_chained_else_if_ladder…`). Genuine reject-with-guidance guards (`…is_rejected_steering_to_the_colon_form`,
+  `malformed_wit_member_type_spellings_are_rejected…`, `…forall…is_a_reserved_keyword_error`) stay Rust for
+  their recovery-arena invariants; their language-agnostic "this declines" content is a candidate for
+  future `Todo` decline cases alongside `ml/476`.
 
 ## How it drives the future Cadenza-parser rewrite
 
