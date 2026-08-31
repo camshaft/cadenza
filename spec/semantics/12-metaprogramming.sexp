@@ -1080,7 +1080,18 @@
            subtree fine (case above) and eval of the hand-built equal tree works; only the static
            reconstruction does not see through a spliced Ast value. Breaker-found; ruled a deliberate limit.")
   (input  (eval (quasiquote (+ (unquote (quote (* 2 3))) 1))))
-  (declines))
+  (declines (message "compile-time metadata") (message "runtime splice") (not "a Ast and")))
+
+(case "a bare Ast literal used as an arithmetic operand names the compile-time-metadata misuse"
+  (doc    "The bare-literal companion of the eval-splice case above (migrated from rcdzc
+           an_ast_operand_in_arithmetic_names_the_compile_time_metadata_misuse): a `(quote x)` Ast value used
+           directly in a numeric position — `(+ (quote x) 1)` — is CDZ0201, and the message names the real
+           category (an `Ast` value is compile-time metadata, not a runtime value to splice), NOT the generic
+           `a Ast and an Int64 are different types` cross-type clash. Pins the diagnostic QUALITY: an Ast in
+           arithmetic is a metadata misuse, however the Ast got there (a bare literal here, an eval
+           reconstruction above).")
+  (input  (+ (quote x) 1))
+  (error  CDZ0201 (message "compile-time metadata") (message "runtime splice") (not "a Ast and")))
 
 ; The boundary is specifically the EVAL/execution surface — not the spliced Ast value, which is a
 ; perfectly well-formed tree. The SAME template that `eval` declines above is handled by the NON-executing

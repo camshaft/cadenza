@@ -2299,43 +2299,14 @@ fn eval_of_a_quote_with_a_non_reifiable_leaf_names_the_literal_not_nothing_to_re
     );
 }
 
-#[test]
-fn an_ast_operand_in_arithmetic_names_the_compile_time_metadata_misuse() {
-    // An `Ast` value used in an ARITHMETIC/comparison position — `(eval (quasiquote (+ (unquote (quote
-    // …)) 1)))` (the spliced `(quote …)` reconstructs to an `Ast` the surrounding `+` can't consume),
-    // or a bare `(+ (quote x) 1)` — used to draw the GENERIC "a Ast and an Int64 are different types",
-    // reading as an ordinary user type error. It now names the real category: `Ast` is compile-time
-    // metadata, not a runtime value (corpus-bugfix breaker issue). CDZ0201.
-    let msg = |src: &str| -> String {
-        crate::diagnostics(&mut crate::db::Db::load(parse(src)))
-            .into_iter()
-            .find(|d| d.code.as_deref() == Some("CDZ0201"))
-            .unwrap_or_else(|| panic!("expected CDZ0201 for {src}"))
-            .message
-    };
-    for src in [
-        // the breaker probe: eval of a template with a runtime `(quote …)` splice
-        "(module m (def (main) (eval (quasiquote (+ (unquote (quote (* 2 3))) 1)))) (export main))",
-        // a bare Ast literal in arithmetic
-        "(module m (def (main) (+ (quote x) 1)) (export main))",
-    ] {
-        let m = msg(src);
-        assert!(
-            m.contains("`Ast` value is compile-time metadata")
-                && m.contains("runtime splice")
-                && !m.contains("a Ast and"),
-            "an Ast arith operand names the compile-time-metadata misuse (not the generic clash): {m}"
-        );
-    }
-    // NO false change: a NON-Ast cross-kind clash keeps the generic boundary message (with the correct
-    // article), NOT the Ast-specific one.
-    let generic = msg("(module m (def (main) (< 1 \"x\")) (export main))");
-    assert!(
-        generic.contains("an Int64 and a String are different types")
-            && !generic.contains("compile-time metadata"),
-        "a non-Ast cross-kind clash keeps the generic message: {generic}"
-    );
-}
+// (an_ast_operand_in_arithmetic_names_the_compile_time_metadata_misuse migrated to corpus: the eval-splice
+// probe `(eval `(+ ,(quote (* 2 3)) 1))` is corpus 12-metaprogramming "eval does not see through a splice
+// whose operand is itself an Ast value" — enriched with (declines (message "compile-time metadata")
+// (message "runtime splice") (not "a Ast and")); the bare-literal form `(+ (quote x) 1)` is the new case "a
+// bare Ast literal used as an arithmetic operand names the compile-time-metadata misuse" (CDZ0201, same
+// message pins); and the NO-false-change control — a non-Ast cross-type clash `(< 1 "x")` keeps the GENERIC
+// "an Int64 and a String are different types" message and NOT "compile-time metadata" — is pinned by
+// enriching corpus 07-type-system "ordering an integer against a string is a type error".)
 
 #[test]
 fn quasiquote_selectively_evaluates_at_unquote_holes() {

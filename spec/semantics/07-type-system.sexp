@@ -1837,9 +1837,13 @@
 (case "ordering an integer against a string is a type error"
   (doc    "`(< 1 \"x\")` compares an Int64 with a String — two different types, rejected (CDZ0201)
            like the equality companion `(= 1 \"x\")`. Pins that the ordering operators reject a
-           cross-kind comparison rather than declining silently or comparing representations.")
+           cross-kind comparison rather than declining silently or comparing representations. Also pins the
+           cross-message CONTRAST (migrated from rcdzc an_ast_operand_in_arithmetic_names_...): a non-Ast
+           cross-type clash keeps the GENERIC 'different types' message, NOT the Ast-specific compile-time-
+           metadata message that an Ast operand draws (corpus 12-metaprogramming) — the metadata wording is
+           reserved for genuine Ast misuse and must not leak onto an ordinary cross-type reject.")
   (input  (< 1 "x"))
-  (error  CDZ0201))
+  (error  CDZ0201 (message "an Int64 and a String are different types") (not "compile-time metadata")))
 
 (case "ordering a string against an integer is a type error regardless of operand order"
   (doc    "The order-flipped companion: `(> \"x\" 1)` is the same cross-type comparison (String vs
