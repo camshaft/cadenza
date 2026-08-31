@@ -267,35 +267,13 @@ fn a_runtime_list_literal_bulk_builds_via_vec_of_arr() {
 // --case grades the codes + messages + run values.)
 // (a_bytes_match_with_only_a_bin_arm_and_no_catch_all_is_non_exhaustive migrated to corpus 16-binary-matching: CDZ0210. PASS wasm.)
 
-#[test]
-fn a_runtime_bin_construction_builds_and_range_checks_under_wasmtime() {
-    // A fixed-width `(bin …)` segment REQUIRES the width-matching typed value (`(u8 v)` takes UInt8,
-    // `(bits v k)` takes `(UInt k)`), so a value that does not fit is a COMPILE-TIME TYPE error (CDZ0203),
-    // never a runtime trap — the caller narrows with `UInt8.wrap`/`(UInt k).wrap`. This test keeps only
-    // that compile-time segment-type guard (a diagnostic assertion the corpus cannot express). The runtime
-    // CONSTRUCTION behaviors — u16 big/little-endian, multi-segment, signed two's-complement, UInt8.wrap
-    // narrowing, a length-prefixed `(bytes …)` frame splice, and `(bits …)` bit-field packing — are
-    // corpus-covered by 16-binary-matching ("a u16 segment encodes big-endian by default" / "the le
-    // modifier encodes a u16 little-endian" / "a multi-segment bin concatenates mixed-width signed and
-    // unsigned segments in order" / the i8 two's-complement case / "bit-field segments pack sub-byte
-    // values into one byte" / "a length-prefixed frame is built from a size segment and a bytes segment" /
-    // "a runtime bin construction result compares equal to the Bytes it builds").
-    let rejects_0203 = |src: &str| {
-        let ds = crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(src)));
-        assert!(
-            ds.iter().any(
-                |d| d.code.as_deref() == Some("CDZ0203") && d.message.contains("segment takes")
-            ),
-            "expected a CDZ0203 segment type error for {src}, got: {ds:?}"
-        );
-    };
-    // A wider runtime value (`Int64`) into a fixed-width `u8` segment is a compile-time type error.
-    rejects_0203("(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))");
-    // Likewise a wider value into a `(bits _ 4)` bit-field segment.
-    rejects_0203(
-        "(module m (def (main (: n Int64)) ((. Bytes len) (bin (bits n 4) (bits 5 4)))) (export main))",
-    );
-}
+// (a_runtime_bin_construction_builds_and_range_checks_under_wasmtime redundant — its residual compile-time
+// segment-type guards are already corpus 16-binary-matching: a wider Int64 into a u8 segment is "an Int64
+// value into a u8 segment is a width type error naming the aliased wrap+of conversions" (CDZ0203 (message
+// "segment takes") (message "UInt8")), and a wider Int64 into a (bits _ 4) field is "an Int64 into a
+// non-aliased bits field names the member-form wrap conversion" (CDZ0203). The runtime CONSTRUCTION
+// behaviors (u16 endian, multi-segment, i8 two's-complement, UInt8.wrap, length-prefixed frame, bit-field
+// packing) are the corpus-16 bin run cases. Redundant, removed.)
 
 // bytes_of_out_of_range_element_is_a_width_error (`(Bytes.of (list 256))` / `(list -1)` → CDZ0302, an
 // out-of-range UInt8 width literal, with a UInt8.wrap Wrap fix) migrated to corpus 10-bytes: the 256 face
