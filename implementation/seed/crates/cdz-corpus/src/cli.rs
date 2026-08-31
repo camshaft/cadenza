@@ -143,6 +143,27 @@ enum CorpusCmd {
         #[arg(required = true)]
         files: Vec<String>,
     },
+    /// Flag VANISHED titles in a `.gate-baseline*` — baseline descriptions with no corpus case — FAST, no
+    /// compile/run. The authoritative, reusable primitive behind a pre-commit baseline-guard (v-fleet-tooling).
+    ///
+    /// A vanished title reds a full `gate --check`/gate-local fleet-wide but only AFTER a ~15-30min gate; this
+    /// wraps the same `corpusVanishedCheck` set-diff (baseline descriptions minus corpus `(case …)`/
+    /// `(platform-case …)` titles, via `cdz-corpus records`) as a fast text-only check so a pre-commit hook can
+    /// BLOCK a contaminated baseline BEFORE it lands. Catches the `#7176`/`#6835` class: a non-harvest bulk
+    /// re-pin (or a title-changing conversion that did not co-remove the old title) that re-injects stale
+    /// titles. Accepts MULTIPLE baselines so a hook can check all 3 staged `.gate-baseline{,-rust,-rust-async}`
+    /// at once. A faithful `nix save-baseline` harvest has vanished==0 by construction, so this NEVER
+    /// false-positives a real re-baseline. Exits NON-ZERO listing every vanished title.
+    VanishedCheck {
+        /// The `.gate-baseline*` file(s) to check (1+; e.g. all 3 staged backends).
+        #[arg(required = true)]
+        baselines: Vec<String>,
+        /// The corpus `.sexp` files whose case titles form the CURRENT set. Pass the COMPLETE set the
+        /// baseline covers (the full `spec/semantics/*.sexp` glob) — a SUBSET makes every other file's
+        /// baselined case look vanished (a false positive).
+        #[arg(long, required = true, num_args = 1..)]
+        corpus: Vec<String>,
+    },
 }
 
 /// Run a corpus command per `args`, returning the process exit code. `prog` names the tool in
@@ -166,6 +187,7 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
         CorpusCmd::DeclinesDeprecatedCheck { files } => check_declines_deprecated(files),
+        CorpusCmd::VanishedCheck { baselines, corpus } => check_vanished(baselines, corpus),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -249,6 +271,51 @@ fn check_baseline_drift(
         Err(format!(
             "{} VANISHED baseline title(s) in {baseline} — a renamed/removed case left the baseline stale; regenerate with `cargo xtask gate --save`",
             vanished.len()
+        ))
+    }
+}
+
+/// `vanished-check <baseline…> --corpus FILE…`: flag VANISHED titles (baseline descriptions with no corpus
+/// case) across ONE OR MORE baselines — the reusable primitive for the pre-commit baseline-guard. Builds the
+/// corpus title set ONCE (shared across baselines) and set-diffs each baseline against it; exits NON-ZERO
+/// listing every vanished title. A faithful harvest has vanished==0 by construction, so this never
+/// false-positives a real re-baseline; it catches the `#7176`/`#6835` contamination class (a non-harvest
+/// bulk re-pin re-injecting stale titles, or a title-changing conversion without co-removal).
+fn check_vanished(baselines: &[String], corpus_files: &[String]) -> Result<(), String> {
+    let mut corpus: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for path in corpus_files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+        corpus.extend(corpus_descriptions(&text).map_err(|e| format!("{path}: {e}"))?);
+    }
+    let mut total_vanished = 0usize;
+    for bl in baselines {
+        let text = std::fs::read_to_string(bl).map_err(|e| format!("reading {bl}: {e}"))?;
+        let descs = baseline_descriptions(&text);
+        let (vanished, _missing) = baseline_drift(&corpus, &descs);
+        if vanished.is_empty() {
+            println!(
+                "vanished-check: OK — {bl}: 0 vanished ({} baseline titles vs {} corpus titles)",
+                descs.len(),
+                corpus.len()
+            );
+        } else {
+            for v in &vanished {
+                eprintln!(
+                    "vanished-check: {bl}: VANISHED baseline title has no corpus case (reds `gate --check`): {v:?}"
+                );
+            }
+            total_vanished += vanished.len();
+        }
+    }
+    if total_vanished == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{total_vanished} vanished baseline title(s) across {} baseline file(s) — a renamed/removed case \
+             left the baseline stale (a contaminated non-harvest bulk re-pin, cf #7176/#6835; or a \
+             title-changing conversion without co-removal). Regenerate via `nix run .#save-baseline` or drop \
+             the stale title(s) — do NOT land a bulk baseline diff from a non-harvest source.",
+            baselines.len()
         ))
     }
 }
@@ -1333,6 +1400,41 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         let descs = corpus_descriptions(src).expect("reads");
         assert!(descs.contains(&"first case".to_string()), "got {descs:?}");
         assert!(descs.contains(&"second case".to_string()), "got {descs:?}");
+    }
+
+    /// `check_vanished` (the pre-commit baseline-guard primitive) errs iff ANY of the given baselines has a
+    /// title with no corpus case, across MULTIPLE baselines; a baseline matching the corpus is clean. This is
+    /// the #7176/#6835 contamination guard.
+    #[test]
+    fn check_vanished_errs_on_any_baseline_with_a_stale_title() {
+        let dir = std::env::temp_dir().join(format!("vanished-check-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p.to_str().unwrap().to_string()
+        };
+        // Corpus has cases "alpha" + "beta".
+        let corpus = w(
+            "corpus.sexp",
+            "(case \"alpha\" (input 1) (output (: 1 Int64)))\n\
+             (case \"beta\" (input 2) (output (: 2 Int64)))\n",
+        );
+        // Clean baseline: only current corpus titles.
+        let clean = w("clean.gate-baseline", "pass\talpha\ntodo\tbeta\n");
+        // Stale baseline: carries "gamma" which no corpus case matches → vanished.
+        let stale = w("stale.gate-baseline", "pass\talpha\npass\tgamma\n");
+
+        let corpus_files = [corpus];
+        // All-clean → Ok.
+        assert!(check_vanished(std::slice::from_ref(&clean), &corpus_files).is_ok());
+        // Any stale baseline → Err naming the vanished count.
+        let err = check_vanished(&[clean, stale.clone()], &corpus_files)
+            .expect_err("a stale title must err");
+        assert!(err.contains("1 vanished"), "got: {err}");
+        // A single stale baseline alone also errs.
+        assert!(check_vanished(std::slice::from_ref(&stale), &corpus_files).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Each per-case artifact is a WELL-FORMED binary AST: it decodes, and re-encoding the decode is
