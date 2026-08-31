@@ -3839,7 +3839,7 @@ fn lambda_param_ty_from_context(db: &mut Db, binder: StructId) -> Option<Ty> {
 /// The `db.defs` index whose signature declares the parameter name-occurrence `binder`, or `None` if
 /// `binder` is not a top-level def parameter (e.g. a `fn` lambda parameter). Walks up from the binder to
 /// the `(def (NAME param…) body)` it sits in.
-fn def_of_param(db: &mut Db, binder: StructId) -> Option<usize> {
+pub(crate) fn def_of_param(db: &mut Db, binder: StructId) -> Option<usize> {
     // A param occurrence is either bare (`binder`'s parent is the signature list) or the name of a
     // `(: name T)` binder (parent is the `:` form, whose parent is the signature). Find the signature
     // list, then the def whose `sig_occ` is it.

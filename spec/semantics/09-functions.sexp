@@ -10265,3 +10265,40 @@
   ; measures 2 on main (breaker census 2026-08-30) — MUST-STAY-LEAK while capturing closures are
   ; excluded from INC1; see doc for the over-suppression tripwire.
   (live-objects known-leak))
+
+; A RECURSIVE local function that CAPTURES a binding from its enclosing scope needs LAMBDA-LIFTING (hoist
+; the local function, thread the captured value as an explicit parameter). That feature is not yet built,
+; so it is DECLINED with a clean coded diagnostic (CDZ0900, reject-not-miscompile — the honest interim per
+; concierge item3 ruling), NOT the former cryptic internal "parameter reference has no local slot". The
+; boundary is exactly RECURSION + CAPTURE: a non-recursive capturing local inlines (the binding flows in),
+; and a non-capturing recursive local compiles standalone (the two positive companions below pin that only
+; the combination declines). The message names the two mechanical work-arounds.
+(case "a recursive local function that captures its enclosing scope is declined with a coded diagnostic"
+  (input  (do
+            (def (f (: n Int64))
+              (do (def (rec (: x Int64)) (if (< x 0) n (rec (- x 1))))
+                  (rec 5)))
+            (export f)))
+  (declines (message "recursive local function that captures a binding from its enclosing scope")))
+
+(case "the work-around — threading the captured value as an explicit parameter — compiles and runs"
+  (doc    "The positive companion of the recursive-local-capture decline: passing the captured `n` in as an
+           explicit parameter of the local recursive function removes the capture, so no lambda-lift is
+           needed and it compiles + runs. `(rec 5 7)` counts down x from 5 to -1 returning the threaded n=7.")
+  (input  (do
+            (def (f (: n Int64))
+              (do (def (rec (: x Int64) (: acc Int64)) (if (< x 0) acc (rec (- x 1) acc)))
+                  (rec 5 n)))
+            (export f)))
+  (call   f (: 7 Int64)) (output (: 7 Int64)))
+
+(case "a non-capturing recursive local function compiles and runs (only capture+recursion declines)"
+  (doc    "The second positive companion: a recursive local function that captures NOTHING compiles
+           standalone (no lift needed). Pins that RECURSION alone is fine — only recursion PLUS capture
+           declines. `(rec 5)` counts x down to -1 returning 0.")
+  (input  (do
+            (def (f (: n Int64))
+              (do (def (rec (: x Int64)) (if (< x 0) 0 (rec (- x 1))))
+                  (rec n)))
+            (export f)))
+  (call   f (: 5 Int64)) (output (: 0 Int64)))
