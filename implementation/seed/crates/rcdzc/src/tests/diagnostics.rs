@@ -1651,6 +1651,39 @@ fn a_set_rest_match_pattern_is_a_coded_check_surfaced_rejection_not_silent() {
     );
 }
 
+/// A `#set(e…)` membership pattern element is an ordinary VALUE EXPRESSION (the set twin of a map KEY),
+/// NOT a binder — a set has no positional structure to bind (core-semantics §A Set Is Matched By
+/// Element-Membership Patterns; v-spec-oracle-blessed). Two consequences this pins (v-rcdzc-ts-2 edge-hunt):
+///  1. An IN-SCOPE name element (`#set(k)`, `k` a param used only for its membership value) must NOT be
+///     collected as a match binder — it was, yielding a spurious CDZ0306 "unused match binding `k`" (whose
+///     `_k` rename would also break the membership test). `arm_pattern_binders` now skips set elements.
+///  2. An UNBOUND name element (`#set(a)`, `a` not in scope) is a plain unbound VALUE reference → CDZ0101,
+///     exactly as any unbound value expression — the element is not a binder, so this is correct (a set
+///     genuinely cannot bind; the fix is to test membership with an in-scope value, not to bind).
+#[test]
+fn a_set_membership_element_is_a_value_expression_not_a_binder() {
+    // (1) An in-scope element used only for membership: NO spurious CDZ0306 on `k`.
+    let ok =
+        "(module m (def (f (: s (Set Int64)) (: k Int64)) (match s (#set(k) 9) (_ 0))) (export f))";
+    let ok_diags = diags_of(ok);
+    assert!(
+        !ok_diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("CDZ0306") && d.message.contains("`k`")),
+        "an in-scope `#set(k)` membership element (a value expression, not a binder) must NOT warn CDZ0306 \
+         unused-binding on `k`: {ok_diags:?}"
+    );
+    // (2) An unbound element is a plain unbound value reference (CDZ0101) — a set element is not a binder.
+    let unb = "(module m (def (main) (match #set(1 2) (#set(a) 9) (_ 0))) (export main))";
+    let unb_diags = diags_of(unb);
+    assert!(
+        unb_diags.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
+            && d.message.contains("unbound name `a`")),
+        "an unbound `#set(a)` element resolves as an unbound value expression (CDZ0101), the element being \
+         a value expression not a binder: {unb_diags:?}"
+    );
+}
+
 /// A RECORD match pattern is now IMPLEMENTED (record match landed — the match twin of the record
 /// binding pattern). A field-binder reference in the body must CHECK CLEAN (resolve to a scrutinee
 /// projection, Case 6rec), NOT leak the old misleading "unbound name" CDZ0101 nor the superseded "not
