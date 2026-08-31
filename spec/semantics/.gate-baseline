@@ -631,10 +631,10 @@ pass	a BARE-param recursive state-threading walk compiles without leaking the sp
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
-pass	a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)
+todo	a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)
 pass	a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE folds through the block (adv-69 g3)
 pass	a BLOCK-wrapped branch perform in a let-init folds through the block (adv-69 Site-6 commuting conversion)
-pass	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3)
+todo	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3)
 pass	a BOOL as a Map key routes a runtime lookup to the right entry
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
@@ -5273,7 +5273,7 @@ pass	an abortive handler arm never resumes, so its value becomes the handle's va
 pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive handler discards a suspended body holding live rope and map handles
-pass	an abortive handler over a non-tail MUTUAL recursion declines cleanly
+todo	an abortive handler over a non-tail MUTUAL recursion declines cleanly
 pass	an abortive let-init after an effectful binding folds via inner-handle pre-reduction
 pass	an abortive perform MID-WALK carries the accumulated state out as its argument
 pass	an abortive perform beside an effectful sibling under a nested handle folds via inner pre-reduction
@@ -5413,7 +5413,7 @@ pass	an effect operation reached with neither a handler nor a delegation is reje
 pass	an effect operation returning a SUM is resumed with a sum value and matched
 pass	an effect operation taking a SUM parameter matches it in the handler arm
 pass	an effect performed in a callee is discharged by the caller's handler
-pass	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
+todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 pass	an effect resolves past an intermediate frame that installs no handler
 pass	an effect resolves through a deep chain of intermediate functions
 pass	an effect result drives the bound of a PURE recursive helper called in the handle body
@@ -9369,21 +9369,21 @@ todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cle
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
-todo	a multi-shot continuation reaching an outer effect via an if branch declines cleanly
-todo	a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it
-todo	a multi-shot continuation spanning a host call declines cleanly, never doubling the host call
-todo	a multi-shot continuation spanning a host call inside a do declines cleanly
+pass	a multi-shot continuation reaching an outer effect via an if branch declines cleanly
+pass	a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it
+pass	a multi-shot continuation spanning a host call declines cleanly, never doubling the host call
+pass	a multi-shot continuation spanning a host call inside a do declines cleanly
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
-todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
-todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
-todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
+pass	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
+pass	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
+pass	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
-todo	an escaping captured continuation is refused, not miscompiled
+pass	an escaping captured continuation is refused, not miscompiled
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
@@ -9656,3 +9656,24 @@ pass	a set pattern naming an element the scrutinee lacks does NOT match
 pass	a set pattern with a RUNTIME in-scope element matches by membership of its value
 pass	an empty membership pattern #set() matches ANY set, and a duplicate element is idempotent
 pass	the empty set pattern matches every set
+pass	a handler arm that never resumes aborts and the handle yields the arm's own value
+todo	a match-discard chain sequencing 3 dispatches over LIST-OF-LISTS state declines cleanly (let-chain twin folds)
+pass	a next-state computed by a match over the state threads a transition across performs
+pass	a non-tail resume runs the continuation as a statement and the arm tail is the handle value
+pass	a tail resume under a do inside a match arm folds and runs
+pass	a tail resume under a let wrapping a do folds and runs
+pass	a tail resume under a match inside a let folds and runs
+pass	a tail resume under a three-level let-match-do nesting folds and runs
+pass	a tail resume under nested lets folds and runs
+pass	adv-20 DEEP nest — a THREE-level nested let in the let-init folds, guarding arbitrary recursion depth
+pass	adv-20 class is BROADER than the Bytes decode — a state-derived OPTION LET-bound then consumed by a plain Some/None match also folds (flatten+pin fix landed; regression-guard)
+pass	adv-20 nested-let — a NESTED let inside the let-init folds (recursive flatten; regression-guard)
+pass	an intra-program handler whose body never performs its effect is inert and runs to the body value
+pass	performing an op with a Bool argument under an Int64-parameter operation is a type error
+pass	performing an op with a String argument under an Int64-parameter operation is a type error
+pass	resuming with a Bool answer under an Int64-result operation is a type error
+pass	resuming with a String answer under an Int64-result operation is a type error
+pass	same-effect shadowing with ADVANCING states, HEAP (tuple) state — the outer heap seed survives the inner handle and threads correctly across the straddle
+pass	the LET-BOUND twin of finding #20 — a state byte LET-bound as a Bytes then decoded by a from-bytes match in a tail-resumptive arm folds (flatten+pin fix landed; regression-guard)
+pass	the PASSING FLOOR of adv-20's bisection — a state byte LET-bound as a Bytes and consumed by Bytes.len (NO decode-match) in a tail-resumptive arm folds correctly
+pass	ti1h the HEAP-state twin of ti1 — two DIFFERENT effects, BOTH threading a TUPLE (heap) state, interleaved A-B-A draws with values crossing
