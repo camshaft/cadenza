@@ -8070,91 +8070,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_comment_trailing_a_sum_variant_is_preserved_same_line() {
-        // A `//` comment on the SAME line as a sum-type variant (`| Ctor(T) // note`) is captured as a
-        // `(comment-after "note" (Ctor T))` node and re-prints SAME-LINE after the variant — NOT dropped
-        // (the trailing-inline loss) NOR moved to its own line. The reader records same-line-ness (a span
-        // check) and attaches the comment to the variant it FOLLOWS. rcdzc's `strip_comments` peels the
-        // `comment-after` head (same as `comment`), so the type still scans. Count-based: the `//` count
-        // is preserved, and the arena carries a `(comment-after …)` that round-trips.
-        let src = "type E =\n  | Mismatch(Int64) // a code\n  | NotImpl";
-        let a = parser::read_ml(src);
-        assert!(a.ok(), "parse: {:?}", a.errors);
-        let sexpr = crate::sexpr::print(&a.arenas);
-        assert_eq!(
-            sexpr.matches("(comment-after ").count(),
-            1,
-            "the trailing `//` becomes a `(comment-after …)` node: {sexpr}"
-        );
-        let printed = print(&a.arenas, 100);
-        // The comment re-prints on the SAME line as its variant (not its own line), and is not dropped.
-        assert!(
-            printed
-                .lines()
-                .any(|l| l.contains("Mismatch(Int64)") && l.contains("// a code")),
-            "the `//` trails its variant same-line: {printed}"
-        );
-        assert_eq!(
-            printed.matches("// a code").count(),
-            1,
-            "comment preserved once: {printed}"
-        );
-        // Idempotent + round-trips (the `(comment-after …)` survives a re-read).
-        let b = parser::read_ml(&printed);
-        assert!(b.ok(), "reparse: {:?}", b.errors);
-        assert_eq!(print(&b.arenas, 100), printed, "not idempotent");
-        assert_eq!(
-            crate::sexpr::print(&b.arenas)
-                .matches("(comment-after ")
-                .count(),
-            1,
-            "the `(comment-after …)` survives the round-trip"
-        );
-    }
-
-    #[test]
-    fn a_comment_trailing_a_match_arm_is_preserved_same_line() {
-        // A `//` on the same line as a NON-LAST match arm (`| pat => body // note`) is captured as a
-        // `(comment-after "note" (pat body))` node and re-prints same-line after the body — not dropped
-        // nor moved. (The FILE-FINAL last-arm case falls back to the pre-existing leading-comment reorder,
-        // count-preserving; here we pin the common non-last case + a following statement makes the last
-        // arm's comment attach too.) `strip_comments` peels it so the match still compiles.
-        let src =
-            "def f(x) =\n  match x with\n  | 0 => 1 // zero\n  | _ => 2 // other\ndef g() = 9";
-        let a = parser::read_ml(src);
-        assert!(a.ok(), "parse: {:?}", a.errors);
-        let sexpr = crate::sexpr::print(&a.arenas);
-        assert_eq!(
-            sexpr.matches("(comment-after ").count(),
-            2,
-            "both arm comments become `(comment-after …)` (the last arm's too, since a def follows): {sexpr}"
-        );
-        let printed = print(&a.arenas, 100);
-        assert!(
-            printed
-                .lines()
-                .any(|l| l.contains("=> 1") && l.contains("// zero")),
-            "first arm comment trails same-line: {printed}"
-        );
-        assert!(
-            printed
-                .lines()
-                .any(|l| l.contains("=> 2") && l.contains("// other")),
-            "last arm comment trails same-line: {printed}"
-        );
-        // Idempotent + round-trips.
-        let b = parser::read_ml(&printed);
-        assert!(b.ok(), "reparse: {:?}", b.errors);
-        assert_eq!(print(&b.arenas, 100), printed, "not idempotent");
-        assert_eq!(
-            crate::sexpr::print(&b.arenas)
-                .matches("(comment-after ")
-                .count(),
-            2,
-            "the `(comment-after …)` arm-comments survive the round-trip"
-        );
-    }
+    // Two same-line trailing-comment preservation tests MIGRATED to the spec/syntax corpus (inc-6
+    // batch-38, comment-node block; a same-line `//` attaches `(comment-after "text" node)` on the node it
+    // FOLLOWS — v-syntax-comments' rule):
+    //   * `a_comment_trailing_a_sum_variant_is_preserved_same_line` → ml/256-comment-trailing-sum-variant
+    //     `type E =`⏎`  | Mismatch(Int64) // a code`⏎`  | NotImpl`→
+    //     `(type E (comment-after "a code" (Mismatch Int64)) NotImpl)`.
+    //   * `a_comment_trailing_a_match_arm_is_preserved_same_line` → ml/257-comment-trailing-match-arm
+    //     `def f(x) = match x with | 0 => 1 // zero | _ => 2 // other` + a following `def g() = 9`→
+    //     `(do (def (f x) (match x (comment-after "zero" (0 1)) (comment-after "other" (_ 2)))) (def (g) 9))`
+    //     (the last arm's comment attaches too because a def follows).
+    // Each golden pins the same-line-preserved comment surface; v-syntax-comments spot-checked these
+    // non-obvious attachment points (sum-variant / match-arm) as correct.
 
     // Two mid-expression trailing-comment preservation tests MIGRATED to the spec/syntax corpus (inc-6
     // batch-37, first of the comment-node block; comment nodes render structurally as `(comment-after …)`):
@@ -8195,30 +8122,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_own_line_comment_before_then_round_trips_not_dropped() {
-        // An OWN-LINE `//` sitting BEFORE the `then` keyword (`if c` ⏎ `// note` ⏎ `then t`) was in the
-        // `then` token's leading slot and dropped when `expect_keyword` consumed past it (the last
-        // comment-attachment position blocking `cdz fmt` on the operator's hm-collect.cdz). Now captured +
-        // folded into the then-branch's leading comments — symmetric with the before-`else` capture.
-        let out = assert_roundtrip("def f(c) = if c\n// note\nthen 1 else 2", 100);
-        assert!(
-            out.contains("// note"),
-            "the own-line comment before `then` is preserved: {out}"
-        );
-    }
-
-    #[test]
-    fn an_own_line_comment_before_else_round_trips_not_dropped() {
-        // An OWN-LINE `//` sitting BEFORE the `else` keyword (`if a then 1` ⏎ `// note` ⏎ `else 2`) was
-        // in the `else` token's leading slot and dropped when `expect_keyword` consumed past it. Now
-        // captured + folded into the else-branch's leading comments (prints own-line above the else).
-        let out = assert_roundtrip("def f(a) = if a then 1\n// note\nelse 2", 100);
-        assert!(
-            out.contains("// note"),
-            "the own-line comment before `else` is preserved: {out}"
-        );
-    }
+    // Two own-line-leading comment tests MIGRATED to the spec/syntax corpus (inc-6 batch-38, comment-node
+    // block; an own-line `//` attaches `(comment "text" node)` — LEADING on the node it PRECEDES —
+    // v-syntax-comments' rule):
+    //   * `an_own_line_comment_before_then_round_trips_not_dropped` → ml/254-comment-before-then
+    //     `def f(c) = if c`⏎`// note`⏎`then 1 else 2`→`(def (f c) (if c (comment "note" 1) 2))` (folded into
+    //     the then-branch's leading comments).
+    //   * `an_own_line_comment_before_else_round_trips_not_dropped` → ml/255-comment-before-else
+    //     `def f(a) = if a then 1`⏎`// note`⏎`else 2`→`(def (f a) (if a 1 (comment "note" 2)))` (leading on
+    //     the else-branch).
+    // Each carries a format.cdz pinning the own-line-above comment surface.
 
     #[test]
     fn an_own_line_comment_leading_a_match_arm_is_preserved_not_dropped() {

@@ -1,0 +1,6 @@
+def f(c) =
+  if c then
+    // note
+    1
+  else
+    2
