@@ -1,0 +1,2 @@
+let list = fn(a, b) => a + b in
+list(3, 4)

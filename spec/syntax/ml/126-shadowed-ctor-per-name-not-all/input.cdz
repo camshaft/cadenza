@@ -1,0 +1,2 @@
+let list = fn(a) => a in
+(list(1), 2)
