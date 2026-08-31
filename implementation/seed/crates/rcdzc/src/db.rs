@@ -762,7 +762,18 @@ pub(crate) const REDUCE_NODE_BUDGET: u64 = 1_000_000;
 /// so any one body is a small fraction — this per-body ceiling has a wide margin). Past it,
 /// `enter_reduction_structural` denies entry (declines like the depth limit), so the walk bottoms out with a
 /// resource-limit CDZ0999 instead of hanging. (Tunable; v-compiler-perf gates the self-host carve-out.)
-pub(crate) const STRUCTURAL_REDUCTION_BUDGET: u64 = 2_000_000;
+///
+/// RAISED 2M → 16M (#6100 shipped 2M, but that FALSE-DECLINED a legitimate large EFFECT-FOLD body): the
+/// 14c corpus case `lgt1` (a two-op `#tuple`-state handler, 8 perform sites, many nested-match resumes) does
+/// ~3–4M structural reductions in one def body during its fault walk, tripped the 2M ceiling mid-fold, and
+/// declined codeless "value is not applyable" (a pass→todo regression git-bisected to #6100). Bracketed:
+/// 2M/2.5M/3M decline, 4M/200M compile — so lgt1 needs 3–4M; 16M gives ~4× margin. A RAISE is
+/// monotonic-safe for correctness (it only ADMITS more reductions — a program that compiled at 2M is
+/// unchanged; one that declined either still declines above 16M or now compiles): the only cost is a
+/// divergent case running a few more doublings before tripping, and since the HANG term widens
+/// EXPONENTIALLY it still trips 16M in bounded time (the three `*_inference_hang` regression tests + the
+/// Option.None `*_survives_reduction_budget_exhaustion` carve-out all still pass at 16M).
+pub(crate) const STRUCTURAL_REDUCTION_BUDGET: u64 = 16_000_000;
 
 /// The bound on RECURSIVE-DESCENT depth across the demand queries (`type_of`, the fault `collect`, and
 /// `core_of`) — a backstop against a native stack overflow on pathologically deep input. Each query is
