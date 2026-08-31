@@ -434,6 +434,9 @@ pass	ml/487-nested-multi-arg-ctor-minimal
 pass	ml/488-nested-multi-arg-ctor-multiline-block
 pass	ml/49-const-force-eval-call
 pass	ml/50-const-force-eval-infix
+pass	ml/506-integer-underscore-separators
+pass	ml/507-float-scientific-notation
+pass	ml/508-float-scientific-negative-exponent
 pass	ml/51-effect-op-resource-marker-first-param
 pass	ml/52-effect-op-resource-marker-second-param
 pass	ml/53-effect-op-no-resource-marker
