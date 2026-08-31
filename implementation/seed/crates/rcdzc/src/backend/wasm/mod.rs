@@ -9273,11 +9273,17 @@ fn export_make_params(
                     slots.push(MakeSlot::Scalar(byte));
                 }
                 _ => {
-                    return Err(Reject::decline(format!(
-                        "a parameterized heap-return export forwards scalar params and fixed-shape scalar \
-                         tuple/record params only; parameter of type `{}` has no boundary representation",
-                        t.render_name(&db.name_ctx())
-                    )));
+                    // A HARD gate (`Err`) that already declines the compile — so tagging with the catalogued
+                    // DeclineId is a pure id-tag (code None→CDZ0900 via `declined`, no gating change; contrast
+                    // the closure NO_REPR soft-poisons, which are non-gating codeless and would false-gate).
+                    return Err(Reject::declined(
+                        crate::diag::DeclineId::WasmHeapReturnParamNoBoundaryRep,
+                        format!(
+                            "a parameterized heap-return export forwards scalar params and fixed-shape scalar \
+                             tuple/record params only; parameter of type `{}` has no boundary representation",
+                            t.render_name(&db.name_ctx())
+                        ),
+                    ));
                 }
             },
         }
