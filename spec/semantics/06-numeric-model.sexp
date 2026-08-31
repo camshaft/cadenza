@@ -7278,6 +7278,32 @@
   (input (do (def (main) (Num.neg "hi")) (export main)))
   (error CDZ0201 (message "never coerces")))
 
+; --- prefix `(- e)` is the DEPRECATED negation: it CURRIES (partial subtraction), use `Num.neg` ---
+; Deprecating prefix unary `-` (operator directive): `(- e)` is arity-1 subtraction — a partially-applied
+; `(-> T T)` FUNCTION — NOT negation (the lowering that made it negate was removed, #7110). Used where a
+; VALUE is expected it is a type mismatch (function vs value), CDZ0203, whose message points at the real
+; negate operators (`Num.neg` / the per-type `T.neg`). To NEGATE, use the `Num.neg`/`T.neg` cases above.
+(case
+  "prefix `(- x)` in value (annotation) position is a partial subtraction, rejected with a suggest-`Num.neg` (CDZ0203)"
+  (doc
+    "The deprecation witness: `(- x)` is NOT negation, it is `-` applied to one argument — a partial
+           `(-> Int64 Int64)`. Annotating it as a value `(: (- x) Int64)` is a function-vs-value mismatch;
+           CDZ0203's message identifies the partial subtraction and points at `Num.neg` / `<T>.neg`. Pins
+           that prefix `-`-as-negation is gone and the diagnostic redirects to the real negate (v-inference
+           #7205). Contrast the companion below: a genuine partial `(+ 1)` gets the GENERIC not-fully-applied
+           message, so the suggest-`Num.neg` is specific to `-`.")
+  (input (do (def (f (: x Int64)) (: (- x) Int64)) (export f)))
+  (error CDZ0203 (message "not negation")))
+(case
+  "a non-`-` partial in value position keeps the GENERIC not-fully-applied message (no suggest-`Num.neg`)"
+  (doc
+    "The contrast companion: `(+ 1)` is also a partial `(-> Int64 Int64)` in value position, but `+` is
+           not negation, so its CDZ0203 keeps the generic partial-application message (`apply it to N more
+           argument(s)`) with NO `Num.neg` suggestion. Proves the suggest-`Num.neg` tail is specific to the
+           deprecated prefix `-`, not emitted for every under-applied binary operator.")
+  (input (do (def (f (: x Int64)) (: (+ 1) Int64)) (export f)))
+  (error CDZ0203 (message "fully applied")))
+
 (case
   "a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum"
   (doc
