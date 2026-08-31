@@ -38,6 +38,8 @@ pass	sexp/31-bigint-suffix
 pass	sexp/32-match-to-let-tuple
 pass	sexp/33-multiline-string-semicolon
 pass	sexp/34-char-literal-semicolon
+pass	sexp/35-comment-in-let-bindings
+pass	sexp/36-comment-lead-compound-literal
 todo	ml/08-incomplete-binding
 todo	ml/10-unterminated-call
 todo	sexp/17-unterminated-list
