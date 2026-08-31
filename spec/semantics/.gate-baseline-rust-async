@@ -8810,3 +8810,31 @@ pass	exporting a bare TYPE handle in a single module names the type-handle expor
 pass	exporting an EFFECT names the category, not a value definition
 pass	the Qty unit-position misuse fires at a value-annotation site too
 pass	two type-value operands in arithmetic name that arithmetic is not defined on Type
+pass	a bare SYMBOL in the Qty unit position names a unit expression, not a bare symbol, with a wrap fix
+pass	a bare name in Unit.base names the symbol requirement with a hash-quote fix
+pass	a bare name in Unit.define names the symbol requirement with a hash-quote fix
+pass	a bare name in Unit.of names the symbol requirement with a hash-quote fix
+pass	a bytes match with only a bin arm and no catch-all is non-exhaustive
+pass	a name-alias (map …) literal mixing integer and float values is a type error
+pass	a name-alias (map …) literal with a duplicate integer key is a type error
+pass	a name-alias (map …) literal with a duplicate string key is a type error
+pass	a name-alias (map …) literal with keys of two different types is a type error
+pass	a name-alias (map …) literal with values of two different types is a type error
+pass	a nested wrong-arity type constructor keeps its own arity message
+pass	a non-integer exponent in a Unit.^ power is named, not silently shipped
+pass	a non-type in a List element position names the element type
+pass	a non-type in a Map key position names the key type
+pass	a non-type in a Map value position names the value type
+pass	a non-type in a Set element position names the element type
+pass	a non-type in a Tuple element position names the element index
+pass	a non-type in a function parameter position names the parameter index
+pass	a non-type in a function result position names the result type
+pass	a non-unit base in a Unit.^ power is named, not silently shipped
+pass	a non-unit factor in a Unit.* product is named, not silently shipped
+pass	a non-unit factor in a Unit./ quotient is named, not silently shipped
+pass	a utf8 bin match with no catch-all is non-exhaustive
+pass	an ordinary unbound name (not a unit-builder arg) keeps the plain unbound message, not the redirect
+pass	an unbound name in a type-argument position keeps CDZ0101, not the non-type message
+pass	member access on a tuple by NAME points at the numeric-index form
+pass	the bare-symbol Qty unit misuse fires at a value-annotation site
+pass	the bare-symbol Qty unit misuse fires nested inside a List type
