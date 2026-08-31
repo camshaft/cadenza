@@ -1625,35 +1625,12 @@ fn a_provably_nonnegative_index_elides_the_list_at_lower_bound_check() {
 // parameter-element propagation is a separate increment (the "runtime list's element type flows
 // through" gap the increment-2 note records).
 
-#[test]
-fn a_variant_name_colliding_with_a_prelude_name_does_not_shadow_it() {
-    // A bare variant name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so a variant
-    // whose name COLLIDES with a built-in prelude entry (`Int`/`List`/`Name` — a type constructor, a
-    // collection module) must NOT shadow it — else that name breaks everywhere it is used as a
-    // type/module. The `variant_ctor_index` build skips a prelude-colliding variant name; the variant
-    // stays reachable QUALIFIED (`(. T Int)`) via the sum record's field. Regression: declaring `(type
-    // T (Int Int64))` made bare `Int` the variant ctor, so an unrelated `(: x Int64)` failed to reduce
-    // (`Int` was no longer the width constructor) — a global corruption from one declaration.
-    // The unrelated `Int64` annotation still reduces even with a `(type T (Int Int64))` in scope.
-    // (The construct-HEAD position DOES now shadow — a bare `(Int 42)` builds T's variant — but that is
-    // scoped to a user node in head position and does NOT touch the width TYPE in annotation position,
-    // the invariant this test guards. See `a_type_name_colliding_variant_constructs_as_the_local_variant`.)
-    assert!(
-            reject_code(
-                "(module m (type T (Int Int64)) (def (g (: x Int64)) x) (def (main) (g 5)) (export main))"
-            )
-            .is_none(),
-            "a variant named `Int` must not shadow the prelude `Int` type constructor"
-        );
-    // The colliding variant is still reachable QUALIFIED and checks its payload: `(. T Int)` applied
-    // to a String is the wrong-payload CDZ0201, exactly as a non-colliding variant is.
-    assert_eq!(
-        reject_code("(module m (type T (Int Int64)) (def (main) ((. T Int) \"x\")) (export main))")
-            .as_deref(),
-        Some("CDZ0201"),
-        "a qualified colliding-variant ctor still type-checks its payload"
-    );
-}
+// (a_variant_name_colliding_with_a_prelude_name_does_not_shadow_it migrated/redundant — corpus
+// 05-compound-types covers BOTH halves: the annotation-non-corruption invariant (declaring `(type T (Int
+// Int64))` must not break an unrelated `(: x Int64)` width annotation) is the run case "a type-name-colliding
+// variant construct coexists with the width type it collides with" (→ 52, exercises `(Int 42)` variant AND
+// the `Int64` annotation in one program), and the qualified-payload-check half (`(. T Int) "x"` → CDZ0201)
+// is the new case "a prelude-TYPE-colliding variant reached QUALIFIED still type-checks its payload".)
 
 // (a_bare_prelude_colliding_variant_matches_as_the_local_variant fully migrated/redundant — corpus
 // 05-compound-types already covers: the single-variant bare `Int` match ("a bare prelude-colliding variant

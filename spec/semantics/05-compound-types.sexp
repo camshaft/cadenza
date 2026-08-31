@@ -13934,6 +13934,18 @@
             (export main)))
   (output (: 52 Int64)))
 
+(case "a prelude-TYPE-colliding variant reached QUALIFIED still type-checks its payload"
+  (doc    "The colliding variant `Int` of `(type T (Int Int64))` stays reachable QUALIFIED (`(. T Int)`) —
+           the collision only skips it from the BARE index — and reaching it qualified does NOT bypass the
+           payload type-check: `((. T Int) \"x\")` applies T's `Int` ctor (whose payload is Int64) to a
+           String, the wrong-payload CDZ0201, exactly as a non-colliding variant is. Pins that the
+           prelude-collision handling is orthogonal to payload validation — a qualified colliding ctor is a
+           full type-checked constructor, not a bypass. (Migrated from rcdzc
+           a_variant_name_colliding_with_a_prelude_name_does_not_shadow_it; the annotation-non-corruption
+           half is the `coexists with the width type` run case above → 52.)")
+  (input  (do (type T (Int Int64)) (def (main) ((. T Int) "x")) (export main)))
+  (error  CDZ0201))
+
 (case "a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant"
   (doc    "A variant whose name collides with a prelude DATA constructor (`Some`/`None`/`Ok`/`Err`) — as
            distinct from a prelude TYPE/MODULE name (`Int`/`List`) — is reachable BARE in BOTH construct
