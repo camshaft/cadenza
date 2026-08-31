@@ -85,7 +85,19 @@ pub(crate) fn op_dup(h: Handle) {
         #[cfg(any(test, feature = "debug-counters"))]
         assert_node_live(h.0, node.guard, "dup");
         if node.rc != IMMORTAL {
+            #[cfg(any(test, feature = "debug-counters"))]
+            let before = node.rc;
             node.rc += 1; // an IMMORTAL node is never retained (dup is a no-op — the global owns it forever)
+            #[cfg(any(test, feature = "debug-counters"))]
+            rc_trace_push(
+                RC_TRACE_DUP,
+                node.node_id,
+                rc_struct_tag(node),
+                before,
+                before + 1,
+                false,
+                RC_TRACE_NO_PARENT,
+            );
         }
     }
 }
@@ -137,10 +149,29 @@ pub(crate) fn op_drop(root: Handle) {
         // before the `rc > 1` decrement, else the sentinel would erode toward 1 and free the static.
     }
     if node.rc > 1 {
+        #[cfg(any(test, feature = "debug-counters"))]
+        let before = node.rc;
         node.rc -= 1; // shared: cheapest path, no reclamation
+        #[cfg(any(test, feature = "debug-counters"))]
+        rc_trace_push(
+            RC_TRACE_DROP,
+            node.node_id,
+            rc_struct_tag(node),
+            before,
+            before - 1,
+            false,
+            RC_TRACE_NO_PARENT,
+        );
         return;
     }
     // rc == 1: last reference. Reclaim the node and cascade into its children.
+    // rc-trace: capture the root's id + structural tag BEFORE the worklist seeding empties its handles
+    // (a Heap root donates its Vec via mem::take), so the tag reflects the live shape. The root id is
+    // also the `cascade_parent` recorded on every child freed in this drop (v1: root-cascade linkage).
+    #[cfg(any(test, feature = "debug-counters"))]
+    let root_id = node.node_id;
+    #[cfg(any(test, feature = "debug-counters"))]
+    let root_tag = rc_struct_tag(node);
     //
     // The worklist is allocated LAZILY: an inline node's ≤2 children are pushed straight onto the
     // (initially-empty) worklist, and a `Vec` is materialized only if/when a HEAP child is expanded (a
@@ -180,6 +211,16 @@ pub(crate) fn op_drop(root: Handle) {
     }
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() - 1));
+    #[cfg(any(test, feature = "debug-counters"))]
+    rc_trace_push(
+        RC_TRACE_DROP,
+        root_id,
+        root_tag,
+        1,
+        0,
+        true,
+        RC_TRACE_NO_PARENT,
+    );
 
     loop {
         // Pop from the worklist first (deeper heap subtrees), then drain the inline seed.
@@ -207,9 +248,27 @@ pub(crate) fn op_drop(root: Handle) {
             // never freed and its count is untouched — skip it, do not decrement toward freeing.
         }
         if n.rc > 1 {
+            #[cfg(any(test, feature = "debug-counters"))]
+            let before = n.rc;
             n.rc -= 1; // shared child survives; freed only when its last owner drops it
+            #[cfg(any(test, feature = "debug-counters"))]
+            rc_trace_push(
+                RC_TRACE_DROP,
+                n.node_id,
+                rc_struct_tag(n),
+                before,
+                before - 1,
+                false,
+                root_id,
+            );
             continue;
         }
+        // rc-trace: capture the child's id + tag BEFORE its handles are moved onto the worklist / it is
+        // freed below; `cascade_parent = root_id` (v1 root-cascade linkage).
+        #[cfg(any(test, feature = "debug-counters"))]
+        let child_id = n.node_id;
+        #[cfg(any(test, feature = "debug-counters"))]
+        let child_tag = rc_struct_tag(n);
         // Move this node's children onto the pending set, then free it. An inline child-set with room
         // fills the seed buffer (no alloc). Otherwise: if the worklist is still empty, ADOPT this node's
         // own Vec as the worklist backing (a heap node owns one; reuse it — zero alloc, as the pre-inline
@@ -249,6 +308,8 @@ pub(crate) fn op_drop(root: Handle) {
         }
         #[cfg(any(test, feature = "debug-counters"))]
         LIVE_NODES.with(|n| n.set(n.get() - 1));
+        #[cfg(any(test, feature = "debug-counters"))]
+        rc_trace_push(RC_TRACE_DROP, child_id, child_tag, 1, 0, true, root_id);
     }
 }
 

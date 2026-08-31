@@ -243,6 +243,12 @@ struct Node {
     /// leaks" — an unsound reclaim drop fails the corpus/heap run loudly rather than shipping silently).
     #[cfg(any(test, feature = "debug-counters"))]
     guard: u32,
+    /// DEBUG-only monotonic identity for rc-trace (leak attribution): unique PER ALLOC, so a reused
+    /// cell address gets a fresh id and "alloc'd but never freed" is unambiguous. ABSENT from the
+    /// shipped build — like `guard`, this keeps the release `Node` layout + `REQUIRED_RUNTIME_HASH`
+    /// byte-unchanged; only `DEBUG_RUNTIME_HASH` moves.
+    #[cfg(any(test, feature = "debug-counters"))]
+    node_id: u32,
 }
 
 /// The ADDRESS-DERIVED "this cell is a LIVE node" sentinel (debug builds only). Mixing the node's own
@@ -901,6 +907,163 @@ runtime_local! {
     static LIVE_NODES: core::cell::Cell<i64> = core::cell::Cell::new(0);
 }
 
+// ─── rc-trace (leak-attribution diagnostic — debug-counters only) ────────────────────────────────
+// A per-node ALLOC/DUP/DROP event log for DEFINITIVE leak attribution (which handle never reached rc0,
+// and whether the missing op is a direct drop, a cascade edge, or an extra dup — the three modes static
+// WAT op-counts cannot separate, since cascade-children muddy the count). Endorsed by v-memory-safety +
+// v-corpus-harness as the attribution complement to `--guarded-all`. OFF by default (zero append cost)
+// even in the debug build until `rc_trace_enable(true)`: cdz-run's `--rc-trace` (via the debug-only
+// `debug-trace` WIT export) flips it before a run; native tests flip it directly. Buffer keeps the FIRST
+// `RC_TRACE_CAP` events and sets `RC_TRACE_TRUNCATED` on overflow (a "truncated at N" marker, never a
+// silent ring-wrap that loses the early allocs a leak needs). Release build: this whole region is cfg'd
+// OUT → `REQUIRED_RUNTIME_HASH` (058B5h) byte-unchanged; only `DEBUG_RUNTIME_HASH` moves (v-nix re-bake).
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TRACE_ALLOC: u8 = 0;
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TRACE_DUP: u8 = 1;
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TRACE_DROP: u8 = 2;
+
+// Structural node tag — the runtime is TAGLESS (see `Node`: no stored Cadenza type), so this is the
+// node SHAPE, not the semantic type. `Leaf` (0 handles, raw-bearing: scalar/Bytes/String/BigInt — not
+// distinguishable from each other), `Sum` (1 handle + a non-empty raw disc), `Compound` (≥1 handle,
+// empty raw: tuple/record/list/map — not distinguishable from each other). Separates an Ast.Int SUM from
+// a BigInt LEAF (v-mem's key case); a finer semantic type is the emit's compile-time knowledge, keyed by
+// node#, not the runtime's to give.
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TAG_LEAF: u8 = 0;
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TAG_SUM: u8 = 1;
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TAG_COMPOUND: u8 = 2;
+
+/// `cascade_parent` sentinel for "no parent" (a direct/root drop, or a non-freeing event).
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TRACE_NO_PARENT: u32 = u32::MAX;
+
+/// A fixed rc-trace event record (v-memory-safety's schema). `cascade_parent == RC_TRACE_NO_PARENT`
+/// means None (a direct drop or a non-DROP event). For v1 a cascade child's `cascade_parent` is the
+/// ROOT drop's node# that initiated the cascade (== the immediate parent at depth 2, e.g. an Ast.Int
+/// sum's BigInt child); deeper immediate-parent linkage is a follow-up (the flat free-worklist would
+/// need to carry per-entry parent ids under a debug-only cfg-split).
+#[cfg(any(test, feature = "debug-counters"))]
+#[derive(Clone, Copy)]
+pub(crate) struct RcTraceEvent {
+    pub op: u8,
+    pub node: u32,
+    pub tag: u8,
+    pub rc_before: u32,
+    pub rc_after: u32,
+    pub freed: bool,
+    pub cascade_parent: u32,
+}
+
+/// Buffer capacity — keeps the FIRST this-many events, then marks truncated. 64Ki events covers a
+/// typical corpus case; a leak needs the early allocs, so keep-first beats a lossy ring-wrap.
+#[cfg(any(test, feature = "debug-counters"))]
+pub(crate) const RC_TRACE_CAP: usize = 1 << 16;
+
+#[cfg(any(test, feature = "debug-counters"))]
+runtime_local! {
+    static NEXT_NODE_ID: core::cell::Cell<u32> = core::cell::Cell::new(0);
+}
+#[cfg(any(test, feature = "debug-counters"))]
+runtime_local! {
+    static RC_TRACE_ENABLED: core::cell::Cell<bool> = core::cell::Cell::new(false);
+}
+#[cfg(any(test, feature = "debug-counters"))]
+runtime_local! {
+    static RC_TRACE_TRUNCATED: core::cell::Cell<bool> = core::cell::Cell::new(false);
+}
+#[cfg(any(test, feature = "debug-counters"))]
+runtime_local! {
+    static RC_TRACE: core::cell::RefCell<alloc::vec::Vec<RcTraceEvent>> =
+        core::cell::RefCell::new(alloc::vec::Vec::new());
+}
+
+/// Mint the next monotonic node id (unique PER ALLOC — a Handle slot reused after free gets a NEW id,
+/// so "alloc'd but never freed" attribution is unambiguous).
+#[cfg(any(test, feature = "debug-counters"))]
+#[inline]
+fn rc_next_node_id() -> u32 {
+    NEXT_NODE_ID.with(|c| {
+        let v = c.get();
+        c.set(v.wrapping_add(1));
+        v
+    })
+}
+
+/// The structural (shape) tag of a node — tagless runtime, so shape only (see `RC_TAG_*`).
+#[cfg(any(test, feature = "debug-counters"))]
+#[inline]
+fn rc_struct_tag(node: &Node) -> u8 {
+    if node.handles.is_empty() {
+        RC_TAG_LEAF
+    } else if node.handles.len() == 1 && node.raw.len() != 0 {
+        RC_TAG_SUM
+    } else {
+        RC_TAG_COMPOUND
+    }
+}
+
+/// Append one rc-trace event (no-op unless recording is enabled; drops on overflow with a marker).
+#[cfg(any(test, feature = "debug-counters"))]
+#[inline]
+fn rc_trace_push(
+    op: u8,
+    node: u32,
+    tag: u8,
+    rc_before: u32,
+    rc_after: u32,
+    freed: bool,
+    cascade_parent: u32,
+) {
+    if !RC_TRACE_ENABLED.with(|e| e.get()) {
+        return;
+    }
+    RC_TRACE.with(|t| {
+        let mut buf = t.borrow_mut();
+        if buf.len() >= RC_TRACE_CAP {
+            RC_TRACE_TRUNCATED.with(|x| x.set(true));
+            return;
+        }
+        buf.push(RcTraceEvent {
+            op,
+            node,
+            tag,
+            rc_before,
+            rc_after,
+            freed,
+            cascade_parent,
+        });
+    });
+}
+
+/// Enable/disable rc-trace recording (OFF by default → zero append cost). Enabling CLEARS the buffer +
+/// the truncation marker so each traced run starts fresh. cdz-run's `--rc-trace` calls this via the
+/// `debug-trace` WIT export; native tests call it directly.
+#[cfg(any(test, feature = "debug-counters"))]
+#[allow(dead_code)]
+pub(crate) fn rc_trace_enable(on: bool) {
+    RC_TRACE_ENABLED.with(|e| e.set(on));
+    if on {
+        RC_TRACE.with(|t| t.borrow_mut().clear());
+        RC_TRACE_TRUNCATED.with(|x| x.set(false));
+    }
+}
+
+/// Snapshot the recorded events (for a native test / the drain export to consume). Second tuple field
+/// is the truncation marker (true = the run produced more than `RC_TRACE_CAP` events, buffer holds the
+/// first `RC_TRACE_CAP`).
+#[cfg(any(test, feature = "debug-counters"))]
+#[allow(dead_code)]
+pub(crate) fn rc_trace_snapshot() -> (alloc::vec::Vec<RcTraceEvent>, bool) {
+    (
+        RC_TRACE.with(|t| t.borrow().clone()),
+        RC_TRACE_TRUNCATED.with(|x| x.get()),
+    )
+}
+
 /// The live heap-object count, or 0 when the counter is not compiled in (the default build). The
 /// `live-objects` export returns this; a leak-check harness asserts it is 0 after a run to verify the
 /// compiler's dup/drop discipline leaves nothing behind.
@@ -939,11 +1102,25 @@ fn alloc_raw(handles: impl Into<Handles>, raw: Raw) -> Handle {
         raw,
         #[cfg(any(test, feature = "debug-counters"))]
         guard: 0, // provisional; stamped with the address-derived live sentinel just below
+        #[cfg(any(test, feature = "debug-counters"))]
+        node_id: 0, // provisional; assigned the monotonic rc-trace id just below
     }));
-    // Stamp the LIVE guard (needs the address, so after `into_raw`). Debug builds only.
+    // Stamp the LIVE guard (needs the address, so after `into_raw`) + mint the rc-trace node id and
+    // record the ALLOC event (rc 0→1). Debug builds only.
     #[cfg(any(test, feature = "debug-counters"))]
     unsafe {
         (*ptr).guard = live_guard(ptr);
+        let id = rc_next_node_id();
+        (*ptr).node_id = id;
+        rc_trace_push(
+            RC_TRACE_ALLOC,
+            id,
+            rc_struct_tag(&*ptr),
+            0,
+            1,
+            false,
+            RC_TRACE_NO_PARENT,
+        );
     }
     Handle(ptr)
 }
