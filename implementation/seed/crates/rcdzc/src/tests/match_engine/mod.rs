@@ -1891,35 +1891,13 @@ fn a_long_chained_rational_sum_folds_in_bounded_time() {
     );
 }
 
-#[test]
-fn a_bool_match_missing_a_literal_offers_the_specific_missing_arm() {
-    // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly
-    // `(false (trap "TODO: false"))` (not a generic wildcard), the same precision as a missing sum
-    // variant. The `trap` body type-checks against the sibling `Int64` arm (a `unit` body would clash).
-    let d = reject_full("(module m (def (main (: b Bool)) (match b (true 1))) (export main))")
-        .expect("non-exhaustive must reject");
-    assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
-    assert!(
-        d.message.contains("`false`") && d.message.contains("not covered"),
-        "names the missing literal: {}",
-        d.message
-    );
-    assert_eq!(
-        d.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("(false (trap \"TODO: false\"))"),
-        "inserts the specific missing arm: {}",
-        d.message
-    );
-    // Symmetric: missing `true` → `(true (trap "TODO: true"))`.
-    let d2 = reject_full("(module m (def (main (: b Bool)) (match b (false 2))) (export main))")
-        .expect("reject");
-    assert_eq!(
-        d2.fix.as_ref().map(|f| f.replacement.as_str()),
-        Some("(true (trap \"TODO: true\"))"),
-        "message: {}",
-        d2.message
-    );
-}
+// [migrated → spec/semantics/02-binding-and-control.sexp] a_bool_match_missing_a_literal_offers_the_specific_missing_arm:
+// a Bool scrutinee is a finite two-value gap — a non-exhaustive Bool match is CDZ0210 naming the missing
+// LITERAL ("`false`"/"`true`" + "not covered") and inserts exactly that arm via an insert-into fix
+// (replacement `(false (trap "TODO: false"))` / `(true (trap "TODO: true"))`), symmetric on which literal
+// is missing. Corpus 02 cases next to the sum add-arms fix. All PASS on a fresh dev build (message + fix
+// pins fresh-build-verified). The add-arm trap-fix's one-shot type-check vs Int64 arms stays pinned by
+// the_exhaustiveness_add_arm_fix_type_checks_in_one_shot_against_int_arms below.
 
 #[test]
 fn the_exhaustiveness_add_arm_fix_type_checks_in_one_shot_against_int_arms() {
