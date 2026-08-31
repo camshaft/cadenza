@@ -363,12 +363,13 @@
            (recursing on a compound element). Guest sumPair(p) = 100*p.0 + p.1 — POSITION-SENSITIVE so a
            swapped or mis-slotted element is caught; (5,10) -> 510. Before this a top-level tuple param declined
            in record_interface_export and fell through to a handle-erased scalar (`u32`) param the boundary
-           driver could not marshal a tuple arg against. The arg is written `(tuple 5 10)` (the coerce_one
-           tuple-arg form), distinct from the `#tuple(5 10)` RESULT render form.")
+           driver could not marshal a tuple arg against. The arg is written in the native `#tuple(5 10)` form
+           (the M3 native-#ctor form; `coerce_one`'s tuple-arg parser accepts it for a `tuple<…>` param and it
+           exercises the same positional cell rebuild — verified 510).")
   (wit-world (world w (export iface (member sum-pair (func (param p (tuple (s64) (s64))) (result (s64)))))))
   (component-name "cadenza:demo/iface")
   (input (do (def (sumPair (: p (Tuple Int64 Int64))) (+ (* 100 (. p 0)) (. p 1))) (export sumPair)))
-  (call sum-pair (: (tuple 5 10) (Tuple Int64 Int64)))
+  (call sum-pair (: #tuple(5 10) (Tuple Int64 Int64)))
   (output (: 510 Int64))
   (live-objects known-leak))
 
