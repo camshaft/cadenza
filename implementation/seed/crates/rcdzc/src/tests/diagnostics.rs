@@ -1018,36 +1018,11 @@ fn diags_of(src: &str) -> Vec<crate::abi::Diagnostic> {
     crate::diagnostics(&mut db)
 }
 
-/// A RECORD sub-pattern NESTED inside a tuple/list/constructor match pattern whose field value is itself
-/// a further COMPOUND — `(tuple (record (x (tuple a b))) c)` — is not yet wired (a record field projects
-/// by NAME and there is no name-keyed `PathStep` to compose a FURTHER descent below the field). It must
-/// BIND — NOT leak a misleading CDZ0101 "unbound name `a`" AND NOT decline CDZ0900 (§235: a record field
-/// value binder may be any nested pattern to any depth). A binder BELOW a nested-record field value in a
-/// tuple match arm — `(tuple (record (x (tuple a b))) c)`, field `x`'s value the further `(tuple a b)` —
-/// now WIRES via a `Resolved::RecordField` reading field `x` then descending `sub_path = [Elem(0/1)]` into
-/// the tuple (a record field read lowers to `Elem(<sorted-slot>)`, so the descent is positional `Elem`
-/// steps — no new `PathStep`). `cdz check` on a PARAMETERIZED body (via match_pattern_fault, not only the
-/// emit walk) must be CLEAN. The BARE-binder cases (`(tuple (record (x a)) c)`) wire via an empty sub_path;
-/// this is the DEEPER (compound-field-value) twin, formerly the CDZ0900 gap #6838/#6850.
-#[test]
-fn a_deeper_nested_record_match_field_binds_via_sub_path() {
-    // Body references the deeper binder `a` below a nested-record field's own compound value. `f` is
-    // parameterized (non-nullary), so this exercises the check≡compile path — it must CHECK CLEAN now.
-    let src = "(module m (def (f (: t (Tuple (Record (x (Tuple Int64 Int64))) Int64))) \
-               (match t ((tuple (record (x (tuple a b))) c) (+ (+ a b) c)))) (export f))";
-    let all = diags_of(src);
-    assert!(
-        all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
-        "no misleading 'unbound name' for a deeper nested-record binder: {all:?}"
-    );
-    assert!(
-        all.iter().all(|d| !d
-            .message
-            .contains("record sub-pattern nested inside a tuple/list/constructor match pattern")),
-        "the deeper nested-compound MATCH field binder now BINDS via the RecordField sub_path (§235) — \
-         no CDZ0900 'not supported' decline: {all:?}"
-    );
-}
+// MIGRATED to corpus (05-compound-types.sexp, "a deeper nested-record MATCH field binds via the RecordField
+// sub_path (§235, match twin, tuple→record→tuple)"): the deeper nested-record match binder
+// `(#tuple(#record((= x #tuple(a b))) c) …)` now BINDS (a=3,b=4,c=5 → 12) — a false CDZ0101/CDZ0900 would
+// deny the run. Expressed with a LITERAL scrutinee in a nullary main (the rcdzc test used a compound entry
+// param + diags-only). Rust test a_deeper_nested_record_match_field_binds_via_sub_path deleted.
 
 // MIGRATED to corpus (05-compound-types.sexp, "two bare-None record fields (let-bound) keep their distinct
 // Option element types"): the LET-BOUND bare-None cross-contamination regression now RUNS in the corpus
