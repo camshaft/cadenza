@@ -1,0 +1,1 @@
+def head([x, .. rest]) = x
