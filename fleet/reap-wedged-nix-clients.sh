@@ -46,21 +46,38 @@ APPLY=0
 log() { echo "$(date -Is) $*" >>"$REAP_LOG" 2>/dev/null || true; }
 
 # (0) ORPHANED-LEAK branch (v-fleet-tooling 2026-08-30; AGE-FLOORED after a false-positive, v-deferral-declines
-# #6163). An ORPHANED (ppid=1) own-user `nix build .#checks.<arch>.local-gate` MIGHT be a leak (owner died) —
-# BUT ppid==1 ALONE is NOT sufficient: a LEGIT local-gate under contention runs 15-40min, and its nix client
-# can transiently/briefly show ppid==1 (or be freshly orphaned by an unrelated wrapper kill) while its build
-# is still ACTIVELY progressing + wanted. Reaping "regardless of age" therefore CULLED HEALTHY in-progress
-# builds → a fleet-wide land-block (the reaper's own false-negative-bias — never kill real work — was
-# violated). FIX: only reap an orphan OLDER than WEDGED_CLIENT_MIN (180min) — far beyond ANY legit local-gate
-# (15-40min), so no in-progress build is ever reaped, while a truly-leaked orphan lingering >3h is still
-# cleaned. Own-user only; local-gate only; honors REAP_EXEMPT_REGEX. (A sub-180min genuine leak self-resolves:
-# the daemon finishes the build + the client exits — no early reap needed, and never worth risking a legit kill.)
+# #6163; SCOPE-BROADENED to all `.#checks` after v-deferral-declines found 4 orphaned corpus/corpus-06/local-gate
+# builds 4h41m-5h22m old that the local-gate-only scope MISSED while they held derivation-output locks + starved
+# the gate lane). An ORPHANED (ppid=1) own-user `nix build .#checks.*` MIGHT be a leak (owner died) — BUT ppid==1
+# ALONE is NOT sufficient: a LEGIT check runs 15-40min, and its nix client can transiently/briefly show ppid==1
+# (or be freshly orphaned by an unrelated wrapper kill) while its build is still ACTIVELY progressing + wanted.
+# Reaping "regardless of age" therefore CULLED HEALTHY in-progress builds → a fleet-wide land-block. FIX: only
+# reap an orphan OLDER than WEDGED_CLIENT_MIN (180min) — far beyond ANY legit check build (15-40min), so no
+# in-progress build is ever reaped, while a truly-leaked orphan lingering >3h is still cleaned.
+# WHY ALL `.#checks` (not just local-gate, the original 2026-08-30 scope): the local-gate scope was over-narrow —
+# an orphaned corpus/corpus-* build is a leak too (holds a corpus derivation-output lock → gate-lane starvation),
+# and warm-keep does NOT fire-and-forget corpus builds (its flake app builds each target SEQUENTIALLY + blocking,
+# so a LIVE warm-keep corpus build has ppid≠1; only a DEAD warm-keep leaves an orphaned build, which is genuinely
+# leaked + won't be rooted). So the original "corpus-* may be warm-keep fire-and-forget" caveat was wrong. Still
+# own-user only; honors REAP_EXEMPT_REGEX (wasm-opt-gaps stays exempt); and SKIPS a CDZ_LEASED_NIX=1 owned build
+# (belt-and-braces with step-1). (A sub-180min genuine leak self-resolves: the daemon finishes + the client exits.)
 orphans="$(ps -eo pid,ppid,euid,etimes,args 2>/dev/null \
   | awk -v me="$(id -u)" -v exempt="$REAP_EXEMPT_REGEX" -v minage=$((WEDGED_CLIENT_MIN * 60)) \
-      '$2 == 1 && $3 == me && $4 > minage && /nix build \.#checks/ && /local-gate/ && !/awk/ && (exempt == "" || $0 !~ exempt) {print $1}')"
+      '$2 == 1 && $3 == me && $4 > minage && /nix build \.#checks/ && !/awk/ && (exempt == "" || $0 !~ exempt) {print $1}')"
+# SKIP a CDZ_LEASED_NIX=1 owned build even if orphaned (mirrors step-1's leased-skip; an owned build gets extra
+# protection, and a truly-leaked leased orphan is rare + the TTL/dead-holder lease reclaim handles its slot).
+_orph_kept=""
+for _op in $orphans; do
+  if grep -qz 'CDZ_LEASED_NIX=1' "/proc/$_op/environ" 2>/dev/null; then
+    log "SKIP leased orphan pid=$_op (CDZ_LEASED_NIX=1 — owned build, never reaped)"
+  else
+    _orph_kept="${_orph_kept:+$_orph_kept }$_op"
+  fi
+done
+orphans="$_orph_kept"
 if [ -n "$orphans" ]; then
   n_orph="$(printf '%s\n' "$orphans" | grep -c .)"
-  echo "reap-wedged-nix-clients: ${n_orph} ORPHANED (ppid=1, own-user) local-gate LEAK(s) older than ${WEDGED_CLIENT_MIN}min (beyond any legit build) — owner dead. $([ "$APPLY" = 1 ] && echo 'KILLING:' || echo 'WOULD-KILL (dry-run; pass --apply):')"
+  echo "reap-wedged-nix-clients: ${n_orph} ORPHANED (ppid=1, own-user) '.#checks' LEAK(s) older than ${WEDGED_CLIENT_MIN}min (beyond any legit build) — owner dead. $([ "$APPLY" = 1 ] && echo 'KILLING:' || echo 'WOULD-KILL (dry-run; pass --apply):')"
   for p in $orphans; do
     oinfo="$(ps -o pid,etime,args -p "$p" 2>/dev/null | tail -1 | cut -c1-100)"
     echo "  $oinfo"
