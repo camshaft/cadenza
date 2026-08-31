@@ -903,6 +903,11 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.app "*" #[.const (.f64 6.0), .const (.f64 7.0)]) == SymExpr.const (.f64 42.0)
 -- FLOAT comparison folds (mirrors fp-0 `(< 681.0 302.0)` → false).
 #guard normalize (.app "<" #[.const (.f64 681.0), .const (.f64 302.0)]) == SymExpr.const (.bool false)
+-- SOUNDNESS regression guards for the float `<` fold (IEEE-faithful, matching the `<` operator): `NaN < x`
+-- is false, and `+0.0 < -0.0` is false (they compare equal under `<`). (`asF64?` returns `none` on an
+-- int, so int `<` is NOT float-folded — that stays the `.int`-pattern arm; audited alongside #6533/#6534.)
+#guard normalize (.app "<" #[.const (.f64 (0.0 / 0.0 : Float)), .const (.f64 (1.0 : Float))]) == SymExpr.const (.bool false)
+#guard normalize (.app "<" #[.const (.f64 (0.0 : Float)), .const (.f64 (-0.0 : Float))]) == SymExpr.const (.bool false)
 -- SOUNDNESS regression guards for the `=` fold's float handling (`valueEqSpec`→`specFloatEq`, BIT-faithful
 -- with a canonical NaN — NOT the derived IEEE `==` that made the ite-collapse unsound, #6533). Distinct
 -- bits ⇒ NOT equal even when IEEE `==` says equal (`+0.0`/`-0.0`); a canonical NaN ⇒ `NaN = NaN` is true.
