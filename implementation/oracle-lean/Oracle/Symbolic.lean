@@ -903,6 +903,12 @@ def equivMain (mP mP' : Module) : EquivVerdict := equivExport mP mP' "main".toUT
 #guard normalize (.app "*" #[.const (.f64 6.0), .const (.f64 7.0)]) == SymExpr.const (.f64 42.0)
 -- FLOAT comparison folds (mirrors fp-0 `(< 681.0 302.0)` → false).
 #guard normalize (.app "<" #[.const (.f64 681.0), .const (.f64 302.0)]) == SymExpr.const (.bool false)
+-- SOUNDNESS regression guards for the `=` fold's float handling (`valueEqSpec`→`specFloatEq`, BIT-faithful
+-- with a canonical NaN — NOT the derived IEEE `==` that made the ite-collapse unsound, #6533). Distinct
+-- bits ⇒ NOT equal even when IEEE `==` says equal (`+0.0`/`-0.0`); a canonical NaN ⇒ `NaN = NaN` is true.
+#guard normalize (.app "=" #[.const (.f64 (0.0 : Float)), .const (.f64 (-0.0 : Float))]) == SymExpr.const (.bool false)
+#guard normalize (.app "=" #[.const (.f64 (1.5 : Float)), .const (.f64 (1.5 : Float))]) == SymExpr.const (.bool true)
+#guard normalize (.app "=" #[.const (.f64 (0.0 / 0.0 : Float)), .const (.f64 (0.0 / 0.0 : Float))]) == SymExpr.const (.bool true)
 -- a nested float-arith chain folds so it matches the backend's folded literal (fp-1's (+ (+ 475 514) 718)=1707).
 #guard symEquiv (.sym (.app "+" #[.app "+" #[.const (.f64 475.0), .const (.f64 514.0)], .const (.f64 718.0)]))
                 (.sym (.const (.f64 1707.0))) == EquivVerdict.proven
