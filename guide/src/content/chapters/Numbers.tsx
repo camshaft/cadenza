@@ -43,11 +43,11 @@ export default function Numbers() {
       <H2>Handling an overflow instead of halting</H2>
       <P>A bare <C>*</C> that overflows <em>declines</em>, so the whole program stops. Sometimes you'd rather <em>handle</em> the possibility: the checked operations do the same arithmetic but hand back an <C>Option</C>, namely <C>(Some v)</C> when it fits and <C>(None unit)</C> when it would overflow, so you decide what happens. Here <C>Int64.checked-mul</C> of two small numbers succeeds:</P>
       <Runnable
-        source={`(match ((. Int64 checked-mul) 6 7) ((Some v) v) ((None _) -1))`}
+        source={`(match (Int64.checked-mul 6 7) ((Some v) v) ((None _) -1))`}
       />
       <P>And the overflow that made the bare <C>*</C> decline instead returns <C>None</C> here, so the <C>None</C> arm runs and the program keeps going, with <C>-1</C> standing in for "didn't fit":</P>
       <Runnable
-        source={`(match ((. Int64 checked-mul) 9223372036854775807 2) ((Some v) v) ((None _) -1))`}
+        source={`(match (Int64.checked-mul 9223372036854775807 2) ((Some v) v) ((None _) -1))`}
       />
       <P>Same discipline, your choice of response: let it halt (the bare operator) or fold the failure into a value you handle (the checked operator). The <C>Option</C> shape is the subject of <strong>Errors &amp; absence</strong>.</P>
       <H2>Types don't mix by accident</H2>

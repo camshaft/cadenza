@@ -77,7 +77,7 @@ export default function WritingAReducer() {
         #record((= kind (EffectKind.Http))
           (= target "https://ok.host/x")
           (= payload (None))
-          (= correlation (Some ((. String to-bytes) "step-1"))))))
+          (= correlation (Some (String.to-bytes "step-1"))))))
     (List EffectRequest)))
 
 (def

@@ -40,7 +40,7 @@ export default function Errors() {
       <H2>Arithmetic that can't answer</H2>
       <P>Overflow is the same story. The ordinary <C>*</C> traps if it overflows; when you'd rather <em>handle</em> an overflow than crash, <C>Int64.checked-mul</C> (and <C>checked-add</C>) returns an <C>Option</C>, <C>None</C> exactly when the result wouldn't fit.</P>
       <Runnable
-        source={`(def (main) (match ((. Int64 checked-mul) 9223372036854775807 2) ((Some x) x) ((None _) -1)))`}
+        source={`(def (main) (match (Int64.checked-mul 9223372036854775807 2) ((Some x) x) ((None _) -1)))`}
       />
       <P>That's <C>Int64</C>'s largest value times 2, which can't fit, so you get the <C>None</C> arm.</P>
       <H2>Chaining fallible steps: the <C>?</C> operator</H2>
@@ -49,16 +49,16 @@ export default function Errors() {
         source={`(def
   (main)
   (let
-    ((x (try ((. Int64 checked-add) 20 22))))
-    (let ((y (try ((. Int64 checked-add) 40 2)))) (Some (+ x y)))))`}
+    ((x (try (Int64.checked-add 20 22))))
+    (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))`}
       />
       <P>No match arms, no nesting, just the happy path, top to bottom. And when a step <em>does</em> fail, the short-circuit takes over: make the first add overflow and its <C>None</C> becomes the function's answer immediately, so the second <C>try</C> and the body never run:</P>
       <Runnable
         source={`(def
   (main)
   (let
-    ((x (try ((. Int64 checked-add) Int64.max 1))))
-    (let ((y (try ((. Int64 checked-add) 40 2)))) (Some (+ x y)))))`}
+    ((x (try (Int64.checked-add Int64.max 1))))
+    (let ((y (try (Int64.checked-add 40 2)))) (Some (+ x y)))))`}
       />
       <P>The overflowing add is <C>None</C>, so <C>main</C> is <C>(None unit)</C>. The enclosing function must itself return the matching kind (an <C>Option</C> here, or a <C>Result</C>): <C>?</C> needs a fallible boundary to short-circuit <em>to</em>, and it doesn't convert between <C>Option</C> and <C>Result</C>: the kinds have to line up.</P>
       <H2>Matching on the value inside</H2>

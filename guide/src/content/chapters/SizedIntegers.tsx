@@ -80,7 +80,7 @@ export default function SizedIntegers() {
       <Exercise
         id="sized-integers:2"
         prompt={<>This won't compile: <C>(+ (UInt8.of 1) (UInt16.of 300))</C> mixes two widths. Fix it by making the first operand a <C>UInt16</C> too, so both sides match and the sum is <C>301</C>.</>}
-        starter={`(+ ((. UInt? of) 1) (UInt16.of 300))`}
+        starter={`(+ (UInt?.of 1) (UInt16.of 300))`}
         solution={`(+ (UInt16.of 1) (UInt16.of 300))`}
         expected="301"
         hint={<>Widths don't mix, so convert the <C>1</C> at the same width as the other operand, namely <C>UInt16</C>. Then <C>1 + 300 = 301</C>.</>}

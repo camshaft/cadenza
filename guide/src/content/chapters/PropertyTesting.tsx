@@ -19,7 +19,7 @@ export default function PropertyTesting() {
   test
   (def
     (addition-commutes)
-    (assert-eq ((. Int64 wrapping-add) 3 7) ((. Int64 wrapping-add) 7 3) "not commutative")))`}
+    (assert-eq (Int64.wrapping-add 3 7) (Int64.wrapping-add 7 3) "not commutative")))`}
         mode="test"
       />
       <P>No <C>main</C>, no wrapper: the source <em>is</em> the test defs, and the runner discovers and runs them exactly the way <C>cdz test</C> does on your machine. A pass means the function returned without trapping; that's the whole contract.</P>
@@ -58,7 +58,7 @@ export default function PropertyTesting() {
   test
   (def
     (add-comm (: a Int64) (: b Int64))
-    (assert-eq ((. Int64 wrapping-add) a b) ((. Int64 wrapping-add) b a) "not commutative")))`}
+    (assert-eq (Int64.wrapping-add a b) (Int64.wrapping-add b a) "not commutative")))`}
         mode="test"
       />
       <P>You wrote the predicate; the runner wrote the generator. It reports <C>PASS add-comm (100 trials)</C>, a hundred generated pairs, all commuting. Scalars generate directly; compound types (a <C>(List Int64)</C>, a record, a user sum) generate too, with the compiler deriving the generator from the type.</P>
