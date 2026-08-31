@@ -671,6 +671,27 @@
   (input  (Rational.of 2 4))
   (output (: 1/2 Rational)))
 
+; Normalization also FIXES THE PLACEMENT OF THE SIGN (numeric-model.md #An Exact Rational Has A Canonical
+; Normalized Form): the sign lives on the NUMERATOR and the denominator is kept STRICTLY POSITIVE, so a
+; rational built with a negative denominator moves the sign up (1/-2 → -1/2) and a rational built with both
+; components negative cancels to a positive value (-3/-6 → 1/2), each reducing to lowest terms — the canonical
+; byte form is a function of the number, not of the signs the author wrote. Const-folded (runtime-independent).
+(case "a rational moves a negative denominator's sign to the numerator (canonical sign placement)"
+  (input  (Rational.of 1 -2))
+  (output (: -1/2 Rational)))
+
+(case "a rational with numerator and denominator both negative normalizes to a positive value"
+  (input  (Rational.of -3 -6))
+  (output (: 1/2 Rational)))
+
+(case "a rational built from a negative denominator reads a strictly positive denominator"
+  (input  (do (def (main) (Int64.of (Rational.denominator (Rational.of 1 -2)))) (export main)))
+  (output (: 2 Int64)))
+
+(case "a rational built from a negative denominator reads a negative numerator (sign on top)"
+  (input  (do (def (main) (Int64.of (Rational.numerator (Rational.of 1 -2)))) (export main)))
+  (output (: -1 Int64)))
+
 ; A CONSTANT `(Rational.of 1 0)` is a compile-provable trap — the rational analogue of a constant ÷0 —
 ; rejected with CDZ0304 at compile time, not deferred to a runtime trap. The diagnostic must not dead-end at
 ; the bare fault; like the sibling divide-by-zero CDZ0304 it NAMES THE REPAIR ("use a nonzero denominator"):
