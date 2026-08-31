@@ -6576,9 +6576,9 @@ pass	dqe18 a SCALAR-conditioned branch escaping a heap value reclaims clean — 
 pass	dqe19 leg-1 cross-scope: projection + walker on a RETURNED binding leaks its tree in the caller
 pass	dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean
 pass	dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean
-pass	dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree
-pass	dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees
-pass	dqe6 a nested operand dual-used by projection + ORDERING walk leaks its tree (order-only is clean)
+pass	dqe4 ONE nested operand dual-used (deep projection + equality) reclaims clean — borrow-only projected binder mints no spurious dup
+pass	dqe5 BOTH nested operands dual-used (projections + equality) reclaim clean — borrow-only projected binders mint no spurious dup
+pass	dqe6 a nested operand dual-used by projection + ORDERING walk reclaims clean — borrow-only projected binder mints no spurious dup
 pass	dqe7 a nested operand dual-used by projection + CHAMP-key descent (insert one, look up by the equal twin) leaks its tree
 pass	dqe8 a nested operand dual-used by projection + Set membership descent leaks its tree
 pass	dqe9 TWO walkers (equality AND ordering) on the same nested operands with no projection reclaim clean

@@ -223,8 +223,28 @@ fn binding_escapes_dup_aware_inner(
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
         Core::Proj { operand, .. } => {
+            // A compound projection is TRANSPARENT to borrowing: if THIS projection's own result is itself
+            // borrowed by its parent (`tail_borrowed` — a deeper scalar `.field`/`.len` reads a scalar OUT
+            // of this compound child), the extracted child handle is TRANSIENT and the operand is NOT
+            // retained past it. So recurse borrowing when EITHER this is a scalar element OR the incoming
+            // context already borrows (`scalar_element || tail_borrowed`). Without `|| tail_borrowed` a
+            // SCALAR-BOTTOMED chain THROUGH compound intermediates (`(. (. (. a 1) 1) 1)`: a.1/a.1.1
+            // compound, a.1.1.1 scalar) reset the borrow flag at each compound step → the operand `a` read
+            // as ESCAPING. That mattered TWO ways for the dqe4-8 leak: (1) the let-epilogue drop was emitted
+            // ONLY because the spurious `mark_binder_dups` dup put `a` in `dup_sites` (a fragile rescue that
+            // the dup-suppression fix removes), and (2) the `never_escapes` gate on the dup-suppression
+            // (`collect_dup_sites` below) uses THIS query with `dup_sites=None`, so without the fix a
+            // borrow-only projected binder wrongly reads as escaping and the gate never fires. A GENUINE
+            // child-handle escape (compound proj in a CONSUMING position, incoming `tail_borrowed` false) is
+            // UNCHANGED (`false || false`), so it still escapes — no under-retain / UAF.
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
-            binding_escapes_dup_aware(db, operand, binder, scalar_element, dup_sites)
+            binding_escapes_dup_aware(
+                db,
+                operand,
+                binder,
+                scalar_element || tail_borrowed,
+                dup_sites,
+            )
         }
         // `List.at` BORROWS its list (`vec-len`/`vec-get` both borrow; the read element is DUP'd into the
         // `Some` payload rather than moved) — so a list bound here does not escape through `List.at`. The
@@ -1730,6 +1750,16 @@ pub(super) fn collect_dup_sites(
     // PREVIOUS value (not unconditionally `None`) is also nesting-safe. (Copilot PR#942 id 3687515459.)
     let _oracle_guard = OracleGuard::install((index, bitsets));
     for &binder in binders {
+        // Compute the borrow-only verdict for THIS binder over the whole body (the BASE escape query,
+        // `dup_sites=None` — deliberately NOT `Some(sites)`: `sites` is what we are computing, and the
+        // dqe17 root is exactly the `dup_sites`↔`binding_escapes` circularity, so gate on the dup-FREE
+        // query). `false` (escapes on some path) ⇒ the binder's projection dup is LEGITIMATE (a
+        // conditional-escape binder like dqe17's `a` needs the taken-path dup for arm-conditional reclaim);
+        // `true` (never escapes) ⇒ a pure borrow-only binder (dqe4's `a`) whose compound-projection chain
+        // must NOT mint a spurious unbalanced dup. The `Core::Proj` arm reads this via `binder_never_escapes`.
+        let never_escapes =
+            !binding_escapes_dup_aware(db, body, EscapeTarget::Binder(binder), false, None);
+        let _ne_guard = NeverEscapesGuard::install(never_escapes);
         // The body's result position CONSUMES (the value is returned / escapes), so the top-level call is
         // `consuming: true`; nothing is used after the whole body, so `live_after: false`.
         mark_binder_dups(db, body, binder, true, false, sites);
@@ -1792,6 +1822,43 @@ pub(super) fn binder_absent_in_subtree(binder: StructId, id: StructId) -> bool {
         };
         (bits[i / 64] >> (i % 64)) & 1 == 0
     })
+}
+
+thread_local! {
+    // Whether the CURRENT `mark_binder_dups` binder PROVABLY never escapes the body (a borrow-only binding) —
+    // set per-binder in `collect_dup_sites` before each `mark_binder_dups` call (the binder is fixed for the
+    // whole recursion, so a single flag is correct), consulted by `mark_binder_dups_inner`'s `Core::Proj` arm
+    // to GATE the compound-projection consuming-transparency. Thread-local (not a threaded param) for the same
+    // reason as `DUP_OCCURRENCE_ORACLE`: `mark_binder_dups`'s ~40-arm recursion + capturing closures would each
+    // need the extra argument, and select runs single-threaded per function. Defaults to `false` (conservative
+    // — keep the dup, the SAFE leak-not-UAF direction) outside a `collect_dup_sites` run.
+    static BINDER_NEVER_ESCAPES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the active `mark_binder_dups` binder provably never escapes its body (set by `collect_dup_sites`).
+/// Read by the `Core::Proj` arm to decide the dqe17-safe dup-suppression (see there).
+fn binder_never_escapes() -> bool {
+    BINDER_NEVER_ESCAPES.with(|c| c.get())
+}
+
+/// RAII guard that sets [`BINDER_NEVER_ESCAPES`] for one `mark_binder_dups` binder and RESTORES the prior value
+/// on drop (normal return OR panic unwind), so a nested `collect_dup_sites` can never leave a stale flag to
+/// mis-gate the enclosing run's remaining binders.
+struct NeverEscapesGuard {
+    prev: bool,
+}
+
+impl NeverEscapesGuard {
+    fn install(never_escapes: bool) -> Self {
+        let prev = BINDER_NEVER_ESCAPES.with(|c| c.replace(never_escapes));
+        NeverEscapesGuard { prev }
+    }
+}
+
+impl Drop for NeverEscapesGuard {
+    fn drop(&mut self) {
+        BINDER_NEVER_ESCAPES.with(|c| c.set(self.prev));
+    }
 }
 
 /// The EXACT occurrence bit for `binder` at subtree `id` from the active oracle — `Some(true/false)` when the
@@ -2514,13 +2581,31 @@ pub(super) fn mark_binder_dups_inner(
             {
                 sites.insert(id);
             }
-            // Recurse for BINDER-marking (the aggregate's own dup) as before, flagging that `operand` is a
-            // projection operand (borrowed) so a nested `Proj` there does not re-mark a child-dup site.
+            // Recurse for BINDER-marking (the aggregate's own dup), flagging that `operand` is a projection
+            // operand (borrowed) so a nested `Proj` there does not re-mark a child-dup site.
+            //
+            // The consuming flag for the operand recursion is dqe17-SAFE-GATED. The bare `!scalar_element`
+            // was a bug: a SCALAR-BOTTOMED chain through COMPOUND intermediates (`(. (. (. a 1) 1) 1)`)
+            // reset consuming to TRUE at each compound step (`!scalar_element` ignores the incoming
+            // `consuming`), so the root binder's `LocalRef` was reached consuming+live_after → a SPURIOUS
+            // binder-dup. For a pure BORROW-ONLY binder (dqe4's `a`: projection + `= a b`, both borrows)
+            // that dup is unbalanced (only the let-epilogue drop) → the binder ends rc1 → its owned tree
+            // LEAKS (dqe4-8). BUT the same dup is LEGITIMATE for a binder that ESCAPES on some arm (dqe17's
+            // `a`, returned in the then-arm): removing it also removes its `dup_sites` entry, which flips
+            // `binding_escapes` to "escapes" and SUPPRESSES the arm-conditional epilogue drop → dqe17
+            // regresses clean→leak. So make the compound-projection consuming-transparency
+            // (`!scalar_element && consuming`) fire ONLY when the binder PROVABLY never escapes any path
+            // (`binder_never_escapes`, the base `dup_sites=None` query computed in `collect_dup_sites`);
+            // otherwise keep the original `!scalar_element` to preserve the escape dup. Equivalent:
+            // `!scalar_element && (consuming || !never_escapes)`. borrow-only ⇒ `&& consuming` (drop the
+            // spurious dup); escaping ⇒ `!scalar_element` (keep it). A genuine consuming compound proj
+            // (incoming `consuming` true) is unchanged either way — no under-retain / UAF.
+            let never_escapes = binder_never_escapes();
             mark_binder_dups_inner(
                 db,
                 operand,
                 binder,
-                !scalar_element,
+                !scalar_element && (consuming || !never_escapes),
                 live_after,
                 true,
                 sites,
