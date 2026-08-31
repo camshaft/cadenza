@@ -8541,7 +8541,6 @@ pass	a bare literal past Int64.max that still fits UInt64 offers an annotate-UIn
 pass	a bare literal past UInt64.max escalates the annotate fix to BigInt
 pass	a bare literal whose width is fixed TRANSITIVELY through an ancestor arith op is range-checked
 pass	a bare operator keeps the generic mismatch message, not a member-op phrasing
-pass	a bare structural set match pattern is a coded, check-surfaced rejection
 pass	a bare user generic in a parameter type echoes its own parameter
 pass	a binary arithmetic operator with too many operands offers a delete-the-surplus fix
 pass	a called def's zero-arm scalar match reports the non-exhaustive reject exactly once, not at the call site too
@@ -8631,7 +8630,7 @@ pass	a reachable unbound name found by two passes is reported exactly once
 pass	a record ARGUMENT missing fields carries an add (insert) fix with a placeholder per missing field
 pass	a record ARGUMENT with a lone surplus field carries a delete fix
 pass	a record match pattern typo field suggests the nearest field with a rename fix
-pass	a rest-form set match pattern is likewise a coded rejection (a set has no positional structure)
+pass	a rest-form set match pattern is a coded, check-surfaced not-yet-supported rejection
 pass	a reused rest binder across sibling rest-lists is non-linear
 pass	a same-arity function PARAMETER difference resolves at the inner argument, no fn-signature tail
 pass	a same-arity per-position tuple type mismatch keeps its element message with no add or delete fix
@@ -8939,3 +8938,18 @@ pass	resuming with a Bool next-state under an Int64-seeded handler is a type err
 pass	resuming with a String next-state under an Int64-seeded handler is a type error
 pass	the newtype-vs-inner comparison on a newtype parameter carries the heuristic unwrap fix
 pass	the non-exhaustive Bool match arm-insert is symmetric on the missing literal
+pass	Tuple.concat over a non-tuple operand names the op and the non-tuple type
+pass	Tuple.remove over a non-tuple operand names the op and the non-tuple type
+pass	Tuple.split-at over a non-tuple operand names the op and the non-tuple type
+pass	a RUNTIME String match with no wildcard is non-exhaustive — the if-chain desugar does not relax the check
+pass	a fixed-arity list destructuring binding param is refutable and rejected CDZ0210
+pass	a leading-element list rest binding param is refutable (does not match empty) and rejected CDZ0210
+pass	a list rest pattern with a binder BEFORE the rest (leading rest) is a malformed shape, rejected CDZ0201
+pass	a lone guarded list arm does NOT count toward exhaustiveness — the empty list stays uncovered
+pass	a refutable literal list element does NOT count toward length-coverage — a catch-all is still required
+pass	a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)
+pass	a set-pattern element that names no in-scope value is an unbound value reference (CDZ0101)
+pass	a top-level-do module member's Bool/Int mix is type-checked and rejected CDZ0203
+todo	a partial built-in operation (at at 1 of 2 args) returned from an exported def is rejected
+todo	a partial built-in operation (slice at 2 of 3 args) as an unconsumed value is rejected
+todo	a partial built-in operation spelled as a NESTED spine is rejected identically to the flat form
