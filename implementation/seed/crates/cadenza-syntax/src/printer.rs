@@ -4898,6 +4898,54 @@ mod tests {
     // list/map pattern-rest are already pinned (ml/160-162), the let-binder tuple-rest at ml/218.
 
     #[test]
+    fn construction_spread_of_a_literal_operand_round_trips() {
+        // Construction spread whose OPERAND is itself a compound LITERAL (not a bare name) — the canonical
+        // splat shape the runtime lowering will evaluate (operator 2026-08-31: "spread should be both in
+        // patterns and construction"), e.g. `[..[1, 2], 3]` → `#list((.. #list(1 2)) 3)` (splats to
+        // `[1, 2, 3]` once lowered). Pin the ML tree + round-trip for all 5 compounds so the lowering
+        // owners' upcoming splat-VALUE corpus cases (`[..#list(1 2), 3] => #list(1 2 3)`) can't red the
+        // round-trip harness on a SURFACE gap. Surface-only (the runtime splat is v-ast-compound/v-inference).
+        for (src, want_tree) in [
+            (
+                "def f() = [..[1, 2], 3]",
+                "(def (f) #list((.. #list(1 2)) 3))",
+            ),
+            (
+                "def f() = #(..#(1, 2), 3)",
+                "(def (f) #set((.. #set(1 2)) 3))",
+            ),
+            (
+                "def f() = #{ ..#{ 1 = 2 }, 3 = 4 }",
+                "(def (f) #map((.. #map((= 1 2))) (= 3 4)))",
+            ),
+            (
+                "def f() = { ..{ a = 1 }, b = 2 }",
+                "(def (f) #record((.. #record((= a 1))) (= b 2)))",
+            ),
+            (
+                "def f() = (..(1, 2), 3)",
+                "(def (f) #tuple((.. #tuple(1 2)) 3))",
+            ),
+        ] {
+            let p = parser::read_ml(src);
+            assert!(
+                p.ok(),
+                "literal-operand splat must parse: {src} -> {:?}",
+                p.errors
+            );
+            assert_eq!(sexpr::print(&p.arenas), want_tree, "tree for {src}");
+            let ml = crate::printer::print(&p.arenas, 100);
+            let back = parser::read_ml(&ml);
+            assert!(back.ok(), "reparse of {ml:?}: {:?}", back.errors);
+            assert!(
+                p.arenas.structurally_eq(&back.arenas),
+                "literal-operand splat lost in round-trip\n src:  {src}\n ml:   {ml}\n back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
+    }
+
+    #[test]
     fn degenerate_construction_spreads_round_trip() {
         // The construction twin of `degenerate_rest_patterns_parse_permissively_without_panic`: the parser
         // is scope-blind, so MULTIPLE, LEADING, spread-ONLY, and INTERLEAVED `.. operand` construction
