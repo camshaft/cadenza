@@ -3642,46 +3642,12 @@ fn an_empty_let_binding_list_names_the_binds_nothing_case_not_a_malformed_bindin
     );
 }
 
-#[test]
-fn record_without_and_merge_reshape_records_with_field_set_checks() {
-    // 15-rows "dropping fields from a record leaves the remaining fields" / "...an absent field is
-    // rejected" / "merging two records with disjoint fields unions their fields" / "merging records
-    // that share a field name is rejected". `Record.without r (b)` drops the named fields (complement
-    // of `project`); `Record.merge a b` unions two records' field sets, requiring DISJOINTNESS.
-    // `without` of a PRESENT field is well-formed.
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (Record.without (record (= a 1) (= b 2) (= c 3)) (b))) (export main))"
-        ),
-        None,
-        "dropping a present field is well-formed"
-    );
-    // `without` of an ABSENT field → CDZ0212 (a drop of a field never held is a static error).
-    assert_eq!(
-        reject_code("(module m (def (main) (Record.without (record (= a 1)) (z))) (export main))")
-            .as_deref(),
-        Some("CDZ0212"),
-        "dropping an absent field is CDZ0212"
-    );
-    // `merge` of DISJOINT field sets is well-formed.
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (Record.merge (record (= a 1)) (record (= b 2)))) (export main))"
-        ),
-        None,
-        "merging disjoint records is well-formed"
-    );
-    // `merge` of records SHARING a field → CDZ0211 (no silent clobber — the combined record cannot
-    // choose which operand's value the shared field takes).
-    assert_eq!(
-        reject_code(
-            "(module m (def (main) (Record.merge (record (= a 1)) (record (= a 2)))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0211"),
-        "merging records that share a field is CDZ0211"
-    );
-}
+// [migrated → spec/semantics/15-rows-and-open-sums.sexp] record_without_and_merge_reshape_records_with_field_set_checks:
+// fully corpus-covered (native #record inputs) — Record.without present-field drop runs ("dropping fields
+// from a record leaves the remaining fields"), absent-field drop → CDZ0212 ("dropping an absent field from
+// a record is rejected"), Record.merge disjoint unions the fields ("merging two records with disjoint
+// fields unions their fields"), shared-field merge → CDZ0211 ("merging records that share a field name is
+// rejected"). Redundant here; pure cite-delete.
 
 #[test]
 fn a_record_row_op_over_a_non_record_names_the_kind() {
