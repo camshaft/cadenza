@@ -3468,23 +3468,23 @@
 ; as an unbound value name alongside the real fault.
 
 (case "an unknown type in a record parameter annotation names the type, not the field label"
-  (input (do (def (g (: r (Record (x Nonesuch)))) r) (export g)))
+  (input (do (def (g (: r (Record (: x Nonesuch)))) r) (export g)))
   (error CDZ0101 (message "Nonesuch") (not "unbound name `x`")))
 
 (case "an unknown type in a NESTED record parameter annotation field names only the deep type"
-  (input (do (def (g (: r (Record (a (Record (b Nonesuch)))))) r) (export g)))
+  (input (do (def (g (: r (Record (: a (Record (: b Nonesuch)))))) r) (export g)))
   (error CDZ0101 (message "Nonesuch") (not "unbound name `a`") (not "unbound name `b`")))
 
 (case "an unknown type in a record VALUE annotation names the type, not the field label"
-  (input (do (def (main) (: 5 (Record (x Nonesuch)))) (export main)))
+  (input (do (def (main) (: 5 (Record (: x Nonesuch)))) (export main)))
   (error CDZ0101 (message "Nonesuch") (not "unbound name `x`")))
 
 (case "an unknown type in a record LET-BINDER annotation names the type, not the field label"
-  (input (do (def (main) (let (((: r (Record (x Nonesuch))) #record((= x 5)))) r)) (export main)))
+  (input (do (def (main) (let (((: r (Record (: x Nonesuch))) #record((= x 5)))) r)) (export main)))
   (error CDZ0101 (message "Nonesuch") (not "unbound name `x`")))
 
 (case "a well-formed record parameter annotation compiles and the field reads back"
-  (input (do (def (g (: r (Record (x Int64)))) (. r x)) (def (main) (g #record((= x 7)))) (export main)))
+  (input (do (def (g (: r (Record (: x Int64)))) (. r x)) (def (main) (g #record((= x 7)))) (export main)))
   (call main)
   (output (: 7 Int64)))
 
