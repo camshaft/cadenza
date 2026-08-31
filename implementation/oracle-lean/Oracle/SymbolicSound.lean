@@ -106,6 +106,11 @@ def denote (ρ : Nat → Value) (w : IntTy) : SymExpr → Outcome
   -- `evalNode`'s tuple construction (spec core: "a trap occurs when observed"). So tuple CONSTRUCTION is a
   -- value (never traps here), matching the concrete evaluator; coverage for compound-valued programs.
   | .tuple es => .value (.tuple (es.attach.map (fun x => outcomeToValue (denote ρ w x.val))))
+  -- a RECORD denotes to a record VALUE, each field stored via `outcomeToValue` (trapping field → deferred
+  -- `poison`, "trap-when-observed"), byte-identical to `evalNode`'s record construction. Like `.tuple`,
+  -- CONSTRUCTION is a value (never traps here) so it does not complicate `mayTrap_sound`. (Projection /
+  -- `case` — which OBSERVE and can trap — are a later increment; they interact with `mayTrap`.)
+  | .record fs => .value (.record (fs.attach.map (fun x => (x.val.1, outcomeToValue (denote ρ w x.val.2)))))
   | _ => .unsupported "denote: unmodeled construct (compound shape — later increment)"
 termination_by e => sizeOf e
 decreasing_by
@@ -113,6 +118,7 @@ decreasing_by
   all_goals first
     | omega
     | (have h := Array.sizeOf_lt_of_mem x.property; omega)
+    | (rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega)
 
 -- Sanity checks that `denote` computes the expected concrete outcomes (Lean-native, justified: this is
 -- a ∀-inputs metatheorem SPEC beyond corpus reach). Leaves, arithmetic, overflow, comparison, if-select.
