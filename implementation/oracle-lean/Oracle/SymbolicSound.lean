@@ -617,20 +617,129 @@ theorem evalFloatOp_value_f64 (op : String) (a b : Float) (w : Value)
   rw [if_neg h4] at h
   exact absurd h (by simp)
 
-/- CAPSTONE `.app` fold-step — `foldConst?_canon_stable`:
-  `foldConst? op args = some v → (match asF64? v with | some f => .f64 f | none => v) = v`
-TRUE (fold outputs are all `.bool`/`.f64`, both `asF64?`-canon) + structurally unblocked (#6892). 🪤 TACTIC:
-core `split at h` STILL does not case the nested `if … then … else …` chain in `h` — even after normalizing
-the conditions to Props (`beq_iff_eq`/`Bool.and_eq_true`), `repeat' split at h` leaves `h` intact
-(confirmed 2× 2026-08-31). `split_ifs` is Mathlib-only. So `h`'s if-chain must be cased by MANUAL
-`by_cases` on each condition (isNone / not∧size1 / size2 / then `op = "="`,`"<"`,… / `and` / `or`), collapsing
-via `rw [if_pos/if_neg]`; the inner `Value`/`Option`/`asF64?` matches DO `split`.
-🔑 STRATEGY REFINEMENT: `split` on the GOAL (not `h`) cases `asF64? v` — the `none` branch is `rfl`
-immediately (no `foldConst?` casing!); only the `some f` (float) branch needs `v = .f64 f`, which needs the
-by_cases-on-`h` to reach the sole float-output arm (`evalFloatOp` → `.f64`). So the by_cases only has to
-handle the float arms fully; every `.bool` arm is discharged by the goal-`none` branch. All OTHER `.app`
-building blocks proven (denote{Unary,Binary}_fold, denoteApp_fold[_unary], denoteBinary_arith, the arith
-identity value-chars, denote_map_normalize_args, asF64Canon_idem). A focused by_cases increment next. -/
+/-- The `foldConst?` FLOAT arm packages `evalFloatOp op x y` as `some w` on a `.value` outcome, `none`
+otherwise. So whenever it yields `some v`, `v` came through `evalFloatOp` → is a `.f64` (via
+`evalFloatOp_value_f64`). Building block for `foldConst?_out`'s single non-`.bool` arm. -/
+private theorem evalFloatOp_fold_f64 (op : String) (x y : Float) (v : Value)
+    (h : (match evalFloatOp op x y with | .value w => some w | _ => none) = some v) :
+    ∃ g, v = Value.f64 g := by
+  split at h
+  · injection h with h'
+    obtain ⟨g, hg⟩ := evalFloatOp_value_f64 op x y _ (by assumption)
+    exact ⟨g, h' ▸ hg⟩
+  · simp at h
+
+/-- Every `foldConst?` output is a `.bool` (all comparison / `=` / `and` / `or` / `not` arms) or a `.f64`
+(the sole FLOAT-arith arm, via `evalFloatOp`) — NEVER an `.int`/`.float`/`.floatNan`/`.floatInf`. This is
+the fact the capstone `.app` fold case needs: a folded constant is `asF64?`-canonical (`foldConst?_canon_stable`
+below). Proven by MANUAL `by_cases` on each `if op == …` condition (core `split` does not fire on the
+`if (bool) = true` chains, and `split_ifs` is Mathlib-only — see the tactic note in #6997), collapsing via
+`rw [if_pos/if_neg]`; the inner `Value`/`Option`/`asF64?` matches DO `split`. -/
+theorem foldConst?_out (op : String) (args : Array SymExpr) (v : Value)
+    (h : foldConst? op args = some v) :
+    (∃ b, v = Value.bool b) ∨ (∃ f, v = Value.f64 f) := by
+  unfold foldConst? at h
+  -- `consts.any isNone` guard
+  by_cases hn : (args.map symToValue?).any (·.isNone) = true
+  · rw [if_pos hn] at h; simp at h
+  rw [if_neg hn] at h
+  -- unary `not` size-dispatch
+  by_cases h1 : (op == "not" && ((args.map symToValue?).filterMap id).size == 1) = true
+  · rw [if_pos h1] at h
+    split at h
+    · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+    · simp at h
+  rw [if_neg h1] at h
+  -- binary size-2 dispatch
+  by_cases h2 : (((args.map symToValue?).filterMap id).size == 2) = true
+  · rw [if_pos h2] at h
+    by_cases he : (op == "=") = true
+    · rw [if_pos he] at h; injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+    rw [if_neg he] at h
+    by_cases hlt : (op == "<") = true
+    · rw [if_pos hlt] at h
+      split at h
+      · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+      · split at h
+        · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+        · simp at h
+    rw [if_neg hlt] at h
+    by_cases hgt : (op == ">") = true
+    · rw [if_pos hgt] at h
+      split at h
+      · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+      · split at h
+        · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+        · simp at h
+    rw [if_neg hgt] at h
+    by_cases hle : (op == "<=") = true
+    · rw [if_pos hle] at h
+      split at h
+      · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+      · split at h
+        · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+        · simp at h
+    rw [if_neg hle] at h
+    by_cases hge : (op == ">=") = true
+    · rw [if_pos hge] at h
+      split at h
+      · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+      · split at h
+        · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+        · simp at h
+    rw [if_neg hge] at h
+    by_cases har : (op == "+" || op == "-" || op == "*" || op == "/") = true
+    · rw [if_pos har] at h
+      split at h
+      · exact Or.inr (evalFloatOp_fold_f64 op _ _ v h)
+      · simp at h
+    rw [if_neg har] at h
+    by_cases hand : (op == "and") = true
+    · rw [if_pos hand] at h
+      split at h
+      · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+      · split at h
+        · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+        · simp at h
+    rw [if_neg hand] at h
+    by_cases hor : (op == "or") = true
+    · rw [if_pos hor] at h
+      split at h
+      · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+      · split at h
+        · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+        · simp at h
+    rw [if_neg hor] at h
+    simp at h
+  rw [if_neg h2] at h
+  -- variadic (arity ≠ 2) `and`/`or`
+  by_cases hand2 : (op == "and") = true
+  · rw [if_pos hand2] at h
+    split at h
+    · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+    · split at h
+      · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+      · simp at h
+  rw [if_neg hand2] at h
+  by_cases hor2 : (op == "or") = true
+  · rw [if_pos hor2] at h
+    split at h
+    · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+    · split at h
+      · injection h with h'; exact Or.inl ⟨_, h'.symm⟩
+      · simp at h
+  rw [if_neg hor2] at h
+  simp at h
+
+/-- CAPSTONE `.app` fold-step: a `foldConst?` output is `asF64?`-CANON-STABLE — canonicalizing it (the shared
+`.const`/`normalize`/`denote` float canon) is a no-op. Immediate from `foldConst?_out` (every output is `.bool`
+— `asF64? = none` → canon returns it unchanged — or `.f64 f` — `asF64? = some f` → canon returns `.f64 f`
+unchanged). This is what lets the capstone `.app` fold case relate a folded constant to its denotation without
+a further canonicalization step. -/
+theorem foldConst?_canon_stable (op : String) (args : Array SymExpr) (v : Value)
+    (h : foldConst? op args = some v) :
+    (match Value.asF64? v with | some f => Value.f64 f | none => v) = v := by
+  rcases foldConst?_out op args v h with ⟨b, rfl⟩ | ⟨f, rfl⟩ <;> rfl
 
 /-! ### Capstone compound-congruence cases (trivial: `denote` is `unsupported` on compounds).
 `normalize` is a congruence on the value-shaped compounds (rebuilds the same constructor with children
