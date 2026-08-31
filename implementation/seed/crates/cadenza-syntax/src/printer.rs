@@ -7122,37 +7122,12 @@ mod tests {
     // segment `match x with | b[u16(n)] => n`. The sexp→ml `print((bin …))` oracles are subsumed by these
     // ml cases' fmt goldens.
 
-    #[test]
-    fn a_comment_on_a_binary_segment_is_preserved_not_dropped() {
-        // A comment on a `b[…]` CONSTRUCTION segment — own-line leading (`b[\n // seg\n u8(1), …]`) or a
-        // same-line trailing on the LAST segment (`b[…, u8(2) // n]`) — used to be DROPPED (segments are
-        // parsed via `expr`, which doesn't drain the leading slot; the last-segment trailing sat in the
-        // `]` slot). bin_form now captures both (leading `(comment …)`, last-segment `(comment-after …)`
-        // gated on `at(RBracket)`), and print_bin uses the shared `bracketed_comment_aware`. Same as the
-        // list literal. `strip_comments` peels them; compiles to wasm.
-        assert_eq!(
-            sexpr::print(
-                &parser::read_ml("def b() -> Bytes = b[\n  // seg\n  u8(1), u8(2)]").arenas
-            ),
-            "(def (b) (: (bin (comment \"seg\" (u8 1)) (u8 2)) Bytes))",
-            "own-line comment before the first bin segment is captured"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def b() -> Bytes = b[u8(1), u8(2) // last\n]").arenas),
-            "(def (b) (: (bin (u8 1) (comment-after \"last\" (u8 2))) Bytes))",
-            "same-line trailing comment on the last bin segment is captured"
-        );
-        assert_eq!(
-            assert_roundtrip("b[\n  // seg\n  u8(1), u8(2)]", 80),
-            "b[\n  // seg\n  u8(1),\n  u8(2)\n]"
-        );
-        // Clean binary literals keep their flat layout.
-        assert_eq!(
-            assert_roundtrip("b[u16(258), u8(1)]", 80),
-            "b[u16(258), u8(1)]"
-        );
-        assert_eq!(assert_roundtrip("b[]", 80), "b[]");
-    }
+    // `a_comment_on_a_binary_segment_is_preserved_not_dropped` (a comment on a `b[…]` construction segment —
+    // own-line leading or same-line trailing on the LAST segment) MIGRATED to the spec/syntax corpus (inc-6
+    // batch-44, comment-node block): ml/285-comment-leading-bin-segment `b[`⏎`  // seg`⏎`  u8(1), u8(2)]`→
+    // `(bin (comment "seg" (u8 1)) (u8 2))`, ml/286-comment-trailing-last-bin-segment
+    // `b[u8(1), u8(2) // last`⏎`]`→`(bin (u8 1) (comment-after "last" (u8 2)))`. Clean bin literals are
+    // already pinned (ml/237-239).
 
     // Two own-line-leading-comment tests MIGRATED to the spec/syntax corpus (inc-6 batch-39, comment-node
     // block; an own-line `//` → `(comment "text" node)` LEADING the node it precedes):
@@ -7531,54 +7506,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn comment_leading_a_def_body_is_preserved_not_dropped() {
-        // A `//` line-comment on its own line at the START of a def body (the interior
-        // body-leading position, `def f() =` \n `// note` \n `body`) is captured + wrapped as a
-        // `(comment …)`, not DROPPED. `expr` doesn't drain trivia (only `stmt` does), so before the
-        // `body_expr` fix the comment was stranded at the body's first-token slot and vanished
-        // entirely — a genuine comment LOSS (worse than a downgrade). A structural round-trip can't
-        // witness a dropped comment; the count-based assert pins it. Covers function + value defs.
-        for (src, label) in [
-            (
-                "def f() -> Int64 =\n  // interior body comment\n  1",
-                "function body",
-            ),
-            ("def x =\n  // value body note\n  42", "value body"),
-        ] {
-            let a = parser::read_ml(src);
-            assert!(a.ok(), "[{label}] parse: {:?}", a.errors);
-            let sexpr = crate::sexpr::print(&a.arenas);
-            assert_eq!(
-                sexpr.matches("(comment ").count(),
-                1,
-                "[{label}] the body `//` must be a `(comment …)` node, not dropped: {sexpr}"
-            );
-            let printed = print(&a.arenas, 100);
-            let comment_lines = printed
-                .lines()
-                .filter(|l| l.trim_start().starts_with("//"))
-                .count();
-            assert_eq!(
-                comment_lines, 1,
-                "[{label}] the body comment re-prints as one `//` line: {printed}"
-            );
-            // Idempotent across a second pass.
-            let b = parser::read_ml(&printed);
-            assert!(b.ok(), "[{label}] reparse: {:?}", b.errors);
-            assert_eq!(print(&b.arenas, 100), printed, "[{label}] not idempotent");
-        }
-        // CONTROL: a `//` between two top-level defs still round-trips (the statement-leading position
-        // `stmt` already handled — the fix must not disturb it).
-        let ctrl = "def a() -> Int64 = 1\n// between defs\ndef b() -> Int64 = 2";
-        let a = parser::read_ml(ctrl);
-        assert!(a.ok(), "[control] parse: {:?}", a.errors);
-        assert_eq!(
-            crate::sexpr::print(&a.arenas).matches("(comment ").count(),
-            1,
-            "[control] the between-defs comment survives"
-        );
-    }
+    // `comment_leading_a_def_body_is_preserved_not_dropped` (a `//` on its own line at the START of a def
+    // body → `(comment "text" body)`, not dropped) MIGRATED to the spec/syntax corpus (inc-6 batch-44,
+    // comment-node block): ml/287-comment-leading-def-body
+    // `def f() -> Int64 =`⏎`  // interior body comment`⏎`  1`→
+    // `(def (f) (: (comment "interior body comment" 1) Int64))`, ml/288-comment-leading-value-def-body
+    // `def x =`⏎`  // value body note`⏎`  42`→`(def x (comment "value body note" 42))`, ml/289-comment-
+    // between-top-level-defs (the CONTROL: a `//` between two top-level defs) `def a() -> Int64 = 1`⏎
+    // `// between defs`⏎`def b() -> Int64 = 2`→`(do (def (a) (: 1 Int64)) (comment "between defs"
+    // (def (b) (: 2 Int64))))`.
 
     #[test]
     fn file_header_doc_before_a_non_documentable_form_becomes_a_module_doc() {
