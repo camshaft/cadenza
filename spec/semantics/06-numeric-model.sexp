@@ -7139,14 +7139,13 @@
   (trap "overflow"))
 
 (case
-  "a genuinely-runtime UNARY negation returns the negation and traps at the minimum integer"
+  "Num.neg of a runtime integer returns the negation and traps at the minimum integer"
   (doc
-    "The unary `(- n)` spelling of runtime negation, the companion of the binary `(- 0 a)` above:
-           `(- n)` over an entry parameter returns -n for an in-range value — f(7) = -7, f(-42) = 42 —
+    "`(Num.neg n)` over an entry parameter returns -n for an in-range value — f(7) = -7, f(-42) = 42 —
            and traps at n = Int64.min, whose magnitude +2^63 has no Int64 representation (a wrapping
-           negate would wrongly return Int64.min). Pins that unary minus lowers to the same CHECKED
-           negate as the binary form.")
-  (input (do (def (f (: n Int64)) (- n)) (export f)))
+           negate would wrongly return Int64.min). Pins that Num.neg lowers to the CHECKED negate, inheriting
+           the binary subtraction's `x == MIN` trap (the companion of the binary `(- 0 a)` underflow above).")
+  (input (do (def (f (: n Int64)) (Num.neg n)) (export f)))
   (call f (: 7 Int64))
   (output (: -7 Int64))
   (call f (: -42 Int64))
@@ -7154,11 +7153,10 @@
   (call f (: -9223372036854775808 Int64))
   (trap "overflow"))
 
-; --- `Int64.neg` — the NAMED first-class form of unary negation `T.neg : T -> T` ---
-; The named companion of prefix `(- e)`: a signed integer module offers `neg`, a first-class negate VALUE
-; that negates an expression unambiguously (where the bare `-` is a lexer-level prefix). Same semantics as
-; `(- e)` — it lowers through the same checked negate (`0 - e`), so it folds a constant, negates at runtime,
-; and traps at the width's minimum. Offered only on SIGNED widths (negating an unsigned underflow-traps on
+; --- `Int64.neg` / `T.neg` — the per-type named negate `T.neg : T -> T` ---
+; A signed integer module offers `neg`, a first-class negate VALUE that negates an expression. It lowers
+; through the checked negate, so it folds a constant, negates at runtime, and traps at the width's minimum
+; (the same negate `Num.neg` uses). Offered only on SIGNED widths (negating an unsigned underflow-traps on
 ; every nonzero input, so no `neg` is built there).
 (case
   "Int64.neg of a constant folds to the negated value"
@@ -7168,9 +7166,9 @@
 (case
   "Int64.neg of a runtime expression negates at runtime, both signs"
   (doc
-    "The named `Int64.neg` over a runtime operand mirrors the unary `(- n)` above: it negates the value,
-           positive to negative and negative to positive. `f(4) = neg(5) = -5`; `f(-43) = neg(-42) = 42`.
-           Pins that the named op lowers to the SAME checked negate as prefix `-`.")
+    "The named `Int64.neg` over a runtime operand negates the value, positive to negative and negative to
+           positive. `f(4) = neg(5) = -5`; `f(-43) = neg(-42) = 42`. Pins that the named op lowers to the same
+           checked negate as `Num.neg`.")
   (input (do (def (f (: n Int64)) (Int64.neg (+ n 1))) (export f)))
   (call f (: 4 Int64))
   (output (: -5 Int64))

@@ -2332,7 +2332,6 @@ pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value
 pass	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
 pass	a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum
 pass	a genuinely-runtime NARROW-width unsigned overflow traps on the emitted operation
-pass	a genuinely-runtime UNARY negation returns the negation and traps at the minimum integer
 pass	a genuinely-runtime addition overflow traps on the emitted operation
 pass	a genuinely-runtime in-range shift count works
 pass	a genuinely-runtime left-shift count beyond the bit width traps rather than masking to a small count
