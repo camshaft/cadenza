@@ -1319,9 +1319,11 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
                 super::type_ast(&mut b, &ty, &ncx)
             };
             let Some(node) = surface else {
+                // Arrow-surface reflection (of a function/continuation type) is a future increment; that
+                // not-yet intent stays in this comment, NOT the user-facing message (operator seq-280).
                 return Core::Poison(Reject::decline(
                     "Type.ast: this type has no canonical surface form to reflect (a function or \
-                     continuation type — arrow-surface reflection is a later increment)",
+                     continuation type — arrow-surface reflection is not supported)",
                 ));
             };
             let arenas = b.finish(node);
@@ -1408,9 +1410,11 @@ pub(super) fn lower_type_ast(db: &mut Db, arg: StructId, instantiated: bool) -> 
                         param_surface.insert(p.clone(), surf);
                     }
                     None => {
+                        // Arrow-surface reflection is a future increment; the not-yet intent stays in this
+                        // comment, NOT the user-facing message (operator seq-280).
                         return Core::Poison(Reject::decline(
                             "Type.ast: a type argument has no canonical surface form to substitute (a \
-                             function type — arrow-surface reflection is a later increment)",
+                             function type — arrow-surface reflection is not supported)",
                         ));
                     }
                 }
