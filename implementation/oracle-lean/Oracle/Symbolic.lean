@@ -1287,6 +1287,32 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | .cannotProve r => .cannotProve r
               | _ => .cannotProve "symeval: Bytes.of on a non-list value")
            | none => .cannotProve "symeval: malformed Bytes.of")
+        else if (parseIntTyName? q).isSome && (mem == "of".toUTF8 || mem == "wrap".toUTF8) then
+          -- INT-CONVERSION `(<IntTy>.of x)` / `.wrap x` (Int8/16/32/64 + UInt8/16/32/64) — byte-faithful to
+          -- evalNode (Eval.lean:1783-1805): `.wrap` reinterprets x mod 2^w (total, two's-complement);
+          -- `.of` is CHECKED — in-range → the value, OUT-OF-RANGE → TRAPS (unreachable) so it does NOT fold
+          -- (stays symbolic → cannotProve, never a false-proven value). BigInt: identity (both). (v-cdz-smith
+          -- steering: the int-conversion `.of` family is the biggest modelable boundary chunk, ~60 cases.)
+          (match children[1]? with
+           | some xId =>
+             (match symEval m senv fuel ty xId with
+              | .sym (.const (.int x)) =>
+                let tty := (parseIntTyName? q).get!
+                (match tty.width with
+                 | .bits w =>
+                   let modw : Int := (2 : Int) ^ w
+                   if mem == "wrap".toUTF8 then
+                     let p := ((x % modw) + modw) % modw
+                     .sym (.const (.int (if tty.signed && p ≥ (2 : Int) ^ (w - 1) then p - modw else p)))
+                   else
+                     let lo : Int := if tty.signed then -((2 : Int) ^ (w - 1)) else 0
+                     let hi : Int := if tty.signed then (2 : Int) ^ (w - 1) else (2 : Int) ^ w
+                     if lo ≤ x && x < hi then .sym (.const (.int x))
+                     else .cannotProve "symeval: <IntTy>.of out of target range (traps unreachable)"
+                 | _ => .sym (.const (.int x)))  -- BigInt (or unknown width): identity
+              | .cannotProve r => .cannotProve r
+              | _ => .cannotProve "symeval: <IntTy>.of/wrap on a non-integer operand")
+           | none => .cannotProve "symeval: malformed <IntTy> conversion")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
       | none => .cannotProve "symeval: non-name head"
   | none => .cannotProve "symeval: node index out of range"
@@ -1851,6 +1877,33 @@ private def _strAtOobExpr : Module :=
     root := 6 }
 #guard symEval _strAtOobExpr [] symDefaultFuel defaultIntTy 6
        == SymOutcome.sym (.ctor "None".toUTF8 #[])
+
+-- INT-CONVERSION `.of`/`.wrap` member-op coverage (v-cdz-smith top boundary, ~60 cases). Single-arg call
+-- `((. <IntTy> of|wrap) x)`: leaves [".", IntTy, of|wrap, x]; nodes head-list#[0,1,2] + arg-atom + call.
+private def _int8OfExpr : Module :=  -- (Int8.of 2) → 2 (in range [-128,128))
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Int8".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .list #[3, 4]], root := 5 }
+#guard symEval _int8OfExpr [] symDefaultFuel defaultIntTy 5 == SymOutcome.sym (.const (.int 2))
+
+private def _uint8OfOobExpr : Module :=  -- (UInt8.of 300) → OUT of range [0,256) → traps → cannotProve
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "UInt8".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[1, 44])],  -- 1*256 + 44 = 300
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .list #[3, 4]], root := 5 }
+#guard match symEval _uint8OfOobExpr [] symDefaultFuel defaultIntTy 5 with
+       | .cannotProve _ => true | _ => false
+
+private def _uint8WrapExpr : Module :=  -- (UInt8.wrap 300) → 300 mod 256 = 44 (total)
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "UInt8".toUTF8, Leaf.name "wrap".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[1, 44])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .list #[3, 4]], root := 5 }
+#guard symEval _uint8WrapExpr [] symDefaultFuel defaultIntTy 5 == SymOutcome.sym (.const (.int 44))
+
+private def _int64OfExpr : Module :=  -- (Int64.of 70) → 70 (in range)
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Int64".toUTF8, Leaf.name "of".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[70])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .list #[3, 4]], root := 5 }
+#guard symEval _int64OfExpr [] symDefaultFuel defaultIntTy 5 == SymOutcome.sym (.const (.int 70))
 
 -- OPTION.EXPECT member-op coverage: `((. Option expect) (Some 5))` → 5 (unwrap the Some payload).
 private def _optExpectExpr : Module :=
