@@ -5677,3 +5677,58 @@
       (export main)))
   (output (: 1011111 Int64))
   (live-objects 0))
+
+; --- An UNDETERMINED Set/Map key element type is a compile-time determination fault, not a codeless bail -
+; A Set/Map key is CANONICALIZED at the key site, which bakes the key type's shape descriptor. When the
+; key's element type is genuinely UNDETERMINED — `(Set.of (list (list)))`, whose inner empty-list element
+; nothing constrains — no shape can be baked, and the seed used to DECLINE codelessly at key canonicalization
+; ("list-key canonicalization: key type has no bakeable shape descriptor"), letting a not-fully-determined
+; program slip to a shape-less lower bail. That is a determination fault: it is now REJECTED at compile time
+; with CDZ0203 "annotate the type" — the SAME determinacy code an unannotated escaping `(None)`/empty-list
+; RESULT gets — the fix being an annotation that fixes the element type, not a codeless decline. A DETERMINED
+; key (a non-empty inner list, or an annotated empty one) bakes its descriptor and compiles; a GENERIC
+; Set/Map-consuming def is monomorphized before this emit-time check, so its key is concrete by then — no
+; false reject (seq-286 / fuzzer #5, v-compiler-primitives + v-deferral-declines routed).
+(case
+  "an undetermined Set-key element type is rejected CDZ0203 (annotate), not a codeless decline"
+  (doc
+    "`(Set.of (list (list)))` builds a `(Set (List (List ?)))` whose inner empty-list element type
+           nothing determines — no canonical key shape can be baked. Rejected at compile time with CDZ0203
+           'not fully determined — annotate it', the determination-fault code (mirrors the unannotated
+           escaping-result reject), rather than the former codeless key-canonicalization decline.")
+  (input (do (def (main) (Set.len (Set.of (list (list))))) (export main)))
+  (error CDZ0203 (message "not fully determined")))
+
+(case
+  "a DETERMINED nested-list Set key bakes its shape and compiles (the determinacy control)"
+  (doc
+    "The control the reject above must be distinguished from: a non-empty inner list `(list 1)` pins the
+           element type to `Int64`, so `(Set (List (List Int64)))` bakes a canonical key shape and compiles —
+           `Set.len` of a one-member set is 1. Pins that the CDZ0203 fires ONLY on a genuinely undetermined
+           key, never on a determined one.")
+  (input (do (def (main) (Set.len (Set.of (list (list 1))))) (export main)))
+  (output (: 1 Int64)))
+
+(case
+  "an ANNOTATED empty-list Set key determines the element type and compiles"
+  (doc
+    "The annotation fix the CDZ0203 hint points at: `(: (list) (List Int64))` determines the empty
+           inner list's element type, so the key shape bakes and it compiles (`Set.len` 1). Pins that the
+           annotation clears the determination fault by construction.")
+  (input (do (def (main) (Set.len (Set.of (list (: (list) (List Int64)))))) (export main)))
+  (output (: 1 Int64)))
+
+(case
+  "a GENERIC Set-consuming def monomorphizes at a determined call — no false reject"
+  (doc
+    "The no-false-reject guard: a def polymorphic over the set's element (`(dup s) = (Set.union s s)`)
+           carries a free key element var in its STANDALONE scheme, but the determinacy check runs at the
+           emit of a MONOMORPHIZED instance — at the concrete call `(dup (Set.of (list (list 1))))` the
+           element is `(List Int64)`, determined — so it compiles (`Set.len` 1), NOT a spurious CDZ0203.
+           Pins that the reject is post-monomorphization and never fires on a legitimately-generic def.")
+  (input
+    (do
+      (def (dup s) (Set.union s s))
+      (def (main) (Set.len (dup (Set.of (list (list 1))))))
+      (export main)))
+  (output (: 1 Int64)))

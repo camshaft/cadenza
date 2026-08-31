@@ -6958,8 +6958,24 @@ fn emit_key_canonicalize(
             match crate::lower::value_cmp_shape_descriptor(db, &resolved) {
                 Some(d) => d,
                 None => {
-                    return Err(Reject::decline(
-                        "list-key canonicalization: key type has no bakeable shape descriptor",
+                    // Neither the field nor the node's resolved key type bakes a shape — the key's element
+                    // type is genuinely UNDETERMINED at this (already-monomorphized) emit site, e.g.
+                    // `(Set.of (list (list)))` whose inner empty-list element nothing constrains. This is a
+                    // determinacy fault, not a feature gap: reject it CODED (CDZ0203 "annotate the type",
+                    // the escape-result determinacy reject's twin) rather than the former CODELESS decline
+                    // that let a not-fully-determined program slip through to a shape-less lower bail. A
+                    // DETERMINED key (`(Set.of (list (list 1)))`, or `(: (list) (List Int64))`) bakes a
+                    // descriptor and never reaches here; a GENERIC `Set a`/`Map a _` def is monomorphized
+                    // before emit, so its key is concrete by the time this runs — no false reject
+                    // (seq-286 / fuzzer #5, v-compiler-primitives + v-deferral-declines routed).
+                    return Err(Reject::coded(
+                        crate::diag::Code::TypeMismatch,
+                        format!(
+                            "a Set/Map key's type `{}` is not fully determined — annotate it \
+                             (e.g. `(: (list) (List Int64))`) so its keys have a canonical form for \
+                             comparison",
+                            resolved.render_name(&db.name_ctx())
+                        ),
                     ));
                 }
             }
