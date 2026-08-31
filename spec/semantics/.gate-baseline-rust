@@ -8950,6 +8950,3 @@ pass	a refutable literal list element does NOT count toward length-coverage — 
 pass	a set match with no whole-set catch-all is non-exhaustive (a set's element set is unbounded)
 pass	a set-pattern element that names no in-scope value is an unbound value reference (CDZ0101)
 pass	a top-level-do module member's Bool/Int mix is type-checked and rejected CDZ0203
-todo	a partial built-in operation (at at 1 of 2 args) returned from an exported def is rejected
-todo	a partial built-in operation (slice at 2 of 3 args) as an unconsumed value is rejected
-todo	a partial built-in operation spelled as a NESTED spine is rejected identically to the flat form

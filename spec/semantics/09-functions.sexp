@@ -176,34 +176,58 @@
   (call main (: 5 Int64))
   (output (: 15 Int64)))
 
-; --- A BUILT-IN OPERATION partially applied as an unconsumed value is REJECTED (a user fn is not) ---
+; --- A BUILT-IN OPERATION partially applied CURRIES — completing it yields a value (should-work) ---
 ;    (migrated from rcdzc a_partial_builtin_operation_as_an_unconsumed_value_is_rejected_not_silently_shipped)
-; Unlike a USER function — which is single-arity and freely curries (the partial-application cases above) — a
-; BUILT-IN OPERATION must be applied to EXACTLY its arguments: a partial application would require a
-; synthesized runtime closure, which is not supported. A partial built-in op as an UNCONSUMED value (a dead
-; def body, or an exported def returning the op) is rejected with "applied at the wrong arity", however the
-; spine is spelled (flat `(String.slice s 0)` or nested `((String.slice s) 0)` — the spine is flattened to its
-; bottom head). The completion test is LOCAL, so full application, unary negation (prefix `-` = Sub at arity
-; 1), a completing constructor spine, and legitimate USER-fn / module-member currying are all NOT flagged.
+; Like a USER function, a BUILT-IN OPERATION is a first-class value (core-semantics L291) and partial application
+; MUST be natural — applying fewer than its arity returns a CLOSURE awaiting the rest (core-semantics L73), which
+; completes to a value when the remaining args arrive. The first-class treatment of a built-in-operation value
+; (storage, partial application) is to-be-specified-as-realized (core-semantics L295): a compiler that does not
+; yet synthesize the runtime closure for a built-in-used-as-a-value DECLINES rather than miscompile
+; (declined(PrimAsValueNeedsClosure), owner v-compiler-primitives) — so these SHOULD-WORK cases are TODOs that
+; auto-pass when that closure synth lands, however the spine is spelled (flat `(String.slice s 0)` or nested
+; `((String.slice s) 0)` — flattened to its bottom head). CONTRAST: OVER-application (too many args) is a PERMANENT
+; CDZ0203 error (core-semantics L293); full application, unary negation (prefix `-` = Sub at arity 1), and a
+; completing constructor spine all compile today.
 (case
-  "a partial built-in operation (slice at 2 of 3 args) as an unconsumed value is rejected"
-  (input (do (def (f (: s String)) (String.slice s 0)) (def (main) 0) (export main)))
-  (declines (message "applied at the wrong arity")))
+  "a partial built-in operation (slice at 2 of 3 args) curries — completing it yields a value (should-work)"
+  (doc
+    "`(String.slice s 0)` is slice partially applied (start given, end missing) — it SHOULD curry to a
+           closure awaiting the end index (core-semantics L73/L295), completing to a substring. Declines today
+           only until the built-in-as-value closure synth is realized (declined(PrimAsValueNeedsClosure)). f holds
+           the partial; `((f \"abcdef\") 4)` completes it to slice(\"abcdef\",0,4) = \"abcd\" (end EXCLUSIVE),
+           byte-len 4.")
+  (input
+    (do (def (f (: s String)) (String.slice s 0)) (def (main) (String.byte-len ((f "abcdef") 4))) (export main)))
+  (call main)
+  (output (: 4 Int64)))
 
 (case
-  "a partial built-in operation (at at 1 of 2 args) returned from an exported def is rejected"
-  (input (do (def (f (: s String)) (String.at s)) (export f)))
-  (declines (message "applied at the wrong arity")))
+  "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
+  (doc
+    "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
+           index (core-semantics L73/L295), declining today only until the built-in-as-value closure synth is
+           realized (declined(PrimAsValueNeedsClosure)). `((f \"hi\") 0)` completes it to String.at(\"hi\",0) =
+           Some \"h\" — String.at yields an (Option String) 1-scalar substring (not a Char); the arm returns 1.")
+  (input
+    (do
+      (def (f (: s String)) (String.at s))
+      (def (main) (match ((f "hi") 0) ((Some c) (if (= c "h") 1 0)) ((None _u) -1)))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
 
 (case
-  "a partial built-in operation spelled as a NESTED spine is rejected identically to the flat form"
+  "a partial built-in operation spelled as a NESTED spine curries identically to the flat form (should-work)"
   (doc
     "`((String.slice s) 0)` is the same application as the flat `(String.slice s 0)` (`(f a b)` desugars
-           to `((f a) b)`), so it must reject identically. The immediate head is the inner Apply
-           `(String.slice s)`; the arity check flattens the spine to its bottom head first, so the nested and
-           flat surfaces are treated the same.")
-  (input (do (def (f (: s String)) ((String.slice s) 0)) (def (main) 0) (export main)))
-  (declines (message "applied at the wrong arity")))
+           to `((f a) b)`), so it curries identically — the spine is flattened to its bottom head, so the nested
+           and flat surfaces are treated the same. Completing `((f \"abcdef\") 4)` = slice(\"abcdef\",0,4) =
+           \"abcd\", byte-len 4 — same value as the flat form. Declines today only until the built-in-as-value
+           closure synth is realized (declined(PrimAsValueNeedsClosure)).")
+  (input
+    (do (def (f (: s String)) ((String.slice s) 0)) (def (main) (String.byte-len ((f "abcdef") 4))) (export main)))
+  (call main)
+  (output (: 4 Int64)))
 
 (case
   "a FULLY applied built-in operation is not flagged as a partial"
@@ -235,23 +259,32 @@
   (call main)
   (output (: 0 Int64)))
 
-; --- An OVER-applied built-in operation is ONE coded reject with a delete-surplus fix; UNDER stays a decline ---
+; --- OVER-application is a PERMANENT CDZ0203 (delete-surplus fix); UNDER-application CURRIES (should-work) ---
 ;    (migrated from rcdzc over_applying_a_builtin_operation_reports_one_error_with_the_delete_fix)
-; A built-in operation over-applied (too many args — `(Map.len m 99)`, size takes one) draws BOTH the uncoded
-; wrong-arity decline (from lower) AND the coded CDZ0203 over-application (from infer, with a delete-surplus
-; fix). They are the SAME defect, so `dedup_faults` drops the weaker decline when the coded reject is present:
-; the program reports EXACTLY ONE primary error, the CDZ0203 carrying the delete fix. An UNDER-application
-; (`(List.at l)`, missing the index) has NO coded sibling, so the wrong-arity decline is KEPT (the only report,
-; nothing to delete → no fix).
+; A built-in operation OVER-applied (too many args — `(Map.len m 99)`, size takes one) is a PERMANENT error
+; (core-semantics L293): infer draws the coded CDZ0203 over-application (with a delete-surplus fix), and
+; `dedup_faults` drops the weaker uncoded wrong-arity decline so EXACTLY ONE primary error reports — the CDZ0203
+; carrying the delete fix. An UNDER-application (`(List.at l)`, missing the index) is the OPPOSITE: partial
+; application, which SHOULD curry to a closure awaiting the rest (core-semantics L73/L295) — a should-work gap
+; that declines(PrimAsValueNeedsClosure) only until the built-in-as-value closure synth is realized, not a
+; permanent error. Completing the partial yields a value.
 (case
   "an over-applied built-in operation is ONE CDZ0203 with a delete-surplus fix, not doubled with the wrong-arity decline"
   (input (do (def (main) (Map.len #map((= 1 2)) 99)) (export main)))
   (error CDZ0203 (fix (kind delete)) (count 1)))
 
 (case
-  "an under-applied built-in operation keeps the wrong-arity decline — no coded sibling to dedup against"
-  (input (do (def (main) (List.at #list(1))) (export main)))
-  (declines (message "applied at the wrong arity")))
+  "an under-applied built-in operation curries — completing it yields a value (should-work)"
+  (doc
+    "`(List.at l)` is List.at partially applied (index missing) — the OPPOSITE of the over-application
+           above: it SHOULD curry to a closure awaiting the index (core-semantics L73/L295), not stay a decline.
+           Declines today only until the built-in-as-value closure synth is realized
+           (declined(PrimAsValueNeedsClosure)). `((List.at #list(10 20 30)) 1)` completes it to List.at(l,1) =
+           Some 20 (0-indexed); the arm returns 20.")
+  (input
+    (do (def (main) (match ((List.at #list(10 20 30)) 1) ((Some v) v) ((None _u) -1))) (export main)))
+  (call main)
+  (output (: 20 Int64)))
 
 (case
   "an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program"

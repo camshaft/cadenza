@@ -9647,9 +9647,6 @@ pass	a top-level-do module member's Bool/Int mix is type-checked and rejected CD
 pass	the zero-leading list rest is IRREFUTABLE — it is accepted in a binding position and binds the whole list
 pass	unary negation is a built-in at arity 1 and is not flagged as a partial
 pass	a GUARDED set membership arm threads its guard, and a false guard falls through to a later arm
-todo	a partial built-in operation (at at 1 of 2 args) returned from an exported def is rejected
-todo	a partial built-in operation (slice at 2 of 3 args) as an unconsumed value is rejected
-todo	a partial built-in operation spelled as a NESTED spine is rejected identically to the flat form
 todo	a record pattern with a trailing rest binds the named fields and the residual record
 pass	a set membership element may be a RUNTIME value expression, and compound elements match by value equality
 pass	a set membership match `#set(e…)` matches when the set contains every named element (with fall-through + catch-all)
