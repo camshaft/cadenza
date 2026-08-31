@@ -19,12 +19,14 @@ durable part and do not depend on the interpreter. talos's runner exit-code cont
 arrives as `.err` → `.unsupported` (a SOUND coverage gap the conformance harness skips, never a false
 differential) until the cdz-runtime imports are modeled (a later increment).
 -/
+import Oracle.Ast
 import Oracle.Value
 import Oracle.Eval
 
 namespace Oracle.Wasm
 
 open Oracle
+open Oracle.Ast
 
 /-- A raw scalar wasm result value. Integers are the SIGNED interpretation of the wasm bits (a wasm
 `i32`/`i64` is two's-complement; the interpreter yields the signed `Int`, e.g. talos's `toInt32.toInt`).
@@ -46,7 +48,7 @@ inductive ScalarTy where
   | float32
   | float64
   | unit
-  deriving Inhabited, BEq, Repr
+  deriving Inhabited, BEq, DecidableEq, Repr
 
 /-- The interpreter's run outcome — the oracle's own boundary shape, mirroring the wasm-interpreter
 exit-code contract (talos: OK/TRAP/OUT_OF_FUEL/ERR). `ok` carries the result stack (a Cadenza `main`
@@ -94,6 +96,53 @@ def toOutcome (o : WasmOutcome) (ty : ScalarTy) : Outcome :=
       | none => .unsupported "wasm result valtype does not match the declared Cadenza scalar type"
     | _, _ => .unsupported "wasm result arity is not one scalar (compound/heap result not yet modeled)"
 
+/-! ### Resolving the entry's result type from the emitted `cdz-result-type` section
+
+The rcdzc wasm COMPONENT carries a `@custom "cdz-result-type"` section: a binary-AST module whose body is
+a `(result-types (result-type <entry-name> <TypeName>) …)` — verified by emission (`Int`/`Bool`/`Float`
+appear as the `<TypeName>` name leaf for scalar mains). The harness passes those raw section bytes here to
+recover the `ScalarTy` that `toOutcome` needs. Decoding reuses the oracle's existing `Oracle.Ast` decoder
+(a shared transport codec, not a semantic judgment — PRINCIPLES.md §1 nuance). -/
+
+/-- The `name`-leaf bytes a node references, if it is an `atom → name` leaf. -/
+def nameAtom? (m : Module) (i : Nat) : Option ByteArray :=
+  match m.nodes[i]? with
+  | some (.atom lid) =>
+    match m.leaves[lid]? with
+    | some (.name b) => some b
+    | _ => none
+  | _ => none
+
+/-- Map an emitted Cadenza result-type NAME to a modeled `ScalarTy`. Only spellings VERIFIED by emission
+are mapped (`Int`/`Bool`/`Float`); anything else is `none` → the caller surfaces `.unsupported` (a sound
+coverage gap, never a wrong value). Widen this as more scalar type spellings are verified from real emits. -/
+def scalarTyOfName? : ByteArray → Option ScalarTy := fun b =>
+  if b == "Int".toUTF8 then some .int
+  else if b == "Bool".toUTF8 then some .bool
+  else if b == "Float".toUTF8 then some .float64   -- Cadenza `Float` is the f64 type
+  else if b == "Unit".toUTF8 then some .unit
+  else none
+
+/-- Walk a decoded `cdz-result-type` module for `(result-type <entry> <TypeName>)` and map `<TypeName>`
+to a `ScalarTy`. `none` if no such node / not a modeled scalar type. -/
+def resultScalarTyOfModule? (m : Module) (entry : ByteArray) : Option ScalarTy :=
+  m.nodes.findSome? (fun node =>
+    match node with
+    | .list cs =>
+      if cs.size ≥ 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
+          && nameAtom? m cs[1]! == some entry then
+        match nameAtom? m cs[2]! with
+        | some ty => scalarTyOfName? ty
+        | none => none
+      else none
+    | _ => none)
+
+/-- Resolve the entry's Cadenza scalar result type from the raw `cdz-result-type` section bytes. -/
+def resultScalarTy? (bytes : ByteArray) (entry : ByteArray) : Option ScalarTy :=
+  match Ast.decode bytes with
+  | .ok m => resultScalarTyOfModule? m entry
+  | .error _ => none
+
 /-! ### Gate witnesses — the mapping invariants (compiled = checked; no corpus case exercises this
 internal boundary, so per PRINCIPLES.md this is exactly the kind of check that belongs in Lean, not the
 corpus). Integer/bool/control cases reduce definitionally (`rfl`); float cases go through opaque `Float`
@@ -115,5 +164,29 @@ example : toOutcome (.ok #[]) .unit = .value .unit := rfl
 -- shape gaps → sound `.unsupported` (never a wrong value / false differential)
 example : toOutcome (.ok #[.i64 5]) .float64 = .unsupported "wasm result valtype does not match the declared Cadenza scalar type" := rfl
 example : toOutcome (.ok #[.i64 1, .i64 2]) .int = .unsupported "wasm result arity is not one scalar (compound/heap result not yet modeled)" := rfl
+
+-- result-type name → ScalarTy (the verified scalar spellings; others decline to none)
+example : scalarTyOfName? "Int".toUTF8 = some .int := by native_decide
+example : scalarTyOfName? "Bool".toUTF8 = some .bool := by native_decide
+example : scalarTyOfName? "Float".toUTF8 = some .float64 := by native_decide
+example : scalarTyOfName? "String".toUTF8 = none := by native_decide
+
+-- walking a `(result-type main <Ty>)` module recovers the entry's scalar type
+example :
+    resultScalarTyOfModule?
+      { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Int".toUTF8],
+        nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+      "main".toUTF8 = some .int := by native_decide
+example :
+    resultScalarTyOfModule?
+      { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Bool".toUTF8],
+        nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+      "main".toUTF8 = some .bool := by native_decide
+-- an entry that is not present → none
+example :
+    resultScalarTyOfModule?
+      { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Int".toUTF8],
+        nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
+      "other".toUTF8 = none := by native_decide
 
 end Oracle.Wasm
