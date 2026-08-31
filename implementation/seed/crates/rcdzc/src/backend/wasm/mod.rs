@@ -632,16 +632,26 @@ pub fn emit(
                 used.insert("bytes-get");
                 used.insert("drop");
             }
-            // A TOP-LEVEL memory-bearing byte-leaf PARAM (`Bytes`/`String`) copies the incoming `(ptr, len)`
-            // out of linear memory via a `bytes-alloc` + `bytes-set` loop, and the wrapper (its owner) drops
-            // the borrowed handle after the call — register those so the wrapper body resolves them.
+            // A TOP-LEVEL memory-bearing leaf PARAM: a `Bytes`/`String` copies the incoming `(ptr, len)` out
+            // of linear memory via a `bytes-alloc` + `bytes-set` loop; a `list<scalar>` builds a value-heap vec
+            // (`vec-empty` + per-element read/box/`vec-push`). The wrapper (its owner) drops the borrowed handle
+            // after the call. Register those so the wrapper body resolves them.
             for m in w.mem_leaf_params.iter().flatten() {
-                if let (serialize::MemLeafKind::Str | serialize::MemLeafKind::Bytes, drop_after) = m
-                {
-                    used.insert("bytes-alloc");
-                    used.insert("bytes-set");
-                    if *drop_after {
-                        used.insert("drop");
+                match m {
+                    (serialize::MemLeafKind::Str | serialize::MemLeafKind::Bytes, drop_after) => {
+                        used.insert("bytes-alloc");
+                        used.insert("bytes-set");
+                        if *drop_after {
+                            used.insert("drop");
+                        }
+                    }
+                    (serialize::MemLeafKind::List(elem), drop_after) => {
+                        used.insert("vec-empty");
+                        used.insert("vec-push");
+                        used.insert(elem.box_op);
+                        if *drop_after {
+                            used.insert("drop");
+                        }
                     }
                 }
             }
@@ -8425,26 +8435,36 @@ fn record_interface_export(
                     mem_leaf_params.push(None);
                     any_record = true;
                 }
-                // A TOP-LEVEL memory-bearing byte-leaf param (`Bytes` ↔ `list<u8>`, `String` ↔ `string`): copy
-                // the incoming `(ptr, len)` out of linear memory into a value-heap byte-leaf handle and pass it
-                // DIRECTLY as the def arg (`mem_leaf_params`, the host→guest mirror of the import-side `list<u8>`
-                // marshal — the `decode-check(list<u8>) -> bool` half of the operator's two-export shape §2).
-                // BORROW-ONLY slice: the def must not consume/escape the param, so the wrapper (its sole owner)
-                // reclaims the lifted handle after the call — a guaranteed 0-leak lift; a consuming/escaping
-                // byte-leaf param needs a reclaim the wrapper cannot guarantee here → decline (a later slice,
-                // mirroring `try_bare_entry_param_component`'s borrow-only rung). WIT type must match the guest.
-                Ty::Bytes | Ty::String => {
+                // A TOP-LEVEL memory-bearing leaf param — `Bytes` ↔ `list<u8>`, `String` ↔ `string`, or a
+                // `list<scalar>` ↔ `list<T>` — all flatten to `(ptr, len)` and lift via `mem_leaf_params`: the
+                // wrapper copies the incoming `(ptr, len)` out of linear memory into a value-heap handle and
+                // passes it DIRECTLY as the def arg (the host→guest mirror of the import-side marshal; the
+                // `decode-check(list<u8>) -> bool` half of the operator's two-export shape §2, plus its
+                // `list<scalar>` sibling). Bytes/String copy a raw byte-leaf; a `list<scalar>` builds a
+                // value-heap vec element-by-element (`list_scalar_elem` — a boxed-element vec, a DISTINCT value
+                // rep from Bytes). BORROW-ONLY slice: the def must not consume/escape the param, so the wrapper
+                // (its sole owner) reclaims the lifted handle after the call — a guaranteed 0-leak lift; a
+                // consuming/escaping param, or a nested/compound list element, declines to a later slice
+                // (mirroring `try_bare_entry_param_component`'s borrow-only rung). WIT must match the guest.
+                Ty::Bytes | Ty::String | Ty::List(_) => {
                     let kind = match (gty, wty) {
                         (Ty::Bytes, WitType::List(inner)) if matches!(**inner, WitType::U8) => {
                             serialize::MemLeafKind::Bytes
                         }
                         (Ty::String, WitType::String) => serialize::MemLeafKind::Str,
-                        _ => return None, // a Bytes vs `string` (or String vs `list<u8>`) mismatch — decline
+                        // A `list<scalar>` (Int8/16/32/64, UInt*, Float32/64, Bool) — the per-element read+box
+                        // descriptor; a nested/compound element (list<list>, list<record>) declines via `?`.
+                        // A `Ty::List(UInt8)` crossing WIT `list<u8>` is a genuine `List UInt8` (boxed-u8 vec),
+                        // NOT `Bytes` (packed byte-leaf) — distinct value reps behind the same WIT type.
+                        (Ty::List(elem), WitType::List(_)) => {
+                            serialize::MemLeafKind::List(list_scalar_elem(elem)?)
+                        }
+                        _ => return None, // a guest/WIT type mismatch — decline
                     };
                     if crate::backend::wasm::select::param_escapes_body(db, e.body, *binder) {
-                        return None; // a consumed/escaping byte-leaf param — a later slice
+                        return None; // a consumed/escaping mem-leaf param — a later slice
                     }
-                    // A byte-leaf param flattens to `(ptr, len)` = two i32 core values.
+                    // A mem-leaf param flattens to `(ptr, len)` = two i32 core values.
                     let i32b = crate::backend::wasm::lir::ValType::I32.byte();
                     param_vts.push(i32b);
                     param_vts.push(i32b);
@@ -8453,7 +8473,7 @@ fn record_interface_export(
                     mem_leaf_params.push(Some((kind, true))); // drop_after = borrowed (checked above)
                     any_mem_leaf_param = true;
                 }
-                Ty::Tuple(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) => {
+                Ty::Tuple(_) | Ty::Sum { .. } | Ty::Map(_, _) | Ty::Set(_) => {
                     return None;
                 } // needs memory / a deeper wrapper — later
                 scalar => {

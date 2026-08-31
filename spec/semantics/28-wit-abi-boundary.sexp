@@ -74,6 +74,9 @@
 ; SHAPE 41 — the CAPSTONE operator §2 shape: ONE component with BOTH exports — encode-quoted() -> list<u8>
 ; (bytes RESULT, CopyBytes) AND decode-check(list<u8>) -> bool (bytes PARAM, mem_leaf lift) — in one
 ; interface, proving the per-member wrappers (SHAPE 34/40) compose: each member emits its own wrapper.
+; SHAPE 42 — a bare string/String PARAM member (MemLeafKind::Str), the byte-leaf-copy sibling of SHAPE 40.
+; SHAPE 43 — a bare list<scalar>/List PARAM member (MemLeafKind::List): a value-heap VEC built element-by-
+; element from the (ptr,count) layout (distinct rep from Bytes), reading count+element to prove stride+box.
 
 (case "an option<s64> field in a record result VALUE round-trips via the run/encode envelope both arms (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -267,6 +270,22 @@
   (output #list(104 105))
   (call decode-check (: #list(104 105) Bytes))
   (output (: true Bool))
+  (live-objects known-leak))
+
+(case "a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)"
+  (doc    "SHAPE 43 — a TOP-LEVEL `list<s64>`/List Int64 PARAM member of a typed export interface. Unlike the
+           Bytes byte-leaf copy (SHAPE 40), `MemLeafKind::List` builds a value-heap VEC element-by-element
+           (`vec-empty` + per-element load-at-stride / `box-int` / `vec-push`) from the canonical `(ptr, count)`
+           layout — a DISTINCT value rep from Bytes (boxed elements, not a packed byte-leaf). The guest reads
+           BOTH the count AND an element value to prove the stride + box are right: readElem(xs) =
+           100*List.len(xs) + xs[1]; [7,42,9] -> 342 (a broken stride/box would mis-read element 1). Borrow-only
+           0-leak lift (the wrapper drops the vec after the call). Mirrors the bare-entry route's list<scalar>
+           param (el4/el5, ch09) onto the typed-interface-MEMBER route.")
+  (wit-world (world w (export iface (member read-elem (func (param xs (list (s64))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (readElem (: xs (List Int64))) (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some v) v) ((Option.None) -1)))) (export readElem)))
+  (call read-elem (: #list(7 42 9) (List Int64)))
+  (output (: 342 Int64))
   (live-objects known-leak))
 
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
