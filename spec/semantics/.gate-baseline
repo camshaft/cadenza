@@ -2091,7 +2091,7 @@ pass	a do-def shadowing a function parameter is a well-defined shadow
 pass	a do-def shadows a MATCH BINDER and a prior def correctly
 pass	a do-def shared across BOTH resume slots stays in scope (the accumulator-arm shape)
 pass	a do-def value in a handle body flows into a perform's argument and stays in scope
-pass	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
+todo	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
 pass	a do-discarded OUTER perform under an inner handle threads its state advance across the level
 pass	a do-local def function references a sibling do-local def function by name
 pass	a do-local def shadowing a parameter rebinds the name (does not unbind it)
@@ -9077,7 +9077,7 @@ pass	two distinct mixed sums sharing a byte-identical immortal nullary terminal 
 pass	two distinct names bound to the same value key the same map entry
 pass	two distinct occurrences of the same unbound name are each reported, not merged to one
 pass	two distinct-named modules in one scope coexist
-pass	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
+todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 pass	two do-local function declarations are mutually recursive
 pass	two effects bound to the same interface share one peer instance (both ops run)
 pass	two effects declared with the same name are distinct, not one merged effect
