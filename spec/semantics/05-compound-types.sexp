@@ -1047,6 +1047,72 @@
   (call main (: -1 Int64))
   (output (: -1 Int64)))
 
+; COMPOSED + DEEP literal dispatch (coverage extensions of the deep-literal group above — each pins a
+; distinct LitTest shape the descent must hold). (1) TWO refutable literal FIELDS in one record arm compose:
+; `(#record((= a 1) (= b 2)) …)` fires only when BOTH slots match — two LitTests at `[Elem(0)]`/`[Elem(1)]`
+; anded on the one arm, else the wildcard.
+(case
+  "two refutable literal fields in one record arm compose (both must match)"
+  (input
+    (do
+      (def
+        (f (: t (Record (: a Int64) (: b Int64))))
+        (match t (#record((= a 1) (= b 2)) 100) (_ 0)))
+      (def (main (: n Int64)) (f #record((= a n) (= b 2))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 100 Int64))
+  (call main (: 9 Int64))
+  (output (: 0 Int64)))
+
+; (2) A literal TWO LEVELS down (record inside a record): the LitTest sub-path is `[Elem(0), Elem(0)]` —
+; the binding twin (nested-record BIND) landed in §235/#6944; this is the DISPATCH twin (a refutable literal
+; at the inner field).
+(case
+  "a literal dispatches two levels down (record inside a record)"
+  (input
+    (do
+      (def
+        (f (: t (Record (: inner (Record (: x Int64))))))
+        (match t (#record((= inner #record((= x 5)))) 42) (_ 0)))
+      (def (main (: n Int64)) (f #record((= inner #record((= x n))))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 42 Int64))
+  (call main (: 6 Int64))
+  (output (: 0 Int64)))
+
+; (3) A literal INSIDE A VARIANT PAYLOAD tuple: `(Some #tuple(a 7))` reads the literal at `[Payload, Elem(1)]`
+; — the LitTest composing with the SumPayload descent (variant tag switch + a tuple-slot literal under it),
+; with `(Some #tuple(a b))` as the same-variant binder fall-through and `(None)` covering the other variant.
+(case
+  "a literal inside a variant payload tuple dispatches under the Some tag"
+  (input
+    (do
+      (def
+        (f (: t (Option (Tuple Int64 Int64))))
+        (match t ((Some #tuple(a 7)) a) ((Some #tuple(a b)) (+ a b)) ((None) -1)))
+      (def (main (: n Int64)) (f (if (> n 0) (Some #tuple(n 7)) (Some #tuple(n 8)))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 3 Int64))
+  (call main (: -1 Int64))
+  (output (: 7 Int64)))
+
+; (4) A literal at a DEEPER tuple slot (`Elem(2)` of a 3-tuple), binding the earlier slots: pins that a
+; per-slot LitTest lands at the correct non-first slot index while `a`/`b` bind slots 0/1.
+(case
+  "a literal at the deeper slot of a 3-tuple dispatches while earlier slots bind"
+  (input
+    (do
+      (def (f (: t (Tuple Int64 Int64 Int64))) (match t (#tuple(a b 9) (+ a b)) (_ 0)))
+      (def (main (: n Int64)) (f #tuple(n 2 (if (> n 0) 9 8))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  (call main (: -1 Int64))
+  (output (: 0 Int64)))
+
 ; A record pattern MAY end in a trailing `.. rest` — the rest binds the RESIDUAL RECORD of the fields NOT
 ; named by the pattern (the record twin of the tuple/map/list rest, per the `(.. v)`-everywhere canonical).
 ; A record's field set is static, so `rest` is a fixed field-subset gather: `(record (= a x) (.. rest))`
