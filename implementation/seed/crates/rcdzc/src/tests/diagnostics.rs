@@ -347,22 +347,12 @@ fn a_cross_kind_operator_clash_uses_the_correct_indefinite_article() {
 //  (adjacent to "a match pattern naming a non-existent variant is a coded rejection"): the pattern-head
 //  variant-typo enrichment — near-typo did-you-mean + replace fix / far-typo "closest matches" list + no-fix,
 //  across qualified (C.Alph→CDZ0201), bare (Alph→CDZ0101), and wrong-sum (D.Gamma→CDZ0203) heads.)
-#[test]
-fn a_newtype_scrutinees_own_ctor_pattern_still_matches() {
-    // WHITE-BOX residual (compile-validity — corpus-inexpressible). The near/far wrong-ctor SUGGESTION
-    // halves over a single-variant `(type A (Xyz))` newtype scrutinee (which erases to a `Ty::Nominal`,
-    // once a separate reject path with no suggestion; now shares `enrich_pattern_head_suggestion` with
-    // the boxed-sum path) migrated to corpus 05-compound-types ("a near-typo/far-typo ctor over a
-    // single-variant newtype …"). What stays here: the newtype's OWN ctor pattern `(Mk n)` still matches
-    // + binds — no false reject from the shared enrich path — a compile_component `.is_ok()` pin.
-    assert!(
-        crate::compile::compile_component(&crate::codec::encode(&parse(
-            "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (match u ((Mk n) n))) (export f))"
-        )))
-        .is_ok(),
-        "the newtype's own ctor pattern still matches"
-    );
-}
+// MIGRATED to corpus (05-compound-types.sexp, "a single-variant newtype's own constructor pattern matches
+// and binds its inner value"): the newtype's own ctor pattern `(Mk n)` matching + binding is expressed as a
+// RUN case — `(f (Mk 7))` = 7 — which requires successful compilation (a false reject would deny the output),
+// so the run replaces the compile_component `.is_ok()` pin. (The near/far wrong-ctor SUGGESTION halves this
+// test's comment references were already migrated separately.) Rust test
+// a_newtype_scrutinees_own_ctor_pattern_still_matches deleted.
 
 #[test]
 fn many_match_patterns_typoing_one_variant_suggest_the_memoized_winner() {
