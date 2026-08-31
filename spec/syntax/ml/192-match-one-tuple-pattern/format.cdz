@@ -1,0 +1,3 @@
+match p with
+  | (a,) => a
+  | _ => 0
