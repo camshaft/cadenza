@@ -10434,6 +10434,36 @@
   (input      (let ((j 5)) (let ((k true)) #map((= j 1) (= k 2)))))
   (error      CDZ0201))
 
+; The map homogeneity + duplicate-key checks must fire on the NAME-ALIAS `(map (= k v))` literal exactly as
+; on the native `#map((= k v))` form above: both lower to the same map, so a mixed value/key type or a
+; DUPLICATE literal key is CDZ0201, not silently built. (A prior seam read entry pairs as the legacy
+; 2-element `(k v)` and filtered out the 3-element `(= k v)` FieldPair entries the alias now emits, so the
+; checks silently skipped.) The equality forces the literal to be built, exercising the check. (Migrated from
+; rcdzc a_map_literal_with_mixed_types_or_a_duplicate_key_is_rejected_cdz0201.)
+(case "a name-alias (map …) literal with values of two different types is a type error"
+  (input  (do (def (main) (= (map (= "a" 1) (= "b" true)) (map (= "a" 1) (= "b" true)))) (export main)))
+  (error  CDZ0201))
+
+(case "a name-alias (map …) literal mixing integer and float values is a type error"
+  (input  (do (def (main) (= (map (= "a" 1) (= "b" 1.5)) (map (= "a" 1) (= "b" 1.5)))) (export main)))
+  (error  CDZ0201))
+
+(case "a name-alias (map …) literal with keys of two different types is a type error"
+  (input  (do (def (main) (= (map (= "a" 1) (= 2 3)) (map (= "a" 1) (= 2 3)))) (export main)))
+  (error  CDZ0201))
+
+(case "a name-alias (map …) literal with a duplicate string key is a type error"
+  (input  (do (def (main) (= (map (= "a" 1) (= "a" 2)) (map (= "a" 1) (= "a" 2)))) (export main)))
+  (error  CDZ0201))
+
+(case "a name-alias (map …) literal with a duplicate integer key is a type error"
+  (input  (do (def (main) (= (map (= 1 10) (= 1 20)) (map (= 1 10) (= 1 20)))) (export main)))
+  (error  CDZ0201))
+
+(case "a homogeneous distinct-key name-alias (map …) literal is accepted and compares equal"
+  (input  (do (def (main) (= (map (= "a" 1) (= "b" 2)) (map (= "a" 1) (= "b" 2)))) (export main)))
+  (output (: true Bool)))
+
 ; As with a list (the compound-shape homogeneity cases above), map value-homogeneity is by value TYPE:
 ; two compound values of the same KIND but different SHAPE are different types (type-system.md
 ; #Structural Values Are Comparable Only When Their Shapes Match). So a map whose values are records
