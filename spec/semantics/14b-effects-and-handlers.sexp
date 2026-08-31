@@ -3500,6 +3500,16 @@
               (+ (Ask.ask) 1)) (export main)))
   (error  CDZ0401))
 
+; A `host` is exactly `(host (<effect>…) <body>)`. A host with TOO MANY operands — `(host (E) <body> extra)` —
+; was silently accepted (the surplus dropped, a silent miscompile). It is now CDZ0201 "too many operands"
+; with a delete-the-surplus fix, and the consequent CDZ0401 (the malformed host's body-perform looks
+; un-delegated to the no-home walk) is deduped so it is the SOLE error. (Migrated from rcdzc
+; a_host_with_too_many_operands_is_cdz0201; the no-home CDZ0401 control is the case above, a valid host is
+; exercised throughout this chapter.)
+(case "a host with too many operands is rejected with a delete-the-surplus fix, no consequent no-home error"
+  (input  (do (effect E (op get (-> Unit Int64))) (def (main) (host (E) (E.get) 99)) (export main)))
+  (error  CDZ0201 (message "too many operands") (fix (kind delete)) (no-other-errors)))
+
 (case "a host delegation of an effect the body never reaches is latent authority and is rejected"
   (doc    "The delegation twin of the no-home reject above: `main` `host`-delegates `log` but its body is
            `42` and never performs `log.emit`, so the entrypoint would carry a granted-but-unexercised
