@@ -422,7 +422,74 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
         }
         return Some(push_list(ast, children));
     }
+    // The DEDICATED native collection-ctor variants (the inverse of `quote::reify_inner`'s `Leaf::Ctor`
+    // branch): `Ast.<X>Ctor (list <child…>)` -> the native `#<x>(<recon child>…)` literal (a `Leaf::Ctor`
+    // head + reconstructed children, NO name head). List/Tuple/Set carry bare element ASTs; Record/Map
+    // carry `Ast.FieldPair` children rebuilt to `(= k v)` (record) / `(k v)` (map) entries. So `(eval
+    // (quote #list(1 2 3)))` rebuilds the native `#list(1 2 3)` and folds to the runtime list.
+    for (variant, ctor) in [
+        ("ListCtor", CompoundCtor::List),
+        ("TupleCtor", CompoundCtor::Tuple),
+        ("SetCtor", CompoundCtor::Set),
+    ] {
+        if let Some(payload) = ast_ctor_arg(ast, node, variant) {
+            let elems = list_elems(ast, payload)?;
+            let mut children = vec![push_atom(ast, Leaf::Ctor(ctor))];
+            for e in elems {
+                children.push(reconstruct(ast, e)?);
+            }
+            return Some(push_list(ast, children));
+        }
+    }
+    // Record/Map: children are `Ast.FieldPair` — rebuild each to its entry (`(= k v)` for a record, `(k v)`
+    // for a map), then head with the native ctor leaf.
+    for (variant, ctor, as_eq) in [
+        ("RecordCtor", CompoundCtor::Record, true),
+        ("MapCtor", CompoundCtor::Map, false),
+    ] {
+        if let Some(payload) = ast_ctor_arg(ast, node, variant) {
+            let elems = list_elems(ast, payload)?;
+            let mut children = vec![push_atom(ast, Leaf::Ctor(ctor))];
+            for fp in elems {
+                let (k, v) = reconstruct_field_pair(ast, fp)?;
+                let entry = if as_eq {
+                    let eq = push_atom(ast, Leaf::Name("=".into()));
+                    push_list(ast, vec![eq, k, v])
+                } else {
+                    push_list(ast, vec![k, v])
+                };
+                children.push(entry);
+            }
+            return Some(push_list(ast, children));
+        }
+    }
+    // `Ast.Member (tuple <obj> <key>)` -> the member access `(. <recon obj> <recon key>)`.
+    if let Some(payload) = ast_ctor_arg(ast, node, "Member") {
+        let (obj, key) = tuple2_of(ast, payload)?;
+        let obj = reconstruct(ast, obj)?;
+        let key = reconstruct(ast, key)?;
+        let dot = push_atom(ast, Leaf::Name(".".into()));
+        return Some(push_list(ast, vec![dot, obj, key]));
+    }
     None
+}
+
+/// Reconstruct an `Ast.FieldPair (tuple <key-ast> <value-ast>)` to its `(reconstructed key, reconstructed
+/// value)` source pair. `None` if `node` is not a well-formed `Ast.FieldPair` over a 2-tuple.
+fn reconstruct_field_pair(ast: &mut Arenas, node: StructId) -> Option<(StructId, StructId)> {
+    let payload = ast_ctor_arg(ast, node, "FieldPair")?;
+    let (k, v) = tuple2_of(ast, payload)?;
+    Some((reconstruct(ast, k)?, reconstruct(ast, v)?))
+}
+
+/// The two element occurrences of a `(tuple a b)` 2-tuple value form — the `(Tuple Ast Ast)` payload shape
+/// of `Ast.FieldPair`/`Ast.Member`. Accepts the native `#tuple(a b)` ctor-leaf head and the `tuple` name
+/// alias. `None` if `payload` is not a 2-element tuple form.
+fn tuple2_of(ast: &Arenas, payload: StructId) -> Option<(StructId, StructId)> {
+    let elems = ast
+        .compound_form_of(payload, CompoundCtor::Tuple)
+        .filter(|e| e.len() == 2)?;
+    Some((elems[0], elems[1]))
 }
 
 /// If `node` is the compiler-internal lift `((intrinsic "ast-lift") e)` — a 2-element list whose head is

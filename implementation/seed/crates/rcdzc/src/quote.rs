@@ -547,6 +547,43 @@ fn reify_inner(
                 return None;
             }
             let child_under_qq = under_qq || head == Some("quasiquote");
+            // A NATIVE MEMBER access `(. obj key)` (a `Leaf::Member` head) → the dedicated `Ast.Member
+            // (tuple <reify obj> <reify key>)` (spec: a reflected member access is an `Ast.Member`, not a
+            // name-headed node). Without this the `Leaf::Member` head hit `reify_inner`'s `_ => None` and a
+            // `(quote (String.byte-len …))` / `(quote (List.at …))` — whose head is `(. String byte-len)` /
+            // `(. List at)` — was left un-reified → `eval` declined CDZ0101.
+            if let Some((obj, key)) = ast.member_parts(node) {
+                let robj = reify(ast, obj, child_under_qq)?;
+                let rkey = reify(ast, key, child_under_qq)?;
+                let th = push_atom(ast, Leaf::Name("tuple".into()));
+                let tup = push_list(ast, vec![th, robj, rkey]);
+                return Some(ast_ctor(ast, "Member", tup));
+            }
+            // A NATIVE COLLECTION-CTOR head (`#list`/`#tuple`/`#record`/`#map`/`#set`, a `Leaf::Ctor`) —
+            // reflect to the DEDICATED first-class `Ast.<X>Ctor` variant carrying the reified CHILDREN with
+            // NO head (spec: metaprogramming.md §"Quoting a collection construction … MUST produce that
+            // collection's own first-class AST variant … rather than a name-headed generic node"). A
+            // List/Tuple/Set carries the bare element ASTs; a Record/Map carries `Ast.FieldPair` children
+            // (each `(= k v)` entry → a `(Tuple <reify k> <reify v>)`). This is DISTINCT from the generic
+            // `Ast.List` below (a NAME-headed node — a form/application `(if …)`/`(f a)`, or the name-alias
+            // `(list 1 2 3)`), so the two spellings reflect distinctly (they ARE different syntax). Without
+            // this the ctor-leaf head hit `reify_inner`'s `_ => None` and the whole `(quote #list …)` was
+            // left un-reified → `eval` declined CDZ0101 on a compile-time-visible form (the eval-fold reds).
+            if let Some(&h) = items.first()
+                && let Some((variant, fieldpair_children)) = native_ctor_variant(ast, h)
+            {
+                let mut children = Vec::with_capacity(items.len() - 1);
+                for &child in &items[1..] {
+                    let reified = if fieldpair_children {
+                        reify_field_pair(ast, child, child_under_qq)?
+                    } else {
+                        reify(ast, child, child_under_qq)?
+                    };
+                    children.push(reified);
+                }
+                let payload = list_form(ast, children);
+                return Some(ast_ctor(ast, variant, payload));
+            }
             // A compound `(a b c …)` -> `(Ast.List (list <reify a> <reify b> …))`. Reify every child
             // (bailing if any is un-reifiable), then wrap in a `list` constructor, then in `Ast.List`.
             let mut reified_children = Vec::with_capacity(items.len());
@@ -652,6 +689,32 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
         // ordinary reified elements with `(ast-splice-lift e)` segments (each lifts e's Int64 elements to
         // `Ast.Int` nodes). With NO splice child, this reduces to the plain `(list <reified…>)` form.
         _ => {
+            // A NATIVE MEMBER access `(. obj key)` inside a quasiquote → `Ast.Member (tuple …)`, recursing
+            // via `reify_active` so a nested active unquote in `obj`/`key` still fires (the quasiquote twin
+            // of the plain-quote member branch in `reify_inner`). Covers a quasiquoted `(String.concat …)` /
+            // `(Bytes.concat …)` whose head is a `(. Module op)` member.
+            if let Some((obj, key)) = ast.member_parts(node) {
+                let robj = reify_active(ast, obj, depth)?;
+                let rkey = reify_active(ast, key, depth)?;
+                let th = push_atom(ast, Leaf::Name("tuple".into()));
+                let tup = push_list(ast, vec![th, robj, rkey]);
+                return Some(ast_ctor(ast, "Member", tup));
+            }
+            // A NATIVE COLLECTION-CTOR head inside a quasiquote — reflect to the dedicated `Ast.<X>Ctor`
+            // (bare children, no head), exactly as the plain-quote path (`reify_inner`), but recursing via
+            // `reify_active` so a nested active unquote inside the collection still fires. Record/Map (whose
+            // children are FieldPairs) fall through to the generic path here (a quasiquoted `#record`/`#map`
+            // value is a later increment); List/Tuple/Set — the common case — reflect correctly.
+            if let Some(&h) = items.first()
+                && let Some((variant, false)) = native_ctor_variant(ast, h)
+            {
+                let mut children = Vec::with_capacity(items.len() - 1);
+                for &child in &items[1..] {
+                    children.push(reify_active(ast, child, depth)?);
+                }
+                let payload = list_form(ast, children);
+                return Some(ast_ctor(ast, variant, payload));
+            }
             let has_active_splice = items.iter().any(|&c| {
                 depth == 1
                     && ast.head_name(c) == Some("unquote-splicing")
@@ -812,6 +875,53 @@ fn reify_escape_list(ast: &mut Arenas, head: &str, inner: StructId) -> StructId 
 fn wrap_ast_list(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
     let list_val = list_form(ast, children);
     ast_ctor(ast, "List", list_val)
+}
+
+/// If `head` is a NATIVE collection-ctor leaf (`#list`/`#tuple`/`#record`/`#map`/`#set`, a `Leaf::Ctor`),
+/// the matching dedicated `Ast.<X>Ctor` variant name + whether its children are `Ast.FieldPair`
+/// (record/map carry `(= k v)`/`(k v)` entries; list/tuple/set carry bare element ASTs). `None` for a
+/// non-ctor head (a name-headed form/application, reflected as the generic `Ast.List`). Shared by the
+/// plain-quote (`reify_inner`) and quasiquote (`reify_active`) reflection paths.
+fn native_ctor_variant(ast: &Arenas, head: StructId) -> Option<(&'static str, bool)> {
+    let Struct::Atom(l) = ast.get(head) else {
+        return None;
+    };
+    match ast.leaf(*l) {
+        Leaf::Ctor(crate::ast::CompoundCtor::List) => Some(("ListCtor", false)),
+        Leaf::Ctor(crate::ast::CompoundCtor::Tuple) => Some(("TupleCtor", false)),
+        Leaf::Ctor(crate::ast::CompoundCtor::Set) => Some(("SetCtor", false)),
+        Leaf::Ctor(crate::ast::CompoundCtor::Record) => Some(("RecordCtor", true)),
+        Leaf::Ctor(crate::ast::CompoundCtor::Map) => Some(("MapCtor", true)),
+        _ => None,
+    }
+}
+
+/// Reify one entry of a native `#record`/`#map` literal to an `Ast.FieldPair` — a `(Tuple <reify key>
+/// <reify value>)` payload (spec: a reflected record/map is a `RecordCtor`/`MapCtor` of `FieldPair`
+/// values). The entry is a record `(= k v)` (name-headed or the native `Leaf::FieldPair` leaf) or a map
+/// `(k v)` 2-element pair. `None` if it is not a well-formed key/value entry (then the enclosing ctor bails).
+fn reify_field_pair(ast: &mut Arenas, entry: StructId, under_qq: bool) -> Option<StructId> {
+    let (k, v) = field_kv(ast, entry)?;
+    let rk = reify(ast, k, under_qq)?;
+    let rv = reify(ast, v, under_qq)?;
+    let tuple_head = push_atom(ast, Leaf::Name("tuple".into()));
+    let tup = push_list(ast, vec![tuple_head, rk, rv]);
+    Some(ast_ctor(ast, "FieldPair", tup))
+}
+
+/// The `(key, value)` of a record/map field entry: a native `Leaf::FieldPair` leaf `(= k v)`, a
+/// name-headed `(= k v)` triple, or a map `(k v)` 2-element pair. `None` otherwise.
+fn field_kv(ast: &Arenas, entry: StructId) -> Option<(StructId, StructId)> {
+    if let Some(kv) = ast.field_pair_parts(entry) {
+        return Some(kv);
+    }
+    if let Some(kv) = ast.field_pair(entry) {
+        return Some(kv);
+    }
+    match ast.get(entry) {
+        Struct::List(items) if items.len() == 2 => Some((items[0], items[1])),
+        _ => None,
+    }
 }
 
 /// Build a `(list <child…>)` value-constructor form — the reader-shaped list literal the `list` prelude
