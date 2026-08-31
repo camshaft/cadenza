@@ -1146,6 +1146,24 @@ theorem denote_normalize_app_fold1 (ρ : Nat → Value) (w : IntTy) (op : String
   simp only [denote]
   rw [foldConst?_canon_stable op #[.const c0] vf hfold, hv]
 
+/-- ARITY REDUCTION for the capstone `.app` case: a `.value`-producing application has arity 1 or 2 (its
+args are a concrete singleton / pair), because `denote (.app …)` goes through `denoteApp`, which is
+`.unsupported` at any other arity — so a `.value` result (`denoteApp_value_inv`) pins the size, and the
+arg array destructures accordingly. This lets the concrete-arity fold cases (`denote_normalize_app_fold1`/
+`_fold2`) and the eventual identity case apply to an arbitrary-arity `.app` node in the `denote.induct`. -/
+theorem denote_app_value_arity (ρ : Nat → Value) (w : IntTy) (op : String) (args : Array SymExpr) (v : Value)
+    (h : denote ρ w (.app op args) = .value v) :
+    (∃ a0, args = #[a0]) ∨ (∃ a0 a1, args = #[a0, a1]) := by
+  simp only [denote] at h
+  rcases denoteApp_value_inv op w _ v h with ⟨hs, _⟩ | ⟨hs, _⟩
+  · left
+    rw [Array.size_map, Array.size_attach] at hs
+    exact Array.size_eq_one_iff.mp hs
+  · right
+    rw [Array.size_map, Array.size_attach] at hs
+    match args, hs with
+    | ⟨[a0, a1]⟩, _ => exact ⟨a0, a1, rfl⟩
+
 theorem denote_tuple (ρ : Nat → Value) (w : IntTy) (es : Array SymExpr) :
     denote ρ w (.tuple es) = .value (.tuple (es.attach.map (fun x => outcomeToValue (denote ρ w x.val)))) := by
   simp only [denote]
