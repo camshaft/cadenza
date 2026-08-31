@@ -324,17 +324,21 @@ pub fn emit_fragment(
 }
 
 /// Reconstruct a user sum's `(type <Name> (<Variant> <PayloadTy>…)…)` declaration, or `None` for a sum
-/// this slice does not emit: a GENERIC sum (type parameters — the payload is a type variable) or an OPEN
-/// sum (row-variable tail). A MULTI-variant sum's values are `Ty::Sum`; a SINGLE-variant sum's values are
-/// the erased `Ty::Nominal` newtype (re-emitted as `(<Ctor> <payload>)`) — BOTH need this decl in scope,
-/// so both are emitted (any `variants.len() >= 1`). A variant's payload types are recovered from their
-/// declaration occurrences via `typeval_of` + lower's `type_ast`; a nullary variant is `(<Variant>)`.
-/// `decl` is an owned clone (so `typeval_of`'s `&mut db` does not alias a `db.type_decls` borrow).
+/// this slice does not emit: an OPEN sum (row-variable tail). A MULTI-variant sum's values are `Ty::Sum`; a
+/// SINGLE-variant sum's values are the erased `Ty::Nominal` newtype (re-emitted as `(<Ctor> <payload>)`) —
+/// BOTH need this decl in scope, so both are emitted. An EMPTY sum (`(type V)`, ZERO variants, uninhabited)
+/// is ALSO emitted — as the bare `(type V)`: no value ever flows through it, but it is a valid CLOSED type
+/// that a live sum may carry as a payload (`(type W (Ok Int64) (Bad V))`), so its declaration must be in
+/// scope for the dependent decl to re-resolve on recompile (else `unknown type V`). A variant's payload
+/// types are recovered from their declaration occurrences via `typeval_of` + lower's `type_ast`; a nullary
+/// variant is `(<Variant>)`. `decl` is an owned clone (so `typeval_of`'s `&mut db` does not alias a
+/// `db.type_decls` borrow).
 fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> Option<StructId> {
-    // Emit any CLOSED sum of arity ≥1. A GENERIC sum (`decl.params` non-empty) is now handled: its head is
-    // `(<Name> p0 p1…)` and a bare type-parameter payload re-emits its name. An OPEN sum (row tail) still
-    // declines (its `.. r` surface is a later slice).
-    if decl.open_tail.is_some() || decl.variants.is_empty() {
+    // Emit any CLOSED sum, including the ZERO-variant (empty / uninhabited) sum as a bare `(type V)`. A
+    // GENERIC sum (`decl.params` non-empty) is handled: its head is `(<Name> p0 p1…)` and a bare
+    // type-parameter payload re-emits its name. An OPEN sum (row tail) still declines (its `.. r` surface
+    // is a later slice).
+    if decl.open_tail.is_some() {
         return None;
     }
     let type_head = b.name("type");
