@@ -6073,6 +6073,12 @@ impl<'a> Parser<'a> {
     /// the printer exactly, so constructor patterns (`Some(x)`), dotted constructors (`Sign.Neg`),
     /// literal-headed forms (`1(v)`), and quoted patterns (`quasiquote(…)`) all parse uniformly.
     fn pattern(&mut self) -> StructId {
+        // I4: route to the iterative pattern driver when `read_ml` set the flag; the recursive body below
+        // stays for `read_ml_recursive` (the frozen oracle reference). Incremental — the iterative driver
+        // de-recurses one pattern family at a time, staying byte-identical (differential oracle) each step.
+        if self.iterative {
+            return self.pattern_iter();
+        }
         let start = self.cur_span();
         // DEPTH GUARD: patterns recurse (a tuple/list/ctor sub-pattern re-enters `pattern`) on a path
         // ENTIRELY separate from `expr`, so `expr`'s guard never covers them — a pathologically deep
@@ -6129,6 +6135,247 @@ impl<'a> Parser<'a> {
         }
         self.depth -= 1;
         node
+    }
+
+    /// Iterative pattern reader (I4) — the explicit-worklist replacement for the recursive [`Self::pattern`]
+    /// (byte-identical, verified by the differential oracle). HYBRID STAGE: the head atom is read via the
+    /// (recursive) [`Self::pattern_atom`] — so a `(tuple)`/`[list]`/`#{map}`/etc. sub-pattern still recurses
+    /// through a nested `pattern_iter` for now — but the postfix chain (`.member` folded inline, `(args)`
+    /// applications) is de-recursed onto this worklist, so a `C(C(C(… )))` constructor-application nest no
+    /// longer grows the native stack. Depth accounting mirrors `pattern`'s `guard_prefix` exactly (one
+    /// budget unit per pattern LEVEL — atom + its whole postfix chain — decremented when the level and all
+    /// its postfix complete), so a pathological nest declines at the same point/shape. Remaining atom
+    /// families (tuple/list/map/set/record/bin/raw-list) convert onto the worklist in later increments.
+    fn pattern_iter(&mut self) -> StructId {
+        // A pattern postfix `( arg, … )` application awaiting an argument sub-pattern. `items` = `[ base,
+        // arg… ]`; `start` is the base pattern's start (the folded node's span); `entered` = whether the
+        // OWNING level incremented `self.depth` (so the balanced decrement fires once, when the whole
+        // pattern completes); `before` is the arg-loop missing-`,` progress guard.
+        enum PCont {
+            Args {
+                start: Span,
+                entered: bool,
+                items: Vec<StructId>,
+                before: usize,
+            },
+            // A `[ p, … ]` list pattern awaiting an element sub-pattern (an ATOM-position form). `items` =
+            // `[ "list"-head, … ]`; each element is a `.. rest` spread (`is_rest`: wrap `(.. binder)` with
+            // `dd_span`/`rest_head`, created before the descent) or an ordinary sub-pattern. `bracket_span`
+            // is the `[`'s span; `before` the element-loop progress guard. `lvl_start`/`lvl_entered` are the
+            // OWNING pattern level's start + depth-entered flag — restored on the close so the list node's
+            // OWN postfix chain (`.member`/`(args)`) resumes + the depth budget balances once.
+            List {
+                lvl_start: Span,
+                lvl_entered: bool,
+                bracket_span: Span,
+                items: Vec<StructId>,
+                is_rest: bool,
+                rest_head: StructId,
+                dd_span: Span,
+                before: usize,
+            },
+        }
+        let mut pending: Vec<PCont> = Vec::new();
+        let mut node: StructId = StructId(0); // placeholder; assigned before use (reading=true first)
+        let mut cur_start = self.cur_span();
+        let mut cur_entered = false;
+        // `reading`: begin a FRESH pattern level (guard + head atom); else `node` holds a completed level
+        // (either the top pattern, or an argument delivered to a suspended `PCont::Args`).
+        let mut reading = true;
+        loop {
+            if reading {
+                cur_start = self.cur_span();
+                // DEPTH GUARD (mirrors `pattern`'s `guard_prefix`): on trip the level's value is a bare
+                // `error_node` with NO atom/postfix + NO depth increment (as `pattern` early-returns).
+                match self.guard_prefix(cur_start) {
+                    Some(err) => {
+                        node = err;
+                        cur_entered = false;
+                        reading = false;
+                    }
+                    None => {
+                        cur_entered = true;
+                        // ATOM DISPATCH: the `[ … ]` list pattern descends its elements on the worklist
+                        // (so `[[[[…` de-recurses); every OTHER atom family falls back to the (recursive)
+                        // `pattern_atom` for now (converted in later increments — byte-identical meanwhile).
+                        if self.at(Kind::LBracket) {
+                            let bracket_span = cur_start;
+                            self.bump(); // '['
+                            let head = self.name("list", bracket_span);
+                            let items = vec![head];
+                            if self.at(Kind::RBracket) {
+                                self.expect(Kind::RBracket, "`]`");
+                                node = self.list(items, bracket_span.merge(self.prev_span()));
+                                reading = false; // -> postfix phase on the list node
+                            } else {
+                                // Start the first element: a `.. rest` spread (create the `..` head NOW,
+                                // before the operand descends — matching `rest_marker`'s order) or an
+                                // ordinary sub-pattern. Descend it as a fresh level.
+                                let before = self.pos;
+                                let (is_rest, dd_span, rest_head) = if self.at(Kind::DotDot) {
+                                    let dd = self.cur_span();
+                                    self.bump(); // `..`
+                                    (true, dd, self.name("..", dd))
+                                } else {
+                                    (false, bracket_span, StructId(0))
+                                };
+                                pending.push(PCont::List {
+                                    lvl_start: cur_start,
+                                    lvl_entered: cur_entered,
+                                    bracket_span,
+                                    items,
+                                    is_rest,
+                                    rest_head,
+                                    dd_span,
+                                    before,
+                                });
+                                continue; // reading stays true: read the element as a fresh level
+                            }
+                        } else {
+                            node = self.pattern_atom();
+                            reading = false;
+                        }
+                    }
+                }
+            }
+            // POSTFIX PHASE (only for a real, non-tripped level — a tripped level has no postfix): fold a
+            // `.member` inline; an `( args )` application descends its args on the worklist.
+            if cur_entered {
+                let mut descended = false;
+                loop {
+                    match self.kind() {
+                        Kind::Dot
+                            if matches!(self.nth_kind(1), Kind::Ident | Kind::BacktickName) =>
+                        {
+                            self.bump(); // '.'
+                            let seg_span = self.cur_span();
+                            let seg_t = self.bump().unwrap();
+                            let seg = match seg_t.kind {
+                                Kind::BacktickName => self.name(
+                                    literal::unescape_backtick_name(self.text(seg_t)),
+                                    seg_span,
+                                ),
+                                _ => self.name(self.text(seg_t), seg_span),
+                            };
+                            let dot_span = cur_start.merge(self.prev_span());
+                            let dot = self.atom(Leaf::Member, dot_span);
+                            node = self.list(vec![dot, node, seg], dot_span);
+                        }
+                        Kind::LParen => {
+                            self.bump(); // '('
+                            let items = vec![node];
+                            if self.at(Kind::RParen) {
+                                // Empty application `C()` -> `(C)` (a one-element list), no arg descent.
+                                self.expect(Kind::RParen, "`)`");
+                                node = self.list(items, cur_start.merge(self.prev_span()));
+                                continue; // fold further postfix onto the result
+                            }
+                            let before = self.pos;
+                            pending.push(PCont::Args {
+                                start: cur_start,
+                                entered: cur_entered,
+                                items,
+                                before,
+                            });
+                            reading = true; // read the first argument as a fresh level
+                            descended = true;
+                            break;
+                        }
+                        _ => break, // no more postfix — the level is complete
+                    }
+                }
+                if descended {
+                    continue; // go read the argument
+                }
+            }
+            // LEVEL COMPLETE: balance the depth budget, then deliver `node` to the parent (or return it).
+            if cur_entered {
+                self.depth -= 1;
+            }
+            match pending.pop() {
+                None => return node,
+                Some(PCont::Args {
+                    start,
+                    entered,
+                    mut items,
+                    before,
+                }) => {
+                    // `node` is the delivered argument sub-pattern.
+                    items.push(node);
+                    if !self.sep_continue(Kind::RParen) {
+                        self.expect(Kind::RParen, "`)`");
+                        node = self.list(items, start.merge(self.prev_span()));
+                        // Resume the OWNING level's postfix loop on the built application node.
+                        cur_start = start;
+                        cur_entered = entered;
+                        reading = false;
+                        continue;
+                    }
+                    if self.pos == before {
+                        self.bump(); // arg didn't consume — avoid a missing-`,` spin
+                    }
+                    let before = self.pos;
+                    pending.push(PCont::Args {
+                        start,
+                        entered,
+                        items,
+                        before,
+                    });
+                    reading = true;
+                    continue; // read the next argument as a fresh level
+                }
+                Some(PCont::List {
+                    lvl_start,
+                    lvl_entered,
+                    bracket_span,
+                    mut items,
+                    is_rest,
+                    rest_head,
+                    dd_span,
+                    before,
+                }) => {
+                    // `node` is the delivered element (or `.. rest` operand). Push it, then read the next
+                    // element or close `]` and resume the OWNING level's postfix on the list node.
+                    if is_rest {
+                        let span = dd_span.merge(self.prev_span());
+                        items.push(self.list(vec![rest_head, node], span));
+                    } else {
+                        items.push(node);
+                    }
+                    if !self.sep_continue(Kind::RBracket) {
+                        self.expect(Kind::RBracket, "`]`");
+                        node = self.list(items, bracket_span.merge(self.prev_span()));
+                        cur_start = lvl_start;
+                        cur_entered = lvl_entered;
+                        reading = false; // resume the owning level's postfix phase on the list node
+                        continue;
+                    }
+                    if self.pos == before {
+                        self.bump(); // element didn't consume — avoid a missing-`,` spin
+                    }
+                    let before = self.pos;
+                    let (is_rest, dd_span, rest_head) = if self.at(Kind::DotDot) {
+                        let dd = self.cur_span();
+                        self.bump(); // `..`
+                        (true, dd, self.name("..", dd))
+                    } else {
+                        (false, bracket_span, StructId(0))
+                    };
+                    pending.push(PCont::List {
+                        lvl_start,
+                        lvl_entered,
+                        bracket_span,
+                        items,
+                        is_rest,
+                        rest_head,
+                        dd_span,
+                        before,
+                    });
+                    reading = true;
+                    continue; // read the next element as a fresh level
+                }
+            }
+        }
     }
 
     /// The head atom of a pattern (before any `.member` / application postfix).
@@ -7723,6 +7970,86 @@ mod tests {
                 rec.errors.len(),
                 it.errors.len(),
                 "expr_iter error count diverged for {src:?}\n  rec: {:?}\n  it: {:?}",
+                rec.errors,
+                it.errors
+            );
+        }
+    }
+
+    #[test]
+    fn pattern_iter_matches_recursive_pattern() {
+        // I4 differential check: the iterative `pattern_iter` must produce a BYTE-IDENTICAL result to the
+        // recursive `pattern` for every pattern — arena (structural eq), span table, and errors. Covers the
+        // de-recursed postfix chain (`.member` / `(args)` ctor applications, incl. deep nesting) + the
+        // recursive-fallback atom families (literals/names/tuple/list/map/set/record/bin), which must stay
+        // byte-identical through the hybrid stage.
+        let cases = [
+            "_",
+            "x",
+            "0",
+            "true",
+            "\"s\"",
+            "Some(x)",
+            "None",
+            "Sign.Neg",
+            "Id.Mk(n)",
+            "Some(Some(x))",
+            "C(D(E(f)))",
+            "Cons(x, Cons(y, Nil))",
+            "Some((a, b))",
+            "Wrap(x).inner",
+            "(a, b)",
+            "(a)",
+            "()",
+            "(a, b, .. rest)",
+            "[]",
+            "[x, y]",
+            "[x, .. rest]",
+            "[(a, b), .. rest]",
+            "[[x], [y]]",
+            "[[[[x]]]]",
+            "[Some(a), None, .. rest]",
+            "[.. all]",
+            "[x].head",
+            "#{ 1 = p }",
+            "#{ k = Some(v), .. rest }",
+            "#(a, b)",
+            "{ f = p, g = q }",
+            "b[u8(1)]",
+            "Point(x, y).norm(z)",
+            "C(C(C(C(x))))",
+        ];
+        for src in cases {
+            let mut rec = build_parser(src, FileId::default());
+            let rec_root = rec.pattern(); // rec.iterative == false -> recursive body
+            let rec_arenas = rec.builder.finish(rec_root);
+
+            let mut it = build_parser(src, FileId::default());
+            let it_root = it.pattern_iter();
+            let it_arenas = it.builder.finish(it_root);
+
+            assert!(
+                it_arenas.structurally_eq(&rec_arenas),
+                "pattern_iter arena diverged for {src:?}\n  recursive: {}\n  iterative: {}",
+                crate::sexpr::print(&rec_arenas),
+                crate::sexpr::print(&it_arenas),
+            );
+            assert_eq!(
+                rec.spans.len(),
+                it.spans.len(),
+                "pattern_iter span-table length diverged for {src:?}"
+            );
+            for i in 0..rec.spans.len() as u32 {
+                assert_eq!(
+                    rec.spans.get(StructId(i)),
+                    it.spans.get(StructId(i)),
+                    "pattern_iter span[{i}] diverged for {src:?}"
+                );
+            }
+            assert_eq!(
+                rec.errors.len(),
+                it.errors.len(),
+                "pattern_iter error count diverged for {src:?}\n  rec: {:?}\n  it: {:?}",
                 rec.errors,
                 it.errors
             );
