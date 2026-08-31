@@ -30,13 +30,13 @@ export default function PatternMatching() {
       />
       <P><C>#\e</C> takes its arm, so the answer is <C>true</C>. Change it to a consonant like <C>#\z</C> and the wildcard arm answers <C>false</C>. As with numbers and strings, the <C>_</C> arm is required, since <C>Char</C> has far too many values for the compiler to see them all listed.</P>
       <H2>Sum types</H2>
-      <P>A sum type is a set of tagged variants. You declare it with <C>type</C>, build a value with one of its constructors, and take it apart by matching each variant. Here <C>Opt</C> is either <C>Some</C> carrying an <C>Int64</C>, or <C>None</C>. The <C>(Some x)</C> arm <em>binds</em> the payload to <C>x</C>:</P>
+      <P>A sum type is a set of tagged variants. You declare it with <C>type</C>, build a value with one of its constructors, and take it apart by matching each variant. Here <C>Opt</C> is either <C>Some</C> carrying an <C>Int64</C>, or <C>None</C>. The <Cadenza>(Some x)</Cadenza> arm <em>binds</em> the payload to <C>x</C>:</P>
       <Runnable
         source={`(type Opt (Some Int64) (None unit))
 
 (def (main) (match (Some 7) ((Some x) x) ((None _) 0)))`}
       />
-      <P>Swap <C>(Some 7)</C> for <C>(None unit)</C> and Run to take the other arm, which returns <C>0</C>.</P>
+      <P>Swap <Cadenza>(Some 7)</Cadenza> for <Cadenza>(None unit)</Cadenza> and Run to take the other arm, which returns <C>0</C>.</P>
       <H2>The compiler checks you covered every case</H2>
       <P>Exhaustiveness is what this buys you. Drop the <C>None</C> arm and the compiler <em>refuses</em> to compile, because it can see, from the type, that a case is unhandled:</P>
       <Note>This one is <strong>meant to be refused</strong>. Run it and read the status bar: <C>non-exhaustive match</C>, the missing variant named for you, before the program ever runs.</Note>
@@ -66,13 +66,13 @@ export default function PatternMatching() {
       />
       <Note>This is the typed cousin of the symbol dispatch from the Symbols chapter. A symbol tag is checked with <C>=</C> and any typo compiles; a sum's variants are checked by the compiler, so a forgotten or misspelled case is caught. Reach for a sum when the set of cases is fixed and worth enforcing.</Note>
       <H2>Matching a map by key</H2>
-      <P>A <C>match</C> can also look <em>inside a collection</em>. A map pattern, <C>#map((= key binder) (.. rest))</C>, fires when the map contains that key, binding the associated value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map, returning <C>(Some v)</C> when the key is present and <C>(None unit)</C> when it's absent, because a missing key is an absence, not a magic number:</P>
+      <P>A <C>match</C> can also look <em>inside a collection</em>. A map pattern, <Cadenza>#map((= key binder) (.. rest))</Cadenza>, fires when the map contains that key, binding the associated value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map, returning <Cadenza>(Some v)</Cadenza> when the key is present and <Cadenza>(None unit)</Cadenza> when it's absent, because a missing key is an absence, not a magic number:</P>
       <Runnable
         source={`(def (setting m) (match m (#map((= "width" v) (.. rest)) (Some v)) (_ (None unit))))
 
 (def (main) (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}
       />
-      <P>The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns <C>(Some 80)</C>. Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns <C>(None unit)</C>. Toggle to the conventional surface and the pattern reads as <C>{"#{ \"width\" = v, .. rest }"}</C>, a map-literal shape on the left of a match arm (the <strong>Maps &amp; sets</strong> chapter later builds out maps as values).</P>
+      <P>The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns <Cadenza>(Some 80)</Cadenza>. Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns <Cadenza>(None unit)</Cadenza>. The <strong>Maps &amp; sets</strong> chapter later builds out maps as values.</P>
       <H2>Matching a tuple's shape</H2>
       <P>A tuple pattern takes a value apart by <em>position</em>, and a trailing rest marker <C>(.. rest)</C> gathers the elements you didn't name into a smaller tuple, the positional twin of a list's <C>.. rest</C>. Here <Cadenza>#tuple(a b (.. rest))</Cadenza> binds <C>a</C> and <C>b</C> to the first two elements and <C>rest</C> to a tuple of whatever trails, so reading <C>rest</C> back with <C>.0</C> recovers the third element:</P>
       <Runnable
@@ -108,7 +108,7 @@ export default function PatternMatching() {
       />
       <Exercise
         id="pattern-matching:2"
-        prompt={<>Write the <em>guard condition</em> so <C>grade</C> returns <C>1</C> for a passing score of <C>60</C> or more, and <C>0</C> otherwise. With <C>(grade 75)</C> the answer is <C>1</C>.</>}
+        prompt={<>Write the <em>guard condition</em> so <C>grade</C> returns <C>1</C> for a passing score of <C>60</C> or more, and <C>0</C> otherwise. With <Cadenza>(grade 75)</Cadenza> the answer is <C>1</C>.</>}
         starter={`(def (grade s) (match s ((guard x ?) 1) (_ 0)))
 
 (def (main) (grade 75))`}
