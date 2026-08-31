@@ -4270,12 +4270,12 @@
 ; contains/remove still work — pin-211 honored). Concierge RULED (a) uniform decline. bare-float sets
 ; + int-leaf tuples still enumerate (unregressed).
 (case
-  "Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)"
+  "Set.to-list over float-leaf tuple elements is a coded CDZ0203 — a float-containing compound offers no total order (§319, 03:626 companion)"
   (input
     (do
       (def (main) (List.len (Set.to-list #set(#tuple(1.5 1) #tuple(2.5 2) #tuple(-1.0 3)))))
       (export main)))
-  (declines))
+  (error CDZ0203 (message "IEEE partial order")))
 
 (case
   "Map.to-list orders by SYMBOL keys while float values — NaN included — ride along"

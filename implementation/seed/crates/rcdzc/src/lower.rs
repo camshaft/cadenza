@@ -5762,6 +5762,67 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
 //# A compound value — a tuple, a record, a list, or a sum — MUST offer a total order exactly when every one of its component types offers a total order.
 //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
 //# A compound any of whose component types does not, transitively, offer a total order MUST NOT be treated as offering one; in particular a floating-point component makes the compound unordered, because a floating-point type offers only the IEEE partial order.
+/// Whether `ty` has a FLOAT leaf anywhere (transitively) — the float-no-total-order face of an
+/// un-orderable value. Used to SCOPE the compound-ordering / to-list rejects: an un-orderable value
+/// caused by a float leaf is a PERMANENT no-total-order carve-out (float offers only the IEEE partial
+/// order) → coded CDZ0203 "use `<`/`<=`/`>`/`>=`"; one caused by a Set/Map leaf (no blessed order at all)
+/// is a separate class that stays a codeless decline. Mirrors `orderable_leaf_or_compound`'s recursion,
+/// closing recursive sums on `seen`. (A `Set`/`Map` whose ELEMENT/value is a float still has a float leaf —
+/// it is the enclosing collection's own orderability that differs; here we only ask "is a float present".)
+pub(crate) fn type_has_float_leaf(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    seen: &mut Vec<crate::ast::StructId>,
+) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Float(_) => true,
+        Ty::Tuple(elems) => {
+            let elems: Vec<Ty> = elems.iter().cloned().collect();
+            elems.iter().any(|e| type_has_float_leaf(db, e, seen))
+        }
+        Ty::List(elem) | Ty::Set(elem) => {
+            let elem = (**elem).clone();
+            type_has_float_leaf(db, &elem, seen)
+        }
+        Ty::Map(k, v) => {
+            let (k, v) = ((**k).clone(), (**v).clone());
+            type_has_float_leaf(db, &k, seen) || type_has_float_leaf(db, &v, seen)
+        }
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().any(|v| type_has_float_leaf(db, v, seen))
+        }
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return false; // recursive back-edge — no new float leaf via this cycle
+            }
+            seen.push(*decl);
+            let vc = db.type_decl_by_occ(*decl).map(|t| t.variants.len());
+            let mut found = false;
+            if let Some(vc) = vc {
+                for disc in 0..vc {
+                    let ctor = db
+                        .type_decl_by_occ(*decl)
+                        .and_then(|t| t.variants.get(disc))
+                        .and_then(|v| v.ctor);
+                    if let Some(ctor) = ctor
+                        && let Some(payload_ty) =
+                            crate::infer::payload_ty_at_instantiation(db, ctor, ty)
+                        && type_has_float_leaf(db, &payload_ty, seen)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            seen.pop();
+            found
+        }
+        _ => false,
+    }
+}
+
 fn is_orderable_compound(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     // The root must be a compound; a bare orderable leaf is handled by the scalar / StrCmp paths.
