@@ -32,6 +32,18 @@ text ──▶ [cadenza-syntax] ──▶ binary AST ──▶ [rcdzc] ──▶
 - **`src/editor/`** — CodeMirror 6 with a Cadenza StreamLanguage tokenizer.
 - **`src/content/`** — the tour chapters (TSX embedding `<Runnable>`), registered in `chapters.ts`.
 
+## Authoring conventions
+
+- **Show the concrete VALUE — never hide it behind a length/count/size.** Every example must render the
+  actual value a program produces (the tangible thing), not a `List.len` / `Set.len` / `Map.len` /
+  `Bytes.len` / `scalar-len` count standing in for it. If a `match` binds a residual collection, return
+  the collection — `(Some rest)` yielding `Option(Set(Int64))` shown as `(Some #set(2 3))` — not
+  `(Set.len rest)` yielding `2`. `(Some #set(2 3))` is far more tangible to a reader than `2`.
+  **Exception:** an example whose *lesson is a length operation itself* (the Lists chapter documenting
+  `List.len`, `scalar-len` vs `byte-len`, a counting algorithm) legitimately shows the length — there the
+  length is the subject, not a stand-in for a hidden value. **This is an operator directive, repeated: it
+  must hold EVERYWHERE, in every new and regenerated example.**
+
 ## Develop
 
 Requires **Node ≥ 20.19** (jco's transpiler needs it) and the Rust `wasm32-unknown-unknown` target +
