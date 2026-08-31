@@ -2346,8 +2346,10 @@ fn emit_switch_tree(
 /// Reconstruct the surface `(match <scrutinee> (<pattern> <body>)…)` for a `Core::MatchSum`. M4a lowers the
 /// SIMPLE decision-tree shape: the `root` is a [`SumCont::Switch`] on the scrutinee's OWN discriminant
 /// (empty `path`), every arm dispatches on an EXPLICIT variant (`disc: Some`) to a bare [`SumCont::Leaf`]
-/// body. Anything richer declines (a later slice): a disc-FOLDED / NESTED-switch / GUARDED / LITERAL-TEST
-/// continuation, or a DEFAULT (`disc: None`) wildcard arm. Each arm's `(<Variant> <binder>…)` pattern mints
+/// body. A root `Switch` at a NON-EMPTY path — a COMPOUND scrutinee (Tuple/Record/newtype) dispatching on a
+/// SLOT — routes through [`emit_switch_tree`]/[`build_arm_pat`] (destructure the compound to reach + dispatch
+/// on the switched slot). Anything richer declines (a later slice): a disc-FOLDED / GUARDED / LITERAL-TEST
+/// root continuation. Each arm's `(<Variant> <binder>…)` pattern mints
 /// one fresh `_cdz_m<n>` binder per payload slot (recorded in `env.payloads` under the same `(scrutinee,
 /// path)` key a `Core::SumPayload` in the body carries — `[Payload]` for a single-payload variant,
 /// `[Payload, Elem(i)]` for slot `i` of a multi-payload variant, mirroring `select.rs`), so a payload read
@@ -2367,10 +2369,41 @@ fn emit_match_sum(
     use crate::core::{PathStep, SumCont};
     let arms = match root {
         SumCont::Switch { path, arms } if path.is_empty() => arms,
+        // A COMPOUND scrutinee dispatching on a SLOT (not its own discriminant): the root `Switch` sits at a
+        // NON-EMPTY path (e.g. `[Elem(1)]` — the 2nd tuple slot, a record field, a newtype payload). The
+        // scrutinee's own type is a Tuple/Record/newtype, NOT a `Sum`, so there is no root discriminant to
+        // switch on (and the `Ty::Sum` `decl` recovery below would decline it); instead reconstruct the surface
+        // arms with the SAME general tree-walk the deep-cont arm uses ([`emit_switch_tree`] + [`build_arm_pat`]):
+        // destructure the irrefutable compound structure down to the switched slot and dispatch THERE —
+        // `(#tuple(a (Some b)) …)` / `(#record((= f (V …))) …)` (the variant-at-slot shape, e.g. #6967's
+        // variant-below-record, and inner-sum-at-a-tuple-slot). The per-`decl` un-emitted-user-sum guard lives
+        // inside `build_arm_pat`/`ctor_pat`, and every tree leaf is enumerated so the emitted match stays
+        // exhaustive (no synthesized wildcard). A `Guarded`/`LitTest` node anywhere in the tree still declines
+        // (a literal-at-slot / guard-at-slot surface reconstruction is a later slice).
+        SumCont::Switch { .. } => {
+            let root_ty = crate::infer::type_of(db, scrutinee);
+            let match_head = b.name("match");
+            let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            let mut children = vec![match_head, scrut_node];
+            emit_switch_tree(
+                db,
+                b,
+                scrutinee,
+                &root_ty,
+                root,
+                std::collections::HashMap::new(),
+                &expected,
+                env,
+                emitted,
+                &mut children,
+            )?;
+            return Ok(b.list(children));
+        }
         _ => {
             return Err(Reject::unsupported(
                 "the Cadenza backend does not support lowering this sum match (a disc-folded / nested / \
-                 guarded root — only a switch on the scrutinee's own discriminant)"
+                 guarded root — only a switch on the scrutinee's own discriminant, or a switch on a \
+                 compound slot)"
                     .to_string(),
             ));
         }
