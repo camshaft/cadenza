@@ -717,6 +717,20 @@ pub fn grade_compile_declines(
         return Grade::Fail("expected the compiler to DECLINE but it COMPILED (miscompile)".into());
     }
     let (got_code, message) = first_error_diag(diag);
+    // CLAUSE-3 (operator directive 2026-08-31): a CODELESS INTERNAL decline is a compiler BUG, not an honest
+    // capability decline — FAIL it (route to the owning compiler lane: give the error a code / fix the path),
+    // never a false "correct decline". Mirrors `grade_trial`'s is_ice_signature discrimination for value/trap
+    // cases. An honest codeless capability decline ("no boundary representation") matches NO signature → still
+    // graded below (Pass). Only the curated internal-invariant breaks (`no local slot` / self-labeled
+    // `compiler bug` / `panicked` / …) fail here. (Fires before the code/msg checks: an ICE is a hard bug, not
+    // a refused-to-confirm Todo. Note: `(declines)` is itself being deprecated per the same directive — this
+    // closes the transitional false-pass where a `(declines)` masks an ICE.)
+    if got_code.is_none() && is_ice_signature(&message) {
+        return Grade::Fail(format!(
+            "declined with an INTERNAL COMPILER ERROR (a codeless ICE — a compiler bug, not a capability \
+             decline; give it a code or fix the path): {message}"
+        ));
+    }
     // An asserted CODE (seq-286 coded-decline pin) must match the refusal's emitted code. A different/absent
     // code is Todo — the compiler refused, just not (yet) with the pinned code (refused-to-confirm, never a
     // false pass) — mirroring `grade_compile_error`'s not-that-code arm. A codeless assertion accepts any
@@ -1652,6 +1666,30 @@ mod tests {
         assert!(matches!(
             grade_compile_declines(false, d, Some("CDZ0900"), &["absent phrase".into()], &[]),
             Grade::Fail(_)
+        ));
+    }
+
+    #[test]
+    fn declines_with_a_codeless_internal_ice_fails_not_passes() {
+        // CLAUSE-3 (operator 2026-08-31): a CODELESS INTERNAL decline (an ICE signature) is a compiler BUG →
+        // FAIL, never a false "correct decline". An honest codeless capability decline still Passes.
+        // codeless ICE ("no local slot" is an is_ice_signature) → Fail (even for a bare codeless (declines)).
+        let ice = "error: parameter reference has no local slot";
+        assert!(matches!(
+            grade_compile_declines(false, ice, None, &[], &[]),
+            Grade::Fail(_)
+        ));
+        // a self-labeled compiler-bug ICE → Fail even if a code was pinned (ICE fires before the code check).
+        let ice2 = "error: a wildcard literal test is a compiler bug";
+        assert!(matches!(
+            grade_compile_declines(false, ice2, Some("CDZ0900"), &[], &[]),
+            Grade::Fail(_)
+        ));
+        // an HONEST codeless capability decline (no ICE signature) → still Pass (clause-4 not-yet, not a bug).
+        let honest = "error: a Map value type has no boundary representation";
+        assert!(matches!(
+            grade_compile_declines(false, honest, None, &[], &[]),
+            Grade::Pass
         ));
     }
 
