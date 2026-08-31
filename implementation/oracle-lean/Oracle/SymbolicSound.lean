@@ -547,6 +547,16 @@ theorem denote_not_bool (ρ : Nat → Value) (w : IntTy) (c : SymExpr) (b : Bool
     denote ρ w (.app "not" #[c]) = .value (.bool (!b)) := by
   cases b <;> simp [denote, denoteApp, denoteUnary, foldConst?, symToValue?_const, h]
 
+/-- SEMANTIC EQUIVALENCE of the `if c then false else true → not c` materialization (#6450), on the
+value-producing valuations: both sides denote to `!b` when the condition denotes to a boolean `b`. This
+is exactly the fact the capstone `.ite` materialize-false sub-case discharges — `normalize` rewrites the
+`ite` to `not c'`, and this shows `denote` is unchanged. Composes `denote_ite_materialize_false` (#6467,
+the ite side) with `denote_not_bool` (the `not` side, now that `foldConst? "not"` reduces). -/
+theorem denote_ite_materialize_false_eq_not (ρ : Nat → Value) (w : IntTy) (c : SymExpr) (b : Bool)
+    (h : denote ρ w c = .value (.bool b)) :
+    denote ρ w (.ite c (.const (.bool false)) (.const (.bool true))) = denote ρ w (.app "not" #[c]) := by
+  rw [denote_ite_materialize_false ρ w c b h, denote_not_bool ρ w c b h]
+
 /-- INVERSION for the `.ite` case: an `ite` denotes to a VALUE only via the branch its condition selects
 — the condition denotes to a boolean, and the taken branch denotes to that same value. (`denote`'s `.ite`
 arm returns a `.value` only in the `bool true`/`bool false` condition sub-cases; a non-bool value gives
