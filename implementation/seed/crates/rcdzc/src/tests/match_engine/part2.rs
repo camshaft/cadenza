@@ -2623,32 +2623,13 @@ fn radian_and_degree_are_first_class_units_in_separate_dimensions() {
         fams.get("degree"),
         "radian and degree are DISTINCT dimensions (no exact interconversion)"
     );
-    // Exact WITHIN a dimension: `5 degree + 90 degree` COMPILES (Int64 magnitude, a valid same-dimension
-    // add). Its RUN value (magnitudes add via Qty.value → 95) is corpus-covered by 18-units-of-measure
-    // "adding two quantities of the same dimension keeps that dimension" / "a runtime-magnitude same-unit
-    // sum adds the erased magnitudes".
-    assert!(
-        compile_component(&crate::codec::encode(&parse(
-            "(do (def (main) ((. Qty value) \
-                   (+ ((. Qty of) 5 ((. Unit of) #\"degree\")) \
-                      ((. Qty of) 90 ((. Unit of) #\"degree\"))))) (export main))"
-        )))
-        .is_ok(),
-        "a degree + degree same-dimension sum compiles"
-    );
-    // Mixing dimensions REJECTS CDZ0501 — degree + radian is not exactly interconvertible, so it is a
-    // dimension mismatch, not a silent conversion.
-    assert_eq!(
-        compile_component(&crate::codec::encode(&parse(
-            "(do (def (main) (+ ((. Qty of) 1 ((. Unit of) #\"degree\")) \
-                   ((. Qty of) 1 ((. Unit of) #\"radian\")))) (export main))"
-        )))
-        .err()
-        .and_then(|d| d.code.as_deref().map(str::to_string))
-        .as_deref(),
-        Some("CDZ0501"),
-        "degree + radian must reject CDZ0501 (incompatible dimension)"
-    );
+    // The COMPILE-PATH facets — `5 degree + 90 degree` = 95 (exact within one angle dimension) and
+    // `degree + radian` → CDZ0501 (the two angle dimensions do NOT interconvert) — are corpus-covered by
+    // 18-units-of-measure "angle units radian and degree are first-class and exact within their own
+    // dimension" and "adding a degree quantity to a radian quantity is a dimension mismatch". This test
+    // keeps only the `unit_families()` registry facet the corpus cannot see: the alias-IDENTITY of
+    // rad/deg/radians/degrees to their canonical spelling (a registry-map equality, distinct from mere
+    // same-dimension combinability).
 }
 
 #[test]
