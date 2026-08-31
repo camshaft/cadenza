@@ -13,8 +13,10 @@
 ; coverage for structural record/tuple/List/Map/Set/primitive via the `type_ast` surface fallback (they have
 ; no `TypeDecl`, so `-generic` == `-ast` == the canonical type-surface AST); a `Fn` type is TODO-pinned
 ; (its arrow surface `(-> …)` is a later increment — `type_ast` has no value-form surface for a function).
-; REMAINING: the instantiated-substitution variant of `Type.ast` on a GENERIC type (increment 3); Ast.print /
-; Ast.encode round-trip lock (increment 4); the `Fn` arrow surface + the non-concrete-`Var` decline.
+; INCREMENT 3: `Type.ast` INSTANTIATED on a GENERIC type — substitute the decl's params by the type's
+; concrete args (dropping the head binders), rendered finite (a nested self-reference stays a named
+; application, never unfolded). REMAINING: `Ast.print` / `Ast.encode` round-trip lock (increment 4); the
+; `Fn` arrow surface (TODO-pinned above).
 (case
   "Type.ast-generic reflects a nominal sum type's verbatim declaration AST"
   (doc
@@ -119,6 +121,57 @@
     (do
       (def (id (: x Int64)) x)
       (def (main) (if (= (Type.ast-generic (Type.of id)) (quote (-> Int64 Int64))) 1 0))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
+
+(case
+  "Type.ast INSTANTIATES a generic type's params; Type.ast-generic keeps them verbatim (they differ)"
+  (doc
+    "Increment 3 — the instantiated variant of `Type.ast` on a GENERIC type. For
+           `(type Opt a (Sm a) (Nn))` reflected from a value of type `Opt Int64`: `Type.ast` substitutes
+           the concrete arg (`a` -> `Int64`) into the decl and DROPS the head param binders, folding to
+           `(type Opt (Sm Int64) (Nn))`; `Type.ast-generic` keeps the params intact, `(type Opt a (Sm a)
+           (Nn))`. So the two DIFFER for a generic type (they coincided only for the monomorphic case
+           pinned above). Checks: instantiated == the substituted-decl quote (weight 1), generic == the
+           verbatim quote (weight 2), and the two are NOT equal (weight 4) — self-witness 1+2+4 = 7. The
+           substitution reuses the type params' first-appearance order (`TypeDecl.params`), so a wrong
+           arg->param mapping or a failure to drop the binders shifts the total.")
+  (input
+    (do
+      (type Opt a (Sm a) (Nn))
+      (def
+        (main)
+        (+
+          (* 1 (if (= (Type.ast (Type.of (Sm 1))) (quote (type Opt (Sm Int64) (Nn)))) 1 0))
+          (+
+            (* 2 (if (= (Type.ast-generic (Type.of (Sm 1))) (quote (type Opt a (Sm a) (Nn)))) 1 0))
+            (* 4 (if (= (Type.ast (Type.of (Sm 1))) (Type.ast-generic (Type.of (Sm 1)))) 0 1)))))
+      (export main)))
+  (call main)
+  (output (: 7 Int64)))
+
+(case
+  "Type.ast on a RECURSIVE generic stays finite — a nested self-reference is not unfolded"
+  (doc
+    "Finiteness (design §3.3): instantiating a RECURSIVE generic substitutes only the decl's OWN param
+           binders in its OWN body; every nested named type reference — including the self-reference — stays
+           a `(Name arg…)` application, NEVER expanded. So `(type Lst a (Nil) (Cons a (Lst a)))` reflected at
+           `Lst Int64` folds to `(type Lst (Nil) (Cons Int64 (Lst Int64)))` — the `a` in `Cons`'s payload
+           becomes `Int64`, and the self-reference `(Lst a)` becomes `(Lst Int64)` but is not inlined, so
+           the result is finite even though the type is infinite. A substitution that unfolded the
+           self-reference would not terminate (or would diverge from this pinned shape).")
+  (input
+    (do
+      (type Lst a (Nil) (Cons a (Lst a)))
+      (def
+        (main)
+        (if
+          (=
+            (Type.ast (Type.of ((Cons 1) (Nil))))
+            (quote (type Lst (Nil) (Cons Int64 (Lst Int64)))))
+          1
+          0))
       (export main)))
   (call main)
   (output (: 1 Int64)))
