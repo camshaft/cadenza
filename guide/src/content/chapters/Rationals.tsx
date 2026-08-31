@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { AppLink } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
@@ -10,7 +10,7 @@ export default function Rationals() {
     <article>
       <H1>Exact fractions</H1>
       <Lede>A <C>Float64</C> is fast but approximate, so when you need an exact fraction like a third that really is a third, reach for a <C>Rational</C>.</Lede>
-      <P>You saw in <strong>Floating-point numbers</strong> that <C>(+ 0.1 0.2)</C> isn't quite <C>0.3</C>, because floats trade exactness for speed. A <C>Rational</C> makes the other trade by holding a number as an exact ratio of two integers, so arithmetic never rounds. Build one with <C>Rational.of</C>, giving a numerator and a denominator:</P>
+      <P>You saw in <strong>Floating-point numbers</strong> that <Cadenza>(+ 0.1 0.2)</Cadenza> isn't quite <C>0.3</C>, because floats trade exactness for speed. A <C>Rational</C> makes the other trade by holding a number as an exact ratio of two integers, so arithmetic never rounds. Build one with <C>Rational.of</C>, giving a numerator and a denominator:</P>
       <Runnable
         source={`(Rational.of 1 2)`}
       />
@@ -23,7 +23,7 @@ export default function Rationals() {
       <Runnable
         source={`0.5R`}
       />
-      <P>It's the very same value as the constructor, since <C>0.5R</C> equals <C>(Rational.of 1 2)</C>, just terser to write. And it's where the contrast with <strong>Floating-point numbers</strong> stops being a claim and becomes something you can watch. Add a tenth and two tenths as <em>floats</em> and the answer isn't <C>0.3</C> but the nearest float to it, which isn't quite <C>0.3</C>:</P>
+      <P>It's the very same value as the constructor, since <C>0.5R</C> equals <Cadenza>(Rational.of 1 2)</Cadenza>, just terser to write. And it's where the contrast with <strong>Floating-point numbers</strong> stops being a claim and becomes something you can watch. Add a tenth and two tenths as <em>floats</em> and the answer isn't <C>0.3</C> but the nearest float to it, which isn't quite <C>0.3</C>:</P>
       <Runnable
         source={`(+ 0.1 0.2)`}
       />
@@ -87,12 +87,12 @@ export default function Rationals() {
         source={`(/ (Rational.of 3 4) (Rational.of 2 1))`}
       />
       <Why tenet="Exactness is a choice you can make">Cadenza doesn't pick one number type and make its weaknesses your problem. A <C>Float64</C> is the right tool when you want speed and can tolerate rounding, as in measurements, graphics, and physics. A <C>Rational</C> is the right tool when a rounding error would be a <em>bug</em>, as in money, exact ratios, and anything that must add up. They're different types with different operators, so you say which guarantee you want, and the compiler never silently swaps one for the other. Same instinct as keeping <C>Int64</C> and <C>Float64</C> apart: one type per kind of number, no surprises.</Why>
-      <Note>A zero denominator has no value to denote, so <C>(Rational.of 1 0)</C> is a compile-time error (<C>CDZ0304</C>), the same "no correct answer, so refuse" rule as dividing an integer by zero.</Note>
+      <Note>A zero denominator has no value to denote, so <Cadenza>(Rational.of 1 0)</Cadenza> is a compile-time error (<C>CDZ0304</C>), the same "no correct answer, so refuse" rule as dividing an integer by zero.</Note>
       <P>That refuse-when-there's-no-answer instinct runs through every number type you've now met. The next chapter, <em>Errors &amp; absence</em>, makes it a tool you hold: <C>Option</C> and <C>Result</C> turn a might-not-have-an-answer into an ordinary value you handle.</P>
       <H2>Your turn</H2>
       <Exercise
         id="rationals:1"
-        prompt={<>A rational is compared by value, so equal fractions are <C>=</C> however they're written. Write the fraction <C>3/6</C> in lowest terms so it equals <C>(Rational.of 1 2)</C> and the comparison gives <C>true</C>.</>}
+        prompt={<>A rational is compared by value, so equal fractions are <C>=</C> however they're written. Write the fraction <C>3/6</C> in lowest terms so it equals <Cadenza>(Rational.of 1 2)</Cadenza> and the comparison gives <C>true</C>.</>}
         starter={`(= (Rational.of 3 6) (Rational.of 1 ?))`}
         solution={`(= (Rational.of 3 6) (Rational.of 1 2))`}
         expected="true"
@@ -104,7 +104,7 @@ export default function Rationals() {
         starter={`(= (/ (Rational.of 1 2) (Rational.of 1 ?)) (Rational.of 2 1))`}
         solution={`(= (/ (Rational.of 1 2) (Rational.of 1 4)) (Rational.of 2 1))`}
         expected="true"
-        hint={<>A quarter is <C>(Rational.of 1 4)</C>. Dividing by it multiplies by its reciprocal <C>4/1</C>, so <C>1/2</C> becomes <C>4/2 = 2/1</C>, exactly two with no rounding.</>}
+        hint={<>A quarter is <Cadenza>(Rational.of 1 4)</Cadenza>. Dividing by it multiplies by its reciprocal <C>4/1</C>, so <C>1/2</C> becomes <C>4/2 = 2/1</C>, exactly two with no rounding.</>}
       />
       <Exercise
         id="rationals:3"
@@ -112,7 +112,7 @@ export default function Rationals() {
         starter={`(= (Rational.? (Rational.of 6 8)) (BigInt.of 3))`}
         solution={`(= (Rational.numerator (Rational.of 6 8)) (BigInt.of 3))`}
         expected="true"
-        hint={<><C>6/8</C> reduces to <C>3/4</C>, whose numerator is <C>3</C>. <C>Rational.numerator</C> reads the top; <C>Rational.denominator</C> would give <C>4</C>. The accessor returns a <C>BigInt</C>, so it's compared against <C>(BigInt.of 3)</C>.</>}
+        hint={<><C>6/8</C> reduces to <C>3/4</C>, whose numerator is <C>3</C>. <C>Rational.numerator</C> reads the top; <C>Rational.denominator</C> would give <C>4</C>. The accessor returns a <C>BigInt</C>, so it's compared against <Cadenza>(BigInt.of 3)</Cadenza>.</>}
       />
     </article>
   );

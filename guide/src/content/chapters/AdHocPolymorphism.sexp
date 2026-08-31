@@ -47,7 +47,7 @@
   (if (< (+ 1.5 1.5) 4.0)
     (+ 1 2)
     99))))
-  (p "The " (c "(+ 1.5 1.5)") " is float addition and the " (c "(+ 1 2)") " integer addition, the same symbol picking the right implementation per type and folding to " (c "3") ". You didn't pass a dictionary because the prelude already provides the instances; it's the record-of-operations idea with the record built in.")
+  (p "The " (cdz "(+ 1.5 1.5)") " is float addition and the " (cdz "(+ 1 2)") " integer addition, the same symbol picking the right implementation per type and folding to " (c "3") ". You didn't pass a dictionary because the prelude already provides the instances; it's the record-of-operations idea with the record built in.")
   (h2 "And the implicit face: generic specialization")
   (p "One more form needs no dictionary at all: a generic function the compiler " (em "monomorphizes") ". Write " (c "len") " with no type annotations and it works for any list; the compiler emits a distinct specialized copy per concrete type it's actually called at:")
   (runnable
@@ -74,10 +74,10 @@
     (hint "The record's " (c "op") " field is the function to call, so put " (c "triple") " there and " (c "apply-op") " calls it on " (c "5") " for " (c "15") ". Dispatch is just choosing which function the record carries."))
   (exercise
     (id "ad-hoc-polymorphism:2")
-    (prompt "The same " (c "+") " means integer or float addition depending on its operands. Fill the float so the comparison " (c "(&lt; (+ 2.0 ?) 5.0)") " is " (em "true") ", which selects the " (c "(+ 10 20)") " integer branch and gives " (c "30") ".")
+    (prompt "The same " (c "+") " means integer or float addition depending on its operands. Fill the float so the comparison " (c "(&lt; (+ 2.0 ?) 5.0)") " is " (em "true") ", which selects the " (cdz "(+ 10 20)") " integer branch and gives " (c "30") ".")
     (starter (def (main)
   (if (< (+ 2.0 ?) 5.0) (+ 10 20) 0)))
     (solution (def (main)
   (if (< (+ 2.0 1.0) 5.0) (+ 10 20) 0)))
     (expected "30")
-    (hint "You need " (c "(+ 2.0 ?)") " to stay under " (c "5.0") ", so any float below " (c "3.0") " works, and " (c "1.0") " gives " (c "3.0 &lt; 5.0") ", true. The addition on " (c "2.0") " is float addition, while " (c "(+ 10 20)") " is integer addition: one operator, its per-type instances.")))
+    (hint "You need " (c "(+ 2.0 ?)") " to stay under " (c "5.0") ", so any float below " (c "3.0") " works, and " (c "1.0") " gives " (c "3.0 &lt; 5.0") ", true. The addition on " (c "2.0") " is float addition, while " (cdz "(+ 10 20)") " is integer addition: one operator, its per-type instances.")))
