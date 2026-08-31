@@ -1012,20 +1012,23 @@
 ; backends), rather than manufacturing a byte-form total order that would diverge from the float relational
 ; ops. The Bytes-declines companion above, on the FLOAT axis (the axis the spec explicitly carves out).
 (case
-  "a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)"
+  "a runtime compound containing a float leaf is rejected CDZ0203 for ordering — floats offer no total order (§319)"
   (doc
-    "`(< (tuple 1 (Float64.of a)) (tuple 1 (Float64.of b)))` asks for a three-way order on two tuples
-           whose second field is a Float64. A float offers only the IEEE PARTIAL order (§319), and a compound
-           is ordered only when EVERY component is (§Compound Ordering Is Lexicographic), so the float field
-           makes the tuple un-orderable and `<` DECLINES on all backends — NOT a byte-form order that would
-           disagree with the float relational ops. The float-axis companion of the Bytes-ordering decline;
-           contrast the tuple/list/sum ordering cases above (all-ordered-component compounds compute).")
+    "`(< (tuple 1 (Float64.of-int a)) (tuple 1 (Float64.of-int b)))` asks for a three-way order on two
+           tuples whose second field is a Float64. A float offers only the IEEE PARTIAL order (§319), and a
+           compound is ordered only when EVERY component is (§Compound Ordering Is Lexicographic), so the float
+           field makes the tuple un-orderable — a permanent no-total-order carve-out (the family of the
+           pure-float compare, Set.to-list, and sum-payload compare), rejected CDZ0203 rather than manufacturing
+           a byte-form order that would disagree with the float relational ops. The float-axis companion of the
+           Bytes-ordering carve-out; contrast the tuple/list/sum ordering cases above (all-ordered-component
+           compounds compute). (Int64→Float64 is `Float64.of-int`; `Float64.of` is the Float→Float width
+           conversion — a prior version used it on an Int64, masking this carve-out behind a CDZ0301.)")
   (input
     (do
-      (def (mk (: n Int64)) #tuple(1 (Float64.of n)))
+      (def (mk (: n Int64)) #tuple(1 (Float64.of-int n)))
       (def (main) (if (< (mk 2) (mk 3)) 1 0))
       (export main)))
-  (declines))
+  (error CDZ0203))
 
 ; The two carve-outs above are on the BOOLEAN `<` path; the three-way `compare` mirrors them. A float
 ; `compare` DECLINES because a floating-point type is the IEEE PARTIAL order (§319 / numeric-model: the

@@ -4097,7 +4097,6 @@ pass	a runtime checked-mul over UInt64 operands emits the unsigned division roun
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
 pass	a runtime compound compare COMPUTES the three-way Ordering via the value-cmp heap walk (§331)
-pass	a runtime compound containing a float leaf declines ordering — floats offer no total order (§319)
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
 pass	a runtime compound with a String leaf orders by the blessed content-lexicographic String order
 pass	a runtime compound with a float leaf still equality-compares though it declines ordering (§313 vs §319)
