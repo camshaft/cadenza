@@ -53,90 +53,15 @@ use super::*;
 // SPECIFIC empty-list arm, not a wildcard" (CDZ0210 (fix (kind insert-into) (replacement-contains "(list)
 // (trap"))) — the length-aware add-arm fix.)
 
-#[test]
-fn a_list_pattern_must_be_linear_and_refutable_elements_decline() {
-    // LINEARITY (`core-semantics.md §145`): a list pattern is a binder position and MUST be linear —
-    // `(list a a)` binds `a` twice → CDZ0102, exactly as `(tuple a a)` does. This was previously a
-    // SOUNDNESS GAP: the list matcher never ran the linearity check, so `(list a a)` compiled silently.
-    assert_eq!(
-        reject_code(
-            "(module m (def (f xs) (match xs ((list a a) (+ a a)) (_ 0))) \
-                         (def (main) (f (list 1 2))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0102"),
-        "a repeated leading binder is non-linear"
-    );
-    // A repeat spanning a leading position AND the rest binder is the same CDZ0102 (`(list a b .. a)`).
-    assert_eq!(
-        reject_code(
-            "(module m (def (f xs) (match xs ((list a b .. a) a) (_ 0))) \
-                         (def (main) (f (list 1 2 3))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0102"),
-        "a binder repeated across a leading position and the rest is non-linear"
-    );
-    // A repeat NESTED inside an element sub-pattern is still caught (`(list (tuple a a) .. r)`).
-    assert_eq!(
-        reject_code(
-            "(module m (def (f xs) (match xs ((list (tuple a a) .. r) a) (_ 0))) \
-                         (def (main) (f (list (tuple 1 2)))) (export main))"
-        )
-        .as_deref(),
-        Some("CDZ0102"),
-        "a binder repeated inside a nested tuple element is non-linear"
-    );
-
-    // A SHAPE-INCOMPATIBLE element (a wrong-arity tuple against a scalar-list element) is a hard reject,
-    // NOT a decline: `(list Int64)` elements are scalars, so a `(tuple a b)` element cannot match.
-    assert_eq!(
-        reject_code(
-            "(module m (def (f (: xs (List Int64))) (match xs ((list (tuple a b) .. r) a) (_ 0))) \
-                         (export f))"
-        )
-        .as_deref(),
-        Some("CDZ0201"),
-        "a tuple element pattern against a scalar list element is a shape error"
-    );
-
-    // A refutable SCALAR/STRING LITERAL element NO LONGER declines — it now DISPATCHES by element value
-    // (desugars to a fresh binder + a `(= binder <lit>)` guard; see
-    // `a_refutable_literal_list_element_dispatches_by_element_value`). So `(list 0 .. r)` with a `_`
-    // catch-all COMPILES (no code, no decline). A refutable MULTI-VARIANT CONSTRUCTOR element ALSO
-    // now compiles (dispatches by discriminant; see
-    // `a_refutable_ctor_list_element_dispatches_by_discriminant`).
-    assert_eq!(
-        reject_code(
-            "(module m (def (f (: xs (List Int64))) (match xs ((list 0 .. r) 1) (_ 0))) \
-                                    (def (main) (f (list 0 1))) (export main))"
-        ),
-        None,
-        "a refutable scalar-literal list element now compiles (dispatches by value)"
-    );
-    assert_eq!(
-        reject_code(
-            "(module m (type C (A Int64) (B Int64)) \
-                   (def (f (: xs (List C))) (match xs ((list (C.A n) .. r) n) (_ 0))) \
-                   (def (main) (f (list (C.A 1)))) (export main))"
-        ),
-        None,
-        "a refutable multi-variant-ctor list element now compiles (dispatches by discriminant)"
-    );
-    // MORE THAN ONE refutable-ctor element in a single arm now COMPILES too: each ctor element gets a
-    // fresh binder, all their discriminant-tests are ANDed into the arm guard, and the body re-matches
-    // are NESTED (innermost holds the original body, so every ctor payload is in scope). `[A n, B m ..r]`
-    // extracts both payloads (`n + m`).
-    assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (type C (A Int64) (B Int64)) \
-                   (def (f (: xs (List C))) (match xs ((list (C.A n) (C.B m) .. r) (+ n m)) (_ 0))) \
-                   (def (main) (f (list (C.A 1) (C.B 2)))) (export main))"
-            )))
-            .is_ok(),
-            "two refutable-ctor elements in one arm now compile (gate verifies value = 3)"
-        );
-}
+// (a_list_pattern_must_be_linear_and_refutable_elements_decline migrated to corpus 05-compound-types: the
+// LINEARITY facets are "a list pattern with a repeated leading binder is non-linear" ((list a a)→CDZ0102),
+// "a list binder repeated across a leading position and the rest is non-linear" ((list a b .. a)), and "a
+// list binder repeated inside a NESTED tuple element is non-linear" ((list (tuple a a) .. r)); the element
+// SHAPE reject is "a tuple element pattern against a scalar list element is a shape error, not a decline"
+// ((list (tuple a b) .. r) on (List Int64)→CDZ0201). The refutable literal/ctor ELEMENT dispatch no longer
+// declines and is compile-clean — covered by the corpus dispatch RUN cases "a literal list element
+// dispatches a runtime list by its value", "a list arm whose FIRST element is a refutable constructor
+// pattern …", and "a list arm with two constructor elements binds both payloads".)
 
 // (a_list_pattern_on_a_non_list_value_names_the_type_not_the_payload migrated to corpus 05-compound-types: a
 // list pattern on a record/tuple is a shape error CDZ0201 naming the type (not the internal "payload" term);
