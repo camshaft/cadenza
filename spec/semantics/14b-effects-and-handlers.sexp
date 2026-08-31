@@ -448,7 +448,7 @@
           ((get (u) s (resume s s)) (put (v) _s (resume unit v)))
           (do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get)) x))))
       (export main)))
-  (declines))
+  (call main (: 3 Int64)) (output (: 73 Int64)))
 
 (case
   "a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)"
@@ -472,7 +472,7 @@
             ((gb (u) t (resume t t)))
             (do (let ((k true)) (if k (A.pa 7) unit)) (+ (* 10 (A.ga)) x)))))
       (export main)))
-  (declines))
+  (call main (: 3 Int64)) (output (: 73 Int64)))
 
 (case
   "a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)"
@@ -3118,7 +3118,7 @@
       (def (od (: n Int64)) (+ 1 (ev (- n 1))))
       (def (main) (handle Bail 0 ((bail (n) s n)) (ev 4)))
       (export main)))
-  (declines))
+  (call main) (output (: 99 Int64)))
 
 (case
   "a mutual group performing in an IF base-case branch and recursing in the other threads and runs"
@@ -6388,7 +6388,7 @@
           ((ask (n) s (resume (* n 2) s)))
           (match (List.at #list((fn (x) (Ask.ask x))) 0) ((Some f) (f 3)) ((None) 0))))
       (export main)))
-  (declines))
+  (call main) (output (: 6 Int64)))
 
 ; TWO NESTED handlers, each arm a do-def-local x, the body reading the enclosing FN-LOCAL x through a
 ; right-nested (+ x (+ (A.geta) (B.getb))) — each binding MUST keep its own scope (no compounding
