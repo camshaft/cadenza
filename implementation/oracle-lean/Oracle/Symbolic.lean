@@ -231,11 +231,15 @@ def normalize : SymExpr → SymExpr
       -- OPERAND-PRESERVING (c' is evaluated once with the SAME trap on both sides — the ite forces c
       -- first), so NO `!mayTrap` guard; sound for a well-typed bool `c'` (an ill-typed c never compiles).
       -- A common backend idiom; folding it here shrinks normalized-but-different (a bool-returning `if`).
-      if t' == .const (.bool true) && e' == .const (.bool false) then c'
-      else if t' == .const (.bool false) && e' == .const (.bool true) then .app "not" #[c']
+      -- STRUCTURAL match (not `t' == .const …`): `SymExpr`'s derived `BEq` recurses over `Array SymExpr`
+      -- and is NOT kernel-reducible, so a `==`-against-a-literal defeats the soundness proofs (`decide`/
+      -- `simp`/`split` can't reduce it); a `match` on the ctor IS reducible. Behavior-identical.
+      match t', e' with
+      | .const (.bool true), .const (.bool false) => c'
+      | .const (.bool false), .const (.bool true) => .app "not" #[c']
       -- collapse identical branches ONLY when the condition can't trap (dropping a trapping condition
       -- would unsoundly claim `(if <trapping-c> a a)` — which traps — equal to `a`).
-      else if t' == e' && !mayTrap c' then t' else .ite c' t' e'
+      | _, _ => if t' == e' && !mayTrap c' then t' else .ite c' t' e'
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf

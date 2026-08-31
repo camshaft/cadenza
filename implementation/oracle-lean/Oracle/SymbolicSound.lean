@@ -269,6 +269,17 @@ theorem normalize_ite_condFalse (c t e : SymExpr) (hc : normalize c = .const (.b
     normalize (.ite c t e) = normalize e := by
   simp only [normalize, hc]
 
+/-- `normalize`-`ite` MATERIALIZE structural equations (now reducible after the ite arm was refactored
+from `==` to a structural `match` on the branches). When both branches normalize to `true`/`false`, the
+`ite` normalizes to the (normalized) condition; to `false`/`true`, to `not` of it. Holds for EVERY
+condition shape (the const-fold arms return the folded literal = `normalize c`; the rebuild arm's first
+`match` clause fires) — no `≠ const bool` hypothesis needed for the true case. -/
+theorem normalize_ite_materializeTrue (c t e : SymExpr)
+    (hnt : normalize t = .const (.bool true)) (hne : normalize e = .const (.bool false)) :
+    normalize (.ite c t e) = normalize c := by
+  simp only [normalize, hnt, hne]
+  split <;> simp_all
+
 /-! ## Trap classification: `arithOps` ∪ `bitwiseOps` = exactly the trapping ops.
 `arithOps`/`bitwiseOps` are plain `List String` data, so membership is decidable — these `decide`
 facts pin that `mayTrap`'s `arithOps.contains op || bitwiseOps.contains op` guard fires on ALL
