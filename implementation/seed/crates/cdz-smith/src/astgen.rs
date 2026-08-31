@@ -1277,7 +1277,7 @@ fn gen_string_body<C: Choice>(c: &mut C, out: &mut String) {
 /// grammar. `Bytes.of` elements are 0..=255 (valid bytes); indices are in-bounds by construction.
 fn gen_bytes_body<C: Choice>(c: &mut C, out: &mut String) {
     // Pick the FORM + string + byte operands before writing (variant-ordering).
-    let form = c.variant(5);
+    let form = c.variant(6);
     let s = ["a", "ab", "abc"][c.variant(3)];
     let (x, y, z) = (
         c.int_bounded(0, 255),
@@ -1293,6 +1293,15 @@ fn gen_bytes_body<C: Choice>(c: &mut C, out: &mut String) {
         2 => write!(out, "b\"{s}\"").ok(),
         // `Bytes.of` a small byte list → a Bytes value.
         3 => write!(out, "(Bytes.of (list {x} {y} {z}))").ok(),
+        // A bytes COMPARISON → Bool: equality `(= b b2)` or ordering `(< / > / <= / >= b b2)` —
+        // Bytes value equality + lexicographic total-order lowering (a Bool result), a surface the
+        // len/at/of/concat ops never reached (none COMPARED two byte values). Value-comparable, and
+        // graded symbolically since v-lean-oracle #7106 models Bytes ordering.
+        4 => {
+            let s2 = ["a", "ab", "abc"][c.variant(3)];
+            let op = ["=", "<", ">", "<=", ">="][c.variant(5)];
+            write!(out, "({op} b\"{s}\" b\"{s2}\")").ok()
+        }
         // Concatenation → a Bytes value.
         _ => write!(out, "(Bytes.concat b\"{s}\" b\"{s}\")").ok(),
     };
@@ -2681,8 +2690,8 @@ mod tests {
     /// COMPILES (S167: the Bytes construct family — distinct from String and numeric/compound grammar).
     #[test]
     fn gen_bytes_body_reaches_all_forms_and_compiles() {
-        let (mut saw_len, mut saw_at, mut saw_lit, mut saw_of, mut saw_concat) =
-            (false, false, false, false, false);
+        let (mut saw_len, mut saw_at, mut saw_lit, mut saw_of, mut saw_concat, mut saw_cmp) =
+            (false, false, false, false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1789);
             let mut bytes = Vec::new();
@@ -2698,6 +2707,8 @@ mod tests {
             saw_of |= body.contains("Bytes.of");
             saw_concat |= body.contains("Bytes.concat");
             saw_lit |= body.starts_with("b\"");
+            // A bytes COMPARISON body begins with an op head over two b"…" byte values.
+            saw_cmp |= body.starts_with("(=") || body.starts_with("(<") || body.starts_with("(>");
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2709,6 +2720,7 @@ mod tests {
         assert!(saw_lit, "should reach a b\"…\" literal");
         assert!(saw_of, "should reach Bytes.of");
         assert!(saw_concat, "should reach Bytes.concat");
+        assert!(saw_cmp, "should reach a bytes comparison");
     }
 
     /// `gen_nested_compound_body` REACHES all five forms (List.at, List.concat, tuple-of-lists,
