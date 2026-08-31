@@ -129,6 +129,29 @@
   (input  (eval (quote 42)))
   (output (: 42 Int64)))
 
+; `eval` needs a COMPILE-TIME-VISIBLE AST (a `(quote …)`), so `(eval q)` on a RUNTIME-visible value `q` (a
+; def parameter) declines CDZ0101 with the teaching text naming the compile-time-AST requirement — NOT a bare
+; "unbound name `eval`" (which misdirects toward imports). The teaching text is the SAME in every position:
+; a match SCRUTINEE, a let INIT, an arithmetic operand (a prior bug gave the match-scrutinee position a bare
+; unbound while the others taught). Exactly ONE diagnostic (a bare unbound copy at the same node is deduped).
+; A genuinely-unbound plain name still reports its own plain unbound, no teaching. (Migrated from rcdzc
+; a_match_scrutinee_eval_gives_the_teaching_message_not_a_bare_unbound.)
+(case "eval on a runtime value in a match scrutinee gives the compile-time-AST teaching message"
+  (input  (do (def (main (: q Int64)) (match (eval q) (_ 0))) (export main)))
+  (error  CDZ0101 (message "COMPILE-TIME-VISIBLE AST") (count 1)))
+
+(case "eval on a runtime value in a let init gives the compile-time-AST teaching message"
+  (input  (do (def (main (: q Int64)) (let ((r (eval q))) 0)) (export main)))
+  (error  CDZ0101 (message "COMPILE-TIME-VISIBLE AST")))
+
+(case "eval on a runtime value in an arithmetic operand gives the compile-time-AST teaching message"
+  (input  (do (def (main (: q Int64)) (+ (eval q) 1)) (export main)))
+  (error  CDZ0101 (message "COMPILE-TIME-VISIBLE AST")))
+
+(case "a genuinely unbound plain name reports its own plain unbound, not the eval teaching message"
+  (input  (do (def (main) nosuchname) (export main)))
+  (error  CDZ0101 (message "unbound") (not "COMPILE-TIME-VISIBLE AST")))
+
 (case "eval of a quoted RECURSIVE-sum construction builds the heap spine"
   (doc    "Eval over a USER-declared recursive sum: `(eval (quote (S (S (Z)))))` must resolve the quoted
            constructor NAMES against the user's `(type Nat (Z) (S Nat))`, build the two-level heap spine at
