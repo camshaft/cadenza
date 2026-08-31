@@ -3488,43 +3488,12 @@ fn an_overflow_pragma_marks_each_unqualified_arith_node_with_its_policy() {
     );
 }
 
-#[test]
-fn an_overflow_pragma_validates_its_shape_and_does_not_block_registration() {
-    // The `overflow` pragma is a MODELED module directive — a well-formed one is accepted (no fault, and
-    // it does not block the module's registration), a malformed one is CDZ0602. Mirrors the
-    // default-integer validation discipline.
-    // (1) WELL-FORMED: accepted, module registers (the `(. m f)` member access resolves).
-    assert_eq!(
-        reject_code(
-            "(module top (def (main) (do (module m (pragma overflow (signed wrap) (unsigned trap)) \
-                   (def (f) 1)) ((. m f) unit))) (export main))"
-        ),
-        None,
-        "a well-formed overflow pragma is accepted and does not block module registration"
-    );
-    // (2) ONE SUB-FORM is enough (the other signedness falls through to the default).
-    assert_eq!(
-        reject_code(
-            "(module top (def (main) (do (module m (pragma overflow (signed wrap)) \
-                   (def (f) 1)) ((. m f) unit))) (export main))"
-        ),
-        None,
-        "a single-signedness overflow pragma is well-formed"
-    );
-    // (3) MALFORMED — a mode outside {trap, wrap} is CDZ0602.
-    assert_eq!(
-        reject_code("(module m (pragma overflow (signed nonesuch)) (def (main) 1) (export main))")
-            .as_deref(),
-        Some("CDZ0602"),
-        "an unknown overflow mode is a malformed directive"
-    );
-    // (4) MALFORMED — no sub-forms at all is CDZ0602.
-    assert_eq!(
-        reject_code("(module m (pragma overflow) (def (main) 1) (export main))").as_deref(),
-        Some("CDZ0602"),
-        "an overflow pragma with no signedness sub-form is malformed"
-    );
-}
+// [migrated → spec/semantics/11-modules.sexp] an_overflow_pragma_validates_its_shape_and_does_not_block_registration:
+// the `overflow` pragma is a MODELED directive with a richer shape than the single-arg keys — each arg is a
+// nested (signed|unsigned <mode>) with mode in {trap,wrap}. Corpus 11-modules faces: well-formed (both
+// signednesses) accepted + module registers (runs 1); unknown mode (signed nonesuch) → CDZ0602; no sub-form
+// (pragma overflow) → CDZ0602. The single-sub-form well-formed face is covered by the (pragma overflow
+// (signed wrap)) behavior cases in 06-numeric-model.sexp. All PASS on wasm.
 
 #[test]
 fn a_default_fraction_pragma_grounds_a_bare_numeric_literal_to_rational() {
