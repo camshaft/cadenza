@@ -3612,7 +3612,16 @@ impl<'a> Parser<'a> {
                     let mut items = vec![head, first];
                     while self.sep_continue(Kind::RParen) {
                         let before = self.pos;
-                        items.push(self.pattern());
+                        // A `.. rest` binds the TRAILING positional elements of the tuple to the wrapped
+                        // `(.. rest)` node (the operator's `(.. v)`-everywhere canonical, the twin of the
+                        // list-pattern rest at the `[…]` arm). Tuple arity is STATIC, so this is a fixed-arity
+                        // trailing-positional bind — `(a, b, .. rest)` -> `(tuple a b (.. rest))`; the leading
+                        // binders resolve to the first elements and `rest` to a tuple of the remainder. (The
+                        // tuple-rest MATCH lowering is v-inference's co-land slice; this is the surface node it
+                        // consumes.)
+                        if !self.rest_marker(&mut items, |p| p.pattern()) {
+                            items.push(self.pattern());
+                        }
                         if self.pos == before {
                             self.bump(); // pattern didn't consume — avoid a missing-`,` spin
                         }
@@ -6583,6 +6592,35 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("def s(xs: List(Int64)) = xs")),
             "(def (s (: xs (List Int64))) xs)"
+        );
+    }
+
+    #[test]
+    fn a_tuple_rest_pattern_parses() {
+        use crate::sexpr;
+        // A tuple pattern with a trailing `.. rest` binds the remaining positional elements to the wrapped
+        // `(.. rest)` node — the twin of the list-pattern rest, per the operator's `(.. v)`-everywhere
+        // canonical. Tuple arity is STATIC, so this is a fixed-arity trailing-positional bind: `(a, b, .. r)`
+        // reads to `(tuple a b (.. r))`. (The tuple-rest MATCH lowering is v-inference's co-land slice — the
+        // reference shape they asked to land FIRST; this pins the SURFACE node it consumes.)
+        assert_eq!(
+            sexpr::print(&parse_ok("def f((a, b, .. rest)) = a")),
+            "(def (f (tuple a b (.. rest))) a)"
+        );
+        // A single leading binder plus the rest.
+        assert_eq!(
+            sexpr::print(&parse_ok("def g((x, .. rest)) = x")),
+            "(def (g (tuple x (.. rest))) x)"
+        );
+        // A plain tuple pattern (no rest) is unchanged — the rest arm is additive.
+        assert_eq!(
+            sexpr::print(&parse_ok("def h((a, b)) = a")),
+            "(def (h (tuple a b)) a)"
+        );
+        // The rest binder is itself a full sub-pattern position, so a nested pattern nests under it.
+        assert_eq!(
+            sexpr::print(&parse_ok("def k((a, .. (b, c))) = a")),
+            "(def (k (tuple a (.. (tuple b c)))) a)"
         );
     }
 
