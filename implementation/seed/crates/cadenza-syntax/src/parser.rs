@@ -10573,40 +10573,17 @@ mod tests {
     //     shorthand `{ a, .. rest }`→`(record (= a a) (.. rest))` (field shorthand puns `{ a }`→`(= a a)`).
     //     Plain `{ a = x, b = y }` = ml/345.
 
-    #[test]
-    fn degenerate_rest_patterns_parse_permissively_without_panic() {
-        use crate::sexpr;
-        // The compound pattern surfaces are INTENTIONALLY PERMISSIVE about rest position/count — like the
-        // long-standing list pattern, they accept a rest-ONLY pattern, a NON-TRAILING rest, and MULTIPLE
-        // rests, parsing each to the wrapped `(.. rest)` node in situ WITHOUT panicking. The SEMANTIC
-        // constraints (at most one rest, trailing-only where the type requires it) are the MATCH-LOWERING's
-        // to enforce (v-inference/v-ast-compound), NOT the parser's — keeping the surface a uniform,
-        // scope-blind grammar. Pinned so a future refactor of `rest_marker` / the pattern arms can neither
-        // crash on a degenerate form nor silently change its shape.
-        // Rest-ONLY (whole-collection bind) across record/set/list — the tuple has no rest-only form (a rest
-        // needs a leading element + comma), and the map rest-only is `#{ .. rest }` (covered elsewhere).
-        assert_eq!(
-            sexpr::print(&parse_ok("def f({ .. rest }) = 0")),
-            "(def (f (record (.. rest))) 0)"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("def f(#(.. rest)) = 0")),
-            "(def (f #set((.. rest))) 0)"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("def f([.. rest]) = 0")),
-            "(def (f (list (.. rest))) 0)"
-        );
-        // NON-TRAILING and MULTIPLE rests parse in situ (surface-permissive; lowering rejects the malformed).
-        assert_eq!(
-            sexpr::print(&parse_ok("def f((a, .. rest, b)) = a")),
-            "(def (f (tuple a (.. rest) b)) a)"
-        );
-        assert_eq!(
-            sexpr::print(&parse_ok("def f((a, .. r1, .. r2)) = a")),
-            "(def (f (tuple a (.. r1) (.. r2))) a)"
-        );
-    }
+    // `degenerate_rest_patterns_parse_permissively_without_panic` (the compound pattern surfaces are
+    // INTENTIONALLY PERMISSIVE about rest position/count — rest-ONLY, NON-TRAILING, and MULTIPLE rests all
+    // parse to the wrapped `(.. rest)` node in situ; the at-most-one/trailing-only constraints are the
+    // match-lowering's job, not the scope-blind parser's) MIGRATED to the spec/syntax corpus (inc-6 batch-67):
+    //   * rest-ONLY (whole-collection bind): ml/405-rest-only-record-pattern `{ .. rest }`→`(record (.. rest))`,
+    //     ml/406-rest-only-set-pattern `#(.. rest)`→`#set((.. rest))`, ml/407-rest-only-list-pattern `[.. rest]`→
+    //     `(list (.. rest))` (a list PATTERN `(list …)`, distinct from the `#list(…)` construction spread ml/151).
+    //   * ml/408-non-trailing-rest-pattern `(a, .. rest, b)`→`(tuple a (.. rest) b)`, ml/409-multiple-rests-pattern
+    //     `(a, .. r1, .. r2)`→`(tuple a (.. r1) (.. r2))` — surface-permissive; lowering rejects the malformed.
+    //   (Tuple has no rest-only form — a rest needs a leading element + comma; the map rest-only `#{ .. rest }`
+    //   is covered elsewhere.)
 
     #[test]
     fn parameterized_annotation_name_takes_a_glued_application() {
