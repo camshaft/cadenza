@@ -59,9 +59,8 @@ fn module_record(
 ) -> StructId {
     // The record head is the NATIVE ctor-LEAF (`Leaf::Ctor(Record)`, M2/M3 — recognized by kind, not head
     // text), so a compiler-synthesized record resolves structurally to `Resolved::Record` independent of any
-    // user binding of the shadowable prelude alias `record`. The ctor-leaf is unshadowable exactly like the
-    // legacy `"record"` STRING head it replaces (both dispatch via `compound_ctor_prim` = leaf-or-string), so
-    // this is behavior-preserving while shedding a string head ahead of the M3 reader-flip.
+    // user binding of the shadowable prelude alias `record`. The ctor-leaf is unshadowable, recognized by
+    // kind via `compound_ctor_leaf`; the M3 reader-flip removed the legacy `"record"` STRING head.
     let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let mut children = vec![head];
     // `(module NAME def…)` — the members are everything after NAME (index 0 of the tail).

@@ -2989,8 +2989,8 @@ pub fn reduce_ctor(
         // `Resolved::Record` and every downstream machinery (the compile-time-visible fold in
         // `reduce_to_tuple_elems`/`reduce_to_record_id`, member projection, the host-escape walk,
         // `type_of`, `lower`) treats it IDENTICALLY to a value written with the native ctor-leaf primitive
-        // (the ctor-leaf head is unshadowable like the legacy string head it replaces — dual-read via
-        // `compound_ctor_prim` — shedding a string head ahead of the M3 reader-flip).
+        // (the ctor-leaf head is unshadowable, recognized by kind via `compound_ctor_leaf`; the M3
+        // reader-flip removed the legacy string head).
         //
         // WARNING: `push_list` RE-PARENTS the arg subtrees under the new head, which would orphan a field/
         // element value like the runtime param `a` in `(record (x a) …)` from its lexical scope (a

@@ -272,8 +272,8 @@ pub fn op_field(ast: &Arenas, record: StructId, op_name: &str) -> Option<StructI
 /// operation-value record.
 fn effect_record(ast: &mut Arenas, decl: &EffectDecl) -> StructId {
     // The record head is the NATIVE ctor-LEAF `Leaf::Ctor(Record)` (unshadowable, recognized by kind — the
-    // NAME `record` is a shadowable alias); it resolves structurally via `compound_ctor_prim` exactly as the
-    // legacy `"record"` string head did (dual-read), shedding a string head ahead of the M3 reader-flip.
+    // NAME `record` is a shadowable alias); it resolves structurally via `compound_ctor_leaf` (the M3
+    // reader-flip removed the legacy `"record"` string-head dual-read).
     let head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
     let mut children = vec![head];
 
