@@ -32,8 +32,8 @@
     (source (def (main)
   (Bytes.len
     (Option.expect (Bytes.slice (Bytes.of #list(1 2 3 4 5)) 1 3) "out of range")))))
-  (p (c "(Bytes.slice bs 1 3)") " takes 3 bytes starting at index 1, so its length is " (c "3") ". Ask for more bytes than remain and you get the " (c "None") " arm instead.")
-  (note "A small difference worth noting: " (c "Bytes.slice") " takes a start and a " (em "length") ", while " (c "String.slice") " from the previous chapter takes a start and an " (em "end") " index. So " (c "(Bytes.slice bs 1 3)") " is three bytes, but " (c "(String.slice s 1 3)") " is two characters (indices 1 and 2). Read the argument names and you won't be caught out.")
+  (p (cdz "(Bytes.slice bs 1 3)") " takes 3 bytes starting at index 1, so its length is " (c "3") ". Ask for more bytes than remain and you get the " (c "None") " arm instead.")
+  (note "A small difference worth noting: " (c "Bytes.slice") " takes a start and a " (em "length") ", while " (c "String.slice") " from the previous chapter takes a start and an " (em "end") " index. So " (cdz "(Bytes.slice bs 1 3)") " is three bytes, but " (cdz "(String.slice s 1 3)") " is two characters (indices 1 and 2). Read the argument names and you won't be caught out.")
   (h2 "From text to bytes")
   (p (c "String.to-bytes") ", the crossing the " (em "Strings") " chapter covered, hands you a string's UTF-8 encoding as a " (c "Bytes") ", which lets us see what " (c "Bytes.len") " measures, namely octets rather than characters. Return the bytes for the 4-character " (c "\"café\"") " and the encoding is right there in " (c "b\"caf\\xc3\\xa9\"") ":")
   (runnable

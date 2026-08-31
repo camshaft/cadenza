@@ -23,25 +23,25 @@
     (source (let ((n 0))
   (if (< n 0) -1
       (if (= n 0) 0 1)))))
-  (p "This is the sign of " (c "n") ", giving " (c "-1") " if negative, " (c "0") " if zero, and " (c "1") " if positive. With " (c "n = 0") " the first test fails and the inner " (c "(= n 0)") " fires, so the answer is " (c "0") ". Change " (c "n") " to " (c "-4") " or " (c "7") " and Run to take a different branch.")
+  (p "This is the sign of " (c "n") ", giving " (c "-1") " if negative, " (c "0") " if zero, and " (c "1") " if positive. With " (c "n = 0") " the first test fails and the inner " (cdz "(= n 0)") " fires, so the answer is " (c "0") ". Change " (c "n") " to " (c "-4") " or " (c "7") " and Run to take a different branch.")
   (h2 "Booleans compose and short-circuit")
   (p "Comparisons produce " (c "Bool") " values, and " (c "and") ", " (c "or") ", " (c "not") " combine them. They " (em "short-circuit") ", so a false " (c "and") " never evaluates its right side. That's what makes a guard-then-use pattern safe, because here " (c "safe") " checks " (c "n") " isn't zero " (em "before") " dividing by it, so the division never runs when it would trap:")
   (runnable
     (source (def (safe n)
   (and (not (= n 0)) (> (/ 100 n) 5)))
 (def (main) (safe 0))))
-  (p "With " (c "n = 0") " the first test is false, so " (c "(/ 100 0)") " is skipped entirely and the whole thing renders " (c "false") ". Were " (c "and") " not short-circuiting, that division would trap.")
+  (p "With " (c "n = 0") " the first test is false, so " (cdz "(/ 100 0)") " is skipped entirely and the whole thing renders " (c "false") ". Were " (c "and") " not short-circuiting, that division would trap.")
   (h2 "Recursion")
   (p "A function can call itself, and that's how you loop in Cadenza. A base case stops the recursion, and each step reduces toward it. Here " (c "sm") " sums the integers from " (c "n") " down to 0:")
   (runnable
     (source (def (sm n)
   (if (= n 0) 0 (+ n (sm (- n 1)))))
 (def (main) (sm 5))))
-  (p (c "(sm 5)") " adds " (c "5 + 4 + 3 + 2 + 1") " down to the base case, giving " (c "15") ". Each call peels off " (c "n") " and recurses on " (c "n - 1") " until it reaches " (c "0") ".")
+  (p (cdz "(sm 5)") " adds " (c "5 + 4 + 3 + 2 + 1") " down to the base case, giving " (c "15") ". Each call peels off " (c "n") " and recurses on " (c "n - 1") " until it reaches " (c "0") ".")
   (h2 "Your turn")
   (exercise
     (id "control-flow:1")
-    (prompt "Write " (c "pow2") ", which computes 2 to the " (c "n") ". Here " (c "n") " is just a " (em "counter") " that says how many times to double, while the doubling itself is always the same. Fill in the step so " (c "(pow2 5)") " gives " (c "32") ".")
+    (prompt "Write " (c "pow2") ", which computes 2 to the " (c "n") ". Here " (c "n") " is just a " (em "counter") " that says how many times to double, while the doubling itself is always the same. Fill in the step so " (cdz "(pow2 5)") " gives " (c "32") ".")
     (starter (def (pow2 n)
   (if (= n 0) 1 ?))
 (def (main) (pow2 5)))
@@ -49,10 +49,10 @@
   (if (= n 0) 1 (* 2 (pow2 (- n 1)))))
 (def (main) (pow2 5)))
     (expected "32")
-    (hint "Unlike " (c "sm") " above, " (c "n") " doesn't appear in the step, since you just double the result of one fewer step with " (c "(* 2 (pow2 (- n 1)))") ". Writing " (c "(* n …)") " by habit would give factorial, " (c "120") ", not " (c "32") "."))
+    (hint "Unlike " (c "sm") " above, " (c "n") " doesn't appear in the step, since you just double the result of one fewer step with " (cdz "(* 2 (pow2 (- n 1)))") ". Writing " (c "(* n …)") " by habit would give factorial, " (c "120") ", not " (c "32") "."))
   (exercise
     (id "control-flow:2")
-    (prompt (c "fare") " picks a ticket price by age tier: under 5 rides free (" (c "0") "), 65 and over pays " (c "5") ", everyone in between pays " (c "10") ". The free case is done; fill the hole with the " (em "nested") " " (c "if") " that decides between the adult and senior fares, so that " (c "(fare 70)") " gives " (c "5") ".")
+    (prompt (c "fare") " picks a ticket price by age tier: under 5 rides free (" (c "0") "), 65 and over pays " (c "5") ", everyone in between pays " (c "10") ". The free case is done; fill the hole with the " (em "nested") " " (c "if") " that decides between the adult and senior fares, so that " (cdz "(fare 70)") " gives " (c "5") ".")
     (starter (def (fare age)
   (if (< age 5) 0
       ?))
@@ -62,4 +62,4 @@
       (if (< age 65) 10 5)))
 (def (main) (fare 70)))
     (expected "5")
-    (hint "The hole is a second " (c "if") " in the else position, like the sign-of-" (c "n") " example above. In " (c "(if (&lt; age 65) 10 5)") ", under 65 is the adult fare " (c "10") " and otherwise the senior " (c "5") ".")))
+    (hint "The hole is a second " (c "if") " in the else position, like the sign-of-" (c "n") " example above. In " (cdz "(if (< age 65) 10 5)") ", under 65 is the adult fare " (c "10") " and otherwise the senior " (c "5") ".")))

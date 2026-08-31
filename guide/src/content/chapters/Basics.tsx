@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -14,23 +14,23 @@ export default function Basics() {
       <Runnable
         source={`(let ((x 10)) (+ x 5))`}
       />
-      <P><C>x</C> is <C>10</C> for the body <C>(+ x 5)</C>, so this is <C>15</C>.</P>
+      <P><C>x</C> is <C>10</C> for the body <Cadenza>(+ x 5)</Cadenza>, so this is <C>15</C>.</P>
       <P>Shadowing is just a second binding of the same name. The inner <C>x</C> is computed <em>from</em> the outer one, since the right-hand side still sees the old value, and only then takes over for the rest of the body:</P>
       <Runnable
         source={`(let ((x 10)) (let ((x (* x 2))) (+ x 1)))`}
       />
-      <P>The inner binding's <C>(* x 2)</C> reads the outer <C>x = 10</C> to get <C>20</C>; the body then sees that inner <C>x</C>, so <C>(+ x 1)</C> is <C>21</C>. Nothing was mutated, since the outer <C>x</C> is untouched, just out of view.</P>
+      <P>The inner binding's <Cadenza>(* x 2)</Cadenza> reads the outer <C>x = 10</C> to get <C>20</C>; the body then sees that inner <C>x</C>, so <Cadenza>(+ x 1)</Cadenza> is <C>21</C>. Nothing was mutated, since the outer <C>x</C> is untouched, just out of view.</P>
       <H2>Functions are values</H2>
       <P>A function is written with <C>fn</C> and is an ordinary value, so you can bind it, pass it, and return it. Here we bind a function <C>inc</C> and call it.</P>
       <Runnable
         source={`(let ((inc (fn (x) (+ x 1)))) (inc 4))`}
       />
-      <P>Binding it to <C>inc</C> and calling <C>(inc 4)</C> gives <C>5</C>.</P>
+      <P>Binding it to <C>inc</C> and calling <Cadenza>(inc 4)</Cadenza> gives <C>5</C>.</P>
       <P>Functions close over their environment. <C>adder</C> returns a function that remembers <C>n</C>:</P>
       <Runnable
         source={`(let ((adder (fn (n) (fn (x) (+ x n))))) ((adder 3) 10))`}
       />
-      <P><C>(adder 3)</C> captures <C>n = 3</C> and returns a function that adds 3; applying it to <C>10</C> gives <C>13</C>.</P>
+      <P><Cadenza>(adder 3)</Cadenza> captures <C>n = 3</C> and returns a function that adds 3; applying it to <C>10</C> gives <C>13</C>.</P>
       <Why tenet="Uniformity over special cases">Underneath, every function takes exactly <em>one</em> argument and returns one value, so a two-argument function is sugar for a function returning a function (that's why <C>adder</C> above works so naturally). Cadenza leans on this kind of uniformity everywhere, because fewer special cases means fewer places for the compiler, and your mental model, to disagree with itself.</Why>
       <H2>Higher-order functions</H2>
       <P>Because functions are values, a function can take another function as an argument. <C>apply-twice</C> applies its argument function twice:</P>
@@ -64,7 +64,7 @@ export default function Basics() {
       />
       <Exercise
         id="basics:2"
-        prompt={<><C>make-scaler</C> returns a function that multiplies by whatever <C>factor</C> it captured. Fill the hole so <C>triple</C> is a scaler that captures <C>3</C>, then <C>(triple 5)</C> is <C>15</C>.</>}
+        prompt={<><C>make-scaler</C> returns a function that multiplies by whatever <C>factor</C> it captured. Fill the hole so <C>triple</C> is a scaler that captures <C>3</C>, then <Cadenza>(triple 5)</Cadenza> is <C>15</C>.</>}
         starter={`(let
   ((make-scaler (fn (factor) (fn (x) (* x factor)))))
   (let ((triple (make-scaler ?))) (triple 5)))`}
@@ -72,7 +72,7 @@ export default function Basics() {
   ((make-scaler (fn (factor) (fn (x) (* x factor)))))
   (let ((triple (make-scaler 3))) (triple 5)))`}
         expected="15"
-        hint={<>The hole is the <C>factor</C> that <C>triple</C> should capture. You want it to triple, so pass <C>3</C>; the returned function then remembers it, and <C>(triple 5)</C> is <C>5 × 3</C>.</>}
+        hint={<>The hole is the <C>factor</C> that <C>triple</C> should capture. You want it to triple, so pass <C>3</C>; the returned function then remembers it, and <Cadenza>(triple 5)</Cadenza> is <C>5 × 3</C>.</>}
       />
     </article>
   );

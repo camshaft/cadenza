@@ -34,7 +34,7 @@
   (runnable
     (source (def (f (: a Int)) a))
     (expect "error"))
-  (p "The fix is to name a concrete width, so " (c "Int64") " for the everyday integer, or " (c "Int32") ", " (c "UInt8") ", and the rest for a fixed size. The compound form " (c "(Int 64)") " is itself a perfectly good type, exactly equal to " (c "Int64") ", so this compiles and runs, and " (c "(add1 41)") " is " (c "42") ":")
+  (p "The fix is to name a concrete width, so " (c "Int64") " for the everyday integer, or " (c "Int32") ", " (c "UInt8") ", and the rest for a fixed size. The compound form " (c "(Int 64)") " is itself a perfectly good type, exactly equal to " (c "Int64") ", so this compiles and runs, and " (cdz "(add1 41)") " is " (c "42") ":")
   (runnable
     (source (do (def (add1 (: n (Int 64))) (+ n 1))
     (def (main) (add1 41))
@@ -62,7 +62,7 @@
     (hint (c "wrap") " keeps the low bits, whereas " (c "of") " would " (em "refuse") " " (c "258") " as out of range. You asked for truncation, so it's " (c "wrap") ", and " (c "258") " wraps to " (c "2") "."))
   (exercise
     (id "sized-integers:2")
-    (prompt "This won't compile: " (c "(+ (UInt8.of 1) (UInt16.of 300))") " mixes two widths. Fix it by making the first operand a " (c "UInt16") " too, so both sides match and the sum is " (c "301") ".")
+    (prompt "This won't compile: " (cdz "(+ (UInt8.of 1) (UInt16.of 300))") " mixes two widths. Fix it by making the first operand a " (c "UInt16") " too, so both sides match and the sum is " (c "301") ".")
     (starter (+ (UInt?.of 1) (UInt16.of 300)))
     (solution (+ (UInt16.of 1) (UInt16.of 300)))
     (expected "301")
