@@ -6724,6 +6724,10 @@ fn sum_path_tag(path: &[crate::core::PathStep]) -> String {
                 tag.push('r');
                 tag.push_str(&k.to_string());
             }
+            crate::core::PathStep::TupleRestFrom(k) => {
+                tag.push('t');
+                tag.push_str(&k.to_string());
+            }
         }
     }
     tag
@@ -7204,6 +7208,15 @@ fn erase_nominal_switch_path(
                     _ => Ty::Any,
                 };
             }
+            // A tuple-rest step never appears in a sum-SWITCH path (a rest binder's own path does not go
+            // through the switch); keep it, advance to the trailing sub-tuple for a well-defined cursor.
+            crate::core::PathStep::TupleRestFrom(k) => {
+                out.push(*step);
+                cur = match cur.strip_nominal() {
+                    Ty::Tuple(elems) => Ty::Tuple(elems.get(*k..).unwrap_or(&[]).to_vec().into()),
+                    _ => Ty::Any,
+                };
+            }
         }
     }
     out
@@ -7240,6 +7253,7 @@ fn lookup_sum_path_type(ctx: &Ctx, path: &[crate::core::PathStep]) -> Option<Ty>
                 _ => return None,
             },
             crate::core::PathStep::RestFrom(_) => return None,
+            crate::core::PathStep::TupleRestFrom(_) => return None,
         };
     }
     Some(ty)
@@ -7312,6 +7326,11 @@ fn ty_at_sum_path(db: &mut Db, scrutinee: StructId, sw_path: &[crate::core::Path
             // A rest sublist keeps the list type (the Rust backend declines a runtime list match; total here).
             crate::core::PathStep::RestFrom(_) => match ty.strip_nominal() {
                 Ty::List(_) => ty.clone(),
+                _ => return Ty::Any,
+            },
+            // A tuple rest binder — the trailing sub-tuple `(Tuple T_k …)`.
+            crate::core::PathStep::TupleRestFrom(k) => match ty.strip_nominal() {
+                Ty::Tuple(elems) => Ty::Tuple(elems.get(*k..).unwrap_or(&[]).to_vec().into()),
                 _ => return Ty::Any,
             },
         };
@@ -7539,6 +7558,14 @@ fn emit_sum_payload(
                     crate::core::PathStep::Payload => {
                         return Err(Reject::unsupported(
                             "a nested sum payload is not supported by the Rust backend",
+                        ));
+                    }
+                    crate::core::PathStep::TupleRestFrom(_) => {
+                        // A tuple REST binder's runtime read (a trailing sub-tuple gather) is not yet
+                        // lowered by the Rust backend — decline (slice 1: const folds; wasm/rust runtime
+                        // are follow-up slices). A graceful not-yet, never a miscompile.
+                        return Err(Reject::unsupported(
+                            "a tuple rest binder is not yet lowered by the Rust backend",
                         ));
                     }
                     crate::core::PathStep::RestFrom(k) => {
