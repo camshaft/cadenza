@@ -470,49 +470,12 @@ fn a_parenthesized_head_generic_type_name_is_visible_to_the_export_reader() {
     );
 }
 
-#[test]
-fn comparing_a_newtype_to_its_underlying_type_is_a_nominal_boundary_error() {
-    // The bare CDZ0202 comparison rejects (newtype vs its erased inner, either operand order, and a
-    // generic newtype vs its bare instantiated inner) migrated to corpus 05-compound-types (the newtype
-    // NOMINAL-BOUNDARY reject block). What STAYS here is the ACTIONABLE-FIX half, which carries a novel
-    // unwrap `(match … ((Mk n) n))` Wrap fix + its no-fix negative + a round-trip compile — facets the
-    // corpus (error …) surface grades only via the nix corpus-grade, kept in rust as the fix-quality pin.
-    // ACTIONABLE FIX (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix): the
-    // message says "unwrap the nominal", and for an ERASABLE SINGLE-VARIANT newtype the unwrap is the
-    // total, unambiguous `(match <it> ((<Variant> n) n))` — so it now carries that WRAP fix on the
-    // newtype operand. Wraps whichever operand IS the newtype, either order.
-    let d = reject_full(
-        "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (= u 5)) (export f))",
-    )
-    .expect("newtype-vs-inner comparison rejects");
-    assert_eq!(d.code.as_deref(), Some("CDZ0202"), "got: {}", d.message);
-    let fix = d.fix.as_ref().expect("the unwrap fix is carried");
-    assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
-    assert!(
-        fix.replacement.contains("match") && fix.replacement.contains("((Mk n) n)"),
-        "the fix unwraps via a `(match … ((Mk n) n))`: {:?}",
-        fix.replacement
-    );
-    // The unwrap-applied program compiles (the unwrap is total for a single-variant newtype).
-    assert!(
-            crate::compile::compile_component(&crate::codec::encode(&parse(
-                "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (= (match u ((Mk n) n)) 5)) (export f))"
-            )))
-            .is_ok(),
-            "the suggested unwrap type-checks"
-        );
-    // NO FIX for a MULTI-variant sum vs a bare value — no single, unambiguous unwrap exists (and it is
-    // not an erasable newtype), so it stays the generic mismatch with no misleading unwrap.
-    let multi =
-        reject_full("(module m (type W (A Int64) (B Int64)) (def (f (: w W)) (= w 5)) (export f))")
-            .expect("a multi-variant sum vs a bare value rejects");
-    assert!(
-        multi.fix.is_none(),
-        "a multi-variant sum offers no unwrap fix: {} fix={:?}",
-        multi.message,
-        multi.fix
-    );
-}
+// [migrated → spec/semantics/05-compound-types.sexp] comparing_a_newtype_to_its_underlying_type_is_a_nominal_boundary_error:
+// the bare CDZ0202 comparison rejects were already in the 05 newtype nominal-boundary block; the ACTIONABLE-FIX
+// half now joins them: newtype PARAM vs inner → CDZ0202 (message "nominal boundary") + heuristic WRAP fix
+// (replacement-contains "((Mk n) n)", unverified); the unwrap-applied program runs (= (match u ((Mk n) n)) 5)
+// → true; a MULTI-variant sum vs a bare value stays the generic CDZ0201 ("different types") with (no-fix).
+// All PASS on a fresh dev build (message + fix-string pins fresh-build-verified per the stale-cache gotcha).
 
 // (an_absent_record_field_access_is_cdz0212_like_record_project migrated to corpus 15-rows-and-open-sums,
 // next to "projecting a record onto an absent field is rejected": a `.`-access of an absent field on a
