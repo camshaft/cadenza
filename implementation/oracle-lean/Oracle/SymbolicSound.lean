@@ -298,6 +298,28 @@ theorem normalize_ite_condFalse (c t e : SymExpr) (hc : normalize c = .const (.b
     normalize (.ite c t e) = normalize e := by
   simp only [normalize, hc]
 
+/-- CAPSTONE `.ite` fold-select cases (full-EQUALITY, condition folds to a bool literal). When
+`normalize c = .const (.bool true)`, `normalize` selects `t`; and `ihc` forces the actual `denote c` to
+`.value (.bool true)` too, so `denote (.ite c t e) = denote t = denote (normalize t)` (`iht`). These are
+the equality-form ite sub-cases the `denote.induct` capstone consumes for a fold-select condition. -/
+theorem denote_normalize_ite_condTrue_eq (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr)
+    (hc : normalize c = .const (.bool true))
+    (ihc : denote ρ w (normalize c) = denote ρ w c)
+    (iht : denote ρ w (normalize t) = denote ρ w t) :
+    denote ρ w (normalize (.ite c t e)) = denote ρ w (.ite c t e) := by
+  have hdc : denote ρ w c = .value (.bool true) := by rw [← ihc, hc]; simp [denote, Value.asF64?]
+  rw [normalize_ite_condTrue c t e hc, iht]
+  simp only [denote, hdc]
+
+theorem denote_normalize_ite_condFalse_eq (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr)
+    (hc : normalize c = .const (.bool false))
+    (ihc : denote ρ w (normalize c) = denote ρ w c)
+    (ihe : denote ρ w (normalize e) = denote ρ w e) :
+    denote ρ w (normalize (.ite c t e)) = denote ρ w (.ite c t e) := by
+  have hdc : denote ρ w c = .value (.bool false) := by rw [← ihc, hc]; simp [denote, Value.asF64?]
+  rw [normalize_ite_condFalse c t e hc, ihe]
+  simp only [denote, hdc]
+
 /-- `normalize`-`ite` MATERIALIZE structural equations (now reducible after the ite arm was refactored
 from `==` to a structural `match` on the branches). When both branches normalize to `true`/`false`, the
 `ite` normalizes to the (normalized) condition; to `false`/`true`, to `not` of it. Holds for EVERY
