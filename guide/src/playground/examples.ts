@@ -269,7 +269,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple((apply-n-times (adder 3) 4 10) (apply-n-times (fn (x) (* x 2)) 5 1)))
 
   (export main))`,
-    expected: "(: #tuple(22 32) (Tuple Int64 Int64))",
+    expected: "(: (tuple 22 32) (Tuple Int64 Int64))",
   },
   {
     id: "memoized-fibonacci",
@@ -421,7 +421,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple((size #record((= x 3) (= y 4))) (size (Some 7)) (size #list(1 2 3))))
 
   (export main))`,
-    expected: "(: #tuple(102 61 66) (Tuple Int64 Int64 Int64))",
+    expected: "(: (tuple 102 61 66) (Tuple Int64 Int64 Int64))",
   },
   {
     id: "value-encode-determinism",
@@ -438,7 +438,7 @@ export const EXAMPLES: Example[] = [
       #tuple(((. Bytes len) ba) (= ba bb) (= ba bc))))
 
   (export main))`,
-    expected: "(: #tuple(102 true false) (Tuple Int64 Bool Bool))",
+    expected: "(: (tuple 102 true false) (Tuple Int64 Bool Bool))",
   },
   {
     id: "value-encode-roundtrip",
@@ -460,7 +460,7 @@ export const EXAMPLES: Example[] = [
           ((None) #tuple(((. Bytes len) bytes) 0))))))
 
   (export main))`,
-    expected: "(: #tuple(73 7) (Tuple Int64 Int64))",
+    expected: "(: (tuple 73 7) (Tuple Int64 Int64))",
   },
   {
     id: "exact-rational-arithmetic",
@@ -991,7 +991,7 @@ export const EXAMPLES: Example[] = [
       ((None) (trap "nfc: invalid accent bytes"))))
 
   (export main))`,
-    expected: "(: #tuple(1 2) (Tuple Int64 Int64))",
+    expected: "(: (tuple 1 2) (Tuple Int64 Int64))",
   },
   {
     id: "string-slice-date-fields",

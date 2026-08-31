@@ -13,4 +13,4 @@
       #tuple(((. Bytes len) ba) (= ba bb) (= ba bc))))
 
   (export main)))
-  (expected (: #tuple(102 true false) (Tuple Int64 Bool Bool))))
+  (expected (: (tuple 102 true false) (Tuple Int64 Bool Bool))))
