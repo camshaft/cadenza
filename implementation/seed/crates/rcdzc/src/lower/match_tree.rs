@@ -72,6 +72,16 @@ pub(super) fn erase_nominal_steps(
                 out.push(*step);
                 // `cur` stays the list type (unchanged); a non-list here is a fault reported elsewhere.
             }
+            PathStep::TupleRestFrom(k) => {
+                // A tuple rest binder — advance the type to the trailing sub-tuple `(Tuple T_k …)`.
+                out.push(*step);
+                cur = match &cur {
+                    crate::ty::Ty::Tuple(elems) => {
+                        crate::ty::Ty::Tuple(elems.get(*k..).unwrap_or(&[]).to_vec().into())
+                    }
+                    _ => crate::ty::Ty::Any,
+                };
+            }
         }
     }
     out
@@ -139,6 +149,12 @@ pub(super) fn fold_sum_path(
             (PathStep::RestFrom(k), Core::ListNew { elems }) => {
                 let tail: Vec<StructId> = elems.iter().skip(*k).copied().collect();
                 return Some(Core::ListNew { elems: tail.into() });
+            }
+            // A tuple-pattern REST binder over a CONSTANT tuple folds to a fresh `Core::Tuple` of the
+            // trailing elements (from index `k`) — a synthesized node so the sub-tuple is itself constant.
+            (PathStep::TupleRestFrom(k), Core::Tuple { elems }) => {
+                let tail: Vec<StructId> = elems.iter().skip(*k).copied().collect();
+                return Some(Core::Tuple { elems: tail.into() });
             }
             _ => return None,
         };
@@ -1572,34 +1588,37 @@ pub(super) fn pattern_constraints(
             .compound_form_of(pat, CompoundCtor::Tuple)
             .unwrap_or(&[])
             .to_vec();
-        // A `..` REST MARKER in a tuple pattern — `(tuple a .. r)` — is meaningless: a tuple has FIXED
-        // arity, so there is no variable-length tail for `..` to spread. Without this check `..` was
-        // COUNTED AS A POSITIONAL ELEMENT (`[a, "..", r]` = 3 "elements") — so `(tuple a .. r)` silently
-        // matched a 3-tuple, binding `..`/`r` as ordinary sub-patterns, and only misfired the arity count
-        // on a differently-sized tuple. `..` (a rest/spread) belongs to a LIST pattern, whose length is
-        // unknown; name that. (Detected the same way the list-pattern arms find their rest — a bare `..`
-        // name among the elements. Anchored at the pattern; the message avoids every `dedup_faults` marker
-        // phrase — "were given"/"takes exactly"/"arguments to a function of arity"/"are different types".)
-        if db.ast.rest_marker(&elems).is_some() {
-            return Err(Reject::coded(
-                Code::Malformed,
-                "a tuple pattern has fixed arity, so `..` (a rest/spread) has no place here — a `..` \
-                 matches the variable-length tail of a LIST, not a tuple. Name each element positionally, \
-                 e.g. `(tuple a b c)`; if the value is a list, match it with `(list a .. rest)`",
-            )
-            .at(pat));
-        }
-        // The payload MUST be a tuple, and the pattern's ARITY must match it — a tuple pattern against a
-        // non-tuple payload, or one naming the wrong number of elements (`(tuple a b c)` against a
-        // 2-tuple), is an ill-typed destructure the compiler REJECTS (CDZ0201), never a silent match on a
-        // wrong shape. (type-system.md: two tuples agree only when their arities are identical.)
+        // A trailing `.. rest` in a tuple pattern — `(tuple a b .. rest)` — binds the TRAILING SUB-TUPLE
+        // to `rest` (a `TupleRestFrom(lead)` read in resolve). UNLIKE a list rest (variable length), a
+        // tuple's arity is FIXED and statically known, so a rest pattern of `lead` LEADING elements matches
+        // a tuple of arity `>= lead` — the leading positions bind at `Elem(i)`, and `rest` gathers the
+        // remaining `arity - lead` elements as a new tuple (its own type read in infer; no constraint of
+        // its own, exactly as the tuple pattern itself imposes none). A non-rest pattern matches EXACTLY its
+        // arity, as before. `..` was previously REJECTED for a tuple; it is now this trailing-gather bind.
+        let (leads, has_rest): (&[StructId], bool) = match db.ast.rest_marker(&elems) {
+            Some((k, _operand, trailing_start)) if trailing_start == elems.len() => {
+                (&elems[..k], true)
+            }
+            _ => (&elems[..], false),
+        };
+        let arity_ok = |n: usize| {
+            if has_rest {
+                n >= leads.len()
+            } else {
+                n == leads.len()
+            }
+        };
+        // The payload MUST be a tuple, and its arity must satisfy the pattern — a tuple pattern against a
+        // non-tuple payload, or naming the wrong number of elements (`(tuple a b c)` against a 2-tuple; a
+        // rest pattern `(tuple a b .. r)` against a 1-tuple), is an ill-typed destructure REJECTED (CDZ0201).
         let elem_tys: &[crate::ty::Ty] = match ty {
-            crate::ty::Ty::Tuple(ts) if ts.len() == elems.len() => ts,
-            // `Any` payload (an unsolved/unknown type) can't be arity-checked here — descend permissively
-            // (each element `Any`), the same not-yet-constrained treatment a projection of an `Any` gets.
+            crate::ty::Ty::Tuple(ts) if arity_ok(ts.len()) => ts,
+            // `Any` payload (an unsolved/unknown type) can't be arity-checked here — descend the LEADING
+            // elements permissively (each `Any`), the same not-yet-constrained treatment a projection of an
+            // `Any` gets. The rest binder (if any) adds no constraint.
             crate::ty::Ty::Any => {
                 let mut out = Vec::new();
-                for (i, &elem) in elems.iter().enumerate() {
+                for (i, &elem) in leads.iter().enumerate() {
                     let mut deeper = path.clone();
                     deeper.push(crate::core::PathStep::Elem(i));
                     out.extend(pattern_constraints(
@@ -1615,25 +1634,22 @@ pub(super) fn pattern_constraints(
             other => {
                 // Anchor at the offending PATTERN node (`pat`), not the enclosing match — the squiggle
                 // then points at `(tuple a b c)`, the actual wrong construct, rather than the whole
-                // `(match … )`. (Without `.at`, `collect_reached_poisons` stamps the coarse match node.)
-                // DISTINGUISH the two shapes this arm catches, each read naturally (the earlier phrasing
-                // "a tuple pattern of N element(s) does not match the payload type T" conflated them and
-                // called every bound value a "payload", misleading for a top-level `let`/`match` on a plain
-                // tuple):
-                //  • the value IS a tuple but of a DIFFERENT arity — `(tuple a b c)` against a 2-tuple —
-                //    name both counts ("this pattern binds 3 elements, but the value is a tuple with 2"); OR
-                //  • the value is NOT a tuple at all — `(tuple a b)` against an `Int64` — say so, since a
-                //    tuple pattern cannot destructure a scalar/record/other (no element to bind).
-                let n = elems.len();
+                // `(match … )`. DISTINGUISH the two shapes this arm catches:
+                //  • the value IS a tuple but of an incompatible arity — name both counts (a rest pattern
+                //    reads "at least N"); OR
+                //  • the value is NOT a tuple at all — a `(tuple …)` pattern cannot destructure it.
+                let n = leads.len();
                 let plural = |k: usize| if k == 1 { "" } else { "s" };
+                let least = if has_rest { "at least " } else { "" };
                 let message = if let crate::ty::Ty::Tuple(ts) = other {
                     format!(
-                        "this tuple pattern binds {n} element{}, but the value is a tuple with {} \
-                         element{} ({}) — a tuple pattern must bind exactly as many elements as the tuple has",
+                        "this tuple pattern binds {least}{n} element{}, but the value is a tuple with {} \
+                         element{} ({}) — a tuple pattern must bind {}as many elements as the tuple has",
                         plural(n),
                         ts.len(),
                         plural(ts.len()),
                         other.render_name(&db.name_ctx()),
+                        if has_rest { "at most " } else { "exactly " },
                     )
                 } else {
                     format!(
@@ -1646,7 +1662,7 @@ pub(super) fn pattern_constraints(
             }
         };
         let mut out = Vec::new();
-        for (i, &elem) in elems.iter().enumerate() {
+        for (i, &elem) in leads.iter().enumerate() {
             let mut deeper = path.clone();
             deeper.push(crate::core::PathStep::Elem(i));
             out.extend(pattern_constraints(
@@ -3344,6 +3360,13 @@ pub(super) fn type_at_path(
                 crate::ty::Ty::List(_) => cur.clone(),
                 _ => return None,
             },
+            // A tuple rest binder — the trailing sub-tuple `(Tuple T_k …)`.
+            crate::core::PathStep::TupleRestFrom(k) => match &cur {
+                crate::ty::Ty::Tuple(elems) => {
+                    crate::ty::Ty::Tuple(elems.get(*k..)?.to_vec().into())
+                }
+                _ => return None,
+            },
             crate::core::PathStep::Payload => match &cur {
                 // A `Payload` step over a NOMINAL NEWTYPE UNWRAPS the tag to its underlying type (a
                 // runtime no-op). A newtype imposes NO discriminant constraint, so its `Payload` step is
@@ -3384,6 +3407,13 @@ pub(super) fn type_from_seeded_prefix(
                     // list of the same element type).
                     crate::core::PathStep::RestFrom(_) => match &cur {
                         crate::ty::Ty::List(_) => cur.clone(),
+                        _ => return None,
+                    },
+                    // A tuple rest binder — the trailing sub-tuple `(Tuple T_k …)`.
+                    crate::core::PathStep::TupleRestFrom(k) => match &cur {
+                        crate::ty::Ty::Tuple(elems) => {
+                            crate::ty::Ty::Tuple(elems.get(*k..)?.to_vec().into())
+                        }
                         _ => return None,
                     },
                     // A `Payload` step over a NOMINAL NEWTYPE UNWRAPS the tag to its underlying type (a
@@ -3467,20 +3497,22 @@ pub(super) fn shallowest_path(rows: &[MatchRow]) -> MatchPath {
         .unwrap_or_else(|| std::rc::Rc::from(&[][..]))
 }
 
-/// A total order on paths for a deterministic switch choice (Payload < Elem < RestFrom, each by index).
-/// `RestFrom` never appears in a SUM decision-tree switch path (only a list-rest binder's own path, which
-/// does not go through `MatchRow`), but the ordering is total so the comparator stays well-defined.
+/// A total order on paths for a deterministic switch choice (Payload < Elem < RestFrom < TupleRestFrom,
+/// each by index). A rest step (`RestFrom`/`TupleRestFrom`) never appears in a SUM decision-tree switch
+/// path (only a rest binder's own path, which does not go through `MatchRow`), but the ordering is total
+/// so the comparator stays well-defined.
 pub(super) fn path_cmp(
     a: &[crate::core::PathStep],
     b: &[crate::core::PathStep],
 ) -> std::cmp::Ordering {
     use crate::core::PathStep;
-    // A rank + inner index gives a total order across all three step kinds in one comparison.
+    // A rank + inner index gives a total order across all step kinds in one comparison.
     fn key(s: &PathStep) -> (u8, usize) {
         match s {
             PathStep::Payload => (0, 0),
             PathStep::Elem(i) => (1, *i),
             PathStep::RestFrom(k) => (2, *k),
+            PathStep::TupleRestFrom(k) => (3, *k),
         }
     }
     for (x, y) in a.iter().zip(b.iter()) {
@@ -3566,6 +3598,12 @@ pub(super) fn const_at_path(
             (PathStep::RestFrom(k), Core::ListNew { elems }) => {
                 let tail: Vec<StructId> = elems.iter().skip(*k).copied().collect();
                 return Some(Core::ListNew { elems: tail.into() });
+            }
+            // A tuple-pattern REST binder over a CONSTANT tuple folds to a fresh `Core::Tuple` of the
+            // trailing elements (from index `k`) — a synthesized node so the sub-tuple is itself constant.
+            (PathStep::TupleRestFrom(k), Core::Tuple { elems }) => {
+                let tail: Vec<StructId> = elems.iter().skip(*k).copied().collect();
+                return Some(Core::Tuple { elems: tail.into() });
             }
             _ => return None,
         };

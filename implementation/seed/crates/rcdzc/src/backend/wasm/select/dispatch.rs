@@ -1171,6 +1171,7 @@ pub(super) fn emit_littest_probe(
                 }
             }
             crate::core::PathStep::RestFrom(_) => {} // never on a sum-lit-test path
+            crate::core::PathStep::TupleRestFrom(_) => {} // never on a sum-lit-test path
         }
     }
     // Read the leaf scalar and compare against the literal. A `0` literal (a `(Some 0)`/`(Ok 0)`

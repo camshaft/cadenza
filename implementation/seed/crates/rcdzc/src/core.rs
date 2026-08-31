@@ -146,6 +146,13 @@ pub enum PathStep {
     /// dropped); over a CONSTANT list it folds to the tail `Core::ListNew`. Only appears as the SOLE step
     /// of a rest-binder's path (a list scrutinee is flat — no nesting under a rest).
     RestFrom(usize),
+    /// The TRAILING SUB-TUPLE of a `Tuple` scrutinee starting at index `k` — the `rest` binder of a tuple
+    /// REST pattern `(tuple p0 … p_{k-1} .. rest)`, which binds `(Tuple T_k … T_{n-1})` (a NEW tuple of the
+    /// elements from `k` onward). UNLIKE [`RestFrom`] (a list slice), a tuple has FIXED, statically-known
+    /// arity `n` (from the solved scrutinee type), so this is not a runtime length split but a fixed
+    /// gather: over a CONSTANT tuple it folds to the trailing `Core::Tuple`; the type at the step supplies
+    /// `n`. Only appears as the SOLE step of a rest-binder's path (a tuple destructure is flat under a rest).
+    TupleRestFrom(usize),
 }
 
 /// A match-arm PROBE — the test that decides whether an arm is taken, over a SCALAR scrutinee. A

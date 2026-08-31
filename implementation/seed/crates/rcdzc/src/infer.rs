@@ -4144,6 +4144,12 @@ fn project_path_type(
                 Ty::List(_) => cur.clone(),
                 _ => return Ty::Any,
             },
+            // A tuple-pattern REST binder — the trailing sub-tuple `(Tuple T_k … T_{n-1})`, a NEW tuple of
+            // the element types from `k` onward (a tuple's arity is fixed, so this slice is well-typed).
+            crate::core::PathStep::TupleRestFrom(k) => match &cur {
+                Ty::Tuple(elems) => Ty::Tuple(elems.get(*k..).unwrap_or(&[]).to_vec().into()),
+                _ => return Ty::Any,
+            },
         };
     }
     cur
@@ -5319,6 +5325,11 @@ fn walk_payload_ty(
             // A rest sublist is the same list type as its scrutinee.
             crate::core::PathStep::RestFrom(_) => match &cur {
                 Ty::List(_) => cur.clone(),
+                _ => return Ty::Any,
+            },
+            // A tuple rest binder — the trailing sub-tuple `(Tuple T_k … T_{n-1})`.
+            crate::core::PathStep::TupleRestFrom(k) => match &cur {
+                Ty::Tuple(elems) => Ty::Tuple(elems.get(*k..).unwrap_or(&[]).to_vec().into()),
                 _ => return Ty::Any,
             },
         };

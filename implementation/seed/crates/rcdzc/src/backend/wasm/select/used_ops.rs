@@ -1290,6 +1290,8 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_VEC_DROP);
                         out.insert(OP_DUP);
                     }
+                    // A runtime tuple-rest read declines at emit (slice 1), so it emits no ops here.
+                    crate::core::PathStep::TupleRestFrom(_) => {}
                 };
             }
             if let Ok(Some(op)) = get_op(db, id) {
@@ -1463,6 +1465,7 @@ pub(super) fn collect_cont_ops_rec(
                         out.insert(OP_VEC_GET)
                     }
                     crate::core::PathStep::RestFrom(_) => false, // never on a sum-disc path
+                    crate::core::PathStep::TupleRestFrom(_) => false, // never on a sum-disc path
                 };
             }
             // The payload leaf type after the path walk — needed to tell an Int probe over a BOXED
@@ -1553,6 +1556,7 @@ pub(super) fn collect_cont_ops_rec(
                         out.insert(OP_VEC_GET)
                     }
                     crate::core::PathStep::RestFrom(_) => false, // never on a sum-disc path
+                    crate::core::PathStep::TupleRestFrom(_) => false, // never on a sum-disc path
                 };
             }
             if sub_is_enum {

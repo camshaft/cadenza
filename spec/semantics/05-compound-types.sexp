@@ -540,6 +540,18 @@
   (input  (do (def (main) (match #tuple(3 4) (#tuple(a b) (+ a b)))) (export main)))
   (call   main) (output (: 7 Int64)))
 
+; A tuple pattern MAY end in a trailing `.. rest` — unlike the old rejection ("a tuple has fixed arity, so
+; `..` has no place here"), a tuple rest binds the TRAILING SUB-TUPLE (a NEW tuple of the elements from the
+; rest position onward). A tuple's arity is fixed and statically known, so `(tuple a .. rest)` over a
+; 3-tuple binds `a` to element 0 and `rest` to the trailing `(Tuple Int64 Int64)` — a fixed gather, not a
+; runtime slice (the tuple analogue of a list `(list a .. rest)`). Here `a=3`, `rest=(tuple 4 5)`, so
+; `(+ a (. rest 1))` = 3 + 5 = 8. Over a CONSTANT tuple the rest folds to a `Core::Tuple` of the trailing
+; elements. (A runtime OPAQUE tuple scrutinee — an exported boundary param — declines CDZ0900 "not yet
+; lowered to wasm" for now: the const/inline-structural fold ships first, the runtime gather is a follow-up.)
+(case "a tuple pattern with a trailing rest binds the leading elements and the trailing sub-tuple"
+  (input  (do (def (main) (match #tuple(3 4 5) (#tuple(a (.. rest)) (+ a (. rest 1))) (_ 0))) (export main)))
+  (call   main) (output (: 8 Int64)))
+
 ; A `(map (k v)…)` pattern tests only that the NAMED keys are PRESENT (it is refutable on key-presence, not
 ; an exact key-set match — see the list-arm map-element cases below). With ZERO named keys, `(map)` is that
 ; presence test made VACUOUS, so it matches ANY map — empty OR non-empty. This is the opposite of `(list)`,

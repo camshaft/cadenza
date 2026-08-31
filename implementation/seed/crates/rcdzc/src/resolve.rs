@@ -4287,10 +4287,28 @@ fn find_binder_in_tuple(
     path: &mut Vec<crate::core::PathStep>,
     heads: &mut Vec<StructId>,
 ) -> bool {
-    let elems: &[StructId] = db
+    let raw: Vec<StructId> = db
         .ast
         .compound_form_of(pattern, CompoundCtor::Tuple)
-        .unwrap_or(&[]);
+        .unwrap_or(&[])
+        .to_vec();
+    // Split off a trailing `.. rest`: the rest binder binds the TRAILING SUB-TUPLE from index `lead`
+    // onward via a `TupleRestFrom(lead)` step (the tuple analogue of the list `RestFrom` above; a tuple's
+    // fixed arity means the sub-tuple is a fixed gather, not a runtime slice). `lead` = the leading fixed
+    // element patterns before the `..`.
+    let (elems, rest): (&[StructId], Option<StructId>) = match db.ast.rest_marker(&raw) {
+        Some((k, operand, trailing_start)) if trailing_start == raw.len() => {
+            (&raw[..k], Some(operand))
+        }
+        _ => (&raw[..], None),
+    };
+    if let Some(rest) = rest
+        && db.ast.as_name(rest) == Some(name)
+        && name != "_"
+    {
+        path.push(crate::core::PathStep::TupleRestFrom(elems.len()));
+        return true;
+    }
     for (i, &elem) in elems.iter().enumerate() {
         // Try this element position. Record the `Elem(i)` step, then match the element pattern; on a
         // miss, undo the step and try the next position (so `path`/`heads` reflect only the found path).

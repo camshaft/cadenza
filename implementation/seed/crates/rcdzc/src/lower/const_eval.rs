@@ -287,6 +287,12 @@ pub(super) fn const_eval_inner(
                     (crate::core::PathStep::RestFrom(k), CVal::List(xs)) => {
                         CVal::List(xs.get(*k..).map(<[CVal]>::to_vec).unwrap_or_default())
                     }
+                    // A tuple-pattern REST binder over a CONSTANT tuple — the trailing sub-tuple (a NEW
+                    // tuple of the elements from `k` onward). A tuple's arity is fixed, so this is a
+                    // constant gather (the twin of the list `RestFrom` slice above).
+                    (crate::core::PathStep::TupleRestFrom(k), CVal::Tuple(vs)) => {
+                        CVal::Tuple(vs.get(*k..).map(<[CVal]>::to_vec).unwrap_or_default())
+                    }
                     // Unwrap a sum variant's single payload — a variant pattern binder `(Ctor x)` reads its
                     // payload out through a `[Payload]` step. (A multi-payload variant's `[Payload, Elem(i)]`
                     // reaches the `Elem` on the payload TUPLE — a later stage; here the payload is one value.)

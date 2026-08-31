@@ -2992,6 +2992,15 @@ pub(super) fn emit(
                             cur = elem_field_ty(&cur, *i);
                         }
                     }
+                    crate::core::PathStep::TupleRestFrom(_) => {
+                        // A runtime tuple-rest read (a trailing sub-tuple gather from the arr) is not yet
+                        // lowered to wasm — decline (slice 1: a CONST tuple-rest folds to a `Core::Tuple`
+                        // before emit and never reaches here; the wasm runtime gather is a follow-up slice).
+                        // A graceful not-yet decline, never a miscompile.
+                        return Err(Reject::unsupported(
+                            "a runtime tuple rest binder is not yet lowered to wasm",
+                        ));
+                    }
                     crate::core::PathStep::RestFrom(k) => {
                         // Tail sublist from `k`: `vec-drop(list, k)` returns the `[k, len)` tail as ONE
                         // handle (dropping the `[0, k)` prefix internally). WARNING: `vec-drop` CONSUMES its

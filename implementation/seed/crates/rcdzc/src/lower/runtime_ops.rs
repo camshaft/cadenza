@@ -478,6 +478,10 @@ pub(super) fn synth_value_path_read(
                 // A list rest inside a map value is not produced here (value sub-patterns descend tuple/ctor;
                 // a nested list value declines upstream) — leave `acc` unchanged defensively.
             }
+            crate::core::PathStep::TupleRestFrom(_) => {
+                // A tuple rest inside a map value is not produced here (same as the list `RestFrom` above) —
+                // leave `acc` unchanged defensively.
+            }
         }
     }
     acc

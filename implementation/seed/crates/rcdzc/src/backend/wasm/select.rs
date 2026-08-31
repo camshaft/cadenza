@@ -2259,6 +2259,11 @@ fn materialize_payload_prefixes(
                         "a payload prefix cannot contain a RestFrom step",
                     ));
                 }
+                crate::core::PathStep::TupleRestFrom(_) => {
+                    return Err(Reject::decline(
+                        "a payload prefix cannot contain a TupleRestFrom step",
+                    ));
+                }
             }
         }
         out.push(Lir::LocalSet(slot));
@@ -5311,6 +5316,10 @@ fn ty_at_path_recorded(
                 Ty::List(_) => cur.clone(),
                 _ => return Ty::Any,
             },
+            crate::core::PathStep::TupleRestFrom(k) => match cur.strip_nominal() {
+                Ty::Tuple(elems) => Ty::Tuple(elems.get(*k..).unwrap_or(&[]).to_vec().into()),
+                _ => return Ty::Any,
+            },
         };
     }
     cur
@@ -5403,6 +5412,7 @@ fn push_discriminant(
                 }
             }
             crate::core::PathStep::RestFrom(_) => {} // never on a sum-disc path
+            crate::core::PathStep::TupleRestFrom(_) => {} // never on a sum-disc path
         }
     }
     if sub_is_enum {
