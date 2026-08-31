@@ -6219,6 +6219,35 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Iterative-reader helper: read the preamble of ONE `#{ … }` map PATTERN entry — a `.. rest` spread
+    /// (descend its operand) or a `key = <pat>` entry (the KEY is a value `expr(0)` read INLINE — a bounded
+    /// nested `expr_iter` call — then `=`, then the value sub-pattern DESCENDS). Returns the descend for
+    /// `Cont::RecordPat` (reused: its `field` slot carries the map KEY, its `f_start` the entry start, so
+    /// the same `(= key value)` `FieldPair` triple is built on deliver). No shorthand (a map has none), so
+    /// this always returns `Some` (the CLOSE is checked by the caller before calling). Mirrors the recursive
+    /// `#{`-pattern arm; `before` is the entry-loop progress guard.
+    fn advance_map_pat(&mut self) -> RecordPatDescend {
+        let before = self.pos;
+        if self.at(Kind::DotDot) {
+            let dd = self.cur_span();
+            self.bump(); // `..`
+            let rest_head = self.name("..", dd);
+            return RecordPatDescend::Rest {
+                dd_span: dd,
+                rest_head,
+                before,
+            };
+        }
+        let e_start = self.cur_span();
+        let key = self.expr(0);
+        self.expect(Kind::Eq, "`=`");
+        RecordPatDescend::Value {
+            f_start: e_start,
+            field: key,
+            before,
+        }
+    }
+
     fn pattern_iter(&mut self) -> StructId {
         // A pattern postfix `( arg, … )` application awaiting an argument sub-pattern. `items` = `[ base,
         // arg… ]`; `start` is the base pattern's start (the folded node's span); `entered` = whether the
@@ -6279,6 +6308,7 @@ impl<'a> Parser<'a> {
                 lvl_start: Span,
                 lvl_entered: bool,
                 brace_span: Span,
+                is_map: bool, // `#{`-map (advance via `advance_map_pat`, key=expr) vs `{`-record (shorthand)
                 items: Vec<StructId>,
                 is_rest: bool,
                 rest_head: StructId,
@@ -6383,16 +6413,27 @@ impl<'a> Parser<'a> {
                                 });
                                 continue; // reading stays true: read the element as a fresh level
                             }
-                        } else if self.at(Kind::LBrace) {
-                            // `{ field = p, … }` record pattern — head created before fields; shorthand
-                            // fields complete inline (advance_record_pat), a value/`.. rest` descends.
+                        } else if self.at(Kind::LBrace)
+                            || (self.kind() == Kind::Hash && self.nth_kind(1) == Kind::LBrace)
+                        {
+                            // `{ field = p, … }` record pattern (shorthand fields inline) OR `#{ key = p, … }`
+                            // map pattern (key = expr, no shorthand) — head created before entries; a value /
+                            // `.. rest` descends on the worklist. Both build `(= key/field value)` triples.
                             let brace_span = cur_start;
-                            self.bump(); // '{'
-                            let head = self.name("record", brace_span);
+                            let is_map = self.kind() == Kind::Hash;
+                            if is_map {
+                                self.bump(); // '#'
+                                self.bump(); // '{'
+                            } else {
+                                self.bump(); // '{'
+                            }
+                            let head = self.name(if is_map { "map" } else { "record" }, brace_span);
                             let mut items = vec![head];
                             let step = if self.at(Kind::RBrace) {
                                 self.expect(Kind::RBrace, "`}`");
                                 None
+                            } else if is_map {
+                                Some(self.advance_map_pat())
                             } else {
                                 self.advance_record_pat(&mut items)
                             };
@@ -6433,6 +6474,7 @@ impl<'a> Parser<'a> {
                                         lvl_start: cur_start,
                                         lvl_entered: cur_entered,
                                         brace_span,
+                                        is_map,
                                         items,
                                         is_rest,
                                         rest_head,
@@ -6674,6 +6716,7 @@ impl<'a> Parser<'a> {
                     lvl_start,
                     lvl_entered,
                     brace_span,
+                    is_map,
                     mut items,
                     is_rest,
                     rest_head,
@@ -6703,7 +6746,12 @@ impl<'a> Parser<'a> {
                     if self.pos == before {
                         self.bump(); // field didn't consume — avoid a missing-`,` spin
                     }
-                    match self.advance_record_pat(&mut items) {
+                    let step = if is_map {
+                        Some(self.advance_map_pat())
+                    } else {
+                        self.advance_record_pat(&mut items)
+                    };
+                    match step {
                         None => {
                             node = self.list(items, brace_span.merge(self.prev_span()));
                             cur_start = lvl_start;
@@ -6731,6 +6779,7 @@ impl<'a> Parser<'a> {
                                 lvl_start,
                                 lvl_entered,
                                 brace_span,
+                                is_map,
                                 items,
                                 is_rest,
                                 rest_head,
@@ -8391,6 +8440,11 @@ mod tests {
             "[x].head",
             "#{ 1 = p }",
             "#{ k = Some(v), .. rest }",
+            "#{}",
+            "#{ 1 = p, 2 = q }",
+            "#{ (a + b) = p }",
+            "#{ 1 = #{ 2 = p } }",
+            "#{ k = v }.rest",
             "#(a, b)",
             "#()",
             "#(a, b, .. rest)",
