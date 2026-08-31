@@ -878,6 +878,23 @@
       (export main)))
   (output (: 7 Int64)))
 
+(case
+  "a deeper nested-record MATCH field binds via the RecordField sub_path (§235, match twin, tuple→record→tuple)"
+  (doc
+    "The MATCH-position deeper counterpart: a tuple whose first element is a record whose field `x` is a
+           tuple — `(#tuple(#record((= x #tuple(a b))) c) …)` — binds the deep binders `a`/`b` (below the
+           record field, inside the inner tuple) and the outer `c`; no misleading CDZ0101 'unbound name' and
+           no CDZ0900 'record sub-pattern nested … not supported' decline. Over `#tuple(#record((= x
+           #tuple(3 4))) 5)`: a=3, b=4, c=5 → 12. LITERAL scrutinee in a nullary `main` (the rcdzc test used a
+           compound entry param + diags-only). Migrated from rcdzc a_deeper_nested_record_match_field_binds_via_sub_path.")
+  (input
+    (do
+      (def
+        (main)
+        (match #tuple(#record((= x #tuple(3 4))) 5) (#tuple(#record((= x #tuple(a b))) c) (+ (+ a b) c))))
+      (export main)))
+  (output (: 12 Int64)))
+
 ; FULL nested-record descent (§235, operator-prioritized): a nested RECORD below a record binding field —
 ; `#record((= x #record((= y v))))`, the field value itself a RECORD — now BINDS. `v` resolves to a
 ; `RecordField` with an EMPTY path reading field `x` then a `sub_path = [Field(y)]` (a NAME-keyed
