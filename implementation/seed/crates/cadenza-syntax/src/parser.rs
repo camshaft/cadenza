@@ -1571,6 +1571,26 @@ impl<'a> Parser<'a> {
                 lvl_entered: bool,
                 lvl_num: bool,
             },
+            // A `def` declaration awaiting its value/body. `target` is the name (value def `def x = …`) or
+            // the built signature `(name p …)` (function def `def f(…) = …`); `ret_ty` the optional `-> R`
+            // (None for a value def) applied to the body via `ascribe` on deliver — so both branches unify.
+            // `docs` are the leading `///` docs (their `(doc …)` nodes built ON DELIVER, after the body, to
+            // match struct-id order); `leading` is the body's own interior leading trivia (the `body_expr`
+            // drain, captured before the descent). On deliver build `(def target doc… body)` + apply the
+            // OUTER postfix/unit suffix. `def` is reachable as an expr operand, so `def a = def b = …`
+            // de-recurses (the body descent reads the inner def iteratively).
+            Def {
+                def_head: StructId,
+                target: StructId,
+                ret_ty: Option<StructId>,
+                docs: Vec<Lead>,
+                leading: Vec<Lead>,
+                start: Span,
+                lvl_min_prec: u8,
+                lvl_spine: u32,
+                lvl_entered: bool,
+                lvl_num: bool,
+            },
         }
         // A sentinel precedence higher than every real infix/`as`/ascription/arrow precedence: a level
         // descended at `TIGHT_PREC` folds its operand + postfix but no infix, and the postfix funnel skips
@@ -1941,6 +1961,87 @@ impl<'a> Parser<'a> {
                         });
                         cur_min_prec = 0; // the body is `expr(0)`
                         continue; // descend: read the body as a fresh level
+                    } else if self.at_keyword(Keyword::Def) {
+                        // `def name = value` (value def) or `def name(p,…) [-> R] = body` (function def). The
+                        // preamble (leading `///` docs, `forall` type-params, name, params, return type) is
+                        // read INLINE — only the value/body is an expr descent (PREC_SEQ+1 for a value,
+                        // 0 for a function body, a sequence position). Cont::Def builds `(def target doc… body)`
+                        // on deliver. `def` is an expr operand, so `def a = def b = …` now de-recurses.
+                        let start = cur_start;
+                        let docs = self.take_docs_here();
+                        let def_head = self.keyword_head("def", start);
+                        self.bump(); // `def`
+                        let sig_start = self.cur_span();
+                        let sig_type_params = self.forall_sig_type_params();
+                        let name = self.binder();
+                        if sig_type_params.is_none() && self.at(Kind::Eq) {
+                            // value def: `def name = value`
+                            self.bump(); // `=`
+                            let leading = if self.pos < self.leading.len() {
+                                std::mem::take(&mut self.leading[self.pos])
+                            } else {
+                                Vec::new()
+                            };
+                            pending.push(Cont::Def {
+                                def_head,
+                                target: name,
+                                ret_ty: None,
+                                docs,
+                                leading,
+                                start,
+                                lvl_min_prec: cur_min_prec,
+                                lvl_spine: spine,
+                                lvl_entered: entered,
+                                lvl_num: prefix_is_number,
+                            });
+                            cur_min_prec = crate::token::PREC_SEQ + 1;
+                            continue; // descend: read the value
+                        }
+                        // function def: `def name(p,…) [-> R] = body`
+                        self.expect(Kind::LParen, "`(`");
+                        let mut params = Vec::new();
+                        if !self.at(Kind::RParen) {
+                            loop {
+                                let before = self.pos;
+                                params.push(self.param());
+                                if !self.sep_continue(Kind::RParen) {
+                                    break;
+                                }
+                                if self.pos == before {
+                                    self.bump();
+                                }
+                            }
+                        }
+                        self.expect(Kind::RParen, "`)`");
+                        let sig_span = sig_start.merge(self.prev_span());
+                        let params = self.hoist_forall_params(params, sig_span);
+                        let mut sig = vec![name];
+                        if let Some(tps) = sig_type_params {
+                            sig.extend(tps);
+                        }
+                        sig.extend(params);
+                        let signature = self.list(sig, sig_span);
+                        let ret_ty = self.opt_return_type();
+                        self.expect(Kind::Eq, "`=`");
+                        let leading = if self.pos < self.leading.len() {
+                            std::mem::take(&mut self.leading[self.pos])
+                        } else {
+                            Vec::new()
+                        };
+                        pending.push(Cont::Def {
+                            def_head,
+                            target: signature,
+                            ret_ty,
+                            docs,
+                            leading,
+                            start,
+                            lvl_min_prec: cur_min_prec,
+                            lvl_spine: spine,
+                            lvl_entered: entered,
+                            lvl_num: prefix_is_number,
+                        });
+                        cur_min_prec = 0; // the function body is `expr(0)` (a sequence position)
+                        continue; // descend: read the body
                     } else if self.at_keyword(Keyword::Handle) {
                         // `handle E[(seed)] with | op(…, s) => body | … in body` — NOT bracketed_bars. Read
                         // the effect name + seed head INLINE; the seed of `E(seed)` descends (Cont::Handle
@@ -3293,6 +3394,38 @@ impl<'a> Parser<'a> {
                     spine = lvl_spine;
                     entered = lvl_entered;
                     pf_pending = true;
+                    pf_num = lvl_num;
+                    pf_spine = 0;
+                    reading = false;
+                    continue;
+                }
+                Some(Cont::Def {
+                    def_head,
+                    target,
+                    ret_ty,
+                    docs,
+                    leading,
+                    start,
+                    lvl_min_prec,
+                    lvl_spine,
+                    lvl_entered,
+                    lvl_num,
+                }) => {
+                    // `left` is the value/body — wrap its interior leading trivia, ascribe the return type
+                    // (a no-op for a value def), then assemble `(def target doc… body)`. The `(doc …)` nodes
+                    // are built HERE (after the body) to match the recursive struct-id order.
+                    let body = self.wrap_comments(leading, left);
+                    let body = self.ascribe(body, ret_ty);
+                    let span = start.merge(self.prev_span());
+                    let mut items = vec![def_head, target];
+                    items.extend(self.doc_nodes(docs));
+                    items.push(body);
+                    left = self.list(items, span);
+                    cur_start = start;
+                    cur_min_prec = lvl_min_prec;
+                    spine = lvl_spine;
+                    entered = lvl_entered;
+                    pf_pending = true; // OUTER postfix/unit suffix (as `expr` applies to `prefix`'s result)
                     pf_num = lvl_num;
                     pf_spine = 0;
                     reading = false;
@@ -7049,6 +7182,58 @@ mod tests {
     }
 
     #[test]
+    fn deep_nesting_boundary_agrees_across_readers() {
+        // DIFFERENTIAL DEPTH-BUDGET GUARD (v-syntax / breaker, re #6881): the iterative reader must accept/
+        // reject at the EXACT same nesting depth as the recursive reference for every shape — so the
+        // explicit worklist's per-level depth accounting can't silently drift from `expr`'s. NOTE: the
+        // absolute boundary is shape-dependent because a level can cost >1 depth unit in BOTH readers — e.g.
+        // `(1 + (paren))` costs 2 depth units per nesting level (the `+` right operand + the paren interior
+        // are two `expr` levels), so it caps at ~511, NOT 1024; a pure `(((…)))` caps at 1023. That 2×-for-
+        // plusparen is INHERENT to the recursive descent (present pre-#6881), not a rewrite regression — the
+        // point of this test is only that iterative == recursive, which is the behavior-neutrality contract.
+        // The recursive reader overflows the default stack at depth (the SIGABRT the rewrite removes), so it
+        // is measured on a big thread — this reads its GUARD boundary, the parity target.
+        type Shape = (&'static str, fn(usize) -> String);
+        let shapes: &[Shape] = &[
+            ("plusparen", |d| {
+                format!("{}0{}", "(1 + ".repeat(d), ")".repeat(d))
+            }),
+            ("paren", |d| format!("{}0{}", "(".repeat(d), ")".repeat(d))),
+            ("defbody", |d| {
+                format!("def main() = {}0{}", "(1 + ".repeat(d), ")".repeat(d))
+            }),
+            ("flatplus", |d| format!("{}0", "1 + ".repeat(d))),
+            ("call", |d| format!("{}0{}", "f(".repeat(d), ")".repeat(d))),
+            ("neg", |d| format!("{}0", "- ".repeat(d))),
+        ];
+        fn max_ok(mk: fn(usize) -> String, f: &dyn Fn(&str) -> bool) -> usize {
+            let mut d = 1;
+            while d < 4096 && f(&mk(d)) {
+                d += 1;
+            }
+            d - 1
+        }
+        let mut msg = String::new();
+        for (name, mk) in shapes {
+            let it = max_ok(*mk, &|s| read_ml(s).ok());
+            let g = *mk;
+            let rec = std::thread::Builder::new()
+                .stack_size(512 * 1024 * 1024)
+                .spawn(move || max_ok(g, &|s| read_ml_recursive(s).ok()))
+                .unwrap()
+                .join()
+                .unwrap();
+            if it != rec {
+                msg.push_str(&format!("  {name}: iterative {it} != recursive {rec}\n"));
+            }
+        }
+        assert!(
+            msg.is_empty(),
+            "iterative reader's nesting boundary drifted from the recursive reference:\n{msg}"
+        );
+    }
+
+    #[test]
     fn expr_iter_matches_recursive_expr() {
         // I3 differential check at the EXPR level: the iterative shunting-yard `expr_iter` must produce a
         // BYTE-IDENTICAL result to the recursive `expr` for every input — arena (structural eq), span
@@ -7288,6 +7473,19 @@ mod tests {
             "@!param(widget: slider) width: Int64",
             "@!param() x: Bool",
             "@!param(min: 0, max: 10) n: Int64",
+            // `def` declaration (now on the worklist) — value def / function def / return type / forall /
+            // nested (def value = def, the de-recursion target) / sequence / leading doc / annotated def.
+            "def x = 1",
+            "def f(a) = a",
+            "def f(a, b) = a + b",
+            "def f(a: Int64) -> Bool = a",
+            "def forall t. f(x: t) = x",
+            "def x = def y = 1",
+            "def x = 1; def y = 2",
+            "def f() = (a; b)",
+            "/// the answer\ndef x = 42",
+            "def f(a) =\n  // note\n  a + 1",
+            "@test def f(a) = a",
         ];
         for src in cases {
             let mut rec = build_parser(src, FileId::default());
