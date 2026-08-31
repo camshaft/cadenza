@@ -977,7 +977,7 @@ fn bare_world_is_still_an_ordinary_name_not_a_world_decl() {
 // forms are whitespace-separated, no `;`) MIGRATED to the spec/syntax corpus (inc-6 batch-72):
 // ml/431-semicolon-body-stops-at-next-def `def f() = a; b; c`⏎`def g() = 2`→`(do (def (f) (do a b c)) (def (g)
 // 2))` (body stops at `def g`); the def-juxtaposition `def a = 1 def b = 2`→`(do (def a 1) (def b 2))` is
-// subsumed by ml/203-top-level-value-defs-blank-separated. (`top_level_semicolon_folds…` stays Rust — GAP note below.)
+// subsumed by ml/203-top-level-value-defs-blank-separated.
 
 // OPERATOR RULED (2026-08-31, via v-syntax) + IMPLEMENTED: top-level `;` is a SEPARATOR required ONLY to
 // disambiguate an ambiguous expr boundary (the `f() g()`→Qty fold); ALL declarations are exempt and a lone
@@ -985,6 +985,9 @@ fn bare_world_is_still_an_ordinary_name_not_a_world_decl() {
 // reader now REJECTS it (was a silent bogus `(Qty.of (f) (Unit.of g))` fold, because `g(` is a call-followed
 // name, never a unit). name/call/member-magnitude quantities stay goldened (ml/242-245); the change is to
 // the `;`-optional claim (via declining the unit-suffix on a call-followed name), not the quantity sugar.
+// Corpus pins the language rule: `f(); g()`=ml/432-semicolon-top-level-folds (parses to two forms),
+// `f() g()`=ml/476-ambiguous-toplevel-juxtaposition-rejected (a DECLINE case — the ambiguity is rejected).
+// This Rust test additionally asserts the diagnostic SUGGESTS `;` (implementation-quality, stays Rust).
 #[test]
 fn top_level_semicolon_separates_and_ambiguous_juxtaposition_is_rejected() {
     // `;` SEPARATES top-level expressions: `f(); g()` folds a stmt-level `(do …)` the root splices flat.
