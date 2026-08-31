@@ -576,3 +576,18 @@
   (call   main (: 3.4028235e38 Float64))
   (output (: #tuple(340282349999999991754788743781432688640.0 1) (Tuple Float64 Int64)))
   (live-objects known-leak))
+
+; The hex sibling of the bare-overflow malformed literal: `0xFFFFFFFFFFFFFFFF` is a VALID hex radix (unlike
+; the bad-radix cases) but its value (2^64-1) overflows the signed Int64 a bare literal defaults to, so it is
+; a malformed literal (CDZ0201) — a bare literal is signed even when the bits would fit unsigned-64. And the
+; bare-overflow check must NOT misfire on an EXPLICIT UInt64 annotation: `(: 18446744073709551615 (UInt 64))`
+; = UInt64.max is in range and runs. (Migrated from rcdzc a_bare_literal_past_int64_is_malformed_not_out_of_range;
+; the decimal bare-overflow / Int64.max-fits faces are the existing 01 cases above, the explicit-width CDZ0302
+; control is 06-numeric-model's over-width cases.)
+(case "a hex bare literal that overflows signed Int64 is a malformed literal"
+  (input  0xFFFFFFFFFFFFFFFF)
+  (error  CDZ0201))
+
+(case "an explicit UInt64-max annotation is in range and runs (the bare-overflow check does not misfire)"
+  (input  (: 18446744073709551615 (UInt 64)))
+  (output (: 18446744073709551615 UInt64)))
