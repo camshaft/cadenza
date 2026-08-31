@@ -956,6 +956,8 @@ pub fn run_reducer_bytes(
 ///
 /// ```text
 /// 1. call `<iface>#encode-quoted() -> list<u8>` -> the canonical binary-AST bytes B of (quote E);
+/// 1b. DECODE-VALIDITY (operator #6992): the harness INDEPENDENTLY asserts B decodes cleanly with the shared
+///    Rust codec; a decode Err = a malformed emit BUG, hard-failed with its DecodeError (never a silent pass);
 /// 2. POSITIVE trial: `<iface>#decode-check(B) -> bool` MUST return true (the round-trip identity
 ///    decode(encode(quote E)) == quote E);
 /// 3. NEGATIVE trial (the anti-const-fold VERIFICATION): `<iface>#decode-check(corrupt(B))` MUST return
@@ -998,6 +1000,24 @@ pub fn run_quote_roundtrip(component_bytes: &[u8], iface: &str, opts: &RunOpts) 
     let bytes = val_list_u8(&enc_res[0])?;
     if bytes.is_empty() {
         bail!("quote-roundtrip: encode-quoted() returned no bytes");
+    }
+
+    // DECODE-VALIDITY invariant (operator directive #6992, slice-3 — the quote/Ast round-trip path). The
+    // harness INDEPENDENTLY asserts the compiler-emitted binary-AST B decodes cleanly with the SHARED Rust
+    // codec (`cadenza_syntax::codec` re-exports the one canonical `cadenza_ast` decoder). A decode `Err` means
+    // `encode-quoted()` emitted a MALFORMED / mismatched cadenza-AST — an Ast.encode(quote E) emit BUG — which
+    // must FAIL LOUDLY with the specific `DecodeError`, never be masked as the quiet round-trip inequality the
+    // guest-side `decode-check` would otherwise report below. This is orthogonal to the VALUE-identity check:
+    // here we assert the bytes are well-formed binary-AST AT ALL; a decode Err is a real bug to surface + route
+    // to the binary-AST emit owner (corpus-as-spec). Shape mirrors v-corpus-harness's slices #7004/#7015.
+    if let Err(e) = cadenza_syntax::codec::decode_detailed(&bytes) {
+        bail!(
+            "quote-roundtrip DECODE-VALIDITY FAILED: encode-quoted() emitted {} byte(s) the shared binary-AST \
+             codec cannot decode ({e:?}) — a malformed/mismatched cadenza-AST from the compiler's \
+             Ast.encode(quote E). This is an emit bug (route to the binary-AST emit owner), NOT a round-trip \
+             value mismatch; a decode Err must never be masked as a silent inequality.",
+            bytes.len()
+        );
     }
 
     // 2. POSITIVE trial: decode-check(B) MUST be true (round-trip identity).
