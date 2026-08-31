@@ -42,22 +42,45 @@ pub fn encode_export_types(entries: &[(String, Arenas)]) -> Vec<u8> {
     cadenza_ast::codec::encode(&b.finish(root))
 }
 
-/// Decode the `KIND_EXPORT_TYPES` bytes back into export name → standalone type arena pairs — the inverse
-/// of [`encode_export_types`], read via the shared `cadenza_ast::codec`. Each returned `Arenas` is a fresh
-/// standalone arena whose ROOT is that export's `(ty …)` payload subtree (so a consumer grafts it directly).
-/// TOTAL: a malformed tree / wrong-shape form is skipped rather than failing the whole decode.
-pub fn decode_export_types(bytes: &[u8]) -> Vec<(String, Arenas)> {
-    let Some(a) = cadenza_ast::codec::decode(bytes) else {
-        return Vec::new();
-    };
+/// Decode the `KIND_EXPORT_TYPES` bytes, DISTINGUISHING a legitimately-ABSENT section from a PRESENT-but-
+/// MALFORMED one — the decode-validity contract (operator directive): a non-empty section that fails to
+/// decode, or whose root is not an `export-types` form, is a compiler BUG the caller must fail LOUD on,
+/// not silently degrade. EMPTY `bytes` → `Ok(vec![])`; non-empty that fails `codec::decode` → `Err`;
+/// decoded but wrong root → `Err`. The `Err` carries an actionable message. Twin of
+/// [`crate::result_types_wire::decode_result_types_checked`]; see the lenient [`decode_export_types`].
+pub fn decode_export_types_checked(bytes: &[u8]) -> Result<Vec<(String, Arenas)>, String> {
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let a = cadenza_ast::codec::decode_detailed(bytes).map_err(|e| {
+        format!(
+            "export-types section is present ({} bytes) but failed to decode ({e:?}) — the compiler \
+             emitted a malformed/mismatched binary AST (decode-validity bug), not a typeless program",
+            bytes.len()
+        )
+    })?;
     let Some(forms) = a.as_form(a.root, "export-types") else {
-        return Vec::new();
+        return Err(
+            "export-types section decoded but its root is not an `export-types` form — \
+             present-but-wrong-shape compiler output (decode-validity bug)"
+                .to_string(),
+        );
     };
-    forms
+    Ok(forms
         .to_vec()
         .iter()
         .filter_map(|&f| decode_one(&a, f))
-        .collect()
+        .collect())
+}
+
+/// Decode the `KIND_EXPORT_TYPES` bytes back into export name → standalone type arena pairs — the inverse
+/// of [`encode_export_types`], read via the shared `cadenza_ast::codec`. Each returned `Arenas` is a fresh
+/// standalone arena whose ROOT is that export's `(ty …)` payload subtree (so a consumer grafts it directly).
+/// LENIENT/TOTAL: a malformed section yields no entries. A consumer that must tell PRESENT-but-MALFORMED
+/// from legitimately-ABSENT (to fail loud per the decode-validity contract) uses
+/// [`decode_export_types_checked`] instead.
+pub fn decode_export_types(bytes: &[u8]) -> Vec<(String, Arenas)> {
+    decode_export_types_checked(bytes).unwrap_or_default()
 }
 
 fn decode_one(a: &Arenas, form: StructId) -> Option<(String, Arenas)> {
