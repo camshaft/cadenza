@@ -6525,76 +6525,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tagged_template_holes_round_trip() {
-        // B2: `{expr}` interpolation holes. The body splits into chunks at hole boundaries — a body
-        // with N holes has N+1 chunks (some empty) — and each hole is an ordinary parsed expression.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def m(x) = jsx\"a{x}b\"").arenas),
-            "(def (m x) (tagged-template jsx (chunks \"a\" \"b\") (holes x)))"
-        );
-        assert_eq!(
-            assert_roundtrip("def m(x) = jsx\"a{x}b\"", 80),
-            "def m(x) = jsx\"a{x}b\""
-        );
-        // Leading/trailing empty chunks (a hole at each edge) → chunks ["", "+", ""].
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def m(x, y) = t\"{x}+{y}\"").arenas),
-            "(def (m x y) (tagged-template t (chunks \"\" \"+\" \"\") (holes x y)))"
-        );
-        assert_eq!(
-            assert_roundtrip("def m(x, y) = t\"{x}+{y}\"", 80),
-            "def m(x, y) = t\"{x}+{y}\""
-        );
-        // A hole holds ANY expression (parsed by the full ML reader).
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def m(a, b) = t\"sum={a + b * 2}!\"").arenas),
-            "(def (m a b) (tagged-template t (chunks \"sum=\" \"!\") (holes (+ a (* b 2)))))"
-        );
-        assert_eq!(
-            assert_roundtrip("def m(a, b) = t\"sum={a + b * 2}!\"", 80),
-            "def m(a, b) = t\"sum={a + b * 2}!\""
-        );
-        // `{{` / `}}` are LITERAL braces in a chunk, not holes — they round-trip (chunk holds `{`/`}`).
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def m(x) = t\"lit {{brace}} {x} end\"").arenas),
-            "(def (m x) (tagged-template t (chunks \"lit {brace} \" \" end\") (holes x)))"
-        );
-        assert_eq!(
-            assert_roundtrip("def m(x) = t\"lit {{brace}} {x} end\"", 80),
-            "def m(x) = t\"lit {{brace}} {x} end\""
-        );
-        // A hole may contain a STRING literal with braces — a raw `"` inside the hole opens/closes it, so
-        // its braces don't miscount (`g("}")` is one hole holding the string `"}"`).
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def m() = t\"x{g(\"}\")}y\"").arenas),
-            "(def (m) (tagged-template t (chunks \"x\" \"y\") (holes (g \"}\"))))"
-        );
-        // A hole's string may contain an ESCAPED quote — `\"` must NOT toggle the hole's string-mode
-        // (PR #409): `g("\"}")` is one hole holding the string `"}` (an escaped-quote char then a brace);
-        // the `}` inside that string must not close the hole. (Source `t"x{g("\"}")}y"`.)
-        assert_eq!(
-            sexpr::print(&parser::read_ml("def m() = t\"x{g(\"\\\"}\")}y\"").arenas),
-            "(def (m) (tagged-template t (chunks \"x\" \"y\") (holes (g \"\\\"}\"))))"
-        );
-        // A backslash-escaped brace `\{` / `\}` is an ALTERNATE spelling of a literal brace: it reads to
-        // the SAME chunk as the `{{` / `}}` doubling (chunk holds `{`/`}`), and the printer CANONICALIZES
-        // it to the doubled form. So `\{`/`\}` input is not byte-preserved — it normalizes to `{{`/`}}` —
-        // but the normalization is a FIXED POINT (re-reading the output re-prints identically). Pin both:
-        // the two spellings read to one arena, and the output is idempotent.
-        assert_eq!(
-            sexpr::print(&parser::read_ml("t\"a\\{b\\}c\"").arenas),
-            sexpr::print(&parser::read_ml("t\"a{{b}}c\"").arenas),
-            "backslash-escaped and doubled braces read to the same literal-brace chunk"
-        );
-        assert_eq!(
-            sexpr::print(&parser::read_ml("t\"a\\{b\\}c\"").arenas),
-            "(tagged-template t (chunks \"a{b}c\") (holes))"
-        );
-        // The escaped spelling canonicalizes to the doubled form, which is then a fixed point.
-        assert_eq!(assert_roundtrip("t\"a\\{b\\}c\"", 80), "t\"a{{b}}c\"");
-        assert_eq!(assert_roundtrip("t\"a{{b}}c\"", 80), "t\"a{{b}}c\"");
-    }
+    // `tagged_template_holes_round_trip` (B2: `{expr}` interpolation holes — a body with N holes has N+1
+    // chunks, each hole an ordinary parsed expression) MIGRATED to the spec/syntax corpus (inc-6 batch-22):
+    //   * ml/173-tagged-template-single-hole `jsx"a{x}b"`→`(chunks "a" "b") (holes x)`.
+    //   * ml/174-tagged-template-empty-edge-chunks `t"{x}+{y}"`→`(chunks "" "+" "") (holes x y)` (a hole at
+    //     each edge → leading/trailing empty chunk).
+    //   * ml/175-tagged-template-hole-with-expr `t"sum={a + b * 2}!"`→`(holes (+ a (* b 2)))` (a hole holds
+    //     ANY parsed expression).
+    //   * ml/176-tagged-template-literal-braces `t"lit {{brace}} {x} end"`→ chunk `"lit {brace} "` (`{{`/`}}`
+    //     are LITERAL braces, not holes).
+    //   * ml/177-tagged-template-string-in-hole `t"x{g("}")}y"`→`(holes (g "}"))` (a raw `"` in the hole
+    //     opens/closes a string so its `}` does not miscount).
+    //   * ml/178-tagged-template-escaped-quote-in-hole `t"x{g("\"}")}y"`→`(holes (g "\"}"))` (PR #409: an
+    //     escaped `\"` must NOT toggle the hole's string-mode).
+    //   * ml/179-tagged-template-backslash-brace-canonicalizes `t"a\{b\}c"`→ tree `(chunks "a{b}c") (holes)`,
+    //     format.cdz `t"a{{b}}c"` (the `\{`/`\}` spelling canonicalizes to the doubled form — a fixed point);
+    //     ml/180-tagged-template-doubled-braces `t"a{{b}}c"` (the same tree, already-canonical, idempotent).
+    // The `print/sexpr::print((tagged-template …))` oracles are subsumed by these ml cases' fmt goldens.
 
     // (`pragma_sugar_round_trips` MIGRATED with the pragma-surface batch above — see the inc-6 batch-20
     // breadcrumb: ml/167-pragma-plain-bare-name, ml/168-pragma-plain-ctor-application, ml/169-pragma-in-

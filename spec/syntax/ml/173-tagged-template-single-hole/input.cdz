@@ -1,0 +1,1 @@
+def m(x) = jsx"a{x}b"
