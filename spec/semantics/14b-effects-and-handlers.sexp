@@ -12889,7 +12889,7 @@
 ;    double it (host-composition invariant, §4.4). The decline is CLEAN: it never leaks an internal `#eff`
 ;    specialization name or a `$s` state-param name (the message-pin below witnesses the clean text).
 (case
-  "a multi-shot continuation spanning a host call declines cleanly, never doubling the host call"
+  "a multi-shot continuation spanning a host call is rejected, never doubling the host call"
   (doc
     "The leading `Amb.flip` gets continuation `C = (+ [] (Ask.ask))`; the multi-shot arm `(+ (resume 1
            s) (resume 2 s))` would splice `C` twice, running the host-delegated `Ask.ask` once per resume — a
@@ -12909,7 +12909,7 @@
   (error CDZ0408))
 
 (case
-  "a multi-shot continuation reaching an outer handler's effect declines cleanly, never doubling it"
+  "a multi-shot continuation reaching an outer handler's effect is rejected, never doubling it"
   (doc
     "An inner multi-shot `Amb` handler nested in an outer `Ctr` handler; the body `(+ (Ctr.tick)
            (Amb.flip))`. The `Amb.flip` continuation is spliced twice by `(+ (resume 1 s) (resume 2 s))`,
@@ -12932,7 +12932,7 @@
   (error CDZ0408))
 
 (case
-  "a multi-shot continuation reaching an outer effect via an if branch declines cleanly"
+  "a multi-shot continuation reaching an outer effect via an if branch is rejected"
   (doc
     "The conditional-path companion: a multi-shot arm whose re-run continuation reaches an outer-handler
            effect through an `if` BRANCH (not a strict operand). `(if (< (Amb.flip) 5) (Ctr.tick) 99)` — re-
@@ -12958,7 +12958,7 @@
   (error CDZ0408))
 
 (case
-  "a multi-shot continuation spanning a host call inside a do declines cleanly"
+  "a multi-shot continuation spanning a host call inside a do is rejected"
   (doc
     "The do-sequence companion: a multi-shot arm whose continuation spans a HOST call inside a `(do …)`.
            `(do (Log.emit (Amb.flip)) 7)` under a multi-shot `flip` arm — re-running the continuation per
