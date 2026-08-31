@@ -1,0 +1,10 @@
+match x with
+  | A => (
+    if p then
+      1
+    else
+      match x with
+      | C => 2
+      | _ => 3
+  )
+  | B => 9

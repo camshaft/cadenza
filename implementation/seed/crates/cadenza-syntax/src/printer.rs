@@ -8583,60 +8583,22 @@ mod tests {
         assert!(out.starts_with("some-function(\n"), "got:\n{out}");
     }
 
-    #[test]
-    fn non_last_match_arm_if_let_body_prints_bare_not_parenthesized() {
-        // A NON-LAST match-arm body that is an `if`/`let`/`fn` (whose trailing sub-expression ends in a
-        // closing token, not an open `|`-arm list) is delimited by the arm's own `|` and must NOT be
-        // parenthesized — the pervasive `(if …)`/`(let …)` match-arm parens the operator flagged
-        // (hm-collect.cdz). `assert_roundtrip` proves the bare form re-parses identically + is idempotent.
-        let out = assert_roundtrip(
-            "match x with | A => if x > 0 then 1 else 2 | B => let y = x in y + 1 | C => 9",
-            200,
-        );
-        assert!(
-            out.contains("| A => if x > 0 then 1 else 2"),
-            "a non-last `if` arm body prints bare (no wrapping parens), got:\n{out}"
-        );
-        assert!(
-            // The multi-line `let` body breaks to its own indented line under `=>` (operator follow-on),
-            // still BARE (no wrapping parens).
-            out.contains("| B =>\n    let y = x in"),
-            "a non-last `let` arm body prints bare (no wrapping parens), got:\n{out}"
-        );
-        assert!(
-            !out.contains("=> (if") && !out.contains("=> (let"),
-            "no redundant `( … )` wrapping an if/let arm body, got:\n{out}"
-        );
-    }
-
-    #[test]
-    fn non_last_match_arm_nested_match_body_keeps_parens_so_it_round_trips() {
-        // The CORRECTNESS boundary of the above: a non-last arm body whose TRAILING sub-expression IS an
-        // open `|`-arm list (a nested `match`/`handle`, possibly under `if`-else / `let`-body / `@`) MUST
-        // parenthesize — else the following `| pat` is absorbed into that inner arm list on re-parse. Two
-        // cases: a bare nested match, and an `if` whose `else` is a match (tail-reachable arm form).
-        // The INPUT must parenthesize the nested match (else `| B` binds to the INNER match — that
-        // ambiguity is exactly why the printer must re-emit the parens); the printer keeps them.
-        let nested = assert_roundtrip(
-            "match x with | A => (match x with | C => 1 | _ => 2) | B => 3",
-            200,
-        );
-        assert!(
-            // Parenthesized arm body (operator seq-95): `=> (` on the arm line, body indented, `)`
-            // dedented; the nested match KEEPS its parens.
-            nested.contains("=> (\n    match x with"),
-            "a non-last nested-match arm body keeps its parens, got:\n{nested}"
-        );
-        // `if` whose else-tail is a match — must wrap (the else-match would swallow the next `|`).
-        let if_else_match = assert_roundtrip(
-            "match x with | A => if p then 1 else (match x with | C => 2 | _ => 3) | B => 9",
-            200,
-        );
-        assert!(
-            if_else_match.contains("=> (\n    if p then"),
-            "a non-last `if` whose else-tail is a match keeps parens, got:\n{if_else_match}"
-        );
-    }
+    // Two non-last-match-arm-body paren-vs-bare layout tests MIGRATED to the spec/syntax corpus (inc-6
+    // batch-29). The paren-vs-bare decision is STRUCTURAL (whether the arm body's TRAILING sub-expression
+    // is an open `|`-arm list), verified width-invariant at the corpus width:
+    //   * `non_last_match_arm_if_let_body_prints_bare_not_parenthesized` (a non-last `if`/`let` arm body,
+    //     whose trailing sub-expr ends in a closing token, is delimited by the arm's own `|` and must NOT
+    //     be parenthesized) → ml/209-non-last-arm-if-let-bare `match x with | A => if x > 0 then 1 else 2
+    //     | B => let y = x in y + 1 | C => 9` — format.cdz: `| A => if …` bare, `| B =>`⏎`    let y = x in`
+    //     ⏎`    y + 1` bare multi-line, no `=> (if`/`=> (let`.
+    //   * `non_last_match_arm_nested_match_body_keeps_parens_so_it_round_trips` (the correctness boundary:
+    //     a non-last arm body whose TRAILING sub-expr IS an open `|`-arm list — a nested match, or an `if`
+    //     whose else-tail is a match — MUST parenthesize, else the next `| pat` is absorbed) →
+    //     ml/210-non-last-arm-nested-match-parens `| A => (match …) | B => 3` and
+    //     ml/211-non-last-arm-if-else-match-parens `| A => if p then 1 else (match …) | B => 9` — each
+    //     format.cdz keeps the seq-95 `=> (`⏎`    …`⏎`  )` parens around the arm body.
+    // (`a_bitwise_or_arm_body_parenthesizes…` below STAYS Rust — its bare-`|` arm body is arena-sourced,
+    // unwritable in the ML surface.)
 
     #[test]
     fn a_bitwise_or_arm_body_parenthesizes_so_the_bare_pipe_does_not_start_a_new_arm() {
