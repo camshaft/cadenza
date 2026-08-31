@@ -106,8 +106,13 @@ match (Wasm.SmallStep.runSteps fuel cfg).result with
 - **W4 — self-contained scalar/arith subset**: end-to-end differential over zero-import core modules
   (align with compiler-ml's `run-emitted` set); widen verified `ScalarTy` spellings from real emits.
 - **W5+ — runtime-importing cases**: heap/collection cases import the cdz-runtime (`"heap" …`); satisfy those
-  imports with clean-room Lean host functions (see "Running imported runtime functions" below). The deep end;
-  scalars first — but FEASIBLE, not a hard ceiling.
+  imports with clean-room Lean host functions (see "Running imported runtime functions" below), with the host
+  state refcount-and-liveness-aware from the start. The deep end; scalars first — but FEASIBLE, not a ceiling.
+- **W6 — Perceus soundness (dynamic)**: the rc+liveness heap host makes every heap-case run also witness
+  no-UAF / no-double-free / no-leak (trap on freed access/double-drop; assert empty live-set at end). Nearly
+  free given the W5 host; an independent mirror of the debug-counters runtime.
+- **W7 — Perceus soundness (symbolic, aspirational capstone)**: prove no-UAF/no-double-free/no-leak FOR ALL
+  INPUTS via talos's WP + a `HostContract` refcount invariant. Theorem-shaped → co-owned w/ v-lean-oracle.
 
 ## Running imported runtime functions — the host API (W5+ feasibility)
 
@@ -126,11 +131,38 @@ real imports first-class:
   runtime-host spec rather than a specific implementation.
 
 So the **W5+ path** is: implement the cdz-runtime `"heap"` interface as clean-room Lean `HostFn`s modeling its
-**observable, value-level** semantics from the spec (`deterministic-value-form.md` + the heap/collections
-semantics) — **not** the Rust byte layout / Perceus refcounts. The real cost is the memory ABI (how handles
-and values sit in linear memory). **Do NOT** satisfy the imports by linking the *real* runtime wasm: that
-would make the oracle share the runtime with rcdzc, destroying the independence the differential depends on
-(a runtime bug would be invisible to both sides). Native host functions keep the oracle independent.
+**observable** semantics from the spec (`deterministic-value-form.md` + the heap/collections semantics). The
+real cost is the memory ABI (how handles and values sit in linear memory). **Do NOT** satisfy the imports by
+linking the *real* runtime wasm: that would make the oracle share the runtime with rcdzc, destroying the
+independence the differential depends on (a runtime bug would be invisible to both sides). Native host
+functions keep the oracle independent.
+
+## Perceus soundness — a verification DIMENSION the heap host must capture (operator, 2026-08-31)
+
+The emitted program manages memory by *calling* the runtime's `dup`/`drop`/`alloc`/access as imports — so the
+heap host IS the natural place to verify the emitted dup/drop discipline is memory-sound: **no
+use-after-free, no double-free, no leaks.** DESIGN CONSTRAINT on the W5 heap host: make its state `α`
+**refcount-and-liveness-aware from the start**, so soundness is a byproduct of every heap-case run, not a
+bolt-on:
+
+- `α` : `handle → (value, refcount, live | freed)` (+ Perceus reuse tokens). `alloc`→rc 1; `dup`→rc++;
+  `drop`→rc-- and at 0 mark `freed` + recursively drop children.
+- **UAF**: any access/dup/drop of a `freed`/unknown handle ⇒ `HostResult.Trap` ⇒ the case surfaces `.trap`.
+- **Double-free**: `drop` of an already-`freed`/rc-0 handle ⇒ `.Trap`.
+- **Leak**: `runSteps` returns the final store; at program end assert the live-set is empty — any still-`live`
+  handle is a leak.
+- **⚠ hardest bit = REUSE SPECIALIZATION** (Perceus in-place reuse when rc==1 + reuse tokens threaded through
+  alloc): must be modeled faithfully from the spec — a reuse bug is precisely a subtle UAF/aliasing class, so
+  it is the highest-value thing to get right.
+
+Two strengths: (a) **dynamic** — per-input, on corpus cases: nearly free once the heap host tracks
+rc+liveness; an INDEPENDENT clean-room mirror of the fleet's debug-counters runtime (`assert_node_live` +
+`live-objects` census), so an oracle-vs-debug-runtime divergence is a real finding
+(dup/drop-insertion bug | runtime bug | spec ambiguity). (b) **symbolic** — no-UAF/no-double-free/no-leak
+FOR ALL INPUTS via talos's WP calculus + a `HostContract` encoding the refcount invariant: the aspirational
+capstone (research-grade), theorem-shaped ⇒ co-owned with v-lean-oracle's WP layer, a second theorem
+dimension alongside value-equivalence. Sequences after W5 (heap host); capturing it now makes rc+liveness a
+W5 design constraint.
 
 ## Gate coverage
 
