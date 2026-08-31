@@ -4059,7 +4059,8 @@ c")))
         (match node ((Ast.List es) (List.fold es 1 (fn (acc e) (+ acc (count e))))) (_ 1)))
       (def (main) (count (quote (f 1))))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 3 Int64)))
 
 ; --- eval drives CONTROL FLOW reified from quoted source (the Ast.Bool integration faces) ---------
 ; The Ast.Bool cases above pin the leaf (quote/match/eval/encode/print of a bare boolean); these pin

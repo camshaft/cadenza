@@ -3374,7 +3374,7 @@ pass	a record-returning closure alongside a parameterized plain export — the p
 pass	a recursion carrying a Bytes parameter does a fallible read in its base arm
 pass	a recursion carrying a List parameter does a fallible read in its base arm
 pass	a recursion-driven host-call sequence consumes one response row per iteration in order
-pass	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
+todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
 pass	a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and counts folds
 pass	a recursive HOF applies a bare operator passed as its function argument
