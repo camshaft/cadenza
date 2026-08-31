@@ -550,7 +550,22 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     // `<iface>#encode-quoted()` → threads the bytes into `#decode-check(bytes)` (assert true) + a
     // corrupt-bytes negative trial (assert false/trap). One-line verdict; a failed trial propagates an Err → exit 1.
     if let Some(iface) = &cli.quote_roundtrip {
-        crate::run_quote_roundtrip(&component_bytes, iface, &opts)?;
+        let outcome = crate::run_quote_roundtrip(&component_bytes, iface, &opts);
+        // `--emit-verdict PATH` (the inc-4 quote-gate-baseline harvest, parallel to the `--grade` path):
+        // CLASSIFY the round-trip and write the coarse tag — `pass` (both trials held) / `fail` (a trial
+        // failed OR the round-trip errored) — then ALWAYS exit 0 (classify, not compare — a regressed case
+        // emits its new verdict rather than failing the derivation, exactly like `--grade --emit-verdict`).
+        // A compile-DECLINED (quote-reify gap) case never reaches here — it has no emit.wasm, so the
+        // verdict derivation records `todo` without calling this. The whole-corpus regenerator harvests
+        // these; the fail-count guard (v-corpus-harness #6835) rejects a fail-SPIKE (nix starvation), so a
+        // rare genuine `fail` is a real round-trip regression, not build-phase contamination.
+        if let Some(vpath) = &cli.emit_verdict {
+            let tag = if outcome.is_ok() { "pass" } else { "fail" };
+            std::fs::write(vpath, tag)
+                .map_err(|e| anyhow::anyhow!("write verdict {}: {e}", vpath.display()))?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        outcome?;
         println!("quote-roundtrip: PASS");
         return Ok(ExitCode::SUCCESS);
     }
