@@ -5046,32 +5046,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn const_force_eval_expression_round_trips_to_a_fixed_point() {
-        // `const(expr)` is the compile-time force-eval EXPRESSION form: an ordinary application of the
-        // head name `const` to one argument, so it lowers to the homoiconic list `(const EXPR)` — an
-        // `Ast.List` headed by `Name "const"`, NOT a bespoke codec node (v-inference/force-eval resolve
-        // the head). The ML surface must reach a FIXED POINT `ml(ml(x)) == ml(x)` for it, across the
-        // expression shapes a user writes.
-        for src in [
-            "const(x)",
-            "const(f(a))",
-            "const(1 + 2)",
-            "const(const(x))",
-            "y + const(x)",
-        ] {
-            assert_roundtrip(src, 80);
-        }
-        // The lowering is the plain `(const EXPR)` list, so the s-expr surface round-trips it for free
-        // (no codec change) — this pins that the ML surface produces exactly that homoiconic shape.
-        let parsed = parser::read_ml("const(f(a))");
-        assert!(parsed.ok(), "parse const(f(a)): {:?}", parsed.errors);
-        let sexp = sexpr::print(&parsed.arenas);
-        assert!(
-            sexp.contains("(const (f a))"),
-            "const(expr) lowers to the homoiconic list, got: {sexp}"
-        );
-    }
+    // `const_force_eval_expression_round_trips_to_a_fixed_point` (the `const(expr)` compile-time
+    // force-eval EXPRESSION form → homoiconic list `(const EXPR)`, NOT a bespoke codec node) MIGRATED to
+    // the spec/syntax corpus (inc-6): ml/49-const-force-eval-call (`const(f(a))` → `(const (f a))`) +
+    // ml/50-const-force-eval-infix (`y + const(x)` → `(+ y (const x))`, showing it composes under infix).
+    // Each tree.sexp pins the homoiconic `(const …)` shape the test asserted via sexpr::print; the
+    // `ml(ml(x)) == ml(x)` fixed-point ← the corpus's format-absent fmt-idempotence property.
+    // (`const_expression_is_distinct_from_the_const_param_modifier` below STAYS Rust — it is a
+    // sexp→ml→sexp cross-surface disambiguation oracle, out of scope for the parse-tree/fmt corpus.)
 
     #[test]
     fn const_expression_is_distinct_from_the_const_param_modifier() {
@@ -5093,48 +5075,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn import_alias_and_named_list_forms_round_trip() {
-        // The whole-module ALIAS import `import alias from "path"` -> `(import "path" alias)` (bare-name
-        // third element — the linker's module-alias discriminant), distinct from the named-list
-        // `import { a, b } from "path"` -> `(import "path" (a b))` (list third element). Both share the
-        // `from "path"` tail and round-trip through the ML surface; the alias composes with member
-        // projection `alias.member` — the shape a multi-contract guest uses to disambiguate two modules
-        // that export the same name.
-        assert_roundtrip("import kv-put from \"kv-put\"", 80);
-        assert_roundtrip("import bput from \"blob-put\"", 80);
-        assert_roundtrip("import { get, put } from \"kv\"", 80);
-        // Per-name RENAME `import { orig as alias, … }` -> `(import "path" ((as orig alias) …))`: bind a
-        // single export under a distinct local name (a reducer imports each contract's `descriptor`
-        // under a unique name), mixed with plain names.
-        assert_roundtrip("import { descriptor as foo, other } from \"path\"", 80);
-        assert_roundtrip("import { descriptor as bput-desc } from \"blob-put\"", 80);
-        let rename = parser::read_ml("import { descriptor as foo, other } from \"m\"");
-        assert!(rename.ok(), "parse rename import: {:?}", rename.errors);
-        assert!(
-            sexpr::print(&rename.arenas).contains("(import \"m\" ((as descriptor foo) other))"),
-            "per-name rename lowers to an (as orig alias) element, got: {}",
-            sexpr::print(&rename.arenas)
-        );
-        let full = "import bput from \"blob-put\"\n\nimport bget from \"blob-get\"\n\n\
-                    def main() = bput.descriptor().id == bget.descriptor().id\n\nexport { main }";
-        assert_roundtrip(full, 80);
-        // The alias lowers to the bare-NAME third element; the named-list to a LIST — the two forms the
-        // linker (resolve/link) tells apart.
-        let alias = parser::read_ml("import kv from \"kv-put\"");
-        assert!(alias.ok(), "parse alias import: {:?}", alias.errors);
-        assert!(
-            sexpr::print(&alias.arenas).contains("(import \"kv-put\" kv)"),
-            "alias import lowers to a bare-name third element, got: {}",
-            sexpr::print(&alias.arenas)
-        );
-        let named = parser::read_ml("import { a, b } from \"m\"");
-        assert!(
-            sexpr::print(&named.arenas).contains("(import \"m\" (a b))"),
-            "named-list import lowers to a name-list third element, got: {}",
-            sexpr::print(&named.arenas)
-        );
-    }
+    // `import_alias_and_named_list_forms_round_trip` (the three import third-element shapes the linker
+    // tells apart) MIGRATED to the spec/syntax corpus (inc-6):
+    //   * ml/46-import-alias-whole-module — `import bput from "blob-put"` → `(import "blob-put" bput)`
+    //     (whole-module ALIAS: bare-name third element).
+    //   * ml/47-import-named-list — `import { get, put } from "kv"` → `(import "kv" (get put))`
+    //     (named-list: LIST third element).
+    //   * ml/48-import-per-name-rename — `import { descriptor as foo, other } from "m"` →
+    //     `(import "m" ((as descriptor foo) other))` (per-name RENAME `(as orig alias)`, mixed w/ plain).
+    // Each tree.sexp pins the exact third-element shape the test asserted via sexpr::print; the
+    // round-trip idempotence ← the corpus's format-absent fmt-idempotence property.
 
     /// Parse ML, print it, re-parse — the printed form must yield a structurally-equal arena, and
     /// printing again must be byte-identical (idempotence).

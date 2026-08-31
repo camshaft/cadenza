@@ -42,6 +42,11 @@ pass	ml/42-match-already-lowered-noop
 pass	ml/43-match-nested-bottom-up
 pass	ml/44-world-deeply-nested-aggregate
 pass	ml/45-world-headed-non-decl-fallback
+pass	ml/46-import-alias-whole-module
+pass	ml/47-import-named-list
+pass	ml/48-import-per-name-rename
+pass	ml/49-const-force-eval-call
+pass	ml/50-const-force-eval-infix
 pass	sexp/01-integer
 pass	sexp/02-arith-precedence
 pass	sexp/03-let
