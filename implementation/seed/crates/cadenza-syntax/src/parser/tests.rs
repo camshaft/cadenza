@@ -947,78 +947,18 @@ fn one_leaf_for_repeated_name() {
     assert_eq!(a.leaves.len(), 1);
 }
 
-#[test]
-fn quantity_literal_desugars() {
-    use crate::sexpr;
-    // A numeric literal followed by a bare unit name is a quantity literal: `5 feet` desugars to
-    // the same arena as the canonical `(Qty.of 5 (Unit.of #"feet"))`.
-    let a = parse_ok("5 feet");
-    assert_eq!(sexpr::print(&a), r#"((. Qty of) 5 ((. Unit of) #"feet"))"#);
-    // A float value works the same way.
-    let f = parse_ok("5.0 meter");
-    assert_eq!(
-        sexpr::print(&f),
-        r#"((. Qty of) 5.0 ((. Unit of) #"meter"))"#
-    );
-    // The literal binds TIGHTER than every operator, so `5 feet / 1 second` is a rate — the
-    // division of two quantity literals — the reading the surface is designed to give.
-    let rate = parse_ok("5 feet / 1 second");
-    assert_eq!(
-        sexpr::print(&rate),
-        r#"(/ ((. Qty of) 5 ((. Unit of) #"feet")) ((. Qty of) 1 ((. Unit of) #"second")))"#
-    );
-    // It composes as an ordinary operand: a call argument, and an addend.
-    assert_eq!(
-        sexpr::print(&parse_ok("dist(5 feet)")),
-        r#"(dist ((. Qty of) 5 ((. Unit of) #"feet")))"#
-    );
-}
+// `quantity_literal_desugars` (a numeric literal + bare unit name is a quantity literal `(Qty.of n (Unit.of
+// #unit))`, binding tighter than every operator) MIGRATED to the spec/syntax corpus (inc-6): ml/80-quantity-
+// concise-int `5 feet`, ml/81-quantity-concise-decimal `5.0 meter`, ml/82-quantity-rate-division `5 feet / 1
+// second`→`(/ (Qty.of 5 …) (Qty.of 1 …))`, ml/84-quantity-in-call-arg `dist(5 feet)`.
 
-#[test]
-fn compound_unit_desugars_on_glued_operators() {
-    use crate::sexpr;
-    // COMPOUND / RATE units (operator BUG #51): a unit magnitude followed by a GLUED `/`/`*`/`^`
-    // extends the UNIT into a composite (bare `/`/`*`/`^` between unit operands — the shape
-    // `eval::unit_of` composes + the printer round-trips), so `59 GiB/s` is a RATE unit, not a
-    // division by an unbound `s`. v-inference confirmed the shape (atomic quotients compose, no
-    // unit_families change).
-    // A glued `/` → a rate unit `(Qty.of 59 (/ (Unit.of GiB) (Unit.of s)))`.
-    assert_eq!(
-        sexpr::print(&parse_ok("59 GiB/s")),
-        r#"((. Qty of) 59 (/ ((. Unit of) #"GiB") ((. Unit of) #"s")))"#
-    );
-    // `^` binds TIGHTER than `/`: `m/s^2` = `m/(s^2)` (the physical reading), NOT `(m/s)^2`.
-    assert_eq!(
-        sexpr::print(&parse_ok("9 m/s^2")),
-        r#"((. Qty of) 9 (/ ((. Unit of) #"m") (^ ((. Unit of) #"s") 2)))"#
-    );
-    // `*` and `/` compose left-to-right: `kg*m/s^2` = `(kg*m)/(s^2)` (a newton).
-    assert_eq!(
-        sexpr::print(&parse_ok("3 kg*m/s^2")),
-        r#"((. Qty of) 3 (/ (* ((. Unit of) #"kg") ((. Unit of) #"m")) (^ ((. Unit of) #"s") 2)))"#
-    );
-    // A bare `^` exponent on a single unit: `m^2`.
-    assert_eq!(
-        sexpr::print(&parse_ok("10 m^2")),
-        r#"((. Qty of) 10 (^ ((. Unit of) #"m") 2))"#
-    );
-    // GLUE is the disambiguator: a SPACED `/ 2` or `/ x` stays ARITHMETIC (a division of the
-    // quantity), NOT a unit — only the ordinary infix loop handles it.
-    assert_eq!(
-        sexpr::print(&parse_ok("59 GiB / 2")),
-        r#"(/ ((. Qty of) 59 ((. Unit of) #"GiB")) 2)"#
-    );
-    assert_eq!(
-        sexpr::print(&parse_ok("59 GiB / x")),
-        r#"(/ ((. Qty of) 59 ((. Unit of) #"GiB")) x)"#
-    );
-    // A glued `/` before a NUMBER is arithmetic, not a unit (`GiB/2` divides): the right operand of a
-    // unit `/` must be a NAME.
-    assert_eq!(
-        sexpr::print(&parse_ok("59 GiB/2")),
-        r#"(/ ((. Qty of) 59 ((. Unit of) #"GiB")) 2)"#
-    );
-}
+// `compound_unit_desugars_on_glued_operators` (a unit magnitude + GLUED `/`/`*`/`^` extends the UNIT into a
+// composite; GLUE is the disambiguator — a spaced `/` or a glued-`/`-before-a-NUMBER stays arithmetic) MIGRATED
+// to the spec/syntax corpus (inc-6 batch-86): rate `59 GiB/s`=ml/85-quantity-compound-rate-per, accel `9 m/s^2`
+// (`^` tighter than `/`)=ml/86-quantity-compound-accel, force `3 kg*m/s^2`=ml/87-quantity-compound-force; new —
+// ml/482-quantity-single-unit-exponent `10 m^2`→`(Qty.of 10 (^ (Unit.of m) 2))`, ml/483-quantity-spaced-slash-
+// is-arithmetic `59 GiB / 2`→`(/ (Qty.of 59 (Unit.of GiB)) 2)` (spaced → arithmetic), ml/484-quantity-glued-
+// slash-before-number-is-arithmetic `59 GiB/2` (a unit `/`'s RHS must be a NAME, so `/2` divides).
 
 #[test]
 fn compound_unit_node_spans_cover_the_whole_unit_expression() {
