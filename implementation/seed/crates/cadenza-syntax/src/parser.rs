@@ -7722,6 +7722,12 @@ impl<'a> Parser<'a> {
     /// `expr`) so a type position admits `->` and application without also admitting arithmetic or a
     /// bare `:` re-ascription. `A -> B -> C` right-associates to `(-> A (-> B C))`.
     fn type_ref(&mut self) -> StructId {
+        // I5: route to the iterative type driver when `read_ml` set the flag; the recursive body below
+        // stays for `read_ml_recursive` (the frozen oracle reference). Incremental — de-recurses one type
+        // layer at a time, staying byte-identical (the type differential oracle) each step.
+        if self.iterative {
+            return self.type_ref_iter();
+        }
         let start = self.cur_span();
         // `forall a b. TYPE` — an explicit generic binder heading a type. Binds the lowercase names
         // `a`/`b` so they resolve as bound type variables inside TYPE instead of erroring CDZ0101
@@ -7755,6 +7761,50 @@ impl<'a> Parser<'a> {
             self.list(vec![arrow, left, right], span)
         } else {
             left
+        }
+    }
+
+    /// Iterative type reader (I5) — the explicit-worklist replacement for the recursive [`Self::type_ref`]
+    /// (byte-identical, verified by the differential oracle). HYBRID STAGE: the arrow-LHS (a `forall`, or a
+    /// `type_operand` + `type_unit_infix` run) is read via the recursive helpers — so a nested generic
+    /// `List(List(…))` / paren-tuple / brace-record / `forall` body still recurses through a nested
+    /// `type_ref_iter` for now — but the `->` ARROW chain is de-recursed onto this worklist: `->` is
+    /// right-associative (`A -> B -> C` = `A -> (B -> C)`), so each right operand is read as a fresh
+    /// arrow-LHS and the chain folds on the way back, so a deep curried function type no longer grows the
+    /// native stack. The `->` head node is created BEFORE descending the right (matching the recursive
+    /// struct-id order). Remaining layers (operand postfix-application, paren-tuple, brace-record, forall,
+    /// unit-infix) convert onto the worklist in later increments.
+    fn type_ref_iter(&mut self) -> StructId {
+        // A pending `LHS ->` awaiting its right type (right-associative). `arrow` is the pre-created `->`
+        // name; `left` the arrow's left operand; `start` its span (for the folded node).
+        struct Arrow {
+            start: Span,
+            arrow: StructId,
+            left: StructId,
+        }
+        let mut pending: Vec<Arrow> = Vec::new();
+        loop {
+            let start = self.cur_span();
+            // Read one arrow-LHS: a head `forall`, else an operand + the unit-composition infix run.
+            let left = if self.at_keyword(Keyword::Forall) {
+                self.forall_type(start)
+            } else {
+                let l = self.type_operand();
+                self.type_unit_infix(l, 0, start)
+            };
+            if self.at(Kind::Arrow) {
+                self.bump(); // `->`
+                let arrow = self.name("->", start);
+                pending.push(Arrow { start, arrow, left });
+                continue; // descend: read the right operand as a fresh arrow-LHS (right-associative)
+            }
+            // No `->`: `left` is complete. Fold the pending arrows (innermost right first).
+            let mut node = left;
+            while let Some(Arrow { start, arrow, left }) = pending.pop() {
+                let span = start.merge(self.prev_span());
+                node = self.list(vec![arrow, left, node], span);
+            }
+            return node;
         }
     }
 
@@ -8546,6 +8596,74 @@ mod tests {
                 rec.errors.len(),
                 it.errors.len(),
                 "pattern_iter error count diverged for {src:?}\n  rec: {:?}\n  it: {:?}",
+                rec.errors,
+                it.errors
+            );
+        }
+    }
+
+    #[test]
+    fn type_ref_iter_matches_recursive_type() {
+        // I5 differential check: the iterative `type_ref_iter` must produce a BYTE-IDENTICAL result to the
+        // recursive `type_ref` for every type — arena (structural eq), span table, and errors. Covers the
+        // de-recursed `->` arrow chain + the recursive-fallback layers (operand/postfix-app/paren-tuple/
+        // brace-record/forall/unit-infix), which must stay byte-identical through the hybrid stage.
+        let cases = [
+            "Int64",
+            "a",
+            "List(Int64)",
+            "List(List(Int64))",
+            "Map(Int64, List(Bool))",
+            "Option(Tuple(Int64, Int64))",
+            "Int64 -> Bool",
+            "Int64 -> Bool -> Int64",
+            "A -> B -> C -> D -> E",
+            "List(a) -> Option(a)",
+            "(Int64, Bool)",
+            "(Int64, Bool) -> Int64",
+            "Tuple(Int64, Bool)",
+            "M.T",
+            "M.N.T(a)",
+            "forall a. a",
+            "forall a b. a -> b",
+            "forall a. List(a) -> a",
+            "Record(x : Int64, y : Bool)",
+            "Qty(Int64, meter / second ^ 2)",
+            "meter / second",
+            "(A -> B) -> C",
+            "Fn(Int64) -> Fn(Bool) -> Int64",
+        ];
+        for src in cases {
+            let mut rec = build_parser(src, FileId::default());
+            let rec_root = rec.type_ref(); // rec.iterative == false -> recursive body
+            let rec_arenas = rec.builder.finish(rec_root);
+
+            let mut it = build_parser(src, FileId::default());
+            let it_root = it.type_ref_iter();
+            let it_arenas = it.builder.finish(it_root);
+
+            assert!(
+                it_arenas.structurally_eq(&rec_arenas),
+                "type_ref_iter arena diverged for {src:?}\n  recursive: {}\n  iterative: {}",
+                crate::sexpr::print(&rec_arenas),
+                crate::sexpr::print(&it_arenas),
+            );
+            assert_eq!(
+                rec.spans.len(),
+                it.spans.len(),
+                "type_ref_iter span-table length diverged for {src:?}"
+            );
+            for i in 0..rec.spans.len() as u32 {
+                assert_eq!(
+                    rec.spans.get(StructId(i)),
+                    it.spans.get(StructId(i)),
+                    "type_ref_iter span[{i}] diverged for {src:?}"
+                );
+            }
+            assert_eq!(
+                rec.errors.len(),
+                it.errors.len(),
+                "type_ref_iter error count diverged for {src:?}\n  rec: {:?}\n  it: {:?}",
                 rec.errors,
                 it.errors
             );
