@@ -1,0 +1,2 @@
+let n: Int64 = 5, m = 6 in
+n + m

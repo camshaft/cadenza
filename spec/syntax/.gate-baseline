@@ -132,6 +132,12 @@ pass	ml/210-non-last-arm-nested-match-parens
 pass	ml/211-non-last-arm-if-else-match-parens
 pass	ml/212-last-arg-lambda-hugs
 pass	ml/213-last-arg-hug-fits-inline
+pass	ml/214-let-annotated-binder
+pass	ml/215-let-annotated-record-type-binder
+pass	ml/216-let-multi-binding-one-annotated
+pass	ml/217-let-annotated-pattern-binder
+pass	ml/218-let-annotated-tuple-rest-pattern-binder
+pass	ml/219-let-function-type-binder
 pass	ml/22-world-variant-record-payload
 pass	ml/23-world-variant-prim-payload
 pass	ml/24-world-enum-flags

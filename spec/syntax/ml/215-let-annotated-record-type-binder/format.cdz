@@ -1,0 +1,2 @@
+let r: Record(x : Int64) = { x = 5 } in
+r.x

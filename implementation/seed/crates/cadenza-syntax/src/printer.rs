@@ -4928,81 +4928,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_annotated_let_binder_prints_the_colon_surface_and_round_trips() {
-        // A type-annotated let binder `let x: T = v in …` reads to `(let (((: x T) v)) …)` (the binder-
-        // position annotation, the mirror of an annotated `param`) and prints back to the clean `x: T`
-        // surface — NOT the degenerate `` `let`(…) `` quoted-op fallback it produced before (which
-        // `is_let_shape` forced by rejecting the annotated binder; it round-tripped only via idempotence).
-        // Such binders are common in the corpus + compiler-validated, so the surface must be first-class.
-        for (src, want) in [
-            (
-                "(do (def (main) (let (((: n Int64) 5)) n)) (export main))",
-                "let n: Int64 = 5",
-            ),
-            (
-                "(do (def (main) (let (((: r (Record (: x Int64))) #record((= x 5)))) (. r x))) \
-                 (export main))",
-                // The let-binder colon is param-style (`let r:`, no space before); the INNER record-TYPE
-                // field keeps the record-type printer's own `x : Int64` spacing — both round-trip.
-                "let r: Record(x : Int64) =",
-            ),
-        ] {
-            let a = sexpr::read(src).expect("sexpr parses");
-            let printed = print(&a, 80);
-            assert!(
-                printed.contains(want),
-                "expected {want:?} in the ML print\n{printed}"
-            );
-            assert!(
-                !printed.contains("`let`"),
-                "annotated let fell back to the quoted-op `let`(…) form\n{printed}"
-            );
-            let back = parser::read_ml(&printed);
-            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
-            assert!(
-                a.structurally_eq(&back.arenas),
-                "annotated let binder lost in round-trip\n src: {src}\n ml:  {printed}\n back: {}",
-                sexpr::print(&back.arenas)
-            );
-        }
-    }
-
-    #[test]
-    fn annotated_let_binder_edges_round_trip() {
-        // Harden the annotated-let surface (#6676) across the tricky binder shapes beyond a plain name +
-        // record-type (pinned above): a MULTI-binding let with one annotated + one plain binder; an
-        // annotated PATTERN binder (`(a, b): T`); an annotated tuple-REST pattern binder; and a
-        // FUNCTION-TYPE annotation (`f: (-> A B)`). Each must round-trip structurally through ML — the
-        // annotated-binder path reuses `type_ref` (reader) + the pattern/expr split (printer), so these
-        // exercise that path, not just the scalar case. Round-trip-only (structural), since the printed
-        // surface for e.g. a function type is verified by its own tests; here we pin no-loss composition.
-        for src in [
-            // multi-binding: one annotated, one plain — the annotated one must not derail the others.
-            "(do (def (main) (let (((: n Int64) 5) (m 6)) (+ n m))) (export main))",
-            // annotated PATTERN binder: a tuple destructure with a type annotation.
-            "(do (def (main) (let (((: (tuple a b) (Tuple Int64 Int64)) #tuple(1 2))) a)) (export main))",
-            // annotated tuple-REST pattern binder (the spread-in-pattern surface under an annotation).
-            "(do (def (main) (let (((: (tuple a (.. rest)) (Tuple Int64 Int64)) #tuple(1 2))) a)) \
-             (export main))",
-            // FUNCTION-TYPE annotation on the binder.
-            "(do (def (main) (let (((: f (-> Int64 Int64)) (fn (x) x))) (f 3))) (export main))",
-        ] {
-            let a = sexpr::read(src).expect("sexpr parses");
-            let printed = print(&a, 80);
-            assert!(
-                !printed.contains("`let`"),
-                "annotated let fell back to the quoted-op `let`(…) form\n src: {src}\n ml:  {printed}"
-            );
-            let back = parser::read_ml(&printed);
-            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
-            assert!(
-                a.structurally_eq(&back.arenas),
-                "annotated let-binder edge lost in round-trip\n src: {src}\n ml:  {printed}\n back: {}",
-                sexpr::print(&back.arenas)
-            );
-        }
-    }
+    // The annotated-let-binder surface (#6676: `let x: T = v in …` reads to `(let (((: x T) v)) …)` — the
+    // binder-position annotation, mirror of an annotated `param` — and prints the clean `x: T` surface,
+    // NOT the degenerate `` `let`(…) `` quoted-op fallback) MIGRATED to the spec/syntax corpus (inc-6
+    // batch-31). Each carries a format.cdz for the `let … in`⏎`body` surface:
+    //   * `an_annotated_let_binder_prints_the_colon_surface_and_round_trips` → ml/214-let-annotated-binder
+    //     `let n: Int64 = 5 in n`→`(let (((: n Int64) 5)) n)`, ml/215-let-annotated-record-type-binder
+    //     `let r: Record(x : Int64) = { x = 5 } in r.x` (param-style `let r:` + the record-TYPE field's own
+    //     `x : Int64` spacing).
+    //   * `annotated_let_binder_edges_round_trip` (the tricky binder shapes) →
+    //     ml/216-let-multi-binding-one-annotated `let n: Int64 = 5, m = 6 in n + m`,
+    //     ml/217-let-annotated-pattern-binder `let (a, b): Tuple(Int64, Int64) = (1, 2) in a`,
+    //     ml/218-let-annotated-tuple-rest-pattern-binder `let (a, .. rest): Tuple(Int64, Int64) = (1, 2) in a`,
+    //     ml/219-let-function-type-binder `let f: Int64 -> Int64 = fn(x) => x in f(3)`.
+    // Each tree is a proper `(let …)` (no `` `let` `` fallback); the arena harnesses' structural-eq is
+    // subsumed by the ml cases pinning the exact tree + fmt.
 
     #[test]
     fn every_reserved_word_used_as_a_bare_name_backtick_round_trips_to_a_name() {
