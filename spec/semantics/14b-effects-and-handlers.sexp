@@ -13071,7 +13071,8 @@
         (main)
         (let ((k (handle Amb 0 ((flip (u) s (fn (x) (resume x s)))) (+ 100 (Amb.flip))))) (k 5)))
       (export main)))
-  (declines))
+  (call main)
+  (output (: 105 Int64)))
 
 (case
   "a partial application of a performing closure that escapes its handler is rejected"

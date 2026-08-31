@@ -3701,7 +3701,7 @@ pass	a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (
 pass	a recursion carrying a Bytes parameter does a fallible read in its base arm
 pass	a recursion carrying a List parameter does a fallible read in its base arm
 pass	a recursion-driven host-call sequence consumes one response row per iteration in order
-pass	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
+todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
 pass	a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and counts folds
 pass	a recursive HOF applies a bare operator passed as its function argument
@@ -9400,7 +9400,7 @@ todo	a self-call gated behind an and short-circuit in an if-condition declines c
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
-pass	an escaping captured continuation is refused, not miscompiled
+todo	an escaping captured continuation is refused, not miscompiled
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
