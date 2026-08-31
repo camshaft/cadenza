@@ -822,54 +822,13 @@ fn warnings_of(src: &str) -> Vec<crate::abi::Diagnostic> {
         .collect()
 }
 
-#[test]
-fn an_eliminated_provable_trap_warns_but_still_compiles() {
-    // Each shape drops a computation that PROVABLY traps because its value is unobserved: an
-    // unprojected tuple element, an unread record field, an unreferenced let binding, an argument
-    // bound to an unused parameter. All compile (the value is not observed) AND warn CDZ0305.
-    for src in [
-        "(module m (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main))",
-        "(module m (def (main) (. (record (= a 42) (= b (/ 100 0))) a)) (export main))",
-        "(module m (def (main) (let ((t (/ 100 0))) 5)) (export main))",
-        "(module m (def (f x y) x) (def (main) (f 7 (/ 100 0))) (export main))",
-    ] {
-        // Exactly one DEAD-TRAP warning (CDZ0305). Some shapes also carry an unused-binding warning
-        // (CDZ0306 — the dropped `let t`, the unused param `y`), which is a separate, correct signal;
-        // filter to the dead-trap code so this test pins the dead-trap behavior specifically.
-        let dead: Vec<_> = warnings_of(src)
-            .into_iter()
-            .filter(|d| d.code.as_deref() == Some("CDZ0305"))
-            .collect();
-        assert_eq!(
-            dead.len(),
-            1,
-            "expected exactly one dead-trap (CDZ0305) warning for `{src}`, got {dead:?}"
-        );
-    }
-    // The dead-trap warning fires for EVERY provably-trapping constant, not only integer ÷0 — pin the
-    // full trap-kind axis `core-semantics.md §285` names, so a future change that breaks the fold's
-    // trap-proof for one kind (e.g. modulo, the rational zero-denominator, or overflow) is caught. Each
-    // is a 0-use `let` binding whose init provably traps at compile time; all compile (value unobserved)
-    // AND warn CDZ0305 exactly once. (Integer ÷0 is covered by the position sweep above; these add %0,
-    // the zero-denominator `Rational.of`, and a constant overflow past the Int64 default.)
-    for trap_init in [
-        "(% 100 0)",                 // integer modulo by zero (CDZ0304-class trap)
-        "(Rational.of 1 0)",         // a rational with a zero denominator
-        "(+ 9223372036854775807 1)", // a constant Int64 overflow (max + 1)
-    ] {
-        let src = format!("(module m (def (main) (let ((t {trap_init})) 5)) (export main))");
-        let dead: Vec<_> = warnings_of(&src)
-            .into_iter()
-            .filter(|d| d.code.as_deref() == Some("CDZ0305"))
-            .collect();
-        assert_eq!(
-            dead.len(),
-            1,
-            "a 0-use let binding whose init is `{trap_init}` must warn CDZ0305 (dead trap) exactly \
-                 once and still compile, got {dead:?}"
-        );
-    }
-}
+// MIGRATED to corpus (02-binding-and-control.sexp): a provably-trapping computation in an UNOBSERVED slot
+// is elided (the program compiles+runs) but earns exactly one CDZ0305 dead-trap warning. The two axes are
+// separable (the trap-proof + elision are kind- and position-independent), so they are covered as a cross:
+// POSITION axis — tuple element (:7858), dropped RECORD field / unused LET init / unused ARGUMENT (the new
+// "a provably-trapping dropped RECORD field / unused LET init / unused ARGUMENT …" cases); KIND axis —
+// ÷0 (:7858), %0 (:7949), overflow (:7962), zero-denominator Rational.of (:7974). Rust test
+// an_eliminated_provable_trap_warns_but_still_compiles deleted.
 
 // MIGRATED to corpus (02-binding-and-control.sexp): a reachable CONSTANT trap in a runtime-guarded `if`
 // branch earns a CDZ0309 "potentially reachable trap" warning that NAMES the specific trap kind. Three

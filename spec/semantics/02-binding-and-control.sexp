@@ -7975,6 +7975,31 @@
   (output (: 42 Int64))
   (warns CDZ0305 (message "always traps but its value is never used")))
 
+; The POSITION axis of the dead-trap warning (the tuple cases above are the ELEMENT position): a provably-
+; trapping constant in ANY unobserved slot — a dropped RECORD field, an unused LET init, or an unused
+; ARGUMENT — is elided (the program runs) and earns exactly one CDZ0305. (Migrated from rcdzc
+; an_eliminated_provable_trap_warns_but_still_compiles position sweep.)
+(case
+  "a provably-trapping dropped RECORD field is elided but earns one CDZ0305 dead-trap warning"
+  (input (do (def (main) (. #record((= a 42) (= b (/ 100 0))) a)) (export main)))
+  (output (: 42 Int64))
+  (count 1)
+  (warning CDZ0305 (message "always traps but its value is never used")))
+
+(case
+  "a provably-trapping unused LET init is elided but earns one CDZ0305 dead-trap warning"
+  (input (do (def (main) (let ((_t (/ 100 0))) 5)) (export main)))
+  (output (: 5 Int64))
+  (count 1)
+  (warning CDZ0305 (message "always traps but its value is never used")))
+
+(case
+  "a provably-trapping unused ARGUMENT is elided but earns one CDZ0305 dead-trap warning"
+  (input (do (def (f x _y) x) (def (main) (f 7 (/ 100 0))) (export main)))
+  (output (: 7 Int64))
+  (count 1)
+  (warning CDZ0305 (message "always traps but its value is never used")))
+
 ; The dead-COMPUTATION warning covers a computation with NO VALUE, not only a trapping one: the same
 ; CDZ0305 code + elision applies when an unobserved init does not REDUCE to a value (a non-terminating or
 ; explosively-growing reduction) — DCE consistency, an un-observed non-normalizing binding is elided
