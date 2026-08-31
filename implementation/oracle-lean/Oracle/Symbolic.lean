@@ -91,27 +91,40 @@ def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
   -- boolean folds; any other `not` shape falls through to `none`, exactly as before).
   if op == "not" && (consts.filterMap id).size == 1 then
     (match (consts.filterMap id)[0]? with | some (Value.bool b) => some (.bool (!b)) | _ => none)
+  -- BINARY ops via a `size == 2` SIZE-DISPATCH + `if op == …` chain (NOT `#[a,b]` array-literal patterns):
+  -- byte-identical to the former `match op, #[a,b]` arms, but built only from splittable matches (string-eq
+  -- `if`s, `Value`/`Option` matches) so the def REDUCES in proofs — the `#[…]` literal arms compiled to a
+  -- `_sparseCasesOn` (`foldConst?.match_10`) with no equation lemmas, blocking `split`/`simp` (needed for
+  -- `denote (normalize e) = denote e`'s `.app` fold-soundness / output-canon-stability). Same `not`-dispatch
+  -- rationale (#6487). Int `<>≤≥` fold first (int-pattern), then FLOAT via `asF64?`; int `+-*/` stay
+  -- symbolic (width/trap-deferred). All fold outputs are `.bool`/`.f64` (never `.int`) — hence canon-stable.
+  else if (consts.filterMap id).size == 2 then
+    let a := (consts.filterMap id)[0]!
+    let b := (consts.filterMap id)[1]!
+    if op == "=" then some (.bool (Value.valueEqSpec a b))
+    else if op == "<" then (match a, b with
+                            | .int x, .int y => some (.bool (decide (x < y)))
+                            | _, _ => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x < y)) | _, _ => none))
+    else if op == ">" then (match a, b with
+                            | .int x, .int y => some (.bool (decide (x > y)))
+                            | _, _ => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x > y)) | _, _ => none))
+    else if op == "<=" then (match a, b with
+                             | .int x, .int y => some (.bool (decide (x ≤ y)))
+                             | _, _ => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≤ y)) | _, _ => none))
+    else if op == ">=" then (match a, b with
+                             | .int x, .int y => some (.bool (decide (x ≥ y)))
+                             | _, _ => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≥ y)) | _, _ => none))
+    else if op == "+" || op == "-" || op == "*" || op == "/" then
+      (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
+    else if op == "and" then
+      (if a == .bool true && b == .bool true then some (.bool true)
+       else if a == .bool false || b == .bool false then some (.bool false) else none)
+    else if op == "or" then
+      (if a == .bool true || b == .bool true then some (.bool true)
+       else if a == .bool false && b == .bool false then some (.bool false) else none)
+    else none
+  -- non-binary `and`/`or` (variadic arity ≠ 2) keep their fold; any other shape → `none`.
   else match op, consts.filterMap id with
-    | "=",  #[a, b] => some (.bool (Value.valueEqSpec a b))
-    | "<",  #[.int x, .int y] => some (.bool (decide (x < y)))
-    | ">",  #[.int x, .int y] => some (.bool (decide (x > y)))
-    | "<=", #[.int x, .int y] => some (.bool (decide (x ≤ y)))
-    | ">=", #[.int x, .int y] => some (.bool (decide (x ≥ y)))
-    -- FLOAT arithmetic + comparison: IEEE is TOTAL (overflow → inf/nan, never a trap), so folding float
-    -- constants is SOUND with no width/trap tracking (unlike integer arith, which is left deferred). Both
-    -- operands must be floats — `asF64?` is `none` for an int, so int arith/comparison is NOT folded here
-    -- (int `<` etc. are the `.int`-pattern arms above; int `+ - * /` stay symbolic pending trap-conditions).
-    -- REUSE the concrete evaluator's float op (evalFloatOp) — do NOT re-implement float arithmetic, so the
-    -- symbolic fold uses byte-identical IEEE semantics to `evalNode`. Fold only when it yields a value.
-    | "+",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
-    | "-",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
-    | "*",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
-    | "/",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
-    | "<",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x < y)) | _, _ => none)
-    | ">",  #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x > y)) | _, _ => none)
-    | "<=", #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≤ y)) | _, _ => none)
-    | ">=", #[a, b] => (match Value.asF64? a, Value.asF64? b with | some x, some y => some (.bool (x ≥ y)) | _, _ => none)
-    -- (`not` is handled by the leading size-dispatch above.)
     | "and", vs => if vs.all (· == .bool true) then some (.bool true)
                    else if vs.any (· == .bool false) then some (.bool false) else none
     | "or",  vs => if vs.any (· == .bool true) then some (.bool true)
