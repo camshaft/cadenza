@@ -1678,6 +1678,20 @@
   (call   main (: 0 Int64)) (trap   "divide by zero")
   (call   main (: 1 Int64)) (output (: 0 Int64)))
 
+(case "a dead-let SET construction with a trapping scalar arg traps — a set constructor is strict in its element args too"
+  (doc    "The set twin of the scalar dead-let list case above: strict heap-collection construction is not
+           list-specific. `(let ((x #set(1 (/ 5 d)))) 0)` binds a SET to `x`, DISCARDS it, and returns 0 — yet at
+           d=0 the trapping `(/ 5 d)` TRAPS even though the set is never observed (operator ruling A #5194; a
+           `(list/set/map …)` constructor evaluates its element arguments whenever reached, in any consumer, even
+           discard — core-semantics.md #A Trap Occurs Only Where Its Computation Is Observed). At d=1 the arg is
+           fine and the discarded set folds away → 0. Pins that a future set-specific construction path (dedup /
+           canonicalization) cannot quietly drop the element-argument evaluation the list path preserves; the set
+           consumer face is otherwise pinned via 19-sets `(Set.len (Set.of (list (/ 5 d) 2 3)))`. Scalar trap arg
+           (backend-independent — green on wasm, rust, rust-async).")
+  (input  (do (def (main (: d Int64)) (let ((x #set(1 (/ 5 d)))) 0)) (export main)))
+  (call   main (: 0 Int64)) (trap   "divide by zero")
+  (call   main (: 1 Int64)) (output (: 0 Int64)))
+
 (case "a dead-let list construction with a HEAP-producing trapping arg also traps — force-eval extends to heap leaves"
   (doc    "The heap-producing-arg companion of the scalar dead-let case above (v-core-opt #5339 closed the
            documented interim gap): `(let ((x #list((Rational.of 1 d)))) 0)` binds a list whose element is a
