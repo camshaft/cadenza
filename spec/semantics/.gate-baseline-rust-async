@@ -8920,3 +8920,22 @@ pass	eval on a runtime value in a match scrutinee gives the compile-time-AST tea
 pass	eval on a runtime value in an arithmetic operand gives the compile-time-AST teaching message
 pass	ordering a tuple against a list is a cross-kind type error
 pass	ordering two same-kind tuples of different arity names the arity delta, not a kind boundary
+pass	a USER variant naming a value-shadowed prelude type name as its payload still faults CDZ0203
+pass	a bare Ast literal used as an arithmetic operand names the compile-time-metadata misuse
+pass	a constructor-export naming a near-miss variant suggests the constructor with a rename fix
+pass	a constructor-export whose head is a value definition names the value-definition category
+pass	a constructor-export whose head is an undeclared name names the not-a-declared-type category
+pass	a do block whose last form is a declaration rather than a value form is rejected
+pass	a multi-variant sum compared to a bare value is a generic kind mismatch with no misleading unwrap fix
+pass	a near-eval typo keeps the ordinary unbound did-you-mean to a near def, not the eval teaching message
+pass	a near-miss field in Record.pop suggests the near field with a replace fix
+pass	a near-miss field in Record.with suggests the near field and keeps the extend hint
+pass	a non-exhaustive Bool match names the missing literal and inserts exactly that arm
+pass	a prelude-TYPE-colliding variant reached QUALIFIED still type-checks its payload
+pass	an empty do block in a parameterized def body is rejected as valueless
+pass	an out-of-range literal in a NESTED SUM payload takes the annotated inferred width and carries no retype fix
+pass	eval on a RUNTIME Ast parameter gives the compile-time-AST teaching message — the requirement is compile-time VISIBILITY, not Ast-ness
+pass	resuming with a Bool next-state under an Int64-seeded handler is a type error
+pass	resuming with a String next-state under an Int64-seeded handler is a type error
+pass	the newtype-vs-inner comparison on a newtype parameter carries the heuristic unwrap fix
+pass	the non-exhaustive Bool match arm-insert is symmetric on the missing literal
