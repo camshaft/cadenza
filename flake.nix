@@ -4004,6 +4004,100 @@
           echo "ok: corpus-rust-async — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→rust-async-build→rust-async-exec caching graph" > "$out"
         '';
 
+        # ── RUST verdict harvest (v-xtask-decompose, the flake.nix:3514 follow-up to the wasm harvest) —
+        # mirrors mkCorpusVerdict/`.#corpus-verdicts` for the rust backend. Per case, CLASSIFY the verdict via
+        # `cdz-rust-run --emit-verdict` (#6978): it writes `<tag>\t<description>` (tag ∈ pass/todo/fail from the
+        # shared cdz-corpus-grade `verdict()` — the same coarse vocab `.gate-baseline-rust` records) and ALWAYS
+        # exits 0 — classify, not compare, so a regressed/todo case emits its CURRENT verdict rather than failing
+        # the derivation (drops the `--baseline` mkCorpusRustExec passes). Same build inputs as mkCorpusRustExec.
+        mkCorpusRustVerdict = { name, build, idx }:
+          pkgs.runCommand "corpus-rust-verdict-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRustRun rustToolchain ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            mkdir -p "$TMPDIR/w"
+            status=$(cat ${build}/compile.status)
+            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
+                  --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
+                  --workdir "$TMPDIR/w" --emit-verdict "$out")
+            if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
+            cdz-rust-run "''${args[@]}"
+            # $out is written by cdz-rust-run (--emit-verdict). Guard an empty write (a real bug would leave it
+            # absent → the aggregate `cat` fails loud, catching a broken emit-verdict rather than a silent gap).
+            [ -s "$out" ] || { echo "corpus-rust-verdict ${name} ${idx}: cdz-rust-run --emit-verdict wrote no verdict" >&2; exit 1; }
+          '';
+
+        verdictsRustFileAgg = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+            cases = map
+              (idx: mkCorpusRustVerdict { inherit name idx; build = mkCorpusRustBuild { inherit name shred idx; }; })
+              idxs;
+          in
+          assert (builtins.length cases) > 0;
+          pkgs.runCommand "corpus-verdicts-rust-${name}" { } ''
+            : > "$out"
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} >> "$out"'') cases}
+          '';
+
+        # `.#corpus-verdicts-rust` — the WHOLE-corpus RUST verdict harvest (one `<tag>\t<description>` line per
+        # case). `apps.save-baseline` feeds this to xtask-save-baseline to regenerate `.gate-baseline-rust`.
+        corpusRustVerdictsAll = pkgs.runCommand "corpus-verdicts-rust" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${verdictsRustFileAgg { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+        '';
+
+        # ── RUST-ASYNC verdict harvest (twin of the rust one; the exec adds `--async` + reads the async
+        # signature marker, exactly like mkCorpusRustAsyncExec). Feeds `.gate-baseline-rust-async`.
+        mkCorpusRustAsyncVerdict = { name, build, idx }:
+          pkgs.runCommand "corpus-rust-async-verdict-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRustRun rustToolchain ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            mkdir -p "$TMPDIR/w"
+            status=$(cat ${build}/compile.status)
+            args=(--grade ${build}/test-run.ast --async --compile-status "$status" --compile-diag ${build}/compile.err
+                  --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
+                  --workdir "$TMPDIR/w" --emit-verdict "$out")
+            if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
+            cdz-rust-run "''${args[@]}"
+            [ -s "$out" ] || { echo "corpus-rust-async-verdict ${name} ${idx}: cdz-rust-run --emit-verdict wrote no verdict" >&2; exit 1; }
+          '';
+
+        verdictsRustAsyncFileAgg = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+            cases = map
+              (idx: mkCorpusRustAsyncVerdict { inherit name idx; build = mkCorpusRustAsyncBuild { inherit name shred idx; }; })
+              idxs;
+          in
+          assert (builtins.length cases) > 0;
+          pkgs.runCommand "corpus-verdicts-rust-async-${name}" { } ''
+            : > "$out"
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} >> "$out"'') cases}
+          '';
+
+        # `.#corpus-verdicts-rust-async` — the WHOLE-corpus RUST-ASYNC verdict harvest. Feeds
+        # `.gate-baseline-rust-async` via `apps.save-baseline`.
+        corpusRustAsyncVerdictsAll = pkgs.runCommand "corpus-verdicts-rust-async" { } ''
+          : > "$out"
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${verdictsRustAsyncFileAgg { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+              corpusFileNames}
+        '';
+
         # VANISHED-check (gap #7 completion) — the GLOBAL half of baseline regression detection the per-case
         # exec cannot do. The per-case `--baseline` check catches a `pass -> not-pass` regression on a case
         # that RAN; it cannot see a baseline case that is no longer in the corpus at all (silently dropped,
@@ -5114,6 +5208,15 @@
         # `<tag>\t<description>` line per case, concatenated across the whole corpus. `apps.save-baseline`
         # (pending v-xtask's xtask-save-baseline leaf on main) feeds this to the leaf to regenerate .gate-baseline.
         packages.corpus-verdicts = corpusVerdictsAll;
+
+        # `.#corpus-verdicts-rust` / `.#corpus-verdicts-rust-async` — the RUST + RUST-ASYNC verdict harvests
+        # (v-xtask-decompose, the flake.nix:3514 follow-up). Same `<tag>\t<description>` shape as the wasm
+        # harvest, via `cdz-rust-run --emit-verdict` (classify-not-compare, exit 0). PACKAGES only — deliberately
+        # NOT in the localGate merge-required fail-set: a verdict harvest is an `apps.save-baseline` regenerator
+        # INPUT, not a gate (mirrors quoteCorpusVerdictsAll being packages-only). The rust/rust-async gate
+        # stays the existing corpus-rust / corpus-rust-async checks; these are the re-baseline source.
+        packages.corpus-verdicts-rust = corpusRustVerdictsAll;
+        packages.corpus-verdicts-rust-async = corpusRustAsyncVerdictsAll;
 
         # `.#quote-corpus-verdicts` — the quote-corpus round-trip verdict harvest (inc-4; mirrors
         # `.#corpus-verdicts`). `<tag>\t<description>` per eligible case (declined→todo, round-trip-ok→pass,
@@ -6615,7 +6718,10 @@
         # (v-xtask-decompose seq-202 --save gate-delete replacement for `cargo xtask gate --save`). `nix run
         # .#save-baseline` builds `.#corpus-verdicts` (the whole-corpus <tag>\t<description> harvest, via the
         # cached per-case shred→build→verdict graph) then runs xtask-save-baseline to write the baseline via
-        # serialize_baseline. WASM baseline; the rust/rust-async baselines get their own harvest+app follow-up.
+        # serialize_baseline. Regenerates ALL THREE backends (wasm + rust + rust-async) from their nix verdict
+        # harvests — the faithful re-baseline (the native `cargo xtask gate --save` path is unfaithful for
+        # rust/rust-async, #6970). v-corpus-harness reviews the resulting baseline diffs (only-gains + a
+        # fail-spike guard) before committing.
         apps.save-baseline =
           let
             wrapper = pkgs.writeShellApplication {
@@ -6623,9 +6729,15 @@
               runtimeInputs = [ pkgs.git ];
               text = ''
                 root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-                # Build the whole-corpus verdict harvest (uses the ambient nix the caller ran with).
+                # Build each backend's whole-corpus verdict harvest (uses the ambient nix the caller ran with),
+                # then write its .gate-baseline* via the xtask-save-baseline leaf. All 3 = the faithful nix
+                # re-baseline; the cached per-case graphs mean an unchanged corpus is a store cache hit.
                 harvest="$(nix build "$root#corpus-verdicts" --no-link --print-out-paths)"
-                exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$root/spec/semantics/.gate-baseline"
+                ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$root/spec/semantics/.gate-baseline"
+                harvest_rust="$(nix build "$root#corpus-verdicts-rust" --no-link --print-out-paths)"
+                ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust" "$root/spec/semantics/.gate-baseline-rust"
+                harvest_rust_async="$(nix build "$root#corpus-verdicts-rust-async" --no-link --print-out-paths)"
+                exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust_async" "$root/spec/semantics/.gate-baseline-rust-async"
               '';
             };
           in
