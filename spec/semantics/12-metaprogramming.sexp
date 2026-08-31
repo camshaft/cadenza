@@ -365,7 +365,7 @@
     "A rational literal `3/2` is its own syntactic form (a `(RationalTag <num> <den>)` node), so quoting
            it reflects to the DEDICATED `Ast.Rational` variant whose payload is a `(Tuple Ast Ast)` of the two
            child ASTs (each an `Ast.Int`) — NOT a name-headed generic node, mirroring the collection-ctor /
-           FieldPair / Member variants. Deconstructs `(quote 3/2)` through `(Ast.Rational (tuple (Ast.Int n)
+           FieldPair / Member variants. Deconstructs `(quote 3/2)` through `(Ast.Rational #tuple((Ast.Int n)
            (Ast.Int d)))` and scores `n*100 + d` = 302 (num 3, den 2 — already lowest terms). Before this
            the `Leaf::Rational` head hit the reifier's un-reifiable-leaf bail and the whole quote DECLINED
            (`quote produces an AST value, not supported`); this closes reflection totality over the rational
