@@ -9670,7 +9670,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
 todo	the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
-todo	unquote-splicing a list of nested lists lifts each list element into an Ast.ListCtor
+pass	unquote-splicing a list of nested lists lifts each list element into an Ast.ListCtor
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	prefix `(- x)` in value (annotation) position is a partial subtraction, rejected with a suggest-`Num.neg` (CDZ0203)

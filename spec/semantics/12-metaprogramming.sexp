@@ -3148,17 +3148,16 @@ c")))
 (case
   "unquote-splicing a list of nested lists lifts each list element into an Ast.ListCtor"
   (doc
-    "IDEAL (corpus-as-spec, locked in per operator policy; graded TODO until the recursive splice-lift
-           lands — v-metaprog owns `ast_reflect` splice-lift). Splicing `xs = (list (list 1) (list 2))` into
-           `` `(f ,@xs) `` splices xs's two ELEMENTS into `(f …)`; each element is a CONSTANT list value,
-           statically reifiable to its dedicated `Ast.ListCtor` exactly as `(quote #list(1))` reflects (see
-           \"a quoted collection or member access equals the node built by its dedicated Ast ctor\" above). So
-           the splice SHOULD build `(Ast.List (Ast.Name \"f\") (Ast.ListCtor (Ast.Int 1)) (Ast.ListCtor
-           (Ast.Int 2)))` — the same shape a scalar splice builds, one level deeper. Today the splice-lift is
-           scalar-only (no recursion into a list value), so this DECLINES rather than miscompiling
-           (reject-don't-miscompile); the assertion below pins the expected AST and grades TODO, auto-flipping
-           to PASS when the recursive lift ships. This was the LAST bare `(declines)` corpus-wide — converting
-           it to a value-asserting TODO discharges the (declines)-deprecation (v-deferral-declines, 2026-08-31).")
+    "Splicing `xs = (list (list 1) (list 2))` into `` `(f ,@xs) `` splices xs's two ELEMENTS into `(f …)`;
+           each element is a CONSTANT list value, RECURSIVELY reifiable to its dedicated `Ast.ListCtor`
+           exactly as `(quote #list(1))` reflects (see \"a quoted collection or member access equals the node
+           built by its dedicated Ast ctor\" above). So the splice builds `(Ast.List (Ast.Name \"f\")
+           (Ast.ListCtor (Ast.Int 1)) (Ast.ListCtor (Ast.Int 2)))` — the same shape a scalar splice builds,
+           one level deeper. The splice-lift recurses into a constant list value (each element lifted through
+           the same node-builder, so arbitrary nesting depth works), the recursive companion of
+           quote-of-collections. Was the LAST bare `(declines)` corpus-wide (a scalar-only splice-lift
+           declined it); converting it to this value-assertion discharged the (declines)-deprecation
+           (v-deferral-declines, 2026-08-31), and the recursive lift now flips it to PASS.")
   (input
     (=
       (let ((xs #list(#list(1) #list(2)))) (quasiquote (f (unquote-splicing xs))))

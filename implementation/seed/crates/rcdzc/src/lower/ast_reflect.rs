@@ -7,64 +7,83 @@
 
 use super::*;
 
-/// Fold `ast-splice-lift` over a CONSTANT list's element cores. An element that is ALREADY an `Ast` value
-/// splices by IDENTITY (a list of pre-built AST fragments needs no wrapping — the same identity arm
-/// `lower_ast_lift` has for an already-`Ast` operand); otherwise wrap each in the `Ast` leaf its CONSTANT
-/// kind denotes — `ConstInt`→`Ast.Int`, `ConstFloat`→`Ast.Float`, `ConstBool`→`Ast.Bool`, `ConstStr`→
-/// `Ast.Str` (each a `Core::SumNew` at the leaf disc, one payload). Returns a `Core::ListNew` of the
-/// wrapped nodes (the lifted `(List Ast)`), or `None` if the `Ast` sum is absent OR an element has no
-/// scalar-value leaf and is not already an `Ast` — a nested list, a char, a NaN float, or a runtime
-/// element declines rather than building a wrong-typed node. The list is homogeneous, so in practice
-/// every element shares one leaf. `id` seeds nothing structural; the synthesized nodes carry their own
-/// `Ty::Sum{Ast}`. This is the constant splice companion of the active-unquote `ast-lift` wrap (which
+/// Fold `ast-splice-lift` over a CONSTANT list's element cores. Each element is lifted to its `Ast`
+/// reflection node by [`lift_value_to_ast`] (identity for an already-`Ast` element, the matching scalar
+/// leaf otherwise, or a recursive `Ast.ListCtor` for a nested list value), and the lifted nodes are
+/// returned as a `Core::ListNew` (the spliced `(List Ast)`). Returns `None` if the `Ast` sum is absent OR
+/// any element is not liftable this increment (a char, a NaN/Inf float, a runtime element) — decline
+/// rather than build a wrong-typed node. `id` seeds nothing structural; the synthesized nodes carry their
+/// own `Ty::Sum{Ast}`. This is the constant splice companion of the active-unquote `ast-lift` wrap (which
 /// dispatches by inferred TYPE for the runtime case); the two agree on the leaf set + the Ast identity.
 pub(super) fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Option<Core> {
     // The `Ast` sum type + its variant discriminants (read by name so a decl reordering never mis-tags).
     let disc = ast_variant_discs(db)?;
-    let ast_ty = disc.ty.clone();
-    // The `Ast` sum's own declaration id — recognizes an element that is ALREADY an `Ast` (identity splice).
-    let ast_decl = match &disc.ty {
-        crate::ty::Ty::Sum { decl, .. } => Some(*decl),
-        _ => None,
-    };
     let _ = id;
     let mut wrapped = Vec::with_capacity(elems.len());
     for &e in elems {
-        // An element already of type `Ast` splices as-is (identity) — a list of pre-built AST fragments.
-        if let crate::ty::Ty::Sum { decl, .. } = crate::infer::type_of(db, e).strip_nominal()
-            && Some(*decl) == ast_decl
-        {
-            wrapped.push(e);
-            continue;
-        }
-        // Otherwise dispatch by CONSTANT core kind to the matching `Ast` leaf. A non-scalar constant
-        // (nested list, char, NaN float) or a runtime element has no leaf this increment → decline the
-        // whole splice (never build a wrong-typed leaf). Mirrors `lower_ast_lift`'s leaf set + identity.
-        // An integer element's payload is WIDENED to `BigInt` (the `Ast.Int` payload type): its `ConstInt`
-        // is retyped `BigInt` (value unchanged) so the leaf carries a `BigInt`, not a raw i64.
-        let (leaf_disc, payload) = match core_of(db, e) {
-            Core::ConstInt(v) => (
-                disc.int,
-                synth_core(db, Core::ConstInt(v), crate::ty::Ty::BigInt),
-            ),
-            Core::ConstFloat(_) => (disc.float, e),
-            Core::ConstBool(_) => (disc.bool, e),
-            Core::ConstStr(_) => (disc.str, e),
-            _ => return None,
-        };
-        let node = synth_core(
-            db,
-            Core::SumNew {
-                disc: leaf_disc,
-                payloads: vec![payload].into(),
-            },
-            ast_ty.clone(),
-        );
-        wrapped.push(node);
+        wrapped.push(lift_value_to_ast(db, e, &disc)?);
     }
     Some(Core::ListNew {
         elems: wrapped.into(),
     })
+}
+
+/// Lift ONE constant value core to its `Ast` reflection node, RECURSIVELY. A value already of type `Ast`
+/// is the IDENTITY (a pre-built AST fragment splices as-is); a scalar wraps in its leaf — `ConstInt`→
+/// `Ast.Int` (WIDENED to the `BigInt` payload), `ConstFloat`→`Ast.Float`, `ConstBool`→`Ast.Bool`,
+/// `ConstStr`→`Ast.Str`; and a CONSTANT list value `#list(…)` reflects to `Ast.ListCtor` of its elements
+/// lifted through this same helper (the recursive companion of quote-of-collections, so `,@` of a list of
+/// nested lists builds `Ast.ListCtor` children instead of declining). Returns `None` for a value with no
+/// reflection this increment (a char, a NaN/Inf float — matched as `ConstFloatNan`/`ConstFloatInf`, not
+/// `ConstFloat` — or a runtime element) — decline, never mis-lift.
+fn lift_value_to_ast(db: &mut Db, e: StructId, disc: &AstDiscs) -> Option<StructId> {
+    // The `Ast` sum's own declaration id — recognizes an element ALREADY of type `Ast` (identity splice).
+    let ast_decl = match &disc.ty {
+        crate::ty::Ty::Sum { decl, .. } => Some(*decl),
+        _ => None,
+    };
+    if let crate::ty::Ty::Sum { decl, .. } = crate::infer::type_of(db, e).strip_nominal()
+        && Some(*decl) == ast_decl
+    {
+        return Some(e);
+    }
+    // Otherwise dispatch by CONSTANT core kind to the matching `Ast` node. A value with no reflection this
+    // increment (a char, a NaN/Inf float, a runtime element) → `None`, declining the whole splice.
+    let (leaf_disc, payload) = match core_of(db, e) {
+        Core::ConstInt(v) => (
+            disc.int,
+            synth_core(db, Core::ConstInt(v), crate::ty::Ty::BigInt),
+        ),
+        Core::ConstFloat(_) => (disc.float, e),
+        Core::ConstBool(_) => (disc.bool, e),
+        Core::ConstStr(_) => (disc.str, e),
+        // A CONSTANT list value reflects to `Ast.ListCtor` of its recursively-lifted elements — the
+        // dedicated collection ctor (metaprogramming.md §Quote Produces An AST Value), the same node
+        // `(quote #list(…))` reifies to. A non-liftable element declines the whole (the `?`).
+        Core::ListNew { elems } => {
+            let mut inner = Vec::with_capacity(elems.len());
+            for &el in elems.iter() {
+                inner.push(lift_value_to_ast(db, el, disc)?);
+            }
+            let list_ast = synth_core(
+                db,
+                Core::ListNew {
+                    elems: inner.into(),
+                },
+                crate::ty::Ty::List(Box::new(disc.ty.clone())),
+            );
+            (disc.list_ctor, list_ast)
+        }
+        _ => return None,
+    };
+    Some(synth_core(
+        db,
+        Core::SumNew {
+            disc: leaf_disc,
+            payloads: vec![payload].into(),
+        },
+        disc.ty.clone(),
+    ))
 }
 
 /// Lower `ast-lift` (`∀a. a → Ast`) — the RUNTIME active-unquote lift. Wrap the operand's value in the
