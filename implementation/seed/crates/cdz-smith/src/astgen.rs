@@ -398,7 +398,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(32) {
+    match c.variant(33) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -496,6 +496,10 @@ fn gen_main_body<C: Choice>(
         // performing BOTH — the op DISPATCH/selection lowering (which arm discharges which perform),
         // distinct from the single-op handler. Value-comparable (deterministic Int64).
         31 => gen_effect_multiop_body(c, out),
+        // A NESTED-HANDLER effect body: two effects, the E2 handle NESTED inside the E1 handle, the body
+        // performing BOTH — so the E1 perform resolves ACROSS the intervening E2 handler frame to the
+        // outer E1 handler (multi-frame handler-stack resolution), distinct from a single handler.
+        32 => gen_effect_nested_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -645,6 +649,27 @@ fn gen_effect_body<C: Choice>(c: &mut C, out: &mut String) {
         )
         .ok();
     }
+}
+
+/// A NESTED-HANDLER effect body: `(do (effect E1 …) (effect E2 …) (handle E1 0 ((o1 (p) s (resume <rv1>
+/// s))) (handle E2 0 ((o2 (p) s (resume <rv2> s))) (+ (E1.o1 <a>) (E2.o2 <b>)))))` — TWO effects with the
+/// E2 handle NESTED inside the E1 handle, the body performing BOTH. The E1 perform occurs INSIDE the inner
+/// E2 handler frame, so it must resolve ACROSS that intervening frame to the OUTER E1 handler — the
+/// multi-frame handler-stack resolution, distinct from the single-handler [`gen_effect_body`]. Both arms
+/// resume (state unchanged; frame resolution is the focus). Deterministic Int64; small `0..=9` args; each
+/// op resumes once so it terminates. Form choices drawn BEFORE the operand literals (cursor-exhaustion).
+fn gen_effect_nested_body<C: Choice>(c: &mut C, out: &mut String) {
+    let rv1 = ["(+ p 1)", "p", "(+ s p)"][c.variant(3)];
+    let rv2 = ["(* p 2)", "p", "(- p 1)"][c.variant(3)];
+    let a = c.int_bounded(0, 9);
+    let b = c.int_bounded(0, 9);
+    write!(
+        out,
+        "(do (effect E1 (op o1 (-> Int64 Int64))) (effect E2 (op o2 (-> Int64 Int64))) \
+         (handle E1 0 ((o1 (p) s (resume {rv1} s))) \
+         (handle E2 0 ((o2 (p) s (resume {rv2} s))) (+ (E1.o1 {a}) (E2.o2 {b})))))"
+    )
+    .ok();
 }
 
 /// A MULTI-OP effect body: `(do (effect E (op o1 (-> Int64 Int64)) (op o2 (-> Int64 Int64))) (handle E 0
@@ -2956,6 +2981,35 @@ mod tests {
         }
         assert!(saw_two_ops, "should declare two ops (o1 + o2)");
         assert!(saw_both_performs, "should perform both ops (E.o1 + E.o2)");
+    }
+
+    /// `gen_effect_nested_body` emits a well-formed NESTED-HANDLER effect program (two effects, the E2
+    /// handle nested inside the E1 handle, both performed) and every body COMPILES — the multi-frame
+    /// handler-stack resolution the single-handler shapes never reached. Asserts both effects + a nested
+    /// (two-`handle`) structure are present.
+    #[test]
+    fn gen_effect_nested_body_is_well_formed_and_compiles() {
+        let (mut saw_two_effects, mut saw_nested) = (false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1733);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_effect_nested_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_two_effects |= body.contains("(effect E1 ") && body.contains("(effect E2 ");
+            saw_nested |= body.matches("(handle ").count() >= 2;
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "nested-handler effect body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_two_effects, "should declare two effects (E1 + E2)");
+        assert!(saw_nested, "should nest two (handle …) frames");
     }
 
     /// `gen_list_producing_op_body` REACHES all forms (List.push, List.prepend, Set.to-list, Map.to-list)
