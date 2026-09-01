@@ -2174,6 +2174,91 @@ theorem denote_normalize_app_binary_bitwise (ρ : Nat → Value) (w : IntTy) (op
   · exact denoteBinary_shl_ne_value w u0 u1 v h
   · exact denoteBinary_shr_ne_value w u0 u1 v h
 
+/-- A `.const`-int expression cannot trap, so `isConstInt e n` implies `mayTrap e = false`. Lets the
+`*`/`%` plain sub-cases discharge the operand-DROPPING guard (`isI · 0 && !mayTrap ·`) when a drop is
+blocked by a trapping operand: a trapping operand is not the literal `0`, so the other-operand `isI · 0`
+guard is `false` there. -/
+theorem isConstInt_mayTrap_false (e : SymExpr) (n : Int) (h : isConstInt e n = true) : mayTrap e = false := by
+  rw [isConstInt_eq e n h]; simp [mayTrap]
+
+/-- CAPSTONE `.app` BINARY dispatch — ARITHMETIC arm (`+ - * / %`). `foldConst?` declined (`hnone`), so
+`normalize` took `normalizeAppIdentities`; dispatch its per-op guard cascade onto the proven arith identity
+cases (`x+0`, `0+x`, `x-0`, `x*1`, `1*x`, `x*0`, `0*x`, `x/1`, `x%1`) and, when no guard fires, the PLAIN
+rebuild. The operand-DROPPING `*`/`%` guards carry `!mayTrap`; a drop blocked by a trapping operand falls to
+plain (the trapping operand is not `0`, so the paired `isI · 0` guard is false — `isConstInt_mayTrap_false`). -/
+theorem denote_normalize_app_binary_arith (ρ : Nat → Value) (w : IntTy) (op : String) (a0 a1 : SymExpr)
+    (v : Value) (harith : op = "+" ∨ op = "-" ∨ op = "*" ∨ op = "/" ∨ op = "%")
+    (hnone : foldConst? op (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app op #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app op #[a0, a1])) = .value v := by
+  have ihm : ∀ x ∈ (#[a0, a1] : Array SymExpr), ∀ u, denote ρ w x = .value u → denote ρ w (normalize x) = .value u := by
+    intro x hx u hu
+    rw [Array.mem_iff_getElem] at hx
+    obtain ⟨i, hi, rfl⟩ := hx
+    match i, hi with
+    | 0, _ => exact ih0 u hu
+    | 1, _ => exact ih1 u hu
+  -- discharge the PLAIN fall-through for `op` given `normalizeAppIdentities op #[na0,na1] = .app op #[na0,na1]`
+  have plain : normalizeAppIdentities op #[normalize a0, normalize a1] = .app op #[normalize a0, normalize a1] →
+      denote ρ w (normalize (.app op #[a0, a1])) = .value v := by
+    intro hred
+    refine denote_normalize_app_ident_plain ρ w op #[a0, a1] v ?_ ihm h
+    rw [normalize_app_ident op #[a0, a1] hnone,
+        show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp, hred]
+  rcases harith with rfl | rfl | rfl | rfl | rfl
+  · -- "+": x+0 (r), 0+x (l), else plain
+    by_cases g1 : isConstInt (normalize a1) 0 = true
+    · exact denote_normalize_app_ident_add_zero_r ρ w a0 a1 v (isConstInt_eq _ _ g1) hnone ih1 ih0 h
+    · by_cases g2 : isConstInt (normalize a0) 0 = true
+      · exact denote_normalize_app_ident_add_zero_l ρ w a0 a1 v (isConstInt_eq _ _ g2) (by simpa using g1) hnone ih1 ih0 h
+      · have f1 : isConstInt (normalize a1) 0 = false := by simpa using g1
+        have f2 : isConstInt (normalize a0) 0 = false := by simpa using g2
+        exact plain (by simp [normalizeAppIdentities, f1, f2])
+  · -- "-": x-0 (r), else plain
+    by_cases g1 : isConstInt (normalize a1) 0 = true
+    · exact denote_normalize_app_ident_sub_zero_r ρ w a0 a1 v (isConstInt_eq _ _ g1) hnone ih1 ih0 h
+    · have f1 : isConstInt (normalize a1) 0 = false := by simpa using g1
+      exact plain (by simp [normalizeAppIdentities, f1])
+  · -- "*": x*1 (r), 1*x (l), x*0 (r, mayTrap), 0*x (l, mayTrap), else plain
+    by_cases g1 : isConstInt (normalize a1) 1 = true
+    · exact denote_normalize_app_ident_mul_one_r ρ w a0 a1 v (isConstInt_eq _ _ g1) hnone ih1 ih0 h
+    · by_cases g2 : isConstInt (normalize a0) 1 = true
+      · exact denote_normalize_app_ident_mul_one_l ρ w a0 a1 v (isConstInt_eq _ _ g2) (by simpa using g1) hnone ih1 ih0 h
+      · have f1 : isConstInt (normalize a1) 1 = false := by simpa using g1
+        have f2 : isConstInt (normalize a0) 1 = false := by simpa using g2
+        by_cases g3 : isConstInt (normalize a1) 0 = true
+        · by_cases g4 : mayTrap (normalize a0) = false
+          · exact denote_normalize_app_ident_mul_zero_r ρ w a0 a1 v (isConstInt_eq _ _ g3) g4 hnone ih1 h
+          · have f4 : mayTrap (normalize a0) = true := by simpa using g4
+            have f5 : isConstInt (normalize a0) 0 = false := by
+              cases hci : isConstInt (normalize a0) 0
+              · rfl
+              · rw [isConstInt_mayTrap_false _ _ hci] at f4; simp at f4
+            exact plain (by simp [normalizeAppIdentities, f1, f2, f4, f5])
+        · have f3 : isConstInt (normalize a1) 0 = false := by simpa using g3
+          by_cases g5 : isConstInt (normalize a0) 0 = true
+          · by_cases g6 : mayTrap (normalize a1) = false
+            · exact denote_normalize_app_ident_mul_zero_l ρ w a0 a1 v (isConstInt_eq _ _ g5) g6 hnone ih0 h
+            · have f6 : mayTrap (normalize a1) = true := by simpa using g6
+              exact plain (by simp [normalizeAppIdentities, f1, f2, f3, g5, f6])
+          · have f5 : isConstInt (normalize a0) 0 = false := by simpa using g5
+            exact plain (by simp [normalizeAppIdentities, f1, f2, f3, f5])
+  · -- "/": x/1 (r), else plain
+    by_cases g1 : isConstInt (normalize a1) 1 = true
+    · exact denote_normalize_app_ident_div_one_r ρ w a0 a1 v (isConstInt_eq _ _ g1) hnone ih1 ih0 h
+    · have f1 : isConstInt (normalize a1) 1 = false := by simpa using g1
+      exact plain (by simp [normalizeAppIdentities, f1])
+  · -- "%": x%1 (r, mayTrap), else plain
+    by_cases g1 : isConstInt (normalize a1) 1 = true
+    · by_cases g2 : mayTrap (normalize a0) = false
+      · exact denote_normalize_app_ident_mod_one_r ρ w a0 a1 v (isConstInt_eq _ _ g1) g2 hnone ih1 h
+      · have f2 : mayTrap (normalize a0) = true := by simpa using g2
+        exact plain (by simp [normalizeAppIdentities, g1, f2])
+    · have f1 : isConstInt (normalize a1) 1 = false := by simpa using g1
+      exact plain (by simp [normalizeAppIdentities, f1])
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
