@@ -219,11 +219,12 @@ mod tests {
         assert!(matches!(res.grade, Grade::Fail(_)), "got {:?}", res.grade);
     }
 
-    // A REFUSED compile (status != 0, no module) with an `expect-declines` grades Pass from the diagnostic
-    // alone — no run (and no rustc shell).
+    // A REFUSED compile (status != 0, no module) with an `expect-error <CODE>` grades Pass from the
+    // diagnostic alone — no run (and no rustc shell). (The former `(declines)` marker was removed: a
+    // rejection must now be coded `(error CDZxxxx)`.)
     #[test]
-    fn a_declined_case_is_graded_from_the_diagnostic() {
-        let tr = one_trial(None, GExpect::Declines(None, vec![], vec![]));
+    fn a_coded_error_case_is_graded_from_the_diagnostic() {
+        let tr = one_trial(None, GExpect::Error("CDZ0999".into(), vec![], vec![]));
         let res = grade_to_result(
             &tr,
             None,
@@ -232,10 +233,10 @@ mod tests {
             1,
             "cdz: error [CDZ0999] (node 1): not yet supported",
             None,
-            &workdir("declines"),
+            &workdir("coded-error"),
         )
         .unwrap();
         assert_eq!(res.grade, Grade::Pass);
-        assert!(!res.ran_a_trial, "a declines case runs no trial");
+        assert!(!res.ran_a_trial, "a coded-error case runs no trial");
     }
 }

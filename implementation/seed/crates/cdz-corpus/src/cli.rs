@@ -115,30 +115,14 @@ enum CorpusCmd {
     ///
     /// The corpus is the impl-INDEPENDENT runnable spec (standing operator directive 2026-08-31): a program
     /// that SHOULD work per spec but the compiler does not YET implement must be a TODO — recorded as
-    /// `(output <spec value>)` (grades Todo now, AUTO-LOCKS to Pass once implemented, no corpus edit) — or
-    /// pinned as `(declines CDZ0900 …)`, NEVER as `(error CDZ0900 …)`. `CDZ0900`
-    /// (`Code::UnsupportedConstruct`) is the DECLINE umbrella for a not-yet-built construct; pinning it as an
-    /// `(error …)` REJECTION asserts the program is ILL-FORMED when it is actually well-formed-but-unrealized
-    /// — baking a transient compiler limitation into the spec (and forcing a corpus edit when the feature
-    /// lands). This lint FLAGs any `(error <capability-limit code>)` pin. Currently ~0 (a going-forward
-    /// guard). Exits NON-ZERO on any hit (convert to `(output V)` / `(declines CDZ0900)`).
+    /// `(output <spec value>)` (grades Todo now, AUTO-LOCKS to Pass once implemented, no corpus edit),
+    /// NEVER as `(error CDZ0900 …)`. `CDZ0900` (`Code::UnsupportedConstruct`) is the DECLINE umbrella for a
+    /// not-yet-built construct; pinning it as an `(error …)` REJECTION asserts the program is ILL-FORMED when
+    /// it is actually well-formed-but-unrealized — baking a transient compiler limitation into the spec (and
+    /// forcing a corpus edit when the feature lands). This lint FLAGs any `(error <capability-limit code>)`
+    /// pin. Currently ~0 (a going-forward guard). Exits NON-ZERO on any hit (convert to `(output V)`).
+    /// (The bare `(declines)` marker was removed entirely — a should-work is a TODO `(output V)`.)
     CapabilityErrorCheck {
-        /// Corpus `.sexp` files to check (typically the full `spec/semantics/*.sexp` glob).
-        #[arg(required = true)]
-        files: Vec<String>,
-    },
-    /// Check the corpus contains NO `(declines …)` assertion — the operator DEPRECATION (2026-08-31).
-    ///
-    /// The corpus is the impl-INDEPENDENT runnable spec, so a `(declines …)` MUST NOT appear at all — each
-    /// current one converts to exactly one of: `(error CDZxxxx)` (a genuine USER-FACING error — every one has
-    /// a code), a flagged FAILURE (a CODELESS INTERNAL decline is a BUG — give it a code or fix the path), or
-    /// `(output <spec value>)` (a NOT-YET-IMPLEMENTED should-work case — asserts the value so it AUTO-PASSES
-    /// when implemented). A `(declines)` grades PASS ("correctly declines"), which is FALSE for a should-work
-    /// case + goes STALE-FAILING once the feature lands — the anti-pattern the directive removes. This lint
-    /// FLAGs every `(declines)` case (reporting coded-vs-codeless to aid the 3-bucket classification). Exits
-    /// NON-ZERO on any hit. NOT yet gate-folded (v-corpus-declines is converting the ~74; v-fleet-tooling folds
-    /// it into localGate once the conversions land — fix-then-fold).
-    DeclinesDeprecatedCheck {
         /// Corpus `.sexp` files to check (typically the full `spec/semantics/*.sexp` glob).
         #[arg(required = true)]
         files: Vec<String>,
@@ -210,7 +194,6 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
         CorpusCmd::NativizeCheck { files } => check_nativize_idempotence(files),
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
-        CorpusCmd::DeclinesDeprecatedCheck { files } => check_declines_deprecated(files),
         CorpusCmd::VanishedCheck { .. } => {
             unreachable!("vanished-check is handled above with distinct exit codes")
         }
@@ -395,14 +378,15 @@ fn check_nativize_idempotence(files: &[String]) -> Result<(), String> {
 /// Diagnostic codes that are CAPABILITY / implementation-LIMITS (a not-yet-built construct), NOT semantic
 /// spec-errors. Pinning one as `(error …)` is the anti-pattern the operator directive forbids (a well-formed-
 /// but-unrealized program pinned as an ill-formed REJECTION). `CDZ0900` (`Code::UnsupportedConstruct`) is the
-/// canonical decline umbrella (`(declines CDZ0900 …)`); it must never be an `(error …)`. Kept as a DATA const
+/// compiler's DECLINE umbrella (emitted for a not-yet-built construct); a should-work case pins its VALUE as
+/// `(output V)` (Todo now), and it must never be an `(error …)`. Kept as a DATA const
 /// so the set can grow if new capability-limit codes surface (semantic-error codes — CDZ0201/0203/0304/0101/…
 /// — are DELIBERATELY absent: those ARE the spec and correctly pin as `(error …)`).
 const CAPABILITY_LIMIT_CODES: &[&str] = &["CDZ0900"];
 
 /// The `(desc, code)` of every case in `records` that pins a [`CAPABILITY_LIMIT_CODES`] code as an
-/// `Expect::Error` (the anti-pattern). Pure over parsed records so it is unit-testable; a `(declines
-/// CDZ0900 …)` (`Expect::Declines`) or a semantic-error `(error CDZ0201 …)` is correctly NOT flagged.
+/// `Expect::Error` (the anti-pattern). Pure over parsed records so it is unit-testable; a semantic-error
+/// `(error CDZ0201 …)` is correctly NOT flagged (only a capability-limit code pinned as `(error …)` is).
 fn capability_error_hits(records: &[Record]) -> Vec<(String, String)> {
     let mut hits = Vec::new();
     for rec in records {
@@ -418,9 +402,9 @@ fn capability_error_hits(records: &[Record]) -> Vec<(String, String)> {
 }
 
 /// `capability-error-check FILE…`: flag any case that pins a [`CAPABILITY_LIMIT_CODES`] code as an
-/// `(error …)`. Parser-based (uses `crate::read`, so comments / multi-line / `(declines CDZ0900)` are handled
-/// correctly — only a genuine `Expect::Error` with a capability-limit code is flagged). A hit should be
-/// converted to `(output <spec value>)` (Todo-now, auto-Pass-when-implemented) or `(declines CDZ0900 …)`.
+/// `(error …)`. Parser-based (uses `crate::read`, so comments / multi-line are handled correctly — only a
+/// genuine `Expect::Error` with a capability-limit code is flagged). A hit should be converted to
+/// `(output <spec value>)` (Todo-now, auto-Pass-when-implemented).
 fn check_capability_error_pins(files: &[String]) -> Result<(), String> {
     let mut hits: Vec<(String, String, String)> = Vec::new(); // (file, case description, code)
     for path in files {
@@ -446,73 +430,12 @@ fn check_capability_error_pins(files: &[String]) -> Result<(), String> {
             eprintln!(
                 "capability-error-check: {path}: case {desc:?} pins {code} as an (error …) — {code} is a \
                  not-yet-implemented DECLINE umbrella, not a semantic error. The corpus is the impl-independent \
-                 spec: record this as (output <spec value>) [Todo now, auto-Pass when implemented] or \
-                 (declines {code} …), NEVER (error {code} …) (operator directive: should-work-unimplemented = Todo)"
+                 spec: record this as (output <spec value>) [Todo now, auto-Pass when implemented], \
+                 NEVER (error {code} …) (operator directive: should-work-unimplemented = Todo)"
             );
         }
         Err(format!(
-            "{} case(s) pin a capability-limit code as an (error …) — convert to (output V)/(declines …) (operator: corpus is the impl-independent spec)",
-            hits.len()
-        ))
-    }
-}
-
-/// The `(desc, coded?)` of every case in `records` carrying a `(declines …)` assertion — the operator
-/// deprecation surface. `coded` is `Some(code)` for `(declines CDZxxxx …)` / `None` for a codeless
-/// `(declines …)`; the classification hint (a CODELESS decline is clause-3 BUG-flavored — needs a code or a
-/// fix; a coded one is a should-work → `(output V)` / genuine `(error CODE)`). Pure over parsed records.
-fn declines_hits(records: &[Record]) -> Vec<(String, Option<String>)> {
-    let mut hits = Vec::new();
-    for rec in records {
-        for trial in &rec.trials {
-            if let Expect::Declines(code, ..) = &trial.expect {
-                hits.push((rec.description.clone(), code.clone()));
-            }
-        }
-    }
-    hits
-}
-
-/// `declines-deprecated-check FILE…`: flag EVERY `(declines …)` case — the operator deprecation (2026-08-31:
-/// the corpus, the impl-independent spec, must contain NO `(declines)`). Each converts to `(error CDZxxxx)` /
-/// a flagged FAILURE (codeless internal = bug) / `(output V)` (should-work, auto-Passes when implemented).
-/// Parser-based; reports coded-vs-codeless per case to aid the 3-bucket conversion. Exits NON-ZERO on any.
-fn check_declines_deprecated(files: &[String]) -> Result<(), String> {
-    let mut hits: Vec<(String, String, Option<String>)> = Vec::new(); // (file, desc, coded?)
-    for path in files {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
-        if crate::is_platform_genre(&text) {
-            continue;
-        }
-        let records = crate::read(&text).map_err(|e| format!("{path}: {e}"))?;
-        for (desc, coded) in declines_hits(&records) {
-            hits.push((path.clone(), desc, coded));
-        }
-    }
-    if hits.is_empty() {
-        println!(
-            "declines-deprecated-check: OK — no (declines …) assertion in {} file(s) (corpus is (declines)-free)",
-            files.len()
-        );
-        Ok(())
-    } else {
-        let codeless = hits.iter().filter(|(_, _, c)| c.is_none()).count();
-        for (path, desc, coded) in &hits {
-            let kind = match coded {
-                Some(code) => format!("(declines {code} …) [CODED]"),
-                None => "(declines …) [CODELESS — classify: (output V) if should-work / (error CODE) if a \
-                         user-facing error needing a code / flagged FAILURE if an internal bug]"
-                    .to_string(),
-            };
-            eprintln!(
-                "declines-deprecated-check: {path}: case {desc:?} has {kind} — (declines) is DEPRECATED; \
-                 convert to (error CDZxxxx) [genuine user-facing error] / (output <spec value>) [should-work, \
-                 auto-Passes when implemented] / a flagged FAILURE [codeless internal bug] (operator: corpus \
-                 is the impl-independent spec, no (declines))"
-            );
-        }
-        Err(format!(
-            "{} (declines …) case(s) — {codeless} CODELESS (need classification) — the corpus must be (declines)-free (operator deprecation); convert each to (error CODE)/(output V)/flagged-failure",
+            "{} case(s) pin a capability-limit code as an (error …) — convert to (output V) (operator: corpus is the impl-independent spec)",
             hits.len()
         ))
     }
@@ -948,7 +871,7 @@ fn quote_wrap_wit_world() -> Vec<u8> {
 /// (`sexpr::read`, grafted) so the oracle reads values as binary AST and never re-parses s-expr text.
 /// The expected outcome is carried too (the oracle asserts it internally). Shape:
 ///   (oracle-trials (trials (trial (call <export>)? (arg <value-ast>)*
-///       (expect-value <value-ast> | expect-trap <reason> | expect-error <code> | expect-declines)) …)
+///       (expect-value <value-ast> | expect-trap <reason> | expect-error <code>)) …)
 ///     (host-responses (response <op> <value-ast>) …)? )
 fn oracle_trials_ast(rec: &Record) -> Vec<u8> {
     let mut b = Builder::new();
@@ -984,7 +907,6 @@ fn oracle_trials_ast(rec: &Record) -> Vec<u8> {
                 let cl = str_leaf(&mut b, code);
                 form(&mut b, "expect-warning", vec![cl])
             }
-            Expect::Declines(..) => form(&mut b, "expect-declines", vec![]),
         };
         tk.push(e);
         trials.push(b.list(tk));
@@ -1067,7 +989,6 @@ fn expect_kind(rec: &Record) -> &'static str {
         // outcome graded from the diagnostic (grade_compile_warning), distinct from `error` (compile must
         // REFUSE). The exec router handles `warning` as compile-must-succeed + grade-from-diag (no run).
         Some(Expect::Warning(..)) => "warning",
-        Some(Expect::Declines(..)) => "declines",
         None => "output", // a case always has ≥1 trial; default is harmless
     }
 }
@@ -1235,22 +1156,6 @@ fn expect_form(b: &mut Builder, e: &Expect) -> StructId {
         Expect::Trap(reason) => {
             let leaf = str_leaf(b, reason);
             form(b, "expect-trap", vec![leaf])
-        }
-        Expect::Declines(code, msg, not_msg) => {
-            // Shred to `(expect-declines [CODE] msg… (not "phrase")*)` — the optional CDZ code leads (the
-            // grader reads leaf[0] as the pinned decline-code when it is `CDZxxxx`-shaped, else the bare
-            // string leaves are message substrings), and each seq-29 message-ABSENCE pin rides as a
-            // `(not "phrase")` sub-form (grade fails if the diagnostic CONTAINS any).
-            let mut leaves: Vec<_> = Vec::new();
-            if let Some(c) = code {
-                leaves.push(str_leaf(b, c));
-            }
-            leaves.extend(msg.iter().map(|m| str_leaf(b, m)));
-            for n in not_msg {
-                let nl = str_leaf(b, n);
-                leaves.push(form(b, "not", vec![nl]));
-            }
-            form(b, "expect-declines", leaves)
         }
     }
 }
@@ -1546,42 +1451,13 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         assert!(run_tr.contains("main"), "call export in test-run: {run_tr}");
     }
 
-    /// seq-29: a `(not "phrase")` message-ABSENCE pin reaches the shredded `test-run.ast` as a `(not …)`
-    /// sub-form INSIDE the `expect-error` / `expect-declines` form — distinguishable from the bare-string
-    /// positive `(message …)` substring leaves, exactly the wire `cdz_corpus_grade` decodes.
-    #[test]
-    fn declines_deprecated_check_flags_every_declines_coded_or_codeless() {
-        // Every (declines …) is flagged (deprecated); coded vs codeless is reported (classification hint).
-        // (error …)/(output …) cases are NOT flagged (only (declines) is deprecated).
-        let recs = crate::read(
-            r#"(case "codeless declines" (input 1_) (declines))
-               (case "coded declines" (input 1_) (declines CDZ0900))
-               (case "a genuine error stays" (input 1_) (error CDZ0201))
-               (case "an output case stays" (input (do (def (main) 0) (export main))) (output (: 0 Int64)))"#,
-        )
-        .unwrap();
-        let hits = declines_hits(&recs);
-        assert_eq!(
-            hits.len(),
-            2,
-            "both (declines) cases flagged, error/output not: {hits:?}"
-        );
-        assert_eq!(hits[0], ("codeless declines".to_string(), None));
-        assert_eq!(
-            hits[1],
-            ("coded declines".to_string(), Some("CDZ0900".to_string()))
-        );
-    }
-
     #[test]
     fn capability_error_check_flags_error_cdz0900_only() {
         // (error CDZ0900) = the anti-pattern (a not-yet-built umbrella pinned as an ill-formed REJECTION) → FLAG.
-        // (declines CDZ0900) = correct (a well-formed-but-unrealized decline) → NOT flagged.
         // (error CDZ0201) = a genuine semantic spec-error → NOT flagged (that IS the spec).
         // (output …) for a should-work case → NOT flagged (grades Todo now, auto-Pass when implemented).
         let recs = crate::read(
             r#"(case "wrongly pins the not-yet umbrella as an error" (input 1_) (error CDZ0900))
-               (case "correctly declines a not-yet construct" (input 1_) (declines CDZ0900))
                (case "a genuine malformed spec error" (input 1_) (error CDZ0201))
                (case "should-work recorded as output" (input (do (def (main) 0) (export main))) (output (: 0 Int64)))"#,
         )
@@ -1599,19 +1475,13 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
     #[test]
     fn not_message_reaches_shredded_test_run() {
         let recs = crate::read(
-            r#"(case "err" (input 1_) (error CDZ0201 (message "malformed") (not "internal error")))
-               (case "dec" (input 1_) (declines CDZ0900 (not "panic")))"#,
+            r#"(case "err" (input 1_) (error CDZ0201 (message "malformed") (not "internal error")))"#,
         )
         .unwrap();
         let err_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
         assert!(
             err_tr.contains(r#"(not "internal error")"#) && err_tr.contains(r#""malformed""#),
             "expect-error carries both the message and the (not …) absence pin: {err_tr}"
-        );
-        let dec_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[1])).unwrap());
-        assert!(
-            dec_tr.contains(r#"(not "panic")"#) && dec_tr.contains("CDZ0900"),
-            "expect-declines carries the code + the (not …) absence pin: {dec_tr}"
         );
     }
 
