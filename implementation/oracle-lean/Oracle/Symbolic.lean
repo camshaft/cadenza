@@ -1446,6 +1446,45 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Set.insert on non-set / non-value element")
            | _, _ => .cannotProve "symeval: malformed Set.insert")
+        else if q == "Set".toUTF8 && mem == "union".toUTF8 then
+          -- `Set.union a b` → the dedup-MERGED canonical set (`canonSet (va ++ vb)`) — the Set companion of
+          -- `Set.insert`, closing the v-cdz-smith #7371 set-transform boundary. Both operands must be concrete
+          -- `.ctor "set"` sets (COMPOUND elements via `symElemToValue?`); unorderable/symbolic → cannotProve.
+          (match children[1]?, children[2]? with
+           | some aId, some bId =>
+             (match symEval m senv fuel ty aId, symEval m senv fuel ty bId with
+              | .sym (.ctor ta ea), .sym (.ctor tb eb) =>
+                if ta == "set".toUTF8 && tb == "set".toUTF8 then
+                  (match ea.mapM symElemToValue?, eb.mapM symElemToValue? with
+                   | some va, some vb =>
+                     (match canonSet (va ++ vb) with
+                      | some s => .sym (.ctor "set".toUTF8 (s.map valueToSym))
+                      | none => .cannotProve "symeval: Set.union on unorderable elements")
+                   | _, _ => .cannotProve "symeval: Set.union needs all-concrete elements")
+                else .cannotProve "symeval: Set.union on a non-set value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Set.union on non-set operands")
+           | _, _ => .cannotProve "symeval: malformed Set.union")
+        else if q == "Set".toUTF8 && mem == "remove".toUTF8 then
+          -- `Set.remove s x` → the set minus `x` (bit-faithful `valEq`, mirroring `Set.contains`/`Map.remove`),
+          -- re-canonicalized. Concrete set + value required; symbolic/unorderable → cannotProve.
+          (match children[1]?, children[2]? with
+           | some sId, some xId =>
+             (match symEval m senv fuel ty sId, symEval m senv fuel ty xId with
+              | .sym (.ctor t elems), .sym xe =>
+                if t == "set".toUTF8 then
+                  (match elems.mapM symElemToValue?, symElemToValue? xe with
+                   | some vals, some xval =>
+                     (match canonSet (vals.filter (fun v => !(valEq v xval))) with
+                      | some s => .sym (.ctor "set".toUTF8 (s.map valueToSym))
+                      | none => .cannotProve "symeval: Set.remove on unorderable elements")
+                   | _, _ => .cannotProve "symeval: Set.remove needs all-concrete elements")
+                else .cannotProve "symeval: Set.remove on a non-set value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Set.remove on non-set / non-value element")
+           | _, _ => .cannotProve "symeval: malformed Set.remove")
         else if q == "Map".toUTF8 && mem == "remove".toUTF8 then
           -- `Map.remove mp k` → the map without k's entry, re-canonicalized (`canonMap (es.filter (·.1 ≠ k))`,
           -- Eval.lean:1746-1749). Reify all-const `.tuple #[k,v]` entries, drop keys valEq `k`, canonMap.
