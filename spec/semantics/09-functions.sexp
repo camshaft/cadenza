@@ -4288,6 +4288,21 @@
   (error CDZ0999))
 
 (case
+  "an unproductive PARAMETERIZED self-recursion is a coded CDZ0204 — no base case, result never concrete"
+  (doc
+    "`(def (f (: n Int64)) (f n))` — a parameterized self-call whose EVERY path recurses with no base
+           case — never returns a concrete value, so its result is undeterminable. A PERMANENT correct-reject
+           of a user bug (the fix is 'add a base case'), coded CDZ0204 NonProductiveRecursion. DISTINCT from
+           the NULLARY `(def (f) (f))` case above (CDZ0999 RecursionBound — a compile-time inline-to-reduction-
+           bound decline): here the fault is a never-productive result the type/value analysis cannot resolve,
+           not a reduction-budget exhaustion. Also DISTINCT from CDZ0203 TypeMismatch — no two types disagree;
+           the single result type is simply undeterminable (nothing to unify against). The pair pins the
+           decline-vs-reject + code-per-invariant taxonomy: both refuse cleanly, with the specific code naming
+           exactly why (reduction bound vs non-productive recursion).")
+  (input (do (def (f (: n Int64)) (f n)) (def (main) (f 0)) (export main)))
+  (error CDZ0204))
+
+(case
   "a self-applying term is declined at the reduction budget, not hung on"
   (doc
     "`((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))` — a self-application whose argument applies itself
