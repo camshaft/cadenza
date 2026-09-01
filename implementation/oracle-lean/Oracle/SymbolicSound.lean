@@ -1610,6 +1610,84 @@ theorem denote_normalize_app_ident_mul_one_l (ρ : Nat → Value) (w : IntTy) (a
   obtain ⟨y, rfl⟩ := denoteBinary_arith_int_l "*" w 1 u1 v (foldConst_arith_int_none_l "*" 1 u1 (by decide)) (by decide) h
   rw [ih1 (.int y) hu1, denoteBinary_mul_one_l_value w y v (foldConst_arith_int_none_l "*" 1 (.int y) (by decide)) h]
 
+/-! ### Operand-DROPPING `.app`-identity denote-soundness (`x*0→0`, `0*x→0`, `x%1→0`). The identity
+returns `.const (.int 0)` (dropping the surviving operand), guarded by `!mayTrap` on the dropped operand.
+Assembly like the preserving cases, but the RESULT is `.const (.int 0)` (no operand IH needed for the
+dropped side — the value hypothesis `h` still forces the operands to `.int`, and the `denoteBinary_*_value`
+characterization gives `v = .int 0`, so `denote (.const (.int 0)) = .value (.int 0) = .value v`). The
+`!mayTrap` guard is carried as `hmt` (from the branch condition in the eventual assembly); it is what lets
+`normalizeAppIdentities` fire, and is faithful to normalize's soundness rule (dropping a trapping operand
+would be unsound, but `h` already witnesses no trap occurred). -/
+theorem normalizeAppIdentities_mul_zero_r (a : SymExpr) (hmt : mayTrap a = false) :
+    normalizeAppIdentities "*" #[a, .const (.int 0)] = .const (.int 0) := by
+  simp [normalizeAppIdentities, isConstInt, hmt]
+theorem normalizeAppIdentities_mul_zero_l (b : SymExpr) (hmt : mayTrap b = false) :
+    normalizeAppIdentities "*" #[.const (.int 0), b] = .const (.int 0) := by
+  simp [normalizeAppIdentities, isConstInt, hmt]
+theorem normalizeAppIdentities_mod_one_r (a : SymExpr) (hmt : mayTrap a = false) :
+    normalizeAppIdentities "%" #[a, .const (.int 1)] = .const (.int 0) := by
+  simp [normalizeAppIdentities, isConstInt, hmt]
+
+/-- CAPSTONE `.app`-IDENTITY (DROPPING): `x * 0 → 0`. -/
+theorem denote_normalize_app_ident_mul_zero_r (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hn1 : normalize a1 = .const (.int 0)) (hmt : mayTrap (normalize a0) = false)
+    (hnone : foldConst? "*" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app "*" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "*" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "*" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp,
+      hn1, normalizeAppIdentities_mul_zero_r (normalize a0) hmt]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "*" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu1' : u1 = .int 0 := by
+    have := ih1 u1 hu1; rw [hn1, denote_const_int] at this; exact (Outcome.value.inj this).symm
+  subst hu1'
+  obtain ⟨x, rfl⟩ := denoteBinary_arith_int_r "*" w u0 0 v (foldConst_arith_int_none "*" u0 0 (by decide)) (by decide) h
+  have hv0 : v = .int 0 := denoteBinary_mul_zero_value w x v (foldConst_arith_int_none "*" (.int x) 0 (by decide)) h
+  rw [denote_const_int, hv0]
+
+/-- CAPSTONE `.app`-IDENTITY (DROPPING, LEFT): `0 * x → 0`. -/
+theorem denote_normalize_app_ident_mul_zero_l (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hn0 : normalize a0 = .const (.int 0)) (hmt : mayTrap (normalize a1) = false)
+    (hnone : foldConst? "*" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (h : denote ρ w (.app "*" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "*" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "*" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp,
+      hn0, normalizeAppIdentities_mul_zero_l (normalize a1) hmt]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "*" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu0' : u0 = .int 0 := by
+    have := ih0 u0 hu0; rw [hn0, denote_const_int] at this; exact (Outcome.value.inj this).symm
+  subst hu0'
+  obtain ⟨y, rfl⟩ := denoteBinary_arith_int_l "*" w 0 u1 v (foldConst_arith_int_none_l "*" 0 u1 (by decide)) (by decide) h
+  have hv0 : v = .int 0 := denoteBinary_mul_zero_l_value w y v (foldConst_arith_int_none_l "*" 0 (.int y) (by decide)) h
+  rw [denote_const_int, hv0]
+
+/-- CAPSTONE `.app`-IDENTITY (DROPPING): `x % 1 → 0`. -/
+theorem denote_normalize_app_ident_mod_one_r (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hn1 : normalize a1 = .const (.int 1)) (hmt : mayTrap (normalize a0) = false)
+    (hnone : foldConst? "%" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app "%" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "%" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "%" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp,
+      hn1, normalizeAppIdentities_mod_one_r (normalize a0) hmt]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "%" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu1' : u1 = .int 1 := by
+    have := ih1 u1 hu1; rw [hn1, denote_const_int] at this; exact (Outcome.value.inj this).symm
+  subst hu1'
+  obtain ⟨x, rfl⟩ := denoteBinary_arith_int_r "%" w u0 1 v (foldConst_arith_int_none "%" u0 1 (by decide)) (by decide) h
+  have hv0 : v = .int 0 := denoteBinary_mod_one_value w x v (foldConst_arith_int_none "%" (.int x) 1 (by decide)) h
+  rw [denote_const_int, hv0]
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
