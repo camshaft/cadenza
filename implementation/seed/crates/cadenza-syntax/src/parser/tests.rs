@@ -1410,57 +1410,20 @@ fn an_unterminated_literal_names_its_specific_cause() {
 // `#list(1 2 3)`, i.e. all three elements survive as a well-formed List. This is the first consumer of the
 // recovered.sexp capability the corpus grew for error-recovery-quality tests.
 
-#[test]
-fn missing_closer_is_reported_and_recovered() {
-    // An unterminated call reports the missing `)` but still yields a usable `(f a b)` tree
-    // (rather than discarding the whole form).
-    let p = read_ml("f(a, b");
-    assert!(!p.ok());
-    assert!(
-        p.errors.iter().any(|e| e.message.contains(')')),
-        "the missing `)` is reported: {:?}",
-        p.errors
-    );
-    let a = &p.arenas;
-    let call = a.as_form(a.root, "f").unwrap();
-    assert_eq!(call.len(), 2);
-}
-
-#[test]
-fn recovers_the_let_around_a_bad_binding() {
-    // A stray value in a binding is isolated: the `let` shape and its body survive.
-    let p = read_ml("let x = $ in x + 1");
-    assert!(!p.ok());
-    let a = &p.arenas;
-    let tail = a.as_form(a.root, "let").expect("still a let form");
-    assert_eq!(tail.len(), 2, "bindings + body recovered");
-    // body is `(+ x 1)` — parsed cleanly after the bad binding.
-    assert_eq!(a.head_name(tail[1]), Some("+"));
-}
-
-#[test]
-fn keyword_boundary_is_not_swallowed_by_a_bad_condition() {
-    // A stray symbol where the `if` condition belongs must not eat the `then` — the rest of the
-    // form still parses, so we get an `(if …)` with three children.
-    let p = read_ml("if $ then a else b");
-    assert!(!p.ok());
-    let a = &p.arenas;
-    let if_form = a.as_form(a.root, "if").expect("still an if form");
-    assert_eq!(if_form.len(), 3, "cond/then/else all recovered");
-    assert_eq!(a.as_name(if_form[1]), Some("a"));
-    assert_eq!(a.as_name(if_form[2]), Some("b"));
-}
-
-#[test]
-fn match_arm_boundary_survives_a_bad_pattern() {
-    // A garbage pattern in the first arm does not consume the `=>` or the `|` that starts the
-    // next arm — both arms are recovered.
-    let p = read_ml("match e with | @ => 1 | _ => 2");
-    assert!(!p.ok());
-    let a = &p.arenas;
-    let m = a.as_form(a.root, "match").expect("still a match");
-    assert_eq!(m.len(), 3, "scrutinee + two arms recovered: {m:?}");
-}
+// The fixed-input error-RECOVERY tests (a decline that still yields a usable PARTIAL tree — the reader
+// recovers instead of bailing) MIGRATED to the spec/syntax corpus (parser-corpus inc-8) via the new
+// `recovered.sexp` recovery-golden (each pins the DECLINE + its recovered arena):
+//   * `missing_closer_is_reported_and_recovered` `f(a, b` -> ml/537-call-missing-closer-recovers,
+//     error.txt `expected )` + recovered `(f a b)` (call keeps both args).
+//   * `recovers_the_let_around_a_bad_binding` `let x = $ in x + 1` -> ml/538-let-bad-binding-recovers,
+//     recovered `(let ((x <error>)) (+ x 1))` (let shape + body survive; bad value is an <error> leaf).
+//   * `keyword_boundary_is_not_swallowed_by_a_bad_condition` `if $ then a else b` ->
+//     ml/539-if-bad-condition-recovers, recovered `(if <error> a b)` (all three branches recovered).
+//   * `match_arm_boundary_survives_a_bad_pattern` `match e with | @ => 1 | _ => 2` ->
+//     ml/540-match-bad-pattern-recovers, recovered `(match e (<error> 1) (_ 2))` (both arms recovered).
+// The recovered.sexp golden is STRICTLY MORE precise than the old structural-count asserts (it pins the
+// exact recovered tree incl. the <error> placeholder). Termination-over-arbitrary-junk (stray_closers,
+// exhaustive_short_token_soup) stays Rust — a generated-input property, not a fixed recovered tree.
 
 #[test]
 fn stray_closers_do_not_hang_and_stay_bounded() {
