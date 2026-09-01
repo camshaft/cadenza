@@ -74,6 +74,19 @@ pub fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
     b.list(vec![colon, value, ty])
 }
 
+/// Encode a self-built value in the canonical binary form ([`cadenza_ast::codec`]): run `build` into a
+/// fresh [`Builder`], [`ascribe`] its root to schema type `ty`, finish, and codec-encode. Every contract
+/// event/envelope's `encode` is this exact `build → ascribe → finish → encode` wrapper, so it lives here
+/// once — each type supplies only its `build` closure and ascription type.
+#[must_use]
+pub fn encode_ascribed(build: impl FnOnce(&mut Builder) -> StructId, ty: &str) -> Bytes {
+    let mut b = Builder::new();
+    let value = build(&mut b);
+    let root = ascribe(&mut b, value, ty);
+    let arenas = b.finish(root);
+    Bytes::from(cadenza_ast::codec::encode(&arenas))
+}
+
 /// A record value — the **M2 NATIVE** record constructor: a `Leaf::Ctor(CompoundCtor::Record)` head
 /// (recognized by leaf-KIND, `KIND_RECORD_CTOR`, not head text) followed by one native `field_pair`
 /// `(= <name> <value>)` (a `Leaf::FieldPair` marker, not a `Name("=")`) per entry, emitted in

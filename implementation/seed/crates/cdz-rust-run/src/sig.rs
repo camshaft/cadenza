@@ -128,12 +128,7 @@ pub fn is_closure_param(param: &str) -> bool {
 /// `Rc<dyn Fn(Rc<dyn Fn(i64)->i64>)->i64>` (the former is a substring of the latter), so the pairing must
 /// compare EXACT balanced closure types.
 pub fn closure_param_type(param: &str) -> Option<&str> {
-    let start = param
-        .find("std::rc::Rc<dyn Fn(")
-        .or_else(|| param.find("std::rc::Rc<dyn cdz_rt::EnvClosure<"))
-        .or_else(|| param.find("Rc<dyn Fn("))
-        .or_else(|| param.find("Rc<dyn cdz_rt::EnvClosure<"))
-        .or_else(|| param.find("Rc<dyn EnvClosure<"))?;
+    let start = closure_spelling_pos(param)?;
     let rest = &param[start..];
     // Find the `<` that opens `Rc<` and walk to its MATCHING `>` (depth-balanced over `<`/`>`), so a nested
     // `Rc<dyn Fn(Rc<…>)…>` returns its whole self and a trailing `, x: i64` is excluded. CRITICAL: the
@@ -169,13 +164,19 @@ pub fn param_type_of(param: &str) -> String {
 /// The closure type out of a return-head — sync `-> …Rc<dyn Fn(i64) -> i64>` or async `-> …Rc<dyn
 /// cdz_rt::EnvClosure<i64, i64>>`. `None` if the return is not a closure.
 pub fn closure_ret_type(ret_head: &str) -> Option<String> {
-    let start = ret_head
-        .find("std::rc::Rc<dyn Fn(")
-        .or_else(|| ret_head.find("std::rc::Rc<dyn cdz_rt::EnvClosure<"))
-        .or_else(|| ret_head.find("Rc<dyn Fn("))
-        .or_else(|| ret_head.find("Rc<dyn cdz_rt::EnvClosure<"))
-        .or_else(|| ret_head.find("Rc<dyn EnvClosure<"))?;
+    let start = closure_spelling_pos(ret_head)?;
     Some(ret_head[start..].trim().to_string())
+}
+
+/// The byte position of the first runtime-closure type spelling in `s` — sync `Rc<dyn Fn(…)>` or async
+/// `Rc<dyn …EnvClosure<…>>`, qualified (`std::rc::Rc<…`) or bare — or `None`. Both closure-type extractors
+/// ([`closure_param_type`], [`closure_ret_type`]) scan for this same spelling set.
+fn closure_spelling_pos(s: &str) -> Option<usize> {
+    s.find("std::rc::Rc<dyn Fn(")
+        .or_else(|| s.find("std::rc::Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| s.find("Rc<dyn Fn("))
+        .or_else(|| s.find("Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| s.find("Rc<dyn EnvClosure<"))
 }
 
 /// A FACTORY (producer) export's CAPTURE-param count — its source params minus the async env param — or
