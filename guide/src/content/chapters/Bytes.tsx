@@ -39,8 +39,8 @@ export default function Bytes() {
   (main)
   (Bytes.len (Option.expect (Bytes.slice (Bytes.of #list(1 2 3 4 5)) 1 3) "out of range")))`}
       />
-      <P><Cadenza>(Bytes.slice bs 1 3)</Cadenza> takes 3 bytes starting at index 1, so its length is <C>3</C>. Ask for more bytes than remain and you get the <C>None</C> arm instead.</P>
-      <Note>A small difference worth noting: <C>Bytes.slice</C> takes a start and a <em>length</em>, while <C>String.slice</C> from the previous chapter takes a start and an <em>end</em> index. So <Cadenza>(Bytes.slice bs 1 3)</Cadenza> is three bytes, but <Cadenza>(String.slice s 1 3)</Cadenza> is two characters (indices 1 and 2). Read the argument names and you won't be caught out.</Note>
+      <P><Cadenza ast="Y2R6YXN0AAEGGgoFQnl0ZXMKBXNsaWNlCgJicwABAQABAwgAAAABAAIBAwABAgADAAQABQEEAwQFBgc=" kind="expr">(Bytes.slice bs 1 3)</Cadenza> takes 3 bytes starting at index 1, so its length is <C>3</C>. Ask for more bytes than remain and you get the <C>None</C> arm instead.</P>
+      <Note>A small difference worth noting: <C>Bytes.slice</C> takes a start and a <em>length</em>, while <C>String.slice</C> from the previous chapter takes a start and an <em>end</em> index. So <Cadenza ast="Y2R6YXN0AAEGGgoFQnl0ZXMKBXNsaWNlCgJicwABAQABAwgAAAABAAIBAwABAgADAAQABQEEAwQFBgc=" kind="expr">(Bytes.slice bs 1 3)</Cadenza> is three bytes, but <Cadenza ast="Y2R6YXN0AAEGGgoGU3RyaW5nCgVzbGljZQoBcwABAQABAwgAAAABAAIBAwABAgADAAQABQEEAwQFBgc=" kind="expr">(String.slice s 1 3)</Cadenza> is two characters (indices 1 and 2). Read the argument names and you won't be caught out.</Note>
       <H2>From text to bytes</H2>
       <P><C>String.to-bytes</C>, the crossing the <em>Strings</em> chapter covered, hands you a string's UTF-8 encoding as a <C>Bytes</C>, which lets us see what <C>Bytes.len</C> measures, namely octets rather than characters. Return the bytes for the 4-character <C>"café"</C> and the encoding is right there in <C>b"caf\xc3\xa9"</C>:</P>
       <Runnable

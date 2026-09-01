@@ -92,7 +92,7 @@ export default function PropertyTesting() {
 
 (def (main) (round-trips 21))`}
         expected="true"
-        hint={<>Doubling then halving gets you back where you started, so <Cadenza>(/ (* n 2) 2)</Cadenza> equals <C>n</C>. Fill the blank with <C>n</C>; a <C>@test</C> would <C>assert-eq</C> these two.</>}
+        hint={<>Doubling then halving gets you back where you started, so <Cadenza ast="Y2R6YXN0AAEECgEvCgEqCgFuAAECBwAAAAEAAgADAQMBAgMAAwEDAAQFBg==" kind="expr">(/ (* n 2) 2)</Cadenza> equals <C>n</C>. Fill the blank with <C>n</C>; a <C>@test</C> would <C>assert-eq</C> these two.</>}
       />
       <Exercise
         id="property-testing:2"

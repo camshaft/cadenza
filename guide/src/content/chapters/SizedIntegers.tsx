@@ -44,7 +44,7 @@ export default function SizedIntegers() {
         source={`(def (f (: a Int)) a)`}
         expect="error"
       />
-      <P>The fix is to name a concrete width, so <C>Int64</C> for the everyday integer, or <C>Int32</C>, <C>UInt8</C>, and the rest for a fixed size. The compound form <C>(Int 64)</C> is itself a perfectly good type, exactly equal to <C>Int64</C>, so this compiles and runs, and <Cadenza>(add1 41)</Cadenza> is <C>42</C>:</P>
+      <P>The fix is to name a concrete width, so <C>Int64</C> for the everyday integer, or <C>Int32</C>, <C>UInt8</C>, and the rest for a fixed size. The compound form <C>(Int 64)</C> is itself a perfectly good type, exactly equal to <C>Int64</C>, so this compiles and runs, and <Cadenza ast="Y2R6YXN0AAECCgRhZGQxAAEpAwAAAAEBAgABAg==" kind="expr">(add1 41)</Cadenza> is <C>42</C>:</P>
       <Runnable
         source={`(do
   (def (add1 (: n (Int 64))) (+ n 1))
@@ -79,7 +79,7 @@ export default function SizedIntegers() {
       />
       <Exercise
         id="sized-integers:2"
-        prompt={<>This won't compile: <Cadenza>(+ (UInt8.of 1) (UInt16.of 300))</Cadenza> mixes two widths. Fix it by making the first operand a <C>UInt16</C> too, so both sides match and the sum is <C>301</C>.</>}
+        prompt={<>This won't compile: <Cadenza ast="Y2R6YXN0AAEHCgErGgoFVUludDgKAm9mAAEBCgZVSW50MTYAAgEsDgAAAAEAAgADAQMBAgMABAECBAUAAQAFAAMBAwcICQAGAQIKCwEDAAYMDQ==" kind="expr">(+ (UInt8.of 1) (UInt16.of 300))</Cadenza> mixes two widths. Fix it by making the first operand a <C>UInt16</C> too, so both sides match and the sum is <C>301</C>.</>}
         starter={`(+ (UInt?.of 1) (UInt16.of 300))`}
         solution={`(+ (UInt16.of 1) (UInt16.of 300))`}
         expected="301"

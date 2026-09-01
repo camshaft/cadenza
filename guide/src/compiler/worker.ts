@@ -28,6 +28,7 @@ import init, {
   render_syntax as wasmRenderSyntax,
   render_syntax_display as wasmRenderSyntaxDisplay,
   render_value as wasmRenderValue,
+  render_binary as wasmRenderBinary,
   required_runtime_hash as wasmRuntimeHash,
   export_types as wasmExportTypes,
 } from "../wasm/pkg/cdz_wasm.js";
@@ -450,6 +451,13 @@ const api = {
   async renderValue(bytes: Uint8Array): Promise<string> {
     await ensureReady();
     return wasmRenderValue(bytes);
+  },
+
+  // Render a canonical binary-AST to a surface, per fragment kind — the render-from-binary path (no text
+  // re-parse). Used by inline <Cadenza> for the (cdz …) tag's embedded AST.
+  async renderBinary(bytes: Uint8Array, to: string, kind: string): Promise<string> {
+    await ensureReady();
+    return wasmRenderBinary(bytes, to, kind);
   },
 
   /// Emit the program as Rust source — sync or (gas-metered) async — for the "Compiled" output views.

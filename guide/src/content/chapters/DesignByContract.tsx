@@ -49,7 +49,7 @@ export default function Contracts() {
       <P>Called with <C>200</C> both hold and it returns <C>100</C>. Call it with <C>-5</C> and it traps at <em>entry</em> (the precondition); call it with <C>5</C> and it traps at <em>exit</em> (the postcondition catches the <C>-95</C>). A caller can only ever see a result that satisfies the contract, or a clean trap at the exact boundary that broke it.</P>
       <Note>Two things to know: a contract may reference only the function's parameters (and prelude/global names), so naming something out of scope is a compile error at the annotation. And a function whose parameter is named <C>ret</C> can't carry an <C>@ensures</C>: the result binder <C>ret</C> would shadow the parameter, so rather than silently ignore the postcondition, the compiler rejects it and asks you to rename the parameter.</Note>
       <H2>A contract is an ordinary boolean</H2>
-      <P>A contract's predicate is just a boolean expression in the def's scope, so it can say far more than <C>&gt;= 0</C>. It can relate two parameters (<Cadenza>{"(requires (< lo hi))"}</Cadenza>), compare the result to an input (<Cadenza>{"(ensures (> ret x))"}</Cadenza>), reach into a tuple or record, or even <em>match</em> a sum result. Here <C>safe-dec</C> returns an <C>Option</C>, and the postcondition matches it, promising that whenever there <em>is</em> a value it's non-negative:</P>
+      <P>A contract's predicate is just a boolean expression in the def's scope, so it can say far more than <C>&gt;= 0</C>. It can relate two parameters (<Cadenza ast="Y2R6YXN0AAEECghyZXF1aXJlcwoBPAoCbG8KAmhpBgAAAAEAAgADAQMBAgMBAgAEBQ==" kind="expr">{"(requires (< lo hi))"}</Cadenza>), compare the result to an input (<Cadenza ast="Y2R6YXN0AAEECgdlbnN1cmVzCgE+CgNyZXQKAXgGAAAAAQACAAMBAwECAwECAAQF" kind="expr">{"(ensures (> ret x))"}</Cadenza>), reach into a tuple or record, or even <em>match</em> a sum result. Here <C>safe-dec</C> returns an <C>Option</C>, and the postcondition matches it, promising that whenever there <em>is</em> a value it's non-negative:</P>
       <Runnable
         source={`(def (main) (safe-dec 5))
 
@@ -59,7 +59,7 @@ export default function Contracts() {
     (ensures (match ret ((Some v) (>= v 0)) ((None _u) true)))
     (def (safe-dec (: x Int64)) (if (> x 0) (Some (- x 1)) (None unit)))))`}
       />
-      <P>Called with <C>5</C> the result is <Cadenza>(Some 4)</Cadenza>, and the postcondition's <C>Some</C> arm checks <C>4 &gt;= 0</C>. Because the predicate is ordinary code, a contract is as expressive as any other boolean you could write, it just runs at the boundary instead of in the body.</P>
+      <P>Called with <C>5</C> the result is <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAEEAwAAAAEBAgABAg==" kind="expr">(Some 4)</Cadenza>, and the postcondition's <C>Some</C> arm checks <C>4 &gt;= 0</C>. Because the predicate is ordinary code, a contract is as expressive as any other boolean you could write, it just runs at the boundary instead of in the body.</P>
       <H2>@invariant: guarding a type</H2>
       <P><C>@requires</C> guards a function's entry and <C>@ensures</C> its exit. The third contract, <C>@invariant</C>, guards a <em>type</em>. Put it on a value type and the compiler enforces the predicate at <em>every</em> point a value of that type is built, so a value that breaks it can never come into existence. The predicate is written over <C>self</C>, the value being constructed. Here a <C>Percent</C> must stay between <C>0</C> and <C>100</C>, and building one in range works:</P>
       <Runnable
