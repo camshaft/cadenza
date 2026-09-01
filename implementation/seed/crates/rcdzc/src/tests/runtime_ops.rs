@@ -789,30 +789,12 @@ fn a_chained_multi_use_boxed_collection_producer_emits_linear_wasm_not_exponenti
              bytes ({ratio:.1}× — linear is ~2×, the un-kept-producer regression compounds exponentially)"
     );
 
-    // `Set.union` (`Core::SetAlgebra`) is the BINARY-same-operand SET producer — the true Set exponential
-    // witness (v-compiler-perf). Its chain `x_i = (Set.union x_{i-1} x_{i-1})` doubles the use per level
-    // exactly like `List.concat`; added to `is_runtime_computation` with the batch so it is kept + shared.
-    fn union_chain(n: usize) -> String {
-        // `x0 = (Set.of (list p))`; `x_i = (Set.union x_{i-1} x_{i-1})` — `x_{i-1}` used TWICE per level.
-        let mut lets = String::from("(x0 ((. Set of) (list p))) ");
-        for i in 1..=n {
-            let prev = i - 1;
-            lets.push_str(&format!("(x{i} ((. Set union) x{prev} x{prev})) "));
-        }
-        format!(
-            "(module m (def (f (: p Int64)) (let ({lets}) ((. Set len) x{n}))) \
-                 (def (main) (f 1)) (export main))"
-        )
-    }
-    let s7 = wasm_len(&union_chain(7));
-    let s14 = wasm_len(&union_chain(14));
-    let sratio = s14 as f64 / (s7.max(1)) as f64;
-    assert!(
-        s7 > 0 && sratio < 4.0 && s14 < 20_000,
-        "a chained multi-use `Set.union` must emit LINEAR wasm (kept + slot-shared), not 2^N (the \
-             confirmed Set exponential witness, kept via the `Core::SetAlgebra` widening): depth 7→14 \
-             emitted {s7}→{s14} bytes ({sratio:.1}× — linear is ~2×)"
-    );
+    // NOTE: the `Set.union` (`Core::SetAlgebra`) chain that used to live here was REMOVED with the P0
+    // stopgap that dropped the MAP + SET producers from `is_runtime_computation` (a multi-use
+    // generation-shared CHAMP map/set over-freed a path-copy-shared interior node under `--guarded-all`;
+    // memory-safety > perf). With `SetOf`/`SetAlgebra` no longer kept, a `Set.union` chain reverts to 2^N
+    // by design, so a linear-emit assertion on it would (correctly) fail. Re-add the Set.union (and a Map)
+    // chain here when the generation-shared-CHAMP reclaim fix lands and the producers are re-widened.
 }
 
 #[test]
