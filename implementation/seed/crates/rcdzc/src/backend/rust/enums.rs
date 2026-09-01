@@ -803,8 +803,14 @@ pub(super) fn ty_derives_eq(
         // element type, so it stays `Set(Var _)` — but it emits with a concrete default rep (`BTreeSet<i64>`)
         // on BOTH sides of a `=`, which unifies and is `Eq`, so treat a free-var leaf as Eq (the drained-set
         // value-equality case). `ty_leaf_eq_or_free` recurses the same way but admits a bare free var.
-        Ty::List(e) | Ty::Set(e) => ty_leaf_eq_or_free(db, e, visited),
-        Ty::Map(k, v) => ty_leaf_eq_or_free(db, k, visited) && ty_leaf_eq_or_free(db, v, visited),
+        // A `List` element / `Map` VALUE is a RAW `Vec<T>` slot (a float there is `Vec<f64>`, NOT `Eq`); a
+        // `Set` ELEMENT / `Map` KEY is stored in the `Eq`-deriving `__CdzF{N}` ord-wrapper, so a float there
+        // makes the `BTreeSet`/`BTreeMap` key `Eq` — use `ty_ord_key_eq_or_free` for those. (See its docs.)
+        Ty::List(e) => ty_leaf_eq_or_free(db, e, visited),
+        Ty::Set(e) => ty_ord_key_eq_or_free(db, e, visited),
+        Ty::Map(k, v) => {
+            ty_ord_key_eq_or_free(db, k, visited) && ty_leaf_eq_or_free(db, v, visited)
+        }
         // A `Qty` erases to its inner magnitude in `lower` (the unit is compile-time), so a runtime `=` over
         // a quantity IS the `=` over its inner numeric type — Eq-derivable iff the inner is. A `(Qty BigInt …)`
         // / `(Qty Rational …)` / `(Qty Int64 …)` leaf in a compound thus compares by its erased magnitude.
@@ -832,8 +838,47 @@ fn ty_leaf_eq_or_free(
     match ty {
         Ty::Var(n) if *n < PARAM_SENTINEL_BASE => true,
         Ty::Any => true,
-        Ty::List(e) | Ty::Set(e) => ty_leaf_eq_or_free(db, e, visited),
-        Ty::Map(k, v) => ty_leaf_eq_or_free(db, k, visited) && ty_leaf_eq_or_free(db, v, visited),
+        // A `List` element / `Map` VALUE is a RAW `Vec<T>` slot (a float there is `Vec<f64>`, NOT `Eq`); a
+        // `Set` ELEMENT / `Map` KEY is stored in the `Eq`-deriving `__CdzF{N}` ord-wrapper, so a float there
+        // makes the `BTreeSet`/`BTreeMap` key `Eq` — use `ty_ord_key_eq_or_free` for those. (See its docs.)
+        Ty::List(e) => ty_leaf_eq_or_free(db, e, visited),
+        Ty::Set(e) => ty_ord_key_eq_or_free(db, e, visited),
+        Ty::Map(k, v) => {
+            ty_ord_key_eq_or_free(db, k, visited) && ty_leaf_eq_or_free(db, v, visited)
+        }
+        other => ty_derives_eq(db, other, visited),
+    }
+}
+
+/// Whether a Set-ELEMENT / Map-KEY type maps to an `Eq`-deriving Rust key — like [`ty_leaf_eq_or_free`] but a
+/// FLOAT leaf counts as `Eq`. A `BTreeSet`/`BTreeMap` key that is (or contains) a float is stored in the
+/// `__CdzF{64,32}` total-order wrapper (`impl Eq`, NaN-canonicalized — see `CDZ_F64_DECL`), NOT a raw `f64`,
+/// so the key type DOES derive `Eq` and a native `==` is the correct canonical set/map equality (the SAME
+/// canonical form used for construction/lookup, matching the wasm heap walk). Mirrors `wrap_ord_key` /
+/// `key_ty_has_wrappable_float`'s wrapping descent (a bare float, and a float REBUILT inside a Tuple/Record
+/// key) so this agrees with what actually gets wrapped. A float nested in a `Sum`/`List` key is NOT wrapped
+/// (it declines upstream as a non-ord-key via `ty_is_ord_key`), so any other shape defers to `ty_derives_eq`
+/// (correctly: `Int`/`String`/`Symbol`/`Bool`/a float-free sum → `Eq`; a float-carrying sum → not). A bare
+/// free var is an EMPTY collection (concrete default rep on both sides) → `Eq`, as in `ty_leaf_eq_or_free`.
+fn ty_ord_key_eq_or_free(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    visited: &mut std::collections::HashSet<crate::ast::StructId>,
+) -> bool {
+    use crate::ty::Ty;
+    match ty.strip_nominal_and_qty() {
+        // A float KEY/element is lifted to the `Eq`-deriving `__CdzF{N}` wrapper.
+        Ty::Float(_) => true,
+        // A Tuple/Record key rebuilds wrapping each float element by position (`ord_key_type`) → `Eq` iff
+        // every element is (a nested float is wrapped; a non-float element must itself be `Eq`).
+        Ty::Tuple(elems) => elems.iter().all(|e| ty_ord_key_eq_or_free(db, e, visited)),
+        Ty::Record(fields) => fields
+            .values()
+            .all(|t| ty_ord_key_eq_or_free(db, t, visited)),
+        // An empty collection's element stays a free var (default rep on both sides) → `Eq`.
+        Ty::Var(n) if *n < PARAM_SENTINEL_BASE => true,
+        Ty::Any => true,
+        // Any other key shape is not float-wrapped — the ordinary derive decides.
         other => ty_derives_eq(db, other, visited),
     }
 }
