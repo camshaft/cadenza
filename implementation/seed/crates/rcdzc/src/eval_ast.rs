@@ -45,7 +45,7 @@ struct EvalPlan {
 
 /// Every node id reachable from `root` through the structure child lists (inclusive). Used to diff the
 /// dead reified-argument subtree against the live reconstruction so the dead wrapper nodes can be blanked.
-fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashSet<u32> {
+pub(crate) fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashSet<u32> {
     let mut seen = std::collections::HashSet::new();
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
