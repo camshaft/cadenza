@@ -1,0 +1,5 @@
+def classify(x) =
+  if first-threshold-check-predicate(x) then first-branch-result-value(x)
+  else if second-threshold-check-predicate(x) then second-branch-result-value(x)
+  else if third-threshold-check-predicate(x) then third-branch-result-value(x)
+  else final-fallback-branch-result-value(x)
