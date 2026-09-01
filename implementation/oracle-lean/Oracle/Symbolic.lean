@@ -133,6 +133,32 @@ def valEqB : Value → Value → Bool
   | .variant t1 p1, .variant t2 p2 => t1.data == t2.data && valEqB p1 p2
   | _, _ => false
 
+/-- A REDUCIBLE STRUCTURAL equality on `SymExpr` (uses `valEqB` at `.const`, so `false` on any float leaf →
+soundness is unconditional: `= true` implies no float, hence propositional equality). The reducible
+counterpart of the OPAQUE derived `SymExpr` `BEq` — needed to reason about the `.app`-IDENTITY IDEMPOTENCE
+guard (`x or x → x` fires on `a == b`, which a proof cannot reduce). `.record`/`.case`/`.localFn` (pair-array
+/ list shapes) → `false` for now (sound-but-incomplete; a later increment). Byte strings compare via `.data`
+(`Array UInt8` IS `LawfulBEq`; `ByteArray` is not). Array cases via `.attach.zip` so each element carries a
+membership proof (`Array.sizeOf_lt_of_mem`) for termination. -/
+def symExprEqB : SymExpr → SymExpr → Bool
+  | .var a, .var b => a == b
+  | .const a, .const b => valEqB a b
+  | .app o1 a1, .app o2 a2 =>
+      o1 == o2 && a1.size == a2.size && (a1.attach.zip a2).all (fun p => symExprEqB p.1.val p.2)
+  | .ite c1 t1 e1, .ite c2 t2 e2 => symExprEqB c1 c2 && symExprEqB t1 t2 && symExprEqB e1 e2
+  | .tuple a1, .tuple a2 =>
+      a1.size == a2.size && (a1.attach.zip a2).all (fun p => symExprEqB p.1.val p.2)
+  | .ctor t1 a1, .ctor t2 a2 =>
+      t1.data == t2.data && a1.size == a2.size && (a1.attach.zip a2).all (fun p => symExprEqB p.1.val p.2)
+  | .proj b1 s1, .proj b2 s2 => symExprEqB b1 b2 && s1.data == s2.data
+  | _, _ => false
+termination_by e _ => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have h := Array.sizeOf_lt_of_mem p.1.property; omega)
+
 /-- Is the VALUE `v` the boolean literal `b`? A REDUCIBLE STRUCTURAL check (`match` + `Bool` `==`), unlike
 `v == .bool b` whose `Value` derived `BEq` is `opaque` (kernel-irreducible). Behavior-identical to
 `v == .bool b`. Lets `foldConst?`'s `and`/`or` arm REDUCE in proofs (the capstone bool-identity cases need
@@ -2761,5 +2787,13 @@ private def _recPat : Module :=
        == some (some [("x".toUTF8, .const (.int 1))])
 -- against a SYMBOLIC scrutinee → binds x to the symbolic field projection `proj scrut a`.
 #guard symBindPat _recPat 4 (.var 0) == some [("x".toUTF8, .proj (.var 0) "a".toUTF8)]
+
+-- symExprEqB (reducible structural SymExpr equality; float → false via valEqB): behaves as expected.
+#guard symExprEqB (.var 3) (.var 3) == true
+#guard symExprEqB (.var 3) (.var 4) == false
+#guard symExprEqB (.app "+" #[.var 0, .const (.int 5)]) (.app "+" #[.var 0, .const (.int 5)]) == true
+#guard symExprEqB (.app "+" #[.var 0, .const (.int 5)]) (.app "+" #[.var 0, .const (.int 6)]) == false
+#guard symExprEqB (.app "+" #[.var 0]) (.app "-" #[.var 0]) == false
+#guard symExprEqB (.const (.f64 (0.0 : Float))) (.const (.f64 (0.0 : Float))) == false  -- floats → false (sound)
 
 end Oracle
