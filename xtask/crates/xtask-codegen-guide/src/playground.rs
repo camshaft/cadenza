@@ -18,6 +18,7 @@
 //! snippet). That is the key playground-vs-chapter rendering distinction.
 
 use cadenza_ast::ast::{Arenas, Struct, StructId};
+use cadenza_syntax_core::spans::SpanTable;
 
 /// The closed `theme` set the playground sidebar groups by (matches the `Example` union in examples.ts +
 /// the `src/playground/examples.test.ts` structural lint). A theme outside this set is a codegen error.
@@ -83,15 +84,42 @@ fn canonical_source(a: &Arenas, example: StructId) -> Option<String> {
     Some(parts.join("\n\n"))
 }
 
-/// The expected-result of an `(expected <value>)` form, rendered as text — a flat value form like
+/// The expected-result of an `(expected <value>)` form, as text — a flat value form like
 /// `(: #tuple(1 2) (Tuple Int64 Int64))` or a bare atom (`5`, `true`). Stored as an SEXPR value, NOT a code
-/// string (operator seq-279 "no code in strings"); rendered via `print_from` (byte-stable round-trip, so the
-/// emitted examples.ts `expected: "…"` string is unchanged from the hand-authored one). `None` when absent.
-fn expected_value(a: &Arenas, example: StructId) -> Option<String> {
+/// string (operator seq-279 "no code in strings").
+///
+/// VERBATIM-PRESERVE the authored surface when the source text + span table are available (`spanned`): the
+/// authored `(expected …)` already carries the CORRECT PER-TYPE value surface (units `Qty.of`/`Unit.base`
+/// SUGARED, matching the sugared Qty runtime; `Ast` `(. Ast List)` UNSUGARED, matching the unsugared Ast
+/// runtime), and `check:examples` runs each example and verifies the pin against the ACTUAL runtime render,
+/// so a wrong authored surface cannot slip through. Crucially, NO re-render printer can reproduce this
+/// per-type distinction: `Qty.of` and `(. Ast List)` both parse to the same `Leaf::Member`, so the surface
+/// choice is NOT in the AST — `print_from` renders every member structurally (`(. obj key)`, breaks Qty) and
+/// `print_pretty_from` renders every member sugared (`obj.key`, breaks Ast). So we slice the authored value's
+/// source span and pass it through untouched (v-syntax-render-ty design, replacing the reverted #7622 blanket
+/// print switch). Fall back to the structural single-line `print_from` for a SPANLESS path — a decoded binary
+/// `(playground …)` shred or a test reading pre-built text — which carries no authored surface to preserve.
+/// `None` when absent.
+fn expected_value(
+    a: &Arenas,
+    example: StructId,
+    spanned: Option<(&str, &SpanTable)>,
+) -> Option<String> {
     let holder = super::named_node(a, example, "expected")?;
     let kids = super::children(a, holder);
     if kids.is_empty() {
         return None;
+    }
+    // Verbatim: slice each value child's source span (byte-exact authored text). `collect` into an
+    // `Option` so a missing span for ANY child falls through to the re-render rather than panicking.
+    if let Some((text, spans)) = spanned {
+        let verbatim: Option<Vec<&str>> = kids
+            .iter()
+            .map(|&k| spans.get(k).map(|s| &text[s.start..s.end]))
+            .collect();
+        if let Some(parts) = verbatim {
+            return Some(parts.join(" "));
+        }
     }
     let parts: Vec<String> = kids
         .iter()
@@ -102,7 +130,14 @@ fn expected_value(a: &Arenas, example: StructId) -> Option<String> {
 
 /// Read + validate ONE `(example …)` form. Returns an error string (not a panic) on a malformed/invalid
 /// example so the codegen can fail loudly with a pointed message.
-pub fn read_one_example(a: &Arenas, ex: StructId) -> Result<PlaygroundExample, String> {
+/// `spanned` carries the source text + span table for the authored `.sexp` when available, so the
+/// `(expected …)` pin is preserved verbatim (see [`expected_value`]); `None` for a spanless read (a decoded
+/// binary shred, or a test on pre-built text) falls back to the structural re-render.
+pub fn read_one_example(
+    a: &Arenas,
+    ex: StructId,
+    spanned: Option<(&str, &SpanTable)>,
+) -> Result<PlaygroundExample, String> {
     let id = super::named_attr(a, ex, "id")
         .ok_or("an (example …) is missing (id \"…\")")?
         .to_string();
@@ -127,7 +162,7 @@ pub fn read_one_example(a: &Arenas, ex: StructId) -> Result<PlaygroundExample, S
     }
     let source =
         canonical_source(a, ex).ok_or_else(|| format!("example {id}: missing (source …)"))?;
-    let expected = expected_value(a, ex);
+    let expected = expected_value(a, ex, spanned);
     let expect_error = super::named_attr(a, ex, "expect-error") == Some("true");
     // A pinned `expected` value must be sexpr-authored (compared on the sexpr pass) — mirrors the
     // examples.test.ts lint. Playground examples are sexpr, so this is a codegen guard against drift.
@@ -157,7 +192,7 @@ pub fn read_playground(a: &Arenas) -> Result<Vec<PlaygroundExample>, String> {
         if a.head_name(ex) != Some("example") {
             continue; // tolerate non-example children (comments/metadata) — walk only (example …)
         }
-        out.push(read_one_example(a, ex)?);
+        out.push(read_one_example(a, ex, None)?);
     }
     Ok(out)
 }
@@ -178,11 +213,12 @@ pub fn read_playground_dir(dir: &std::path::Path) -> Result<Vec<PlaygroundExampl
     let mut out = Vec::new();
     for f in &files {
         let text = std::fs::read_to_string(f).map_err(|e| format!("read {}: {e}", f.display()))?;
-        let a = cadenza_syntax_sexpr::read_all(&text)
+        // Spanned read so the (expected …) pin is preserved verbatim from the authored source.
+        let (a, spans) = cadenza_syntax_sexpr::read_all_spanned(&text)
             .map_err(|e| format!("parse {}: {e:?}", f.display()))?;
         let ex =
             locate_example(&a).ok_or_else(|| format!("{}: no (example …) form", f.display()))?;
-        out.push(read_one_example(&a, ex)?);
+        out.push(read_one_example(&a, ex, Some((&text, &spans)))?);
     }
     Ok(out)
 }
@@ -194,7 +230,7 @@ pub fn read_playground_any(a: &Arenas) -> Result<Vec<PlaygroundExample>, String>
         return read_playground(a);
     }
     if let Some(ex) = locate_example(a) {
-        return Ok(vec![read_one_example(a, ex)?]);
+        return Ok(vec![read_one_example(a, ex, None)?]);
     }
     Err("no (playground …) or (example …) form in the document".into())
 }
@@ -529,6 +565,47 @@ mod tests {
     }
 
     #[test]
+    fn spanned_read_preserves_authored_expected_surface_per_type() {
+        // (b) verbatim-preserve (v-syntax-render-ty design, replacing the reverted #7622): the authored
+        // (expected …) surface passes through byte-for-byte, so a PER-TYPE value surface the AST cannot
+        // carry — `Qty.of` SUGARED vs `(. Qty of)` STRUCTURAL, both the same Member node — is preserved to
+        // match the runtime per-type. Guards against a re-render regression (a blanket print_from /
+        // print_pretty switch that would flip one type's surface and break its pin).
+        let read_spanned = |text: &str| {
+            let (a, spans) = cadenza_syntax_sexpr::read_all_spanned(text).unwrap();
+            let ex = locate_example(&a).unwrap();
+            read_one_example(&a, ex, Some((text, &spans))).unwrap()
+        };
+        // SUGARED authored surface is preserved verbatim (NOT structuralized to `(. Qty of)`).
+        let sugared = "(example (id \"q\") (name \"Q\") (theme \"basics\") (surface \"sexpr\") \
+            (source (do (def (main) 1) (export main))) \
+            (expected (: (Qty.of 5000.0 (Unit.base #\"meter\")) (Qty Float64 (Unit.base #\"meter\")))))";
+        assert_eq!(
+            read_spanned(sugared).expected.as_deref(),
+            Some("(: (Qty.of 5000.0 (Unit.base #\"meter\")) (Qty Float64 (Unit.base #\"meter\")))")
+        );
+        // STRUCTURAL authored surface is preserved verbatim (NOT sugared to `Ast.Int`).
+        let structural = "(example (id \"a\") (name \"A\") (theme \"basics\") (surface \"sexpr\") \
+            (source (do (def (main) 1) (export main))) \
+            (expected (: ((. Ast Int) 6) Ast)))";
+        assert_eq!(
+            read_spanned(structural).expected.as_deref(),
+            Some("(: ((. Ast Int) 6) Ast)")
+        );
+        // Contrast — the SPANLESS path (a decoded binary shred / test text) re-renders STRUCTURALLY, so a
+        // sugared authored surface is LOST (`Qty.of` → `(. Qty of)`). This is exactly why the generation
+        // path must preserve the source span rather than re-render.
+        let (a, _spans) = cadenza_syntax_sexpr::read_all_spanned(sugared).unwrap();
+        let ex = locate_example(&a).unwrap();
+        assert_eq!(
+            read_one_example(&a, ex, None).unwrap().expected.as_deref(),
+            Some(
+                "(: ((. Qty of) 5000.0 ((. Unit base) #\"meter\")) (Qty Float64 ((. Unit base) #\"meter\")))"
+            )
+        );
+    }
+
+    #[test]
     fn rejects_unknown_theme() {
         let doc = "(playground (example (id \"x\") (name \"X\") (theme \"algorithm\") (surface \"sexpr\") \
               (source (do (def (main) 1) (export main)))))";
@@ -639,7 +716,7 @@ mod tests {
         let read = |form: &str| {
             let a = cadenza_syntax_sexpr::read_all(form).unwrap();
             let ex = locate_example(&a).expect("emitted form is not an (example …)");
-            read_one_example(&a, ex).unwrap()
+            read_one_example(&a, ex, None).unwrap()
         };
         let one = read(&forms[0].1);
         assert_eq!(one.id, "one");
