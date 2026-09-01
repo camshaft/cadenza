@@ -124,9 +124,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   decline it: *"parameter … has no scalar boundary representation — a non-scalar entry parameter is not
   yet emitted on this export path"* (verified: an enum export param, and a record with an enum field,
   both decline `todo`). The param twin of Direction A above.
+- **[emit, export] typed `result<ok,err>` EXPORT result — ✅ DONE (SHAPE 74/75).** A `result<s64,s64>`
+  (74) and a compound-payload `result<record{lo,hi}, s64>` (75) EXPORT result now cross: `canon_write_of`
+  gained a Result arm (a 2-variant both-payload sum → `CanonWrite::Variant`, mapping guest `Ok`→boundary
+  disc 0 / `Err`→1 BY NAME, payload written recursively at the canonical result layout), reusing the
+  existing `CanonWrite::Variant` emit (SHAPE 61) with no new writer. Both `(live-objects known-leak)`
+  (SpillRecord-result reclaim class). REMAINING: a `result<_, E>`/`result<T, _>` with a NULLARY arm.
 - **[emit, export]** top-level Tuple/Sum/List/String/Bytes typed-interface PARAM
-  (`record_interface_export`); a `result<>` top-level export result writer (`canon_write_of`); a flat
-  1-value record result; an enum-disc result needing case REORDER; a nested/compound list-param
+  (`record_interface_export`); a flat
+  1-value record result; a nested/compound list-param
   element on the bare-entry path; a `result<>` bare-entry param.
 
 **Design-level (no WIT boundary form on either side; needs a design decision — TRACK, don't rush):**

@@ -4361,3 +4361,49 @@ cases
       #list(#tuple(3 (hi 4)) #tuple(8 (lo unit)))
       (List (Tuple Int64 V))))
   (live-objects known-leak))
+
+(case
+  "a result<s64,s64> EXPORT result crosses as a typed WIT result (declared world)"
+  (doc
+    "SHAPE 74 - a typed `result<s64,s64>` EXPORT result. Was a DECLINE: `canon_write_of`'s Sum arm handled only `option<T>` (nullary+payload) and payloadless enums; a `result<ok,err>` (a 2-variant sum whose BOTH arms carry a payload) fell through to `return None`. Now a `canon_write_of` Result arm maps each guest variant BY NAME (`Ok`->boundary disc 0, `Err`->disc 1) to a `CanonWrite::Variant` arm writing the payload at the canonical result layout (1-byte disc + payload at `align_up(1, max(align(ok), align(err)))`). Reuses the existing `CanonWrite::Variant` emit (SHAPE 61) - no new writer. classify(x) = x>0 ? Ok(x) : Err(-x); x=5 -> Ok(5), x=-3 -> Err(3). KNOWN-LEAK (SpillRecord-result reclaim class, SHAPE 60/62/63).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member classify (func (param x (s64)) (result (result (s64) (s64))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (classify (: x Int64)) (if (> x 0) (Result.Ok x) (Result.Err (- 0 x))))
+      (export classify)))
+  (call classify (: 5 Int64))
+  (output (: (Ok 5) (Result Int64 Int64)))
+  (call classify (: -3 Int64))
+  (output (: (Err 3) (Result Int64 Int64)))
+  (live-objects known-leak))
+
+(case
+  "a result<record,s64> EXPORT result crosses — a COMPOUND ok payload (declared world)"
+  (doc
+    "SHAPE 75 - the compound-payload twin of SHAPE 74: a typed `result<record{lo,hi}, s64>` EXPORT result. The Ok arm's payload is a RECORD, written by the `canon_write_of` Result arm recursing into the Record arm at the payload offset (the same recursion the variant/list arms use). Proves the result<> writer composes for a compound payload, not just scalars. cl(x) = x>0 ? Ok({lo:x, hi:x+1}) : Err(-x); x=5 -> Ok({lo:5,hi:6}), x=-3 -> Err(3). KNOWN-LEAK (SpillRecord-result reclaim class).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member
+          cl
+          (func (param x (s64)) (result (result (record (= lo (s64)) (= hi (s64))) (s64))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def
+        (cl (: x Int64))
+        (if (> x 0) (Result.Ok #record((= lo x) (= hi (+ x 1)))) (Result.Err (- 0 x))))
+      (export cl)))
+  (call cl (: 5 Int64))
+  (output (: (Ok #record((= lo 5) (= hi 6))) (Result (Record (: lo Int64) (: hi Int64)) Int64)))
+  (call cl (: -3 Int64))
+  (output (: (Err 3) (Result (Record (: lo Int64) (: hi Int64)) Int64)))
+  (live-objects known-leak))

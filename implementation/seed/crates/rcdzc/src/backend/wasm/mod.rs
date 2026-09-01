@@ -7795,6 +7795,77 @@ fn canon_write_of(
         // OPTION result: a two-variant guest sum (one nullary + one single-payload) crossing as WIT
         // `option<inner>` (boundary None=0, Some=1). Resolve which decl-disc is the payload arm + its payload
         // type (mirrors the param-side `fixed_shape_option_scalar_arg`), then write the payload recursively.
+        // A `result<ok,err>` RESULT: a 2-variant Sum whose BOTH arms carry a payload (`Ok(ok)`, `Err(err)`),
+        // crossing as WIT `result<ok,err>`. Map each guest variant to its WIT arm BY NAME (`ok`→boundary disc
+        // 0, `err`→disc 1), writing that arm's payload (recursively) at the canonical result layout (a 1-byte
+        // disc + the payload at `align_up(1, max(align(ok), align(err)))`). The both-payload sibling of the
+        // option arm below (which handles the nullary+payload shape). A `result<_, E>`/`result<T, _>` with a
+        // NULLARY arm, or a non-two-variant sum, declines to the option/general arms (a later slice).
+        Ty::Sum { decl, args, .. } if matches!(wty, WitType::Result { .. }) => {
+            use crate::backend::common::export_name::kebab_extern_name;
+            let WitType::Result { ok, err } = wty else {
+                unreachable!("guarded by the arm pattern");
+            };
+            // Both WIT arms must carry a payload for this slice (`result<T, E>`); a bare `result<_, _>`/`_, E`
+            // (a nullary ok or err) is a later slice.
+            let (ok_wit, err_wit) = match (ok, err) {
+                (Some(o), Some(e)) => ((**o).clone(), (**e).clone()),
+                _ => return None,
+            };
+            let (params, variants): (Vec<String>, Vec<(String, Vec<crate::ast::StructId>)>) = {
+                let dr = db.type_decl_by_occ(*decl)?;
+                if dr.variants.len() != 2 {
+                    return None;
+                }
+                (
+                    dr.params.clone(),
+                    dr.variants
+                        .iter()
+                        .map(|v| (kebab_extern_name(&v.name), v.payloads.clone()))
+                        .collect(),
+                )
+            };
+            // Resolve each guest variant's boundary disc (BY NAME) + its SINGLE generic payload type
+            // (instantiated against `args`, like the option arm) EAGERLY — separating the immutable `db.ast`
+            // reads from the `&mut db` `canon_write_of` recursion below (no overlapping borrow). Indexed by
+            // GUEST decl disc (the value `sum-disc` returns).
+            let mut resolved: Vec<(u32, Ty, WitType)> = Vec::with_capacity(2);
+            for (name, payloads) in &variants {
+                if payloads.len() != 1 {
+                    return None; // a nullary result arm — a later slice
+                }
+                let (boundary_disc, wit) = match name.as_str() {
+                    "ok" => (0u32, ok_wit.clone()),
+                    "err" => (1u32, err_wit.clone()),
+                    _ => return None, // not an ok/err-named 2-variant sum
+                };
+                let occ = payloads[0];
+                let pname = db
+                    .ast
+                    .head_name(occ)
+                    .or_else(|| db.ast.as_name(occ))?
+                    .to_string();
+                let pi = params.iter().position(|p| *p == pname)?;
+                let payload_gty = args.get(pi)?.clone();
+                resolved.push((boundary_disc, payload_gty, wit));
+            }
+            let mut arms: Vec<VariantArm> = Vec::with_capacity(2);
+            for (boundary_disc, payload_gty, wit) in &resolved {
+                let write = canon_write_of(db, payload_gty, wit)?;
+                arms.push(VariantArm {
+                    boundary_disc: *boundary_disc,
+                    payload: Some(Box::new(write)),
+                });
+            }
+            let payload_align =
+                wit_ctype::canonical_align(&ok_wit).max(wit_ctype::canonical_align(&err_wit));
+            let payload_offset = 1u32.div_ceil(payload_align) * payload_align;
+            Some(CanonWrite::Variant {
+                disc_store: op::I32_STORE8,
+                payload_offset,
+                arms,
+            })
+        }
         Ty::Sum { decl, args, .. } => {
             let WitType::Option(inner) = wty else {
                 return None; // result<> results are a later slice
