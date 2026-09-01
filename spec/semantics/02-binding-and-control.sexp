@@ -9273,6 +9273,19 @@
   (output (: 150 Int64)))
 
 (case
+  "a scalar-literal pattern over a List scrutinee is a coded CDZ0203 — the literal type cannot match the list"
+  (doc
+    "`(match #list(1 2) (8 99))` — the arm pattern `8` is an Int64 scalar literal, but the scrutinee is a
+           `List Int64`. A scalar-literal pattern can NEVER match a list value, so the pattern and scrutinee
+           types cannot unify — a PERMANENT type-mismatch reject (CDZ0203), reworded off the former codeless
+           \"not supported\" (seq-280): this is ill-typed, not a not-yet lowering gap. Contrast the sibling
+           arms that DO type-check: a bare binder `(x 99)` binds the whole list, and an element pattern
+           `(#list(a b) …)` destructures it — only a non-list scalar/bool/string literal pattern is the type
+           error. (Surfaced by the v-cdz-smith reachability sweep; coded by #7351.)")
+  (input (do (def (main) (match #list(1 2) (8 99))) (export main)))
+  (error CDZ0203 (message "scalar-literal pattern cannot match a `List` scrutinee")))
+
+(case
   "a runtime-length list dispatches a leading-rest arm by its actual length"
   (doc
     "The length test is a RUNTIME check: a list built to length n by a recursive appender
