@@ -506,6 +506,48 @@ pub fn cdz_qty_at(module: &str, name: &str) -> std::collections::HashMap<String,
     map
 }
 
+/// Whether `ty` (a `render_name`-form type) is a scalar the flag-gated VALUE-DOC path handles today. The
+/// value-doc path (`CDZ_VALUE_DOC`) emits the result as a self-describing `(: value type)` codec doc rendered
+/// by the ONE canonical printer (`render_binary`) — the operator-directed parser-elimination / op-seq-283
+/// convergence. Restricted to a bare `Int64` for now (its runtime value is already an `i64`, so
+/// `IntValue::from_i64` is exact); other widths (unsigned needs `from_u64`) and COMPOUND shapes (a Ty-guided
+/// walk in rcdzc) are follow-ups. Default path keeps `cdz_render_expr` (byte-identical) when this is false.
+pub fn is_value_doc_scalar(ty: &str) -> bool {
+    ty.trim() == "Int64"
+}
+
+/// A Rust EXPRESSION producing the `"CDZDOC:<hex>"` marker string for a scalar `Int64` result binding
+/// `val_expr` (`__r`): build the `(: <value> Int64)` codec doc via `cadenza_ast::Builder` + `codec::encode`
+/// (the SAME wire cdz-run's `value_codec` emits, decoded by the harness's `render_binary`), hex-encode it, and
+/// prefix `CDZDOC:` (the marker the harness's [`crate` consumer]/`value_doc::interpret_run_stdout` detects).
+/// Built by explicit concatenation (NOT `format!`) so the generated code's own `{`/`}` need no brace-escaping;
+/// only `val_expr` + `type_name` are interpolated. The emitted program links `cadenza_ast` (the rust exec
+/// layer `--extern`s it — run.rs `RlibDirs.cadenza_ast`), so `cadenza_ast::…` resolves at compile time.
+pub fn value_doc_render_scalar(val_expr: &str, type_name: &str) -> String {
+    let mut s = String::new();
+    s.push_str("{ let mut __vb = cadenza_ast::ast::Builder::new(); ");
+    s.push_str("let __vc = __vb.name(\":\"); ");
+    s.push_str(
+        "let __vv = __vb.atom_leaf(cadenza_ast::ast::Leaf::Int { \
+         value: cadenza_ast::ast::IntValue::from_i64((",
+    );
+    s.push_str(val_expr);
+    s.push_str(") as i64), radix: cadenza_ast::ast::Radix::Dec }); ");
+    s.push_str("let __vt = __vb.name(\"");
+    s.push_str(type_name);
+    s.push_str("\"); ");
+    s.push_str("let __vr = __vb.list(vec![__vc, __vv, __vt]); ");
+    s.push_str("let __vbytes = cadenza_ast::codec::encode(&__vb.finish(__vr)); ");
+    s.push_str("const __VHEX: &[u8] = b\"0123456789abcdef\"; ");
+    s.push_str("let mut __vs = String::from(\"CDZDOC:\"); ");
+    s.push_str(
+        "for __vbyte in &__vbytes { __vs.push(__VHEX[(__vbyte >> 4) as usize] as char); \
+         __vs.push(__VHEX[(__vbyte & 15) as usize] as char); } ",
+    );
+    s.push_str("__vs }");
+    s
+}
+
 /// A Rust EXPRESSION that renders the driver's result binding `__r` (whose CADENZA type is `ty`, in
 /// `render_name` form) to cdz-run's canonical text form — the value the gate grades against. Type-
 /// directed and recursive over the Cadenza type:
