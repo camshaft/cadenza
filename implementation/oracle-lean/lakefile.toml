@@ -24,3 +24,7 @@ root = "OracleAstTest"
 [[lean_exe]]
 name = "oracle-check"
 root = "OracleCheck"
+
+[[lean_exe]]
+name = "oracle-wasm-diff"
+root = "OracleWasmDiffTest"
