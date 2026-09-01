@@ -165,7 +165,7 @@
       (def
         (main (: a Int64))
         (Set.len
-          #set((Map.insert Map.empty 1 a) (Map.insert Map.empty 1 10) (Map.insert Map.empty 2 10))))
+          #set(#map((= 1 a)) #map((= 1 10)) #map((= 2 10)))))
       (export main)))
   (call main (: 10 Int64))
   (output (: 2 Int64))
