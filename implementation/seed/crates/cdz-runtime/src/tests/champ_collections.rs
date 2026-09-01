@@ -216,6 +216,79 @@ fn map_keyed_by_shallow_compound_roundtrips_and_dedups() {
 }
 
 #[test]
+fn map_merge_last_writer_wins_and_no_leak() {
+    reset();
+    let before = live_nodes();
+    // Heap-boxed VALUES (FIXNUM_MAX + n) so the merge's per-entry val dup/drop path is exercised
+    // (small-int keys are immediates → no probe-drop needed, and their dup/drop is a no-op).
+    // a = {1:10, 2:20, 3:30}
+    let mut a = op_map_empty();
+    a = op_map_insert(a, op_box_int(1), op_box_int(FIXNUM_MAX + 10));
+    a = op_map_insert(a, op_box_int(2), op_box_int(FIXNUM_MAX + 20));
+    a = op_map_insert(a, op_box_int(3), op_box_int(FIXNUM_MAX + 30));
+    // b = {2:200, 4:40} — key 2 conflicts with a.
+    let mut b = op_map_empty();
+    b = op_map_insert(b, op_box_int(2), op_box_int(FIXNUM_MAX + 200));
+    b = op_map_insert(b, op_box_int(4), op_box_int(FIXNUM_MAX + 40));
+    // LAST-WRITER-WINS: b overwrites a on the conflicting key 2. Consumes both a and b.
+    let m = op_map_merge(a, b);
+    assert_eq!(op_map_len(m), 4, "union = {{1,2,3,4}}");
+    assert_eq!(
+        op_get_int(op_map_lookup(m, op_box_int(1))),
+        FIXNUM_MAX + 10,
+        "a-only key kept"
+    );
+    assert_eq!(
+        op_get_int(op_map_lookup(m, op_box_int(2))),
+        FIXNUM_MAX + 200,
+        "conflicting key 2: b wins (last-writer)"
+    );
+    assert_eq!(
+        op_get_int(op_map_lookup(m, op_box_int(3))),
+        FIXNUM_MAX + 30,
+        "a-only key kept"
+    );
+    assert_eq!(
+        op_get_int(op_map_lookup(m, op_box_int(4))),
+        FIXNUM_MAX + 40,
+        "b-only key added"
+    );
+    op_drop(m);
+    assert_eq!(live_nodes(), before, "map-merge: no leak / no double-free");
+}
+
+#[test]
+fn map_merge_empty_operand_is_identity_no_leak() {
+    reset();
+    let before = live_nodes();
+    // merge(a, empty) == a (contents preserved), and no leak.
+    let mut a = op_map_empty();
+    a = op_map_insert(a, op_box_int(1), op_box_int(FIXNUM_MAX + 1));
+    a = op_map_insert(a, op_box_int(2), op_box_int(FIXNUM_MAX + 2));
+    let m1 = op_map_merge(a, op_map_empty());
+    assert_eq!(op_map_len(m1), 2, "merge(a, empty) keeps a's 2 entries");
+    assert_eq!(op_get_int(op_map_lookup(m1, op_box_int(1))), FIXNUM_MAX + 1);
+    assert_eq!(op_get_int(op_map_lookup(m1, op_box_int(2))), FIXNUM_MAX + 2);
+    op_drop(m1);
+    // merge(empty, b) == b.
+    let mut b = op_map_empty();
+    b = op_map_insert(b, op_box_int(7), op_box_int(FIXNUM_MAX + 7));
+    let m2 = op_map_merge(op_map_empty(), b);
+    assert_eq!(op_map_len(m2), 1, "merge(empty, b) keeps b's entry");
+    assert_eq!(op_get_int(op_map_lookup(m2, op_box_int(7))), FIXNUM_MAX + 7);
+    op_drop(m2);
+    // merge(empty, empty) == empty.
+    let m3 = op_map_merge(op_map_empty(), op_map_empty());
+    assert_eq!(op_map_len(m3), 0, "merge(empty, empty) is empty");
+    op_drop(m3);
+    assert_eq!(
+        live_nodes(),
+        before,
+        "map-merge identity: no leak / no double-free"
+    );
+}
+
+#[test]
 fn champ_hash_deep_is_stack_safe() {
     reset();
     let before = live_nodes();
