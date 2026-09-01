@@ -606,22 +606,33 @@ pub fn print_verdict(result: &GradeResult, description: &str) -> ExitCode {
 /// `BadArtifact` on a value/trap case is a `Fail` (the emit did not build/run).
 pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
     match expect {
-        GExpect::Output(payload) => {
-            let expected_val = expected_value(payload);
-            let expected_full = payload.trim().to_string();
-            match outcome {
-                Outcome::Value(v, _) if *v == expected_val || *v == expected_full => Grade::Pass,
-                Outcome::Value(v, _) => {
-                    Grade::Fail(format!("expected output {payload}, got value {v}"))
+        GExpect::Output(payload) => match outcome {
+            // STRUCTURAL value compare via the canonical reader/printer (operator directive: NO
+            // hand-rolled value scan). Both the expected `(: v T)` payload and the run value are read
+            // by the canonical s-expr reader and re-printed from their VALUE subtree, so bare-vs-annotated
+            // and any rendering variance normalize away; a parse failure is surfaced LOUDLY as a Fail
+            // (never a silent pass) — a corpus authoring error on the expected side, a compiler emit bug
+            // on the actual side (the decode-validity invariant).
+            Outcome::Value(v, _) => {
+                match (canonical_output_value(payload), canonical_output_value(v)) {
+                    (Ok(want), Ok(got)) if want == got => Grade::Pass,
+                    (Ok(want), Ok(got)) => Grade::Fail(format!(
+                        "expected output {payload} (canonical value {want}), got value {v} \
+                         (canonical value {got})"
+                    )),
+                    (Err(e), _) => Grade::Fail(format!(
+                        "corpus expected-output {payload} did not parse as a canonical value: {e}"
+                    )),
+                    (_, Err(e)) => Grade::Fail(format!(
+                        "run value {v} did not parse as a canonical value (compiler emit bug): {e}"
+                    )),
                 }
-                Outcome::Trap(t) => {
-                    Grade::Fail(format!("expected output {payload}, but trapped: {t}"))
-                }
-                Outcome::BadArtifact(e) => Grade::Fail(format!(
-                    "expected output {payload}, but the artifact did not build: {e}"
-                )),
             }
-        }
+            Outcome::Trap(t) => Grade::Fail(format!("expected output {payload}, but trapped: {t}")),
+            Outcome::BadArtifact(e) => Grade::Fail(format!(
+                "expected output {payload}, but the artifact did not build: {e}"
+            )),
+        },
         GExpect::Trap(reason) => match outcome {
             // Resolve the EXPECTED side to a `TrapCode`: an explicit code id (`from_id`, the preferred stable
             // form) or a legacy English reason (`classify`, back-compat). Compare by CODE to `classify(actual)`
@@ -1443,98 +1454,30 @@ fn not_leaf(a: &Arenas, id: StructId) -> Option<String> {
         .and_then(|vid| str_leaf(a, vid))
 }
 
-/// The value out of an `output` payload `(: <value> <Type>)` — the text of `<value>`. Ported verbatim
-/// from the corpus gate: balanced-paren / quoted-string aware, so a compound value/type
-/// (`(: (tuple 0 7) (Tuple Int64 Int64))`) or a string value (`(: "parse error" String)`) is not miscut.
-pub fn expected_value(payload: &str) -> String {
-    let inner = payload.trim();
-    let Some(rest) = inner.strip_prefix("(:") else {
-        return inner.to_string();
-    };
-    let rest = rest.trim();
-    let bytes = rest.as_bytes();
-    if bytes.first() == Some(&b'(') {
-        let mut depth = 0i32;
-        for (i, &b) in bytes.iter().enumerate() {
-            match b {
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return rest[..=i].to_string();
-                    }
-                }
-                _ => {}
-            }
-        }
-        rest.to_string()
-    } else if bytes.first() == Some(&b'"') {
-        let mut escaped = false;
-        for (i, &b) in bytes.iter().enumerate().skip(1) {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                return rest[..=i].to_string();
-            }
-        }
-        rest.to_string()
-    } else if bytes.first() == Some(&b'#') {
-        // An M2 NATIVE-CTOR value: `#tuple(…)`, `#list(…)`, `#record((= a 1) …)`, `#set(…)`, `#map((= k v) …)`
-        // — the `#head` is immediately followed by a BALANCED `(…)` whose interior has TOP-LEVEL SPACES, so the
-        // bare-atom "up to next space" split would cut it wrong (`#tuple(127` from `#tuple(127 -128)`), failing
-        // EVERY compound value on the Rust ABI (which crosses the bare value, no `(: … type)` wrapper — unlike
-        // the wasm ABI's full-form escape matched by `expected_full`). Take the `#head(…)` span via balanced
-        // parens. A `#"…"` bytes literal (may hold interior spaces) is taken to its closing quote; a paren-less
-        // `#`-value (`#\a`, `#\space`) falls to the bare-atom arm.
-        //
-        // Kept BYTE-IDENTICAL to the in-process `--case` gate's copy at `xtask/src/main.rs` `expected_value`
-        // (the two diverged once: the xtask copy had this arm, this shared grader lacked it → the rust-05-1321
-        // nested-record red). Port any change to both until they are de-duplicated onto this one.
-        if bytes.get(1) == Some(&b'"') {
-            let mut escaped = false;
-            for (i, &b) in bytes.iter().enumerate().skip(2) {
-                if escaped {
-                    escaped = false;
-                } else if b == b'\\' {
-                    escaped = true;
-                } else if b == b'"' {
-                    return rest[..=i].to_string();
-                }
-            }
-            return rest.to_string();
-        }
-        let lp = rest.find('(');
-        let ws = rest.find(char::is_whitespace);
-        if let Some(lp) = lp
-            && ws.is_none_or(|w| lp < w)
-        {
-            let mut depth = 0i32;
-            for (i, &b) in bytes.iter().enumerate().skip(lp) {
-                match b {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return rest[..=i].to_string();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // A `#`-value with no parens before the next space (`#\a`) — bare atom.
-        match rest.find(char::is_whitespace) {
-            Some(idx) => rest[..idx].to_string(),
-            None => rest.trim_end_matches(')').to_string(),
-        }
+/// Canonicalize an `output` value TEXT to the canonical s-expr render of its VALUE, via the canonical
+/// reader/printer (`cadenza_syntax::sexpr`) — NOT a hand-rolled paren/`#`/quote scan (operator directive
+/// 2026-09-01: "use our canonical parser … or exchange a binary AST"). A top-level `(: <value> <Type>)`
+/// ascription is stripped to `<value>` (type-blind, matching the historical `expected_value`); a bare
+/// value is returned as its own canonical print. Both the corpus expected payload and the run value pass
+/// through this, so bare-vs-annotated and any rendering variance normalize away structurally.
+///
+/// `Err` if the text does not parse as a single canonical s-expr — surfaced LOUDLY by the caller (a corpus
+/// authoring error on the expected side, a compiler emit bug on the run-value side), never a silent pass.
+///
+/// PUBLIC as the SINGLE SOURCE for output-value canonicalization: the in-process `xtask gate --check`
+/// (the authoritative merge gate, until the gateCheckNix swap) calls THIS from its own `grade_trial`
+/// Output arm instead of a divergent local copy — the divergence that produced the #7273 fleet red. Keep
+/// it the one canonical value-canon both graders share.
+pub fn canonical_output_value(text: &str) -> Result<String, String> {
+    let a = cadenza_syntax::sexpr::read(text.trim()).map_err(|e| e.0)?;
+    let root = a.root;
+    // A top-level `(: value type)` ascription → the VALUE child; a bare value → the root itself.
+    let value_id = if a.head_name(root) == Some(":") {
+        children(&a, root).first().copied().unwrap_or(root)
     } else {
-        match rest.find(char::is_whitespace) {
-            Some(idx) => rest[..idx].to_string(),
-            None => rest.trim_end_matches(')').to_string(),
-        }
-    }
+        root
+    };
+    Ok(cadenza_syntax::sexpr::print_from(&a, value_id))
 }
 
 /// A STANDARD, CLOSED set of runtime trap KINDS — the "trap code" analogue of a diagnostic `Code` (operator
@@ -1803,44 +1746,47 @@ mod tests {
     }
 
     #[test]
-    fn expected_value_extracts_bare_scalar_compound_and_string() {
-        assert_eq!(expected_value("(: 42 Int64)"), "42");
+    fn canonical_output_value_strips_ascription_to_scalar_compound_and_string() {
+        // The canonical reader/printer replaces the old hand-rolled `expected_value` scan: a `(: v T)`
+        // ascription is stripped type-blind to `v`'s canonical print; a bare value prints itself.
+        assert_eq!(canonical_output_value("(: 42 Int64)").unwrap(), "42");
         assert_eq!(
-            expected_value("(: (tuple 0 7) (Tuple Int64 Int64))"),
+            canonical_output_value("(: (tuple 0 7) (Tuple Int64 Int64))").unwrap(),
             "(tuple 0 7)"
         );
         assert_eq!(
-            expected_value("(: \"parse error\" String)"),
+            canonical_output_value("(: \"parse error\" String)").unwrap(),
             "\"parse error\""
         );
-        assert_eq!(expected_value("bare"), "bare");
+        assert_eq!(canonical_output_value("bare").unwrap(), "bare");
     }
 
     #[test]
-    fn expected_value_extracts_hashtag_compound_values() {
-        // `#`-prefixed native compound values must NOT miscut at the first inner space (the
-        // corpus-rust-05-1321 nested-record bug: `#record((= …) …)` was truncated to `#record((=`).
+    fn canonical_output_value_handles_hashtag_compound_values() {
+        // `#`-prefixed native compounds no longer miscut at the first inner space (the corpus-rust-05-1321
+        // nested-record bug: the old scan truncated `#record((= …) …)` to `#record((=`). The canonical
+        // reader parses the whole compound and re-prints it.
         assert_eq!(
-            expected_value(
+            canonical_output_value(
                 "(: #record((= first (Ok 7)) (= second (Err b\"no\"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes))))"
-            ),
+            ).unwrap(),
             "#record((= first (Ok 7)) (= second (Err b\"no\")))"
         );
         assert_eq!(
-            expected_value("(: #list(1 2 3) (List Int64))"),
+            canonical_output_value("(: #list(1 2 3) (List Int64))").unwrap(),
             "#list(1 2 3)"
         );
         assert_eq!(
-            expected_value("(: #tuple(127 -128) (Tuple Int64 Int64))"),
+            canonical_output_value("(: #tuple(127 -128) (Tuple Int64 Int64))").unwrap(),
             "#tuple(127 -128)"
         );
-        // A `#"…"` bytes literal may hold interior spaces — take it to its closing quote, not the first space.
-        assert_eq!(
-            expected_value("(: #\"hello world\" Bytes)"),
-            "#\"hello world\""
-        );
-        // A paren-less `#scalar` splits at the type-separating space like any bare token.
-        assert_eq!(expected_value("(: #unit Unit)"), "#unit");
+    }
+
+    #[test]
+    fn canonical_output_value_errs_on_unparsable_text() {
+        // A run value that is not a canonical s-expr is a compiler emit bug → the caller Fails loudly
+        // (never a silent pass). An unterminated compound must not parse.
+        assert!(canonical_output_value("#record((= a 1").is_err());
     }
 
     #[test]
