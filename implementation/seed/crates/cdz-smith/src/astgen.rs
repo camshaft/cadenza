@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(27) {
+    match c.variant(28) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -446,9 +446,32 @@ fn gen_main_body<C: Choice>(
         // — Qty magnitude/unit value-lowering, a whole numeric family the coercing grammar never reached
         // (only the text crash-hunt did). Value-comparable (Qty.value → Int64).
         26 => gen_qty_body(c, out),
+        // A MAP.LOOKUP body: build a 2-entry const map, look up a PRESENT or ABSENT key, and match the
+        // `Option` result to Int64 — the fundamental keyed map READ (→ `Option V`) + the Some/None
+        // consumption, absent from the coercing grammar (which only did Map.len). Value-comparable.
+        27 => gen_map_lookup_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
+}
+
+/// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
+/// the keyed map read yielding `Option V`, consumed to an Int64 by matching Some/None. Half the time
+/// the key is PRESENT (→ `Some` → the stored value), half DEFINITELY-ABSENT (→ `None` → the default),
+/// so both arms are exercised. Keys are disjoint (`0..=9` vs `10..=19`) so the map has two distinct
+/// entries; values `0..=9`. Value-comparable (the result is an Int64 the wasm-vs-rust diff grades).
+fn gen_map_lookup_body<C: Choice>(c: &mut C, out: &mut String) {
+    let present = c.variant(2) == 0;
+    let (k1, v1) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
+    let (k2, v2) = (c.int_bounded(10, 19), c.int_bounded(0, 9));
+    let dflt = c.int_bounded(0, 9);
+    // A present key is `k1`; an absent one is `99` (outside both key ranges).
+    let key = if present { k1 } else { 99 };
+    write!(
+        out,
+        "(match (Map.lookup (Map.insert (Map.insert Map.empty {k1} {v1}) {k2} {v2}) {key}) ((Some v) v) (None {dflt}))"
+    )
+    .ok();
 }
 
 /// A QUANTITY body: `(Qty.value <q>)` where `<q>` is a `Qty.of` magnitude literal or a SAME-UNIT
@@ -2526,6 +2549,35 @@ mod tests {
             saw_grouped,
             "should reach a parenthesized (grouped) magnitude"
         );
+    }
+
+    /// `gen_map_lookup_body` REACHES both a PRESENT-key lookup (the `Some` arm, key `0..=9`) and an
+    /// ABSENT-key lookup (the `None` arm, key `99`), and every body COMPILES — filling the Map.lookup
+    /// (keyed read → `Option V`) gap the coercing grammar's Map.len-only coverage never reached.
+    #[test]
+    fn gen_map_lookup_body_reaches_present_and_absent_and_compiles() {
+        let (mut saw_present, mut saw_absent) = (false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1049);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_map_lookup_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            // The absent lookup uses the sentinel key ` 99)`; a present lookup uses a `0..=9` key.
+            saw_absent |= body.contains(" 99) ((Some");
+            saw_present |= !body.contains(" 99) ((Some") && body.contains("(Map.lookup");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "map-lookup body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_present, "should reach a present-key lookup (Some arm)");
+        assert!(saw_absent, "should reach an absent-key lookup (None arm)");
     }
 
     /// `gen_partial_application_body` REACHES all three currying forms (2-ary `let`-partial, 3-ary chained,
