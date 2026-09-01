@@ -113,9 +113,31 @@ def nameAtom? (m : Module) (i : Nat) : Option ByteArray :=
     | _ => none
   | _ => none
 
-/-- Map an emitted Cadenza result-type NAME to a modeled `ScalarTy`. Only spellings VERIFIED by emission
+/-- The `name` OR `str` leaf bytes a node references. The emitted `cdz-result-type` spells the entry as a
+`str` leaf (`(result-type "main" …)`), while heads/type names are `name` leaves — so matching the entry
+needs both leaf kinds. -/
+def atomText? (m : Module) (i : Nat) : Option ByteArray :=
+  match m.nodes[i]? with
+  | some (.atom lid) =>
+    match m.leaves[lid]? with
+    | some (.name b) => some b
+    | some (.str b) => some b
+    | _ => none
+  | _ => none
+
+/-- The scalar type's HEAD NAME at node `i`: a bare `name` atom's bytes, or — since `cdz-result-type` spells
+a scalar type as a LIST `(Int 64)` / `(Float 64)` (head name + width), verified by emission — the list head
+child's name. `none` for anything else. -/
+def headTypeName? (m : Module) (i : Nat) : Option ByteArray :=
+  match m.nodes[i]? with
+  | some (.atom _) => nameAtom? m i
+  | some (.list cs) => if cs.size ≥ 1 then nameAtom? m cs[0]! else none
+  | _ => none
+
+/-- Map an emitted Cadenza result-type HEAD NAME to a modeled `ScalarTy`. Only heads VERIFIED by emission
 are mapped (`Int`/`Bool`/`Float`); anything else is `none` → the caller surfaces `.unsupported` (a sound
-coverage gap, never a wrong value). Widen this as more scalar type spellings are verified from real emits. -/
+coverage gap, never a wrong value). The width child (`(Int 64)`) doesn't change the mapping — `decodeScalar`
+maps any wasm int width → `.int`. Widen as more scalar heads are verified from real emits. -/
 def scalarTyOfName? : ByteArray → Option ScalarTy := fun b =>
   if b == "Int".toUTF8 then some .int
   else if b == "Bool".toUTF8 then some .bool
@@ -123,15 +145,16 @@ def scalarTyOfName? : ByteArray → Option ScalarTy := fun b =>
   else if b == "Unit".toUTF8 then some .unit
   else none
 
-/-- Walk a decoded `cdz-result-type` module for `(result-type <entry> <TypeName>)` and map `<TypeName>`
-to a `ScalarTy`. `none` if no such node / not a modeled scalar type. -/
+/-- Walk a decoded `cdz-result-type` module for `(result-type "<entry>" <Type>)` and map `<Type>`'s head
+name to a `ScalarTy`. VERIFIED real structure: `(result-types (result-type "main" (Int 64)))` — the entry is
+a `str` leaf, the type is a list `(Int 64)`. `none` if no such node / not a modeled scalar type. -/
 def resultScalarTyOfModule? (m : Module) (entry : ByteArray) : Option ScalarTy :=
   m.nodes.findSome? (fun node =>
     match node with
     | .list cs =>
       if cs.size ≥ 3 && nameAtom? m cs[0]! == some "result-type".toUTF8
-          && nameAtom? m cs[1]! == some entry then
-        match nameAtom? m cs[2]! with
+          && atomText? m cs[1]! == some entry then
+        match headTypeName? m cs[2]! with
         | some ty => scalarTyOfName? ty
         | none => none
       else none
@@ -218,6 +241,16 @@ example :
       { leaves := #[.name "result-type".toUTF8, .name "main".toUTF8, .name "Int".toUTF8],
         nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2]], root := 3 }
       "other".toUTF8 = none := by native_decide
+-- the REAL emitted structure `(result-types (result-type "main" (Int 64)))`: entry is a `str` leaf, the type
+-- is a list `(Int 64)`. (Verified against a real corpus case's cdz-result-type section; the earlier flat
+-- `(result-type main Int)` hand-form was too simplistic and made every corpus case skip — this pins reality.)
+example :
+    resultScalarTyOfModule?
+      { leaves := #[.name "result-types".toUTF8, .name "result-type".toUTF8, .str "main".toUTF8,
+                    .name "Int".toUTF8, .intLit false .dec (ByteArray.mk #[64])],
+        nodes := #[.atom 1, .atom 2, .atom 3, .atom 4, .list #[2, 3], .list #[0, 1, 4], .atom 0,
+                   .list #[6, 5]], root := 7 }
+      "main".toUTF8 = some .int := by native_decide
 
 /-- The `cdz-result-type` section bytes for `(result-type main <tyName>)` — a real encode via `Oracle.Ast`,
 so the end-to-end `runWasmWith` witnesses exercise the actual section round-trip (encode → decode → resolve). -/
