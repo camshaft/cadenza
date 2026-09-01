@@ -1439,7 +1439,8 @@ fn emit_expr_viewed(
             for e in elems.iter().copied() {
                 children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
             }
-            Ok(b.compound(crate::ast::CompoundCtor::List, &children))
+            let node = b.compound(crate::ast::CompoundCtor::List, &children);
+            Ok(ascribe_if_empty(db, b, node, children.is_empty(), &eff_ty))
         }
         // A runtime MAP value `(map (<k> <v>)…)` — the entries are runtime operands (a fully-constant map
         // bakes via lower's constant escape, so a surviving `Core::MapNew` is a runtime value). Entries are
@@ -1484,7 +1485,8 @@ fn emit_expr_viewed(
                 let vv = emit_expr(db, b, v, val_ty.clone(), env, emitted)?;
                 children.push(b.field_pair(kv, vv));
             }
-            Ok(b.compound(crate::ast::CompoundCtor::Map, &children))
+            let node = b.compound(crate::ast::CompoundCtor::Map, &children);
+            Ok(ascribe_if_empty(db, b, node, children.is_empty(), &eff_ty))
         }
         // A runtime SET value `((. Set of) (list <e>…))` — the `Set.of` application over a `(list …)` of the
         // elements (a fully-constant set bakes via lower's constant escape; a surviving `Core::SetOf` is a
@@ -1501,7 +1503,8 @@ fn emit_expr_viewed(
             for e in elems.iter().copied() {
                 children.push(emit_expr(db, b, e, elem_ty.clone(), env, emitted)?);
             }
-            Ok(b.compound(crate::ast::CompoundCtor::Set, &children))
+            let node = b.compound(crate::ast::CompoundCtor::Set, &children);
+            Ok(ascribe_if_empty(db, b, node, children.is_empty(), &eff_ty))
         }
         // A runtime SUM (variant) value `(<Variant> <payload>)` — a constructed variant built from a
         // runtime payload. The variant NAME is recovered from the discriminant against the node's solved
@@ -4032,6 +4035,33 @@ fn sum_payload_expected(db: &mut Db, decl: StructId, disc: u32, sum_ty: &Ty) -> 
 /// `Core::SumNew` emit to decide whether the node's OWN solved type is usable, or whether it must fall back
 /// to the `expected` type its context supplied (e.g. a bare `(None)` whose own type is `Option<?>`). Walks
 /// the type's structure so a free arg NESTED inside a compound (`Option<List<?>>`) is caught too.
+/// Ascribe an EMPTY collection literal with its solved type. An empty `#list()` / `#set()` / `#map()` re-emitted
+/// BARE loses the element/key/value type the ascription determined, so hop-2's undetermined-escape check rejects
+/// the backend's OWN output (CDZ0203, `List Any` — breaker-minimized; the collection sibling of the #7346 UInt64
+/// ascription-drop). Wrap `(: <lit> <solved-ty>)` when the type RENDERS (concrete `(List Int64)` / `(Set …)` /
+/// `(Map …)`) — the in-tree precedent is `(None)` carrying its payload type. A genuinely-undetermined empty
+/// collection (no concrete element type) stays bare and declines on recompile (SHARED — both backends reject an
+/// undetermined empty escape). A NON-empty collection is returned unchanged (its elements already pin the type).
+fn ascribe_if_empty(
+    db: &mut Db,
+    b: &mut Builder,
+    compound: StructId,
+    is_empty: bool,
+    eff_ty: &Ty,
+) -> StructId {
+    if !is_empty {
+        return compound;
+    }
+    let ncx = db.name_ctx();
+    match crate::lower::type_ast(b, eff_ty, &ncx) {
+        Some(ty_node) => {
+            let colon = b.name(":");
+            b.list(vec![colon, compound, ty_node])
+        }
+        None => compound,
+    }
+}
+
 /// A dedup SIGNATURE for a map KEY that folded to a compile-time CONSTANT (the only keys that can collide as
 /// duplicate LITERALS in the re-emitted `#map` and trip the front-end's CDZ0201 duplicate-literal-key check).
 /// `Some(sig)` iff the key's core is a constant leaf — `sig` is equal iff the key VALUE is equal (type-prefixed
