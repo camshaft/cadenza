@@ -4444,3 +4444,64 @@ cases
       (export f)))
   (call f (: 5 Int64))
   (output (: #record((= a 5) (= b 6)) (Record (: a Int64) (: b Int64)))))
+
+(case
+  "a bare option<record> PARAM member crosses (compound option payload — sum_params + payload rebuild)"
+  (doc
+    "SHAPE 78 - a TOP-LEVEL `option<record{lo,hi}>` PARAM member. The prior option-param coverage was option<scalar> (SHAPE 44) + an option<s64> record FIELD; this is a COMPOUND option payload at the top-level param position, rebuilt via the sum-param path (branch on the boundary disc → build the guest Some(record)/None cell). f(Some{lo,hi}) = lo+hi, f(None) = -1; Some{3,4} -> 7. KNOWN-LEAK (the wrapper-built sum cell reclaim class).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member
+          f
+          (func (param o (option (record (= lo (s64)) (= hi (s64))))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def
+        (f (: o (Option (Record (: lo Int64) (: hi Int64)))))
+        (match o ((Some r) (+ (. r lo) (. r hi))) ((None) -1)))
+      (export f)))
+  (call f (: (Some #record((= lo 3) (= hi 4))) (Option (Record (: lo Int64) (: hi Int64)))))
+  (output (: 7 Int64))
+  (live-objects known-leak))
+
+(case
+  "a typed list<option<s64>> EXPORT result crosses as a WIT list of options"
+  (doc
+    "SHAPE 79 - a typed `list<option<s64>>` EXPORT result (the RESULT twin of SHAPE 38's list<option> host-op ARG). Composes via `canon_write_of`'s List arm recursing into the option arm per element (disc byte + payload at the canonical option layout). f(x) = [Some(x), None]; x=5 -> [Some(5), (None unit)]. KNOWN-LEAK (SpillRecord-result reclaim class).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member f (func (param x (s64)) (result (list (option (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (f (: x Int64)) #list((Some x) None))
+      (export f)))
+  (call f (: 5 Int64))
+  (output (: #list((Some 5) (None unit)) (List (Option Int64))))
+  (live-objects known-leak))
+
+(case
+  "a typed option<Bytes> EXPORT result crosses (top-level option<list<u8>>)"
+  (doc
+    "SHAPE 80 - a typed top-level `option<list<u8>>`/`option<Bytes>` EXPORT result (the bytes-payload twin of SHAPE 66's option<record> result). `canon_write_of`'s option arm recurses its payload into the Bytes arm (Some copies the rope + writes (ptr,len); None writes the nullary disc). f(x>0) -> Some(b\"hi\"), else None; x=5 -> Some(b\"hi\"). KNOWN-LEAK (SpillRecord-result reclaim class).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member f (func (param x (s64)) (result (option (list (u8)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (f (: x Int64)) (if (> x 0) (Some (Bytes.of #list(104 105))) None))
+      (export f)))
+  (call f (: 5 Int64))
+  (output (: (Some b"hi") (Option Bytes)))
+  (live-objects known-leak))
