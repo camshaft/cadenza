@@ -7,7 +7,7 @@
   (lede "Bundling several values into one, positionally or by name.")
   (p "So far our programs have passed around single values. Real programs group values together: a point is an " (c "x") " and a " (c "y") ", a result is a value and a status. Cadenza has two ways to bundle values, namely " (strong "tuples") " (by position) and " (strong "records") " (by name).")
   (h2 "Tuples")
-  (p "A tuple is a fixed positional product of values. When you Run this, look at the type the result carries, " (c "(Tuple Int64 Bool)") ": the compiler tracks not just " (em "how many") " elements there are but the type of each one, in order. The two slots hold different types, and that's fine, because a tuple's shape is part of its type.")
+  (p "A tuple is a fixed positional product of values. When you Run this, look at the type the result carries, " (cdz (Tuple Int64 Bool)) ": the compiler tracks not just " (em "how many") " elements there are but the type of each one, in order. The two slots hold different types, and that's fine, because a tuple's shape is part of its type.")
   (runnable
     (source #tuple(7 true))
     (title "A tuple"))

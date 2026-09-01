@@ -41,7 +41,7 @@
     (source (@ test (def (add-comm (: a Int64) (: b Int64))
   (assert-eq (Int64.wrapping-add a b) (Int64.wrapping-add b a) "not commutative"))))
     (mode "test"))
-  (p "You wrote the predicate; the runner wrote the generator. It reports " (c "PASS add-comm (100 trials)") ", a hundred generated pairs, all commuting. Scalars generate directly; compound types (a " (c "(List Int64)") ", a record, a user sum) generate too, with the compiler deriving the generator from the type.")
+  (p "You wrote the predicate; the runner wrote the generator. It reports " (c "PASS add-comm (100 trials)") ", a hundred generated pairs, all commuting. Scalars generate directly; compound types (a " (cdz (List Int64)) ", a record, a user sum) generate too, with the compiler deriving the generator from the type.")
   (p "And a deliberately-wrong property shows the " (em "shrink") ". This one claims every generated " (c "Int64") " is under 100, which is false, so Run it and watch the runner report the " (em "smallest") " failing input it can find, not whatever large value it first stumbled on:")
   (runnable
     (source (@ test (def (all-small (: n Int64))
@@ -49,7 +49,7 @@
     (expect "error")
     (mode "test"))
   (p "The counterexample is " (c "all-small(100)") ": the runner found a failing draw, then shrank it toward zero to the boundary value, with a seed to reproduce the run. A property that holds passes silently over its trials; one that doesn't hands you the minimal witness.")
-  (p "Shrinking isn't just for scalars; it minimizes " (em "compound") " values the same way. Here a property claims no generated list ever has exactly three elements, a deliberately-wrong claim. The parameter is a " (c "(List Int64)") ", so the compiler synthesizes a " (em "list") " generator (a random length, then an element per slot); press Run and the runner finds a failing list and shrinks it:")
+  (p "Shrinking isn't just for scalars; it minimizes " (em "compound") " values the same way. Here a property claims no generated list ever has exactly three elements, a deliberately-wrong claim. The parameter is a " (cdz (List Int64)) ", so the compiler synthesizes a " (em "list") " generator (a random length, then an element per slot); press Run and the runner finds a failing list and shrinks it:")
   (runnable
     (source (@ test (def (never-three (: xs (List Int64)))
   (if (= (List.len xs) 3) (trap "was three") unit))))
