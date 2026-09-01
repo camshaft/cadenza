@@ -182,6 +182,16 @@ pub(crate) fn collect_dominating_frontier(
         // unconditionally → a spurious divide-by-zero trap at `d=0` even when `b` is false (adv-55, a wasm
         // soundness miscompile via the always-on select.rs CSE; the O2 Core CSE shares this frontier too).
         Core::And { lhs, .. } => vec![lhs],
+        // A `Core::HandleAbort` (v-effects, CASE 1) is a NON-LOCAL exit — its `value` is the whole handle's
+        // result, emitted then followed by a bare wasm `return` that unwinds every enclosing block. Its
+        // `value` subtree must NOT enter the dominating frontier: a scalar hoisted OUT of it to the body root
+        // would be speculated onto every path (exactly the adv-55 short-circuit class above — a conditional/
+        // divergent subexpression wrongly treated as always-evaluated, spuriously moving its trap/work).
+        // Today `licm_children` already yields no children for it (so the `_` arm is empty), but making the
+        // barrier EXPLICIT here fences the future general/nested HandleAbort (CASE 2 — a MID-function,
+        // `handle_id`-keyed conditional abort whose `value` is genuinely conditional): a later change giving
+        // `licm_children` a `HandleAbort => vec![value]` arm must not silently let the abort value be hoisted.
+        Core::HandleAbort { .. } => vec![],
         // Everything else `licm_children` enumerates evaluates ALL its children unconditionally (a pure
         // operator's operands, a `let`'s bindings + body, a call's args, a compound's elements).
         _ => licm_children(db, id),
@@ -1062,6 +1072,66 @@ mod tests {
         assert!(
             !collect_shared_heap_binding_candidates(&mut db, scalar_shared).contains(&s),
             "a twice-reached SCALAR node is not a B2 heap candidate"
+        );
+    }
+
+    // SOUNDNESS FENCE (v-effects `Core::HandleAbort`, CASE 1 — non-local exit): the abort `value` subtree
+    // must NOT enter the dominating frontier. HandleAbort emits its `value` then a bare wasm `return` that
+    // unwinds every enclosing block — so a scalar hoisted OUT of the abort value to the body root would be
+    // SPECULATED onto every path (the adv-55 short-circuit class: a divergent/conditional subexpression
+    // wrongly treated as always-evaluated, moving its work/trap). This pins that `collect_dominating_frontier`
+    // yields ONLY the HandleAbort node itself, never a node inside its `value` — so neither the O2 CSE hoist
+    // (guard D1) nor b2's unconditional-reach gate can lift a share out of / across the abort. Guards the
+    // future CASE-2 (mid-function, `handle_id`-keyed CONDITIONAL abort) against a permissive `licm_children`
+    // refactor: even if `licm_children` were later given a `HandleAbort => vec![value]` arm, the explicit
+    // frontier arm keeps the abort value out of the hoist frontier.
+    #[test]
+    fn dominating_frontier_does_not_descend_into_a_handle_abort_value() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        // A HandleAbort whose `value` is a repeated-scalar `(+ (& p 7) (& p 7))` — the exact shape the CSE
+        // frontier would normally treat as an always-evaluated share candidate.
+        let p = synth_param(&mut db);
+        let c7 = synth_core(
+            &mut db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(7)),
+            Ty::int64(),
+        );
+        let masked = synth_core(
+            &mut db,
+            Core::Arith {
+                op: crate::resolved::Prim::BitAnd,
+                lhs: p,
+                rhs: c7,
+            },
+            Ty::int64(),
+        );
+        let value = synth_core(
+            &mut db,
+            Core::Arith {
+                op: crate::resolved::Prim::Add,
+                lhs: masked,
+                rhs: masked,
+            },
+            Ty::int64(),
+        );
+        let handle_id = synth_id_marker(&mut db);
+        let ha = synth_core(&mut db, Core::HandleAbort { value, handle_id }, Ty::int64());
+
+        let mut frontier = std::collections::HashSet::new();
+        collect_dominating_frontier(&mut db, ha, &mut frontier);
+        assert!(
+            frontier.contains(&ha),
+            "the HandleAbort node itself is in its own frontier (the walk's root insert)"
+        );
+        assert!(
+            !frontier.contains(&value),
+            "the abort VALUE must NOT enter the dominating frontier — it runs only on the non-local-exit path"
+        );
+        assert!(
+            !frontier.contains(&masked),
+            "no scalar INSIDE the abort value enters the frontier → nothing is hoisted out of / across the abort"
         );
     }
 
