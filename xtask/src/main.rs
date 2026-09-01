@@ -260,6 +260,7 @@ fn main() {
                     GateTargetArg::Wasm => GateTarget::Wasm,
                     GateTargetArg::Rust => GateTarget::Rust,
                     GateTargetArg::RustAsync => GateTarget::RustAsync,
+                    GateTargetArg::Cadenza => GateTarget::Cadenza,
                 },
                 shard,
                 guarded_all,
@@ -1228,6 +1229,14 @@ enum GateTarget {
     /// and a minimal executor, and drive the export under `block_on` — so the SAME corpus expectations
     /// grade the async form (its answers must match, gas threading and all).
     RustAsync,
+    /// The CADENZA-BACKEND ROUND-TRIP: emit the OPTIMIZED program BACK to a Cadenza surface (`--target
+    /// cadenza`), then RECOMPILE that surface through the normal wasm path and run it — grading the SAME
+    /// corpus expectations against the round-tripped value. This is the CI witness for v-cadenza-backend's
+    /// core invariant (the emitted surface must recompile + be value-equivalent); a case whose ORIGINAL
+    /// does not compile to wasm is SHARED (a language/lowering limit, not a backend gap) → declines, and a
+    /// case the cadenza backend cannot yet emit declines too — only an emitted surface that fails to
+    /// recompile or gives a wrong value is a real break. Mirrors the standalone `hop2_validate` harness.
+    Cadenza,
 }
 
 /// The `--target` value clap parses for the `gate` command (its own enum so clap validates the
@@ -1237,6 +1246,7 @@ enum GateTargetArg {
     Wasm,
     Rust,
     RustAsync,
+    Cadenza,
 }
 
 /// How the wasm gate checks a case's post-run HEAP BALANCE — the corpus opt-out heap-liveness model. The
@@ -1402,7 +1412,146 @@ fn run_program(
             host_responses,
             host_calls,
         ),
+        GateTarget::Cadenza => run_program_cadenza(
+            tools,
+            store,
+            program,
+            modules,
+            call,
+            host_responses,
+            live_objects,
+        ),
     }
+}
+
+/// Drive one program through the CADENZA-BACKEND ROUND-TRIP (`GateTarget::Cadenza`): emit the optimized
+/// program back to a Cadenza SURFACE (`cdz compile --target cadenza`), then RECOMPILE that surface through
+/// the normal wasm path ([`run_program_wasm`]) and run it — so the case's recorded expectation grades the
+/// round-tripped value, exactly as `hop2_validate` does out-of-band. The grading contract:
+/// - a MULTI-FILE package case is not yet round-tripped → DECLINE (Todo, coverage-not-yet);
+/// - a case whose ORIGINAL does not compile to wasm is SHARED (a language/lowering limit, NOT a backend
+///   gap — the standard wasm gate already records it) → DECLINE, so it never counts as a cadenza break;
+/// - a case the cadenza backend cannot yet EMIT (hop1 declines) → DECLINE (Todo);
+/// - only an emitted surface that fails to RECOMPILE, traps, or yields a wrong value is a real break — that
+///   flows through as the wasm run's `Ran`.
+///
+/// (`wit_world`/`peer`/two-call/drop/method cases already declined for every non-`Wasm` target upstream in
+/// [`run_program`], so they never reach here.)
+fn run_program_cadenza(
+    tools: &Tools,
+    store: &Option<PathBuf>,
+    program: &str,
+    modules: &[(String, String)],
+    call: Option<&Call>,
+    host_responses: &[(String, String)],
+    live_objects: LiveObjectsCheck,
+) -> Ran {
+    // Multi-file package round-trip is a later increment — decline (Todo), never a spurious break.
+    if !modules.is_empty() {
+        return Ran::Declined {
+            code: None,
+            message: String::new(),
+        };
+    }
+    // Precondition: the ORIGINAL program must compile to wasm. If it doesn't, this is a SHARED gap (the
+    // standard wasm gate owns it), NOT a cadenza-backend round-trip break → decline so it stays uncounted.
+    if emit_component_single_at(tools, program, None, None, None).is_err() {
+        return Ran::Declined {
+            code: None,
+            message: String::new(),
+        };
+    }
+    // hop1: emit the optimized program BACK to a Cadenza surface (sexpr text). A decline here = the cadenza
+    // backend cannot yet re-emit this form → Todo (coverage-not-yet), not a disagreement.
+    let surface = match emit_cadenza_surface(tools, program) {
+        Some(s) => s,
+        None => {
+            return Ran::Declined {
+                code: None,
+                message: String::new(),
+            };
+        }
+    };
+    // hop2: recompile the emitted surface through the normal wasm path and run it. A recompile failure /
+    // trap / wrong value here is a REAL cadenza round-trip break (the whole point of this target).
+    run_program_wasm(
+        tools,
+        store,
+        &surface,
+        &[],
+        &[],
+        call,
+        host_responses,
+        None,
+        None,
+        None,
+        live_objects,
+    )
+}
+
+/// Emit the OPTIMIZED program back to a Cadenza SURFACE as sexpr text: sexpr → binary AST (`cdz-syntax
+/// convert`) → `cdz compile --target cadenza` (the cadenza binary AST) → sexpr (`cdz convert --from binary
+/// --to sexpr`). Returns the surface text, or `None` if any stage fails (hop1 decline / a hang). The sexpr
+/// form is then re-parseable source for the wasm recompile leg — a true round-trip through the same pipeline.
+fn emit_cadenza_surface(tools: &Tools, program: &str) -> Option<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Stage 1: sexpr text (stdin) → binary AST (stdout).
+    let mut syntax = Command::new(&tools.syntax)
+        .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+    syntax
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(program.as_bytes())
+        .ok();
+
+    // Stage 2: binary AST → cadenza binary AST (`compile --target cadenza`); capture nothing but the bytes.
+    let compile = Command::new(&tools.rcdzc)
+        .args(["compile", "--target", "cadenza", "-", "-o", "-"])
+        .stdin(Stdio::from(syntax.stdout.take().unwrap()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("rcdzc", e));
+    let compile_out =
+        match wait_with_timeout(compile, run_timeout()).expect("wait rcdzc -t cadenza") {
+            Some(out) => out,
+            None => {
+                let _ = syntax.wait();
+                return None;
+            }
+        };
+    let _ = syntax.wait();
+    if !compile_out.status.success() {
+        return None; // hop1 declined — the cadenza backend cannot re-emit this form yet.
+    }
+
+    // Stage 3: cadenza binary AST (stdin) → sexpr text (stdout) — the re-parseable surface.
+    let mut convert = Command::new(&tools.syntax)
+        .args(["convert", "--from", "binary", "--to", "sexpr", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+    convert
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&compile_out.stdout)
+        .ok();
+    let convert_out = wait_with_timeout(convert, run_timeout()).expect("wait cdz convert")?;
+    if !convert_out.status.success() {
+        return None;
+    }
+    String::from_utf8(convert_out.stdout).ok()
 }
 
 /// Drive one program through cdz-syntax → rcdzc (wasm) → cdz-run — the historical path. A multi-file
@@ -3721,6 +3870,10 @@ fn corpus_check_attr(target: GateTarget, stem: Option<&str>) -> Option<String> {
         // rust-async gained a cached per-case nix check (#4728: `corpus-rust-async[-<stem>]`, graded vs
         // `.gate-baseline-rust-async`), so it delegates like wasm/rust instead of running in-process.
         GateTarget::RustAsync => "corpus-rust-async",
+        // No nix per-case check wired yet — the cadenza round-trip runs IN-PROCESS (excluded from the
+        // `gate_via_nix_cache` short-circuit), so this prefix is reserved for the future `corpus-cadenza`
+        // check but not yet consumed.
+        GateTarget::Cadenza => "corpus-cadenza",
     };
     match stem {
         None => Some(prefix.to_string()),
@@ -4292,6 +4445,12 @@ fn sweep_one_case(
                 &[],
                 &[],
             ),
+            // The cadenza round-trip is not part of the optimization-level-equivalence sweep (it is its own
+            // `--target cadenza` gate, run without `--opt-sweep`) → decline here so it is skipped.
+            GateTarget::Cadenza => Ran::Declined {
+                code: None,
+                message: String::new(),
+            },
         }
     };
     let mut diffs = Vec::new();
@@ -4866,6 +5025,7 @@ fn baseline_path(paths: &Paths, target: GateTarget) -> PathBuf {
         GateTarget::Wasm => ".gate-baseline".to_string(),
         GateTarget::Rust => ".gate-baseline-rust".to_string(),
         GateTarget::RustAsync => ".gate-baseline-rust-async".to_string(),
+        GateTarget::Cadenza => ".gate-baseline-cadenza".to_string(),
     };
     paths.repo.join("spec/semantics").join(name)
 }
