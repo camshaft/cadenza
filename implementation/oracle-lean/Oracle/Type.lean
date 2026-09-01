@@ -195,6 +195,8 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
 * T1.4 — **arithmetic** (`+ - * / %`, §4): `(OP a b)` unifies the operands and requires the result to be
   numeric (`Int` → that int type); a same-typed non-numeric operand is `IllTyped CDZ0301`, a mixed clash
   `CDZ0203`. A Float operand (not a modeled scalar) → `Unsupported` (never a false `Int`-reject).
+* T1.5 — **boolean connectives** (`and`/`or` binary, `not` unary): every operand unifies with `Bool`,
+  result `Bool`; a non-`Bool` operand is `IllTyped CDZ0203`.
 Any other construct → `Unsupported` until its rule lands (ascription/App/Let/Fn/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
@@ -254,6 +256,25 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                 | .bool | .string | .char | .unit => .error (.illTyped "CDZ0301")
                 | _ => .error (.unsupported "type oracle: arithmetic on an unresolved/unmodeled operand type")
             | _, _ => .error (.unsupported "type oracle: malformed arithmetic (unary or partial)")
+          else if (String.fromUTF8? h).elim false (fun s => s == "and" || s == "or" || s == "not") then
+            -- T1.5 — BOOLEAN connectives (`and`/`or` binary, `not` unary): every operand unifies with
+            -- `Bool`, result `Bool`. A non-`Bool` operand is `IllTyped CDZ0203`.
+            if h == "not".toUTF8 then
+              match children[1]? with
+              | some aId => do
+                  let (τa, st) ← inferE m env st aId
+                  let st ← unifyInfer τa .bool st
+                  .ok (.bool, st)
+              | none => .error (.unsupported "type oracle: malformed not")
+            else
+              match children[1]?, children[2]? with
+              | some aId, some bId => do
+                  let (τa, st) ← inferE m env st aId
+                  let st ← unifyInfer τa .bool st
+                  let (τb, st) ← inferE m env st bId
+                  let st ← unifyInfer τb .bool st
+                  .ok (.bool, st)
+              | _, _ => .error (.unsupported "type oracle: malformed and/or")
           else .error (.unsupported
             "type oracle: construct not yet modeled (T1 — ascription/App/Let/Fn/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
@@ -406,6 +427,27 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
 -- T1.4 (arithmetic): `(+ 1 #t)` — mixed operand clash → IllTyped CDZ0203 (caught by unify before the numeric check).
 #guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "+".toUTF8,
                             .intLit false .dec (ByteArray.mk #[1]), .boolLit true, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .illTyped "CDZ0203")
+-- T1.5 (boolean): `(and #t #f)` — both operands Bool → WellTyped Bool.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "and".toUTF8,
+                            .boolLit true, .boolLit false, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .wellTyped .bool)
+-- T1.5 (boolean): `(not #t)` — unary; operand Bool → WellTyped Bool.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "not".toUTF8,
+                            .boolLit true, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .list #[0, 1],            -- (not #t)
+                           .atom 2, .list #[3], .atom 1, .list #[5, 4, 2],
+                           .atom 5, .atom 2, .list #[7, 8], .atom 0, .list #[10, 6, 9]],
+                root := 11 } == .wellTyped .bool)
+-- T1.5 (boolean): `(and #t 1)` — a non-Bool operand → IllTyped CDZ0203.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "and".toUTF8,
+                            .boolLit true, .intLit false .dec (ByteArray.mk #[1]), .name "export".toUTF8],
                 nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
                            .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
                            .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
