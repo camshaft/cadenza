@@ -731,16 +731,32 @@ pub fn grade_compile_error(
             "expected compile error {want} but the program COMPILED (miscompile)"
         ));
     }
-    let (got, message) = first_error_diag(diag);
+    let (got, _first_message) = first_error_diag(diag);
     match got {
         Some(code) if code == want => {
-            if let Some(p) = msgs.iter().find(|p| !message.contains(p.as_str())) {
-                return Grade::Fail(format!("error {want} but message {message:?} lacks {p:?}"));
-            }
-            // seq-29 message-ABSENCE: a `(not "phrase")` pin fails if the diagnostic CONTAINS it.
-            if let Some(p) = not_msgs.iter().find(|p| message.contains(p.as_str())) {
+            // Search each `(message …)` phrase across ALL diagnostics carrying `want` (not just the first),
+            // so a case whose asserted phrases are SPLIT across multiple same-code diagnostics — e.g. two
+            // CDZ0101s for a `(Qty widget meter)` bad-inner + bad-unit, each anchoring its own position —
+            // grades correctly. A phrase passes if it appears in SOME same-code diagnostic; a `(not …)`
+            // absence pin fails if it appears in ANY. For a single same-code diagnostic (the common case)
+            // this is identical to the old first-diagnostic check.
+            let messages = same_code_messages(diag, want);
+            if let Some(p) = msgs
+                .iter()
+                .find(|p| !messages.iter().any(|m| m.contains(p.as_str())))
+            {
                 return Grade::Fail(format!(
-                    "error {want} but message {message:?} unexpectedly contains {p:?}"
+                    "error {want} but no {want} diagnostic message contains {p:?} (searched {} same-code diag(s))",
+                    messages.len()
+                ));
+            }
+            // seq-29 message-ABSENCE: a `(not "phrase")` pin fails if ANY same-code diagnostic CONTAINS it.
+            if let Some(p) = not_msgs
+                .iter()
+                .find(|p| messages.iter().any(|m| m.contains(p.as_str())))
+            {
+                return Grade::Fail(format!(
+                    "error {want} but a {want} diagnostic message unexpectedly contains {p:?}"
                 ));
             }
             Grade::Pass
@@ -1043,6 +1059,31 @@ pub fn first_error_diag(diag: &str) -> (Option<String>, String) {
         }
     }
     (None, String::new())
+}
+
+/// The messages of EVERY `error [CODE]` diagnostic whose code == `code`, in emission order. A single
+/// program can raise the same coded fault at multiple positions as SEPARATE diagnostics (e.g. `(Qty widget
+/// meter)` emits two CDZ0101s — one anchoring `widget` "not a type variable", one anchoring `meter` "not a
+/// unit"), and a case's `(message …)` asserts phrases that are split across them. `first_error_diag` only
+/// sees the first, so a per-first-message check false-fails such a split case; this collects all same-code
+/// messages so the phrase search can span them (see `grade_compile_error`).
+pub fn same_code_messages(diag: &str, code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in diag.lines() {
+        if let Some((_, after)) = line.split_once("error [")
+            && let Some((c, rest)) = after.split_once(']')
+            && c.trim() == code
+        {
+            out.push(
+                rest.split_once(": ")
+                    .map(|(_, m)| m)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            );
+        }
+    }
+    out
 }
 
 /// Whether a CODE-LESS compile-failure message is an INTERNAL COMPILER ERROR (a bug) rather than an honest
@@ -1923,6 +1964,35 @@ mod tests {
         let miss = ["no implicit conversion".to_string(), "UInt64".to_string()];
         assert!(matches!(
             grade_compile_error(false, diag, "CDZ0301", &miss, &[]),
+            Grade::Fail(_)
+        ));
+    }
+
+    /// A case whose `(message …)` phrases are SPLIT across MULTIPLE same-code diagnostics (a `(Qty widget
+    /// meter)` bad-inner + bad-unit emits two CDZ0101s, one per position) grades correctly — each phrase is
+    /// searched across ALL same-code diagnostics, not just the first. (18-units:0005 fix.)
+    #[test]
+    fn compile_error_grade_spans_multiple_same_code_diagnostics() {
+        let two = "cdz: error [CDZ0101] (col 23): `widget` is not a type variable here\n\
+                   cdz: error [CDZ0101] (col 30): `meter` is not a unit — Qty's second argument is a unit";
+        let both = ["not a type variable".to_string(), "not a unit".to_string()];
+        // Both phrases present across the two CDZ0101s → Pass (the first-diagnostic-only check false-failed this).
+        assert_eq!(
+            grade_compile_error(false, two, "CDZ0101", &both, &[]),
+            Grade::Pass
+        );
+        // A phrase in NEITHER same-code diagnostic → Fail.
+        let absent = ["not a lifetime".to_string()];
+        assert!(matches!(
+            grade_compile_error(false, two, "CDZ0101", &absent, &[]),
+            Grade::Fail(_)
+        ));
+        // `same_code_messages` collects only the matching code (both CDZ0101 here; a CDZ0999 is ignored).
+        assert_eq!(same_code_messages(two, "CDZ0101").len(), 2);
+        assert_eq!(same_code_messages(two, "CDZ0999").len(), 0);
+        // seq-29 absence across diags: a `(not …)` phrase present in ANY same-code diagnostic → Fail.
+        assert!(matches!(
+            grade_compile_error(false, two, "CDZ0101", &[], &["not a unit".to_string()]),
             Grade::Fail(_)
         ));
     }
