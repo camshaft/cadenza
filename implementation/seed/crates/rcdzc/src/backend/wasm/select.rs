@@ -4172,46 +4172,6 @@ fn collect_surplus_skippable_dups(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// INC1 pt3 G3 helper: whether `id` (a loop back-edge rebind arg) is a CHILD-PROJECTION chain that roots at
-/// the loop-param in slot `slot` — i.e. following `SumPayload{scrutinee}` / `Proj{operand}` steps (through
-/// `LocalRef` binders that name a let-bound projection) reaches the `Param`/`LocalRef` whose slot is `slot`.
-/// This distinguishes a carried CHILD (inorder's `r = Proj(p,2)`, `p = SumPayload(t)`, `t` = loop-param — a
-/// 2-level nested chain) from the node carried WHOLE (a bare re-pass of the param → NOT a projection → the
-/// shell would still be live → must NOT reclaim). `depth` bounds the walk (a self-referential `Param` binder
-/// resolves to itself, so the `Param` arm never recurses; the guard is a backstop). Sound-conservative: any
-/// shape that is not a provable self-projection returns `false` (skip the reclaim → leak, never a UAF).
-fn carried_roots_at_loop_param(
-    db: &mut Db,
-    id: StructId,
-    slot: u32,
-    slots: &HashMap<StructId, u32>,
-    depth: u32,
-) -> bool {
-    if depth > 16 {
-        return false;
-    }
-    match core_of(db, id) {
-        // A bare param IS the root: reclaim only if it is the loop-param slot. (Does NOT recurse — a Param
-        // binder's core is itself, so this terminates the walk.)
-        Core::Param { binder } => slots.get(&binder) == Some(&slot),
-        // A `LocalRef` either directly names the loop-param slot, or binds a let-bound projection — follow its
-        // binder's core (a `Proj`/`SumPayload` for a projection binder, or a `Param` for a param ref).
-        Core::LocalRef { binder } => {
-            slots.get(&binder) == Some(&slot)
-                || carried_roots_at_loop_param(db, binder, slot, slots, depth + 1)
-        }
-        // Projection steps: descend to the projected-from node (the parent of this child).
-        Core::SumPayload { scrutinee, .. } => {
-            carried_roots_at_loop_param(db, scrutinee, slot, slots, depth + 1)
-        }
-        Core::Proj { operand, .. } => {
-            carried_roots_at_loop_param(db, operand, slot, slots, depth + 1)
-        }
-        // Anything else (a fresh ctor, an arith, a call result) is NOT a projection of the loop-param.
-        _ => false,
-    }
-}
-
 fn emit_loop_iteration(
     db: &mut Db,
     which: usize,
