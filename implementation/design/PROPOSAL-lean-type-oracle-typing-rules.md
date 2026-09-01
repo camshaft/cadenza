@@ -71,8 +71,8 @@ Ty =
   | bool | unit | string | char
   | fn    (dom cod : Ty)                   -- curried; a multi-arg fn is nested arrows
   | tuple (elts : List Ty)                 -- positional, arity is part of the type (ts:130-146)
-  | record (fields : List (String × Ty))  -- CLOSED, fields sorted by name for shape-equality (ts:70-74)
-  | sum    (variants : List (String × Option Ty)) -- CLOSED; None payload = nullary variant (ts:192-204)
+  | record (fields : List (String × Ty))  -- CLOSED; fields sorted by name and unique (no duplicates) for shape-equality (ts:70-74)
+  | sum    (variants : List (String × Option Ty)) -- CLOSED; variants sorted by name and unique; None payload = nullary variant (ts:192-204)
   | never                                  -- the empty sum; unifies with any type (ts:76-84)
   | var    (id : Nat)                      -- a unification variable
 ```
