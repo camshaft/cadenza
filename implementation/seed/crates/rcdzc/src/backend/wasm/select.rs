@@ -1216,19 +1216,19 @@ pub fn select_function_of(
     // EXPORT entry (caller-built cell) or a genuine CAPTURING closure (closure-arg boundary-built) stays
     // excluded. `call_arg_caller_drops` gate(5) excludes looped callees, and every INC1 target is
     // self-recursive → mutually exclusive with the caller-drop by construction (v-runtime rc-confirmed).
-    // Admit ONLY a LOOPED (self-recursive) lifted combinator: `call_arg_caller_drops` gate(5) excludes a
-    // LOOPED callee from the caller-drop ("looped callee handles its own params"), so INC1's callee-reclaim
-    // is mutually exclusive with the caller-drop ONLY for looped combinators. A NON-looped lifted combinator
-    // still gets the caller-drop → INC1-reclaiming it too would DOUBLE-FREE (v-runtime's non-looped caveat,
-    // reproduced: admitting all combinators red'd 61 guarded-all cases). So keep non-looped combinators +
-    // capturing closures + exports boundary-excluded.
-    let is_looped_combinator = self_def.is_some_and(|d| !mutual_loop_group(db, d).is_empty())
-        && db.lifted.iter().any(|l| l.body == body)
-        && !body_is_capturing_lifted(db, body);
-    let inc1_boundary_excluded = (layout.exports.iter().any(|e| e.body == body)
-        || db.lifted.iter().any(|l| l.body == body))
-        && !is_looped_combinator;
-    let nontail_reclaim: HashSet<StructId> = if inc1_boundary_excluded {
+    // APPROACH A (v-runtime gate(4)-measured, v-core-opt-endorsed condition): admit a lifted COMBINATOR's
+    // owned recursive-sum param into the INC1 non-tail-spine reclaim iff `param_escapes_body || looped` — the
+    // EXACT complement of `call_arg_caller_drops`' exclusion gates (4)+(5). So INC1's per-frame callee-reclaim
+    // fires PRECISELY when the caller does NOT caller-drop the param → mutually exclusive by construction, no
+    // yield needed. A non-escaping non-looped combinator (v-runtime's `g`) stays caller-dropped (excluded
+    // here). Only EXPORT entries + genuine CAPTURING closures are wholly boundary-excluded. (Non-lifted
+    // internal defs keep the pre-existing count==0 selection unchanged — the combinator gate is additive.)
+    let inc1_wholly_excluded =
+        layout.exports.iter().any(|e| e.body == body) || body_is_capturing_lifted(db, body);
+    let is_lifted_combinator =
+        db.lifted.iter().any(|l| l.body == body) && !body_is_capturing_lifted(db, body);
+    let self_looped = self_def.is_some_and(|d| !mutual_loop_group(db, d).is_empty());
+    let nontail_reclaim: HashSet<StructId> = if inc1_wholly_excluded {
         HashSet::new()
     } else {
         let epilogue_dropped: HashSet<u32> = looped_owned_param_drops(db, body, params, self_def)
@@ -1247,6 +1247,12 @@ pub fn select_function_of(
             }
             if epilogue_dropped.contains(&this_slot) {
                 continue; // already reclaimed at the fn-exit epilogue — a match drop would double-free.
+            }
+            // INC1 combinator gate (approach A): a lifted combinator's param is caller-dropped iff
+            // !param_escapes_body && !looped (call_arg_caller_drops gates 4+5). So INC1-reclaim it ONLY when
+            // the caller does NOT — param_escapes_body || looped — else it double-frees (the `g` 42-fail class).
+            if is_lifted_combinator && !(param_escapes_body(db, body, *binder) || self_looped) {
+                continue;
             }
             // SOLE-CONSUME (gate b): count_param_consumes counts CONSUMING uses (RestFrom / consume-ops /
             // escapes / direct-ref call args) but NOT a match's Payload extraction or a scrutinee borrow. == 0

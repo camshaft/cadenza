@@ -3547,3 +3547,35 @@ fn collect_nontail_compound_reclaim_binders_seen(
         collect_nontail_compound_reclaim_binders_seen(db, child, top_body, out, seen);
     }
 }
+
+/// Whether the callee function `body` will INC1 non-tail-spine-reclaim its param `param_binder` — i.e. `body`
+/// contains a `MatchSum` over `param_binder` that [`is_nontail_spine_param`] selects (the callee drops that
+/// owned recursive-sum scrutinee's shell itself, at every recursion frame). Used by `call_arg_caller_drops`
+/// (APPROACH B): the caller-drop YIELDS to this — callee-reclaim covers ALL frames (top + inner, inner
+/// reachable only by the callee), the caller-drop covers only the top, so the callee is the COMPLETE owner.
+/// Making this exclusion UNCONDITIONAL (not gated on whether the caller-drop fires today) is future-proof:
+/// a later `param_escapes_body` change can never silently double-free an INC1-reclaimed param.
+pub(super) fn def_inc1_reclaims_param(db: &mut Db, body: StructId, param_binder: StructId) -> bool {
+    fn go(
+        db: &mut Db,
+        id: StructId,
+        top_body: StructId,
+        pb: StructId,
+        seen: &mut HashSet<StructId>,
+    ) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::MatchSum { scrutinee, root } = core_of(db, id)
+            && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if binder == pb)
+            && is_nontail_spine_param(db, top_body, scrutinee, &root)
+        {
+            return true;
+        }
+        core_child_ids(db, id)
+            .into_iter()
+            .any(|c| go(db, c, top_body, pb, seen))
+    }
+    let mut seen = HashSet::new();
+    go(db, body, body, param_binder, &mut seen)
+}
