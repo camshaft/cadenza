@@ -11,18 +11,15 @@ For each case it runs `Oracle.WasmDiff.differential` (Core `reduce coreAst` vs `
 tallies agree/diverge/skip; a DIVERGENCE is a real MISCOMPILE finding (printed for triage). Exit nonzero iff
 any case diverged.
 
-DRIVER: `Oracle.Wasm.talosDriver` (module `Oracle.Wasm.Talos`) once the `nix/talos-lean-deps` co-land is on
-main. Until then a STUB driver returns `.err` (→ every case `.skip`), so the whole IO plumbing compiles and
-runs now (reporting all-skip); wiring talos is the one-line `stubDriver → Oracle.Wasm.talosDriver` swap +
-its import, done the moment v-wasm-oracle pings the merge.
+DRIVER: `Oracle.Wasm.talosDriver` (module `Oracle.Wasm.Talos`) — the talos small-step wasm interpreter,
+now on main (`nix/talos-lean-deps` co-land, toolchain 4.32.2). Import-free scalar/arith core modules RUN
+end-to-end (Core `reduce` vs talos-interpret); a runtime-importing/heap module returns `.err` →
+`.unsupported` → `differential` `.skip` (a sound coverage gap, not a false verdict).
 -/
 import Oracle
+import Oracle.Wasm.Talos
 
 open Oracle Oracle.Wasm Oracle.WasmDiff
-
-/-- Placeholder interpreter seam until `Oracle.Wasm.talosDriver` lands (co-land pending in v-nix verify).
-Returns `.err`, so every case maps to `.unsupported` → `differential` `.skip` (no false results). -/
-def stubDriver : Driver := fun _ _ => .err "talos driver not yet wired (pending nix/talos-lean-deps co-land)"
 
 /-- Parse a manifest: newline-separated per-case directory paths (blank lines ignored). -/
 def readManifest (file : String) : IO (List String) := do
@@ -53,9 +50,10 @@ def main (args : List String) : IO UInt32 := do
       match ← loadCase dir with
       | some c => cases := c :: cases
       | none => pure ()
-    let (tally, divs) := runCorpus stubDriver { entry := "main" } cases
+    let (tally, divs) := runCorpus Oracle.Wasm.talosDriver { entry := "main" } cases
     IO.println s!"oracle-wasm-diff: {tally.agree} agree, {tally.diverge} diverge, {tally.skip} skip (of {cases.length} cases)"
     for (id, _, _) in divs.reverse do
       IO.eprintln s!"DIVERGE {id}: Core reference and wasm run disagree (miscompile candidate)"
-    -- NB: with the stub driver every case skips; a nonzero exit only fires once talosDriver is wired.
+    -- talos DRIVES the wasm side now; scalar/arith import-free cases run, heap/runtime-import cases
+    -- `.err`→`.unsupported`→`.skip` (sound gap). A DIVERGENCE (nonzero exit) is a real miscompile finding.
     return (if tally.diverge == 0 then 0 else 1)
