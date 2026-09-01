@@ -471,40 +471,14 @@ fn arena_shapes() {
 // (op emit (-> Int64 Unit)) (op collect (-> (List Int64))))` — `emit`'s `P -> R` is a two-element arrow,
 // `collect`'s `-> R` the nullary-elided one-element arrow. (Effect with doc headers = ml/300-301.)
 
-#[test]
-fn world_decl_builds_the_canonical_wit_world_node() {
-    // `world Reducer = | export fold = | apply : (event : Bytes) -> Bytes | import kv = | get :
-    // (key : String) -> String` -> the canonical world node the S1 builders produce: a `world` head,
-    // the name, then import/export interface sub-nodes, each `(member M (func (param P T) (result R)))`.
-    let a = parse_ok(
-        "world Reducer = \
-             | export fold = | apply : (event : Bytes) -> Bytes \
-             | import kv = | get : (key : String) -> String",
-    );
-    let world = a.as_form(a.root, "world").unwrap();
-    assert_eq!(a.as_name(world[0]), Some("Reducer"));
-    // export fold { apply : (event: Bytes) -> Bytes }
-    let fold = a.as_form(world[1], "export").unwrap();
-    assert_eq!(a.as_name(fold[0]), Some("fold"));
-    let apply = a.as_form(fold[1], "member").unwrap();
-    assert_eq!(a.as_name(apply[0]), Some("apply"));
-    let func = a.as_form(apply[1], "func").unwrap();
-    assert_eq!(
-        func.len(),
-        2,
-        "one param sub-node + the always-present result"
-    );
-    let param = a.as_form(func[0], "param").unwrap();
-    assert_eq!(a.as_name(param[0]), Some("event"));
-    assert!(
-        a.as_form(func[1], "result").is_some(),
-        "result sub-node present"
-    );
-    // import kv { get : (key: String) -> String } — direction is the structural sub-head.
-    let kv = a.as_form(world[2], "import").unwrap();
-    assert_eq!(a.as_name(kv[0]), Some("kv"));
-    assert!(a.as_form(kv[1], "member").is_some(), "kv has a member");
-}
+// `world_decl_builds_the_canonical_wit_world_node` (a `world Name = | export I = | m : (p : T) -> R |
+// import J = …` parses to the canonical `(world Name (export I (member m (func (param p T) (result R)))) …)`
+// node — world head/name, per-direction interface sub-nodes, each member a `(func (param …) (result …))`)
+// MIGRATED to the spec/syntax corpus (parser-corpus): its parse-structure claim is SUBSUMED byte-for-byte by
+// ml/13-world-full-decl `(world Reducer (export fold (member apply (func (param event Bytes) (result Bytes))))
+// (import kv (member get …) (member put …)))` — a structural superset (export+import, member/func/param/result)
+// — plus ml/12 nullary-member, ml/14-24 (prim/list/option/result/variant/enum-flags/record members). The
+// builder-EQUIVALENCE claim (parse == the S1 programmatic builders) is the separate `inline_world_*` tests.
 
 #[test]
 fn a_docd_world_carries_the_doc_but_its_interfaces_are_identity_stable() {
