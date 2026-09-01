@@ -13469,3 +13469,17 @@
       (def (main) (count (.. #tuple(1 2 3))))
       (export main)))
   (output (: 3 Int64)))
+
+(case
+  "a tuple splat spreads a tuple held in a variable"
+  (doc
+    "The splat operand need not be a tuple LITERAL — a bound `let`-local holding a tuple splats the same
+           way: `let t = (1, 2, 3) in add3(.. t)` reads `t`'s three elements into `add3`'s parameters,
+           giving 6. Pins that `(.. t)` spreads a tuple VALUE by reference (each argument position reads one
+           element), not only a syntactic tuple.")
+  (input
+    (do
+      (def (add3 (: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c)))
+      (def (main) (let ((t #tuple(1 2 3))) (add3 (.. t))))
+      (export main)))
+  (output (: 6 Int64)))

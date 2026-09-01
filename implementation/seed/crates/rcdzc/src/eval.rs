@@ -1134,20 +1134,50 @@ fn apply_lambda_uncached(
         if args.iter().any(|&a| db.ast.spread_operand(a).is_some()) {
             let mut out: Vec<StructId> = Vec::new();
             for &a in args {
-                match db.ast.spread_operand(a).and_then(|t| {
-                    db.ast
-                        .compound_form_of(t, crate::ast::CompoundCtor::Tuple)
-                        .map(|e| e.to_vec())
-                }) {
-                    Some(elems) => {
-                        for e in elems {
-                            crate::resolve::resolve_subtree(db, e);
-                            out.push(e);
-                        }
+                let Some(t) = db.ast.spread_operand(a) else {
+                    out.push(a);
+                    continue;
+                };
+                // (i) A SYNTACTIC tuple operand `(.. #tuple(a b c))` — splice its element occurrences.
+                if let Some(elems) = db
+                    .ast
+                    .compound_form_of(t, crate::ast::CompoundCtor::Tuple)
+                    .map(|e| e.to_vec())
+                {
+                    for e in elems {
+                        crate::resolve::resolve_subtree(db, e);
+                        out.push(e);
                     }
-                    // Not a `(.. <compile-time-tuple>)` — leave as-is (a runtime-tuple / list splat is a
-                    // follow-up; a bare `..` here still declines downstream as before).
-                    None => out.push(a),
+                    continue;
+                }
+                // (ii) A tuple-typed REFERENCE `(.. t)` (a param / let-local) — expand into per-slot
+                // projections `(. t 0) … (. t k-1)` (k = the static tuple arity). t is a bound VALUE, so
+                // reading it k times does not re-evaluate it; a copy of the reference per projection keeps
+                // the one-parent invariant. A NON-reference operand (a call that computes a tuple) would
+                // re-evaluate per projection → left as-is for the materialize-once follow-up.
+                crate::resolve::resolve_subtree(db, t);
+                let arity = match crate::infer::type_of(db, t) {
+                    crate::ty::Ty::Tuple(elems) => Some(elems.len()),
+                    _ => None,
+                };
+                let simple_ref = matches!(
+                    resolved_of(db, t),
+                    Resolved::Ref { .. } | Resolved::Param { .. }
+                );
+                if let (Some(k), true) = (arity, simple_ref) {
+                    for i in 0..k {
+                        let t_copy = copy_structural_pub(db, t, &[], &HashMap::default());
+                        let dot = db.push_name(".");
+                        let idx = db.push_atom(Leaf::Int {
+                            value: IntValue::from_i64(i as i64),
+                            radix: crate::ast::Radix::Dec,
+                        });
+                        let proj = db.push_list(vec![dot, t_copy, idx]);
+                        crate::resolve::resolve_subtree(db, proj);
+                        out.push(proj);
+                    }
+                } else {
+                    out.push(a);
                 }
             }
             Some(out)
