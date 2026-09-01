@@ -205,6 +205,10 @@ fn compile_with_opt_inner(
     // the enclosing module from these at lowering, keyed by `file_of`. Set here (post-load), like
     // `component_name`, so `Db::load`'s many callers need no new argument.
     db.source_snapshots = source_snapshots;
+    // MACRO EXPANSION (DESIGN-macro-system.md §4) — run POST-RESOLVE, PRE-INFER: rewrite every quote-param
+    // macro call to its expansion so infer/lower type the EXPANSION, not the macro's declared `Ast` return
+    // (spec: macro expansion precedes type checking). A no-op for a program with no `quote` parameter.
+    crate::lower::expand_macros(&mut db);
     // A PROVIDER compile names the interface it publishes its exports under (X4b) — the
     // `component-name` request artifact. A peer consumer binds to this name with an `(effect …)`
     // `(bind "cadenza:pkg/iface")` (the effects-unified surface, U2). Absent (the common case) → exports

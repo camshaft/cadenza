@@ -1227,6 +1227,8 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
         // bare type/module used at runtime declines at the erasure fence.
         Resolved::Apply { head, args } => {
+            // (Macro expansion of a quote-param call happens PRE-INFER in `ast_reflect::expand_macros`, so
+            // by lowering the call node is already the expansion — nothing to do here.)
             // A PERFORM that reaches lowering directly — no enclosing handler discharged it (a handled
             // perform is REDUCED AWAY by `effects::reduce_handle` before its body is lowered, so it never
             // reaches here) and no host delegation routed it (E2). Whether this is an ERROR depends on

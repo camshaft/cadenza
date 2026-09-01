@@ -1,0 +1,53 @@
+; Macros — a macro is an ORDINARY FUNCTION over the AST (metaprogramming.md §Macros). No `defmacro`: a
+; parameter marked `(quote p)` receives its argument UNEVALUATED, as the reflected `Ast` of the syntax
+; written at the call site; the function returns an `Ast`; and the compiler EXPANDS the call — splices the
+; returned syntax in the call's position and type-checks it as if written directly (§Expansion Precedes And
+; Feeds The Core Guarantees). Expansion PRECEDES type checking (§Expansion Runs In Phases To A Fixpoint), so
+; the call takes the EXPANSION's type, not the macro's declared `Ast` return. DESIGN-macro-system.md.
+(case
+  "a quote-parameter macro receives its argument as unevaluated Ast and returns it (identity expansion)"
+  (doc
+    "The minimal macro: `(def (q (quote x)) x)` — the `(quote x)` parameter binds the ARGUMENT'S SYNTAX
+           (an `Ast`), and the body returns it. `(q 42)` reflects the literal `42` to its `Ast`, the macro
+           returns that `Ast`, and the compiler SPLICES it back as the source `42`, which evaluates to `42 :
+           Int64`. Pins that a macro is an ordinary function over the AST (metaprogramming.md §A Macro Is
+           Dispatched By Binding), that a `quote` parameter is call-by-AST (§Expansion Operates On The
+           Canonical Representation), and — crucially — that the CALL takes the EXPANSION's `Int64` type, not
+           the macro's declared `Ast` return (expansion precedes type checking, §Expansion Runs In Phases).")
+  (input (do (def (q (quote x)) x) (def (main) (q 42)) (export main)))
+  (call main)
+  (output (: 42 Int64)))
+
+(case
+  "a macro builds new syntax from its argument via quasiquote and the expansion is type-checked directly"
+  (doc
+    "`(def (twice (quote x)) (quasiquote (+ (unquote x) (unquote x))))` builds the syntax `(+ x x)` with
+           the argument's reflected AST spliced at each `(unquote x)`. `(twice 5)` expands to `(+ 5 5)` and
+           evaluates to `10 : Int64` — the expansion is ordinary code, type-checked as if written directly
+           (metaprogramming.md §Expansion Precedes And Feeds The Core Guarantees). A macro-body literal and a
+           spliced-argument literal must ground to the SAME `Int64` (no BigInt-vs-Int64 mismatch), so the
+           `(+ 5 5)` type-checks — witnessing that expansion feeds ordinary inference cleanly.")
+  (input
+    (do
+      (def (twice (quote x)) (quasiquote (+ (unquote x) (unquote x))))
+      (def (main) (twice 5))
+      (export main)))
+  (call main)
+  (output (: 10 Int64)))
+
+(case
+  "a macro mixing a body literal with an argument grounds both to Int64 (unless as a plain function)"
+  (doc
+    "The classic `unless`, as a plain function: `(def (unless (quote c) (quote body)) (quasiquote (if
+           (unquote c) 0 (unquote body))))`. `(unless false 7)` expands to `(if false 0 7)` → `7`. Pins that
+           a macro-BODY literal (`0`) and a spliced-ARGUMENT literal (`7`) both ground to `Int64` in the
+           expansion (they are the two `if` branches — a BigInt-vs-Int64 grounding mismatch would reject
+           CDZ0203), so a macro that mixes its own literals with the caller's arguments type-checks as
+           ordinary code.")
+  (input
+    (do
+      (def (unless (quote c) (quote body)) (quasiquote (if (unquote c) 0 (unquote body))))
+      (def (main) (unless false 7))
+      (export main)))
+  (call main)
+  (output (: 7 Int64)))

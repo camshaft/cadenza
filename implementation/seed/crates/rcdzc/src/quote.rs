@@ -437,6 +437,16 @@ pub(crate) fn reflect_document(ast: &mut Arenas, node: StructId) -> Option<Struc
     reify_inner(ast, node, true, true)
 }
 
+/// Reify a MACRO ARGUMENT subtree to the `Ast` value that denotes its syntax — the exact node
+/// `(quote <arg>)` produces (`under_qq = false`, so a stray unquote in the argument bails/codes as it
+/// would in a plain quote; `ground_ints = true`, value position). The macro-system expander
+/// (`DESIGN-macro-system.md` §4) calls this to pass a `quote`-marked (unevaluated) parameter its
+/// argument as reified `Ast` instead of an eager value. Thin `pub(crate)` sibling of
+/// [`reflect_document`] (which uses `under_qq = true` for arbitrary module reflection).
+pub(crate) fn reify_arg(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+    reify_inner(ast, node, false, true)
+}
+
 /// Does `ast` contain a `(. Ast module)` form anywhere — the `Ast.module` self-reflection intrinsic? A
 /// cheap structural scan used to GATE the pre-resolve source snapshot: the snapshot (a per-file arena
 /// clone the `Prim::ReflectModule` fill reflects from) is captured ONLY for a file that actually

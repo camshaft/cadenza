@@ -45,7 +45,7 @@ struct EvalPlan {
 
 /// Every node id reachable from `root` through the structure child lists (inclusive). Used to diff the
 /// dead reified-argument subtree against the live reconstruction so the dead wrapper nodes can be blanked.
-fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashSet<u32> {
+pub(crate) fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashSet<u32> {
     let mut seen = std::collections::HashSet::new();
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
@@ -108,17 +108,6 @@ pub fn desugar_eval(ast: &mut Arenas) {
             continue;
         };
         if let Some(replacement) = reconstruct(ast, arg) {
-            // HYGIENE: a template-introduced binder (a `let`/`fn`/`match` binder BUILT by the
-            // reconstruction — a FRESH node, id >= original_len) must not CAPTURE a variable the
-            // reconstruction spliced from an ACTIVE UNQUOTE (a LIVE-REUSED operand node, id <
-            // original_len, carrying its enclosing-scope name). Without this, `(let ((x 10)) (eval
-            // `(let ((x 1)) (+ ,x 99))))` reconstructs to `(let ((x 1)) (+ x 99))` where the spliced
-            // `,x` (meant to be the outer 10) is captured by the template's `(let (x 1))` → 100, not the
-            // correct 109 — a silent variable-capture miscompile. `rename_captured_binders` alpha-renames
-            // any template binder whose spelling collides with a spliced (live-reused) name to a fresh
-            // name, rewriting only the FRESH bound occurrences (the spliced ones, being live-reused, keep
-            // their spelling and resolve in the enclosing scope). Binder-kind-agnostic: any template
-            // binder that shadows a spliced name.
             rename_captured_binders(ast, replacement, original_len);
             plans.push(EvalPlan {
                 eval: id,
@@ -353,7 +342,23 @@ fn binder_of_param(ast: &Arenas, slot: StructId) -> StructId {
 /// An empty `Ast.List` (a compound with no operator — malformed AST) reconstructs to `(trap "malformed
 /// AST")`: eval of a malformed AST is a runtime halt (`metaprogramming.md` §Eval Is Optional: "eval on
 /// malformed AST traps"), not a value.
-fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+/// Reconstruct an `Ast.*` value back to the SOURCE it denotes — the `eval` path (a bare name / computed
+/// active-unquote operand passes through to fold in the enclosing scope; a spliced `Ast` VALUE stays an
+/// `Ast`, so an `Ast` in a numeric position is the deliberate CDZ0201 reject).
+pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+    reconstruct_inner(ast, node, false)
+}
+
+/// Reconstruct for MACRO EXPANSION — like [`reconstruct`] but SEES THROUGH a spliced reflected `Ast`
+/// construction at an `ast-lift` operand (a macro's reified `quote`-parameter argument: `,x` where `x` was
+/// bound to `(Ast.Int 5)` reconstructs to `5`, its denotation, not the constructor call). A macro's `,x`
+/// splices SYNTAX (code), so its expansion is real code; distinct from `eval`, where a spliced `Ast` value
+/// is data and must not be seen through (DESIGN-macro-system.md §4).
+pub(crate) fn reconstruct_macro(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+    reconstruct_inner(ast, node, true)
+}
+
+fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -> Option<StructId> {
     // `(Ast.Int payload)` -> the payload AS SOURCE. `Ast.Int` arises two ways, both reconstructing to the
     // payload node itself: (a) a reified INTEGER LITERAL `(Ast.Int 42)` — payload is the literal `42`, whose
     // source is `42`; (b) an ACTIVE-UNQUOTE lift `(Ast.Int <e>)` where `reify_active` wrapped the unquote's
@@ -366,6 +371,23 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     // reconstructed source folds through the ordinary compile-time path; a payload that is NOT compile-time-
     // known then declines/errors there as ordinary code would, not here.
     if let Some(payload) = ast_ctor_arg(ast, node, "Int") {
+        // MACRO path (see_through_lift): return a FRESH copy of a bare int literal, NOT the payload node
+        // itself. The payload is shared with this (soon-dead) `Ast.Int` wrapper, and
+        // `collect_bigint_ctor_arg_literals` — recomputed / consulted over the post-expansion arena —
+        // marks a bare `Ast.Int` arg to ground `BigInt`; a SHARED spliced literal would inherit that mark
+        // and wrongly ground `BigInt` (the body-literal BigInt-vs-Int64 bug). A fresh copy is a distinct
+        // node the ctor-arg scan never sees, so it grounds `Int64` by ordinary inference at the call site.
+        // (eval keeps the reuse — it splices at load, before the scan, and needs live-reuse for scope.)
+        if see_through_lift {
+            let stripped = strip_bigint_grounding(ast, payload);
+            if let Struct::Atom(l) = ast.get(stripped) {
+                let leaf = ast.leaf(*l).clone();
+                if matches!(leaf, Leaf::Int { .. }) {
+                    return Some(push_atom(ast, leaf));
+                }
+            }
+            return Some(stripped);
+        }
         // STRIP the reifier's `(: <lit> BigInt)` grounding wrapper (`quote::ast_bigint_payload`): an
         // `Ast.Int` VALUE stores its integer as `BigInt` (non-lossy storage), but the source an eval
         // RECONSTRUCTS must ground by ordinary width inference — an `(eval (quote (+ 1 2)))` yields an
@@ -386,6 +408,14 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     // So `(eval (quasiquote (+ (unquote x) 4)))` — whose `,x` now reifies to `(ast-lift x)` rather than a
     // literal-dispatched `(Ast.Int x)` — reconstructs to `(+ x 4)` and folds in the eval's enclosing scope.
     if let Some(payload) = ast_lift_arg(ast, node) {
+        // eval (see_through_lift = false): pass the operand through unchanged — a bare name / computed
+        // expr folds in scope, and a spliced `Ast` VALUE stays an `Ast` (an Ast in a numeric position is
+        // the deliberate CDZ0201 reject). MACRO (true): the operand is a reflected quote-param argument
+        // (syntax), so reconstruct it to its DENOTATION (`(Ast.Int 5)` → `5`); a non-Ast operand
+        // (`unwrap_or`) still passes through.
+        if see_through_lift {
+            return Some(reconstruct_inner(ast, payload, true).unwrap_or(payload));
+        }
         return Some(payload);
     }
     // `(Ast.Bool payload)` -> the payload AS SOURCE (the `true`/`false` literal node). Like `Ast.Int`,
@@ -418,7 +448,7 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
         }
         let mut children = Vec::with_capacity(elems.len());
         for e in elems {
-            children.push(reconstruct(ast, e)?);
+            children.push(reconstruct_inner(ast, e, see_through_lift)?);
         }
         return Some(push_list(ast, children));
     }
@@ -436,7 +466,7 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
             let elems = list_elems(ast, payload)?;
             let mut children = vec![push_atom(ast, Leaf::Ctor(ctor))];
             for e in elems {
-                children.push(reconstruct(ast, e)?);
+                children.push(reconstruct_inner(ast, e, see_through_lift)?);
             }
             return Some(push_list(ast, children));
         }
@@ -458,12 +488,12 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
                 // face of the #6855 fix; without this a quoted map/record-rest pattern closed and its match
                 // fell through to the catch-all).
                 if ast_ctor_arg(ast, fp, "FieldPair").is_some() {
-                    let (k, v) = reconstruct_field_pair(ast, fp)?;
+                    let (k, v) = reconstruct_field_pair(ast, fp, see_through_lift)?;
                     let eq = push_atom(ast, Leaf::FieldPair);
                     let entry = push_list(ast, vec![eq, k, v]);
                     children.push(entry);
                 } else {
-                    children.push(reconstruct(ast, fp)?);
+                    children.push(reconstruct_inner(ast, fp, see_through_lift)?);
                 }
             }
             return Some(push_list(ast, children));
@@ -472,8 +502,8 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     // `Ast.Member (tuple <obj> <key>)` -> the member access `(. <recon obj> <recon key>)`.
     if let Some(payload) = ast_ctor_arg(ast, node, "Member") {
         let (obj, key) = tuple2_of(ast, payload)?;
-        let obj = reconstruct(ast, obj)?;
-        let key = reconstruct(ast, key)?;
+        let obj = reconstruct_inner(ast, obj, see_through_lift)?;
+        let key = reconstruct_inner(ast, key, see_through_lift)?;
         let dot = push_atom(ast, Leaf::Name(".".into()));
         return Some(push_list(ast, vec![dot, obj, key]));
     }
@@ -482,10 +512,17 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
 
 /// Reconstruct an `Ast.FieldPair (tuple <key-ast> <value-ast>)` to its `(reconstructed key, reconstructed
 /// value)` source pair. `None` if `node` is not a well-formed `Ast.FieldPair` over a 2-tuple.
-fn reconstruct_field_pair(ast: &mut Arenas, node: StructId) -> Option<(StructId, StructId)> {
+fn reconstruct_field_pair(
+    ast: &mut Arenas,
+    node: StructId,
+    see_through_lift: bool,
+) -> Option<(StructId, StructId)> {
     let payload = ast_ctor_arg(ast, node, "FieldPair")?;
     let (k, v) = tuple2_of(ast, payload)?;
-    Some((reconstruct(ast, k)?, reconstruct(ast, v)?))
+    Some((
+        reconstruct_inner(ast, k, see_through_lift)?,
+        reconstruct_inner(ast, v, see_through_lift)?,
+    ))
 }
 
 /// The two element occurrences of a `(tuple a b)` 2-tuple value form — the `(Tuple Ast Ast)` payload shape

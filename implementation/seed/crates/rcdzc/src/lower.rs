@@ -36,6 +36,7 @@ use ast_reflect::{
 };
 // Re-exported at crate scope so `crate::lower::is_ast_float_variant` (the rust backend's escape guard)
 // keeps resolving to its new home.
+pub(crate) use ast_reflect::expand_macros;
 pub(crate) use ast_reflect::is_ast_float_variant;
 #[cfg(test)]
 use ast_reflect::{SNode, SexprReader, parse_bigint_decimal};

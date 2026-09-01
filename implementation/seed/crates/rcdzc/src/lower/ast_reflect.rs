@@ -602,6 +602,122 @@ pub(super) fn lower_gensym(db: &mut Db, id: StructId, base_val: StructId) -> Cor
     }
 }
 
+/// Try to expand ONE quote-param macro call `(head args…)` to the SOURCE its expansion denotes
+/// (DESIGN-macro-system.md §2/§4). If `head` resolves to a def with at least one `quote`-marked parameter
+/// (recorded in `db.quote_params` by `strip_quote_params`), this application is a MACRO USE: reify each
+/// quote-marked argument to the `Ast` that `(quote arg)` denotes (`quote::reify_arg`), leave eager args as
+/// values, β-reduce the macro with those args (`eval::apply_lambda`) to a result `Ast`, and reconstruct
+/// that `Ast` back to source (`reconstruct_macro`, which SEES THROUGH a spliced reflected arg). Returns
+/// the reconstructed SOURCE node (the caller splices it at the call site), or `None` — deferring to the
+/// ordinary application — when `head` is not a quote-param def, on an arity mismatch (a partial
+/// application), or when an argument is not reifiable / the result not reconstructable.
+fn try_macro_expand(db: &mut Db, head: StructId, args: &[StructId]) -> Option<StructId> {
+    let def_ix = super::callee_def_index(db, head)?;
+    let params = db.defs[def_ix].params.clone();
+    // Which params are `quote`-marked (name-occ ∈ quote_params)? Not a macro call if none are.
+    let marked: Vec<bool> = params
+        .iter()
+        .map(|&p| {
+            db.quote_params
+                .contains(&crate::eval::param_name_occ(db, p))
+        })
+        .collect();
+    if !marked.iter().any(|&m| m) {
+        return None;
+    }
+    // Only a FULL application expands here; a partial application defers (curry, no macro yet).
+    if args.len() != params.len() {
+        return None;
+    }
+    // Reify each quote-marked argument to its `Ast` (the syntax); keep an eager arg as its value.
+    let mut new_args = Vec::with_capacity(args.len());
+    for (i, &arg) in args.iter().enumerate() {
+        if marked[i] {
+            new_args.push(crate::quote::reify_arg(&mut db.ast, arg)?);
+        } else {
+            new_args.push(arg);
+        }
+    }
+    // β-reduce to the result `Ast`, then reconstruct it to source (see-through for a reflected arg).
+    let reduced = crate::eval::apply_lambda(db, head, &new_args).ok()??;
+    crate::eval_ast::reconstruct_macro(&mut db.ast, reduced)
+}
+
+/// The MACRO-EXPANSION pass — run POST-RESOLVE, PRE-INFER (DESIGN-macro-system.md §4). Macros are plain
+/// functions whose body returns an `Ast`; expansion MUST precede type checking (metaprogramming.md §145),
+/// so a macro call is rewritten to its expansion HERE, before infer/lower type it — otherwise infer would
+/// type the call by the macro's declared `Ast` return, not the expansion's real type. For each application
+/// `(f a…)` whose head resolves to a `quote`-parameter def, `try_macro_expand` reifies the marked args,
+/// β-reduces, and reconstructs the result to source; the call node is then OVERWRITTEN in place with the
+/// reconstruction (its `StructId`/span preserved, so `def_by_body` stays valid), the appended duplicate
+/// root blanked, and the spliced subtree's scope SEEDED (`extend_scope_skip_into_subtree`) so its names
+/// resolve at the call site. Iterates to a FIXPOINT (a macro whose output contains another macro call
+/// expands next round); `db.resolved` is invalidated between rounds because a spliced node's memoized
+/// resolution is stale. A non-macro program appends nothing and returns after one no-op scan.
+pub(crate) fn expand_macros(db: &mut Db) {
+    // FAST BAIL: no quote-param anywhere → no macro to expand (the overwhelming common case).
+    if db.quote_params.is_empty() {
+        return;
+    }
+    loop {
+        let mut changed = false;
+        // Scan only nodes present at the START of the round; freshly-spliced nodes are handled next round
+        // (after the memo invalidation below re-resolves them).
+        let n = db.ast.structure.len();
+        // A def/fn SIGNATURE list `(f (quote a) …)` is a BINDER list, NOT an application to `f` — never
+        // expand it (else scanning `(qi (quote x))` would "call" qi on its own param binder and corrupt the
+        // def, unbinding its body). Collect the signature lists to skip; recomputed each round (a spliced
+        // `fn` could add one).
+        let mut sig_lists: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+        for i in 0..n {
+            let id = StructId(i as u32);
+            let sig = db
+                .ast
+                .as_form(id, "def")
+                .or_else(|| db.ast.as_form(id, "fn"))
+                .and_then(|tail| tail.first().copied());
+            if let Some(sig) = sig {
+                sig_lists.insert(sig);
+            }
+        }
+        for i in 0..n {
+            let id = StructId(i as u32);
+            if sig_lists.contains(&id) {
+                continue; // a def/fn signature/param list is not an application
+            }
+            if !matches!(db.ast.get(id), crate::ast::Struct::List(_)) {
+                continue; // only a compound form can be an application
+            }
+            let crate::resolved::Resolved::Apply { head, args } =
+                crate::resolve::resolved_of(db, id)
+            else {
+                continue;
+            };
+            let args = args.to_vec();
+            if let Some(src) = try_macro_expand(db, head, &args) {
+                // Splice: overwrite the CALL NODE with a copy of the reconstruction root's structure, so
+                // the call's own `StructId`/span becomes the spliced-in form. Blank the now-duplicate
+                // appended root (a fresh `push_*` node out-ranks the copy as the shared children's parent).
+                let entry = db.ast.get(src).clone();
+                db.ast.structure[id.0 as usize] = entry;
+                if src.0 as usize >= n {
+                    db.ast.structure[src.0 as usize] = crate::ast::Struct::List(Vec::new());
+                }
+                // Seed the spliced subtree's scope so its names resolve at the call site.
+                db.extend_scope_skip_into_subtree(id);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+        // Invalidate the memoized RESOLUTION and TYPE of the (now-spliced) arena. `resolved_of` cached the
+        // pre-splice `Apply`; clearing `db.types` drops any type memoized on the reduced/copied body.
+        db.resolved = crate::arena::Column::new();
+        db.types = crate::arena::Column::new();
+    }
+}
+
 /// A parsed s-expression over the `Ast`-value subset: an integer, a bare atom (name), or a list. The
 /// minimal grammar `read` accepts — exactly the shapes `print_ast_value` emits, so the two round-trip.
 /// Parse an all-ASCII-digits token (with an optional leading `-`) into an arbitrary-precision [`IntValue`],
