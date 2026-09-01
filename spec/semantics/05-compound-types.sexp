@@ -4981,7 +4981,7 @@
       (def
         (main (: k Int64) (: v Int64))
         (let
-          ((m (Map.insert Map.empty 1 10)))
+          ((m #map((= 1 10))))
           (match (Map.swap m k v) (#tuple(_ _) (match (Map.lookup m 1) ((Some x) x) ((None) -1))))))
       (export main)))
   (call main (: 1 Int64) (: 99 Int64))
@@ -7148,7 +7148,7 @@
       (def
         (main (: n Int64))
         (let
-          ((m (Map.insert Map.empty 1 (Some (Some n)))))
+          ((m #map((= 1 (Some (Some n))))))
           (match
             (Map.lookup m 1)
             ((Some (Some (Some v))) v)
@@ -22740,7 +22740,7 @@
       (def
         (main (: d Int64))
         (let
-          ((m (Map.insert Map.empty 1 d)))
+          ((m #map((= 1 d))))
           (+
             (Option.expect (Map.lookup m 1) "a")
             (Option.expect (Map.lookup (Map.insert m 1 99) 1) "b"))))
@@ -25925,7 +25925,7 @@
       (def
         (main (: a Int64))
         (let
-          ((m (Map.insert Map.empty 1 (Neg (Wrap (Num a))))))
+          ((m #map((= 1 (Neg (Wrap (Num a)))))))
           (match (Map.lookup m 1) ((Some e) (eval-e e)) ((None u) -99))))
       (export main)))
   (call main (: 42 Int64))
