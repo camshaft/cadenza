@@ -1934,6 +1934,17 @@ impl Arenas {
         None
     }
 
+    /// If `id` is a WRAPPED spread node `(.. operand)` (a list headed by `..`), its operand. The
+    /// per-element classifier for CONSTRUCTION spread — a `#list(1 (.. xs) n)` may carry SEVERAL spreads
+    /// interleaved with inline elements, so the single-marker `rest_marker` (used by pattern
+    /// destructuring, which has ONE rest) does not fit; each element is classified independently. Recognizes
+    /// only the wrapped `(.. v)` form the surface now produces (the flat legacy marker is pattern-only).
+    /// `None` for an ordinary inline element.
+    pub fn spread_operand(&self, id: StructId) -> Option<StructId> {
+        self.as_form(id, "..")
+            .and_then(|args| args.first().copied())
+    }
+
     /// If `id` is an `Atom` of an integer literal, its value. (Used to read an integer member key as a
     /// tuple position — `(. t 0)` — where a name key would be a record field instead.)
     pub fn as_int(&self, id: StructId) -> Option<&IntValue> {

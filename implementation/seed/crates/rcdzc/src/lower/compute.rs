@@ -712,6 +712,14 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // A list literal — a `Core::ListNew` the backend builds on the persistent `vec-*` heap. (Unlike a
         // tuple, a list has no projection-fold: `List.len`/`List.at` are operations, not a static index.)
         Resolved::List { elems } => {
+            // A CONSTRUCTION SPREAD `#list(a (.. xs) b)` — one or more `(.. operand)` children splice a
+            // runtime `List<T>` inline. Desugar to the eager left-to-right concat the design pins
+            // (DESIGN-collection-spread-construction.md §4a): fold the maximal inline runs (as synthetic
+            // `#list(…)` nodes) and the spread operands with `List.concat`, then lower THAT — reusing the
+            // existing `List.concat` fold, no new IR. A non-spread list stays the plain `Core::ListNew`.
+            if elems.iter().any(|&e| db.ast.spread_operand(e).is_some()) {
+                return lower_list_spread(db, id, &elems);
+            }
             if let Some(r) = reduction_bound_element(db, &elems) {
                 return Core::Poison(r);
             }
@@ -3142,4 +3150,71 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             crate::diag::RESUME_NOT_REDUCIBLE_DECLINE,
         )),
     }
+}
+
+/// Lower a spread-bearing list construction `#list(a (.. xs) b …)` — the value twin of the list REST
+/// pattern (DESIGN-collection-spread-construction.md §4/§4a). Segment the children into maximal INLINE
+/// runs and SPREAD operands, then fold left-to-right into `(List.concat …)` over synthetic `#list(…)`
+/// inline-run nodes, and lower that occurrence tree — the existing `List.concat` fold (Prim::ListConcat)
+/// turns constant operands into one merged `Core::ListNew` and runtime operands into `Core::ListConcat`
+/// (`vec-concat`), so NO new IR is needed. `elems` is the ordered child list (each element either an
+/// ordinary value occurrence or a `(.. operand)` wrapper).
+///
+/// REPARENTING: the synthetic fold reuses the ORIGINAL element/operand occurrences, whose parent pointers
+/// `push_list`/`push_compound` repoint to the synthetic nodes; the fold ROOT is then grafted UNDER the
+/// original list node `id` (`db.reparent`), so a free name inside a reused element (an enclosing param /
+/// `let` binder) still ascends through `id` to its scope — the same graft `match_desugar`'s
+/// `fuse_match_into_if` performs.
+fn lower_list_spread(db: &mut Db, id: StructId, elems: &[StructId]) -> Core {
+    // Segment: consecutive inline elements coalesce into one run; each `(.. operand)` is its own spread.
+    enum Seg {
+        Inline(Vec<StructId>),
+        Spread(StructId),
+    }
+    let mut segs: Vec<Seg> = Vec::new();
+    for &e in elems {
+        if let Some(operand) = db.ast.spread_operand(e) {
+            segs.push(Seg::Spread(operand));
+        } else if let Some(Seg::Inline(run)) = segs.last_mut() {
+            run.push(e);
+        } else {
+            segs.push(Seg::Inline(vec![e]));
+        }
+    }
+    // Realize each segment as ONE list occurrence: an inline run → a synthetic `#list(run…)`, a spread →
+    // its operand (already a `List<T>`). An all-empty edge (`#list((.. xs))` with the empty run elided)
+    // still yields the single spread operand.
+    let seg_occs: Vec<StructId> = segs
+        .into_iter()
+        .map(|seg| match seg {
+            Seg::Inline(run) => db.push_compound(crate::ast::CompoundCtor::List, run),
+            Seg::Spread(operand) => operand,
+        })
+        .collect();
+    // Fold left-to-right with `List.concat`. Zero segments (only possible if `elems` was empty, which the
+    // caller's spread check precludes) → an empty list; one segment → itself; else nest concat calls.
+    let root = match seg_occs.split_first() {
+        None => db.push_compound(crate::ast::CompoundCtor::List, vec![]),
+        Some((&first, rest)) => {
+            let mut acc = first;
+            for &next in rest {
+                // `List.concat` is the member `concat` of the `List` module — reached via member access
+                // `(. List concat)`, NOT a flat name (which is unbound). Synthesize `((. List concat) acc
+                // next)`, the same spelling `set_of_runtime` uses for `(. Set of)`.
+                let dot = db.push_name(".");
+                let list_mod = db.push_name("List");
+                let concat_key = db.push_name("concat");
+                let head = db.push_list(vec![dot, list_mod, concat_key]);
+                acc = db.push_list(vec![head, acc, next]);
+            }
+            acc
+        }
+    };
+    // Graft the fold under the original list node so reused occurrences' scope-walk stays intact, then
+    // lower it. (A bare single-operand `root` that IS an original occurrence needs no reparent — its
+    // parent already reaches the scope; reparenting only matters for a synthesized `root`.)
+    if root != id && db.parent_of(root).is_none() {
+        db.reparent(root, Some(id), db.child_ix_of(id) as u32);
+    }
+    core_of(db, root)
 }
