@@ -74,7 +74,7 @@ pub enum Verdict {
 
 /// Everything captured about a crash — enough to dedup it (by [`site`](CrashInfo::site)) and to
 /// write an actionable triage note.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrashInfo {
     /// The panic origin as `file:line:col`. Thanks to `#[track_caller]`, for `.unwrap()`/`.expect(`
     /// this is the CALL site in the compiler source (not libcore), which is exactly the crash site
@@ -179,6 +179,36 @@ fn capture_crash(prefix: &str) -> CrashInfo {
         site: cap.site,
         message,
         backtrace: cap.backtrace,
+    }
+}
+
+/// Why a panic-guarded in-process COMPONENT compile did not yield a component (see
+/// [`compile_component_catching`]).
+pub enum ComponentFail {
+    /// An errors-as-data DECLINE — the diagnostic code (used for the not-comparable reason). Expected
+    /// output (a rejected program), never a bug.
+    Declined(Option<String>),
+    /// A compiler PANIC — captured with its site. This is a CRASH finding: the differential sweeps file
+    /// it (like the crash oracle) and CONTINUE, instead of the unguarded native panic aborting the run.
+    Crashed(CrashInfo),
+}
+
+/// Compile binary-AST `bytes` to a component IN-PROCESS, catching a compiler PANIC — for the differential
+/// sweeps, which need the COMPONENT on success (unlike [`compile_catching`], which reports only a Verdict).
+/// The wasm/rust `differential` and `run_ast_corpus` sweeps otherwise call `rcdzc::compile_component`
+/// through the hang-watchdog `guard` but WITHOUT `catch_unwind`, so a compiler panic (e.g. a nullary
+/// `(Set.of)` index-OOB at infer/node.rs) propagated straight up and ABORTED the whole campaign. Routing
+/// the compile through this guard turns a panic into a filed crash finding + a continued sweep. Returns
+/// `Ok(component)` on a clean compile, `Err(Declined(code))` on an errors-as-data decline, or
+/// `Err(Crashed(info))` on a compiler panic (site captured via the same hook `compile_catching` uses).
+pub fn compile_component_catching(bytes: &[u8]) -> Result<Vec<u8>, ComponentFail> {
+    install_panic_hook();
+    // Clear the slot so, on a crash, we read THIS compile's panic and not a stale one.
+    *slot().lock().unwrap() = None;
+    match panic::catch_unwind(AssertUnwindSafe(|| rcdzc::compile_component(bytes))) {
+        Ok(Ok(component)) => Ok(component),
+        Ok(Err(diag)) => Err(ComponentFail::Declined(diag.code)),
+        Err(_) => Err(ComponentFail::Crashed(capture_crash(""))),
     }
 }
 

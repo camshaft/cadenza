@@ -79,6 +79,11 @@ pub enum Side {
     /// a campaign with a broken link env fails LOUD (counted "unavailable") rather than silently agreeing
     /// (hiding the broken env) or filing false `Artifact` buckets (the S79/breaker false-positive class).
     Unavailable(String),
+    /// The in-process compile PANICKED — a compiler crash (e.g. a nullary `(Set.of)` index-OOB in
+    /// `infer/node.rs`). Caught by [`crate::oracle::compile_component_catching`] so it is FILED as a crash
+    /// finding + the sweep continues, instead of the unguarded native panic aborting the whole run. Only
+    /// the in-process wasm side produces it (the rust side compiles in a subprocess).
+    CompilePanic(crate::oracle::CrashInfo),
 }
 
 /// The verdict of comparing the two sides.
@@ -96,6 +101,10 @@ pub enum Diff {
     /// The comparison could not run (a harness failure driving `cdz run-rust`, e.g. the binary was
     /// not found). Distinct from a compiler outcome — the caller logs it, it is never filed.
     Unavailable(String),
+    /// The in-process compile PANICKED — a compiler CRASH (filed as [`crate::finding::Category::Crash`],
+    /// like the crash oracle, then the sweep continues). Distinct from a value/liveness `Mismatch`: no
+    /// value was produced, the compiler itself faulted.
+    CompileCrash(crate::oracle::CrashInfo),
 }
 
 /// Which flavor of disagreement fired — drives the finding's signature + note.
@@ -138,6 +147,9 @@ fn is_resource_trap(msg: &str) -> bool {
 /// compiler or a subprocess.
 pub fn compare(wasm: &Side, rust: &Side) -> Diff {
     match (wasm, rust) {
+        // A COMPILER PANIC on either side is a crash finding — checked FIRST so it is never masked by
+        // the other side's outcome (a decline/agreement must not swallow a real compiler crash).
+        (Side::CompilePanic(c), _) | (_, Side::CompilePanic(c)) => Diff::CompileCrash(c.clone()),
         // An ENV/link failure (staging externs missing → E0433 cdz_num/cdz_rt) is NOT a compiler outcome
         // and makes the comparison MEANINGLESS for this program — surface it as `Unavailable` (counted,
         // never filed) so a broken link env fails loud instead of filing false Artifact buckets. Checked
@@ -217,6 +229,7 @@ fn describe_side(s: &Side) -> String {
         Side::Declined(d) => format!("declined {d}"),
         Side::ArtifactError(e) => format!("artifact-error {e}"),
         Side::Unavailable(e) => format!("unavailable {e}"),
+        Side::CompilePanic(c) => format!("compile-panic {}", c.message),
     }
 }
 
@@ -282,17 +295,17 @@ fn run_wasm_bytes(
 ) -> Side {
     // Compile to a component under the compile-hang watchdog. A rejection/decline (errors-as-data) →
     // not comparable; a HANG (native loop) is captured + aborted by the watchdog (no-op if uninstalled).
-    let component =
-        match crate::compile_guard::guard(report_source, || rcdzc::compile_component(bytes)) {
-            Ok(c) => c,
-            Err(diag) => {
-                return Side::Declined(
-                    diag.code
-                        .clone()
-                        .unwrap_or_else(|| "wasm-decline".to_string()),
-                );
-            }
-        };
+    let component = match crate::compile_guard::guard(report_source, || {
+        crate::oracle::compile_component_catching(bytes)
+    }) {
+        Ok(c) => c,
+        Err(crate::oracle::ComponentFail::Declined(code)) => {
+            return Side::Declined(code.unwrap_or_else(|| "wasm-decline".to_string()));
+        }
+        // A compiler PANIC — surface it so the sweep FILES a crash finding + continues, instead of the
+        // unguarded native panic aborting the whole run.
+        Err(crate::oracle::ComponentFail::Crashed(info)) => return Side::CompilePanic(info),
+    };
 
     // Resolve the value-heap runtime by content address, if the component imports one.
     let runtime = match cdz_run::required_runtime(&component) {
@@ -610,10 +623,13 @@ pub fn run_ast_corpus_sweep(
             Side::Value(_) => stats.values += 1,
             Side::Trap(_) => stats.traps += 1,
             // The wasm side never yields `Unavailable` (an env/link failure is rust-side only), but the
-            // match must stay exhaustive — fold it in with the other non-value outcomes.
-            Side::Declined(_) | Side::ArtifactError(_) | Side::Unavailable(_) => {
-                stats.declined += 1
-            }
+            // match must stay exhaustive — fold it in with the other non-value outcomes. A `CompilePanic`
+            // (a compiler crash on a corpus seed) is caught rather than aborting; folded here too (this
+            // plumbing smoke only tallies — the differential/crash oracle is the crash-mining path).
+            Side::Declined(_)
+            | Side::ArtifactError(_)
+            | Side::Unavailable(_)
+            | Side::CompilePanic(_) => stats.declined += 1,
         }
     }
     Ok(stats)
@@ -636,7 +652,11 @@ fn side_to_rcdzc_output(side: Side) -> Option<crate::lean::RcdzcOutput> {
         Side::Value(v) => crate::lean::RcdzcOutput::value_from_render(&v),
         Side::Trap(t) => Some(crate::lean::RcdzcOutput::Trap(t)),
         // `Unavailable` is rust-side only (this bridges the wasm side), but keep the match exhaustive.
-        Side::Declined(_) | Side::ArtifactError(_) | Side::Unavailable(_) => None,
+        // A `CompilePanic` (compiler crash) is not a comparable value → skip the trial.
+        Side::Declined(_)
+        | Side::ArtifactError(_)
+        | Side::Unavailable(_)
+        | Side::CompilePanic(_) => None,
     }
 }
 
@@ -987,6 +1007,28 @@ mod tests {
         assert_eq!(
             compare(&Side::Value("3".into()), &Side::Value("3".into())),
             Diff::Agree
+        );
+    }
+
+    #[test]
+    fn a_compile_panic_is_a_compile_crash_and_is_never_masked() {
+        let info = crate::oracle::CrashInfo {
+            site: Some("crates/rcdzc/src/infer/node.rs:1830:28".into()),
+            message: "index out of bounds: the len is 0 but the index is 0".into(),
+            backtrace: String::new(),
+        };
+        // A compiler panic on the wasm side → CompileCrash, regardless of what the rust side did — even a
+        // decline (which normally means "not comparable / agree") must NOT swallow a real compiler crash.
+        assert_eq!(
+            compare(
+                &Side::CompilePanic(info.clone()),
+                &Side::Declined("x".into())
+            ),
+            Diff::CompileCrash(info.clone())
+        );
+        assert_eq!(
+            compare(&Side::Value("1".into()), &Side::CompilePanic(info.clone())),
+            Diff::CompileCrash(info)
         );
     }
 

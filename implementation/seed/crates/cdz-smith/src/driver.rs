@@ -344,6 +344,9 @@ pub struct DiffStats {
     pub unavailable: u64,
     /// Programs where a compile/run HUNG (hit the per-call timeout) — captured as a hang-witness (seq-203).
     pub hangs: u64,
+    /// Programs where the in-process compile PANICKED — a compiler crash, filed as a `Crash` finding
+    /// (like the crash oracle) so the sweep continues instead of the native panic aborting the run.
+    pub crashed: u64,
 }
 
 /// Run the differential oracle over `count` seeds drawn from `run_seed`, filing any mismatch. `store`
@@ -398,14 +401,35 @@ pub fn differential_sweep(
                     &label,
                 );
             }
+            // A compiler PANIC caught in-process (e.g. nullary `(Set.of)`): file it as a Crash finding
+            // (like the crash oracle) and CONTINUE — the panic no longer aborts the whole sweep.
+            Diff::CompileCrash(info) => {
+                stats.crashed += 1;
+                let finding = Finding {
+                    category: Category::Crash,
+                    program: source.clone(),
+                    crash: Some(info),
+                    detail: None,
+                    commit: cfg.commit.clone(),
+                };
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    "differential compile-crash",
+                );
+            }
         }
         if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
             eprintln!(
-                "[cdz-smith] differential {}/{count} | {} agreed, {} mismatched ({} buckets), {} unavailable",
+                "[cdz-smith] differential {}/{count} | {} agreed, {} mismatched ({} buckets), {} crashed, {} unavailable",
                 i + 1,
                 stats.agreed,
                 stats.mismatched,
                 stats.new_buckets,
+                stats.crashed,
                 stats.unavailable
             );
         }
