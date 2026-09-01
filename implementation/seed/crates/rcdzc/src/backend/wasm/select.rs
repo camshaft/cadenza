@@ -1372,6 +1372,7 @@ pub fn select_function_of(
         which: mutual.then_some(which_slot),
         depth: 0,
         scrut_shell_reclaim: None,
+        selfloop_scrut_slot: None,
     });
     // Initialize `which` to this function's OWN discriminant BEFORE the loop opens — it selects which
     // member body runs on the FIRST iteration (this function's own). A member cross-call updates `which`
@@ -3002,6 +3003,19 @@ struct TailLoop<'a> {
     /// handles the value-returning arms; this handles the looping arms the post-match drop `br`s past — the
     /// codec `find-at`/`fromcol` String.at scan leak. `None` on every ordinary loop (the common case).
     scrut_shell_reclaim: Option<u32>,
+    /// INC1 SELF-LOOP-TAIL shell reclaim (pt3, v-mem G1-G7 gated): the PARAM SLOT holding an owned
+    /// compound-boxed match scrutinee that is DEAD-after-iteration in a tail-loop (its children are extracted
+    /// — one carried into a loop-param, siblings consumed by non-tail sub-calls — all already dup'd, so the
+    /// old node shell array is dead once its children are read). Unlike [`scrut_shell_reclaim`] (a STASHED
+    /// slot), this is the REASSIGNED loop-param slot, so `emit_loop_iteration` must SAVE it to a scratch
+    /// BEFORE the back-edge reassign then deep-`op_drop` the scratch AFTER (the `drop_old_borrowed` save-path
+    /// shape, NOT the post-reassign `scrut_shell_reclaim` drop which would free the NEW value). No dup added:
+    /// every child already has its escape dup (dup ⟺ cascade lockstep, G6), so the deep op_drop cascade nets
+    /// each child to its single surviving owner and frees the old shell. Set by the tail `MatchSum` emit ONLY
+    /// when the G1-G7 gate holds (the self-loop-tail scrutinee is dead-after-iteration, not returned/aliased,
+    /// children all dup-backed). `None` on every ordinary loop. Fixes the inorder self-tail-traversal spine
+    /// leak (the ~165 self-loop-tail lever). SOUNDNESS (double-free) rests on the G6 dup-lockstep gate.
+    selfloop_scrut_slot: Option<u32>,
 }
 
 impl TailLoop<'_> {
@@ -4373,6 +4387,22 @@ fn emit_loop_iteration(
             borrowed_old_scratch.push(sc);
         }
     }
+    // INC1 SELF-LOOP-TAIL shell reclaim (pt3, save half): SAVE the dead-after-iteration compound scrutinee
+    // shell (a REASSIGNED loop-param slot, `tl.selfloop_scrut_slot`) into a fresh scratch BEFORE the back-edge
+    // reassign overwrites it — a slot COPY (no rc change; the old shell handle stays owned in scratch). The
+    // deep `op_drop` (post-store, below) then frees it; its cascade decrements each child's shell-ref, all of
+    // which are already dup-backed (child carried into a loop-param, siblings consumed by dup'd non-tail
+    // sub-calls — the G6 dup ⟺ cascade lockstep), so every child nets to its single surviving owner. Unlike
+    // `scrut_shell_reclaim` (a stashed slot dropped as-is post-reassign), this MUST save first: the slot is
+    // reassigned to the carried child, so a post-reassign drop of the slot would free the NEW value.
+    let selfloop_scrut_scratch: Option<u32> = tl.selfloop_scrut_slot.map(|slot| {
+        let sc = *high;
+        *high = (*high).max(sc + 1);
+        scratch_ty.insert(sc, ValType::I32);
+        out.push(Lir::LocalGet(slot)); // [old-shell]
+        out.push(Lir::LocalSet(sc)); // scratch = old-shell (slot copy, no rc change)
+        sc
+    });
     // Args start ABOVE the saved-shell scratch so their emit never reuses those persistent slots (and never
     // below the body scratch floor `base`).
     let mut arg_base = base.max(*high);
@@ -4415,6 +4445,16 @@ fn emit_loop_iteration(
     for &sc in &borrowed_old_scratch {
         out.push(Lir::LocalGet(sc)); // [old-v]
         out.push(Lir::CallImport(OP_DROP)); // free the dead old accumulator → []
+    }
+    // INC1 SELF-LOOP-TAIL shell reclaim (pt3, drop half): free the saved dead compound scrutinee shell. LATE
+    // by construction — this fires AFTER the arg-eval (which ran the non-tail sibling sub-calls that consume
+    // their dup'd children) AND after the back-edge reassign captured the carried child, so no live handle
+    // dangles. The deep `op_drop` cascade decrements each shell child's ref; every child survives via its
+    // pre-existing escape dup (G6 dup ⟺ cascade lockstep) → the old node shell is freed, one per iteration
+    // (the self-tail-traversal spine reclaimed as walked). NO dup added here (would over-retain).
+    if let Some(sc) = selfloop_scrut_scratch {
+        out.push(Lir::LocalGet(sc)); // [old-shell]
+        out.push(Lir::CallImport(OP_DROP)); // free the dead scrutinee shell; cascade nets each dup-backed child → []
     }
     out.loop_reassign_no_dup = saved_no_dup;
     // OWNED-VIEW SHELL back-edge reclaim: an enclosing owned-single-view (String.at/Bytes.slice) MatchSum
