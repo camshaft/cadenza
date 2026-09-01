@@ -2298,6 +2298,16 @@ pub struct Db {
     /// what is compile-time, the compiler obeys.
     pub(crate) const_params: crate::fxhash::FxHashSet<StructId>,
 
+    /// The NAME OCCURRENCES of parameters declared `quote` — an UNEVALUATED (call-by-AST) parameter for the
+    /// macro system (`(def (m (quote x) …) …)`, `DESIGN-macro-system.md` §2). A `quote` param receives the
+    /// caller's argument as its reified `Ast` (the syntax) instead of an eager value, so a macro is an
+    /// ordinary function over the AST. Populated ONCE by `strip_quote_params` at load (which unwraps the
+    /// `(quote …)` binder in place — BEFORE `reify_quotes`, so a binder-position `(quote x)` is never
+    /// mistaken for a quote EXPRESSION), keyed by the inner binder's name occurrence. Empty for a program
+    /// with no `quote` param (byte-identical to before). The post-resolve macro expander reads this set to
+    /// decide which arguments to reify at a call site (§4).
+    pub(crate) quote_params: crate::fxhash::FxHashSet<StructId>,
+
     /// The RAW-CONSTRUCTION node ids inside the synthesized `__invariant_construct_<T>` defs — each
     /// `((. T V) __inv_p)` a checked constructor builds. These are the construct sites `lower_sum_new` must
     /// EXEMPT from the `@invariant` establish divert: they ARE the checked constructor's own construction, so
@@ -2494,6 +2504,12 @@ impl Db {
         // RECORD the stripped param's name occurrence in `const_params`. Done here, like `strip_def_docs`,
         // so every downstream reader sees a PLAIN binder and const-ness lives only in the set.
         let const_params = strip_const_params(&mut ast);
+        // Normalize away a `(quote BINDER)` PARAMETER wrapper on every `def`/`fn` signature — an
+        // UNEVALUATED (call-by-AST) macro parameter (`DESIGN-macro-system.md` §2). Done HERE, adjacent to
+        // `strip_const_params` and BEFORE `reify_quotes`, so (a) a binder-position `(quote x)` is unwrapped
+        // to a plain binder before the quote-EXPRESSION reifier ever runs (never conflated), and (b) every
+        // downstream reader sees a plain binder while quote-ness lives only in `quote_params`.
+        let quote_params = strip_quote_params(&mut ast);
         // Normalize away every known `(@ NAME (def …))` ANNOTATION on a definition BEFORE `scan_top_level`
         // — `inline-never`/`inline-always` (the emitter's inline policy, Addendum 4) and `test` (the
         // `cdz test` hoist marker). An annotation is a declaration a build phase consumes, not part of the
@@ -3223,6 +3239,7 @@ impl Db {
             called: crate::fxhash::FxHashSet::default(),
             transformed: accum_links.into_iter().collect(),
             const_params,
+            quote_params,
             invariant_exempt_ctors,
             inline_never,
             inline_always,
@@ -5638,6 +5655,74 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
         }
     }
     const_params
+}
+
+/// Normalize away a `(quote BINDER)` PARAMETER wrapper on every `def`/`fn` signature, recording the
+/// stripped param's NAME occurrence in the returned set (populates `Db::quote_params`). A `quote` param is
+/// an UNEVALUATED (call-by-AST) macro parameter (`DESIGN-macro-system.md` §2): the caller's argument is
+/// passed as its reified `Ast` instead of an eager value. The twin of [`strip_const_params`] — same
+/// signature-scan (a `def`'s params are its signature tail `[NAME, p…]`; an `fn`'s are its whole param
+/// list), same in-place unwrap `(quote (: x T))` → `(: x T)` (inner binder ids unchanged), same
+/// name-occ keying. Runs BEFORE `reify_quotes`, so a binder-position `(quote x)` is unwrapped here and
+/// never reified as a quote EXPRESSION. No-op (empty set, byte-identical) for a program with no `quote`
+/// param.
+fn strip_quote_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
+    let mut quote_params: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    // The NAME occurrence of a (already-unwrapped) binder: a bare name is itself; a `(: name T)` binder is
+    // its first child. Mirrors `strip_const_params`'s `name_occ_of` (over `&Arenas`, no `Db` yet at load).
+    fn name_occ_of(ast: &Arenas, binder: StructId) -> StructId {
+        if ast.as_name(binder).is_some() {
+            return binder;
+        }
+        if let Some(tail) = ast.as_form(binder, ":")
+            && let Some(&n) = tail.first()
+        {
+            return n;
+        }
+        binder
+    }
+    for i in 0..ast.structure.len() {
+        let id = StructId(i as u32);
+        // The parameter list to scan: a `def`'s SIGNATURE (params are indices 1..) or an `fn`'s PARAMETER
+        // LIST (params are all) — identical to `strip_const_params`.
+        let (list_occ, first_param_ix) = if let Some(tail) = ast.as_form(id, "def") {
+            match tail.first() {
+                Some(&sig) if matches!(ast.get(sig), Struct::List(_)) => (sig, 1usize),
+                _ => continue,
+            }
+        } else if let Some(tail) = ast.as_form(id, "fn") {
+            match tail.first() {
+                Some(&params) if matches!(ast.get(params), Struct::List(_)) => (params, 0usize),
+                _ => continue,
+            }
+        } else {
+            continue;
+        };
+        let Struct::List(children) = ast.get(list_occ) else {
+            continue;
+        };
+        let children = children.clone();
+        let mut rewritten = children.clone();
+        let mut changed = false;
+        for (ix, &child) in children.iter().enumerate() {
+            if ix < first_param_ix {
+                continue; // the def NAME at index 0 is not a parameter
+            }
+            // A `(quote BINDER)` wrapper — exactly one operand. Unwrap to BINDER, record its name occ.
+            if let Some(tail) = ast.as_form(child, "quote")
+                && tail.len() == 1
+            {
+                let binder = tail[0];
+                quote_params.insert(name_occ_of(ast, binder));
+                rewritten[ix] = binder;
+                changed = true;
+            }
+        }
+        if changed {
+            ast.structure[list_occ.0 as usize] = Struct::List(rewritten);
+        }
+    }
+    quote_params
 }
 
 /// The known annotation NAMES `strip_annotations` records into a policy set off a `(@ NAME (def …))`
