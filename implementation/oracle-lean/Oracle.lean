@@ -13,6 +13,7 @@ import Oracle.Wasm.Talos
 import Oracle.Symbolic
 import Oracle.SymbolicSound
 import Oracle.Check
+import Oracle.Type
 import Oracle.Frame
 import Oracle.Handler
 import Oracle.Batch
