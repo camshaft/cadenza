@@ -99,6 +99,31 @@ fn doc_value_node(
             out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
             Ok(v)
         }
+        // A record → `(record (= <f0> <v0>) (= <f1> <v1>) …)`: a `Name "record"` head then, per field (in
+        // BTreeMap = SORTED-key order, matching the emitted tuple's `.i`), a `List[FieldPair, Name <field>,
+        // <value-node>]` (the `=` marker is a `Leaf::FieldPair`).
+        Ty::Record(fields) => {
+            let fields: Vec<(String, Ty)> =
+                fields.iter().map(|(k, t)| (k.name.to_string(), t.clone())).collect();
+            let head = fresh(ctr);
+            out.push_str(&format!("    let {head} = __b.name(\"record\");\n"));
+            let mut kids = vec![head];
+            for (i, (fname, fty)) in fields.iter().enumerate() {
+                let fp = fresh(ctr);
+                out.push_str(&format!(
+                    "    let {fp} = __b.atom_leaf(cadenza_ast::ast::Leaf::FieldPair);\n"
+                ));
+                let fnn = fresh(ctr);
+                out.push_str(&format!("    let {fnn} = __b.name({fname:?});\n"));
+                let fv = doc_value_node(db, fty, &format!("({val_expr}).{i}"), out, ctr)?;
+                let pair = fresh(ctr);
+                out.push_str(&format!("    let {pair} = __b.list(vec![{fp}, {fnn}, {fv}]);\n"));
+                kids.push(pair);
+            }
+            let v = fresh(ctr);
+            out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            Ok(v)
+        }
         _ => Err(Reject::decline(
             "value-doc: result shape not yet covered by the rust value-doc emit (WIP)",
         )),
@@ -116,6 +141,29 @@ fn doc_type_node(db: &mut Db, ty: &Ty, out: &mut String, ctr: &mut usize) -> Res
             let mut kids = vec![head];
             for e in elems.iter() {
                 kids.push(doc_type_node(db, e, out, ctr)?);
+            }
+            let v = fresh(ctr);
+            out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            Ok(v)
+        }
+        // A record TYPE → `(Record (: <f0> <T0>) (: <f1> <T1>) …)`: a `Name "Record"` head then, per field
+        // (sorted-key order), the canonical ASCRIPTION node `List[Name ":", Name <field>, <type-node>]`
+        // (matching `render_name` + the corpus `(Record (: x Int64) …)` form — NOT a bare `[field, ty]`).
+        Ty::Record(fields) => {
+            let fields: Vec<(String, Ty)> =
+                fields.iter().map(|(k, t)| (k.name.to_string(), t.clone())).collect();
+            let head = fresh(ctr);
+            out.push_str(&format!("    let {head} = __b.name(\"Record\");\n"));
+            let mut kids = vec![head];
+            for (fname, fty) in fields.iter() {
+                let colon = fresh(ctr);
+                out.push_str(&format!("    let {colon} = __b.name(\":\");\n"));
+                let fnn = fresh(ctr);
+                out.push_str(&format!("    let {fnn} = __b.name({fname:?});\n"));
+                let ft = doc_type_node(db, fty, out, ctr)?;
+                let pair = fresh(ctr);
+                out.push_str(&format!("    let {pair} = __b.list(vec![{colon}, {fnn}, {ft}]);\n"));
+                kids.push(pair);
             }
             let v = fresh(ctr);
             out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
