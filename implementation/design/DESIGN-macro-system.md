@@ -120,17 +120,40 @@ distinction from a user-written handler is WHO provides the arm (the compiler's 
 fires (expansion, ambient at every macro call site) — the mechanism is the same nearest-enclosing
 effect discharge. (Draft co-authored with v-effects, who co-owns increment 3.)
 
-## 4. The expansion phase
+## 4. The expansion phase (POST-RESOLVE — grounded, not the load-time window)
 
-A new load-time expander, sibling to `tagged_template::expand`, but keyed on **binding**: when a
-call head resolves to a function with unevaluated parameters, rewrite the call so the marked
-arguments are reified to `Ast` and the others stay values, then let `eval::apply_lambda` β-reduce and
-splice the result in place, expanding to a fixpoint before typecheck. Unlike tagged templates (which
-always package chunks+holes as lists with no callee-signature lookup), the macro expander needs the
-**callee's parameter markers**, so it runs **after name resolution** (to know the callee) and
-**before type checking** — matching the spec's "Macro expansion MUST run as a distinct phase that
-precedes type checking … expanding to a fixpoint" (metaprogramming.md:145-148). Phase placement
-(extend resolve, or a dedicated post-resolve pass) is settled in increment 1.
+Reconnaissance settled the phase placement decisively: the expander **cannot** be a load-time
+sibling of `tagged_template::expand`. Those load-time desugars (`reify_quotes` → `desugar_eval` →
+`tagged_template::expand`, `db.rs:2565-2582`) run **before** the resolution indices exist
+(`def_by_name`/`def_by_body`/`parent`/`scope_skip` are built at `db.rs:2658-2716`). Tagged templates
+get away with a pure structural reshape because dispatch is *deferred* to ordinary resolution of the
+rewritten call. A macro-call expander must instead **decide by the callee's signature** which
+arguments to reify, so it needs resolution first → it runs as a **distinct post-resolve pass**
+(after `db.rs:2716`), matching the spec's "Macro expansion MUST run as a distinct phase that precedes
+type checking … expanding to a fixpoint" (metaprogramming.md:145-148).
+
+**Param surface (increment 2a).** A `(quote x)` / `(quote (: x T))` binder in signature position marks
+an unevaluated (call-by-AST) parameter. Recognize + normalize it at load exactly as
+`strip_const_params` handles `(const …)` (`db.rs:2451-2457`): a `strip_quote_params` pass unwraps the
+`(quote …)` wrapper **in place** to the plain binder (preserving the two-shape `name`/`(: name T)`
+invariant every reader depends on) and records the binder occurrence in a new
+`quote_params: FxHashSet<StructId>` side-set on `Db`. (Reuse `quote::binder_position_nodes`,
+`quote.rs:364-383`, which already excludes a signature-position `(quote x)` from reification so a def
+named `quote` still binds.)
+
+**The pass (increment 2b), per call `(f a b)`:** (1) resolve the head via
+`callee_def_index_for_infer` (`infer.rs:5948`) to a def; (2) if its params carry `quote_params`
+markers, reify each marked argument to its `Ast` with `quote::reify` (`quote.rs:419` — expose
+`pub(crate)`, or a `reflect_document`-style wrapper), leaving eager args unchanged; (3) β-reduce the
+call with `eval::apply_lambda` (`eval.rs:1057`) to a result `Ast` occurrence; (4) reconstruct that
+`Ast` back to source with `eval_ast::reconstruct` (`eval_ast.rs:356` — expose `pub(crate)`);
+(5) splice at the call site via the overwrite-original-slot / blank-appended-root idiom
+(`eval_ast.rs:155-163`, shared with `desugar_eval`/`tagged_template`/`reify_quotes`); (6) **iterate to
+a fixpoint** — spliced output is new source that may contain further macro calls and whose names need
+resolving, so the pass rebuilds the resolution indices and re-scans until no macro call remains, then
+hands off to type-checking. Step 6's resolution-rebuild-per-round is the one genuinely new mechanism
+(the load-time desugars are single-pass because their output needs no callee resolution); keep it
+bounded by only re-resolving when a splice occurred.
 
 ## 5. Capability 3 — gensym
 
