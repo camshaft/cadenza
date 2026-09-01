@@ -1533,35 +1533,13 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
         // dup-pass over-includes (a param the emit won't drop → dup-without-drop = a LEAK, never a UAF), so
         // dup ⊇ drop = every emit drop has its dup = no double-free. heap_operand_ownership(Param)==Borrowed,
         // so this is DISJOINT from owned_compound_boxed above (no double dup).
-        // Match the EMIT's boundary exclusion (dup ⟺ drop, tightest-correct per v-mem-safety): a LIFTED-
-        // LAMBDA body's params are CLOSURE-ARG boundary-built (caller-owned) — the emit excludes them
-        // (is_boundary_owned), so the dup-pass MUST too, else dup-without-drop = a LEAK (the 5 DES cases).
-        // db.lifted is accessible here (unlike layout.exports); an export body with a COMPOUND-payload param
-        // is rare (Option-scalar exports don't dup) and any residual is a pinnable leak, never a UAF.
-        let top_is_lifted = db.lifted.iter().any(|l| l.body == top_body);
-        let nontail_spine_param = compound_boxed
-            && !top_is_lifted
-            && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if {
-                let mut seen2 = HashSet::new();
-                let mut total = 0usize;
-                count_param_consumes(db, top_body, binder, &mut seen2, &mut total, true);
-                // SOLE-CONSUME (count_param_consumes==0) AND SOLE-MATCH: a param matched by >1 MatchSum is
-                // SHARED/borrowed — its shell is NOT emit-reclaimed and mark_binder_dups owns the shared
-                // payload dup, so the shell-reclaim pass must NOT also mark it (else the same SumPayload
-                // node is double-claimed: the b2 shared-scrutinee overlap, flagged by v-mem-safety). The
-                // single-match non-tail spine (sum-nat) matches its param exactly once → unaffected.
-                // count_matchsum is a SUFFICIENT (restrictive) sharing over-approximation, NOT a complete
-                // oracle (it misses ValueEq borrows) — SAFE here only because the reclaim it gates is
-                // TAIL-POSITION-emit-gated (see count_matchsum_over_binder's SOUNDNESS SCOPE).
-                total == 0 && count_matchsum_over_binder(db, top_body, binder) <= 1
-            })
-            // §5-DISJOINTNESS: skip if the payload is consumed by a call in the arm's TAIL position — that is
-            // §5's self-loop-tail spine shape (`(rec tail …)` as the arm tail), where emit_loop_iteration
-            // ALREADY dup(rest)s the carried payload. Dupping here too would DOUBLE-dup → leak. The tail-
-            // MatchSum EMIT already skips the drop for such an arm (`!arms_tail_call`), so skipping the dup
-            // keeps dup⟺drop in lockstep. Structural (no self_def needed); a non-member tail call is also
-            // skipped (→ leak, never a UAF).
-            && !sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee);
+        // NON-TAIL SPINE param (INC1): the dup-pass predicate, EXTRACTED to `is_nontail_spine_param` so the
+        // DROP-side collector (`collect_nontail_compound_reclaim_binders`) shares it verbatim (dup ⟺ drop).
+        // The boundary exclusion is `!body_is_capturing_lifted` (NOT bare `db.lifted`): a lifted COMBINATOR
+        // (empty captures — a named recursive def hoisted to the funcref table, called directly, callee-owned)
+        // IS reclaimable (the BST del-min/insert 29/13/3 leak class); only a genuine CAPTURING closure's
+        // closure-arg params stay excluded. (Prior `!top_is_lifted` over-excluded the combinators = the leak.)
+        let nontail_spine_param = is_nontail_spine_param(db, top_body, scrutinee, &root);
         if owned_compound_boxed || nontail_spine_param {
             collect_consuming_payload_sites_cont(db, &root, scrutinee, dup_sites);
         }
