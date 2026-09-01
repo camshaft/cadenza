@@ -94,7 +94,18 @@ impl Finding {
             // bucket per shape rather than one per magnitude.
             (None, Category::Differential) => {
                 let d = self.detail.as_deref().unwrap_or("differential");
-                format!("differential::{}", mask_message(d))
+                // The known Float32→Float64 promotion render divergence (operator seq-238: shortest-f32
+                // is canonical, rust's full-expansion is the bug) recurs in EVERY compound shape, each a
+                // distinct masked detail = a distinct bucket. Collapse all PROVABLE f32-promotion
+                // divergences into ONE bucket so the per-shape noise cannot bury a genuinely-new value
+                // divergence. Kept as a FLAGGED finding (a real unfixed bug — never marked agreed); REMOVE
+                // this classifier once v-syntax-render-ty lands the rust f32-render fix (then these revert
+                // to per-shape buckets, which confirms the fix by this bucket going to zero).
+                if is_f32_promotion_divergence(d) {
+                    "differential-f32-promotion".to_string()
+                } else {
+                    format!("differential::{}", mask_message(d))
+                }
             }
             (None, Category::Timeout) => "timeout".to_string(),
             // Bucket by the (masked) codeless-decline message, so each distinct assumed-unreachable
@@ -548,6 +559,110 @@ fn differential_tag(detail: Option<&str>) -> &'static str {
     }
 }
 
+/// TRUE iff a differential `detail` (`"[value] wasm=<a> rust=<b>"`) is EXACTLY the known Float32→Float64
+/// promotion render divergence: the wasm and rust renders are structurally identical except at float
+/// literals, and every DIFFERING float pair `(w, r)` satisfies `r == (w as f32) as f64` (rust promotes
+/// the f32 that wasm shortest-printed to its f64 widening). The operator ruled shortest-f32 canonical
+/// (seq-238), so this is a real rust-side bug — but it recurs in every compound shape, so [`signature`]
+/// collapses all such divergences into one flagged bucket. STRICTLY conservative: only VALUE mismatches,
+/// and ANY other difference (structure, a non-promotion float pair, a non-value kind) returns false → the
+/// finding keeps its own per-shape bucket and is NEVER masked (a genuinely-new value divergence always
+/// gets its own bucket). Remove this once the rust f32-render is fixed.
+fn is_f32_promotion_divergence(detail: &str) -> bool {
+    if differential_tag(Some(detail)) != "value" {
+        return false; // a liveness/artifact split is never an f32 render issue
+    }
+    let body = detail.trim_start();
+    let body = body
+        .strip_prefix("[value]")
+        .map(str::trim_start)
+        .unwrap_or(body);
+    let Some(rest) = body.strip_prefix("wasm=") else {
+        return false;
+    };
+    let Some((w, r)) = rest.split_once(" rust=") else {
+        return false;
+    };
+    let (skel_w, floats_w) = extract_float_tokens(w);
+    let (skel_r, floats_r) = extract_float_tokens(r);
+    // Everything but the float literals must match, and the float count must match.
+    if skel_w != skel_r || floats_w.len() != floats_r.len() {
+        return false;
+    }
+    let mut any_diff = false;
+    for (fw, fr) in floats_w.iter().zip(&floats_r) {
+        if fw == fr {
+            continue;
+        }
+        any_diff = true;
+        let (Ok(vw), Ok(vr)) = (fw.parse::<f64>(), fr.parse::<f64>()) else {
+            return false;
+        };
+        // rust must be EXACTLY the f64-widening of the f32 that wasm shortest-printed.
+        if (vw as f32) as f64 != vr {
+            return false;
+        }
+    }
+    any_diff
+}
+
+/// Split `s` into `(skeleton, floats)`: each maximal FLOAT literal (a numeric run containing a `.` or an
+/// exponent, e.g. `-28.29`, `199.05999755859375`, `1.5e10`) is replaced by a NUL sentinel in the skeleton
+/// and collected in order; integers (no `.`/exponent) stay in the skeleton (they render identically on
+/// both backends), as does all structure (parens, names, `=`). Char-based, so UTF-8 renders (e.g.
+/// `#\u+0001`) are handled correctly.
+fn extract_float_tokens(s: &str) -> (String, Vec<String>) {
+    let chars: Vec<char> = s.chars().collect();
+    let mut skel = String::with_capacity(s.len());
+    let mut floats = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // A number token starts at a digit, or a sign IMMEDIATELY followed by a digit.
+        let starts_num = c.is_ascii_digit()
+            || ((c == '-' || c == '+') && chars.get(i + 1).is_some_and(char::is_ascii_digit));
+        if !starts_num {
+            skel.push(c);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        if c == '-' || c == '+' {
+            i += 1;
+        }
+        let mut is_float = false;
+        while i < chars.len() {
+            let d = chars[i];
+            if d.is_ascii_digit() {
+                i += 1;
+            } else if d == '.' && !is_float {
+                is_float = true;
+                i += 1;
+            } else if (d == 'e' || d == 'E')
+                && chars
+                    .get(i + 1)
+                    .is_some_and(|n| n.is_ascii_digit() || *n == '-' || *n == '+')
+            {
+                is_float = true; // an exponent form is a float too
+                i += 1;
+                if matches!(chars.get(i), Some('-') | Some('+')) {
+                    i += 1;
+                }
+            } else {
+                break;
+            }
+        }
+        let tok: String = chars[start..i].iter().collect();
+        if is_float {
+            skel.push('\u{0}');
+            floats.push(tok);
+        } else {
+            skel.push_str(&tok); // an integer — structural, identical on both sides
+        }
+    }
+    (skel, floats)
+}
+
 /// Turn an arbitrary string into a filesystem-safe, bounded slug.
 fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len().min(80));
@@ -665,6 +780,49 @@ mod tests {
             detail: Some(detail.into()),
             commit: "abc".into(),
         }
+    }
+
+    #[test]
+    fn f32_promotion_collapses_to_one_bucket_but_never_masks_a_new_class() {
+        // The known rust f32→f64 promotion in DIFFERENT compound shapes → ONE collapsed bucket.
+        let some = differential("[value] wasm=(Some 28.29) rust=(Some 28.290000915527344)");
+        let record = differential(
+            "[value] wasm=#record((= a -630) (= b 0) (= c (Some 199.06))) rust=#record((= a -630) (= b 0) (= c (Some 199.05999755859375)))",
+        );
+        let list = differential("[value] wasm=#list(28.29 1.5) rust=#list(28.290000915527344 1.5)");
+        assert_eq!(
+            some.signature(),
+            "differential-f32-promotion".to_string(),
+            "collapsed slug"
+        );
+        assert_eq!(
+            some.signature(),
+            record.signature(),
+            "f32-promotion in ANY compound shape collapses to one bucket"
+        );
+        assert_eq!(some.signature(), list.signature());
+
+        // NEVER masks a genuinely-new value divergence: a plain integer disagreement, a float pair that
+        // is NOT the f32→f64 promotion relationship, or a MIXED diff (f32 promotion + a real int diff)
+        // each keeps its own per-shape bucket.
+        let int_diff = differential("[value] wasm=6 rust=7");
+        let bad_float = differential("[value] wasm=(Some 1.5) rust=(Some 2.5)");
+        let mixed = differential("[value] wasm=#list(28.29 5) rust=#list(28.290000915527344 6)");
+        for f in [&int_diff, &bad_float, &mixed] {
+            assert_ne!(
+                f.signature(),
+                "differential-f32-promotion",
+                "a non-(pure-f32-promotion) divergence must NOT collapse (never mask a new class): {:?}",
+                f.detail
+            );
+            assert!(
+                f.signature().starts_with("differential"),
+                "still namespaced"
+            );
+        }
+        // A liveness split that happens to mention floats is never treated as an f32 render issue.
+        let liveness = differential("[liveness] wasm=value (Some 28.29) rust=trap divide by zero");
+        assert_ne!(liveness.signature(), "differential-f32-promotion");
     }
 
     #[test]
