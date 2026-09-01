@@ -4247,7 +4247,7 @@
               [ -d "$case" ] || continue
               case="''${case%/}"
               work="$TMPDIR/work"; rm -rf "$work"; mkdir -p "$work/w"
-              # --- compile -t rust (mirrors mkCorpusRustBuild) ---
+              # --- compile (mirrors mkCorpusRust${if async then "Async" else ""}Build: -t ${if async then "rust-async" else "rust"}) ---
               inputs=("ast:main=$case/program.ast")
               entry=()
               for m in "$case"/module-*.ast; do
@@ -4257,7 +4257,7 @@
                   entry=(--entry main)
                 fi
               done
-              if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t rust -o "$work/emit.rs" 2>"$work/compile.err"; then
+              if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t ${if async then "rust-async" else "rust"} -o "$work/emit.rs" 2>"$work/compile.err"; then
                 status=0
               else
                 status=$?
