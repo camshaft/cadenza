@@ -27,7 +27,7 @@
   (runnable
     (source (def (main)
   (Map.len (Map.insert (Map.insert (Map.empty) 1 10) 2 20)))))
-  (p (c "Map.lookup") " is what you reach for a map to do, and like reaching into a list, it can miss. So it returns an " (c "Option") ": " (c "(Some v)") " when the key is present, " (c "(None unit)") " when it isn't. You take it apart with " (c "match") ":")
+  (p (c "Map.lookup") " is what you reach for a map to do, and like reaching into a list, it can miss. So it returns an " (c "Option") ": " (cdz (Some v)) " when the key is present, " (cdz (None unit)) " when it isn't. You take it apart with " (c "match") ":")
   (runnable
     (source (def (main)
   (match (Map.lookup (Map.insert (Map.empty) 7 99) 7)
@@ -67,14 +67,14 @@
   (runnable
     (source (def (main)
   (. (Map.take #map((= 1 10) (= 2 20)) 1) 1))))
-  (p "Take a key that isn't there and " (c ".0") " is " (c "(None unit)") " while " (c ".1") " equals the original: removal stays total, and you learn it held nothing in the same step.")
+  (p "Take a key that isn't there and " (c ".0") " is " (cdz (None unit)) " while " (c ".1") " equals the original: removal stays total, and you learn it held nothing in the same step.")
   (p (c "Map.insert") " has the same value-yielding twin, " (c "Map.swap") ": it inserts (or replaces) and reports what the key held " (em "before") ", again as a " (c "(prior-value . new-map)") " tuple. So swapping key " (c "1") " (already " (c "10") ") for " (c "99") " hands back the old " (c "10") " in " (c ".0") ", no separate lookup needed:")
   (runnable
     (source (def (main)
   (match (. (Map.swap #map((= 1 10)) 1 99) 0)
     ((Some old) old)
     ((None _) -1)))))
-  (p "Swap a key that's new and " (c ".0") " is " (c "(None unit)") ": nothing was replaced. Between them, " (c "take") " reports what a remove " (em "dropped") " and " (c "swap") " what an insert " (em "overwrote") ", each in a single step.")
+  (p "Swap a key that's new and " (c ".0") " is " (cdz (None unit)) ": nothing was replaced. Between them, " (c "take") " reports what a remove " (em "dropped") " and " (c "swap") " what an insert " (em "overwrote") ", each in a single step.")
   (p "Numbers, symbols, lists, maps: all collections of values. Text is its own thing, with its own honest questions (how long " (em "is") " a string?). " (em "Strings &amp; text") ", next.")
   (h2 "Your turn")
   (exercise

@@ -58,7 +58,7 @@
     (source (= (quote (+ 1 2))
    (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))))
   (p "Constructing by hand is what you reach for when the pieces come from " (em "values") " rather than being written out: a computed argument, a name chosen at run time.")
-  (note "The ML surface has lighter sugar for this: a " (em "quasiquote") " is a backtick-brace template, and an " (em "unquote") " (a comma) drops a value into a hole. " (c "`{ ,x + 10 }") " with " (c "x = 2") " builds the AST for " (c "(+ 2 10)") ", i.e. " (c "Ast.List([Ast.Name(\"+\"), Ast.Int(2), Ast.Int(10)])") ". It's exactly the constructor call above, written as a template. This is construction, not execution: the " (c ",x") " evaluates " (em "x") " to get a value to embed, not the whole form.")
+  (note "The ML surface has lighter sugar for this: a " (em "quasiquote") " is a backtick-brace template, and an " (em "unquote") " (a comma) drops a value into a hole. " (c "`{ ,x + 10 }") " with " (c "x = 2") " builds the AST for " (cdz (+ 2 10)) ", i.e. " (c "Ast.List([Ast.Name(\"+\"), Ast.Int(2), Ast.Int(10)])") ". It's exactly the constructor call above, written as a template. This is construction, not execution: the " (c ",x") " evaluates " (em "x") " to get a value to embed, not the whole form.")
   (h2 "Eval: run a tree")
   (p "An AST is inert data until you " (c "eval") " it, which executes the tree as code. Evaluating the quoted " (cdz (+ 1 2)) " finally gives " (c "3") ":")
   (runnable

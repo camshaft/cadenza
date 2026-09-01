@@ -44,7 +44,7 @@ export default function SizedIntegers() {
         source={`(def (f (: a Int)) a)`}
         expect="error"
       />
-      <P>The fix is to name a concrete width, so <C>Int64</C> for the everyday integer, or <C>Int32</C>, <C>UInt8</C>, and the rest for a fixed size. The compound form <C>(Int 64)</C> is itself a perfectly good type, exactly equal to <C>Int64</C>, so this compiles and runs, and <Cadenza ast="Y2R6YXN0AAECCgRhZGQxAAEpAwAAAAEBAgABAg==" kind="expr">(add1 41)</Cadenza> is <C>42</C>:</P>
+      <P>The fix is to name a concrete width, so <C>Int64</C> for the everyday integer, or <C>Int32</C>, <C>UInt8</C>, and the rest for a fixed size. The compound form <Cadenza ast="Y2R6YXN0AAECCgNJbnQAAUADAAAAAQECAAEC" kind="expr">(Int 64)</Cadenza> is itself a perfectly good type, exactly equal to <C>Int64</C>, so this compiles and runs, and <Cadenza ast="Y2R6YXN0AAECCgRhZGQxAAEpAwAAAAEBAgABAg==" kind="expr">(add1 41)</Cadenza> is <C>42</C>:</P>
       <Runnable
         source={`(do
   (def (add1 (: n (Int 64))) (+ n 1))
@@ -53,7 +53,7 @@ export default function SizedIntegers() {
 
   (export main))`}
       />
-      <P>Only the <em>bare</em> name is the mistake, since <C>(Int 64)</C> and <C>Int64</C> are the same type written two ways. Reach for the width name and the reflex costs you nothing.</P>
+      <P>Only the <em>bare</em> name is the mistake, since <Cadenza ast="Y2R6YXN0AAECCgNJbnQAAUADAAAAAQECAAEC" kind="expr">(Int 64)</Cadenza> and <C>Int64</C> are the same type written two ways. Reach for the width name and the reflex costs you nothing.</P>
       <H2>Arithmetic stays inside the width</H2>
       <P>The width isn't just checked at conversion, since it's enforced in arithmetic too. Two <C>UInt8</C>s add as a <C>UInt8</C>, and a sum that would exceed <C>255</C> is caught, exactly like <C>Int64</C> overflow. <C>200 + 100</C> can't fit a byte, so it's refused:</P>
       <Note>This one is <strong>meant to be refused</strong>: the <C>UInt8</C> sum overflows its width, so the compiler declines rather than wrapping, the same no-silent-wrap discipline, at 8 bits.</Note>

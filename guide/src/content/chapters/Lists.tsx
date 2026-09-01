@@ -67,7 +67,7 @@ export default function Lists() {
         source={`(match #list(1 2 3) (#list(a (.. #list(b (.. r)))) a) (_ 0))`}
         expect="error"
       />
-      <P>To reach the second element, bind the tail to a name and match <em>that</em>, a two-step you'll use whenever you need more than the head: peel one layer, then look again. Here <C>rest</C> is <C>#list(20 30)</C>, and matching it pulls out <C>20</C>:</P>
+      <P>To reach the second element, bind the tail to a name and match <em>that</em>, a two-step you'll use whenever you need more than the head: peel one layer, then look again. Here <C>rest</C> is <Cadenza ast="Y2R6YXN0AAEDFAABFAABHgQAAAABAAIBAwABAgM=" kind="expr">#list(20 30)</Cadenza>, and matching it pulls out <C>20</C>:</P>
       <Runnable
         source={`(match
   #list(10 20 30)
@@ -95,7 +95,7 @@ export default function Lists() {
       />
       <Exercise
         id="lists:3"
-        prompt={<>Here's the same fold shape as <C>sum</C>, but <em>multiplying</em>, and this time the recursive step is written for you; the <em>empty</em> case is the hole. What should <C>prod</C> of the empty list be, so that folding <C>#list(1 2 3 4)</C> gives <C>24</C>? Fill in the base case.</>}
+        prompt={<>Here's the same fold shape as <C>sum</C>, but <em>multiplying</em>, and this time the recursive step is written for you; the <em>empty</em> case is the hole. What should <C>prod</C> of the empty list be, so that folding <Cadenza ast="Y2R6YXN0AAEFFAABAQABAgABAwABBAYAAAABAAIAAwAEAQUAAQIDBAU=" kind="expr">#list(1 2 3 4)</Cadenza> gives <C>24</C>? Fill in the base case.</>}
         starter={`(def (prod xs) (match xs (#list() ?) (#list(x (.. rest)) (* x (prod rest)))))
 
 (def (main) (prod #list(1 2 3 4)))`}

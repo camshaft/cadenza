@@ -33,7 +33,7 @@
   (module Scale (def (g x) (* x 10)) (export g))
   (def (main) (Scale.g (Inc.f 4)))
   (export main))))
-  (p (c "Inc.f 4") " is 5, then " (c "Scale.g 5") " is " (c "50") ". Swap the order to " (c "(Inc.f (Scale.g 4))") " and you'd get 41 instead, so the qualified names make the pipeline unambiguous either way.")
+  (p (c "Inc.f 4") " is 5, then " (c "Scale.g 5") " is " (c "50") ". Swap the order to " (cdz (Inc.f (Scale.g 4))) " and you'd get 41 instead, so the qualified names make the pipeline unambiguous either way.")
   (h2 "Modules nest")
   (p "A module can hold another module, so one file can carry a whole tree of scopes, much like a module tree in Rust. You reach through the layers with the same dotted access, one name per level. Here a " (c "Geometry") " module contains a " (c "Square") " module with an " (c "area") ":")
   (runnable

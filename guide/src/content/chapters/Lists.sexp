@@ -61,7 +61,7 @@
   (#list(a .. #list(b .. r)) a)
   (_ 0)))
     (expect "error"))
-  (p "To reach the second element, bind the tail to a name and match " (em "that") ", a two-step you'll use whenever you need more than the head: peel one layer, then look again. Here " (c "rest") " is " (c "#list(20 30)") ", and matching it pulls out " (c "20") ":")
+  (p "To reach the second element, bind the tail to a name and match " (em "that") ", a two-step you'll use whenever you need more than the head: peel one layer, then look again. Here " (c "rest") " is " (cdz #list(20 30)) ", and matching it pulls out " (c "20") ":")
   (runnable
     (source (match #list(10 20 30)
   (#list(a .. rest)
@@ -92,7 +92,7 @@
     (hint (c "push") " adds a single element to the end; " (c "concat") " joins two " (em "lists") " (and would reject the bare " (c "99") "). Pushing one element onto three gives length " (c "4") "."))
   (exercise
     (id "lists:3")
-    (prompt "Here's the same fold shape as " (c "sum") ", but " (em "multiplying") ", and this time the recursive step is written for you; the " (em "empty") " case is the hole. What should " (c "prod") " of the empty list be, so that folding " (c "#list(1 2 3 4)") " gives " (c "24") "? Fill in the base case.")
+    (prompt "Here's the same fold shape as " (c "sum") ", but " (em "multiplying") ", and this time the recursive step is written for you; the " (em "empty") " case is the hole. What should " (c "prod") " of the empty list be, so that folding " (cdz #list(1 2 3 4)) " gives " (c "24") "? Fill in the base case.")
     (starter (def (prod xs)
   (match xs
     (#list() ?)

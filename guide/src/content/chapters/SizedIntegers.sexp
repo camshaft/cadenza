@@ -34,12 +34,12 @@
   (runnable
     (source (def (f (: a Int)) a))
     (expect "error"))
-  (p "The fix is to name a concrete width, so " (c "Int64") " for the everyday integer, or " (c "Int32") ", " (c "UInt8") ", and the rest for a fixed size. The compound form " (c "(Int 64)") " is itself a perfectly good type, exactly equal to " (c "Int64") ", so this compiles and runs, and " (cdz (add1 41)) " is " (c "42") ":")
+  (p "The fix is to name a concrete width, so " (c "Int64") " for the everyday integer, or " (c "Int32") ", " (c "UInt8") ", and the rest for a fixed size. The compound form " (cdz (Int 64)) " is itself a perfectly good type, exactly equal to " (c "Int64") ", so this compiles and runs, and " (cdz (add1 41)) " is " (c "42") ":")
   (runnable
     (source (do (def (add1 (: n (Int 64))) (+ n 1))
     (def (main) (add1 41))
     (export main))))
-  (p "Only the " (em "bare") " name is the mistake, since " (c "(Int 64)") " and " (c "Int64") " are the same type written two ways. Reach for the width name and the reflex costs you nothing.")
+  (p "Only the " (em "bare") " name is the mistake, since " (cdz (Int 64)) " and " (c "Int64") " are the same type written two ways. Reach for the width name and the reflex costs you nothing.")
   (h2 "Arithmetic stays inside the width")
   (p "The width isn't just checked at conversion, since it's enforced in arithmetic too. Two " (c "UInt8") "s add as a " (c "UInt8") ", and a sum that would exceed " (c "255") " is caught, exactly like " (c "Int64") " overflow. " (c "200 + 100") " can't fit a byte, so it's refused:")
   (note "This one is " (strong "meant to be refused") ": the " (c "UInt8") " sum overflows its width, so the compiler declines rather than wrapping, the same no-silent-wrap discipline, at 8 bits.")

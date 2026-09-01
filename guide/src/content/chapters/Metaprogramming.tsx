@@ -61,7 +61,7 @@ export default function Metaprogramming() {
         source={`(= (quote (+ 1 2)) (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))`}
       />
       <P>Constructing by hand is what you reach for when the pieces come from <em>values</em> rather than being written out: a computed argument, a name chosen at run time.</P>
-      <Note>The ML surface has lighter sugar for this: a <em>quasiquote</em> is a backtick-brace template, and an <em>unquote</em> (a comma) drops a value into a hole. <C>{"`{ ,x + 10 }"}</C> with <C>x = 2</C> builds the AST for <C>(+ 2 10)</C>, i.e. <C>Ast.List([Ast.Name("+"), Ast.Int(2), Ast.Int(10)])</C>. It's exactly the constructor call above, written as a template. This is construction, not execution: the <C>,x</C> evaluates <em>x</em> to get a value to embed, not the whole form.</Note>
+      <Note>The ML surface has lighter sugar for this: a <em>quasiquote</em> is a backtick-brace template, and an <em>unquote</em> (a comma) drops a value into a hole. <C>{"`{ ,x + 10 }"}</C> with <C>x = 2</C> builds the AST for <Cadenza ast="Y2R6YXN0AAEDCgErAAECAAEKBAAAAAEAAgEDAAECAw==" kind="expr">(+ 2 10)</Cadenza>, i.e. <C>Ast.List([Ast.Name("+"), Ast.Int(2), Ast.Int(10)])</C>. It's exactly the constructor call above, written as a template. This is construction, not execution: the <C>,x</C> evaluates <em>x</em> to get a value to embed, not the whole form.</Note>
       <H2>Eval: run a tree</H2>
       <P>An AST is inert data until you <C>eval</C> it, which executes the tree as code. Evaluating the quoted <Cadenza ast="Y2R6YXN0AAEDCgErAAEBAAECBAAAAAEAAgEDAAECAw==" kind="expr">(+ 1 2)</Cadenza> finally gives <C>3</C>:</P>
       <Runnable
