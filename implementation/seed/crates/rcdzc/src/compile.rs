@@ -473,6 +473,7 @@ fn compile_with_opt_inner(
             cse_partition_core_eq_calls: 0,
             value_range_uncached_calls: 0,
             param_apply_extra_handled_calls: 0,
+            is_cse_shareable_uncached_calls: 0,
         };
     }
 
@@ -1183,6 +1184,16 @@ fn compile_with_opt_inner(
             #[cfg(test)]
             {
                 db.param_apply_extra_handled_calls
+            }
+            #[cfg(not(test))]
+            {
+                0
+            }
+        },
+        is_cse_shareable_uncached_calls: {
+            #[cfg(test)]
+            {
+                db.is_cse_shareable_uncached_calls
             }
             #[cfg(not(test))]
             {
@@ -7031,6 +7042,7 @@ fn fail_with(query_artifacts: Vec<Artifact>, rejects: Vec<Reject>) -> CompileOut
         cse_partition_core_eq_calls: 0,
         value_range_uncached_calls: 0,
         param_apply_extra_handled_calls: 0,
+        is_cse_shareable_uncached_calls: 0,
     }
 }
 

@@ -2948,6 +2948,72 @@ fn arm_cascade_entries_stay_linear_on_a_nested_match() {
 }
 
 #[test]
+fn is_cse_shareable_stays_linear_on_a_nested_expression() {
+    // REGRESSION (perf): `backend::wasm::select::is_cse_shareable` recurses over a node's whole Core
+    // subtree, and the straight-line CSE driver queries it per candidate node — so WITHOUT the
+    // `Db::is_cse_shareable_memo` a deeply-nested expression re-walks overlapping subtrees per enclosing
+    // node → O(N²)+ (a `cdz compile` probe on a nested-match/arith chain showed `is_cse_shareable` at ~70%
+    // and near-O(N^2.6) emit; the memo cut that compile 3.3× at N=240, byte-identical output). The memo keys
+    // on id ALONE (the verdict is a pure function of the immutable Core subtree), so the inner runs once per
+    // distinct node → O(N) misses. `IS_CSE_SHAREABLE_UNCACHED_CALLS` counts inner (memo-miss) evaluations —
+    // the noise-free signal (a wall-clock ratio is diluted by the rest of emit). Right-nested Option match,
+    // each arm binding `x_i` fed to the next scrutinee (runtime-derived from `p`), the innermost body summing
+    // every binder TWICE so each subtree is a straight-line CSE candidate.
+    fn nested(depth: usize) -> String {
+        // Innermost Int64 body: a right fold summing every binder TWICE — `(+ x0 (+ x0 (+ x1 (+ x1 … 0))))`.
+        let mut inner = String::from("0");
+        for i in (0..depth).rev() {
+            inner = format!("(+ x{i} (+ x{i} {inner}))");
+        }
+        fn build(i: usize, depth: usize, inner: &str) -> String {
+            if i >= depth {
+                return inner.to_string();
+            }
+            let prev = if i > 0 {
+                format!("x{}", i - 1)
+            } else {
+                "p".into()
+            };
+            format!(
+                "(match (Some (+ {prev} 1)) ((Some x{i}) {}) ((None _) 0))",
+                build(i + 1, depth, inner)
+            )
+        }
+        format!(
+            "(module m (def (main (: p Int64)) {}) (export main))",
+            build(0, depth, &inner)
+        )
+    }
+    fn uncached_calls(src: &str) -> u64 {
+        // Drive `compile` directly (the emit path fills the per-`Db` counter, surfaced via CompileOutput) on
+        // the bumped compiler-stack worker — the deeply-nested match/arith chain overflows the default
+        // cargo-test thread stack otherwise (as the sibling deep-recursion tests do).
+        crate::host::run_with_compiler_stack(|| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    crate::codec::encode(&crate::testkit::parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.is_cse_shareable_uncached_calls
+        })
+    }
+    // Depth 40→80 is a 2× nest; with the memo the inner runs once per distinct node (~linear ~2×), without
+    // it the per-candidate re-walk is O(N²) (~4×). Require < 3× (between the regimes, margin for constants).
+    let n40 = uncached_calls(&nested(40));
+    let n80 = uncached_calls(&nested(80));
+    let ratio = n80 as f64 / (n40.max(1)) as f64;
+    assert!(
+        n40 > 0 && ratio < 3.0,
+        "is_cse_shareable must stay O(N) uncached evaluations on a nested expression, not O(N²) (the memo \
+             keyed on id alone linearizes the per-candidate subtree re-walk): depth 40→80 grew uncached \
+             calls {ratio:.1}× (n40={n40}, n80={n80}); linear is ~2×, the un-memoized re-walk was ~4×"
+    );
+}
+
+#[test]
 fn newtype_underlying_reads_the_erased_structural_type() {
     // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
     // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the

@@ -1622,6 +1622,20 @@ pub struct Db {
     pub(crate) captured_occ_memo:
         crate::fxhash::FxHashMap<StructId, std::collections::HashMap<usize, Vec<StructId>>>,
 
+    /// Memo of the wasm-CSE `is_cse_shareable(id)` predicate (`backend::wasm::select`), keyed by node id
+    /// ALONE — the SIMPLEST key in the emit-memo family (like `captured_occ_memo`). The predicate is a PURE
+    /// function of the node's immutable Core subtree (each arm recurses on child ids via `core_of`, no
+    /// mutable/thread-local/flow context, no `dup_sites`/`tail_borrowed`), so its verdict for a fixed id is a
+    /// stable fact of the build-once graph. The straight-line CSE driver queries it per candidate node, so on
+    /// a deeply-nested expression the recursive subtree walk is re-run for every enclosing node → O(N²)+
+    /// (a `cdz compile` probe on a nested-match/arith chain showed ~O(N^2.6) emit, `is_cse_shareable` 70%
+    /// self+inclusive). Caching linearizes it. Compile-lifetime; NO in_progress/tainted needed — the walk is
+    /// ACYCLIC (it recurses only through pure structural expression children; a `Core::Call`/heap-construct is
+    /// a leaf that returns `false`, never descending into a callee body), so a memo write post-return can
+    /// never observe a cycle. Byte-neutral: the SAME bool is computed, just once, so every CSE decision is
+    /// identical → identical emitted wasm.
+    pub(crate) is_cse_shareable_memo: crate::fxhash::FxHashMap<StructId, bool>,
+
     /// Memo of "does this compound type have a free var?" keyed by the payload's shared `Rc` address — for
     /// the `infer::type_of` memoization guard (`!t.has_free_var()`), which runs on EVERY node's solved type.
     /// A wide `Ty::Record`/`Ty::Tuple` (an N-field record) referenced from N nodes had the guard walk its
@@ -2035,6 +2049,15 @@ pub struct Db {
     /// exponential) growth — pins the seq-203 #5755 memo.
     #[cfg(test)]
     pub(crate) param_apply_extra_handled_calls: u64,
+    /// Test-only compile-cost counter: how many times [`crate::backend::wasm::select::is_cse_shareable`] ran
+    /// its inner body (a query that MISSED the `Self::is_cse_shareable_memo`). Surfaced via
+    /// `CompileOutput::is_cse_shareable_uncached_calls` for the regression guard
+    /// (`is_cse_shareable_stays_linear_on_a_nested_expression`) to assert LINEAR (not quadratic) growth — the
+    /// straight-line CSE driver queries the predicate per candidate node, so without the id-keyed memo a
+    /// deeply-nested expression re-walks overlapping subtrees per enclosing node (O(N²)+). Scoped to one `Db`
+    /// (the emit path holds `&mut Db`) so the parallel test harness cannot pollute it.
+    #[cfg(test)]
+    pub(crate) is_cse_shareable_uncached_calls: u64,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
     /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
@@ -3111,6 +3134,7 @@ impl Db {
             escape_verdict_memo: crate::fxhash::FxHashMap::default(),
             payload_sites_memo: crate::fxhash::FxHashMap::default(),
             captured_occ_memo: crate::fxhash::FxHashMap::default(),
+            is_cse_shareable_memo: crate::fxhash::FxHashMap::default(),
             ty_has_free_var: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
@@ -3156,6 +3180,8 @@ impl Db {
             value_range_uncached_calls: 0,
             #[cfg(test)]
             param_apply_extra_handled_calls: 0,
+            #[cfg(test)]
+            is_cse_shareable_uncached_calls: 0,
             types: Column::new(),
             typeval: Column::new(),
             typeval_memo_live: false,

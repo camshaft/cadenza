@@ -350,6 +350,15 @@ pub struct CompileOutput {
     /// un-memoization flips it back to exponential. `0` outside `rcdzc`'s lowering path. Always-present (same
     /// cross-crate-`#[cfg(test)]` reason as the metrics above) — 8 harmless bytes.
     pub param_apply_extra_handled_calls: u64,
+    /// A DIAGNOSTIC METRIC: the `rcdzc` Db's `is_cse_shareable_uncached_calls` count from this compile — how
+    /// many times `backend::wasm::select::is_cse_shareable` ran its inner body (a query that MISSED the
+    /// `is_cse_shareable_memo`). The straight-line CSE driver queries the predicate per candidate node and it
+    /// recurses over the node's whole Core subtree, so without the id-keyed memo a deeply-nested expression
+    /// re-walks overlapping subtrees per enclosing node → O(N²)+ emit; the memo makes inner-runs ~O(nodes).
+    /// Surfaced here (the `Db` is dropped before returning) for the regression-guard test to assert a LINEAR
+    /// bound — a future un-memoization flips it back to quadratic. `0` outside `rcdzc`'s emit path.
+    /// Always-present (same cross-crate-`#[cfg(test)]` reason as the metrics above) — 8 harmless bytes.
+    pub is_cse_shareable_uncached_calls: u64,
 }
 
 impl CompileOutput {
