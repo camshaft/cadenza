@@ -349,13 +349,16 @@ pub enum FragmentKind {
     /// An expression fragment (the default + by far the most frequent): value / application / member /
     /// list-or-record with rest. Rendered by the ordinary canonical printer.
     Expr,
-    /// A type fragment — rendered in TYPE position (`(Tuple Int64 Iter)` → the idiomatic type surface, not
-    /// the ctor-application `Tuple(Int64, Iter)`). INCREMENT-1: renders via the ordinary printer (faithful
-    /// AST, not yet the idiomatic type surface); the idiomatic render is a follow-up increment.
+    /// A type fragment. VERIFIED (`type_fragments_render_idiomatically_kind_independent`): the canonical
+    /// printer ALREADY renders a type fragment idiomatically — the ML type surface falls out of the AST
+    /// SHAPE (arrow `(-> A B)` → `A -> B`, type application `(Tuple/Option/List/… args)` → `Name(args)`),
+    /// so the render is kind-INDEPENDENT and no separate type-render path is needed. `Tuple(Int64, Iter)`
+    /// IS the idiomatic ML tuple-type surface (NOT a ctor-application mis-render). `Type` is carried for
+    /// tag semantics / future-proofing, not because rendering currently branches on it.
     Type,
-    /// A pattern fragment — rendered in PATTERN position. A list/record WITH a rest already round-trips as
-    /// an expr; a bare standalone spread cannot be backed (it has no meaning outside its construction).
-    /// INCREMENT-1: renders via the ordinary printer (follow-up makes it idiomatic where it differs).
+    /// A pattern fragment. A backable pattern (a list/record WITH a rest) renders idiomatically via the
+    /// canonical printer, kind-independent (v-syntax verified the round-trip). A bare STANDALONE spread
+    /// cannot be backed (it has no meaning outside its enclosing construction) and stays static.
     Pattern,
 }
 
@@ -377,11 +380,13 @@ impl FragmentKind {
 /// printer (binary-AST is THE exchange format — one canonical render, NO text re-parse). `surface` is a
 /// text surface (`Sexpr`/`Ml`/…); `kind` selects the FRAGMENT render mode (see [`FragmentKind`]).
 ///
-/// INCREMENT-1: `Expr` is the fully-canonical printer (turnkey for value/application/member/list-record
-/// fragments). `Type`/`Pattern` currently render through the SAME canonical printer — a FAITHFUL AST render,
-/// but not yet the idiomatic type-/pattern-position surface; the idiomatic render is a follow-up increment,
-/// so a caller wanting the idiomatic TYPE surface must not rely on `Type` until then. The `kind` is threaded
-/// now so the interface (and its `cdz-wasm` binding) is stable for consumers to wire against immediately.
+/// Rendering is currently KIND-INDEPENDENT: the canonical printer renders every BACKABLE fragment
+/// idiomatically from its AST shape — `Expr` (value/application/member/list-record-with-rest), `Type` (the
+/// ML type surface `A -> B` / `Name(args)` falls out of the same shape, VERIFIED
+/// `type_fragments_render_idiomatically_kind_independent`), and a backable `Pattern` (list/record with
+/// rest). The `kind` is threaded so the interface (and its `cdz-wasm` binding) is stable and carries the
+/// tag's semantic role — and is the seam a HYPOTHETICAL future construct that renders differently per kind
+/// would branch at — but no such branch is needed today. (A bare standalone spread cannot be backed at all.)
 pub fn render_binary(
     bytes: &[u8],
     surface: Format,
@@ -389,8 +394,9 @@ pub fn render_binary(
     opts: Options,
 ) -> Result<String, ConvertError> {
     let arenas = read(bytes, Format::Binary)?;
-    // INCREMENT-1: every kind renders via the ordinary canonical printer (`write_with`). `Expr` is exact;
-    // `Type`/`Pattern` idiomatic rendering is the follow-up increment (this is the seam it will branch at).
+    // Rendering is kind-independent — the idiomatic per-kind surface falls out of the AST shape via the
+    // canonical printer (see the doc + `type_fragments_render_idiomatically_kind_independent`). `kind` is
+    // the seam a future per-kind divergence would branch at; none is needed today.
     let _ = kind;
     let out = write_with(&arenas, surface, opts)?;
     String::from_utf8(out)
@@ -465,6 +471,45 @@ mod tests {
         assert_eq!(FragmentKind::parse("pattern"), Some(FragmentKind::Pattern));
         assert_eq!(FragmentKind::parse("pat"), Some(FragmentKind::Pattern));
         assert_eq!(FragmentKind::parse("nope"), None);
+    }
+
+    #[test]
+    fn type_fragments_render_idiomatically_kind_independent() {
+        // DESIGN VERIFICATION (kind=type increment): does a TYPE fragment need a SEPARATE render path, or
+        // does the canonical printer already render it idiomatically? The ML type surfaces (arrow `A -> B`,
+        // type application `Name(args)`) fall out of the AST SHAPE unconditionally (printer.rs:506/1011 arrow,
+        // :4893 tuple), so render_binary(Type) should equal render_binary(Expr) AND be the idiomatic type
+        // surface — i.e. kind=type is a no-op over the canonical printer, not new render work.
+        let cases = [
+            ("(-> Int64 Iter)", "Int64 -> Iter"), // arrow type -> infix (printer.rs:506/1011)
+            ("(Tuple Int64 Iter)", "Tuple(Int64, Iter)"), // tuple type -> Name(args) (printer.rs:4893)
+            ("(Option Int64)", "Option(Int64)"),          // generic type application
+            ("(List Int64)", "List(Int64)"),
+            ("(Set Int64)", "Set(Int64)"),
+            ("(Map Int64 Bool)", "Map(Int64, Bool)"),
+            // Curried arrow (right-assoc) + a nested compound arg — the type surface still falls out of shape.
+            ("(-> Int64 (-> Bool Iter))", "Int64 -> Bool -> Iter"),
+            (
+                "(Tuple (Option Int64) (List Bool))",
+                "Tuple(Option(Int64), List(Bool))",
+            ),
+        ];
+        for (sexp, expect) in cases {
+            let arenas = crate::sexpr::read(sexp).expect("fragment AST");
+            let bytes = crate::codec::encode(&arenas);
+            let as_type =
+                render_binary(&bytes, Format::Ml, FragmentKind::Type, Options::default()).unwrap();
+            let as_expr =
+                render_binary(&bytes, Format::Ml, FragmentKind::Expr, Options::default()).unwrap();
+            assert_eq!(
+                as_type, expect,
+                "{sexp} renders as the idiomatic ML type surface"
+            );
+            assert_eq!(
+                as_type, as_expr,
+                "the ML type surface is kind-independent (falls out of the AST shape) for {sexp}"
+            );
+        }
     }
 
     #[test]
