@@ -109,6 +109,13 @@ decreasing_by
   · simp_wf; rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega
   · simp_wf; have h := Array.sizeOf_lt_of_mem x.property; omega
 
+/-- Is the VALUE `v` the boolean literal `b`? A REDUCIBLE STRUCTURAL check (`match` + `Bool` `==`), unlike
+`v == .bool b` whose `Value` derived `BEq` is `opaque` (kernel-irreducible). Behavior-identical to
+`v == .bool b`. Lets `foldConst?`'s `and`/`or` arm REDUCE in proofs (the capstone bool-identity cases need
+to compute `foldConst? "or" #[.const (.bool true), …]`, which the opaque `==` blocked). Mirrors `isConstInt`
+(the same fix for `SymExpr`-level guards, #7216). -/
+def valIsBool (v : Value) (b : Bool) : Bool := match v with | .bool c => c == b | _ => false
+
 /-- Constant-fold an operator applied to fully-CONSTANT operands, iff the fold is SOUND independent of
 integer width (the symbolic evaluator does not yet track width). So this folds ONLY operators that can
 never overflow / trap: COMPARISONS over integer constants (`< > <= >=`, total on `Int`), value EQUALITY
@@ -164,11 +171,11 @@ def foldConst? (op : String) (args : Array SymExpr) : Option Value :=
     else if op == "+" || op == "-" || op == "*" || op == "/" then
       (match Value.asF64? a, Value.asF64? b with | some x, some y => (match evalFloatOp op x y with | .value v => some v | _ => none) | _, _ => none)
     else if op == "and" then
-      (if a == .bool true && b == .bool true then some (.bool true)
-       else if a == .bool false || b == .bool false then some (.bool false) else none)
+      (if valIsBool a true && valIsBool b true then some (.bool true)
+       else if valIsBool a false || valIsBool b false then some (.bool false) else none)
     else if op == "or" then
-      (if a == .bool true || b == .bool true then some (.bool true)
-       else if a == .bool false && b == .bool false then some (.bool false) else none)
+      (if valIsBool a true || valIsBool b true then some (.bool true)
+       else if valIsBool a false && valIsBool b false then some (.bool false) else none)
     else none
   -- non-binary `and`/`or` (variadic arity ≠ 2) keep their fold; any other shape → `none`. Via `if op == …`
   -- (NOT a `match op with "and"/"or"` string-literal matcher, which — like `match_10` — would compile to a
