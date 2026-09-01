@@ -798,6 +798,28 @@ fn emit_expr_viewed(
     // / OPEN sum, no decl emitted). Prelude sums (Option/Result — `is_user_node` false) are ambient and
     // always proceed. (breaker-reported; decline-don't-miscompile.)
     match &eff_ty {
+        // A TYPE-VALUE (`Ty::Type`) — a first-class type used as a runtime value (`(let ((t Int64)) t)`,
+        // `(: Int64 Type)`). Its Core is intentionally ERASED (a type is FULLY compile-time-known, not a
+        // runtime value, so the erased core is a `Poison` — `lower/value_form.rs:1998`), so decide by the
+        // TYPE, not the core: recover the concrete `Ty` with `eval::typeval_of` (the same reducer the SHARED
+        // value-form renderer bakes the boundary form with at `value_form.rs:1999`) and re-emit the explicit
+        // type-value ascription `(: <type-surface> Type)` — the recompilable source form (the corpus program
+        // `(: Int64 Type)`), `type_ast` rendering the type surface. SAFE discriminator (confirmed by
+        // v-metaprogramming, the type-reflection owner): keyed on `Ty::Type` AND `typeval_of` SUCCESS, which
+        // holds ONLY for a genuinely compile-time-known type-value — a real rejection has a non-`Type` type or
+        // `typeval_of` fails, so this never misfires on a carried `Poison`. A parameterized / not-fully-
+        // determined type has no boundary form → `typeval_of` / `type_ast` yield `None` → falls through to the
+        // core match and declines (correct — per the 07-type-system corpus).
+        Ty::Type => {
+            if let Some(concrete) = crate::eval::typeval_of(db, id) {
+                let ncx = db.name_ctx();
+                if let Some(ty_surface) = crate::lower::type_ast(b, &concrete, &ncx) {
+                    let colon = b.name(":");
+                    let type_kw = b.name("Type");
+                    return Ok(b.list(vec![colon, ty_surface, type_kw]));
+                }
+            }
+        }
         Ty::Sum { decl, .. } if db.is_user_node(*decl) && !emitted.contains(decl) => {
             return Err(Reject::unsupported(
                 "the Cadenza backend does not support re-emitting a generic / open user sum value; only a \
