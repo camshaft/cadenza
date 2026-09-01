@@ -105,39 +105,11 @@ fn merge(ours: &Path, theirs: &Path) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    // Dependency-free unique temp path (no `tempfile` dep — that would need same-window flake
-    // registration). Per-test dir under the system temp, uniqued by pid + a process-wide counter so
-    // parallel `cargo test` runs never collide. `Drop` reaps the dir.
-    struct TmpDir(PathBuf);
-    impl TmpDir {
-        fn new() -> Self {
-            static N: AtomicU32 = AtomicU32::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "xtask-merge-baseline-test-{}-{}",
-                std::process::id(),
-                N.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            TmpDir(dir)
-        }
-        fn write(&self, name: &str, contents: &str) -> PathBuf {
-            let p = self.0.join(name);
-            std::fs::write(&p, contents).unwrap();
-            p
-        }
-    }
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use xtask_support::TmpDir;
 
     #[test]
     fn clean_union_rewrites_ours_in_place_with_the_deduped_union() {
-        let d = TmpDir::new();
+        let d = TmpDir::new("xtask-merge-baseline-test-");
         let ours = d.write("ours", "pass\talpha\n");
         let theirs = d.write("theirs", "todo\tzeta\n");
         assert_eq!(merge_files(&ours, &theirs), Outcome::Merged);
@@ -153,7 +125,7 @@ mod tests {
     #[test]
     fn a_conflict_refuses_and_leaves_ours_byte_for_byte_untouched() {
         // Same description, different verdict — the union can't pick one without masking the other.
-        let d = TmpDir::new();
+        let d = TmpDir::new("xtask-merge-baseline-test-");
         let original = "pass\tsame case\n";
         let ours = d.write("ours", original);
         let theirs = d.write("theirs", "todo\tsame case\n");
@@ -167,7 +139,7 @@ mod tests {
 
     #[test]
     fn an_unparseable_line_refuses_and_leaves_ours_untouched() {
-        let d = TmpDir::new();
+        let d = TmpDir::new("xtask-merge-baseline-test-");
         let original = "pass\tok case\nthis-line-has-no-tab\n";
         let ours = d.write("ours", original);
         let theirs = d.write("theirs", "todo\tother\n");
@@ -177,9 +149,9 @@ mod tests {
 
     #[test]
     fn an_unreadable_side_is_an_io_error_not_a_silent_success() {
-        let d = TmpDir::new();
+        let d = TmpDir::new("xtask-merge-baseline-test-");
         let ours = d.write("ours", "pass\talpha\n");
-        let missing = d.0.join("does-not-exist");
+        let missing = d.path("does-not-exist");
         assert_eq!(merge_files(&ours, &missing), Outcome::IoError);
     }
 }

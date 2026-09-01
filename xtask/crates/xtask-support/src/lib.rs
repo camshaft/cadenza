@@ -137,6 +137,53 @@ pub const BASELINE_REL: [&str; 3] = [
     "spec/semantics/.gate-baseline-rust-async",
 ];
 
+/// A dependency-free, RAII unique temp directory for TESTS (no `tempfile` dep — that would need
+/// same-window flake registration). The dir is `<system-temp>/<prefix><pid>-<counter>`, uniqued by
+/// pid + a process-wide counter so parallel `cargo test` runs never collide; `Drop` reaps it, so it
+/// is cleaned up even if a test panics. Shared here so the decomposed xtask crates don't each re-grow
+/// the same struct.
+pub struct TmpDir(PathBuf);
+
+impl TmpDir {
+    /// Create a fresh unique temp dir named `<prefix><pid>-<counter>`.
+    pub fn new(prefix: &str) -> Self {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        TmpDir(dir)
+    }
+
+    /// The temp dir's root path.
+    pub fn dir(&self) -> &Path {
+        &self.0
+    }
+
+    /// `<dir>/<rel>` (parent dirs are NOT created — use [`TmpDir::write`] for that).
+    pub fn path(&self, rel: &str) -> PathBuf {
+        self.0.join(rel)
+    }
+
+    /// Write `contents` to `<dir>/<rel>` (creating any parent dirs) and return the written path.
+    pub fn write(&self, rel: &str, contents: impl AsRef<[u8]>) -> PathBuf {
+        let p = self.0.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&p, contents).unwrap();
+        p
+    }
+}
+
+impl Drop for TmpDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 // moved from xtask/src/main.rs (v-xtask-decompose slice 2b) — &Tools/&Paths → &Path.
 pub fn default_corpus_files(repo: &Path) -> Vec<PathBuf> {
     let dir = repo.join("spec/semantics");
@@ -1486,107 +1533,79 @@ expect\tdone\n\
     }
 
     /// Build a unique temp `<repo>/implementation/` fixture and write `name` with `bytes` bytes.
-    fn size_fixture(tag: &str, name: &str, bytes: usize) -> PathBuf {
-        let repo = std::env::temp_dir().join(format!(
-            "cdz-filesize-{tag}-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let dir = repo.join("implementation");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(name), vec![b'x'; bytes]).unwrap();
-        repo
+    /// Returns the [`TmpDir`]; hold it for the test's duration (`Drop` reaps the dir, even on panic).
+    fn size_fixture(tag: &str, name: &str, bytes: usize) -> TmpDir {
+        let fx = TmpDir::new(&format!("cdz-filesize-{tag}-"));
+        fx.write(&format!("implementation/{name}"), vec![b'x'; bytes]);
+        fx
     }
 
     #[test]
     fn file_size_lint_flags_oversized_non_allowlisted() {
-        let repo = size_fixture("over", "huge.rs", (MAX_SOURCE_BYTES + 1) as usize);
-        let err = file_size_lint_with(&repo, &[]).unwrap_err();
+        let fx = size_fixture("over", "huge.rs", (MAX_SOURCE_BYTES + 1) as usize);
+        let err = file_size_lint_with(fx.dir(), &[]).unwrap_err();
         assert!(err.contains("huge.rs"), "names the offender: {err}");
         assert!(err.contains("split"), "tells you to split it: {err}");
-        std::fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
     fn file_size_lint_passes_under_limit_and_allowlisted() {
         // A small file passes; a huge one ON the allowlist passes (grandfathered, no stale entry).
-        let repo = size_fixture("ok", "small.rs", 10);
-        assert!(file_size_lint_with(&repo, &[]).is_ok());
-        std::fs::remove_dir_all(&repo).ok();
+        let fx = size_fixture("ok", "small.rs", 10);
+        assert!(file_size_lint_with(fx.dir(), &[]).is_ok());
 
-        let repo = size_fixture("grand", "huge.rs", (MAX_SOURCE_BYTES + 1) as usize);
-        assert!(file_size_lint_with(&repo, &["implementation/huge.rs"]).is_ok());
-        std::fs::remove_dir_all(&repo).ok();
+        let fx = size_fixture("grand", "huge.rs", (MAX_SOURCE_BYTES + 1) as usize);
+        assert!(file_size_lint_with(fx.dir(), &["implementation/huge.rs"]).is_ok());
     }
 
     #[test]
     fn file_size_lint_flags_stale_allowlist_entry() {
         // An allowlisted file that is UNDER the limit (or missing) is a stale entry → must be removed.
-        let repo = size_fixture("stale", "small.rs", 10);
-        let err = file_size_lint_with(&repo, &["implementation/small.rs"]).unwrap_err();
+        let fx = size_fixture("stale", "small.rs", 10);
+        let err = file_size_lint_with(fx.dir(), &["implementation/small.rs"]).unwrap_err();
         assert!(
             err.contains("STALE"),
             "flags the stale allowlist entry: {err}"
         );
         assert!(err.contains("small.rs"), "names the stale entry: {err}");
-        std::fs::remove_dir_all(&repo).ok();
     }
 
     /// Build a two-crate fixture: `<repo>/implementation/crates/{a,b}/` each with a `Cargo.toml` + `src/`.
-    /// Crate A's `src/lib.rs` gets `a_lib_body`; crate B gets a `src/shared.rs`. Returns the repo root.
-    fn path_fixture(tag: &str, a_lib_body: &str) -> PathBuf {
-        let repo = std::env::temp_dir().join(format!(
-            "cdz-pathlint-{tag}-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+    /// Crate A's `src/lib.rs` gets `a_lib_body`; crate B gets a `src/shared.rs`. Returns the [`TmpDir`].
+    fn path_fixture(tag: &str, a_lib_body: &str) -> TmpDir {
+        let fx = TmpDir::new(&format!("cdz-pathlint-{tag}-"));
         for c in ["a", "b"] {
-            let src = repo.join(format!("implementation/crates/{c}/src"));
-            std::fs::create_dir_all(&src).unwrap();
-            std::fs::write(
-                repo.join(format!("implementation/crates/{c}/Cargo.toml")),
+            fx.write(
+                &format!("implementation/crates/{c}/Cargo.toml"),
                 "[package]\n",
-            )
-            .unwrap();
+            );
         }
-        std::fs::write(
-            repo.join("implementation/crates/b/src/shared.rs"),
-            "pub fn f() {}\n",
-        )
-        .unwrap();
-        std::fs::write(repo.join("implementation/crates/a/src/lib.rs"), a_lib_body).unwrap();
-        repo
+        fx.write("implementation/crates/b/src/shared.rs", "pub fn f() {}\n");
+        fx.write("implementation/crates/a/src/lib.rs", a_lib_body);
+        fx
     }
 
     #[test]
     fn path_lint_flags_cross_crate_include() {
         // A's lib.rs source-includes B's file → cross-crate, must fail.
-        let repo = path_fixture(
+        let fx = path_fixture(
             "cross",
             "#[path = \"../../b/src/shared.rs\"]\nmod shared;\n",
         );
-        let err = cross_crate_path_include_lint_with(&repo, &[]).unwrap_err();
+        let err = cross_crate_path_include_lint_with(fx.dir(), &[]).unwrap_err();
         assert!(err.contains("cross-crate"), "names the violation: {err}");
         assert!(err.contains("shared.rs"), "names the target: {err}");
-        std::fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
     fn path_lint_allows_same_crate_include_and_allowlisted() {
         // Same-crate #[path] (a file under A's own src/) is fine.
-        let repo = path_fixture("same", "#[path = \"helper.rs\"]\nmod helper;\n");
-        std::fs::write(repo.join("implementation/crates/a/src/helper.rs"), "\n").unwrap();
-        assert!(cross_crate_path_include_lint_with(&repo, &[]).is_ok());
-        std::fs::remove_dir_all(&repo).ok();
+        let fx = path_fixture("same", "#[path = \"helper.rs\"]\nmod helper;\n");
+        fx.write("implementation/crates/a/src/helper.rs", "\n");
+        assert!(cross_crate_path_include_lint_with(fx.dir(), &[]).is_ok());
 
         // A grandfathered cross-crate include passes (and is not stale, since it is present).
-        let repo = path_fixture(
+        let fx = path_fixture(
             "allow",
             "#[path = \"../../b/src/shared.rs\"]\nmod shared;\n",
         );
@@ -1594,23 +1613,21 @@ expect\tdone\n\
             "implementation/crates/a/src/lib.rs",
             "../../b/src/shared.rs",
         )];
-        assert!(cross_crate_path_include_lint_with(&repo, allow).is_ok());
-        std::fs::remove_dir_all(&repo).ok();
+        assert!(cross_crate_path_include_lint_with(fx.dir(), allow).is_ok());
     }
 
     #[test]
     fn path_lint_flags_stale_allowlist_entry() {
         // The allowlist names an include that no longer exists → stale, must be removed.
-        let repo = path_fixture("pstale", "// no includes here\n");
+        let fx = path_fixture("pstale", "// no includes here\n");
         let allow = &[(
             "implementation/crates/a/src/lib.rs",
             "../../b/src/shared.rs",
         )];
-        let err = cross_crate_path_include_lint_with(&repo, allow).unwrap_err();
+        let err = cross_crate_path_include_lint_with(fx.dir(), allow).unwrap_err();
         assert!(
             err.contains("STALE"),
             "flags the stale allowlist entry: {err}"
         );
-        std::fs::remove_dir_all(&repo).ok();
     }
 }
