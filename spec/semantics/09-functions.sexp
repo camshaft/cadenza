@@ -230,6 +230,26 @@
   (output (: 4 Int64)))
 
 (case
+  "a partial built-in operation (List.at at 1 of 2 args) curries — completing it yields a value (should-work)"
+  (doc
+    "The HEAP-COLLECTION sibling of the String partials above: `(List.at l)` is at partially applied
+           (index missing) — it SHOULD curry to a closure awaiting the index (core-semantics L73/L295),
+           declining today only until the built-in-as-value closure synth is realized
+           (declined(PrimAsValueNeedsClosure), owner v-compiler-primitives). No spec carve-out makes a
+           heap-collection op differ from a String op: a captured List is just a heap handle, captured in the
+           pending closure by the same mechanism as a captured String. `f` holds the partial; `((f #list(10
+           20 30)) 1)` completes it to List.at([10,20,30],1) = Some 20, and the arm returns 20. (Migrated
+           from rcdzc a_partial_application_of_a_builtin_operation_declines_honestly — v-spec-oracle ruled
+           SHOULD-WORK, so this asserts the idealistic curry rather than pinning the decline.)")
+  (input
+    (do
+      (def (f (: l (List Int64))) (List.at l))
+      (def (main) (match ((f #list(10 20 30)) 1) ((Some x) x) ((None _u) -1)))
+      (export main)))
+  (call main)
+  (output (: 20 Int64)))
+
+(case
   "a FULLY applied built-in operation is not flagged as a partial"
   (doc
     "The no-false-positive control: a built-in op applied to exactly its arguments is fine.

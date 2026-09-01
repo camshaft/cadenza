@@ -64,18 +64,8 @@ fn unsupported_construct_decline_carries_cdz0900_and_is_still_a_decline() {
 // a_partial_subtraction_in_value_position_suggests_neg_over_the_generic_unapplied_hint deleted —
 // language-independent + corpus-covered.
 
-fn all_errors(src: &str) -> Vec<crate::abi::Diagnostic> {
-    let ast = parse(src);
-    let bytes = crate::codec::encode(&ast);
-    let out = compile(
-        &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
-        &[Target::Wasm],
-    );
-    out.diagnostics
-        .into_iter()
-        .filter(|d| d.severity == crate::abi::Severity::Error)
-        .collect()
-}
+// (the `all_errors` test helper was removed once its last consumer — the built-in-partial-application test
+//  — migrated to corpus 09; every remaining test uses `first_error` or the direct `compile` path.)
 
 // (a_duplicate_record_field_carries_a_delete_the_duplicate_fix migrated to corpus 05-compound-types
 //  "a record with a duplicate field name is a type error" — enhanced with (fix (kind delete) (unverified))
@@ -122,34 +112,18 @@ fn all_errors(src: &str) -> Vec<crate::abi::Diagnostic> {
 // ((: 3.0 Int64) → CDZ0203 (message "drop the fractional form")(fix (kind replace)(replacement "3"))
 // — the guard that the clean literal-retype path survives). --case grades the message facets.)
 
-#[test]
-fn a_partial_application_of_a_builtin_operation_declines_honestly_naming_the_op() {
-    // A built-in operation applied to too FEW arguments — `(. List at) (list 1)`, missing the index —
-    // is a partial application: a genuine not-yet-built construct (it would need a runtime closure). It
-    // used to leak the INTERNAL `reduce_ctor` sentinel `error: not a type constructor` (the op fell
-    // through lower's full-arity arms into the constructor catch-all). Now it declines HONESTLY, naming
-    // the operation from its `Operand.key` surface spelling and stating the real limitation.
-    let d = first_error("(module m (def (main) ((. List at) (list 1))) (export main))");
-    assert!(
-        !d.message.contains("not a type constructor"),
-        "the internal reduce_ctor sentinel must not surface: {}",
-        d.message
-    );
-    assert!(
-        d.message.contains("`List.at`")
-            && d.message.contains("wrong arity")
-            && d.message.contains("runtime closure"),
-        "names the op + the real limitation: {}",
-        d.message
-    );
-    // A FULL application of the same op still compiles (the honest decline did not over-fire).
-    let full = all_errors("(module m (def (main) ((. List at) (list 1) 0)) (export main))");
-    assert!(
-        full.is_empty(),
-        "a fully-applied operation is not declined: {:?}",
-        full.iter().map(|e| &e.message).collect::<Vec<_>>()
-    );
-}
+// MIGRATED to corpus (09-functions.sexp, the built-in-partial-application cluster ~192): v-spec-oracle
+// ruled (A) SHOULD-WORK — a partial application of a built-in operation CURRIES (core-semantics L73/L291/
+// L295: a built-in op is a first-class value, partial application returns a closure awaiting the rest);
+// the decline is a should-work GAP, not a permanent limit (over-application is the permanent CDZ0203, L293).
+// So per operator corpus policy the migrated case asserts the IDEALISTIC curry rather than pinning the
+// decline: a heap-collection `List.at` sibling of the existing String.slice/String.at partials — `(List.at
+// l)` completed by `((f #list(10 20 30)) 1)` → List.at([10,20,30],1) = Some 20 → 20 — grading `todo`
+// (should-work) today via the CODED declined(PrimAsValueNeedsClosure)/CDZ0900, auto-passing when the
+// built-in-as-value closure synth lands. The underlying gap is routed to v-compiler-primitives (owner,
+// already owns the String.slice/at partials). The old rust test's "wrong arity"/uncoded framing was a
+// misframe (partial application is not an arity error) — per the oracle it is NOT preserved. Rust test
+// a_partial_application_of_a_builtin_operation_declines_honestly_naming_the_op deleted.
 
 // (a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening migrated to corpus 06-numeric-model:
 // "a NARROWER integer operand to a float operator nests the Int64 widening in the of-int wrap"
