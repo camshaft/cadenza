@@ -1,0 +1,5 @@
+@ann
+handle E(s) with
+  | op(st) => st
+in
+b

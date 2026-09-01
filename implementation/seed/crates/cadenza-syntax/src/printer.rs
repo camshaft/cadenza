@@ -6109,60 +6109,21 @@ mod tests {
     // are subsumed by the ml cases' format goldens. (`attr_renders_on_its_own_line_above_the_def_operator_16`
     // — the guide-derived EXACT `@test`/`@tag` cases + never-inline anti-case — stays Rust for now.)
 
-    #[test]
-    fn attr_renders_on_its_own_line_above_the_def_operator_16() {
-        // OPERATOR #16 (ATTR-ABOVE): a `@test` / `@tag("…")` annotation on a def renders on its OWN LINE
-        // ABOVE the def (the Rust `#[attr]\nfn …` convention), NEVER inline. This absorbs the invariant the
-        // guide's `check-examples.mjs` pinned as a safety net — that check is being removed (operator: guide
-        // off node checks), and ATTR-ABOVE is THIS ML printer's contract, so it belongs in the printer suite.
-        // The general shape is also covered by `annotation_sigil_round_trips` /
-        // `parameterized_annotation_round_trips`; this pins the guide's EXACT `@test`/`@tag` cases + the
-        // never-inline anti-case under the operator-numbered name so the contract is unmistakable.
-        // Bare `@test`.
-        assert_eq!(
-            assert_roundtrip("@test def f() = 1", 80),
-            "@test\ndef f() = 1"
-        );
-        // Parameterized `@tag("slow")`.
-        assert_eq!(
-            assert_roundtrip("@tag(\"slow\") def f() = 1", 80),
-            "@tag(\"slow\")\ndef f() = 1"
-        );
-        // Already-canonical (own-line) input is idempotent — the `@` line stays immediately above `def`.
-        assert_eq!(
-            assert_roundtrip("@test\ndef f() = 1", 80),
-            "@test\ndef f() = 1"
-        );
-        // The never-inline anti-case, explicit: the printed form STARTS with `@test\n` and never renders
-        // `@test def` on one line (the exact regression the guide's check guarded).
-        let out = assert_roundtrip("@test def f() = 1", 80);
-        assert!(
-            out.starts_with("@test\n") && !out.contains("@test def"),
-            "a @-annotation must render on its own line above the def (OPERATOR #16), got {out:?}"
-        );
-    }
-
-    #[test]
-    fn an_annotation_on_a_keyword_headed_form_reaches_the_prefix_keyword_arms() {
-        // GUARD for a real deletion landmine: the `prefix` fn's `Kind::Ident => match keyword(…)` arms
-        // (let/if/fn/match/handle/host — parser.rs) LOOK dead because `expr_iter` intercepts those same
-        // keywords at statement start BEFORE it ever calls `self.prefix()`. They are NOT dead: an
-        // `@annotation <form>` reads its annotated form via `self.prefix()` DIRECTLY (parser.rs
-        // "a def/OTHER KEYWORD dispatches to its full form … via self.prefix() — directly, NOT through
-        // expr"), so a keyword-headed annotated form is parsed by exactly these arms. Stripping an arm
-        // makes `keyword("fn")` fall to the `Some(_) =>` "keyword used outside its form" error, so the
-        // annotated form FAILS to parse — which `assert_roundtrip`'s `.ok()` assertion catches here.
-        // (`@… def` is separately pinned by `attr_renders_on_its_own_line_above_the_def_operator_16`.)
-        // Each form round-trips (parse → print → reparse structurally-equal + idempotent); the exact
-        // printed layout is not asserted (that is corpus-golden territory) — reachability is the contract.
-        assert_roundtrip("@ann\nlet x = 1 in x", 80); // Keyword::Let arm
-        assert_roundtrip("@ann\nif a then b else c", 80); // Keyword::If arm
-        assert_roundtrip("@ann\nfn(x) => x", 80); // Keyword::Fn arm
-        assert_roundtrip("@ann\nmatch x with | _ => 1", 80); // Keyword::Match arm
-        assert_roundtrip("@ann\nhandle E(s) with | op(st) => st in b", 80); // Keyword::Handle arm
-        assert_roundtrip("@ann\nhost E in b", 80); // Keyword::Host arm
-    }
-
+    // `attr_renders_on_its_own_line_above_the_def_operator_16` (OPERATOR #16 ATTR-ABOVE: a `@test`/`@tag(…)`
+    // annotation on a def renders on its OWN LINE above the def, never inline) MIGRATED to the spec/syntax
+    // corpus: ml/249-annotation-test-example (`@test def …` one line → format.cdz `@test`⏎`def …`) pins the
+    // `@test` own-line reflow, and ml/94-annotation-parameterized is byte-identical `@tag("slow") def f() =
+    // 1` → `@tag("slow")`⏎`def f() = 1`. The format.cdz goldens (one-line → own-line) ARE the never-inline
+    // contract; bless verifies idempotency.
+    //
+    // `an_annotation_on_a_keyword_headed_form_reaches_the_prefix_keyword_arms` (an `@annotation <keyword-
+    // form>` — let/if/fn/match/handle/host — parses via `self.prefix()`'s keyword arms, guarding those arms
+    // are not dead-code-eliminated) MIGRATED to the spec/syntax corpus: ml/556-annotation-on-let `(@ ann (let
+    // ((x 1)) x))`, ml/557-annotation-on-lambda `(@ ann (fn (x) x))`, ml/558-annotation-on-match `(@ ann
+    // (match x (_ 1)))`, ml/559-annotation-on-handle `(@ ann (handle E s ((op () st st)) b))`, ml/560-
+    // annotation-on-host `(@ ann (host (E) b))`, plus ml/318 `@ann`⏎`if a then b else c`. A stripped keyword
+    // arm would make the annotated form fail to parse — so each corpus case (a well-formed tree.sexp) IS the
+    // reachability guard: the arm going dead flips the case to a decline (parse fail), a corpus red.
     // `the_test_annotation_example_round_trips_both_directions_and_never_prints_the_backtick_at_form`
     // (regression witness for the operator's thrice-reported high-viz `@test` bug: `(@ test (def …))` must
     // print `@test` above the def and re-read to the same `(@ test …)` head, NEVER the malformed

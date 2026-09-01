@@ -476,7 +476,12 @@ pass	ml/55-neg-prefix-call
 pass	ml/550-else-if-ladder-flat-indent
 pass	ml/554-raw-list-application
 pass	ml/555-bitwise-or-match-arm-body-parens
+pass	ml/556-annotation-on-let
+pass	ml/557-annotation-on-lambda
+pass	ml/558-annotation-on-match
+pass	ml/559-annotation-on-handle
 pass	ml/56-neg-prefix-member
+pass	ml/560-annotation-on-host
 pass	ml/57-neg-tighter-than-plus
 pass	ml/58-neg-parenthesized-operand
 pass	ml/59-neg-signed-literal
