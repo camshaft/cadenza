@@ -13,6 +13,11 @@ cadenza-backend gap — do NOT chase). Scan scripts: `/tmp/parity_scan.sh` (decl
 `/tmp/parity_xref.sh` (GAP-vs-SHARED classification). Re-run when closing a category to re-measure.
 
 ## Tally (2026-09-01 baseline scan): **968 GAP-cases** vs 1919 SHARED.
+## Re-measured (2026-09-01, post #7268/#7257/#7259/#7278): **340 GAP** / 1543 SHARED (1883 total declines,
+down from 2887 — ~1000 more cases now compile to cadenza as the landed slices closed). Top remaining GAPs:
+generic `Core node … : NODE` 72 · nested-match non-tuple sub-pattern 49 · fn-typed param `(-> ..)` 46+20+… ·
+newtype-value-from-construction-site 28 · payload-projection-over-non-tuple/record 22 · literal-payload-test
+non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Qty-value-from-construction-site 11.
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
@@ -41,10 +46,14 @@ cadenza-backend gap — do NOT chase). Scan scripts: `/tmp/parity_scan.sh` (decl
   nested-projection fallback declines a refutable sum/list-rest step under a list/tuple pattern
   (breaker's family; the codeless-ness is fixed CDZ0900 #7189, the FACE still declines). Needs
   nested-match reconstruction inside `emit_match_list` / the projection walker.
-- [ ] **disc-FOLDED / Leaf-ROOT sum-match root — 65** (MY lane). A single-arm irrefutable
-  destructure `(match p ((Mk #tuple(a b)) body))` (root cont = Leaf) hits the `_ => decline` in
-  emit_match_sum. Needs Leaf-root routing through emit_switch_tree with a full destructure (the
-  early-session reverted area — do it carefully with body-read-driven slot binding).
+- [~] **disc-FOLDED / Leaf-ROOT sum-match root — 65** (MY lane). PARTIALLY CLOSED #7278 (8eba1dfc2d):
+  a Leaf-root MatchSum whose body reads the scrutinee by position (`SumPayload{s,[Elem(i)]}`, no `Payload`
+  step) now reconstructs the ONE irrefutable arm — `#tuple(b…)` for a `Ty::Tuple` scrutinee, `(Ctor b…)` for
+  a single-variant Sum/Nominal (erased newtype) — binding slot i at `(s,[Elem(i)])` so body reads resolve off
+  the once-evaluated scrutinee (no double-eval). VALIDATED: value A/B on 05-compound-types = 0 mismatch;
+  full-corpus hop2 recompile = 0 breaks. STILL DECLINING (`sum match (a disc-folded / nested / …)` ~8): the
+  MULTI-variant-Sum root reads `[Elem(i)]` at a PROVEN variant — needs the folded variant RECORDED (re-engage
+  v-core-opt) + a bind at `[Elem(i)]` not `[Payload,Elem]`. Next slice.
 - [x] **closure-capture resolution — 42.** CLOSED #7257 (6e65587241): hoist an un-resolvable value-capture
   into a `(let ((cN <cap-value>)) (fn ..))`. Re-scan CONFIRMED: captured-var declines 42 → **0**.
 - [ ] **newtype VALUE from certain construction sites — 32** (`re-emitting a newtype value from this
@@ -53,6 +62,11 @@ cadenza-backend gap — do NOT chase). Scan scripts: `/tmp/parity_scan.sh` (decl
   #7259 (5635966d4b): three member-access emit arms `((. Ast encode/print/decode) operand)`; the
   `discs`/`disc_ok`/`disc_err` re-derive from the operand's solved type on recompile. Case (b) confirmed
   (runtime Ast, not a fold fix). Co-owned w/ v-metaprogramming (they own the codec). Metaprog-file declines 13 → 0.
+  ✅ v-metaprog CONFIRMED SOUND (2026-09-01): discs are TYPE-derived (Ast sum by name) not operand-derived, so
+  never carry them on the surface; empirically byte-clean on corpus-cadenza-12 + -30. ONE exotic caveat (NOT a
+  blocker): a USER-SHADOWED `(type Ast …)` + encode of that value + the user decl NOT re-emitted → recompile
+  would derive the BUILT-IN discs (mismatch). Safe here — `emit` re-emits ALL user type decls, so a shadowed
+  Ast decl rides along and discs re-derive consistently; the dangerous combo (decl dropped) is not reachable.
 - [ ] **`Core::Seq` — 41.** Entangled with effects (Seq ⟺ observable side-effects ⟺ HostCall); likely
   RESOLVED as a side effect of the HostCall build (emit `(do stmts… tail)`). Re-measure after HostCall.
 - [ ] **`ConstFloatNan` 30 + `ConstFloatInf` 8.** An un-folded INTERNAL NaN/Inf node declines; emit the
