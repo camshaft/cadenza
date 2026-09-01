@@ -1307,7 +1307,7 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
                                     // `Core::Let` slot → LINEAR emit. SOUND: `SumNew` CONSUMES all its payloads (reclaim.rs:3177
                                     // `payloads.map(|p| (p, false))`, borrowed=false; v-wasm-opt: Owned select.rs:7340) — the same
                                     // consuming-producer keep-emit path as `ListNew`.
-                                    // 🛑 STOPGAP (INVALID-WASM regression, #7488): SumNew keep is TEMPORARILY REMOVED. Bisect pinned
+                                    // STOPGAP (INVALID-WASM regression, #7488): SumNew keep is TEMPORARILY REMOVED. Bisect pinned
                                     // #7488 (the SumNew keep) as the first-bad for a 14b-effects INVALID COMPONENT (case "an
                                     // Option-of-HEAP handler state transitions None to Some…", func 12: "type mismatch: expected i32,
                                     // found i64"). A multi-use SumNew (an `Option` handler STATE) materialized-once into a `Core::Let`
