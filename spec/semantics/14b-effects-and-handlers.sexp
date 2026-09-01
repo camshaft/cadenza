@@ -431,12 +431,15 @@
   (output (: 34 Int64)))
 
 (case
-  "a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3)"
+  "a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT folds to 73 (adv-69 c3)"
   (doc
     "A block-wrapped branch-performing conditional as a non-tail `do`-statement: `(do (let ((x true))
            (if x (St.put 7) unit)) (+ (* 10 (St.get)) x))`. Site 1 hoists a DIRECT non-last branch-performing
-           item, but a block wrapper hides it, so the `put` advance would be dropped — the fold declines
-           cleanly (a safe floor) rather than miscompile.")
+           item; the block (`let`) wrapper once hid it (the `put` advance dropped → safe-decline), but Site 1's
+           THROUGH-BLOCK extension now FOLDS it: FRESHEN the wrapper's local binders (alpha-rename so `rest`'s
+           `x` = the enclosing fn param is not captured by the block's `x`), PEEL the pure `let` wrapper,
+           distribute `rest` into the conditional branches, and RE-WRAP in the freshened `let`. `x`=true → the
+           `if` runs `(St.put 7)` (state 3→7), then `(+ (* 10 (St.get)) x)` = `10·7 + 3` = 73.")
   (input
     (do
       (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit)))
@@ -452,7 +455,7 @@
   (output (: 73 Int64)))
 
 (case
-  "a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)"
+  "a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body folds to 73 (adv-69 c3-nested)"
   (doc
     "The c3 do-statement drop where the block-wrapped perform is of the OUTER effect and sits in a
            `do`-statement INSIDE a nested inner handler's body: the outer reduction's statement scanner would
@@ -717,7 +720,7 @@
   (output (: 34 Int64)))
 
 (case
-  "a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3 sub-face)"
+  "a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT folds to 73 (adv-69 c3 sub-face)"
   (doc
     "adv-69 c3 (breaker probe-c3, block-outstate battery): the SAME block-boundary out-state drop, at a
            non-tail `do`-STATEMENT position. `(do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get))
@@ -744,7 +747,7 @@
   (output (: 73 Int64)))
 
 (case
-  "a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)"
+  "a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body folds to 73 (adv-69 c3-nested sub-face)"
   (doc
     "adv-69 c3-nested (v-effects self-probe 2026-08-04): the c3 non-tail do-statement drop, but the
            block-wrapped branch perform is of the OUTER effect and sits in a `do`-statement INSIDE a nested
@@ -777,7 +780,7 @@
   (output (: 73 Int64)))
 
 (case
-  "a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)"
+  "a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep folds to 73 (adv-69 nh7 depth-3)"
   (doc
     "adv-69 nh7 (breaker depth escalation of c3-nested): the SAME non-tail do-statement drop, but the
            outer `A`-perform sits inside TWO stacked nested handlers (`B` then `C`) — `(handle A x (…) (handle
