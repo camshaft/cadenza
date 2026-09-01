@@ -933,15 +933,7 @@ pub fn run_reducer_bytes(
     opts: &RunOpts,
 ) -> Result<Vec<u8>> {
     let (mut store, instance) = compose_and_instantiate(provider_bytes, opts)?;
-    let iface_idx = instance
-        .get_export_index(&mut store, None, iface)
-        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
-    let member_idx = instance
-        .get_export_index(&mut store, Some(&iface_idx), member)
-        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
-    let func = instance
-        .get_func(&mut store, member_idx)
-        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
+    let func = resolve_iface_member(&mut store, &instance, iface, member)?;
     let mut results = [Val::Bool(false)];
     func.call(&mut store, &[list_u8_val(input)], &mut results)
         .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
@@ -1083,15 +1075,7 @@ pub fn run_reducer_typed(
     opts: &RunOpts,
 ) -> Result<Val> {
     let (mut store, instance) = compose_and_instantiate(provider_bytes, opts)?;
-    let iface_idx = instance
-        .get_export_index(&mut store, None, iface)
-        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
-    let member_idx = instance
-        .get_export_index(&mut store, Some(&iface_idx), member)
-        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
-    let func = instance
-        .get_func(&mut store, member_idx)
-        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
+    let func = resolve_iface_member(&mut store, &instance, iface, member)?;
     let mut results = [Val::Bool(false)];
     func.call(&mut store, args, &mut results)
         .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
@@ -1106,6 +1090,76 @@ pub fn run_reducer_typed(
 /// The ordered `(key, value)` byte-pairs a reducer's host `put` op performed during an invoke — the
 /// recording sink [`run_reducer_bytes_with_puts`] returns (and threads through its `Arc<Mutex<_>>` sink).
 pub type PutLog = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// Resolve `iface`.`member` on an instantiated reducer component to its callable [`Func`] — the
+/// `get_export_index`(interface) → `get_export_index`(member) → `get_func` chain every reducer entry
+/// repeats, with its three actionable "no such interface / member / not a func" errors.
+fn resolve_iface_member(
+    store: &mut Store<()>,
+    instance: &wasmtime::component::Instance,
+    iface: &str,
+    member: &str,
+) -> Result<wasmtime::component::Func> {
+    let iface_idx = instance
+        .get_export_index(&mut *store, None, iface)
+        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
+    let member_idx = instance
+        .get_export_index(&mut *store, Some(&iface_idx), member)
+        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
+    instance
+        .get_func(&mut *store, member_idx)
+        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))
+}
+
+/// Compose + instantiate a host-fused reducer's value-heap runtime (as [`run_reducer_bytes`]) with `bind`
+/// installing the caller's host op into the `host_iface` linker instance, then invoke `iface`.`member` with
+/// the bytes `input` and return the member's result document. The prologue (runtime bind), the host-op
+/// wrapper, and the epilogue (instantiate → [`resolve_iface_member`] → call → post_return) are shared by the
+/// with-puts / with-scan / with-get drivers; only the host-op closure `bind` installs differs.
+#[allow(clippy::too_many_arguments)]
+fn run_reducer_bytes_binding(
+    provider_bytes: &[u8],
+    iface: &str,
+    member: &str,
+    input: &[u8],
+    host_iface: &str,
+    host_op: &str,
+    opts: &RunOpts,
+    bind: impl FnOnce(&str, &mut wasmtime::component::LinkerInstance<'_, ()>) -> Result<()>,
+) -> Result<Vec<u8>> {
+    let engine = engine();
+    let component =
+        jit_component(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let mut store = new_store(&engine);
+    let mut linker: Linker<()> = Linker::new(&engine);
+    if let Some(req) = find_runtime_req(&engine, &component) {
+        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+        bind_runtime_into(
+            &engine,
+            &mut store,
+            &mut linker,
+            &req.import_name,
+            &rt_instance,
+            &heap_names,
+        )?;
+    }
+    {
+        let mut iface_linker = linker
+            .instance(host_iface)
+            .map_err(|e| anyhow!("linker instance {host_iface}: {e}"))?;
+        bind(host_op, &mut iface_linker)?;
+    }
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| anyhow!("instantiate component: {e}"))?;
+    let func = resolve_iface_member(&mut store, &instance, iface, member)?;
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[list_u8_val(input)], &mut results)
+        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
+    func.post_return(&mut store)
+        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
+    val_list_u8(&results[0])
+}
 
 /// Invoke a HOST-FUSED reducer's bytes member (§3c GAP B) while BINDING its host `put`-style op to a
 /// RECORDING closure — the deeper behavioral proof that the reducer actually EXECUTES its host effect on
@@ -1125,66 +1179,39 @@ pub fn run_reducer_bytes_with_puts(
     opts: &RunOpts,
 ) -> Result<(Vec<u8>, PutLog)> {
     use std::sync::{Arc, Mutex};
-    let engine = engine();
-    let component =
-        jit_component(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
-    let mut store = new_store(&engine);
-    let mut linker: Linker<()> = Linker::new(&engine);
-    if let Some(req) = find_runtime_req(&engine, &component) {
-        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
-        bind_runtime_into(
-            &engine,
-            &mut store,
-            &mut linker,
-            &req.import_name,
-            &rt_instance,
-            &heap_names,
-        )?;
-    }
     // The recording sink: each performed put appends its (key, value) byte-pair. `Arc<Mutex<_>>` because the
     // `func_new` closure must be `Send + Sync + 'static` (wasmtime holds it inside the linker/instance).
     let puts: Arc<Mutex<PutLog>> = Arc::new(Mutex::new(Vec::new()));
     let sink = puts.clone();
     let op_label = host_op.to_string();
-    {
-        let mut iface_linker = linker
-            .instance(host_iface)
-            .map_err(|e| anyhow!("linker instance {host_iface}: {e}"))?;
-        // The host `put` op crosses two `list<u8>` args (lifted to `Val::List(Val::U8 …)`) and returns unit
-        // (a zero-result component functype), so the closure reads both args and writes nothing to `results`.
-        iface_linker.func_new(host_op, move |_ctx, params, _results| {
-            let key = val_list_u8(
-                params
-                    .first()
-                    .ok_or_else(|| anyhow!("{op_label}: missing arg 0"))?,
-            )?;
-            let value = val_list_u8(
-                params
-                    .get(1)
-                    .ok_or_else(|| anyhow!("{op_label}: missing arg 1"))?,
-            )?;
-            sink.lock().unwrap().push((key, value));
+    let out = run_reducer_bytes_binding(
+        provider_bytes,
+        iface,
+        member,
+        input,
+        host_iface,
+        host_op,
+        opts,
+        move |op, il| {
+            // The host `put` op crosses two `list<u8>` args (lifted to `Val::List(Val::U8 …)`) and returns
+            // unit (a zero-result component functype), so the closure reads both args and writes nothing.
+            il.func_new(op, move |_ctx, params, _results| {
+                let key = val_list_u8(
+                    params
+                        .first()
+                        .ok_or_else(|| anyhow!("{op_label}: missing arg 0"))?,
+                )?;
+                let value = val_list_u8(
+                    params
+                        .get(1)
+                        .ok_or_else(|| anyhow!("{op_label}: missing arg 1"))?,
+                )?;
+                sink.lock().unwrap().push((key, value));
+                Ok(())
+            })?;
             Ok(())
-        })?;
-    }
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .map_err(|e| anyhow!("instantiate component: {e}"))?;
-    let iface_idx = instance
-        .get_export_index(&mut store, None, iface)
-        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
-    let member_idx = instance
-        .get_export_index(&mut store, Some(&iface_idx), member)
-        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
-    let func = instance
-        .get_func(&mut store, member_idx)
-        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
-    let mut results = [Val::Bool(false)];
-    func.call(&mut store, &[list_u8_val(input)], &mut results)
-        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
-    func.post_return(&mut store)
-        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
-    let out = val_list_u8(&results[0])?;
+        },
+    )?;
     let recorded = puts.lock().unwrap().clone();
     Ok((out, recorded))
 }
@@ -1208,55 +1235,28 @@ pub fn run_reducer_bytes_with_scan(
     pairs: Vec<(Vec<u8>, Vec<u8>)>,
     opts: &RunOpts,
 ) -> Result<Vec<u8>> {
-    let engine = engine();
-    let component =
-        jit_component(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
-    let mut store = new_store(&engine);
-    let mut linker: Linker<()> = Linker::new(&engine);
-    if let Some(req) = find_runtime_req(&engine, &component) {
-        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
-        bind_runtime_into(
-            &engine,
-            &mut store,
-            &mut linker,
-            &req.import_name,
-            &rt_instance,
-            &heap_names,
-        )?;
-    }
-    {
-        let mut iface_linker = linker
-            .instance(host_iface)
-            .map_err(|e| anyhow!("linker instance {host_iface}: {e}"))?;
-        // `prefix-scan(prefix: list<u8>) -> list<tuple<list<u8>,list<u8>>>`: the closure ignores the prefix
-        // and returns the fixed `pairs` as a `Val::List` of 2-element `Val::Tuple`s (each `(list<u8>, list<u8>)`).
-        iface_linker.func_new(host_op, move |_ctx, _params, results| {
-            let items = pairs
-                .iter()
-                .map(|(k, v)| Val::Tuple(vec![list_u8_val(k), list_u8_val(v)]))
-                .collect();
-            results[0] = Val::List(items);
+    run_reducer_bytes_binding(
+        provider_bytes,
+        iface,
+        member,
+        input,
+        host_iface,
+        host_op,
+        opts,
+        move |op, il| {
+            // `prefix-scan(prefix: list<u8>) -> list<tuple<list<u8>,list<u8>>>`: ignore the prefix and return
+            // the fixed `pairs` as a `Val::List` of 2-element `Val::Tuple`s (each `(list<u8>, list<u8>)`).
+            il.func_new(op, move |_ctx, _params, results| {
+                let items = pairs
+                    .iter()
+                    .map(|(k, v)| Val::Tuple(vec![list_u8_val(k), list_u8_val(v)]))
+                    .collect();
+                results[0] = Val::List(items);
+                Ok(())
+            })?;
             Ok(())
-        })?;
-    }
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .map_err(|e| anyhow!("instantiate component: {e}"))?;
-    let iface_idx = instance
-        .get_export_index(&mut store, None, iface)
-        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
-    let member_idx = instance
-        .get_export_index(&mut store, Some(&iface_idx), member)
-        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
-    let func = instance
-        .get_func(&mut store, member_idx)
-        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
-    let mut results = [Val::Bool(false)];
-    func.call(&mut store, &[list_u8_val(input)], &mut results)
-        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
-    func.post_return(&mut store)
-        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
-    val_list_u8(&results[0])
+        },
+    )
 }
 
 /// Invoke a host-fused reducer's bytes member while binding its host `get`-style op (one `list<u8>` param,
@@ -1277,52 +1277,25 @@ pub fn run_reducer_bytes_with_get(
     reply: Option<Vec<u8>>,
     opts: &RunOpts,
 ) -> Result<Vec<u8>> {
-    let engine = engine();
-    let component =
-        jit_component(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
-    let mut store = new_store(&engine);
-    let mut linker: Linker<()> = Linker::new(&engine);
-    if let Some(req) = find_runtime_req(&engine, &component) {
-        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
-        bind_runtime_into(
-            &engine,
-            &mut store,
-            &mut linker,
-            &req.import_name,
-            &rt_instance,
-            &heap_names,
-        )?;
-    }
-    {
-        let mut iface_linker = linker
-            .instance(host_iface)
-            .map_err(|e| anyhow!("linker instance {host_iface}: {e}"))?;
-        // `get(key: list<u8>) -> option<list<u8>>`: the closure ignores the key and returns the fixed `reply`
-        // (Some(bytes) → `Val::Option(Some(list<u8>))`, None → `Val::Option(None)`).
-        iface_linker.func_new(host_op, move |_ctx, _params, results| {
-            let v = reply.clone().map(|b| Box::new(list_u8_val(&b)));
-            results[0] = Val::Option(v);
+    run_reducer_bytes_binding(
+        provider_bytes,
+        iface,
+        member,
+        input,
+        host_iface,
+        host_op,
+        opts,
+        move |op, il| {
+            // `get(key: list<u8>) -> option<list<u8>>`: ignore the key and return the fixed `reply`
+            // (Some(bytes) → `Val::Option(Some(list<u8>))`, None → `Val::Option(None)`).
+            il.func_new(op, move |_ctx, _params, results| {
+                let v = reply.clone().map(|b| Box::new(list_u8_val(&b)));
+                results[0] = Val::Option(v);
+                Ok(())
+            })?;
             Ok(())
-        })?;
-    }
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .map_err(|e| anyhow!("instantiate component: {e}"))?;
-    let iface_idx = instance
-        .get_export_index(&mut store, None, iface)
-        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
-    let member_idx = instance
-        .get_export_index(&mut store, Some(&iface_idx), member)
-        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
-    let func = instance
-        .get_func(&mut store, member_idx)
-        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
-    let mut results = [Val::Bool(false)];
-    func.call(&mut store, &[list_u8_val(input)], &mut results)
-        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
-    func.post_return(&mut store)
-        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
-    val_list_u8(&results[0])
+        },
+    )
 }
 
 /// CAPTURE a program's escaping compound result as its RAW canonical value-form `list<u8>` document (the
