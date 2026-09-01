@@ -474,7 +474,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a closure captures a MAP and serves lookups at call time"
@@ -2819,7 +2819,7 @@
   (call main (: 0 Int64))
   (output (: 33 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a RUNTIME-selected combiner closure crosses a join and drives a fold"
@@ -5298,7 +5298,7 @@
       (export main)))
   (output (: -1 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- A TAIL call runs in constant stack ---------------------------------------------------------
 ; A recursive call in TAIL position (the function's result is exactly that call) must reuse the
@@ -5364,7 +5364,7 @@
       (export main)))
   (call main (: 5000 Int64))
   (output (: 5000 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack"
@@ -9125,7 +9125,7 @@
   (call main (: 0 Int64))
   (output (: 2 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a captured list survives a structural rebuild of the same source between capture and application"
@@ -10098,7 +10098,7 @@
   (call main (: 3 Int64))
   (output (: 3008 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a pipeline chain threads handler STATE left-to-right through effectful stages"
@@ -10288,7 +10288,7 @@
   (call main (: 10 Int64))
   (output (: 30 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "ch04 a runtime-branch-selected closure applies"
@@ -12415,7 +12415,7 @@
       (export main)))
   (output (: -1 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime value-eq in a tail-loop condition does not clash the arithmetic scratch slot"
@@ -12882,7 +12882,7 @@
   (output (: 5 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "nts1 a non-tail recursive-sum consumer over a SHARED spine does not over-reclaim it (sum then len both read it)"
@@ -12906,7 +12906,7 @@
       (export main)))
   (call main (: 4 Int64))
   (output (: 10004 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a heap-typed EXPORTED-entry param + a reachable RECURSIVE fn emits VALID wasm (the def-call index survives the entry's lift-op imports)"
@@ -13020,7 +13020,7 @@
   (call main (: 5 Int64))
   (output (: 15 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an extracted closure placed into a tuple then projected and applied reclaims"
@@ -13042,7 +13042,7 @@
   (call main (: 5 Int64))
   (output (: 15 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime-selected closure from a list of DISTINCT-BODY closures dispatches indirectly and reclaims"
@@ -13071,7 +13071,7 @@
   (call main (: 3 Int64))
   (output (: 30 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an extracted closure passed through a helper then applied reclaims"
@@ -13092,7 +13092,7 @@
   (call main (: 5 Int64))
   (output (: 15 Int64))
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "hc1 an empty-captures COMBINATOR boxed as a first-class value and applied via call_indirect reclaims its compound shells"
