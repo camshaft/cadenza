@@ -602,6 +602,38 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
         out.push('\n');
         out.push_str(&f);
     }
+    // VALUE-DOC EMIT (operator seq-210 parser-elimination, FLAG-GATED `CDZ_VALUE_DOC`, default-OFF). For each
+    // NULLARY export whose result shape the Ty-guided walk covers, emit a `pub fn __cdz_doc_<ident>() -> String`
+    // that calls the export and builds the self-describing `(: value type)` binary-AST codec doc → the
+    // `CDZDOC:<hex>` marker (see `value_doc::emit_result_doc`). The gate driver, under the same flag, calls this
+    // INSTEAD of cdz-rust-render's type-note-driven `cdz_render_at` string walk — moving the value walk into
+    // rcdzc (Ty-direct, no sexpr re-parse), which is what lets us eventually delete `cdz_render_at` /
+    // `parse_head_type` / `rust_call_arg`. GATED because the doc body references `cadenza_ast`, which the gate
+    // driver only links (and only calls `__cdz_doc`) when the flag is set — so with the flag UNSET this emits
+    // nothing and the module is byte-identical (zero gate impact). A `// cdz-value-doc: <name>` marker note
+    // (inert to rustc) tells the driver-gen which exports have a `__cdz_doc` to call. An export whose result
+    // shape is not yet covered emits no `__cdz_doc` (and no marker) → the driver falls back to `cdz_render_at`.
+    if std::env::var("CDZ_VALUE_DOC").is_ok() {
+        for &def in &layout.order {
+            let Some(e) = layout.export_plan(def) else {
+                continue;
+            };
+            // NULLARY exports only — the gate's value-doc render path invokes the export with no arguments
+            // (`<name>()`); an arg-taking export's driver supplies args, a later slice.
+            if !e.params.is_empty() {
+                continue;
+            }
+            let e = e.clone();
+            let ident = fn_ident(db, layout, def);
+            let call = format!("{ident}()");
+            if let Ok(body) = value_doc::emit_result_doc(db, &e.result, &call) {
+                out.push_str(&format!("// cdz-value-doc: {}\n", e.name));
+                out.push_str(&format!(
+                    "#[allow(dead_code)]\npub fn __cdz_doc_{ident}() -> String {{\n{body}}}\n"
+                ));
+            }
+        }
+    }
     // REJECT a closure escaping an effect (CDZ0406) — the SAME rule the wasm backend enforces
     // (`backend/wasm/mod.rs`): a lifted-lambda body that performs a host effect carries that effect OUT to
     // the host, to be run when the host later invokes the closure — outside the delegation's dynamic extent,
