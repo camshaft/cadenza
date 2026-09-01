@@ -4137,6 +4137,12 @@ fn qty_disposition(db: &mut Db, id: StructId) -> NominalDisp {
         // erased `Qty.value`-peel whose real escape type is numeric — do NOT re-wrap (the direct path emits
         // it bare); a genuine quantity-returning construction from such a site needs the escape type
         // threaded, a later slice. Decline-don't-miscompile.
+        // ⚠ A CONSTANT magnitude typed `Ty::Qty` is NOT safe to blanket-Construct (tried + reverted
+        // 2026-09-01): 18-units has const-Qty nodes that must emit BARE, not `(Qty.of const unit)` — e.g. a
+        // prefix-SCALED quantity whose Core const is the UNSCALED magnitude (`5.0`, value scales to `5000.0`),
+        // and "a bare literal magnitude adopts its arith sibling's fixed width" whose real escape is bare
+        // `8 UInt32`. Wrapping those miscompiles (33 corpus-cadenza fails). The distinguishing escape type
+        // must be THREADED, not inferred from const-ness — a later slice.
         _ => NominalDisp::Decline,
     }
 }
