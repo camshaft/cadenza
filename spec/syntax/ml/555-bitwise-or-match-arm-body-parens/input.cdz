@@ -1,0 +1,1 @@
+def f(v) = match v with | C(x) => (x | 8) | _ => 0

@@ -7109,9 +7109,12 @@ mod tests {
             mout.contains("=> (x | 8)"),
             "a bitwise-or match-arm body parenthesizes the bare `|`, got:\n{mout}"
         );
-        // Round-trip: both re-parse identically (the whole point — without the parens the `| 8` / `| _`
-        // would be swallowed as a phantom next arm).
-        assert_roundtrip("match v with | C(x) => (x | 8) | _ => 0", 200);
+        // (The ML-authorable round-trip — `match v with | C(x) => (x | 8) | _ => 0`, where the parens are
+        // PRESENT in source and must be preserved so `| 8` is not a phantom next arm — MIGRATED to the
+        // spec/syntax corpus: ml/555-bitwise-or-match-arm-body-parens → `(def (f v) (match v ((C x) (| x 8))
+        // (_ 0)))`. What stays here is the SEXPR-ARENA case above: a BARE `(| x 8)` arm body — which the ML
+        // surface cannot author — where the PRINTER must ADD the parens; that cross-surface print behavior
+        // has no ml-input the corpus harness can drive it from.)
         // The nested-operand shape breaker's bw4 used: `(| (& x 15) (<< (& s 3) 4))`.
         let nested = sexpr::read(
             "(handle E n ((tag (x) s (resume (| (& x 15) (<< (& s 3) 4)) (+ s 1)))) (E.tag 3))",
