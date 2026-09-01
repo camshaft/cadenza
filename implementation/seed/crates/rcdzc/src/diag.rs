@@ -982,6 +982,18 @@ pub const RESUME_RESULT_MISMATCH_MARKER: &str = "a handler resumes with a value 
 /// (CDZ0403/0405) or a mistyped resume, so a wrong-arity arm is ONE primary error naming the real defect.
 pub const HANDLER_ARM_ARITY_MARKER: &str = "an arm binds exactly its operation's parameters";
 
+/// A stable SUBSTRING unique to the coded CDZ0203 ABORTIVE-arm value-type mismatch — an arm that aborts
+/// (does not resume) makes its body value the WHOLE handle's result, so it must agree with BOTH the
+/// operation's declared result type AND the handle body's type; either mismatch is reported by
+/// `check_abort_arm_type` (both messages begin `a handler ABORTS with a value of type …`). An ill-typed
+/// abort ALSO makes the handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`]
+/// alongside — a CONSEQUENCE of the type defect, not an independent limit (and, being at the handle head,
+/// it sorts BEFORE the CDZ0203 at the abort value, so `first_error_diag` would otherwise pick the weaker
+/// CDZ0900). `dedup_faults` matches this to drop that decline, exactly as it does for a malformed handler
+/// (CDZ0403/0405), a mistyped resume, or a wrong-arity arm — so an ill-typed abort is ONE primary CDZ0203
+/// naming the real defect.
+pub const ABORT_ARM_TYPE_MISMATCH_MARKER: &str = "a handler ABORTS with a value of type";
+
 /// The stable PREFIX of the coded CDZ0201 "this handle is not in canonical form" reject — a source
 /// `handle` still headed `handle` after `effects::desugar_handles` (the retired effect-name-less shape,
 /// or a too-short handle). Shared as a const so `compile::dedup_faults` can recognize it and drop the

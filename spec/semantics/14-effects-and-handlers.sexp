@@ -12838,14 +12838,18 @@
   (doc
     "An abort makes its arm value the WHOLE handle's value, so it must have the body's type. `(tuple 1
            (Bail.bail 7))` has a compound body `(Tuple Int64 Int64)` but the abort yields a scalar Int64 —
-           they disagree, so reduce_handle declines rather than miscompile (a scalar substituted into the
-           tuple → (1,7)).")
+           they disagree, so it is rejected CDZ0203 rather than miscompiled (a scalar substituted into the
+           tuple → (1,7)). The ill-typed handler ALSO can't fold, so the emit path produces the uncoded
+           HANDLER_NOT_REDUCIBLE decline (CDZ0900) as a CONSEQUENCE — and it anchors at the handle HEAD,
+           sorting BEFORE the abort-value CDZ0203; `dedup_faults` drops it (has_abort_type_reject) so ONE
+           primary CDZ0203 remains. `(no-other-errors)` pins that no CDZ0900 leaks alongside.")
   (input
     (do
       (effect Bail (op bail (-> Int64 Int64)))
       (def (main) (handle Bail 0 ((bail (n) s n)) #tuple(1 (Bail.bail 7))))
       (export main)))
-  (error CDZ0203))
+  (error CDZ0203 (message "ABORTS with a value of type"))
+  (no-other-errors))
 
 (case
   "a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)"

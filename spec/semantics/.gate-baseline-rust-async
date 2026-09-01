@@ -8762,7 +8762,7 @@ todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines 
 todo	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
 todo	a diamond peer graph shares one provider across two middle peers
 todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
-todo	a distributed if-branch that folds to an ill-typed arm composition declines
+pass	a distributed if-branch that folds to an ill-typed arm composition declines
 todo	a fallible Result peer op result crosses and its Err arm matches
 todo	a fallible Result peer op result crosses and its Ok arm matches
 todo	a heap-inner (Rational) quantity crosses to and from a peer as a shared runtime handle
@@ -8784,7 +8784,7 @@ todo	a peer op returning a tuple result is projected to a scalar over the shared
 todo	a peer op type mismatch is rejected at compose time (same arity, different type)
 todo	a peer result handle passes straight through to another peer's arg without local inspection
 todo	a peer string result is consumed in-program via equality and byte-len
-todo	a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled
+pass	a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
@@ -8802,8 +8802,8 @@ todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b l
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a runtime-produced String argument crosses to a peer as its handle
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
-todo	a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)
-todo	a scalar abort in a TUPLE-typed handle body declines (type-consistency)
+pass	a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)
+pass	a scalar abort in a TUPLE-typed handle body declines (type-consistency)
 todo	a scalar quantity argument crosses to and from a peer as its inner scalar
 todo	a scalar tuple argument crosses INBOUND to a peer and both fields are summed there
 todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
@@ -8820,7 +8820,7 @@ todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm r
 todo	aeq1 bare equality over two runtime Ast.encode results
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
-todo	an abortive arm whose value type mismatches the op RESULT type declines
+pass	an abortive arm whose value type mismatches the op RESULT type declines
 todo	an abortive handler over a non-tail MUTUAL recursion declines cleanly
 todo	an abortive perform in a non-tail accumulator-introduced recursion declines cleanly (safe floor; flips to the abort value under the non-local-exit vertical)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it

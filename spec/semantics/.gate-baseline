@@ -9609,28 +9609,28 @@ todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a continuation call whose body ITSELF performs is not effect-free and declines
 todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 todo	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
-todo	a distributed if-branch that folds to an ill-typed arm composition declines
+pass	a distributed if-branch that folds to an ill-typed arm composition declines
 todo	a match-discard chain sequencing 3 dispatches over LIST-OF-LISTS state declines cleanly (let-chain twin folds)
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a non-tail cross-function conditional abort declines cleanly
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
 todo	a non-tail recursive abort declines rather than miscompiles
-todo	a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled
+pass	a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled
 todo	a record pattern with a trailing rest binds the named fields and the residual record
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
-todo	a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)
-todo	a scalar abort in a TUPLE-typed handle body declines (type-consistency)
+pass	a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)
+pass	a scalar abort in a TUPLE-typed handle body declines (type-consistency)
 todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
 todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	a tuple pattern with a trailing rest binds the leading elements and the trailing sub-tuple
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
-todo	an abortive arm whose value type mismatches the op RESULT type declines
+pass	an abortive arm whose value type mismatches the op RESULT type declines
 todo	an abortive handler over a non-tail MUTUAL recursion declines cleanly
 todo	an abortive perform in a non-tail accumulator-introduced recursion declines cleanly (safe floor; flips to the abort value under the non-local-exit vertical)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
