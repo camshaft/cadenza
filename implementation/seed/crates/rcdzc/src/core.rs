@@ -1095,6 +1095,18 @@ pub enum Core {
     //= spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point
     //# A trap MUST halt the program at a defined point rather than continue with an unspecified value.
     Trap,
+    /// EFFECT NON-LOCAL EXIT (v-effects). An ABORTIVE handler arm (no resume) whose perform is at a
+    /// NON-TAIL position makes its `value` the WHOLE handle's result while ABANDONING every pending frame
+    /// between the perform and the handle — inexpressible as a plain return (that flows the value up through
+    /// the pending frames). Emitted by the fold; lowered as a non-local branch to the reduced handle's OUTER
+    /// labeled block carrying `value` (already the handle-result type — the E4 abortive type-consistency
+    /// check guarantees it). Like `Trap`, the stack is POLYMORPHIC after the branch (validates in any result
+    /// position). `handle_id` = the reduced handle's original handle-node occurrence (the emit keys its
+    /// handle->abort-block-depth stack on it so a nested handle's abort resolves to the right block).
+    HandleAbort {
+        value: StructId,
+        handle_id: StructId,
+    },
     /// A KIND-PRESERVING runtime divide-by-zero trap — the demote target for a CONST divide/remainder-by-zero
     /// (`(/ 1 0)`) in a conditionally-reached `if` branch / `match` arm (`lower::demote_conditional_trap`).
     /// A bare `Core::Trap` (`unreachable`) would report the trap KIND as "unreachable", but the operator ruled

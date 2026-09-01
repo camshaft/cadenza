@@ -1160,6 +1160,9 @@ pub(super) fn collect_used_ops_into_seen(
         // A boundary block / break — descend into the body / break value to reach any op inside.
         Core::Block { body, .. } => collect_used_ops_into_seen(db, body, out, visited),
         Core::Break { value } => collect_used_ops_into_seen(db, value, out, visited),
+        // The abort VALUE is evaluated before the non-local branch, so its ops belong to the import/op set;
+        // recurse into it. `handle_id` is a reference to the target handle node, not an emitted subexpression.
+        Core::HandleAbort { value, .. } => collect_used_ops_into_seen(db, value, out, visited),
         Core::Record { fields } => {
             // A runtime record builds on the heap exactly as a tuple — `arr-alloc` + per-field
             // `box-*`/`arr-set` (the same ops `emit`'s `Core::Record` arm lays down), so the used-set

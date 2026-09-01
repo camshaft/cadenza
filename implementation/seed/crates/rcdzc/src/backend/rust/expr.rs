@@ -3934,6 +3934,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // branch). `panic!` returns `!` (any position, like `Core::Trap`) with a reason `trap_kind`
         // classifies as `overflow` — agreeing with the wasm side's native `i32.div_s` MIN/-1 overflow trap.
         Core::TrapOverflow => Ok("panic!(\"integer overflow\")".to_string()),
+        // EFFECT NON-LOCAL EXIT (an abortive handler arm's non-tail perform). The effect lowering + its
+        // non-local-branch emit are wasm-only today; the Rust backend does not yet build this construct, so
+        // it declines (CDZ0900 deferred-emit, not a program error) rather than mis-render it.
+        Core::HandleAbort { .. } => Err(Reject::unsupported(
+            "an abortive-handler non-local exit (HandleAbort) is not yet emitted by the Rust backend",
+        )),
         // Runtime BigInt ops → `cdz_num::Big` value ops (the SAME bignum the wasm runtime uses, shared by
         // source via the `cdz-num` crate). `Big` methods BORROW their operands and return an owned `Big`.
         // `BigInt.of x` on a runtime fixed-width int — widen the i64-slot value into a `Big`. (A CONSTANT

@@ -5394,6 +5394,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // `trap` is an EXPLICIT runtime divergence (`Core::Trap` → `unreachable`), not a compile-provable
         // trap the build must reject — the honest "this halts here" primitive whose defined outcome IS the
         // runtime trap (like `expect`'s absent branch), so it carries no poison to collect.
+        // The abort VALUE is evaluated before the non-local branch, so a poison in it is reached.
+        Core::HandleAbort { value, .. } => collect_reached_poisons(db, value, out),
         Core::Captured { .. }
         | Core::LocalRef { .. }
         | Core::Param { .. }
