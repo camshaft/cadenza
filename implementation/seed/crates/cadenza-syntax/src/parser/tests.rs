@@ -1250,39 +1250,14 @@ fn recovered_arena_invariants_hold_on_arbitrary_input() {
 // (`missing_comma_between_args_recovers` also asserts arg SPAN slices — it migrates once the corpus grows a
 // span-golden; kept below until then. Termination-over-generated-junk stays Rust: an internal property.)
 
-#[test]
-fn missing_comma_between_args_recovers() {
-    // `f(1 2)` — a missing separator is reported once, and BOTH arguments are still recovered. (This
-    // uses NUMBER args deliberately: since the general unit-suffix landed, `f(a b)` is now a VALID
-    // parse — `a` with unit `b`, i.e. `f((Qty.of a (Unit.of #b)))` — not a missing comma. A number
-    // cannot be a unit name, so `1 2` is still unambiguously a missing separator, which keeps this
-    // recovery invariant exercised on a shape the unit grammar does not claim.)
-    let p = read_ml("f(1 2)");
-    assert!(!p.ok(), "the missing `,` is reported");
-    assert_eq!(p.errors.len(), 1, "exactly one error: {:?}", p.errors);
-    assert!(
-        p.errors[0].message.contains(','),
-        "the error names the missing comma: {:?}",
-        p.errors[0]
-    );
-    let a = &p.arenas;
-    let call = a.as_form(a.root, "f").unwrap();
-    assert_eq!(call.len(), 2, "both args recovered");
-    // Both args are the number literals (Int atoms — `as_name` is None for a non-Name leaf).
-    for (arg, want) in [(call[0], "1"), (call[1], "2")] {
-        match a.get(arg) {
-            crate::ast::Struct::Atom(lid) => {
-                assert!(
-                    matches!(a.leaf(*lid), Leaf::Int { .. }),
-                    "arg is an Int literal"
-                );
-                let sp = p.spans.get(arg).unwrap();
-                assert_eq!(&"f(1 2)"[sp.start..sp.end], want, "arg slices to {want}");
-            }
-            other => panic!("arg is an atom, got {other:?}"),
-        }
-    }
-}
+// `missing_comma_between_args_recovers` (`f(1 2)` — a missing arg separator is reported once, BOTH number
+// args are recovered, and each arg's SPAN slices back to its literal) MIGRATED to the spec/syntax corpus
+// (parser-corpus inc-8) — the first case to compose BOTH harness extensions: ml/546-call-missing-comma-
+// recovers pins the DECLINE (error.txt `expected \`,\``), the recovered tree via recovered.sexp `(f 1 2)`
+// (both args survive), AND the arg spans via spans.txt `2:3 1` / `4:5 2` (each arg slices to its literal),
+// plus `0:1 f` / `0:6 f(1 2)`. (Number args are used deliberately: since the unit-suffix grammar landed,
+// `f(a b)` is a VALID quantity parse `f((Qty.of a (Unit.of #b)))`, not a missing comma — but `1 2` cannot
+// be a unit, so it stays an unambiguous missing separator.)
 
 #[test]
 fn an_unterminated_literal_names_its_specific_cause() {
