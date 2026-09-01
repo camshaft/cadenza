@@ -469,6 +469,7 @@ pass	ml/535-try-in-let-binder
 pass	ml/536-annotation-contract-requires-ensures
 pass	ml/54-neg-prefix-name
 pass	ml/545-spans-total-and-distinct
+pass	ml/547-embedded-node-spans-document-coordinates
 pass	ml/55-neg-prefix-call
 pass	ml/56-neg-prefix-member
 pass	ml/57-neg-tighter-than-plus
