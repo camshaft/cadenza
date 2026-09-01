@@ -386,14 +386,7 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
     // So `(eval (quasiquote (+ (unquote x) 4)))` — whose `,x` now reifies to `(ast-lift x)` rather than a
     // literal-dispatched `(Ast.Int x)` — reconstructs to `(+ x 4)` and folds in the eval's enclosing scope.
     if let Some(payload) = ast_lift_arg(ast, node) {
-        // The lift operand reconstructs to the SOURCE it denotes. A bare name or computed expression
-        // (eval's own runtime unquote — `,x` with `x` a name/`(+ a b)`) is NOT an `Ast.*` construction, so
-        // `reconstruct` returns `None` and we pass it through to fold in the enclosing scope (unchanged
-        // eval behavior). But a reflected `Ast` CONSTRUCTION spliced into the operand position — a MACRO's
-        // reified `quote`-parameter argument (`,x` where `x` was bound to `(Ast.Int 5)`), or a user's
-        // `,(Ast.Int 5)` — reconstructs to its DENOTATION (`(Ast.Int 5)` → `5`), so a quasiquote macro body
-        // expands to real code, not a constructor call. `unwrap_or(payload)` = recurse-if-Ast, else through.
-        return Some(reconstruct(ast, payload).unwrap_or(payload));
+        return Some(payload);
     }
     // `(Ast.Bool payload)` -> the payload AS SOURCE (the `true`/`false` literal node). Like `Ast.Int`,
     // the payload node is reused live: a reified boolean literal `(Ast.Bool true)` unwraps back to `true`.
