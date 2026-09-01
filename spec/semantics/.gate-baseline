@@ -1068,6 +1068,7 @@ pass	a Qty state's next-state slot computes (+ s s) INLINE — the formerly-reje
 pass	a Qty-keyed trie churned with differently-normalized magnitudes equals the direct build
 pass	a Qty-typed export carries its unit frame across the module boundary into caller algebra
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
+pass	a Qty.+ magnitude from a function-application result reconciles against an Int8 sibling
 pass	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 pass	a RADIX literal carries the N type suffix
 pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
