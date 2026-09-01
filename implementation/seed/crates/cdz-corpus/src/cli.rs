@@ -80,6 +80,13 @@ enum CorpusCmd {
         /// wired-in guard stays quiet; the full list can be long when the baseline is stale.
         #[arg(long)]
         list_missing: bool,
+        /// MACHINE-READABLE: emit ONLY the missing-from-baseline integer to stdout, then exit 0 —
+        /// nothing else (no prose, no warnings, no vanished guard). For a monitor cron that keys on the
+        /// corpus-ahead-of-baseline count (v-fleet-tooling's baseline-drift-monitor) — parse the integer
+        /// instead of grepping the prose line. Vanished detection is the DEFAULT mode + the `vanished-check`
+        /// subcommand (its exit-3 contract); `--count` deliberately does not red on vanished.
+        #[arg(long)]
+        count: bool,
     },
     /// Check corpus files are in NATIVE compound-value form — FAST, no compile/run.
     ///
@@ -190,7 +197,8 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
             files,
             baseline,
             list_missing,
-        } => check_baseline_drift(files, baseline, *list_missing),
+            count,
+        } => check_baseline_drift(files, baseline, *list_missing, *count),
         CorpusCmd::NativizeCheck { files } => check_nativize_idempotence(files),
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
@@ -238,6 +246,7 @@ fn check_baseline_drift(
     files: &[String],
     baseline: &str,
     list_missing: bool,
+    count: bool,
 ) -> Result<(), String> {
     let mut corpus: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for path in files {
@@ -248,6 +257,14 @@ fn check_baseline_drift(
         std::fs::read_to_string(baseline).map_err(|e| format!("reading {baseline}: {e}"))?;
     let baseline_descs = baseline_descriptions(&bl_text);
     let (vanished, missing) = baseline_drift(&corpus, &baseline_descs);
+
+    // `--count`: emit ONLY the corpus-ahead-of-baseline integer to stdout + exit 0 (a machine-readable
+    // count query for a monitor cron). Suppress the prose/warnings AND the vanished guard — vanished
+    // detection lives in the default mode + `vanished-check`, so a count query never reds on it.
+    if count {
+        println!("{}", missing.len());
+        return Ok(());
+    }
 
     // MISSING titles are warnings only (a `gate --save` records them) — summarized by count so a wired-in
     // guard stays quiet, with the full list gated behind `--list-missing`.
