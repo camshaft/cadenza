@@ -1,1 +1,0 @@
-(do (type (Container a) (Full a)) (def (unwrap (: b (Container Int64))) (match b ((Full v) v))) (def (main (: k Int64)) (unwrap (Full k))) (export main))

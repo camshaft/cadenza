@@ -1,3 +1,0 @@
-(do (effect H (op push (-> Int64 Int64)))
-  (def (getat (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None u) 0)))
-  (def (main (: n Int64)) (handle H (: (list) (List Int64)) ((push (v) st (let ((s2 (List.push st v))) (match s2 (h2 (resume (getat h2 0) h2)))))) (let ((x1 (H.push 1))) (let ((x2 (H.push 2))) (let ((x3 (H.push 3))) (let ((x4 (H.push 4))) (let ((x5 (H.push 5))) (+ x5 (+ x4 (+ x3 (+ x2 (+ x1 0)))))))))))) (export main))

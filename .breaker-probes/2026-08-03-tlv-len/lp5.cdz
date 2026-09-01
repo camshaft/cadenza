@@ -1,8 +1,0 @@
-(do
-  (def (main (: k UInt8))
-    (match (bin (u8 7) (u16 0) (bytes (Bytes.of (list))))
-      ((bin (u8 7) (u16 n) (bytes body n))
-        (+ (Int64.of n) (* 10 (Bytes.len body))))
-      (_ -1)))
-  (def (go) (main 0))
-  (export go))
