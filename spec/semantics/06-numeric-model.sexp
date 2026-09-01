@@ -2723,14 +2723,16 @@
   "a Float32 if-branch literal rounds through binary32, not binary64"
   (doc
     "The rounding face of the bare-ConstFloat Float32 if-branch grounding (the valid-emit companion
-           returns Int64 via a comparison; this returns the f32 DIRECTLY and pins the rounding). 0.1 is
-           inexact in binary32, so grounding the branch literal at Float32 rounds through f32 — the returned
-           value is the f32-rounded 0.1, which renders 0.10000000149011612 (bit-distinct from the f64 0.1
-           that would render 0.1). Confirms the branch literal is solved at f32 width, not defaulted to f64
-           then narrowed, AND that a grounded f32 branch value crosses the boundary as an f32.")
-  (input (do (def (f (: c Bool)) (: (if c 0.1 0.2) Float32)) (export f)))
+           returns Int64 via a comparison; this pins the rounding). 0.1 is inexact in binary32, so grounding
+           the branch literal at Float32 rounds through f32 — the f32-rounded 0.1. A DIRECT Float32 render is
+           now canonically the f32's OWN shortest decimal (0.1; operator-ruled seq-283), which no longer
+           distinguishes it from an f64 0.1 — so the rounding is WITNESSED by PROMOTING the grounded value to
+           Float64: `(Float64.of (: (if c 0.1 0.2) Float32))` renders 0.10000000149011612 (the binary32
+           nearest 0.1, promoted), bit-distinct from a true f64 0.1 (which renders 0.1). Confirms the branch
+           literal is solved at f32 width, not defaulted to f64 then narrowed.")
+  (input (do (def (f (: c Bool)) (Float64.of (: (if c 0.1 0.2) Float32))) (export f)))
   (call f (: true Bool))
-  (output (: 0.10000000149011612 Float32)))
+  (output (: 0.10000000149011612 Float64)))
 
 ; The MATCH sibling of the if-branch pin above — the whole Float32-bare-literal-arm family. A `(: (match n …)
 ; Float32)` whose arms are ALL bare float literals used to emit an INVALID module: the match lowers to a
@@ -6029,17 +6031,17 @@
 (case
   "a bare decimal in a default-float=Float32 module grounds to Float32"
   (doc
-    "`(pragma default-float Float32)` in module `m` makes the bare `3.14` in `(def (x) 3.14)` a Float32, so `((. m x) unit)` is 3.14 rounded to the nearest binary32 = 3.140000104904175 (its exact f32 value). A width that failed to propagate (defaulting to Float64) would render the binary64 3.14 instead — the f32 rounding VISIBLE in the value is the width witness.")
+    "`(pragma default-float Float32)` in module `m` makes the bare `3.14` in `(def (x) 3.14)` a Float32, so `(m.x unit)` is 3.14 rounded to the nearest binary32 (its exact f32 value). A DIRECT Float32 render is now canonically the f32's OWN shortest decimal (3.14; operator-ruled seq-283), indistinguishable from an f64 3.14 — so the width is WITNESSED by PROMOTING to Float64: `(Float64.of (m.x unit))` renders 3.140000104904175 (the binary32 nearest 3.14, promoted). A width that failed to propagate (defaulting to Float64) would round through binary64 and promote to plain 3.14 instead — the f32 rounding VISIBLE in the PROMOTED value is the width witness.")
   (input
     (do
       (module m
         (pragma default-float Float32)
 
         (def (x) 3.14))
-      (def (main) (m.x unit))
+      (def (main) (Float64.of (m.x unit)))
       (export main)))
   (call main)
-  (output (: 3.140000104904175 Float32)))
+  (output (: 3.140000104904175 Float64)))
 
 (case
   "a bare decimal outside any default-float module keeps the Float64 default"
@@ -6913,25 +6915,29 @@
   "demoting a Float64 to Float32 rounds to the nearest binary32"
   (doc
     "`(Float32.of 0.1)` narrows the binary64 0.1 to Float32, which rounds to the nearest
-           representable binary32 — 0.10000000149011612 when read back as the canonical value form (the
-           binary32 nearest to 0.1 is not 0.1). Pins that `Float32.of` DEMOTES with rounding under the
-           fixed mode (numeric-model.md #A Conversion Involving A Floating-Point Type Is Explicit), the
-           narrowing companion of the exact promote.")
-  (input (Float32.of 0.1))
-  (output (: 0.10000000149011612 Float32)))
+           representable binary32 (not 0.1). A DIRECT Float32 render is now canonically the f32's OWN shortest
+           decimal (0.1; operator-ruled seq-283), indistinguishable from an f64 0.1 — so the demote-rounding
+           is WITNESSED by PROMOTING back to Float64: `(Float64.of (Float32.of 0.1))` reads back as
+           0.10000000149011612 (the binary32 nearest 0.1, promoted), distinct from a true f64 0.1. Pins that
+           `Float32.of` DEMOTES with rounding under the fixed mode (numeric-model.md #A Conversion Involving A
+           Floating-Point Type Is Explicit), the narrowing companion of the exact promote.")
+  (input (Float64.of (Float32.of 0.1)))
+  (output (: 0.10000000149011612 Float64)))
 
 (case
   "a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)"
   (doc
-    "`(: 0.1 Float32)` grounds the bare literal 0.1 at binary32 precision AT PARSE TIME — its
-           canonical value form is 0.10000000149011612 (the binary32 nearest to 0.1), the SAME value the
-           runtime `(Float32.of 0.1)` demote produces above, but via the LITERAL-grounding path rather than
-           an explicit conversion op. Pins that a Float32-annotated literal stores at binary32, not the f64
-           0.1 (which renders 0.1). This is the working scalar baseline for the fitting-Float32-branch-literal
-           lowering (a bare literal under a Float32 annotation must ground at f32) — the axis a branch-position
-           annotation must also push down.")
-  (input (: 0.1 Float32))
-  (output (: 0.10000000149011612 Float32)))
+    "`(: 0.1 Float32)` grounds the bare literal 0.1 at binary32 precision AT PARSE TIME. A DIRECT Float32
+           render is now canonically the f32's OWN shortest decimal (0.1; operator-ruled seq-283),
+           indistinguishable from an f64 0.1 — so the binary32 grounding is WITNESSED by PROMOTING to Float64:
+           `(Float64.of (: 0.1 Float32))` reads back as 0.10000000149011612 (the binary32 nearest 0.1,
+           promoted), the SAME value the runtime `(Float32.of 0.1)` demote produces above, but via the
+           LITERAL-grounding path rather than an explicit conversion op. Pins that a Float32-annotated literal
+           stores at binary32, not the f64 0.1 (whose promotion would render 0.1). This is the working scalar
+           baseline for the fitting-Float32-branch-literal lowering (a bare literal under a Float32 annotation
+           must ground at f32) — the axis a branch-position annotation must also push down.")
+  (input (Float64.of (: 0.1 Float32)))
+  (output (: 0.10000000149011612 Float64)))
 
 (case
   "an explicit float-width conversion makes a mixed-width operation well-typed"
@@ -14762,11 +14768,14 @@
 (case
   "Float32.of demotes a runtime Float64 to the nearest binary32"
   (doc
-    "`(Float32.of x)` DEMOTES via f32.demote_f64 (rounds): 0.1 : Float64 -> the nearest binary32,
-           which reads back as 0.10000000149011612.")
-  (input (do (def (f (: x Float64)) (Float32.of x)) (export f)))
+    "`(Float32.of x)` DEMOTES via f32.demote_f64 (rounds): 0.1 : Float64 -> the nearest binary32. A
+           DIRECT Float32 render is now canonically the f32's OWN shortest decimal (0.1; operator-ruled
+           seq-283), indistinguishable from an f64 0.1 — so the demote-rounding is WITNESSED by PROMOTING back
+           to Float64: `(Float64.of (Float32.of x))` reads back as 0.10000000149011612 (the binary32 nearest
+           0.1, promoted), distinct from a true f64 0.1.")
+  (input (do (def (f (: x Float64)) (Float64.of (Float32.of x))) (export f)))
   (call f (: 0.1 Float64))
-  (output (: 0.10000000149011612 Float32)))
+  (output (: 0.10000000149011612 Float64)))
 
 (case
   "Float64.of promotes a runtime Float32 exactly"

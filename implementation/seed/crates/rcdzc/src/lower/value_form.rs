@@ -2042,10 +2042,15 @@ pub(super) fn const_value_ast(
             if let crate::ty::Ty::Float(ft) = crate::infer::type_of(db, id)
                 && ft.ground_width() == 32
             {
-                canon = crate::ast::Decimal::from_f64(
-                    f64::from_bits(canon.to_f64_bits()) as f32 as f64
-                )
-                .unwrap_or(canon);
+                // Render the SHORTEST-F32 decimal (`from_f32` = `{:e}` on the binary32), NOT the
+                // f32→f64-PROMOTED shortest-f64: `from_f64(… as f32 as f64)` rendered `28.29` as
+                // `28.290000915527344` (the shortest f64 of the promoted value — a DIFFERENT number;
+                // operator ruling: "those are different values entirely"). Demote the VALUE to binary32
+                // then render the f32's own shortest, mirroring the wasm value_codec `float32_leaf`, the
+                // Rust backend's `from_f32`, and the runtime `float_leaf` — the one-canonical-render
+                // (seq-283): a const / bare Float32 now displays identically to a runtime-heap one.
+                let f32_val = f64::from_bits(canon.to_f64_bits()) as f32;
+                canon = crate::ast::Decimal::from_f32(f32_val).unwrap_or(canon);
             }
             Some(b.atom_leaf(Leaf::Float(canon)))
         }
@@ -2327,10 +2332,15 @@ pub(super) fn const_value_ast_at(
             if let crate::ty::Ty::Float(ft) = crate::infer::type_of(db, id)
                 && ft.ground_width() == 32
             {
-                canon = crate::ast::Decimal::from_f64(
-                    f64::from_bits(canon.to_f64_bits()) as f32 as f64
-                )
-                .unwrap_or(canon);
+                // Render the SHORTEST-F32 decimal (`from_f32` = `{:e}` on the binary32), NOT the
+                // f32→f64-PROMOTED shortest-f64: `from_f64(… as f32 as f64)` rendered `28.29` as
+                // `28.290000915527344` (the shortest f64 of the promoted value — a DIFFERENT number;
+                // operator ruling: "those are different values entirely"). Demote the VALUE to binary32
+                // then render the f32's own shortest, mirroring the wasm value_codec `float32_leaf`, the
+                // Rust backend's `from_f32`, and the runtime `float_leaf` — the one-canonical-render
+                // (seq-283): a const / bare Float32 now displays identically to a runtime-heap one.
+                let f32_val = f64::from_bits(canon.to_f64_bits()) as f32;
+                canon = crate::ast::Decimal::from_f32(f32_val).unwrap_or(canon);
             }
             Some(b.atom_leaf(Leaf::Float(canon)))
         }
