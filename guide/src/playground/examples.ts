@@ -1111,7 +1111,7 @@ export const EXAMPLES: Example[] = [
   (def (main) #tuple((build 6 5) (eval (quasiquote (+ (* (unquote 6) (unquote 6)) (unquote 5))))))
 
   (export main))`,
-    expected: "(: #tuple((Ast.List #list((Ast.Name \"+\") (Ast.List #list((Ast.Name \"*\") (Ast.Int 6) (Ast.Int 6))) (Ast.Int 5))) 41) (Tuple Ast Int64))",
+    expected: "(: #tuple(((. Ast List) #list(((. Ast Name) \"+\") ((. Ast List) #list(((. Ast Name) \"*\") ((. Ast Int) 6) ((. Ast Int) 6))) ((. Ast Int) 5))) 41) (Tuple Ast Int64))",
   },
   {
     id: "effects-handlers-stateful",
@@ -1237,7 +1237,7 @@ export const EXAMPLES: Example[] = [
   (def (main) (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
 
   (export main))`,
-    expected: "(: (Qty.of 5000.0 (Unit.base #\"meter\")) (Qty Float64 (Unit.base #\"meter\")))",
+    expected: "(: ((. Qty of) 5000.0 ((. Unit base) #\"meter\")) (Qty Float64 ((. Unit base) #\"meter\")))",
   },
   {
     id: "unit-arithmetic",
