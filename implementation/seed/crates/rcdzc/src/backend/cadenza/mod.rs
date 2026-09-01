@@ -3081,6 +3081,33 @@ fn build_arm_pat(
                     emitted,
                 );
             }
+            // A MULTI-variant sum with a DEEPER constraint (a payload literal / nested pattern in a specific
+            // variant) — cross into the variant the SWITCH already committed to at this path. `choices[path]`
+            // records the discriminant the enclosing `emit_switch_tree` `Switch` arm selected (see the
+            // `c.insert(path, arm.disc)` there), so crossing via `ctor_pat(decl, disc)` is IRREFUTABLE (the
+            // dispatch already chose this variant) and reaches the deeper `[Payload …]` constraint — e.g.
+            // `(A (n))` where the payload is further destructured/literal-tested. Only when `choices[path]` is
+            // present: a DISC-FOLDED shape (the switch was folded because the scrutinee's variant is statically
+            // known, so no `choices` entry) still declines below — the folded variant isn't recoverable here
+            // (a separate, later slice).
+            Ty::Sum { decl, .. } if choices.get(path).and_then(|c| *c).is_some() => {
+                let decl = *decl;
+                let disc = choices.get(path).and_then(|c| *c).unwrap();
+                return ctor_pat(
+                    db,
+                    b,
+                    root_scrut,
+                    ty,
+                    decl,
+                    disc,
+                    path,
+                    read_path,
+                    choices,
+                    lit_choices,
+                    env,
+                    emitted,
+                );
+            }
             Ty::Tuple(ts) => {
                 let ts = ts.clone();
                 let mut children = Vec::with_capacity(ts.len());
