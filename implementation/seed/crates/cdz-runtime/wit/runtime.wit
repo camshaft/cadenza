@@ -555,6 +555,14 @@ interface heap {
   //    superseded front-spine (~17 cells/prepend). Reclaims the old header + root shell while the shared
   //    children carry forward; sound on the immortal empty-vec base.
   vec-prepend: func(v: u32, elem: u32) -> u32;         // 97 — elem then v's elements (consumes both)
+  //  map-merge(a, b) -> a∪b
+  //    Merge two persistent CHAMP maps, LAST-WRITER-WINS: `b`'s entries OVERWRITE `a`'s on a key conflict
+  //    (`b` is the "last writer"). CONSUMES both. The runtime primitive behind `Map.union` and the map arm
+  //    of value-position spread `#map((= k v) (.. m))` — the caller passes the later/rightmost operand as
+  //    `b` so the rightmost occurrence of a key wins (matching list/set/record spread's L-to-R semantics).
+  //    Iterates `b` and re-inserts into `a` (canonical CHAMP insert overwrites → `b` wins); the empty map
+  //    is the identity on both sides. APPENDED last (frozen-contract rule). See `op_map_merge`.
+  map-merge: func(a: u32, b: u32) -> u32;              // 98 — a with b's entries merged in, b wins on conflict (consumes both)
 }
 
 world runtime {
