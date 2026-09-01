@@ -858,6 +858,31 @@ fn print_inlines(a: &Arenas, inlines: &[StructId], out: &mut String) {
     }
 }
 
+/// Print a `link` / `image` inline as `<prefix>text](dest[ "title"])`. The two forms differ only in the
+/// opening `prefix` (`[` for a link, `![` for an image); destination (item 1), title (item 2), and the
+/// inline text (items 3..) are read identically.
+fn print_link_like(a: &Arenas, id: StructId, prefix: &str, out: &mut String) {
+    let items = list_items(a, id);
+    let dest = items
+        .get(1)
+        .and_then(|&s| str_leaf(a, s))
+        .unwrap_or_default();
+    let title = items
+        .get(2)
+        .and_then(|&s| str_leaf(a, s))
+        .unwrap_or_default();
+    out.push_str(prefix);
+    print_inlines(a, &items[3.min(items.len())..], out);
+    out.push_str("](");
+    out.push_str(&dest);
+    if !title.is_empty() {
+        out.push_str(" \"");
+        out.push_str(&title);
+        out.push('"');
+    }
+    out.push(')');
+}
+
 fn print_inline(a: &Arenas, id: StructId, out: &mut String) {
     match a.head_name(id) {
         Some("text") => {
@@ -885,48 +910,8 @@ fn print_inline(a: &Arenas, id: StructId, out: &mut String) {
             print_inlines(a, &child_tail(a, id), out);
             out.push_str("~~");
         }
-        Some("link") => {
-            let items = list_items(a, id);
-            let dest = items
-                .get(1)
-                .and_then(|&s| str_leaf(a, s))
-                .unwrap_or_default();
-            let title = items
-                .get(2)
-                .and_then(|&s| str_leaf(a, s))
-                .unwrap_or_default();
-            out.push('[');
-            print_inlines(a, &items[3.min(items.len())..], out);
-            out.push_str("](");
-            out.push_str(&dest);
-            if !title.is_empty() {
-                out.push_str(" \"");
-                out.push_str(&title);
-                out.push('"');
-            }
-            out.push(')');
-        }
-        Some("image") => {
-            let items = list_items(a, id);
-            let dest = items
-                .get(1)
-                .and_then(|&s| str_leaf(a, s))
-                .unwrap_or_default();
-            let title = items
-                .get(2)
-                .and_then(|&s| str_leaf(a, s))
-                .unwrap_or_default();
-            out.push_str("![");
-            print_inlines(a, &items[3.min(items.len())..], out);
-            out.push_str("](");
-            out.push_str(&dest);
-            if !title.is_empty() {
-                out.push_str(" \"");
-                out.push_str(&title);
-                out.push('"');
-            }
-            out.push(')');
-        }
+        Some("link") => print_link_like(a, id, "[", out),
+        Some("image") => print_link_like(a, id, "![", out),
         Some("html") => {
             if let Some(t) = list_items(a, id).get(1).and_then(|&s| str_leaf(a, s)) {
                 out.push_str(&t);

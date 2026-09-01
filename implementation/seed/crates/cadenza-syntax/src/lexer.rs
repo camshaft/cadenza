@@ -367,7 +367,10 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn read_backtick_name(&mut self, a: Char) -> Token {
+    /// The shared delimited-scan loop for a `close`-terminated token: scan from `a` to the next
+    /// unescaped `close`, returning a `kind` token spanning `a..=close`; a `\`-escape consumes the
+    /// next char verbatim; EOF before `close` yields an `Error` token (unterminated).
+    fn read_delimited(&mut self, a: Char, close: char, kind: Kind) -> Token {
         let mut end = a.span;
         loop {
             match self.bump() {
@@ -377,9 +380,9 @@ impl<'a> Lexer<'a> {
                         span: a.span.merge(end),
                     };
                 } // unterminated
-                Some(c) if c.value == '`' => {
+                Some(c) if c.value == close => {
                     return Token {
-                        kind: Kind::BacktickName,
+                        kind,
                         span: a.span.merge(c.span),
                     };
                 }
@@ -397,34 +400,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn read_backtick_name(&mut self, a: Char) -> Token {
+        self.read_delimited(a, '`', Kind::BacktickName)
+    }
+
     fn read_string(&mut self, a: Char) -> Token {
-        let mut end = a.span;
-        loop {
-            match self.bump() {
-                None => {
-                    return Token {
-                        kind: Kind::Error,
-                        span: a.span.merge(end),
-                    };
-                } // unterminated
-                Some(c) if c.value == '"' => {
-                    return Token {
-                        kind: Kind::Str,
-                        span: a.span.merge(c.span),
-                    };
-                }
-                Some(c) if c.value == '\\' => match self.bump() {
-                    None => {
-                        return Token {
-                            kind: Kind::Error,
-                            span: a.span.merge(c.span),
-                        };
-                    }
-                    Some(d) => end = d.span,
-                },
-                Some(c) => end = c.span,
-            }
-        }
+        self.read_delimited(a, '"', Kind::Str)
     }
 
     /// A numeric literal: an optional leading `-` (already consumed as `a` on the `minus` path),
