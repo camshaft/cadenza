@@ -72,3 +72,24 @@
       (export main)))
   (call main)
   (output (: 42 Int64)))
+
+(case
+  "a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)"
+  (doc
+    "The macro-introduced binding need not be a do-local `def` — a `let` bindings-list works the same
+           (metaprogramming.md §Expansion Precedes And Feeds The Core Guarantees). `(def (let2 (quote a)
+           (quote b)) (quasiquote (let ((u (unquote a)) (v (unquote b))) (+ u v))))` builds `(let ((u A) (v
+           B)) (+ u v))` — TWO let binders whose inits are the spliced arguments, both referenced by the
+           macro's own `(+ u v)`. `(let2 30 12)` expands to `(let ((u 30) (v 12)) (+ u v))` and evaluates to
+           `42 : Int64`. Pins that the expander seeds the spliced subtree's scope for a `let` bindings-list
+           (a DIFFERENT binder-candidate shape than a do-local `def`), so both introduced binders resolve
+           for the macro's own references — the binders are macro-internal (no caller interaction / hygiene
+           question). Without scope seeding for the spliced-in `let`, the `u`/`v` references would unbind
+           (CDZ0101).")
+  (input
+    (do
+      (def (let2 (quote a) (quote b)) (quasiquote (let ((u (unquote a)) (v (unquote b))) (+ u v))))
+      (def (main) (let2 30 12))
+      (export main)))
+  (call main)
+  (output (: 42 Int64)))
