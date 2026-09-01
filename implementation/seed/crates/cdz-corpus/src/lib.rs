@@ -17,7 +17,7 @@
 //!   program\t<normalized program, s-expression on one line>
 //!   call\t<export>                 (present only when the case has a `(call …)` clause)
 //!   arg\t<value-form>              (zero or more, in order; the arguments to the call)
-//!   expect\t(output <value-form>) | (error <CODE>) | (trap <reason>) | (declines)
+//!   expect\t(output <value-form>) | (error <CODE>) | (trap <reason>)
 //!   ---
 
 /// The command surface (`CorpusArgs` + `run`), embeddable so the unified `cdz` binary can mount
@@ -277,23 +277,10 @@ pub enum Expect {
     Warning(String, Vec<String>, Vec<String>),
     /// `(trap "<reason>")` — the run halts with this reason.
     Trap(String),
-    /// `(declines)` — the compiler DECLINES to emit a component for this program: a well-formed program
-    /// whose shape the compiler does not (yet) realize, so it produces no artifact rather than a value
-    /// or a coded rejection (`reference-compiler.md` §A "No" Is A First-Class Value Produced Where The
-    /// Decision Is Made — decline is a first-class outcome alongside reject and trap). The DISTINCTION
-    /// from `(error CODE)`: an `error` is a coded well-formedness REJECTION (the program is ill-formed);
-    /// a `declines` is a CODELESS decline (the program is well-formed, the compiler cannot realize its
-    /// shape — e.g. a type with no boundary representation, per `component-abi.md` §A Type That Has No
-    /// Defined Boundary Representation Must Not Appear In An Exported Or Imported Signature). Grades Pass
-    /// when the compiler declines, Fail when it emits (the "declines rather than miscompiles" property).
-    /// The optional first field PINS the decline's error-CODE (a `CDZxxxx` leaf, e.g. the seq-286 coded-decline
-    /// umbrella `CDZ0900` for a not-yet-built construct): `(declines CDZ0900 …)`. `None` = the classic form
-    /// (any code / codeless). The `Vec` holds load-bearing SUBSTRINGS of the decline's diagnostic MESSAGE the
-    /// corpus pins (`(declines … (message "phrase"))`, repeatable — ALL required; the gate requires the
-    /// decline diagnostic to CONTAIN every phrase, operator seq353). Empty vec = any message passes.
-    /// The third field pins message ABSENCE substrings (repeatable `(not "phrase")`, seq-29): the decline
-    /// diagnostic must NOT contain ANY of them (required-absence, AND-d). Empty = no absence assertion.
-    Declines(Option<String>, Vec<String>, Vec<String>),
+    // NOTE: the bare `(declines)` expectation was REMOVED (operator directive, corpus (declines)=0):
+    // a corpus rejection must now be coded `(error CDZxxxx)` and a should-work must be a TODO `(output V)`.
+    // Parsing a `(declines)` clause is now a hard error (see `parse_case`), so this enum carries no
+    // `Declines` variant — the acceptance path is gone and cannot be reintroduced without re-adding it here.
 }
 
 /// A platform-conformance case (`(platform-case "title" …)`) — the runtime/platform analog of a
@@ -405,15 +392,9 @@ pub struct ExpectMessage {
 }
 
 /// Extract a `(message "phrase")` sibling clause's string from a clause's tail, if present — the
-/// EVERY diagnostic-message substring pin (operator seq353) shared by `(error …)`/`(warning …)`/
-/// `(declines …)` — one per `(message STR)` child, in order, REPEATABLE (all AND-required at grade). Empty
+/// EVERY diagnostic-message substring pin (operator seq353) shared by `(error …)`/`(warning …)` —
+/// one per `(message STR)` child, in order, REPEATABLE (all AND-required at grade). Empty
 /// when no well-formed `(message STR)` child is present (code-only).
-/// A `CDZxxxx` error-code token (four digits) — the discriminator for `(declines …)`'s OPTIONAL leading
-/// code (a bare message/prose leaf never matches this).
-fn is_cdz_code(s: &str) -> bool {
-    s.len() == 7 && s.starts_with("CDZ") && s[3..].bytes().all(|b| b.is_ascii_digit())
-}
-
 fn message_clauses(a: &Arenas, tail: &[StructId]) -> Vec<String> {
     tail.iter()
         .filter_map(|&child| {
@@ -662,26 +643,6 @@ pub fn render(records: &[Record]) -> String {
                 Expect::Trap(reason) => {
                     out.push_str("trap ");
                     out.push_str(reason);
-                }
-                // `declines`, plus ` CDZxxxx` when the case pins the decline's error-code (seq-286), plus
-                // ` (message "phrase")` when it pins the diagnostic prose; bare `declines` (byte-identical to
-                // before) when it pins neither.
-                Expect::Declines(code, message, not_message) => {
-                    out.push_str("declines");
-                    if let Some(c) = code {
-                        out.push(' ');
-                        out.push_str(c);
-                    }
-                    for m in message {
-                        out.push_str(" (message \"");
-                        out.push_str(m);
-                        out.push_str("\")");
-                    }
-                    for n in not_message {
-                        out.push_str(" (not \"");
-                        out.push_str(n);
-                        out.push_str("\")");
-                    }
                 }
             }
             out.push('\n');
@@ -1131,24 +1092,16 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                 }
             }
             Some("declines") => {
-                // `(declines)`, `(declines CDZ0900)`, `(declines CDZ0900 (message "phrase"))`, or the classic
-                // `(declines (message "phrase"))` — closes a trial that must produce NO artifact (the compiler
-                // declines). An optional leading `CDZxxxx` NAME leaf PINS the decline's error-code (seq-286
-                // coded-decline umbrella); `(message …)` clauses pin diagnostic-prose substrings (all required).
-                let tail = a.as_form(clause, "declines");
-                let code = tail
-                    .and_then(|t| t.first().copied())
-                    .and_then(|id| a.as_name(id))
-                    .filter(|c| is_cdz_code(c))
-                    .map(str::to_string);
-                // `message_clauses` scans for `(message …)` forms, so it ignores a leading bare code name.
-                let message = tail.map(|t| message_clauses(a, t)).unwrap_or_default();
-                let not_message = tail.map(|t| not_message_clauses(a, t)).unwrap_or_default();
-                trials.push(Trial {
-                    call: pending_call.take(),
-                    expect: Expect::Declines(code, message, not_message),
-                    diag: None,
-                });
+                // REMOVED (operator directive; corpus (declines)=0): a bare `(declines)` marker is no longer
+                // accepted in the corpus. A rejection must be coded `(error CDZxxxx)` and a should-work must be
+                // a TODO `(output V)`. This hard error is the removed acceptance path — it cannot be
+                // reintroduced without re-adding an `Expect::Declines` variant + this parse arm.
+                return Err(
+                    "(declines) is no longer supported in the corpus: a rejection must be coded \
+                     `(error CDZxxxx)` and a should-work must be a TODO `(output V)`. The bare-decline \
+                     marker was removed (operator directive; corpus (declines)=0)."
+                        .to_string(),
+                );
             }
             Some("compiler") => {
                 // `(compiler (error <CODE>))` — a provable-at-compile-time rejection accompanying a
@@ -1858,22 +1811,17 @@ mod tests {
         );
     }
 
-    /// seq-29 `(not "phrase")` message-ABSENCE pin: parses into the third field of `Expect::Error` /
-    /// `Expect::Declines`, separate from the positive `(message …)` substrings, and renders back verbatim.
+    /// seq-29 `(not "phrase")` message-ABSENCE pin: parses into the third field of `Expect::Error`,
+    /// separate from the positive `(message …)` substrings, and renders back verbatim.
     #[test]
     fn not_message_clause_parses_and_renders() {
         let recs = read(
-            r#"(case "err" (input 1_) (error CDZ0201 (message "malformed") (not "internal error")))
-               (case "dec" (input 1_) (declines CDZ0900 (message "not yet") (not "panic") (not "ICE")))"#,
+            r#"(case "err" (input 1_) (error CDZ0201 (message "malformed") (not "internal error")))"#,
         )
         .unwrap();
         assert!(
             matches!(&recs[0].trials[0].expect, Expect::Error(c, ms, neg)
             if c == "CDZ0201" && ms.as_slice() == ["malformed"] && neg.as_slice() == ["internal error"])
-        );
-        assert!(
-            matches!(&recs[1].trials[0].expect, Expect::Declines(c, ms, neg)
-            if c.as_deref() == Some("CDZ0900") && ms.as_slice() == ["not yet"] && neg.as_slice() == ["panic", "ICE"])
         );
         let text = to_records(
             r#"(case "err" (input 1_) (error CDZ0201 (message "malformed") (not "internal error")))"#,
@@ -2279,50 +2227,29 @@ mod tests {
         assert!(matches!(&recs[0].trials[1].expect, Expect::Trap(r) if r == "integer overflow"));
     }
 
-    /// A `(declines)` clause parses to a `Declines` expectation — a payloadless trial (no call, no value).
+    /// A `(declines)` clause is now a HARD ERROR (operator directive; corpus (declines)=0): the bare-decline
+    /// marker was REMOVED — parsing any case with `(declines)` fails, so the acceptance path is gone. A
+    /// rejection must be coded `(error CDZxxxx)`; a should-work must be a TODO `(output V)`.
     #[test]
-    fn a_declines_clause_is_a_declines_expectation() {
-        let recs = read(
+    fn a_declines_clause_is_now_a_hard_error() {
+        let err = read(
             r#"(case "x"
                  (input (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
                  (declines))"#,
         )
-        .unwrap();
-        assert_eq!(recs.len(), 1);
-        assert_eq!(recs[0].trials.len(), 1);
-        assert!(recs[0].trials[0].call.is_none());
-        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(..)));
-    }
-
-    /// A `(declines)` renders to a bare `expect\tdeclines` line (no payload after the keyword).
-    #[test]
-    fn render_emits_a_bare_declines_expect_line() {
-        let text = to_records(
-            r#"(case "x"
-                 (input (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
-                 (declines))"#,
-        )
-        .unwrap();
+        .err()
+        .expect("a `(declines)` clause must be rejected, but parsing succeeded");
         assert!(
-            text.contains("expect\tdeclines\n"),
-            "declines renders as a bare keyword line, got: {text:?}"
+            err.contains("(declines) is no longer supported"),
+            "a `(declines)` clause must be rejected with the removal error, got: {err:?}"
         );
-    }
 
-    /// A `(declines)` MAY pair with a `(call …)` (the trial's call is recorded, the expectation is a
-    /// decline) — so a case that drives a specific export can still pin the decline outcome.
-    #[test]
-    fn a_declines_clause_pairs_with_a_pending_call() {
-        let recs = read(
-            r#"(case "x"
-                 (input (do (def (mk (: xs (List Int64))) (fn ((: i Int64)) ((. List len) xs))) (export mk)))
-                 (call mk (: 5 Int64))
-                 (declines))"#,
-        )
-        .unwrap();
-        assert_eq!(recs[0].trials.len(), 1);
-        assert_eq!(recs[0].trials[0].call.as_ref().unwrap().export, "mk");
-        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(..)));
+        // A coded `(declines CDZ0900 …)` (the former seq-286 form) is ALSO rejected — the acceptance path
+        // is gone entirely, not merely the codeless form.
+        let err2 = read(r#"(case "y" (input 1_) (declines CDZ0900 (message "not yet")))"#)
+            .err()
+            .expect("a coded `(declines CDZ0900 …)` must also be rejected");
+        assert!(err2.contains("(declines) is no longer supported"));
     }
 
     /// A `(then <arg>…)` after a `(call …)` records a SECOND call on the same handle (borrow<t>

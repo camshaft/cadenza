@@ -203,19 +203,10 @@ pub enum GExpect {
     /// Severity-distinct from `Error` (which DENIES the artifact): a warning ACCOMPANIES a produced component.
     /// Pairs with a `(count N)` for the exact-count warning cases a presence-only `(warns …)` can't express.
     Warning(String, Vec<String>, Vec<String>),
-    /// `(expect-declines [CODE] msg?)` — the compiler must refuse. The optional leading `CODE` (a `CDZxxxx`
-    /// leaf) PINS the decline's error-code (the seq-286 coded-decline umbrella, e.g. `CDZ0900` for a
-    /// not-yet-built construct); when present the refusal's emitted code must equal it (a different/absent
-    /// code is `Todo` — refused, but not confirmed as that code). `None` = the classic form (any code /
-    /// codeless). Remaining bare string leaves are required message substrings (AND); `(not "phrase")`
-    /// sub-forms are required-ABSENCE substrings the message must NOT contain (seq-29, AND).
-    Declines(Option<String>, Vec<String>, Vec<String>),
-}
-
-/// A `CDZxxxx` error-code leaf (four digits) — the discriminator that lets `(expect-declines …)` carry an
-/// OPTIONAL leading code without ambiguity against a bare message substring (prose never matches this).
-pub fn is_cdz_code(s: &str) -> bool {
-    s.len() == 7 && s.starts_with("CDZ") && s[3..].bytes().all(|b| b.is_ascii_digit())
+    // NOTE: the `Declines` expectation (`(expect-declines …)`) was REMOVED (operator directive; corpus
+    // (declines)=0). A corpus rejection is coded `(error CDZxxxx)` and a should-work is a TODO `(output V)`.
+    // The `cdz-corpus` parser rejects a `(declines)` clause as a hard error, so no `expect-declines` form is
+    // ever produced to grade — this enum carries no `Declines` variant and `grade_compile_declines` is gone.
 }
 
 /// A decoded `test-run.ast`: the case's run/grade metadata.
@@ -413,19 +404,6 @@ where
                 if let (Some(faults), Some(diag)) = (&faults, &trial.diag) {
                     worst = worst.worse(grade_diag_quality(faults, Severity::Error, code, diag));
                 }
-                if matches!(worst, Grade::Fail(_)) {
-                    break;
-                }
-                continue;
-            }
-            GExpect::Declines(code, msg, not_msg) => {
-                worst = worst.worse(grade_compile_declines(
-                    compiled,
-                    compile_diag,
-                    code.as_deref(),
-                    msg,
-                    not_msg,
-                ));
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
@@ -675,7 +653,7 @@ pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
             )),
         },
         // Not reached (compile-outcome expectations are graded before the run), but total for safety.
-        GExpect::Error(..) | GExpect::Declines(..) | GExpect::Warning(..) => Grade::Todo(
+        GExpect::Error(..) | GExpect::Warning(..) => Grade::Todo(
             "compile-outcome expectation is graded from the diagnostic, not the run".into(),
         ),
     }
@@ -713,54 +691,6 @@ pub fn grade_compile_error(
         }
         _ => Grade::Todo(format!("refused, but not with {want} (got {got:?})")),
     }
-}
-
-/// Grade an `(expect-declines msg*)` — ANY refusal passes (coded or codeless); a compiled program is a
-/// Fail; EVERY pinned message substring must appear (empty = any refusal passes).
-pub fn grade_compile_declines(
-    compiled: bool,
-    diag: &str,
-    want_code: Option<&str>,
-    msgs: &[String],
-    not_msgs: &[String],
-) -> Grade {
-    if compiled {
-        return Grade::Fail("expected the compiler to DECLINE but it COMPILED (miscompile)".into());
-    }
-    let (got_code, message) = first_error_diag(diag);
-    // CLAUSE-3 (operator directive 2026-08-31): a CODELESS INTERNAL decline is a compiler BUG, not an honest
-    // capability decline — FAIL it (route to the owning compiler lane: give the error a code / fix the path),
-    // never a false "correct decline". Mirrors `grade_trial`'s is_ice_signature discrimination for value/trap
-    // cases. An honest codeless capability decline ("no boundary representation") matches NO signature → still
-    // graded below (Pass). Only the curated internal-invariant breaks (`no local slot` / self-labeled
-    // `compiler bug` / `panicked` / …) fail here. (Fires before the code/msg checks: an ICE is a hard bug, not
-    // a refused-to-confirm Todo. Note: `(declines)` is itself being deprecated per the same directive — this
-    // closes the transitional false-pass where a `(declines)` masks an ICE.)
-    if got_code.is_none() && is_ice_signature(&message) {
-        return Grade::Fail(format!(
-            "declined with an INTERNAL COMPILER ERROR (a codeless ICE — a compiler bug, not a capability \
-             decline; give it a code or fix the path): {message}"
-        ));
-    }
-    // An asserted CODE (seq-286 coded-decline pin) must match the refusal's emitted code. A different/absent
-    // code is Todo — the compiler refused, just not (yet) with the pinned code (refused-to-confirm, never a
-    // false pass) — mirroring `grade_compile_error`'s not-that-code arm. A codeless assertion accepts any
-    // refusal (back-compat).
-    if let Some(want) = want_code
-        && got_code.as_deref() != Some(want)
-    {
-        return Grade::Todo(format!("declined, but not with {want} (got {got_code:?})"));
-    }
-    if let Some(p) = msgs.iter().find(|p| !message.contains(p.as_str())) {
-        return Grade::Fail(format!("declined, but message {message:?} lacks {p:?}"));
-    }
-    // seq-29 message-ABSENCE: a `(not "phrase")` pin fails if the decline diagnostic CONTAINS it.
-    if let Some(p) = not_msgs.iter().find(|p| message.contains(p.as_str())) {
-        return Grade::Fail(format!(
-            "declined, but message {message:?} unexpectedly contains {p:?}"
-        ));
-    }
-    Grade::Pass
 }
 
 /// Grade an `(expect-warning CODE msg?)` against the compile outcome — the SEVERITY-warning companion of
@@ -1329,19 +1259,6 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                     }
                 }
             }
-            Some("expect-declines") => {
-                // Optional leading `CDZxxxx` code (seq-286 coded-decline pin); remaining bare STRING leaves
-                // are required message substrings (AND), and `(not "phrase")` sub-forms are required-ABSENCE
-                // substrings (seq-29). A bare-message first leaf (prose) stays codeless (back-compat).
-                let t = a.as_form(child, "expect-declines").unwrap_or(&[]);
-                let leaves: Vec<String> = t.iter().filter_map(|&id| str_leaf(a, id)).collect();
-                let not_msgs: Vec<String> = t.iter().filter_map(|&id| not_leaf(a, id)).collect();
-                let (code, msgs) = match leaves.split_first() {
-                    Some((head, rest)) if is_cdz_code(head) => (Some(head.clone()), rest.to_vec()),
-                    _ => (None, leaves),
-                };
-                expect = Some(GExpect::Declines(code, msgs, not_msgs));
-            }
             // `(count N)` — the fault-count the `(severity, code)` set must match exactly; `(once)` is the
             // common `(count 1)` shorthand.
             Some("count") => {
@@ -1622,96 +1539,10 @@ mod tests {
         cadenza_compile_abi::encode_diagnostics(&diags)
     }
 
-    #[test]
-    fn declines_with_code_pins_the_decline_error_code() {
-        // is_cdz_code discriminator: a `CDZxxxx` token, never prose.
-        assert!(is_cdz_code("CDZ0900"));
-        assert!(!is_cdz_code("CDZ090")); // too short
-        assert!(!is_cdz_code("CDZ09XX")); // non-digit
-        assert!(!is_cdz_code("does not yet compile"));
-
-        let d = "error [CDZ0900]: the compiler does not yet compile this construct";
-        // codeless assertion: ANY refusal passes (back-compat with classic `(declines)`).
-        assert!(matches!(
-            grade_compile_declines(false, d, None, &[], &[]),
-            Grade::Pass
-        ));
-        // matching code (+ optional present message substring) -> Pass.
-        assert!(matches!(
-            grade_compile_declines(false, d, Some("CDZ0900"), &[], &[]),
-            Grade::Pass
-        ));
-        assert!(matches!(
-            grade_compile_declines(false, d, Some("CDZ0900"), &["does not yet".into()], &[]),
-            Grade::Pass
-        ));
-        // WRONG code -> Todo (refused, but not confirmed as that code — never a false pass).
-        assert!(matches!(
-            grade_compile_declines(false, d, Some("CDZ0901"), &[], &[]),
-            Grade::Todo(_)
-        ));
-        // codeless decline diagnostic but a code was pinned -> Todo.
-        assert!(matches!(
-            grade_compile_declines(false, "error: some refusal", Some("CDZ0900"), &[], &[]),
-            Grade::Todo(_)
-        ));
-        // COMPILED (did not decline) -> Fail regardless of code.
-        assert!(matches!(
-            grade_compile_declines(true, d, Some("CDZ0900"), &[], &[]),
-            Grade::Fail(_)
-        ));
-        // matching code but a MISSING message substring -> Fail.
-        assert!(matches!(
-            grade_compile_declines(false, d, Some("CDZ0900"), &["absent phrase".into()], &[]),
-            Grade::Fail(_)
-        ));
-    }
-
-    #[test]
-    fn declines_with_a_codeless_internal_ice_fails_not_passes() {
-        // CLAUSE-3 (operator 2026-08-31): a CODELESS INTERNAL decline (an ICE signature) is a compiler BUG →
-        // FAIL, never a false "correct decline". An honest codeless capability decline still Passes.
-        // codeless ICE ("no local slot" is an is_ice_signature) → Fail (even for a bare codeless (declines)).
-        let ice = "error: parameter reference has no local slot";
-        assert!(matches!(
-            grade_compile_declines(false, ice, None, &[], &[]),
-            Grade::Fail(_)
-        ));
-        // a self-labeled compiler-bug ICE → Fail even if a code was pinned (ICE fires before the code check).
-        let ice2 = "error: a wildcard literal test is a compiler bug";
-        assert!(matches!(
-            grade_compile_declines(false, ice2, Some("CDZ0900"), &[], &[]),
-            Grade::Fail(_)
-        ));
-        // an HONEST codeless capability decline (no ICE signature) → still Pass (clause-4 not-yet, not a bug).
-        let honest = "error: a Map value type has no boundary representation";
-        assert!(matches!(
-            grade_compile_declines(false, honest, None, &[], &[]),
-            Grade::Pass
-        ));
-    }
-
-    /// seq-29 message-ABSENCE `(not "phrase")`: a decline/error whose diagnostic does NOT contain a forbidden
+    /// seq-29 message-ABSENCE `(not "phrase")`: an error whose diagnostic does NOT contain a forbidden
     /// phrase PASSES; one that DOES contain it FAILS (even with the right code + all positive substrings).
     #[test]
     fn grade_message_not_contains_absence_assertion() {
-        let d = "error [CDZ0900]: the compiler does not yet compile this construct";
-        // forbidden phrase ABSENT → Pass (code + positive both satisfied, absence holds).
-        assert!(matches!(
-            grade_compile_declines(
-                false,
-                d,
-                Some("CDZ0900"),
-                &["does not yet".into()],
-                &["internal error".into()]
-            ),
-            Grade::Pass
-        ));
-        // forbidden phrase PRESENT → Fail (the message must not contain it).
-        assert!(matches!(
-            grade_compile_declines(false, d, Some("CDZ0900"), &[], &["compile".into()]),
-            Grade::Fail(_)
-        ));
         // expect-error: absence holds → Pass; present → Fail.
         let e = "cdz: error [CDZ0201] (node 4): malformed record separator";
         assert!(matches!(
@@ -2834,7 +2665,7 @@ mod tests {
         );
     }
 
-    /// seq-29: `decode_test_run` partitions an `(expect-declines [CODE] "msg"* (not "phrase")*)` form into
+    /// seq-29: `decode_test_run` partitions an `(expect-error CODE "msg"* (not "phrase")*)` form into
     /// the code, the positive message substrings (bare string leaves), and the `(not …)` absence substrings.
     #[test]
     fn decode_reads_not_message_absence_pins() {
@@ -2846,10 +2677,10 @@ mod tests {
         let dh = b.name("description");
         let dv = s(&mut b, "case");
         let desc = b.list(vec![dh, dv]);
-        // (expect-declines "CDZ0900" "not yet" (not "internal error") (not "panic"))
-        let eh = b.name("expect-declines");
-        let code = s(&mut b, "CDZ0900");
-        let pos = s(&mut b, "not yet");
+        // (expect-error "CDZ0201" "malformed" (not "internal error") (not "panic"))
+        let eh = b.name("expect-error");
+        let code = s(&mut b, "CDZ0201");
+        let pos = s(&mut b, "malformed");
         let nh1 = b.name("not");
         let nv1 = s(&mut b, "internal error");
         let neg1 = b.list(vec![nh1, nv1]);
@@ -2865,12 +2696,12 @@ mod tests {
         let bytes = codec::encode(&b.finish(root));
         let tr = decode_test_run(&bytes).unwrap();
         match &tr.trials[0].expect {
-            GExpect::Declines(code, msgs, not_msgs) => {
-                assert_eq!(code.as_deref(), Some("CDZ0900"));
-                assert_eq!(msgs.as_slice(), ["not yet"]);
+            GExpect::Error(code, msgs, not_msgs) => {
+                assert_eq!(code, "CDZ0201");
+                assert_eq!(msgs.as_slice(), ["malformed"]);
                 assert_eq!(not_msgs.as_slice(), ["internal error", "panic"]);
             }
-            _ => panic!("expected GExpect::Declines"),
+            _ => panic!("expected GExpect::Error"),
         }
     }
 
