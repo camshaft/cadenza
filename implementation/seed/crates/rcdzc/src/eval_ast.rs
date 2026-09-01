@@ -108,7 +108,9 @@ pub fn desugar_eval(ast: &mut Arenas) {
             continue;
         };
         if let Some(replacement) = reconstruct(ast, arg) {
-            rename_captured_binders(ast, replacement, original_len);
+            // eval PROVENANCE: a node LIVE-REUSED from the eval argument (`id < original_len`) is the
+            // caller's spliced operand; a FRESH reconstructed node (`>= original_len`) is template.
+            rename_captured_binders(ast, replacement, &|id| id.0 < original_len);
             plans.push(EvalPlan {
                 eval: id,
                 arg,
@@ -167,12 +169,15 @@ pub fn desugar_eval(ast: &mut Arenas) {
 /// occurrences of that spelling within the binder form's subtree to a fresh unique name. The live-reused
 /// spliced occurrences (id < original_len) are left untouched, so they keep their spelling and resolve in
 /// the enclosing scope rather than being captured by the template binder.
-fn rename_captured_binders(ast: &mut Arenas, root: StructId, original_len: u32) {
-    // (1) The spliced (live-reused, id < original_len) name spellings reachable in the reconstruction —
-    // the enclosing-scope variables that a template binder must not shadow.
+fn rename_captured_binders(ast: &mut Arenas, root: StructId, is_caller: &dyn Fn(StructId) -> bool) {
+    // (1) The CALLER-ORIGIN (spliced) name spellings reachable in the reconstruction — the caller's
+    // variables that a template binder must not shadow. `is_caller` is the PROVENANCE predicate: for
+    // `eval` a node is caller-origin iff it is LIVE-REUSED from the eval argument (`id < original_len`);
+    // for a MACRO expansion iff it was reconstructed UNDER an `ast-lift` (the caller's active-unquote
+    // syntax). Both reduce to "this node is the caller's, not the template's".
     let mut spliced: std::collections::HashSet<String> = std::collections::HashSet::new();
     for n in reachable(ast, root) {
-        if n < original_len
+        if is_caller(StructId(n))
             && let Some(name) = ast.as_name(StructId(n))
         {
             spliced.insert(name.to_string());
@@ -181,8 +186,8 @@ fn rename_captured_binders(ast: &mut Arenas, root: StructId, original_len: u32) 
     if spliced.is_empty() {
         return;
     }
-    // (2) Walk every compound in the reconstruction; at a binder form, rename any binder colliding with a
-    // spliced name. A stack walk over the FRESH structure (binder forms are reconstruction-built).
+    // (2) Walk every compound in the reconstruction; at a binder form, rename any TEMPLATE binder
+    // colliding with a caller name. A stack walk over the reconstructed structure.
     let mut stack = vec![root];
     let mut seen = std::collections::HashSet::new();
     while let Some(node) = stack.pop() {
@@ -196,8 +201,13 @@ fn rename_captured_binders(ast: &mut Arenas, root: StructId, original_len: u32) 
         for &c in &items {
             stack.push(c);
         }
-        // Collect this form's template binder names (by kind) that collide with a spliced name.
+        // Collect this form's binder names (by kind) that collide with a caller name.
         for binder in binder_names_of(ast, node) {
+            // A caller-origin binder (a `let`/`fn`/`def` the CALLER spliced in) is the caller's own — do
+            // NOT rename it; only a TEMPLATE-introduced binder is alpha-renamed for hygiene.
+            if is_caller(binder) {
+                continue;
+            }
             let Some(spelling) = ast.as_name(binder).map(str::to_string) else {
                 continue;
             };
@@ -205,12 +215,12 @@ fn rename_captured_binders(ast: &mut Arenas, root: StructId, original_len: u32) 
                 continue;
             }
             // Alpha-rename: a fresh, collision-proof name (contains a space, so the reader/round-trip
-            // never produces it and no source name collides). Rewrite the binder node + every FRESH
-            // (id >= original_len) Name node of this spelling within `node`'s subtree; the spliced
-            // (live-reused, id < original_len) occurrences keep the original spelling.
+            // never produces it and no source name collides). Rewrite the binder node + every
+            // TEMPLATE-origin Name node of this spelling within `node`'s subtree; the caller-origin
+            // occurrences keep the original spelling and resolve in the caller's scope.
             let fresh = format!("{spelling} $capture{}", binder.0);
             for m in reachable(ast, node) {
-                if m >= original_len && ast.as_name(StructId(m)) == Some(spelling.as_str()) {
+                if !is_caller(StructId(m)) && ast.as_name(StructId(m)) == Some(spelling.as_str()) {
                     // Overwrite the leaf this atom points at with the fresh name.
                     if let Struct::Atom(lid) = ast.get(StructId(m)) {
                         let lid = *lid;
@@ -255,6 +265,24 @@ fn binder_names_of(ast: &Arenas, node: StructId) -> Vec<StructId> {
             {
                 for &p in ps {
                     binders.push(binder_of_param(ast, p));
+                }
+            }
+        }
+        Some("def") => {
+            // items = [def, sig, body…]. The introduced binder is the def's NAME: `sig` is either a bare
+            // NAME (a value def `(def x V)`) or a signature LIST `(name param…)` (a function def
+            // `(def (f p…) body)`) whose FIRST child is the name. (A do-local `def` in a macro expansion
+            // binds that name for the following forms — `resolve::do_local_binds` — so a template `(def x
+            // …)` must not capture a caller `x`.) The function-def PARAMS are a deeper case left to the
+            // `fn`/nested handling; here we alpha-rename the def name itself.
+            if let Some(&sig) = items.get(1) {
+                match ast.get(sig) {
+                    Struct::Atom(_) => binders.push(sig),
+                    Struct::List(s) => {
+                        if let Some(&name) = s.first() {
+                            binders.push(name);
+                        }
+                    }
                 }
             }
         }
@@ -346,7 +374,8 @@ fn binder_of_param(ast: &Arenas, slot: StructId) -> StructId {
 /// active-unquote operand passes through to fold in the enclosing scope; a spliced `Ast` VALUE stays an
 /// `Ast`, so an `Ast` in a numeric position is the deliberate CDZ0201 reject).
 pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
-    reconstruct_inner(ast, node, false)
+    let mut caller = std::collections::HashSet::new();
+    reconstruct_inner(ast, node, false, &mut caller)
 }
 
 /// Reconstruct for MACRO EXPANSION — like [`reconstruct`] but SEES THROUGH a spliced reflected `Ast`
@@ -355,10 +384,25 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
 /// splices SYNTAX (code), so its expansion is real code; distinct from `eval`, where a spliced `Ast` value
 /// is data and must not be seen through (DESIGN-macro-system.md §4).
 pub(crate) fn reconstruct_macro(ast: &mut Arenas, node: StructId) -> Option<StructId> {
-    reconstruct_inner(ast, node, true)
+    // Track CALLER-ORIGIN nodes: a caller's quote-argument reaches the expansion through an active
+    // unquote (the `ast-lift` boundary), so `reconstruct_inner` records every node it reconstructs UNDER
+    // an `ast-lift` into `caller`. Everything else in `root` is MACRO-TEMPLATE syntax.
+    let mut caller = std::collections::HashSet::new();
+    let root = reconstruct_inner(ast, node, true, &mut caller)?;
+    // HYGIENE (preserve-by-default, DESIGN-macro-system.md / metaprogramming.md §Macros Are Hygienic): a
+    // binder INTRODUCED by the macro template must not CAPTURE a caller-spliced identifier of the same
+    // name. Alpha-rename any template binder whose spelling collides with a caller-origin name; the
+    // caller's occurrences (in `caller`) keep their spelling and resolve in the caller's scope.
+    rename_captured_binders(ast, root, &|id| caller.contains(&id.0));
+    Some(root)
 }
 
-fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -> Option<StructId> {
+fn reconstruct_inner(
+    ast: &mut Arenas,
+    node: StructId,
+    see_through_lift: bool,
+    caller: &mut std::collections::HashSet<u32>,
+) -> Option<StructId> {
     // `(Ast.Int payload)` -> the payload AS SOURCE. `Ast.Int` arises two ways, both reconstructing to the
     // payload node itself: (a) a reified INTEGER LITERAL `(Ast.Int 42)` — payload is the literal `42`, whose
     // source is `42`; (b) an ACTIVE-UNQUOTE lift `(Ast.Int <e>)` where `reify_active` wrapped the unquote's
@@ -414,7 +458,11 @@ fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -
         // (syntax), so reconstruct it to its DENOTATION (`(Ast.Int 5)` → `5`); a non-Ast operand
         // (`unwrap_or`) still passes through.
         if see_through_lift {
-            return Some(reconstruct_inner(ast, payload, true).unwrap_or(payload));
+            let r = reconstruct_inner(ast, payload, true, caller).unwrap_or(payload);
+            // `r` and its whole subtree are CALLER-ORIGIN — reconstructed from an active-unquote operand
+            // (the caller's spliced syntax). Record them so hygiene never renames a caller identifier.
+            caller.extend(reachable(ast, r));
+            return Some(r);
         }
         return Some(payload);
     }
@@ -448,7 +496,7 @@ fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -
         }
         let mut children = Vec::with_capacity(elems.len());
         for e in elems {
-            children.push(reconstruct_inner(ast, e, see_through_lift)?);
+            children.push(reconstruct_inner(ast, e, see_through_lift, caller)?);
         }
         return Some(push_list(ast, children));
     }
@@ -466,7 +514,7 @@ fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -
             let elems = list_elems(ast, payload)?;
             let mut children = vec![push_atom(ast, Leaf::Ctor(ctor))];
             for e in elems {
-                children.push(reconstruct_inner(ast, e, see_through_lift)?);
+                children.push(reconstruct_inner(ast, e, see_through_lift, caller)?);
             }
             return Some(push_list(ast, children));
         }
@@ -488,12 +536,12 @@ fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -
                 // face of the #6855 fix; without this a quoted map/record-rest pattern closed and its match
                 // fell through to the catch-all).
                 if ast_ctor_arg(ast, fp, "FieldPair").is_some() {
-                    let (k, v) = reconstruct_field_pair(ast, fp, see_through_lift)?;
+                    let (k, v) = reconstruct_field_pair(ast, fp, see_through_lift, caller)?;
                     let eq = push_atom(ast, Leaf::FieldPair);
                     let entry = push_list(ast, vec![eq, k, v]);
                     children.push(entry);
                 } else {
-                    children.push(reconstruct_inner(ast, fp, see_through_lift)?);
+                    children.push(reconstruct_inner(ast, fp, see_through_lift, caller)?);
                 }
             }
             return Some(push_list(ast, children));
@@ -502,8 +550,8 @@ fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -
     // `Ast.Member (tuple <obj> <key>)` -> the member access `(. <recon obj> <recon key>)`.
     if let Some(payload) = ast_ctor_arg(ast, node, "Member") {
         let (obj, key) = tuple2_of(ast, payload)?;
-        let obj = reconstruct_inner(ast, obj, see_through_lift)?;
-        let key = reconstruct_inner(ast, key, see_through_lift)?;
+        let obj = reconstruct_inner(ast, obj, see_through_lift, caller)?;
+        let key = reconstruct_inner(ast, key, see_through_lift, caller)?;
         let dot = push_atom(ast, Leaf::Name(".".into()));
         return Some(push_list(ast, vec![dot, obj, key]));
     }
@@ -516,12 +564,13 @@ fn reconstruct_field_pair(
     ast: &mut Arenas,
     node: StructId,
     see_through_lift: bool,
+    caller: &mut std::collections::HashSet<u32>,
 ) -> Option<(StructId, StructId)> {
     let payload = ast_ctor_arg(ast, node, "FieldPair")?;
     let (k, v) = tuple2_of(ast, payload)?;
     Some((
-        reconstruct_inner(ast, k, see_through_lift)?,
-        reconstruct_inner(ast, v, see_through_lift)?,
+        reconstruct_inner(ast, k, see_through_lift, caller)?,
+        reconstruct_inner(ast, v, see_through_lift, caller)?,
     ))
 }
 

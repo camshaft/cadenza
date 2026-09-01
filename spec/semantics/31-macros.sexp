@@ -93,3 +93,41 @@
       (export main)))
   (call main)
   (output (: 42 Int64)))
+
+(case
+  "a macro-introduced binder does NOT capture a caller identifier of the same name (hygiene, do-local def)"
+  (doc
+    "Macros are HYGIENIC — expansion PRESERVES the caller's bindings (metaprogramming.md §Macros Are
+           Hygienic): a name a macro INTRODUCES in its expansion must not capture a same-named identifier
+           the CALLER passed in. `(def (capture (quote body)) (quasiquote (do (def x 100) (unquote body))))`
+           introduces a do-local `x`; `(capture x)` at a call site where the caller has its OWN `(def x 1)`
+           passes the caller's `x` as `body`. Hygienically the caller's `x` still denotes the caller's `1`
+           — the macro's introduced `x` is alpha-renamed so it does NOT shadow the spliced argument — so
+           `(capture x)` evaluates to `1 : Int64`, NOT `100`. Pins capture-avoidance for a macro-introduced
+           do-local `def` binder (a naive splice would produce `(do (def x 100) (+ 0 x))` reading the
+           macro's `x` and wrongly yield 100). The `(+ 0 …)` wrapper keeps the caller's argument off the
+           do's bare tail (an ML-surface round-trip detail) without changing the hygiene it witnesses.")
+  (input
+    (do
+      (def (capture (quote body)) (quasiquote (do (def x 100) (+ 0 (unquote body)))))
+      (def (main) (do (def x 1) (capture x)))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
+
+(case
+  "a macro-introduced LET binder does NOT capture a caller identifier of the same name (hygiene)"
+  (doc
+    "Hygiene applies to every binder form, not only a do-local `def` (metaprogramming.md §Macros Are
+           Hygienic). `(def (wrap (quote body)) (quasiquote (let ((x 100)) (unquote body))))` introduces a
+           `let`-bound `x`; `(wrap x)` where the caller has its own `(def x 1)` passes the caller's `x` as
+           `body`. The macro's `let`-bound `x` is alpha-renamed so it does not shadow the spliced argument,
+           so the caller's `x` still denotes `1` and `(wrap x)` evaluates to `1 : Int64`, not `100`. Pins
+           capture-avoidance for a macro-introduced `let` binder (parallel to the do-local `def` case).")
+  (input
+    (do
+      (def (wrap (quote body)) (quasiquote (let ((x 100)) (unquote body))))
+      (def (main) (do (def x 1) (wrap x)))
+      (export main)))
+  (call main)
+  (output (: 1 Int64)))
