@@ -1,0 +1,1 @@
+(@ (requires (>= x 0)) (@ (ensures (>= ret 0)) (def (double (: x Int64)) (* x 2))))
