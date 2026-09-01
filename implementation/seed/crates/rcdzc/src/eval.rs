@@ -1124,6 +1124,37 @@ fn apply_lambda_uncached(
         Some(lam) => lam,
         None => return Ok(None),
     };
+    // CALL-SITE SPLAT (`DESIGN-variable-arity-functions.md` addendum A.2): a `(.. t)` ARGUMENT whose
+    // operand is a compile-time TUPLE is expanded into its element occurrences spliced positionally —
+    // `f(.. #tuple(a b c))` ≡ `f(a b c)` — BEFORE the gather/zip below, so the `..` never resolves as a
+    // head (it would otherwise CDZ0201). Each spliced element is `resolve_subtree`-pinned to its caller
+    // scope before it flows into β-reduction. (First slice: a syntactic tuple operand; a runtime tuple
+    // VARIABLE — per-slot projection + materialize-once — is a follow-up.)
+    let call_splatted: Option<Vec<StructId>> =
+        if args.iter().any(|&a| db.ast.spread_operand(a).is_some()) {
+            let mut out: Vec<StructId> = Vec::new();
+            for &a in args {
+                match db.ast.spread_operand(a).and_then(|t| {
+                    db.ast
+                        .compound_form_of(t, crate::ast::CompoundCtor::Tuple)
+                        .map(|e| e.to_vec())
+                }) {
+                    Some(elems) => {
+                        for e in elems {
+                            crate::resolve::resolve_subtree(db, e);
+                            out.push(e);
+                        }
+                    }
+                    // Not a `(.. <compile-time-tuple>)` — leave as-is (a runtime-tuple / list splat is a
+                    // follow-up; a bare `..` here still declines downstream as before).
+                    None => out.push(a),
+                }
+            }
+            Some(out)
+        } else {
+            None
+        };
+    let args: &[StructId] = call_splatted.as_deref().unwrap_or(args);
     // VARARGS (`DESIGN-variable-arity-functions.md` §3.1): a rest LAST-parameter `(.. binder)` absorbs
     // the TRAILING arguments as a single LIST value. Gather `args[fixed..]` (fixed = the count of leading
     // fixed params) into a synth `#list(…)` and rewrite the argument list to `[fixed args…, list]` — of
