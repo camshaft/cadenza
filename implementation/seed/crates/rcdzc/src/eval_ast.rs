@@ -108,17 +108,6 @@ pub fn desugar_eval(ast: &mut Arenas) {
             continue;
         };
         if let Some(replacement) = reconstruct(ast, arg) {
-            // HYGIENE: a template-introduced binder (a `let`/`fn`/`match` binder BUILT by the
-            // reconstruction — a FRESH node, id >= original_len) must not CAPTURE a variable the
-            // reconstruction spliced from an ACTIVE UNQUOTE (a LIVE-REUSED operand node, id <
-            // original_len, carrying its enclosing-scope name). Without this, `(let ((x 10)) (eval
-            // `(let ((x 1)) (+ ,x 99))))` reconstructs to `(let ((x 1)) (+ x 99))` where the spliced
-            // `,x` (meant to be the outer 10) is captured by the template's `(let (x 1))` → 100, not the
-            // correct 109 — a silent variable-capture miscompile. `rename_captured_binders` alpha-renames
-            // any template binder whose spelling collides with a spliced (live-reused) name to a fresh
-            // name, rewriting only the FRESH bound occurrences (the spliced ones, being live-reused, keep
-            // their spelling and resolve in the enclosing scope). Binder-kind-agnostic: any template
-            // binder that shadows a spliced name.
             rename_captured_binders(ast, replacement, original_len);
             plans.push(EvalPlan {
                 eval: id,
