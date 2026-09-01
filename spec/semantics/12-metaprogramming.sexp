@@ -407,6 +407,31 @@
   (output (: 63 Int64)))
 
 (case
+  "Ast.gensym mints a fresh Ast.Name, distinct per call site, stable per binding (manual macro hygiene)"
+  (doc
+    "The fresh-name substrate for MANUAL macro hygiene (DESIGN-macro-system.md — macros are plain
+           functions, non-hygienic by default; a macro avoids capture by minting its introduced binders with
+           `Ast.gensym`). `(Ast.gensym base)` folds at compile time to a fresh `Ast.Name` whose spelling
+           embeds an unreadable character (a space) + this call node's id, so it (a) IS an `Ast.Name`
+           (weight 1), (b) two DISTINCT call sites produce DISTINCT names — freshness (weight 2, the `= …`
+           is 0 so the term is 1), and (c) one gensym bound ONCE and referenced twice is the SAME name —
+           stable per binding, the property manual hygiene relies on (weight 4). Self-witness 1+2+4 = 7. A
+           name a source program cannot write (the space) guarantees no collision with a user identifier or
+           another gensym; node-id keying keeps expansion DETERMINISTIC (same program → same names).")
+  (input
+    (do
+      (def
+        (main)
+        (+
+          (* 1 (match (Ast.gensym "x") ((Ast.Name _) 1) (_ 0)))
+          (+
+            (* 2 (if (= (Ast.gensym "x") (Ast.gensym "x")) 0 1))
+            (* 4 (let ((g (Ast.gensym "x"))) (if (= g g) 1 0))))))
+      (export main)))
+  (call main)
+  (output (: 7 Int64)))
+
+(case
   "a qualified (. Ast Ctor) pattern binds each variant's payload at its own type"
   (doc
     "The payload-binding half of the deconstruction fence: `((. Ast Ctor) subpat)` binds the subpattern

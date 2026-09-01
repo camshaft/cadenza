@@ -31,7 +31,7 @@ mod ast_reflect;
 // test module) call by bare name so those call sites read unchanged.
 use ast_reflect::{
     ast_variant_discs, const_byte_slice, lower_ast_decode, lower_ast_encode, lower_ast_lift,
-    lower_ast_splice_lift, lower_blake3_of, lower_print, lower_read, lower_type_ast,
+    lower_ast_splice_lift, lower_blake3_of, lower_gensym, lower_print, lower_read, lower_type_ast,
     reflect_module_value,
 };
 // Re-exported at crate scope so `crate::lower::is_ast_float_variant` (the rust backend's escape guard)
@@ -6448,6 +6448,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ReflectModule => "reflect-module",
         Prim::Print => "print",
         Prim::Read => "read",
+        Prim::Gensym => "gensym",
         Prim::ListCtor => "List",
         Prim::BytesOf => "bytes-of",
         Prim::BytesLen => "bytes-len",

@@ -9679,3 +9679,4 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	prefix `(- x)` in value (annotation) position is a partial subtraction, rejected with a suggest-`Num.neg` (CDZ0203)
 pass	a non-`-` partial in value position keeps the GENERIC not-fully-applied message (no suggest-`Num.neg`)
 pass	unquote-splicing outside quasiquote is a syntax error
+pass	Ast.gensym mints a fresh Ast.Name, distinct per call site, stable per binding (manual macro hygiene)

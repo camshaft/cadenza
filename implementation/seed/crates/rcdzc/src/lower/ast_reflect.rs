@@ -569,6 +569,39 @@ pub(super) fn lower_read(db: &mut Db, str_val: StructId) -> Core {
     }
 }
 
+/// Lower `(Ast.gensym base)` — mint a FRESH, collision-free `Ast.Name` for MANUAL macro hygiene (macros
+/// are non-hygienic by default; DESIGN-macro-system.md §5). FOLD a compile-time-visible base string to
+/// `Ast.Name "<base> $<id>"`, where `id` is THIS call node's `StructId`: that makes the name distinct per
+/// call SITE and DETERMINISTIC across compiles (the same program assigns the same node ids → the same
+/// gensym names → reproducible expansion, metaprogramming.md §Expansion Is Reproducible), and re-lowering
+/// the SAME node is idempotent (one gensym value used twice stays one name). The embedded SPACE makes the
+/// name UNREADABLE (a reader can never produce a name containing a space — the same collision-proof trick
+/// the eval hygiene pass uses at `eval_ast.rs`), so a gensym can never clash with a source name or another
+/// gensym. A runtime (non-constant) base declines; a poison operand propagates.
+pub(super) fn lower_gensym(db: &mut Db, id: StructId, base_val: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, base_val) {
+        return Core::Poison(r);
+    }
+    let Core::ConstStr(base) = core_of(db, base_val) else {
+        return Core::Poison(Reject::unsupported(
+            "Ast.gensym needs a compile-time-constant base name (constant strings only)",
+        ));
+    };
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline(
+            "Ast.gensym: the built-in Ast sum is unavailable",
+        ));
+    };
+    // Fresh name keyed by this call node's id: distinct per site, deterministic across compiles, and
+    // UNREADABLE (the space) so it never collides with a source name or another gensym.
+    let fresh = format!("{base} ${}", id.0);
+    let payload = synth_core(db, Core::ConstStr(fresh.into()), crate::ty::Ty::String);
+    Core::SumNew {
+        disc: disc.name,
+        payloads: vec![payload].into(),
+    }
+}
+
 /// A parsed s-expression over the `Ast`-value subset: an integer, a bare atom (name), or a list. The
 /// minimal grammar `read` accepts — exactly the shapes `print_ast_value` emits, so the two round-trip.
 /// Parse an all-ASCII-digits token (with an optional leading `-`) into an arbitrary-precision [`IntValue`],

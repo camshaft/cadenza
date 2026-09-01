@@ -4221,6 +4221,8 @@ pub(super) fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         // in `lower_print`/`lower_read`, never an integer binary operation.
         | Prim::Print
         | Prim::Read
+        // `Ast.gensym` folds to a fresh `Ast.Name` in `lower_gensym`, never an integer binary operation.
+        | Prim::Gensym
         // `Ast.module` is the self-reflection magic-constant (folds to the enclosing module's `Ast`
         // value at lowering — v-compiler-primitives' fill), never an integer binary operation.
         | Prim::ReflectModule

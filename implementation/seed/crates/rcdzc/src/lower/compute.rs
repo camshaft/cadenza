@@ -2259,6 +2259,10 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // `read` — the inverse: parse a compile-time-visible `Core::ConstStr` as one s-expression
                 // and reify it into the `Ast` `Core::SumNew` tree it denotes. A runtime String declines.
                 Some(Prim::Read) if args.len() == 1 => lower_read(db, args[0]),
+                // `Ast.gensym` — mint a fresh, collision-free `Ast.Name` for manual macro hygiene, keyed
+                // by this call node's id (distinct per site + deterministic across compiles). A runtime
+                // (non-constant) base declines.
+                Some(Prim::Gensym) if args.len() == 1 => lower_gensym(db, id, args[0]),
                 Some(Prim::ListConcat) if args.len() == 2 => {
                     match (core_of(db, args[0]), core_of(db, args[1])) {
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
