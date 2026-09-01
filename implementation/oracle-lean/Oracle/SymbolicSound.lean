@@ -1994,6 +1994,110 @@ theorem denote_normalize_app_ident_and_idem (ρ : Nat → Value) (w : IntTy) (a0
   subst h01
   rw [ih0 u0 hu0, denoteBinary_and_self w u0 v h]
 
+/-! ### RIGHT-const BOOL `.app`-identity cases (`x or false→x`, `x or true→true`, `x and true→x`,
+`x and false→false`) — the mirror of the LEFT-const cases (#7251/#7256), operand positions swapped. In
+`foldConst?`'s `or`/`and` arm the const-on-the-RIGHT fires the 3rd/4th guard of `normalizeAppIdentities`
+(after the two LEFT guards decline). `x or true`/`x and false` fold to a const REGARDLESS of the free
+operand (`_ || true`/`_ && false`); `x or false`/`x and true` PRESERVE the free operand (which the value
+hypothesis forces to be a bool). The `denoteBinary_*_r` helpers mirror the `_l` ones with `cases` on the
+FREE (left, `u0`) operand instead of the right. -/
+theorem denoteBinary_or_false_r (w : IntTy) (u0 v : Value)
+    (h : denoteBinary "or" w (.value u0) (.value (.bool false)) = .value v) : v = u0 := by
+  simp only [denoteBinary, foldConst?] at h
+  simp [symToValue?_const, valIsBool] at h
+  cases u0 <;> simp_all <;> (rename_i b; cases b <;> simp_all)
+theorem denoteBinary_and_true_r (w : IntTy) (u0 v : Value)
+    (h : denoteBinary "and" w (.value u0) (.value (.bool true)) = .value v) : v = u0 := by
+  simp only [denoteBinary, foldConst?] at h
+  simp [symToValue?_const, valIsBool] at h
+  cases u0 <;> simp_all <;> (rename_i b; cases b <;> simp_all)
+theorem denoteBinary_or_true_r (w : IntTy) (u0 v : Value)
+    (h : denoteBinary "or" w (.value u0) (.value (.bool true)) = .value v) : v = .bool true := by
+  simp only [denoteBinary, foldConst?] at h
+  simp [symToValue?_const, valIsBool] at h
+  exact h.symm
+theorem denoteBinary_and_false_r (w : IntTy) (u0 v : Value)
+    (h : denoteBinary "and" w (.value u0) (.value (.bool false)) = .value v) : v = .bool false := by
+  simp only [denoteBinary, foldConst?] at h
+  simp [symToValue?_const, valIsBool] at h
+  exact h.symm
+
+/-- CAPSTONE `.app`-IDENTITY (BOOL, PRESERVE): `x or false → x`. Right-const mirror of `_or_false_l`;
+`heq` = the branch result (`normalizeAppIdentities "or" #[na0,na1] = na0`, supplied by the top assembly). -/
+theorem denote_normalize_app_ident_or_false_r (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hnone : foldConst? "or" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (hn1 : normalize a1 = .const (.bool false))
+    (heq : normalizeAppIdentities "or" #[normalize a0, normalize a1] = normalize a0)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app "or" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "or" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "or" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp, heq]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "or" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu1' : u1 = .bool false := by
+    have := ih1 u1 hu1; rw [hn1, denote_const_bool] at this; exact (Outcome.value.inj this).symm
+  subst hu1'
+  rw [ih0 u0 hu0, denoteBinary_or_false_r w u0 v h]
+
+/-- CAPSTONE `.app`-IDENTITY (BOOL, PRESERVE): `x and true → x`. Right-const mirror of `_and_true_l`. -/
+theorem denote_normalize_app_ident_and_true_r (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hnone : foldConst? "and" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (hn1 : normalize a1 = .const (.bool true))
+    (heq : normalizeAppIdentities "and" #[normalize a0, normalize a1] = normalize a0)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app "and" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "and" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "and" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp, heq]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "and" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu1' : u1 = .bool true := by
+    have := ih1 u1 hu1; rw [hn1, denote_const_bool] at this; exact (Outcome.value.inj this).symm
+  subst hu1'
+  rw [ih0 u0 hu0, denoteBinary_and_true_r w u0 v h]
+
+/-- CAPSTONE `.app`-IDENTITY (BOOL, DROP): `x or true → true`. Right-const mirror of `_or_true_l`;
+`heq` result is the const `.const (.bool true)`. -/
+theorem denote_normalize_app_ident_or_true_r (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hnone : foldConst? "or" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (hn1 : normalize a1 = .const (.bool true))
+    (heq : normalizeAppIdentities "or" #[normalize a0, normalize a1] = .const (.bool true))
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app "or" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "or" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "or" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp, heq]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "or" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu1' : u1 = .bool true := by
+    have := ih1 u1 hu1; rw [hn1, denote_const_bool] at this; exact (Outcome.value.inj this).symm
+  subst hu1'
+  rw [denote_const_bool, denoteBinary_or_true_r w u0 v h]
+
+/-- CAPSTONE `.app`-IDENTITY (BOOL, DROP): `x and false → false`. Right-const mirror of `_and_false_l`. -/
+theorem denote_normalize_app_ident_and_false_r (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
+    (hnone : foldConst? "and" (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (hn1 : normalize a1 = .const (.bool false))
+    (heq : normalizeAppIdentities "and" #[normalize a0, normalize a1] = .const (.bool false))
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app "and" #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app "and" #[a0, a1])) = .value v := by
+  rw [normalize_app_ident "and" #[a0, a1] hnone,
+      show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp, heq]
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv "and" w _ _ v h
+  rw [hu0, hu1] at h
+  have hu1' : u1 = .bool false := by
+    have := ih1 u1 hu1; rw [hn1, denote_const_bool] at this; exact (Outcome.value.inj this).symm
+  subst hu1'
+  rw [denote_const_bool, denoteBinary_and_false_r w u0 v h]
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
