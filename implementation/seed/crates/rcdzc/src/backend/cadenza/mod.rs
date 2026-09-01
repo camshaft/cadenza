@@ -1451,14 +1451,35 @@ fn emit_expr_viewed(
         Core::MapNew { entries, .. } => {
             // M2: a native MAP ctor-leaf head; entries are `(= k v)` FieldPair leaves (distinguished from a
             // record only by the MAP head). Stored order (a map is unordered → value-eq is order-independent).
-            let mut children = Vec::with_capacity(entries.len());
             // Key/value `expected` are the map type's key/value types (an under-determined key or value —
             // e.g. a `(None)` value — recovers its type from there).
             let (key_ty, val_ty) = match &eff_ty {
                 Ty::Map(k, v) => (Some((**k).clone()), Some((**v).clone())),
                 _ => (None, None),
             };
-            for &(k, v) in entries.iter() {
+            // LAST-WINS dedup of FOLDED-CONSTANT keys. The optimizer folds a bound key NAME to a literal (a
+            // `(let ((a 5)) #map((= a 1) (= 5 2)))` folds to `#map((= 5 1) (= 5 2))`), so two entries can
+            // collapse to the SAME literal key — and the front-end REJECTS a `#map` with duplicate literal keys
+            // (CDZ0201), rejecting the backend's own output (breaker-minimized). Runtime map construction is
+            // last-wins (a later entry overwrites an equal key), so keep only the LAST entry per equal CONSTANT
+            // key: value-identical to the original AND recompilable. A non-constant (RUNTIME) key is never a
+            // literal (so never triggers the duplicate-literal check) and is genuinely distinct, so it is always
+            // kept — the runtime resolves any equal-at-runtime collision exactly as the original did.
+            let mut last_for_sig: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for (i, &(k, _)) in entries.iter().enumerate() {
+                if let Some(sig) = map_key_const_sig(db, k) {
+                    last_for_sig.insert(sig, i);
+                }
+            }
+            let mut children = Vec::with_capacity(entries.len());
+            for (i, &(k, v)) in entries.iter().enumerate() {
+                if let Some(sig) = map_key_const_sig(db, k) {
+                    // An earlier duplicate of a constant key that recurs later → drop (last-wins).
+                    if last_for_sig.get(&sig) != Some(&i) {
+                        continue;
+                    }
+                }
                 let kv = emit_expr(db, b, k, key_ty.clone(), env, emitted)?;
                 let vv = emit_expr(db, b, v, val_ty.clone(), env, emitted)?;
                 children.push(b.field_pair(kv, vv));
@@ -4011,6 +4032,21 @@ fn sum_payload_expected(db: &mut Db, decl: StructId, disc: u32, sum_ty: &Ty) -> 
 /// `Core::SumNew` emit to decide whether the node's OWN solved type is usable, or whether it must fall back
 /// to the `expected` type its context supplied (e.g. a bare `(None)` whose own type is `Option<?>`). Walks
 /// the type's structure so a free arg NESTED inside a compound (`Option<List<?>>`) is caught too.
+/// A dedup SIGNATURE for a map KEY that folded to a compile-time CONSTANT (the only keys that can collide as
+/// duplicate LITERALS in the re-emitted `#map` and trip the front-end's CDZ0201 duplicate-literal-key check).
+/// `Some(sig)` iff the key's core is a constant leaf — `sig` is equal iff the key VALUE is equal (type-prefixed
+/// so `ConstInt(5)` and `ConstStr("5")` never collide). `None` for a RUNTIME key (never a literal, always kept).
+fn map_key_const_sig(db: &mut Db, k: StructId) -> Option<String> {
+    match core_of(db, k) {
+        Core::ConstInt(v) => Some(format!("I{v:?}")),
+        Core::ConstStr(s) => Some(format!("S{s}")),
+        Core::ConstBool(bo) => Some(format!("B{bo}")),
+        Core::ConstChar(c) => Some(format!("C{c}")),
+        Core::ConstBytes(b) => Some(format!("Y{b:?}")),
+        _ => None,
+    }
+}
+
 fn ty_has_free_arg(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) | Ty::Any => true,
