@@ -20,6 +20,7 @@
 //! TOTAL on decode: a malformed / unknown-tag value decodes to [`TypeAt::Unknown`] — a defined benign
 //! hover, never a crash (safe for editor hover on incomplete programs).
 
+use crate::graft::copy_from;
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
 
 /// The hover verdict for a node — the render-distinct cases of the `TypeAt` query.
@@ -132,40 +133,6 @@ fn extract(a: &Arenas, payload: StructId) -> Arenas {
     let mut b = Builder::new();
     let root = copy_from(&mut b, a, payload);
     b.finish(root)
-}
-
-/// Copy the subtree rooted at `id` of `src` into builder `b`, returning the new root id. Iterative
-/// post-order so a deep type payload can't overflow the native stack (mirrors `type_info_wire`).
-fn copy_from(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
-    enum Job {
-        Visit(StructId),
-        EmitList(usize),
-    }
-    let mut jobs = vec![Job::Visit(id)];
-    let mut results: Vec<StructId> = Vec::new();
-    while let Some(job) = jobs.pop() {
-        match job {
-            Job::Visit(sid) => match src.get(sid) {
-                Struct::Atom(lid) => {
-                    let leaf = src.leaf(*lid).clone();
-                    let n = b.atom_leaf(leaf);
-                    results.push(n);
-                }
-                Struct::List(kids) => {
-                    jobs.push(Job::EmitList(kids.len()));
-                    for &k in kids.iter().rev() {
-                        jobs.push(Job::Visit(k));
-                    }
-                }
-            },
-            Job::EmitList(n) => {
-                let kids = results.split_off(results.len() - n);
-                let node = b.list(kids);
-                results.push(node);
-            }
-        }
-    }
-    results.pop().expect("copy_from leaves a root")
 }
 
 #[cfg(test)]

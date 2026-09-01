@@ -19,7 +19,8 @@
 //! does not resolve is OMITTED from the list (the doc-item then gets no `(ty …)` — the graceful-degrade
 //! rule). TOTAL on decode: a malformed tree / wrong-shape form is skipped, never a crash.
 
-use cadenza_ast::ast::{Arenas, Builder, Struct, StructId};
+use crate::graft::copy_from;
+use cadenza_ast::ast::{Arenas, Builder, StructId};
 
 /// Encode the exported-item → resolved-type map as the `KIND_EXPORT_TYPES` artifact bytes — ONE canonical
 /// binary AST value (see module docs). Each entry's `Arenas` is a standalone arena ROOTED at that export's
@@ -90,40 +91,6 @@ fn decode_one(a: &Arenas, form: StructId) -> Option<(String, Arenas)> {
     let mut b = Builder::new();
     let root = copy_from(&mut b, a, payload);
     Some((name, b.finish(root)))
-}
-
-/// Copy the subtree rooted at `id` of `src` into builder `b`, returning the new root id. Iterative
-/// post-order so a deep type payload can't overflow the native stack (mirrors `cdz::doc_module::copy_from`).
-fn copy_from(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
-    enum Job {
-        Visit(StructId),
-        EmitList(usize),
-    }
-    let mut jobs = vec![Job::Visit(id)];
-    let mut results: Vec<StructId> = Vec::new();
-    while let Some(job) = jobs.pop() {
-        match job {
-            Job::Visit(sid) => match src.get(sid) {
-                Struct::Atom(lid) => {
-                    let leaf = src.leaf(*lid).clone();
-                    let n = b.atom_leaf(leaf);
-                    results.push(n);
-                }
-                Struct::List(kids) => {
-                    jobs.push(Job::EmitList(kids.len()));
-                    for &k in kids.iter().rev() {
-                        jobs.push(Job::Visit(k));
-                    }
-                }
-            },
-            Job::EmitList(n) => {
-                let kids = results.split_off(results.len() - n);
-                let node = b.list(kids);
-                results.push(node);
-            }
-        }
-    }
-    results.pop().expect("copy_from leaves a root")
 }
 
 #[cfg(test)]
