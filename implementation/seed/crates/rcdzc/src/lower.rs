@@ -1268,56 +1268,29 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             | Core::ListPush { .. }
             | Core::ListPrepend { .. }
             | Core::ListUpdate { .. }
-            // MAP constructor + merge — KEPT (structurally SAFE, v-runtime-verified): `MapNew` builds a
-            // FRESH CHAMP from its entries; `MapMerge` CONSUMES+DUPS both operands into a fresh CHAMP (the
-            // `ListConcat` shape). Neither shares interior nodes off a LIVE generation, so materializing them
-            // once cannot over-free/over-retain an ancestor-shared node (v-runtime verified `MapMerge` passes
-            // `--guarded-all` even multi-use generation-shared). Keeping `MapMerge` also preserves the #7485
-            // map value-position spread fold (a chained `(merge (merge a b) c)` — 2^N without the keep).
             | Core::MapNew { .. }
-            | Core::MapMerge { .. } // STOPGAP (P0, SURGICAL — v-runtime scope): the PATH-COPY generation-share producers
-                                    // `MapInsert`/`MapRemove`/`SetAlgebra` are TEMPORARILY REMOVED. Each PATH-COPIES off an input
-                                    // map/set, SHARING its interior CHAMP nodes; materializing a multi-use GENERATION-SHARED handle
-                                    // once into a `Core::Let` slot then over-drops / over-retains that shared interior — witnessed
-                                    // under `--guarded-all` as `MapInsert` over-FREE/UAF (chapter-05 third-gen-overwrite) AND
-                                    // `SetAlgebra` over-RETAIN/leak (19-sets subset-algebraic 0v1). Same root (materialize-once
-                                    // reclaim of a generation-shared CHAMP handle), OPPOSITE symptoms. Safety > perf (operator bar =
-                                    // 0 UAF/leak); cost = a chained `Map.insert` / `Set.union` reverts to 2^N emit. RE-WIDEN each
-                                    // once the proper reclaim fix lands + guarded-all-clean (Perceus dup/drop placement —
-                                    // v-memory-safety + v-core-opt lane; CHAMP runtime rc is clean, the bug is the EMIT reclaim).
+            | Core::MapMerge { .. } // 🛑 STOPGAP (P0) — the boxed-CHAMP / SumNew producers below are TEMPORARILY DROPPED from the
+                                    // keep list (kept as comments for an easy re-widen). MapNew + MapMerge ABOVE stay KEPT: they build
+                                    // a FRESH CHAMP (MapMerge consumes+dups both operands, the ListConcat shape) with no live-interior
+                                    // sharing — v-runtime-verified guarded-all-clean even multi-use generation-shared; MapMerge also
+                                    // preserves the #7485 map-spread fold. Each DROPPED producer is a materialize-once hazard the
+                                    // pre-land gate missed (guarded-all / component-validation axes, not opt-sweep/emit-size):
+                                    //   - MapInsert / MapRemove: PATH-COPY producers — a multi-use GENERATION-SHARED materialized
+                                    //     handle over-FREEs a shared interior CHAMP node (chapter-05 third-gen UAF, #7498).
+                                    //   - SetAlgebra: PATH-COPY producer — over-RETAINs the shared interior (19-sets leak, #7500).
+                                    //   - SetOf: a SAFE constructor in isolation; dropped ONLY for a MIXED-STATE hazard — materialized
+                                    //     SetOf feeding COPY-PROPAGATED (dropped) SetAlgebra is over-consumed (#7504). GENERAL RULE: a
+                                    //     dropped copy-propagated consumer forces dropping any producer it shares materialized.
+                                    //   - SumNew: the Option/variant ctor — as a multi-use handler STATE materialized-once + threaded
+                                    //     through a TAIL-RESUMPTIVE-FOLD resume, the fold's i32 state-slot receives an i64 -> INVALID
+                                    //     wasm (14b Option-of-heap handler func 12; bisect first-bad #7488, dropped #7538).
+                                    // RE-WIDEN each with its proper fix (map/set CHAMP reclaim: v-mem + v-core-opt; SumNew fold-emit
+                                    // width: v-effects + v-core-opt), re-verifying guarded-all + component-validation + re-adding the
+                                    // per-op emit-size gate.
                                     // | Core::MapInsert { .. }
                                     // | Core::MapRemove { .. }
                                     // | Core::SetAlgebra { .. }
-                                    // `SetOf` is ALSO dropped — NOT for its own reclaim (a fresh constructor is safe in isolation)
-                                    // but for a MIXED-STATE interaction (v-runtime, post-#7503): with `SetOf` MATERIALIZED-once but
-                                    // its consumer `SetAlgebra` COPY-PROPAGATED (dropped above), a `SetOf` operand shared into ≥2
-                                    // inlined `SetAlgebra` ops is OVER-CONSUMED → the 19-sets subset-algebraic leak returns. Both-set-
-                                    // producers-dropped (= #7500 state) is clean; `SetOf` is a constructor with negligible perf cost
-                                    // to drop (unlike `MapMerge`). Re-widen `SetOf` together with `SetAlgebra` when the reclaim fix
-                                    // lands. GENERAL RULE: a dropped copy-propagated consumer forces dropping any producer it would
-                                    // otherwise share materialized (else the inlined copies over-consume the shared handle).
                                     // | Core::SetOf { .. }
-                                    // `Core::SumNew` (the sum-payload heap constructor) is the DIRECT ANALOG of `ListNew` (above),
-                                    // and was the deferred-for-ubiquity op the family-widen note named. A `Node x x` binary variant
-                                    // whose payload `x` is used twice, consumed at runtime (a recursive fold so it can't const-fold),
-                                    // was COPY-PROPAGATED (SumNew was not in this list — only `ListNew` was) → `x` inlines at both
-                                    // payloads → a chained `x_i = (Node x_{i-1} x_{i-1})` COMPOUNDS to 2^N (v-compiler-perf: wasm
-                                    // 1869→197712 for N=6→14; CAVEAT — a variant only MATCHED with a known ctor const-folds to ~190B,
-                                    // so the witness must consume it at runtime). Keeping it materializes the shell ONCE into a
-                                    // `Core::Let` slot → LINEAR emit. SOUND: `SumNew` CONSUMES all its payloads (reclaim.rs:3177
-                                    // `payloads.map(|p| (p, false))`, borrowed=false; v-wasm-opt: Owned select.rs:7340) — the same
-                                    // consuming-producer keep-emit path as `ListNew`.
-                                    // STOPGAP (INVALID-WASM regression, #7488): SumNew keep is TEMPORARILY REMOVED. Bisect pinned
-                                    // #7488 (the SumNew keep) as the first-bad for a 14b-effects INVALID COMPONENT (case "an
-                                    // Option-of-HEAP handler state transitions None to Some…", func 12: "type mismatch: expected i32,
-                                    // found i64"). A multi-use SumNew (an `Option` handler STATE) materialized-once into a `Core::Let`
-                                    // slot and threaded through a TAIL-RESUMPTIVE-FOLD handler's resume continuations emits an i32/i64
-                                    // width mismatch (the fold's state slot is a heap handle=i32, but the materialized-SumNew path
-                                    // feeds an i64 where the i32 handle is expected). Reverting to copy-propagation (SumNew NOT kept)
-                                    // restores valid wasm (verified: valid at window-start 7549608f33). Cost: a chained multi-use
-                                    // SumNew reverts to 2^N emit (the a_chained_multi_use_sum_new gate is relaxed to match). RE-WIDEN
-                                    // once the handler-fold emit correctly width-handles a materialized SumNew state (v-effects
-                                    // fold-lowering + v-core-opt/emit). Invalid-wasm (a miscompile) > perf.
                                     // | Core::SumNew { .. }
     )
 }
