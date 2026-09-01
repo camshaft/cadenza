@@ -481,29 +481,37 @@ fn fix_clause(a: &Arenas, id: StructId) -> FixQuality {
     fx
 }
 
-/// Parse a corpus file's `text` into records. Returns an error only if the file itself does not
-/// parse as s-expressions; a malformed individual case is reported as an error record inline.
-pub fn read(text: &str) -> Result<Vec<Record>, String> {
+/// Parse `text` into records by dispatching on top-level forms whose head is `head`, parsing each match
+/// with `parse_fn`. The shared spine of [`read`] and [`read_platform`]: read the s-exprs (error only if
+/// the file itself does not parse), skip the synthetic `(do …)` wrapper `read_all` adds, peel a leading
+/// `;`/`//` comment wrapper off each top-level form (comment-preservation seq-285; read-only — the
+/// comment stays in the tree for the fmt/round-trip path, it just does not hide the case head here), and
+/// parse the matching heads. A non-matching top-level form is skipped; a malformed matching case is
+/// propagated as the parse error (`parse_fn`'s `Err`).
+fn read_cases<T>(
+    text: &str,
+    head: &str,
+    parse_fn: impl Fn(&Arenas, StructId) -> Result<T, String>,
+) -> Result<Vec<T>, String> {
     let arenas = sexpr::read_all(text).map_err(|e| format!("corpus parse error: {}", e.0))?;
-    // `read_all` wraps every top-level form under a synthetic `(do …)`; the cases are its children.
     let top = match arenas.get(arenas.root) {
         cadenza_syntax::ast::Struct::List(items) => &items[1..], // skip the synthetic `do` head
         _ => return Ok(Vec::new()),
     };
     let mut records = Vec::new();
     for &top_id in top {
-        // A leading `;`/`//` comment above a top-level `(case …)` reifies to a `(comment "…" (case …))`
-        // wrapper (comment-preservation, seq-285); peel it so the case head is found. Read-only — the
-        // comment stays in the tree for the fmt/round-trip path, it just does not hide the case here.
         let case_id = arenas.peel_comments(top_id);
-        if arenas.head_name(case_id) == Some("case") {
-            match parse_case(&arenas, case_id) {
-                Ok(r) => records.push(r),
-                Err(e) => return Err(e),
-            }
+        if arenas.head_name(case_id) == Some(head) {
+            records.push(parse_fn(&arenas, case_id)?);
         }
     }
     Ok(records)
+}
+
+/// Parse a corpus file's `text` into records. Returns an error only if the file itself does not
+/// parse as s-expressions; a malformed individual case is reported as an error record inline.
+pub fn read(text: &str) -> Result<Vec<Record>, String> {
+    read_cases(text, "case", parse_case)
 }
 
 /// Parse a PLATFORM-conformance file's `text` into [`PlatformRecord`]s — the separate `spec/platform/`
@@ -512,20 +520,7 @@ pub fn read(text: &str) -> Result<Vec<Record>, String> {
 /// in practice platform files are homogeneous). Errors only if the file does not parse as s-expressions;
 /// a malformed individual case is a hard error (fail loud, like `read`).
 pub fn read_platform(text: &str) -> Result<Vec<PlatformRecord>, String> {
-    let arenas = sexpr::read_all(text).map_err(|e| format!("corpus parse error: {}", e.0))?;
-    let top = match arenas.get(arenas.root) {
-        cadenza_syntax::ast::Struct::List(items) => &items[1..], // skip the synthetic `do` head
-        _ => return Ok(Vec::new()),
-    };
-    let mut records = Vec::new();
-    for &top_id in top {
-        // Peel a leading comment wrapper (see [`read`]) so a `;`/`//`-commented platform case is found.
-        let case_id = arenas.peel_comments(top_id);
-        if arenas.head_name(case_id) == Some("platform-case") {
-            records.push(parse_platform_case(&arenas, case_id)?);
-        }
-    }
-    Ok(records)
+    read_cases(text, "platform-case", parse_platform_case)
 }
 
 /// Render a coded diagnostic expectation (`error`/`warning`) to the flat manifest: the severity
