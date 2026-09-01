@@ -4357,6 +4357,18 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     let has_arm_arity_reject = faults.iter().any(|r| {
         r.code == Some(Code::Malformed) && r.message.contains(crate::diag::HANDLER_ARM_ARITY_MARKER)
     });
+    // An ABORTIVE-arm value-type mismatch (CDZ0203 — the abort value disagrees with the op result type or
+    // the handle body type) ALSO makes the handler unfoldable, so `lower` emits the uncoded "not yet
+    // reducible" decline alongside — the same relationship the malformed-handler / resume-result /
+    // arm-arity rejects have. The CDZ0203 is the primary (it names the real type defect); drop the
+    // consequent fold-decline so an ill-typed abort reports ONE primary error. Crucial ORDERING fix too:
+    // the fold-decline anchors at the handle HEAD (sorts before the CDZ0203 at the abort value), so without
+    // this drop `first_error_diag` picks the weaker CDZ0900 and the case grades Todo instead of Pass.
+    let has_abort_type_reject = faults.iter().any(|r| {
+        r.code == Some(Code::TypeMismatch)
+            && r.message
+                .contains(crate::diag::ABORT_ARM_TYPE_MISMATCH_MARKER)
+    });
     // Likewise: a NON-CANONICAL handle (the retired effect-name-less shape) is rejected at resolve time
     // (`resolve_noncanonical_handle`, a CDZ0201). Because the handle never resolved as a handler, its
     // body's perform is seen by the entrypoint no-home walk as reached with NO enclosing handler → a
@@ -4805,6 +4817,7 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             if (has_malformed_handler_reject
                 || has_resume_result_reject
                 || has_arm_arity_reject
+                || has_abort_type_reject
                 || has_member_over_application_reject)
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
