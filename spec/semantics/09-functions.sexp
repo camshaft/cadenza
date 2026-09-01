@@ -176,6 +176,54 @@
   (call main (: 5 Int64))
   (output (: 15 Int64)))
 
+; A partial application capturing a COMPOUND (heap-value) argument in the residual closure — the compound
+; sibling of the scalar-capture cases above. Formerly DECLINED ("a partial application of a runtime closure
+; … is not supported") pending the capture-escape dup wiring: the residual lambda captures the compound and
+; passes it to the underlying fn as a consuming arg, so the capture ESCAPES and needs a dup to balance the
+; closure-cell drop. That wiring (#5007 `collect_captured_escape_dup_sites`) now runs on the synthesized
+; eta-closure body too, so the compound capture is DUP'd per escaping occurrence — leak-free. Each pins
+; `(live-objects 0)`: the escape dup exactly balances the cell drop. (v-effects co-verified the 3 shapes.)
+(case
+  "a partial application capturing a fresh-literal List in the residual closure runs and reclaims (live-objects 0)"
+  (input
+    (do
+      (def (f (: a (List Int64)) (: b (List Int64))) (List.len (List.concat a b)))
+      (def (main) (do (def g (f #list(1 2))) (g #list(3 4 5))))
+      (export main)))
+  (call main)
+  (output (: 5 Int64))
+  (live-objects 0))
+
+(case
+  "a partial application whose residual reads the compound capture in TWO escaping positions reclaims cleanly (per-occurrence dup)"
+  (doc
+    "The multi-occurrence face: the residual reads the captured List `a` in two consuming positions
+           (`List.len a` + `List.concat a b`). The capture-escape dup is PER-OCCURRENCE, not one-total, so both
+           reads are balanced — the hczm1 face. `((g #list(1 2)) #list(3 4 5))` = len[1,2] + len[1,2,3,4,5] = 7.")
+  (input
+    (do
+      (def (g (: a (List Int64)) (: b (List Int64))) (+ (List.len a) (List.len (List.concat a b))))
+      (def (main) (do (def p (g #list(1 2))) (p #list(3 4 5))))
+      (export main)))
+  (call main)
+  (output (: 7 Int64))
+  (live-objects 0))
+
+(case
+  "a compound-capturing residual closure built once and CALLED TWICE keeps the capture live across both calls"
+  (doc
+    "The called-twice face: the residual `g` (capturing `#list(1 2)`) is applied twice — the captured
+           List's refcount must survive repeated reads. `(g #list(3))` = len[1,2,3] = 3, `(g #list(4 5))` =
+           len[1,2,4,5] = 4, sum 7. A one-shot capture would UAF/under-free on the second call.")
+  (input
+    (do
+      (def (f (: a (List Int64)) (: b (List Int64))) (List.len (List.concat a b)))
+      (def (main) (do (def g (f #list(1 2))) (+ (g #list(3)) (g #list(4 5)))))
+      (export main)))
+  (call main)
+  (output (: 7 Int64))
+  (live-objects 0))
+
 ; --- A BUILT-IN OPERATION partially applied CURRIES — completing it yields a value (should-work) ---
 ;    (migrated from rcdzc a_partial_builtin_operation_as_an_unconsumed_value_is_rejected_not_silently_shipped)
 ; Like a USER function, a BUILT-IN OPERATION is a first-class value (core-semantics L291) and partial application

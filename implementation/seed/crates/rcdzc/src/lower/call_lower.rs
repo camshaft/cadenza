@@ -289,20 +289,21 @@ pub(super) fn partial_closure_eta_closure(
     if m == 0 || m >= param_tys.len() {
         return None; // not a genuine partial (0 args / full / over-application handled elsewhere)
     }
-    // SCALAR-CAPTURE ONLY (for now): the residual lambda CAPTURES each supplied arg + the head closure. A
-    // scalar capture is copied by value (no refcount), so it round-trips cleanly; but a COMPOUND (heap-value)
-    // capture spliced from the caller's own occurrence is double-owned (the caller created it AND the residual
-    // closure captures it) and is NOT dup'd/dropped at the capture site → a LEAK (`live-objects` mismatch),
-    // the capture-escape hazard v-effects flagged (its #5007 collect_captured_escape_dup_sites machinery is the
-    // real fix). Until that dup-site wiring is reused here, DECLINE a partial whose supplied args (or the head
-    // itself, a closure handle) include a heap value — a scalar-only partial (the corpus `(f 3)` case) folds
-    // soundly, a compound-capturing one keeps declining (reject-don't-miscompile, as before). fn_head is a
-    // closure HANDLE (heap) but is captured by the same lambda-lift every source closure uses (proven), so it
-    // is not the leak source — only the spliced compound ARG occurrences are; gate on those.
-    if supplied.iter().any(|&a| !is_scalar(db, a)) {
-        trace!(target: "rcdzc::lower", head = fn_head.0, "partial-closure eta: a supplied arg is a COMPOUND capture (leak hazard) → decline pending capture-escape dup wiring");
-        return None;
-    }
+    // The residual lambda CAPTURES each supplied arg + the head closure. A SCALAR capture is copied by value
+    // (no refcount) so it round-trips trivially; a COMPOUND (heap-value) capture spliced from the caller's own
+    // occurrence is double-owned (the caller created it AND the residual closure captures it) — historically a
+    // LEAK, since it was NOT dup'd/dropped at the capture site (the capture-escape hazard v-effects flagged,
+    // #5007's `collect_captured_escape_dup_sites` the fix). That dup-site wiring is now REUSED here (it runs on
+    // this synthesized eta-closure body like any lifted closure), so a compound capture is dup'd per escaping
+    // occurrence — no gate needed; both scalar and compound partials fold soundly + reclaim clean.
+    // COMPOUND CAPTURE is now leak-safe: a supplied compound (heap-value) arg the residual lambda captures
+    // escapes `fn_head` as a consuming call arg and is DUP'd per escaping occurrence by the capture-escape
+    // machinery (#5007 `collect_captured_escape_dup_sites`), which runs on this SYNTHESIZED eta-closure body
+    // exactly as on any lifted closure (select.rs:687 + the emit-side twin) — so the compound-capture LEAK the
+    // former `is_scalar` gate declined is now balanced. Verified leak-free (`live-objects 0` + `--guarded-all`
+    // clean) on v-effects' 3 witnesses: single-occurrence, MULTI-occurrence (per-occurrence dup, the hczm1
+    // face), and called-twice (refcount survives repeated reads). `fn_head` (a closure handle) was never the
+    // leak source — captured by the same lambda-lift every source closure uses (the pre-lift comment's note).
     let r = param_tys.len() - m; // remaining params to eta-abstract
     // Body: `(fn_head supplied[0] … supplied[m-1] __eta0 … __eta{r-1})`. The `fn_head` + supplied occurrences
     // are the caller's own nodes (already lowered/typed in this scope), spliced verbatim so they capture.
