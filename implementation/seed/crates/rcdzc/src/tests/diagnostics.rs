@@ -45,6 +45,28 @@ fn unsupported_construct_decline_carries_cdz0900_and_is_still_a_decline() {
 }
 
 #[test]
+fn a_user_variant_named_like_a_prelude_module_constructs_through_const_fold() {
+    // REGRESSION (#7023 added the `Num` prelude namespace): a user `(type … (Num …) …)` variant named
+    // like a prelude MODULE must still CONSTRUCT — `(Num n)` builds the variant, not "apply the num_module
+    // record". The failure surfaced only through the CONST-FOLD/inline path: a `(mk 4)` call reduces `mk`'s
+    // body, and the inlined `(Num n)` copy is a SYNTHESIZED node whose colliding-variant construct-position
+    // shadow (`resolve` step 3d) did not fire (its `is_user_node` gate excluded synth copies), so it fell to
+    // the prelude `Num` record → a spurious CDZ0201 "cannot apply a value of type (Record …)". The fix wires
+    // the same `source_of_synth`/`inlined_value_construct` discriminator the same-name-newtype step uses.
+    // A mutually-recursive sum (the shape the 03-equality corpus case exercises) and a runtime construct.
+    for src in [
+        "(do (type E (Num Int64) (Neg T)) (type T (Wrap E)) (def (mk (: n Int64)) (Neg (Wrap (Num n)))) (def (main) (= (mk 4) (mk 4))) (export main))",
+        "(do (type E (Num Int64) (Zero)) (def (mk (: n Int64)) (Num n)) (def (main (: a Int64)) (= (mk a) (mk a))) (export main))",
+    ] {
+        assert!(
+            all_errors(src).is_empty(),
+            "a user `Num` variant constructs through const-fold with no spurious decline: {:?}",
+            all_errors(src)
+        );
+    }
+}
+
+#[test]
 fn a_partial_subtraction_in_value_position_suggests_neg_over_the_generic_unapplied_hint() {
     // `(- e)` is a partially-applied binary subtraction (`(-> T T)`), NOT negation (the operator removed
     // unary-`-`-means-negate; negation is `Num.neg`/`<T>.neg`). A user who wrote `-e` expecting to negate

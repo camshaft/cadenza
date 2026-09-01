@@ -943,7 +943,22 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // `List` variant — diverting it would turn a self-referential AST sum's payload into a bogus variant
     // application (CDZ0201). A bare type ATOM (`Int64`) is already spared by the head-position gate; only a
     // type-expression APPLICATION head needs this. `is_type_expr_node` is the load-time subtree marker.
-    if db.child_ix_of(id) == 0 && db.is_user_node(id) && !db.is_type_expr_node(id) {
+    //
+    // A β-COPY of a colliding-variant construct — `mk`'s body `(Num n)` INLINED at a `(mk 4)` call the
+    // const-fold reduces, or a param'd def whose returned `(Num k)` reaches emit — is a SYNTHESIZED head
+    // (id ≥ `user_node_count`, `is_user_node` false), so the plain user-node gate would leave it to the
+    // prelude (the num_module RECORD → a spurious "cannot apply a value of type (Record …)" CDZ0201; the
+    // #7023 `Num`-namespace regression, generalizing to any variant named like a prelude MODULE). Fire on
+    // an inlined value construct too — a synth head that `source_of_synth` traces back to a user occurrence
+    // OUTSIDE a type-expression subtree — the SAME `inlined_value_construct` discriminator the same-name
+    // newtype ctor step (step 3) uses, so a reduced `(Num 4)` keeps resolving to the local variant ctor.
+    let inlined_value_construct = db
+        .source_of_synth(id)
+        .is_some_and(|src| !db.is_type_expr_node(src));
+    if db.child_ix_of(id) == 0
+        && (db.is_user_node(id) || inlined_value_construct)
+        && !db.is_type_expr_node(id)
+    {
         // FILE-SCOPED for a linked package: consult the QUALIFIED ctor surface (which, unlike the bare
         // map, retains a prelude-named ctor) confined to this reference's own file, so the shadowing is
         // scoped exactly like every other declaration — a sibling file's colliding variant does not leak.
