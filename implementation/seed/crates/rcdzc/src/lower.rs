@@ -1271,6 +1271,13 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             | Core::MapInsert { .. }
             | Core::MapRemove { .. }
             | Core::SetOf { .. }
+            // `Set.union`/`intersect`/`diff` (`Core::SetAlgebra`) is the TRUE Set exp witness (v-compiler-perf
+            // confirmed a `Set.union` chain still 2^N on main — `SetOf` alone is a constructor, not the
+            // binary-same-operand reproducer). A binary op that CONSUMES/dups both set operands + returns a
+            // fresh owned set (v-wasm-opt verified both axes: heap_operand_ownership Owned select.rs:7473,
+            // mark_binder_dups seq[(lhs,F),(rhs,F)] CONSUMING reclaim.rs:3269) — the exact `ListConcat` shape
+            // for sets. Kept under the >= 2-use rule so a `Set.union x x` chain is LINEAR.
+            | Core::SetAlgebra { .. }
     )
 }
 
