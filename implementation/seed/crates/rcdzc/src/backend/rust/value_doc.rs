@@ -132,18 +132,29 @@ fn doc_value_node(
             out.push_str(&format!("    let {head} = __b.name(\"tuple\");\n"));
             let mut kids = vec![head];
             for (i, e) in elems.iter().enumerate() {
-                kids.push(doc_value_node(db, e, &format!("({val_expr}).{i}"), out, ctr)?);
+                kids.push(doc_value_node(
+                    db,
+                    e,
+                    &format!("({val_expr}).{i}"),
+                    out,
+                    ctr,
+                )?);
             }
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            out.push_str(&format!(
+                "    let {v} = __b.list(vec![{}]);\n",
+                kids.join(", ")
+            ));
             Ok(v)
         }
         // A record → `(record (= <f0> <v0>) (= <f1> <v1>) …)`: a `Name "record"` head then, per field (in
         // BTreeMap = SORTED-key order, matching the emitted tuple's `.i`), a `List[FieldPair, Name <field>,
         // <value-node>]` (the `=` marker is a `Leaf::FieldPair`).
         Ty::Record(fields) => {
-            let fields: Vec<(String, Ty)> =
-                fields.iter().map(|(k, t)| (k.name.to_string(), t.clone())).collect();
+            let fields: Vec<(String, Ty)> = fields
+                .iter()
+                .map(|(k, t)| (k.name.to_string(), t.clone()))
+                .collect();
             let head = fresh(ctr);
             out.push_str(&format!("    let {head} = __b.name(\"record\");\n"));
             let mut kids = vec![head];
@@ -156,11 +167,16 @@ fn doc_value_node(
                 out.push_str(&format!("    let {fnn} = __b.name({fname:?});\n"));
                 let fv = doc_value_node(db, fty, &format!("({val_expr}).{i}"), out, ctr)?;
                 let pair = fresh(ctr);
-                out.push_str(&format!("    let {pair} = __b.list(vec![{fp}, {fnn}, {fv}]);\n"));
+                out.push_str(&format!(
+                    "    let {pair} = __b.list(vec![{fp}, {fnn}, {fv}]);\n"
+                ));
                 kids.push(pair);
             }
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            out.push_str(&format!(
+                "    let {v} = __b.list(vec![{}]);\n",
+                kids.join(", ")
+            ));
             Ok(v)
         }
         // A FLOAT → a `Leaf::Float` (finite) / `Leaf::FloatNan` / `Leaf::FloatInf` at RUNTIME, EXACTLY the
@@ -368,7 +384,9 @@ fn doc_value_node(
                 }
             }
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = match ({val_expr}) {{\n{arms}    }};\n"));
+            out.push_str(&format!(
+                "    let {v} = match ({val_expr}) {{\n{arms}    }};\n"
+            ));
             Ok(v)
         }
         _ => Err(Reject::decline(
@@ -379,7 +397,12 @@ fn doc_value_node(
 
 /// Emit `let`-bindings building the TYPE node for `ty`; return the final node's Rust variable. A LEAF type
 /// (Int64/Bool/…) is a `Name` atom of its `render_name`; a Tuple is `(Tuple <T0> …)`.
-fn doc_type_node(db: &mut Db, ty: &Ty, out: &mut String, ctr: &mut usize) -> Result<String, Reject> {
+fn doc_type_node(
+    db: &mut Db,
+    ty: &Ty,
+    out: &mut String,
+    ctr: &mut usize,
+) -> Result<String, Reject> {
     match ty.strip_nominal_and_qty() {
         Ty::Tuple(elems) => {
             let elems = elems.clone();
@@ -390,15 +413,20 @@ fn doc_type_node(db: &mut Db, ty: &Ty, out: &mut String, ctr: &mut usize) -> Res
                 kids.push(doc_type_node(db, e, out, ctr)?);
             }
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            out.push_str(&format!(
+                "    let {v} = __b.list(vec![{}]);\n",
+                kids.join(", ")
+            ));
             Ok(v)
         }
         // A record TYPE → `(Record (: <f0> <T0>) (: <f1> <T1>) …)`: a `Name "Record"` head then, per field
         // (sorted-key order), the canonical ASCRIPTION node `List[Name ":", Name <field>, <type-node>]`
         // (matching `render_name` + the corpus `(Record (: x Int64) …)` form — NOT a bare `[field, ty]`).
         Ty::Record(fields) => {
-            let fields: Vec<(String, Ty)> =
-                fields.iter().map(|(k, t)| (k.name.to_string(), t.clone())).collect();
+            let fields: Vec<(String, Ty)> = fields
+                .iter()
+                .map(|(k, t)| (k.name.to_string(), t.clone()))
+                .collect();
             let head = fresh(ctr);
             out.push_str(&format!("    let {head} = __b.name(\"Record\");\n"));
             let mut kids = vec![head];
@@ -409,11 +437,16 @@ fn doc_type_node(db: &mut Db, ty: &Ty, out: &mut String, ctr: &mut usize) -> Res
                 out.push_str(&format!("    let {fnn} = __b.name({fname:?});\n"));
                 let ft = doc_type_node(db, fty, out, ctr)?;
                 let pair = fresh(ctr);
-                out.push_str(&format!("    let {pair} = __b.list(vec![{colon}, {fnn}, {ft}]);\n"));
+                out.push_str(&format!(
+                    "    let {pair} = __b.list(vec![{colon}, {fnn}, {ft}]);\n"
+                ));
                 kids.push(pair);
             }
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            out.push_str(&format!(
+                "    let {v} = __b.list(vec![{}]);\n",
+                kids.join(", ")
+            ));
             Ok(v)
         }
         // A LIST TYPE → `(List <elem>)` (the `render_name` shape): a `Name "List"` head then the element
@@ -445,7 +478,9 @@ fn doc_type_node(db: &mut Db, ty: &Ty, out: &mut String, ctr: &mut usize) -> Res
             let kt = doc_type_node(db, &kty, out, ctr)?;
             let vt = doc_type_node(db, &vty, out, ctr)?;
             let v = fresh(ctr);
-            out.push_str(&format!("    let {v} = __b.list(vec![{head}, {kt}, {vt}]);\n"));
+            out.push_str(&format!(
+                "    let {v} = __b.list(vec![{head}, {kt}, {vt}]);\n"
+            ));
             Ok(v)
         }
         // A SUM TYPE → its NOMINAL name applied to type ARGS (the `render_name` shape): a MONOMORPHIC sum
@@ -470,7 +505,10 @@ fn doc_type_node(db: &mut Db, ty: &Ty, out: &mut String, ctr: &mut usize) -> Res
                     kids.push(doc_type_node(db, a, out, ctr)?);
                 }
                 let v = fresh(ctr);
-                out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+                out.push_str(&format!(
+                    "    let {v} = __b.list(vec![{}]);\n",
+                    kids.join(", ")
+                ));
                 Ok(v)
             }
         }
