@@ -124,7 +124,18 @@ ambient at every macro call site) — the mechanism is the same nearest-enclosin
 (Effect shape co-designed with v-effects, who co-owns increment 3; `Eval`-general naming per the
 operator, 2026-09-01.)
 
-## 4. The expansion phase (POST-RESOLVE — grounded, not the load-time window)
+**Explicit row + direct-caller semantics (operator directive, 2026-09-01).** Two refinements: (1) a
+function acquires the capability **explicitly** — `{Eval}` is written in its signature/effect-row like
+any Cadenza effect, NOT ambiently auto-acquired — so a **nested** function that also declares `{Eval}`
+can perform it and it composes through the row normally. (2) The `caller` op targets the **direct /
+immediate** caller's environment — the caller currently being evaluated — **not** a transitive parent
+further up. These compose cleanly with the ambient discharge: the compiler-synthesized handler is wrapped
+at **each** macro call site, so it provides **that** call's caller env; a nested `{Eval}` fn's
+`in-caller` is therefore discharged by the handler at *its own* call site = its **direct** caller's env,
+never the outermost. So "explicit row" governs acquisition (typed, composes to nested fns) and the
+per-call-site ambient handler governs discharge (direct-caller env). The env captured by each synthesized
+handler is the immediate call site's lexical environment. (Reconcile the acquisition/discharge split
+with v-effects during increment 3.)
 
 Reconnaissance settled the phase placement decisively: the expander **cannot** be a load-time
 sibling of `tagged_template::expand`. Those load-time desugars (`reify_quotes` → `desugar_eval` →
@@ -168,24 +179,35 @@ No general fresh-name facility exists (only `unify::Fresh` for *type* variables,
 with any source or other gensym. Small, self-contained; folds like the other `Ast.*` intrinsics
 (ast_reflect.rs). Surface: `(gensym)` or `(Ast.gensym)` → `Ast`, pure.
 
-## 6. Capability 4 — hygiene (DECIDED fork c: operator OPEN to preserving; amendment ON HOLD)
+## 6. Capability 4 — hygiene (RATIFIED fork c: PRESERVE by default + explicit opt-out)
 
-The operator is **open to preserving hygiene** (keeping the spec MUST intact) if there's a feasible,
-not-too-complex mechanism — their worry: "wouldn't we need to somehow keep track of the scopes of all
-of the name nodes? It just seems complicated." So the spec-amendment is **on hold** while
-v-spec-oracle + I produce a **preservation proposal**.
+**Operator ratified (2026-09-01): preserve hygiene BY DEFAULT** ("let's try keeping hygiene in by
+default. But it would be nice to have a way to opt out where you want as well"). So macros are
+hygienic by default via per-splice provenance+rename, **plus** an explicit opt-out for a deliberately
+capturing (unhygienic) macro.
 
-**Proposal (to co-assess with v-spec-oracle).** We likely do **not** need a per-node scope-set. The
-existing `eval` hygiene already preserves hygiene without one: a **node-provenance boundary** (nodes
-`< original_len` are spliced caller syntax; `≥ original_len` are macro-introduced) plus a **targeted
-alpha-rename** of only the introduced binders that would capture spliced names
-(`rename_captured_binders`, eval_ast.rs:181-234). Generalize that to macro output: rename the binders
-a macro introduces (backed by `Ast.gensym`, #7274) so they cannot capture caller names, and mark
-introduced references so caller binders cannot capture them. That tracks provenance **per splice**,
-not a scope-set per name node — directly answering the operator's complexity worry. **If** this is
-faithful to the spec MUST and simple → preserve (no amendment, maybe a small faithful-mirror wording
-tweak). **If** it genuinely needs full scope-sets (too complex) → fall back to no-auto-hygiene +
-amend. v-spec-oracle handshake decides which; surfaced to the operator before locking.
+**Mechanism (both halves).** We do **not** need a per-node scope-set. The existing `eval` hygiene
+preserves hygiene via a **node-provenance boundary** (nodes `< original_len` are spliced caller
+syntax; `≥ original_len` are macro-introduced) plus a **targeted alpha-rename**
+(`rename_captured_binders`, eval_ast.rs:181-234). Generalize to macro output, **both directions**:
+(direction 1, :138) rename macro-introduced binders (backed by `Ast.gensym`, #7274) so they cannot
+capture caller names; (direction 2, :140) mark macro-introduced references by provenance so caller
+binders cannot capture them (the reference-side dual — the one genuinely new piece; binder-side
+already exists for `eval`). Tracks provenance **per splice**, not a scope-set per name node.
+
+**Spec (ratified).** v-spec-oracle lands the faithful-mirror **:142 wording tweak** (mechanism →
+provenance-general; :138/:140 stay verbatim) — no longer held. And a **:140 direction-2 corpus
+witness** (an introduced reference NOT captured by a use-site binder) lands with v-spec-oracle once the
+reference-side dual ships; it needs the macro-**function** shape (def-site ≠ use-site), and its exact
+spelling depends on the realized expander (increment 2b) — co-finalized then.
+
+**Opt-out (new requirement, realizes the spec's "unless explicit" clause).** :138/:140 are both "…
+unless the macro explicitly requests it", so a deliberately-capturing macro is already spec-anticipated
+— likely **no further spec change** beyond making the "unless explicit" mechanism concrete. Design the
+opt-out **surface**: how a macro author marks an introduced name as intentionally resolved in the
+caller's scope (candidates: an anti-hygiene / "inject unhygienically" marker on the introduced name, or
+naming a captured identifier through the `Eval` effect's caller env). Co-design with v-spec-oracle;
+surface to the operator if a real design choice, else note it. This is increment 4's second half.
 
 ## 7. Forks — ALL DECIDED (2026-09-01)
 
@@ -201,12 +223,15 @@ amend. v-spec-oracle handshake decides which; surfaced to the operator before lo
 2. **Quote-based unevaluated parameters + the expander** — the `quote`-in-binder marker + the
    post-resolve reify-and-splice expander; a first macro (`unless`/`swap`) as a plain function,
    corpus-pinned to its expansion.
-3. **Caller-env-eval EFFECT** (with v-effects) — the `Eval` effect (`in-caller` op) + ambient
-   call-site handling + row threading; corpus-pin a macro that evaluates a caller expression in the
-   caller's env. Blocked on the v-effects effect-shape co-design (§3).
-4. **Hygiene** (with v-spec-oracle) — either the preservation mechanism (§6 proposal) + a corpus
-   lock that a macro neither captures nor is captured, OR (if too complex) the spec amendment +
-   manual-hygiene-via-gensym pattern. Blocked on the v-spec-oracle proposal outcome (§6).
+3. **Caller-env-eval `Eval` EFFECT** (with v-effects) — the general `Eval` effect with the `in-caller`
+   op; **explicit `{Eval}` row acquisition** (composes to nested fns) + per-call-site ambient discharge
+   giving **direct-caller** env semantics (§3); corpus-pin a macro that evaluates a caller expression
+   in the (direct) caller's env. Blocked on increment 2 + the v-effects acquisition/discharge co-design.
+4. **Hygiene — PRESERVE, both halves + opt-out** (with v-spec-oracle) — generalize provenance+rename to
+   macro output: direction-1 binder-rename (exists) + the direction-2 **reference-side dual** (new);
+   land v-spec-oracle's faithful-mirror :142 tweak + the :140 direction-2 corpus witness; then the
+   explicit **opt-out** surface for a deliberately-capturing macro (§6). Blocked on increment 2 (operates
+   on the expander's spliced output) + the reference-dual design.
 
 Each increment gates: corpus (`nix build .#checks…corpus-…`), ml_surface round-trip, nativize,
 clippy `-D warnings`, pinned fmt. No runtime/hash change expected (front-end expansion + folds).
