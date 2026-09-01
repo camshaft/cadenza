@@ -100,7 +100,17 @@ generic node is CLOSED or ROUTED.
   probes still decline, coded CDZ0900.)
 
 ## VERIFY (counted as GAP but likely true-parity / mis-counted) — confirm before chasing
-- [ ] **under-determined sum type — 13.** Likely SHARED (wasm needs concrete types too); confirm direct also declines.
+- [ ] **under-determined / generic-open sum type — 12 (+2 generic-open) = ~14.** ⚠️ CORRECTED: NOT shared — the xref
+  data (reliable exit-code classification) has all 12 as **GAP** (wasm compiles them, cadenza declines); the "likely
+  SHARED" guess was WRONG. ROOT CAUSE (read `backend/cadenza/mod.rs:1504` + `lower.rs:1576` type_ast): a `SumNew`
+  value re-emits `(: (<V> <payload>) <sum-type>)`, and the ascription's `<sum-type>` is built by
+  `crate::lower::type_ast(&ty)`; it returns `None` (→ decline) when the sum type can't be rendered — chiefly
+  `ncx.name_of(decl) == None` (an UNNAMED / anonymous / not-registered sum decl) or a nested unrenderable type (a
+  type `Var`, a fn type, `Type`). Same family as the "generic / open user sum value" decline (mod.rs:803, 2 cases).
+  So it's a TYPE-SURFACE-RENDERING gap in the `(: value Type)` ascription path, not a value-shape gap. ⏭️ NEEDS
+  case-level diagnosis at a LOW-LOAD tick: run the 12 cases to see WHICH sum types hit `name_of==None` — if a named
+  sum just isn't in `ncx` it's a fixable registration/lookup; if genuinely ANONYMOUS (no surface name) it may be an
+  un-writable surface = reclassify SHARED. Likely overlaps the type-surface renderer (render_ty / type_ast) lane.
 - [x] **`TrapDivZero` 7.** NOT true-parity — a real GAP, now CLOSED #7313 (c438bc88a0). These are const `(/ x 0)`/
   `(% x 0)` demoted in a conditionally-reached branch (`demote_conditional_trap`); wasm compiles + traps "integer
   divide by zero", cadenza previously declined. Re-emit the kind-preserving source form `(: (/ 1 0) <IntTy>)` — it
