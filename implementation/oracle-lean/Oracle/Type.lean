@@ -190,7 +190,9 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
 * T1.2 — the **If rule** (`ts:76-84`): `(if c t e)` unifies `τc` with `Bool`, unifies the two branch
   types (`never` absorbs — `unify`'s bottom rule — so `(if c 1 (trap))` stays well-typed at `Int`), and
   yields the resolved branch type. A condition-not-`Bool` or a branch clash is `IllTyped CDZ0203`.
-Any other construct → `Unsupported` until its rule lands (A/App/Let/Fn/Match). -/
+* T1.3 — **comparison / equality** (`< > <= >=` and `=`, `ts:186-188`): `(OP a b)` unifies the two
+  operand types (a shape mismatch is a genuine type error) and yields `Bool`; an operand clash is `CDZ0203`.
+Any other construct → `Unsupported` until its rule lands (ascription/App/Let/Fn/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
@@ -217,8 +219,21 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                 let st ← unifyInfer τt τe st              -- both branches unify; never absorbs (ts:82-84)
                 .ok (applySubst st.subst τt, st)
             | _, _, _ => .error (.unsupported "type oracle: malformed if")
+          else if (String.fromUTF8? h).elim false (fun s => Eval.cmpOps.contains s || s == "=") then
+            -- T1.3 — COMPARISON / EQUALITY (`< > <= >=` and `=`): `(OP a b)` unifies the two operand types
+            -- (a shape mismatch is a genuine type error — ts:186-188) and yields `Bool`. An operand clash is
+            -- `IllTyped CDZ0203`. SOUND for the current fragment: only scalars flow to a comparison (the
+            -- Fn/tuple rules that could produce a non-orderable operand aren't wired yet); the orderable-vs-
+            -- equatable distinction on COMPOUND operands is a refinement for when those become inferable.
+            match children[1]?, children[2]? with
+            | some aId, some bId => do
+                let (τa, st) ← inferE m env st aId
+                let (τb, st) ← inferE m env st bId
+                let st ← unifyInfer τa τb st
+                .ok (.bool, st)
+            | _, _ => .error (.unsupported "type oracle: malformed comparison")
           else .error (.unsupported
-            "type oracle: construct not yet modeled (T1 — A/App/Let/Fn/Match rules land next)")
+            "type oracle: construct not yet modeled (T1 — ascription/App/Let/Fn/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
       | _ => .error (.unsupported "type oracle: node not modeled")
 
@@ -326,6 +341,31 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[5], .atom 1, .list #[7, 6, 4],
                            .atom 7, .atom 2, .list #[9, 10], .atom 0, .list #[12, 8, 11]],
                 root := 13 } == .illTyped "CDZ0203")
+-- T1.3 (comparison): `(< 1 2)` — operands unify (Int, Int), result Bool → WellTyped Bool.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "<".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],       -- (< 1 2)
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],    -- (def (main) …)
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .wellTyped .bool)
+-- T1.3 (comparison): `(< 1 #t)` — operand clash (Int vs Bool) → IllTyped CDZ0203.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "<".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .boolLit true, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .illTyped "CDZ0203")
+-- T1.3 × T1.2 integration: `(if (< 1 2) 10 20)` — comparison condition is Bool → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "if".toUTF8,
+                            .name "<".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .intLit false .dec (ByteArray.mk #[10]),
+                            .intLit false .dec (ByteArray.mk #[20]), .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2],           -- (< 1 2)
+                           .atom 3, .atom 7, .atom 8, .list #[4, 3, 5, 6],        -- (if (< 1 2) 10 20)
+                           .atom 2, .list #[8], .atom 1, .list #[10, 9, 7],       -- (def (main) …)
+                           .atom 9, .atom 2, .list #[12, 13], .atom 0, .list #[15, 11, 14]],
+                root := 16 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
