@@ -4382,6 +4382,56 @@ fn self_calls_tail(db: &mut Db, node: StructId, callee_def: usize, tail: bool) -
     }
 }
 
+/// Whether `body` contains an ABORTIVE perform (of a `ctx`-abortive op) at a NON-TAIL position — the shape
+/// single-return specialization mis-folds as tail-RESUMPTIVE (it returns the arm value as the perform's
+/// result, threading it forward instead of abandoning the computation). Mirrors [`self_calls_tail`]'s tail
+/// propagation: an `if`/`match` branch and a `let` body inherit the position's tail-ness; an operator
+/// operand, a call/self-call ARGUMENT, and an `if`/`let` condition/init are NON-tail. An abort in the
+/// function's actual TAIL is sound here (its arm value IS the return); an abort anywhere else is NOT — most
+/// notably the ACCUMULATOR ARGUMENT that `accum::introduce` moves a non-tail associative recursion's abort
+/// into (`(+ (loop …) (if c (E.bail) k))` → a tail self-call whose accum arg carries the abort), which
+/// `self_calls_tail` misses because THE SELF-CALL is tail even though the abort is not. Declining this shape
+/// is a safe CDZ0900 floor until the non-local-exit calling convention (the tagged-return vertical) lands.
+fn abortive_perform_off_tail(db: &mut Db, node: StructId, ctx: &HandlerCtx, tail: bool) -> bool {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && let Some(op) = is_perform(db, head, ctx)
+    {
+        if ctx.abortive.contains(&op) && !tail {
+            return true;
+        }
+        // A tail-position (or resumptive) perform is sound here; still descend its ARGS (non-tail).
+        return args
+            .iter()
+            .any(|&a| abortive_perform_off_tail(db, a, ctx, false));
+    }
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, node) {
+        return abortive_perform_off_tail(db, cond, ctx, false)
+            || abortive_perform_off_tail(db, then_, ctx, tail)
+            || abortive_perform_off_tail(db, else_, ctx, tail);
+    }
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && form.len() == 2
+    {
+        if let Struct::List(pairs) = db.ast.get(form[0]).clone() {
+            for pair in pairs {
+                if let Struct::List(kv) = db.ast.get(pair).clone()
+                    && kv.len() == 2
+                    && abortive_perform_off_tail(db, kv[1], ctx, false)
+                {
+                    return true;
+                }
+            }
+        }
+        return abortive_perform_off_tail(db, form[1], ctx, tail);
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| abortive_perform_off_tail(db, c, ctx, false)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// ACCUM-COPY REDIRECT detector (rn post-observer fix, increment 1). A linear NON-tail recursion `f` that
 /// `accum::introduce` rewrote into a seed-wrapper `(def (f p…) (f$acc p… seed…))` + a tail-recursive copy
 /// `f$acc` reads `is_recursive(f.body)=false` — so specializing `f` (the seed-wrapper) under a MERGED
@@ -4447,6 +4497,18 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // convention (a stack of `+ 1` frames the abort unwinds — a later vertical). A TAIL self-call is fine:
     // the abort is the tail value, propagating up with no pending frame. Decline the non-tail abortive case.
     if !ctx.abortive.is_empty() && !recursive_self_calls_all_tail(db, orig_body, callee_def) {
+        return None;
+    }
+    // ABORTIVE PERFORM AT A NON-TAIL POSITION IN THE (possibly ACCUM-REWRITTEN) CALLEE BODY. The self-call
+    // tail-check above is INSUFFICIENT when accumulator-introduction has rewritten a non-tail associative
+    // recursion `(+ (loop (- k 1)) (if c (E.bail) k))` into a TAIL self-call whose ACCUMULATOR ARGUMENT
+    // carries the abort — the self-call is now tail (so the check above passes) but the abort rides a
+    // non-tail position, and single-return specialization folds it as tail-RESUMPTIVE (returns the arm value
+    // as the perform's result, flowing back through the accumulator → breaker's `103` instead of the abort
+    // value or a decline). Reuse the handle-body guard's non-tail-abort detector on the callee body: an
+    // abortive perform the fold cannot lift to a capturable position DECLINES cleanly (CDZ0900, a safe floor)
+    // — the sound lowering needs the non-local-exit calling convention (the tagged-return vertical).
+    if !ctx.abortive.is_empty() && abortive_perform_off_tail(db, orig_body, ctx, true) {
         return None;
     }
     // ABORTIVE + MUTUAL RECURSION: decline. `recursive_self_calls_all_tail` above checks only THIS def's
