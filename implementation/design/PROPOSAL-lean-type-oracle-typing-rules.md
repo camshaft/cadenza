@@ -67,7 +67,7 @@ closed structural forms T1 needs:
 
 ```
 Ty =
-  | int (width : Nat) (signed : Bool)     -- I8…I64 / U8…U64 (numeric-model widths)
+  | int (width : Nat) (signed : Bool)     -- integer type indexed by signedness and bit width (width set admitted by the numeric-model default)
   | bool | unit | string | char
   | fn    (dom cod : Ty)                   -- curried; a multi-arg fn is nested arrows
   | tuple (elts : List Ty)                 -- positional, arity is part of the type (ts:130-146)
