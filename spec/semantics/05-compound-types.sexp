@@ -20681,7 +20681,7 @@
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert Map.empty 1 10))
+          (def m #map((= 1 10)))
           (match
             (Map.swap m k 99)
             (#tuple(prior m2)
@@ -24728,7 +24728,7 @@
       (def
         (main (: n Int64))
         (do
-          (def m (Map.insert Map.empty 1 #record((= xs #list(n 2)) (= tag "t"))))
+          (def m #map((= 1 #record((= xs #list(n 2)) (= tag "t")))))
           (match
             (Map.lookup m 1)
             ((Some r) (match r (#record((= xs ys)) (List.len ys))))
@@ -26290,7 +26290,7 @@
         (main (: mode Int64))
         (do
           (def s #set(1 2))
-          (def m (Map.insert Map.empty 7 s))
+          (def m #map((= 7 s)))
           (def r (Map.take m 7))
           (def taken (match (. r 0) ((Some ts) ts) ((None _u) #set())))
           (def grown (Set.insert taken 3))
@@ -27016,7 +27016,7 @@
       (def
         (main (: k Int64))
         (do
-          (def inv (Map.insert Map.empty 1 #record((= name "widget") (= qty k))))
+          (def inv #map((= 1 #record((= name "widget") (= qty k)))))
           (def r (Option.expect (Map.lookup inv 1) "slot"))
           (def fresh #record((= name r.name) (= qty (+ r.qty 5))))
           (+ (* 10 fresh.qty) (String.byte-len fresh.name))))
