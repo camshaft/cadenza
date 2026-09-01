@@ -31,7 +31,10 @@
 //! * A **value disagreement** (both ran to a value, values differ) is the headline finding — a
 //!   valid-artifact wrong-value miscompile.
 //! * A **liveness disagreement** (one ran to a value, the other trapped) is also a finding: one
-//!   backend computes a result where the other faults.
+//!   backend computes a result where the other faults — EXCEPT a stack-exhaustion / resource trap
+//!   ([`is_resource_trap`]), which is a tolerated RESOURCE divergence (the backends have different
+//!   native stack limits, so deep non-tail recursion returns on one and traps gracefully on the
+//!   other), not a semantic liveness bug.
 //! * A **`Declined` on EITHER side is never a mismatch.** The Rust backend supports a strict subset
 //!   (compound results, host effects, etc. decline there), and the shared front-end declines the same
 //!   unimplemented constructs on both — a decline means "not comparable here", i.e. coverage-not-yet,
@@ -117,6 +120,19 @@ impl MismatchKind {
     }
 }
 
+/// A stack-exhaustion / resource trap (as opposed to a semantic trap). The two backends have different
+/// native call-stack limits — wasm traps `call stack exhausted` at ~15k non-tail frames, rust panics
+/// `has overflowed its stack` ~10x deeper — so on deep non-tail recursion one may return a value while
+/// the other traps GRACEFULLY at its own limit. That value-vs-trap split is a tolerated RESOURCE
+/// divergence, not a liveness miscompile. Matched narrowly on the stack-exhaustion phrasings so a
+/// SEMANTIC trap (`divide by zero`, arithmetic `overflow`, `unreachable`) is NOT swallowed.
+fn is_resource_trap(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("call stack exhausted")
+        || m.contains("stack overflow")
+        || m.contains("overflowed its stack")
+}
+
 /// Compare the wasm and rust outcomes for one program per the pairing rules. Pure — the two sides are
 /// produced by [`run_wasm`] / [`run_rust`]; splitting it out keeps the rules unit-testable without a
 /// compiler or a subprocess.
@@ -161,17 +177,35 @@ pub fn compare(wasm: &Side, rust: &Side) -> Diff {
         }
         // Both trapped — correct behavior on both; the reason text is not backend-comparable.
         (Side::Trap(_), Side::Trap(_)) => Diff::Agree,
-        // One value, one trap — a liveness disagreement.
-        (Side::Value(v), Side::Trap(t)) => Diff::Mismatch {
-            kind: MismatchKind::Liveness,
-            wasm: format!("value {v}"),
-            rust: format!("trap {t}"),
-        },
-        (Side::Trap(t), Side::Value(v)) => Diff::Mismatch {
-            kind: MismatchKind::Liveness,
-            wasm: format!("trap {t}"),
-            rust: format!("value {v}"),
-        },
+        // One value, one trap — a liveness disagreement — EXCEPT a stack-exhaustion / resource trap,
+        // which is a TOLERATED resource divergence, not a liveness bug: the two backends have different
+        // native stack limits (wasm traps "call stack exhausted" at ~15k non-tail frames; rust "has
+        // overflowed its stack" ~10x deeper), so on deep non-tail recursion one returns a value while the
+        // other traps GRACEFULLY at its own limit. Both fail safely; it is not a semantic split. (breaker
+        // datapoint 2026-09.) A SEMANTIC trap (divide-by-zero, arithmetic overflow, unreachable) has a
+        // distinct message and still surfaces as a Liveness mismatch.
+        (Side::Value(v), Side::Trap(t)) => {
+            if is_resource_trap(t) {
+                Diff::Agree
+            } else {
+                Diff::Mismatch {
+                    kind: MismatchKind::Liveness,
+                    wasm: format!("value {v}"),
+                    rust: format!("trap {t}"),
+                }
+            }
+        }
+        (Side::Trap(t), Side::Value(v)) => {
+            if is_resource_trap(t) {
+                Diff::Agree
+            } else {
+                Diff::Mismatch {
+                    kind: MismatchKind::Liveness,
+                    wasm: format!("trap {t}"),
+                    rust: format!("value {v}"),
+                }
+            }
+        }
     }
 }
 
@@ -1028,6 +1062,44 @@ mod tests {
             ),
             "got {d2:?}"
         );
+    }
+
+    /// A value-vs-(STACK-EXHAUSTION trap) split is a TOLERATED resource divergence (different backend
+    /// stack limits), NOT a liveness mismatch (breaker datapoint) — on either side. A SEMANTIC trap
+    /// (divide-by-zero) is still a liveness mismatch.
+    #[test]
+    fn value_vs_stack_exhaustion_trap_is_tolerated() {
+        for t in [
+            "call stack exhausted",
+            "wasm `unreachable` — call stack exhausted",
+            "thread 'main' has overflowed its stack",
+        ] {
+            assert!(
+                matches!(
+                    compare(&Side::Value("7".into()), &Side::Trap(t.into())),
+                    Diff::Agree
+                ),
+                "wasm-value vs resource-trap {t:?} should AGREE"
+            );
+            assert!(
+                matches!(
+                    compare(&Side::Trap(t.into()), &Side::Value("7".into())),
+                    Diff::Agree
+                ),
+                "resource-trap {t:?} vs rust-value should AGREE"
+            );
+        }
+        // A SEMANTIC trap is NOT tolerated — still a liveness mismatch.
+        assert!(matches!(
+            compare(
+                &Side::Value("7".into()),
+                &Side::Trap("integer divide by zero".into())
+            ),
+            Diff::Mismatch {
+                kind: MismatchKind::Liveness,
+                ..
+            }
+        ));
     }
 
     // ── verdict parsing ──────────────────────────────────────────────────────────────────────
