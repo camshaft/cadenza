@@ -263,8 +263,18 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let lifted: std::rc::Rc<[crate::lower::LiftedLambda]> = layout.lifted.clone().into();
 
     // One `(def …)` per reachable definition, in layout order (a stable, target-neutral order).
+    // DEDUP BY NAME: inlining a fn with a do-local nested `(def (f …))` at TWO call sites lifts the SAME
+    // nested def to the module root TWICE, yielding two `(def f …)` with identical bodies — which the
+    // front-end rejects (CDZ0201 "defined more than once", a module has a fixed name set). A Cadenza module's
+    // names are unique, so a repeated name in `layout.order` is the same lifted def; emit it once (the copies
+    // are byte-identical, so keeping the first is value-exact). A genuine same-name-different-body clash would
+    // itself be an un-round-trippable lowering fault (the same CDZ0201), so skipping is never worse.
+    let mut emitted_def_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for &def in &layout.order {
         let dn = db.defs[def].name.clone();
+        if !emitted_def_names.insert(dn.to_string()) {
+            continue;
+        }
         root_children.push(
             emit_def(db, &mut b, def, &emitted, &emitted_effects, &lifted)
                 .map_err(|e| with_def_context(e, &dn))?,
