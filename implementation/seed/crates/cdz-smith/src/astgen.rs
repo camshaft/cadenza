@@ -470,7 +470,7 @@ fn gen_main_body<C: Choice>(
 fn gen_list_producing_op_body<C: Choice>(c: &mut C, out: &mut String) {
     // Pick the FORM before consuming operand choices — else a short entropy seed exhausts the cursor
     // on the literals and `variant` always defaults to 0 (never reaching Set/Map.to-list).
-    let form = c.variant(4);
+    let form = c.variant(6);
     let (a, b, x, y) = (
         c.int_bounded(0, 4),
         c.int_bounded(5, 9),
@@ -485,23 +485,33 @@ fn gen_list_producing_op_body<C: Choice>(c: &mut C, out: &mut String) {
         // Set → ordered list → distinct count.
         2 => write!(out, "(List.len (Set.to-list (Set.of (list {a} {b} {x}))))").ok(),
         // Map → ordered entry list → entry count (keys a,b disjoint so two entries).
-        _ => write!(
+        3 => write!(
             out,
             "(List.len (Map.to-list (Map.insert (Map.insert Map.empty {a} {x}) {b} {y})))"
+        )
+        .ok(),
+        // PREPEND then count: `[a,b]` prepend `x` at the FRONT → len 3 (the front-insertion sibling of
+        // the push arm; a distinct list-builder lowering push never reaches).
+        4 => write!(out, "(List.len (List.prepend (list {a} {b}) {x}))").ok(),
+        // Prepend then read the FRONT element at index 0 → the prepended `x` (matched out of the Option).
+        _ => write!(
+            out,
+            "(match (List.at (List.prepend (list {a} {b}) {x}) 0) ((Some v) v) (None {y}))"
         )
         .ok(),
     };
 }
 
 /// A COLLECTION-OP body over small const collections, consumed to a scalar/Bool (value-comparable):
-/// `Set.union`/`Set.intersection`/`Set.difference`/`Set.remove`/`Map.remove` fed to `.len` (→ Int64), or
-/// `Set.contains` (→ Bool). Half the remove/contains cases target a PRESENT element, half an ABSENT one,
+/// `Set.union`/`Set.intersection`/`Set.difference`/`Set.remove`/`Map.remove`/`Map.merge` fed to `.len`
+/// (→ Int64), or `Set.contains` (→ Bool). Half the remove/contains cases target a PRESENT element, half
+/// an ABSENT one,
 /// so both outcomes are exercised. The binary set-algebra ops share ONE element (`b`) between the two
 /// operand sets so union/intersection/difference each yield a DISTINCT deterministic cardinality (the
 /// value the wasm-vs-rust diff grades — intersection={b}=1, difference={a}=1, union=3). Elements/keys are
 /// `0..=9`.
 fn gen_collection_op_body<C: Choice>(c: &mut C, out: &mut String) {
-    let form = c.variant(6);
+    let form = c.variant(7);
     let present = c.variant(2) == 0;
     let (a, b, d) = (
         c.int_bounded(0, 4),
@@ -539,9 +549,17 @@ fn gen_collection_op_body<C: Choice>(c: &mut C, out: &mut String) {
         )
         .ok(),
         // Set.difference cardinality — left-only elements survive (here `a`), the shared `b` is removed.
-        _ => write!(
+        5 => write!(
             out,
             "(Set.len (Set.difference (Set.of (list {a} {b})) (Set.of (list {b} {d}))))"
+        )
+        .ok(),
+        // Map.merge cardinality — the Map analogue of Set.union: merge two 2-entry maps sharing key `b`
+        // (map1 keys {a,b}, map2 keys {b,d}) → distinct-key count, deduping the shared key.
+        _ => write!(
+            out,
+            "(Map.len (Map.merge (Map.insert (Map.insert Map.empty {a} {b}) {b} {d}) \
+             (Map.insert (Map.insert Map.empty {b} {a}) {d} {b})))"
         )
         .ok(),
     };
@@ -2685,7 +2703,8 @@ mod tests {
             mut saw_mremove,
             mut saw_intersection,
             mut saw_difference,
-        ) = (false, false, false, false, false, false);
+            mut saw_merge,
+        ) = (false, false, false, false, false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1163);
             let mut bytes = Vec::new();
@@ -2702,6 +2721,7 @@ mod tests {
             saw_mremove |= body.contains("Map.remove");
             saw_intersection |= body.contains("Set.intersection");
             saw_difference |= body.contains("Set.difference");
+            saw_merge |= body.contains("Map.merge");
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2714,13 +2734,16 @@ mod tests {
         assert!(saw_mremove, "should reach Map.remove");
         assert!(saw_intersection, "should reach Set.intersection");
         assert!(saw_difference, "should reach Set.difference");
+        assert!(saw_merge, "should reach Map.merge");
     }
 
-    /// `gen_list_producing_op_body` REACHES all forms (List.push, Set.to-list, Map.to-list) and every
-    /// body COMPILES — filling the list-BUILDING collection ops the coercing grammar never reached.
+    /// `gen_list_producing_op_body` REACHES all forms (List.push, List.prepend, Set.to-list, Map.to-list)
+    /// and every body COMPILES — filling the list-BUILDING collection ops the coercing grammar never
+    /// reached.
     #[test]
     fn gen_list_producing_op_body_reaches_all_forms_and_compiles() {
-        let (mut saw_push, mut saw_settolist, mut saw_maptolist) = (false, false, false);
+        let (mut saw_push, mut saw_settolist, mut saw_maptolist, mut saw_prepend) =
+            (false, false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1277);
             let mut bytes = Vec::new();
@@ -2734,6 +2757,7 @@ mod tests {
             saw_push |= body.contains("List.push");
             saw_settolist |= body.contains("Set.to-list");
             saw_maptolist |= body.contains("Map.to-list");
+            saw_prepend |= body.contains("List.prepend");
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2741,6 +2765,7 @@ mod tests {
             );
         }
         assert!(saw_push, "should reach List.push");
+        assert!(saw_prepend, "should reach List.prepend");
         assert!(saw_settolist, "should reach Set.to-list");
         assert!(saw_maptolist, "should reach Map.to-list");
     }
