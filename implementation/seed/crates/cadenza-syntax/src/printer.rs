@@ -5779,33 +5779,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_empty_compound_quote_pattern_round_trips_and_never_panics() {
-        // NEVER-PANIC regression: the pattern printer's list arm was `List(items) if !items.is_empty()`,
-        // so an EMPTY `Struct::List([])` in pattern position (the inner `()` of a quote PATTERN
-        // `(quote ())`) fell to the `_` catch-all, which assumed a `Struct::Atom` and hit `unreachable!()`
-        // (verified by breaker + corpus-bugfix on `(match (quote ()) ((quote ()) 1) (_ 0))`). The fix: the
-        // printer renders an empty list pattern as `#[]` (mirroring `list()`'s expr-position escape), and
-        // the parser accepts `#[…]` as the raw-list pattern twin — so it round-trips to the same node.
-        let oracle = "(match (quote ()) ((quote ()) 1) (_ 0))";
-        let a = sexpr::read(oracle).unwrap();
-        let ml = print(&a, 80); // must NOT panic
-        assert!(
-            ml.contains("quote(#[])"),
-            "empty quote pattern renders `quote(#[])`: {ml}"
-        );
-        // The printed ML re-reads to a STRUCTURALLY IDENTICAL oracle (the empty-list node survives).
-        let back = parser::read_ml(&ml);
-        assert!(back.ok(), "reparse {ml:?}: {:?}", back.errors);
-        assert_eq!(
-            sexpr::print(&back.arenas).trim(),
-            oracle,
-            "empty-compound quote pattern round-trips to the same s-expr"
-        );
-        // Idempotent.
-        assert_eq!(print(&back.arenas, 80), ml, "not idempotent: {ml}");
-    }
-
+    // `an_empty_compound_quote_pattern_round_trips_and_never_panics` (an EMPTY list in pattern position — the
+    // inner `()` of a quote PATTERN `(quote ())` — renders as `quote(#[])`, the `#[]` raw-list pattern twin, and
+    // round-trips; the printer's list arm used to fall to a `_` catch-all `unreachable!()`) MIGRATED to the
+    // spec/syntax corpus (parser-corpus inc-8): ml/561-empty-quote-pattern-round-trip, `def f() = match
+    // quote(#[]) with | quote(#[]) => 1 | _ => 0` → `(def (f) (match (quote ()) ((quote ()) 1) (_ 0)))` — the
+    // tree.sexp + fmt round-trip drive the exact empty-list-pattern printer path, so a regression to the
+    // panicking catch-all would fail the corpus case (bless/read exercises it).
     #[test]
     fn a_non_last_handler_arm_with_a_greedy_block_body_parenthesizes_so_it_round_trips() {
         // ARM-EXTENT regression (breaker report): a handler arm whose BODY is a greedy block form
