@@ -231,7 +231,9 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
 * T1.10 — **ascription** (`(: e T)`, `ts:50-54`), constrain-not-override: unify `τ` with `T`, result `T`;
   a category clash is `CDZ0203`; an unmodeled `T`, or an int↔int width ascription (deferred to OQ-G), is
   `Unsupported` (never a false width-reject).
-Any other construct → `Unsupported` until its rule lands (App/Fn/Match). -/
+* T1.11 — **Fn** (`ts:28-36`): `(fn (p…) body)` gives each param a fresh var (bare) or its annotated
+  type, infers `body`, and yields the curried arrow `p₁→…→body`.
+Any other construct → `Unsupported` until its rule lands (App/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
@@ -421,8 +423,44 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                       | .ok st' => .ok (τT, st')
                       | .error e => .error e))
             | _, _ => .error (.unsupported "type oracle: malformed ascription")
+          else if h == "fn".toUTF8 then
+            -- T1.11 — Fn / closure introduction (`ts:28-36`): `(fn (p…) body)` gives each param a FRESH type
+            -- var (a bare `x`) or its annotated type (`(: x T)` via `parseTy?`), infers `body` under the
+            -- extended env, and yields the CURRIED arrow `p₁→…→body` (`inferBody`'s final `applySubst`
+            -- resolves any param var the body constrained). An annotated param whose type isn't modeled →
+            -- `Unsupported`. This is the intro rule; App (elim) reads the arrow back in a follow-up slice.
+            match children[1]?, children[2]? with
+            | some paramsId, some bodyId =>
+              (match m.nodes[paramsId]? with
+               | some (Ast.Node.list paramNodes) =>
+                 (match paramNodes.foldlM (m := Except InferFail)
+                     (fun (acc : List (ByteArray × Ty) × List Ty × InferState) pid =>
+                       match m.nodes[pid]? with
+                       | some (Ast.Node.atom lid) =>            -- bare param → fresh var
+                         (match m.leaves[lid]? with
+                          | some (.name nm) =>
+                            let α : Ty := .var acc.2.2.next
+                            .ok ((nm, α) :: acc.1, α :: acc.2.1, { acc.2.2 with next := acc.2.2.next + 1 })
+                          | _ => .error (.unsupported "type oracle: malformed fn param"))
+                       | some (Ast.Node.list pc) =>            -- (: name T)
+                         (match pc[1]?, pc[2]? with
+                          | some nId, some tId =>
+                            (match Eval.nameOf? m nId, parseTy? m tId with
+                             | some nm, some τ => .ok ((nm, τ) :: acc.1, τ :: acc.2.1, acc.2.2)
+                             | some _, none => .error (.unsupported "type oracle: fn param has an unmodeled type annotation")
+                             | none, _ => .error (.unsupported "type oracle: fn param missing name"))
+                          | _, _ => .error (.unsupported "type oracle: malformed fn param spec"))
+                       | none => .error (.unsupported "type oracle: malformed fn param"))
+                     (env, [], st) with
+                  | .ok (env', ptysRev, st') =>
+                    (match inferE m env' st' bodyId with
+                     | .ok (bodyτ, st'') => .ok (ptysRev.foldl (fun acc pτ => Ty.fn pτ acc) bodyτ, st'')
+                     | .error e => .error e)
+                  | .error e => .error e)
+               | _ => .error (.unsupported "type oracle: fn params not a list"))
+            | _, _ => .error (.unsupported "type oracle: malformed fn")
           else .error (.unsupported
-            "type oracle: construct not yet modeled (T1 — App/Fn/Match rules land next)")
+            "type oracle: construct not yet modeled (T1 — App/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
       | _ => .error (.unsupported "type oracle: node not modeled")
 
@@ -695,6 +733,28 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                                  .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
                                  .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
                       root := 12 } with | .unsupported _ => true | _ => false)
+-- T1.11 (Fn): `(fn (x) (+ x 1))` — the arithmetic body constrains the fresh param var to Int → Int→Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "fn".toUTF8,
+                            .name "x".toUTF8, .name "+".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 4, .list #[0],                   -- (x)
+                           .atom 5, .atom 4, .atom 6, .list #[2, 3, 4],  -- (+ x 1)
+                           .atom 3, .list #[6, 1, 5],             -- (fn (x) (+ x 1))
+                           .atom 2, .list #[8], .atom 1, .list #[10, 9, 7],  -- (def (main) <fn>)
+                           .atom 7, .atom 2, .list #[12, 13], .atom 0, .list #[15, 11, 14]],
+                root := 16 } == .wellTyped (.fn (.int 64 true) (.int 64 true)))
+-- T1.11 (Fn): `(fn ((: b Bool)) (if b 1 2))` — an annotated param + an if body → Bool→Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "fn".toUTF8,
+                            .name ":".toUTF8, .name "b".toUTF8, .name "Bool".toUTF8, .name "if".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .atom 6, .list #[0, 1, 2],   -- (: b Bool)
+                           .list #[3],                            -- ((: b Bool))
+                           .atom 7, .atom 5, .atom 8, .atom 9, .list #[5, 6, 7, 8],  -- (if b 1 2)
+                           .atom 3, .list #[10, 4, 9],            -- (fn ((: b Bool)) (if b 1 2))
+                           .atom 2, .list #[12], .atom 1, .list #[14, 13, 11],  -- (def (main) <fn>)
+                           .atom 10, .atom 2, .list #[16, 17], .atom 0, .list #[19, 15, 18]],
+                root := 20 } == .wellTyped (.fn .bool (.int 64 true)))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
