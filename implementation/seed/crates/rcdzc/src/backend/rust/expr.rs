@@ -3935,11 +3935,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // classifies as `overflow` — agreeing with the wasm side's native `i32.div_s` MIN/-1 overflow trap.
         Core::TrapOverflow => Ok("panic!(\"integer overflow\")".to_string()),
         // EFFECT NON-LOCAL EXIT (an abortive handler arm's non-tail perform). The effect lowering + its
-        // non-local-branch emit are wasm-only today; the Rust backend does not yet build this construct, so
-        // it declines (CDZ0900 deferred-emit, not a program error) rather than mis-render it.
-        Core::HandleAbort { .. } => Err(Reject::unsupported(
-            "an abortive-handler non-local exit (HandleAbort) is not yet emitted by the Rust backend",
-        )),
+        // EFFECT NON-LOCAL EXIT (CASE 1) — the Rust twin of the wasm `emit(value); Lir::Return`. The fold
+        // produces `HandleAbort` ONLY for a WHOLE-DEF-BODY handle (see the `Core::HandleAbort` doc), which the
+        // Rust backend lowers as a plain `fn`, so a native `return <value>` performs the non-local exit: the
+        // abort value IS the enclosing function's result (== the handle result, E4-guaranteed), abandoning the
+        // pending continuation. `return e` is a `!`-typed expression (coerces to any result position, like
+        // `Core::Trap`'s `panic!`), so it validates wherever the abort sits — e.g. an `if` branch.
+        Core::HandleAbort { value, .. } => {
+            let v = emit(db, value, env, ctx)?;
+            Ok(format!("return {v}"))
+        }
         // Runtime BigInt ops → `cdz_num::Big` value ops (the SAME bignum the wasm runtime uses, shared by
         // source via the `cdz-num` crate). `Big` methods BORROW their operands and return an owned `Big`.
         // `BigInt.of x` on a runtime fixed-width int — widen the i64-slot value into a `Big`. (A CONSTANT
