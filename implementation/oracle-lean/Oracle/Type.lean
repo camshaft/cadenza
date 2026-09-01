@@ -192,6 +192,9 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
   yields the resolved branch type. A condition-not-`Bool` or a branch clash is `IllTyped CDZ0203`.
 * T1.3 — **comparison / equality** (`< > <= >=` and `=`, `ts:186-188`): `(OP a b)` unifies the two
   operand types (a shape mismatch is a genuine type error) and yields `Bool`; an operand clash is `CDZ0203`.
+* T1.4 — **arithmetic** (`+ - * / %`, §4): `(OP a b)` unifies the operands and requires the result to be
+  numeric (`Int` → that int type); a same-typed non-numeric operand is `IllTyped CDZ0301`, a mixed clash
+  `CDZ0203`. A Float operand (not a modeled scalar) → `Unsupported` (never a false `Int`-reject).
 Any other construct → `Unsupported` until its rule lands (ascription/App/Let/Fn/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
@@ -232,6 +235,25 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                 let st ← unifyInfer τa τb st
                 .ok (.bool, st)
             | _, _ => .error (.unsupported "type oracle: malformed comparison")
+          else if (String.fromUTF8? h).elim false (fun s => Eval.arithOps.contains s) then
+            -- T1.4 — ARITHMETIC (`+ - * / %`): `(OP a b)` unifies the two operands, then requires the result
+            -- to be NUMERIC — `Int` → result that int type; a same-typed NON-numeric operand (`Bool`/`String`/
+            -- `Char`/`Unit`) is `IllTyped CDZ0301` NumericMismatch (§4). A mixed operand clash was already
+            -- caught by the unify (`CDZ0203`). `never` absorbs (`(+ (trap) x)`). SOUND on float: a float
+            -- literal isn't a modeled scalar (`scalarLitTy?` declines it) → its operand is `Unsupported` →
+            -- the whole expr skips, never a false `Int`-reject of valid Float arithmetic. A still-unresolved
+            -- operand type → `Unsupported` (can't classify numeric-ness).
+            match children[1]?, children[2]? with
+            | some aId, some bId => do
+                let (τa, st) ← inferE m env st aId
+                let (τb, st) ← inferE m env st bId
+                let st ← unifyInfer τa τb st
+                match applySubst st.subst τa with
+                | .int w sg => .ok (.int w sg, st)
+                | .never => .ok (.never, st)
+                | .bool | .string | .char | .unit => .error (.illTyped "CDZ0301")
+                | _ => .error (.unsupported "type oracle: arithmetic on an unresolved/unmodeled operand type")
+            | _, _ => .error (.unsupported "type oracle: malformed arithmetic (unary or partial)")
           else .error (.unsupported
             "type oracle: construct not yet modeled (T1 — ascription/App/Let/Fn/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
@@ -366,6 +388,28 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[8], .atom 1, .list #[10, 9, 7],       -- (def (main) …)
                            .atom 9, .atom 2, .list #[12, 13], .atom 0, .list #[15, 11, 14]],
                 root := 16 } == .wellTyped (.int 64 true))
+-- T1.4 (arithmetic): `(+ 1 2)` — numeric operands → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "+".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .wellTyped (.int 64 true))
+-- T1.4 (arithmetic): `(+ #t #f)` — same-typed but NON-numeric operands → IllTyped CDZ0301 NumericMismatch.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "+".toUTF8,
+                            .boolLit true, .boolLit false, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .illTyped "CDZ0301")
+-- T1.4 (arithmetic): `(+ 1 #t)` — mixed operand clash → IllTyped CDZ0203 (caught by unify before the numeric check).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "+".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .boolLit true, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .illTyped "CDZ0203")
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
