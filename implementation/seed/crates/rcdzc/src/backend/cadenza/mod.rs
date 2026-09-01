@@ -1897,13 +1897,57 @@ fn emit_expr_viewed(
                 }
             }
             let sig = b.list(sig_children);
+            // A CAPTURED value that is neither a parameter NAME nor an in-scope `let` (e.g. a runtime Call
+            // the optimizer inlined into the capture list without let-binding it) has NO surface name for
+            // the body's `Core::Captured` read → the read would decline. HOIST each such capture into a
+            // `let` binding wrapped around the `(fn …)`: emit its value ONCE, bind a fresh name, register
+            // (capture-node → name) so `Core::Captured` resolves — the surface analogue of the wasm
+            // backend's implicit capture (evaluate at closure creation, store in the cell). The result
+            // `(let ((c0 <cap0-value>) …) (fn (params) body))` re-lowers to the same closure (c0 is now a
+            // let-binder the fn captures). A capture already resolvable (a param / in-scope let) is left
+            // as-is. The hoisted names are removed after this closure's body so they do not leak to siblings.
+            let mut hoisted: Vec<(std::rc::Rc<str>, StructId)> = Vec::new();
+            let mut inserted_keys: Vec<StructId> = Vec::new();
+            for &cap in lifted.captures.iter() {
+                let resolvable = db.ast.as_name(cap).is_some() || env.lets.contains_key(&cap);
+                // SAFETY (why hoisting the capture VALUE is sound, not an effect-doubling miscompile): the ANF
+                // effect-sequencing invariant guarantees the optimizer never inlines an EFFECTFUL expression
+                // into a capture list — a `perform`/`HostCall` is a SEQUENCED statement (let-bound / in a
+                // `Seq`), so a closure captures the (pure) RESULT binder (resolvable via `env.lets`, not
+                // hoisted), never a live effectful value. Thus a capture reaching THIS branch (un-resolvable →
+                // an inlined value) is a PURE expression; evaluating it once in the hoisted `let` matches the
+                // wasm backend's evaluate-once-at-creation capture. (Value-eq; sharing across sibling closures
+                // is lost — each hoists its own copy — a benign double-eval, not a wrong value.)
+                if !resolvable {
+                    let cname = synth_binding_name(env.lets.len());
+                    let cap_val = emit_expr(db, b, cap, None, env, emitted)?;
+                    env.lets.insert(cap, cname.clone());
+                    inserted_keys.push(cap);
+                    hoisted.push((cname, cap_val));
+                }
+            }
             // Emit the lifted body with THIS lambda's captures in scope (save/restore for nesting).
             let saved = env.current_captures.take();
             env.current_captures = Some(lifted.captures.clone().into());
             let body_res = emit_expr(db, b, lifted.body, None, env, emitted);
             env.current_captures = saved;
+            for k in &inserted_keys {
+                env.lets.remove(k);
+            }
             let body_node = body_res?;
-            Ok(b.list(vec![fn_head, sig, body_node]))
+            let fn_node = b.list(vec![fn_head, sig, body_node]);
+            if hoisted.is_empty() {
+                Ok(fn_node)
+            } else {
+                let let_head = b.name("let");
+                let mut binding_nodes = Vec::with_capacity(hoisted.len());
+                for (cname, cval) in hoisted {
+                    let name_atom = b.name(cname);
+                    binding_nodes.push(b.list(vec![name_atom, cval]));
+                }
+                let bindings_list = b.list(binding_nodes);
+                Ok(b.list(vec![let_head, bindings_list, fn_node]))
+            }
         }
         // A read of the k-th CAPTURED free variable inside a lifted closure body — re-emit the enclosing
         // binding's LEXICAL surface name (`lifted.captures[index]` is that binding's binder occurrence). A
