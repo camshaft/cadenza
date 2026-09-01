@@ -353,7 +353,23 @@ fn binder_of_param(ast: &Arenas, slot: StructId) -> StructId {
 /// An empty `Ast.List` (a compound with no operator — malformed AST) reconstructs to `(trap "malformed
 /// AST")`: eval of a malformed AST is a runtime halt (`metaprogramming.md` §Eval Is Optional: "eval on
 /// malformed AST traps"), not a value.
+/// Reconstruct an `Ast.*` value back to the SOURCE it denotes — the `eval` path (a bare name / computed
+/// active-unquote operand passes through to fold in the enclosing scope; a spliced `Ast` VALUE stays an
+/// `Ast`, so an `Ast` in a numeric position is the deliberate CDZ0201 reject).
 pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+    reconstruct_inner(ast, node, false)
+}
+
+/// Reconstruct for MACRO EXPANSION — like [`reconstruct`] but SEES THROUGH a spliced reflected `Ast`
+/// construction at an `ast-lift` operand (a macro's reified `quote`-parameter argument: `,x` where `x` was
+/// bound to `(Ast.Int 5)` reconstructs to `5`, its denotation, not the constructor call). A macro's `,x`
+/// splices SYNTAX (code), so its expansion is real code; distinct from `eval`, where a spliced `Ast` value
+/// is data and must not be seen through (DESIGN-macro-system.md §4).
+pub(crate) fn reconstruct_macro(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+    reconstruct_inner(ast, node, true)
+}
+
+fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -> Option<StructId> {
     // `(Ast.Int payload)` -> the payload AS SOURCE. `Ast.Int` arises two ways, both reconstructing to the
     // payload node itself: (a) a reified INTEGER LITERAL `(Ast.Int 42)` — payload is the literal `42`, whose
     // source is `42`; (b) an ACTIVE-UNQUOTE lift `(Ast.Int <e>)` where `reify_active` wrapped the unquote's
@@ -386,6 +402,14 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
     // So `(eval (quasiquote (+ (unquote x) 4)))` — whose `,x` now reifies to `(ast-lift x)` rather than a
     // literal-dispatched `(Ast.Int x)` — reconstructs to `(+ x 4)` and folds in the eval's enclosing scope.
     if let Some(payload) = ast_lift_arg(ast, node) {
+        // eval (see_through_lift = false): pass the operand through unchanged — a bare name / computed
+        // expr folds in scope, and a spliced `Ast` VALUE stays an `Ast` (an Ast in a numeric position is
+        // the deliberate CDZ0201 reject). MACRO (true): the operand is a reflected quote-param argument
+        // (syntax), so reconstruct it to its DENOTATION (`(Ast.Int 5)` → `5`); a non-Ast operand
+        // (`unwrap_or`) still passes through.
+        if see_through_lift {
+            return Some(reconstruct_inner(ast, payload, true).unwrap_or(payload));
+        }
         return Some(payload);
     }
     // `(Ast.Bool payload)` -> the payload AS SOURCE (the `true`/`false` literal node). Like `Ast.Int`,
@@ -418,7 +442,7 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
         }
         let mut children = Vec::with_capacity(elems.len());
         for e in elems {
-            children.push(reconstruct(ast, e)?);
+            children.push(reconstruct_inner(ast, e, see_through_lift)?);
         }
         return Some(push_list(ast, children));
     }
@@ -436,7 +460,7 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
             let elems = list_elems(ast, payload)?;
             let mut children = vec![push_atom(ast, Leaf::Ctor(ctor))];
             for e in elems {
-                children.push(reconstruct(ast, e)?);
+                children.push(reconstruct_inner(ast, e, see_through_lift)?);
             }
             return Some(push_list(ast, children));
         }
@@ -458,12 +482,12 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
                 // face of the #6855 fix; without this a quoted map/record-rest pattern closed and its match
                 // fell through to the catch-all).
                 if ast_ctor_arg(ast, fp, "FieldPair").is_some() {
-                    let (k, v) = reconstruct_field_pair(ast, fp)?;
+                    let (k, v) = reconstruct_field_pair(ast, fp, see_through_lift)?;
                     let eq = push_atom(ast, Leaf::FieldPair);
                     let entry = push_list(ast, vec![eq, k, v]);
                     children.push(entry);
                 } else {
-                    children.push(reconstruct(ast, fp)?);
+                    children.push(reconstruct_inner(ast, fp, see_through_lift)?);
                 }
             }
             return Some(push_list(ast, children));
@@ -472,8 +496,8 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
     // `Ast.Member (tuple <obj> <key>)` -> the member access `(. <recon obj> <recon key>)`.
     if let Some(payload) = ast_ctor_arg(ast, node, "Member") {
         let (obj, key) = tuple2_of(ast, payload)?;
-        let obj = reconstruct(ast, obj)?;
-        let key = reconstruct(ast, key)?;
+        let obj = reconstruct_inner(ast, obj, see_through_lift)?;
+        let key = reconstruct_inner(ast, key, see_through_lift)?;
         let dot = push_atom(ast, Leaf::Name(".".into()));
         return Some(push_list(ast, vec![dot, obj, key]));
     }
@@ -482,10 +506,17 @@ pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> 
 
 /// Reconstruct an `Ast.FieldPair (tuple <key-ast> <value-ast>)` to its `(reconstructed key, reconstructed
 /// value)` source pair. `None` if `node` is not a well-formed `Ast.FieldPair` over a 2-tuple.
-fn reconstruct_field_pair(ast: &mut Arenas, node: StructId) -> Option<(StructId, StructId)> {
+fn reconstruct_field_pair(
+    ast: &mut Arenas,
+    node: StructId,
+    see_through_lift: bool,
+) -> Option<(StructId, StructId)> {
     let payload = ast_ctor_arg(ast, node, "FieldPair")?;
     let (k, v) = tuple2_of(ast, payload)?;
-    Some((reconstruct(ast, k)?, reconstruct(ast, v)?))
+    Some((
+        reconstruct_inner(ast, k, see_through_lift)?,
+        reconstruct_inner(ast, v, see_through_lift)?,
+    ))
 }
 
 /// The two element occurrences of a `(tuple a b)` 2-tuple value form — the `(Tuple Ast Ast)` payload shape

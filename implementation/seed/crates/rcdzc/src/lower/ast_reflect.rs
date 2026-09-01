@@ -642,7 +642,9 @@ pub(super) fn expand_quote_macro(db: &mut Db, head: StructId, args: &[StructId])
     }
     // β-reduce to the result `Ast`, reconstruct to source, seed the spliced subtree's scope, then lower it.
     let reduced = crate::eval::apply_lambda(db, head, &new_args).ok()??;
-    let src = crate::eval_ast::reconstruct(&mut db.ast, reduced)?;
+    // `reconstruct_macro` (not `reconstruct`) — SEE THROUGH a spliced reflected quote-param arg so `,x`
+    // expands to the argument's SYNTAX (its denotation), not an inert Ast constructor call.
+    let src = crate::eval_ast::reconstruct_macro(&mut db.ast, reduced)?;
     db.extend_scope_skip_into_subtree(src);
     Some(core_of(db, src))
 }
