@@ -4528,3 +4528,22 @@ cases
   (call f (: 5 Int64))
   (output (: (Ok #record((= a 5))) (Result (Record (: a Int64)) (Record (: b Int64)))))
   (live-objects known-leak))
+
+(case
+  "a nested option<option<s64>> EXPORT result crosses — a SUM inside an option payload"
+  (doc
+    "SHAPE 82 - a typed `option<option<s64>>` EXPORT result: the outer option's payload is ITSELF an option (a nested SUM), distinct from option<scalar/record/list/bytes> (SHAPE 8/66/79/80). `canon_write_of`'s option arm recurses its payload into the option arm again (disc byte + a nested {disc, payload} at the canonical layout). f(x>0) -> Some(Some(x)), else Some(None); x=5 -> Some(Some(5)). Value-verified; 0-leak reclaim rides #7226. KNOWN-LEAK pin kept for SpillRecord-result-family parity (now over-specified since #7226).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member f (func (param x (s64)) (result (option (option (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (f (: x Int64)) (if (> x 0) (Some (Some x)) (Some None)))
+      (export f)))
+  (call f (: 5 Int64))
+  (output (: (Some (Some 5)) (Option (Option Int64))))
+  (live-objects known-leak))
