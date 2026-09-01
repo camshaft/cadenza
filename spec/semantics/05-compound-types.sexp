@@ -453,6 +453,18 @@
     (no-fix)))
 
 (case
+  "a nullary (Set.of) is an arity error, not a compiler crash"
+  (doc
+    "`Set.of` takes exactly ONE argument — the list of elements. A NULLARY `(Set.of)` is an arity
+           error and MUST decline with a coded CDZ0203 ('`Set.of` takes 1 argument, but 0 were given'),
+           NOT crash the compiler. Regression witness for a fault-walk panic (v-cdz-smith seed 14142135):
+           the `Set.of` arm of the inference fault walk read `args[0]` unguarded, so a zero-argument
+           `(Set.of)` panicked rcdzc with an index-out-of-bounds instead of declining. The compiler must
+           never panic on any input — only decline. Pins the graceful arity decline.")
+  (input (do (def (main) (Set.of)) (export main)))
+  (error CDZ0203))
+
+(case
   "named member access on a String redirects to the String operation module"
   (input (do (def (g (: str String)) str.foo) (export g)))
   (error

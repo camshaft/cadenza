@@ -8647,6 +8647,7 @@ pass	mx4 a FOUR-param op mixing two Int64s, a NARROW UInt8, and a Bool — the n
 pass	named member access on a List redirects to the List operation module
 pass	named member access on a Map redirects to the Map operation module
 pass	named member access on a Set redirects to the Set operation module
+pass	a nullary (Set.of) is an arity error, not a compiler crash
 pass	named member access on a String redirects to the String operation module
 pass	named member access on a sum redirects to a match template over its variants
 pass	named member access on a user sum spells its own variants and payload binders in the match template

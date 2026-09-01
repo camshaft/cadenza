@@ -1827,26 +1827,42 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // descending into the list ARG here would RE-derive the list's own CDZ0203 (a redundant,
                 // wrong-coded duplicate of the fault already reported). Instead descend into each ELEMENT
                 // directly (a nested per-element fault still surfaces), never the list node as a whole.
-                let list = args[0];
-                let elems: Vec<StructId> = match resolved_of(db, list) {
-                    Resolved::List { elems } => elems.to_vec(),
-                    Resolved::Apply { head: lh, args: la }
-                        if crate::eval::meta_apply_of(db, lh)
-                            == Some(crate::resolved::Prim::ListNew) =>
-                    {
-                        la.to_vec()
+                // A NULLARY `(Set.of)` has NO list argument. `check_application`'s `Set.of` homogeneity
+                // check is guarded on `args.len() == 1`, so it emits nothing for zero args — and an
+                // unguarded `args[0]` here panicked the fault walk (index-OOB, v-cdz-smith seed
+                // 14142135). The compiler must DECLINE, never crash: emit the coded CDZ0203 arity fault
+                // (the "`X.of` takes N argument, but M were given" convention) so `(Set.of)` declines
+                // cleanly. Guard with `args.first()`; the ≥1-arg path is unchanged.
+                if let Some(&list) = args.first() {
+                    let elems: Vec<StructId> = match resolved_of(db, list) {
+                        Resolved::List { elems } => elems.to_vec(),
+                        Resolved::Apply { head: lh, args: la }
+                            if crate::eval::meta_apply_of(db, lh)
+                                == Some(crate::resolved::Prim::ListNew) =>
+                        {
+                            la.to_vec()
+                        }
+                        // Not a visible list literal (a runtime list operand) — collect it normally.
+                        _ => {
+                            collect(db, list, out);
+                            Vec::new()
+                        }
+                    };
+                    // (The sibling-width CDZ0302 range-check for `Set.of` elements runs in
+                    // `check_application`'s `Set.of` arm — the homogeneous-set path — which sees the
+                    // settled element type; this `collect` arm only descends into each element for its
+                    // OWN nested faults.)
+                    for &e in &elems {
+                        collect(db, e, out);
                     }
-                    // Not a visible list literal (a runtime list operand) — collect it normally.
-                    _ => {
-                        collect(db, list, out);
-                        Vec::new()
-                    }
-                };
-                // (The sibling-width CDZ0302 range-check for `Set.of` elements runs in `check_application`'s
-                // `Set.of` arm — the homogeneous-set path — which sees the settled element type; this
-                // `collect` arm only descends into each element for its OWN nested faults.)
-                for &e in &elems {
-                    collect(db, e, out);
+                } else {
+                    out.push(
+                        Reject::coded(
+                            Code::TypeMismatch,
+                            "`Set.of` takes 1 argument, but 0 were given".to_string(),
+                        )
+                        .at(id),
+                    );
                 }
             } else {
                 for &arg in args.iter() {
