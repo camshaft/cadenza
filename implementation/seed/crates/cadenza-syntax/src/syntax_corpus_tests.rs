@@ -143,19 +143,55 @@ fn syntax_corpus_goldens_are_self_consistent() {
                 // A decline. It must NOT carry a tree.sexp (a well-formed case that regressed to a
                 // decline would still have its golden — catch that). An optional `error.txt` pins a
                 // substring the diagnostic must contain (DESIGN §10 parse-error-quality); an unpinned
-                // decline just records that it declines.
+                // decline just records that it declines. An optional `recovered.sexp` pins the PARTIAL
+                // tree the reader RECOVERS despite the error (error-RECOVERY quality: a decline that
+                // still yields a usable, well-formed arena rather than bailing/panicking).
                 if tree_path.exists() {
                     failures.push(format!(
                         "{label}: input DECLINES ({e}) but a tree.sexp golden exists — a well-formed \
                          case regressed to a decline, or delete tree.sexp to record it as a decline case"
                     ));
-                } else if let Ok(want) = std::fs::read_to_string(case.join("error.txt")) {
-                    let want = want.trim();
-                    if !want.is_empty() && !e.to_string().contains(want) {
-                        failures.push(format!(
-                            "{label}: decline message {:?} lacks the pinned error.txt substring {want:?}",
-                            e.to_string()
-                        ));
+                } else {
+                    if let Ok(want) = std::fs::read_to_string(case.join("error.txt")) {
+                        let want = want.trim();
+                        if !want.is_empty() && !e.to_string().contains(want) {
+                            failures.push(format!(
+                                "{label}: decline message {:?} lacks the pinned error.txt substring \
+                                 {want:?}",
+                                e.to_string()
+                            ));
+                        }
+                    }
+                    // OPT-IN recovery golden: only blessed/checked when `recovered.sexp` is present in the
+                    // case dir (most declines don't recover to a meaningful tree). ML-only — `read_ml`
+                    // recovers into `parsed.arenas` even on error; the other surfaces don't expose a
+                    // recovered partial tree here.
+                    let recovered_path = case.join("recovered.sexp");
+                    if recovered_path.exists() {
+                        if surface != Format::Ml {
+                            failures.push(format!(
+                                "{label}: recovered.sexp is ML-surface only (read_ml is the recovering \
+                                 reader)"
+                            ));
+                        } else {
+                            let text = std::str::from_utf8(&input).expect("ml input is utf-8");
+                            let recovered = tree_golden(&crate::parser::read_ml(text).arenas);
+                            if bless {
+                                std::fs::write(&recovered_path, &recovered)
+                                    .expect("write recovered.sexp");
+                            } else {
+                                match std::fs::read(&recovered_path) {
+                                    Ok(have) if have == recovered => {}
+                                    Ok(_) => failures.push(format!(
+                                        "{label}: recovered.sexp mismatch — render_sexpr of the recovered \
+                                         arena differs from the golden (re-bless if recovery changed)"
+                                    )),
+                                    Err(err) => {
+                                        failures.push(format!("{label}: reading recovered.sexp: {err}"))
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 continue;
@@ -163,7 +199,14 @@ fn syntax_corpus_goldens_are_self_consistent() {
         };
 
         // A well-formed case MUST NOT be mislabeled as a decline: if it parses, it needs a golden.
-        // tree.sexp — the structural parse-tree golden.
+        // tree.sexp — the structural parse-tree golden. A `recovered.sexp` is a DECLINE-only golden (the
+        // partial tree after error recovery); a case that parses clean has no "recovered" tree.
+        if case.join("recovered.sexp").exists() {
+            failures.push(format!(
+                "{label}: recovered.sexp present but the input parses clean — recovered.sexp records the \
+                 partial tree of a DECLINE (error-recovery) case; delete it (this is a well-formed case)"
+            ));
+        }
         let want_tree = tree_golden(&arena);
         if bless {
             std::fs::write(&tree_path, &want_tree).expect("write tree.sexp");
