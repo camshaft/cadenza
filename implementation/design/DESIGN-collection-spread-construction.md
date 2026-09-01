@@ -117,6 +117,55 @@ Reuse the existing `vec-concat`/`vec-push` ops + the derived `concat(list-new(el
 leading `..s` followed by a single inline `x` is exactly the existing `concat(list-new(x), list)` shape
 run in reverse, so no new runtime op is needed.
 
+### 4a. Implementation mechanism (rcdzc — CONCRETE, resolves §4's hand-wave; v-ast-compound, 2026-09-01)
+
+§4 said "segment then fold" without pinning HOW, and the shipped IR forces a specific realization.
+Findings from a build spike:
+
+- **`Core` nodes reference AST `StructId` OCCURRENCES, not boxed `Core`.** `Core::ListNew { elems:
+  Rc<[StructId]> }` and `Core::ListConcat { lhs: StructId, rhs: StructId }` (core.rs ~419/443) both hold
+  occurrence ids that the backend RE-LOWERS via `core_of`. So a fold cannot be built by nesting `Core`
+  values directly — each `ListConcat` arm needs an AST occurrence that itself lowers to a list.
+- **NO new IR is needed.** The existing `List.concat` fold already collapses two constant `#list` operands
+  into one `Core::ListNew` and otherwise emits the runtime `Core::ListConcat` (compute.rs ~2315). So the
+  desugar target is an **AST-level rewrite into `(List.concat …)` calls over synthetic `#list(…)`
+  inline-run nodes**, then normal lowering handles everything (fold, typing, const-bake) for free.
+- **Synthesis primitives exist:** `db.push_compound(CompoundCtor::List, children)` (a `#list(…)` node),
+  `db.push_name("List.concat")`, `db.push_list([...])` (db.rs ~3871-3979) — the same family
+  `lower/match_desugar.rs`'s `fuse_match_into_if` uses.
+
+**The desugar (list):** segment the ctor children into maximal inline runs and spread operands via
+`db.ast.as_form(elem, "..")` (`Some([operand])` iff the child is a `(.. operand)` node). Then fold
+left-to-right: an inline run `[x, y]` → `push_compound(List, [x, y])`; a spread `..s` → `s` (the operand
+occurrence, reused as-is — already a `List<T>`); combine adjacent segments with a synthesized
+`(List.concat A B)` call. A single leading spread with no inline is just `s` copied (`concat([], s)`).
+
+**⚠ THE REPARENTING TRAP (must handle, per match_desugar's precedent):** reusing an element occurrence
+(`x`, or the spread operand `s`) as a child of a SYNTHETIC node reparents it — "a single node cannot have
+two parents; push_list reparents" (match_desugar.rs:26). The resolver resolves a name by walking UP the
+AST to the nearest binder, so a reused occurrence `n` (a bound param) MUST still reach its enclosing
+scope after reparenting. The synthesized top-level concat node has to be spliced where the original
+`(list …)` node sat (inherit its parent), and — as match_desugar does — reused sub-nodes may need
+re-resolution. This is the one real correctness risk; get it right before landing (test a spread whose
+inline element AND spread operand are both enclosing-scope binders, e.g. `#list(1 (.. xs) n)` with `n` a
+param — exactly the `cspr1` fence).
+
+**Consumer sites that must treat a `(.. operand)` list child as the operand (else the `..` head resolves
+→ CDZ0201):** (1) `lower/compute.rs` `Resolved::List` arm (~714) — the desugar entry; (2) `infer.rs`
+`type_of` `Resolved::List` (~586) and (3) `reflected_ty` `Resolved::List` (~3695) — a spread elem
+contributes `peel_list(type_of(operand))` to the element-type join, not `type_of(elem)`; (4) the
+error-collection walk that surfaces the CDZ0201 — must recurse into the operand, not the `(.. )` wrapper.
+Doing (1)-(4) means the bare-`..` `resolve_name` reject (resolve.rs:1090) stays intact for a `..` that is
+NOT a direct construction child, so NO blanket resolve relaxation is required (the reject simply never
+fires for a properly-desugared construction child). §5's const-hoist decline: a spread-bearing literal is
+not a constant compound — the desugar produces a `ListConcat` (runtime) whenever a spread operand is
+runtime, so the const path is not reached; a fully-constant spread (`#list(1 (.. #list(2 3)) 4)`) folds
+to one `ListNew` via the existing `List.concat` constant-fold, which is correct (still a fresh list).
+
+**Corpus witness that auto-flips:** `cspr1` (ch05 ~34981) — `#list(1 (.. xs) n)` must build `[1,10,20,n]`
+— currently declines CDZ0201 (`todo`), flips to PASS when this lands. Add sibling witnesses per edge case
+(empty spread, all-spread, leading/trailing/interior, constant-only fold).
+
 **Edge cases (all lower cleanly with the fold):**
 - **no spread** — the ordinary `(list …)` construction (unchanged; NOT this path).
 - **single spread, no inline** — `[..c]` ≡ a copy of `c` (`List.concat([], c)` or just `c`-copy; pick the
