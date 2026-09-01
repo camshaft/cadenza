@@ -2822,10 +2822,8 @@ pub(crate) fn op_map_iter_val(cur: Handle) -> Handle {
 /// `a` returned; empty `a` → `b`'s entries re-inserted into empty = `b`). rc-balanced: `b`'s surviving
 /// entries are `dup`'d into `acc` before `b` is dropped, so no leak and no double-free.
 ///
-/// STAGED (Phase 1 of the map-merge dispatch): not yet WIT-exported/wired — `#[allow(dead_code)]` like
-/// the sibling `op_map_iter_next`/`_key`/`_val`; the `map-merge` WIT export + `Core::MapMerge` + backend
-/// arms + `Map.union` prelude land in the coordinated hash-bump flag-day (Phases 2-5).
-#[allow(dead_code)]
+/// Wired via the `map-merge` WIT export (op 98) + the `Guest::map_merge` impl; the `Core::MapMerge`
+/// variant + backend arms + `Map.union` prelude ride the same coordinated hash-bump flag-day.
 pub(crate) fn op_map_merge(a: Handle, b: Handle) -> Handle {
     let mut acc = a;
     let mut cur = op_map_iter(b); // BORROWS b (dups the focused descent frames into the cursor)

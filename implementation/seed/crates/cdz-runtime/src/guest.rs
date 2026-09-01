@@ -715,6 +715,9 @@ impl Guest for Component {
     fn map_remove(m: u32, key: u32) -> u32 {
         op_map_remove(Handle::from_u32(m), Handle::from_u32(key)).to_u32()
     }
+    fn map_merge(a: u32, b: u32) -> u32 {
+        op_map_merge(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
     fn map_size(m: u32) -> u32 {
         op_map_size(Handle::from_u32(m))
     }
