@@ -1159,6 +1159,21 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: List.push on a non-list value")
            | _, _ => .cannotProve "symeval: malformed List.push")
+        else if q == "List".toUTF8 && mem == "prepend".toUTF8 then
+          -- `List.prepend lst x` → `x` CONSED AT THE FRONT (`.ctor "list" (#[x] ++ elems)`): the front
+          -- analogue of `List.push` (append). Lists are ORDERED + strict, so no canonicalization — index 0
+          -- is the prepended element. Closes v-cdz-smith's #7513 List.prepend boundary. Non-list operand /
+          -- unmodelable `x` → cannotProve.
+          (match children[1]?, children[2]? with
+           | some lId, some xId =>
+             (match symEval m senv fuel ty lId, symEval m senv fuel ty xId with
+              | .sym (.ctor t elems), .sym xe =>
+                if t == "list".toUTF8 then .sym (.ctor "list".toUTF8 (#[xe] ++ elems))
+                else .cannotProve "symeval: List.prepend on a non-list value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: List.prepend on a non-list value")
+           | _, _ => .cannotProve "symeval: malformed List.prepend")
         else if q == "List".toUTF8 && (mem == "at".toUTF8 || mem == "get".toUTF8) then
           -- `List.at lst i` / `List.get lst i` (concrete list + concrete int index) → `Some lst[i]` when
           -- `0 ≤ i < len`, else `None` — byte-faithful to `evalNode` (Eval.lean:1737-1745). PURELY
@@ -1653,6 +1668,30 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, _, .cannotProve r => .cannotProve r
               | _, _, _ => .cannotProve "symeval: Map.insert on non-map / non-const key or value")
            | _, _, _ => .cannotProve "symeval: malformed Map.insert")
+        else if q == "Map".toUTF8 && mem == "merge".toUTF8 then
+          -- `Map.merge a b` → the union of the two maps, with the RIGHT operand `b` WINNING on an
+          -- overlapping key (LAST-writer, prelude.rs:891-893). `canonMap` is last-insert-wins per key, so
+          -- `canonMap (aKvs ++ bKvs)` gives exactly b-wins — the Map analogue of List.concat / the value-
+          -- position map spread `#map((= k v) (.. m))`. Closes v-cdz-smith's #7513 Map.merge boundary. Both
+          -- operands concrete `.ctor "map"` of all-const `.tuple #[k,v]` entries; symbolic/unorderable →
+          -- cannotProve. 🪤 arg order is load-bearing (b wins) — pinned by a #guard, like Set.difference.
+          (match children[1]?, children[2]? with
+           | some aId, some bId =>
+             (match symEval m senv fuel ty aId, symEval m senv fuel ty bId with
+              | .sym (.ctor ta ea), .sym (.ctor tb eb) =>
+                if ta == "map".toUTF8 && tb == "map".toUTF8 then
+                  (match ea.mapM (fun e => match e with | .tuple #[.const k, .const v] => some (k, v) | _ => none),
+                         eb.mapM (fun e => match e with | .tuple #[.const k, .const v] => some (k, v) | _ => none) with
+                   | some kvsA, some kvsB =>
+                     (match canonMap (kvsA ++ kvsB) with
+                      | some cm => .sym (.ctor "map".toUTF8 (cm.map (fun p => SymExpr.tuple #[.const p.1, .const p.2])))
+                      | none => .cannotProve "symeval: Map.merge on unorderable key")
+                   | _, _ => .cannotProve "symeval: Map.merge needs all-concrete entries")
+                else .cannotProve "symeval: Map.merge on a non-map value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Map.merge on non-map operands")
+           | _, _ => .cannotProve "symeval: malformed Map.merge")
         else if q == "Option".toUTF8 && mem == "expect".toUTF8 then
           -- `Option.expect o` unwraps `Some x` → x (evalNode uses observeShallow, which is identity on a
           -- non-poison value; a modeled symbolic payload is never poison, so → x). `None` traps with a custom
@@ -2253,6 +2292,35 @@ private def _pushExpr : Module :=
     root := 9 }
 #guard symEval _pushExpr [] symDefaultFuel defaultIntTy 9
        == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2), .const (.int 3)])
+
+-- LIST.PREPEND coverage (v-cdz-smith #7513): `((. List prepend) (list 2 3) 1)` → `[1,2,3]` (cons at FRONT).
+private def _listPrependExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "List".toUTF8, Leaf.name "prepend".toUTF8,
+                Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[2]),
+                Leaf.intLit false .dec (ByteArray.mk #[3]), Leaf.intLit false .dec (ByteArray.mk #[1])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5,
+               .list #[4, 5, 6], .atom 6, .list #[3, 7, 8]],
+    root := 9 }
+#guard symEval _listPrependExpr [] symDefaultFuel defaultIntTy 9
+       == SymOutcome.sym (.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2), .const (.int 3)])
+
+-- MAP.MERGE coverage (v-cdz-smith #7513): `((. Map merge) (map (1 10) (2 20)) (map (2 99) (3 30)))` →
+-- `{1:10, 2:99, 3:30}` — the RIGHT operand wins on the shared key 2 (99, not 20). Pins the b-wins order.
+private def _mapMergeExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Map".toUTF8, Leaf.name "merge".toUTF8,
+                Leaf.name "map".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[10]), Leaf.intLit false .dec (ByteArray.mk #[2]),
+                Leaf.intLit false .dec (ByteArray.mk #[20]), Leaf.intLit false .dec (ByteArray.mk #[99]),
+                Leaf.intLit false .dec (ByteArray.mk #[3]), Leaf.intLit false .dec (ByteArray.mk #[30])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2],           -- 0..3  (. Map merge)
+               .atom 4, .atom 5, .list #[4, 5], .atom 6, .atom 7, .list #[7, 8], .atom 3, .list #[10, 6, 9], -- 4..11 (map (1 10)(2 20))
+               .atom 6, .atom 8, .list #[12, 13], .atom 9, .atom 10, .list #[15, 16], .atom 3, .list #[18, 14, 17], -- 12..19 (map (2 99)(3 30))
+               .list #[3, 11, 19]],                                   -- 20   ((. Map merge) a b)
+    root := 20 }
+#guard symEval _mapMergeExpr [] symDefaultFuel defaultIntTy 20
+       == SymOutcome.sym (.ctor "map".toUTF8 #[.tuple #[.const (.int 1), .const (.int 10)],
+                                               .tuple #[.const (.int 2), .const (.int 99)],
+                                               .tuple #[.const (.int 3), .const (.int 30)]])
 
 -- LIST.AT/GET member-op coverage: indexed access → Option. `((. List at) (list 10 20 30) 1)` → `Some 20`
 -- (in-bounds); `((. List at) (list 10 20 30) 5)` → `None` (out-of-bounds). Purely structural (no equality).
