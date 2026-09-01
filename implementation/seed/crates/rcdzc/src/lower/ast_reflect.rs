@@ -664,8 +664,27 @@ pub(crate) fn expand_macros(db: &mut Db) {
         // Scan only nodes present at the START of the round; freshly-spliced nodes are handled next round
         // (after the memo invalidation below re-resolves them).
         let n = db.ast.structure.len();
+        // A def/fn SIGNATURE list `(f (quote a) …)` is a BINDER list, NOT an application to `f` — never
+        // expand it (else scanning `(qi (quote x))` would "call" qi on its own param binder and corrupt the
+        // def, unbinding its body). Collect the signature lists to skip; recomputed each round (a spliced
+        // `fn` could add one).
+        let mut sig_lists: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
         for i in 0..n {
             let id = StructId(i as u32);
+            let sig = db
+                .ast
+                .as_form(id, "def")
+                .or_else(|| db.ast.as_form(id, "fn"))
+                .and_then(|tail| tail.first().copied());
+            if let Some(sig) = sig {
+                sig_lists.insert(sig);
+            }
+        }
+        for i in 0..n {
+            let id = StructId(i as u32);
+            if sig_lists.contains(&id) {
+                continue; // a def/fn signature/param list is not an application
+            }
             if !matches!(db.ast.get(id), crate::ast::Struct::List(_)) {
                 continue; // only a compound form can be an application
             }
