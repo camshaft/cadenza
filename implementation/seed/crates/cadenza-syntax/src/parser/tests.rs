@@ -625,29 +625,12 @@ fn inline_pure_fold_world_encodes_identically_to_the_kernel_artifact_form() {
 // Corpus pins the language rule: `f(); g()`=ml/432-semicolon-top-level-folds (parses to two forms),
 // `f() g()`=ml/476-ambiguous-toplevel-juxtaposition-rejected (a DECLINE case — the ambiguity is rejected).
 // This Rust test additionally asserts the diagnostic SUGGESTS `;` (implementation-quality, stays Rust).
-#[test]
-fn top_level_semicolon_separates_and_ambiguous_juxtaposition_is_rejected() {
-    // `;` SEPARATES top-level expressions: `f(); g()` folds a stmt-level `(do …)` the root splices flat.
-    let with = parse_ok("f(); g()");
-    let wt = with.as_form(with.root, "do").unwrap();
-    assert_eq!(wt.len(), 2);
-    assert_eq!(with.head_name(wt[0]), Some("f"));
-    assert_eq!(with.head_name(wt[1]), Some("g"));
-    // But whitespace-juxtaposing two top-level exprs on ONE line — `f() g()` — is AMBIGUOUS (the sugar
-    // would fold `g` as a unit into a bogus quantity), so it is now a parse ERROR that suggests `;`.
-    let without = read_ml("f() g()");
-    assert!(
-        !without.ok(),
-        "juxtaposed top-level exprs `f() g()` must require `;`, got: {}",
-        crate::sexpr::print(&without.arenas)
-    );
-    assert!(
-        without.errors.iter().any(|e| e.message.contains(';')),
-        "the ambiguous-juxtaposition error suggests `;`: {:?}",
-        without.errors
-    );
-}
-
+// `top_level_semicolon_separates_and_ambiguous_juxtaposition_is_rejected` (`;` SEPARATES top-level exprs —
+// `f(); g()` → a root-spliced `(do (f) (g))` — while whitespace-juxtaposing two on one line `f() g()` is
+// AMBIGUOUS and is a parse ERROR suggesting `;`) MIGRATED to the spec/syntax corpus: the separator half is
+// ml/432-semicolon-top-level-folds `f(); g()` → `(do (f) (g))`; the rejection half is ml/476-ambiguous-
+// toplevel-juxtaposition-rejected `f() g()` (decline, error.txt "separate juxtaposed expressions with" —
+// the `;`-suggestion). The operator-ruled `;`-at-ambiguity design (b72/b83) is now fully corpus-pinned.
 // `semicolon_in_argument_position_needs_parens` (a call argument is a single expression, so a `;` inside must
 // parenthesize: `f((a; b))` is a one-arg call whose argument is the sequence `(do a b)`) +
 // `if_branch_does_not_swallow_the_trailing_sequence` (`if`'s branches parse at `PREC_SEQ + 1`, so a `;` after
