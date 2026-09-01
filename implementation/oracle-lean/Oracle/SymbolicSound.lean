@@ -2154,6 +2154,26 @@ theorem denote_normalize_app_unary (ρ : Nat → Value) (w : IntTy) (op : String
         exact normalizeAppIdentities_unary_plain op (normalize a0) hm
       exact denote_normalize_app_ident_plain ρ w op #[a0] v hplain ihm h
 
+/-- CAPSTONE `.app` BINARY dispatch — BITWISE arm. For a bitwise op (`& | ^ << >>`), `denoteBinary` is
+`.unsupported` on value operands (`foldConst?` has no bitwise arm; the op ∉ `arithOps`), so a `.app`-node
+value hypothesis is CONTRADICTORY (`denoteBinary_*_ne_value`). Hence soundness holds VACUOUSLY regardless
+of which bitwise identity `normalizeAppIdentities` selects (`x&0→0`, `x|0→x`, `x^x→0`, `x<<0→x`, …) — the
+5 bitwise ops collapse to one uniform vacuity case in the eventual `denote.induct` `.app` assembly. -/
+theorem denote_normalize_app_binary_bitwise (ρ : Nat → Value) (w : IntTy) (op : String) (a0 a1 : SymExpr)
+    (v : Value) (hbit : op = "&" ∨ op = "|" ∨ op = "^" ∨ op = "<<" ∨ op = ">>")
+    (h : denote ρ w (.app op #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app op #[a0, a1])) = .value v := by
+  exfalso
+  rw [denote_app2] at h
+  obtain ⟨⟨u0, hu0⟩, ⟨u1, hu1⟩⟩ := denoteBinary_value_inv op w _ _ v h
+  rw [hu0, hu1] at h
+  rcases hbit with rfl | rfl | rfl | rfl | rfl
+  · exact denoteBinary_amp_ne_value w u0 u1 v h
+  · exact denoteBinary_bor_ne_value w u0 u1 v h
+  · exact denoteBinary_bxor_ne_value w u0 u1 v h
+  · exact denoteBinary_shl_ne_value w u0 u1 v h
+  · exact denoteBinary_shr_ne_value w u0 u1 v h
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
