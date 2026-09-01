@@ -7147,21 +7147,21 @@
                 # Build each backend's whole-corpus verdict harvest (uses the ambient nix the caller ran with),
                 # then write its .gate-baseline* via the xtask-save-baseline leaf. All 3 = the faithful nix
                 # re-baseline; the cached per-case graphs mean an unchanged corpus is a store cache hit.
-                # `--option substitute false`: the harvest is a huge CONTENT-ADDRESSED graph (tens of thousands
-                # of per-case CA outputs); with substitution ON, nix fires a REALISATION (`.doi`) query per CA
-                # output PER substituter (camshaft + the determinate-nix system defaults install.determinate.
-                # systems + cache.nixos.org, the latter two ALWAYS 404 for our CA realisations) → hundreds of
-                # thousands of tiny HTTP GETs that build NOTHING → the daemon "wedges live-but-sleeping" even
-                # SOLO at low load (network-bound, v-nix -L repro 2026-08-31). substitute=false skips that
-                # realisation-substitution phase entirely; it is verdict-SAFE (build-vs-fetch, not what-outputs —
-                # deterministic per-case verdicts are byte-identical local vs substituted; v-corpus-harness
-                # sign-off) and a fresh re-baseline substitutes nothing anyway. Only the harvest path is affected;
-                # the gate keeps normal substitution. Durable fix (per-file coarsening) tracked separately.
-                harvest="$(nix build "$root#corpus-verdicts" --no-link --print-out-paths --option substitute false)"
+                # COARSE harvest (v-nix coarsening 2026-09-01): the -coarse variants are ONE derivation per FILE
+                # (~35, each compiling+grading its cases internally) instead of the per-CASE __contentAddressed
+                # graph (tens of thousands of CA outputs). The old per-case harvest wedged "live-but-sleeping"
+                # under a REALISATION (`.doi`) query storm (a query per CA output per substituter; substitute=false
+                # was the blunt workaround, but rebuilt the toolchain from source too / timed out at 5.5h). The
+                # coarse graph has only ~35 CA shreds → the storm cannot recur, so substitution stays ON (keeps
+                # cachix reuse — a fresh re-baseline builds; an unchanged corpus is a cache hit). VERDICT-SAFE:
+                # byte-identical to the per-case harvest (v-corpus-harness parity sign-off — wasm 6-file diverse
+                # sample + rust/rust-async 11-modules+05-compound-types all byte-clean). The GATE keeps the
+                # per-case granularity (fast incremental PR gating); only this HARVEST coarsens.
+                harvest="$(nix build "$root#corpus-verdicts-coarse" --no-link --print-out-paths)"
                 ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest" "$root/spec/semantics/.gate-baseline"
-                harvest_rust="$(nix build "$root#corpus-verdicts-rust" --no-link --print-out-paths --option substitute false)"
+                harvest_rust="$(nix build "$root#corpus-verdicts-rust-coarse" --no-link --print-out-paths)"
                 ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust" "$root/spec/semantics/.gate-baseline-rust"
-                harvest_rust_async="$(nix build "$root#corpus-verdicts-rust-async" --no-link --print-out-paths --option substitute false)"
+                harvest_rust_async="$(nix build "$root#corpus-verdicts-rust-async-coarse" --no-link --print-out-paths)"
                 exec ${xtaskSaveBaselineBin}/bin/xtask-save-baseline "$harvest_rust_async" "$root/spec/semantics/.gate-baseline-rust-async"
               '';
             };
