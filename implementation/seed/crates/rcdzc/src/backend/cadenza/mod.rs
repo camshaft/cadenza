@@ -2523,10 +2523,18 @@ fn emit_switch_tree(
                     radix: Radix::Dec,
                 }),
                 crate::core::Probe::Bool(x) => b.atom_leaf(Leaf::Bool(*x)),
+                // A STRING / CHAR literal probe (`(#tuple(a "hi") …)` / `(#tuple(a #\z) …)`): emit the literal
+                // IN the pattern, exactly as Int/Bool — the recompile re-lowers it to the same `LitTest` and
+                // (for the constant-foldable scrutinee that survives to a backend) re-folds it, matching the
+                // direct wasm path (which folds the constant string/char match). A runtime Str/Char scrutinee
+                // never reaches a backend (folds or declines in lowering, both backends alike), so this only
+                // reconstructs what actually arrives here. Keeps the round-trip idempotent (literal → LitTest).
+                crate::core::Probe::Str(s) => b.atom_leaf(Leaf::Str(s.as_str().into())),
+                crate::core::Probe::Char(c) => b.atom_leaf(Leaf::Char(*c)),
                 _ => {
-                    return Err(Reject::decline(
-                        "the Cadenza backend reconstructs a literal-at-slot test only for a scalar \
-                         (Int/Bool) probe"
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend reconstructs a literal-at-slot test only for an Int / Bool / \
+                         Str / Char probe (a Bytes / ListLen / MapHasKeys slot probe is a later slice)"
                             .to_string(),
                     ));
                 }
