@@ -5070,6 +5070,12 @@
             ./implementation/oracle-lean/OracleTest.lean
             ./implementation/oracle-lean/OracleAstTest.lean
             ./implementation/oracle-lean/OracleCheck.lean
+            # the wasm-differential exe root (talos-driven Core↔wasm conformance runner). MUST be enumerated
+            # or `lake build oracle-wasm-diff` fails "no such file" — and, since it is not in `src`, an edit
+            # to ONLY this file leaves the drv hash unchanged so nix serves a STALE cached build (its
+            # native_decide e2e witnesses silently never recompile). #7335 added the exe to the build/install
+            # lines but omitted it here; that gap is closed now (its absence made #7343's e2e gate hollow).
+            ./implementation/oracle-lean/OracleWasmDiffTest.lean
             ./implementation/oracle-lean/Oracle
           ];
         };
