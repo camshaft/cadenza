@@ -3751,7 +3751,7 @@
           '';
         corpusVerdictsCoarseParity = mkCoarseParity {
           name = pkgs.lib.removeSuffix ".sexp" (builtins.head corpusFileNames);
-          file = ./spec/semantics + "/" + (builtins.head corpusFileNames);
+          file = ./spec/semantics + "/${builtins.head corpusFileNames}";
         };
 
         # ── wasm-opt OPTIMALITY-GAP sweep (operator 2026-08-27; design/DESIGN-wasm-opt-gap-analysis-rcdzc.md) ──
@@ -4295,34 +4295,27 @@
         '';
 
         # PARITY SPIKES (rust + rust-async): coarse per-file == per-case verdictsRust{,Async}FileAgg, sorted-diff.
-        corpusRustVerdictsCoarseParity =
-          let
-            f = builtins.head corpusFileNames;
-            stem = pkgs.lib.removeSuffix ".sexp" f;
-            file = ./spec/semantics + "/${f}";
-          in
-          pkgs.runCommand "corpus-verdicts-rust-coarse-parity-${stem}" { } ''
-            if diff <(sort ${mkCorpusRustVerdictsFileCoarse { name = stem; inherit file; }}) \
-                    <(sort ${verdictsRustFileAgg { name = stem; inherit file; }}); then
-              echo "ok: coarse rust per-file == per-case for ${stem}" > "$out"
+        # Parametrized per-file (v-corpus-harness: 01-literals scalar-only is NOT enough — the -t rust-async
+        # variant bug proved diverse shapes must be exercised). `.#corpus-verdicts-rust{,-async}-coarse-parity-<stem>`.
+        mkRustCoarseParity = { name, file, async ? false }:
+          let tag = if async then "rust-async" else "rust";
+          in pkgs.runCommand "corpus-verdicts-${tag}-coarse-parity-${name}" { } ''
+            if diff <(sort ${mkCorpusRustVerdictsFileCoarse { inherit name file async; }}) \
+                    <(sort ${if async then verdictsRustAsyncFileAgg { inherit name file; } else verdictsRustFileAgg { inherit name file; }}); then
+              echo "ok: coarse ${tag} per-file == per-case for ${name}" > "$out"
             else
-              echo "PARITY FAIL: coarse rust != per-case for ${stem}" >&2; exit 1
+              echo "PARITY FAIL: coarse ${tag} != per-case for ${name}" >&2; exit 1
             fi
           '';
-        corpusRustAsyncVerdictsCoarseParity =
-          let
-            f = builtins.head corpusFileNames;
-            stem = pkgs.lib.removeSuffix ".sexp" f;
-            file = ./spec/semantics + "/${f}";
-          in
-          pkgs.runCommand "corpus-verdicts-rust-async-coarse-parity-${stem}" { } ''
-            if diff <(sort ${mkCorpusRustVerdictsFileCoarse { name = stem; inherit file; async = true; }}) \
-                    <(sort ${verdictsRustAsyncFileAgg { name = stem; inherit file; }}); then
-              echo "ok: coarse rust-async per-file == per-case for ${stem}" > "$out"
-            else
-              echo "PARITY FAIL: coarse rust-async != per-case for ${stem}" >&2; exit 1
-            fi
-          '';
+        corpusRustVerdictsCoarseParity = mkRustCoarseParity {
+          name = pkgs.lib.removeSuffix ".sexp" (builtins.head corpusFileNames);
+          file = ./spec/semantics + "/${builtins.head corpusFileNames}";
+        };
+        corpusRustAsyncVerdictsCoarseParity = mkRustCoarseParity {
+          name = pkgs.lib.removeSuffix ".sexp" (builtins.head corpusFileNames);
+          file = ./spec/semantics + "/${builtins.head corpusFileNames}";
+          async = true;
+        };
 
         # VANISHED-check (gap #7 completion) — the GLOBAL half of baseline regression detection the per-case
         # exec cannot do. The per-case `--baseline` check catches a `pass -> not-pass` regression on a case
@@ -5589,6 +5582,18 @@
         packages.corpus-verdicts-rust-async-coarse = corpusRustAsyncVerdictsCoarseAll;
         packages.corpus-verdicts-rust-coarse-parity = corpusRustVerdictsCoarseParity;
         packages.corpus-verdicts-rust-async-coarse-parity = corpusRustAsyncVerdictsCoarseParity;
+        # DIVERSE-SAMPLE rust + rust-async per-file parity (v-corpus-harness: 01-literals scalar-only insufficient
+        # after the -t rust-async variant bug — exercise multi-module + value-heavy shapes at least).
+        packages.corpus-verdicts-rust-coarse-parity-11-modules = mkRustCoarseParity { name = "11-modules"; file = ./spec/semantics/11-modules.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-05-compound-types = mkRustCoarseParity { name = "05-compound-types"; file = ./spec/semantics/05-compound-types.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-25-verification = mkRustCoarseParity { name = "25-verification"; file = ./spec/semantics/25-verification.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-26-program-conditions = mkRustCoarseParity { name = "26-program-conditions"; file = ./spec/semantics/26-program-conditions.sexp; };
+        packages.corpus-verdicts-rust-coarse-parity-29-cross-component-peers = mkRustCoarseParity { name = "29-cross-component-peers"; file = ./spec/semantics/29-cross-component-peers.sexp; };
+        packages.corpus-verdicts-rust-async-coarse-parity-11-modules = mkRustCoarseParity { name = "11-modules"; file = ./spec/semantics/11-modules.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-05-compound-types = mkRustCoarseParity { name = "05-compound-types"; file = ./spec/semantics/05-compound-types.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-25-verification = mkRustCoarseParity { name = "25-verification"; file = ./spec/semantics/25-verification.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-26-program-conditions = mkRustCoarseParity { name = "26-program-conditions"; file = ./spec/semantics/26-program-conditions.sexp; async = true; };
+        packages.corpus-verdicts-rust-async-coarse-parity-29-cross-component-peers = mkRustCoarseParity { name = "29-cross-component-peers"; file = ./spec/semantics/29-cross-component-peers.sexp; async = true; };
 
         # `.#corpus-verdicts-rust` / `.#corpus-verdicts-rust-async` — the RUST + RUST-ASYNC verdict harvests
         # (v-xtask-decompose, the flake.nix:3514 follow-up). Same `<tag>\t<description>` shape as the wasm
