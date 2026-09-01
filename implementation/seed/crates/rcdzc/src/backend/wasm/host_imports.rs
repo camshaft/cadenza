@@ -129,6 +129,7 @@ pub(super) fn collect_host_arg_strings_at(
         | Core::ValueEqShaped { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
+        | Core::MapMerge { lhs, rhs }
         | Core::BytesConcat { lhs, rhs }
         | Core::BigIntBinOp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }

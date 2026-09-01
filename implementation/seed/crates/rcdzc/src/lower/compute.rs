@@ -2901,6 +2901,10 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // is a RUNTIME map (built inline or a parameter); emit `Core::MapInsert` carrying the
                 // solved key/value types (for the box ops). A poison operand propagates.
                 Some(Prim::MapInsert) if args.len() == 3 => lower_map_insert(db, id, &args),
+                // `Map.merge` — union two runtime maps, last-writer (b) wins on an overlapping key. Emit
+                // `Core::MapMerge` (runtime `map-merge`, consumes both handles → a new map). Backs the map
+                // construction-spread fold `(. Map merge)`.
+                Some(Prim::MapMerge) if args.len() == 2 => lower_map_merge(db, args[0], args[1]),
                 // `Map.lookup` — the FALLIBLE keyed read `(Map k v) → k → (Option v)`. Emit the runtime
                 // `Core::MapLookup` (a NULL-or-handle test → `Some`/`None`). The result Option's discs are
                 // read off the result type; the value type off the map operand.

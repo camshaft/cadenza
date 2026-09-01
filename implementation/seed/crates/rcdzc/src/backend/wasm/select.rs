@@ -492,6 +492,7 @@ const OP_VALUE_DECODE: &str = "value-decode";
 /// cross as plain handles; the runtime compares keys by a tagless structural walk.
 const OP_MAP_EMPTY: &str = "map-empty";
 const OP_MAP_INSERT: &str = "map-insert";
+const OP_MAP_MERGE: &str = "map-merge";
 const OP_MAP_LOOKUP: &str = "map-lookup";
 const OP_MAP_REMOVE: &str = "map-remove";
 const OP_MAP_SIZE: &str = "map-size";
@@ -7379,6 +7380,14 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapRemove { .. }
+        // `Map.merge` (`MapMerge`) returns a FRESH owned map handle — `map-merge` CONSUMES both operands and
+        // hands back a new CHAMP map (the map analog of `ListConcat`). As a BORROWING-op operand (`Map.len
+        // (Map.merge a b)` / `= (Map.merge …) m`) it is an owned temporary the emit must reclaim after the
+        // borrow. WITHOUT this it fell to `_ => decline`, so the reclaim gate never fired and the fresh
+        // merged map LEAKED its root cell (value correct — a leak, not a miscompile; WAT-confirmed: the
+        // map-merge result was consumed by a borrowing `map-size` with no drop). The merge's ENTRIES are
+        // dup'd from the operands (or immortal statics), so dropping only the fresh spine never double-frees.
+        | Core::MapMerge { .. }
         // A constant string/bytes materializes a FRESH owned byte-leaf handle (`bytes-alloc`+`bytes-set`,
         // see the `Core::ConstStr`/`ConstBytes`/`BytesOf` emit), so — like a constructor — the `value-eq`
         // emit drops it after the borrowing compare. This is the `(= h "+")` shape: comparing a runtime

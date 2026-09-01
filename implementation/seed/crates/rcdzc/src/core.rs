@@ -891,6 +891,15 @@ pub enum Core {
         key_ty: crate::ty::Ty,
         val_ty: crate::ty::Ty,
     },
+    /// `Map.merge` — the UNION of two runtime maps, LAST-WRITER (right operand) wins on an overlapping key
+    /// (runtime `map-merge`, op 98; CHAMP union, CONSUMES both map handles → a new map). The map analogue
+    /// of `Core::ListConcat` (two heap operands both consumed → fresh result, no key/val boxing since the
+    /// operands' entries are already boxed). Backs the value-position map construction spread
+    /// `#map((= k v) (.. m))` (folded left-to-right via `(. Map merge)`, last-writer-wins per DESIGN §6).
+    MapMerge {
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// `Map.lookup` — the FALLIBLE keyed read, present when the map is a RUNTIME value. The backend emits
     /// `map-lookup(map, key)` (BORROWS both; the boxed key is dropped after) — a NULL handle for an absent
     /// key — and wraps it: a non-null handle → `Some(<unbox value>)`, null → `None`. `disc_some`/`disc_none`

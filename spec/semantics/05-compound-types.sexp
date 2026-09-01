@@ -4710,6 +4710,46 @@
   (output (: 11 Int64)))
 
 (case
+  "Map.merge unions two runtime maps, last-writer (right operand) wins on an overlapping key"
+  (doc
+    "`Map.merge a b` is the persistent CHAMP UNION of two maps, LAST-WRITER-WINS: `b`'s value
+           overwrites `a`'s on a conflicting key (`b` is the last writer). Backs `Map.union` and the map arm
+           of the value-position construction spread `#map((= k v) (.. m))`. Both operands are RUNTIME maps
+           (built by a recursive `build`, no const-fold): `a = build 0 n 0` = {0:0 … (n-1):(n-1)};
+           `b = build 2 (n+2) 100` = {2:102 … (n+1):(101+n)} — so keys [2, n-1] OVERLAP (b wins), key 0/1
+           are a-ONLY, keys [n, n+1] are b-ONLY. For n=3: a={0:0,1:1,2:2}, b={2:102,3:103,4:104},
+           merged={0:0, 1:1, 2:102, 3:103, 4:104} (size 5). Encodes size·100000 + merged[0]·10000 +
+           merged[2]·100 + merged[4]: n=3 → 5·100000 + 0 + 102·100 + 104 = 510304 (union complete = size 5;
+           a-only survives = merged[0]=0; b-WINS on the conflict = merged[2]=102 not 2; b-only added =
+           merged[4]=104). `(live-objects 0)` PINS the reclaim: the fresh merged map is fully freed at the
+           end of `main` (the Core::MapMerge producer-result reclaim — a regression that re-leaks the merged
+           spine reds live-objects, and a value garble reds the output).")
+  (input
+    (do
+      (def
+        (build (: i Int64) (: n Int64) (: vb Int64) (: acc (Map Int64 Int64)))
+        (if (< i n) (build (+ i 1) n vb (Map.insert acc i (+ vb i))) acc))
+      (def
+        (main (: n Int64))
+        (do
+          (def a (build 0 n 0 #map()))
+          (def b (build 2 (+ n 2) 100 #map()))
+          (def merged (Map.merge a b))
+          (+
+            (* (Map.len merged) 100000)
+            (+
+              (* (Option.expect (Map.lookup merged 0) "k0") 10000)
+              (+
+                (* (Option.expect (Map.lookup merged 2) "k2") 100)
+                (Option.expect (Map.lookup merged 4) "k4"))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 510304 Int64))
+  (call main (: 4 Int64))
+  (output (: 610304 Int64))
+  (live-objects 0))
+
+(case
   "dropping a map derived by persistent insert must not free nodes shared with the survivor"
   (doc
     "The RECLAIM side of the persistence pins above: those check the SURVIVOR's content when a

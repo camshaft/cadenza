@@ -1271,6 +1271,12 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             | Core::MapNew { .. }
             | Core::MapInsert { .. }
             | Core::MapRemove { .. }
+            // `Map.merge` (`MapMerge`) is the binary MAP analog of `ListConcat`/`SetAlgebra` — a
+            // fresh-map-building runtime op consuming BOTH operands. The value-position map construction
+            // spread desugars to a LEFT-nested `merge` CHAIN (`(merge (merge a b) c)`…), the exact chained
+            // shape that COMPOUNDS to 2^N under copy-propagation; kept under the >= 2-use rule so a linear
+            // spread emits linear output.
+            | Core::MapMerge { .. }
             | Core::SetOf { .. }
             // `Set.union`/`intersect`/`diff` (`Core::SetAlgebra`) is the TRUE Set exp witness (v-compiler-perf
             // confirmed a `Set.union` chain still 2^N on main — `SetOf` alone is a constructor, not the
@@ -6506,6 +6512,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListPush => "list-push",
         Prim::ListPrepend => "list-prepend",
         Prim::ListConcat => "list-concat",
+        Prim::MapMerge => "map-merge",
         Prim::ListUpdate => "list-update",
         Prim::ListAt => "list-at",
         Prim::AstSpliceLift => "ast-splice-lift",

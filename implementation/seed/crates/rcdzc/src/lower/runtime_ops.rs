@@ -710,6 +710,31 @@ pub(super) fn lower_map_remove(db: &mut Db, map: StructId, key: StructId) -> Cor
     Core::MapRemove { map, key, key_ty }
 }
 
+/// Lower `(Map.merge a b)` — the UNION of two runtime maps, last-writer (b) wins. Emit `Core::MapMerge`
+/// (the runtime `map-merge` op consumes both handles → a new map). Both operands must be solved map
+/// types; a poison operand propagates. The map analogue of `List.concat`/`Record.merge` lowering.
+pub(super) fn lower_map_merge(db: &mut Db, lhs: StructId, rhs: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    for operand in [lhs, rhs] {
+        if map_kv_types(db, operand).is_none() {
+            let mismatch = !matches!(
+                crate::infer::type_of(db, operand),
+                crate::ty::Ty::Map(_, _) | crate::ty::Ty::Var(_) | crate::ty::Ty::Any
+            );
+            return ill_typed_operand_decline(
+                mismatch,
+                "Map.merge operand is not a solved map type",
+            );
+        }
+    }
+    Core::MapMerge { lhs, rhs }
+}
+
 /// Lower `(String.at string index)` — the fallible SCALAR-indexed read. FOLD when both operands are
 /// constant: index the string by UNICODE SCALAR position (`chars().nth`, NOT byte offset —
 /// collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), yielding `(Some

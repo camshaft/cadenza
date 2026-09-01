@@ -1372,6 +1372,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::ValueEqShaped { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
+        | Core::MapMerge { lhs, rhs }
         | Core::BytesConcat { lhs, rhs }
         | Core::BigIntBinOp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
@@ -1696,7 +1697,8 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::ValueCmp { lhs, rhs, .. }
         | crate::core::Core::ValueEqShaped { lhs, rhs, .. }
         | crate::core::Core::And { lhs, rhs, .. }
-        | crate::core::Core::ListConcat { lhs, rhs } => {
+        | crate::core::Core::ListConcat { lhs, rhs }
+        | crate::core::Core::MapMerge { lhs, rhs } => {
             collect_call_callees(db, lhs, out);
             collect_call_callees(db, rhs, out);
         }

@@ -4150,6 +4150,7 @@ pub(super) fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::MapNew
         | Prim::MapEmpty
         | Prim::MapInsert
+        | Prim::MapMerge
         | Prim::MapLookup
         | Prim::MapRemove
         | Prim::MapSize

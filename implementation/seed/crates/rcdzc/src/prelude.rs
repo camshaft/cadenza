@@ -678,6 +678,7 @@ fn map_module(ast: &mut Arenas) -> StructId {
     // then handed to `list_op_record` (the shared operator-record builder — nothing list-specific in it).
     let empty_lambda = map_empty_type_lambda(ast);
     let insert_lambda = map_insert_type_lambda(ast);
+    let merge_lambda = map_merge_type_lambda(ast);
     let lookup_lambda = map_lookup_type_lambda(ast);
     let remove_lambda = map_remove_type_lambda(ast);
     let size_lambda = map_size_type_lambda(ast);
@@ -688,6 +689,7 @@ fn map_module(ast: &mut Arenas) -> StructId {
     for (name, prim, lambda) in [
         ("empty", "map-empty", empty_lambda),
         ("insert", "map-insert", insert_lambda),
+        ("merge", "map-merge", merge_lambda),
         ("lookup", "map-lookup", lookup_lambda),
         ("remove", "map-remove", remove_lambda),
         ("len", "map-size", size_lambda),
@@ -883,6 +885,19 @@ fn map_remove_type_lambda(ast: &mut Arenas) -> StructId {
     let key_arrow = arrow_type(ast, k, map_r); // (-> k (Map k v))
     let map_l = map_k_v_type(ast);
     let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (Map k v)))
+    map_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (k v) (-> (Map k v) (-> (Map k v) (Map k v))))` for `Map.merge` — `∀k v. (Map k
+/// v) → (Map k v) → (Map k v)`: the union of two maps, LAST-WRITER (right operand) wins on an overlapping
+/// key. The map analogue of `List.concat`/`Record.merge`; the runtime `map-merge` CHAMP union (both
+/// operands consumed → new map). Backs the value-position map construction spread `#map((= k v) (.. m))`.
+fn map_merge_type_lambda(ast: &mut Arenas) -> StructId {
+    let map_r = map_k_v_type(ast); // result (Map k v)
+    let map_b = map_k_v_type(ast); // second operand (Map k v)
+    let snd_arrow = arrow_type(ast, map_b, map_r); // (-> (Map k v) (Map k v))
+    let map_a = map_k_v_type(ast); // first operand (Map k v)
+    let body = arrow_type(ast, map_a, snd_arrow); // (-> (Map k v) (-> (Map k v) (Map k v)))
     map_type_lambda(ast, body)
 }
 

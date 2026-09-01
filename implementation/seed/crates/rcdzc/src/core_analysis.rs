@@ -110,6 +110,7 @@ pub(crate) fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::ValueEqShaped { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
+        | Core::MapMerge { lhs, rhs }
         | Core::BytesConcat { lhs, rhs } => vec![lhs, rhs],
         Core::Convert { operand, .. }
         | Core::Not { operand }

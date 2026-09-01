@@ -1316,6 +1316,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         | Core::ValueEqShaped { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
+        | Core::MapMerge { lhs, rhs }
         | Core::BytesConcat { lhs, rhs }
         | Core::BigIntBinOp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }

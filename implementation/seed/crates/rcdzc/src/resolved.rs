@@ -716,6 +716,11 @@ pub enum Prim {
     /// consumes the map handle, returns a new one). Enforces key/value homogeneity against the map's
     /// solved key/value types (CDZ0201 on a mismatch). Inserting a present key replaces its value.
     MapInsert,
+    /// `Map.merge` — the UNION of two maps, LAST-WRITER (right operand) wins on an overlapping key: `∀k v.
+    /// (Map k v) → (Map k v) → (Map k v)`. Lowers to the runtime `map-merge` op (CHAMP union — consumes
+    /// both map handles, returns a new one). The map analogue of `List.concat`/`Record.merge`; backs the
+    /// value-position map construction spread.
+    MapMerge,
     /// `Map.lookup` — the FALLIBLE keyed read `∀k v. (Map k v) → k → (Option v)`: `Some v` when the map
     /// contains the key, `None` otherwise (collections-and-text.md §Indexing And Lookup Are Fallible —
     /// the map clause). Lowers to the runtime `map-lookup` op (returns a NULL handle when absent, which
@@ -1005,6 +1010,7 @@ impl Prim {
             "map-new" => Some(Prim::MapNew),
             "map-empty" => Some(Prim::MapEmpty),
             "map-insert" => Some(Prim::MapInsert),
+            "map-merge" => Some(Prim::MapMerge),
             "map-lookup" => Some(Prim::MapLookup),
             "map-remove" => Some(Prim::MapRemove),
             "map-size" => Some(Prim::MapSize),
