@@ -93,6 +93,22 @@ decreasing_by
   · simp_wf; rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega
   · simp_wf; have h := Array.sizeOf_lt_of_mem x.property; omega
 
+/-- Convert a `Value` back to the SymExpr representation `symEval` uses — the inverse of `symElemToValue?`
+over its output range: a scalar → `.const`, `.tuple`/`.record` → the same-shaped SymExpr (children
+converted), a `.list` → `.ctor "list"` (matching how `symEval` builds list literals). Used to REBUILD a
+canonicalized collection (e.g. `Set.insert`'s `canonSet` output) as a SymExpr value; representation-faithful
+so a rebuilt set matches a set built from a literal of the same elements. -/
+def valueToSym : Value → SymExpr
+  | .tuple es => .tuple (es.attach.map (fun x => valueToSym x.val))
+  | .record fs => .record (fs.attach.map (fun x => (x.val.1, valueToSym x.val.2)))
+  | .list es => .ctor "list".toUTF8 (es.attach.map (fun x => valueToSym x.val))
+  | v => .const v
+termination_by v => sizeOf v
+decreasing_by
+  · simp_wf; have h := Array.sizeOf_lt_of_mem x.property; omega
+  · simp_wf; rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega
+  · simp_wf; have h := Array.sizeOf_lt_of_mem x.property; omega
+
 /-- Constant-fold an operator applied to fully-CONSTANT operands, iff the fold is SOUND independent of
 integer width (the symbolic evaluator does not yet track width). So this folds ONLY operators that can
 never overflow / trap: COMPARISONS over integer constants (`< > <= >=`, total on `Int`), value EQUALITY
@@ -711,22 +727,24 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
         | some r => .cannotProve r
         | none => .sym (.ctor "list".toUTF8 (outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)))
       else if h == "set".toUTF8 then
-        -- a SET literal → `.ctor "set"`. When ALL elements are concrete `.const`, CANONICALIZE via eval's own
-        -- `canonSet` (sort + dedup) so the symbolic value matches eval's canonicalized set AND set-REORDER
-        -- equality proves (`(set 1 2)` ≡ `(set 2 1)` ≡ `(set 1 2 2)`) — previously a blind spot. Symbolic
-        -- (non-const) elements → keep SOURCE ORDER (sound; reorder-equality stays incomplete there). An
-        -- unorderable all-const set (canonSet `none`) is one `evalNode` DECLINES at construction → keep source
-        -- order (the differential skips the declined program anyway). Distinct head from `list`/`tuple`.
+        -- a SET literal → `.ctor "set"`. When ALL elements are CONCRETE (incl COMPOUND list/tuple/record via
+        -- `symElemToValue?`), CANONICALIZE via eval's own `canonSet` (sort + dedup) then rebuild the SymExpr
+        -- form with `valueToSym` — so the symbolic value matches eval's canonicalized set AND set-REORDER
+        -- equality proves (`(set 1 2)` ≡ `(set 2 1)` ≡ `(set 1 2 2)`, and now for compound elements too). This
+        -- also keeps set LITERALS consistent with `Set.insert` output (both canonical). SYMBOLIC (non-value)
+        -- elements → keep SOURCE ORDER (sound; reorder-equality stays incomplete there). An unorderable
+        -- all-concrete set (canonSet `none`) is one `evalNode` DECLINES at construction → keep source order
+        -- (the differential skips the declined program anyway). Distinct head from `list`/`tuple`.
         let outs := (children.extract 1 children.size).map (fun c => symEval m senv fuel ty c)
         match outs.findSome? (fun o => match o with | .cannotProve r => some r | .sym _ => none) with
         | some r => .cannotProve r
         | none =>
           let elems := outs.map (fun o => match o with | .sym e => e | .cannotProve _ => .const .unit)
-          if elems.all (fun e => match e with | .const _ => true | _ => false) then
-            (match canonSet (elems.filterMap (fun e => match e with | .const v => some v | _ => none)) with
-             | some s => .sym (.ctor "set".toUTF8 (s.map (fun v => SymExpr.const v)))
-             | none => .sym (.ctor "set".toUTF8 elems))
-          else .sym (.ctor "set".toUTF8 elems)
+          (match elems.mapM symElemToValue? with
+           | some vals => (match canonSet vals with
+                           | some s => .sym (.ctor "set".toUTF8 (s.map valueToSym))
+                           | none => .sym (.ctor "set".toUTF8 elems))
+           | none => .sym (.ctor "set".toUTF8 elems))
       else if h == "map".toUTF8 then
         -- a MAP literal: each entry is `(k v)` or `(= k v)` (mirrors `evalMapLiteral`'s key/value parse).
         -- Model as `.ctor "map"` of one `.tuple #[key, value]` per entry. When ALL entries are const (key AND
@@ -1317,17 +1335,22 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
           (match children[1]?, children[2]? with
            | some sId, some xId =>
              (match symEval m senv fuel ty sId, symEval m senv fuel ty xId with
-              | .sym (.ctor t elems), .sym (.const xv) =>
+              | .sym (.ctor t elems), .sym xe =>
                 if t == "set".toUTF8 then
-                  (if elems.all (fun e => match e with | .const _ => true | _ => false) then
-                     (match canonSet ((elems.filterMap (fun e => match e with | .const v => some v | _ => none)).push xv) with
-                      | some s => .sym (.ctor "set".toUTF8 (s.map (fun v => SymExpr.const v)))
+                  -- reify EVERY element AND the inserted value to Values (incl COMPOUND list/tuple/record via
+                  -- `symElemToValue?`), `canonSet` the pushed array (sort + structural dedup), then REBUILD the
+                  -- canonical set as SymExprs via `valueToSym` (representation-faithful → matches a set literal
+                  -- of the same elements). A symbolic / unorderable element → cannotProve.
+                  (match elems.mapM symElemToValue?, symElemToValue? xe with
+                   | some vals, some xval =>
+                     (match canonSet (vals.push xval) with
+                      | some s => .sym (.ctor "set".toUTF8 (s.map valueToSym))
                       | none => .cannotProve "symeval: Set.insert on unorderable elements")
-                   else .cannotProve "symeval: Set.insert needs all-concrete elements")
+                   | _, _ => .cannotProve "symeval: Set.insert needs all-concrete elements")
                 else .cannotProve "symeval: Set.insert on a non-set value"
               | .cannotProve r, _ => .cannotProve r
               | _, .cannotProve r => .cannotProve r
-              | _, _ => .cannotProve "symeval: Set.insert on non-set / non-const element")
+              | _, _ => .cannotProve "symeval: Set.insert on non-set / non-value element")
            | _, _ => .cannotProve "symeval: malformed Set.insert")
         else if q == "Map".toUTF8 && mem == "remove".toUTF8 then
           -- `Map.remove mp k` → the map without k's entry, re-canonicalized (`canonMap (es.filter (·.1 ≠ k))`,
@@ -2224,6 +2247,33 @@ private def _setContainsCompoundExpr : Module :=
     root := 18 }
 #guard symEval _setContainsCompoundExpr [] symDefaultFuel defaultIntTy 18
        == SymOutcome.sym (.const (.bool true))
+
+-- SET.INSERT over COMPOUND elements: `((. Set insert) (set (list 1 2)) (list 3 4))` → canonical set
+-- `{[1,2], [3,4]}` (`symElemToValue?` reifies, `canonSet` sorts, `valueToSym` rebuilds representation-faithfully).
+private def _setInsertCompoundExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "insert".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3]),
+                Leaf.intLit false .dec (ByteArray.mk #[4])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 4, .atom 5, .atom 6, .list #[4, 5, 6],
+               .atom 3, .list #[8, 7], .atom 4, .atom 7, .atom 8, .list #[10, 11, 12], .list #[3, 9, 13]],
+    root := 14 }
+#guard symEval _setInsertCompoundExpr [] symDefaultFuel defaultIntTy 14
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2)],
+                                              .ctor "list".toUTF8 #[.const (.int 3), .const (.int 4)]])
+
+-- SET LITERAL with COMPOUND elements now CANONICALIZES (reorder equality): `(set (list 3 4)(list 1 2))`
+-- canonicalizes to the SAME `{[1,2],[3,4]}` as `(set (list 1 2)(list 3 4))` — previously kept source order.
+private def _setReorderCompoundExpr : Module :=
+  { leaves := #[Leaf.name "set".toUTF8, Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[3]),
+                Leaf.intLit false .dec (ByteArray.mk #[4]), Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2])],
+    nodes := #[.atom 1, .atom 2, .atom 3, .list #[0, 1, 2], .atom 1, .atom 4, .atom 5, .list #[4, 5, 6],
+               .atom 0, .list #[8, 3, 7]],
+    root := 9 }
+#guard symEval _setReorderCompoundExpr [] symDefaultFuel defaultIntTy 9
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.ctor "list".toUTF8 #[.const (.int 1), .const (.int 2)],
+                                              .ctor "list".toUTF8 #[.const (.int 3), .const (.int 4)]])
 
 -- MAP.LEN member-op coverage with DUP-KEY DEDUP: `((. Map len) (map (1 10) (1 20) (2 30)))` → 2 (key 1
 -- deduped, last-wins via canonMap).
