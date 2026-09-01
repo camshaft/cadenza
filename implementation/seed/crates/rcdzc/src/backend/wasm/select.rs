@@ -3778,12 +3778,36 @@ fn emit_tail(
             // (`find-at`'s recursive branch) drops the dead shell before its back-edge `br`. Only when the
             // match actually loops (`arms_tail_call`) and the view reclaim holds; else the arms' `tl` is
             // unchanged (the common case never touches this).
+            // INC1 pt3 SELF-LOOP-TAIL shell reclaim: when this tail match LOOPS (a member tail-call arm) over
+            // a self-recursive body's COMPOUND loop-param scrutinee, thread that param's slot so
+            // `emit_loop_iteration` deep-`op_drop`s the dead node shell per iteration (fixes the inorder
+            // self-tail-traversal spine leak — the self-loop-tail lever). G1 (the scrutinee IS a loop-param:
+            // its binder slot ∈ `tl.param_slots`) + G2/G4/G5/G6a (`selfloop_scrut_shell_reclaim_ok`) gate here;
+            // G3 (the arg carried back into that slot is a CHILD-PROJ, node not carried whole) is checked in
+            // `emit_loop_iteration` where the per-arm tail-call args live.
+            let selfloop_scrut_slot = if arms_tail_call
+                && let Some(t) = tl
+                && let Some(b) = scrut_binder
+                && let Some(&slot) = slots.get(&b)
+                && t.param_slots.contains(&slot)
+                && let Some(fb) = out.fn_body
+                && selfloop_scrut_shell_reclaim_ok(db, fb, scrutinee, &root)
+            {
+                Some(slot)
+            } else {
+                None
+            };
             let arm_tp = if view_reclaim && arms_tail_call {
                 let shell_slot = stashed_slot
                     .expect("matchsum_view_shell_reclaim_ok implies a stashed I32 slot")
                     .0;
                 TailPos::Tail(tl.map(|t| TailLoop {
                     scrut_shell_reclaim: Some(shell_slot),
+                    ..t
+                }))
+            } else if let Some(slot) = selfloop_scrut_slot {
+                TailPos::Tail(tl.map(|t| TailLoop {
+                    selfloop_scrut_slot: Some(slot),
                     ..t
                 }))
             } else {
@@ -4395,13 +4419,33 @@ fn emit_loop_iteration(
     // sub-calls — the G6 dup ⟺ cascade lockstep), so every child nets to its single surviving owner. Unlike
     // `scrut_shell_reclaim` (a stashed slot dropped as-is post-reassign), this MUST save first: the slot is
     // reassigned to the carried child, so a post-reassign drop of the slot would free the NEW value.
-    let selfloop_scrut_scratch: Option<u32> = tl.selfloop_scrut_slot.map(|slot| {
+    let selfloop_scrut_scratch: Option<u32> = tl.selfloop_scrut_slot.and_then(|slot| {
+        // G3 (checked here where the per-arm tail-call args live): the arg carried BACK into the scrutinee's
+        // own slot must be a CHILD-PROJECTION of it (a `SumPayload`/`Proj` rooting at that same param slot) —
+        // never the node carried WHOLE. An identity re-pass (`is_identity`) or a non-projection would alias the
+        // live loop-param to the shell we free → UAF. Sound-conservative: a shape we can't prove is a
+        // self-child-proj → skip the reclaim (leak, safe). This keeps the dead-shell invariant (G3): the shell
+        // is dead once its children are extracted, and the carried child is one of those extractions.
+        let i = tl.param_slots.iter().position(|&s| s == slot)?;
+        if is_identity[i] {
+            return None;
+        }
+        let carried_is_self_child_proj = match core_of(db, args[i]) {
+            Core::SumPayload { scrutinee: s, .. } | Core::Proj { operand: s, .. } => {
+                matches!(core_of(db, s), Core::Param { binder } | Core::LocalRef { binder }
+                    if slots.get(&binder) == Some(&slot))
+            }
+            _ => false,
+        };
+        if !carried_is_self_child_proj {
+            return None;
+        }
         let sc = *high;
         *high = (*high).max(sc + 1);
         scratch_ty.insert(sc, ValType::I32);
         out.push(Lir::LocalGet(slot)); // [old-shell]
         out.push(Lir::LocalSet(sc)); // scratch = old-shell (slot copy, no rc change)
-        sc
+        Some(sc)
     });
     // Args start ABOVE the saved-shell scratch so their emit never reuses those persistent slots (and never
     // below the body scratch floor `base`).

@@ -3532,6 +3532,61 @@ pub(super) fn is_nontail_spine_param(
         && !sum_cont_payload_consumed_in_tail_call(db, root, scrutinee)
 }
 
+/// INC1 pt3 SELF-LOOP-TAIL shell reclaim gate (v-core-opt emit lead + v-mem G1-G7 soundness). Whether a
+/// tail-`MatchSum` over `scrutinee` (continuation `root`) in a SELF-TAIL-LOOP body `top_body` may reclaim the
+/// scrutinee's compound node shell per iteration via a deep `op_drop` on its saved loop-param slot (the
+/// `selfloop_scrut_slot` emit path in `emit_loop_iteration`). This is the SELF-LOOP-TAIL case that
+/// [`is_nontail_spine_param`] EXCLUDES by construction (its `count_param_consumes == 0` +
+/// `!sum_cont_payload_consumed_in_tail_call` gates both fail here: the self-loop-tail scrutinee IS consumed in
+/// the tail-call — a child carried into the loop-param — and by non-tail sibling sub-calls, so count > 0). The
+/// composed conditions (G1 tail-loop-param + G3 next-loop-param-is-child-proj are checked at the emit site
+/// where the slots/args live; G2/G4/G5/G6 here):
+///   G2 — COMPOUND-BOXED heap match scrutinee (a real node array = the shell to free); an all-scalar-payload
+///        or enum-disc sum has no heap shell.
+///   G6a — OWNED-BY-FLOW (the DOUBLE-FREE-critical caller-drop complementarity): reuse
+///        [`body_is_self_recursive`] — a self-recursive fold is internally direct-called and a tail self-call
+///        carries NO caller-drop (the exact INC1-1 frame `def_inc1_reclaims_param` uses), so the callee owns
+///        its tree shell despite `heap_operand_ownership`'s conservative Borrowed default. If a caller DID drop
+///        the tree (borrowed it), this `op_drop` would double-free — `body_is_self_recursive` is the
+///        conservative first-cut; v-mem's guarded-all harden loop traps any residual caller-drop overlap
+///        (op_drop + caller-drop both fire → assert_node_live). (A non-self-recursive owned-param stays a LEAK,
+///        never a UAF — the paramountcy order.)
+///   G4 — `!sum_cont_arm_returns_scrutinee`: no arm returns the scrutinee node WHOLE (else the shell is live
+///        in the result → freeing it is a UAF). The 05:9972 fence.
+///   G5 — `!sum_cont_arm_interior_view_on_scrutinee`: no arm aliases a shell child OUT via a fallible
+///        interior-view op (Map.lookup/List.at/String.at/…) whose result outlives the match → the deep drop
+///        would free a still-read view (the 2026-07-19 sread UAF fence).
+///   G6b — dup ⟺ cascade lockstep: SOUND BY CONSTRUCTION here — while the scrutinee shell is RETAINED until
+///        our end-of-iteration `op_drop`, the general emit CANNOT move a child out (a projected child of a
+///        still-live parent is dup'd for its consuming use, never moved), so every child the deep-drop cascade
+///        decrements survives via its pre-existing escape dup. The emit path adds ONLY the `op_drop` and does
+///        NOT alter child-dup emission, preserving the retained-parent invariant. (guarded-all is the
+///        empirical check that no child was actually moved.)
+/// SOUND-CONSERVATIVE: under-admit = LEAK (safe); the double-free direction is blocked by G6a's
+/// self-recursion + G4/G5, and empirically gated by v-mem's guarded-all harden loop.
+pub(super) fn selfloop_scrut_shell_reclaim_ok(
+    db: &mut Db,
+    top_body: StructId,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let scrut_ty = type_of(db, scrutinee);
+    // G2: a compound-boxed heap node (has a shell array to free); NOT an all-scalar / enum-disc sum.
+    let compound_boxed = is_heap_type(&scrut_ty)
+        && !ty_is_enum_disc(db, &scrut_ty)
+        && !sum_has_only_scalar_payloads(db, &scrut_ty);
+    compound_boxed
+        // The scrutinee must be a PARAM/LocalRef (the loop-param whose slot the emit saves+drops); a computed
+        // temporary is the stashed `sum_shell_reclaim_ok`/`scrut_shell_reclaim` path, not this one.
+        && matches!(core_of(db, scrutinee), Core::Param { .. } | Core::LocalRef { .. })
+        // G6a: owned-by-flow (caller-drop complementarity) — conservative first-cut, hardened vs guarded-all.
+        && body_is_self_recursive(db, top_body)
+        // G4: the scrutinee node is never returned WHOLE (shell not live in a result).
+        && !sum_cont_arm_returns_scrutinee(db, root, scrutinee)
+        // G5: no arm aliases a shell child out via an interior-view op (sread UAF fence).
+        && !sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
+}
+
 /// Collect the PARAM BINDERS whose owned-shell the tail-`MatchSum` emit reclaims via the param slot for a
 /// COMPOUND payload (INC1 — the drop side of the [`is_nontail_spine_param`] dup side). Shares the exact
 /// predicate so `nontail_compound_reclaim_binders` ⟺ the dups `collect_shell_reclaim_child_dups` marks.
