@@ -35102,3 +35102,53 @@
       (export main)))
   (call main (: 6 Int64))
   (output (: 206 Int64)))
+
+; SET construction spread — the value twin of the set REST pattern (DESIGN-collection-spread-construction.md
+; §6; operator: spread must support ALL collections). `#set(k (.. s) 30)` splices set s's elements in and
+; DEDUPS (Set.union semantics): s={10,20}, so k=5 -> {5,10,20,30} (len 4), k=10 -> {10,20,30} (the 10
+; already present, absorbed — len 3). Lowers to a `Set.union` fold over synthetic `#set(…)` inline runs +
+; the spread operand; works on wasm and rust.
+(case
+  "a set construction spread splices a runtime set's elements and dedups"
+  (input
+    (do
+      (def (main (: k Int64))
+        (do
+          (def s #set(10 20))
+          (Set.len #set(k (.. s) 30))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 4 Int64))
+  (call main (: 10 Int64))
+  (output (: 3 Int64)))
+
+; ALL-SPREAD set union — `#set((.. a) (.. b))` is the union of the two runtime sets (no inline element, so
+; the fold is a bare `Set.union` of the operands). a={1,2}, b={2,3} -> {1,2,3}, len 3 (the shared 2
+; collapses). Also observe membership of a b-only element (3 present -> +100): 100 + 3 = 103.
+(case
+  "a set construction spread with only spreads unions the operands"
+  (input
+    (do
+      (def (main (: x Int64))
+        (do
+          (def a #set(1 2))
+          (def b #set(2 x))
+          (def u #set((.. a) (.. b)))
+          (+ (if (Set.contains u x) 100 0) (Set.len u))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 103 Int64)))
+
+; A FULLY-CONSTANT set spread folds at compile — `#set(1 (.. #set(2 3)) 3)` is the constant {1,2,3} (the 3
+; dedups), observably identical to `#set(1 2 3)`. len=3, contains 2 -> +10: 100*3 + 10 = 310.
+(case
+  "a fully-constant set construction spread folds and dedups"
+  (input
+    (do
+      (def (main)
+        (do
+          (def u #set(1 (.. #set(2 3)) 3))
+          (+ (* 100 (Set.len u)) (if (Set.contains u 2) 10 0))))
+      (export main)))
+  (call main)
+  (output (: 310 Int64)))
