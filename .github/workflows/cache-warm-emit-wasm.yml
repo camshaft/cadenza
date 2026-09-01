@@ -1,0 +1,58 @@
+# DEDICATED DAILY warm for the per-case corpus emit.wasm closure (v-wasm-oracle #7427 →
+# packages.corpus-emit-wasm-warm, which realizes every mkCorpusBuild emit.wasm across corpusFileNames).
+#
+# WHY A SEPARATE DAILY JOB (v-gha-green decision, 2026-09-01), NOT inline in cache-warm.yml's */30 warm:
+# corpus-emit-wasm-warm is ~10.7k per-case wasm compiles. It's content-addressed (amortized — only changed
+# cases rebuild), BUT a compiler-rev bump (~90min cadence) re-keys the WHOLE per-case set = a heavy re-warm.
+# Putting that in the 30-min critical-path warm would (a) bloat/slow the dep-cache warm every rotation and
+# (b) risk a daemon wedge on the wide CA graph. A dedicated DAILY job keeps the emit.wasm reasonably warm on
+# cachix (so the full-corpus oracle-wasm-diff hits cache instead of cold-compiling) without touching the
+# critical warm. NON-required / advisory: a failure just means "cold like today", never reds a PR.
+name: cache-warm-emit-wasm
+
+on:
+  schedule:
+    - cron: "0 8 * * *" # once a day (08:00 UTC, off-peak) — v-gha-green may retune the hour
+  workflow_dispatch: {} # manual on-demand (e.g. right after a compiler-rev bump, to reseed the emit cache)
+
+# Own group, fully outside ci's push-supersede group + cache-warm's group, so it never contends with or
+# supersedes the critical dep-cache warm.
+concurrency:
+  group: cache-warm-emit-wasm
+  cancel-in-progress: false
+
+# Least-privilege: this job only READS the repo + PUSHES to cachix (no GHA-cache save/purge — it seeds cachix
+# via the cachix-action post-step, it does not touch the c2 GHA store cache), so contents:read is sufficient.
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+jobs:
+  warm-emit-wasm:
+    # aarch64 only: the emit.wasm the full-corpus oracle-wasm-diff consumes is produced on the aarch64 corpus
+    # path (matching the runtime-hash arch the gate + oracle build against).
+    name: warm + push per-case corpus emit.wasm (aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # ca-derivations so the per-case content-addressed emit.wasm cache is built + reused (#3363); the
+          # cachix substituter so an already-warm case cache-HITS instead of recompiling.
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      # The cachix-action post-step pushes every path built during this run to camshaft.cachix.org (DEDUPs —
+      # an already-present emit.wasm is a cheap no-op). Placed BEFORE the build so it captures it. Push gated
+      # to the default branch (the schedule only fires on main anyway; explicit gate future-proofs it).
+      - uses: cachix/cachix-action@v16
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          name: camshaft
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      # Realize the whole per-case emit.wasm closure → the cachix post-step pushes it. --keep-going so one
+      # bad case doesn't abort the whole warm (a corpus code-red must not block seeding the rest).
+      - name: warm + push per-case corpus emit.wasm
+        run: nix build .#packages.aarch64-linux.corpus-emit-wasm-warm --print-build-logs --keep-going
