@@ -972,30 +972,43 @@ pub(super) fn binder_reuses_or_moves_on_some_path(
     }
 }
 
-/// Whether the loop-rebind VALUE `arg` PROVABLY produces a FRESH heap value that does NOT alias or descend
-/// the old accumulator — the SOUND sufficient condition for the borrowed-accumulator drop (`drop_old_borrowed`
-/// in `emit_loop_iteration`). A runtime `rational-add`/`bigint-*` (RationalBinOp/BigIntBinOp) computes a NEW
-/// Rational/BigInt (fresh num/den or magnitude) from its operands' VALUES; it never returns or embeds an
-/// operand's cell, so once such an op has read the old accumulator, that accumulator is genuinely dead and
-/// dropping it frees nothing the new value references (harmonic/Rational/BigInt numeric folds → clean).
-/// EXCLUDES the SHARE hazards the drop must NOT touch (all produce a value that aliases/descends the old
-/// accumulator, so its shell-drop would cascade-free a carried cell → UAF/corruption):
-///   • a `LocalRef`/`Proj`/match-PAYLOAD binder that IS a CHILD of the old accumulator — the tail fold
-///     `(def (bb s) (match s ((Leaf r) r) ((Diff l _t) (bb l))))` rebinds the slot to `l`, a child of the
-///     old `Diff`; dropping the old `Diff` cascade-frees the carried `l` (breaker's reduced CAD repro,
-///     silent value corruption / the 7 CAD `unreachable` double-frees);
-///   • a ctor SHARING the accumulator (`v2max`→`Vec2.V2` reusing the max operand's Rational child, CSG
-///     `fuse`→`Solid.Union` with the accumulator as a payload child);
-///   • a `Call` (may alias/consume/share via the callee).
+/// Whether the loop-rebind VALUE `arg` PROVABLY produces a FRESH heap CELL (a distinct new allocation that is
+/// not itself the old accumulator's cell) — the SOUND sufficient condition for the borrowed-accumulator drop
+/// (`drop_old_borrowed` in `emit_loop_iteration`). TWO fresh-producing shapes:
+///   • a runtime `rational-add`/`bigint-*` (RationalBinOp/BigIntBinOp) — computes a NEW Rational/BigInt (fresh
+///     num/den or magnitude) from its operands' VALUES; never returns or embeds an operand's cell, so once it
+///     has read the old accumulator that accumulator is genuinely dead (harmonic/Rational/BigInt folds → clean).
+///   • a fresh COMPOUND-PRODUCT CTOR (`Core::Tuple`/`ListNew`/`Record`/`BytesOf`) — `arr-alloc`s a brand-new
+///     cell. A RECURSIVE tuple/record/list-STATE handler rebinds its loop state slot to such a ctor each
+///     iteration; the numeric-only gate saw the fresh ctor as non-fresh → left the OLD state shell undropped =
+///     one leak per perform (v-effects confirmed via wasm dump on `/tmp/rectuple_tail`: a self-loop that
+///     arr-allocs the new `#tuple` + rebinds the state local with NO free of the old shell — exactly this gap).
+/// SOUNDNESS of the ctor arm rests ENTIRELY on the CALLER's conjunctive escape guard at the drop site
+/// (`!binding_escapes(arg, binder)` for EVERY rebind arg). A ctor that would cascade-free a carried cell always
+/// makes the old accumulator ESCAPE through it, so the guard blocks the drop BEFORE this fn is consulted:
+///   • a ctor EMBEDDING a HEAP CHILD of the old accumulator (`v2max`→`Vec2.V2` reusing a Rational child; CSG
+///     `fuse`→`Solid.Union` with the accumulator as a payload child) — the child extraction is a nested-compound
+///     `Proj` (`get_op` None) in the ctor's CONSUMING element position → `binding_escapes` = true → drop BLOCKED;
+///   • a ctor FBIP-REUSING the old cell consumes the accumulator → `binding_escapes` = true → drop BLOCKED;
+///   • the `bb (Diff l _t) => bb l` child-carry is a bare payload rebind (not a product ctor) → still `false` here.
+/// Only a ctor whose operands read the old accumulator via BORROWING scalar projections (`get_op` Some — the
+/// scalar is COPIED, no heap child shared) passes BOTH the escape guard and this arm, so its old shell is truly
+/// dead (14b-tuple: field 0 a fresh arith over unboxed scalars, field 1 an unboxed-scalar projection).
 /// Following Let/Seq/Block tails; conservative `false` for everything else (keep the drop OFF → at worst the
-/// pre-fix benign leak, never a cascade double-free). NARROWER than "borrowed-not-consumed" alone, which
-/// over-approximated "dead" for compound accumulators whose children are carried forward.
-pub(super) fn rebind_produces_fresh_numeric(db: &mut Db, arg: StructId) -> bool {
+/// pre-fix benign leak, never a cascade double-free). Sum ctors (`SumNew`) deferred to a separately-verified
+/// follow-up (the excluded share-hazards above are sum ctors; the escape guard would cover them, but the
+/// sum-state leak wants its own before/after pin).
+pub(super) fn rebind_produces_fresh(db: &mut Db, arg: StructId) -> bool {
     match core_of(db, arg) {
         Core::RationalBinOp { .. } | Core::BigIntBinOp { .. } => true,
-        Core::Let { body, .. } => rebind_produces_fresh_numeric(db, body),
-        Core::Seq { tail, .. } => rebind_produces_fresh_numeric(db, tail),
-        Core::Block { body, .. } => rebind_produces_fresh_numeric(db, body),
+        // A fresh product-compound ctor — a distinct new cell (see the fn doc; the caller's escape guard
+        // excludes any ctor that embeds/reuses a heap child of the old accumulator).
+        Core::Tuple { .. } | Core::ListNew { .. } | Core::Record { .. } | Core::BytesOf { .. } => {
+            true
+        }
+        Core::Let { body, .. } => rebind_produces_fresh(db, body),
+        Core::Seq { tail, .. } => rebind_produces_fresh(db, tail),
+        Core::Block { body, .. } => rebind_produces_fresh(db, body),
         _ => false,
     }
 }
