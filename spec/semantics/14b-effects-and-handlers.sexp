@@ -662,7 +662,7 @@
   (output (: 34 Int64)))
 
 (case
-  "a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)"
+  "a block-wrapped OUTER-effect perform in a nested handle's INIT folds to 34 (adv-69 a4-init sub-face)"
   (doc
     "adv-69 a4-init (liaison/Copilot on merged #1933): the a4 nested-handle-escape, but the block-wrapped
            OUTER-effect perform sits in the inner handle's INIT — `(handle A 3 ((ga …)) (handle B (let ((k true))
@@ -673,8 +673,8 @@
            trailing A.ga must read 4 → 10*3 + 4). The a4 fix scanned the inner handle's BODY but early-returned
            without the INIT, missing this position. FIX: the nested-Handle scan checks the init node directly
            (`block_wrapped_branch_performs`) AND recurses into both init and body — ctx-keyed, so only an
-           OUTER-op perform fires (no over-decline of `B`'s shapes). Grades TODO on all backends; flips to 34
-           PASS on the through-block fold.")
+           OUTER-op perform fires (no over-decline of `B`'s shapes). Now FOLDS to 34 (Site 7 nested-handle-init through-block float, reduce.rs): the pure `let`
+           wrapper is floated OUTSIDE the inner handle so the conditional is a DIRECT seed the outer fold threads.")
   (input
     (do
       (effect A (op ga (-> Unit Int64)))
