@@ -461,6 +461,13 @@ pub(crate) mod cse {
                     && is_cse_candidate(db, then_)
                     && is_cse_candidate(db, else_)
             }
+            // NOT a shareable candidate — a NON-LOCAL exit (v-effects `Core::HandleAbort`, CASE 1): its
+            // `value` becomes the whole handle's result via a bare wasm `return`. Deduping/naming it (or any
+            // node holding it) would move a divergent control-flow point. Explicit reject-set membership (the
+            // `_ => false` default already excludes it, but this documents it as a deliberate CSE barrier —
+            // paired with the `collect_dominating_frontier` fence that keeps its abort value out of the
+            // hoist frontier). Guards the future CASE-2 mid-function conditional abort.
+            Core::HandleAbort { .. } => false,
             _ => false,
         }
     }
