@@ -2341,6 +2341,38 @@ theorem denote_normalize_app_binary_bool (ρ : Nat → Value) (w : IntTy) (op : 
             · have f6 : symExprEqB (normalize a0) (normalize a1) = false := by simpa using g6
               exact plain (by simp [normalizeAppIdentities, f1, f2, f3, f4, f6])
 
+/-- CAPSTONE `.app` case — the CONSOLIDATED dispatch (the `.app` case of the top-level `denote.induct`
+assembly). Splits on arity (`denote_app_value_arity`), then for the unary case uses `denote_normalize_app_unary`;
+for binary, `cases foldConst?` → the fold lemma, else dispatch the op class to the bitwise / arith / bool arm
+(or, for an op with no identity, the PLAIN rebuild). Combines every `.app`-dispatch arm (unary #7325,
+bitwise #7354, arith #7372, bool #7378) into the single per-arg-IH statement the induction supplies. -/
+theorem denote_normalize_app (ρ : Nat → Value) (w : IntTy) (op : String) (args : Array SymExpr) (v : Value)
+    (ih : ∀ x ∈ args, ∀ u, denote ρ w x = .value u → denote ρ w (normalize x) = .value u)
+    (h : denote ρ w (.app op args) = .value v) :
+    denote ρ w (normalize (.app op args)) = .value v := by
+  rcases denote_app_value_arity ρ w op args v h with ⟨a0, rfl⟩ | ⟨a0, a1, rfl⟩
+  · exact denote_normalize_app_unary ρ w op a0 v (fun u hu => ih a0 (by simp) u hu) h
+  · have ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u := fun u hu => ih a0 (by simp) u hu
+    have ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u := fun u hu => ih a1 (by simp) u hu
+    cases hfold : foldConst? op (#[a0, a1].attach.map (fun x => normalize x.val)) with
+    | some vf => exact denote_normalize_app_fold ρ w op #[a0, a1] vf v hfold ih h
+    | none =>
+      by_cases hbit : op = "&" ∨ op = "|" ∨ op = "^" ∨ op = "<<" ∨ op = ">>"
+      · exact denote_normalize_app_binary_bitwise ρ w op a0 a1 v hbit h
+      · by_cases harith : op = "+" ∨ op = "-" ∨ op = "*" ∨ op = "/" ∨ op = "%"
+        · exact denote_normalize_app_binary_arith ρ w op a0 a1 v harith hfold ih0 ih1 h
+        · by_cases hbool : op = "or" ∨ op = "and"
+          · exact denote_normalize_app_binary_bool ρ w op a0 a1 v hbool hfold ih0 ih1 h
+          · -- op has NO identity rewrite → PLAIN rebuild. From ¬(bit ∨ arith ∨ bool) get op ≠ each of the 12.
+            simp only [not_or] at hbit harith hbool
+            obtain ⟨hb1, hb2, hb3, hb4, hb5⟩ := hbit
+            obtain ⟨ha1, ha2, ha3, ha4, ha5⟩ := harith
+            obtain ⟨ho1, ho2⟩ := hbool
+            refine denote_normalize_app_ident_plain ρ w op #[a0, a1] v ?_ ih h
+            rw [normalize_app_ident op #[a0, a1] hfold,
+                show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp]
+            simp [normalizeAppIdentities, ha1, ha2, ha3, ha4, ha5, ho1, ho2, hb1, hb2, hb3, hb4, hb5]
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
