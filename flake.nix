@@ -5462,19 +5462,37 @@
         # SCOPE (Step A): scalar-heavy corpus files so the initial differential run is tractable; widen to
         # `corpusFileNames` once the pipeline is proven green over these.
         wasmOracleFiles = [ "01-literals.sexp" "06-numeric-model.sexp" ];
+        # All per-case extraction dirs for the scoped files — shared by the manifest (oracleWasmCaseDirs) and the
+        # extraction cache-warm (corpusWasmExtractWarm), so both realize exactly the same set.
+        wasmOracleExtractDirs = pkgs.lib.concatLists (map
+          (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            wasmExtractFileDirs { name = stem; file = ./spec/semantics + "/${f}"; })
+          wasmOracleFiles);
         # The manifest v-lean-oracle's oracle-wasm-diff check reads: one line per per-case dir that HAS a
-        # core.wat (a runnable extraction), sorted. Mirrors oracleLeanCaseDirs.
+        # core.wat (a runnable extraction), sorted. Mirrors oracleLeanCaseDirs. The dir list is passed via
+        # `passAsFile` (NOT an env attr): at ~1478 dirs (Step A) it's ~90KB and at full-corpus Step B ~640KB —
+        # a runCommand env attr stringifies the list into one env var that counts against the execve arg+env
+        # limit (the E2BIG that bit corpus-emit-wasm-warm, #7546), so read it from a file instead.
         oracleWasmCaseDirs = pkgs.runCommand "oracle-wasm-case-dirs"
           {
-            dirs = pkgs.lib.concatLists (map
-              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
-                wasmExtractFileDirs { name = stem; file = ./spec/semantics + "/${f}"; })
-              wasmOracleFiles);
+            dirs = wasmOracleExtractDirs;
+            passAsFile = [ "dirs" ];
           } ''
           : > "$out"
-          for d in $dirs; do [ -e "$d/core.wat" ] && echo "$d" >> "$out" || true; done
+          for d in $(tr ' ' '\n' < "$dirsPath"); do [ -e "$d/core.wat" ] && echo "$d" >> "$out" || true; done
           sort -o "$out" "$out"
           echo "oracle-wasm-case-dirs: $(wc -l < "$out") runnable extractions" >&2
+        '';
+        # Extraction-layer cache-warm: realize every per-case wasm extraction (mkWasmExtract: unbundle/print +
+        # `cdz compile -t cadenza` + objdump/dd) so v-gha-green can push them to cachix and v-lean-oracle's
+        # oracle-wasm-diff check pulls them instead of cold-building (~12h cold under a vertical lease). The
+        # emit.wasm layer is already warmed by corpus-emit-wasm-warm; this is the layer ON TOP of it. Same
+        # writeText-manifest pattern as corpus-emit-wasm-warm (a single store path, NOT an env attr) so the
+        # ~1478 (Step A) / ~10.7k (Step B) extraction paths never hit the execve arg+env limit.
+        corpusWasmExtractWarm = pkgs.runCommand "corpus-wasm-extract-warm" { } ''
+          cp ${pkgs.writeText "corpus-wasm-extract-dirs"
+            (pkgs.lib.concatStringsSep "\n" wasmOracleExtractDirs)} "$out"
+          echo "corpus-wasm-extract-warm: realized $(wc -l < "$out") per-case wasm extractions" >&2
         '';
         oracleLeanAstRoundtrip = pkgs.runCommand "oracle-lean-ast-roundtrip"
           { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleLeanCaseDirs; } ''
@@ -5769,6 +5787,9 @@
         # each dir = {core.wat, result-type.ast, core.ast}. v-lean-oracle's oracle-wasm-diff check reads this
         # to run the Core↔wasm differential over the corpus. `nix build .#oracle-wasm-case-dirs`.
         packages.oracle-wasm-case-dirs = oracleWasmCaseDirs;
+        # Extraction-layer cache-warm target (v-gha-green wires into a daily/dispatch workflow, like
+        # cache-warm-emit-wasm.yml): realizes every per-case wasm extraction so they land on cachix.
+        packages.corpus-wasm-extract-warm = corpusWasmExtractWarm;
         # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
         packages.guide-shred = guideShred;
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
