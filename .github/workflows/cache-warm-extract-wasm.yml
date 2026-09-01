@@ -1,0 +1,64 @@
+# DEDICATED DAILY warm for the per-case corpus wasm-EXTRACTION closure (v-wasm-oracle #7633 →
+# packages.corpus-wasm-extract-warm, which realizes every mkWasmExtract output across the corpus:
+# wasm-tools unbundle/print + `cdz compile -t cadenza` + objdump/dd per case).
+#
+# WHY A SEPARATE DAILY JOB (v-gha-green decision, same rationale as cache-warm-emit-wasm.yml #7428), NOT
+# inline in cache-warm.yml's */30 warm: this is the SECOND wasm-oracle warm layer, sitting ON TOP of the
+# emit.wasm layer (cache-warm-emit-wasm.yml). v-wasm-oracle measured the cold cost at ~12h under a single
+# vertical lease (~1 extraction / 45s, lease-starved) — CI parallelism handles the ~1478-case realization far
+# better. It is content-addressed (amortized) but re-keys on a compiler-rev bump like the emit layer, so it
+# must NOT burden the 30-min critical dep-cache warm or contend for the shared nix daemon with it. A dedicated
+# daily job keeps the extraction layer warm on cachix so v-lean-oracle's full-corpus oracle-wasm-diff PULLS
+# instead of cold-building (~12h). NON-required / advisory: a failure just means "cold like today".
+#
+# SCHEDULED at 10:00 UTC — 2h AFTER cache-warm-emit-wasm.yml's 08:00 emit warm, so (a) the emit.wasm layer
+# this builds on is warm/pushed to cachix first (extraction PULLs it instead of cold-recompiling), and (b) the
+# two heavy whole-corpus warms don't hammer the shared nix daemon simultaneously (avoids the daemon-contention
+# wedge class). If emit isn't done by 10:00 the extraction cold-builds the emit layer too (--keep-going, fine).
+name: cache-warm-extract-wasm
+
+on:
+  schedule:
+    - cron: "0 10 * * *" # once a day (10:00 UTC), 2h after the 08:00 emit warm — v-gha-green may retune
+  workflow_dispatch: {} # manual on-demand (e.g. right after a compiler-rev bump, to reseed the extractions)
+
+# Own group, fully outside ci's push-supersede group + cache-warm's group + cache-warm-emit-wasm's group, so
+# it never contends with or supersedes the critical dep-cache warm (or the emit warm).
+concurrency:
+  group: cache-warm-extract-wasm
+  cancel-in-progress: false
+
+# Least-privilege: only READS the repo + PUSHES to cachix (no GHA-cache save/purge), so contents:read suffices.
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+jobs:
+  warm-extract-wasm:
+    # aarch64 only: the extraction the full-corpus oracle-wasm-diff consumes is produced on the aarch64 corpus
+    # path (matching the runtime-hash arch the gate + oracle build against), same as the emit warm.
+    name: warm + push per-case corpus wasm extraction (aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # ca-derivations so the per-case content-addressed extraction cache is built + reused (#3363); the
+          # cachix substituter so an already-warm extraction (and the emit.wasm layer beneath it) cache-HITS.
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      # The cachix-action post-step pushes every path built during this run to camshaft.cachix.org (DEDUPs —
+      # an already-present extraction is a cheap no-op). Placed BEFORE the build so it captures it. Push gated
+      # to the default branch (the schedule only fires on main anyway; explicit gate future-proofs it).
+      - uses: cachix/cachix-action@v16
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          name: camshaft
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      # Realize the whole per-case extraction closure → the cachix post-step pushes it. --keep-going so one
+      # bad case doesn't abort the whole warm (a corpus code-red must not block seeding the rest).
+      - name: warm + push per-case corpus wasm extraction
+        run: nix build .#packages.aarch64-linux.corpus-wasm-extract-warm --print-build-logs --keep-going
