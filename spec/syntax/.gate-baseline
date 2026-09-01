@@ -464,6 +464,8 @@ pass	ml/530-empty-record-literal
 pass	ml/531-match-string-literal-pattern
 pass	ml/532-match-char-literal-pattern
 pass	ml/533-match-bool-literal-pattern
+pass	ml/534-try-fallible-unwrap
+pass	ml/535-try-in-let-binder
 pass	ml/54-neg-prefix-name
 pass	ml/55-neg-prefix-call
 pass	ml/56-neg-prefix-member
