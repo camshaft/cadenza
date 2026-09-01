@@ -287,6 +287,14 @@ pub enum Lir {
     Select,
     /// `unreachable` — an unconditional trap.
     Unreachable,
+    /// `return` (wasm `0x0f`) — a NON-LOCAL exit from the enclosing function, popping the function's
+    /// result values off the stack. A terminator: like `unreachable` it leaves the stack POLYMORPHIC, so
+    /// it validates in ANY result position. Used by the recursive effect-abort (`Core::HandleAbort`): the
+    /// fold produces `HandleAbort` ONLY when the reduced abortive handle is the WHOLE function body (so the
+    /// handle result IS the function result), and the abort emits `emit(value); Return` — abandoning the
+    /// pending continuation + the self-loop and yielding `value` as the handle/function result. (Distinct
+    /// from `ReturnCall`, the tail-call frame replacement.)
+    Return,
     /// `drop` — pop and discard the top stack value. Used where a value was produced for its side of the
     /// stack but is not consumed: a UNIT heap slot stores the inline-unit sentinel `IMM_UNIT`, so reading
     /// such a slot (`arr-get`/`sum-payload`) yields that handle, which must be dropped because a `Unit`

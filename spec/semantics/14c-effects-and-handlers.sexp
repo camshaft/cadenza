@@ -27011,3 +27011,21 @@
       (export main)))
   (call main)
   (output (: 160 Int64)))
+
+(case
+  "eab1 an ABORTIVE arm at a NON-TAIL position the tail-resumptive fold cannot lift (under an effectful resumptive sibling `(E.other)`, so the hoist cannot raise the `if` to a branch tail) in a WHOLE-DEF-BODY handle lowers to a NON-LOCAL EXIT (the fold emits `Core::HandleAbort`, the wasm backend a bare return): the taken abort ABANDONS the pending `+` and yields the arm value, while the untaken branch adds normally. `(E.other)`'s effect still runs before the abort (the abort abandons the pending continuation, not an already-executed effect). This formerly declined CDZ0900 (v-effects HandleAbort CASE-1, co-verified v-wasm-opt emit)."
+  (input
+    (do
+      (effect E (op other (-> Int64)) (op bail (-> Int64 Int64)))
+      (def
+        (main (: c Bool))
+        (handle
+          E
+          0
+          ((other () s (resume s (+ s 1))) (bail (v) s v))
+          (+ (E.other) (if c (E.bail 5) 0))))
+      (export main)))
+  (call main (: false Bool))
+  (output (: 0 Int64))
+  (call main (: true Bool))
+  (output (: 5 Int64)))

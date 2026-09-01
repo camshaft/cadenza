@@ -1303,6 +1303,10 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         // A boundary block / break — descend into the body / break value to reach any host op inside.
         Core::Block { body, .. } => collect_host_imports(db, body, out),
         Core::Break { value } => collect_host_imports(db, value, out),
+        // The abort VALUE is evaluated before the non-local branch; a HostCall inside it would otherwise be
+        // missed → a missing host import → invalid module. Recurse into it; `handle_id` is a reference to
+        // the target handle node, not an emitted subexpression.
+        Core::HandleAbort { value, .. } => collect_host_imports(db, value, out),
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::StrCmp { lhs, rhs, .. }

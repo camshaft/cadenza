@@ -1564,6 +1564,9 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             collect_closure_codes(db, scrutinee, out)
         }
+        // The abort VALUE (evaluated before the non-local branch) may build a closure; the branch target
+        // (`handle_id`) is a StructId reference to the handle node, not an emitted subexpression.
+        Core::HandleAbort { value, .. } => collect_closure_codes(db, value, out),
         // Leaves / references build no closure.
         Core::ConstInt(_)
         | Core::ConstRational(_, _)
@@ -1922,6 +1925,9 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // A boundary block / break — descend into the body / break value to reach any call inside.
         crate::core::Core::Block { body, .. } => collect_call_callees(db, body, out),
         crate::core::Core::Break { value } => collect_call_callees(db, value, out),
+        // The abort VALUE (evaluated before the non-local branch) may contain a call; `handle_id` is a
+        // reference to the target handle node, not an emitted subexpression.
+        crate::core::Core::HandleAbort { value, .. } => collect_call_callees(db, value, out),
         // Leaves and references have no sub-calls (a `Captured` read is a heap read of the env cell).
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstRational(_, _)

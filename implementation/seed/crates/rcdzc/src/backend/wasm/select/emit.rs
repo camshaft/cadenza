@@ -3170,6 +3170,25 @@ pub(super) fn emit(
             out.push(Lir::Unreachable);
             Ok(())
         }
+        // EFFECT NON-LOCAL EXIT — BASELINE PLACEHOLDER (v-wasm-opt fills the CASE-1 emit: `emit(value)` then a
+        // bare wasm `return`, since the fold only produces `HandleAbort` when the reduced handle is the whole
+        // function body so the function result IS the handle result — see the `Core::HandleAbort` doc). The
+        // fold does not yet PRODUCE `HandleAbort`, so this arm is unreachable in the baseline; decline
+        // gracefully rather than `unreachable!()` so an unexpected route declines instead of panicking.
+        // EFFECT NON-LOCAL EXIT (recursive effect-abort): the fold produces `HandleAbort` ONLY when the
+        // reduced abortive handle is the WHOLE function body (handle-result == function-result; a
+        // mid-function or cross-recursive-frame abort DECLINES in the fold until a future vertical). So the
+        // abort is a plain non-local RETURN of `value` from the enclosing function: `value` is already the
+        // handle result type (the E4 abortive-arm type-consistency check guarantees it) = the function
+        // result type, and `Lir::Return` pops it as the function result, abandoning the pending
+        // continuation AND the self-loop's remaining iterations. `Return` leaves the stack POLYMORPHIC (like
+        // `Core::Trap`'s `unreachable`), so this validates in ANY result position. `handle_id` is unused
+        // here (it keys the block-depth machinery of the deferred mid-function CASE-2 emit).
+        Core::HandleAbort { value, .. } => {
+            emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [abort-value]
+            out.push(Lir::Return); // non-local exit: value becomes the function/handle result
+            Ok(())
+        }
         // A KIND-PRESERVING divide-by-zero trap (demoted from a const `(/ 1 0)` in a conditional branch —
         // `lower::demote_conditional_trap`). Emit a guaranteed-trapping division so the runtime surfaces its
         // NATIVE reason ("integer divide by zero", which `trap_kind` canonicalizes to `div-by-zero`) rather

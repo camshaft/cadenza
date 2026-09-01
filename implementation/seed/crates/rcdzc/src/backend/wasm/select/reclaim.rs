@@ -633,6 +633,11 @@ fn binding_escapes_dup_aware_inner(
                     .iter()
                     .any(|&a| binding_escapes_dup_aware(db, a, binder, false, dup_sites))
         }
+        // The abort VALUE becomes the handle's result (a consuming position), so a binding occurring in it
+        // may escape; descend it. `handle_id` is a reference to the target handle node, not a subexpression.
+        Core::HandleAbort { value, .. } => {
+            binding_escapes_dup_aware(db, value, binder, false, dup_sites)
+        }
         // Leaves reference no binding. (`Core::Captured` is handled by its own arm ABOVE — it matches a
         // `Capture(index)` query and is inert for a `Binder` query, so it is NOT in this leaf group.) `trap`
         // diverges with no operand, so it holds no binding to escape.
@@ -887,6 +892,9 @@ fn binder_must_escape(db: &mut Db, id: StructId, binder: StructId, tail_borrowed
                     .iter()
                     .any(|&a| binder_must_escape(db, a, binder, false))
         }
+        // The abort VALUE is unconditionally evaluated (straight-line before the non-local branch) as a
+        // consuming position, so a binder escaping in it must-escapes here. `handle_id` is a reference.
+        Core::HandleAbort { value, .. } => binder_must_escape(db, value, binder, false),
         // `Core::Captured` reads a closure env slot by INDEX, never a `Binder` id ⇒ inert for this query.
         Core::Captured { .. }
         | Core::ConstInt(_)
@@ -2529,6 +2537,9 @@ pub(super) fn child_ids_of(c: &Core, cs: &mut Vec<StructId>) {
         // A boundary block's child is its body; a break's child is its value.
         Core::Block { body, .. } => cs.push(*body),
         Core::Break { value } => cs.push(*value),
+        // The abort VALUE is the sole emitted child; `handle_id` is a reference to the target handle node
+        // (not a subexpression occurrence), so it is NOT a child id.
+        Core::HandleAbort { value, .. } => cs.push(*value),
         Core::Let { bindings, body } => {
             cs.extend(bindings.iter().map(|(_, v)| *v));
             cs.push(*body);
@@ -3282,6 +3293,12 @@ pub(super) fn mark_binder_dups_inner(
             mark_binder_dups(db, body, binder, consuming, live_after, sites)
         }
         Core::Break { value } => mark_binder_dups(db, value, binder, consuming, live_after, sites),
+        // The abort VALUE flows out as the reduced handle's result on the non-local path (like a break value
+        // flowing out as its block's value), so its position carries the enclosing `consuming`; `handle_id`
+        // is a reference to the target handle node, not a subexpression.
+        Core::HandleAbort { value, .. } => {
+            mark_binder_dups(db, value, binder, consuming, live_after, sites)
+        }
         // A `let`: the initializers are sequential-before the body (a `let*` later init may name an earlier
         // one). The body's position is the enclosing `consuming` (the let's value flows to where the let is
         // used). NOTE the INNER binder shadows nothing here — we track ONE outer `binder`; an inner binding

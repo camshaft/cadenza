@@ -1888,7 +1888,7 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::rc::Rc<[StructId]>, Stru
             // folded `50` occurrence (the synthesized node was built by `push_list`, unresolved), then close
             // the closure via the `Let` arm over that value. If the fold declines, keep the old behavior
             // (fall back to the raw body-lambda) so no previously-working shape regresses.
-            match crate::effects::reduce_handle(g, init, &arms, body) {
+            match crate::effects::reduce_handle(g, init, &arms, body, false) {
                 Some(folded) => {
                     crate::resolve::resolve_subtree(g, folded);
                     lambda_of(g, folded)

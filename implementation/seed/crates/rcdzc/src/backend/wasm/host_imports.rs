@@ -116,6 +116,10 @@ pub(super) fn collect_host_arg_strings_at(
         // A boundary block / break — descend into the body / break value for any host-arg string inside.
         Core::Block { body, .. } => collect_host_arg_strings(db, body, out),
         Core::Break { value } => collect_host_arg_strings(db, value, out),
+        // The abort VALUE is evaluated before the non-local branch; a HostCall with a constant string arg
+        // inside it needs its string in the data segment. Recurse into it; `handle_id` is a reference to the
+        // target handle node, not an emitted subexpression.
+        Core::HandleAbort { value, .. } => collect_host_arg_strings(db, value, out),
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::StrCmp { lhs, rhs, .. }
