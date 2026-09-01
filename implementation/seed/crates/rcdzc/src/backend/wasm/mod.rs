@@ -632,6 +632,12 @@ pub fn emit(
                 used.insert("bytes-get");
                 used.insert("drop");
             }
+            // A flat single-scalar-field record result (FlatScalarField) reads the one field off the def's
+            // record handle (`arr-get` + the scalar unbox `read`) and returns the scalar — register those.
+            if let serialize::ResultLower::FlatScalarField { read, .. } = &w.result {
+                used.insert("arr-get");
+                used.insert(*read);
+            }
             // A TOP-LEVEL memory-bearing leaf PARAM: a `Bytes`/`String` copies the incoming `(ptr, len)` out
             // of linear memory via a `bytes-alloc` + `bytes-set` loop; a `list<scalar>` builds a value-heap vec
             // (`vec-empty` + per-element read/box/`vec-push`). The wrapper (its owner) drops the borrowed handle
@@ -8502,9 +8508,35 @@ fn record_interface_export(
             };
             return Some((lower, vec![crate::backend::wasm::lir::ValType::I32.byte()]));
         }
+        // A FLAT single-scalar-field record (`record{v: s64}`) flattens to ONE core value, returned DIRECTLY
+        // (not by pointer — MAX_FLAT_RESULTS=1), so it does NOT spill. The def returns the record HANDLE; the
+        // wrapper reads its one field (`arr-get(handle, 0)` → unbox) and returns that scalar. This is the
+        // flat-1-value-record lower the SpillRecord path declined below (`!sig_needs_memory`). Restricted to a
+        // record with exactly ONE field that is a scalar (a multi-field-but-1-flat record, e.g. a unit sibling,
+        // or a nested-compound single field, is a later slice).
+        if let Ty::Record(gfields) = gr.strip_nominal()
+            && let WitType::Record(wfields) = wr
+            && gfields.len() == 1
+            && wfields.len() == 1
+            && !wit_ctype::sig_needs_memory(&[], Some(wr))
+        {
+            let fgty = gfields.values().next()?.clone();
+            if let Some((read, wrap_i64, _store)) = scalar_result_read_store(&fgty)
+                && let Some(vt) = crate::backend::wasm::lir::valtype_of(&fgty)
+            {
+                return Some((
+                    ResultLower::FlatScalarField {
+                        field_cell: 0,
+                        read,
+                        wrap_i64,
+                    },
+                    vec![vt.byte()],
+                ));
+            }
+        }
         // Otherwise a compound that SPILLS to memory (flat count > MAX_FLAT_RESULTS): build the recursive
-        // canonical writer. A flat 1-value record (a single-scalar-field record) is a later slice — the core
-        // would return the flattened scalar, not a pointer (a different lower); decline here.
+        // canonical writer. A flat 1-value record whose single field is NOT a plain scalar (a nested compound)
+        // still declines here — a later slice.
         if !wit_ctype::sig_needs_memory(&[], Some(wr)) {
             return None;
         }
@@ -8792,6 +8824,12 @@ fn record_interface_export(
         // else the `!any_record && !needs_result_wrapper` gate bails and the export falls through to the
         // provider path, which crosses the Bytes as a raw `u32` handle instead of the declared `list<u8>`.
         if matches!(result_lower, serialize::ResultLower::CopyBytes) {
+            needs_result_wrapper = true;
+        }
+        // A flat single-scalar-field record result (FlatScalarField) needs this wrapper to READ the field off
+        // the def's record handle + return the scalar — else the export falls through to the provider path,
+        // which crosses the record as a bare `u32` handle instead of the flattened scalar the WIT declares.
+        if matches!(result_lower, serialize::ResultLower::FlatScalarField { .. }) {
             needs_result_wrapper = true;
         }
         // A payloadless-ENUM result is a `Passthrough` (raw i32 disc), NOT a `SpillRecord`, but it STILL needs

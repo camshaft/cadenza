@@ -4407,3 +4407,22 @@ cases
   (call cl (: -3 Int64))
   (output (: (Err 3) (Result (Record (: lo Int64) (: hi Int64)) Int64)))
   (live-objects known-leak))
+
+(case
+  "a flat single-scalar-field record EXPORT result crosses (returned directly, not by pointer)"
+  (doc
+    "SHAPE 76 - a `record{v: s64}` EXPORT result. It flattens to ONE core value (MAX_FLAT_RESULTS=1), so the canonical ABI returns it DIRECTLY (in a register), NOT via a retptr - so `record_result_lower`'s SpillRecord path (which returns a pointer) declined it (`!sig_needs_memory -> return None`, the flat-1-value-record gap). Now a `ResultLower::FlatScalarField` lower: the def returns the record HANDLE, the wrapper reads its one field (`arr-get(handle, 0)` -> unbox, narrowing a <=32-bit value) and returns that scalar as the flattened result. No memory (returned in a register). f(x) = {v: x+1}; x=5 -> {v: 6}. KNOWN-LEAK (the def's record handle is not reclaimed after the field read - the SpillRecord-result reclaim class, SHAPE 60/62/63).")
+  (wit-world
+    (world
+      w
+      (export
+        cadenza:demo/iface
+        (member f (func (param x (s64)) (result (record (= v (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (f (: x Int64)) #record((= v (+ x 1))))
+      (export f)))
+  (call f (: 5 Int64))
+  (output (: #record((= v 6)) (Record (: v Int64))))
+  (live-objects known-leak))

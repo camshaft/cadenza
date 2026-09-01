@@ -130,9 +130,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   disc 0 / `Err`→1 BY NAME, payload written recursively at the canonical result layout), reusing the
   existing `CanonWrite::Variant` emit (SHAPE 61) with no new writer. Both `(live-objects known-leak)`
   (SpillRecord-result reclaim class). REMAINING: a `result<_, E>`/`result<T, _>` with a NULLARY arm.
+- **[emit, export] flat single-scalar-field record result — ✅ DONE (SHAPE 76).** A `record{v: s64}` result
+  flattens to ONE core value (returned directly, not by pointer), so the SpillRecord path (retptr) declined
+  it. A `ResultLower::FlatScalarField` lower reads the one field off the def's record handle (`arr-get` +
+  unbox, narrowing a ≤32-bit value) and returns the scalar; no memory. `(live-objects known-leak)` (the
+  record handle is not reclaimed). Restricted to a record with exactly one scalar field (a nested-compound
+  single field, or a multi-field-but-1-flat record, is a later slice).
 - **[emit, export]** top-level Tuple/Sum/List/String/Bytes typed-interface PARAM
-  (`record_interface_export`); a flat
-  1-value record result; a nested/compound list-param
+  (`record_interface_export`); a nested/compound list-param
   element on the bare-entry path; a `result<>` bare-entry param.
 
 **Design-level (no WIT boundary form on either side; needs a design decision — TRACK, don't rush):**
