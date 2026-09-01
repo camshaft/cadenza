@@ -2685,6 +2685,24 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let b = emit(db, rhs, env, ctx)?;
             Ok(format!("{{ let mut __v = {a}; __v.extend({b}); __v }}"))
         }
+        // `Map.merge(a, b)` → `BTreeMap::extend`, which overwrites with the RIGHT operand's values on an
+        // overlapping key = last-writer / b-wins, matching the CHAMP `map-merge`. Both operands are moved
+        // (consumed), mirroring `List.concat`. A non-Ord (float-carrying) key has no `BTreeMap` rep and
+        // declines, exactly as `Map.insert` does. (v-rust-backend refines the float-key wrapper / verify.)
+        Core::MapMerge { lhs, rhs } => {
+            let kt = match crate::infer::type_of(db, id).strip_nominal() {
+                Ty::Map(mk, _) => (**mk).clone(),
+                _ => crate::ty::Ty::Any,
+            };
+            if !types::ty_is_ord_key(db, &kt) {
+                return Err(Reject::decline(
+                    "a Map.merge over a non-Ord key (a float-carrying key) has no BTreeMap rep on the Rust backend",
+                ));
+            }
+            let a = emit(db, lhs, env, ctx)?;
+            let b = emit(db, rhs, env, ctx)?;
+            Ok(format!("{{ let mut __m = {a}; __m.extend({b}); __m }}"))
+        }
         // `List.update` → replace the element at `index`, returning the NEW list; an out-of-bounds index
         // TRAPS (Cadenza `List.update` traps OOB, `value-heap-runtime.md`). The index is an Int64 occurrence
         // cast to `usize` (a negative index or `>= len` → the trap). KEYSTONE: TRAP KIND: the wasm runtime's

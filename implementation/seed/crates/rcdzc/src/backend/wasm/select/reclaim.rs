@@ -446,7 +446,7 @@ fn binding_escapes_dup_aware_inner(
             binding_escapes_dup_aware(db, list, binder, false, dup_sites)
                 || binding_escapes_dup_aware(db, elem, binder, false, dup_sites)
         }
-        Core::ListConcat { lhs, rhs } => {
+        Core::ListConcat { lhs, rhs } | Core::MapMerge { lhs, rhs } => {
             binding_escapes_dup_aware(db, lhs, binder, false, dup_sites)
                 || binding_escapes_dup_aware(db, rhs, binder, false, dup_sites)
         }
@@ -793,7 +793,7 @@ fn binder_must_escape(db: &mut Db, id: StructId, binder: StructId, tail_borrowed
             binder_must_escape(db, list, binder, false)
                 || binder_must_escape(db, elem, binder, false)
         }
-        Core::ListConcat { lhs, rhs } => {
+        Core::ListConcat { lhs, rhs } | Core::MapMerge { lhs, rhs } => {
             binder_must_escape(db, lhs, binder, false) || binder_must_escape(db, rhs, binder, false)
         }
         Core::ListUpdate { list, elem, .. } => {
@@ -2482,6 +2482,7 @@ pub(super) fn child_ids_of(c: &Core, cs: &mut Vec<StructId>) {
         | Core::ValueEqShaped { lhs: a, rhs: b, .. }
         | Core::BytesConcat { lhs: a, rhs: b }
         | Core::ListConcat { lhs: a, rhs: b }
+        | Core::MapMerge { lhs: a, rhs: b }
         | Core::ListPush { list: a, elem: b }
         | Core::ListPrepend { list: a, elem: b }
         | Core::MapLookup { map: a, key: b, .. }
@@ -3159,9 +3160,9 @@ pub(super) fn mark_binder_dups_inner(
             seq(db, &[(lhs, true), (rhs, true)], live_after, sites)
         }
         // Consuming constructors / ops: every operand is consumed into the result.
-        Core::BytesConcat { lhs, rhs } | Core::ListConcat { lhs, rhs } => {
-            seq(db, &[(lhs, false), (rhs, false)], live_after, sites)
-        }
+        Core::BytesConcat { lhs, rhs }
+        | Core::ListConcat { lhs, rhs }
+        | Core::MapMerge { lhs, rhs } => seq(db, &[(lhs, false), (rhs, false)], live_after, sites),
         Core::BytesSlice {
             bytes, start, len, ..
         } => seq(

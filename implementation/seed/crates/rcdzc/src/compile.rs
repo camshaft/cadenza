@@ -5296,7 +5296,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
             collect_reached_poisons(db, list, out);
             collect_reached_poisons(db, elem, out);
         }
-        Core::ListConcat { lhs, rhs } => {
+        Core::ListConcat { lhs, rhs } | Core::MapMerge { lhs, rhs } => {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }

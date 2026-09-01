@@ -383,6 +383,12 @@ pub(super) fn collect_used_ops_into_seen(
             collect_used_ops_into_seen(db, lhs, out, visited);
             collect_used_ops_into_seen(db, rhs, out, visited);
         }
+        // `Map.merge` uses the `map-merge` op; recurse into both map operands.
+        Core::MapMerge { lhs, rhs } => {
+            out.insert(OP_MAP_MERGE);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
+        }
         // `List.update` uses `vec-update` (the replacement element boxed by its type, like a push).
         Core::ListUpdate { list, index, elem } => {
             out.insert(OP_VEC_UPDATE);

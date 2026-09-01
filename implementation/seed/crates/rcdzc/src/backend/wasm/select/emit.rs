@@ -1311,6 +1311,16 @@ pub(super) fn emit(
             out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map']
             Ok(())
         }
+        // `Map.merge(a, b)` — emit both map handles, then `map-merge` (→ the unioned map handle; CONSUMES
+        // both, LAST-WRITER/b-wins on an overlapping key). No key/val boxing — the operands' entries are
+        // already boxed inside the maps. The second operand emits ABOVE the first's high-water (disjoint-
+        // slot discipline), exactly as `Core::ListConcat` threads its two heap handles.
+        Core::MapMerge { lhs, rhs } => {
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
+            emit(db, rhs, slots, *high, high, scratch_ty, layout, out)?; // [a, b]
+            out.push(Lir::CallImport(OP_MAP_MERGE)); // → [a ∪ b, b-wins]
+            Ok(())
+        }
         // `Map.remove(m, k)` — emit the map handle, the key boxed by its type, then `map-remove` (RETURNS
         // the new map; consumes the map, BORROWS the key). Removing an absent key yields a map equal to the
         // operand (total). The op only reads the key (via hash/eq) and drops the map's OWN stored columns,

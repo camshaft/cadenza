@@ -2093,6 +2093,12 @@ fn emit_expr_viewed(
             let r = emit_expr(db, b, rhs, None, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
         }
+        Core::MapMerge { lhs, rhs } => {
+            let head = member_access(b, "Map", "merge");
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
+            Ok(b.list(vec![head, l, r]))
+        }
         Core::ListUpdate { list, index, elem } => {
             let head = member_access(b, "List", "update");
             let l = emit_expr(db, b, list, None, env, emitted)?;
