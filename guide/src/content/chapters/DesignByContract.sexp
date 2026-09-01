@@ -41,7 +41,7 @@
   (p "Called with " (c "200") " both hold and it returns " (c "100") ". Call it with " (c "-5") " and it traps at " (em "entry") " (the precondition); call it with " (c "5") " and it traps at " (em "exit") " (the postcondition catches the " (c "-95") "). A caller can only ever see a result that satisfies the contract, or a clean trap at the exact boundary that broke it.")
   (note "Two things to know: a contract may reference only the function's parameters (and prelude/global names), so naming something out of scope is a compile error at the annotation. And a function whose parameter is named " (c "ret") " can't carry an " (c "@ensures") ": the result binder " (c "ret") " would shadow the parameter, so rather than silently ignore the postcondition, the compiler rejects it and asks you to rename the parameter.")
   (h2 "A contract is an ordinary boolean")
-  (p "A contract's predicate is just a boolean expression in the def's scope, so it can say far more than " (c "&gt;= 0") ". It can relate two parameters (" (cdz "(requires (< lo hi))") "), compare the result to an input (" (cdz "(ensures (> ret x))") "), reach into a tuple or record, or even " (em "match") " a sum result. Here " (c "safe-dec") " returns an " (c "Option") ", and the postcondition matches it, promising that whenever there " (em "is") " a value it's non-negative:")
+  (p "A contract's predicate is just a boolean expression in the def's scope, so it can say far more than " (c "&gt;= 0") ". It can relate two parameters (" (cdz (requires (< lo hi))) "), compare the result to an input (" (cdz (ensures (> ret x))) "), reach into a tuple or record, or even " (em "match") " a sum result. Here " (c "safe-dec") " returns an " (c "Option") ", and the postcondition matches it, promising that whenever there " (em "is") " a value it's non-negative:")
   (runnable
     (source (def (main) (safe-dec 5))
 (@ (requires (>= x 0))
@@ -50,7 +50,7 @@
                 ((None _u) true)))
     (def (safe-dec (: x Int64))
       (if (> x 0) (Some (- x 1)) (None unit)))))))
-  (p "Called with " (c "5") " the result is " (cdz "(Some 4)") ", and the postcondition's " (c "Some") " arm checks " (c "4 &gt;= 0") ". Because the predicate is ordinary code, a contract is as expressive as any other boolean you could write, it just runs at the boundary instead of in the body.")
+  (p "Called with " (c "5") " the result is " (cdz (Some 4)) ", and the postcondition's " (c "Some") " arm checks " (c "4 &gt;= 0") ". Because the predicate is ordinary code, a contract is as expressive as any other boolean you could write, it just runs at the boundary instead of in the body.")
   (h2 "@invariant: guarding a type")
   (p (c "@requires") " guards a function's entry and " (c "@ensures") " its exit. The third contract, " (c "@invariant") ", guards a " (em "type") ". Put it on a value type and the compiler enforces the predicate at " (em "every") " point a value of that type is built, so a value that breaks it can never come into existence. The predicate is written over " (c "self") ", the value being constructed. Here a " (c "Percent") " must stay between " (c "0") " and " (c "100") ", and building one in range works:")
   (runnable

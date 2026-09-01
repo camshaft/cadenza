@@ -31,7 +31,7 @@
   (runnable
     (source (/ -17 5)))
   (h2 "Handling an overflow instead of halting")
-  (p "A bare " (c "*") " that overflows " (em "declines") ", so the whole program stops. Sometimes you'd rather " (em "handle") " the possibility: the checked operations do the same arithmetic but hand back an " (c "Option") ", namely " (cdz "(Some v)") " when it fits and " (cdz "(None unit)") " when it would overflow, so you decide what happens. Here " (c "Int64.checked-mul") " of two small numbers succeeds:")
+  (p "A bare " (c "*") " that overflows " (em "declines") ", so the whole program stops. Sometimes you'd rather " (em "handle") " the possibility: the checked operations do the same arithmetic but hand back an " (c "Option") ", namely " (cdz (Some v)) " when it fits and " (cdz (None unit)) " when it would overflow, so you decide what happens. Here " (c "Int64.checked-mul") " of two small numbers succeeds:")
   (runnable
     (source (match (Int64.checked-mul 6 7)
   ((Some v) v)
@@ -63,4 +63,4 @@
     (starter (? 23 4))
     (solution (% 23 4))
     (expected "3")
-    (hint "The remainder operator is " (c "%") ". Since " (c "23 = 4 × 5 + 3") ", " (cdz "(% 23 4)") " is " (c "3") ".")))
+    (hint "The remainder operator is " (c "%") ". Since " (c "23 = 4 × 5 + 3") ", " (cdz (% 23 4)) " is " (c "3") ".")))

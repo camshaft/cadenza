@@ -21,7 +21,7 @@
     (source #record((= year 2026) (= leap true))))
   (why (tenet "Everything is a record") "Records aren't just one data type among many, since they're the mechanism the whole language is built from. A module is a record of its exports; a built-in like " (c "List") " is a record of its operations; a sum type is a record of its constructors. Because the special things are ordinary values reached the ordinary way, the compiler needs just " (em "one") " lookup rule instead of dozens of special cases, and a name you define simply shadows a built-in of the same name, with no magic.")
   (h2 "Compared by value")
-  (p "Two tuples or two records are equal when their contents are, which is structural equality, not identity. A tuple matches position by position, so " (cdz "#tuple(1 2)") " equals another " (cdz "#tuple(1 2)") ":")
+  (p "Two tuples or two records are equal when their contents are, which is structural equality, not identity. A tuple matches position by position, so " (cdz #tuple(1 2)) " equals another " (cdz #tuple(1 2)) ":")
   (runnable
     (source (= #tuple(1 2) #tuple(1 2))))
   (p "A record matches by " (em "field name") ", not field order, so the same fields written in a different order are still the same record. That's the by-name nature showing through: a record is its set of named fields, however you list them.")

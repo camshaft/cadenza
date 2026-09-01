@@ -5,7 +5,7 @@
   (section "Fundamentals")
   (blurb "Rationals: exact ratios, always in lowest terms, so where floats round, these don't.")
   (lede "A " (c "Float64") " is fast but approximate, so when you need an exact fraction like a third that really is a third, reach for a " (c "Rational") ".")
-  (p "You saw in " (strong "Floating-point numbers") " that " (cdz "(+ 0.1 0.2)") " isn't quite " (c "0.3") ", because floats trade exactness for speed. A " (c "Rational") " makes the other trade by holding a number as an exact ratio of two integers, so arithmetic never rounds. Build one with " (c "Rational.of") ", giving a numerator and a denominator:")
+  (p "You saw in " (strong "Floating-point numbers") " that " (cdz (+ 0.1 0.2)) " isn't quite " (c "0.3") ", because floats trade exactness for speed. A " (c "Rational") " makes the other trade by holding a number as an exact ratio of two integers, so arithmetic never rounds. Build one with " (c "Rational.of") ", giving a numerator and a denominator:")
   (runnable
     (source (Rational.of 1 2)))
   (p "The value comes back as " (c "1/2") " tagged with its type, which reads " (c "1/2 : Rational") " in the conventional surface and " (c "(: 1/2 Rational)") " in s-expressions. Since a whole number is just a denominator of one, " (c "Rational.of-int") " makes that explicit:")
@@ -15,7 +15,7 @@
   (p "Spelling out " (c "Rational.of") " every time is wordy when you already know the number. A decimal with an " (c "R") " suffix is a rational " (em "literal") " that the compiler reads exactly and converts to a fraction, so " (c "0.5R") " is " (c "1/2") " and " (c "1.25R") " is " (c "5/4") ":")
   (runnable
     (source 0.5R))
-  (p "It's the very same value as the constructor, since " (c "0.5R") " equals " (cdz "(Rational.of 1 2)") ", just terser to write. And it's where the contrast with " (strong "Floating-point numbers") " stops being a claim and becomes something you can watch. Add a tenth and two tenths as " (em "floats") " and the answer isn't " (c "0.3") " but the nearest float to it, which isn't quite " (c "0.3") ":")
+  (p "It's the very same value as the constructor, since " (c "0.5R") " equals " (cdz (Rational.of 1 2)) ", just terser to write. And it's where the contrast with " (strong "Floating-point numbers") " stops being a claim and becomes something you can watch. Add a tenth and two tenths as " (em "floats") " and the answer isn't " (c "0.3") " but the nearest float to it, which isn't quite " (c "0.3") ":")
   (runnable
     (source (+ 0.1 0.2)))
   (p (c "0.30000000000000004") ", so the drift is real rather than hypothetical, and the natural test " (em "fails") " because the float sum is not equal to " (c "0.3") ".")
@@ -66,12 +66,12 @@
   (runnable
     (source (/ (Rational.of 3 4) (Rational.of 2 1))))
   (why (tenet "Exactness is a choice you can make") "Cadenza doesn't pick one number type and make its weaknesses your problem. A " (c "Float64") " is the right tool when you want speed and can tolerate rounding, as in measurements, graphics, and physics. A " (c "Rational") " is the right tool when a rounding error would be a " (em "bug") ", as in money, exact ratios, and anything that must add up. They're different types with different operators, so you say which guarantee you want, and the compiler never silently swaps one for the other. Same instinct as keeping " (c "Int64") " and " (c "Float64") " apart: one type per kind of number, no surprises.")
-  (note "A zero denominator has no value to denote, so " (cdz "(Rational.of 1 0)") " is a compile-time error (" (c "CDZ0304") "), the same \"no correct answer, so refuse\" rule as dividing an integer by zero.")
+  (note "A zero denominator has no value to denote, so " (cdz (Rational.of 1 0)) " is a compile-time error (" (c "CDZ0304") "), the same \"no correct answer, so refuse\" rule as dividing an integer by zero.")
   (p "That refuse-when-there's-no-answer instinct runs through every number type you've now met. The next chapter, " (em "Errors &amp; absence") ", makes it a tool you hold: " (c "Option") " and " (c "Result") " turn a might-not-have-an-answer into an ordinary value you handle.")
   (h2 "Your turn")
   (exercise
     (id "rationals:1")
-    (prompt "A rational is compared by value, so equal fractions are " (c "=") " however they're written. Write the fraction " (c "3/6") " in lowest terms so it equals " (cdz "(Rational.of 1 2)") " and the comparison gives " (c "true") ".")
+    (prompt "A rational is compared by value, so equal fractions are " (c "=") " however they're written. Write the fraction " (c "3/6") " in lowest terms so it equals " (cdz (Rational.of 1 2)) " and the comparison gives " (c "true") ".")
     (starter (= (Rational.of 3 6) (Rational.of 1 ?)))
     (solution (= (Rational.of 3 6) (Rational.of 1 2)))
     (expected "true")
@@ -82,11 +82,11 @@
     (starter (= (/ (Rational.of 1 2) (Rational.of 1 ?)) (Rational.of 2 1)))
     (solution (= (/ (Rational.of 1 2) (Rational.of 1 4)) (Rational.of 2 1)))
     (expected "true")
-    (hint "A quarter is " (cdz "(Rational.of 1 4)") ". Dividing by it multiplies by its reciprocal " (c "4/1") ", so " (c "1/2") " becomes " (c "4/2 = 2/1") ", exactly two with no rounding."))
+    (hint "A quarter is " (cdz (Rational.of 1 4)) ". Dividing by it multiplies by its reciprocal " (c "4/1") ", so " (c "1/2") " becomes " (c "4/2 = 2/1") ", exactly two with no rounding."))
   (exercise
     (id "rationals:3")
     (prompt "A rational is stored in lowest terms, so its parts come back " (em "reduced") ": " (c "6/8") " is really " (c "3/4") ", so its numerator is " (c "3") ". Which accessor reads the top of the fraction, " (c "numerator") " or " (c "denominator") "? Fill in the blank so the check confirms the numerator is " (c "3") " and gives " (c "true") ".")
     (starter (= (Rational.? (Rational.of 6 8)) (BigInt.of 3)))
     (solution (= (Rational.numerator (Rational.of 6 8)) (BigInt.of 3)))
     (expected "true")
-    (hint (c "6/8") " reduces to " (c "3/4") ", whose numerator is " (c "3") ". " (c "Rational.numerator") " reads the top; " (c "Rational.denominator") " would give " (c "4") ". The accessor returns a " (c "BigInt") ", so it's compared against " (cdz "(BigInt.of 3)") ".")))
+    (hint (c "6/8") " reduces to " (c "3/4") ", whose numerator is " (c "3") ". " (c "Rational.numerator") " reads the top; " (c "Rational.denominator") " would give " (c "4") ". The accessor returns a " (c "BigInt") ", so it's compared against " (cdz (BigInt.of 3)) ".")))

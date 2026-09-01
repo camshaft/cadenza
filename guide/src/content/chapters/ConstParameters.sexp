@@ -54,4 +54,4 @@
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
 (def (main) (fold-n #record((= op (fn (x) (+ x 5)))) 3 0)))
     (expected "15")
-    (hint "Three steps from " (c "0") ", each adding the same amount " (c "a") ", gives " (c "3 × a") ". For " (c "15") " that's " (c "a = 5") ", so " (c "op") " is " (cdz "(fn (x) (+ x 5))") ". The dictionary is const, so this operation is inlined into the specialized " (c "fold-n") ".")))
+    (hint "Three steps from " (c "0") ", each adding the same amount " (c "a") ", gives " (c "3 × a") ". For " (c "15") " that's " (c "a = 5") ", so " (c "op") " is " (cdz (fn (x) (+ x 5))) ". The dictionary is const, so this operation is inlined into the specialized " (c "fold-n") ".")))

@@ -9,23 +9,23 @@
   (p "A " (c "let") " binds a name to a value for the rest of an expression. Bindings are lexical, and an inner binding may shadow an outer one.")
   (runnable
     (source (let ((x 10)) (+ x 5))))
-  (p (c "x") " is " (c "10") " for the body " (cdz "(+ x 5)") ", so this is " (c "15") ".")
+  (p (c "x") " is " (c "10") " for the body " (cdz (+ x 5)) ", so this is " (c "15") ".")
   (p "Shadowing is just a second binding of the same name. The inner " (c "x") " is computed " (em "from") " the outer one, since the right-hand side still sees the old value, and only then takes over for the rest of the body:")
   (runnable
     (source (let ((x 10))
   (let ((x (* x 2)))
     (+ x 1)))))
-  (p "The inner binding's " (cdz "(* x 2)") " reads the outer " (c "x = 10") " to get " (c "20") "; the body then sees that inner " (c "x") ", so " (cdz "(+ x 1)") " is " (c "21") ". Nothing was mutated, since the outer " (c "x") " is untouched, just out of view.")
+  (p "The inner binding's " (cdz (* x 2)) " reads the outer " (c "x = 10") " to get " (c "20") "; the body then sees that inner " (c "x") ", so " (cdz (+ x 1)) " is " (c "21") ". Nothing was mutated, since the outer " (c "x") " is untouched, just out of view.")
   (h2 "Functions are values")
   (p "A function is written with " (c "fn") " and is an ordinary value, so you can bind it, pass it, and return it. Here we bind a function " (c "inc") " and call it.")
   (runnable
     (source (let ((inc (fn (x) (+ x 1)))) (inc 4))))
-  (p "Binding it to " (c "inc") " and calling " (cdz "(inc 4)") " gives " (c "5") ".")
+  (p "Binding it to " (c "inc") " and calling " (cdz (inc 4)) " gives " (c "5") ".")
   (p "Functions close over their environment. " (c "adder") " returns a function that remembers " (c "n") ":")
   (runnable
     (source (let ((adder (fn (n) (fn (x) (+ x n)))))
   ((adder 3) 10))))
-  (p (cdz "(adder 3)") " captures " (c "n = 3") " and returns a function that adds 3; applying it to " (c "10") " gives " (c "13") ".")
+  (p (cdz (adder 3)) " captures " (c "n = 3") " and returns a function that adds 3; applying it to " (c "10") " gives " (c "13") ".")
   (why (tenet "Uniformity over special cases") "Underneath, every function takes exactly " (em "one") " argument and returns one value, so a two-argument function is sugar for a function returning a function (that's why " (c "adder") " above works so naturally). Cadenza leans on this kind of uniformity everywhere, because fewer special cases means fewer places for the compiler, and your mental model, to disagree with itself.")
   (h2 "Higher-order functions")
   (p "Because functions are values, a function can take another function as an argument. " (c "apply-twice") " applies its argument function twice:")
@@ -55,7 +55,7 @@
     (hint "Replace the " (c "?") " with the number that doubles 21."))
   (exercise
     (id "basics:2")
-    (prompt (c "make-scaler") " returns a function that multiplies by whatever " (c "factor") " it captured. Fill the hole so " (c "triple") " is a scaler that captures " (c "3") ", then " (cdz "(triple 5)") " is " (c "15") ".")
+    (prompt (c "make-scaler") " returns a function that multiplies by whatever " (c "factor") " it captured. Fill the hole so " (c "triple") " is a scaler that captures " (c "3") ", then " (cdz (triple 5)) " is " (c "15") ".")
     (starter (let ((make-scaler (fn (factor) (fn (x) (* x factor)))))
   (let ((triple (make-scaler ?)))
     (triple 5))))
@@ -63,4 +63,4 @@
   (let ((triple (make-scaler 3)))
     (triple 5))))
     (expected "15")
-    (hint "The hole is the " (c "factor") " that " (c "triple") " should capture. You want it to triple, so pass " (c "3") "; the returned function then remembers it, and " (cdz "(triple 5)") " is " (c "5 × 3") ".")))
+    (hint "The hole is the " (c "factor") " that " (c "triple") " should capture. You want it to triple, so pass " (c "3") "; the returned function then remembers it, and " (cdz (triple 5)) " is " (c "5 × 3") ".")))

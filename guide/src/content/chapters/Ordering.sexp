@@ -22,7 +22,7 @@
   (if (< x lo) lo
       (if (> x hi) hi x)))
 (def (main) (clamp 0 10 42))))
-  (p (cdz "(min 8 3)") " is " (c "3") ", the smaller of the two. And " (cdz "(clamp 0 10 42)") " is " (c "10") ": 42 is past the upper bound, so " (c "clamp") " pulls it back to " (c "10") ", and feeding it a value already inside " (c "0") "–" (c "10") " gives that value back unchanged.")
+  (p (cdz (min 8 3)) " is " (c "3") ", the smaller of the two. And " (cdz (clamp 0 10 42)) " is " (c "10") ": 42 is past the upper bound, so " (c "clamp") " pulls it back to " (c "10") ", and feeding it a value already inside " (c "0") "–" (c "10") " gives that value back unchanged.")
   (h2 "Three answers, not two")
   (p "A single " (c "&lt;") " only tells you yes-or-no. But comparing two values really has " (em "three") " possible answers: less, equal, or greater. You " (em "could") " encode that as " (c "-1") " / " (c "0") " / " (c "1") " and nest a couple of " (c "if") "s:")
   (runnable
@@ -46,7 +46,7 @@
   (runnable
     (source (Ordering.of "apple" "banana")))
   (h2 "Ordered types can be keys")
-  (p (c "Bytes") " is ordered too, lexicographically over its " (em "unsigned") " byte values, the same way Text compares in dictionary order. So " (cdz "(Bytes.of #list(1 2))") " comes before " (cdz "(Bytes.of #list(1 3))") ", decided at the first byte that differs:")
+  (p (c "Bytes") " is ordered too, lexicographically over its " (em "unsigned") " byte values, the same way Text compares in dictionary order. So " (cdz (Bytes.of #list(1 2))) " comes before " (cdz (Bytes.of #list(1 3))) ", decided at the first byte that differs:")
   (runnable
     (source (< (Bytes.of #list(1 2)) (Bytes.of #list(1 3)))))
   (p "Watch the " (em "unsigned") " part: a byte holding " (c "128") " is " (em "greater") " than one holding " (c "127") ", not less, because the bytes are compared as 0–255, never as signed numbers:")
@@ -59,7 +59,7 @@
         (Map.insert (Map.empty) (Bytes.of #list(1 2)) 42)
         (Bytes.of #list(1 2))))
     (export main))))
-  (p "The lookup returns " (cdz "(Some 42)") ": the second " (c "Bytes") " value compares equal to the key that was inserted, so the " (c "Map") " finds it. A value you can order is a value you can organize.")
+  (p "The lookup returns " (cdz (Some 42)) ": the second " (c "Bytes") " value compares equal to the key that was inserted, so the " (c "Map") " finds it. A value you can order is a value you can organize.")
   (h2 "What can't be a key: a function")
   (p "The flip side of that rule draws a sharp line. Keying needs equality and a total order, and a " (em "function") " has neither: two closures can compute the same results yet be different values, and there's no canonical way to compare or order them. So a function can't be a " (c "Map") " key or a " (c "Set") " element, and the compiler says so rather than inventing an answer. A " (c "Set") " of functions is rejected:")
   (runnable
@@ -72,7 +72,7 @@
   (h2 "Your turn")
   (exercise
     (id "ordering:1")
-    (prompt "Finish the predicate " (c "outside") " so it returns " (c "true") " when " (c "x") " is " (em "below 0 or above 10") ", and " (c "false") " in between. With " (cdz "(outside 15)") " the answer is " (c "true") ".")
+    (prompt "Finish the predicate " (c "outside") " so it returns " (c "true") " when " (c "x") " is " (em "below 0 or above 10") ", and " (c "false") " in between. With " (cdz (outside 15)) " the answer is " (c "true") ".")
     (starter (def (outside x)
   (or (< x 0) ?))
 (def (main) (outside 15)))
@@ -80,10 +80,10 @@
   (or (< x 0) (> x 10)))
 (def (main) (outside 15)))
     (expected "true")
-    (hint "The two ways to be outside are joined with " (c "or") "; the second is \"above 10\", namely " (cdz "(> x 10)") ". " (c "15") " is above 10, so the result is " (c "true") "."))
+    (hint "The two ways to be outside are joined with " (c "or") "; the second is \"above 10\", namely " (cdz (> x 10)) ". " (c "15") " is above 10, so the result is " (c "true") "."))
   (exercise
     (id "ordering:2")
-    (prompt "Write " (c "max") " using " (c "Ordering.of") " and " (c "match") ", picking " (c "a") " when it's greater or equal, and " (c "b") " when " (c "a") " is less. " (cdz "(max 8 3)") " should give " (c "8") ".")
+    (prompt "Write " (c "max") " using " (c "Ordering.of") " and " (c "match") ", picking " (c "a") " when it's greater or equal, and " (c "b") " when " (c "a") " is less. " (cdz (max 8 3)) " should give " (c "8") ".")
     (starter (def (max a b)
   (match (Ordering.of a b)
     ((Less _)    ?)

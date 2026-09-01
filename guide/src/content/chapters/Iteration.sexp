@@ -16,8 +16,8 @@
   (if (= n 0)
     acc
     (sum-to (- n 1) (+ acc n))))))
-  (p "Read it as a loop turned inside out: " (c "acc") " is the running total, " (c "n") " counts down, the " (cdz "(= n 0)") " check is the exit condition, and each call adds " (c "n") " to " (c "acc") " and continues. When " (c "n") " reaches " (c "0") " the base case hands back the total, " (c "15") ". Nothing mutates; each call just receives the next pair of values.")
-  (p "The same shape works over a list. Match the list by its structure, either the empty list " (cdz "#list()") " or a non-empty " (cdz "#list(x .. rest)") " that binds the first element to " (c "x") " and the remainder to " (c "rest") ", and thread the accumulator through:")
+  (p "Read it as a loop turned inside out: " (c "acc") " is the running total, " (c "n") " counts down, the " (cdz (= n 0)) " check is the exit condition, and each call adds " (c "n") " to " (c "acc") " and continues. When " (c "n") " reaches " (c "0") " the base case hands back the total, " (c "15") ". Nothing mutates; each call just receives the next pair of values.")
+  (p "The same shape works over a list. Match the list by its structure, either the empty list " (cdz #list()) " or a non-empty " (cdz #list(x .. rest)) " that binds the first element to " (c "x") " and the remainder to " (c "rest") ", and thread the accumulator through:")
   (runnable
     (source (def (main) (sum-list #list(10 20 30) 0))
 (def (sum-list xs acc)
@@ -31,7 +31,7 @@
   (match xs
     (#list() acc)
     (#list(x .. rest) (rev rest (List.prepend acc x)))))))
-  (p "Prepending is what does the reversing: element " (c "1") " is placed first, then " (c "2") " goes in front of it, then " (c "3") " in front of that, so " (cdz "#list(1 2 3)") " comes back as " (cdz "#list(3 2 1)") ". " (link (slug "lists") " " (c "List.prepend")) " adds an element to the front, which is what flips the order; appending each element to the end with " (c "List.push") " would instead copy the list unchanged. A quick " (c "@test") " pins it, reading the three positions of the result back and checking they spell " (c "3") ", " (c "2") ", " (c "1") " (as the single number " (c "321") "):")
+  (p "Prepending is what does the reversing: element " (c "1") " is placed first, then " (c "2") " goes in front of it, then " (c "3") " in front of that, so " (cdz #list(1 2 3)) " comes back as " (cdz #list(3 2 1)) ". " (link (slug "lists") " " (c "List.prepend")) " adds an element to the front, which is what flips the order; appending each element to the end with " (c "List.push") " would instead copy the list unchanged. A quick " (c "@test") " pins it, reading the three positions of the result back and checking they spell " (c "3") ", " (c "2") ", " (c "1") " (as the single number " (c "321") "):")
   (runnable
     (source (def (rev xs acc)
   (match xs
@@ -43,6 +43,6 @@
     (assert-eq (+ (* 100 (nth r 0)) (+ (* 10 (nth r 1)) (nth r 2))) 321
       "rev of (1 2 3) should read back as 3,2,1")))))
     (mode "test"))
-  (note "Notice the recursive call is the " (em "last") " thing each step does: it sits in " (em "tail position") ". A recursion in tail position compiles to a loop. It reuses one stack frame rather than stacking a new one per element, so an accumulator over a long list runs in constant stack space. Threading the accumulator is what puts the call in tail position; a version that adds " (em "after") " the recursive call (" (cdz "(+ x (sum rest))") ") does not, and you meet exactly that shape in the next chapter.")
+  (note "Notice the recursive call is the " (em "last") " thing each step does: it sits in " (em "tail position") ". A recursion in tail position compiles to a loop. It reuses one stack frame rather than stacking a new one per element, so an accumulator over a long list runs in constant stack space. Threading the accumulator is what puts the call in tail position; a version that adds " (em "after") " the recursive call (" (cdz (+ x (sum rest))) ") does not, and you meet exactly that shape in the next chapter.")
   (why (tenet "Repetition is a value, not a statement") "A loop mutates state for effect; a recursive function " (em "returns") " the result of repeating. Making iteration an expression means every repetition has a value and a type, there is no mutable loop counter to get wrong, and the same tool, a function, does the job with no special loop syntax to learn. Uniformity over special cases, applied to the oldest control structure there is.")
   (p "You will rarely write the accumulator by hand for long. The " (em "fold") " family packages exactly this pattern (a base value and a step that combines the running result with each element), so you state the step and let the traversal disappear. The next chapter, " (link (slug "lists") "Lists") ", puts recursion to work over sequences, and " (link (slug "iterators") "Iterators") " adds a lazy, on-demand layer on top: the fold vocabulary (" (c "map") ", " (c "filter") ", " (c "fold") ") built from the very mechanism you just saw."))

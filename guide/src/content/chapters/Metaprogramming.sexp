@@ -6,7 +6,7 @@
   (blurb "Code is data: quote a program to an AST value, take it apart, build it up, eval it.")
   (lede "What if a program could read and rewrite another program, with no macro language to learn, just the tools you already have? In Cadenza, code is data: " (c "quote") " hands you a program's structure as an ordinary value you can inspect, take apart, build up, and (if you like) run. There's no separate macro system; the AST is a sum type like any other, so you already know how to work with it.")
   (h2 "Quote: a program as a value")
-  (p "Normally " (cdz "(+ 1 2)") " evaluates to " (c "3") ". Wrap it in " (c "quote") " and it doesn't run at all. You get back the " (em "structure") " of the expression instead: a list whose head is the name " (c "+") " and whose arguments are the integers " (c "1") " and " (c "2") ".")
+  (p "Normally " (cdz (+ 1 2)) " evaluates to " (c "3") ". Wrap it in " (c "quote") " and it doesn't run at all. You get back the " (em "structure") " of the expression instead: a list whose head is the name " (c "+") " and whose arguments are the integers " (c "1") " and " (c "2") ".")
   (runnable
     (source (quote (+ 1 2))))
   (p "The result reads " (c "Ast.List([Ast.Name(\"+\"), Ast.Int(1), Ast.Int(2)])") ", a value of type " (c "Ast") ". Each syntactic form is a variant: an integer literal is an " (c "Ast.Int") ", a name is an " (c "Ast.Name") ", a compound form is an " (c "Ast.List") " of its parts. Quoting " (em "reifies") " the code into that tree without evaluating a thing inside it.")
@@ -21,8 +21,8 @@
     (source (match (quote (+ 1 2))
   ((Ast.List elems) (Ast.List elems))
   (_                (quote nil)))))
-  (p "The result reads " (c "Ast.List([Ast.Name(\"+\"), Ast.Int(1), Ast.Int(2)])") ": the operator name and its two arguments, each still an " (c "Ast") " node. And since " (c "Ast") " is an ordinary sum, its match obeys the same exhaustiveness rule as any other: a match that inspects one form carries a catch-all " (c "_") " for the rest (here it hands back a harmless " (cdz "(quote nil)") ").")
-  (note "You can build an AST directly with its constructors, too, and the two routes agree. A quoted literal produces the same node written by hand, so " (cdz "(quote 42)") " and " (cdz "(Ast.Int 42)") " both read " (c "Ast.Int(42)") ". Quote is just a convenient way to write down a tree you could also assemble constructor by constructor.")
+  (p "The result reads " (c "Ast.List([Ast.Name(\"+\"), Ast.Int(1), Ast.Int(2)])") ": the operator name and its two arguments, each still an " (c "Ast") " node. And since " (c "Ast") " is an ordinary sum, its match obeys the same exhaustiveness rule as any other: a match that inspects one form carries a catch-all " (c "_") " for the rest (here it hands back a harmless " (cdz (quote nil)) ").")
+  (note "You can build an AST directly with its constructors, too, and the two routes agree. A quoted literal produces the same node written by hand, so " (cdz (quote 42)) " and " (cdz (Ast.Int 42)) " both read " (c "Ast.Int(42)") ". Quote is just a convenient way to write down a tree you could also assemble constructor by constructor.")
   (runnable
     (source (quote 42)))
   (runnable
@@ -38,7 +38,7 @@
     (source (match (quote "hi")
   ((Ast.Str s) (Ast.Str s))
   (_           (quote nil)))))
-  (p "A float has its own variant too, " (c "Ast.Float") ", distinct from " (c "Ast.Int") ", so " (cdz "(quote 2.5)") " matches the float arm and hands its node back as " (c "Ast.Float(2.5)") ":")
+  (p "A float has its own variant too, " (c "Ast.Float") ", distinct from " (c "Ast.Int") ", so " (cdz (quote 2.5)) " matches the float arm and hands its node back as " (c "Ast.Float(2.5)") ":")
   (runnable
     (source (match (quote 2.5)
   ((Ast.Float f) (Ast.Float f))
@@ -48,23 +48,23 @@
     (source (match (quote b"hi")
   ((Ast.Bytes b) (Ast.Bytes b))
   (_             (quote nil)))))
-  (p "That completes the literal set: integers, floats, strings, booleans, names, and byte strings each reify to their own variant. And because a constructor is type-checked like any other, " (cdz "(Ast.Bool 5)") " is a compile error: the payload must be a " (c "Bool") ", not an integer.")
+  (p "That completes the literal set: integers, floats, strings, booleans, names, and byte strings each reify to their own variant. And because a constructor is type-checked like any other, " (cdz (Ast.Bool 5)) " is a compile error: the payload must be a " (c "Bool") ", not an integer.")
   (runnable
     (source (Ast.Bool 5))
     (expect "error"))
   (h2 "Building a tree yourself")
-  (p "Since the AST is just a sum, you can assemble a form node by node with the constructors: an " (c "Ast.List") " over the operator name and its arguments. This builds the very same tree that " (cdz "(quote (+ 1 2))") " gives, so the two are equal:")
+  (p "Since the AST is just a sum, you can assemble a form node by node with the constructors: an " (c "Ast.List") " over the operator name and its arguments. This builds the very same tree that " (cdz (quote (+ 1 2))) " gives, so the two are equal:")
   (runnable
     (source (= (quote (+ 1 2))
    (Ast.List #list((Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))))
   (p "Constructing by hand is what you reach for when the pieces come from " (em "values") " rather than being written out: a computed argument, a name chosen at run time.")
   (note "The ML surface has lighter sugar for this: a " (em "quasiquote") " is a backtick-brace template, and an " (em "unquote") " (a comma) drops a value into a hole. " (c "`{ ,x + 10 }") " with " (c "x = 2") " builds the AST for " (c "(+ 2 10)") ", i.e. " (c "Ast.List([Ast.Name(\"+\"), Ast.Int(2), Ast.Int(10)])") ". It's exactly the constructor call above, written as a template. This is construction, not execution: the " (c ",x") " evaluates " (em "x") " to get a value to embed, not the whole form.")
   (h2 "Eval: run a tree")
-  (p "An AST is inert data until you " (c "eval") " it, which executes the tree as code. Evaluating the quoted " (cdz "(+ 1 2)") " finally gives " (c "3") ":")
+  (p "An AST is inert data until you " (c "eval") " it, which executes the tree as code. Evaluating the quoted " (cdz (+ 1 2)) " finally gives " (c "3") ":")
   (runnable
     (source (def (main)
   (eval (quote (+ 1 2))))))
-  (p "And a tree you " (em "built") " runs the same way. Assemble a call to " (c "double") " on the argument " (c "21") " and eval it: the reconstructed " (cdz "(double 21)") " folds to " (c "42") ". That's the shape of a macro: build a form, then run it.")
+  (p "And a tree you " (em "built") " runs the same way. Assemble a call to " (c "double") " on the argument " (c "21") " and eval it: the reconstructed " (cdz (double 21)) " folds to " (c "42") ". That's the shape of a macro: build a form, then run it.")
   (runnable
     (source (def (double x) (* 2 x))
 (def (main)
@@ -103,14 +103,14 @@
   ((Ast.Name _n) true)
   (_             false))))
   (h2 "Interpolating a computed subtree")
-  (p "The point of a template is a hole you fill at run time. Here the argument isn't written out; it's a " (em "computed") " value (" (cdz "(* 3 7)") " = 21) spliced into the tree, which is then evaluated. The built " (cdz "(+ 21 4)") " runs to " (c "25") ":")
+  (p "The point of a template is a hole you fill at run time. Here the argument isn't written out; it's a " (em "computed") " value (" (cdz (* 3 7)) " = 21) spliced into the tree, which is then evaluated. The built " (cdz (+ 21 4)) " runs to " (c "25") ":")
   (runnable
     (source (def (main)
   (let ((x (* 3 7)))
     (eval (Ast.List #list((Ast.Name "+") (Ast.Int x) (Ast.Int 4))))))))
-  (p "The " (cdz "(Ast.Int x)") " lifts the runtime value " (c "x") " into a leaf of the tree. This is interpolation: the shape is fixed, one piece comes from a computation. The ML surface writes exactly this with a quasiquote and an unquote, " (c "`{ ,x + 4 }") ", the comma marking the spot the value " (c "x") " drops into. Template with holes, holes filled by values.")
+  (p "The " (cdz (Ast.Int x)) " lifts the runtime value " (c "x") " into a leaf of the tree. This is interpolation: the shape is fixed, one piece comes from a computation. The ML surface writes exactly this with a quasiquote and an unquote, " (c "`{ ,x + 4 }") ", the comma marking the spot the value " (c "x") " drops into. Template with holes, holes filled by values.")
   (h2 "Splicing a whole list of elements")
-  (p "Where an unquote drops in " (em "one") " value, an " (em "unquote-splicing") " drops in a whole list of them, each element becoming its own node in the surrounding form. In the conventional surface it's the " (c "`,@") " marker; here we write it " (cdz "(unquote-splicing xs)") ". The lift is type-directed: a list of integers splices to " (c "Ast.Int") " leaves, floats to " (c "Ast.Float") ", booleans to " (c "Ast.Bool") ", strings to " (c "Ast.Str") ", so the leaf matches the element. Splice a list of floats into a call and the resulting " (c "Ast.List") " has the head plus one node per element: here " (c "f") " and two floats, so " (c "3") " children:")
+  (p "Where an unquote drops in " (em "one") " value, an " (em "unquote-splicing") " drops in a whole list of them, each element becoming its own node in the surrounding form. In the conventional surface it's the " (c "`,@") " marker; here we write it " (cdz (unquote-splicing xs)) ". The lift is type-directed: a list of integers splices to " (c "Ast.Int") " leaves, floats to " (c "Ast.Float") ", booleans to " (c "Ast.Bool") ", strings to " (c "Ast.Str") ", so the leaf matches the element. Splice a list of floats into a call and the resulting " (c "Ast.List") " has the head plus one node per element: here " (c "f") " and two floats, so " (c "3") " children:")
   (runnable
     (source (def (main)
   (match (quasiquote (f (unquote-splicing #list(1.5 2.5))))
@@ -127,7 +127,7 @@
     (_ false)))))
   (p "The head's name is " (c "\"+\"") ", so the check reads " (c "true") ". The pattern binds " (c "op") " to that name and " (c "rest") " to the arguments, so a macro can dispatch on what a form " (em "is") " before rewriting it. There's also a quasiquote " (em "pattern") " for the common shapes: a " (c "quasiquote") " form with " (c "unquote") " holes as a match arm binds the operands directly, the mirror image of building with a quasiquote template. The next section puts it to work.")
   (h2 "A quasiquote pattern, and an interpreter")
-  (p "That quasiquote pattern is the whole game for an interpreter or a macro. In a " (c "match") " arm, a " (c "quasiquote") " form with " (c "unquote") " holes matches a tree of that shape and " (em "binds") " what's in each hole. " (cdz "(unquote x)") " in a pattern is a binder, the dual of " (cdz "(unquote x)") " in a template (which embeds a value). Match a runtime " (c "Ast") " against " (cdz "(quasiquote (+ (unquote x) (unquote y)))") " and you get its two operands as sub-trees, ready to recurse on. Here's a complete little evaluator over an arithmetic " (c "Ast") ": integers evaluate to themselves, and each operator shape recurses into its operands:")
+  (p "That quasiquote pattern is the whole game for an interpreter or a macro. In a " (c "match") " arm, a " (c "quasiquote") " form with " (c "unquote") " holes matches a tree of that shape and " (em "binds") " what's in each hole. " (cdz (unquote x)) " in a pattern is a binder, the dual of " (cdz (unquote x)) " in a template (which embeds a value). Match a runtime " (c "Ast") " against " (cdz (quasiquote (+ (unquote x) (unquote y)))) " and you get its two operands as sub-trees, ready to recurse on. Here's a complete little evaluator over an arithmetic " (c "Ast") ": integers evaluate to themselves, and each operator shape recurses into its operands:")
   (runnable
     (source (def (eval-expr (: a Ast))
   (match a
@@ -136,13 +136,13 @@
     ((quasiquote (* (unquote x) (unquote y))) (* (eval-expr x) (eval-expr y)))
     (_ (BigInt.of 0))))
 (def (main) (eval-expr (quote (* (+ 1 2) 4))))))
-  (p "The quoted " (cdz "(* (+ 1 2) 4)") " is a real tree, and " (c "eval-expr") " walks it: the outer " (c "*") " arm binds " (c "x") " to the sub-tree " (cdz "(+ 1 2)") " and " (c "y") " to " (c "4") ", recurses into each, and multiplies to " (c "(1 + 2) * 4 = 12") ". This is exactly how the compiler and a macro take apart the code handed to them: the same " (c "match") " you use on any sum type, with a template-shaped pattern for the syntax you care about. Note the arms dispatch on the operator too (the " (c "+") " arm won't match a " (c "*") " form), so distinguishing one operator from another is just two arms.")
+  (p "The quoted " (cdz (* (+ 1 2) 4)) " is a real tree, and " (c "eval-expr") " walks it: the outer " (c "*") " arm binds " (c "x") " to the sub-tree " (cdz (+ 1 2)) " and " (c "y") " to " (c "4") ", recurses into each, and multiplies to " (c "(1 + 2) * 4 = 12") ". This is exactly how the compiler and a macro take apart the code handed to them: the same " (c "match") " you use on any sum type, with a template-shaped pattern for the syntax you care about. Note the arms dispatch on the operator too (the " (c "+") " arm won't match a " (c "*") " form), so distinguishing one operator from another is just two arms.")
   (why (tenet "One representation for code, and it's an ordinary value") "Many languages bolt on a separate macro system: a second little language, with its own rules, for programs that write programs. Cadenza doesn't. The AST is a sum type declared like any other, so the tools you already have (" (c "match") ", constructors, " (c "=") ", lists) are the whole metaprogramming toolkit. The compiler itself operates on these AST values natively rather than poking at string-tagged reflection, and " (c "eval") " is an optional extra (for macros and the REPL), not something the core depends on. Code as data, with no new machinery to learn.")
   (p "You can watch a program become an " (c "Ast") " value, and see the WebAssembly and Rust it compiles to, in the " (app-link (route "/playground") " playground ") " , where code-as-data stops being an abstraction and becomes something you can poke at.")
   (h2 "Your turn")
   (exercise
     (id "metaprogramming:1")
-    (prompt (c "quote") " reifies a form without running it, so a quoted compound is an " (c "Ast.List") " of its parts. Fill the arm so this counts the elements of " (cdz "(quote (f 1 2 3))") ", its operator plus three arguments, giving " (c "4") ".")
+    (prompt (c "quote") " reifies a form without running it, so a quoted compound is an " (c "Ast.List") " of its parts. Fill the arm so this counts the elements of " (cdz (quote (f 1 2 3))) ", its operator plus three arguments, giving " (c "4") ".")
     (starter (match (quote (f 1 2 3))
   ((Ast.List elems) ?)
   (_                0)))
@@ -150,10 +150,10 @@
   ((Ast.List elems) (List.len elems))
   (_                0)))
     (expected "4")
-    (hint "The " (c "Ast.List") " arm binds " (c "elems") " to the list of child nodes. Its length is " (cdz "(List.len elems)") ": one for the name " (c "f") " and one for each argument, so " (c "4") "."))
+    (hint "The " (c "Ast.List") " arm binds " (c "elems") " to the list of child nodes. Its length is " (cdz (List.len elems)) ": one for the name " (c "f") " and one for each argument, so " (c "4") "."))
   (exercise
     (id "metaprogramming:2")
-    (prompt "Build a call and run it. The tree is a " (cdz "(triple 14)") " form assembled by hand, an " (c "Ast.List") " of the name " (c "triple") " and one argument. Fill the argument node so " (c "eval") " runs " (cdz "(triple 14)") " and gives " (c "42") ".")
+    (prompt "Build a call and run it. The tree is a " (cdz (triple 14)) " form assembled by hand, an " (c "Ast.List") " of the name " (c "triple") " and one argument. Fill the argument node so " (c "eval") " runs " (cdz (triple 14)) " and gives " (c "42") ".")
     (starter (def (triple x) (* 3 x))
 (def (main)
   (eval (Ast.List #list((Ast.Name "triple") ?)))))
@@ -161,7 +161,7 @@
 (def (main)
   (eval (Ast.List #list((Ast.Name "triple") (Ast.Int 14))))))
     (expected "42")
-    (hint "The argument is the integer " (c "14") " as an AST node, an " (c "Ast.Int") ", the same kind " (cdz "(quote 14)") " would give. So the hole is " (cdz "(Ast.Int 14)") ", and " (c "eval") " then runs " (cdz "(triple 14)") "."))
+    (hint "The argument is the integer " (c "14") " as an AST node, an " (c "Ast.Int") ", the same kind " (cdz (quote 14)) " would give. So the hole is " (cdz (Ast.Int 14)) ", and " (c "eval") " then runs " (cdz (triple 14)) "."))
   (exercise
     (id "metaprogramming:3")
     (prompt (c "unquote-splicing") " drops each element of a list in as its own node. Splice a three-element list into " (c "(g …)") " and count the children of the resulting " (c "Ast.List") ": the operator " (c "g") " plus the three spliced nodes. Fill the list so the count is " (c "4") ".")
