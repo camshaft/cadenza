@@ -10720,7 +10720,6 @@ todo	a do-def-bound perform inside a recursive fn called under a handle declines
 todo	a match-discard chain sequencing 3 dispatches over LIST-OF-LISTS state declines cleanly (let-chain twin folds)
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
-todo	a non-tail recursive abort declines rather than miscompiles
 todo	a partial built-in operation (List.at at 1 of 2 args) curries — completing it yields a value (should-work)
 todo	a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)
 todo	a partial built-in operation (slice at 2 of 3 args) curries — completing it yields a value (should-work)
