@@ -375,6 +375,7 @@ impl Fleet {
             "cpu-monitor.sh",
             "warm-keep.sh",
             "baseline-drift-monitor.sh",
+            "drain-nudge.sh",
         ] {
             let src = self.src.join(f);
             if src.exists() {
@@ -1805,6 +1806,55 @@ fn ensure_baseline_drift_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired every-3-min user-crontab line for the autonomous DRAIN-NUDGE heartbeat (v-fleet-tooling
+/// 2026-09-01, operator-GO'd wake-path hardening), tagged `# fleet:drain-nudge` so [`reconcile_tagged_crons`]
+/// can find/heal it. Runs the HUB copy of `drain-nudge.sh`, which runs a worktree's `xtask fleet drain-nudge
+/// --session main` — the strict-subset scan that nudges an idle agent with unconsumed actionable mail (no
+/// re-arm/restart). Every 3 min so an idle-with-mail agent self-drains fast (beating the concierge's */4
+/// watchdog cadence) WITHOUT waiting out its /loop interval — the fix for the wake-miss stall. Silent
+/// (`>/dev/null 2>&1`): a nudge tick never emits cron mail. Shares the watchdog's rate-limit marker, so
+/// overlapping the concierge's watchdog never double-nudges (the concierge drops its drain-nudge once this is
+/// live — the shared grace covers the cutover).
+fn drain_nudge_cron_line(hub_script: &str) -> String {
+    format!("*/3 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:drain-nudge")
+}
+
+/// Ensure the `# fleet:drain-nudge` per-3-min user-crontab entry exists + points at THIS hub's
+/// `drain-nudge.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
+/// [`ensure_warm_keep_cron`] / [`ensure_cpu_monitor_cron`], and INDEPENDENT of them (a separate
+/// reconcile/write in `up`, each preserving the others' lines via [`reconcile_tagged_crons`]'s per-tag
+/// heal). This is the SCHEDULER that makes drain-nudging autonomous + decoupled from the concierge-driven
+/// watchdog (the wake-miss durable fix). Skips silently if `drain-nudge.sh` isn't materialized yet (older
+/// tree) or `crontab` is absent/errs — never blocks `fleet up`.
+fn ensure_drain_nudge_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("drain-nudge.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:drain-nudge",
+        drain_nudge_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// Pure decision for the checkout-symlink bootstrap: given whether the tracked source dir exists, and the
 /// current state of the `.claude/<name>` path (is-symlink, symlink-target, exists-as-non-symlink), what
 /// should `ensure_claude_symlinks` DO? Split out so the "when do we (re)link vs skip vs refuse" policy is
@@ -1913,6 +1963,13 @@ fn up(fleet: &Fleet) {
     // scan that notifies v-corpus-harness when `.gate-baseline` drifts past threshold behind the corpus (it
     // went 911 behind silently). DETECT-only; the heavy `gate --save` stays triggered. Fail-open, drift-healed.
     ensure_baseline_drift_cron(fleet);
+    // Re-arm the every-3-min autonomous DRAIN-NUDGE cron (operator-GO'd 2026-09-01 wake-path hardening) —
+    // runs `drain-nudge.sh` → `xtask fleet drain-nudge`, the strict-subset scan that nudges an idle agent
+    // with unconsumed actionable mail (no re-arm/restart). Decouples drain-nudging from the concierge's */4
+    // watchdog so an idle-with-mail agent self-drains fast even if the concierge is slow/stalled — the fix
+    // for the wake-miss stall. Independent of the other self-crons; fail-open + drift-healed. Shares the
+    // watchdog's rate-limit marker, so overlapping the concierge's watchdog never double-nudges.
+    ensure_drain_nudge_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -16350,6 +16407,7 @@ mod tests {
             "cargo-nix-shim.sh",
             "nix-shim.sh",
             "cpu-monitor.sh",
+            "drain-nudge.sh",
         ];
         let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -17360,6 +17418,24 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(
             !line.contains("gate"),
             "detect-only, no gate --save on a timer: {line}"
+        );
+    }
+
+    #[test]
+    fn drain_nudge_cron_line_is_every_3min_silent_and_tagged() {
+        let line = drain_nudge_cron_line("/hub/drain-nudge.sh");
+        // Every 3 min (beats the concierge's */4 watchdog cadence), runs the hub script, silent, tagged.
+        assert!(
+            line.starts_with("*/3 * * * * bash /hub/drain-nudge.sh"),
+            "every-3-min, invoking the hub script: {line}"
+        );
+        assert!(
+            line.contains(">/dev/null 2>&1"),
+            "silent — a nudge tick never emits cron mail: {line}"
+        );
+        assert!(
+            line.ends_with("# fleet:drain-nudge"),
+            "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
     }
 
