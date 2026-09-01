@@ -48,6 +48,20 @@ done
 
 # Best-effort + exit 0: a drain-nudge is benign (a keystroke into an idle pane), rate-limited + guarded; a
 # nonzero here (a tmux hiccup, or a stale binary lacking the subcommand) is not worth alarming — the next
-# fire retries, and worktrees pick up the subcommand as they rebuild post-#7327.
-"$best" fleet drain-nudge --session "$SESSION" || echo "drain-nudge: scan exited nonzero — next fire retries." >&2
+# fire retries, and worktrees pick up the subcommand as they rebuild post-#7327. Capture the output so the
+# .last-run stamp below records the result (the crontab's >/dev/null only silences the cron's OWN stdout).
+_out="$("$best" fleet drain-nudge --session "$SESSION" 2>&1)"
+_rc=$?
+
+# SILENT-CRON OBSERVABILITY (matches prune-*.sh / baseline-drift-monitor.sh; concierge convention 2026-08-29):
+# OVERWRITE a `.last-run` next to this script — its MTIME is liveness proof the (silent) cron actually FIRED,
+# and its content is the last result. Without this an all-silent cron is invisible ("is drain-nudge even
+# running?"). The scan is quiet on a no-op pass, so the summary may be empty — the mtime is the proof either
+# way. Best-effort, never fails the run.
+_stamp="$(dirname "${BASH_SOURCE[0]}")/drain-nudge.last-run"
+printf '%s rc=%s %s\n' \
+  "$(date -Is 2>/dev/null || echo now)" "$_rc" "$(printf '%s' "$_out" | tail -1)" \
+  > "$_stamp" 2>/dev/null || true
+
+[ "$_rc" = 0 ] || echo "drain-nudge: scan exited nonzero — next fire retries." >&2
 exit 0
