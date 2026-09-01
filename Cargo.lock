@@ -3397,6 +3397,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "cadenza-ast",
+ "cdz-corpus-grade",
  "cdz-rust-render",
  "clap",
  "prettyplease",
