@@ -2259,6 +2259,88 @@ theorem denote_normalize_app_binary_arith (ρ : Nat → Value) (w : IntTy) (op :
     · have f1 : isConstInt (normalize a1) 1 = false := by simpa using g1
       exact plain (by simp [normalizeAppIdentities, f1])
 
+/-- CAPSTONE `.app` BINARY dispatch — BOOLEAN arm (`or`/`and`). `foldConst?` declined (`hnone`), so dispatch
+`normalizeAppIdentities`' per-op guard cascade onto the proven bool identity cases — LEFT-const
+(`or_true_l`/`or_false_l`, `and_false_l`/`and_true_l`), RIGHT-const (`or_false_r`/`or_true_r`,
+`and_true_r`/`and_false_r`, keyed on `heq` proven by `simp`), IDEMPOTENCE (`or_idem`/`and_idem`), and the
+PLAIN fall-through. The RIGHT-`true or`/`false and` DROP guards carry `!mayTrap`; when blocked by a trapping
+left operand the dispatch falls to idempotence-or-plain. -/
+theorem denote_normalize_app_binary_bool (ρ : Nat → Value) (w : IntTy) (op : String) (a0 a1 : SymExpr)
+    (v : Value) (hbool : op = "or" ∨ op = "and")
+    (hnone : foldConst? op (#[a0, a1].attach.map (fun x => normalize x.val)) = none)
+    (ih0 : ∀ u, denote ρ w a0 = .value u → denote ρ w (normalize a0) = .value u)
+    (ih1 : ∀ u, denote ρ w a1 = .value u → denote ρ w (normalize a1) = .value u)
+    (h : denote ρ w (.app op #[a0, a1]) = .value v) :
+    denote ρ w (normalize (.app op #[a0, a1])) = .value v := by
+  have ihm : ∀ x ∈ (#[a0, a1] : Array SymExpr), ∀ u, denote ρ w x = .value u → denote ρ w (normalize x) = .value u := by
+    intro x hx u hu
+    rw [Array.mem_iff_getElem] at hx
+    obtain ⟨i, hi, rfl⟩ := hx
+    match i, hi with
+    | 0, _ => exact ih0 u hu
+    | 1, _ => exact ih1 u hu
+  have plain : normalizeAppIdentities op #[normalize a0, normalize a1] = .app op #[normalize a0, normalize a1] →
+      denote ρ w (normalize (.app op #[a0, a1])) = .value v := by
+    intro hred
+    refine denote_normalize_app_ident_plain ρ w op #[a0, a1] v ?_ ihm h
+    rw [normalize_app_ident op #[a0, a1] hnone,
+        show (#[a0, a1] : Array SymExpr).attach.map (fun x => normalize x.val) = #[normalize a0, normalize a1] by simp, hred]
+  rcases hbool with rfl | rfl
+  · -- "or": a=true→true, a=false→b, b=false→a, (b=true && !mayTrap a)→true, symEq→a, else plain
+    by_cases g1 : isConstBool (normalize a0) true = true
+    · exact denote_normalize_app_ident_or_true_l ρ w a0 a1 v (isConstBool_eq _ _ g1) hnone ih0 h
+    · by_cases g2 : isConstBool (normalize a0) false = true
+      · exact denote_normalize_app_ident_or_false_l ρ w a0 a1 v (isConstBool_eq _ _ g2) hnone ih1 ih0 h
+      · have f1 : isConstBool (normalize a0) true = false := by simpa using g1
+        have f2 : isConstBool (normalize a0) false = false := by simpa using g2
+        by_cases g3 : isConstBool (normalize a1) false = true
+        · refine denote_normalize_app_ident_or_false_r ρ w a0 a1 v hnone (isConstBool_eq _ _ g3) ?_ ih0 ih1 h
+          simp [normalizeAppIdentities, f1, f2, g3]
+        · have f3 : isConstBool (normalize a1) false = false := by simpa using g3
+          by_cases g4 : isConstBool (normalize a1) true = true
+          · by_cases g5 : mayTrap (normalize a0) = false
+            · refine denote_normalize_app_ident_or_true_r ρ w a0 a1 v hnone (isConstBool_eq _ _ g4) ?_ ih1 h
+              simp [normalizeAppIdentities, f1, f2, f3, g4, g5]
+            · have f5 : mayTrap (normalize a0) = true := by simpa using g5
+              by_cases g6 : symExprEqB (normalize a0) (normalize a1) = true
+              · refine denote_normalize_app_ident_or_idem ρ w a0 a1 v hnone g6 ?_ ih0 ih1 h
+                simp [normalizeAppIdentities, f1, f2, f3, g4, f5, g6]
+              · have f6 : symExprEqB (normalize a0) (normalize a1) = false := by simpa using g6
+                exact plain (by simp [normalizeAppIdentities, f1, f2, f3, g4, f5, f6])
+          · have f4 : isConstBool (normalize a1) true = false := by simpa using g4
+            by_cases g6 : symExprEqB (normalize a0) (normalize a1) = true
+            · refine denote_normalize_app_ident_or_idem ρ w a0 a1 v hnone g6 ?_ ih0 ih1 h
+              simp [normalizeAppIdentities, f1, f2, f3, f4, g6]
+            · have f6 : symExprEqB (normalize a0) (normalize a1) = false := by simpa using g6
+              exact plain (by simp [normalizeAppIdentities, f1, f2, f3, f4, f6])
+  · -- "and": a=false→false, a=true→b, b=true→a, (b=false && !mayTrap a)→false, symEq→a, else plain
+    by_cases g1 : isConstBool (normalize a0) false = true
+    · exact denote_normalize_app_ident_and_false_l ρ w a0 a1 v (isConstBool_eq _ _ g1) hnone ih0 h
+    · by_cases g2 : isConstBool (normalize a0) true = true
+      · exact denote_normalize_app_ident_and_true_l ρ w a0 a1 v (isConstBool_eq _ _ g2) hnone ih1 ih0 h
+      · have f1 : isConstBool (normalize a0) false = false := by simpa using g1
+        have f2 : isConstBool (normalize a0) true = false := by simpa using g2
+        by_cases g3 : isConstBool (normalize a1) true = true
+        · refine denote_normalize_app_ident_and_true_r ρ w a0 a1 v hnone (isConstBool_eq _ _ g3) ?_ ih0 ih1 h
+          simp [normalizeAppIdentities, f1, f2, g3]
+        · have f3 : isConstBool (normalize a1) true = false := by simpa using g3
+          by_cases g4 : isConstBool (normalize a1) false = true
+          · by_cases g5 : mayTrap (normalize a0) = false
+            · refine denote_normalize_app_ident_and_false_r ρ w a0 a1 v hnone (isConstBool_eq _ _ g4) ?_ ih1 h
+              simp [normalizeAppIdentities, f1, f2, f3, g4, g5]
+            · have f5 : mayTrap (normalize a0) = true := by simpa using g5
+              by_cases g6 : symExprEqB (normalize a0) (normalize a1) = true
+              · refine denote_normalize_app_ident_and_idem ρ w a0 a1 v hnone g6 ?_ ih0 ih1 h
+                simp [normalizeAppIdentities, f1, f2, f3, g4, f5, g6]
+              · have f6 : symExprEqB (normalize a0) (normalize a1) = false := by simpa using g6
+                exact plain (by simp [normalizeAppIdentities, f1, f2, f3, g4, f5, f6])
+          · have f4 : isConstBool (normalize a1) false = false := by simpa using g4
+            by_cases g6 : symExprEqB (normalize a0) (normalize a1) = true
+            · refine denote_normalize_app_ident_and_idem ρ w a0 a1 v hnone g6 ?_ ih0 ih1 h
+              simp [normalizeAppIdentities, f1, f2, f3, f4, g6]
+            · have f6 : symExprEqB (normalize a0) (normalize a1) = false := by simpa using g6
+              exact plain (by simp [normalizeAppIdentities, f1, f2, f3, f4, f6])
+
 /-- CAPSTONE tuple case (full-equality, per-element IH): `denote` MODELS `.tuple` (each element folded
 through `outcomeToValue`), so `denote (normalize (.tuple es)) = denote (.tuple es)` needs the per-element
 congruence `denote (normalize eᵢ) = denote eᵢ` (the IH the eventual `denote.induct` supplies). This is the
