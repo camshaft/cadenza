@@ -744,7 +744,7 @@
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert Map.empty 1 #record((= x 10) (= y 20))))
+          (def m #map((= 1 #record((= x 10) (= y 20)))))
           (def r (Option.expect (Map.lookup m 1) "present"))
           (def r2 (Record.with r #"x" k))
           (def m2 (Map.insert m 1 r2))
