@@ -1,6 +1,6 @@
 {
-  "count": 414,
-  "emitted": 407,
+  "count": 415,
+  "emitted": 408,
   "deferred": 7,
   "blockedDirs": [],
   "cases": [
@@ -417,6 +417,7 @@
     { "dir": "0411-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "iterator-zip-dot-product" },
     { "dir": "0412-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": false, "expectKind": "error", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "a-type-error" },
     { "dir": "0413-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "try-operator" },
-    { "dir": "0414-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "design-by-contract" }
+    { "dir": "0414-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "design-by-contract" },
+    { "dir": "0415-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "units-of-measure" }
   ]
 }
