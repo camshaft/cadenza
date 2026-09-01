@@ -513,6 +513,63 @@ mod tests {
     }
 
     #[test]
+    fn render_binary_renders_a_standalone_value_annotation_doc() {
+        // The rust value-doc convergence (op-seq-283/#7295) and cdz-run's `value_codec` both emit a
+        // SELF-DESCRIBING `(: value <type>)` doc — a bare top-level colon-annotation, NOT module-wrapped —
+        // and the gate harness renders it through THIS fn (`render_binary(bytes,'sexpr','expr')`), the same
+        // path cdz-run uses. This pins that render_binary handles that annotation-doc shape and produces the
+        // CANONICAL value surface, so a future printer/codec change can't silently break the convergence
+        // contract. The load-bearing property: a VALUE tuple renders as the idiomatic `(tuple …)` / `(…, …)`
+        // form, NOT the bespoke `#tuple` the old type-driven rust renderer produced (that divergence is
+        // exactly what routing through render_binary closes).
+        let cases = [
+            // (sexpr value-annotation doc, canonical Sexpr surface, canonical ML surface)
+            ("(: 42 Int64)", "(: 42 Int64)", "42 : Int64"),
+            (
+                "(: (tuple 1 2) (Tuple Int64 Int64))",
+                "(: (tuple 1 2) (Tuple Int64 Int64))",
+                "(1, 2) : Tuple(Int64, Int64)",
+            ),
+        ];
+        for (sexp, expect_sexpr, expect_ml) in cases {
+            let arenas = crate::sexpr::read(sexp).expect("value-annotation doc parses");
+            let bytes = crate::codec::encode(&arenas);
+            assert_eq!(
+                render_binary(
+                    &bytes,
+                    Format::Sexpr,
+                    FragmentKind::Expr,
+                    Options::default()
+                )
+                .unwrap(),
+                expect_sexpr,
+                "{sexp}: render_binary(Sexpr, Expr) is the canonical value-doc s-expr (round-trips)"
+            );
+            assert_eq!(
+                render_binary(&bytes, Format::Ml, FragmentKind::Expr, Options::default()).unwrap(),
+                expect_ml,
+                "{sexp}: render_binary(Ml, Expr) is the canonical ML value surface"
+            );
+            // A value doc is kind=expr; the canonical printer is kind-independent (the value surface falls
+            // out of the AST shape), so Type/Pattern render identically — pin that so the kind seam stays inert.
+            let as_expr = render_binary(
+                &bytes,
+                Format::Sexpr,
+                FragmentKind::Expr,
+                Options::default(),
+            )
+            .unwrap();
+            for k in [FragmentKind::Type, FragmentKind::Pattern] {
+                assert_eq!(
+                    render_binary(&bytes, Format::Sexpr, k, Options::default()).unwrap(),
+                    as_expr,
+                    "{sexp}: value-doc render is kind-independent (kind seam inert over the canonical printer)"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn locate_byte_in_message_maps_a_trailing_byte_offset_to_line_col() {
         // A multi-line s-expr parse error's trailing `at byte N` becomes `at line:col`.
         let src = "(module m\n  (def (main)\n    (+ 1 2)))\n  )))";
