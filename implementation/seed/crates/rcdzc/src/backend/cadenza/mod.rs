@@ -173,6 +173,18 @@ struct BinderEnv {
     /// the inner scalar is needed (CDZ0203, e.g. a map-key `(Box.Mk n)` sub-pattern). A key ABSENT here → no
     /// peel (bare binder, prior behavior), so a missing / imprecise type degrades safely to today's emit.
     payload_tys: HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
+    /// The set of effect NAMES a `Core::HostCall` performed while emitting the CURRENT definition's body.
+    /// [`emit_def`] reads it after the body and, if non-empty, wraps the body in one `(host (E…) <body>)`
+    /// delegation so each re-emitted perform `((. E o) …)` re-lowers to a host-delegated `HostCall` (else
+    /// CDZ0401 "no home"). Cleared per definition. A generous per-def delegation scope is faithful — a
+    /// HostCall effect is unhandled in-program, so delegating it over the whole def body shadows nothing.
+    performed_effects: std::collections::HashSet<std::rc::Rc<str>>,
+    /// The set of effect NAMES whose `(effect …)` declaration this backend re-emitted in the preamble (its
+    /// `emit_effect_decl` returned `Some`). A `Core::HostCall` perform emits ONLY if its effect is here —
+    /// else the decl could not round-trip (e.g. an op arrow with a non-copyable payload) and a bare
+    /// `((. E o) …)` would recompile as `unbound name E`, so it DECLINES instead (the perform ⇔ decl
+    /// coupling, mirroring a sum value ⇔ its `(type …)`). Set once per program (cloned into each def's env).
+    emitted_effects: std::collections::HashSet<std::rc::Rc<str>>,
     next_payload: usize,
     /// The program's lambda-lifted lambdas (a cheap `Rc` copy of `layout.lifted`), so a `Core::Closure {
     /// code }` value resolves its lifted lambda by index and re-emits the surface `(fn (<params>) <body>)`.
@@ -229,6 +241,23 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         }
     }
 
+    // Then the user EFFECT declarations — a host-delegated perform `((. E o) …)` (a re-emitted
+    // `Core::HostCall`) needs `(effect E (op o …))` in scope to re-lower to the same HostCall (as a sum
+    // value needs its `(type …)`). `emitted_effects` records which effects' decls landed — a perform of an
+    // effect whose decl could NOT be re-emitted (a non-copyable op arrow) DECLINES rather than emit an
+    // unbound-effect surface.
+    let mut emitted_effects: std::collections::HashSet<std::rc::Rc<str>> =
+        std::collections::HashSet::new();
+    for i in 0..db.effect_decls.len() {
+        let decl = db.effect_decls[i].clone();
+        if db.is_user_node(decl.occ)
+            && let Some(node) = emit_effect_decl(db, &mut b, &decl)
+        {
+            root_children.push(node);
+            emitted_effects.insert(decl.name.as_str().into());
+        }
+    }
+
     // The lambda-lifted lambdas, shared (by `Rc`) into each definition's binder environment so a
     // `Core::Closure { code }` body resolves its lifted lambda by index. Empty for a closure-free program.
     let lifted: std::rc::Rc<[crate::lower::LiftedLambda]> = layout.lifted.clone().into();
@@ -237,7 +266,8 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     for &def in &layout.order {
         let dn = db.defs[def].name.clone();
         root_children.push(
-            emit_def(db, &mut b, def, &emitted, &lifted).map_err(|e| with_def_context(e, &dn))?,
+            emit_def(db, &mut b, def, &emitted, &emitted_effects, &lifted)
+                .map_err(|e| with_def_context(e, &dn))?,
         );
     }
 
@@ -316,13 +346,36 @@ pub fn emit_fragment(
         }
     }
 
+    // Effect decls, mirroring the type-decl treatment: PUSH the `(effect …)` node when this fragment OWNS
+    // the decls (`include_type_decls`), else MARK-only (the closure fragment carries it at splice time).
+    // `emitted_effects` gates which HostCall performs may emit (perform ⇔ decl, as the whole-program `emit`).
+    let mut emitted_effects: std::collections::HashSet<std::rc::Rc<str>> =
+        std::collections::HashSet::new();
+    for i in 0..db.effect_decls.len() {
+        let decl = db.effect_decls[i].clone();
+        if !db.is_user_node(decl.occ) {
+            continue;
+        }
+        if include_type_decls {
+            if let Some(node) = emit_effect_decl(db, &mut b, &decl) {
+                root_children.push(node);
+                emitted_effects.insert(decl.name.as_str().into());
+            }
+        } else {
+            let mut scratch = Builder::new();
+            if emit_effect_decl(db, &mut scratch, &decl).is_some() {
+                emitted_effects.insert(decl.name.as_str().into());
+            }
+        }
+    }
+
     let lifted: std::rc::Rc<[crate::lower::LiftedLambda]> = layout.lifted.clone().into();
     // ONLY the named subset, in `layout.order` (deterministic) — NO exports (added at splice time).
     for &def in &layout.order {
         if subset.contains(&db.defs[def].name) {
             let dn = db.defs[def].name.clone();
             root_children.push(
-                emit_def(db, &mut b, def, &emitted, &lifted)
+                emit_def(db, &mut b, def, &emitted, &emitted_effects, &lifted)
                     .map_err(|e| with_def_context(e, &dn))?,
             );
         }
@@ -331,6 +384,31 @@ pub fn emit_fragment(
     let root = b.list(root_children);
     let arenas = b.finish(root);
     Ok(crate::codec::encode(&arenas))
+}
+
+/// Reconstruct a user EFFECT's `(effect <Name> (op <o> (-> <Domain> <Result>))…)` declaration so a
+/// re-emitted host-delegated perform `((. E o) …)` re-lowers to the same `Core::HostCall` (the effect
+/// name + op signature must be in scope on recompile, exactly as a sum's `(type …)` must be). Each op's
+/// arrow type is copied structurally from its declaration occurrence (`OpDecl.ty`) via
+/// [`emit_type_surface`], like a variant payload. `None` if any op lacks a written arrow type (a malformed
+/// decl the recompile could not re-type). A `@resource`-marked op re-emits its bare arrow here (the marker
+/// is a hash-clean decl-sibling recovered on re-lower; a resource op that needs the marker for round-trip
+/// is a later refinement).
+fn emit_effect_decl(
+    db: &mut Db,
+    b: &mut Builder,
+    decl: &crate::db::EffectDecl,
+) -> Option<StructId> {
+    let effect_head = b.name("effect");
+    let name_node = b.name(decl.name.as_str());
+    let mut children = vec![effect_head, name_node];
+    for op in &decl.ops {
+        let op_head = b.name("op");
+        let op_name = b.name(op.name.as_str());
+        let ty_node = emit_type_surface(db, b, op.ty?)?;
+        children.push(b.list(vec![op_head, op_name, ty_node]));
+    }
+    Some(b.list(children))
 }
 
 /// Reconstruct a user sum's `(type <Name> (<Variant> <PayloadTy>…)…)` declaration, or `None` for a sum
@@ -427,6 +505,7 @@ fn emit_def(
     b: &mut Builder,
     def: usize,
     emitted: &std::collections::HashSet<StructId>,
+    emitted_effects: &std::collections::HashSet<std::rc::Rc<str>>,
     lifted: &std::rc::Rc<[crate::lower::LiftedLambda]>,
 ) -> Result<StructId, Reject> {
     let name = db.defs[def].name.clone();
@@ -475,6 +554,7 @@ fn emit_def(
     // program's lifted lambdas are shared in so a `Core::Closure` body can resolve its lifted lambda.
     let mut env = BinderEnv {
         lifted: Some(lifted.clone()),
+        emitted_effects: emitted_effects.clone(),
         ..BinderEnv::default()
     };
     // A def whose RESULT type is a concrete `Ty::Qty` AND whose body reduces to a BARE-INNER runtime
@@ -515,6 +595,21 @@ fn emit_def(
             ));
         }
         _ => emit_expr(db, b, body, None, &mut env, emitted)?,
+    };
+    // If the body PERFORMED any host-delegated effect (a `Core::HostCall`), wrap it in ONE
+    // `(host (E1 E2 …) <body>)` delegation so each re-emitted perform `((. E o) …)` re-lowers to a
+    // host-delegated `HostCall` on recompile (else CDZ0401 "no home"). Effects are emitted in SORTED order
+    // for a deterministic (idempotent) surface. A generous whole-def-body scope is faithful — a HostCall
+    // effect is unhandled in-program, so delegating it over the body shadows no handler.
+    let body_node = if env.performed_effects.is_empty() {
+        body_node
+    } else {
+        let mut names: Vec<std::rc::Rc<str>> = env.performed_effects.iter().cloned().collect();
+        names.sort();
+        let host_head = b.name("host");
+        let effect_names: Vec<StructId> = names.iter().map(|n| b.name(n.clone())).collect();
+        let effects_list = b.list(effect_names);
+        b.list(vec![host_head, effects_list, body_node])
     };
     Ok(b.list(vec![def_head, sig, body_node]))
 }
@@ -1640,6 +1735,35 @@ fn emit_expr_viewed(
             let head = member_access(b, "Ast", "decode");
             let x = emit_expr(db, b, operand, None, env, emitted)?;
             Ok(b.list(vec![head, x]))
+        }
+        // A PERFORM of a host-delegated / escaping effect op — `Core::HostCall { effect: E, op: o, args }`
+        // re-emits the member-access perform `((. E o) <args>)` (`E.o` is ordinary member access, v-effects).
+        // For this to re-lower to the SAME HostCall on recompile, TWO context pieces are emitted elsewhere:
+        // the `(effect E (op o …))` DECL (preamble, [`emit_effect_decls`]) and ONE entrypoint-level
+        // `(host (E…) <body>)` delegation ([`emit_def`]) — a generous entrypoint scope is faithful because a
+        // HostCall effect is unhandled in-program (a handled op reduces away before the backend), so
+        // delegating it over a larger region shadows nothing. NO lexical host-scope reconstruction needed.
+        Core::HostCall {
+            effect, op, args, ..
+        } => {
+            // Perform ⇔ decl coupling: only emit if the `(effect E …)` decl re-emitted (else `((. E o) …)`
+            // recompiles as `unbound name E` — an op arrow with a non-copyable payload declines the decl).
+            if !env.emitted_effects.contains(&effect) {
+                return Err(Reject::unsupported(
+                    "the Cadenza backend does not support re-emitting a perform of this effect (its \
+                     `(effect …)` declaration is not re-emittable — an op signature with a non-copyable \
+                     payload)"
+                        .to_string(),
+                ));
+            }
+            let head = member_access(b, &effect, &op);
+            let mut children = vec![head];
+            for &a in args.iter() {
+                children.push(emit_expr(db, b, a, None, env, emitted)?);
+            }
+            // Record the effect so `emit_def` wraps this def's body in `(host (E…) …)` (the delegation).
+            env.performed_effects.insert(effect.clone());
+            Ok(b.list(children))
         }
         Core::MapSize { map } => {
             let head = member_access(b, "Map", "len");
