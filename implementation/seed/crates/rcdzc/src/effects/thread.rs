@@ -164,6 +164,238 @@ pub(crate) fn thread_returning_tuple(
     }
 }
 
+/// A fresh `Int` leaf `n` (decimal). The tag literals 0/1 and the abort-tag comparison operand.
+fn tagged_int_lit(db: &mut Db, n: i64) -> StructId {
+    db.push_atom(Leaf::Int {
+        value: IntValue::from_i64(n),
+        radix: Radix::Dec,
+    })
+}
+
+/// A TAGGED-return tuple `#tuple(tag value)` — the non-local-exit CC's carrier. `tag` = 1 marks an ABORT
+/// (the value is the abort value to propagate up every pending frame), 0 marks a NORMAL result (the value is
+/// the ordinary function result). Both live in slot 1, so the handle collapse reads `(. r 1)` regardless.
+fn build_tag_tuple(db: &mut Db, tag: i64, value: StructId) -> StructId {
+    let head = db.push_atom(Leaf::Ctor(CompoundCtor::Tuple));
+    let tag_atom = tagged_int_lit(db, tag);
+    db.push_list(vec![head, tag_atom, value])
+}
+
+/// Build the specialized recursive CALL `(spec args… captures… states…)` for a self-call `(head orig_args)`,
+/// returning `(call_node, spec_name)`. Mirrors the recursive-call arm's call construction (thread.rs ~1091),
+/// but built DIRECTLY (not via `thread_bounded`) so the tagged handle-body collapse in that arm — which wraps
+/// a tagged spec's call in `(let ((r …)) (. r 1))` — does NOT also fire on the INTERNAL self-calls the
+/// tagged threader emits (which must stay raw `(spec …)` tuple-returning calls for the tag-check to read).
+/// Args are pure in v1 (copied), so no state threads through them. `None` if `head` is not a recursive call
+/// or the callee cannot specialize.
+fn build_spec_call(
+    db: &mut Db,
+    head: StructId,
+    orig_args: &[StructId],
+    states: &[StructId],
+    ctx: &HandlerCtx,
+) -> Option<(StructId, String)> {
+    let head_def = callee_def_index_of(db, head)?;
+    let mut rargs: Vec<StructId> = orig_args.iter().map(|&a| copy_pure(db, a)).collect();
+    if let Some((_acc, seeds)) = accum_seed_redirect(db, head_def, ctx.slots.len()) {
+        rargs.extend(seeds);
+    }
+    let spec = specialize_recursive(db, head, ctx)?;
+    if let Some(captures) = db.effect_spec_captures.get(&spec).cloned() {
+        for name in captures {
+            rargs.push(db.push_name(&name));
+        }
+    }
+    for &s in states.iter() {
+        rargs.push(deep_fresh_copy(db, s));
+    }
+    let name_atom = db.push_name(&spec);
+    let mut call = vec![name_atom];
+    call.extend(rargs);
+    Some((db.push_list(call), spec))
+}
+
+/// Thread a SELF-RECURSIVE callee body in TAGGED-ABORT mode (the non-local-exit calling convention). The
+/// specialized fn returns a TAGGED tuple `#tuple(tag value)` at every tail; a NON-TAIL self-call short-
+/// circuits its pending frame on the abort tag, so an abort ABANDONS the pending computation instead of
+/// flowing back through it (walk `(+ 1 (walk (- n 1)))` with a base abort → 99, not 102). Descends `if`/
+/// `match` (each branch is its own tagged tail, PURE condition/scrutinee required in v1). Leaves:
+///   * an ABORTIVE perform `(Op.abort V…)` → `#tuple(1 <arm-value>)` (arm body with op-params↦args; a
+///     state-reading arm declines — v1 threads no state here);
+///   * a DIRECT tail self-call `(callee args)` → the raw spec call (it already returns a tagged tuple);
+///   * a STRICT-operand self-call `(OP a… (callee …) …)` with exactly ONE direct recursive operand and the
+///     rest pure → `(let ((r <call>)) (if (= (. r 0) 1) r #tuple(0 (OP a… (. r 1) …))))`;
+///   * a pure leaf → `#tuple(0 value)`.
+///
+/// Returns `None` (clean decline → the 4499 safe-floor fallback stays) for any shape v1 does not model.
+pub(crate) fn thread_returning_tagged(
+    db: &mut Db,
+    body: StructId,
+    states: Vec<StructId>,
+    ctx: &HandlerCtx,
+    callee_def: usize,
+) -> Option<StructId> {
+    match resolved_of(db, body) {
+        // An `if`: PURE condition (no perform / no self-call in v1 — the abort and the recursion live in the
+        // branches), then each branch is its OWN tagged tail. Rebuild `(if rcond then-tagged else-tagged)`.
+        Resolved::If { cond, then_, else_ } => {
+            if subtree_performs(db, cond, ctx) || contains_recursive_call(db, cond, callee_def) {
+                return None;
+            }
+            let rcond = copy_pure(db, cond);
+            let then_states: Vec<StructId> = states.iter().map(|&s| copy_pure(db, s)).collect();
+            let else_states: Vec<StructId> = states.iter().map(|&s| copy_pure(db, s)).collect();
+            let rthen = thread_returning_tagged(db, then_, then_states, ctx, callee_def)?;
+            let relse = thread_returning_tagged(db, else_, else_states, ctx, callee_def)?;
+            let if_head = db.push_name("if");
+            Some(db.push_list(vec![if_head, rcond, rthen, relse]))
+        }
+        // A `match`: PURE scrutinee, each arm body its own tagged tail. The pattern is a binder position.
+        Resolved::Match { scrutinee, arms } => {
+            if subtree_performs(db, scrutinee, ctx)
+                || contains_recursive_call(db, scrutinee, callee_def)
+            {
+                return None;
+            }
+            let rscrut = copy_pure(db, scrutinee);
+            let match_head = db.push_name("match");
+            let mut children = vec![match_head, rscrut];
+            for (pat, arm_body) in arms {
+                let rpat = copy_pure(db, pat);
+                let arm_states: Vec<StructId> = states.iter().map(|&s| copy_pure(db, s)).collect();
+                let rbody = thread_returning_tagged(db, arm_body, arm_states, ctx, callee_def)?;
+                children.push(db.push_list(vec![rpat, rbody]));
+            }
+            Some(db.push_list(children))
+        }
+        Resolved::Apply { head, args } => {
+            // ABORTIVE-PERFORM leaf → `#tuple(1 <arm-value>)`. The arm value is the abortive arm body with
+            // its op-params bound to the perform args (`(bail (n) s n)` on `(Bail.bail 99)` → 99). A
+            // resumptive perform (not in `ctx.abortive`) or a state-reading abort arm declines in v1.
+            if let Some((decl, idx)) = is_perform(db, head, ctx) {
+                if !ctx.abortive.contains(&(decl, idx)) {
+                    return None;
+                }
+                let arm = ctx.arms.get(&(decl, idx))?.clone();
+                if count_param_refs(db, arm.body, arm.state) != 0 {
+                    return None;
+                }
+                let mut subst: HashMap<StructId, StructId> = HashMap::default();
+                if arm.params.len() == args.len() {
+                    for (&p, &a) in arm.params.iter().zip(args.iter()) {
+                        subst.insert(p, a);
+                    }
+                } else if arm.params.len() == 1 && args.is_empty() {
+                    let unit = db.push_name("unit");
+                    subst.insert(arm.params[0], unit);
+                } else {
+                    return None;
+                }
+                let abortval = crate::eval::beta_reduce(db, arm.body, &subst);
+                let abortval = copy_pure(db, abortval);
+                return Some(build_tag_tuple(db, 1, abortval));
+            }
+            // A DIRECT tail self-call `(callee args)`: the spec already returns a tagged tuple — propagate it.
+            // Args must be pure in v1.
+            if callee_def_index_of(db, head) == Some(callee_def) {
+                if args.iter().any(|&a| {
+                    subtree_performs(db, a, ctx) || contains_recursive_call(db, a, callee_def)
+                }) {
+                    return None;
+                }
+                return build_spec_call(db, head, &args, &states, ctx).map(|(c, _)| c);
+            }
+            // A STRICT-operand self-call `(OP a… (callee …) …)`: head PURE (a primitive/operator, not a
+            // perform, not recursive), exactly ONE arg a DIRECT recursive call, every other arg pure. Bind
+            // the recursive result to `r` and short-circuit the pending `OP` on the abort tag.
+            if is_perform(db, head, ctx).is_none() && !contains_recursive_call(db, head, callee_def)
+            {
+                let mut rec_arg_pos: Option<usize> = None;
+                let mut ok = true;
+                for (i, &a) in args.iter().enumerate() {
+                    let is_direct_rec = matches!(
+                        resolved_of(db, a),
+                        Resolved::Apply { head: ah, .. } if callee_def_index_of(db, ah) == Some(callee_def)
+                    );
+                    if is_direct_rec {
+                        if rec_arg_pos.is_some() {
+                            ok = false;
+                            break;
+                        }
+                        rec_arg_pos = Some(i);
+                    } else if subtree_performs(db, a, ctx)
+                        || contains_recursive_call(db, a, callee_def)
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok
+                    && let Some(rpos) = rec_arg_pos
+                    && let Resolved::Apply {
+                        head: rec_head,
+                        args: rec_args,
+                    } = resolved_of(db, args[rpos])
+                {
+                    if rec_args.iter().any(|&a| {
+                        subtree_performs(db, a, ctx) || contains_recursive_call(db, a, callee_def)
+                    }) {
+                        return None;
+                    }
+                    let (call, spec) = build_spec_call(db, rec_head, &rec_args, &states, ctx)?;
+                    let k = ctx.temp_ctr.get();
+                    ctx.temp_ctr.set(k + 1);
+                    let tname = format!("{spec}$rt{k}");
+                    // The pending context `(OP a0' … (. r 1) … aN')` — the recursive operand replaced by the
+                    // NORMAL result value, siblings copied.
+                    let rhead = copy_pure(db, head);
+                    let mut ctx_children = vec![rhead];
+                    for (i, &a) in args.iter().enumerate() {
+                        if i == rpos {
+                            ctx_children.push(tuple_proj(db, &tname, 1));
+                        } else {
+                            ctx_children.push(copy_pure(db, a));
+                        }
+                    }
+                    let context = db.push_list(ctx_children);
+                    let normal = build_tag_tuple(db, 0, context);
+                    // `(if (= (. r 0) 1) r <normal>)` — on the abort tag, return the tuple `r` UNCHANGED
+                    // (tag 1 propagates up); else apply the pending op to the result value.
+                    let tag_proj = tuple_proj(db, &tname, 0);
+                    let eq_head = db.push_name("=");
+                    let one = tagged_int_lit(db, 1);
+                    let cond = db.push_list(vec![eq_head, tag_proj, one]);
+                    let r_ref = db.push_name(&tname);
+                    let if_head = db.push_name("if");
+                    let if_node = db.push_list(vec![if_head, cond, r_ref, normal]);
+                    let let_head = db.push_name("let");
+                    let tn_atom = db.push_name(&tname);
+                    let pair = db.push_list(vec![tn_atom, call]);
+                    let bindings = db.push_list(vec![pair]);
+                    return Some(db.push_list(vec![let_head, bindings, if_node]));
+                }
+                // A pure operator application with no recursive operand → a NORMAL leaf value.
+                if !contains_recursive_call(db, body, callee_def)
+                    && !subtree_performs(db, body, ctx)
+                {
+                    let v = copy_pure(db, body);
+                    return Some(build_tag_tuple(db, 0, v));
+                }
+            }
+            None
+        }
+        // A non-`Apply` leaf — a bare value / literal / reference — is a NORMAL result if pure.
+        _ => {
+            if !contains_recursive_call(db, body, callee_def) && !subtree_performs(db, body, ctx) {
+                let v = copy_pure(db, body);
+                Some(build_tag_tuple(db, 0, v))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 pub(crate) fn thread(
     db: &mut Db,
     node: StructId,
@@ -1142,6 +1374,24 @@ pub(crate) fn thread_bounded(
                     .map(|slot| tuple_proj(db, &tname, (slot + 1) as u32))
                     .collect();
                 return Some((value, new_states));
+            }
+            if db.tagged_abort_specs.contains(&spec) {
+                // TAGGED-ABORT MODE (non-local-exit CC): `f#eff` returns `#tuple(tag value)`. At THIS call
+                // site — the handle body's initial call, threaded by the ordinary path (the INTERNAL self-
+                // calls are built directly by `thread_returning_tagged`, bypassing this arm) — the observed
+                // value is `(. r 1)`: the abort value if aborted (tag 1), else the normal result (tag 0),
+                // both in slot 1. Let-bind the call + project slot 1, so the handle collapses to the correct
+                // value whether or not an abort fired. (Single-use `r` copy-props away downstream.)
+                let k = ctx.temp_ctr.get();
+                ctx.temp_ctr.set(k + 1);
+                let tname = format!("{spec}$rc{k}");
+                let let_head = db.push_name("let");
+                let tn_atom = db.push_name(&tname);
+                let pair = db.push_list(vec![tn_atom, call_node]);
+                let bindings = db.push_list(vec![pair]);
+                let proj = tuple_proj(db, &tname, 1);
+                let wrapped = db.push_list(vec![let_head, bindings, proj]);
+                return Some((wrapped, cur));
             }
             // The call's VALUE is the specialized fn's result; the states after it are not observed (the
             // corpus never reads post-recursion state — the single-return shape).

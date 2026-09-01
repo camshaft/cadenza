@@ -8807,7 +8807,7 @@ todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with
 todo	a non-kebab (camelCase) peer op name agrees across both sides and runs
 todo	a non-tail cross-function conditional abort declines cleanly
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
-todo	a non-tail recursive abort declines rather than miscompiles
+pass	a non-tail recursive abort abandons the pending frames and folds to the abort value (99)
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
 todo	a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)
 todo	a peer missing a bound op is rejected naming the op
