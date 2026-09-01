@@ -48,10 +48,10 @@ fn main() {
     }
 
     // --refactor --select <head> --to {ast|string} [--check] <file.sexp>: the GENERAL select-on-pattern +
-    // convert primitive (operator directive). v1 selector = by HEAD-NAME (recursive over the whole arena);
-    // `--to ast` embeds every `(<head> "sexpr-string")` form as `(<head> <forms>)` (parse-at-build, the
-    // string->AST direction — generalizes the seq-213/214 `--migrate`). `--to string` (AST->string, render
-    // the selected subtree via the canonical printer) is render-ty-gated + not yet wired. This lives here
+    // convert primitive (operator directive), BIDIRECTIONAL. v1 selector = by HEAD-NAME (recursive over the
+    // whole arena). `--to ast` embeds every `(<head> "sexpr-string")` form as `(<head> <forms>)` (parse the
+    // string, the string->AST direction — generalizes the seq-213/214 `--migrate`); `--to string` reverses
+    // it, rendering each `(<head> <forms>)` back to `(<head> "…")` via the s-expr printer. This lives here
     // (the parser+codec+span machinery) for v1; a `cargo xtask refactor` wrapper is a thin follow-up.
     if args.iter().any(|a| a == "--refactor") {
         run_refactor(&args);
@@ -414,16 +414,7 @@ fn run_refactor(args: &[String]) {
         eprintln!("xtask-codegen-guide --refactor: missing <file.sexp>");
         std::process::exit(2);
     };
-    if to == "string" {
-        // AST->string is render-ty-gated (render the selected subtree via the canonical binary-AST->surface
-        // printer). Not yet wired — fail loudly rather than silently no-op.
-        eprintln!(
-            "xtask-codegen-guide --refactor --to string: AST->string is not yet implemented \
-             (blocked on the canonical render-from-binary-AST entry, v-syntax-render-ty). Use --to ast for now."
-        );
-        std::process::exit(2);
-    }
-    if to != "ast" {
+    if to != "ast" && to != "string" {
         eprintln!("xtask-codegen-guide --refactor: --to must be `ast` or `string` (got `{to}`)");
         std::process::exit(2);
     }
@@ -435,12 +426,27 @@ fn run_refactor(args: &[String]) {
         eprintln!("xtask-codegen-guide --refactor: parse {path}: {e:?}");
         std::process::exit(1);
     });
-    match refactor_embed_head(&text, &a, &spans, &head) {
+    // The two directions are symmetric: `--to ast` embeds `(<head> "string")` → `(<head> <forms>)`;
+    // `--to string` renders `(<head> <forms>)` → `(<head> "string")`. Both return (rewritten text, count).
+    let (result, direction, remaining) = if to == "ast" {
+        (
+            refactor_embed_head(&text, &a, &spans, &head),
+            "embed",
+            format!("`({head} \"…\")` string span(s)"),
+        )
+    } else {
+        (
+            refactor_render_head(&text, &a, &spans, &head),
+            "stringify",
+            format!("`({head} <forms>)` embedded span(s)"),
+        )
+    };
+    match result {
         Some((new_text, n)) => {
             if check {
                 eprintln!(
-                    "✗ {path}: {n} `({head} \"…\")` string span(s) NOT yet embedded — run \
-                     `xtask-codegen-guide --refactor --select {head} --to ast {path}`"
+                    "✗ {path}: {n} {remaining} NOT yet converted — run \
+                     `xtask-codegen-guide --refactor --select {head} --to {to} {path}`"
                 );
                 std::process::exit(1);
             }
@@ -448,18 +454,57 @@ fn run_refactor(args: &[String]) {
                 eprintln!("xtask-codegen-guide --refactor: write {path}: {e}");
                 std::process::exit(1);
             });
-            println!("refactor --select {head} --to ast: embedded {n} span(s) in {path}");
+            println!("refactor --select {head} --to {to}: {direction} {n} span(s) in {path}");
         }
         None => {
             if check {
-                println!(
-                    "✓ {path}: no embeddable `({head} \"…\")` string span (all embedded/clean)"
-                );
+                println!("✓ {path}: no {remaining} to convert (--select {head} --to {to} clean)");
             } else {
-                println!("{path}: no eligible `({head} \"…\")` string span to embed");
+                println!("{path}: no eligible {remaining} to {direction}");
             }
         }
     }
+}
+
+/// `--refactor --select <head> --to string`: the REVERSE of `refactor_embed_head` — render each
+/// `(<head> <embedded-form>)` payload back to a canonical s-expr STRING, turning `(<head> <forms>)` into
+/// `(<head> "…")`. Uses the s-expr printer on the in-arena subtree (no binary round-trip needed for the
+/// s-expr surface). Skips a head whose child is already a string (nothing to stringify).
+fn refactor_render_head(
+    text: &str,
+    a: &Arenas,
+    spans: &SpanTable,
+    head: &str,
+) -> Option<(String, usize)> {
+    let mut forms = Vec::new();
+    collect_head_forms(a, a.root, head, &mut forms);
+    let mut repls: Vec<(usize, usize, String)> = Vec::new();
+    for f in forms {
+        let kids = children(a, f);
+        if kids.len() != 1 {
+            continue; // multi-child or empty — not a single-fragment span
+        }
+        let child = kids[0];
+        if a.as_str(child).is_some() {
+            continue; // already a string payload — nothing to stringify
+        }
+        let Some(sp) = spans.get(child) else {
+            continue;
+        };
+        // Render the embedded subtree to canonical s-expr, then quote it as a JS/JSON string literal.
+        let rendered = cadenza_syntax_sexpr::print_pretty_from(a, child, 100);
+        repls.push((sp.start, sp.end, json_string(&rendered)));
+    }
+    if repls.is_empty() {
+        return None;
+    }
+    let n = repls.len();
+    repls.sort_by_key(|r| std::cmp::Reverse(r.0)); // right-to-left so earlier spans stay valid
+    let mut out = text.to_string();
+    for (s, e, content) in repls {
+        out.replace_range(s..e, &content);
+    }
+    Some((out, n))
 }
 
 /// A block in document order — prose (h2/p/note) or an example (runnable/exercise/why).
@@ -1235,5 +1280,34 @@ mod tests {
         // Idempotent + re-parses: a second pass over the embedded text finds nothing.
         let (a2, spans2) = parse(&new_text);
         assert!(refactor_embed_head(&new_text, &a2, &spans2, "cdz").is_none());
+    }
+
+    #[test]
+    fn refactor_render_head_reverses_embed_to_a_string() {
+        // --to string is the reverse of --to ast: (cdz <forms>) → (cdz "canonical-sexpr").
+        let embedded = "(chapter (slug \"x\") (p \"a \" (cdz #tuple(1 2)) \" b \" (cdz (Some x)) \" c \" (c \"lit\")))";
+        let (a, spans) = parse(embedded);
+        let (out, n) =
+            refactor_render_head(embedded, &a, &spans, "cdz").expect("stringifies cdz forms");
+        assert_eq!(n, 2, "both embedded-form spans stringified");
+        assert!(
+            out.contains("(cdz \"#tuple(1 2)\")"),
+            "tuple form → string: {out}"
+        );
+        assert!(
+            out.contains("(cdz \"(Some x)\")"),
+            "ctor-app form → string: {out}"
+        );
+        assert!(
+            out.contains("(c \"lit\")"),
+            "the (c …) span is untouched (not selected)"
+        );
+        // Reverse-then-forward round-trips to the same embedded arena (semantic identity).
+        let (a2, spans2) = parse(&out);
+        let (back, _) = refactor_embed_head(&out, &a2, &spans2, "cdz").expect("re-embeds");
+        let (ab, _) = parse(&back);
+        let mut fb = Vec::new();
+        collect_head_forms(&ab, ab.root, "cdz", &mut fb);
+        assert_eq!(fb.len(), 2, "still two cdz spans after the round-trip");
     }
 }
