@@ -2856,26 +2856,32 @@
 ; elements never called the comparator, so a lone compound would have MATERIALIZED while the runtime
 ; op declines — a compile/runtime divergence). The EMPTY set of a non-orderable element type is
 ; order-trivial and folds to the empty list (the correct boundary of the per-element pre-check).
+; #7234 refined the DIAGNOSTIC: a non-orderable element/key type has NO TOTAL ORDER, so its to-list
+; enumeration is undefined — the shared front-end now declines CDZ0203 (the no-total-order carve-out
+; family: float leaf = IEEE partial order, set/map leaf = no blessed order; ordering #7143 + compare
+; #7210 + to-list #7234), the DEEPER reason than the former generic CDZ0201 "not a compile-time
+; constant". Still a decline (the const value cannot be materialized), just coded for the real cause.
 (case
   "lnr1 a const Set.to-list of a LONE non-orderable element still declines (the sort-by-skip soundness face)"
   (doc
     "A LONE element (a `sort_by` over one element never calls the comparator) must still be probed for
-        orderability. A tuple carrying a FLOAT is genuinely non-orderable (`const_key_order` declines a float),
-        so the per-element pre-check keeps the runtime op → the const demand REJECTS. (A tuple of orderable
-        scalars now folds — see the tuple-order cases above; this pins the LONE-non-orderable soundness face.)")
+        orderability. A tuple carrying a FLOAT is genuinely non-orderable (a float offers only the IEEE partial
+        order), so its to-list has no total order → CDZ0203 at the shared front-end (the deeper reason than the
+        former const-demand CDZ0201). A tuple of orderable scalars still folds — see the tuple-order cases above;
+        this pins the LONE-non-orderable soundness face still declines, now with the no-total-order code.")
   (input (do (def (main) (const (List.len (Set.to-list #set(#tuple(1.5 2)))))) (export main)))
-  (error CDZ0201 (message "compile-time constant")))
+  (error CDZ0203 (message "no total order")))
 
 (case
   "lnr2 a const Map.to-list with a LONE non-orderable KEY still declines"
   (doc
-    "The Map-key twin: a lone tuple KEY carrying a FLOAT is non-orderable, so the per-element pre-check
-        keeps the runtime op and the const demand REJECTS.")
+    "The Map-key twin: a lone tuple KEY carrying a FLOAT is non-orderable, so its to-list has no total order
+        over the keys → CDZ0203 at the shared front-end (the deeper reason than the former const-demand CDZ0201).")
   (input
     (do
       (def (main) (const (List.len (Map.to-list (Map.insert #map() #tuple(1.5 2) 10)))))
       (export main)))
-  (error CDZ0201 (message "compile-time constant")))
+  (error CDZ0203 (message "no total order")))
 
 (case
   "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
