@@ -13928,6 +13928,97 @@
   (input (let ((a 5)) (Map.insert #map((= a 1) (= 5 2)) 5 9)))
   (output (: #map((= 5 9)) (Map Int64 Int64))))
 
+; ── breaker bank: FLOAT SPECIAL VALUES AS COLLECTION KEYS. The scalar semantics are pinned in 06
+; (canonical-byte-form `=`: zero-sign distinctness 06:3217+, NaN self-equality 06:6385+); these pin
+; the COLLECTION-KEY face — keys compare by the same canonical `=`, so -0.0/0.0 are DISTINCT keys
+; while every NaN provenance is ONE key. Runtime NaN is built via 0/0 over an opaque operand
+; (non-finite floats have no literal form, seq-32).
+(case
+  "fzk1 negative zero and positive zero are DISTINCT map keys (canonical-form key equality)"
+  (doc
+    "Map keys compare by the canonical-byte-form `=` (collections-and-text.md #Keys Are Compared By
+           Value), which distinguishes -0.0 from 0.0 (the zero-sign pins in 06) — so a literal map keyed
+           by both holds TWO entries. An IEEE-==-keyed map would collapse them to one. MUST be 2.")
+  (input (Map.len #map((= (Float64.neg 0.0) 1) (= 0.0 2))))
+  (output (: 2 Int64)))
+
+(case
+  "fzk2 the zero-sign-keyed map escapes with BOTH entries, -0.0 in its own literal form"
+  (doc
+    "The value face of fzk1: the escaped map shows both zero-sign keys, -0.0 printed as its own
+           canonical literal. Pins that the distinctness survives to the boundary render, not only len.")
+  (input #map((= (Float64.neg 0.0) 1) (= 0.0 2)))
+  (output (: #map((= 0.0 2) (= -0.0 1)) (Map Float64 Int64)))
+  ; the escaping value is RUNTIME-BUILT (`Float64.neg 0.0` does not fold to a -0.0 literal, so the
+  ; map is heap-constructed) — its own cells are alive at the boundary: 4 = the 2-entry map + shells.
+  (live-objects 4))
+
+(case
+  "fzk3 a runtime NaN map key is self-equal and collapses to ONE findable entry"
+  (doc
+    "NaN under the canonical byte form equals itself (06 pins `= _ nan` true only for NaN), so a NaN
+           key is FINDABLE and two inserts at NaN keys collapse to one entry — unlike an IEEE-==-keyed
+           map where a NaN key would be unreachable and re-inserts would pile up. The NaN is computed at
+           run time (0/0 over an opaque operand; non-finite floats have no literal form). MUST be 1.")
+  (input
+    (do
+      (def (z (: k Int64)) (if (> k 0) (z (- k 1)) 0))
+      (def (nan (: n Int64)) (/ (Float64.of-int (z n)) (Float64.of-int (z n))))
+      (def (main (: n Int64)) (Map.len (Map.insert (Map.insert Map.empty (nan n) 1) (nan n) 2)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case
+  "fzk4 runtime float-keyed map EQUALITY agrees with the canonical collapse"
+  (doc
+    "Structural equality over a float-KEYED map at run time: the single-insert map equals the
+           double-insert-at-the-same-NaN-key map (both are the one-entry canonical value). The float
+           key compares/hashes by its canonical form on every backend (the Rust leg via the
+           total-order key wrapper's Eq, #7419 — was a CDZ0900 decline). MUST be true.")
+  (input
+    (do
+      (def (z (: k Int64)) (if (> k 0) (z (- k 1)) 0))
+      (def (nan (: n Int64)) (/ (Float64.of-int (z n)) (Float64.of-int (z n))))
+      (def
+        (main (: n Int64))
+        (= (Map.insert Map.empty (nan n) 2) (Map.insert (Map.insert Map.empty (nan n) 1) (nan n) 2)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: true Bool)))
+
+(case
+  "fzk5 the float SPECIAL-KEY map escapes in the canonical raw-bits key order on every backend"
+  (doc
+    "Five keys spanning every float special class — 0.0, 1.5, NaN, -0.0, -inf (the non-finites
+           computed at run time; no literal form, seq-32) — escape in ONE canonical order, the raw-bits
+           total order (sign bit last): 0.0 < 1.5 < nan < -0.0 < -inf. Deterministic-value-form demands
+           one canonical byte form; this pins the key-iteration face of it, verified identical on
+           wasm, the cadenza hop, and rust at #7479. Insertion order deliberately scrambled.")
+  (input
+    (do
+      (def (z (: k Int64)) (if (> k 0) (z (- k 1)) 0))
+      (def (zf (: n Int64)) (Float64.of-int (z n)))
+      (def
+        (main (: n Int64))
+        (Map.insert
+          (Map.insert
+            (Map.insert
+              (Map.insert (Map.insert Map.empty (/ (zf n) (zf n)) 1) (Float64.neg (zf n)) 2)
+              (zf n)
+              3)
+            1.5
+            4)
+          (/ -1.0 (zf n))
+          5))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: #map((= 0.0 3) (= 1.5 4) (= nan 1) (= -0.0 2) (= -inf 5)) (Map Float64 Int64)))
+  ; the escaping value is RUNTIME-BUILT (the opaque operands force heap construction, unlike the
+  ; const-map escapes above that live in static data) — its own cells are alive at the boundary:
+  ; 8 = the 5-entry CHAMP map + entry shells, the gate's authoritative measurement.
+  (live-objects 8))
+
 ; A map's KEY is a VALUE, not a compile-time label: collections-and-text.md #A Map's Canonical Form —
 ; "a map's keys are values of one key type; a record's field names are fixed compile-time labels." So in
 ; a `(map (k v) …)` literal the key position `k` is an ORDINARY EXPRESSION evaluated and resolved in
@@ -35201,14 +35292,15 @@
   "a construction spread with only spreads concatenates the operands (no inline element)"
   (input
     (do
-      (def (main (: k Int64))
+      (def
+        (main (: k Int64))
         (do
           (def xs #list(1 k))
           (def ys #list(3 4))
           (def zs #list((.. xs) (.. ys)))
-          (+ (+ (* 100 (List.len zs))
-                (* 10 (match (List.at zs 1) ((Some v) v) ((None _u) -1))))
-             (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
+          (+
+            (+ (* 100 (List.len zs)) (* 10 (match (List.at zs 1) ((Some v) v) ((None _u) -1))))
+            (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main (: 2 Int64))
   (output (: 423 Int64)))
@@ -35219,13 +35311,13 @@
   "a construction spread with a leading and a trailing spread around an inline element"
   (input
     (do
-      (def (main (: mid Int64))
+      (def
+        (main (: mid Int64))
         (do
           (def xs #list(1 2))
           (def ys #list(3 4))
           (def zs #list((.. xs) mid (.. ys)))
-          (+ (* 100 (List.len zs))
-             (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
+          (+ (* 100 (List.len zs)) (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main (: 7 Int64))
   (output (: 507 Int64)))
@@ -35236,11 +35328,11 @@
   "a construction spread of an empty list contributes no elements"
   (input
     (do
-      (def (main)
+      (def
+        (main)
         (do
           (def zs #list(1 (.. #list()) 2))
-          (+ (* 100 (List.len zs))
-             (match (List.at zs 1) ((Some v) v) ((None _u) -1)))))
+          (+ (* 100 (List.len zs)) (match (List.at zs 1) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main)
   (output (: 202 Int64)))
@@ -35252,11 +35344,11 @@
   "a fully-constant construction spread folds to a single constant list"
   (input
     (do
-      (def (main)
+      (def
+        (main)
         (do
           (def zs #list(1 (.. #list(2 3)) 4))
-          (+ (* 100 (List.len zs))
-             (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
+          (+ (* 100 (List.len zs)) (match (List.at zs 2) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main)
   (output (: 403 Int64)))
@@ -35267,12 +35359,12 @@
   "a construction spread of a single list with no inline elements is that list"
   (input
     (do
-      (def (main (: k Int64))
+      (def
+        (main (: k Int64))
         (do
           (def xs #list(5 k))
           (def zs #list((.. xs)))
-          (+ (* 100 (List.len zs))
-             (match (List.at zs 1) ((Some v) v) ((None _u) -1)))))
+          (+ (* 100 (List.len zs)) (match (List.at zs 1) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main (: 6 Int64))
   (output (: 206 Int64)))
@@ -35285,12 +35377,7 @@
 (case
   "a set construction spread splices a runtime set's elements and dedups"
   (input
-    (do
-      (def (main (: k Int64))
-        (do
-          (def s #set(10 20))
-          (Set.len #set(k (.. s) 30))))
-      (export main)))
+    (do (def (main (: k Int64)) (do (def s #set(10 20)) (Set.len #set(k (.. s) 30)))) (export main)))
   (call main (: 5 Int64))
   (output (: 4 Int64))
   (call main (: 10 Int64))
@@ -35303,7 +35390,8 @@
   "a set construction spread with only spreads unions the operands"
   (input
     (do
-      (def (main (: x Int64))
+      (def
+        (main (: x Int64))
         (do
           (def a #set(1 2))
           (def b #set(2 x))
@@ -35319,10 +35407,9 @@
   "a fully-constant set construction spread folds and dedups"
   (input
     (do
-      (def (main)
-        (do
-          (def u #set(1 (.. #set(2 3)) 3))
-          (+ (* 100 (Set.len u)) (if (Set.contains u 2) 10 0))))
+      (def
+        (main)
+        (do (def u #set(1 (.. #set(2 3)) 3)) (+ (* 100 (Set.len u)) (if (Set.contains u 2) 10 0))))
       (export main)))
   (call main)
   (output (: 310 Int64)))
@@ -35337,7 +35424,8 @@
   "a record construction spread splices a runtime record's fields (disjoint)"
   (input
     (do
-      (def (main (: k Int64))
+      (def
+        (main (: k Int64))
         (do
           (def r #record((= x 1) (= y k)))
           (def m #record((= a 9) (.. r) (= b 2)))
@@ -35351,12 +35439,7 @@
 (case
   "a fully-constant record construction spread folds to one record"
   (input
-    (do
-      (def (main)
-        (do
-          (def m #record((= a 1) (.. #record((= b 2)))))
-          (+ m.a m.b)))
-      (export main)))
+    (do (def (main) (do (def m #record((= a 1) (.. #record((= b 2))))) (+ m.a m.b))) (export main)))
   (call main)
   (output (: 3 Int64)))
 
@@ -35377,11 +35460,7 @@
      value.")
   (input
     (do
-      (def (main)
-        (do
-          (def r #record((= x 1) (= y 2)))
-          (def m #record((.. r) (= x 9)))
-          (+ m.x m.y)))
+      (def (main) (do (def r #record((= x 1) (= y 2))) (def m #record((.. r) (= x 9))) (+ m.x m.y)))
       (export main)))
   (call main)
   (output (: 11 Int64)))
@@ -35393,11 +35472,9 @@
   "a record construction spread after an inline field overrides it (spread wins)"
   (input
     (do
-      (def (main (: k Int64))
-        (do
-          (def r #record((= x k) (= y 2)))
-          (def m #record((= x 9) (.. r)))
-          (+ m.x m.y)))
+      (def
+        (main (: k Int64))
+        (do (def r #record((= x k) (= y 2))) (def m #record((= x 9) (.. r))) (+ m.x m.y)))
       (export main)))
   (call main (: 1 Int64))
   (output (: 3 Int64)))
@@ -35412,12 +35489,12 @@
   "a map construction spread merges a runtime map's entries last-writer-wins"
   (input
     (do
-      (def (main (: seed Int64))
+      (def
+        (main (: seed Int64))
         (do
           (def d (Map.insert (Map.insert Map.empty 1 99) 2 20))
           (def m #map((= 1 10) (.. d)))
-          (+ (* 100 (Map.len m))
-             (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
+          (+ (* 100 (Map.len m)) (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 299 Int64)))
@@ -35428,12 +35505,12 @@
   "a map construction spread with a later inline entry overrides a spread key"
   (input
     (do
-      (def (main)
+      (def
+        (main)
         (do
           (def d (Map.insert Map.empty 1 99))
           (def m #map((.. d) (= 1 7)))
-          (+ (* 100 (Map.len m))
-             (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
+          (+ (* 100 (Map.len m)) (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main)
   (output (: 107 Int64)))
@@ -35444,13 +35521,13 @@
   "a map construction spread with only spreads merges the operands last-writer-wins"
   (input
     (do
-      (def (main)
+      (def
+        (main)
         (do
           (def a (Map.insert (Map.insert Map.empty 1 1) 2 2))
           (def b (Map.insert (Map.insert Map.empty 2 20) 3 30))
           (def m #map((.. a) (.. b)))
-          (+ (* 100 (Map.len m))
-             (match (Map.lookup m 2) ((Some v) v) ((None _u) -1)))))
+          (+ (* 100 (Map.len m)) (match (Map.lookup m 2) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main)
   (output (: 320 Int64)))
@@ -35464,7 +35541,8 @@
   "a tuple construction spread flattens a runtime tuple's elements by position"
   (input
     (do
-      (def (main (: k Int64))
+      (def
+        (main (: k Int64))
         (do
           (def t #tuple(k 20))
           (def u #tuple(1 (.. t) 3))
@@ -35479,11 +35557,7 @@
   "a tuple construction spread of a single tuple with no inline elements is that tuple"
   (input
     (do
-      (def (main (: k Int64))
-        (do
-          (def t #tuple(k 20))
-          (def u #tuple((.. t)))
-          (+ (. u 0) (. u 1))))
+      (def (main (: k Int64)) (do (def t #tuple(k 20)) (def u #tuple((.. t))) (+ (. u 0) (. u 1))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 25 Int64)))
@@ -35494,7 +35568,8 @@
   "a tuple construction spread with two spreads concatenates their elements in order"
   (input
     (do
-      (def (main (: k Int64))
+      (def
+        (main (: k Int64))
         (do
           (def a #tuple(1 k))
           (def b #tuple(3 4))
@@ -35511,10 +35586,7 @@
   (input
     (do
       (def (sum3 (: p (Tuple Int64 Int64 Int64))) (+ (+ (. p 0) (. p 1)) (. p 2)))
-      (def (main (: k Int64))
-        (do
-          (def t #tuple(k 20))
-          (sum3 #tuple(1 (.. t)))))
+      (def (main (: k Int64)) (do (def t #tuple(k 20)) (sum3 #tuple(1 (.. t)))))
       (export main)))
   (call main (: 5 Int64))
   (output (: 26 Int64)))
@@ -35524,11 +35596,6 @@
 (case
   "a fully-constant tuple construction spread folds to one tuple"
   (input
-    (do
-      (def (main)
-        (do
-          (def u #tuple(1 (.. #tuple(2 3)) 4))
-          (+ (. u 1) (. u 2))))
-      (export main)))
+    (do (def (main) (do (def u #tuple(1 (.. #tuple(2 3)) 4)) (+ (. u 1) (. u 2)))) (export main)))
   (call main)
   (output (: 5 Int64)))
