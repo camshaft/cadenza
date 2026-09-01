@@ -484,6 +484,10 @@ pass	ml/56-neg-prefix-member
 pass	ml/560-annotation-on-host
 pass	ml/561-empty-quote-pattern-round-trip
 pass	ml/562-record-breaks-all-or-nothing-wide
+pass	ml/563-def-param-list-wraps-when-wide
+pass	ml/564-def-record-body-hugs-eq
+pass	ml/565-infix-chain-breaks-one-indent
+pass	ml/566-plain-call-all-or-nothing-wide
 pass	ml/57-neg-tighter-than-plus
 pass	ml/58-neg-parenthesized-operand
 pass	ml/59-neg-signed-literal
