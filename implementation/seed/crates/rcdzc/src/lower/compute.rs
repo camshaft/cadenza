@@ -36,6 +36,14 @@ fn fold_record_substeps(
 }
 
 pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
+    // A CONSTRUCTION-SPREAD record `#record((= f v) (.. r) …)` resolves to a Poison (`read_record_fields`
+    // rejects the `(.. )` entry — its `..` is the pattern-only sigil), so intercept BEFORE the resolved-form
+    // dispatch and lower the memoized `(Record.merge …)` desugar instead. List/set carry the `(.. )` node in
+    // their `elems` and handle it in-arm; records collapse to a field map at resolve, so the raw AST is read
+    // by `record_spread_desugar`. (Cheap: `compound_form_of` returns `None` at once for a non-record head.)
+    if let Some(desugar) = crate::lower::record_spread_desugar(db, id) {
+        return core_of(db, desugar);
+    }
     // A `(do S… tail)` block whose NON-FINAL statements reach a HOST CALL lowers to a `Core::Seq` — the
     // side-effecting statements must be EMITTED (their host call crosses the boundary), then the tail is
     // the block's value. A `do` resolves to a `Ref` to its last form (`resolve_do`), which would DROP the
@@ -3224,6 +3232,74 @@ fn lower_list_spread(db: &mut Db, id: StructId, elems: &[StructId]) -> Core {
         db.reparent(root, Some(id), db.child_ix_of(id) as u32);
     }
     core_of(db, root)
+}
+
+/// The CONSTRUCTION-SPREAD desugar for a `#record((= f v) (.. r) …)` node: `Some(fold)` where `fold` is a
+/// synthesized `((. Record merge) …)` left-to-right fold of the maximal inline FIELD-ENTRY runs (as
+/// synthetic `#record(entry…)` nodes) and the spread operands (each a record whose STATIC field set
+/// `Record.merge` projects). `None` if `id` is not a `#record` node or has no spread child. The result is
+/// MEMOIZED (`db.record_spread_desugar`) and grafted under `id` ONCE — `lower`/`type_of`/`collect` all
+/// delegate to this one node, so its type (a record row), its faults (incl. the CDZ0211 overlap check
+/// `Record.merge` enforces — a last-writer-wins overlap is a documented follow-up, tracked in the corpus),
+/// and its lowering are computed by the existing `Record.merge` machinery. Records-only: a MAP spread needs
+/// a runtime map-merge op (dynamic keys — no such op yet; routed as a gap). The record analogue of
+/// [`lower_list_spread`]/[`lower_set_spread`], but records collapse to a field map at resolve (so the raw
+/// AST is read here) — hence the delegated node rather than an in-arm rewrite.
+pub(crate) fn record_spread_desugar(db: &mut Db, id: StructId) -> Option<StructId> {
+    if let Some(&cached) = db.record_spread_desugar.get(&id) {
+        return Some(cached);
+    }
+    let tail: Vec<StructId> = db
+        .ast
+        .compound_form_of(id, crate::ast::CompoundCtor::Record)?
+        .to_vec();
+    if !tail.iter().any(|&c| db.ast.spread_operand(c).is_some()) {
+        return None;
+    }
+    // Segment: consecutive inline FIELD entries (`(= f v)`) coalesce into one run; each `(.. r)` is a spread.
+    enum Seg {
+        Inline(Vec<StructId>),
+        Spread(StructId),
+    }
+    let mut segs: Vec<Seg> = Vec::new();
+    for &c in &tail {
+        if let Some(operand) = db.ast.spread_operand(c) {
+            segs.push(Seg::Spread(operand));
+        } else if let Some(Seg::Inline(run)) = segs.last_mut() {
+            run.push(c);
+        } else {
+            segs.push(Seg::Inline(vec![c]));
+        }
+    }
+    let seg_occs: Vec<StructId> = segs
+        .into_iter()
+        .map(|seg| match seg {
+            Seg::Inline(run) => db.push_compound(crate::ast::CompoundCtor::Record, run),
+            Seg::Spread(operand) => operand,
+        })
+        .collect();
+    let root = match seg_occs.split_first() {
+        None => db.push_compound(crate::ast::CompoundCtor::Record, vec![]),
+        Some((&first, rest)) => {
+            let mut acc = first;
+            for &next in rest {
+                // `Record.merge` is the member `merge` of the `Record` module — reached via member access
+                // `(. Record merge)` (a synthesized flat name would be unbound). Binary + associative over
+                // disjoint field sets; folds left-to-right like the list/set concat/union.
+                let dot = db.push_name(".");
+                let rec_mod = db.push_name("Record");
+                let merge_key = db.push_name("merge");
+                let head = db.push_list(vec![dot, rec_mod, merge_key]);
+                acc = db.push_list(vec![head, acc, next]);
+            }
+            acc
+        }
+    };
+    if root != id && db.parent_of(root).is_none() {
+        db.reparent(root, Some(id), db.child_ix_of(id) as u32);
+    }
+    db.record_spread_desugar.insert(id, root);
+    Some(root)
 }
 
 /// Lower a spread-bearing SET construction `#set(x (.. s) y …)` — the set analogue of

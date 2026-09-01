@@ -29,6 +29,15 @@ fn list_elem_contrib_ty(db: &mut Db, e: StructId) -> Ty {
 }
 
 pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    // A CONSTRUCTION-SPREAD record `#record((= f v) (.. r) …)` resolves to a Poison (the `(.. )` entry is
+    // rejected at resolve — its `..` is the pattern-only sigil), so collect the faults of the memoized
+    // `(Record.merge …)` desugar instead: this surfaces the operands' own faults AND `Record.merge`'s
+    // field-overlap CDZ0211 (a last-writer-wins overlap is a tracked follow-up), never the misleading
+    // pattern-only reject on the `(.. )` wrapper.
+    if let Some(desugar) = crate::lower::record_spread_desugar(db, id) {
+        collect(db, desugar, out);
+        return;
+    }
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form (its value), so the `Resolved::Ref`
     // arm below descends only into that. But the INTERMEDIATE forms are still evaluated (their value
     // discarded), so an ill-typed or provably-trapping intermediate must be caught — descend into EVERY

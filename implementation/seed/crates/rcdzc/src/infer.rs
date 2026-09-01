@@ -256,6 +256,12 @@ pub fn type_is_nominal(db: &mut Db, id: StructId) -> bool {
 /// induces a spurious mismatch upward. An integer literal is typed with a DEFERRED width, which
 /// inference (or, failing that, the backend) grounds later.
 fn compute(db: &mut Db, id: StructId) -> Ty {
+    // A CONSTRUCTION-SPREAD record `#record((= f v) (.. r) …)` resolves to a Poison (the `(.. )` entry is
+    // rejected at resolve), so its type comes from the memoized `(Record.merge …)` desugar — the row union
+    // of the inline fields and the spread operands' rows. Delegating reuses `Record.merge`'s row typing.
+    if let Some(desugar) = crate::lower::record_spread_desugar(db, id) {
+        return type_of(db, desugar);
+    }
     match resolved_of(db, id) {
         // A bare integer literal is polymorphic in its width until something fixes it — UNLESS the module
         // it is WRITTEN in declares `(pragma default-integer <T>)`, which fixes the type an otherwise-

@@ -35152,3 +35152,85 @@
       (export main)))
   (call main)
   (output (: 310 Int64)))
+
+; RECORD construction spread — the value twin of the record REST pattern (DESIGN §6; operator: spread must
+; support all collections). A record has a STATIC field set, so `#record((= a 9) (.. r) (= b 2))` splices
+; r's fields in by projection (no runtime merge op needed): with r={x:1, y:k}, m has a=9, b=2, x=1, y=k,
+; and a+b+x+y = 9+2+1+k. k=5 -> 17. Desugars to a `Record.merge` fold over synthetic `#record(…)` inline
+; runs + the spread operands; works on wasm and rust. DISJOINT field sets (the inline fields and each
+; spread's fields do not overlap).
+(case
+  "a record construction spread splices a runtime record's fields (disjoint)"
+  (input
+    (do
+      (def (main (: k Int64))
+        (do
+          (def r #record((= x 1) (= y k)))
+          (def m #record((= a 9) (.. r) (= b 2)))
+          (+ (+ (+ m.a m.b) m.x) m.y)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 17 Int64)))
+
+; A FULLY-CONSTANT record spread folds at compile — `#record((= a 1) (.. #record((= b 2))))` is the
+; constant {a:1, b:2}, a+b = 3.
+(case
+  "a fully-constant record construction spread folds to one record"
+  (input
+    (do
+      (def (main)
+        (do
+          (def m #record((= a 1) (.. #record((= b 2)))))
+          (+ m.a m.b)))
+      (export main)))
+  (call main)
+  (output (: 3 Int64)))
+
+; TODO fence (idealistic; DESIGN §6 last-writer-wins): a record spread whose fields OVERLAP an inline field
+; should let the LATER (left-to-right) writer win. `#record((.. r) (= x 9))` with r={x:1,y:2}: the spread
+; comes first (x=1,y=2), then the inline x=9 overrides -> x=9, y=2, so m.x + m.y = 11. Currently DECLINES
+; CDZ0211 (Record.merge requires DISJOINT field sets; a last-writer-wins overlap needs a merge variant that
+; does not exist yet — routed as a follow-up). Auto-flips when a last-wins record merge lands.
+(case
+  "a record construction spread with an overriding field is last-writer-wins (should-work)"
+  (doc
+    "Idealistic TODO fence (operator: spread supports all collections, DESIGN §6 last-writer-wins). The
+     spread and a later inline field name the SAME field; the LATER (inline) write should win. Declines
+     CDZ0211 today — Record.merge is disjoint-only; a last-writer-wins record merge is the missing piece.
+     Routed as a follow-up (v-ast-compound / record row-ops). Auto-flips when that merge lands.")
+  (input
+    (do
+      (def (main)
+        (do
+          (def r #record((= x 1) (= y 2)))
+          (def m #record((.. r) (= x 9)))
+          (+ m.x m.y)))
+      (export main)))
+  (call main)
+  (output (: 11 Int64)))
+
+; TODO fence (idealistic; DESIGN §6): a MAP construction spread `#map((= k v) (.. m))` should merge m's
+; entries last-writer-wins. Currently DECLINES — unlike list/set/record, a map has DYNAMIC keys, so it
+; needs a RUNTIME map-merge/union op (map-union heap op + prelude binding + Core variant) that does NOT
+; exist yet (the Map module has insert/lookup/remove/size/to-list/empty, no union). Routed to the map /
+; runtime owner. Auto-flips when a runtime map-merge op lands. `#map((= 1 10) (.. d))` with d={1:99, 2:20}
+; last-writer-wins: d comes after, so key 1 -> 99; Map.size = 2, lookup 1 = 99: 100*2 + 99 = 299.
+(case
+  "a map construction spread merges a runtime map's entries last-writer-wins (should-work)"
+  (doc
+    "Idealistic TODO fence (operator: spread supports ALL collections). A map spread needs a RUNTIME
+     map-merge/union op — the Map module has no union (only insert/lookup/remove/size/to-list/empty), and
+     map keys are dynamic so the spread cannot be expanded statically the way a record's static field set
+     is. Routed to the map/runtime owner (a `map-union` heap op + `Map.union` binding + Core variant +
+     backend arms). Auto-flips when that op lands.")
+  (input
+    (do
+      (def (main (: seed Int64))
+        (do
+          (def d (Map.insert (Map.insert Map.empty 1 99) 2 20))
+          (def m #map((= 1 10) (.. d)))
+          (+ (* 100 (Map.size m))
+             (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 299 Int64)))
