@@ -231,3 +231,22 @@
       (export main)))
   (call main)
   (output (: 120 Int64)))
+
+(case
+  "eval sees through macro expansion — a macro producing a (quote …) evals as the plain form"
+  (doc
+    "`eval` and macro expansion are ONE compile-time tier (metaprogramming.md §Compile-Time Evaluation Is
+           One Tier), so `(eval (MACRO …))` whose expansion is a `(quote …)` must behave as the plain
+           `(eval (quote …))`. `(def (mk-quoted (quote e)) (quasiquote (quote (unquote e))))` expands
+           `(mk-quoted (+ 2 3))` to `(quote (+ 2 3))`; `(eval (mk-quoted (+ 2 3)))` therefore evals `(+ 2 3)`
+           to `5 : Int64` — byte-identical to the plain `(eval (quote (+ 2 3)))`. Pins that eval SEES THROUGH
+           expansion: the quote/eval reconstruction is re-run over the EXPANDED program (the load-time passes
+           precede expansion), so an eval-argument that only became a visible `(quote …)` via a macro is
+           reconstructed + folded, not rejected CDZ0101 (a post-expansion-equivalence guarantee).")
+  (input
+    (do
+      (def (mk-quoted (quote e)) (quasiquote (quote (unquote e))))
+      (def (main) (eval (mk-quoted (+ 2 3))))
+      (export main)))
+  (call main)
+  (output (: 5 Int64)))

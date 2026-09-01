@@ -209,6 +209,25 @@ fn compile_with_opt_inner(
     // macro call to its expansion so infer/lower type the EXPANSION, not the macro's declared `Ast` return
     // (spec: macro expansion precedes type checking). A no-op for a program with no `quote` parameter.
     crate::lower::expand_macros(&mut db);
+    // EVAL SEES THROUGH EXPANSION (post-expansion equivalence): a macro whose expansion is a `(quote …)`
+    // is byte-identical to the hand-written `(eval (quote …))`, so it must eval the same. But
+    // `quote::reify_quotes` + `eval_ast::desugar_eval` ran at LOAD, BEFORE expansion — so an `(eval ARG)`
+    // whose ARG only became a visible `(quote …)` VIA expansion was left un-reified + un-reconstructed and
+    // `resolve` rejects it CDZ0101 ("eval executes only a compile-time-visible AST"). Re-run both over the
+    // expanded arena so the expansion-produced quote reifies and its enclosing eval reconstructs to source
+    // (folding through the ordinary path — eval + macro expansion are ONE compile-time tier,
+    // metaprogramming.md §Compile-Time Evaluation Is One Tier). Gated on macros having run (`quote_params`);
+    // both passes also self-fast-bail on an arena with no `quote`/no `eval`, so this is a no-op otherwise.
+    if !db.quote_params.is_empty() {
+        crate::quote::reify_quotes(&mut db.ast);
+        crate::eval_ast::desugar_eval(&mut db.ast);
+        // Invalidate the memoized resolution/type: `expand_macros` resolved the eval node while its arg was
+        // still an un-expanded macro call (caching the CDZ0101 decline), and `desugar_eval` above just
+        // OVERWROTE that node with the reconstructed source — so its stale memo must be dropped for the
+        // reconstruction to re-resolve + fold.
+        db.resolved = crate::arena::Column::new();
+        db.types = crate::arena::Column::new();
+    }
     // A PROVIDER compile names the interface it publishes its exports under (X4b) — the
     // `component-name` request artifact. A peer consumer binds to this name with an `(effect …)`
     // `(bind "cadenza:pkg/iface")` (the effects-unified surface, U2). Absent (the common case) → exports

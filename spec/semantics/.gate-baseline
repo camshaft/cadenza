@@ -10787,3 +10787,4 @@ pass	a bare Float32 value renders its own shortest decimal, not the f32->f64 pro
 pass	a runtime heap-carried Option Float32 renders shortest-f32, keeping its 2 reachable return cells
 pass	consuming a runtime Option Float32 (not returning it) leaves zero live objects
 pass	a runtime heap-carried Result Float32 (Ok) renders shortest-f32, keeping its 2 reachable return cells
+pass	eval sees through macro expansion — a macro producing a (quote …) evals as the plain form
