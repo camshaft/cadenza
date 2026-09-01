@@ -204,6 +204,9 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
   (record field / member) is `Unsupported`.
 * T1.8 — **let** (`ts:40-44`, monomorphic): `(let ((x e)…) body)` binds each `x:τ` sequentially (later
   sees earlier) then infers `body`; complete for the fn-free fragment (generalization lands with Fn).
+* T1.9 — **do block**: `(do stmt… last)` — a value def `(def x e)` binds `x:τ` sequentially, a non-def
+  statement is inferred (well-typed, type discarded), and the `last` item is the result. A local function
+  def `(def (f …) …)` is `Unsupported` (needs Fn).
 Any other construct → `Unsupported` until its rule lands (ascription/App/Fn/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
@@ -344,8 +347,38 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                   | .error e => .error e)
                | _ => .error (.unsupported "type oracle: let bindings not a list"))
             | _, _ => .error (.unsupported "type oracle: malformed let")
+          else if h == "do".toUTF8 then
+            -- T1.9 — DO block (`(do stmt… last)`): process each leading statement, then the LAST item is
+            -- the result. A value def `(def x e)` binds `x:τ` into the env SEQUENTIALLY (mirrors `let`); a
+            -- non-def statement is inferred (must be well-typed — an ill-typed statement makes the whole
+            -- program ill-typed) and its type discarded. A LOCAL FUNCTION def `(def (f …) …)` needs the Fn
+            -- rule → `Unsupported` until that lands. An `IllTyped`/`Unsupported` statement propagates.
+            let items := children.extract 1 children.size
+            match items.back? with
+            | none => .error (.unsupported "type oracle: empty do")
+            | some lastId =>
+              let stmts := items.extract 0 (items.size - 1)
+              (match stmts.foldlM (m := Except InferFail) (fun (acc : List (ByteArray × Ty) × InferState) sid =>
+                  match Eval.asDef? m sid with
+                  | some dc =>
+                    (match dc[1]?, dc[dc.size - 1]? with
+                     | some targetId, some valId =>
+                       (match Eval.nameOf? m targetId with
+                        | some nm =>                       -- value def → bind x:τ
+                          (match inferE m acc.1 acc.2 valId with
+                           | .ok (τ, st') => .ok (((nm, τ) :: acc.1), st')
+                           | .error e => .error e)
+                        | none => .error (.unsupported "type oracle: local function def in a do not yet modeled"))
+                     | _, _ => .error (.unsupported "type oracle: malformed do def"))
+                  | none =>                                -- non-def statement → must be well-typed, type discarded
+                    (match inferE m acc.1 acc.2 sid with
+                     | .ok (_, st') => .ok (acc.1, st')
+                     | .error e => .error e))
+                  (env, st) with
+               | .ok (env', st') => inferE m env' st' lastId
+               | .error e => .error e)
           else .error (.unsupported
-            "type oracle: construct not yet modeled (T1 — ascription/App/Let/Fn/Match rules land next)")
+            "type oracle: construct not yet modeled (T1 — ascription/App/Fn/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
       | _ => .error (.unsupported "type oracle: node not modeled")
 
@@ -576,6 +609,26 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 3, .list #[9, 3, 8],             -- (let ((b #t)) (if b 1 2))
                            .atom 2, .list #[11], .atom 1, .list #[13, 12, 10],       -- (def (main) …)
                            .atom 9, .atom 2, .list #[15, 16], .atom 0, .list #[18, 14, 17]],
+                root := 19 } == .wellTyped (.int 64 true))
+-- T1.9 (do): main body `(do (def x 5) (+ x 1))` — a local value def then an arith body → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "x".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "+".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .name "export".toUTF8],
+                nodes := #[.atom 1, .atom 3, .atom 4, .list #[0, 1, 2],   -- (def x 5)
+                           .atom 5, .atom 3, .atom 6, .list #[4, 5, 6],   -- (+ x 1)
+                           .atom 0, .list #[8, 3, 7],                     -- (do (def x 5) (+ x 1))
+                           .atom 2, .list #[10], .atom 1, .list #[12, 11, 9],  -- (def (main) <inner do>)
+                           .atom 7, .atom 2, .list #[14, 15], .atom 0, .list #[17, 13, 16]],
+                root := 18 } == .wellTyped (.int 64 true))
+-- T1.9 (do): `(do (def b #t) (if b 1 2))` — a do-bound Bool used as an if condition → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "b".toUTF8,
+                            .boolLit true, .name "if".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
+                            .intLit false .dec (ByteArray.mk #[2]), .name "export".toUTF8],
+                nodes := #[.atom 1, .atom 3, .atom 4, .list #[0, 1, 2],   -- (def b #t)
+                           .atom 5, .atom 3, .atom 6, .atom 7, .list #[4, 5, 6, 7],  -- (if b 1 2)
+                           .atom 0, .list #[9, 3, 8],                     -- (do (def b #t) (if b 1 2))
+                           .atom 2, .list #[11], .atom 1, .list #[13, 12, 10],  -- (def (main) <inner do>)
+                           .atom 8, .atom 2, .list #[15, 16], .atom 0, .list #[18, 14, 17]],
                 root := 19 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
