@@ -627,6 +627,65 @@ mod tests {
     }
 
     #[test]
+    fn pattern_fragments_render_idiomatically_kind_independent() {
+        // DESIGN VERIFICATION + GATE for kind=Pattern (mirrors `type_fragments_render_idiomatically_kind_independent`):
+        // the module doc-comment claims a BACKABLE pattern (a list/record WITH a rest) renders idiomatically via
+        // the canonical printer, kind-independent — but the render_binary suite only pinned Pattern on a MODULE
+        // doc ("renders faithfully"), never a real pattern FRAGMENT's idiomatic surface. This completes the
+        // kind-coverage matrix (expr + type each have a dedicated idiomatic-surface pin; pattern did not). It
+        // pins that a list/record-with-rest fragment renders the idiomatic pattern surface (`[h, .. t]` /
+        // `{ a = x, .. rest }`) AND that Pattern == Expr (the surface falls out of the AST shape, so the `kind`
+        // seam is inert). The rest marker is the canonical wrapped `(.. v)` node. (A bare STANDALONE spread is
+        // not backable and is out of scope — this covers the backable list/record-with-rest forms.)
+        let cases = [
+            // (canonical sexpr fragment, canonical Sexpr surface (round-trips), idiomatic ML pattern surface)
+            ("#list(h (.. t))", "#list(h (.. t))", "[h, .. t]"),
+            (
+                "#list(a b (.. rest))",
+                "#list(a b (.. rest))",
+                "[a, b, .. rest]",
+            ),
+            (
+                "#record((= a x) (.. rest))",
+                "#record((= a x) (.. rest))",
+                "{ a = x, .. rest }",
+            ),
+        ];
+        for (sexp, expect_sexpr, expect_ml) in cases {
+            let arenas = crate::sexpr::read(sexp).expect("pattern fragment parses");
+            let bytes = crate::codec::encode(&arenas);
+            let as_pat_sexpr = render_binary(
+                &bytes,
+                Format::Sexpr,
+                FragmentKind::Pattern,
+                Options::default(),
+            )
+            .unwrap();
+            let as_pat_ml = render_binary(
+                &bytes,
+                Format::Ml,
+                FragmentKind::Pattern,
+                Options::default(),
+            )
+            .unwrap();
+            let as_expr_ml =
+                render_binary(&bytes, Format::Ml, FragmentKind::Expr, Options::default()).unwrap();
+            assert_eq!(
+                as_pat_sexpr, expect_sexpr,
+                "{sexp}: render_binary(Sexpr, Pattern) is the canonical pattern s-expr (round-trips)"
+            );
+            assert_eq!(
+                as_pat_ml, expect_ml,
+                "{sexp}: render_binary(Ml, Pattern) is the idiomatic ML pattern surface"
+            );
+            assert_eq!(
+                as_pat_ml, as_expr_ml,
+                "{sexp}: the ML pattern surface is kind-independent (falls out of the AST shape)"
+            );
+        }
+    }
+
+    #[test]
     fn locate_byte_in_message_maps_a_trailing_byte_offset_to_line_col() {
         // A multi-line s-expr parse error's trailing `at byte N` becomes `at line:col`.
         let src = "(module m\n  (def (main)\n    (+ 1 2)))\n  )))";
