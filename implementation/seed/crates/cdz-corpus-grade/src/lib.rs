@@ -1463,7 +1463,12 @@ fn not_leaf(a: &Arenas, id: StructId) -> Option<String> {
 ///
 /// `Err` if the text does not parse as a single canonical s-expr — surfaced LOUDLY by the caller (a corpus
 /// authoring error on the expected side, a compiler emit bug on the run-value side), never a silent pass.
-fn canonical_output_value(text: &str) -> Result<String, String> {
+///
+/// PUBLIC as the SINGLE SOURCE for output-value canonicalization: the in-process `xtask gate --check`
+/// (the authoritative merge gate, until the gateCheckNix swap) calls THIS from its own `grade_trial`
+/// Output arm instead of a divergent local copy — the divergence that produced the #7273 fleet red. Keep
+/// it the one canonical value-canon both graders share.
+pub fn canonical_output_value(text: &str) -> Result<String, String> {
     let a = cadenza_syntax::sexpr::read(text.trim()).map_err(|e| e.0)?;
     let root = a.root;
     // A top-level `(: value type)` ascription → the VALUE child; a bare value → the root itself.
