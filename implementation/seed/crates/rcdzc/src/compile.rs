@@ -3175,25 +3175,28 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .copied()
             .filter(|&p| crate::eval::is_rest_param(db, p))
             .collect();
-        if let Some(&last) = params.last() {
-            for &r in &rests {
-                if r != last {
-                    faults.push(
-                        Reject::coded(
-                            Code::Malformed,
-                            "a rest parameter `(.. …)` must be the LAST parameter — move it to the end",
-                        )
-                        .at(r),
-                    );
-                }
+        // Report exactly ONE clear placement fault per parameter list (so a corpus reject case matches a
+        // single diagnostic, and the user sees the primary problem): MULTIPLE rests → the multiplicity is
+        // the error ("AT MOST ONE", at the 2nd+ rest; the earlier rest's non-lastness is a CONSEQUENCE of
+        // the extra rest, so it is NOT also flagged "must be LAST"). A SINGLE rest that is not last → "must
+        // be LAST".
+        if rests.len() > 1 {
+            for &r in rests.iter().skip(1) {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "a parameter list may have AT MOST ONE rest parameter `(.. …)`",
+                    )
+                    .at(r),
+                );
             }
-        }
-        // A second (or later) rest parameter — at most one is allowed.
-        for &r in rests.iter().skip(1) {
+        } else if let Some(&r) = rests.first()
+            && params.last() != Some(&r)
+        {
             faults.push(
                 Reject::coded(
                     Code::Malformed,
-                    "a parameter list may have AT MOST ONE rest parameter `(.. …)`",
+                    "a rest parameter `(.. …)` must be the LAST parameter — move it to the end",
                 )
                 .at(r),
             );
