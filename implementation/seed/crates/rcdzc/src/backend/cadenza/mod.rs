@@ -2375,6 +2375,24 @@ fn emit_expr_viewed(
             let msg = b.atom_leaf(Leaf::Str("".into()));
             Ok(b.list(vec![head, msg]))
         }
+        // A SEQUENCING BLOCK — statements evaluated in written order for their observable host effects, then
+        // the TAIL is the block's value. Re-emit `(do <stmt>… <tail>)`. A `Core::Seq` is built ONLY when a
+        // non-final statement reaches a host call (`lower/compute.rs` §needs_seq — otherwise the do-block folds
+        // to its tail), and the surface `do` re-lowers to a `Core::Seq` under that SAME condition; since the
+        // re-emitted statements still reach their host calls, the block round-trips (re-forms an equivalent
+        // Seq). Statements emit at `None` (their value is discarded); the tail carries the block's `expected`
+        // type. The per-def `(host …)` wrapper + perform⇔decl coupling (#7268) carry the statements' effects —
+        // an effect whose decl is not re-emittable declines its perform, so the whole Seq declines cleanly.
+        Core::Seq { stmts, tail } => {
+            let do_head = b.name("do");
+            let mut children = Vec::with_capacity(stmts.len() + 2);
+            children.push(do_head);
+            for &s in stmts.iter() {
+                children.push(emit_expr(db, b, s, None, env, emitted)?);
+            }
+            children.push(emit_expr(db, b, tail, expected.clone(), env, emitted)?);
+            Ok(b.list(children))
+        }
         other => Err(Reject::unsupported(format!(
             "the Cadenza backend does not support lowering this Core node back to Cadenza: {}",
             core_node_kind(&other)
