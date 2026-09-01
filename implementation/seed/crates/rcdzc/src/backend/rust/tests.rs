@@ -3456,7 +3456,7 @@ fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
     assert!(
         base.contains("-> f64")
             && base.contains("// cdz-return[g]: (Qty Float64 (Unit.base #\"meter\"))")
-            && base.contains("// cdz-unit[g]: ((. Unit base) #\"meter\")"),
+            && base.contains("// cdz-unit[g]: (Unit.base #\"meter\")"),
         "a Qty{{Float64,meter}} result emits the inner f64 + return + value-form unit notes:\n{base}"
     );
     // A NON-scale-1 unit over a BIGINT magnitude still DECLINES — a bignum scaled by a non-integer ratio is
@@ -3475,7 +3475,7 @@ fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
     );
     assert!(
         area.contains("-> f64")
-            && area.contains("// cdz-unit[g]: (Unit.^ ((. Unit base) #\"meter\") 2)"),
+            && area.contains("// cdz-unit[g]: (Unit.^ (Unit.base #\"meter\") 2)"),
         "a meter² result emits the inner f64 + a `Unit.^` value-form unit note:\n{area}"
     );
     // A QUOTIENT of DISTINCT bases — a velocity `m/s` — now COMPILES (scale-1, the value-form note renders it
@@ -3487,16 +3487,16 @@ fn quantity_result_maps_to_inner_at_any_scale1_unit_else_declines() {
     assert!(
         velocity.contains("-> f64")
             && velocity.contains(
-                "// cdz-unit[g]: (Unit./ ((. Unit base) #\"meter\") ((. Unit base) #\"second\"))"
+                "// cdz-unit[g]: (Unit./ (Unit.base #\"meter\") (Unit.base #\"second\"))"
             ),
         "a velocity (m/s) result emits the inner f64 + a `Unit./` quotient value-form note:\n{velocity}"
     );
-    // A reciprocal / negative power — `second⁻¹`, a frequency — renders as `(Unit./ (. Unit one) …)`.
+    // A reciprocal / negative power — `second⁻¹`, a frequency — renders as `(Unit./ Unit.one…)`.
     let freq = compile_rust(
         "(module m (def (g) (Qty.pow (Qty.of 2.0 (Unit.base #\"second\")) -1)) (export g))",
     );
     assert!(
-        freq.contains("// cdz-unit[g]: (Unit./ (. Unit one) ((. Unit base) #\"second\"))"),
+        freq.contains("// cdz-unit[g]: (Unit./ Unit.one (Unit.base #\"second\"))"),
         "a frequency (second⁻¹) result emits a `Unit./` over the dimensionless numerator:\n{freq}"
     );
 }
@@ -3572,7 +3572,7 @@ fn a_non_scale1_float_int_or_rational_quantity_display_scales_to_its_reference()
     );
     assert!(
         km.contains("-> f64")
-            && km.contains("// cdz-unit[g]: ((. Unit base) #\"meter\")")
+            && km.contains("// cdz-unit[g]: (Unit.base #\"meter\")")
             && km.contains("// cdz-scale[g]: 1000/1"),
         "a Float kilometer result emits the reference unit + a 1000/1 scale note:\n{km}"
     );
@@ -3582,7 +3582,7 @@ fn a_non_scale1_float_int_or_rational_quantity_display_scales_to_its_reference()
     );
     assert!(
         kib.contains("// cdz-scale[g]: 1024/1")
-            && kib.contains("// cdz-unit[g]: ((. Unit base) #\"byte\")"),
+            && kib.contains("// cdz-unit[g]: (Unit.base #\"byte\")"),
         "an Int kibibyte result emits the reference byte + a 1024/1 scale note:\n{kib}"
     );
     // A scale-1 (reference) unit emits NO scale note — the magnitude is displayed as stored.
@@ -3600,7 +3600,7 @@ fn a_non_scale1_float_int_or_rational_quantity_display_scales_to_its_reference()
     assert!(
         mile.contains("-> cdz_num::Rational")
             && mile.contains("// cdz-scale[g]: 201168/125")
-            && mile.contains("// cdz-unit[g]: ((. Unit base) #\"meter\")"),
+            && mile.contains("// cdz-unit[g]: (Unit.base #\"meter\")"),
         "a Rational mile result emits the reference meter + the exact 201168/125 scale note:\n{mile}"
     );
     // A BigInt non-scale-1 still DECLINES (a bignum scaled by a non-integer ratio is not a BigInt).

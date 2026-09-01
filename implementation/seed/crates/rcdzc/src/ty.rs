@@ -497,18 +497,18 @@ impl Unit {
         acc
     }
 
-    /// Render the unit as the canonical VALUE-form s-expression cdz-run prints inside a `((. Qty of) <mag>
-    /// <unit>)` result — the DOTTED member-access surface, byte-for-byte identical to what [`crate::lower`]'s
-    /// `unit_value_ast` bakes (that builds an arena tree; this builds its text). It differs from [`render`]
-    /// (the TYPE-annotation surface) in two ways the corpus records demand:
-    ///   - the base leaf is DOTTED member access `((. Unit base) #"name")` (not the bare `(Unit.base …)`),
-    ///     and the dimensionless unit is `(. Unit one)` (not `Unit.one`);
+    /// Render the unit as the canonical VALUE-form s-expression cdz-run prints inside a `(Qty.of <mag>
+    /// <unit>)` result — byte-for-byte identical to what [`crate::lower`]'s `unit_value_ast` bakes (that
+    /// builds an arena tree; this builds its text). Every member-access key is SUGARED to its bare dotted
+    /// name (`Qty.of`/`Unit.base`/`Unit.one` — a name atom the printer emits verbatim, matching the
+    /// operator-symbol members `Unit.*`/`Unit./`/`Unit.^`; seq-283 consistency fix — before it, only the
+    /// operator-symbol members sugared while the identifier members rendered the unsugared `(. Unit base)`).
+    /// It differs from [`render`] (the TYPE-annotation surface) in one way the corpus records demand:
     ///   - a unit with NEGATIVE exponents renders as a QUOTIENT `(Unit./ <numerator> <denominator>)` — the
     ///     velocity surface `(Unit./ meter second)`, NOT `render`'s `(Unit.* meter (Unit.^ second -1))`.
     ///
-    /// The numerator is the positive-exponent factors as a left-nested `(Unit.* …)` product (`(. Unit one)`
-    /// if none); the denominator the negative-exponent factors with exponents made positive. `Unit.^`/
-    /// `Unit.*`/`Unit./` stay BARE (a non-alphabetic segment the reader does not desugar). This is the note
+    /// The numerator is the positive-exponent factors as a left-nested `(Unit.* …)` product (`Unit.one`
+    /// if none); the denominator the negative-exponent factors with exponents made positive. This is the note
     /// the Rust-backend gate splices verbatim, so it MUST track `unit_value_ast` exactly.
     pub fn render_value_form(&self) -> String {
         // Escape a base NAME for embedding in a `#"…"` symbol literal — the SAME closed set the canonical
@@ -535,9 +535,9 @@ impl Unit {
             }
             out
         }
-        // A single base at a (positive) exponent: `((. Unit base) #"name")` or `(Unit.^ … k)`.
+        // A single base at a (positive) exponent: `(Unit.base #"name")` or `(Unit.^ … k)`.
         fn factor(name: &str, exp: i64) -> String {
-            let base = format!("((. Unit base) #\"{}\")", escape_sym(name));
+            let base = format!("(Unit.base #\"{}\")", escape_sym(name));
             if exp == 1 {
                 base
             } else {
@@ -547,7 +547,7 @@ impl Unit {
         // Left-nested product of a factor list, or `(. Unit one)` when empty.
         fn product(factors: &[(&String, i64)]) -> String {
             let Some((first, rest)) = factors.split_first() else {
-                return "(. Unit one)".to_string();
+                return "Unit.one".to_string();
             };
             let mut acc = factor(first.0, first.1);
             for (name, exp) in rest {
@@ -2147,29 +2147,29 @@ mod tests {
         // review on PR #485.)
         assert_eq!(
             Unit::base("meter").render_value_form(),
-            "((. Unit base) #\"meter\")",
+            "(Unit.base #\"meter\")",
             "an ordinary name is unchanged"
         );
         assert_eq!(
             Unit::base("me\"ter").render_value_form(),
-            "((. Unit base) #\"me\\\"ter\")",
+            "(Unit.base #\"me\\\"ter\")",
             "an embedded quote is escaped"
         );
         assert_eq!(
             Unit::base("a\\b").render_value_form(),
-            "((. Unit base) #\"a\\\\b\")",
+            "(Unit.base #\"a\\\\b\")",
             "a backslash is escaped"
         );
         // A newline in the name would otherwise split the single-line `// cdz-unit` note → escaped to `\n`.
         assert_eq!(
             Unit::base("x\ny").render_value_form(),
-            "((. Unit base) #\"x\\ny\")",
+            "(Unit.base #\"x\\ny\")",
             "a newline is escaped so the note stays one line"
         );
         // The escape composes through a power and a quotient (each factor's base name is escaped).
         assert_eq!(
             Unit::base("m\"").pow(2).render_value_form(),
-            "(Unit.^ ((. Unit base) #\"m\\\"\") 2)",
+            "(Unit.^ (Unit.base #\"m\\\"\") 2)",
             "a powered factor escapes its base name"
         );
     }

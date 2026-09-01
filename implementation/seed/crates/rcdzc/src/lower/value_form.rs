@@ -1752,7 +1752,7 @@ pub(super) fn template_value_ast_flagged(
             // `cdzast-decode-error IdOutOfRange` on `(: (Qty.of N unit) …)` under --guarded-all. Interning
             // the head's leaves first makes the magnitude hole share the SAME preceding-leaf set in build and
             // canonical order (the byte sum is order-invariant over that set), so the offset stays valid.
-            let qty_of = member_access(b, "Qty", "of");
+            let qty_of = b.name("Qty.of");
             let inner_hole = template_value_ast_flagged(b, inner, path, out, via_sum_payload)?;
             let unit_ast = unit_value_ast(b, &unit.at_reference());
             Some(b.list(vec![qty_of, inner_hole, unit_ast]))
@@ -1973,7 +1973,7 @@ pub(super) fn const_value_ast(
         // `((. Qty of) <value> <unit>)` — the member-access form the reader normalizes `(Qty.of …)` to
         // (a dotted name `Qty.of` desugars to `(. Qty of)`), so the baked value re-reads/re-prints to
         // the SAME canonical shape the corpus records.
-        let qty_of = member_access(b, "Qty", "of");
+        let qty_of = b.name("Qty.of");
         return Some(b.list(vec![qty_of, inner_val, unit_ast]));
     }
     // A SYMBOL value renders its CONSTRUCTION form `((. Symbol of) "text")` (17-symbols "a symbol is
@@ -2379,12 +2379,14 @@ pub(crate) fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit
     use crate::ast::Leaf;
     let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
     if entries.is_empty() {
-        // `Unit.one` — the dimensionless unit, the member-access form `(. Unit one)`.
-        return member_access(b, "Unit", "one");
+        // `Unit.one` — the dimensionless unit (bare dotted-name atom, printed verbatim → sugared).
+        return b.name("Unit.one");
     }
-    // One base factor at a (positive) exponent: `((. Unit base) #"name")` or `(Unit.^ … k)`.
+    // One base factor at a (positive) exponent: `(Unit.base #"name")` or `(Unit.^ … k)` — the head is a
+    // bare dotted-name atom (`Unit.base`), printed verbatim → sugared, matching the operator-symbol members
+    // `Unit.^`/`Unit.*`/`Unit./` (seq-283 member-render consistency; re-reads to the same Leaf::Member).
     fn factor(b: &mut crate::ast::Builder, name: &str, exp: i64) -> StructId {
-        let base_head = member_access(b, "Unit", "base");
+        let base_head = b.name("Unit.base");
         let sym = b.atom_leaf(Leaf::Sym(name.into()));
         let base = b.list(vec![base_head, sym]);
         if exp == 1 {
@@ -2401,7 +2403,7 @@ pub(crate) fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit
     // Left-nested product of a factor list, or `Unit.one` when empty.
     fn product(b: &mut crate::ast::Builder, factors: &[(String, i64)]) -> StructId {
         if factors.is_empty() {
-            return member_access(b, "Unit", "one");
+            return b.name("Unit.one");
         }
         let mut acc = factor(b, &factors[0].0, factors[0].1);
         for (name, exp) in &factors[1..] {
