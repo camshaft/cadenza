@@ -161,6 +161,27 @@ def topLevelValueEnv (m : Ast.Module) : List (ByteArray × Ty) :=
       | none => none)
   | _ => []
 
+/-- Parse a TYPE-annotation node to a `Ty` over the modeled scalar subset: `Int64`/`(Int N)`/`UInt8`/… →
+`.int N signed` (a `.bits` width; `BigInt`/`(Int W)` unknown-width → `none`, not modeled), `Bool`/`Unit`/
+`String`/`Char` → their scalar `Ty`. `none` for any un-modeled annotation (records/sums/fn/generics) — the
+ascription rule declines (`Unsupported`) on `none`, never guesses. Reused by Fn param annotations later. -/
+def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
+  match Eval.parseIntTy? m nodeId with
+  | some it => (match it.width with | .bits n => some (.int n it.signed) | _ => none)
+  | none =>
+    match m.nodes[nodeId]? with
+    | some (.atom lid) =>
+      match m.leaves[lid]? with
+      | some (.name b) =>
+        (match String.fromUTF8? b with
+         | some "Bool" => some .bool
+         | some "Unit" => some .unit
+         | some "String" => some .string
+         | some "Char" => some .char
+         | _ => none)
+      | _ => none
+    | _ => none
+
 /-- An inference FAILURE: a positive `IllTyped` (a modeled fault with a CDZ code — a `mismatch` when it
 disagrees with rcdzc) vs an `Unsupported` coverage gap (always a `skip`). Keeping them distinct is the
 positive-disagreement invariant (design §5): the oracle emits a positive verdict ONLY on a fully-modeled
@@ -207,7 +228,10 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
 * T1.9 — **do block**: `(do stmt… last)` — a value def `(def x e)` binds `x:τ` sequentially, a non-def
   statement is inferred (well-typed, type discarded), and the `last` item is the result. A local function
   def `(def (f …) …)` is `Unsupported` (needs Fn).
-Any other construct → `Unsupported` until its rule lands (ascription/App/Fn/Match). -/
+* T1.10 — **ascription** (`(: e T)`, `ts:50-54`), constrain-not-override: unify `τ` with `T`, result `T`;
+  a category clash is `CDZ0203`; an unmodeled `T`, or an int↔int width ascription (deferred to OQ-G), is
+  `Unsupported` (never a false width-reject).
+Any other construct → `Unsupported` until its rule lands (App/Fn/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
@@ -377,8 +401,28 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                   (env, st) with
                | .ok (env', st') => inferE m env' st' lastId
                | .error e => .error e)
+          else if h == ":".toUTF8 && children.size == 3 then
+            -- T1.10 — ASCRIPTION `(: e T)` (`ts:50-54`), constrain-NOT-override: parse `T`, infer `e`,
+            -- unify `τ` with `T`; the result is `T`. A clash across type CATEGORIES (`(: 5 Bool)`,
+            -- `(: #t Int64)`, …) is `IllTyped CDZ0203`. An unmodeled annotation type → `Unsupported`.
+            -- 🪤 INT↔INT ascription (`(: 5 Int32)`) is DEFERRED to the OQ-G fresh-width-var model →
+            -- `Unsupported`, NOT a reject: my scalar int literal is concrete `.int 64`, so a strict
+            -- width-unify would FALSE-REJECT a width-polymorphic literal. (Category clashes are still caught.)
+            match children[1]?, children[2]? with
+            | some eId, some tId =>
+              (match parseTy? m tId with
+               | none => .error (.unsupported "type oracle: unmodeled ascription type")
+               | some τT => do
+                   let (τ, st) ← inferE m env st eId
+                   match applySubst st.subst τ, τT with
+                   | .int _ _, .int _ _ => .error (.unsupported "type oracle: int-width ascription deferred (OQ-G)")
+                   | τr, _ =>
+                     (match unifyInfer τr τT st with
+                      | .ok st' => .ok (τT, st')
+                      | .error e => .error e))
+            | _, _ => .error (.unsupported "type oracle: malformed ascription")
           else .error (.unsupported
-            "type oracle: construct not yet modeled (T1 — ascription/App/Fn/Match rules land next)")
+            "type oracle: construct not yet modeled (T1 — App/Fn/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
       | _ => .error (.unsupported "type oracle: node not modeled")
 
@@ -630,6 +674,27 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[11], .atom 1, .list #[13, 12, 10],  -- (def (main) <inner do>)
                            .atom 8, .atom 2, .list #[15, 16], .atom 0, .list #[18, 14, 17]],
                 root := 19 } == .wellTyped (.int 64 true))
+-- T1.10 (ascription): `(: #t Bool)` — matching category → WellTyped Bool.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                            .boolLit true, .name "Bool".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .wellTyped .bool)
+-- T1.10 (ascription): `(: 5 Bool)` — category clash (Int vs Bool) → IllTyped CDZ0203.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "Bool".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .illTyped "CDZ0203")
+-- T1.10 (ascription): `(: 5 Int64)` — int↔int width ascription is DEFERRED (OQ-G) → Unsupported, NOT a reject.
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                                  .intLit false .dec (ByteArray.mk #[5]), .name "Int64".toUTF8, .name "export".toUTF8],
+                      nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                                 .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                                 .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                      root := 12 } with | .unsupported _ => true | _ => false)
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
