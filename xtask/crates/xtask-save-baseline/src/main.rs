@@ -159,41 +159,11 @@ mod tests {
 
     // --- file-level `save()` tests: the I/O + no-write-on-error contract ---
 
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    // Dependency-free unique temp dir (no `tempfile` dep — that would need same-window flake
-    // registration). Uniqued by pid + a process-wide counter so parallel test runs never collide.
-    struct TmpDir(PathBuf);
-    impl TmpDir {
-        fn new() -> Self {
-            static N: AtomicU32 = AtomicU32::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "xtask-save-baseline-test-{}-{}",
-                std::process::id(),
-                N.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            TmpDir(dir)
-        }
-        fn write(&self, name: &str, contents: &str) -> PathBuf {
-            let p = self.0.join(name);
-            std::fs::write(&p, contents).unwrap();
-            p
-        }
-        fn path(&self, name: &str) -> PathBuf {
-            self.0.join(name)
-        }
-    }
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use xtask_support::TmpDir;
 
     #[test]
     fn save_writes_the_serialized_baseline_for_a_valid_stream() {
-        let d = TmpDir::new();
+        let d = TmpDir::new("xtask-save-baseline-test-");
         let verdicts = d.write("verdicts", "todo\tzeta case\npass\talpha case\n");
         let out = d.path("baseline");
         assert_eq!(save(&verdicts, &out), Outcome::Wrote(2));
@@ -206,7 +176,7 @@ mod tests {
     #[test]
     fn a_bad_verdict_does_not_create_or_touch_the_baseline() {
         // The doc-comment safety invariant: a malformed classify emitter must NOT corrupt the baseline.
-        let d = TmpDir::new();
+        let d = TmpDir::new("xtask-save-baseline-test-");
         let verdicts = d.write("verdicts", "pass\tok case\ndecline\tbad tag\n");
         let out = d.path("baseline");
         assert!(matches!(save(&verdicts, &out), Outcome::BadVerdict(_)));
@@ -221,7 +191,7 @@ mod tests {
     fn a_bad_verdict_leaves_a_preexisting_baseline_untouched() {
         // If a stale baseline already exists, a bad harvest must leave it byte-for-byte intact rather
         // than half-overwriting it.
-        let d = TmpDir::new();
+        let d = TmpDir::new("xtask-save-baseline-test-");
         let verdicts = d.write("verdicts", "pass\tok case\nno-tab-line\n");
         let original = "# gate baseline harvest\npass\tpre-existing\n";
         let out = d.write("baseline", original);
@@ -231,7 +201,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_verdicts_source_is_an_error_not_a_silent_empty_baseline() {
-        let d = TmpDir::new();
+        let d = TmpDir::new("xtask-save-baseline-test-");
         let missing = d.path("does-not-exist");
         let out = d.path("baseline");
         assert!(matches!(save(&missing, &out), Outcome::Unreadable(_)));
