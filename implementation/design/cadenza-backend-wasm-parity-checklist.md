@@ -29,12 +29,16 @@ re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user su
 fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
 #7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
 effect breaks were all SHARED). ✅ #7346 CLOSED the UInt64-literal cluster (ascribe `(: v <IntTy>)` for
-unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **10** (was 12; #7355 closed the 2 Map folded-dup-key breaks. titled-break scan,
-corrected+precondition gate, post-#7346/#7355; all surface/recompilability TYPE breaks — none wrong-DATA), by family:
-  • GENERIC/NESTED-SUM (CDZ0203 ×5): 05 depth-3 erased-and-boxed nested-sum match (breaker-reproduced) · 07
-    annotated-empty-list (undetermined-empty-list control) · 07 gng1 nested generic Box-of-Pair · 09
-    recursive-generic producer wrapping in a user sum consumed at one type · 09 borrowed-heap-sum-param in a
-    self-recursive fn. (Same root as the under-determined-sum type_ast/generic-sum surface family.)
+unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **9** (was 12; #7355 closed the 2 Map folded-dup-key breaks, #7357 the empty-collection
+ascription-drop. titled-break scan, corrected+precondition gate; all surface/recompilability TYPE breaks — none
+wrong-DATA), by family:
+  • ✅ EMPTY-COLLECTION ascription-drop (CDZ0203) — CLOSED #7357 (dae2c1b1c2): an empty `#list()`/`#set()`/`#map()`
+    re-emitted bare drops its element/key/value type → hop2 undetermined-escape reject. Fix = `ascribe_if_empty`
+    wraps `(: <lit> <solved-ty>)` (mirrors the `(None)`-carries-its-type precedent). breaker-minimized (3/5).
+  • GENERIC/NESTED-SUM (CDZ0203 ×4): 05 depth-3 erased-and-boxed nested-sum match (breaker-reproduced) · 07 gng1
+    nested generic Box-of-Pair · 09 recursive-generic producer wrapping in a user sum consumed at one type · 09
+    borrowed-heap-sum-param in a self-recursive fn. (Same root as the under-determined-sum type_ast/generic-sum
+    surface family; breaker minimizing the 2 generic-sum titles next.)
   • ✅ MAP folded-duplicate-key (CDZ0201 ×2) — CLOSED #7355 (c4016b9f57): the optimizer folds a bound key name to
     a literal, so `#map` gets duplicate literal keys → front-end rejects. Fix = last-wins dedup of equal CONSTANT
     keys at emission (= runtime overwrite; runtime keys untouched). breaker-minimized both to one root cause.
