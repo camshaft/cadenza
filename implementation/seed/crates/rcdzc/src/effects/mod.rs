@@ -7396,6 +7396,110 @@ fn next_state_directly_performs_foreign(db: &mut Db, node: StructId, ctx: &Handl
     }
 }
 
+/// Whether `node` DIRECTLY performs a FOREIGN op — one NOT in `discharged` (this handle's ops) and not
+/// host-delegated. The `discharged`-set companion of [`next_state_directly_performs_foreign`] (which keys on
+/// a built `HandlerCtx`), for use at arm-setup where the ctx is not yet built. PURE (no arena mutation).
+fn expr_performs_foreign(
+    db: &mut Db,
+    node: StructId,
+    discharged: &std::collections::HashSet<(u32, u32)>,
+) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some((decl, idx)) = crate::eval::effect_op_of(db, head)
+        && !discharged.contains(&(decl.0, idx))
+        && perform_host_target(db, node, head).is_none()
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| expr_performs_foreign(db, c, discharged)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Rebuild `node`, replacing every DIRECT foreign perform (an `(Outer.op …)` of an op NOT in `discharged`,
+/// not host-delegated) with a fresh ORDINARY `_cdz_ns{k}` NAME reference, recording each `(name,
+/// original-perform-node)` in `binds` in left-to-right (evaluation) order. The pure companion of
+/// [`hoist_next_state_foreign_perform`]: it turns `(+ t (A.get))` into `(+ t _cdz_ns0)` + binding `(_cdz_ns0
+/// (A.get))`. The binder is an ORDINARY `_cdz_`-prefixed name (like `synth_binding_name`), NOT a `#`-prefixed
+/// one: a `#`-name trips the fold's growing-state / `#cv`/`#st`/`#seed` heuristics and mis-threads the lifted
+/// perform across dispatches (an early `#ns` attempt miscompiled as1 → 89; the ordinary name folds → 61,
+/// matching the hand-written `let`-lift). The `_cdz_ns` prefix is unbindable-by-collision (no source uses it)
+/// yet ordinary to the fold. Byte-identical (no new nodes) when the expression contains no foreign perform.
+fn hoist_foreign_in_expr(
+    db: &mut Db,
+    node: StructId,
+    discharged: &std::collections::HashSet<(u32, u32)>,
+    binds: &mut Vec<(String, StructId)>,
+) -> StructId {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some((decl, idx)) = crate::eval::effect_op_of(db, head)
+        && !discharged.contains(&(decl.0, idx))
+        && perform_host_target(db, node, head).is_none()
+    {
+        let name = format!("_cdz_ns{}", binds.len());
+        binds.push((name.clone(), node));
+        return db.push_name(&name);
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| hoist_foreign_in_expr(db, c, discharged, binds))
+                .collect();
+            db.push_list(rebuilt)
+        }
+        Struct::Atom(_) => node,
+    }
+}
+
+/// NEXT-STATE FOREIGN-PERFORM HOIST (as2/as1/asb fold, v-effects; operator directive: drive effects to 100%).
+/// An inner handler arm whose tail resume NEXT-STATE performs an OUTER effect directly — `(resume t (+ t
+/// (A.get)))` — is unsound to thread as-is: the next-state threads forward as a state EXPRESSION, so the
+/// embedded `(A.get)` is DROPPED (as2 → 5 not 6) or DUPLICATED (as1), which is why
+/// [`next_state_directly_performs_foreign`] DECLINES it. But that perform is a DISPATCH-TIME evaluation:
+/// lifting it (and any perform in the resume VALUE, which must sequence FIRST) to `let`-inits before the
+/// resume — `(let ((_cdz_ns0 (A.get))) (resume t (+ t _cdz_ns0)))` — runs it once per dispatch and threads
+/// its PURE result, the proven-value-equivalent form (as2→6, as1→61, asb→57, all hand-verified). This
+/// normalizes the arm UP FRONT (at [`reduce_handle`]'s arm setup), so the ordinary resumptive fold serves it.
+///
+/// TRIGGERS only when the NEXT-STATE performs a foreign op — so a foreign in the resume VALUE alone (as3,
+/// served natively → 56) is UNTOUCHED (returns `None`, byte-identical). When it fires, it hoists the VALUE's
+/// performs FIRST then the next-state's, preserving value-before-next-state evaluation order (asb → 57, not
+/// the 67 a next-state-first order gives). Handles a BARE tail `(resume v ns)` arm body (as2/as1/asb); a
+/// resume wrapped in `do`/`let`/`match` returns `None` and keeps declining (incremental-safe, no regression).
+fn hoist_next_state_foreign_perform(
+    db: &mut Db,
+    arm_body: StructId,
+    discharged: &std::collections::HashSet<(u32, u32)>,
+) -> Option<StructId> {
+    let (value, next_state) = tail_resume(db, arm_body)?;
+    // TRIGGER: only intervene when the NEXT-STATE performs a foreign op. A pure next-state (as3, or an
+    // ordinary state-threading arm) needs no hoist — leave it byte-identical.
+    if !expr_performs_foreign(db, next_state, discharged) {
+        return None;
+    }
+    // Hoist the VALUE's foreign performs FIRST (they sequence before the next-state's), then the next-state's,
+    // into ONE binding list — so `_cdz_ns0…` are in value-then-next-state evaluation order.
+    let mut binds: Vec<(String, StructId)> = Vec::new();
+    let value2 = hoist_foreign_in_expr(db, value, discharged, &mut binds);
+    let next_state2 = hoist_foreign_in_expr(db, next_state, discharged, &mut binds);
+    let resume_head = db.push_name("resume");
+    let new_resume = db.push_list(vec![resume_head, value2, next_state2]);
+    let binding_nodes: Vec<StructId> = binds
+        .into_iter()
+        .map(|(name, node)| {
+            let n = db.push_name(&name);
+            db.push_list(vec![n, node])
+        })
+        .collect();
+    let let_head = db.push_name("let");
+    let bindings = db.push_list(binding_nodes);
+    Some(db.push_list(vec![let_head, bindings, new_resume]))
+}
+
 /// Collect the RAW next-state child of every tail `resume` in a (parented) arm body, descending through
 /// `do`/`let`/`match` wrappers WITHOUT lifting them into the child. This differs deliberately from
 /// `peel_resume_from_arm_body`, which WRAPS each returned child in the surrounding `let`/`do` for scoping —
