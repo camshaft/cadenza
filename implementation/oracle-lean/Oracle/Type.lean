@@ -60,6 +60,15 @@ partial def occurs (i : Nat) : Ty → Bool
   | .tuple es => es.any (occurs i)
   | _ => false
 
+/-- Does a type contain ANY (free) unification variable? Used by the App rule to decline applying a
+POLYMORPHIC function type — a monomorphic oracle without `let`-generalization would otherwise false-reject
+a polymorphic let-bound fn used at two types, so a var-containing head declines (`Unsupported`) instead. -/
+partial def hasVar : Ty → Bool
+  | .var _ => true
+  | .fn d c => hasVar d || hasVar c
+  | .tuple es => es.any hasVar
+  | _ => false
+
 /-- A unification substitution: variable id → resolved type, innermost (head) binding wins. -/
 abbrev Subst := List (Nat × Ty)
 
@@ -233,7 +242,10 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
   `Unsupported` (never a false width-reject).
 * T1.11 — **Fn** (`ts:28-36`): `(fn (p…) body)` gives each param a fresh var (bare) or its annotated
   type, infers `body`, and yields the curried arrow `p₁→…→body`.
-Any other construct → `Unsupported` until its rule lands (App/Match). -/
+* T1.12 — **App** (`ts:36`): `(f a…)` with `f` a name bound to a CONCRETE function type unifies the
+  arrow against each arg to a fresh result var → the codomain; a domain clash / non-fn head is `CDZ0203`.
+  A polymorphic (var-containing) head or an unbound head → `Unsupported` (defers `let`-generalization).
+Any other construct → `Unsupported` until its rule lands (Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
@@ -459,8 +471,34 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                   | .error e => .error e)
                | _ => .error (.unsupported "type oracle: fn params not a list"))
             | _, _ => .error (.unsupported "type oracle: malformed fn")
-          else .error (.unsupported
-            "type oracle: construct not yet modeled (T1 — App/Match rules land next)")
+          else
+            -- T1.12 — APPLICATION `(f a…)` (`ts:36`), the arrow-elim rule: `f` a NAME bound in the env to a
+            -- function; unify the (curried) fn type against each argument to a fresh result var, yielding the
+            -- codomain. 🪤 SOUNDNESS: only apply a CONCRETE (no-free-var) function type — a POLYMORPHIC head
+            -- (e.g. a let-bound `(fn (x) x) : α→α`) declines to `Unsupported`, because monomorphic
+            -- instantiation without `let`-generalization would FALSE-REJECT it used at two types (design §5).
+            -- A head not bound in the env (a prelude/builtin) → `Unsupported`. `(f)` (no args) = grouping →
+            -- `f`'s type. Applying a non-function concrete type, or an arg-domain clash → `IllTyped CDZ0203`.
+            match env.find? (fun e => e.1 == h) with
+            | some (_, τf0) =>
+              let τf := applySubst st.subst τf0
+              if hasVar τf then
+                .error (.unsupported "type oracle: polymorphic application not modeled (needs let-generalization)")
+              else
+                (match (children.extract 1 children.size).foldlM (m := Except InferFail)
+                    (fun (acc : Ty × InferState) aid =>
+                      match inferE m env acc.2 aid with
+                      | .ok (τa, st1) =>
+                        let β : Ty := .var st1.next
+                        let st2 := { st1 with next := st1.next + 1 }
+                        (match unifyInfer acc.1 (.fn τa β) st2 with
+                         | .ok st3 => .ok (applySubst st3.subst β, st3)
+                         | .error e => .error e)
+                      | .error e => .error e) (τf, st) with
+                 | .ok (τres, st') => .ok (τres, st')
+                 | .error e => .error e)
+            | none => .error (.unsupported
+                "type oracle: unmodeled application head / construct (App/Match — prelude & polymorphic heads decline)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
       | _ => .error (.unsupported "type oracle: node not modeled")
 
@@ -755,6 +793,45 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[12], .atom 1, .list #[14, 13, 11],  -- (def (main) <fn>)
                            .atom 10, .atom 2, .list #[16, 17], .atom 0, .list #[19, 15, 18]],
                 root := 20 } == .wellTyped (.fn .bool (.int 64 true)))
+-- T1.12 (App): `(let ((f (fn (x) (+ x 1)))) (f 5))` — a concrete Int→Int fn applied to Int → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "let".toUTF8,
+                            .name "f".toUTF8, .name "fn".toUTF8, .name "x".toUTF8, .name "+".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[5]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 7, .atom 6, .atom 8, .list #[0, 1, 2],   -- (+ x 1)
+                           .atom 6, .list #[4],                           -- (x)
+                           .atom 5, .list #[6, 5, 3],                     -- (fn (x) (+ x 1))
+                           .atom 4, .list #[8, 7],                        -- (f (fn …))
+                           .list #[9],                                    -- ((f (fn …)))
+                           .atom 4, .atom 9, .list #[11, 12],             -- (f 5)
+                           .atom 3, .list #[14, 10, 13],                  -- (let ((f …)) (f 5))
+                           .atom 2, .list #[16], .atom 1, .list #[18, 17, 15],  -- (def (main) <let>)
+                           .atom 10, .atom 2, .list #[20, 21], .atom 0, .list #[23, 19, 22]],
+                root := 24 } == .wellTyped (.int 64 true))
+-- T1.12 (App): `(let ((f (fn (x) (+ x 1)))) (f #t))` — Int→Int applied to Bool → arg clash → CDZ0203.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "let".toUTF8,
+                            .name "f".toUTF8, .name "fn".toUTF8, .name "x".toUTF8, .name "+".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .boolLit true, .name "export".toUTF8],
+                nodes := #[.atom 7, .atom 6, .atom 8, .list #[0, 1, 2],
+                           .atom 6, .list #[4], .atom 5, .list #[6, 5, 3],
+                           .atom 4, .list #[8, 7], .list #[9],
+                           .atom 4, .atom 9, .list #[11, 12],
+                           .atom 3, .list #[14, 10, 13],
+                           .atom 2, .list #[16], .atom 1, .list #[18, 17, 15],
+                           .atom 10, .atom 2, .list #[20, 21], .atom 0, .list #[23, 19, 22]],
+                root := 24 } == .illTyped "CDZ0203")
+-- T1.12 (App): `(let ((id (fn (x) x))) (id 5))` — a POLYMORPHIC head (id : α→α) declines → Unsupported
+-- (NOT a false reject: monomorphic instantiation without let-generalization would be unsound).
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "let".toUTF8,
+                                  .name "id".toUTF8, .name "fn".toUTF8, .name "x".toUTF8,
+                                  .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
+                      nodes := #[.atom 6, .atom 6, .list #[1], .atom 5, .list #[3, 2, 0],  -- x, (x), (fn (x) x)
+                                 .atom 4, .list #[5, 4], .list #[6],       -- (id (fn …)), ((id (fn …)))
+                                 .atom 4, .atom 7, .list #[8, 9],          -- (id 5)
+                                 .atom 3, .list #[11, 7, 10],              -- (let ((id …)) (id 5))
+                                 .atom 2, .list #[13], .atom 1, .list #[15, 14, 12],
+                                 .atom 8, .atom 2, .list #[17, 18], .atom 0, .list #[20, 16, 19]],
+                      root := 21 } with | .unsupported _ => true | _ => false)
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
