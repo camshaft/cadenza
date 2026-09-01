@@ -1,0 +1,1 @@
+def forall a f() = 1
