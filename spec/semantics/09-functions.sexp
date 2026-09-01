@@ -13483,3 +13483,17 @@
       (def (main) (let ((t #tuple(1 2 3))) (add3 (.. t))))
       (export main)))
   (output (: 6 Int64)))
+
+(case
+  "a list splat feeds a whole list into a list-rest parameter"
+  (doc
+    "A runtime LIST spread into a call `(.. xs)` supplies that list's elements as the trailing arguments,
+           which a list-rest parameter gathers back into its own list: `let ys = [1,2,3,4] in count(.. ys)`
+           binds `count`'s rest to `ys` (length 4). Pins the runtime-list splat's single-argument form — a
+           whole list flows through the call into the rest parameter.")
+  (input
+    (do
+      (def (count (.. (: xs (List Int64)))) (List.len xs))
+      (def (main) (let ((ys #list(1 2 3 4))) (count (.. ys))))
+      (export main)))
+  (output (: 4 Int64)))
