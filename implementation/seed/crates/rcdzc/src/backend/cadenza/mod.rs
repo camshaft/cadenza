@@ -949,6 +949,13 @@ fn emit_expr_viewed(
             let text = b.atom_leaf(Leaf::Str(s));
             Ok(b.list(vec![head, text]))
         }
+        // A BYTES constant re-emits its canonical value-form leaf `b"…"` (`Leaf::Bytes` — the raw bytes flow
+        // through the shared `Arc<[u8]>` with no copy), the surface a byte sequence is written as; it
+        // recompiles straight back to a `Core::ConstBytes` of the same bytes (the reader folds a `b"…"`
+        // literal to `ConstBytes` in `lower`, the twin of the `ConstStr`↔`"…"` path above).
+        Core::ConstBytes(bytes) if matches!(eff_ty, Ty::Bytes) => {
+            Ok(b.atom_leaf(Leaf::Bytes(bytes)))
+        }
         // A float constant. A bare decimal leaf grounds to the DEFAULT `Float64` on recompile, so a
         // `Float32` constant (or any non-64 width) must be ASCRIBED with its width — otherwise the value
         // CHANGES (`0.1` at `Float32` = `0.10000000149…` ≠ `0.1` at `Float64`, a value miscompile). A
@@ -967,6 +974,18 @@ fn emit_expr_viewed(
                 let ty_node = b.name(tyname.as_str());
                 Ok(b.list(vec![colon, lit, ty_node]))
             }
+        }
+        // The non-finite Float constants re-emit their canonical value-form leaves (`Leaf::FloatNan` /
+        // `Leaf::FloatInf` — the surface a NaN / +∞ crosses the boundary as, added with v-metaprogramming's
+        // `Ast.Float` reification). `Core::ConstFloatInf` is the POSITIVE infinity (a negative ∞ is a negate
+        // over it), so `negative: false`. Guarded to the DEFAULT `Float64` width — a bare non-finite leaf
+        // grounds to `Float64` on recompile, so a non-64 width (which a bare leaf can't carry) still declines
+        // (a later slice), mirroring the finite `ConstFloat` width-ascription guard just above.
+        Core::ConstFloatNan if matches!(&eff_ty, Ty::Float(ft) if ft.ground_width() == 64) => {
+            Ok(b.atom_leaf(Leaf::FloatNan))
+        }
+        Core::ConstFloatInf if matches!(&eff_ty, Ty::Float(ft) if ft.ground_width() == 64) => {
+            Ok(b.atom_leaf(Leaf::FloatInf { negative: false }))
         }
         // An exact RATIONAL constant — its value-form `num/den` is not valid expression syntax, so
         // re-emit the CONSTRUCTOR `(Rational.of <num> <den>)` over the normalized pair. `Rational.of`
