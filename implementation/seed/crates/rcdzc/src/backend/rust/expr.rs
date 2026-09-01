@@ -6809,7 +6809,7 @@ fn sum_path_tag(path: &[crate::core::PathStep]) -> String {
     tag
 }
 
-fn sum_variant_path_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> Result<String, Reject> {
+pub(super) fn sum_variant_path_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> Result<String, Reject> {
     let decl_occ = match ty.strip_nominal() {
         Ty::Sum { decl, .. } => *decl,
         _ => return Err(Reject::decline("sum construction node is not a sum type")),
@@ -7346,7 +7346,7 @@ fn lookup_sum_path_type(ctx: &Ctx, path: &[crate::core::PathStep]) -> Option<Ty>
 /// [`variant_payload_arity_at`], reading the arity off the (possibly hint-supplied) subject type rather
 /// than re-walking from the scrutinee. `strip_nominal` first so an erased-newtype-wrapped sum reads the
 /// inner sum's variant arity.
-fn variant_arity_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> usize {
+pub(super) fn variant_arity_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> usize {
     let decl_occ = match ty.strip_nominal() {
         Ty::Sum { decl, .. } => *decl,
         _ => return 0,
