@@ -15,7 +15,8 @@
 //! defined type payload); `<binder-node>` is the binder's node id, mapped by the consumer to `file:line:col`.
 //! TOTAL on decode: a malformed / wrong-shape form is skipped, never a crash.
 
-use cadenza_ast::ast::{Arenas, Builder, IntValue, Leaf, Radix, Struct, StructId};
+use crate::graft::copy_from;
+use cadenza_ast::ast::{Arenas, Builder, IntValue, Leaf, Radix, StructId};
 
 /// One in-scope binding — its name, its type (a standalone arena rooted at the `encode_ty_payload`
 /// sub-AST), and its binder node id (mapped to a source span by the consumer).
@@ -79,40 +80,6 @@ fn decode_one(a: &Arenas, form: StructId) -> Option<ScopeBinding> {
         ty: b.finish(root),
         node,
     })
-}
-
-/// Copy the subtree rooted at `id` of `src` into builder `b`, returning the new root id. Iterative
-/// post-order so a deep type payload can't overflow the native stack (mirrors `exports_wire`).
-fn copy_from(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
-    enum Job {
-        Visit(StructId),
-        EmitList(usize),
-    }
-    let mut jobs = vec![Job::Visit(id)];
-    let mut results: Vec<StructId> = Vec::new();
-    while let Some(job) = jobs.pop() {
-        match job {
-            Job::Visit(sid) => match src.get(sid) {
-                Struct::Atom(lid) => {
-                    let leaf = src.leaf(*lid).clone();
-                    let n = b.atom_leaf(leaf);
-                    results.push(n);
-                }
-                Struct::List(kids) => {
-                    jobs.push(Job::EmitList(kids.len()));
-                    for &k in kids.iter().rev() {
-                        jobs.push(Job::Visit(k));
-                    }
-                }
-            },
-            Job::EmitList(n) => {
-                let kids = results.split_off(results.len() - n);
-                let node = b.list(kids);
-                results.push(node);
-            }
-        }
-    }
-    results.pop().expect("copy_from leaves a root")
 }
 
 #[cfg(test)]

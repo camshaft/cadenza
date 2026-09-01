@@ -19,6 +19,7 @@ pub mod effect_bind_wire;
 pub mod export_types_wire;
 pub mod exports_wire;
 pub mod func_layout_wire;
+mod graft;
 pub mod highlight_wire;
 pub mod instantiations_wire;
 pub mod link_map;
