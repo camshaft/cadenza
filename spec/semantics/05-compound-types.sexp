@@ -5695,7 +5695,10 @@
   (output (: 4 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; INC1 increment-1 (main 389beee7be, #7342): the self-recursion-gated owned-param-shell reclaim now frees
+  ; depth's owned Nat spine — v-runtime faithful rc-trace confirmed leak-4→0 (non-reconstructing fold: the
+  ; `+1` arm reads the recursive payload + rebuilds nothing, so the shell cascade-frees). Was known-leak.
+  (live-objects 0))
 
 ; The map-sum-value case above consumes the lookup result INLINE, in the same expression. The environment-
 ; lookup idiom a type-inference / evaluation pass takes is different: look a binding up in the map, WRAP it
