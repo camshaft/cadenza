@@ -93,6 +93,14 @@
     ((bail (n) s n))
     (+ (Bail.bail 7) 100)))))
   (p "The result is " (c "7") ", not " (c "107") ": performing " (c "bail") " jumped out of the addition entirely. This is how you'd write \"stop and return this now\": the same shape as an exception, but it's just a handler choosing not to resume.")
+  (p "The bail works even right beside another effect, not just a plain value. Here the body adds a resumptive " (cdz (E.other)) " and an abortive " (cdz (E.bail 5)) ", and performing " (c "bail") " still exits the whole " (c "handle") ":")
+  (runnable
+    (source (effect E (op other (-> Int64)) (op bail (-> Int64 Int64)))
+(def (main)
+  (handle E 0
+    ((other () s (resume s (+ s 1))) (bail (v) s v))
+    (+ (E.other) (E.bail 5))))))
+  (p "The result is " (c "5") ". " (cdz (E.other)) " ran first and drew the seed " (c "0") ", then " (cdz (E.bail 5)) " bailed, so the pending " (c "+") " never finishes. The effect " (cdz (E.other)) " already performed isn't undone, though: a bail-out abandons the work still " (em "pending") ", not what already happened. And the bail need not sit at the top of the body; it exits from wherever it runs, even from inside a conditional like " (cdz (if c (E.bail 5) 0)) " that only some runs reach.")
   (note "These handlers are " (em "one-shot") ": each performance resumes at most once, so they compile down to ordinary control flow: no captured continuations, no runtime machinery. Handling something the program can't discharge itself (real input, the clock) is delegated to the host at the program's edge, and shows up in its manifest. That's how effects stay honest about what a program actually does.")
   (h2 "A guard must be side-effect-free")
   (p "There's one place a perform is " (em "not") " allowed: a " (link (slug "pattern-matching") " match-arm ") " " (em "guard") ". A guard is a boolean decision the pattern engine may evaluate " (em "speculatively or repeatedly") ", or skip entirely when an earlier arm wins, so it has no well-defined \"run exactly once, in this order\" the way an arm body does. Performing an effect there would mean an effect with no defined schedule, so the compiler rejects it outright. Here a guard performs " (c "Ask.ask") ", and the program declines:")
