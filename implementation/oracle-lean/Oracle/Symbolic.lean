@@ -1537,6 +1537,51 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Set.union on non-set operands")
            | _, _ => .cannotProve "symeval: malformed Set.union")
+        else if q == "Set".toUTF8 && mem == "intersection".toUTF8 then
+          -- `Set.intersection a b` → the canonical set of elements in BOTH `a` and `b`
+          -- (`canonSet (va.filter (∈ vb))`). Prelude type `∀a. (Set a) → (Set a) → (Set a)`
+          -- (prelude.rs:714/745); COMMUTATIVE. The Set companion of `union`, closing v-cdz-smith's #7506
+          -- intersection/difference boundary (the last Set-op residual after #7507's Set.of). Membership
+          -- via BIT-FAITHFUL `valEq` (NaN dedupes, +0.0 ≠ -0.0 — NEVER SymExpr-beq, whose IEEE `==` is the
+          -- opposite and unsound), mirroring `Set.contains`. Both operands concrete `.ctor "set"` (COMPOUND
+          -- elements via `symElemToValue?`); symbolic/unorderable → cannotProve.
+          (match children[1]?, children[2]? with
+           | some aId, some bId =>
+             (match symEval m senv fuel ty aId, symEval m senv fuel ty bId with
+              | .sym (.ctor ta ea), .sym (.ctor tb eb) =>
+                if ta == "set".toUTF8 && tb == "set".toUTF8 then
+                  (match ea.mapM symElemToValue?, eb.mapM symElemToValue? with
+                   | some va, some vb =>
+                     (match canonSet (va.filter (fun v => vb.any (fun w => valEq w v))) with
+                      | some s => .sym (.ctor "set".toUTF8 (s.map valueToSym))
+                      | none => .cannotProve "symeval: Set.intersection on unorderable elements")
+                   | _, _ => .cannotProve "symeval: Set.intersection needs all-concrete elements")
+                else .cannotProve "symeval: Set.intersection on a non-set value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Set.intersection on non-set operands")
+           | _, _ => .cannotProve "symeval: malformed Set.intersection")
+        else if q == "Set".toUTF8 && mem == "difference".toUTF8 then
+          -- `Set.difference a b` → the canonical set of elements in `a` but NOT in `b` (`a \ b`,
+          -- `canonSet (va.filter (∉ vb))`). Prelude type `∀a. (Set a) → (Set a) → (Set a)`; NON-COMMUTATIVE
+          -- (`a` is the minuend, `b` the subtrahend — arg ORDER is load-bearing, a swap = a FALSE verdict).
+          -- Same bit-faithful `valEq` membership + concrete-operand discipline as `intersection`.
+          (match children[1]?, children[2]? with
+           | some aId, some bId =>
+             (match symEval m senv fuel ty aId, symEval m senv fuel ty bId with
+              | .sym (.ctor ta ea), .sym (.ctor tb eb) =>
+                if ta == "set".toUTF8 && tb == "set".toUTF8 then
+                  (match ea.mapM symElemToValue?, eb.mapM symElemToValue? with
+                   | some va, some vb =>
+                     (match canonSet (va.filter (fun v => !(vb.any (fun w => valEq w v)))) with
+                      | some s => .sym (.ctor "set".toUTF8 (s.map valueToSym))
+                      | none => .cannotProve "symeval: Set.difference on unorderable elements")
+                   | _, _ => .cannotProve "symeval: Set.difference needs all-concrete elements")
+                else .cannotProve "symeval: Set.difference on a non-set value"
+              | .cannotProve r, _ => .cannotProve r
+              | _, .cannotProve r => .cannotProve r
+              | _, _ => .cannotProve "symeval: Set.difference on non-set operands")
+           | _, _ => .cannotProve "symeval: malformed Set.difference")
         else if q == "Set".toUTF8 && mem == "remove".toUTF8 then
           -- `Set.remove s x` → the set minus `x` (bit-faithful `valEq`, mirroring `Set.contains`/`Map.remove`),
           -- re-canonicalized. Concrete set + value required; symbolic/unorderable → cannotProve.
@@ -2645,6 +2690,34 @@ private def _setOfExpr : Module :=
     root := 9 }
 #guard symEval _setOfExpr [] symDefaultFuel defaultIntTy 9
        == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 0), .const (.int 6)])
+
+-- SET.INTERSECTION coverage (v-cdz-smith #7506 closed loop): `((. Set intersection) (set 1 2 3) (set 2 3 4))`
+-- → `[2,3]` (elements in both). COMMUTATIVE.
+private def _setIntersectionExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "intersection".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3]),
+                Leaf.intLit false .dec (ByteArray.mk #[4])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7], .atom 3, .atom 5, .atom 6, .atom 7, .list #[9, 10, 11, 12],
+               .list #[3, 8, 13]],
+    root := 14 }
+#guard symEval _setIntersectionExpr [] symDefaultFuel defaultIntTy 14
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 2), .const (.int 3)])
+
+-- SET.DIFFERENCE coverage: `((. Set difference) (set 1 2 3) (set 2 3 4))` → `[1]` (in `a` not in `b`).
+-- NON-COMMUTATIVE — pins the a\b arg ORDER (a swap would give `[4]`, a false verdict).
+private def _setDifferenceExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "difference".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[3]),
+                Leaf.intLit false .dec (ByteArray.mk #[4])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 3, .atom 4, .atom 5, .atom 6,
+               .list #[4, 5, 6, 7], .atom 3, .atom 5, .atom 6, .atom 7, .list #[9, 10, 11, 12],
+               .list #[3, 8, 13]],
+    root := 14 }
+#guard symEval _setDifferenceExpr [] symDefaultFuel defaultIntTy 14
+       == SymOutcome.sym (.ctor "set".toUTF8 #[.const (.int 1)])
 
 -- MAP.REMOVE member-op coverage: `((. Map remove) (map (1 10) (2 20)) 1)` → `[(2,20)]` (key 1 dropped).
 private def _mapRemoveExpr : Module :=
