@@ -91,13 +91,38 @@ pub struct EquivTrial {
     pub cadenza: Arenas,
 }
 
-/// One item in a batch: either an output-assertion [`Trial`] or a symbolic-equivalence [`EquivTrial`].
-/// The oracle iterates batch children and emits one verdict per child IN ORDER, reusing the verdict
-/// protocol for both — so a batch may freely MIX the two kinds (an equiv node needs no decoder change).
+/// rcdzc's frontend `cdz check` verdict, carried in a [`TypecheckItem`] (design §1.2/§1.3): `Accept`,
+/// `Reject(code)` (a CODED error-severity fault — the CDZ code, e.g. `"CDZ0203"`), or `Decline` (a
+/// CODELESS "not yet implemented"). The false-reject-vs-capability-gap triage keys on which of the last
+/// two rcdzc carried (a coded reject over a Lean-accept = a bug; a codeless decline = a known gap).
+#[derive(Debug, Clone)]
+pub enum RcdzcVerdict {
+    Accept,
+    Reject(String),
+    Decline,
+}
+
+/// A TYPING assertion (design §1.3): the Lean type oracle infers a typing verdict for `program` and
+/// compares it against rcdzc's carried `rcdzc_verdict`. The fuzzer drives this on rcdzc's REJECTED (and,
+/// from T2, ACCEPTED) programs — a Lean-accepts over a coded reject is a FALSE-REJECT, a Lean-rejects over
+/// an accept is a FALSE-ACCEPT (soundness hole). Verdicts reuse the existing protocol: `(holds)` = agree,
+/// `(mismatch <detail>)` = a finding (detail names the direction), `(skip <reason>)` = the oracle declined.
+#[derive(Debug, Clone)]
+pub struct TypecheckItem {
+    /// The program AST — a self-contained `(do (def (main …) BODY) (export main))`.
+    pub program: Arenas,
+    /// rcdzc's `cdz check` accept/reject/decline verdict for it.
+    pub rcdzc_verdict: RcdzcVerdict,
+}
+
+/// One item in a batch: an output-assertion [`Trial`], a symbolic-equivalence [`EquivTrial`], or a typing
+/// [`TypecheckItem`]. The oracle iterates batch children and emits one verdict per child IN ORDER, reusing
+/// the verdict protocol for all — so a batch may freely MIX the kinds (each needs no decoder change).
 #[derive(Debug, Clone)]
 pub enum BatchItem {
     Trial(Trial),
     Equiv(EquivTrial),
+    Typecheck(TypecheckItem),
 }
 
 /// Encode a batch of mixed [`BatchItem`]s as one `(batch <item>…)` binary-AST blob — the entire REQUEST
@@ -110,6 +135,7 @@ pub fn encode_batch(items: &[BatchItem]) -> Vec<u8> {
         kids.push(match it {
             BatchItem::Trial(t) => build_trial(t, &mut b),
             BatchItem::Equiv(e) => build_equiv(e, &mut b),
+            BatchItem::Typecheck(t) => build_typecheck(t, &mut b),
         });
     }
     let root = b.list(kids);
@@ -159,6 +185,31 @@ fn build_equiv(e: &EquivTrial, b: &mut Builder) -> StructId {
     let orig = graft(&e.orig, e.orig.root, b);
     let cadenza = graft(&e.cadenza, e.cadenza.root, b);
     b.list(vec![head, orig, cadenza])
+}
+
+/// Build one `(typecheck <program> <rcdzc-verdict>)` node — the TYPING dimension (design §1.3). The
+/// carried verdict is `(accept)` | `(reject "<CODE>")` | `(decline)`. Mirrors `build_trial`/`build_equiv`;
+/// the oracle runs `infer` on the program and compares against this verdict (`Oracle/Batch.lean`
+/// `judgeTypecheckNode`). No verdict-protocol change — a `(typecheck …)` reuses `holds/mismatch/skip`.
+fn build_typecheck(t: &TypecheckItem, b: &mut Builder) -> StructId {
+    let head = b.name("typecheck");
+    let prog = graft(&t.program, t.program.root, b);
+    let verdict = match &t.rcdzc_verdict {
+        RcdzcVerdict::Accept => {
+            let h = b.name("accept");
+            b.list(vec![h])
+        }
+        RcdzcVerdict::Reject(code) => {
+            let h = b.name("reject");
+            let leaf = b.atom_leaf(Leaf::Str(code.as_str().into()));
+            b.list(vec![h, leaf])
+        }
+        RcdzcVerdict::Decline => {
+            let h = b.name("decline");
+            b.list(vec![h])
+        }
+    };
+    b.list(vec![head, prog, verdict])
 }
 
 /// Copy the subtree at `id` of `src` into builder `b`, returning its new id (structural graft — the AST
@@ -595,6 +646,68 @@ mod tests {
             matches!(differ[0], Verdict::Skip(_)),
             "(equiv 42 43) must be cannot-prove (skip normalized-but-different), got {:?}",
             differ[0]
+        );
+    }
+
+    /// The `(typecheck …)` encoder builds a valid `(typecheck <program> (reject "<CODE>"))` node inside a
+    /// `(batch …)` — round-trips through the shared codec. Version-independent (no oracle needed).
+    #[test]
+    fn encode_typecheck_builds_the_typecheck_node() {
+        let items = vec![BatchItem::Typecheck(TypecheckItem {
+            program: ast("(do (def (main) 42) (export main))"),
+            rcdzc_verdict: RcdzcVerdict::Reject("CDZ0203".into()),
+        })];
+        let blob = encode_batch(&items);
+        let a = cadenza_syntax::codec::decode(&blob).expect("typecheck batch decodes");
+        let Struct::List(kids) = a.get(a.root) else {
+            panic!("root not a list");
+        };
+        assert_eq!(a.as_name(kids[0]), Some("batch"));
+        assert_eq!(kids.len(), 2, "batch head + typecheck");
+        let Struct::List(tc) = a.get(kids[1]) else {
+            panic!("item not a list");
+        };
+        assert_eq!(
+            a.as_name(tc[0]),
+            Some("typecheck"),
+            "child is the typecheck node"
+        );
+        // child 2 is the rcdzc verdict `(reject "CDZ0203")`
+        let Struct::List(rv) = a.get(tc[2]) else {
+            panic!("verdict not a list");
+        };
+        assert_eq!(
+            a.as_name(rv[0]),
+            Some("reject"),
+            "carried verdict is (reject …)"
+        );
+    }
+
+    /// END-TO-END: a `(typecheck P (reject "CDZ0203"))` against the real oracle judges `(skip …)` — T0.1's
+    /// `infer` is all-declining, so every typecheck item skips. ROBUST to version skew: a pre-typecheck
+    /// oracle rejects the unknown node with its OWN skip, so the `Skip` assertion holds either way. Verifies
+    /// the typecheck wire round-trips through the real oracle process (the fuzzer's real invocation).
+    #[test]
+    fn typecheck_self_test_against_oracle_check() {
+        let Some(oracle) = discover_oracle_check() else {
+            eprintln!(
+                "skipping: no oracle-check (nix build .#oracle-lean; set CDZ_SMITH_ORACLE_CHECK)"
+            );
+            return;
+        };
+        let v = judge_batch_items(
+            &oracle,
+            &[BatchItem::Typecheck(TypecheckItem {
+                program: ast("(do (def (main) 42) (export main))"),
+                rcdzc_verdict: RcdzcVerdict::Reject("CDZ0203".into()),
+            })],
+        )
+        .expect("oracle judges the typecheck batch");
+        assert_eq!(v.len(), 1);
+        assert!(
+            matches!(v[0], Verdict::Skip(_)),
+            "T0.1 declining infer ⇒ a typecheck item must skip, got {:?}",
+            v[0]
         );
     }
 }
