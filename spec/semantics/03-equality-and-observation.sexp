@@ -1811,6 +1811,53 @@
   (call main (: 6 Int64))
   (output (: false Bool)))
 
+; REGRESSION (v-inference #7218, after #7023 added the `Num` prelude MODULE for `Num.neg`): a user variant
+; whose name collides with a prelude MODULE (`Num`) must still CONSTRUCT the variant, not resolve to the
+; prelude module record. The bug surfaced ONLY through the CONST-FOLD / inline path — a `(mk 4)` call
+; reduces `mk`'s body and the INLINED `(Num n)` copy is a SYNTHESIZED node whose construct-position
+; colliding-variant shadow (`resolve` step 3d) did not fire (its user-node gate excluded synth copies), so
+; it fell to the prelude `Num` record → a spurious CDZ0201 "cannot apply a value of type (Record …)". The
+; two cases below force the fold path the mutually-recursive equality case above does NOT: a NULLARY main
+; over `(= (mk 4) (mk 4))` FULLY const-folds BOTH operands (the case above folds only the one `(mk 4)`
+; operand alongside a runtime `(mk a)`, so it never exercised the synth-node construct). The `(no-diagnostic
+; "cannot apply")` pins the ABSENCE of the spurious prelude-module misresolution; the run output witnesses
+; the construct actually happened. (Migrated from rcdzc a_user_variant_named_like_a_prelude_module_
+; constructs_through_const_fold, now deleted — language-independent + corpus-covered.)
+(case
+  "a user variant named like a prelude MODULE (`Num`) constructs through a FULLY const-folded call (no misresolution to the module)"
+  (doc
+    "The nullary-main both-const twin of the mutually-recursive equality case above: `(= (mk 4) (mk 4))`
+           in a NULLARY main fully const-folds both operands, reducing `mk`'s body and inlining the `(Num n)`
+           construct as a synthesized node. That synth copy must still resolve `Num` to the USER variant, not
+           the prelude `Num` module record — else a spurious CDZ0201. Two identical constructions compare
+           equal → true.")
+  (input
+    (do
+      (type E (Num Int64) (Neg T))
+      (type T (Wrap E))
+      (def (mk (: n Int64)) (Neg (Wrap (Num n))))
+      (def (main) (= (mk 4) (mk 4)))
+      (export main)))
+  (no-diagnostic "cannot apply")
+  (call main)
+  (output (: true Bool)))
+(case
+  "a user variant named like a prelude MODULE (`Num`) constructs directly through mk-inline over a runtime arg"
+  (doc
+    "The simple-sum companion: `mk` directly returns `(Num n)` (no mutual recursion), and `(= (mk a) (mk
+           a))` over a runtime param `a` inlines `mk`'s body — the inlined `(Num n)` synth node must resolve to
+           the user variant, not the prelude `Num` module. Two identical constructions of `(Num a)` compare
+           equal for any `a` → true.")
+  (input
+    (do
+      (type E (Num Int64) (Zero))
+      (def (mk (: n Int64)) (Num n))
+      (def (main (: a Int64)) (= (mk a) (mk a)))
+      (export main)))
+  (no-diagnostic "cannot apply")
+  (call main (: 4 Int64))
+  (output (: true Bool)))
+
 (case
   "a negative zero in a record field is distinct from positive zero"
   (doc

@@ -44,27 +44,16 @@ fn unsupported_construct_decline_carries_cdz0900_and_is_still_a_decline() {
     assert_eq!(d.message, "a widget of this shape is not supported");
 }
 
-#[test]
-fn a_user_variant_named_like_a_prelude_module_constructs_through_const_fold() {
-    // REGRESSION (#7023 added the `Num` prelude namespace): a user `(type … (Num …) …)` variant named
-    // like a prelude MODULE must still CONSTRUCT — `(Num n)` builds the variant, not "apply the num_module
-    // record". The failure surfaced only through the CONST-FOLD/inline path: a `(mk 4)` call reduces `mk`'s
-    // body, and the inlined `(Num n)` copy is a SYNTHESIZED node whose colliding-variant construct-position
-    // shadow (`resolve` step 3d) did not fire (its `is_user_node` gate excluded synth copies), so it fell to
-    // the prelude `Num` record → a spurious CDZ0201 "cannot apply a value of type (Record …)". The fix wires
-    // the same `source_of_synth`/`inlined_value_construct` discriminator the same-name-newtype step uses.
-    // A mutually-recursive sum (the shape the 03-equality corpus case exercises) and a runtime construct.
-    for src in [
-        "(do (type E (Num Int64) (Neg T)) (type T (Wrap E)) (def (mk (: n Int64)) (Neg (Wrap (Num n)))) (def (main) (= (mk 4) (mk 4))) (export main))",
-        "(do (type E (Num Int64) (Zero)) (def (mk (: n Int64)) (Num n)) (def (main (: a Int64)) (= (mk a) (mk a))) (export main))",
-    ] {
-        assert!(
-            all_errors(src).is_empty(),
-            "a user `Num` variant constructs through const-fold with no spurious decline: {:?}",
-            all_errors(src)
-        );
-    }
-}
+// MIGRATED to corpus (03-equality-and-observation.sexp, after the mutually-recursive-sum equality case):
+// two cases pin that a user variant named like a prelude MODULE (`Num`, added by #7023 for `Num.neg`) still
+// CONSTRUCTS through the const-fold/inline path — a NULLARY-main `(= (mk 4) (mk 4))` FULLY const-folds both
+// operands (forcing the synthesized-`(Num n)` construct the pre-existing mutually-recursive case never
+// exercised, since it folds only one operand), and a simple-sum `(= (mk a) (mk a))` over a runtime param
+// inlines `mk` directly. Each pins `(no-diagnostic "cannot apply")` (the ABSENCE of the spurious CDZ0201
+// prelude-module misresolution the synth-node shadow gate caused, resolve step 3d, #7218) plus a run
+// output witnessing the construct happened → true. Rust test
+// a_user_variant_named_like_a_prelude_module_constructs_through_const_fold deleted — language-independent
+// + corpus-covered.
 
 // MIGRATED to corpus (06-numeric-model.sexp, the deprecated-prefix-`(- e)` section ~7286): all three
 // facets are corpus-asserted — the ANNOTATION site (`(: (- x) Int64)` → CDZ0203, enriched to AND-require
