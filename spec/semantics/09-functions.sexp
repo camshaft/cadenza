@@ -11150,13 +11150,18 @@
 (case
   "a recursive linked-list fold leaks every heap node (O(N) reclaim gap)"
   (doc
-    "A user recursive sum `L = Cons(Int64, L) | Nil` built to 3 elements and folded by `len` (which
-           matches each Cons but never reclaims the matched shell) leaks EVERY heap node: 3 Cons + 3
-           (Int64, L) tuples + 1 Nil = 7 cells for a 3-element list — the PERVASIVE O(N)-in-data
-           Perceus-in-recursion reclaim gap (the O(1) closure / borrowed-sum-param reclaim cases are its
-           bounded cousins). Value-correct despite the leak: `len (build 3)` = 3 (a freed-early node would
-           trap/garble). Flips to 0 (and the marker retires) when the general Perceus drop-insertion pass
-           lands; a count above 7 is a NEW leak, below 7 partial reclaim.")
+    "A user recursive sum `L = Cons(Int64, L) | Nil` built to 3 elements and folded by `len` — a
+           SELF-TAIL-RECURSIVE fold (the `(len t …)` tail call sits in the Cons arm). This WAS the
+           pervasive O(N)-in-data Perceus-in-recursion leak witness: every matched Cons shell + its
+           (Int64, L) tuple leaked (7 cells for a 3-element list), the reclaim gap the doc below once
+           tracked. INC1 pt3's SELF-LOOP-TAIL shell reclaim (v-core-opt emit: a per-iteration deep
+           `op_drop` on the loop-param shell; v-memory-safety dup-side: dup the moved tail child before
+           the drop so the cascade nets without a double-free) now RECLAIMS the traversed spine per
+           iteration: `(live-objects 0)` — the 3 Cons shells + 3 tuples are freed, and the payloadless
+           `Nil` terminal is an immortal 0-heap constant (not a leaked cell), confirmed by faithful
+           rctrace on landed #7399. Value-correct: `len (build 3)` = 3 (a freed-early node would
+           trap/garble). The pin is now a REGRESSION GUARD for the self-loop-tail reclaim — any
+           `live-objects > 0` is a pt3 reclaim regression (a re-leaked spine).")
   (input
     (do
       (type L (Cons (Tuple Int64 L)) Nil)
@@ -11167,7 +11172,7 @@
       (def (main) (len (build 3) 0))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── Reclaim (no-double-free): a CONSUMED heap param on a self-recursive non-tail spine is not dropped (migrated from rcdzc) ──
 (case
