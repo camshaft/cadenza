@@ -54,6 +54,16 @@ baseline="$(grep -vc '^#' "$wt"spec/semantics/.gate-baseline 2>/dev/null || echo
 drift=$((corpus - baseline))
 echo "baseline-drift-monitor: corpus=$corpus baseline=$baseline drift=$drift threshold=$THRESHOLD (worktree $(basename "$wt"))"
 
+# SILENT-CRON OBSERVABILITY (matches prune-*.sh / drain-nudge.sh; concierge convention 2026-08-29): stamp a
+# `.last-run` on EVERY run (mtime = liveness proof the daily cron FIRED, content = the drift summary). This is
+# DISTINCT from `.last-notify` (which stamps only when a notification is SENT, so its age reflects "last
+# notified", not "last ran") — without a per-run stamp there was no way to confirm the daily cron is even
+# firing (the exact gap drain-nudge.sh's .last-run closed). Placed BEFORE the under-threshold early-exit so a
+# quiet no-drift pass still records liveness. Best-effort, never fails the run.
+printf '%s corpus=%s baseline=%s drift=%s threshold=%s\n' \
+  "$(date -Is 2>/dev/null || echo now)" "$corpus" "$baseline" "$drift" "$THRESHOLD" \
+  > "$HUB/baseline-drift-monitor.last-run" 2>/dev/null || true
+
 [ "$drift" -gt "$THRESHOLD" ] || exit 0   # under threshold → nothing to do
 
 # Cooldown: don't re-notify within COOLDOWN while the drift persists (avoid daily spam until a gate --save lands).
