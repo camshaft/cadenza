@@ -13285,3 +13285,66 @@
   (output (: 20 Int64))
   (call main (: 0 Int64))
   (output (: 12 Int64)))
+
+; --- Variable-arity (varargs) functions: a `(.. binder)` REST parameter -----------------------
+; DESIGN-variable-arity-functions.md §3.1: a function's LAST parameter may be a rest parameter
+; `(.. (: xs (List T)))`, which GATHERS all trailing arguments into a single homogeneous `List T`
+; value. The function keeps ONE runtime body over that list; a call supplies zero or more trailing
+; arguments (each must have the element type T), so `count(1, 2, 3)`, `count()`, and `tagged(100, 7,
+; 8, 9)` all resolve against the one definition. This is the parameter-side dual of the value-position
+; `(.. v)` spread and reuses the same marker shape. (The heterogeneous tuple-rest is a later increment.)
+(case
+  "a list-rest parameter gathers the trailing arguments into a list"
+  (doc
+    "`(def (count (.. (: xs (List Int64)))) (List.len xs))` gathers every argument into `xs : List
+           Int64`, so `(count 1 2 3)` binds `xs = [1, 2, 3]` and its length is 3. Witnesses that a rest
+           parameter collects a variable number of arguments into one homogeneous list the body reads.")
+  (input
+    (do
+      (def (count (.. (: xs (List Int64)))) (List.len xs))
+      (def (main) (count 1 2 3))
+      (export main)))
+  (output (: 3 Int64)))
+
+(case
+  "a list-rest parameter with zero trailing arguments is the empty list"
+  (doc
+    "The degenerate boundary: `(count)` supplies no trailing arguments, so the rest parameter binds the
+           EMPTY list `[]` and its length is 0. Pins that a varargs call with no arguments is well-formed —
+           the rest gathers nothing rather than being a missing argument.")
+  (input
+    (do
+      (def (count (.. (: xs (List Int64)))) (List.len xs))
+      (def (main) (count))
+      (export main)))
+  (output (: 0 Int64)))
+
+(case
+  "a fixed parameter before a list-rest parameter binds positionally"
+  (doc
+    "`(def (tagged (: tag Int64) (.. (: xs (List Int64)))) (+ tag (List.len xs)))` has one FIXED
+           parameter then a rest: `(tagged 100 7 8 9)` binds `tag = 100` positionally and gathers `[7, 8,
+           9]` into `xs` (length 3), giving 103. A call with only the fixed argument, `(tagged 5)`, gathers
+           the empty list, giving 5. Pins that leading fixed parameters bind positionally and the rest
+           absorbs exactly the surplus.")
+  (input
+    (do
+      (def (tagged (: tag Int64) (.. (: xs (List Int64)))) (+ tag (List.len xs)))
+      (def (main (: n Int64)) (tagged n 7 8 9))
+      (export main)))
+  (call main (: 100 Int64))
+  (output (: 103 Int64)))
+
+(case
+  "a list-rest argument of the wrong element type is rejected"
+  (doc
+    "The rest parameter is HOMOGENEOUS — every trailing argument shares the element type. `(count 1 \"x\"
+           3)` mixes an `Int64` and a `String`, so gathering them into one list is a type error (the same
+           CDZ0201 a heterogeneous list literal gets). Pins that a list-rest enforces one element type across
+           all the arguments it gathers.")
+  (input
+    (do
+      (def (count (.. (: xs (List Int64)))) (List.len xs))
+      (def (main) (count 1 "x" 3))
+      (export main)))
+  (error CDZ0201 (message "list elements must share one type")))

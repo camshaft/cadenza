@@ -47,6 +47,13 @@ fn push_name(ast: &mut Arenas, name: &str) -> StructId {
 /// `(: name T)` (inner is a bare name — a typed binder) is NOT destructured (`None`): its inner name IS
 /// the real binder. A bare name / `()` is not a pattern (`None`).
 fn destructure_pattern(ast: &Arenas, id: StructId) -> Option<(StructId, Option<StructId>)> {
+    // A REST parameter `(.. binder)` (varargs, `DESIGN-variable-arity-functions.md` §2) is NOT a
+    // destructuring pattern — it is a plain binder that receives the GATHERED trailing arguments as a
+    // list (handled at application in `apply_lambda`). Leave it untouched (like a bare / `(: name T)`
+    // param) so it is not rewritten into a `let` with a `(.. …)` binding the `let`-validation rejects.
+    if ast.as_form(id, "..").is_some() {
+        return None;
+    }
     // An annotation `(: <inner> T)`: peel to the inner pattern. Destructure iff the inner is a compound
     // pattern (a list); a `(: name T)` typed binder is left alone.
     if let Some(tail) = ast.as_form(id, ":")

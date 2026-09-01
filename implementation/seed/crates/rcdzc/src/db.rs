@@ -5304,6 +5304,12 @@ fn build_scope_binders(
     // The name a parameter occurrence declares, with its NAME occurrence — bare `a` or `(: a T)`.
     // Mirrors `resolve::param_name` (kept in sync; a divergence would resolve a param wrong).
     fn param_binder(ast: &Arenas, param: StructId) -> Option<(&str, StructId)> {
+        // A REST parameter `(.. binder)` (varargs, `DESIGN-variable-arity-functions.md` §2) — peel the
+        // `..` marker to its binder (a bare name or a `(: name T)`), then read the name as usual, so a
+        // body reference to the rest binder resolves in scope.
+        if let Some(tail) = ast.as_form(param, "..") {
+            return param_binder(ast, *tail.first()?);
+        }
         if let Some(n) = ast.as_name(param) {
             return Some((n, param));
         }

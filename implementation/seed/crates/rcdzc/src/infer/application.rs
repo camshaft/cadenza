@@ -2480,7 +2480,13 @@ pub(crate) fn check_application(
             // silently graded as a to-do. A body whose result IS a function (a curried lambda returning a
             // lambda) legitimately absorbs the extra args — so gate on the reduced result NOT being an
             // arrow (checked via the full-application result type below).
-            if args.len() > params.len() {
+            // A VARARGS callee (rest last-parameter `(.. binder)`, `DESIGN-variable-arity-functions.md`
+            // §3.1) legitimately absorbs the surplus arguments — they are GATHERED into the rest list at
+            // application (`apply_lambda`), so more args than the declared arity is NOT an over-application.
+            // Skip the over-application fault for such a callee; its arguments are typed via the ordinary
+            // gather-reduction (the rest binder receives a `(List T)`).
+            let callee_is_varargs = crate::eval::callee_is_varargs(db, head);
+            if args.len() > params.len() && !callee_is_varargs {
                 // Type the lambda fully applied to its own arity; if the result is not a function, the
                 // surplus args over-apply it.
                 let applied_ty = apply_type(db, head, &args[..params.len()]);
@@ -3094,7 +3100,10 @@ pub(crate) fn check_application(
             //     an argument (`(x 3)` for `x : Int`). That is the genuine not-a-function case; keep the
             //     `NOT_A_FUNCTION_PREFIX` message.
             other => {
-                if arg_index > 0 {
+                // A VARARGS callee (rest last-parameter, `DESIGN-variable-arity-functions.md` §3.1)
+                // absorbs the surplus arguments into its rest list at application — not an over-application.
+                let callee_is_varargs = crate::eval::callee_is_varargs(db, head);
+                if arg_index > 0 && !callee_is_varargs {
                     trace!(target: "rcdzc::infer", head = head.0, arity = arg_index, args = args.len(), "apply: over-applied a scheme-typed head (CDZ0203)");
                     // `arg_index` args were consumed before the arrow ran out, so `args[arg_index]` is the
                     // FIRST surplus — DELETE it (the fixpoint removes each extra in turn). Anchor + fix there.

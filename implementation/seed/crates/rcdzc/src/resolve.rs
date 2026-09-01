@@ -6700,21 +6700,46 @@ fn is_param_occurrence(db: &Db, id: StructId) -> bool {
     let Some(parent) = db.parent_of(id) else {
         return false;
     };
-    let (param_node, list) = if db.ast.as_form(parent, ":").is_some() {
-        // `id` is inside a `(: name T)`; it is a param NAME only if it is the name position (first),
-        // never the type position. The binder node itself is what sits in the param list.
-        let is_name_position =
-            db.ast.as_form(parent, ":").and_then(|t| t.first().copied()) == Some(id);
-        if !is_name_position {
-            return false;
+    // `id` may sit in the param list bare, inside a `(: name T)` binder, and/or inside a `(.. binder)`
+    // REST-parameter marker (varargs, `DESIGN-variable-arity-functions.md` §2) — e.g. `(.. xs)` or
+    // `(.. (: xs (List T)))`. Peel a `(:…)` wrapper (id must be the NAME position, never the type), then
+    // peel a `(..)` wrapper (id/binder must be its sole operand). `param_node` ends as the element that
+    // actually sits in the param list (the `(..)` node for a rest param); `list` is that param list.
+    let mut binder_node = id;
+    let mut container = parent;
+    if db.ast.as_form(container, ":").is_some() {
+        if db
+            .ast
+            .as_form(container, ":")
+            .and_then(|t| t.first().copied())
+            != Some(binder_node)
+        {
+            return false; // the type position of a `(: name T)`, not a param name
         }
-        let Some(list) = db.parent_of(parent) else {
+        binder_node = container;
+        let Some(p) = db.parent_of(container) else {
             return false;
         };
-        (parent, list)
-    } else {
-        (id, parent)
-    };
+        container = p;
+    }
+    if db.ast.as_form(container, "..").is_some() {
+        // A `(.. binder)` rest marker: `binder_node` (the bare name or the `(: name T)` node) must be its
+        // sole operand. The element sitting in the param list is then the `(..)` node itself.
+        if db
+            .ast
+            .as_form(container, "..")
+            .and_then(|t| t.first().copied())
+            != Some(binder_node)
+        {
+            return false;
+        }
+        binder_node = container;
+        let Some(p) = db.parent_of(container) else {
+            return false;
+        };
+        container = p;
+    }
+    let (param_node, list) = (binder_node, container);
     let Some(form) = db.parent_of(list) else {
         return false;
     };
