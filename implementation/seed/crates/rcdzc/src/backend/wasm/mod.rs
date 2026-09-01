@@ -624,6 +624,8 @@ pub fn emit(
                 canon_write_ops(write, &mut |op| {
                     used.insert(op);
                 });
+                // The wrapper reclaims the def's owned result handle after the canonical write (deep-drop).
+                used.insert("drop");
             }
             // A `list<u8>`/Bytes result member (CopyBytes) copies the runtime bytes out (`bytes-len` +
             // `bytes-get` loop) and drops the handle — register those so the wrapper body resolves them.

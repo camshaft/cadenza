@@ -3443,6 +3443,15 @@ fn emit_result_spill(
     uleb128(retptr as u64, out);
     // Write the value's canonical form at retptr + 0.
     emit_canon_write(write, rec, retptr, 0, next_local, realloc_abs, imp, out);
+    // Reclaim the def's RESULT handle: the def returned an OWNED compound (callee-owns-args → the caller, this
+    // wrapper, owns the result), and the canonical writer only BORROWED it (arr-get/vec-get/sum-disc/bytes-len
+    // are borrowing reads that retain nothing), so after the write `rec` holds the sole reference to the whole
+    // value tree — `drop` deep-reclaims it (the tree's children too). Without this the spilled result cell
+    // (+ its boxed children) LEAKED one per call (the SpillRecord-result known-leak class, SHAPE 60/62/63).
+    out.push(op::LOCAL_GET);
+    uleb128(rec as u64, out);
+    out.push(op::CALL);
+    uleb128(imp("drop"), out);
     // Return the area pointer.
     out.push(op::LOCAL_GET);
     uleb128(retptr as u64, out);
