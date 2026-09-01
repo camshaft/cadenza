@@ -1548,8 +1548,48 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
         // IS reclaimable (the BST del-min/insert 29/13/3 leak class); only a genuine CAPTURING closure's
         // closure-arg params stay excluded. (Prior `!top_is_lifted` over-excluded the combinators = the leak.)
         let nontail_spine_param = is_nontail_spine_param(db, top_body, scrutinee, &root);
+        let selfloop_scrut = selfloop_scrut_shell_reclaim_ok(db, top_body, scrutinee, &root);
         if owned_compound_boxed || nontail_spine_param {
             collect_consuming_payload_sites_cont(db, &root, scrutinee, dup_sites);
+        } else if selfloop_scrut {
+            // SELF-LOOP-TAIL path (INC1 pt3, v-mem dup-side of v-core-opt's emit `op_drop`): a self-tail-loop
+            // scrutinee whose per-iteration shell the emit deep-`op_drop`s (gated on the SAME
+            // `selfloop_scrut_shell_reclaim_ok`, so dup ⟺ drop key on ONE scrutinee, never the inner nested
+            // match). `is_nontail_spine_param` EXCLUDES this case by construction (the self-tail-loop scrutinee
+            // IS consumed in the tail call → its `!sum_cont_payload_consumed_in_tail_call` gate fails), hence
+            // its own arm. The `op_drop` is DEEP (cascades t→p→{children}); the empirical guarded-all harden
+            // DISPROVED the emit's "child dup'd by construction" assumption — the general emit MOVES a
+            // `Proj(SumPayload(t))` tail-carried child (inorder's `r`, len's `t`) into the loop-param slot
+            // WITHOUT a dup — so each consuming child-proj rooting at the scrutinee MUST be dup'd (Proj-nested
+            // tail carry + count>0 non-tail sibling consume like inorder's `l`). `collect_consuming_payload_
+            // sites_cont` follows the full `Proj|SumPayload|SumExpect` chain through the nested inner match, so
+            // both `l` and `r` are marked.
+            //
+            // EXCLUDE the §5 emit-OWNED carries — the two the emit already dups AND whose slot G7 skips the
+            // `op_drop` for, so re-dupping them here is a double-dup → a per-node LEAK (measured: the Nat
+            // `(Succ m)` fold + the recursive-sum spine regressed from 0 to depth-1 live):
+            //   • a BARE `SumPayload` whose path ends at `Payload` = `is_sumpayload_consume` (the whole-payload
+            //     tail carry `m` carried into its own slot), and
+            //   • a `RestFrom` list-rest slice = `is_restfrom_consume` (`emit_loop_iteration` vec-drops it).
+            // KEEP everything else (Proj-nested, `Elem`, sibling consumes) — the emit MOVES those with NO dup,
+            // so our deep drop double-frees them unless we dup. EXCLUSION is the UAF-DANGEROUS direction (an
+            // under-dup → double-free), so it is deliberately MINIMAL (only the two confirmed emit+G7-owned
+            // path steps); the guarded-all harden is the gate that any over-exclusion re-trips.
+            let mut sites = HashSet::new();
+            collect_consuming_payload_sites_cont(db, &root, scrutinee, &mut sites);
+            for s in sites {
+                let emit_owned_carry = match core_of(db, s) {
+                    Core::SumPayload { path, .. } => matches!(
+                        path.last(),
+                        Some(crate::core::PathStep::Payload)
+                            | Some(crate::core::PathStep::RestFrom(_))
+                    ),
+                    _ => false,
+                };
+                if !emit_owned_carry {
+                    dup_sites.insert(s);
+                }
+            }
         }
     }
     for child in core_child_ids(db, id) {
