@@ -1090,6 +1090,27 @@ pub(super) fn rebind_produces_fresh(db: &mut Db, arg: StructId) -> bool {
         Core::Tuple { .. } | Core::ListNew { .. } | Core::Record { .. } | Core::BytesOf { .. } => {
             true
         }
+        // `List.concat` mints a FRESH list handle — a distinct new cell that is NEVER the old accumulator's
+        // own cell WHEN the drop is eligible: the caller's conjunctive escape guard (`!binding_escapes(arg,
+        // binder)` for every rebind arg) fires this arm only when the old accumulator is BORROWED into the
+        // concat operands (its scalar head via a borrowing `get_op=Some` proj; its tail `(.. t)` via a
+        // RestFrom = the fresh-tail borrow), never carried WHOLE — a whole-carry (`concat(acc, more)`, or a
+        // let-aliased `let y=acc in concat(t, y)`) reads `acc` as a CONSUMING operand → `binding_escapes` =
+        // true → drop BLOCKED; a HEAP head re-embedded (`#list(h)`, `h` a nested-compound proj `get_op=None`)
+        // likewise escapes → BLOCKED. So when the drop DOES fire, `acc` is not a concat operand, hence the
+        // result outer cell is distinct from `acc` — a fresh cell. This is the INC2 (a) self-loop-tail
+        // decomposed-scrutinee reclaim: PASCAL/PAIRWISE rebind their list loop-param to a per-iteration
+        // `(List.concat #list(head) (.. tail))` built from BORROWS of the matched scrutinee, whose old shell
+        // then leaked one/iteration (v-runtime rc-trace: the concat-result loop-param's outer Compound #7 +
+        // Sum #8 stuck at rc1). The deep `op_drop` is rc-AWARE: the spine SHARED with the new list (via the
+        // consumed `(.. t)`) is rc-balanced at mint time (the RestFrom's `vec-drop` dup), so the drop frees
+        // only `acc`'s unique outer cells and merely decrements the shared spine (kept alive by the new
+        // list) — cascade nets each survivor to its owner, no UAF. Exactly the fn-doc's anticipated case
+        // ("the escape guard would cover them, but the … leak wants its own before/after pin"): v-runtime's
+        // PASCAL/PAIRWISE trace + guarded-all IS that pin. `List.push`/`prepend` NOT added — CATALAN's
+        // `(List.push c …)` carries `c` WHOLE (consumed) → escapes → blocked (a DISTINCT multi-use read-
+        // borrow-dup leak, v-runtime-classified Fix-A-adjacent, deferred).
+        Core::ListConcat { .. } => true,
         Core::Let { body, .. } => rebind_produces_fresh(db, body),
         Core::Seq { tail, .. } => rebind_produces_fresh(db, tail),
         Core::Block { body, .. } => rebind_produces_fresh(db, body),
