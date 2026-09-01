@@ -27029,3 +27029,21 @@
   (output (: 0 Int64))
   (call main (: true Bool))
   (output (: 5 Int64)))
+
+(case
+  "eab2 TWO abortive performs on one strict spine in a WHOLE-DEF-BODY handle, each under its own `if` the fold cannot lift (the sibling operand also performs) — both lower to a non-local exit, and FIRST-ABORT-WINS by runtime evaluation order: the leftmost taken abort RETURNS, abandoning the `+` and the second operand entirely. Pins the multi-HandleAbort first-wins invariant (v-effects HandleAbort CASE-1)."
+  (input
+    (do
+      (effect E (op bail (-> Int64 Int64)))
+      (def
+        (main (: c1 Bool) (: c2 Bool))
+        (handle E 0 ((bail (v) s v)) (+ (if c1 (E.bail 1) 10) (if c2 (E.bail 2) 20))))
+      (export main)))
+  (call main (: true Bool) (: true Bool))
+  (output (: 1 Int64))
+  (call main (: true Bool) (: false Bool))
+  (output (: 1 Int64))
+  (call main (: false Bool) (: true Bool))
+  (output (: 2 Int64))
+  (call main (: false Bool) (: false Bool))
+  (output (: 30 Int64)))
