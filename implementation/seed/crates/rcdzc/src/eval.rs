@@ -2309,7 +2309,28 @@ pub fn runtime_member_index(db: &mut Db, operand: StructId, key: &Symbol) -> Opt
 /// single-use / propagated binding's ref IS followed (it inlines to the tuple literal, which folds).
 pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::rc::Rc<[StructId]>> {
     match resolved_of(db, id) {
-        Resolved::Tuple { elems } => Some(elems),
+        Resolved::Tuple { elems } => {
+            // A CONSTRUCTION-SPREAD tuple `#tuple(a (.. t) b)` — its LOGICAL elements are `t`'s elements
+            // FLATTENED in (DESIGN §6), so a static projection `(. u k)` indexes the flattened sequence, not
+            // the raw `(.. )`-bearing child list. Inline each spread operand's own (constant-reducible)
+            // elements; if a spread operand is RUNTIME (`reduce_to_tuple_elems` → None), the whole tuple is
+            // not compile-time-visible, so decline the fold (`?`) and the projection lowers to a runtime
+            // `Core::Proj` over the flattened `Core::Tuple` `lower_tuple_spread` builds.
+            if elems.iter().any(|&e| db.ast.spread_operand(e).is_some()) {
+                let mut out: Vec<StructId> = Vec::with_capacity(elems.len());
+                for &e in elems.iter() {
+                    if let Some(op) = db.ast.spread_operand(e) {
+                        let inner = reduce_to_tuple_elems(db, op)?;
+                        out.extend(inner.iter().copied());
+                    } else {
+                        out.push(e);
+                    }
+                }
+                Some(out.into())
+            } else {
+                Some(elems)
+            }
+        }
         Resolved::Ref { value } => {
             if db.kept_bindings.contains(&value) {
                 // A kept multi-use runtime binding — opaque; its projection is a runtime read.

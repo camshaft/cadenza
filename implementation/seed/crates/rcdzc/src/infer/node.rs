@@ -636,10 +636,15 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
             collect(db, operand, out);
         }
-        // A tuple literal: descend into each element for its own faults.
+        // A tuple literal: descend into each element for its own faults. A CONSTRUCTION-SPREAD child
+        // `(.. t)` — collect the OPERAND's faults, not the `(.. )` wrapper (its `..` head is the
+        // pattern-only CDZ0201; the wrapper is flattened away at lowering into `t`'s element projections).
         Resolved::Tuple { elems } => {
             for &e in elems.iter() {
-                collect(db, e, out);
+                match db.ast.spread_operand(e) {
+                    Some(op) => collect(db, op, out),
+                    None => collect(db, e, out),
+                }
             }
         }
         // A list literal is HOMOGENEOUS: every element must share ONE type (collections-and-text.md §A
