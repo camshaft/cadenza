@@ -342,28 +342,12 @@ fn run_deep(f: impl FnOnce()) {
     f();
 }
 
-#[test]
-fn parses_clean() {
-    for src in [
-        "42",
-        "1 + 2 * 3",
-        "f(a, b)",
-        "a.b.c",
-        "let x = 1, y = 2 in x + y",
-        "if a then b else c",
-        "fn(x, y) => x + y",
-        "match e with | Some(n) => n | None => 0 | _ => neg",
-        "match n with | x if x < 0 => neg | _ => pos",
-        "List.at(xs, 0)",
-        "x |> f",
-        "x |> f(a) |> g",
-        "total + tax |> round",
-        "`{ x + 1 }",
-        "#[a, b, c]",
-    ] {
-        let _ = parse_ok(src);
-    }
-}
+// `parses_clean` (a smoke list of surfaces that must all parse clean) MIGRATED to the spec/syntax corpus
+// (parser-corpus inc-8): every entry is a corpus case whose tree.sexp golden IS the parses-clean proof —
+// `42` ml/01, `1 + 2 * 3` ml/02, `f(a, b)`/`a.b.c` member+call, `let …` multi-binding-let, `if …` ml/187,
+// `fn(x, y) => …` ml/188, `match …` multi-clause ml/33-34 + guarded ml/149, `List.at(…)` member-call,
+// `x |> f …` pipeline ml/61-64, `` `{ x + 1 } `` quasiquote ml/181, and the last gap `#[a, b, c]` (raw-list)
+// -> ml/554-raw-list-application `(a b c)`.
 
 // `pipeline_operator_builds_a_real_node` (`|>` is a REAL infix operator building an arena node `(|> L R)`,
 // left-associative, looser than arithmetic — the resolver's application-rewrite happens later, so the
@@ -373,45 +357,12 @@ fn parses_clean() {
 // ml/62-pipeline-call-rhs `x |> f(a)`→`(|> x (f a))` covers the call RHS. No new cases needed — the parser
 // `parse_ok` tree assertions here are byte-identical to those goldens' trees.
 
-#[test]
-fn arena_shapes() {
-    // `1 + 2 * 3` -> (+ 1 (* 2 3))
-    let a = parse_ok("1 + 2 * 3");
-    assert_eq!(a.head_name(a.root), Some("+"));
-    let plus = a.as_form(a.root, "+").unwrap();
-    assert_eq!(a.head_name(plus[1]), Some("*"));
-
-    // `f(a, b)` -> (f a b)
-    let a = parse_ok("f(a, b)");
-    assert_eq!(a.head_name(a.root), Some("f"));
-    assert_eq!(a.as_form(a.root, "f").unwrap().len(), 2);
-
-    // `a.b` -> (. a b) — the `.` head is a native `Leaf::Member` (kind identity, not `Name(".")`),
-    // read via `member_parts`.
-    let a = parse_ok("a.b");
-    assert!(a.member_parts(a.root).is_some());
-
-    // `p.0` -> (. p 0) — positional tuple access, the numeric sibling of `p.field`.
-    let a = parse_ok("p.0");
-    let (obj, key) = a.member_parts(a.root).unwrap();
-    assert_eq!(a.as_name(obj), Some("p"));
-    assert!(
-        matches!(a.get(key), crate::ast::Struct::Atom(l) if matches!(a.leaf(*l), Leaf::Int { .. }))
-    );
-    // `(x.0).1` -> (. (. x 0) 1) — chained index, parens keep `0.1` from lexing as a float.
-    let a = parse_ok("(x.0).1");
-    let (inner, _) = a.member_parts(a.root).unwrap();
-    assert!(a.member_parts(inner).is_some());
-
-    // `if a then b else c` -> (if a b c)
-    let a = parse_ok("if a then b else c");
-    assert_eq!(a.as_form(a.root, "if").map(|t| t.len()), Some(3));
-
-    // `let x = 1 in x` -> (let ((x 1)) x)
-    let a = parse_ok("let x = 1 in x");
-    let tail = a.as_form(a.root, "let").unwrap();
-    assert_eq!(tail.len(), 2); // bindings + body
-}
+// `arena_shapes` (specific parse-tree shapes for a handful of core surfaces) MIGRATED to the spec/syntax
+// corpus (parser-corpus inc-8): each shape is a corpus tree.sexp golden — `1 + 2 * 3`→`(+ 1 (* 2 3))` ml/02,
+// `f(a, b)`→`(f a b)` (call), `a.b` member, `p.0`→`(. p 0)` ml/141-positional-member-access, `(x.0).1`→
+// `(. (. x 0) 1)` ml/145-positional-member-chained, `if a then b else c`→`(if a b c)` ml/187, `let x = 1 in
+// x`→`(let ((x 1)) x)` (let). The `member_parts`/`head_name` accessors these asserted through are the arena
+// API; the observable tree they build is what the goldens pin.
 
 // `match_arm_is_pattern_body_pair` (a match arm is a `(pattern body)` pair) + `prefix_unary_minus_is_arity_one_
 // subtraction` (prefix `-x` is the arity-1 negation `(- x)`, binding tighter than `+`, distinct from binary
