@@ -3491,3 +3491,81 @@ pub(super) fn mark_cont_dups(
         }
     }
 }
+
+// ============================================================================
+// INC1: recursive-sum owned-param-shell reclaim — SOUND SELECTION (recovered from f455bf3bdb,
+// adapted to current main: count_param_consumes now takes the count_restfrom arg). The reclaim EMIT
+// half is the existing single-op_drop param_reclaim (op_drop cascades — no bespoke recursive drop).
+// ============================================================================
+
+/// Whether `body` is a CAPTURING-CLOSURE lifted body — in `db.lifted` AND with a non-empty capture set (an
+/// `(env, param…)` closure whose params ARE built + `drop_after`'d by the caller at the `call_indirect`
+/// boundary). The refined boundary-owned discriminator (INC1): a lifted COMBINATOR (empty captures — a named
+/// recursive def like BST del-min/insert hoisted to the funcref table but called DIRECTLY, no env slot) is
+/// NOT caller-`drop_after`'d — it receives an OWNED (dup'd) param and must reclaim it itself. A genuine
+/// capturing closure stays excluded. NOTE: this refines ONLY the INC1 nontail-spine SELECTION; it does NOT
+/// change the global `is_boundary_owned` (which the 05:18721 surplus/caller-drop still read as db.lifted).
+pub(super) fn body_is_capturing_lifted(db: &Db, body: StructId) -> bool {
+    db.lifted
+        .iter()
+        .any(|l| l.body == body && !l.captures.is_empty())
+}
+
+/// Whether a `MatchSum` over `scrutinee` (continuation `root`) in function body `top_body` is the NON-TAIL
+/// SPINE PARAM case for a COMPOUND payload: an owned-by-flow compound boxed-sum PARAM matched exactly once +
+/// consumed ONLY by the match, NOT a capturing-closure body, NOT §5 self-loop-tail-consumed. The tail-
+/// `MatchSum` emit reclaims its shell via the param SLOT, so its consumed spine payload must be dup'd in
+/// lockstep. (Recovered from f455bf3bdb; count_param_consumes gets the current `, true` arg.)
+pub(super) fn is_nontail_spine_param(
+    db: &mut Db,
+    top_body: StructId,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let scrut_ty = type_of(db, scrutinee);
+    let compound_boxed = is_heap_type(&scrut_ty)
+        && !ty_is_enum_disc(db, &scrut_ty)
+        && !sum_has_only_scalar_payloads(db, &scrut_ty);
+    compound_boxed
+        && !body_is_capturing_lifted(db, top_body)
+        && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if {
+            let mut seen2 = HashSet::new();
+            let mut total = 0usize;
+            count_param_consumes(db, top_body, binder, &mut seen2, &mut total, true);
+            total == 0 && count_matchsum_over_binder(db, top_body, binder) <= 1
+        })
+        && !sum_cont_payload_consumed_in_tail_call(db, root, scrutinee)
+}
+
+/// Collect the PARAM BINDERS whose owned-shell the tail-`MatchSum` emit reclaims via the param slot for a
+/// COMPOUND payload (INC1 — the drop side of the [`is_nontail_spine_param`] dup side). Shares the exact
+/// predicate so `nontail_compound_reclaim_binders` ⟺ the dups `collect_shell_reclaim_child_dups` marks.
+pub(super) fn collect_nontail_compound_reclaim_binders(
+    db: &mut Db,
+    body: StructId,
+    out: &mut HashSet<StructId>,
+) {
+    let mut seen = HashSet::new();
+    collect_nontail_compound_reclaim_binders_seen(db, body, body, out, &mut seen);
+}
+
+fn collect_nontail_compound_reclaim_binders_seen(
+    db: &mut Db,
+    id: StructId,
+    top_body: StructId,
+    out: &mut HashSet<StructId>,
+    seen: &mut HashSet<StructId>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    if let Core::MatchSum { scrutinee, root } = core_of(db, id)
+        && is_nontail_spine_param(db, top_body, scrutinee, &root)
+        && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, scrutinee)
+    {
+        out.insert(binder);
+    }
+    for child in core_child_ids(db, id) {
+        collect_nontail_compound_reclaim_binders_seen(db, child, top_body, out, seen);
+    }
+}
