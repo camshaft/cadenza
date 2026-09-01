@@ -2415,6 +2415,36 @@ fn emit_expr_viewed(
             let ty_node = b.name(tyname.as_str());
             Ok(b.list(vec![colon, div, ty_node]))
         }
+        // A KIND-PRESERVING const INTEGER-OVERFLOW trap — the overflow twin of `TrapDivZero` (same operator
+        // ruling). Re-emit the canonical const overflow `(: (/ <MIN> -1) <IntTy>)`: the minimum signed value
+        // divided by -1 overflows at EVERY signed width (`MIN / -1 = 2^(w-1)`, one past `MAX`), and in the SAME
+        // conditionally-reached position `demote_conditional_trap` re-demotes it to `Core::TrapOverflow` of the
+        // same kind — the round-tripped program traps "integer overflow" identically (this is exactly the corpus
+        // shape `(/ -9223372036854775808 -1)`). Guarded to a SIGNED, ≤64-bit int (the shape `(/ MIN -1)` needs a
+        // signed MIN, and the i128 `MIN` literal is exact for w ≤ 64); an unsigned / wider / non-int type
+        // declines (a later slice — unsigned overflow needs a different const shape).
+        Core::TrapOverflow if matches!(&eff_ty, Ty::Int(it) if it.ground_signed() && it.ground_width() <= 64) =>
+        {
+            let width = match &eff_ty {
+                Ty::Int(it) => it.ground_width(),
+                _ => 64,
+            };
+            let min = -(1i128 << (width - 1));
+            let tyname = eff_ty.render_name(&db.name_ctx());
+            let slash = b.name("/");
+            let min_lit = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i128(min),
+                radix: Radix::Dec,
+            });
+            let neg_one = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(-1),
+                radix: Radix::Dec,
+            });
+            let div = b.list(vec![slash, min_lit, neg_one]);
+            let colon = b.name(":");
+            let ty_node = b.name(tyname.as_str());
+            Ok(b.list(vec![colon, div, ty_node]))
+        }
         // A SEQUENCING BLOCK — statements evaluated in written order for their observable host effects, then
         // the TAIL is the block's value. Re-emit `(do <stmt>… <tail>)`. A `Core::Seq` is built ONLY when a
         // non-final statement reaches a host call (`lower/compute.rs` §needs_seq — otherwise the do-block folds
