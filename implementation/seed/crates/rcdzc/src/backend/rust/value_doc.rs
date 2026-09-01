@@ -14,11 +14,11 @@
 //!   `(: (tuple 1 2) …)`        → the value is List[ Name "tuple", <e0>, <e1>… ]; the type List[ Name "Tuple", <T0>… ]
 //!   `(: true Bool)`            → Bool leaf, type Name "Bool"
 //!
-//! WIP (built incrementally, per concierge): covers Int / Bool / Tuple / Record / List and the
-//! single-payload / nullary SUM (Option / Result / a bare-head user sum). Float / String / Bytes / Set /
-//! Map / Qty, plus the harder sum shapes (qualified-head, multi-field/flattened, recursive) are follow-up
-//! increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape DECLINES (never a
-//! miscompile) — the driver keeps `cdz_render_at` for it until covered, so partial coverage is safe.
+//! WIP (built incrementally, per concierge): covers Int / Bool / Float / Tuple / Record / List and the
+//! single-payload / nullary SUM (Option / Result / a bare-head user sum). String / Bytes / Set / Map / Qty,
+//! plus the harder sum shapes (qualified-head, multi-field/flattened, recursive) are follow-up increments
+//! (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape DECLINES (never a miscompile) — the
+//! driver keeps `cdz_render_at` for it until covered, so partial coverage is safe.
 
 use crate::db::Db;
 use crate::diag::Reject;
@@ -123,6 +123,30 @@ fn doc_value_node(
             }
             let v = fresh(ctr);
             out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            Ok(v)
+        }
+        // A FLOAT → a `Leaf::Float` (finite) / `Leaf::FloatNan` / `Leaf::FloatInf` at RUNTIME, EXACTLY the
+        // canonical `value_codec` / cdz-run `float_atom` disposition: NaN → `FloatNan` (`nan`), ±inf →
+        // `FloatInf { negative }` (`inf`/`-inf`), finite → `Decimal::from_f{32,64}` (the 3-codec-identical
+        // shortest decimal). A `Float32` uses `from_f32` on its OWN f32 (NOT the f32→f64 PROMOTION — operator
+        // ruling #7554: the promoted shortest is a different number); a `Float64` uses `from_f64`. The Rust
+        // value here is a bare `f32`/`f64` (the `__CdzF64`/`__CdzF32` ord-key wrapper only wraps a Set/Map
+        // key/element — a later increment unwraps via `.get()`). The TYPE node is the bare `FloatN` name (the
+        // `doc_type_node` leaf arm's `render_name`), so only the VALUE arm is needed here.
+        Ty::Float(ft) => {
+            let from = if ft.ground_width() == 32 {
+                "from_f32"
+            } else {
+                "from_f64"
+            };
+            let f = fresh(ctr);
+            out.push_str(&format!("    let {f} = {val_expr};\n"));
+            let v = fresh(ctr);
+            out.push_str(&format!(
+                "    let {v} = if {f}.is_nan() {{ __b.atom_leaf(cadenza_ast::ast::Leaf::FloatNan) }} \
+                 else if {f}.is_infinite() {{ __b.atom_leaf(cadenza_ast::ast::Leaf::FloatInf {{ negative: {f}.is_sign_negative() }}) }} \
+                 else {{ __b.atom_leaf(cadenza_ast::ast::Leaf::Float(cadenza_ast::ast::Decimal::{from}({f}).expect(\"a finite float has a Decimal\"))) }};\n"
+            ));
             Ok(v)
         }
         // A LIST → `(list <e0> <e1> …)`: a `Name "list"` head then each element's value-node, appended at
