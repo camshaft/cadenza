@@ -1803,6 +1803,40 @@ theorem denoteBinary_and_true_l (w : IntTy) (u1 v : Value)
   simp [symToValue?_const, valIsBool] at h
   cases u1 <;> simp_all <;> (rename_i b; cases b <;> simp_all)
 
+/-! ### BITWISE `.app`-identity cases are VACUOUS in `denote`. `denoteBinary` models only `arithOps`
+(int `+ - * /`) on the deferred path; a BITWISE op (`& | ^ << >>`) is NOT in `arithOps` and `foldConst?`
+has no bitwise arm, so `denoteBinary bitwise (.value _) (.value _)` is always `.unsupported` — never a value.
+So in the top-level `denote.induct` `.app` case, a bitwise-op node with a value hypothesis is contradictory
+⇒ the bitwise identity sub-cases (`x&0→0`, `x^x→0`, `x|0→x`, `x<<0→x`, `x>>0→x`) hold VACUOUSLY. Only the
+symbol bitwise ops get identity rewrites in `normalizeAppIdentities` (word-forms `band`/… don't), so these
+five suffice. Proof: `foldConst?` declines (concrete op string), then the deferred `.int,.int / _` match is
+`.unsupported` either way (`arithOps.contains` is false). -/
+theorem denoteBinary_amp_ne_value (w : IntTy) (va vb v : Value) :
+    denoteBinary "&" w (.value va) (.value vb) ≠ .value v := by
+  intro h
+  have hfc : foldConst? "&" #[.const va, .const vb] = none := by simp [foldConst?, symToValue?, valIsBool]
+  simp only [denoteBinary] at h; rw [hfc] at h; simp only [] at h; split at h <;> simp_all [arithOps]
+theorem denoteBinary_bor_ne_value (w : IntTy) (va vb v : Value) :
+    denoteBinary "|" w (.value va) (.value vb) ≠ .value v := by
+  intro h
+  have hfc : foldConst? "|" #[.const va, .const vb] = none := by simp [foldConst?, symToValue?, valIsBool]
+  simp only [denoteBinary] at h; rw [hfc] at h; simp only [] at h; split at h <;> simp_all [arithOps]
+theorem denoteBinary_bxor_ne_value (w : IntTy) (va vb v : Value) :
+    denoteBinary "^" w (.value va) (.value vb) ≠ .value v := by
+  intro h
+  have hfc : foldConst? "^" #[.const va, .const vb] = none := by simp [foldConst?, symToValue?, valIsBool]
+  simp only [denoteBinary] at h; rw [hfc] at h; simp only [] at h; split at h <;> simp_all [arithOps]
+theorem denoteBinary_shl_ne_value (w : IntTy) (va vb v : Value) :
+    denoteBinary "<<" w (.value va) (.value vb) ≠ .value v := by
+  intro h
+  have hfc : foldConst? "<<" #[.const va, .const vb] = none := by simp [foldConst?, symToValue?, valIsBool]
+  simp only [denoteBinary] at h; rw [hfc] at h; simp only [] at h; split at h <;> simp_all [arithOps]
+theorem denoteBinary_shr_ne_value (w : IntTy) (va vb v : Value) :
+    denoteBinary ">>" w (.value va) (.value vb) ≠ .value v := by
+  intro h
+  have hfc : foldConst? ">>" #[.const va, .const vb] = none := by simp [foldConst?, symToValue?, valIsBool]
+  simp only [denoteBinary] at h; rw [hfc] at h; simp only [] at h; split at h <;> simp_all [arithOps]
+
 /-- CAPSTONE `.app`-IDENTITY (BOOL, PRESERVE): `false or x → x`. `foldConst? "or"` returns the surviving
 operand (which is a bool); `ih1` carries `denote (normalize a1) = denote a1 = .value v`. -/
 theorem denote_normalize_app_ident_or_false_l (ρ : Nat → Value) (w : IntTy) (a0 a1 : SymExpr) (v : Value)
