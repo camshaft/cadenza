@@ -45,6 +45,14 @@ pub(crate) mod doc {
     pub const KIND_INT_POS_DEC: u8 = 0;
     pub const KIND_FLOAT: u8 = 6;
     pub const KIND_STR: u8 = 7;
+    // Non-finite float VALUES — payloadless single kind bytes (like KIND_BOOL_*), matching cadenza-ast
+    // codec's KIND_FLOAT_NAN / KIND_FLOAT_POS_INF / KIND_FLOAT_NEG_INF (17/18/19). A non-finite float has
+    // no exact decimal (KIND_FLOAT's form), so it crosses the value-encode boundary as one of these
+    // dedicated word-form leaves instead of declining the encode (which collapsed any compound holding a
+    // non-finite float). NaN is a single canonical sign-less leaf; infinity carries its sign.
+    pub const KIND_FLOAT_NAN: u8 = 17;
+    pub const KIND_FLOAT_POS_INF: u8 = 18;
+    pub const KIND_FLOAT_NEG_INF: u8 = 19;
     pub const KIND_BOOL_FALSE: u8 = 8;
     pub const KIND_BOOL_TRUE: u8 = 9;
     pub const KIND_NAME: u8 = 10;
@@ -412,6 +420,15 @@ pub(crate) enum DocLeaf {
         exponent: i64,
         significand: Vec<u8>,
     }, // exact decimal (from f64), big-endian mag
+    /// The non-finite float value NaN — a payloadless leaf (`KIND_FLOAT_NAN`), matching cadenza-ast codec's
+    /// `Leaf::FloatNan`. A non-finite float has no exact decimal, so it crosses as this dedicated word-form
+    /// leaf instead of declining the encode (which collapsed any compound containing it).
+    FloatNan,
+    /// A non-finite float infinity (`+∞`/`−∞`) — payloadless (`KIND_FLOAT_POS_INF`/`KIND_FLOAT_NEG_INF`),
+    /// matching cadenza-ast codec's `Leaf::FloatInf { negative }`.
+    FloatInf {
+        negative: bool,
+    },
     /// A payloadless M2 ctor-head leaf — stores its `doc::KIND_*_CTOR`/`KIND_FIELD_PAIR`/`KIND_MEMBER` byte
     /// (20-26). Wire form is that single kind byte (no body), like `Bool`. The head-first list-head atom for
     /// a native compound value; DEDUPED by `ctor_leaf` (matching cadenza-ast `Builder::leaf`'s general dedup).
@@ -578,11 +595,13 @@ impl DocBuilder {
     /// stores. Converts the runtime `f64` to that decimal by a byte-for-byte PORT of the compiler's
     /// `Decimal::from_f64` (rcdzc `ast.rs`): `{:e}` shortest round-tripping text → sign, digit string,
     /// base-10 exponent, then a base-10→base-256 Horner conversion of the digits (no BigInt — plain
-    /// `Vec<u8>`, so `no_std`-portable). `None` for a NON-FINITE float (`nan`/`inf`), matching
-    /// `from_f64` (a non-finite float has no exact decimal / no written form) — the walker declines.
+    /// `Vec<u8>`, so `no_std`-portable). A NON-FINITE float (`nan`/`inf`) has no exact decimal / no written
+    /// form (like `from_f64`'s `None`), so it emits its dedicated payloadless word-form leaf
+    /// ([`DocLeaf::FloatNan`]/[`DocLeaf::FloatInf`]) instead of declining — a non-finite float in a compound
+    /// must cross the boundary (previously the decline collapsed the whole compound).
     pub(crate) fn float_leaf(&mut self, f: f64) -> Option<u32> {
         if !f.is_finite() {
-            return None;
+            return Some(self.non_finite_float_leaf(f.is_nan(), f.is_sign_negative()));
         }
         // A WHOLE float renders its FULL exact expansion (`{f:.0}`, matches scalar display_float + rust);
         // a non-whole keeps `{:e}` (shortest == written form; `{f:.0}` would round the fraction away).
@@ -595,12 +614,25 @@ impl DocBuilder {
     }
     /// A Float32 leaf — the f32's SHORTEST round-tripping decimal (via `{:e}` on the `f32`, NOT a
     /// promoted f64 whose shortest decimal differs — `0.1f32` → `"1e-1"` not `"1.0000000149…e-1"`). Same
-    /// `KIND_FLOAT` encoding as `float_leaf`; declines a non-finite f32.
+    /// `KIND_FLOAT` encoding as `float_leaf`; a non-finite f32 emits the dedicated word-form leaf (the same
+    /// payloadless `FloatNan`/`FloatInf` — non-finites carry no width), matching `float_leaf`.
     pub(crate) fn float32_leaf(&mut self, f: f32) -> Option<u32> {
         if !f.is_finite() {
-            return None;
+            return Some(self.non_finite_float_leaf(f.is_nan(), f.is_sign_negative()));
         }
         self.float_leaf_from_sci(&format!("{f:e}"))
+    }
+    /// Push a non-finite float's dedicated payloadless word-form leaf and return its index — `FloatNan`
+    /// (`is_nan`, sign-less canonical, matching cadenza-ast's single canonical NaN) else `FloatInf` with the
+    /// sign. Shared by `float_leaf`/`float32_leaf` so a non-finite float in a compound crosses the
+    /// value-encode boundary instead of collapsing the compound to empty.
+    fn non_finite_float_leaf(&mut self, is_nan: bool, negative: bool) -> u32 {
+        self.leaves.push(if is_nan {
+            DocLeaf::FloatNan
+        } else {
+            DocLeaf::FloatInf { negative }
+        });
+        (self.leaves.len() - 1) as u32
     }
     /// Build a `KIND_FLOAT` `DocLeaf::Float` from a `[-]D[.DDDD]eEXP` scientific-notation string (the
     /// `{:e}` form of an f32 or f64): parse sign / digit string / base-10 exponent, then a base-10→
@@ -717,6 +749,7 @@ impl DocBuilder {
                 DocLeaf::Name(n) => 11 + n.len(),
                 DocLeaf::Str(b) | DocLeaf::Bytes(b) => 11 + b.len(),
                 DocLeaf::Float { significand, .. } => 20 + significand.len(),
+                DocLeaf::FloatNan | DocLeaf::FloatInf { .. } => 1, // payloadless single kind byte
             })
             .sum();
         let est = doc::SCHEMA_HEADER.len()
@@ -800,6 +833,14 @@ impl DocBuilder {
                     doc_leb(&mut out, significand.len() as u64);
                     out.extend_from_slice(significand);
                 }
+                // Non-finite floats — a single payloadless kind byte (like Bool/Ctor), byte-identical to
+                // cadenza-ast codec's KIND_FLOAT_NAN / KIND_FLOAT_POS_INF / KIND_FLOAT_NEG_INF.
+                DocLeaf::FloatNan => out.push(doc::KIND_FLOAT_NAN),
+                DocLeaf::FloatInf { negative } => out.push(if *negative {
+                    doc::KIND_FLOAT_NEG_INF
+                } else {
+                    doc::KIND_FLOAT_POS_INF
+                }),
             }
         }
         doc_leb(&mut out, self.structs.len() as u64);
@@ -1184,15 +1225,15 @@ pub(crate) fn encode_value(
                     }
                     Shape::Float => {
                         // Convert the runtime f64 to the codec's EXACT decimal (KIND_FLOAT). A NON-FINITE
-                        // float (nan/inf) has no exact-decimal form → `float_leaf` returns None → the whole
-                        // encode declines (matches the compiler's `Decimal::from_f64` None; nan/inf cross by
-                        // their own dedicated forms, not the value-encode walker).
+                        // float (nan/inf) has no exact-decimal form, so `float_leaf` emits its dedicated
+                        // payloadless word-form leaf (FloatNan/FloatInf) rather than declining — a non-finite
+                        // float in a compound crosses the boundary instead of collapsing the whole compound.
                         let l = b.float_leaf(op_get_float(h))?;
                         out.push(b.atom(l));
                     }
                     Shape::Float32 => {
                         // Read the 4-byte Float32 and render the f32's OWN shortest decimal (not a promoted
-                        // f64's). A non-finite f32 declines, like Float64.
+                        // f64's). A non-finite f32 emits the same payloadless word-form leaf, like Float64.
                         let l = b.float32_leaf(op_get_float32(h))?;
                         out.push(b.atom(l));
                     }
@@ -1609,6 +1650,10 @@ pub(crate) enum ParsedLeaf {
     Bytes(Vec<u8>),
     /// (negative, exponent, big-endian base-256 significand) — the `KIND_FLOAT` exact-decimal parts.
     Float(bool, i64, Vec<u8>),
+    /// The non-finite float value NaN (`KIND_FLOAT_NAN`) — `decode_value` boxes it as `f64::NAN`.
+    FloatNan,
+    /// A non-finite float infinity (`KIND_FLOAT_POS_INF`/`KIND_FLOAT_NEG_INF`); `negative` picks the sign.
+    FloatInf(bool),
     /// An M2 payloadless ctor-head leaf — its `doc::KIND_*_CTOR`/`KIND_FIELD_PAIR`/`KIND_MEMBER` byte (20-26).
     /// The head atom of a native compound value's list; `doc_atom_ctor` reads its kind for the decode arms.
     Ctor(u8),
@@ -1690,6 +1735,10 @@ pub(crate) fn parse_doc(d: &[u8]) -> Option<ParsedDoc> {
                 let sig = doc_read_bytes(d, &mut pos, siglen)?.to_vec();
                 ParsedLeaf::Float(neg, exp, sig)
             }
+            // Non-finite floats — payloadless (no body to read), the inverse of the encode word-forms.
+            doc::KIND_FLOAT_NAN => ParsedLeaf::FloatNan,
+            doc::KIND_FLOAT_POS_INF => ParsedLeaf::FloatInf(false),
+            doc::KIND_FLOAT_NEG_INF => ParsedLeaf::FloatInf(true),
             doc::KIND_STR => {
                 let len = doc_read_leb(d, &mut pos)? as usize;
                 ParsedLeaf::Str(doc_read_bytes(d, &mut pos, len)?.to_vec())
@@ -1956,18 +2005,31 @@ pub(crate) fn decode_value_opt(
             };
             Some(op_box_int(*c as i64))
         }
-        Shape::Float => {
-            let ParsedLeaf::Float(neg, exp, mag) = doc_atom_leaf(doc, struct_ix)? else {
-                return None;
-            };
-            Some(op_box_float(float_from_parts(*neg, *exp, mag)?))
-        }
-        Shape::Float32 => {
-            let ParsedLeaf::Float(neg, exp, mag) = doc_atom_leaf(doc, struct_ix)? else {
-                return None;
-            };
-            Some(op_box_float32(float32_from_parts(*neg, *exp, mag)?))
-        }
+        Shape::Float => match doc_atom_leaf(doc, struct_ix)? {
+            ParsedLeaf::Float(neg, exp, mag) => {
+                Some(op_box_float(float_from_parts(*neg, *exp, mag)?))
+            }
+            // The inverse of the encode word-forms — box the non-finite f64 directly.
+            ParsedLeaf::FloatNan => Some(op_box_float(f64::NAN)),
+            ParsedLeaf::FloatInf(negative) => Some(op_box_float(if *negative {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            })),
+            _ => None,
+        },
+        Shape::Float32 => match doc_atom_leaf(doc, struct_ix)? {
+            ParsedLeaf::Float(neg, exp, mag) => {
+                Some(op_box_float32(float32_from_parts(*neg, *exp, mag)?))
+            }
+            ParsedLeaf::FloatNan => Some(op_box_float32(f32::NAN)),
+            ParsedLeaf::FloatInf(negative) => Some(op_box_float32(if *negative {
+                f32::NEG_INFINITY
+            } else {
+                f32::INFINITY
+            })),
+            _ => None,
+        },
         Shape::Str => {
             let ParsedLeaf::Str(bytes) = doc_atom_leaf(doc, struct_ix)? else {
                 return None;
