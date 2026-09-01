@@ -8822,6 +8822,7 @@ todo	aeq3 arena Bytes laundered through fn params bare-compare equal
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive arm whose value type mismatches the op RESULT type declines
 todo	an abortive handler over a non-tail MUTUAL recursion declines cleanly
+todo	an abortive perform in a non-tail accumulator-introduced recursion declines cleanly (safe floor; flips to the abort value under the non-local-exit vertical)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	an effect bound to a peer routes a two-argument op to the boundary
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)

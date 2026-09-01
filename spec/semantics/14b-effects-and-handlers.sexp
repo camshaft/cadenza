@@ -13140,3 +13140,30 @@
   (call main (: 100 Int64))
   (output (: 10100 Int64))
   (live-objects known-leak))
+
+(case
+  "an abortive perform in a non-tail accumulator-introduced recursion declines cleanly (safe floor; flips to the abort value under the non-local-exit vertical)"
+  (doc
+    "breaker's non-local-exit face: a non-tail ASSOCIATIVE abortive recursion `(def (loop k) (if (> k 0)
+           (+ (loop (- k 1)) (if (= k 2) (E.bail) k)) 0))` under `(handle E 0 ((bail (u) s 99)) (loop n))`.
+           accumulator-introduction rewrites `(+ (loop …) …)` into a TAIL self-call whose ACCUMULATOR ARGUMENT
+           carries the abort, so a self-call-tail-only check is fooled and single-return specialization would
+           fold the abort as tail-RESUMPTIVE (thread 99 into the accumulator → the silent-miscompile
+           main(3)=103). Under the safe floor (`abortive_perform_off_tail` in `specialize_recursive`) this
+           DECLINES cleanly (CDZ0900) on all backends rather than miscompiling. The ABORT must ABANDON the
+           pending `+` frames and yield the arm value: idealistically main(1)=1 (k never hits the bail) and
+           main(3)=99 (the k==2 bail abandons everything). Flips to those PASSes when the non-local-exit
+           calling convention (tagged-return) lands. Fix #7361; breaker-verified no over-decline (a
+           TAIL-position abortive recursion still folds).")
+  (input
+    (do
+      (effect E (op bail (-> Unit Int64)))
+      (def
+        (loop (: k Int64))
+        (if (> k 0) (+ (loop (- k 1)) (if (= k 2) (E.bail unit) k)) 0))
+      (def (main (: n Int64)) (handle E 0 ((bail (u) s 99)) (loop n)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (call main (: 3 Int64))
+  (output (: 99 Int64)))
