@@ -602,6 +602,51 @@ pub(super) fn lower_gensym(db: &mut Db, id: StructId, base_val: StructId) -> Cor
     }
 }
 
+/// Expand a QUOTE-PARAM MACRO CALL during lowering (DESIGN-macro-system.md §2/§4). If `head` resolves to
+/// a def with at least one `quote`-marked parameter (recorded in `db.quote_params` by
+/// `strip_quote_params`), this application is a MACRO USE: reify each quote-marked argument to the `Ast`
+/// that `(quote arg)` denotes (`quote::reify_arg`), leave eager args as values, β-reduce the macro with
+/// those args (`eval::apply_lambda`) to a result `Ast`, reconstruct that `Ast` back to source
+/// (`eval_ast::reconstruct`), SEED the spliced subtree's scope (`extend_scope_skip_into_subtree`, so its
+/// names resolve at the CALL SITE — caller-scope resolution of the macro's output), and LOWER it. The
+/// `core_of` recursion gives the expansion FIXPOINT (a macro whose output contains another macro call
+/// re-enters here). Returns `None` — deferring to ordinary application lowering, never a miscompile — when
+/// `head` is not a quote-param def, on an arity mismatch (a partial application), or when an argument is
+/// not reifiable / the result not reconstructable. Mirrors `match_desugar`'s build-seed-lower pattern.
+pub(super) fn expand_quote_macro(db: &mut Db, head: StructId, args: &[StructId]) -> Option<Core> {
+    let def_ix = super::callee_def_index(db, head)?;
+    let params = db.defs[def_ix].params.clone();
+    // Which params are `quote`-marked (name-occ ∈ quote_params)? Not a macro call if none are.
+    let marked: Vec<bool> = params
+        .iter()
+        .map(|&p| {
+            db.quote_params
+                .contains(&crate::eval::param_name_occ(db, p))
+        })
+        .collect();
+    if !marked.iter().any(|&m| m) {
+        return None;
+    }
+    // Only a FULL application expands here; a partial application lowers ordinarily (curry, no macro yet).
+    if args.len() != params.len() {
+        return None;
+    }
+    // Reify each quote-marked argument to its `Ast` (the syntax); keep an eager arg as its value.
+    let mut new_args = Vec::with_capacity(args.len());
+    for (i, &arg) in args.iter().enumerate() {
+        if marked[i] {
+            new_args.push(crate::quote::reify_arg(&mut db.ast, arg)?);
+        } else {
+            new_args.push(arg);
+        }
+    }
+    // β-reduce to the result `Ast`, reconstruct to source, seed the spliced subtree's scope, then lower it.
+    let reduced = crate::eval::apply_lambda(db, head, &new_args).ok()??;
+    let src = crate::eval_ast::reconstruct(&mut db.ast, reduced)?;
+    db.extend_scope_skip_into_subtree(src);
+    Some(core_of(db, src))
+}
+
 /// A parsed s-expression over the `Ast`-value subset: an integer, a bare atom (name), or a list. The
 /// minimal grammar `read` accepts — exactly the shapes `print_ast_value` emits, so the two round-trip.
 /// Parse an all-ASCII-digits token (with an optional leading `-`) into an arbitrary-precision [`IntValue`],
