@@ -594,14 +594,27 @@ fn b2_dispatch_rust_slot_safe(db: &mut Db, body: StructId, target: StructId) -> 
                     *all_safe = false;
                 }
             }
-            // Any OTHER dispatch read of the target is unsafe on at least one backend (sum-variant switch/
-            // unwrap on rust; consuming list split on wasm; scalar/length match — conservatively excluded).
+            // A `Match`/`MatchSum`/`SumExpect` on THIS target is a TUPLE/RECORD PRODUCT DESTRUCTURE: the
+            // enclosing fn early-returns false unless `tty` is Tuple/Record, so a dispatch reaching here has a
+            // PRODUCT (single-shape, no variant discriminant) scrutinee — the rust backend lowers the field
+            // binds as a `let (a, q) = slot` dot-index off the (slotted) LocalRef, the SAME slot-safe field
+            // read as the single-`Elem` SumPayload above. The P3 rust-slot hazard (the inner switch subject
+            // type resolved from the ENTERED VARIANT's payload of the direct node) applies ONLY to SUM dispatch
+            // — a product has no variant, so there is no entered-variant payload to lose, and slotting it is
+            // safe on BOTH backends. So a Tuple/Record product-destructure dispatch is ADMITTED (cbm3: the
+            // tuple `p` matched 3×, which lowers to MatchSum over the product, is now bindable). VERIFIED
+            // value-neutral + NO new rust decline by the O0..O3 opt-sweep on `--target rust` (the axis the P3
+            // comment notes the wasm sweep can't see) AND `--target wasm`.
             Core::Match { scrutinee, .. }
-            | Core::MatchList { scrutinee, .. }
             | Core::MatchSum { scrutinee, .. }
             | Core::SumExpect { scrutinee, .. }
                 if scrutinee == target =>
             {
+                *any = true;
+            }
+            // A `MatchList` on THIS target is a CONSUMING list split (`vec-drop`) on wasm — unsafe to slot.
+            // (Unreachable given the Tuple/Record `tty` gate above, but kept explicit + conservative.)
+            Core::MatchList { scrutinee, .. } if scrutinee == target => {
                 *any = true;
                 *all_safe = false;
             }
