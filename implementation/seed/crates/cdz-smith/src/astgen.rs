@@ -581,21 +581,37 @@ fn gen_collection_op_body<C: Choice>(c: &mut C, out: &mut String) {
 /// terminates) cannot overflow. The result is a deterministic Int64 the wasm-vs-rust diff grades.
 fn gen_effect_body<C: Choice>(c: &mut C, out: &mut String) {
     // Draw the FORM choices BEFORE the operand literals — else a short entropy seed exhausts the cursor on
-    // the int_bounded draws and `variant` always defaults to 0 (never reaching the bare param resume-value
-    // forms). Same trap as gen_list_producing_op_body.
-    // resume-value and new-state expressions over the in-scope Int64 params `s` (state) and `p` (perform
+    // the int_bounded draws and `variant` always defaults to 0 (never reaching the bare-param arm-value
+    // forms, or the abort form). Same trap as gen_list_producing_op_body.
+    let abort = c.variant(2) == 1;
+    // The op-arm value / new-state expressions over the in-scope Int64 params `s` (state) and `p` (perform
     // arg). Each is Int64→Int64, so any pairing type-checks; small ops keep the twice-threaded state small.
-    let rv = ["(+ s p)", "(+ p 1)", "s", "p"][c.variant(4)];
+    let av = ["(+ s p)", "(+ p 1)", "s", "p"][c.variant(4)];
     let ns = ["(+ s p)", "(+ s 1)", "s", "p"][c.variant(4)];
     let s0 = c.int_bounded(0, 9);
     let a = c.int_bounded(0, 9);
     let b = c.int_bounded(0, 9);
-    write!(
-        out,
-        "(do (effect E (op o (-> Int64 Int64))) \
-         (handle E {s0} ((o (p) s (resume {rv} {ns}))) (+ (E.o {a}) (E.o {b}))))"
-    )
-    .ok();
+    if abort {
+        // ABORT (non-resumptive) form: the op arm returns a value DIRECTLY, never calling `resume`, so the
+        // captured continuation (the rest of the handled body — the second perform + the outer `+`) is
+        // DISCARDED. The handle's result is the arm value from the FIRST perform (p = a, s = s0) — a
+        // distinct effects lowering (continuation drop) from the resume form. Deterministic Int64.
+        write!(
+            out,
+            "(do (effect E (op o (-> Int64 Int64))) \
+             (handle E {s0} ((o (p) s {av})) (+ (E.o {a}) (E.o {b}))))"
+        )
+        .ok();
+    } else {
+        // RESUME form: a stateful handler that RESUMES with the computed value `av` and threads the new
+        // state `ns`; the body performs the op twice, folding the state across both.
+        write!(
+            out,
+            "(do (effect E (op o (-> Int64 Int64))) \
+             (handle E {s0} ((o (p) s (resume {av} {ns}))) (+ (E.o {a}) (E.o {b}))))"
+        )
+        .ok();
+    }
 }
 
 /// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
@@ -2776,8 +2792,8 @@ mod tests {
     /// the resume-value form spread reaches both the state-folding `(+ s p)` and a bare param/literal.
     #[test]
     fn gen_effect_body_is_well_formed_and_compiles() {
-        let (mut saw_handle, mut saw_resume, mut saw_statefold, mut saw_bare) =
-            (false, false, false, false);
+        let (mut saw_handle, mut saw_resume, mut saw_statefold, mut saw_bare, mut saw_abort) =
+            (false, false, false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1481);
             let mut bytes = Vec::new();
@@ -2792,6 +2808,8 @@ mod tests {
             saw_resume |= body.contains("(resume ");
             saw_statefold |= body.contains("(resume (+ s p)");
             saw_bare |= body.contains("(resume s ") || body.contains("(resume p ");
+            // An ABORT body is a (handle …) with NO (resume …) — the arm returns a value directly.
+            saw_abort |= body.contains("(handle E") && !body.contains("(resume ");
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2807,6 +2825,10 @@ mod tests {
         assert!(
             saw_bare,
             "effect body should reach a bare param resume value"
+        );
+        assert!(
+            saw_abort,
+            "effect body should reach the ABORT (non-resumptive) form"
         );
     }
 
