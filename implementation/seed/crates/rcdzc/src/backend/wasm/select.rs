@@ -3710,21 +3710,28 @@ fn emit_tail(
             // `nontail_param_reclaim_kind` (occurrence-level), shared with the dup-pass + def_inc1_reclaims_param
             // so caller-drop XOR reclaim can never drift. Scalar path only while the compound arm is bisected
             // OFF — behavior-identical to the prior inline `nontail_param_payload_ok`.
+            // SINGLE-SOURCE (v-core-opt extract-share): ONE predicate call decides the kind; the emit then
+            // gates on the matching binder-set the dup-pass populated in LOCKSTEP — Scalar on the raw selection
+            // `nontail_match_reclaim_binders` (:1226), Compound on `nontail_compound_reclaim_binders`
+            // (`collect_nontail_compound_reclaim_binders` → same `is_nontail_spine_param`, so its consumed shell
+            // children were dup'd → the op_drop cascade nets). INC1 increment-2: Compound now LIVE.
             let param_reclaim = stashed_slot.is_none()
-                && scrut_binder.is_some_and(|b| out.nontail_match_reclaim_binders.contains(&b))
-                && matches!(
-                    nontail_param_reclaim_kind(
-                        db,
-                        out.fn_body
-                            .expect("fn_body set in select_function_of before emit"),
-                        scrutinee,
-                        &scrut_ty,
-                        never_diverges,
-                        &root,
-                    ),
-                    Some(ReclaimKind::Scalar)
-                );
-            let _ = &out.nontail_compound_reclaim_binders; // keep field live during bisect
+                && match nontail_param_reclaim_kind(
+                    db,
+                    out.fn_body
+                        .expect("fn_body set in select_function_of before emit"),
+                    scrutinee,
+                    &scrut_ty,
+                    never_diverges,
+                    &root,
+                ) {
+                    Some(ReclaimKind::Scalar) => {
+                        scrut_binder.is_some_and(|b| out.nontail_match_reclaim_binders.contains(&b))
+                    }
+                    Some(ReclaimKind::Compound) => scrut_binder
+                        .is_some_and(|b| out.nontail_compound_reclaim_binders.contains(&b)),
+                    None => false,
+                };
             // OWNED-SINGLE-VIEW (String.at / Bytes.slice) local reclaim: its Some shell leaks because the
             // scrutinee is not globally `Owned` (`matchsum_view_shell_reclaim_ok`). UNLIKE the general
             // owned/param reclaim it fires EVEN WHEN `arms_tail_call` — a tail-recursive String.at scan
