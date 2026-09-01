@@ -214,6 +214,14 @@ pub struct Emit {
     /// `select_function_of` (it has params/self_def/body); empty otherwise. Reuses the EXISTING
     /// `count_param_consumes` + `looped_owned_param_drops` machinery (no re-derived predicate).
     nontail_match_reclaim_binders: HashSet<StructId>,
+    /// INC1: the COMPOUND-payload subset of `nontail_match_reclaim_binders` — param binders whose tail-
+    /// `MatchSum` shell the emit reclaims for a COMPOUND (fresh-rebuilt `(Node …)`/`#tuple(…)`) payload,
+    /// populated in LOCKSTEP with the dup-pass (`collect_shell_reclaim_child_dups`'s `is_nontail_spine_param`
+    /// arm) so every consumed shell child is dup'd BEFORE the param-slot deep-drop (dup ⟺ drop, no double-
+    /// free). The emit's compound `param_reclaim` disjunct gates on membership here + `nontail_param_compound_
+    /// extra_ok` (the interior-view alias-out exclusion). DISTINCT from `nontail_match_reclaim_binders`'s
+    /// SCALAR path (`nontail_param_payload_ok`, which copies out — no dup). Empty for a non-INC1 body.
+    nontail_compound_reclaim_binders: HashSet<StructId>,
     /// 05:18721 PART 1 (RestFrom preservation-dup skip-gate, read by the `emit.rs` `Core::SumPayload`
     /// `RestFrom` arm): whether the function body being emitted is BOUNDARY-OWNED (an export-entry or a
     /// lifted lambda) — i.e. the scrutinee is borrowed and the CALLER emits the single shell-drop_after (the
@@ -1201,7 +1209,27 @@ pub fn select_function_of(
     // skip-gate (emit.rs `Core::SumPayload` RestFrom arm) can read them (v-wasm-opt owns that gate).
     code.body_is_boundary_owned = is_boundary_owned;
     code.fn_body = Some(body);
-    let nontail_reclaim: HashSet<StructId> = if is_boundary_owned {
+    // INC1: the non-tail-spine owned-param reclaim SELECTION uses a COMBINATOR-aware boundary guard, NOT the
+    // global `is_boundary_owned` (which 05:18721's surplus_skippable_dups + call_arg_caller_drops read as
+    // exports||db.lifted). A lifted COMBINATOR (empty captures — hoisted to funcref, called directly,
+    // callee-owned) is EXCLUDED by the global flag but IS reclaimable here (BST del-min/Peano); only an
+    // EXPORT entry (caller-built cell) or a genuine CAPTURING closure (closure-arg boundary-built) stays
+    // excluded. `call_arg_caller_drops` gate(5) excludes looped callees, and every INC1 target is
+    // self-recursive → mutually exclusive with the caller-drop by construction (v-runtime rc-confirmed).
+    // APPROACH B (v-core-opt single-source-of-truth): admit ALL lifted COMBINATORS (empty captures =
+    // callee-owned) into the INC1 non-tail-spine reclaim. The mutual exclusion with the caller-drop is on
+    // the CALLER side — `call_arg_caller_drops` YIELDS to a callee that INC1-reclaims the param, querying the
+    // SAME selection (`def_inc1_reclaims_param`) so caller-drop XOR INC1-reclaim is exactly complementary
+    // per (edge, param). Only EXPORT entries + genuine CAPTURING closures are wholly boundary-excluded.
+    let inc1_wholly_excluded =
+        layout.exports.iter().any(|e| e.body == body) || body_is_capturing_lifted(db, body);
+    // INC1 SELF-RECURSION gate: only a self-recursive fold's owned-param shell is safe to reclaim here. A
+    // non-self-recursive owned-param match (esp. the boundary-REBUILT compound-Result CLOSURE arg whose
+    // export trampoline ALSO drops it) would DOUBLE-FREE — MEASURED on 21-host-closures:6896 (guest func-12
+    // INC1 drop + guest func-15 trampoline drop → runtime drop-guard trap). See `body_is_self_recursive`.
+    let nontail_reclaim: HashSet<StructId> = if inc1_wholly_excluded
+        || !body_is_self_recursive(db, body)
+    {
         HashSet::new()
     } else {
         let epilogue_dropped: HashSet<u32> = looped_owned_param_drops(db, body, params, self_def)
@@ -1288,6 +1316,10 @@ pub fn select_function_of(
         &mut code.sumexpect_shell_reclaim,
     );
     code.nontail_match_reclaim_binders = nontail_reclaim;
+    // INC1: the COMPOUND-payload subset, populated in LOCKSTEP with the dup-pass
+    // (`collect_shell_reclaim_child_dups` → `is_nontail_spine_param`), so the emit's compound param-shell
+    // drop fires only where the consumed shell children were dup'd (dup ⟺ drop). Empty for a non-INC1 body.
+    collect_nontail_compound_reclaim_binders(db, body, &mut code.nontail_compound_reclaim_binders);
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each
     // scratch slot's VALUE TYPE (i32 for a ≤32-bit op, i64 otherwise) — a slot must be DECLARED at the
@@ -3663,10 +3695,24 @@ fn emit_tail(
             // the payload runs BEFORE this post-arm drop (gate 6 ordering); the payload-safety gate excludes a
             // borrowed-out payload (gate 3) and a re-match (gate 8); count_param_consumes==0 means the match
             // holds the LAST owned ref (a post-match consume → count>0 → not in the set → not reclaimed here).
+            let scrut_binder = match core_of(db, scrutinee) {
+                Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+                _ => None,
+            };
+            // INC1: admit a COMPOUND-payload owned-param shell (a fresh-rebuilt `(Node …)`/`#tuple(…)` arm —
+            // the BST del-min/insert 29/13/3 leak class) via the SECOND disjunct: membership in
+            // `nontail_compound_reclaim_binders` (populated in LOCKSTEP by the dup-pass `is_nontail_spine_param`,
+            // so every consumed shell child is dup'd before this single-op_drop param-slot reclaim — op_drop
+            // cascades, no bespoke recursive drop) AND `nontail_param_compound_extra_ok` (the interior-view
+            // alias-out exclusion — no arm reads a shell child through Map.lookup/List.at/… whose result
+            // aliases the shell). The SCALAR path (`nontail_param_payload_ok`, which copies out) is unchanged.
+            // BISECT: compound disjunct temporarily OFF — scalar path only (nontail_param_payload_ok). Peano
+            // is fixed via this path (its `+1` arm builds no compound). Isolates whether the compound
+            // reconstructing-arm path (nontail_param_compound_extra_ok) is the guarded-all culprit.
             let param_reclaim = stashed_slot.is_none()
-                && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder }
-                    if out.nontail_match_reclaim_binders.contains(&binder))
+                && scrut_binder.is_some_and(|b| out.nontail_match_reclaim_binders.contains(&b))
                 && nontail_param_payload_ok(db, scrutinee, &scrut_ty, never_diverges, &root);
+            let _ = &out.nontail_compound_reclaim_binders; // keep field live during bisect
             // OWNED-SINGLE-VIEW (String.at / Bytes.slice) local reclaim: its Some shell leaks because the
             // scrutinee is not globally `Owned` (`matchsum_view_shell_reclaim_ok`). UNLIKE the general
             // owned/param reclaim it fires EVEN WHEN `arms_tail_call` — a tail-recursive String.at scan
@@ -5047,6 +5093,85 @@ fn nontail_param_payload_ok(
         && !sum_cont_arm_constructs_compound(db, root)
         && !cont_rematches_scrutinee(db, scrutinee, root)
         && !sum_cont_payload_in_result(db, root, scrutinee)
+}
+
+/// INC1 — the COMPOUND-payload relaxation of [`nontail_param_payload_ok`] for the owned-PARAM shell reclaim
+/// (recovered from f455bf3bdb). IDENTICAL to `nontail_param_payload_ok` EXCEPT it DROPS the blanket
+/// `!sum_cont_arm_constructs_compound` FBIP fence (a fresh-rebuild `(Node …)`/`#tuple(…)` arm is admitted —
+/// the BST del-min/insert leak class) and ADDS the POSITIVE owned-result exclusion
+/// `!sum_cont_arm_interior_view_on_scrutinee` (no arm aliases a shell child out via an interior-view op). The
+/// CALLER gates this on membership in `nontail_compound_reclaim_binders`, which the dup-pass
+/// (`is_nontail_spine_param`) populates in LOCKSTEP — so every consumed shell child is dup'd before the drop.
+#[allow(dead_code)] // INC1 increment-2: compound-disjunct re-enable (v-core-opt extract-share) reactivates this; dead until then
+fn nontail_param_compound_extra_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    !never_diverges
+        && is_heap_type(scrut_ty)
+        && !ty_is_enum_disc(db, scrut_ty)
+        && !cont_rematches_scrutinee(db, scrutinee, root)
+        && !sum_cont_payload_in_result(db, root, scrutinee)
+        && !sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
+}
+
+/// INC1 POSITIVE owned-result exclusion: whether ANY arm applies an INTERIOR-VIEW / fallible-extraction op
+/// (`scrutinee_is_fallible_extraction`: Map.lookup/List.at/Bytes.at/String.at/String.slice/Bytes.slice) to a
+/// CONTAINER operand that PROJECTS the scrutinee (a shell child — a SumPayload/Proj chain rooting at the
+/// scrutinee node). Such an op returns a handle ALIASING INTO that shell child; if it outlives the match the
+/// shell deep-drop frees it (the 2026-07-19 sread UAF). CONSERVATIVE (leak beats UAF). del-min/insert/inorder
+/// take no interior view of their scrutinee payload (fresh Node/tuple ctors) → NOT flagged → reclaim proceeds.
+#[allow(dead_code)] // INC1 increment-2: compound-disjunct re-enable (v-core-opt extract-share) reactivates this; dead until then
+fn sum_cont_arm_interior_view_on_scrutinee(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrutinee: StructId,
+) -> bool {
+    let mut seen = HashSet::new();
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            expr_interior_view_on_node_seen(db, *body, scrutinee, &mut seen)
+        }
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            expr_interior_view_on_node_seen(db, *cond, scrutinee, &mut seen)
+                || expr_interior_view_on_node_seen(db, *body, scrutinee, &mut seen)
+                || sum_cont_arm_interior_view_on_scrutinee(db, els, scrutinee)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_arm_interior_view_on_scrutinee(db, then_, scrutinee)
+                || sum_cont_arm_interior_view_on_scrutinee(db, els, scrutinee)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_arm_interior_view_on_scrutinee(db, &a.cont, scrutinee)),
+    }
+}
+
+#[allow(dead_code)] // INC1 increment-2: compound-disjunct re-enable (v-core-opt extract-share) reactivates this; dead until then
+fn expr_interior_view_on_node_seen(
+    db: &mut Db,
+    id: StructId,
+    scrutinee: StructId,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if scrutinee_is_fallible_extraction(db, id) {
+        let children = core_child_ids(db, id);
+        if children
+            .iter()
+            .any(|&c| payload_proj_chain_roots_at_node(db, c, scrutinee))
+        {
+            return true;
+        }
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| expr_interior_view_on_node_seen(db, c, scrutinee, seen))
 }
 
 /// Whether ANY arm's RESULT/tail expression IS a heap payload of `scrut` (the UNSAFE non-tail-spine case:
@@ -8760,6 +8885,18 @@ fn call_arg_caller_drops(
     }
     if param_escapes_body(db, body, param_binder) {
         return false; // (4)
+    }
+    // (6) INC1 approach B — YIELD to the callee's own non-tail-spine shell-reclaim. `def_inc1_reclaims_param`
+    // queries the SAME selection the callee's shell-drop uses (single source of truth), so caller-drop XOR
+    // INC1-reclaim is exactly complementary. Guarded by the SAME `inc1_wholly_excluded` (not-export +
+    // not-capturing) as :1204's selection, so this fires ONLY where INC1 actually reclaims (else a suppressed
+    // caller-drop for a non-reclaimed param would LEAK). Callee-reclaim wins: it covers every recursion frame;
+    // the caller-drop covers only the top.
+    if !layout.exports.iter().any(|e| e.body == body)
+        && !body_is_capturing_lifted(db, body)
+        && def_inc1_reclaims_param(db, body, param_binder)
+    {
+        return false; // (6)
     }
     true
 }

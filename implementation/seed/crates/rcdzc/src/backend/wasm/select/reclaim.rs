@@ -1541,35 +1541,13 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
         // dup-pass over-includes (a param the emit won't drop → dup-without-drop = a LEAK, never a UAF), so
         // dup ⊇ drop = every emit drop has its dup = no double-free. heap_operand_ownership(Param)==Borrowed,
         // so this is DISJOINT from owned_compound_boxed above (no double dup).
-        // Match the EMIT's boundary exclusion (dup ⟺ drop, tightest-correct per v-mem-safety): a LIFTED-
-        // LAMBDA body's params are CLOSURE-ARG boundary-built (caller-owned) — the emit excludes them
-        // (is_boundary_owned), so the dup-pass MUST too, else dup-without-drop = a LEAK (the 5 DES cases).
-        // db.lifted is accessible here (unlike layout.exports); an export body with a COMPOUND-payload param
-        // is rare (Option-scalar exports don't dup) and any residual is a pinnable leak, never a UAF.
-        let top_is_lifted = db.lifted.iter().any(|l| l.body == top_body);
-        let nontail_spine_param = compound_boxed
-            && !top_is_lifted
-            && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if {
-                let mut seen2 = HashSet::new();
-                let mut total = 0usize;
-                count_param_consumes(db, top_body, binder, &mut seen2, &mut total, true);
-                // SOLE-CONSUME (count_param_consumes==0) AND SOLE-MATCH: a param matched by >1 MatchSum is
-                // SHARED/borrowed — its shell is NOT emit-reclaimed and mark_binder_dups owns the shared
-                // payload dup, so the shell-reclaim pass must NOT also mark it (else the same SumPayload
-                // node is double-claimed: the b2 shared-scrutinee overlap, flagged by v-mem-safety). The
-                // single-match non-tail spine (sum-nat) matches its param exactly once → unaffected.
-                // count_matchsum is a SUFFICIENT (restrictive) sharing over-approximation, NOT a complete
-                // oracle (it misses ValueEq borrows) — SAFE here only because the reclaim it gates is
-                // TAIL-POSITION-emit-gated (see count_matchsum_over_binder's SOUNDNESS SCOPE).
-                total == 0 && count_matchsum_over_binder(db, top_body, binder) <= 1
-            })
-            // §5-DISJOINTNESS: skip if the payload is consumed by a call in the arm's TAIL position — that is
-            // §5's self-loop-tail spine shape (`(rec tail …)` as the arm tail), where emit_loop_iteration
-            // ALREADY dup(rest)s the carried payload. Dupping here too would DOUBLE-dup → leak. The tail-
-            // MatchSum EMIT already skips the drop for such an arm (`!arms_tail_call`), so skipping the dup
-            // keeps dup⟺drop in lockstep. Structural (no self_def needed); a non-member tail call is also
-            // skipped (→ leak, never a UAF).
-            && !sum_cont_payload_consumed_in_tail_call(db, &root, scrutinee);
+        // NON-TAIL SPINE param (INC1): the dup-pass predicate, EXTRACTED to `is_nontail_spine_param` so the
+        // DROP-side collector (`collect_nontail_compound_reclaim_binders`) shares it verbatim (dup ⟺ drop).
+        // The boundary exclusion is `!body_is_capturing_lifted` (NOT bare `db.lifted`): a lifted COMBINATOR
+        // (empty captures — a named recursive def hoisted to the funcref table, called directly, callee-owned)
+        // IS reclaimable (the BST del-min/insert 29/13/3 leak class); only a genuine CAPTURING closure's
+        // closure-arg params stay excluded. (Prior `!top_is_lifted` over-excluded the combinators = the leak.)
+        let nontail_spine_param = is_nontail_spine_param(db, top_body, scrutinee, &root);
         if owned_compound_boxed || nontail_spine_param {
             collect_consuming_payload_sites_cont(db, &root, scrutinee, dup_sites);
         }
@@ -3507,4 +3485,174 @@ pub(super) fn mark_cont_dups(
             occurs
         }
     }
+}
+
+// ============================================================================
+// INC1: recursive-sum owned-param-shell reclaim — SOUND SELECTION (recovered from f455bf3bdb,
+// adapted to current main: count_param_consumes now takes the count_restfrom arg). The reclaim EMIT
+// half is the existing single-op_drop param_reclaim (op_drop cascades — no bespoke recursive drop).
+// ============================================================================
+
+/// Whether `body` is a CAPTURING-CLOSURE lifted body — in `db.lifted` AND with a non-empty capture set (an
+/// `(env, param…)` closure whose params ARE built + `drop_after`'d by the caller at the `call_indirect`
+/// boundary). The refined boundary-owned discriminator (INC1): a lifted COMBINATOR (empty captures — a named
+/// recursive def like BST del-min/insert hoisted to the funcref table but called DIRECTLY, no env slot) is
+/// NOT caller-`drop_after`'d — it receives an OWNED (dup'd) param and must reclaim it itself. A genuine
+/// capturing closure stays excluded. NOTE: this refines ONLY the INC1 nontail-spine SELECTION; it does NOT
+/// change the global `is_boundary_owned` (which the 05:18721 surplus/caller-drop still read as db.lifted).
+pub(super) fn body_is_capturing_lifted(db: &Db, body: StructId) -> bool {
+    db.lifted
+        .iter()
+        .any(|l| l.body == body && !l.captures.is_empty())
+}
+
+/// Whether a `MatchSum` over `scrutinee` (continuation `root`) in function body `top_body` is the NON-TAIL
+/// SPINE PARAM case for a COMPOUND payload: an owned-by-flow compound boxed-sum PARAM matched exactly once +
+/// consumed ONLY by the match, NOT a capturing-closure body, NOT §5 self-loop-tail-consumed. The tail-
+/// `MatchSum` emit reclaims its shell via the param SLOT, so its consumed spine payload must be dup'd in
+/// lockstep. (Recovered from f455bf3bdb; count_param_consumes gets the current `, true` arg.)
+pub(super) fn is_nontail_spine_param(
+    db: &mut Db,
+    top_body: StructId,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let scrut_ty = type_of(db, scrutinee);
+    let compound_boxed = is_heap_type(&scrut_ty)
+        && !ty_is_enum_disc(db, &scrut_ty)
+        && !sum_has_only_scalar_payloads(db, &scrut_ty);
+    compound_boxed
+        && !body_is_capturing_lifted(db, top_body)
+        && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if {
+            let mut seen2 = HashSet::new();
+            let mut total = 0usize;
+            count_param_consumes(db, top_body, binder, &mut seen2, &mut total, true);
+            total == 0 && count_matchsum_over_binder(db, top_body, binder) <= 1
+        })
+        && !sum_cont_payload_consumed_in_tail_call(db, root, scrutinee)
+}
+
+/// Collect the PARAM BINDERS whose owned-shell the tail-`MatchSum` emit reclaims via the param slot for a
+/// COMPOUND payload (INC1 — the drop side of the [`is_nontail_spine_param`] dup side). Shares the exact
+/// predicate so `nontail_compound_reclaim_binders` ⟺ the dups `collect_shell_reclaim_child_dups` marks.
+pub(super) fn collect_nontail_compound_reclaim_binders(
+    db: &mut Db,
+    body: StructId,
+    out: &mut HashSet<StructId>,
+) {
+    let mut seen = HashSet::new();
+    collect_nontail_compound_reclaim_binders_seen(db, body, body, out, &mut seen);
+}
+
+fn collect_nontail_compound_reclaim_binders_seen(
+    db: &mut Db,
+    id: StructId,
+    top_body: StructId,
+    out: &mut HashSet<StructId>,
+    seen: &mut HashSet<StructId>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    if let Core::MatchSum { scrutinee, root } = core_of(db, id)
+        && is_nontail_spine_param(db, top_body, scrutinee, &root)
+        && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, scrutinee)
+    {
+        out.insert(binder);
+    }
+    for child in core_child_ids(db, id) {
+        collect_nontail_compound_reclaim_binders_seen(db, child, top_body, out, seen);
+    }
+}
+
+/// INC1 boundary discriminator: whether `body` is SELF-RECURSIVE — it contains a `Core::Call` back to its
+/// OWN def (`db.defs[callee].body == Some(body)`). This SEPARATES the INC1 reclaim targets (Peano `depth`,
+/// BST del-min/insert — recursive-sum owned-param FOLDS whose shell is genuinely callee-owned + dead-after)
+/// from a NON-recursive owned-param match the scalar `nontail_param_payload_ok` gate would otherwise admit —
+/// CRUCIALLY the boundary-REBUILT compound-Result CLOSURE arg: an EXPORTED closure the host invokes via a
+/// trampoline that ALSO drops the rebuilt arg. That closure body matches its param ONCE and never self-calls,
+/// so INC1-reclaiming its shell DOUBLE-FREES against the trampoline drop (guest func-12 INC1 drop + guest
+/// func-15 trampoline drop → runtime drop-guard `unreachable`; MEASURED on 21-host-closures:6896, main-vs-B
+/// A/B). A self-recursive fold has NO such external drop (internally direct-called; a tail self-call carries
+/// no caller-drop). SOUND-CONSERVATIVE: a non-self-recursive owned-param leak stays a LEAK (value-correct),
+/// never a UAF — the operator's paramountcy order. Direct self-recursion only (mutual recursion is missed →
+/// a leak, never a double-free). Computable from `body` alone (no `self_def`), so BOTH the emit selection
+/// AND `def_inc1_reclaims_param` gate on it identically (single-source-of-truth complementary).
+pub(super) fn body_is_self_recursive(db: &mut Db, body: StructId) -> bool {
+    fn go(db: &mut Db, id: StructId, body: StructId, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::Call { callee, .. } = core_of(db, id)
+            && db.defs.get(callee).and_then(|d| d.body) == Some(body)
+        {
+            return true;
+        }
+        core_child_ids(db, id)
+            .into_iter()
+            .any(|c| go(db, c, body, seen))
+    }
+    let mut seen = HashSet::new();
+    go(db, body, body, &mut seen)
+}
+
+/// Whether the callee function `body` will INC1 non-tail-spine-reclaim its param `param_binder` — i.e. `body`
+/// contains a `MatchSum` over `param_binder` that [`is_nontail_spine_param`] selects (the callee drops that
+/// owned recursive-sum scrutinee's shell itself, at every recursion frame). Used by `call_arg_caller_drops`
+/// (APPROACH B): the caller-drop YIELDS to this — callee-reclaim covers ALL frames (top + inner, inner
+/// reachable only by the callee), the caller-drop covers only the top, so the callee is the COMPLETE owner.
+/// Making this exclusion UNCONDITIONAL (not gated on whether the caller-drop fires today) is future-proof:
+/// a later `param_escapes_body` change can never silently double-free an INC1-reclaimed param.
+pub(super) fn def_inc1_reclaims_param(db: &mut Db, body: StructId, param_binder: StructId) -> bool {
+    // Mirror the EMIT's `param_reclaim` condition EXACTLY (v-core-opt single-source-of-truth): the callee
+    // reclaims `param_binder`'s shell iff it is in `nontail_match_reclaim_binders` (heap + count==0 + not
+    // epilogue/boundary-excluded — the count==0 is the load-bearing part; !epilogue is moot here since an
+    // epilogue-dropped param is in a LOOPED def whose caller-drop is already gate(5)-excluded) AND some
+    // MatchSum over it passes the emit's payload gate (`nontail_param_payload_ok` scalar OR
+    // `is_nontail_spine_param` + `nontail_param_compound_extra_ok` compound). `never_diverges` is passed
+    // FALSE: the emit's never_diverges is TRUE only for an unrepresentable-result diverging body (not an
+    // INC1 target); assuming non-diverging is exact for every reclaimable case (a rare diverging body
+    // over-yields → a leak, never a double-free).
+    if !is_heap_type(&type_of(db, param_binder)) {
+        return false;
+    }
+    // Mirror the emit selection's SELF-RECURSION gate (single-source-of-truth): a non-self-recursive body
+    // (e.g. a boundary-rebuilt compound-Result closure) never INC1-reclaims here, so the caller-drop must
+    // NOT yield to it.
+    if !body_is_self_recursive(db, body) {
+        return false;
+    }
+    let mut cseen = HashSet::new();
+    let mut total = 0usize;
+    count_param_consumes(db, body, param_binder, &mut cseen, &mut total, true);
+    if total != 0 {
+        return false;
+    }
+    fn go(
+        db: &mut Db,
+        id: StructId,
+        top_body: StructId,
+        pb: StructId,
+        seen: &mut HashSet<StructId>,
+    ) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::MatchSum { scrutinee, root } = core_of(db, id)
+            && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if binder == pb)
+        {
+            let scrut_ty = type_of(db, scrutinee);
+            // SCALAR path only (must MATCH the emit's current param_reclaim — the compound disjunct is
+            // bisected OFF; re-enable BOTH together). `top_body` unused while compound is off.
+            let _ = top_body;
+            if super::nontail_param_payload_ok(db, scrutinee, &scrut_ty, false, &root) {
+                return true;
+            }
+        }
+        core_child_ids(db, id)
+            .into_iter()
+            .any(|c| go(db, c, top_body, pb, seen))
+    }
+    let mut seen = HashSet::new();
+    go(db, body, body, param_binder, &mut seen)
 }
