@@ -16,11 +16,11 @@
 //!
 //! WIP (built incrementally, per concierge): covers Int / Bool / Float / String / Symbol / Bytes / Char /
 //! Tuple / Record / List / Set / Map (incl. a DIRECT-float key/element via the `__CdzF` `.get()` unwrap) and
-//! the single-payload / nullary SUM (Option / Result / a bare-head user sum). Qty, a COMPOUND-float
-//! (tuple-with-float) key/element, plus the harder sum shapes (qualified-head, multi-field/flattened,
-//! recursive) are follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape
-//! DECLINES (never a miscompile) — the driver keeps `cdz_render_at` for it until covered, so partial coverage
-//! is safe.
+//! a bare-head SUM (Option / Result / a user sum) — nullary, single-payload, AND multi-field (flattened by
+//! declared arity). Qty, a COMPOUND-float (tuple-with-float) key/element, plus the harder sum shapes
+//! (qualified-head, recursive) are follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An
+//! uncovered shape DECLINES (never a miscompile) — the driver keeps `cdz_render_at` for it until covered, so
+//! partial coverage is safe.
 
 use crate::db::Db;
 use crate::diag::Reject;
@@ -282,11 +282,11 @@ fn doc_value_node(
         // `Name <variant>` head then, for a NULLARY variant, the bare `unit` atom (`(None unit)`); for a
         // SINGLE-payload variant, the payload's own value-node (`(Some 5)`). Head is the BARE variant name.
         //
-        // Scope of THIS increment (Option/Result-shaped): a QUALIFIED-head sum (`sum_needs_qualified_heads`
-        // — a variant name shadowed by a type-ctor/module, so the head must render `((. Ast Str) …)`), a
-        // MULTI-field variant (a `Tuple`/`Spread` payload the codec FLATTENS as `(V p0 p1 …)`), and a
+        // Covers nullary `(V unit)`, single-payload `(V p)`, and MULTI-field `(V p0 p1 …)` (flattened, driven
+        // by the declared arity) bare-head variants. A QUALIFIED-head sum (`sum_needs_qualified_heads` — a
+        // variant name shadowed by a type-ctor/module, so the head must render `((. Ast Str) …)`) and a
         // RECURSIVE sum (a self-referential/`Box`ed payload needing a helper fn to terminate) each DECLINE —
-        // they are follow-up increments. A decline is never a miscompile (the driver keeps `cdz_render_at`).
+        // follow-up increments. A decline is never a miscompile (the driver keeps `cdz_render_at`).
         Ty::Sum { decl, .. } => {
             let decl_occ = *decl;
             let sum_ty = ty.strip_nominal_and_qty().clone();
@@ -322,22 +322,48 @@ fn doc_value_node(
                                 "value-doc: recursive sum not yet covered by the rust value-doc emit (WIP)",
                             ));
                         }
-                        // A multi-field variant's payload is a `Tuple` the codec FLATTENS (`(V p0 p1 …)`) —
-                        // not the single-payload `(V p)` this increment covers. Decline (follow-up increment).
-                        if matches!(payload_ty.strip_nominal_and_qty(), Ty::Tuple(_)) {
-                            return Err(Reject::decline(
-                                "value-doc: multi-field sum variant not yet covered by the rust value-doc emit (WIP)",
-                            ));
-                        }
-                        // Single payload → `(<Variant> <payload-node>)`. The arm binds the payload by value
-                        // (moving it out of the owned enum) and walks it into a per-arm buffer, so the arm is
-                        // a block evaluating to the assembled node.
+                        // The DECLARED arity distinguishes a MULTI-field variant `(V a b)` (arity ≥ 2 — the
+                        // Rust enum binds ONE tuple `V((A,B))` which the codec FLATTENS as `(V p0 p1 …)`) from a
+                        // SINGLE field `(V T)` (arity 1 — `(V <payload>)`, even when T is itself a tuple type →
+                        // `(V (tuple …))`). `variant_payload_ty` returns a `Tuple` for BOTH, so match on ARITY,
+                        // not on the payload being a tuple.
+                        let arity = super::expr::variant_arity_of_ty(db, &sum_ty, disc);
                         let pbind = fresh(ctr);
                         let mut armbuf = String::new();
-                        let pnode = doc_value_node(db, &payload_ty, &pbind, &mut armbuf, ctr)?;
-                        arms.push_str(&format!(
-                            "        {path}({pbind}) => {{\n{armbuf}            let __hv = __b.name({vname:?}); __b.list(vec![__hv, {pnode}])\n        }}\n"
-                        ));
+                        if arity >= 2 {
+                            // Multi-field → FLATTEN: the bound `__p` is the tuple `(T0, T1, …)`; splice each
+                            // element `(__p).i`'s node directly under the variant head (`(V p0 p1 …)`), NOT a
+                            // nested `(tuple …)`.
+                            let elems = match payload_ty.strip_nominal_and_qty() {
+                                Ty::Tuple(es) if es.len() == arity => es.clone(),
+                                _ => {
+                                    return Err(Reject::decline(
+                                        "value-doc: multi-field variant payload is not a matching tuple",
+                                    ));
+                                }
+                            };
+                            let mut enodes = Vec::with_capacity(arity);
+                            for (i, e) in elems.iter().enumerate() {
+                                enodes.push(doc_value_node(
+                                    db,
+                                    e,
+                                    &format!("({pbind}).{i}"),
+                                    &mut armbuf,
+                                    ctr,
+                                )?);
+                            }
+                            arms.push_str(&format!(
+                                "        {path}({pbind}) => {{\n{armbuf}            let __hv = __b.name({vname:?}); __b.list(vec![__hv, {}])\n        }}\n",
+                                enodes.join(", ")
+                            ));
+                        } else {
+                            // Single payload → `(<Variant> <payload-node>)`. The arm binds the payload by value
+                            // (moving it out of the owned enum) and walks it into a per-arm buffer.
+                            let pnode = doc_value_node(db, &payload_ty, &pbind, &mut armbuf, ctr)?;
+                            arms.push_str(&format!(
+                                "        {path}({pbind}) => {{\n{armbuf}            let __hv = __b.name({vname:?}); __b.list(vec![__hv, {pnode}])\n        }}\n"
+                            ));
+                        }
                     }
                 }
             }

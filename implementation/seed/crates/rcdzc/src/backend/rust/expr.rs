@@ -7346,7 +7346,7 @@ fn lookup_sum_path_type(ctx: &Ctx, path: &[crate::core::PathStep]) -> Option<Ty>
 /// [`variant_payload_arity_at`], reading the arity off the (possibly hint-supplied) subject type rather
 /// than re-walking from the scrutinee. `strip_nominal` first so an erased-newtype-wrapped sum reads the
 /// inner sum's variant arity.
-fn variant_arity_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> usize {
+pub(super) fn variant_arity_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> usize {
     let decl_occ = match ty.strip_nominal() {
         Ty::Sum { decl, .. } => *decl,
         _ => return 0,
