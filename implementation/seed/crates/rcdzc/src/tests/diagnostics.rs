@@ -1854,59 +1854,17 @@ fn a_redundant_arm_warning_anchors_to_the_dead_arms_pattern() {
 // clean" witness is covered by the `(= (< a b) true)` over-Float64 case in the same chapter. Rust test
 // compare_on_a_float_names_the_relational_operators_as_the_fix deleted — language-independent + corpus-covered.
 
-#[test]
-fn compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route() {
-    // A COMPOUND (tuple/record/list/sum) is ordered lexicographically ONLY when every leaf offers a
-    // total order. A float (or bytes/set/map) leaf INSIDE a compound makes the whole compound
-    // un-orderable (a float offers only the IEEE partial order; §319 / core-semantics.md
-    // #compound-ordering-is-lexicographic), so a three-way `compare` over it is a PERMANENT carve-out —
-    // never a not-yet — so it is a coded CDZ0203 rejection (the SAME no-total-order `Code::TypeMismatch`
-    // family as the pure-float `compare` and the `<`/`>`/`<=`/`>=` compound arm, unified by the §7143
-    // reconcile), NOT an uncoded decline. The message must not dead-end: it names WHY (the offending leaf
-    // kinds) AND the actionable route — comparing the orderable components individually. This pins that
-    // redirect (lower.rs compound-`compare` arm) so a refactor can't degrade it. Runtime float params
-    // inside a tuple so it reaches lowering (a constant compound would fold).
-    let d = first_error(
-        "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of (tuple x 1) (tuple y 2))) (export f))",
-    );
-    // A CODED CDZ0203 no-total-order carve-out (a float leaf offers only the IEEE partial order), not an
-    // uncoded not-yet decline.
-    assert_eq!(
-        d.code.as_deref(),
-        Some("CDZ0203"),
-        "an un-orderable-leaf compound compare is the coded no-total-order carve-out: {}",
-        d.message
-    );
-    assert!(
-        d.message.contains("has no total order")
-                // names WHY (the offending leaf kinds) AND the component-wise route
-                && d.message.contains("float, set, or map leaf")
-                && d.message.contains("no three-way `compare`")
-                && d.message.contains("compare its orderable components individually"),
-        "the carve-out names the un-orderable-leaf reason AND the component-wise route: {}",
-        d.message
-    );
-    // ROUND-TRIP witness: the named route — comparing the orderable component (the Int field) on its
-    // own — compiles clean, so the redirect points at a form that type-checks.
-    let ast = crate::testkit::parse(
-        "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of 1 2)) (export f))",
-    );
-    let out = compile(
-        &[Artifact::new(
-            Artifact::KIND_AST,
-            "m",
-            crate::codec::encode(&ast),
-        )],
-        &[Target::Wasm],
-    );
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.severity == crate::abi::Severity::Error),
-        "the component-wise route (compare the orderable Int component) compiles clean: {:?}",
-        out.diagnostics
-    );
-}
+// MIGRATED to corpus (03-equality-and-observation.sexp, "a runtime compound compare with a float leaf is
+// a coded CDZ0203 — the three-way twin of the compound `<` decline"): the compound-compare-with-an-
+// un-orderable-leaf CDZ0203 carve-out + its full actionable message (four AND-required `(message …)`
+// facets: the offending leaf kinds "float, set, or map leaf", "has no total order", "no three-way
+// `compare`", and the component-wise route "compare its orderable components individually") are corpus-
+// asserted, with a Float64-leaf `#tuple` scrutinee reaching lowering. The component-wise route witness
+// (`(Ordering.of 1 2)` compiles+computes) is covered by the all-orderable-leaf compound-compare case just
+// below it and the "`(Ordering.of 1 2)` is `(Ordering.Less unit)`" case in the same chapter. Coded CDZ0203
+// by #7210 (the three-way twin of #7143's compound-`<` ordering reconcile). Rust test
+// compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route deleted — language-
+// independent + corpus-covered.
 
 // MIGRATED to corpus (03-equality-and-observation.sexp, "a runtime compound containing a float leaf is
 // rejected CDZ0203 for ordering …"): a compound with an unorderable (float/set/map) leaf ordered by
