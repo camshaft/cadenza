@@ -3178,6 +3178,14 @@ fn emit_match_list(
     let match_head = b.name("match");
     let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
     let mut children = vec![match_head, scrut_node];
+    // The list's ELEMENT type — recorded for each element binder (for the erased-newtype read peel, see
+    // `BinderEnv::payload_tys`): a `#list((Mk a) …)` element that is an erased single-variant newtype otherwise
+    // binds the whole `Box` and a body read of its inner scalar emits the bare `Box` where the inner is required
+    // (CDZ0201 "arithmetic is not defined on Box" on recompile — a round-trip BREAK, not just a decline).
+    let elem_ty = match crate::infer::type_of(db, scrutinee) {
+        Ty::List(e) => Some(*e),
+        _ => None,
+    };
     for arm in arms {
         // Build the arm's surface pattern, registering each binder's `SumPayload` path for the body.
         let pattern = match arm.cond {
@@ -3187,6 +3195,10 @@ fn emit_match_list(
                 for i in 0..n {
                     let name = synth_payload_name(env.next_payload);
                     env.next_payload += 1;
+                    if let Some(et) = &elem_ty {
+                        env.payload_tys
+                            .insert((scrutinee, vec![PathStep::Elem(i)]), et.clone());
+                    }
                     env.payloads
                         .insert((scrutinee, vec![PathStep::Elem(i)]), name.clone());
                     pat.push(b.name(name));
@@ -3199,6 +3211,10 @@ fn emit_match_list(
                 for i in 0..lead {
                     let name = synth_payload_name(env.next_payload);
                     env.next_payload += 1;
+                    if let Some(et) = &elem_ty {
+                        env.payload_tys
+                            .insert((scrutinee, vec![PathStep::Elem(i)]), et.clone());
+                    }
                     env.payloads
                         .insert((scrutinee, vec![PathStep::Elem(i)]), name.clone());
                     pat.push(b.name(name));
