@@ -1771,17 +1771,23 @@ fn navigable_type_name(rendered: &str) -> Option<&str> {
 /// the type NAME's declaration by scanning each loaded file's own `Symbols` (like `package_completions_at`
 /// reads each lib's columns). `None` when the closure can't load, the type is not a bare navigable name,
 /// or no loaded file declares it (a builtin) — the caller falls back to the single-buffer path.
-fn package_type_definition_at(
+/// The shared cross-file linked-query preamble for the `package_*_at` handlers: load the cursor's
+/// `(import …)` closure, splice each file as a `KIND_AST` artifact plus a `KIND_SIDECAR` "drive" request
+/// list built by `build_requests(cursor_node)`, and compile the linked program. The entry is spliced FIRST
+/// (`crate::closure::load` returns it at `files[0]`, `struct_base == 0`), so the cursor's entry-local node
+/// id IS the global query input — pass it as `cursor_node`. Returns the loaded files (for span/link-map
+/// demux) and the compile output (for the caller to decode its own answer artifact); `None` if the closure
+/// can't load. The caller parses the entry itself (it needs `entry_spans` for the cursor, and hover for its
+/// range), so only the load→splice→compile body is shared.
+fn linked_query_at(
     entry_path: &str,
     open: &dyn Fn(&std::path::Path) -> Option<String>,
-    entry_text: &str,
-    entry_is_ml: bool,
-    pos: Position,
-) -> Option<Location> {
-    let (_entry_arenas, entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
-    let byte = position_to_byte(entry_text, pos);
-    let cursor = entry_spans.node_at_offset(byte)?;
-
+    cursor_node: u32,
+    build_requests: impl FnOnce(u32) -> Vec<cadenza_compile_abi::Request>,
+) -> Option<(
+    Vec<crate::closure::LoadedFile>,
+    cadenza_compile_abi::CompileOutput,
+)> {
     let files = crate::closure::load(entry_path, open).ok()?;
     let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
         .iter()
@@ -1796,13 +1802,31 @@ fn package_type_definition_at(
     inputs.push(cadenza_compile_abi::Artifact::new(
         cadenza_compile_abi::sidecar::KIND_SIDECAR,
         "drive",
-        // Entry is spliced FIRST (base 0), so the cursor's entry-local node id is the linked query input.
-        cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
-            cadenza_compile_abi::sidecar::Query::TypeAt { node: cursor.0 },
-        )]),
+        cadenza_compile_abi::sidecar::encode(&build_requests(cursor_node)),
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
-    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    Some((
+        files,
+        rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[])),
+    ))
+}
+
+fn package_type_definition_at(
+    entry_path: &str,
+    open: &dyn Fn(&std::path::Path) -> Option<String>,
+    entry_text: &str,
+    entry_is_ml: bool,
+    pos: Position,
+) -> Option<Location> {
+    let (_entry_arenas, entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
+    let byte = position_to_byte(entry_text, pos);
+    let cursor = entry_spans.node_at_offset(byte)?;
+    // Entry is spliced FIRST (base 0), so the cursor's entry-local node id is the linked query input.
+    let (files, compiled) = linked_query_at(entry_path, open, cursor.0, |node| {
+        vec![cadenza_compile_abi::Request::Query(
+            cadenza_compile_abi::sidecar::Query::TypeAt { node },
+        )]
+    })?;
     let ty = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)
         .map(|b| crate::render_type_at(&cadenza_compile_abi::decode_type_at(b)))?;
@@ -1842,29 +1866,11 @@ fn package_definition_at(
     let (_entry_arenas, entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
     let byte = position_to_byte(entry_text, pos);
     let cursor = entry_spans.node_at_offset(byte)?;
-
-    let files = crate::closure::load(entry_path, open).ok()?;
-    let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
-        .iter()
-        .map(|f| {
-            cadenza_compile_abi::Artifact::new(
-                cadenza_compile_abi::Artifact::KIND_AST,
-                f.name.clone(),
-                cadenza_syntax::codec::encode(&f.arenas),
-            )
-        })
-        .collect();
-    inputs.push(cadenza_compile_abi::Artifact::new(
-        cadenza_compile_abi::sidecar::KIND_SIDECAR,
-        "drive",
-        cadenza_compile_abi::sidecar::encode(&[cadenza_compile_abi::Request::Query(
-            cadenza_compile_abi::sidecar::Query::ResolveOf {
-                node: cursor.0, // entry-local == global (entry is base 0)
-            },
-        )]),
-    ));
-    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
-    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let (files, compiled) = linked_query_at(entry_path, open, cursor.0, |node| {
+        vec![cadenza_compile_abi::Request::Query(
+            cadenza_compile_abi::sidecar::Query::ResolveOf { node }, // entry-local == global (entry is base 0)
+        )]
+    })?;
     let bytes = compiled.artifact(cadenza_compile_abi::sidecar::KIND_RESOLVE)?;
     // The defining occurrence's global node id, decoded from the binary-AST wire — ZERO string parsing.
     let target = cadenza_compile_abi::decode_resolve(bytes)?;
@@ -1909,33 +1915,17 @@ fn package_hover_at(
     let (_entry_arenas, entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
     let byte = position_to_byte(entry_text, pos);
     let cursor = entry_spans.node_at_offset(byte)?;
-
-    let files = crate::closure::load(entry_path, open).ok()?;
-    let mut inputs: Vec<cadenza_compile_abi::Artifact> = files
-        .iter()
-        .map(|f| {
-            cadenza_compile_abi::Artifact::new(
-                cadenza_compile_abi::Artifact::KIND_AST,
-                f.name.clone(),
-                cadenza_syntax::codec::encode(&f.arenas),
-            )
-        })
-        .collect();
-    inputs.push(cadenza_compile_abi::Artifact::new(
-        cadenza_compile_abi::sidecar::KIND_SIDECAR,
-        "drive",
-        // TYPE + DOCSTRING of the cursor node in one linked compile (entry-local == global at base 0).
-        cadenza_compile_abi::sidecar::encode(&[
+    // TYPE + DOCSTRING of the cursor node in one linked compile (entry-local == global at base 0).
+    let (_files, compiled) = linked_query_at(entry_path, open, cursor.0, |node| {
+        vec![
             cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::TypeAt {
-                node: cursor.0,
+                node,
             }),
             cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::DocAt {
-                node: cursor.0,
+                node,
             }),
-        ]),
-    ));
-    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
-    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+        ]
+    })?;
     let ty = compiled
         .artifact(cadenza_compile_abi::sidecar::KIND_TYPE_AT)
         .map(|b| crate::render_type_at(&cadenza_compile_abi::decode_type_at(b)))
@@ -2415,41 +2405,24 @@ fn package_references_at(
         return Vec::new();
     };
 
-    let Ok(files) = crate::closure::load(entry_path, open) else {
-        return Vec::new();
-    };
-    // Build the spliced package inputs (entry first = base 0), then run ALL THREE fact reads —
-    // `Symbols` (the shadowing-guard authority + the declaration node), `ResolveOf` (does the cursor
-    // resolve to a top-level symbol), and `UsesOf` (the references themselves) — in a SINGLE `compile`.
-    // A query is TOTAL and rides alongside the others, so one linked compile answers all three (and
-    // carries the `link-map` for the demux), instead of one full compile PER query. Distinct query kinds
-    // → distinct artifacts, retrieved by `KIND_*` below.
-    let ast_inputs: Vec<cadenza_compile_abi::Artifact> = files
-        .iter()
-        .map(|f| {
-            cadenza_compile_abi::Artifact::new(
-                cadenza_compile_abi::Artifact::KIND_AST,
-                f.name.clone(),
-                cadenza_syntax::codec::encode(&f.arenas),
-            )
-        })
-        .collect();
-    let mut inputs = ast_inputs;
-    inputs.push(cadenza_compile_abi::Artifact::new(
-        cadenza_compile_abi::sidecar::KIND_SIDECAR,
-        "drive",
-        cadenza_compile_abi::sidecar::encode(&[
+    // ALL THREE fact reads in ONE linked compile (entry first = base 0): `Symbols` (the shadowing-guard
+    // authority + the declaration node), `ResolveOf` (does the cursor resolve to a top-level symbol), and
+    // `UsesOf` (the references themselves). A query is TOTAL and rides alongside the others, so one linked
+    // compile answers all three (and carries the `link-map` for the demux). Distinct query kinds → distinct
+    // artifacts, retrieved by `KIND_*` below.
+    let Some((files, compiled)) = linked_query_at(entry_path, open, cursor.0, |node| {
+        vec![
             cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::Symbols),
             cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::ResolveOf {
-                node: cursor.0,
+                node,
             }),
             cadenza_compile_abi::Request::Query(cadenza_compile_abi::sidecar::Query::UsesOf {
                 name: name.clone(),
             }),
-        ]),
-    ));
-    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
-    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+        ]
+    }) else {
+        return Vec::new();
+    };
     // Read a query answer's RAW artifact bytes off the package compile, decoded via the shared
     // binary-AST codec (`KIND_SYMBOLS`/`KIND_RESOLVE`) — ZERO string parsing.
     let artifact_bytes = |kind: &str| -> Option<&[u8]> { compiled.artifact(kind) };
