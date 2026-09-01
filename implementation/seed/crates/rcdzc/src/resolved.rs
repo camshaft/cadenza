@@ -561,6 +561,14 @@ pub enum Prim {
     //= spec/capabilities/self-hosting-surface.md#a-reader-converts-text-to-the-canonical-representation
     //# A reader MUST convert the text of a program to the program's canonical representation, so that a program can be written as text before a surface syntax exists.
     Read,
+    /// `Ast.gensym` — mint a FRESH, collision-free `Ast.Name` for MANUAL macro hygiene (macros are
+    /// non-hygienic by default; DESIGN-macro-system.md): `String → Ast`. A compile-time-visible base
+    /// string folds to `Ast.Name "<base> $<node-id>"` — the call node's id makes the name distinct per
+    /// call site and DETERMINISTIC across compiles (reproducible expansion), and the embedded SPACE makes
+    /// it unreadable (a reader can never produce a name with a space) so it cannot collide with a source
+    /// name or another gensym. A runtime (non-constant) base declines. Folds at compile time — no backend
+    /// arm (like `Print`/`Read`/`ReflectModule`).
+    Gensym,
     /// `Bytes.of` — construct a byte sequence from a list of integers in `0..=255`: `(List Int64) →
     /// Bytes`. The `(meta apply)` of the `of` field of the `Bytes` module. A CONSTANT list literal folds
     /// to the baked byte value (range-checking each element: `< 0` or `> 255` is a compile-time trap,
@@ -968,6 +976,7 @@ impl Prim {
             "reflect-module" => Some(Prim::ReflectModule),
             "print" => Some(Prim::Print),
             "read" => Some(Prim::Read),
+            "gensym" => Some(Prim::Gensym),
             "List" => Some(Prim::ListCtor),
             "bytes-of" => Some(Prim::BytesOf),
             "bytes-len" => Some(Prim::BytesLen),

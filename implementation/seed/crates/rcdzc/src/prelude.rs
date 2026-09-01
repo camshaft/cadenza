@@ -2374,7 +2374,25 @@ pub(crate) fn ast_associated_fields(ast: &mut Arenas) -> Vec<StructId> {
         ast_module_field(ast),
         ast_print_field(ast),
         ast_read_field(ast),
+        ast_gensym_field(ast),
     ]
+}
+
+/// The `(gensym <op-record>)` field for the built-in `Ast` record — `Ast.gensym base : Ast`, the
+/// FRESH-NAME mint for MANUAL macro hygiene (macros are non-hygienic by default;
+/// `DESIGN-macro-system.md`). Takes a base-name `String` and folds to a fresh `Ast.Name` unique to the
+/// call site + deterministic across compiles (`Prim::Gensym`, `lower_gensym`) — the SAME monomorphic
+/// op-record shape as `Ast.read` (`(meta t) = (fn () (-> String Ast))`, `(meta apply) = (intrinsic
+/// gensym)`). Carried on the `Ast` `TypeDecl.associated` like `Ast.module`/`print`/`read`; a user `type
+/// Ast` carries no associated, so it shadows it.
+pub(crate) fn ast_gensym_field(ast: &mut Arenas) -> StructId {
+    let gensym_lambda = mono_op_type_lambda(ast, "String", "Ast");
+    let op = list_op_record(ast, "gensym", gensym_lambda);
+    let gensym_name = push_atom(ast, Leaf::Name("gensym".into()));
+    {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, gensym_name, op])
+    } // (gensym <op-record>)
 }
 
 /// The `(of <op-record>)` field for the built-in `Ordering` record — `Ordering.of a b : Ordering`, the
