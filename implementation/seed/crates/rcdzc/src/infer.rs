@@ -561,11 +561,21 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // `#tuple((None) (None))` direct-arg cross-contamination (the symbol-headed twin of the `#record`
         // fix; the arg-check step-1 `type_of` unify hit the shared var before the freshened reflection).
         Resolved::Tuple { elems } => {
+            // Freshen each element into a disjoint block (the two-`None()` cross-contamination fix, #7192),
+            // but via `freshen_arg` — which PRESERVES the def's own parameter type vars while a
+            // `compute_def_scheme` body solve is active (`scheme_rigid_vars`). A plain `freshen_free` here
+            // renamed EVERY free var, including a var TIED to a recursive-generic scheme's param — e.g. a
+            // tuple element of type `a` in a `List a -> Iter a` producer — SEVERING the tie so the var
+            // became untied and the scheme could not monomorphize (CDZ0201, the test-shred-iterators
+            // regression). `freshen_arg` keeps rigid (param) vars fixed during a scheme solve (so the tie
+            // survives) and is byte-identical to `freshen_free` OUTSIDE a scheme solve (so the two-`None`
+            // disjoint-freshen still fires, since those `Option ?` vars are not scheme params).
+            let elem_tys: Vec<Ty> = elems.iter().map(|&e| type_of(db, e)).collect();
             let mut fresh = crate::unify::Fresh::new();
             Ty::Tuple(
-                elems
+                elem_tys
                     .iter()
-                    .map(|&e| crate::unify::freshen_free(&type_of(db, e), &mut fresh))
+                    .map(|t| freshen_arg(db, t, &mut fresh))
                     .collect(),
             )
         }
