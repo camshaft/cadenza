@@ -195,6 +195,16 @@ struct BinderEnv {
     /// surface name — the closure re-captures it LEXICALLY, so the surface is just that name. Saved/restored
     /// around each `Core::Closure` body emit so a nested closure resolves its own captures.
     current_captures: Option<std::rc::Rc<[StructId]>>,
+    /// The content-addressed effect-spec DEDUP map (`layout.spec_merge`, `merged_def → representative_def`):
+    /// a `Core::Call` to a merged-away spec (dropped from `layout.order`, never emitted) must name its
+    /// structurally-identical REPRESENTATIVE — which IS emitted — instead of a dangling by-name reference.
+    /// The wasm backend redirects the func-index (`order_pos`) and the rust backend canonicalizes the name
+    /// (`fn_ident` via `spec_representative`); the cadenza backend emits by NAME too, so it applies the SAME
+    /// canonicalization here. Without it a mutual-recursive-performer SCC whose members collapse to one rep
+    /// (`ev#eff3`/`od#eff4`) leaves the dropped partner's call dangling → `unbound name od#eff4` on the
+    /// round-trip (v-effects, dispatched by v-core-opt). Empty for a program with no congruent specs (the
+    /// common case → identity, byte-identical output). Set once per program (cloned into each def's env).
+    spec_merge: std::collections::HashMap<usize, usize>,
 }
 
 /// The deterministic synthesized surface name for the `i`th kept `let` binding encountered in an emit
@@ -359,8 +369,16 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
             continue;
         }
         root_children.push(
-            emit_def(db, &mut b, def, &emitted, &emitted_effects, &lifted)
-                .map_err(|e| with_def_context(e, &dn))?,
+            emit_def(
+                db,
+                &mut b,
+                def,
+                &emitted,
+                &emitted_effects,
+                &lifted,
+                &layout.spec_merge,
+            )
+            .map_err(|e| with_def_context(e, &dn))?,
         );
     }
 
@@ -468,8 +486,16 @@ pub fn emit_fragment(
         if subset.contains(&db.defs[def].name) {
             let dn = db.defs[def].name.clone();
             root_children.push(
-                emit_def(db, &mut b, def, &emitted, &emitted_effects, &lifted)
-                    .map_err(|e| with_def_context(e, &dn))?,
+                emit_def(
+                    db,
+                    &mut b,
+                    def,
+                    &emitted,
+                    &emitted_effects,
+                    &lifted,
+                    &layout.spec_merge,
+                )
+                .map_err(|e| with_def_context(e, &dn))?,
             );
         }
     }
@@ -600,6 +626,7 @@ fn emit_def(
     emitted: &std::collections::HashSet<StructId>,
     emitted_effects: &std::collections::HashSet<std::rc::Rc<str>>,
     lifted: &std::rc::Rc<[crate::lower::LiftedLambda]>,
+    spec_merge: &std::collections::HashMap<usize, usize>,
 ) -> Result<StructId, Reject> {
     let name = db.defs[def].name.clone();
     let body = db.defs[def].body.ok_or_else(|| {
@@ -648,6 +675,7 @@ fn emit_def(
     let mut env = BinderEnv {
         lifted: Some(lifted.clone()),
         emitted_effects: emitted_effects.clone(),
+        spec_merge: spec_merge.clone(),
         ..BinderEnv::default()
     };
     // A def whose RESULT type is a concrete `Ty::Qty` AND whose body reduces to a BARE-INNER runtime
@@ -1460,6 +1488,13 @@ fn emit_expr_viewed(
         // (it is in `layout.order`, so this backend also emits its `(def …)`). Args are lowered in the
         // caller's frame, left-to-right. Head-first: the callee name atom is pushed before the args.
         Core::Call { callee, args } => {
+            // CONTENT-ADDRESSED SPEC DEDUP: canonicalize a call to a merged-away effect-spec to its
+            // structurally-identical REPRESENTATIVE (the one actually in `layout.order` + emitted). Without
+            // this, a mutual-recursive-performer SCC whose members collapse (`ev#eff3`/`od#eff4`) leaves the
+            // dropped partner's call naming a def with no `(def …)` → `unbound name od#eff4` on the round-trip.
+            // Identity for a non-merged callee (empty map / common case), matching the rust backend's
+            // `fn_ident` canonicalization; the wasm backend does the same via the `order_pos` func-index redirect.
+            let callee = env.spec_merge.get(&callee).copied().unwrap_or(callee);
             let callee_name = db.defs[callee].name.clone();
             let head = b.name(callee_name.as_str());
             let mut children = Vec::with_capacity(1 + args.len());
