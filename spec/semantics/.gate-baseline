@@ -3497,6 +3497,7 @@ pass	a parameterized export returns a sum value computed from its argument
 pass	a parameterized export returns a tuple computed from its argument
 pass	a parameterized plain export alongside a closure export applies its argument
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
+pass	a PARENTHESIZED literal magnitude adopts its arith sibling's fixed width like a bare one
 pass	a parenthesized-head generic type de-dups a repeated head parameter to arity one and resolves
 pass	a partial application as an operator operand names the forgotten call with a polished function-value lead
 pass	a partial application captures a let-bound variable in the residual closure

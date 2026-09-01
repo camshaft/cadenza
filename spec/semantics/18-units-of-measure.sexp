@@ -833,6 +833,31 @@
   (call main (: 100 UInt32))
   (output (: 105 UInt32)))
 
+; The PARENTHESIZED-literal variant of the same adoption (fuzzer cdz-smith). A grouped `(5)` reads as a
+; zero-argument identity application `Apply { head: 5, args: [] }` — semantically `5` — so its DIRECT parent
+; is the grouping, not the `Qty.of`. The magnitude-width adoption climbs from the literal to the `Qty.of`;
+; without seeing past the grouping the `(5)` escaped adoption, grounded to the Int64 DEFAULT, and the quantity
+; add emitted an i64 op over the i32 magnitude → INVALID WASM with no diagnostic (a distinct variant of the
+; resolved rcdzc-wasm-qty-add-mixed-magnitude-width finding — the bare-literal fix held, the grouped one did
+; not). Grouping is transparent to the context climb, so `(5)` — and nested `((5))` — adopt exactly as bare `5`.
+(case
+  "a PARENTHESIZED literal magnitude adopts its arith sibling's fixed width like a bare one"
+  (doc
+    "`(+ (Qty.of (5) meter) (Qty.of v0 meter))` over `v0 : UInt32`: the grouped `(5)` is semantically the
+           bare `5`, so it adopts the sibling quantity's `UInt32` magnitude and `main 3` returns `(: (Qty.of 8
+           meter) (Qty UInt32 meter))` — identical to the bare-literal case above. Formerly the grouping
+           defeated the width adoption and the add emitted an i64 op over the i32 magnitude → invalid wasm.")
+  (input
+    (do
+      (def
+        (main (: v0 UInt32))
+        (Qty.value (+ (Qty.of (5) (Unit.base #"meter")) (Qty.of v0 (Unit.base #"meter")))))
+      (export main)))
+  (call main (: 3 UInt32))
+  (output (: 8 UInt32))
+  (call main (: 100 UInt32))
+  (output (: 105 UInt32)))
+
 (case
   "a two-fixed-width magnitude clash under quantity arithmetic is CDZ0301 (no silent widening)"
   (doc
