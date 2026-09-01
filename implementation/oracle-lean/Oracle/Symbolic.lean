@@ -679,7 +679,15 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
     | some l =>
       match Value.ofLeaf l with
       | some v => .sym (.const v)
-      | none => .cannotProve "symeval: non-scalar leaf"
+      | none => match l with
+                -- a SYMBOL leaf (`#"…"`, e.g. a Qty base-unit name `(Unit.base #"second")`) → its raw bytes.
+                -- Symbolic-only (eval leaves symbols `.unsupported`; the cadenza-equiv differential is
+                -- symEval-vs-roundtrip, so decoding a symbol to its bytes is CONSISTENT across P/P' — symbols
+                -- compare by bytes, and stay DISTINCT from `.str` (different `Value` ctor) so no false
+                -- symbol==string. Unblocks Qty programs — the unit name is a symbol, so the operand atom hit
+                -- this leaf path before `Unit.base` could wrap it (v-cdz-smith #7290 migration to non-scalar-leaf).
+                | .sym b => .sym (.const (.bytes b))
+                | _ => .cannotProve "symeval: non-scalar leaf"
     | none => .cannotProve "symeval: leaf index out of range"
   | some (Node.list children) =>
     -- CONSTRUCTION first: a head resolving to a declared sum constructor (bare `C` or qualified `(. T C)`).
@@ -2352,7 +2360,7 @@ private def _setReorderCompoundExpr : Module :=
 private def _qtyDirectExpr : Module :=
   { leaves := #[.name ".".toUTF8, .name "Qty".toUTF8, .name "value".toUTF8, .name "of".toUTF8,
                 .name "Unit".toUTF8, .name "base".toUTF8, .intLit false .dec (ByteArray.mk #[5]),
-                .bytesLit "g".toUTF8],
+                .sym "g".toUTF8],
     nodes := #[.atom 0, .atom 4, .atom 5, .list #[0, 1, 2], .atom 7, .list #[3, 4],
                .atom 0, .atom 1, .atom 3, .list #[6, 7, 8], .atom 6, .list #[9, 10, 5],
                .atom 0, .atom 1, .atom 2, .list #[12, 13, 14], .list #[15, 11]],
@@ -2365,7 +2373,7 @@ private def _qtyAddExpr : Module :=
   { leaves := #[.name ".".toUTF8, .name "Qty".toUTF8, .name "value".toUTF8, .name "of".toUTF8,
                 .name "Unit".toUTF8, .name "base".toUTF8, .name "+".toUTF8,
                 .intLit false .dec (ByteArray.mk #[6]), .intLit false .dec (ByteArray.mk #[3]),
-                .bytesLit "s".toUTF8],
+                .sym "s".toUTF8],
     nodes := #[.atom 0, .atom 4, .atom 5, .list #[0,1,2], .atom 9, .list #[3,4],
                .atom 0, .atom 1, .atom 3, .list #[6,7,8], .atom 7, .list #[9,10,5],
                .atom 0, .atom 4, .atom 5, .list #[12,13,14], .atom 9, .list #[15,16],
