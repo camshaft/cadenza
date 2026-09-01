@@ -64,51 +64,14 @@ fn a_closer_comment_does_not_reorder_when_the_last_element_already_has_a_comment
 // leads-next `def f(e) = match e with …`⏎`// section header`⏎`def g() = 3`→`(do (def (f e) (match …)) (comment
 // "section header" (def (g) 3)))` pins the identical own-line-comment-leads-next-def-after-a-match shape.
 
-#[test]
-fn a_chained_else_if_ladder_flattens_headers_to_one_indent() {
-    // operator seq69/seq70: an `else if` ladder must NOT indent DEEPER per rung — every
-    // `if`/`else if`/`else` header stays at the OUTER indent (the "20 levels deep" compiler-ml pain
-    // was the printer nesting `else { if { else { if … } } }`, one cbox per rung). A too-wide chain
-    // lays out as a FLAT ladder (headers aligned, bodies one level under each header).
-    let src = "def classify(x) =\n\
-                   \x20\x20if first-threshold-check-predicate(x) then first-branch-result-value(x)\n\
-                   \x20\x20else if second-threshold-check-predicate(x) then second-branch-result-value(x)\n\
-                   \x20\x20else if third-threshold-check-predicate(x) then third-branch-result-value(x)\n\
-                   \x20\x20else final-fallback-branch-result-value(x)\n";
-    let p = read_ml(src);
-    assert!(p.ok(), "parses: {:?}", p.errors);
-    let printed = crate::printer::print(&p.arenas, 60); // narrow width forces the ladder to break
-    // Every `else if`/`else` header sits at the SAME indent (flat ladder, not deepening per rung).
-    let header_indents: Vec<usize> = printed
-        .lines()
-        .filter(|l| {
-            let t = l.trim_start();
-            t.starts_with("else if ") || t == "else"
-        })
-        .map(|l| l.len() - l.trim_start().len())
-        .collect();
-    assert!(
-        header_indents.len() >= 3,
-        "ladder broke into rungs:\n{printed}"
-    );
-    assert!(
-        header_indents.iter().all(|&i| i == header_indents[0]),
-        "all else-if/else headers at ONE indent (flat ladder, not deepening): {header_indents:?}\n{printed}"
-    );
-    // Round-trips structurally + idempotent.
-    let rp = read_ml(&printed);
-    assert!(
-        rp.ok() && p.arenas.structurally_eq(&rp.arenas),
-        "ladder round-trips: {:?}\n{printed}",
-        rp.errors
-    );
-    assert_eq!(
-        crate::printer::print(&rp.arenas, 60),
-        printed,
-        "idempotent\n{printed}"
-    );
-}
-
+// `a_chained_else_if_ladder_flattens_headers_to_one_indent` (an `else if` ladder must NOT indent deeper
+// per rung — every `if`/`else if`/`else` header stays at the OUTER indent, a FLAT ladder, bodies one level
+// under each header; the "20 levels deep" compiler-ml pain) MIGRATED to the spec/syntax corpus (parser-
+// corpus inc-8): ml/550-else-if-ladder-flat-indent — a 4-rung `def classify(x) = if …-predicate(x) then
+// …-result(x) else if … else …` whose format.cdz golden lays out every `else if`/`else` header at ONE
+// (2-space) indent with bodies at 4, and whose tree.sexp `(if p1 r1 (if p2 r2 (if p3 r3 r4)))` + idempotent
+// fmt pin the structural round-trip. (The long predicate names break it at the corpus default width, so no
+// width override is needed.)
 // `an_own_line_comment_between_infix_operands_survives_the_round_trip` (own-line `//` block lines between
 // operands of a multi-line infix chain attach as LEADING `(comment …)` on the right operand, printed own-line
 // before the operator) MIGRATED to the spec/syntax corpus (inc-6 batch-85): ml/480-comment-own-line-multiline-
