@@ -112,6 +112,31 @@ pub struct Call {
     pub method: Option<String>,
 }
 
+/// The repo ROOT: from `CDZ_REPO_ROOT` (the nix-app wrappers set it to the invoking worktree, since a
+/// relocated nix binary can't self-locate), else the current dir (a bare `cargo run`). The one place every
+/// decomposed xtask leaf-crate resolves its root, so the env-var contract lives in a single spot.
+pub fn repo_root() -> PathBuf {
+    std::env::var_os("CDZ_REPO_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().expect("current dir"))
+}
+
+/// The seed-toolchain BINARY dir: from `CDZ_SEED_BIN_DIR` (the nix apps inject the warm nix-built `cdz`/
+/// `cdz-corpus`), else `<repo>/target/debug` for a bare `cargo run`. Pairs with [`repo_root`].
+pub fn seed_bin_dir(repo: &Path) -> PathBuf {
+    std::env::var_os("CDZ_SEED_BIN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo.join("target/debug"))
+}
+
+/// The three committed gate-baseline files (repo-relative), in `[wasm, rust, rust-async]` order — the
+/// canonical set the baseline canonicalizer/pruner sweep. One copy so the list can't drift between them.
+pub const BASELINE_REL: [&str; 3] = [
+    "spec/semantics/.gate-baseline",
+    "spec/semantics/.gate-baseline-rust",
+    "spec/semantics/.gate-baseline-rust-async",
+];
+
 // moved from xtask/src/main.rs (v-xtask-decompose slice 2b) — &Tools/&Paths → &Path.
 pub fn default_corpus_files(repo: &Path) -> Vec<PathBuf> {
     let dir = repo.join("spec/semantics");

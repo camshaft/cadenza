@@ -8,15 +8,11 @@ use std::path::{Path, PathBuf};
 use xtask_support::{CorpusRecord, convert_bytes, default_corpus_files, read_corpus, to_binary};
 
 fn main() {
-    let repo = std::env::var_os("CDZ_REPO_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
+    let repo = xtask_support::repo_root();
     // The nix-built pipeline tools (cdz for surface conversions, cdz-corpus for record extraction), from
     // the dir the `apps.roundtrip` wrapper points CDZ_SEED_BIN_DIR at. Falls back to `<repo>/target/debug`
     // for a bare `cargo run -p xtask-roundtrip` (dev), where a prior `cargo build` left the bins.
-    let bin_dir = std::env::var_os("CDZ_SEED_BIN_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo.join("target/debug"));
+    let bin_dir = xtask_support::seed_bin_dir(&repo);
     let cdz = bin_dir.join("cdz");
     let corpus = bin_dir.join("cdz-corpus");
 

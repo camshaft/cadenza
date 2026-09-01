@@ -11,27 +11,14 @@
 //! and the `merge-baseline` git driver use, so there is one source of truth. The repo root comes from
 //! `CDZ_REPO_ROOT` (else cwd) — the `apps.canonicalize-baselines` wrapper sets it to the invoking worktree.
 
-use std::path::PathBuf;
 use xtask_support::canonicalize_baseline_text;
 
-/// The three committed gate-baseline files, relative to the repo root — one per semantics backend. Mirrors
-/// xtask's `baseline_path(GateTarget::{Wasm,Rust,RustAsync})`: `spec/semantics/.gate-baseline{,-rust,
-/// -rust-async}`. (CadenzaMl is differential-only and has no baseline file.) Kept here as the canonicalizer
-/// owns knowing which files to sweep; the names are stable + committed.
-const BASELINE_REL: [&str; 3] = [
-    "spec/semantics/.gate-baseline",
-    "spec/semantics/.gate-baseline-rust",
-    "spec/semantics/.gate-baseline-rust-async",
-];
-
 fn main() {
-    let repo = std::env::var_os("CDZ_REPO_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
+    let repo = xtask_support::repo_root();
 
     let mut rewrote: Vec<String> = Vec::new();
     let mut conflicts: Vec<String> = Vec::new();
-    for rel in BASELINE_REL {
+    for rel in xtask_support::BASELINE_REL {
         let path = repo.join(rel);
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
