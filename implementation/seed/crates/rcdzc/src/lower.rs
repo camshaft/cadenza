@@ -1251,6 +1251,26 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // dup/consume EMIT is the same sound path `BytesConcat` uses post-adv-66 — ListConcat is already
             // CONSUMING in `mark_binder_dups`), exactly as adv-54b widened from the StrSlice/StrToBytes pair.
             | Core::ListConcat { .. }
+            // FAMILY WIDENING (the #7416 ListConcat class — the exponential-emit boxed-rep fix, seq-203):
+            // the boxed-COLLECTION PRODUCERS are all fresh-owned-handle producers that CONSUME/dup their
+            // operands (v-wasm-opt verified all 8 on BOTH axes @ 48e46259fe: mark_binder_dups is_borrow=false
+            // CONSUMING + heap_operand_ownership Owned; no adv-54 kept-emit caveat — the adv-54 3-case
+            // regression was a since-fixed mark_binder_dups bug). So a multi-use let-bound collection producer
+            // was COPY-PROPAGATED (not in this list) → rebuilt at each use → an EXPONENTIAL chain (Set.union /
+            // List.push / Map.insert chained, each binding consuming the previous 2x, 2^N). Keeping them under
+            // the >= 2-use rule materializes ONCE into a `Core::Let` slot (handle read per use, a dup=rc bump),
+            // so a linear program emits LINEAR output. LIST: `List.push`/`List.prepend`/`List.update`; MAP:
+            // `Map`-empty-build / `Map.insert`/`Map.remove`; SET: `Set.of`. (`SumNew` — the sum-payload rep —
+            // verified too but deferred to a separate increment for its ubiquity; `SetAlgebra`=`Set.union` is
+            // the confirmed exp witness, pending its own verify.) v-wasm-opt co-lands a per-kind emit-size
+            // regression gate with each; gate-local + opt-sweep are the per-op empirical arbiter.
+            | Core::ListPush { .. }
+            | Core::ListPrepend { .. }
+            | Core::ListUpdate { .. }
+            | Core::MapNew { .. }
+            | Core::MapInsert { .. }
+            | Core::MapRemove { .. }
+            | Core::SetOf { .. }
     )
 }
 
