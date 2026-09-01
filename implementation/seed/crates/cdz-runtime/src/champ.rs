@@ -2807,6 +2807,44 @@ pub(crate) fn op_map_iter_val(cur: Handle) -> Handle {
     }
 }
 
+/// `map-merge` — merge two persistent CHAMP maps, LAST-WRITER-WINS: `b`'s entries OVERWRITE `a`'s on a
+/// key conflict (`b` is the "last writer"). CONSUMES both `a` and `b`; returns the merged map. This is
+/// the runtime primitive behind `Map.union` and the map arm of value-position spread `#map((= k v) (.. m))`
+/// (the caller picks which operand is `b`/last so the spread's winner matches its surface order).
+///
+/// IMPLEMENTATION: iterate `b`'s entries with the shared CHAMP cursor and `op_map_insert` each into `a`.
+/// `op_map_insert` OVERWRITES a duplicate key (canonical CHAMP insert), so `b` wins; it also CONSUMES its
+/// key+val, so each cursor-BORROWED `(k, v)` is `dup`'d first. `a` flows through as the accumulator —
+/// FBIP-refit in place while uniquely owned, else path-copied by insert (also the a==b self-merge safety:
+/// the cursor holds dup'd frame refs into the map, so insert sees rc>1 and path-copies rather than mutating
+/// a node the cursor still walks). O(|b| · log|a∪b|); a structural node-merge (share unchanged subtrees)
+/// is a later perf optimization. Empty is the identity on both sides (empty `b` → cursor yields nothing,
+/// `a` returned; empty `a` → `b`'s entries re-inserted into empty = `b`). rc-balanced: `b`'s surviving
+/// entries are `dup`'d into `acc` before `b` is dropped, so no leak and no double-free.
+///
+/// Wired via the `map-merge` WIT export (op 98) + the `Guest::map_merge` impl; the `Core::MapMerge`
+/// variant + backend arms + `Map.union` prelude ride the same coordinated hash-bump flag-day.
+pub(crate) fn op_map_merge(a: Handle, b: Handle) -> Handle {
+    let mut acc = a;
+    let mut cur = op_map_iter(b); // BORROWS b (dups the focused descent frames into the cursor)
+    loop {
+        let k = op_map_iter_key(cur); // BORROW; NULL is the exhausted done-signal
+        if k == Handle::NULL {
+            break;
+        }
+        let v = op_map_iter_val(cur); // BORROW (paired with the key)
+        // `op_map_insert` CONSUMES key + val; `k`/`v` are borrowed from `b`'s nodes → retain a fresh
+        // reference for each so `b`'s originals stay live until `b` itself is dropped below.
+        op_dup(k);
+        op_dup(v);
+        acc = op_map_insert(acc, k, v); // overwrites the dup'd key → `b` wins (last-writer)
+        cur = op_map_iter_next(cur); // consumes `cur`, returns the advanced (or exhausted) cursor
+    }
+    op_drop(cur); // release the exhausted cursor (its frame refs into `b`)
+    op_drop(b); // consume `b`: its kept entries were dup'd into `acc`, its spine frees
+    acc
+}
+
 // ─── CHAMP persistent SET (CHAMP minus the value column, stride 1) ───────────────────────
 // A set is a PRIMITIVE collection, NOT `Map<T, Unit>`: entries are ONE handle. Every op is a thin
 // `SET_STRIDE` wrapper over the SAME shared trie core the map uses (`champ_insert_node`,
