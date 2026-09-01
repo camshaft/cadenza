@@ -14,11 +14,11 @@
 //!   `(: (tuple 1 2) …)`        → the value is List[ Name "tuple", <e0>, <e1>… ]; the type List[ Name "Tuple", <T0>… ]
 //!   `(: true Bool)`            → Bool leaf, type Name "Bool"
 //!
-//! WIP (built incrementally, per concierge): covers Int / Bool / Tuple / Record and the single-payload /
-//! nullary SUM (Option / Result / a bare-head user sum). List / Float / String / Bytes / Set / Map / Qty,
-//! plus the harder sum shapes (qualified-head, multi-field/flattened, recursive) are follow-up increments
-//! (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape DECLINES (never a miscompile) — the
-//! driver keeps `cdz_render_at` for it until covered, so partial coverage is safe.
+//! WIP (built incrementally, per concierge): covers Int / Bool / Tuple / Record / List and the
+//! single-payload / nullary SUM (Option / Result / a bare-head user sum). Float / String / Bytes / Set /
+//! Map / Qty, plus the harder sum shapes (qualified-head, multi-field/flattened, recursive) are follow-up
+//! increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape DECLINES (never a
+//! miscompile) — the driver keeps `cdz_render_at` for it until covered, so partial coverage is safe.
 
 use crate::db::Db;
 use crate::diag::Reject;
@@ -123,6 +123,27 @@ fn doc_value_node(
             }
             let v = fresh(ctr);
             out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            Ok(v)
+        }
+        // A LIST → `(list <e0> <e1> …)`: a `Name "list"` head then each element's value-node, appended at
+        // RUNTIME by consuming the `Vec<T>` (`for __e in __r`) so an arbitrary-length list works. The head
+        // + kids vec + iterator binder all use FRESH names (a nested list `(list (list …) …)` else shadows
+        // the outer `__kids`, so its inner `push` would target the wrong vec). The element walk emits its
+        // bindings into the LOOP-BODY buffer (re-run per element) and returns the built-node var to push.
+        Ty::List(elem) => {
+            let elem = (**elem).clone();
+            let head = fresh(ctr);
+            let kids = fresh(ctr);
+            let iter = fresh(ctr);
+            out.push_str(&format!("    let {head} = __b.name(\"list\");\n"));
+            out.push_str(&format!("    let mut {kids} = vec![{head}];\n"));
+            let mut body = String::new();
+            let enode = doc_value_node(db, &elem, &iter, &mut body, ctr)?;
+            out.push_str(&format!(
+                "    for {iter} in ({val_expr}) {{\n{body}        {kids}.push({enode});\n    }}\n"
+            ));
+            let v = fresh(ctr);
+            out.push_str(&format!("    let {v} = __b.list({kids});\n"));
             Ok(v)
         }
         // A SUM (Option / Result / a user sum) → a `match` over the emitted enum. Each variant arm builds
@@ -236,6 +257,17 @@ fn doc_type_node(db: &mut Db, ty: &Ty, out: &mut String, ctr: &mut usize) -> Res
             }
             let v = fresh(ctr);
             out.push_str(&format!("    let {v} = __b.list(vec![{}]);\n", kids.join(", ")));
+            Ok(v)
+        }
+        // A LIST TYPE → `(List <elem>)` (the `render_name` shape): a `Name "List"` head then the element
+        // type-node.
+        Ty::List(elem) => {
+            let elem = (**elem).clone();
+            let head = fresh(ctr);
+            out.push_str(&format!("    let {head} = __b.name(\"List\");\n"));
+            let et = doc_type_node(db, &elem, out, ctr)?;
+            let v = fresh(ctr);
+            out.push_str(&format!("    let {v} = __b.list(vec![{head}, {et}]);\n"));
             Ok(v)
         }
         // A SUM TYPE → its NOMINAL name applied to type ARGS (the `render_name` shape): a MONOMORPHIC sum
