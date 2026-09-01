@@ -753,12 +753,41 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     return Core::Poison(r);
                 }
             }
+            // DEDUP folded-equal keys LAST-WINS. A map's keys are compared BY VALUE and "each key appears at
+            // most once — a later entry overwrites" (collections-and-text.md #Keys Are Compared By Value).
+            // The keys are distinct EXPRESSIONS that may fold to the SAME value — `(let ((a 5)) #map((= a 1)
+            // (= 5 2)))` has keys `a` and `5` that only collide AFTER const-fold — so the front-end
+            // duplicate-literal-key check (distinct expressions) misses them and the constant-map value model
+            // held BOTH physical entries, which every consumer then read inconsistently (equality-fold FALSE
+            // vs `(Map.insert Map.empty 5 2)` where the spec demands TRUE, `Map.insert` overwriting only the
+            // first dup, wasm materializing both, print showing both — breaker's wrong-value miscompile). Keep
+            // an entry only when NO LATER entry has a by-value-equal key (`const_compound_eq == Some(true)`),
+            // so the LAST write per key wins — the ONE canonical map value all consumers inherit. A RUNTIME
+            // key (`const_compound_eq` = `None`, not comparable at compile time) is kept: the runtime CHAMP
+            // `map-insert` chain the backend builds dedups it order-canonically.
+            let deduped: std::rc::Rc<[(StructId, StructId)]> = {
+                let mut kept: Vec<(StructId, StructId)> = Vec::with_capacity(entries.len());
+                for i in 0..entries.len() {
+                    let (k, v) = entries[i];
+                    let mut overwritten = false;
+                    for j in (i + 1)..entries.len() {
+                        if const_compound_eq(db, k, entries[j].0) == Some(true) {
+                            overwritten = true;
+                            break;
+                        }
+                    }
+                    if !overwritten {
+                        kept.push((k, v));
+                    }
+                }
+                kept.into()
+            };
             let (key_ty, val_ty) = match crate::infer::type_of(db, id) {
                 crate::ty::Ty::Map(k, v) => (*k, *v),
                 _ => (crate::ty::Ty::Any, crate::ty::Ty::Any),
             };
             Core::MapNew {
-                entries,
+                entries: deduped,
                 key_ty,
                 val_ty,
             }
