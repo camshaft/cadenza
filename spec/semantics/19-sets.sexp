@@ -4298,7 +4298,7 @@
   "Set.to-list over set/map-leaf elements is a coded CDZ0203 — a set/map leaf carries no blessed total order (all-leaf sibling of the float case)"
   (input
     (do
-      (def (main) (List.len (Set.to-list (Set.of (list (Map.insert Map.empty 0 (list 8 7)))))))
+      (def (main) (List.len (Set.to-list #set((Map.insert Map.empty 0 #list(8 7))))))
       (export main)))
   (error CDZ0203 (message "no blessed order")))
 
