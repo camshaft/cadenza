@@ -8948,3 +8948,6 @@ todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	a block-wrapped OUTER-effect perform in a nested handle's INIT folds to 34 (adv-69 a4-init sub-face)
 pass	a bare Float32 value renders its own shortest decimal, not the f32->f64 promotion
+pass	a runtime heap-carried Option Float32 renders shortest-f32, keeping its 2 reachable return cells
+pass	consuming a runtime Option Float32 (not returning it) leaves zero live objects
+pass	a runtime heap-carried Result Float32 (Ok) renders shortest-f32, keeping its 2 reachable return cells
