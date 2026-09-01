@@ -2028,6 +2028,14 @@ pub struct Db {
     /// program with no such defect.
     pub(crate) nonfinal_splice_patterns: Vec<StructId>,
 
+    /// Macro-call occurrences whose EXPANSION did not terminate within the fuel budget
+    /// ([`crate::lower::expand_macros`]) — a self- or mutually-recursive macro whose expansion keeps
+    /// producing another macro call. The expander records the culprit call here and STOPS (rather than
+    /// looping forever, which hung the compiler + `cdz check`/LSP); [`crate::compile::collect_faults`]
+    /// reports each as a coded reject so a non-terminating macro is a diagnosable error, not a hang. Empty
+    /// for a program whose macro expansion converges (the overwhelming common case).
+    pub(crate) macro_expansion_overflow: Vec<StructId>,
+
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
     /// Test-only: count of clone-returning [`crate::resolve::resolved_of`] calls against THIS `Db` — the
@@ -3170,6 +3178,7 @@ impl Db {
             file_scope,
             user_node_count,
             nonfinal_splice_patterns,
+            macro_expansion_overflow: Vec::new(),
             reduce_depth: 0,
             reduce_nodes: 0,
             structural_reductions: 0,

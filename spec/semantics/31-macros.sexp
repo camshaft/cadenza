@@ -176,7 +176,8 @@
            (Was breaker-fenced `mrf1`; fixed by the two mechanisms above, both in `expand_macros`.)")
   (input
     (do
-      (def (via-fn (quote arg))
+      (def
+        (via-fn (quote arg))
         (quasiquote (do (def (fact p) (if (> p 1) (* p (fact (- p 1))) 1)) (fact (unquote arg)))))
       (def (main) (via-fn 5))
       (export main)))
@@ -274,3 +275,15 @@
       (export main)))
   (call main)
   (output (: 5 Int64)))
+
+(case
+  "a non-terminating self-recursive macro is a hard CDZ0999 error, not a compiler hang"
+  (doc
+    "A macro whose expansion keeps producing another call to itself — `(def (m (quote e)) (quasiquote (m
+           (unquote e))))` with `(m 5)` — has no fixpoint. The expander caps the expansion fuel and reports
+           a hard CDZ0999 (the compile-time-reduction-bound band — macro expansion is compile-time
+           evaluation) instead of LOOPING FOREVER, which hung the compiler AND `cdz check` (freezing the
+           LSP / diagnostics-as-you-type on one accidental self-referential macro edit). Pins that a
+           non-terminating macro is a DIAGNOSABLE error, not a hang — a robustness guarantee for the tool.")
+  (input (do (def (m (quote e)) (quasiquote (m (unquote e)))) (def (main) (m 5)) (export main)))
+  (error CDZ0999 (message "macro expansion did not terminate")))
