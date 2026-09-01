@@ -535,7 +535,7 @@ impl Unit {
             }
             out
         }
-        // A single base at a (positive) exponent: `((. Unit base) #"name")` or `(Unit.^ … k)`.
+        // A single base at a (positive) exponent: `(Unit.base #"name")` or `(Unit.^ … k)`.
         fn factor(name: &str, exp: i64) -> String {
             let base = format!("(Unit.base #\"{}\")", escape_sym(name));
             if exp == 1 {
@@ -2147,29 +2147,29 @@ mod tests {
         // review on PR #485.)
         assert_eq!(
             Unit::base("meter").render_value_form(),
-            "((. Unit base) #\"meter\")",
+            "(Unit.base #\"meter\")",
             "an ordinary name is unchanged"
         );
         assert_eq!(
             Unit::base("me\"ter").render_value_form(),
-            "((. Unit base) #\"me\\\"ter\")",
+            "(Unit.base #\"me\\\"ter\")",
             "an embedded quote is escaped"
         );
         assert_eq!(
             Unit::base("a\\b").render_value_form(),
-            "((. Unit base) #\"a\\\\b\")",
+            "(Unit.base #\"a\\\\b\")",
             "a backslash is escaped"
         );
         // A newline in the name would otherwise split the single-line `// cdz-unit` note → escaped to `\n`.
         assert_eq!(
             Unit::base("x\ny").render_value_form(),
-            "((. Unit base) #\"x\\ny\")",
+            "(Unit.base #\"x\\ny\")",
             "a newline is escaped so the note stays one line"
         );
         // The escape composes through a power and a quotient (each factor's base name is escaped).
         assert_eq!(
             Unit::base("m\"").pow(2).render_value_form(),
-            "(Unit.^ ((. Unit base) #\"m\\\"\") 2)",
+            "(Unit.^ (Unit.base #\"m\\\"\") 2)",
             "a powered factor escapes its base name"
         );
     }

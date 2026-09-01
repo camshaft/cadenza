@@ -750,13 +750,11 @@ fn a_runtime_qty_over_int_at_reference_unit_templates_with_the_unit_baked() {
             _ => None,
         })
         .collect();
+    // The `Qty.of` head is now a single bare dotted-NAME leaf (seq-283 member-render sugar), not separate
+    // `Qty` + `of` member-part leaves — so the baked leaf pool carries the one string `"Qty.of"`.
     assert!(
-        names.contains("Qty"),
-        "the Qty.of construction is baked: {names:?}"
-    );
-    assert!(
-        names.contains("of"),
-        "the Qty.of member is baked: {names:?}"
+        names.contains("Qty.of"),
+        "the Qty.of construction is baked as one dotted name: {names:?}"
     );
     assert!(
         names.contains("meter"),
