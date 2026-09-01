@@ -162,6 +162,13 @@ use std::collections::HashMap;
 #[derive(Default)]
 struct BinderEnv {
     lets: HashMap<StructId, std::rc::Rc<str>>,
+    /// A Core-node → surface-binder-name OVERRIDE: while emitting a scalar-match's if-chain over an EFFECTFUL
+    /// scrutinee (a `Core::HostCall`), the scrutinee is let-bound ONCE and every re-emission of that Core node
+    /// (each probe's `(= <scrut> lit)`, plus a wildcard arm body that reads it) must resolve to the BINDER,
+    /// not re-emit the host call — else the effect fires once per probe (a miscompile: `(match (Param.mode) …)`
+    /// → an `if`-chain calling `Param.mode` N times). Checked at the TOP of `emit_expr` (only when non-empty).
+    /// Scoped: inserted before the chain emit, removed after.
+    scrut_lets: HashMap<StructId, std::rc::Rc<str>>,
     payloads: HashMap<(StructId, Vec<crate::core::PathStep>), std::rc::Rc<str>>,
     /// The solved TYPE of a payload binder in `payloads` (SAME key), populated where cheaply known (the
     /// sum-match arm-loop's variant payload slot; a `build_arm_pat` leaf). Its ONLY use: a `Core::SumPayload`
@@ -877,6 +884,14 @@ fn emit_expr(
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
+    // A let-bound effectful scrutinee (scalar-match over a `Core::HostCall`) resolves to its binder NAME here,
+    // so a re-emission (each if-chain probe / a scrutinee-reading arm body) references the once-evaluated
+    // value instead of re-performing the effect. Empty in the common case → near-zero cost.
+    if !env.scrut_lets.is_empty()
+        && let Some(name) = env.scrut_lets.get(&id).cloned()
+    {
+        return Ok(b.name(name));
+    }
     emit_expr_viewed(db, b, id, None, expected, env, emitted)
 }
 
@@ -1587,6 +1602,35 @@ fn emit_expr_viewed(
                 }
             }
             let ctx = body_ctx(db, id, expected);
+            // The scalar-match → `if`-chain re-emits the SCRUTINEE per probe (`(= <scrut> lit)`). That is
+            // side-effect-free ONLY for a PURE scalar (the assumption above). For an EFFECTFUL scrutinee — a
+            // `Core::HostCall` (a `@param`/effect read, e.g. `(match (Param.mode) (0 …)(1 …)(_ …))`) — with 2+
+            // literal probes, re-emitting it fires the effect ONCE PER PROBE (the host op is performed N times
+            // → wrong: `Param.mode` read twice consumes two responses, dispatches to the wildcard → 26-runtime-
+            // params `-1` vs `42`). Bind it ONCE and route every re-emission through the binder via
+            // `env.scrut_lets`: `(let ((_s <host-call>)) <if-chain over _s>)`. Only for a HostCall + 2+ probes
+            // (a single-probe match emits the scrutinee once already; a pure scrutinee re-emits harmlessly and
+            // stays byte-idempotent).
+            let probe_count = arms
+                .iter()
+                .filter(|a| !matches!(a.probe, crate::core::Probe::Wild))
+                .count();
+            let effectful_scrut = matches!(core_of(db, scrutinee), Core::HostCall { .. });
+            if effectful_scrut && probe_count >= 2 {
+                let name = synth_binding_name(env.next_payload);
+                env.next_payload += 1;
+                // Emit the host call ONCE (scrut_lets does not yet contain it, so this is the real perform).
+                let sval = emit_expr(db, b, scrutinee, None, env, emitted)?;
+                env.scrut_lets.insert(scrutinee, name.clone());
+                let chain = emit_match_chain(db, b, scrutinee, &arms, 0, ctx, env, emitted);
+                env.scrut_lets.remove(&scrutinee);
+                let chain = chain?;
+                let name_atom = b.name(name);
+                let binding = b.list(vec![name_atom, sval]);
+                let bindings = b.list(vec![binding]);
+                let let_head = b.name("let");
+                return Ok(b.list(vec![let_head, bindings, chain]));
+            }
             emit_match_chain(db, b, scrutinee, &arms, 0, ctx, env, emitted)
         }
         // A runtime TUPLE value `(tuple <e>…)` — a fixed-arity positional product built from runtime
