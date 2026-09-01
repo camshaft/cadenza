@@ -100,6 +100,29 @@ duvet extract -f markdown -o /tmp/ex ./spec/contracts/<name>.md
 duvet report
 ```
 
+## Tests belong in the corpus, NOT baked into the host language — OPERATOR DIRECTIVE
+
+**Every behavioral test MUST be a host-language-independent case in the executable-semantics
+corpus ([spec/semantics/](spec/semantics/)), not a test baked into the Rust seed toolchain.** This
+is the direction the whole project is going, and it is not optional. When you want to assert what a
+construct *does* — what it evaluates to, what it declines, what diagnostic it emits — write it as a
+corpus case (an Input paired with its expected Output), because the corpus is the
+implementation-independent, runnable language specification and every tool agrees with it. A Rust
+`#[test]` that encodes a *language behavior* is the anti-pattern this directive exists to stop:
+push it into the corpus.
+
+- **Do not add new Rust `#[test]`s for language/semantic behavior.** Reserve host-language tests for
+  what genuinely cannot live in the corpus — internal data-structure invariants, parser/printer
+  plumbing with no observable Cadenza-level behavior, and the like. Anything a Cadenza program can
+  observe belongs in the corpus.
+- **If the corpus is missing the functionality you need to express a test, RAISE A FLAG** — do not
+  fall back to a Rust test and do not work around the gap. Per the corpus policy, lock in the
+  idealistic (spec-correct) expectation as a corpus `TODO` and route the underlying gap to its owner;
+  a found gap is a win, not a reason to bake a test into Rust.
+
+This restates, at repository level, the behavior-gate above and the corpus policy every fleet agent
+already follows: the corpus is the single source of truth for what a construct does.
+
 ## The hub is BARE — you cannot edit it; always work in your own worktree
 
 The hub repository is **bare**: it has no working tree, so there is no central checkout to edit
