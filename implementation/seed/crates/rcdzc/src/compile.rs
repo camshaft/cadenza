@@ -3539,12 +3539,15 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // SILENTLY ACCEPTED. Reject each here: the head must name a declared SUM TYPE, and (unless the `*`
     // wildcard) the ctor must be one of its variants — with a did-you-mean over the type's variant names.
     let ctor_exports = db.ctor_export_elements();
-    for (elem_occ, ty_occ, ctor_occ) in ctor_exports {
-        let ty_name = db.ast.as_name(ty_occ).map(str::to_string);
-        let ctor_name = db.ast.as_name(ctor_occ).map(str::to_string);
-        let (Some(ty_name), Some(ctor_name)) = (ty_name, ctor_name) else {
-            continue; // shape guaranteed by `is_ctor_export_shape`, but stay total
-        };
+    for elem in ctor_exports {
+        let crate::db::CtorExportElem {
+            elem: elem_occ,
+            ty_name,
+            ctor_key: ctor_name,
+            ty_anchor,
+            ctor_anchor,
+            is_atom,
+        } = elem;
         // The head must name a declared SUM TYPE. A value def / effect / undeclared name is not one — a
         // ctor-export of a non-type has no constructors to publish. `type_decl_by_name` returns the sum's
         // SYNTHESIZED RECORD occurrence; `type_decl_by_synth` recovers the `TypeDecl` (with its variants).
@@ -3585,7 +3588,17 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             )
             .at(elem_occ);
             if let Some(near) = type_hint {
-                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(ty_occ, near));
+                // The rename fix targets the TYPE-name occurrence. For the LIST form `(. Colr *)` that is a
+                // distinct node (`ty_anchor`), replaced with the bare corrected name. For the dotted ATOM
+                // `Colr.*` there is only the one atom node, so the fix replaces the WHOLE atom and its
+                // replacement must carry the `.*` tail (`Colr.*` -> `Color.*`) — replacing with just
+                // `Color` would drop the wildcard and yield `(export Color)`.
+                let (fix_at, replacement) = if is_atom {
+                    (elem_occ, format!("{near}.{ctor_name}"))
+                } else {
+                    (ty_anchor, near)
+                };
+                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(fix_at, replacement));
             }
             faults.push(reject);
             continue;
@@ -3611,11 +3624,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                      constructor-export names one of its variants (or `*` for all){hint}"
                 ),
             )
-            .at(ctor_occ);
+            .at(ctor_anchor);
             if let Some(near) =
                 crate::diag::suggest::nearest(&ctor_name, variant_names.iter().map(String::as_str))
             {
-                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(ctor_occ, near));
+                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(ctor_anchor, near));
             }
             faults.push(reject);
         }

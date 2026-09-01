@@ -1945,6 +1945,8 @@ pass	a constructor selected at RUNTIME is a first-class value that is then appli
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a constructor with an all-irrefutable payload shadows a later refining arm of the same variant
 pass	a constructor-export naming a near-miss variant suggests the constructor with a rename fix
+pass	a constructor-export of all variants (. T *) is well-formed and not flagged
+pass	a constructor-export whose TYPE head is a near-miss suggests the declared type with a rename fix
 pass	a constructor-export whose head is a FAR-MISS undeclared name gets no spurious did-you-mean
 pass	a constructor-export whose head is a value definition names the value-definition category
 pass	a constructor-export whose head is an undeclared name names the not-a-declared-type category

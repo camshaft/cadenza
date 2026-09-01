@@ -3385,17 +3385,22 @@
 (case
   "a constructor-export whose TYPE head is a near-miss suggests the declared type with a rename fix"
   (doc
-    "`(export (. Colr *))` names `Colr` where `(type Color …)` is declared — a near-miss of the
+    "`(export Colr.*)` names `Colr` where `(type Color …)` is declared — a near-miss of the
           declared sum. The type head names no sum type (CDZ0201, expected `to be a sum type`), and it
-          suggests the declared type + carries a rename fix on the type-name occurrence (`Colr` -> `Color`),
-          the type-name twin of the constructor-NAME did-you-mean. (Migrated from rcdzc
+          suggests the declared type + carries a rename fix. `Colr.*` reads as ONE dotted atom (the `*` is a
+          reserved, non-identifier final member segment the reader keeps unsplit — unlike a named ctor
+          `T.A`, which desugars to a `(. T A)` list), so the rename replaces the WHOLE atom `Colr.*` ->
+          `Color.*`. The type-name twin of the constructor-NAME did-you-mean. (Migrated from rcdzc
           a_ctor_export_with_a_mistyped_type_name_suggests_the_declared_type.)")
   (input (do (type Color (R) (G)) (export Colr.*) (def (main) 5) (export main)))
   (error
     CDZ0201
     (message "to be a sum type")
     (message "did you mean `Color`?")
-    (fix (kind replace) (replacement "Color"))))
+    ; `Colr.*` reads as ONE dotted atom (`*` is a reserved non-identifier member segment the reader keeps
+    ; unsplit), so the rename fix replaces the WHOLE atom — the replacement carries the `.*` tail
+    ; (`Colr.*` -> `Color.*`), not the bare type name (which would drop the wildcard).
+    (fix (kind replace) (replacement "Color.*"))))
 
 ; The did-you-mean fires ONLY on a plausible NEAR-MISS of a declared sum. A VALUE-named export head
 ; (`(export (. helper *))` where `helper` is a def, not a type) and a FAR-MISS undeclared name
