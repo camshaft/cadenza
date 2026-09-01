@@ -8938,3 +8938,6 @@ todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	unquote-splicing outside quasiquote is a syntax error
 pass	Ast.gensym mints a fresh Ast.Name, distinct per call site, stable per binding (manual macro hygiene)
+pass	a quote-parameter macro receives its argument as unevaluated Ast and returns it (identity expansion)
+pass	a macro builds new syntax from its argument via quasiquote and the expansion is type-checked directly
+pass	a macro mixing a body literal with an argument grounds both to Int64 (unless as a plain function)
