@@ -540,11 +540,28 @@ fn compile_with_opt_inner(
     // run_sharing_aware_emit holds; a future reachability-changing pass needs a layout recompute here.
     crate::opt::PassManager::for_level(opt_level).run(&mut db);
 
-    // `scrutinee_shares_only = false`: the default (wasm) path installs the FULL B2 plan (the O2 body's pass
-    // pipeline makes the general shared-heap bindings reclaim-safe). v-cadenza-backend flips this to a
-    // cadenza-at-O1 gate (`emit_targets` includes Cadenza && level < O2) to install only the match-scrutinee
-    // subset — the co-designed mechanism lives in `run_sharing_aware_emit`/`b2_bind_plan_scrutinee_only`.
-    crate::opt::run_sharing_aware_emit(&mut db, &layout, opt_level, false);
+    // CADENZA-AT-O1 SHARING SEAM (co-design w/ v-core-opt #7581/#7583/#7588). The Cadenza surface backend
+    // cannot express DAG sharing except via `let`, so a shared/effectful MATCH-SCRUTINEE emitted inline is
+    // re-materialized on the round-trip: a live-object leak for a pure scrutinee, a DOUBLE-FIRE trap for an
+    // effectful one (the host op fires once per re-materialization). B2 sharing-aware-emit binds such a share
+    // into a `Core::Let` (which my emit preserves faithfully, #7563), but its FULL plan is O2-gated because on
+    // an O1 body it also binds shares whose Let-binds are reclaim-UNSAFE at O1 (O1 loop-reclaim omits the drop
+    // the O2 pipeline inserts) → new leaks. So for the Cadenza target BELOW O2, run B2 with
+    // `scrutinee_shares_only = true`: `b2_bind_plan_scrutinee_only` binds a dispatched scrutinee ONLY when
+    // GENUINELY re-materialized — 2+ DISTINCT dispatch sites (not intra-match SumPayload field-reads), OR an
+    // effectful scrutinee (#7588) — in a straight-line body (#7583). Bump the pass to O2 so it runs on the O1
+    // body. This makes the corpus-cadenza round-trip spec-correct at the DEFAULT O1 (concierge/v-core-opt/
+    // v-corpus-harness-blessed option B: fix the EMIT, do not flip the gate to O2 — that would mask the O1
+    // gap). Closes cbm3 (tuple scrutinee of 3 matches) + the adv-62 double-fire traps (effectful scrutinee).
+    // At O2+ the full plan already runs (`false`) for every target, byte-identical to wasm; wasm is unchanged.
+    let cadenza_below_o2 = opt_level < crate::opt::OptLevel::O2
+        && emit_targets.iter().any(|t| matches!(t, Target::Cadenza));
+    let (sharing_level, scrutinee_shares_only) = if cadenza_below_o2 {
+        (opt_level.max(crate::opt::OptLevel::O2), true)
+    } else {
+        (opt_level, false)
+    };
+    crate::opt::run_sharing_aware_emit(&mut db, &layout, sharing_level, scrutinee_shares_only);
 
     // Collect every reached fault across the reachable definitions, module-wide (report ALL, not just
     // the first — `compiler-pipeline.md` §Phases Recover From Errors). The check does not stop at the
