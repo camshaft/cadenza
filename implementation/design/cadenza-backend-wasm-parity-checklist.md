@@ -29,11 +29,21 @@ re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user su
 fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
 #7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
 effect breaks were all SHARED). ✅ #7346 CLOSED the UInt64-literal cluster (ascribe `(: v <IntTy>)` for
-unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks (~9-12, all
-surface/recompilability TYPE breaks — none wrong-DATA): nested-sum ctor-pattern at depth≥3 / under a single-ctor
-box (CDZ0203 wrong-matched-type, breaker-refined) · newtype-unwrap type-drop (`(match u ((Mk n) n))`→bare `u`) ·
-Int8 narrow-signed type-drop (tuple Int8→Int64) · `(& x <hugelit>)` imprecise-Int64-own-type edge · empty-list
-ascription · fn-typed shapes. 🪤 value_ab HARNESS CAVEAT: it passes FIXED args regardless of `main` arity, so a
+unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **12** (titled-break scan, corrected+precondition gate, post-#7346; all
+surface/recompilability TYPE breaks — none wrong-DATA), by family:
+  • GENERIC/NESTED-SUM (CDZ0203 ×5): 05 depth-3 erased-and-boxed nested-sum match (breaker-reproduced) · 07
+    annotated-empty-list (undetermined-empty-list control) · 07 gng1 nested generic Box-of-Pair · 09
+    recursive-generic producer wrapping in a user sum consumed at one type · 09 borrowed-heap-sum-param in a
+    self-recursive fn. (Same root as the under-determined-sum type_ast/generic-sum surface family.)
+  • MAP runtime-key (CDZ0201 ×2): 05 two distinct names → same value key · same string key. [breaker minimizing]
+  • MUTUAL-RECURSION / SCC (CDZ0101 ×2): 14b mutually-recursive performing pair threading one handler state · 14c
+    caller-observed pure-mutual SCC group-wide multi-value fold (a fn in the SCC not re-emitted → unbound name).
+  • do-local recursive-fn double-inlining (CDZ0201 ×1, 02) · newtype-from-PERFORM @invariant (CDZ0201 ×1, 14b).
+  • UInt64-FROM-CONTEXT (CDZ0301 ×1, 06): `(& x <hugelit>)` — the literal's own type is imprecisely Int64; needs
+    the op to thread `expected`=UInt64 to operands AND the ConstInt arm to prefer expected when eff_ty can't hold v
+    (MINE, deferred — touches Arith operand emit + the expected-consultation path). Also: newtype-unwrap type-drop
+    `(match u ((Mk n) n))`→bare `u` + Int8 narrow-signed type-drop (tuple Int8→Int64) — the "emit drops the precise
+    type" family (may overlap the generic-sum ascription work). NO Rational break in the true set (Rational is SHARED/OK). 🪤 value_ab HARNESS CAVEAT: it passes FIXED args regardless of `main` arity, so a
 MULTI-arg main gets a malformed invocation → FALSE-POSITIVE mismatch (bit me: gcd "3041 vs 3040" was fake; gcd
 MATCHES with correct 2 args). Confirm any value_ab mismatch with arity-correct args before believing it.
 
