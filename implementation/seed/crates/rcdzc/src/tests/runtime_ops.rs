@@ -816,6 +816,59 @@ fn a_chained_multi_use_boxed_collection_producer_emits_linear_wasm_not_exponenti
 }
 
 #[test]
+fn a_chained_multi_use_sum_new_emits_linear_wasm_not_exponential() {
+    // REGRESSION (emit-SIZE, seq-203 batch-3): `Core::SumNew` (the boxed sum-payload constructor) joins the
+    // `is_runtime_computation` keep family. A let-bound producer used 2+ times must be KEPT (materialized
+    // once, slot-shared), not copy-propagated at each use. `SumNew` is an Owned fresh producer with
+    // CONSUMING payloads (reclaim.rs), so keeping + dup-per-use is refcount-sound. Same noise-free
+    // `wasm.len()` signal (pure deterministic function of the program); ratio < 4.0 (linear ≈ 2×) AND
+    // absolute ceiling < 20 KB.
+    //
+    // Uses a MONOMORPHIC recursive type (avoids the nested-tuple type-growth that would hit the front-end
+    // `ty_has_free_var` axis, a separate v-inference concern). `x_i = (T.Node x_{i-1} x_{i-1})` is a
+    // 2-payload boxed constructor using `x_{i-1}` twice, so an un-kept `x_{i-1}` inlines its `SumNew` at
+    // both payload sites and the chain compounds to 2^N. The body `(sz x_n)` consumes `x_n` (a recursive
+    // fold over the whole tree) so the chain materializes and is not DCE'd.
+    //
+    // NOTE: `Core::NfcNormalize` (the String-producer sibling in this same batch-3 keep addition) is NOT
+    // guarded here — a `String.concat` chain cannot be turned into a clean emit-size guard: `String.len`/
+    // `String.at` fold the chain dead via structural strength-reduction, and a bare escape-return of the
+    // built string stays ~34× with OR without the keep (the keep is not load-bearing for that shape). The
+    // NfcNormalize guard is deferred pending v-core-opt's exact exponential witness (their ~9 KB→129 KB
+    // N=6→10 program), tracked separately; the keep itself is sound (verified both axes).
+    fn wasm_len(src: &str) -> usize {
+        crate::host::run_with_compiler_stack(|| {
+            compile_component(&crate::codec::encode(&parse(src)))
+                .expect("chain compiles")
+                .len()
+        })
+    }
+    fn sum_chain(n: usize) -> String {
+        // `x0 = (T.Leaf p)`; `x_i = (T.Node x_{i-1} x_{i-1})` — `x_{i-1}` used TWICE per level.
+        let mut lets = String::from("(x0 (T.Leaf p)) ");
+        for i in 1..=n {
+            let prev = i - 1;
+            lets.push_str(&format!("(x{i} (T.Node x{prev} x{prev})) "));
+        }
+        format!(
+            "(module m (type T (Leaf Int64) (Node T T)) \
+                 (def (sz (: t T)) (match t ((Leaf v) 1) ((Node l r) (+ (sz l) (sz r))))) \
+                 (def (f (: p Int64)) (let ({lets}) (sz x{n}))) \
+                 (def (main) (f 1)) (export main))"
+        )
+    }
+    let b7 = wasm_len(&sum_chain(7));
+    let b14 = wasm_len(&sum_chain(14));
+    let bratio = b14 as f64 / (b7.max(1)) as f64;
+    assert!(
+        b7 > 0 && bratio < 4.0 && b14 < 20_000,
+        "a chained multi-use boxed `SumNew` (`T.Node x x`) must emit LINEAR wasm (kept + slot-shared), \
+             not 2^N (SumNew keep, seq-203 batch-3): depth 7→14 emitted {b7}→{b14} bytes \
+             ({bratio:.1}× — linear is ~2×, the un-kept regression was ~95× / ~493 KB at N=14)"
+    );
+}
+
+#[test]
 fn a_wide_literal_match_builds_its_decision_tree_in_bounded_time() {
     // REGRESSION (perf): `lower::build_tree`'s lit-test arm compiles a wide literal match
     // (`(match t ((tuple 0 a) …) ((tuple 1 a) …) … (_ -1))`) as an N-DEEP chain of `LitTest` nodes.

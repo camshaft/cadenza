@@ -1285,6 +1285,17 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // mark_binder_dups seq[(lhs,F),(rhs,F)] CONSUMING reclaim.rs:3269) — the exact `ListConcat` shape
             // for sets. Kept under the >= 2-use rule so a `Set.union x x` chain is LINEAR.
             | Core::SetAlgebra { .. }
+            // `Core::SumNew` (the sum-payload heap constructor) is the DIRECT ANALOG of `ListNew` (above),
+            // and was the deferred-for-ubiquity op the family-widen note named. A `Node x x` binary variant
+            // whose payload `x` is used twice, consumed at runtime (a recursive fold so it can't const-fold),
+            // was COPY-PROPAGATED (SumNew was not in this list — only `ListNew` was) → `x` inlines at both
+            // payloads → a chained `x_i = (Node x_{i-1} x_{i-1})` COMPOUNDS to 2^N (v-compiler-perf: wasm
+            // 1869→197712 for N=6→14; CAVEAT — a variant only MATCHED with a known ctor const-folds to ~190B,
+            // so the witness must consume it at runtime). Keeping it materializes the shell ONCE into a
+            // `Core::Let` slot → LINEAR emit. SOUND: `SumNew` CONSUMES all its payloads (reclaim.rs:3177
+            // `payloads.map(|p| (p, false))`, borrowed=false; v-wasm-opt: Owned select.rs:7340) — the same
+            // consuming-producer keep-emit path as `ListNew`.
+            | Core::SumNew { .. }
     )
 }
 
