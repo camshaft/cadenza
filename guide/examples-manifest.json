@@ -1,6 +1,6 @@
 {
-  "count": 412,
-  "emitted": 405,
+  "count": 413,
+  "emitted": 406,
   "deferred": 7,
   "blockedDirs": [],
   "cases": [
@@ -415,6 +415,7 @@
     { "dir": "0409-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "effects-handlers-stateful" },
     { "dir": "0410-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "iterator-pipeline" },
     { "dir": "0411-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "iterator-zip-dot-product" },
-    { "dir": "0412-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": false, "expectKind": "error", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "a-type-error" }
+    { "dir": "0412-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": false, "expectKind": "error", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "a-type-error" },
+    { "dir": "0413-examples", "file": "src/playground/examples.ts", "kind": "playground", "graded": true, "expectKind": "value", "surfaces": ["sexpr", "ml"], "deferred": false, "playgroundId": "try-operator" }
   ]
 }
