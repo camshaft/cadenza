@@ -928,6 +928,10 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
             let isFloatMod := baseName? == some "Float64".toUTF8 || baseName? == some "Float32".toUTF8
             if isFloatMod && fld == "nan".toUTF8 then .sym (.const .floatNan)
             else if isFloatMod && fld == "Infinity".toUTF8 then .sym (.const (.floatInf false))
+            else if baseName? == some "Map".toUTF8 && fld == "empty".toUTF8 then
+              -- `(. Map empty)` used as a VALUE = the empty map (prelude module value, Eval.lean:2063-2064).
+              -- Mirrors the `((. Map empty))` nullary-call form handled in the member-call dispatch.
+              .sym (.ctor "map".toUTF8 #[])
             else
             (match symEval m senv fuel ty tId with
              | .sym (.record fs) => (match fs.find? (fun kv => kv.1 == fld) with
@@ -1451,6 +1455,37 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _, .cannotProve r => .cannotProve r
               | _, _ => .cannotProve "symeval: Map.remove on non-map / non-const key")
            | _, _ => .cannotProve "symeval: malformed Map.remove")
+        else if q == "Map".toUTF8 && mem == "empty".toUTF8 then
+          -- `(Map.empty)` = `((. Map empty))` (nullary) → the empty map VALUE (Eval.lean:1124 zero-arg
+          -- call / 2063 projection). The map-building base for `Map.insert` chains (v-cdz-smith boundary):
+          -- without this, `Map.insert (Map.insert Map.empty …)` sinks to cannotProve and `Map.lookup`/`Map.len`
+          -- over it cannot fold. Distinct empty-map ctor consumed by the Map.insert/lookup/len/remove handlers.
+          .sym (.ctor "map".toUTF8 #[])
+        else if q == "Map".toUTF8 && mem == "insert".toUTF8 then
+          -- `Map.insert mp k v` → `mp` with `k ↦ v` (LAST-write-wins on a dup key), re-canonicalized —
+          -- byte-faithful to `evalMapInsert` (Eval.lean:1512-1529): `canonMap (mapInsertRaw es k v)` where
+          -- `mapInsertRaw es k v = (es.filter (·.1 ≠ k)).push (k,v)`. Reify all-const `.tuple #[k,v]` entries
+          -- + const key/value; a symbolic/unorderable/malformed operand → cannotProve. The Map twin of
+          -- `Set.insert`; closes the `Map.insert (Map.insert Map.empty …)` construction boundary.
+          (match children[1]?, children[2]?, children[3]? with
+           | some mId, some kId, some vId =>
+             (match symEval m senv fuel ty mId, symEval m senv fuel ty kId, symEval m senv fuel ty vId with
+              | .sym (.ctor t elems), .sym (.const kk), .sym (.const vv) =>
+                if t == "map".toUTF8 then
+                  (match elems.mapM (fun e => match e with
+                                              | .tuple #[.const k, .const v] => some (k, v)
+                                              | _ => none) with
+                   | some kvs =>
+                     (match canonMap (mapInsertRaw kvs kk vv) with
+                      | some cm => .sym (.ctor "map".toUTF8 (cm.map (fun p => SymExpr.tuple #[.const p.1, .const p.2])))
+                      | none => .cannotProve "symeval: Map.insert on unorderable key")
+                   | none => .cannotProve "symeval: Map.insert needs all-concrete entries")
+                else .cannotProve "symeval: Map.insert on a non-map value"
+              | .cannotProve r, _, _ => .cannotProve r
+              | _, .cannotProve r, _ => .cannotProve r
+              | _, _, .cannotProve r => .cannotProve r
+              | _, _, _ => .cannotProve "symeval: Map.insert on non-map / non-const key or value")
+           | _, _, _ => .cannotProve "symeval: malformed Map.insert")
         else if q == "Option".toUTF8 && mem == "expect".toUTF8 then
           -- `Option.expect o` unwraps `Some x` → x (evalNode uses observeShallow, which is identity on a
           -- non-poison value; a modeled symbolic payload is never poison, so → x). `None` traps with a custom
