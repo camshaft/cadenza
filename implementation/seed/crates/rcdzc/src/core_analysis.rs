@@ -839,6 +839,7 @@ fn b2_members_lca(db: &mut Db, body: StructId, members: &[StructId]) -> Option<S
                 containing.push(*c);
             }
         }
+        trace!(target: "rcdzc::b2", ?target, ?cur, cur_core = ?core_of(db, cur), containing = containing.len(), "b2 LCA descent step");
         if containing.len() == 1 && containing[0] != target {
             cur = containing[0];
         } else {
