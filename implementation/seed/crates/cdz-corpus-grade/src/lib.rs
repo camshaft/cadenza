@@ -1481,35 +1481,53 @@ pub fn expected_value(payload: &str) -> String {
         }
         rest.to_string()
     } else if bytes.first() == Some(&b'#') {
-        // A `#`-prefixed native compound value (`#record(...)`, `#list(...)`, `#set(...)`,
-        // `#map(...)` — the canonical `#ctor` compound-value form). The tag precedes a balanced
-        // paren body, so a plain first-whitespace split would miscut `#record((= a 1) …)` at the
-        // first inner space. Scan past the tag to its `(` and balance-match the body; a paren-less
-        // `#scalar` (e.g. `#unit`) with no `(` before the type has no body and splits like a bare token.
-        let paren = rest.find('(');
-        let ws = rest.find(char::is_whitespace);
-        match (paren, ws) {
-            // A `(` opening the compound body before any top-level whitespace → balanced-match it,
-            // returning the whole `#tag(…)` span (indexing from 0 keeps the `#tag` prefix).
-            (Some(p), maybe_ws) if maybe_ws.is_none_or(|w| p < w) => {
-                let mut depth = 0i32;
-                for (i, &b) in bytes.iter().enumerate().skip(p) {
-                    match b {
-                        b'(' => depth += 1,
-                        b')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                return rest[..=i].to_string();
-                            }
-                        }
-                        _ => {}
-                    }
+        // An M2 NATIVE-CTOR value: `#tuple(…)`, `#list(…)`, `#record((= a 1) …)`, `#set(…)`, `#map((= k v) …)`
+        // — the `#head` is immediately followed by a BALANCED `(…)` whose interior has TOP-LEVEL SPACES, so the
+        // bare-atom "up to next space" split would cut it wrong (`#tuple(127` from `#tuple(127 -128)`), failing
+        // EVERY compound value on the Rust ABI (which crosses the bare value, no `(: … type)` wrapper — unlike
+        // the wasm ABI's full-form escape matched by `expected_full`). Take the `#head(…)` span via balanced
+        // parens. A `#"…"` bytes literal (may hold interior spaces) is taken to its closing quote; a paren-less
+        // `#`-value (`#\a`, `#\space`) falls to the bare-atom arm.
+        //
+        // Kept BYTE-IDENTICAL to the in-process `--case` gate's copy at `xtask/src/main.rs` `expected_value`
+        // (the two diverged once: the xtask copy had this arm, this shared grader lacked it → the rust-05-1321
+        // nested-record red). Port any change to both until they are de-duplicated onto this one.
+        if bytes.get(1) == Some(&b'"') {
+            let mut escaped = false;
+            for (i, &b) in bytes.iter().enumerate().skip(2) {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'"' {
+                    return rest[..=i].to_string();
                 }
-                rest.to_string()
             }
-            // No body before the type: a bare `#scalar` token, split at the type-separating space.
-            (_, Some(w)) => rest[..w].to_string(),
-            (_, None) => rest.trim_end_matches(')').to_string(),
+            return rest.to_string();
+        }
+        let lp = rest.find('(');
+        let ws = rest.find(char::is_whitespace);
+        if let Some(lp) = lp
+            && ws.is_none_or(|w| lp < w)
+        {
+            let mut depth = 0i32;
+            for (i, &b) in bytes.iter().enumerate().skip(lp) {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return rest[..=i].to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // A `#`-value with no parens before the next space (`#\a`) — bare atom.
+        match rest.find(char::is_whitespace) {
+            Some(idx) => rest[..idx].to_string(),
+            None => rest.trim_end_matches(')').to_string(),
         }
     } else {
         match rest.find(char::is_whitespace) {
@@ -1811,6 +1829,15 @@ mod tests {
         assert_eq!(
             expected_value("(: #list(1 2 3) (List Int64))"),
             "#list(1 2 3)"
+        );
+        assert_eq!(
+            expected_value("(: #tuple(127 -128) (Tuple Int64 Int64))"),
+            "#tuple(127 -128)"
+        );
+        // A `#"…"` bytes literal may hold interior spaces — take it to its closing quote, not the first space.
+        assert_eq!(
+            expected_value("(: #\"hello world\" Bytes)"),
+            "#\"hello world\""
         );
         // A paren-less `#scalar` splits at the type-separating space like any bare token.
         assert_eq!(expected_value("(: #unit Unit)"), "#unit");
