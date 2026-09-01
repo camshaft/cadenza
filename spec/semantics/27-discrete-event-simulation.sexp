@@ -1252,7 +1252,7 @@
 ; n=10 — ~O(n²/2) undropped QCons+tuple nodes, the insert-rebuild face of the sum-spine leak).
 ; Flips with the two-shell / tuple-payload reclaim arc.
 (case
-  "deq1 a DES priority queue built by sorted insert then drained is value-exact and leaks its rebuilt spine prefixes (superlinear)"
+  "deq1 a DES priority queue built by sorted insert then drained is value-exact and RECLAIMS its rebuilt spine prefixes (was a superlinear leak)"
   (input
     (do
       (type Instant (Instant UInt64))
@@ -1280,4 +1280,4 @@
       (export main)))
   (call main (: 10 Int64))
   (output (: 55 Int64))
-  (live-objects known-leak))
+  (live-objects 0))

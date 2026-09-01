@@ -867,7 +867,7 @@
         (let ((s (Term.Var 0)) (body (Term.Abs 0 (Term.Var 1)))) (free-in 0 (subst 1 s body))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents"
@@ -1585,7 +1585,7 @@
           ((Option.None) false)))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214"
@@ -3029,7 +3029,7 @@
           (Term.Imp (Term.Var 9) (Term.Var 2))))
       (export main)))
   (output (: true Bool))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)"

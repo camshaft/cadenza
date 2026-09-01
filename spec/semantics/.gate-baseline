@@ -6700,7 +6700,7 @@ pass	decoding ill-formed bytes through a helper takes the None arm
 pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
-pass	deq1 a DES priority queue built by sorted insert then drained is value-exact and leaks its rebuilt spine prefixes (superlinear)
+pass	deq1 a DES priority queue built by sorted insert then drained is value-exact and RECLAIMS its rebuilt spine prefixes (was a superlinear leak)
 pass	df1 a MONOMORPHIC user sum mirroring Option's shape (heap list payload) deforests completely
 pass	df2 a GENERIC user sum at a heap list payload leaks its shells like Option (the one non-fusing cell)
 pass	df3 the SAME generic sum at a scalar payload deforests completely
@@ -8726,8 +8726,8 @@ pass	sts1 a persistent Set.insert against a constant Set leaves the constant wit
 pass	sts2 fifty frames of runtime-indexed membership over a 40-element constant Set hit every element and the miss cells
 pass	sts3 fifty frames of runtime-keyed Set.insert against a 40-element constant Set never corrupt it (sibling stays without the key)
 pass	stt1 a SET-OF-TUPLES state seeded by Set.of — structural dedup across dispatches: the repeated pair does not grow the set and the order-swapped pair only counts when the components differ
-pass	stt1 a runtime-built binary Exp tree evals exactly and leaks the whole tree (branching-walk calibration)
-pass	stt2 a tree-to-tree transform then eval preserves meaning and leaks BOTH trees (transform calibration)
+pass	stt1 a runtime-built binary Exp tree evals exactly and RECLAIMS the whole tree (branching-walk calibration)
+pass	stt2 a tree-to-tree transform then eval preserves meaning and RECLAIMS BOTH trees (transform calibration)
 pass	su1 a SUM-typed state machine — Idle transitions to Run on first dispatch, Run accumulates thereafter
 pass	su2 a THREE-variant cyclic machine — the op arg selects the transition, both Mid exits exercised
 pass	su3 a RECURSIVE sum state — the arm grows a Peano tower by two per dispatch, a recursive fn measures it

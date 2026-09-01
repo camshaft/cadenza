@@ -449,7 +449,7 @@
   (output (: 15 Int64))
   (call main (: -7 Int64))
   (output (: -7 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite"
@@ -920,7 +920,7 @@
 ; Calibration for the reclaim arc: the two-shell fix targets self-loop-TAIL chains; branching
 ; non-tail recursion is the harder later face — these clauses key its landing.
 (case
-  "stt1 a runtime-built binary Exp tree evals exactly and leaks the whole tree (branching-walk calibration)"
+  "stt1 a runtime-built binary Exp tree evals exactly and RECLAIMS the whole tree (branching-walk calibration)"
   (input
     (do
       (type Exp (Lit Int64) (Add (Tuple Exp Exp)))
@@ -930,10 +930,10 @@
       (export main)))
   (call main (: 4 Int64))
   (output (: 16 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
-  "stt2 a tree-to-tree transform then eval preserves meaning and leaks BOTH trees (transform calibration)"
+  "stt2 a tree-to-tree transform then eval preserves meaning and RECLAIMS BOTH trees (transform calibration)"
   (input
     (do
       (type Exp (Lit Int64) (Add (Tuple Exp Exp)))
@@ -949,7 +949,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 16 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── breaker batch 571: constant QUOTES join the build-once family (verified: 3 static globals —
 ; previously undocumented in the constant-kind matrix) but the WALK over a hoisted immortal Ast
