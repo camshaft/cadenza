@@ -10171,6 +10171,48 @@
   (live-objects known-leak))
 
 (case
+  "a self-tail-loop inorder tree-fold reclaims its whole traversed spine (INC1 pt3)"
+  (doc
+    "`inorder` over a BST — self-tail-recursing on the right subtree `(inorder r …)` (a MEMBER TAIL-CALL,
+           so a self-loop-tail) and non-tail on the left `(inorder l acc)` — now reclaims every Node shell +
+           Tuple payload per loop iteration (INC1 pt3 self-loop-tail per-iteration deep op_drop +
+           dup-moved-children, #7399). Value-correct AND leak-free: `inorder (build (5 3 8 1 9))` = 13589 with
+           live-objects 0 (a full O(N) tree-spine leak pre-pt3). The BINARY/tree sibling of the linear
+           `len` self-loop-tail witness (09-functions `a recursive linked-list fold …`): both are regression
+           guards for the self-loop-tail reclaim, so any live-objects > 0 here is a pt3 reclaim regression on
+           the tree fold. build's reconstructing inserts are reclaimed by INC1 pt1/pt2; inorder's spine by pt3.
+           (del-min stays a known-leak — its reused-by-reference right-subtree carry is the pt4 residual.)")
+  (input
+    (do
+      (type BST (Empty) (Node (Tuple BST Int64 BST)))
+      (def
+        (insert (: t BST) (: v Int64))
+        (match
+          t
+          ((Empty _u) (Node #tuple((Empty) v (Empty))))
+          ((Node p)
+            (match
+              p
+              (#tuple(l k r)
+                (if
+                  (< v k)
+                  (Node #tuple((insert l v) k r))
+                  (if (> v k) (Node #tuple(l k (insert r v))) (Node #tuple(l k r)))))))))
+      (def
+        (build (: xs (List Int64)) (: t BST))
+        (match xs (#list() t) (#list(h (.. rest)) (build rest (insert t h)))))
+      (def
+        (inorder (: t BST) (: acc Int64))
+        (match
+          t
+          ((Empty _u) acc)
+          ((Node p) (match p (#tuple(l k r) (inorder r (+ (* (inorder l acc) 10) k)))))))
+      (def (main) (inorder (build #list(5 3 8 1 9) (Empty)) 0))
+      (export main)))
+  (output (: 13589 Int64))
+  (live-objects 0))
+
+(case
   "a recursive user sum type is built at run time and renders its variant names"
   (doc
     "A recursive user sum type — the linked-list / AST shape a self-hosted compiler manipulates —
