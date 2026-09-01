@@ -10873,14 +10873,21 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     // Read the build log (written by the detached build) to NAME the failing sub-check on RED (nix's summary
     // alone doesn't) — the same information the old piped-stderr `captured` held.
     let captured = std::fs::read_to_string(&log).unwrap_or_default();
-    let _ = std::fs::remove_file(&log); // clean up our scratch (leaks only if the agent was killed mid-build → prune-tmp reaps)
     let verdict = local_gate_verdict(spawned_ok, build_ok);
+    // Log-file hygiene: DELETE it on a clean pass (GREEN — nothing to inspect), but KEEP it on any non-green
+    // verdict so the FULL build output is available for inspection. Detaching the build traded away the old
+    // live in-pane stderr stream, so on a RED (esp. when the sub-check name isn't parseable) the preserved
+    // logfile is the ONLY way to see the failure — deleting it unconditionally would make a RED undebuggable.
+    if matches!(verdict, CiVerdict::Green) {
+        let _ = std::fs::remove_file(&log);
+    }
     if matches!(verdict, CiVerdict::Red) {
         let failing = parse_failing_subchecks(&captured);
         if failing.is_empty() {
             eprintln!(
                 "gate-local: HOLD — a required sub-check failed, but its name was not parseable from the \
-                 nix output above; re-run `{nix_bin} build {target} -L` to see which."
+                 nix output above. FULL build log preserved at {} — or re-run `{nix_bin} build {target} -L`.",
+                log.display()
             );
         } else {
             eprintln!(
