@@ -5396,3 +5396,26 @@
           (List.at #list((Qty.of 5.0 (Unit.base #"meter")) (Qty.of 2.0 (Unit.base #"second"))) 0)))
       (export main)))
   (error CDZ0201 (message "meter") (not "SAME dimension at DIFFERENT units")))
+
+; --- A same-unit Qty `+` whose two erased magnitudes have DIFFERENT machine widths must widen the
+;     narrow one to the op width — regression witness for a runtime i32-into-i64 invalid-wasm miscompile. ---
+(case
+  "a same-unit quantity + over a NARROW runtime magnitude beside a wider one widens the narrow operand (no invalid wasm)"
+  (doc
+    "The erased-magnitude `+` runs at the op's canonical width (i64 here). One operand — the closure-application
+           result `((fn (v1) 8) 3)`, a default `Int` that does NOT const-fold — reaches the op as a runtime i32; the
+           other, the `Int8` param `v0`, is widened to i64. Before the fix `emit_operand` widened only the reverse
+           direction (i64→i32 wrap), so the i32 magnitude was pushed UN-widened beside the i64 op → the module failed
+           wasm validation (`type mismatch: expected i64, found i32`) even though `cdz compile` reported success — a
+           soundness hole (invalid wasm shipped). The fix sign/zero-extends a narrow runtime magnitude to the op
+           width (peeling `Ty::Qty`), honoring the operand's own signedness. `8 + v0` at `v0 = 5` = 13.
+           (v-cdz-smith seed 3473784874326431246; root-caused + routed by v-core-opt as a base-lowering coercion gap.)")
+  (input
+    (do
+      (def
+        (main (: v0 Int8))
+        (Qty.value
+          (+ (Qty.of ((fn (v1) 8) 3) (Unit.base #"meter")) (Qty.of v0 (Unit.base #"meter")))))
+      (export main)))
+  (call main (: 5 Int8))
+  (output (: 13 Int64)))

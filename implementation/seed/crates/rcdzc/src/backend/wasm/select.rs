@@ -8109,10 +8109,16 @@ fn emit_operand(
     // i64, whose low bits ARE its value; the enclosing op's own range-check then traps a true overflow.
     // (The reverse — a narrow operand into a wider op — is likewise a fault, so it never reaches here; the
     // comparison path handles its own pair via `operand_int_ty`, and a direct literal is grounded above.)
-    if matches!(type_of(db, id), Ty::Int(_)) {
+    // PEEL `Ty::Qty`/`Ty::Nominal` (via `peel_qty_ty`) before classifying the operand's slot: a Qty-erased
+    // operand — `(Qty.of x u)` — types as `Ty::Qty { inner: Int }`, whose magnitude erases to the inner
+    // int's machine slot (the op width `it` was itself peeled by `int_ty_of`). WITHOUT the peel the whole
+    // block was skipped for a quantity operand (`Ty::Qty` is not `Ty::Int(_)`), so a narrow-inner magnitude
+    // fed a WIDER Qty op UN-widened — an i32 beside the op's i64 → invalid wasm (v-cdz-smith / v-core-opt
+    // `(+ (Qty.of ((fn ..) ..) u) (Qty.of v0:Int8 u))`, "expected i64, found i32").
+    if let Ty::Int(operand_it) = peel_qty_ty(type_of(db, id)) {
         let op_slot = m_slot(it);
-        let operand_slot = valtype_of(&type_of(db, id));
-        if operand_slot == Some(ValType::I64) && op_slot == ValType::I32 {
+        let operand_slot = m_slot(operand_it);
+        if operand_slot == ValType::I64 && op_slot == ValType::I32 {
             // Before truncating a control-flow operand's i64 value down to the narrow op width, REJECT a
             // constant branch VALUE that does not fit — `(+ (if c 1099511627776 2) 5) : Int8` must be a
             // CDZ0302 (as the bare `(: (if c 1099511627776 2) Int8)` is), NOT a silent `i32.wrap_i64`
@@ -8124,6 +8130,21 @@ fn emit_operand(
             // compile-time-constant branch is judged, matching how the bare-if path grounds its literals.)
             reject_oversize_branch_constant(db, id, it)?;
             out.push(Lir::I32WrapI64);
+        } else if operand_slot == ValType::I32 && op_slot == ValType::I64 {
+            // NARROW operand into a WIDER op: sign/zero-extend i32 → i64. This is the reverse of the wrap
+            // above and the direction `operand_src` already DEFERS here for ("a narrow operand feeding a
+            // wider op … takes the copy path, where `emit_operand` widens it") — but the extend was never
+            // implemented, so a width-mismatched runtime operand reached the i64 op as a bare i32 → invalid
+            // wasm. SOUND for the same reason the wrap is: a genuine narrow-vs-wide *fixed*-Int disagreement
+            // is a CDZ0203 fault caught before emit, so a mismatch reaching here is an ERASURE artifact (a
+            // Qty/newtype magnitude whose inner width differs from the op's peeled width), whose i32 value
+            // is exact and extends losslessly. Signedness is the OPERAND's own (a `UInt8` magnitude
+            // zero-extends, an `Int8`/default-`Int` sign-extends), so the i64 value equals the narrow value.
+            out.push(if operand_it.ground_signed() {
+                Lir::I64ExtendI32S
+            } else {
+                Lir::I64ExtendI32U
+            });
         }
     }
     Ok(())
