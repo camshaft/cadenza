@@ -2734,6 +2734,26 @@
   (call f (: true Bool))
   (output (: 0.10000000149011612 Float64)))
 
+; ── Float32 CANONICAL value-render lock-in (operator-ruled seq-283): a Float32 renders the f32's OWN
+; shortest decimal, NOT the f32->f64-promoted expansion ("those are different values entirely"). This pins the
+; DIRECT scalar render (the width-witness cases above use Float64.of to keep the promoted observable). Backends:
+; rust #7554 (cdz-rust-render), wasm #7565 (cdz-run float32_atom + const-fold). (A heap-carried Option/Result
+; Float32 render is verified correct real-wasm by v-compiler-primitives + the fuzzer seed-550055, but a corpus
+; witness for it awaits the live-objects/census convention for a heap-returning value — coordinated separately.)
+(case
+  "a bare Float32 value renders its own shortest decimal, not the f32->f64 promotion"
+  (doc
+    "Operator ruling (seq-283): a Float32 VALUE renders the SHORTEST decimal round-tripping to its 32 bits —
+           28.29 (and 0.1f32 -> 0.1), NOT the f32->f64-promoted 28.290000915527344 / 0.10000000149011612. Matches
+           Rust's own f32 Display + the wasm value_codec float32_leaf. The f32-WIDTH witness lives in the
+           Float64.of-promotion cases above; THIS pins that the DIRECT Float32 render is the f32's own shortest —
+           the operator-ruling lock-in so no render path re-promotes.")
+  (input (do (def (main (: pick Bool)) (: (if pick 28.29 0.1) Float32)) (export main)))
+  (call main (: true Bool))
+  (output (: 28.29 Float32))
+  (call main (: false Bool))
+  (output (: 0.1 Float32)))
+
 ; The MATCH sibling of the if-branch pin above — the whole Float32-bare-literal-arm family. A `(: (match n …)
 ; Float32)` whose arms are ALL bare float literals used to emit an INVALID module: the match lowers to a
 ; branchless SELECT (2-arm) or a probe-chain terminal pair, and those paths grounded arm values from
