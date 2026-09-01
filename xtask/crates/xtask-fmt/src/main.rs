@@ -42,12 +42,8 @@ fn main() {
 
     // The nix-built cdz (surface conversions), from the dir the `apps.fmt` wrapper points CDZ_SEED_BIN_DIR
     // at. Falls back to `<repo>/target/debug` for a bare `cargo run -p xtask-fmt` (dev).
-    let repo = std::env::var_os("CDZ_REPO_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
-    let bin_dir = std::env::var_os("CDZ_SEED_BIN_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo.join("target/debug"));
+    let repo = xtask_support::repo_root();
+    let bin_dir = xtask_support::seed_bin_dir(&repo);
     let cdz = bin_dir.join("cdz");
 
     let mut unformatted: Vec<String> = Vec::new();

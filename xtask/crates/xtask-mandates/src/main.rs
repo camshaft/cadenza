@@ -4,14 +4,10 @@
 //! back to the current directory. The monolith `cargo xtask lint-mandates` dispatches to the same
 //! `xtask_mandates::lint_mandates` library fn, so the two can't drift.
 
-use std::path::PathBuf;
-
 fn main() {
     // The repo root: `CDZ_REPO_ROOT` (set by the nix app, since a relocated nix binary can't self-locate
     // the source tree) else the current directory (the `cargo run -p xtask-mandates` / bare-invocation path).
-    let repo = std::env::var_os("CDZ_REPO_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
+    let repo = xtask_support::repo_root();
 
     // `xtask-mandates declines` runs ONLY the seq-280 decline-professionalism scan and nothing else — a
     // SEPARATE check surface so v-fleet-tooling can wire it (a `.#lint-declines` app + `decline-

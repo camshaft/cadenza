@@ -6,12 +6,8 @@
 //! there is one source of truth. The repo root comes from `CDZ_REPO_ROOT` (else cwd) — the `apps.lint-emoji`
 //! wrapper sets it to the invoking worktree, so the relocated nix-built bin lints the right tree.
 
-use std::path::PathBuf;
-
 fn main() {
-    let repo = std::env::var_os("CDZ_REPO_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
+    let repo = xtask_support::repo_root();
     match xtask_support::emoji_free_lint(&repo) {
         Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
         Err(msg) => {

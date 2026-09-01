@@ -12,28 +12,15 @@
 //! Usage: `xtask-prune-baselines [--check]`.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use xtask_support::{default_corpus_files, read_corpus};
-
-/// The three committed gate-baseline files, relative to the repo root — one per semantics backend
-/// (mirrors gate's `baseline_path(GateTarget::{Wasm,Rust,RustAsync})`). Absent files are skipped.
-const BASELINE_REL: [&str; 3] = [
-    "spec/semantics/.gate-baseline",
-    "spec/semantics/.gate-baseline-rust",
-    "spec/semantics/.gate-baseline-rust-async",
-];
 
 fn main() {
     let check = std::env::args_os().any(|a| a == "--check");
 
-    let repo = std::env::var_os("CDZ_REPO_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().expect("current dir"));
+    let repo = xtask_support::repo_root();
     // The nix-built cdz-corpus (records extractor), from the dir the app wrapper points CDZ_SEED_BIN_DIR
     // at. Falls back to `<repo>/target/debug` for a bare `cargo run -p xtask-prune-baselines` (dev).
-    let bin_dir = std::env::var_os("CDZ_SEED_BIN_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo.join("target/debug"));
+    let bin_dir = xtask_support::seed_bin_dir(&repo);
     let cdz_corpus = bin_dir.join("cdz-corpus");
 
     // The corpus's current title set: each record's `description` is the `case\t<title>` line the baseline
@@ -62,7 +49,7 @@ fn main() {
 
     let mut report: Vec<String> = Vec::new();
     let mut total_pruned = 0usize;
-    for rel in BASELINE_REL {
+    for rel in xtask_support::BASELINE_REL {
         let path = repo.join(rel);
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
