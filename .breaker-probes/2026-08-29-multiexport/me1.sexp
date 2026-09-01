@@ -1,6 +1,0 @@
-(do (def (double (: n Int64)) (* n 2))
-    (def (shift (: n Int64)) (+ n 100))
-    (def (main (: n Int64)) (double (shift n)))
-    (export main)
-    (export double)
-    (export shift))

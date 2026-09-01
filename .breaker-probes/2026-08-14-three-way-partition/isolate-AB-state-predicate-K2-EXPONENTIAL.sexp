@@ -1,2 +1,0 @@
-(do (effect P (op tick (-> Int64)))
-  (def (main (: n Int64)) (handle P (tuple (: 0 Int64) (+ (% n 3) 1) (: 0 Int64)) ((tick () st (match st ((tuple phase duty ons) (if (< (% phase 4) duty) (resume 1 (tuple (+ phase 1) duty (+ ons 1))) (resume 0 (tuple (+ phase 1) duty ons))))))) (let ((x1 (P.tick))) (let ((x2 (P.tick))) (let ((x3 (P.tick))) (let ((x4 (P.tick))) (let ((x5 (P.tick))) (let ((x6 (P.tick))) (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 0) x1)) x2)) x3)) x4)) x5)) x6))))))))) (export main))

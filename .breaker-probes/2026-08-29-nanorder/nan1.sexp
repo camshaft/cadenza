@@ -1,6 +1,0 @@
-(do (def (main (: n Int64))
-      (+ (* 1000 (if (= Float64.nan Float64.nan) 1 0))
-         (+ (* 100 (if (< Float64.nan (Float64.of-int n)) 1 0))
-            (+ (* 10 (if (> Float64.nan (Float64.of-int n)) 1 0))
-               (if (<= Float64.nan Float64.nan) 1 0)))))
-    (export main))

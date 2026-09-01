@@ -1,5 +1,0 @@
-(do
-  (def (main (: c Bool) (: d Int64))
-    (+ (if c (/ 100 d) 5) (/ 100 d)))
-  (def (go) (main false 5))
-  (export go))

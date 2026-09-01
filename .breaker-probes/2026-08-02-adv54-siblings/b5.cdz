@@ -1,9 +1,0 @@
-(do
-  (def (main (: k Int64))
-    (let ((s (String.concat "abc" "defgh")))
-      (let ((src (String.to-bytes s)))
-        (let ((v (match (Bytes.slice src k 6) ((Some w) w) ((None _u) src))))
-          (+ (match (Bytes.at v 0) ((Some x) x) ((None _u) 0))
-             (match (Bytes.at v 1) ((Some y) y) ((None _u) 0)))))))
-  (def (go) (main 2))
-  (export go))

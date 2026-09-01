@@ -1,6 +1,0 @@
-(do
-  (def (main (: k Int64))
-    (match (eval (quasiquote ((fn ((: x Int64)) (* x x)) (unquote k))))
-      (v v)))
-  (def (go) (main 7))
-  (export go))

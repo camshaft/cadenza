@@ -1,1 +1,0 @@
-(do (def (main (: n Int64)) (match (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple (tuple n 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) (#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(#tuple(a b) c0) c1) c2) c3) c4) c5) c6) c7) c8) (+ a b)))) (export main))

@@ -1,6 +1,0 @@
-(do (def (main (: n Int64))
-      (match (if (> n 0) (Some (record (= x n) (= y 3))) (None))
-        ((guard (Some (record (= x a) (= y b))) (> a 5)) (+ (* a 100) b))
-        ((Some r) (. r y))
-        ((None u) -1)))
-    (export main))

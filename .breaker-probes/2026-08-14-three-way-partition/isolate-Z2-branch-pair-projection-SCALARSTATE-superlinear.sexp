@@ -1,2 +1,0 @@
-(do (effect D (op cls (-> Int64 Int64)))
-  (def (main (: m Int64)) (handle D (: 0 Int64) ((cls (v) s (let ((res (if (< v (% m 4)) (tuple (+ 100 s) (+ s 1)) (tuple (+ 200 s) (+ s 2))))) (resume (. res 0) (. res 1))))) (let ((x1 (D.cls 1))) (let ((x2 (D.cls 2))) (let ((x3 (D.cls 3))) (let ((x4 (D.cls 4))) (let ((x5 (D.cls 5))) (let ((x6 (D.cls 6))) (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 0) x1)) x2)) x3)) x4)) x5)) x6))))))))) (export main))
