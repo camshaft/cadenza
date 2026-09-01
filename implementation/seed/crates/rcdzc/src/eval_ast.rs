@@ -371,6 +371,23 @@ fn reconstruct_inner(ast: &mut Arenas, node: StructId, see_through_lift: bool) -
     // reconstructed source folds through the ordinary compile-time path; a payload that is NOT compile-time-
     // known then declines/errors there as ordinary code would, not here.
     if let Some(payload) = ast_ctor_arg(ast, node, "Int") {
+        // MACRO path (see_through_lift): return a FRESH copy of a bare int literal, NOT the payload node
+        // itself. The payload is shared with this (soon-dead) `Ast.Int` wrapper, and
+        // `collect_bigint_ctor_arg_literals` — recomputed / consulted over the post-expansion arena —
+        // marks a bare `Ast.Int` arg to ground `BigInt`; a SHARED spliced literal would inherit that mark
+        // and wrongly ground `BigInt` (the body-literal BigInt-vs-Int64 bug). A fresh copy is a distinct
+        // node the ctor-arg scan never sees, so it grounds `Int64` by ordinary inference at the call site.
+        // (eval keeps the reuse — it splices at load, before the scan, and needs live-reuse for scope.)
+        if see_through_lift {
+            let stripped = strip_bigint_grounding(ast, payload);
+            if let Struct::Atom(l) = ast.get(stripped) {
+                let leaf = ast.leaf(*l).clone();
+                if matches!(leaf, Leaf::Int { .. }) {
+                    return Some(push_atom(ast, leaf));
+                }
+            }
+            return Some(stripped);
+        }
         // STRIP the reifier's `(: <lit> BigInt)` grounding wrapper (`quote::ast_bigint_payload`): an
         // `Ast.Int` VALUE stores its integer as `BigInt` (non-lossy storage), but the source an eval
         // RECONSTRUCTS must ground by ordinary width inference — an `(eval (quote (+ 1 2)))` yields an

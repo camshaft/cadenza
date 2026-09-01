@@ -6837,7 +6837,7 @@ fn mark_overflow_nodes(
 /// `Leaf::Int`. So matching a DIRECT integer-literal argument marks EXACTLY the bare, un-suffixed,
 /// uncomputed case; a `42N`, a `(: 42 Int64)`, or a `(+ 1 1)` in a BigInt payload position is never marked
 /// and still declines if it mismatches (the operator's load-bearing guard, enforced structurally).
-fn collect_bigint_ctor_arg_literals(
+pub(crate) fn collect_bigint_ctor_arg_literals(
     ast: &Arenas,
     type_decls: &[TypeDecl],
     out: &mut crate::fxhash::FxHashSet<StructId>,
