@@ -4930,6 +4930,28 @@
   (output (: 32021 Int64)))
 
 (case
+  "a self-aliased map-merge dups the shared handle, merges idempotently, and reclaims with no leak"
+  (doc
+    "The SELF-ALIASED-OPERAND face of Map.merge (the memory-safety companion to the generation
+           pins above): both operands of `(Map.merge m m)` are the SAME let-bound handle `m`, so the
+           compiler must DUP `m` for op_map_merge to CONSUME both operands. `m ∪ m == m` (idempotent),
+           so `Map.len` is unchanged at 2. The reclaim face: the self-aliased operand must be dup'd
+           (never moved-twice) and the merge result reclaimed with NO leak and NO over-free on the
+           shared handle — a missing dup would over-free the aliased operand (a UAF the debug-counters
+           guard traps), an under-reclaim would leak. `n` seeds two keys (n, n+1) so the merged len is
+           exactly 2 regardless of `n`.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let ((m (Map.insert (Map.insert (Map.empty) n 10) (+ n 1) 20)))
+          (Map.len (Map.merge m m))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
   "an inner map shared between two outer generations survives the loser's drop"
   (doc
     "One level DEEPER than the node-sharing pins above: here the shared thing is a heap VALUE —
