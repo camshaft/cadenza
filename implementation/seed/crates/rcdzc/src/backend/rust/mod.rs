@@ -35,6 +35,10 @@
 mod enums;
 mod expr;
 mod types;
+// The Ty-guided VALUE-DOC emit (operator seq-210 parser-elimination) — WIP, not yet wired into `emit`
+// (the flag-gated driver call comes in a later increment), so `#[allow(dead_code)]` until then.
+#[allow(dead_code)]
+mod value_doc;
 
 use crate::db::Db;
 use crate::diag::Reject;
