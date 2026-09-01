@@ -42,6 +42,29 @@ fn tree_golden(arena: &crate::ast::Arenas) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// Render the SPAN GOLDEN of an ML parse: one line per structure node (in node-id order) — the node's
+/// source byte range and the exact slice it covers, `START:END<TAB>SLICE` (control chars in the slice
+/// escaped so each node stays one line). Pins the OBSERVABLE span behavior an editor/diagnostic depends
+/// on: spans are TOTAL (one per node), the exact ranges (so distinct occurrences of the same name differ),
+/// and each node covers the WHOLE construct it names (e.g. a compound-unit `/` node spans `GiB/s`, not
+/// `/s`). Works on the recovered arena too — a decline still has a span per recovered node.
+fn spans_golden(parsed: &crate::parser::Parsed, src: &str) -> Vec<u8> {
+    let mut out = String::new();
+    for i in 0..parsed.arenas.structure.len() as u32 {
+        let sp = parsed
+            .spans
+            .get(crate::ast::StructId(i))
+            .expect("total span table (one span per structure node)");
+        let slice = &src[sp.start..sp.end];
+        let escaped = slice
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('\t', "\\t");
+        out.push_str(&format!("{}:{}\t{}\n", sp.start, sp.end, escaped));
+    }
+    out.into_bytes()
+}
+
 /// `fmt(input)` for `surface` — read then re-print in the SAME surface, with the trailing-newline
 /// convention `run_fmt` uses (append one `\n` if the printer emitted none). This is the exact
 /// canonical-format oracle `cdz fmt` compares against (cli.rs `run_fmt`).
@@ -131,6 +154,33 @@ fn syntax_corpus_goldens_are_self_consistent() {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_string();
+
+        // spans.txt — OPT-IN span golden (ML-surface only), checked for BOTH well-formed and decline
+        // cases (a recovered arena carries spans too). Present only where a case pins span behavior. Uses
+        // `read_ml` directly for the span table (convert::read returns just the arena).
+        let spans_path = case.join("spans.txt");
+        if spans_path.exists() {
+            if surface != Format::Ml {
+                failures.push(format!(
+                    "{label}: spans.txt is ML-surface only (read_ml carries the spans)"
+                ));
+            } else {
+                let text = std::str::from_utf8(&input).expect("ml input is utf-8");
+                let golden = spans_golden(&crate::parser::read_ml(text), text);
+                if bless {
+                    std::fs::write(&spans_path, &golden).expect("write spans.txt");
+                } else {
+                    match std::fs::read(&spans_path) {
+                        Ok(have) if have == golden => {}
+                        Ok(_) => failures.push(format!(
+                            "{label}: spans.txt mismatch — a node's source span differs from the golden \
+                             (re-bless if the span table changed)"
+                        )),
+                        Err(err) => failures.push(format!("{label}: reading spans.txt: {err}")),
+                    }
+                }
+            }
+        }
 
         // Read the surface into the arena. A case is a DECLINE case (Increment 4's `Todo` path) IFF it
         // carries no `tree.sexp`: the reader is expected to REFUSE the input (a malformed or not-yet-
