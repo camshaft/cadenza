@@ -2715,14 +2715,47 @@ fn emit_expr_viewed(
         // type. The per-def `(host …)` wrapper + perform⇔decl coupling (#7268) carry the statements' effects —
         // an effect whose decl is not re-emittable declines its perform, so the whole Seq declines cleanly.
         Core::Seq { stmts, tail } => {
-            let do_head = b.name("do");
-            let mut children = Vec::with_capacity(stmts.len() + 2);
-            children.push(do_head);
-            for &s in stmts.iter() {
-                children.push(emit_expr(db, b, s, None, env, emitted)?);
+            // STRICT-FORCE preservation (#5194 CASE2 round-trip faithfulness, v-core-opt reroute): a statement
+            // in `db.strict_force_eval` is the decomposed trap-possible arg of a DEAD heap-collection ctor —
+            // it MUST be forced (its trap is observable), an `(A)-override` of the §283 "discarded trapping
+            // do-statement elides" ruling. But `db.strict_force_eval` is a DB-side mark NOT encoded in the
+            // surface, and a bare `(do <s> …)` statement §283-ELIDES `<s>`'s trap on RE-compile → the trap is
+            // lost (corpus-03 dead-let-collection-ctor: expected a trap, ran the tail). Re-derive CASE2 in the
+            // surface by binding the marked stmt in a DEAD let-init wrapped in a collection ctor:
+            // `(let ((_fresh #list(<s>))) <continuation>)` — the list ctor forces the trap arg, the dead binding
+            // discards it (verified: a let-init dead-collection-ctor traps; a bare do-statement OR a
+            // let-as-do-statement both §283-elide). Only restructure when a mark is present; the common
+            // (unmarked) do-block stays the flat `(do <stmt>… <tail>)` form, byte-identical.
+            if !stmts.iter().any(|s| db.strict_force_eval.contains(s)) {
+                let do_head = b.name("do");
+                let mut children = Vec::with_capacity(stmts.len() + 2);
+                children.push(do_head);
+                for &s in stmts.iter() {
+                    children.push(emit_expr(db, b, s, None, env, emitted)?);
+                }
+                children.push(emit_expr(db, b, tail, expected.clone(), env, emitted)?);
+                return Ok(b.list(children));
             }
-            children.push(emit_expr(db, b, tail, expected.clone(), env, emitted)?);
-            Ok(b.list(children))
+            // Fold statements RIGHT-TO-LEFT onto the tail (preserving left-to-right eval order): a marked stmt
+            // wraps the continuation in a forcing dead-let; an ordinary stmt stays a discarded do-statement.
+            let mut acc = emit_expr(db, b, tail, expected.clone(), env, emitted)?;
+            for &s in stmts.iter().rev() {
+                let es = emit_expr(db, b, s, None, env, emitted)?;
+                if db.strict_force_eval.contains(&s) {
+                    let lst = b.compound(crate::ast::CompoundCtor::List, &[es]);
+                    let name = synth_binding_name(env.next_payload);
+                    env.next_payload += 1;
+                    let name_atom = b.name(name);
+                    let binding = b.list(vec![name_atom, lst]);
+                    let bindings = b.list(vec![binding]);
+                    let let_head = b.name("let");
+                    acc = b.list(vec![let_head, bindings, acc]);
+                } else {
+                    let do_head = b.name("do");
+                    acc = b.list(vec![do_head, es, acc]);
+                }
+            }
+            Ok(acc)
         }
         other => Err(Reject::unsupported(format!(
             "the Cadenza backend does not support lowering this Core node back to Cadenza: {}",
