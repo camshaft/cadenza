@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(26) {
+    match c.variant(27) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -442,9 +442,43 @@ fn gen_main_body<C: Choice>(
         // A SIZED-INT SHIFT body: `<<` / `>>` (and a nested shift+bitwise) on a sized-int-ascribed operand
         // — the narrow-width shift codegen the sized-int arm (which only did `+ * & | ^`) never emitted.
         25 => gen_sized_shift_body(c, out),
+        // A QUANTITY (Qty) body: `Qty.value` of a Qty.of magnitude or a same-unit arithmetic combination
+        // — Qty magnitude/unit value-lowering, a whole numeric family the coercing grammar never reached
+        // (only the text crash-hunt did). Value-comparable (Qty.value → Int64).
+        26 => gen_qty_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
+}
+
+/// A QUANTITY body: `(Qty.value <q>)` where `<q>` is a `Qty.of` magnitude literal or a SAME-UNIT
+/// `+`/`-`/`*` combination of two — extracting the magnitude as an Int64 (value-comparable, so the
+/// wasm-vs-rust diff + the oracle both grade it). Qty is a whole numeric family absent from the
+/// coercing grammar. HALF the magnitudes are PARENTHESIZED `(n)` — a standing regression guard for
+/// #7227 (a grouped-literal Qty magnitude must adopt the sibling's fixed width; was an i64/i32
+/// invalid-wasm). Same-unit ops keep the result well-typed; the magnitudes are `0..=9` so nothing
+/// overflows.
+fn gen_qty_body<C: Choice>(c: &mut C, out: &mut String) {
+    let form = c.variant(2);
+    let op = ["+", "-", "*"][c.variant(3)];
+    let unit = ["meter", "second", "gram", "mole"][c.variant(4)];
+    let grp = c.variant(2) == 0;
+    let (a, b) = (c.int_bounded(0, 9), c.int_bounded(0, 9));
+    let mag_a = if grp {
+        format!("({a})")
+    } else {
+        format!("{a}")
+    };
+    match form {
+        // `Qty.value` of a bare `Qty.of` literal → the magnitude.
+        0 => write!(out, "(Qty.value (Qty.of {mag_a} (Unit.base #\"{unit}\")))").ok(),
+        // `Qty.value` of a same-unit `+`/`-`/`*` combination → the arithmetic result.
+        _ => write!(
+            out,
+            "(Qty.value ({op} (Qty.of {mag_a} (Unit.base #\"{unit}\")) (Qty.of {b} (Unit.base #\"{unit}\"))))"
+        )
+        .ok(),
+    };
 }
 
 /// Append a SIZED-integer-typed expression (`main : T` for a `T` in [`SIZED_INT_TYPES`]) — self-contained
@@ -2452,6 +2486,46 @@ mod tests {
         assert!(saw_n, "should reach a BigInt (N) form");
         assert!(saw_r, "should reach a Rational (R) form");
         assert!(saw_cmp, "should reach a BigInt/Rational comparison");
+    }
+
+    /// `gen_qty_body` REACHES both the bare `Qty.of` literal form and the same-unit arithmetic form,
+    /// exercises a PARENTHESIZED magnitude (the #7227 regression guard), and every body COMPILES —
+    /// filling the Qty numeric-family gap (Qty was absent from the coercing/value-comparable grammar).
+    #[test]
+    fn gen_qty_body_reaches_all_forms_and_compiles() {
+        let (mut saw_lit, mut saw_arith, mut saw_grouped) = (false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(937);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_qty_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            // A bare-literal body is `(Qty.value (Qty.of …))`; an arithmetic body wraps an op.
+            saw_arith |= body.starts_with("(Qty.value (+")
+                || body.starts_with("(Qty.value (-")
+                || body.starts_with("(Qty.value (*");
+            saw_lit |= body.starts_with("(Qty.value (Qty.of");
+            // A parenthesized magnitude renders `(Qty.of (n) …)` (grouped literal — #7227 guard).
+            saw_grouped |= body.contains("(Qty.of (");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "qty body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_lit, "should reach a bare Qty.of literal");
+        assert!(
+            saw_arith,
+            "should reach a Qty same-unit arithmetic combination"
+        );
+        assert!(
+            saw_grouped,
+            "should reach a parenthesized (grouped) magnitude"
+        );
     }
 
     /// `gen_partial_application_body` REACHES all three currying forms (2-ary `let`-partial, 3-ary chained,
