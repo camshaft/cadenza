@@ -22,9 +22,9 @@ non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Q
 (binary-matching — coordinate owner) · ConstFloatNan 30 · ConstBytes 16 · Seq 15 · ConstFloatInf 8 · TrapDivZero 7
 · TrapOverflow 5 · Poison 3. ✅ #7298 CLOSED ConstBytes + ConstFloatNan(F64) + ConstFloatInf(F64) = ~54; ✅ #7303
 CLOSED Seq = 15. Left in this bucket (re-measured post-#7303): BinIntRead 96 / BinRestRead 6 / BinSizedRead 2 =
-binary-matching 104 (coordinate owner) · ✅ TrapDivZero 7 CLOSED #7313 (kind-preserving) · ⏭️ TrapOverflow 5
-(symmetric, width-specific values, follow-up) · Poison 3 (verify — may be dead-path DCE). (ConstFloatNan
-non-Float64 residual CLOSED by #7309 — all widths.)
+binary-matching 104 (coordinate owner) · ✅ TrapDivZero 7 CLOSED #7313 · ✅ TrapOverflow 5 CLOSED #7319 (both
+kind-preserving) · Poison 3 (verify — may be dead-path DCE). (ConstFloatNan non-Float64 residual CLOSED by #7309.)
+So the generic-node bucket is now ONLY binary-matching 104 (owner-coordinate) + Poison 3 (verify).
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
@@ -105,10 +105,14 @@ non-Float64 residual CLOSED by #7309 — all widths.)
   re-demotes to Core::TrapDivZero of the SAME kind + width (operator's 2026-08-27 kind-preservation ruling). A
   generic `(trap "")` traps the WRONG kind ("unreachable") → since a decline is SKIPPED but a mismatched trap FAILS
   the gate, that would be worse than declining. Validated: trap-kind A/B on runtime-vs-const survivors matches;
-  targeted hop2 = 0 breaks. BigInt-typed div-zero declines (later). ⏭️ **`TrapOverflow` 5** — the SYMMETRIC gap
-  (const `(* MAX MAX)` / `(/ MIN -1)` → "integer overflow"); same recipe but width-specific overflow VALUES (fiddly
-  per width) — a follow-up. **`Poison` 3** — still verify (a Poison node may be a dead/unreached rejection wasm DCEs
-  while the cadenza walk declines; confirm direct-wasm behavior before treating as a gap).
+  targeted hop2 = 0 breaks. BigInt-typed div-zero declines (later).
+- [x] **`TrapOverflow` 5.** CLOSED #7319 (05c6912b62) — the overflow twin of #7313. Re-emit `(: (/ <MIN> -1) <IntTy>)`:
+  MIN ÷ -1 overflows at every SIGNED width, re-demoting to Core::TrapOverflow of the same kind. KIND-preserving, not
+  byte-preserving (a source `(* MAX MAX)` re-emits as `(/ MIN -1)` — different source, same trap kind = correct). Guarded
+  to signed ≤64-bit (unsigned / wider defer — unsigned overflow needs a different const shape). Validated: trap-kind A/B
+  on runtime-vs-const survivors both trap "integer overflow"; targeted hop2 = 0 breaks.
+- [ ] **`Poison` 3.** Still VERIFY — a Poison node may be a dead/unreached rejection wasm DCEs while the cadenza walk
+  declines; confirm direct-wasm behavior before treating as a gap.
 
 ## Already landed toward parity (compound-slot family + declines-coded, pre-full-parity-ruling)
 variant-at-slot #7074 · literal-at-slot + empty-sum #7153 · newtype-peel (map-key) #7181 · guarded-slot
