@@ -207,12 +207,11 @@ fn a_recursive_def_with_no_base_case_names_the_missing_base_case_not_the_paramet
     // `(: n Int64)` the parameter is already determined, yet the old message still demanded the very
     // annotation already present. The fix distinguishes the two via `recursive_def_params_all_determined`
     // — when the params ARE determined, the fault is the missing BASE CASE, and the message says so.
-    let base_case_msg = |src: &str| {
+    let base_case_diag = |src: &str| {
         crate::diagnostics(&mut crate::db::Db::load(parse(src)))
             .into_iter()
             .find(|d| d.severity == crate::abi::Severity::Error)
             .unwrap_or_else(|| panic!("a no-base-case recursive def must decline: {src}"))
-            .message
     };
     // Unannotated AND annotated — BOTH now name the missing base case (the annotated one is the bug:
     // the parameter is fine, so "annotate the parameter" was a dead end).
@@ -220,7 +219,16 @@ fn a_recursive_def_with_no_base_case_names_the_missing_base_case_not_the_paramet
         "(module m (def (loop n) (loop (+ n 1))) (def (main) (loop 0)) (export main))",
         "(module m (def (loop (: n Int64)) (loop (+ n 1))) (def (main) (loop 0)) (export main))",
     ] {
-        let m = base_case_msg(src);
+        let d = base_case_diag(src);
+        let m = &d.message;
+        // Coded CDZ0204 (`NonProductiveRecursion`, the 02xx well-formedness REJECTION band — an invalid
+        // user program with no base case, not a capability decline; distinct from CDZ0999 RecursionBound
+        // and CDZ0203 TypeMismatch). Pins the code, not just the message (seq-286 coded-decline).
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0204"),
+            "a no-base-case recursion is coded CDZ0204 (NonProductiveRecursion): {m}"
+        );
         assert!(
             m.contains("never returns") && m.contains("BASE CASE"),
             "names the missing base case, not the parameter: {m}"

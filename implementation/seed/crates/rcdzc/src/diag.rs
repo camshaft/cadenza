@@ -79,6 +79,17 @@ pub enum Code {
     Malformed,
     /// A type mismatch (e.g. an `if` condition that is not a boolean; branches of differing type).
     TypeMismatch,
+    /// A recursive function with NO BASE CASE — every path recurses, so it never yields a concrete value
+    /// and its result type is undetermined (`(def (f (: n Int64)) (f n))`, or a mutually-recursive set
+    /// with no non-recursing arm). A REJECTION of an invalid user program (the fix is "add a base case"),
+    /// so it sits in the 02xx well-formedness band with [`Malformed`]/[`TypeMismatch`] — NOT the CDZ09xx
+    /// "declined, not crashed" band. DISTINCT from [`RecursionBound`] (CDZ0999), which is the nullary
+    /// reduce-bound DECLINE (`(def (f) (f))` stops at the recursion bound — a limit, not an ill-formed
+    /// program), and from [`TypeMismatch`] (no two types disagree here — the result type simply cannot be
+    /// determined because nothing in any path is non-recursive). Reached when a callee's signature is
+    /// undetermined yet all its PARAMETERS are determined (`recursive_def_params_all_determined`), so the
+    /// undetermined thing is specifically the RESULT — the missing-base-case fingerprint.
+    NonProductiveRecursion,
     /// A `?`/`try` operator with NO fallible boundary that admits it — the enclosing function's result
     /// type is neither `Result` nor `Option` (or the `?` is not inside a function at all), so there is no
     /// boundary for its short-circuit to exit to (`DESIGN-try-operator-rcdzc.md` §6). The fix hint tells
@@ -439,6 +450,7 @@ impl Code {
             Code::Malformed => "CDZ0201",
             Code::NominalMismatch => "CDZ0202",
             Code::TypeMismatch => "CDZ0203",
+            Code::NonProductiveRecursion => "CDZ0204",
             Code::NumericMismatch => "CDZ0301",
             Code::IntOutOfRange => "CDZ0302",
             Code::NonIntegerDefault => "CDZ0303",
