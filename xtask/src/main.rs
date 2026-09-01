@@ -4571,12 +4571,13 @@ fn gate_one_case(
                 .iter()
                 .enumerate()
                 .map(|(i, t)| {
-                    // Heap balance is checked on the FIRST trial only (see `grade`).
-                    let live_objects = if i == 0 {
-                        LiveObjectsCheck::from_record(rec.live_objects, rec.live_objects_known_leak)
-                    } else {
-                        LiveObjectsCheck::Off
-                    };
+                    // Heap balance per `live_objects_for_trial` (trial-0-only in the default gate;
+                    // every must-reclaim-to-0 trial under --guarded-all) — kept in sync with `grade`.
+                    let live_objects = live_objects_for_trial(
+                        &rec,
+                        i,
+                        std::env::var_os("CDZ_GATE_GUARDED_ALL").is_some(),
+                    );
                     run_program(
                         tools,
                         store,
@@ -4688,22 +4689,48 @@ enum Grade {
 /// disagreement wins, tagged with which trial), else `Todo` if any trial is todo (the whole case is
 /// only as "done" as its least-done trial — a partially-declining case is not a live guard), else
 /// `Pass`. The common single-trial case grades exactly as before.
+/// The live-objects check to apply to trial `i` of a case.
+///
+/// Trial 0 always uses the recorded check. For a LATER trial the DEFAULT gate skips the balance
+/// (`Off`) — a single case-level `(live-objects N)` clause can't express per-trial counts (a multi-trial
+/// case re-drives the SAME program with different args, which retain/leak different amounts), and the
+/// authoritative nix grade (`cdz-run --grade`) keys the balance off the first runnable trial. Later
+/// trials still grade their value/trap outcome.
+///
+/// Under `--guarded-all` (the memory-safety escape-verification mode) the MUST-RECLAIM-TO-0 checks
+/// (opt-out `Default` and explicit `Expect(0)`) ALSO apply to every later trial: a non-leak heap case
+/// must fully reclaim on EVERY call, and a residual on a later call is a genuine leak the trial-0-only
+/// rule was HIDING (breaker's PAIRWISE/tree/PASCAL class — arg1 is the clean call, the leaks are on
+/// later args). A positive `Expect(n>0)` residual still can't be expressed per-trial (different args
+/// return different-sized heap values), so it stays first-trial-only; `known-leak` stays `Off`. The
+/// strictness is CONFINED to guarded-all (a manual CLI mode, not in the required nix gate) so the
+/// DEFAULT corpus gate baseline is unchanged — no fleet flip — while the monitor stops missing
+/// later-trial leaks.
+fn live_objects_for_trial(rec: &CorpusRecord, i: usize, guarded_all: bool) -> LiveObjectsCheck {
+    let check = LiveObjectsCheck::from_record(rec.live_objects, rec.live_objects_known_leak);
+    if i == 0 {
+        return check;
+    }
+    if guarded_all
+        && matches!(
+            check,
+            LiveObjectsCheck::Default | LiveObjectsCheck::Expect(0)
+        )
+    {
+        check
+    } else {
+        LiveObjectsCheck::Off
+    }
+}
+
 fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: GateTarget) -> Grade {
     let rans: Vec<Ran> = rec
         .trials
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            // The heap-balance check is applied to the FIRST trial only — a single `(live-objects N)`
-            // clause can't express per-trial counts (a multi-trial case re-drives the SAME program with
-            // different args, which leak different amounts), and the authoritative nix grade
-            // (`cdz-run --grade`) already keys the balance off the first runnable trial. Later trials still
-            // grade their value/trap outcome; they just skip the balance (`Off`).
-            let live_objects = if i == 0 {
-                LiveObjectsCheck::from_record(rec.live_objects, rec.live_objects_known_leak)
-            } else {
-                LiveObjectsCheck::Off
-            };
+            let live_objects =
+                live_objects_for_trial(rec, i, std::env::var_os("CDZ_GATE_GUARDED_ALL").is_some());
             run_program(
                 tools,
                 store,
@@ -7050,6 +7077,77 @@ mod trap_grading_tests {
                 GateTarget::RustAsync
             ),
             Grade::Pass
+        ));
+    }
+
+    /// Pins the multi-trial live-objects gate coverage (breaker's PAIRWISE/tree/PASCAL blind spot):
+    /// the must-reclaim-to-0 checks apply to EVERY trial under --guarded-all, but the DEFAULT gate stays
+    /// trial-0-only so its baseline is unchanged. If this regresses, later-trial leaks go unseen again
+    /// (guarded_all=true side) or the fleet baseline flips (guarded_all=false side).
+    #[test]
+    fn live_objects_check_is_per_trial_only_under_guarded_all() {
+        let rec = |count: Option<u32>, known_leak: bool| CorpusRecord {
+            description: "live-objects trial fixture".to_string(),
+            program: String::new(),
+            modules: Vec::new(),
+            peers: Vec::new(),
+            trials: Vec::new(),
+            needs: Vec::new(),
+            host_responses: Vec::new(),
+            host_calls: Vec::new(),
+            warns: Vec::new(),
+            wit_world: None,
+            component_name: None,
+            live_objects: count,
+            live_objects_known_leak: known_leak,
+        };
+        // Trial 0 always uses the recorded check, regardless of mode.
+        let expect_zero = rec(Some(0), false);
+        let default_heap = rec(None, false); // opt-out default = must reclaim to 0
+        let expect_residual = rec(Some(3), false);
+        let leaker = rec(None, true);
+        for guarded in [false, true] {
+            assert!(matches!(
+                live_objects_for_trial(&expect_zero, 0, guarded),
+                LiveObjectsCheck::Expect(0)
+            ));
+            assert!(matches!(
+                live_objects_for_trial(&default_heap, 0, guarded),
+                LiveObjectsCheck::Default
+            ));
+            assert!(matches!(
+                live_objects_for_trial(&leaker, 0, guarded),
+                LiveObjectsCheck::Off
+            ));
+        }
+        // DEFAULT gate: every LATER trial skips the balance (baseline unchanged, no fleet flip).
+        assert!(matches!(
+            live_objects_for_trial(&expect_zero, 1, false),
+            LiveObjectsCheck::Off
+        ));
+        assert!(matches!(
+            live_objects_for_trial(&default_heap, 2, false),
+            LiveObjectsCheck::Off
+        ));
+        // GUARDED-ALL: the must-reclaim-to-0 checks (Expect(0) + Default) apply to EVERY later trial —
+        // this is what catches a leak on arg2/arg3 that arg1 (trial 0) does not.
+        assert!(matches!(
+            live_objects_for_trial(&expect_zero, 1, true),
+            LiveObjectsCheck::Expect(0)
+        ));
+        assert!(matches!(
+            live_objects_for_trial(&default_heap, 2, true),
+            LiveObjectsCheck::Default
+        ));
+        // GUARDED-ALL: a POSITIVE residual (Expect(n>0)) can't be expressed per-trial (different args
+        // return different-sized heap values) → stays first-trial-only, and known-leak stays Off.
+        assert!(matches!(
+            live_objects_for_trial(&expect_residual, 1, true),
+            LiveObjectsCheck::Off
+        ));
+        assert!(matches!(
+            live_objects_for_trial(&leaker, 1, true),
+            LiveObjectsCheck::Off
         ));
     }
 
