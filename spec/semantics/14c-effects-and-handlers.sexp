@@ -14784,6 +14784,48 @@
   (live-objects known-leak))
 
 (case
+  "a RECURSIVE tuple-state handler threads a rebuilt pair per perform — the superseded state tuple is reclaimed each iteration (no per-perform leak)"
+  (doc
+    "The RECURSIVE companion of the bounded tuple-state case in 14b. A tail-recursive driver `spin` performs
+           `Acc.step` once per level, and the handler's TUPLE state `(acc, base)` is REBUILT each perform —
+           `(step (v) p (resume (+ (. p 0) (. p 1)) #tuple((+ (. p 0) v) (. p 1))))`. Because the body is
+           recursive, the discharge lowers via specialize_recursive to a SELF-LOOP whose iteration rebinds the
+           state slot to the fresh `#tuple`; the OLD state shell is dead after the rebind and MUST be reclaimed
+           (a `drop_old_borrowed` on the loop back-edge). Its NEW value is a fresh product ctor whose fields only
+           BORROW the old accumulator (field 0 a fresh arith over the unboxed scalars `(. p 0)`+`v`, field 1 the
+           unboxed-scalar `(. p 1)`), so the old shell shares no live child — dropping it frees exactly one dead
+           tuple per perform. Seeded `(0, 100)`, `spin n 0` sums `(. p 0)+(. p 1)` over the descending steps:
+           n=2 → 202, n=5 → 540. Pins that a recursive tuple-STATE fold reclaims its superseded state each
+           iteration (`(live-objects 0)` — NO per-perform leak scaling with n); the loop-rebind reclaim companion
+           of the numeric borrowed-accumulator fold, extended from numeric ops to fresh product ctors.")
+  (input
+    (do
+      (effect Acc (op step (-> Int64 Int64)))
+      (def
+        (spin (: i Int64) (: acc Int64))
+        (if (= i 0) acc (spin (- i 1) (+ acc (Acc.step i)))))
+      (def
+        (main (: n Int64))
+        (handle
+          Acc
+          #tuple(0 100)
+          ((step (v) p (resume (+ (. p 0) (. p 1)) #tuple((+ (. p 0) v) (. p 1)))))
+          (spin n 0)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 202 Int64))
+  (call main (: 5 Int64))
+  (output (: 540 Int64))
+  ; The per-perform SCALING leak is FIXED (v-memory-safety): the loop-rebind reclaim now drops the superseded
+  ; state tuple each iteration, so the leak is CONSTANT (verified: n=2 and n=20 both leave exactly 1 live cell,
+  ; not ~n) — extended `rebind_produces_fresh` to accept a fresh product ctor whose fields only borrow the old
+  ; accumulator (the escape guard excludes the share-hazards). The RESIDUAL 1 is the FINAL handler-state tuple,
+  ; live at loop EXIT and never dropped — a distinct handler-COMPLETION reclaim locus (the resume-seam / #st-drop
+  ; that the bounded dbn1 case's Increment B also needs), NOT the per-iteration rebind. Ideal is (live-objects 0);
+  ; pinned known-leak to track the residual final-state gap, routed to v-effects. (faithful-nix pending.)
+  (live-objects known-leak))
+
+(case
   "rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds"
   (input
     (do

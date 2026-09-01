@@ -9618,6 +9618,13 @@ fn collect_module_used_ops(
             used.insert("dup");
             used.insert("drop");
         }
+        // BORROWED-ACCUMULATOR reclaim: a single-member self-loop that rebinds a heap loop param to a fresh
+        // cell (numeric op or fresh product ctor) `drop`s the old accumulator each iteration
+        // (`emit_loop_iteration`'s `drop_old_borrowed`). Import `drop` iff that fires — precise import/emit
+        // agreement (else the emit's `CallImport(OP_DROP)` resolves to an unresolved op index = invalid module).
+        if select::def_rebinds_fresh_accumulator(db, body, &params, Some(def)) {
+            used.insert("drop");
+        }
     }
     for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
         if layout.lifted_reached.get(code).copied().unwrap_or(true) {

@@ -833,6 +833,90 @@ fn sum_spine_reclaim_in_body(
         .any(|c| sum_spine_reclaim_in_body(db, c, members, param_slots, slot_of, seen))
 }
 
+/// Whether def `self_def`'s body will emit the BORROWED-ACCUMULATOR reclaim drop (`drop_old_borrowed` in
+/// [`emit_loop_iteration`]) for some loop-carried param — the import-side companion of that emit, so
+/// [`collect_module_used_ops`] declares `drop` iff the emit actually reclaims a rebound accumulator (precise
+/// import/emit agreement: an under-declaration would leave the emit's `CallImport(OP_DROP)` pointing at an
+/// UNRESOLVED op index = an invalid module, the `str_at_does_not_over_declare_drop`-class bug in reverse).
+/// Mirrors the drop_old_borrowed gate: a SINGLE-MEMBER self-loop with a member tail-call whose arg `i` (stored
+/// into heap param slot `i`) PROVABLY produces a FRESH cell ([`reclaim::rebind_produces_fresh`]) and does NOT
+/// consume the old accumulator (the escape guard `!binding_escapes` over EVERY arg). The three emit exclusions
+/// (is_identity / RestFrom-consume / SumPayload-consume) are AUTOMATICALLY false when `rebind_produces_fresh`
+/// holds — a fresh product ctor / numeric op is never a bare `Param` nor a `SumPayload` — so they need no
+/// separate mirror. Arg↔slot alignment follows [`def_sum_spine_reclaims`]'s convention (arg `i` ↔ the i-th
+/// non-Unit param slot).
+pub fn def_rebinds_fresh_accumulator(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+) -> bool {
+    let Some(self_d) = self_def else {
+        return false;
+    };
+    let mut param_slots: Vec<u32> = Vec::new();
+    let mut slot_binders: Vec<StructId> = Vec::new();
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if valtype_of(ty).is_none() {
+            return false;
+        }
+        param_slots.push(param_slots.len() as u32);
+        slot_binders.push(*binder);
+    }
+    if param_slots.is_empty() {
+        return false;
+    }
+    // drop_old_borrowed is SINGLE-MEMBER only (a mutual loop's cross-arm classification is deferred to the
+    // leak-not-double-free side, so no drop fires there → nothing to declare).
+    let members = mutual_loop_group(db, self_d);
+    if members.len() != 1 {
+        return false;
+    }
+    let mut seen = HashSet::new();
+    rebinds_fresh_accumulator_in_body(db, body, &members, &param_slots, &slot_binders, &mut seen)
+}
+
+/// Walk `id` for a member `Call` (a tail-loop back-edge) whose arg `i` triggers the borrowed-accumulator drop
+/// — the same gate [`emit_loop_iteration`]'s `drop_old_borrowed` applies (see [`def_rebinds_fresh_accumulator`]).
+/// `seen` breaks DAG re-walk.
+fn rebinds_fresh_accumulator_in_body(
+    db: &mut Db,
+    id: StructId,
+    members: &[usize],
+    param_slots: &[u32],
+    slot_binders: &[StructId],
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if let Core::Call { callee, args } = core_of(db, id)
+        && members.contains(&callee)
+    {
+        for i in 0..args.len() {
+            if i >= param_slots.len() {
+                continue;
+            }
+            let binder = slot_binders[i];
+            if !is_heap_type(&type_of(db, binder)) {
+                continue;
+            }
+            if !rebind_produces_fresh(db, args[i]) {
+                continue;
+            }
+            if !args.iter().any(|&a| binding_escapes(db, a, binder, false)) {
+                return true;
+            }
+        }
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| rebinds_fresh_accumulator_in_body(db, c, members, param_slots, slot_binders, seen))
+}
+
 fn looped_owned_param_drops(
     db: &mut Db,
     body: StructId,
@@ -3945,15 +4029,21 @@ fn emit_loop_iteration(
             if !is_heap_type(&type_of(db, binder)) {
                 return false;
             }
-            // Dead iff NOT consumed by any rebind arg (only borrowed) AND the accumulator's NEW value is a
-            // PROVABLY-FRESH numeric op (rational-add/bigint — never aliases/descends the old accumulator).
-            // The `binding_escapes` "borrowed-not-consumed" check ALONE over-approximated "dead": a compound
-            // accumulator whose CHILD is carried forward (a match-payload binder `l` = a child of the old
-            // `s`, or a ctor/Call sharing it) passes it, but dropping the old shell cascade-frees the carried
-            // child → UAF (breaker's reduced CAD fold `bb (Diff l _t) => bb l`; the 7 CAD double-frees). The
-            // fresh-numeric gate is the SOUND sufficient condition — see `rebind_produces_fresh_numeric`.
+            // Dead iff NOT consumed by any rebind arg (only borrowed) AND the accumulator's NEW value
+            // PROVABLY produces a FRESH cell (a numeric rational-add/bigint OR a fresh product-compound ctor
+            // that only borrows the old accumulator — never aliases/descends it). These two conjuncts are
+            // co-dependent: the `binding_escapes` "borrowed-not-consumed" check ALONE over-approximated
+            // "dead" (a compound accumulator whose CHILD is carried forward — a match-payload binder `l` = a
+            // child of the old `s`, or a ctor EMBEDDING a heap child — would pass it), but a ctor embedding a
+            // heap child of the accumulator makes that child ESCAPE through the ctor element (a nested-compound
+            // `Proj`, `get_op` None, consuming position) → `binding_escapes` = true → this whole gate is false,
+            // so the old shell is NEVER dropped when it would cascade-free a carried cell (breaker's CAD fold
+            // `bb (Diff l _t) => bb l`; the 7 CAD double-frees; the `v2max`/CSG-`fuse` share hazards). The
+            // escape guard + fresh-cell gate together are the SOUND sufficient condition — see
+            // `rebind_produces_fresh`. Extended from numeric-only to fresh product ctors to close the RECURSIVE
+            // tuple/record/list-STATE handler per-perform leak (v-effects wasm-dump-confirmed on rectuple_tail).
             !args.iter().any(|&a| binding_escapes(db, a, binder, false))
-                && rebind_produces_fresh_numeric(db, args[i])
+                && rebind_produces_fresh(db, args[i])
         })
         .collect();
     let mut eval_order: Vec<usize> = (0..args.len())
