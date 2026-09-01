@@ -8689,8 +8689,11 @@
       (def (main) (s #list(1 2 3) 0))
       (export main)))
   (output (: 6 Int64))
-  ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
-  (live-objects known-leak))
+  ; RECLAIMS to 0 (was interim known-leak #6022/#6049): INC1 pt3's self-loop-tail shell reclaim frees the
+  ; runtime-list spine per iteration — the (List Int64) sibling of the user-Cons `len` (09) + tree `inorder`
+  ; (05) self-tail-loop witnesses. Confirmed 0 by v-runtime faithful census. A regression guard: live-objects
+  ; > 0 here is a pt3 reclaim regression on the runtime-list tail fold.
+  (live-objects 0))
 
 ; The tail fold above folds a built-in list with a fixed `+`. The general HIGHER-ORDER left fold
 ; (`foldl f acc xs`) takes a COMBINING FUNCTION `f` as a parameter — the single most common higher-order
