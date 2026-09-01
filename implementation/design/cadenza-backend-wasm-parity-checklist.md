@@ -24,9 +24,8 @@ non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Q
 CLOSED Seq = 15. Left in this bucket (re-measured post-#7303): BinIntRead 96 / BinRestRead 6 / BinSizedRead 2 =
 binary-matching 104 (coordinate owner) · ✅ TrapDivZero 7 CLOSED #7313 · ✅ TrapOverflow 5 CLOSED #7319 (both
 kind-preserving) · Poison 3 VERIFIED → 27 SHARED + 3 type-value GAPs ROUTED to v-metaprogramming (reflection).
-(ConstFloatNan non-Float64 residual CLOSED by #7309.) So the generic-node bucket is now ONLY binary-matching 104
-(owner-coordinate) + the 3 type-value Poison GAPs (v-metaprogramming's reflection lane) — every solo my-lane
-generic node is CLOSED or ROUTED.
+(ConstFloatNan non-Float64 residual CLOSED by #7309; type-value Poison CLOSED #7330.) So the generic-node bucket is
+now ONLY binary-matching 104 (BinIntRead/Rest/Sized — owner-coordinate). EVERY other generic-node GAP is CLOSED.
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
@@ -123,7 +122,13 @@ generic node is CLOSED or ROUTED.
   byte-preserving (a source `(* MAX MAX)` re-emits as `(/ MIN -1)` — different source, same trap kind = correct). Guarded
   to signed ≤64-bit (unsigned / wider defer — unsigned overflow needs a different const shape). Validated: trap-kind A/B
   on runtime-vs-const survivors both trap "integer overflow"; targeted hop2 = 0 breaks.
-- [~] **`Poison` 3** — VERIFIED + ROUTED (not a solo close). Full Poison scan: 30 Poison-declining programs = 27
+- [x] **`Poison` type-value 3 — CLOSED #7330 (d3b70e9b6d).** v-metaprogramming (reflection owner) confirmed the recipe:
+  the Poison IS the expected erased core of a compile-time type-value (do NOT de-Poison it). A pre-core-match `Ty::Type`
+  arm recovers the concrete Ty via `eval::typeval_of` and re-emits `(: <type_ast(concrete)> Type)` (mirrors
+  value_form.rs:1999). SAFE discriminator (Ty::Type AND typeval_of success) — a real Poison rejection like
+  `(const (+ k 1))` has a non-Type type → arm skipped → still declines CDZ0900 (verified, no misfire). All 3 round-trip
+  value-equivalent; full-corpus hop2 = 0 breaks. The other 27 Poison programs stay SHARED (wasm also rejects).
+- [~] ~~**`Poison` 3** — VERIFIED + ROUTED~~ (superseded by ↑ CLOSED #7330). Full Poison scan: 30 Poison-declining programs = 27
   SHARED (wasm ALSO rejects, e.g. `(const (+ k 1))` → CDZ0201 not-a-const — reclassify SHARED, NOT a gap) + 3 true
   GAPs, ALL TYPE-VALUE programs in 07-type-system: `(let ((t Int64)) t)`, `(let ((t String)) (let ((u t)) u))`,
   `(: Int64 Type)`. wasm compiles+runs these, printing the reified type value `(: Int64 Type)`; the cadenza backend
