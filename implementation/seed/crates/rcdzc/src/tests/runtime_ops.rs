@@ -808,6 +808,34 @@ fn a_chained_multi_use_boxed_collection_producer_emits_linear_wasm_not_exponenti
 // SumNew state (v-effects fold-lowering + v-core-opt/emit). The List concat/push gates above stay green.
 
 #[test]
+fn an_effects_handler_with_a_boxed_heap_state_emits_a_valid_wasm_component() {
+    // REGRESSION (emit-VALIDITY, seq-203 keep family): a materialize-once keep of a boxed producer used as
+    // a handler STATE, threaded through a TAIL-RESUMPTIVE-FOLD resume, can emit an i32/i64 width mismatch →
+    // an INVALID wasm component (14b "an Option-of-HEAP handler state transitions None to Some and grows the
+    // payload", func 12: "type mismatch: expected i32, found i64"). Bisect pinned #7488 (the SumNew keep) as
+    // first-bad; the SumNew stopgap (#7538) restored validity.
+    //
+    // This gate is the FAST pre-land guard the opt-sweep + emit-size gates LACKED: it COMPONENT-VALIDATES
+    // the emitted wasm (wasmparser, all features incl the component model) — the axis that caught this only
+    // in the slow full-corpus grade, so #7488 slipped past its pre-land gate. It guards any future re-widen
+    // of the keep family (SumNew / map / set) against re-introducing the invalid-component class. It is a
+    // compiler-OUTPUT-correctness pin (does the emit validate?), not a Cadenza-behavior property — hence a
+    // Rust #[test], like the existing `validate_composed` / cross-component validation pins.
+    let src = r#"(do (effect St (op feed (-> Int64 Int64))) (def (main (: a Int64)) (handle St (Option.None) ((feed (v) s (match s ((Option.None) (resume 0 (Option.Some #list(v)))) ((Option.Some xs) (resume (List.len xs) (Option.Some (List.push xs v))))))) (+ (* 100 (St.feed a)) (+ (* 10 (St.feed (+ a 1))) (St.feed (+ a 2)))))) (export main))"#;
+    let comp = crate::host::run_with_compiler_stack(|| {
+        compile_component(&crate::codec::encode(&parse(src)))
+            .expect("effects-handler with an Option-of-List heap state compiles")
+    });
+    let mut validator = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    validator.validate_all(&comp).expect(
+        "an effects-handler with a boxed-heap (Option-of-List) state threaded through the \
+         tail-resumptive fold must emit a VALID wasm component — a materialize-once keep of the \
+         SumNew/List state must not produce an i32/i64 width mismatch (seq-203 keep family; the \
+         #7488 invalid-component class, func 12)",
+    );
+}
+
+#[test]
 fn a_wide_literal_match_builds_its_decision_tree_in_bounded_time() {
     // REGRESSION (perf): `lower::build_tree`'s lit-test arm compiles a wide literal match
     // (`(match t ((tuple 0 a) …) ((tuple 1 a) …) … (_ -1))`) as an N-DEEP chain of `LitTest` nodes.
