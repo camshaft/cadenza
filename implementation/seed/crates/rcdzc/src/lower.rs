@@ -1268,15 +1268,21 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             | Core::ListPush { .. }
             | Core::ListPrepend { .. }
             | Core::ListUpdate { .. }
-            | Core::MapNew { .. }
-            | Core::MapInsert { .. }
-            | Core::MapRemove { .. }
-            // `Map.merge` (`MapMerge`) is the binary MAP analog of `ListConcat`/`SetAlgebra` — a
-            // fresh-map-building runtime op consuming BOTH operands. The value-position map construction
-            // spread desugars to a LEFT-nested `merge` CHAIN (`(merge (merge a b) c)`…), the exact chained
-            // shape that COMPOUNDS to 2^N under copy-propagation; kept under the >= 2-use rule so a linear
-            // spread emits linear output.
-            | Core::MapMerge { .. }
+            // 🛑 STOPGAP (P0 UAF, seq-203 batch): the MAP producers (`MapNew`/`MapInsert`/`MapRemove`/
+            // `MapMerge`) are TEMPORARILY REMOVED from the keep list. Materializing a multi-use
+            // GENERATION-SHARED map once into a `Core::Let` slot OVER-FREES a CHAMP node shared across
+            // generations (a `m1` built-then-read-later while `m2`/`m3` path-copy off it) — an emit
+            // ref-counting bug in the materialized shared-map handle's reclaim, witnessed as an
+            // `assert_node_live` over-free/UAF under `--guarded-all` (chapter-05 "third-generation overwrite
+            // path-copies away from both ancestors"; SILENT on release). Removing them reintroduces the
+            // chained-map-insert/merge exponential-emit perf regression, but memory-safety > perf (operator
+            // bar = zero UAF). RE-WIDEN once the PROPER fix lands: correct the materialize-once Let-slot
+            // reclaim for a generation-shared CHAMP handle (Perceus dup/drop placement — v-memory-safety +
+            // v-core-opt lane). CHAMP runtime rc is clean; the bug is the EMIT-side reclaim.
+            // | Core::MapNew { .. }
+            // | Core::MapInsert { .. }
+            // | Core::MapRemove { .. }
+            // | Core::MapMerge { .. }
             | Core::SetOf { .. }
             // `Set.union`/`intersect`/`diff` (`Core::SetAlgebra`) is the TRUE Set exp witness (v-compiler-perf
             // confirmed a `Set.union` chain still 2^N on main — `SetOf` alone is a constructor, not the
