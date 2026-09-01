@@ -1268,30 +1268,30 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             | Core::ListPush { .. }
             | Core::ListPrepend { .. }
             | Core::ListUpdate { .. }
-            // 🛑 STOPGAP (P0 UAF, seq-203 batch): the MAP producers (`MapNew`/`MapInsert`/`MapRemove`/
-            // `MapMerge`) are TEMPORARILY REMOVED from the keep list. Materializing a multi-use
-            // GENERATION-SHARED map once into a `Core::Let` slot OVER-FREES a CHAMP node shared across
-            // generations (a `m1` built-then-read-later while `m2`/`m3` path-copy off it) — an emit
-            // ref-counting bug in the materialized shared-map handle's reclaim, witnessed as an
-            // `assert_node_live` over-free/UAF under `--guarded-all` (chapter-05 "third-generation overwrite
-            // path-copies away from both ancestors"; SILENT on release). Removing them reintroduces the
-            // chained-map-insert/merge exponential-emit perf regression, but memory-safety > perf (operator
-            // bar = zero UAF). RE-WIDEN once the PROPER fix lands: correct the materialize-once Let-slot
-            // reclaim for a generation-shared CHAMP handle (Perceus dup/drop placement — v-memory-safety +
-            // v-core-opt lane). CHAMP runtime rc is clean; the bug is the EMIT-side reclaim.
-            // | Core::MapNew { .. }
+            // MAP constructor + merge — KEPT (structurally SAFE, v-runtime-verified): `MapNew` builds a
+            // FRESH CHAMP from its entries; `MapMerge` CONSUMES+DUPS both operands into a fresh CHAMP (the
+            // `ListConcat` shape). Neither shares interior nodes off a LIVE generation, so materializing them
+            // once cannot over-free/over-retain an ancestor-shared node (v-runtime verified `MapMerge` passes
+            // `--guarded-all` even multi-use generation-shared). Keeping `MapMerge` also preserves the #7485
+            // map value-position spread fold (a chained `(merge (merge a b) c)` — 2^N without the keep).
+            | Core::MapNew { .. }
+            | Core::MapMerge { .. }
+            // 🛑 STOPGAP (P0, SURGICAL — v-runtime scope): the PATH-COPY generation-share producers
+            // `MapInsert`/`MapRemove`/`SetAlgebra` are TEMPORARILY REMOVED. Each PATH-COPIES off an input
+            // map/set, SHARING its interior CHAMP nodes; materializing a multi-use GENERATION-SHARED handle
+            // once into a `Core::Let` slot then over-drops / over-retains that shared interior — witnessed
+            // under `--guarded-all` as `MapInsert` over-FREE/UAF (chapter-05 third-gen-overwrite) AND
+            // `SetAlgebra` over-RETAIN/leak (19-sets subset-algebraic 0v1). Same root (materialize-once
+            // reclaim of a generation-shared CHAMP handle), OPPOSITE symptoms. Safety > perf (operator bar =
+            // 0 UAF/leak); cost = a chained `Map.insert` / `Set.union` reverts to 2^N emit. RE-WIDEN each
+            // once the proper reclaim fix lands + guarded-all-clean (Perceus dup/drop placement —
+            // v-memory-safety + v-core-opt lane; CHAMP runtime rc is clean, the bug is the EMIT reclaim).
             // | Core::MapInsert { .. }
             // | Core::MapRemove { .. }
-            // | Core::MapMerge { .. }
-            // 🛑 STOPGAP (P0 UAF, extended to SETS): `SetOf`/`SetAlgebra` are TEMPORARILY REMOVED alongside
-            // the map producers above. Set is ALSO CHAMP-backed, so a multi-use generation-shared set hits
-            // the SAME materialize-once over-free of a path-copy-shared interior node (v-core-opt clean-main
-            // disambiguation: "SET dedup accumulator" live-objects 0v7 + "subset algebraic-formulations-agree"
-            // 0v1 regressed in the same guarded-all set as the map case). Same trade + same re-widen plan as
-            // the maps: restore once the generation-shared-CHAMP reclaim fix lands (v-memory-safety +
-            // v-core-opt). Cost: a `Set.union x x` chain reverts to 2^N emit (accepted, safety > perf).
-            // | Core::SetOf { .. }
             // | Core::SetAlgebra { .. }
+            // SET constructor — KEPT (structurally SAFE, the `MapNew` analog): `Set.of` builds a FRESH CHAMP
+            // from its elems, no interior sharing off a live set.
+            | Core::SetOf { .. }
             // `Core::SumNew` (the sum-payload heap constructor) is the DIRECT ANALOG of `ListNew` (above),
             // and was the deferred-for-ubiquity op the family-widen note named. A `Node x x` binary variant
             // whose payload `x` is used twice, consumed at runtime (a recursive fold so it can't const-fold),
