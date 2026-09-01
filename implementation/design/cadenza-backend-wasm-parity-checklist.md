@@ -29,8 +29,9 @@ re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user su
 fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
 #7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
 effect breaks were all SHARED). ✅ #7346 CLOSED the UInt64-literal cluster (ascribe `(: v <IntTy>)` for
-unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **8** (was 12; #7355 closed 2 Map dup-key, #7357 empty-collection, #7376 the erased-sum
-tuple-payload destructure = 07 Box-Pair/gn3. corrected+precondition gate; all surface/recompilability TYPE breaks —
+unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **7** (was 12; #7355 Map dup-key,
+#7357 empty-collection, #7376 erased-sum tuple-payload destructure = 07 Box-Pair/gn3, #7380 erased-sum WRAP-side +
+generic-nominal type-args = 09 rg1. corrected+precondition gate; all surface/recompilability TYPE breaks —
 none wrong-DATA), by family:
   • ✅ EMPTY-COLLECTION ascription-drop (CDZ0203) — CLOSED #7357 (dae2c1b1c2): an empty `#list()`/`#set()`/`#map()`
     re-emitted bare drops its element/key/value type → hop2 undetermined-escape reject. Fix = `ascribe_if_empty`
@@ -38,14 +39,16 @@ none wrong-DATA), by family:
   • ERASED-SUM re-materialization (CDZ0203) — ✅ tuple-payload DESTRUCTURE fixed #7376 (a5c42accf2): the #7278
     Leaf-root arm bound a single-variant ctor's payload at CTOR arity, so an erased newtype OVER a tuple bound the
     WHOLE tuple as one slot while the body reads its FIELDS at `[Elem(i)]` → dropped projection. Fix: when the sole
-    payload is a `Ty::Tuple`, destructure it (`(Ctor #tuple(b…))`). Closed 07 Box-Pair/gn3 + breaker cd1/cd2. ⏭️ TWO
-    remaining sub-shapes (still open, CDZ0203 ×3 across 05/09): (1) the WRAP-SIDE (rg1 title-5) — a `(Box.Wrap x)`
-    CONSTRUCTION emitted BARE (nominal-disposition Construct-vs-PassThrough, not the destructure) — MINE NEXT; (2) the
-    DEPTH-3 rb3 erased-and-boxed nested-sum (05) — a deeper nesting my one-level tuple-destructure doesn't compose
-    through yet. 🎯 POLICY = **FULLY RE-MATERIALIZE** (NOT fully-erase): the Core keeps nominal identity (`Box` ≠
-    inner), so an escaping value must render with its `Box` type + producer/consumer must agree at `(List Box)`;
-    fully-erase would drop nominal annotations = a type-drop. For the WRAP-SIDE: emit the `(Ctor …)` construction
-    (nominal_disposition Construct) where a wrap was dropped; validate corrected+precondition gate + value-A/B
+    payload is a `Ty::Tuple`, destructure it (`(Ctor #tuple(b…))`). Closed 07 Box-Pair/gn3 + breaker cd1/cd2.
+    ✅ WRAP-SIDE + generic-nominal type-args fixed #7380 (d1ea2595b0): nominal_disposition PassThrough'd every
+    SumPayload, dropping the `(Box.Wrap h)` wrap when the read's SLOT holds the INNER type (a `List Int64` head that
+    `wrapall` wraps into `List Box`) — now CONSTRUCTs unless the slot type IS the nominal (compiler-ml Ty/Subst reads
+    preserved, `sum_payload_slot_ty`); AND `lower::type_ast` dropped a generic Nominal's type ARGS (bare `Box` =
+    `Box <free>` vs the produced `Box Int64`) — now renders `(Box Int64)` (mirrors `Ty::Sum`). Closed 09 rg1
+    recursive-generic. ⏭️ ONE remaining erased-sum sub-shape: the DEPTH-3 rb3 erased-and-boxed nested-sum (05) — the
+    one-level tuple-destructure + wrap don't COMPOSE through a depth-3 chain yet (needs the destructure/wrap to
+    recurse). Plus 09 borrowed-heap-sum-param (likely a reclaim/heap family, not this re-materialization). 🎯 POLICY
+    (achieved for the closed shapes): FULLY RE-MATERIALIZE — nominal identity survives; validate gate + value-A/B
     (breaker verifies rg1).
     Repros: /tmp/gn3.sexp, /tmp/rg1.sexp; writeup .claude/fleet/queue/adv-emitter-incoherent-rematerialization-of-erased-generic-sums.md.
     NOTE: #7355 verify surfaced a PRE-EXISTING constructor-side dup-key bug (const-map CONSTRUCTOR holds both
