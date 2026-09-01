@@ -337,9 +337,13 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
                 //= spec/capabilities/modules-and-namespaces.md#a-type-s-handle-and-its-constructors-are-independently-visible
                 //# A module MUST be able to make every constructor of a type visible in one act that also makes the type's handle visible, so that publishing a type together with its whole constructor set does not require enumerating the constructors one by one and does not drift as the constructor set changes.
                 for &s in tail.iter() {
-                    if let Some(name) = ast.as_name(s) {
-                        exports.push(name.to_string());
-                    } else if let Some((ty, ctor)) = as_ctor_export(ast, s) {
+                    // Try the ctor-export form FIRST — it recognizes BOTH the `(. T *)`/`(. T A)` list and
+                    // the dotted-name atom `"T.*"` (the wildcard reads as one atom, not a member-access
+                    // list). Checking `as_name` first would push a `"T.*"` atom verbatim as an export name,
+                    // never publishing the handle `T` — the cross-module type-import regression. A plain
+                    // (non-dotted) name is not a ctor-export (`as_ctor_export` → None) and falls to the
+                    // bare-name arm below unchanged.
+                    if let Some((ty, ctor)) = as_ctor_export(ast, s) {
                         // The handle is public (an importer must be able to NAME the type it can
                         // construct). Idempotent — a repeated `(. T A)` re-adds the same handle name.
                         exports.push(ty.to_string());
@@ -361,6 +365,11 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
                                 }
                             },
                         }
+                    } else if let Some(name) = ast.as_name(s) {
+                        // A BARE NAME `T` / `f` — a value def OR a type HANDLE exported bare (abstract
+                        // unless a ctor-export clause also names it). A plain name has no `.`, so
+                        // `as_ctor_export` returned None above and we publish it verbatim here.
+                        exports.push(name.to_string());
                     }
                 }
             } else if let Some(name) = top_item_defined_name(ast, item) {
@@ -837,17 +846,38 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// final member segment meaning "every constructor", not a name glob — it is recognized only in this
 /// export position, so it never collides with the multiply operator.
 fn as_ctor_export(ast: &Arenas, s: StructId) -> Option<(&str, Option<&str>)> {
-    let tail = ast.as_form(s, ".")?;
-    if tail.len() != 2 {
+    // FORM 1 — the member-access LIST `(. T *)` / `(. T A)` (the explicit form, and what a normal dotted
+    // ctor `T.A` desugars to).
+    if let Some(tail) = ast.as_form(s, ".") {
+        if tail.len() != 2 {
+            return None;
+        }
+        let ty = ast.as_name(tail[0])?;
+        let key = ast.as_name(tail[1])?;
+        return Some(if key == "*" {
+            (ty, None)
+        } else {
+            (ty, Some(key))
+        });
+    }
+    // FORM 2 — a DOTTED NAME ATOM `"T.*"` (the WILDCARD case). Unlike a specific ctor `T.A` (which the
+    // reader desugars to the `(. T A)` list above), `T.*` reads as a single atom `"T.*"` — `*` is a
+    // RESERVED final member segment, not a name identifier the dotted-name desugar splits. Recognize it
+    // here so `(export T.*)` publishes the handle `T` + `All` ctors, exactly like the list form. Without
+    // this the export loop's `as_name` pushed the literal `"T.*"` as an export name, so the type HANDLE
+    // `T` was never exported and an importer's `(import (T …))` failed "does not export it". A `"T.A"`
+    // named-ctor atom is likewise split (defensive — normally it desugars to a list). Split on the LAST
+    // `.` so a namespaced type reads correctly.
+    let name = ast.as_name(s)?;
+    let (ty, key) = name.rsplit_once('.')?;
+    if ty.is_empty() || key.is_empty() {
         return None;
     }
-    let ty = ast.as_name(tail[0])?;
-    let key = ast.as_name(tail[1])?;
-    if key == "*" {
-        Some((ty, None))
+    Some(if key == "*" {
+        (ty, None)
     } else {
-        Some((ty, Some(key)))
-    }
+        (ty, Some(key))
+    })
 }
 
 /// The name a top-level item DEFINES, if it is a `def`/`type`/`effect` — used only to tell an import of
@@ -1607,6 +1637,32 @@ mod tests {
         assert!(
             !out.has_error(),
             "a wildcard-exported type's constructor should be reachable; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// REGRESSION: `(export T.*)` written as a DOTTED ATOM (the corpus/ML spelling) must publish the type
+    /// HANDLE `T` — the wildcard `T.*` reads as ONE atom `"T.*"` (NOT the `(. T *)` member-access LIST the
+    /// test above uses; `*` is a reserved final segment the dotted-name desugar does not split). The export
+    /// loop pushed the literal `"T.*"` as an export NAME instead of the handle, so an importer's
+    /// `(import (T …))` failed "hol defines T but does not export it" — un-breaking a whole class of
+    /// cross-module type-importing programs (the 25-verification Term/Thm kernel: 0023 α-equivalence,
+    /// the Thm.Seq-unforgeability CDZ0214 that had drifted to CDZ0201, etc.). `as_ctor_export` now
+    /// recognizes the `"T.*"` atom alongside the `(. T *)` list. Uses the dotted-atom spelling the earlier
+    /// test does not, so it actually covers the regressed path.
+    #[test]
+    fn a_dotted_atom_wildcard_export_publishes_the_type_handle() {
+        let out = compile_package(
+            "(do (type Color (Red) (Green) (Blue)) \
+                 (def (rank (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3))) \
+                 (export Color.* rank))",
+            "(do (import \"lib\" (Color rank)) (def (main) (rank (Color.Green))) (export main))",
+        );
+        assert!(
+            !out.has_error(),
+            "a DOTTED-ATOM wildcard export `Color.*` must publish the handle so an importer can name + \
+             import the type; got {:?}",
             out.diagnostics
         );
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
