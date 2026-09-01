@@ -38,9 +38,11 @@ in place → let the one-tier fold reach a fixpoint before typecheck". **The mac
 same expansion generalized to ordinary calls whose callee marks parameters as unevaluated.**
 
 So we do **not** add an evaluator or a lazy/thunk representation. We add: (a) a per-parameter
-"unevaluated" marker, (b) a load-time/post-resolve expander that reifies the marked arguments to
-`Ast` and splices the macro's result at the call site, (c) a `gensym` primitive. Caller-scope
-evaluation falls out of (b). Hygiene-by-default is explicitly dropped (§6).
+`quote` marker (§2), (b) a **post-resolve** expander that reifies the marked arguments to `Ast` and
+splices the macro's result at the call site, iterating to a fixpoint (§4), (c) `Ast.gensym` (§5),
+and (d) the general `Eval` effect for caller-environment evaluation (§3). Hygiene is **preserved**
+(fork c) via per-splice provenance+rename, pending operator ratification of a faithful-mirror :142
+wording tweak (§6).
 
 ## 2. Capability 1 — unevaluated (call-by-AST) parameters
 
@@ -71,54 +73,56 @@ and you could wrap it just like any other effect." This is the powerful core of 
 
 **Two paths compose.** (i) For output, splice-at-call-site still gives caller-scope resolution of the
 macro's *returned* AST for free (as `tagged_template::expand` does, tagged_template.rs:82-90). (ii)
-For *computing with* a caller expression during the macro body, a macro performs an
-**`eval-in-caller` effect op** — `Ast → a` — whose handler (provided ambiently at the call site by the
-expansion context) evaluates the AST in the caller's environment and returns the value. The macro's
-signature carries this effect in its row, so it is threaded and wrappable like any other effect.
+For *computing with* a caller expression during the macro body, a macro performs the **`in-caller` op
+of the general `Eval` effect** — `Ast → Ast` — whose handler (provided ambiently at the call site by
+the expansion context) evaluates the AST in the caller's environment and returns the reified value.
+The macro's signature carries `{Eval}` in its row, so it is threaded and wrappable like any effect.
 
 **Cross-lane with v-effects — SHAPE AGREED (2026-09-01).** The three open questions are resolved
 (result type is `Ast`-reified, not value-polymorphic; ambient compiler-synthesized handler; plain row
 entry). The canonical spec of the effect (v-effects' drop-in draft) follows.
 
-### 3.x Caller-environment evaluation is an effect
+### 3.x Caller-environment evaluation is the first op of a general `Eval` effect
 
-Caller-environment evaluation is modeled as an ordinary effect, not a bespoke `defmacro` form. A macro
-that needs to evaluate one of its (unevaluated, quoted) arguments in the *caller's* environment
-performs an operation of a single built-in effect:
+Caller-environment evaluation is modeled as an ordinary effect, not a bespoke `defmacro` form. Per the
+operator's refinement, the effect is a **general, EXTENSIBLE `Eval` effect** (the eval *capability*),
+not a single-purpose one; its **first operation is `in-caller`** (evaluate an AST in the caller's
+environment), with room to add further eval operations later:
 
-    (effect EvalInCaller (op eval-in-caller (-> Ast Ast)))
+    (effect Eval (op in-caller (-> Ast Ast)) ...future ops...)
 
-`eval-in-caller` takes the argument AST and returns an `Ast`: the evaluated value REIFIED back to an
-Ast literal (via quote-reify). The result type is `Ast`, deliberately NOT value-polymorphic — a typed
+`in-caller` takes the argument AST and returns an `Ast`: the evaluated value REIFIED back to an Ast
+literal (via quote-reify). The result type is `Ast`, deliberately NOT value-polymorphic — a typed
 effect row cannot carry a result type that depends on the argument value, and because a macro is
 `Ast -> Ast` the reified-Ast result composes directly with the rest of the macro's AST manipulation.
 (Returning a raw runtime value into the caller is a separate, future feature and is intentionally out
 of scope for this op.)
 
-Because it is a plain effect, `EvalInCaller` appears as an ordinary entry in a macro's effect row:
+Because it is a plain effect, `Eval` appears as an ordinary entry in a macro's effect row:
 
-    a-macro : (quoted-arg: Ast) -{EvalInCaller}-> Ast
+    a-macro : (quoted-arg: Ast) -{Eval}-> Ast
 
 and threads/wraps exactly like any other effect: a function that calls the macro without discharging
-the capability inherits `{EvalInCaller}` in its own row (standard row propagation), and a pure
-`Ast -> Ast` macro that never evaluates in the caller simply carries no `EvalInCaller` — the
-capability is opt-in via the row.
+the capability inherits `{Eval}` in its own row (standard row propagation), and a pure `Ast -> Ast`
+macro that never evaluates in the caller simply carries no `Eval` — the capability is opt-in via the
+row.
 
 The capability is discharged by an AMBIENT, COMPILER-SYNTHESIZED handler that the expander wraps
 around each macro application site — the `reduce_handle` analogue, but run at EXPANSION time rather
 than at runtime:
 
-    (handle EvalInCaller <caller-env>
-      ((eval-in-caller (a) _ <evaluate `a` in the caller's environment>))
+    (handle Eval <caller-env>
+      ((in-caller (a) _ <evaluate `a` in the caller's environment>))
       <macro-body>)
 
 The arm evaluates the argument AST in the caller's environment (the one-tier evaluator seam,
-`eval::apply_lambda`) and reifies the result to an Ast. Discharging at expansion time means
-`EvalInCaller` is fully reduced away before the runtime backend ever sees it — it never becomes a
-`HostCall` or any runtime effect, exactly as an in-program-handled effect folds away. The only
-distinction from a user-written handler is WHO provides the arm (the compiler's expander) and WHEN it
-fires (expansion, ambient at every macro call site) — the mechanism is the same nearest-enclosing
-effect discharge. (Draft co-authored with v-effects, who co-owns increment 3.)
+`eval::apply_lambda`) and reifies the result to an Ast. Discharging at expansion time means `Eval` is
+fully reduced away before the runtime backend ever sees it — it never becomes a `HostCall` or any
+runtime effect, exactly as an in-program-handled effect folds away. The only distinction from a
+user-written handler is WHO provides the arm (the compiler's expander) and WHEN it fires (expansion,
+ambient at every macro call site) — the mechanism is the same nearest-enclosing effect discharge.
+(Effect shape co-designed with v-effects, who co-owns increment 3; `Eval`-general naming per the
+operator, 2026-09-01.)
 
 ## 4. The expansion phase (POST-RESOLVE — grounded, not the load-time window)
 
@@ -197,7 +201,7 @@ amend. v-spec-oracle handshake decides which; surfaced to the operator before lo
 2. **Quote-based unevaluated parameters + the expander** — the `quote`-in-binder marker + the
    post-resolve reify-and-splice expander; a first macro (`unless`/`swap`) as a plain function,
    corpus-pinned to its expansion.
-3. **Caller-env-eval EFFECT** (with v-effects) — the `eval-in-caller` effect op + ambient
+3. **Caller-env-eval EFFECT** (with v-effects) — the `Eval` effect (`in-caller` op) + ambient
    call-site handling + row threading; corpus-pin a macro that evaluates a caller expression in the
    caller's env. Blocked on the v-effects effect-shape co-design (§3).
 4. **Hygiene** (with v-spec-oracle) — either the preservation mechanism (§6 proposal) + a corpus
