@@ -420,6 +420,7 @@ pass	Set.to-list over STRING elements orders by content with a rope participatin
 pass	Set.to-list over a 100-element trie enumerates strictly increasing end to end
 pass	Set.to-list over a BORROWED param source reused across a loop borrows it (no consume) -- value-correct, no UAF
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
+pass	Set.to-list over a newtype (Int64-payload) element enumerates via the newtype's orderable payload
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list over an all-nullary sum enumerates in discriminant order
 pass	Set.to-list over an owned-temporary runtime set reclaims the source, leaving no live heap objects
