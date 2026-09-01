@@ -16235,6 +16235,36 @@
   (live-objects known-leak))
 
 (case
+  "mdc1 a two-list merge-walk reuses one list WHOLE in one arm and advances it in the other — the join-point divergent-consume leak (merge-sort's minimal core)"
+  (doc
+    "The minimal isolation of the merge-sort reclaim gap (the branching two-list merge above builds on
+           this). `h` matches BOTH `a` and `b`, then CONDITIONALLY either reuses `a` WHOLE + advances `b`
+           (`(h a tb …)`) OR advances `a`→`ta` + reuses `b` WHOLE (`(h ta b …)`). So a self-loop-tail
+           match-scrutinee is carried WHOLE in one arm and CHILD-consumed (advanced to its tail) in another;
+           the branch JOIN cannot reconcile the divergent per-arm refcount of the matched list, leaking ~1
+           cell per step. Value-correct: `(List.len (h [5,2] [1,3,4,6] []))` = 5. Flips to (live-objects 0)
+           when the self-loop-tail DIVERGENT-CONSUME reconciliation lands (extends the pt3 self-loop-tail
+           shell reclaim: in a whole-reuse arm the scrutinee is carried whole with NO shell drop, and its DEAD
+           matched-tail is dropped as the surplus) — the builtin-List sibling of the sum-shell join reclaim.")
+  (input
+    (do
+      (def
+        (h (: a (List Int64)) (: b (List Int64)) (: acc (List Int64)))
+        (match
+          a
+          (#list() acc)
+          (#list(ha (.. ta))
+            (match
+              b
+              (#list() acc)
+              (#list(hb (.. tb))
+                (if (< hb ha) (h a tb (List.push acc hb)) (h ta b (List.push acc ha))))))))
+      (def (main) (List.len (h #list(5 2) #list(1 3 4 6) #list())))
+      (export main)))
+  (output (: 5 Int64))
+  (live-objects known-leak))
+
+(case
   "INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed"
   (doc
     "The sortedness METRIC (inversions are exactly what the merge sort above eliminates —
