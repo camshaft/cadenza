@@ -1239,6 +1239,18 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // `BytesConcat` mis-classified in `mark_binder_dups`, now CONSUMING), so the keep is regression-
             // free NOW (gate 0-fail with this arm; adv54b witness computes 200, traps OOB without it).
             | Core::BytesConcat { .. }
+            // `List.concat` (`ListConcat`) is the DIRECT ANALOG of `BytesConcat` (adv-54b) — a fresh-list-
+            // building runtime op that CONSUMES/dups both operands (`select.rs`: "vec-concat consumes both
+            // operands"; classified a producer, NOT a borrow). A `let`-bound concat used more than once was
+            // COPY-PROPAGATED (it was not in this list), RE-BUILDING the concat at each use — and in a CHAINED
+            // shape where each binding concats the PREVIOUS one twice (`x1=(concat x0 x0)`, `x2=(concat x1 x1)`,
+            // …) the duplication COMPOUNDS to 2^N: an EXPONENTIAL wasm emit + compile time for a linear-size
+            // program (operator seq-203; N=14 emitted 136 KB, N≥20 timed out). Keeping it under the >= 2-use
+            // rule materializes the list ONCE into a `Core::Let` slot whose handle each use reads (a dup =
+            // an rc bump), so a linear program emits LINEAR output. Regression-free NOW (the kept-binding
+            // dup/consume EMIT is the same sound path `BytesConcat` uses post-adv-66 — ListConcat is already
+            // CONSUMING in `mark_binder_dups`), exactly as adv-54b widened from the StrSlice/StrToBytes pair.
+            | Core::ListConcat { .. }
     )
 }
 
