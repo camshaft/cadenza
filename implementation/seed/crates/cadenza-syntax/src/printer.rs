@@ -1423,6 +1423,16 @@ impl<'a> Printer<'a> {
             self.print_param(t[0]);
             return;
         }
+        // A `(.. binder)` REST parameter (varargs, `DESIGN-variable-arity-functions.md` §2) — emit `..`
+        // then the inner binder, so `(.. xs)` → `..xs` and `(.. (: xs (List Int64)))` → `..xs: List(Int64)`,
+        // round-tripping the parser's `param` rest case (NOT the generic `` `..`(…) `` application form).
+        if let Some(t) = self.a.as_form(p, "..")
+            && t.len() == 1
+        {
+            self.doc.word("..");
+            self.print_param(t[0]);
+            return;
+        }
         if let Some(t) = self.a.as_form(p, ":")
             && t.len() == 2
         {

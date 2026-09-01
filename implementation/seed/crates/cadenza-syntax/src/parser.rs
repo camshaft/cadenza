@@ -7749,6 +7749,19 @@ impl<'a> Parser<'a> {
     /// type `A -> B`.
     fn param(&mut self) -> StructId {
         let start = self.cur_span();
+        // A REST parameter `..binder` (varargs, `DESIGN-variable-arity-functions.md` §2): consume `..`,
+        // parse the inner binder recursively (a plain `..xs` name or an annotated `..xs: List(Int64)` /
+        // `..xs: Tuple`), and wrap `(.. binder)` — the SAME self-contained marker node the s-expr surface
+        // produces and the compiler's `is_param_occurrence` reads. The printer re-emits `..binder`, so a
+        // rest-parameter function round-trips ml→binary→ml.
+        if self.at(Kind::DotDot) {
+            let dd_span = self.cur_span();
+            self.bump(); // `..`
+            let head = self.name("..", dd_span);
+            let inner = self.param();
+            let span = dd_span.merge(self.prev_span());
+            return self.list(vec![head, inner], span);
+        }
         // A `const`-prefixed parameter — an EXPLICIT compile-time parameter (`const d: T` / `const d`),
         // wrapped `(const BINDER)` so the compiler's load-time strip records it. `const` is not a lexer
         // keyword (a plain identifier), so treat it as the modifier ONLY when it heads a param AND is
