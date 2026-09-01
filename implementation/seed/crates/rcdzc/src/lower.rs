@@ -30,12 +30,13 @@ mod ast_reflect;
 // The AST-reflection intrinsic lowerings live in `ast_reflect`; re-import the ones `compute` (and the
 // test module) call by bare name so those call sites read unchanged.
 use ast_reflect::{
-    ast_variant_discs, const_byte_slice, expand_quote_macro, lower_ast_decode, lower_ast_encode,
-    lower_ast_lift, lower_ast_splice_lift, lower_blake3_of, lower_gensym, lower_print, lower_read,
-    lower_type_ast, reflect_module_value,
+    ast_variant_discs, const_byte_slice, lower_ast_decode, lower_ast_encode, lower_ast_lift,
+    lower_ast_splice_lift, lower_blake3_of, lower_gensym, lower_print, lower_read, lower_type_ast,
+    reflect_module_value,
 };
 // Re-exported at crate scope so `crate::lower::is_ast_float_variant` (the rust backend's escape guard)
 // keeps resolving to its new home.
+pub(crate) use ast_reflect::expand_macros;
 pub(crate) use ast_reflect::is_ast_float_variant;
 #[cfg(test)]
 use ast_reflect::{SNode, SexprReader, parse_bigint_decimal};

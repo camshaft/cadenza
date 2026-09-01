@@ -1227,14 +1227,8 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
         // bare type/module used at runtime declines at the erasure fence.
         Resolved::Apply { head, args } => {
-            // MACRO EXPANSION (quote-param macro call) — DESIGN-macro-system.md §4. If `head` is a def with
-            // `quote`-marked parameters, this application is a MACRO USE: reify the marked args, β-reduce,
-            // reconstruct the result Ast to source, seed its scope at the call site, and lower the
-            // expansion (the `core_of` recursion is the fixpoint). Checked BEFORE the ordinary
-            // application/perform paths; a non-macro head returns `None` and falls through unchanged.
-            if let Some(expanded) = expand_quote_macro(db, head, &args) {
-                return expanded;
-            }
+            // (Macro expansion of a quote-param call happens PRE-INFER in `ast_reflect::expand_macros`, so
+            // by lowering the call node is already the expansion — nothing to do here.)
             // A PERFORM that reaches lowering directly — no enclosing handler discharged it (a handled
             // perform is REDUCED AWAY by `effects::reduce_handle` before its body is lowered, so it never
             // reaches here) and no host delegation routed it (E2). Whether this is an ERROR depends on
