@@ -338,14 +338,14 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
        else if isB b true && !mayTrap a then SymExpr.const (Value.bool true)
        -- IDEMPOTENCE `x or x → x` (bool companion of `x|x→x`): PRESERVES the operand (both sides evaluate x,
        -- with the same trap), so no `!mayTrap` guard — sound like `x&x→x`/`x|x→x`.
-       else if a == b then a
+       else if symExprEqB a b then a
        else .app op args')
     else if op == "and" then
       (if isB a false then SymExpr.const (Value.bool false)
        else if isB a true then b
        else if isB b true then a
        else if isB b false && !mayTrap a then SymExpr.const (Value.bool false)
-       else if a == b then a  -- `x and x → x` idempotence (operand-preserving, like `x or x → x`)
+       else if symExprEqB a b then a  -- `x and x → x` idempotence (operand-preserving, like `x or x → x`)
        else .app op args')
     -- SOUND BITWISE identities — WIDTH-INDEPENDENT (0 is all-zero bits, `<<`/`>>` by 0 is identity at any
     -- width), the bit-op companions of the integer ones above. `x&0`/`0&x`→0 DROPS the operand → `!mayTrap`
@@ -353,15 +353,15 @@ def normalizeAppIdentities (op : String) (args' : Array SymExpr) : SymExpr :=
     else if op == "&" then
       (if isI b 0 && !mayTrap a then SymExpr.const (Value.int 0)
        else if isI a 0 && !mayTrap b then SymExpr.const (Value.int 0)
-       else if a == b then a
+       else if symExprEqB a b then a
        else .app op args')
     else if op == "|" then
-      (if isI b 0 then a else if isI a 0 then b else if a == b then a else .app op args')
+      (if isI b 0 then a else if isI a 0 then b else if symExprEqB a b then a else .app op args')
     -- `x^0`/`0^x`→x PRESERVE the operand; `x^x`→0 (XOR of equal operands is all-zero at ANY width, the
     -- common zeroing idiom; the XOR companion of `x-x→0`/`x&0→0`) DROPS the operand → `!mayTrap` guard.
     else if op == "^" then
       (if isI b 0 then a else if isI a 0 then b
-       else if a == b && !mayTrap a then SymExpr.const (Value.int 0)
+       else if symExprEqB a b && !mayTrap a then SymExpr.const (Value.int 0)
        else .app op args')
     else if op == "<<" then (if isI b 0 then a else .app op args')
     else if op == ">>" then (if isI b 0 then a else .app op args')
