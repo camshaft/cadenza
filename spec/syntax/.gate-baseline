@@ -572,6 +572,10 @@ todo	ml/503-list-missing-comma
 todo	ml/504-tuple-missing-comma
 todo	ml/505-embedded-toml-missing-value
 todo	ml/516-if-requires-else
+todo	ml/537-call-missing-closer-recovers
+todo	ml/538-let-bad-binding-recovers
+todo	ml/539-if-bad-condition-recovers
+todo	ml/540-match-bad-pattern-recovers
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string
