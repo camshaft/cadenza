@@ -2666,6 +2666,8 @@ pass	a macro builds new syntax from its argument via quasiquote and the expansio
 pass	a macro may INTRODUCE a local binding in its expansion and reference it within that expansion
 pass	a macro may introduce LET bindings in its expansion and reference them (a distinct binder form)
 pass	a macro mixing a body literal with an argument grounds both to Int64 (unless as a plain function)
+pass	a macro-introduced LET binder does NOT capture a caller identifier of the same name (hygiene)
+pass	a macro-introduced binder does NOT capture a caller identifier of the same name (hygiene, do-local def)
 pass	a magic header and a length-prefixed chunk parse together
 pass	a magnitude literal that overflows the annotated Qty INNER width is rejected
 pass	a malformed application in a DEAD parameter's argument still rejects (a non-unbound fault kind)
