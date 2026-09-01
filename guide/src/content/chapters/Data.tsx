@@ -11,7 +11,7 @@ export default function Data() {
       <Lede>Bundling several values into one, positionally or by name.</Lede>
       <P>So far our programs have passed around single values. Real programs group values together: a point is an <C>x</C> and a <C>y</C>, a result is a value and a status. Cadenza has two ways to bundle values, namely <strong>tuples</strong> (by position) and <strong>records</strong> (by name).</P>
       <H2>Tuples</H2>
-      <P>A tuple is a fixed positional product of values. When you Run this, look at the type the result carries, <C>(Tuple Int64 Bool)</C>: the compiler tracks not just <em>how many</em> elements there are but the type of each one, in order. The two slots hold different types, and that's fine, because a tuple's shape is part of its type.</P>
+      <P>A tuple is a fixed positional product of values. When you Run this, look at the type the result carries, <Cadenza ast="Y2R6YXN0AAEDCgVUdXBsZQoFSW50NjQKBEJvb2wEAAAAAQACAQMAAQID" kind="expr">(Tuple Int64 Bool)</Cadenza>: the compiler tracks not just <em>how many</em> elements there are but the type of each one, in order. The two slots hold different types, and that's fine, because a tuple's shape is part of its type.</P>
       <Runnable
         source={`#tuple(7 true)`}
         title="A tuple"

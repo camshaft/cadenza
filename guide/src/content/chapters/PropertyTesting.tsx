@@ -61,7 +61,7 @@ export default function PropertyTesting() {
     (assert-eq (Int64.wrapping-add a b) (Int64.wrapping-add b a) "not commutative")))`}
         mode="test"
       />
-      <P>You wrote the predicate; the runner wrote the generator. It reports <C>PASS add-comm (100 trials)</C>, a hundred generated pairs, all commuting. Scalars generate directly; compound types (a <C>(List Int64)</C>, a record, a user sum) generate too, with the compiler deriving the generator from the type.</P>
+      <P>You wrote the predicate; the runner wrote the generator. It reports <C>PASS add-comm (100 trials)</C>, a hundred generated pairs, all commuting. Scalars generate directly; compound types (a <Cadenza ast="Y2R6YXN0AAECCgRMaXN0CgVJbnQ2NAMAAAABAQIAAQI=" kind="expr">(List Int64)</Cadenza>, a record, a user sum) generate too, with the compiler deriving the generator from the type.</P>
       <P>And a deliberately-wrong property shows the <em>shrink</em>. This one claims every generated <C>Int64</C> is under 100, which is false, so Run it and watch the runner report the <em>smallest</em> failing input it can find, not whatever large value it first stumbled on:</P>
       <Runnable
         source={`(@ test (def (all-small (: n Int64)) (assert (< n 100) "not every Int64 is under 100")))`}
@@ -69,7 +69,7 @@ export default function PropertyTesting() {
         mode="test"
       />
       <P>The counterexample is <C>all-small(100)</C>: the runner found a failing draw, then shrank it toward zero to the boundary value, with a seed to reproduce the run. A property that holds passes silently over its trials; one that doesn't hands you the minimal witness.</P>
-      <P>Shrinking isn't just for scalars; it minimizes <em>compound</em> values the same way. Here a property claims no generated list ever has exactly three elements, a deliberately-wrong claim. The parameter is a <C>(List Int64)</C>, so the compiler synthesizes a <em>list</em> generator (a random length, then an element per slot); press Run and the runner finds a failing list and shrinks it:</P>
+      <P>Shrinking isn't just for scalars; it minimizes <em>compound</em> values the same way. Here a property claims no generated list ever has exactly three elements, a deliberately-wrong claim. The parameter is a <Cadenza ast="Y2R6YXN0AAECCgRMaXN0CgVJbnQ2NAMAAAABAQIAAQI=" kind="expr">(List Int64)</Cadenza>, so the compiler synthesizes a <em>list</em> generator (a random length, then an element per slot); press Run and the runner finds a failing list and shrinks it:</P>
       <Runnable
         source={`(@ test (def (never-three (: xs (List Int64))) (if (= (List.len xs) 3) (trap "was three") unit)))`}
         expect="error"

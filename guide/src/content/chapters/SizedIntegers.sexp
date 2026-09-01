@@ -29,7 +29,7 @@
     (expect "error"))
   (p "The fix is to say which width you want and convert there, so the widening is a thing you write, not a thing that happens to you.")
   (h2 "Why isn't " (c "Int") " a type?")
-  (p "A newcomer's first reflex is to annotate with a bare " (c "Int") ", the way most languages name their integer type. In Cadenza " (c "Int") ", " (c "UInt") ", and " (c "Float") " are not types at all: they're " (em "width constructors") " that " (em "build") " a sized type from a bit width. " (c "(Int 64)") " is " (c "Int64") ", " (c "(UInt 8)") " is " (c "UInt8") ", " (c "(Float 32)") " is " (c "Float32") ". So writing a bare " (c "Int") " where a type belongs uses a value where a type is required, and the compiler says so:")
+  (p "A newcomer's first reflex is to annotate with a bare " (c "Int") ", the way most languages name their integer type. In Cadenza " (c "Int") ", " (c "UInt") ", and " (c "Float") " are not types at all: they're " (em "width constructors") " that " (em "build") " a sized type from a bit width. " (cdz (Int 64)) " is " (c "Int64") ", " (cdz (UInt 8)) " is " (c "UInt8") ", " (cdz (Float 32)) " is " (c "Float32") ". So writing a bare " (c "Int") " where a type belongs uses a value where a type is required, and the compiler says so:")
   (note "This one is " (strong "meant to be refused") ": " (c "Int") " is a width constructor, not a type, so the annotation has nothing to stand on. The diagnostic names the sized default " (c "Int64") " (and offers a one-click fix to it), and points you at the other widths if you meant one of those.")
   (runnable
     (source (def (f (: a Int)) a))
