@@ -367,7 +367,19 @@ pub fn reduce_handle(
         // `#seed` reads UNBOUND (CDZ0101). Until the HandleAbort value gets that same seed-wrap/drain treatment
         // (a scoped follow-up), DECLINE the heap-seed case cleanly (it declined before this feature too — no
         // regression) and take HandleAbort only for the shareable-seed subset (the eab1 witness + scalar states).
-        if !whole_fn_body || cross_fn || !seed_is_shareable_constant(db, init) {
+        // FOREIGN-PERFORM gate (first increment): a FOREIGN perform on the strict spine BEFORE the abort (an
+        // OUTER handler's op or a HOST call) has ALREADY committed its effect and must survive the abort — the
+        // collapse path preserves it via its do-form foreign-advance rule, but the mid-body `Core::HandleAbort`
+        // does NOT (it would emit the abort's non-local return without the pre-abort foreign dispatch, DROPPING
+        // it → a host-call-sequence miscompile, e.g. expected ["io.fetch"] observed []). Until the HandleAbort
+        // path carries the pre-abort foreign advance (a scoped follow-up), DECLINE a body that reaches a foreign
+        // perform (it declined before this feature too — no regression). eab1's only performs are of THIS
+        // handler's own effect (not foreign), so it still folds.
+        if !whole_fn_body
+            || cross_fn
+            || !seed_is_shareable_constant(db, init)
+            || body_reaches_foreign_perform(db, body, &ctx)
+        {
             return None;
         }
         // else: RELAX — this handle is the whole function body and its only unsoundness is a same-fn abort
