@@ -1395,7 +1395,52 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
               | _ => .cannotProve "symeval: <IntTy>.of/wrap on a non-integer operand")
            | none => .cannotProve "symeval: malformed <IntTy> conversion")
         else .cannotProve "symeval: member-op head not modeled (boundary)"
-      | none => .cannotProve "symeval: non-name head"
+      | none =>
+        -- a NON-NAME APPLICATION head that itself evaluates to a CLOSURE — a CURRY CHAIN
+        -- `(((pa3 41) 7) 38)` (the head `((pa3 41) 7)` is an application, not a bound name). symEval the
+        -- head; if it is a `.localFn`, apply it to the remaining args with the SAME partial/full discipline
+        -- as the name-head local-fn call above. Byte-faithful to eval (Eval.lean:1119-1128: symEval the
+        -- computed head → applyClosure). A non-closure head / unmodelable head → cannotProve (safe boundary).
+        match children[0]? with
+        | some hid =>
+          (match symEval m senv fuel ty hid with
+           | .sym (.localFn lspecs lbodyId lcap) =>
+             if fuel == 0 then .cannotProve "symeval: curry-chain apply fuel exhausted (recursion?)"
+             else
+               let nargs := children.size - 1
+               if 0 < nargs && nargs < lspecs.size then
+                 -- PARTIAL: extend the closure over the remaining params (same as the name-head partial case).
+                 let capExt := ((lspecs.extract 0 nargs).zip (children.extract 1 children.size)).foldl
+                   (fun (acc : Option (List (ByteArray × SymExpr))) p =>
+                     match acc with
+                     | none => none
+                     | some cap =>
+                       match paramSpec? m p.1 with
+                       | some (pnm, _) => (match symEval m senv fuel ty p.2 with
+                                           | .sym e => some (cap ++ [(pnm, e)])
+                                           | .cannotProve _ => none)
+                       | none => none) (some lcap)
+                 match capExt with
+                 | some newCap => .sym (.localFn (lspecs.extract nargs lspecs.size) lbodyId newCap)
+                 | none => .cannotProve "symeval: a curried (chain) argument is unmodelable"
+               else if lspecs.size != nargs then .cannotProve "symeval: curry-chain arity mismatch (over-application)"
+               else
+                 let callEnv := (lspecs.zip (children.extract 1 children.size)).foldl
+                   (fun (acc : Option SymEnv) p =>
+                     match acc with
+                     | none => none
+                     | some env =>
+                       match paramSpec? m p.1 with
+                       | some (pnm, _) => (match symEval m senv fuel ty p.2 with
+                                           | .sym e => some ((pnm, e) :: env)
+                                           | .cannotProve _ => none)
+                       | none => none) (some lcap)
+                 match callEnv with
+                 | some ce => symEval m ce (fuel - 1) defaultIntTy lbodyId
+                 | none => .cannotProve "symeval: a curry-chain argument is unmodelable"
+           | .sym _ => .cannotProve "symeval: non-name head is not a closure"
+           | .cannotProve r => .cannotProve r)
+        | none => .cannotProve "symeval: empty application (no head)"
   | none => .cannotProve "symeval: node index out of range"
 
 /-- Symbolically evaluate a `(let ((n v)…) body)`: bind the remaining `(name value)` pairs `ps`
@@ -2259,6 +2304,23 @@ private def _curryLocalFnExpr : Module :=
     root := 22 }
 #guard symEval _curryLocalFnExpr [] symDefaultFuel defaultIntTy 22
        == SymOutcome.sym (.const (.int 38))
+
+-- CURRY CHAIN (v-cdz-smith next-tier, NON-NAME head): `(do (def (pa3 a b c) (+ (+ a b) c)) (((pa3 41) 7) 38))`
+-- → 86. Each application head is itself an application: `(pa3 41)`→closure[b,c], `((pa3 41) 7)`→closure[c]
+-- (non-name head symEval'd), `(((pa3 41) 7) 38)`→full→inline → `(+ (+ 41 7) 38)` → 86. Previously the
+-- non-name application head was `cannotProve "non-name head"`.
+private def _curryChainExpr : Module :=
+  { leaves := #[Leaf.name "do".toUTF8, Leaf.name "def".toUTF8, Leaf.name "pa3".toUTF8,
+                Leaf.name "a".toUTF8, Leaf.name "b".toUTF8, Leaf.name "c".toUTF8, Leaf.name "+".toUTF8,
+                Leaf.intLit false .dec (ByteArray.mk #[41]), Leaf.intLit false .dec (ByteArray.mk #[7]),
+                Leaf.intLit false .dec (ByteArray.mk #[38])],
+    nodes := #[.atom 2, .atom 3, .atom 4, .atom 5, .list #[0, 1, 2, 3], .atom 6, .atom 3, .atom 4,
+               .list #[5, 6, 7], .atom 6, .atom 5, .list #[9, 8, 10], .atom 1, .list #[12, 4, 11],
+               .atom 2, .atom 7, .list #[14, 15], .atom 8, .list #[16, 17], .atom 9, .list #[18, 19],
+               .atom 0, .list #[21, 13, 20]],
+    root := 22 }
+#guard symEval _curryChainExpr [] symDefaultFuel defaultIntTy 22
+       == SymOutcome.sym (.const (.int 86))
 
 -- TRY success-unwrap: `(try (Ok 5))` → 5 (the `?` operator on a concrete Ok). leaves 0:try 1:Ok 2:(5).
 private def _tryOkExpr : Module :=
