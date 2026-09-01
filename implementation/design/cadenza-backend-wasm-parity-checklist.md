@@ -20,8 +20,10 @@ newtype-value-from-construction-site 28 · payload-projection-over-non-tuple/rec
 non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Qty-value-from-construction-site 11.
 ### generic-node bucket IDENTIFIED (node_ident scan, un-normalized): BinIntRead 96 / BinRestRead 6 / BinSizedRead 2
 (binary-matching — coordinate owner) · ConstFloatNan 30 · ConstBytes 16 · Seq 15 · ConstFloatInf 8 · TrapDivZero 7
-· TrapOverflow 5 · Poison 3. ✅ #7298 CLOSED ConstBytes + ConstFloatNan(F64) + ConstFloatInf(F64) = ~54. Left in
-this bucket: binary-matching (104, owner) · Seq 15 (re-measure post-HostCall) · Trap*/Poison (verify true-parity).
+· TrapOverflow 5 · Poison 3. ✅ #7298 CLOSED ConstBytes + ConstFloatNan(F64) + ConstFloatInf(F64) = ~54; ✅ #7303
+CLOSED Seq = 15. Left in this bucket (re-measured post-#7303): BinIntRead 96 / BinRestRead 6 / BinSizedRead 2 =
+binary-matching 104 (coordinate owner) · TrapDivZero 7 / TrapOverflow 5 / Poison 3 = 15 (verify true-parity — a
+trap may BE the expected outcome) · ConstFloatNan 5 (non-Float64 width, later slice).
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
@@ -71,8 +73,11 @@ this bucket: binary-matching (104, owner) · Seq 15 (re-measure post-HostCall) �
   blocker): a USER-SHADOWED `(type Ast …)` + encode of that value + the user decl NOT re-emitted → recompile
   would derive the BUILT-IN discs (mismatch). Safe here — `emit` re-emits ALL user type decls, so a shadowed
   Ast decl rides along and discs re-derive consistently; the dangerous combo (decl dropped) is not reachable.
-- [ ] **`Core::Seq` — 41.** Entangled with effects (Seq ⟺ observable side-effects ⟺ HostCall); likely
-  RESOLVED as a side effect of the HostCall build (emit `(do stmts… tail)`). Re-measure after HostCall.
+- [x] **`Core::Seq` — 15** (node_ident count; the 41 was the pre-HostCall estimate). CLOSED #7303 (d516929b77):
+  re-emit `(do <stmt>… <tail>)`. A Seq is built ONLY when a non-final stmt reaches a host call (compute.rs
+  §needs_seq) and surface `do` re-lowers to a Seq under the SAME condition, so the re-emitted stmts re-form an
+  equivalent Seq (round-trips); composes with the #7268 `(host …)` wrapper + perform⇔decl coupling. Seq declines
+  15 → 0; full-corpus hop2 = 0 breaks. Additive-by-construction.
 - [x] **`ConstFloatNan` 30 + `ConstFloatInf` 8.** CLOSED #7298 (2fcda9acc3): re-emit the canonical value-form
   leaves `Leaf::FloatNan` / `Leaf::FloatInf { negative:false }` (Core::ConstFloatInf is +∞). These leaves EXIST
   (added w/ v-metaprogramming's Ast.Float reification) — the old core.rs "no written value form" comment was
