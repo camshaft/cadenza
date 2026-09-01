@@ -4520,6 +4520,7 @@ pass	a same-signature multi-export shared call is repeatable on one make-<name> 
 pass	a same-signature mutual tail cycle shares one constant-stack loop
 pass	a same-sum comparison is valid (no false kind-boundary reject)
 pass	a same-type sum match is accepted and binds the payload (the control)
+pass	a same-unit quantity + over a NARROW runtime magnitude beside a wider one widens the narrow operand (no invalid wasm)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a satisfied @ensures on a performing def passes the effectful result through
 pass	a saturating OR-mask over a refined range folds to the constant (value + trap parity)
