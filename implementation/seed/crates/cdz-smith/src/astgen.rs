@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(29) {
+    match c.variant(30) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -454,9 +454,43 @@ fn gen_main_body<C: Choice>(
         // Set.contains (→ Bool) — set-merge / element-removal / membership lowering the grammar never
         // reached (it only did Set.len/insert + Map.len/lookup). Value-comparable.
         28 => gen_collection_op_body(c, out),
+        // A LIST-PRODUCING op body: List.push / Set.to-list / Map.to-list, consumed by List.len (→
+        // count) or List.at (→ element) — collection ops that BUILD a list, which the grammar never
+        // reached (it only read existing lists via at/concat/len). Value-comparable.
+        29 => gen_list_producing_op_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
+}
+
+/// A LIST-PRODUCING-op body consumed to an Int64 (value-comparable): `List.push` (append), or
+/// `Set.to-list` / `Map.to-list` (the ordered projection), fed to `List.len` (→ count) or `List.at`
+/// (→ element). Fills the list-BUILDING collection ops the grammar never reached (it only read
+/// existing lists). Small `0..=9` literals → a deterministic count/element the wasm-vs-rust diff grades.
+fn gen_list_producing_op_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Pick the FORM before consuming operand choices — else a short entropy seed exhausts the cursor
+    // on the literals and `variant` always defaults to 0 (never reaching Set/Map.to-list).
+    let form = c.variant(4);
+    let (a, b, x, y) = (
+        c.int_bounded(0, 4),
+        c.int_bounded(5, 9),
+        c.int_bounded(0, 9),
+        c.int_bounded(0, 9),
+    );
+    match form {
+        // Append then count: `[a,b]` push `x` → len 3.
+        0 => write!(out, "(List.len (List.push (list {a} {b}) {x}))").ok(),
+        // Append then read the pushed element at index 2.
+        1 => write!(out, "(List.at (List.push (list {a} {b}) {x}) 2)").ok(),
+        // Set → ordered list → distinct count.
+        2 => write!(out, "(List.len (Set.to-list (Set.of (list {a} {b} {x}))))").ok(),
+        // Map → ordered entry list → entry count (keys a,b disjoint so two entries).
+        _ => write!(
+            out,
+            "(List.len (Map.to-list (Map.insert (Map.insert Map.empty {a} {x}) {b} {y})))"
+        )
+        .ok(),
+    };
 }
 
 /// A COLLECTION-OP body over small const collections, consumed to a scalar/Bool (value-comparable):
@@ -2653,6 +2687,35 @@ mod tests {
         assert!(saw_sremove, "should reach Set.remove");
         assert!(saw_contains, "should reach Set.contains");
         assert!(saw_mremove, "should reach Map.remove");
+    }
+
+    /// `gen_list_producing_op_body` REACHES all forms (List.push, Set.to-list, Map.to-list) and every
+    /// body COMPILES — filling the list-BUILDING collection ops the coercing grammar never reached.
+    #[test]
+    fn gen_list_producing_op_body_reaches_all_forms_and_compiles() {
+        let (mut saw_push, mut saw_settolist, mut saw_maptolist) = (false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1277);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_list_producing_op_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_push |= body.contains("List.push");
+            saw_settolist |= body.contains("Set.to-list");
+            saw_maptolist |= body.contains("Map.to-list");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "list-producing-op body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_push, "should reach List.push");
+        assert!(saw_settolist, "should reach Set.to-list");
+        assert!(saw_maptolist, "should reach Map.to-list");
     }
 
     /// `gen_partial_application_body` REACHES all three currying forms (2-ary `let`-partial, 3-ary chained,
