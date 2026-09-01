@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { AppLink, Ch } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
@@ -12,13 +12,13 @@ export default function Effects() {
       <Lede>An effect lets a function ask for something like a random choice or the current setting or a way to bail out while leaving how that request is answered to whoever runs it.</Lede>
       <P>Most languages bake the answer into the function itself, so one that needs a random number calls the global generator and one that needs to give up throws an exception. Cadenza splits those two apart, because a function performs an operation by naming what it needs while a <C>handle</C> around it decides what performing that operation means, and the performing code never knows or cares who is listening. We'll build up from a handler sitting right next to the performance toward the case that matters, where a function performs an operation that some other function further out decides how to answer.</P>
       <H2>Declaring and performing an operation</H2>
-      <P>An <C>effect</C> declares a named operation and its type. Here <C>Ask</C> has one operation, <C>ask</C>, that produces an <C>Int64</C>. The body performs it with <C>(Ask.ask)</C>, and the enclosing <C>handle</C> answers every performance by <C>resume</C>-ing with a value:</P>
+      <P>An <C>effect</C> declares a named operation and its type. Here <C>Ask</C> has one operation, <C>ask</C>, that produces an <C>Int64</C>. The body performs it with <Cadenza ast="Y2R6YXN0AAEDGgoDQXNrCgNhc2sFAAAAAQACAQMAAQIBAQME" kind="expr">(Ask.ask)</Cadenza>, and the enclosing <C>handle</C> answers every performance by <C>resume</C>-ing with a value:</P>
       <Runnable
         source={`(effect Ask (op ask (-> Unit Int64)))
 
 (def (main) (handle Ask unit ((ask () s (resume 42 s))) (Ask.ask)))`}
       />
-      <P>The body is just <C>(Ask.ask)</C>. There's no <C>42</C> in it; the value came entirely from the handler. Read the arm as: when <C>ask</C> is performed, <C>resume</C> the performing code with <C>42</C>. (The <C>s</C> is the handler's state; we'll get to it, for now it's along for the ride.)</P>
+      <P>The body is just <Cadenza ast="Y2R6YXN0AAEDGgoDQXNrCgNhc2sFAAAAAQACAQMAAQIBAQME" kind="expr">(Ask.ask)</Cadenza>. There's no <C>42</C> in it; the value came entirely from the handler. Read the arm as: when <C>ask</C> is performed, <C>resume</C> the performing code with <C>42</C>. (The <C>s</C> is the handler's state; we'll get to it, for now it's along for the ride.)</P>
       <Why tenet="A function says what it needs, not how it's met">Splitting <em>performing</em> from <em>handling</em> is the same move as returning an <C>Option</C> instead of crashing: it puts a decision into the open where it can be seen and changed. Code that performs <C>Ask.ask</C> works against any handler: one that returns a constant, one that reads a config, one that records every call for a test. The alternative, reaching out to a global or throwing an exception the caller can't see in the type, welds the answer to the question. An effect keeps them separable.</Why>
       <H2>The handler intercepts every performance</H2>
       <P>A handler isn't a one-time value; it answers <em>each</em> time the operation is performed. Here the body performs <C>Ask.ask</C> twice, and each one resumes with <C>20</C>:</P>
@@ -75,7 +75,7 @@ export default function Effects() {
 (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (Amb.flip)))`}
       />
       <P>The arm resumes the performer with <C>10</C>, and here the body <em>is</em> that performance, so it reduces to <C>10</C>; then the arm's own <C>+ 1</C> wraps that result, and the answer is <C>11</C>. The <C>resume</C> plugs a value into the hole where <C>Amb.flip</C> was, and the arm gets to act on what comes back.</P>
-      <P>That hole can have work around it too. If the body is <C>(+ 100 (Amb.flip))</C>, the resumption re-runs <em>the whole rest of the body</em> with <C>10</C> in the hole, giving <C>110</C>, and only then does the arm's <C>+ 1</C> apply:</P>
+      <P>That hole can have work around it too. If the body is <Cadenza ast="Y2R6YXN0AAEFCgErAAFkGgoDQW1iCgRmbGlwCAAAAAEAAgADAAQBAwIDBAEBBQEDAAEGBw==" kind="expr">(+ 100 (Amb.flip))</Cadenza>, the resumption re-runs <em>the whole rest of the body</em> with <C>10</C> in the hole, giving <C>110</C>, and only then does the arm's <C>+ 1</C> apply:</P>
       <Runnable
         source={`(effect Amb (op flip (-> Unit Int64)))
 
@@ -160,7 +160,7 @@ export default function Effects() {
       <H2>Your turn</H2>
       <Exercise
         id="effects:1"
-        prompt={<>Make the handler resume <C>ask</C> with <C>41</C>, so <C>(+ (Ask.ask) 1)</C> gives <C>42</C>.</>}
+        prompt={<>Make the handler resume <C>ask</C> with <C>41</C>, so <Cadenza ast="Y2R6YXN0AAEFCgErGgoDQXNrCgNhc2sAAQEIAAAAAQACAAMBAwECAwEBBAAEAQMABQYH" kind="expr">(+ (Ask.ask) 1)</Cadenza> gives <C>42</C>.</>}
         starter={`(effect Ask (op ask (-> Unit Int64)))
 
 (def (main) (handle Ask unit ((ask () s (resume ? s))) (+ (Ask.ask) 1)))`}
@@ -204,7 +204,7 @@ export default function Effects() {
     ((next (u) s (resume s (+ s 1))))
     (+ (Counter.next) (+ (Counter.next) (Counter.next)))))`}
         expected="3"
-        hint={<><C>resume</C> takes two things: the value handed back (here <C>s</C>, the current count) and the state the <em>next</em> performance will see. Advance it by one with <C>(+ s 1)</C>. (Leave it as plain <C>s</C> and every call sees <C>0</C>, summing to <C>0</C>.)</>}
+        hint={<><C>resume</C> takes two things: the value handed back (here <C>s</C>, the current count) and the state the <em>next</em> performance will see. Advance it by one with <Cadenza ast="Y2R6YXN0AAEDCgErCgFzAAEBBAAAAAEAAgEDAAECAw==" kind="expr">(+ s 1)</Cadenza>. (Leave it as plain <C>s</C> and every call sees <C>0</C>, summing to <C>0</C>.)</>}
       />
       <P>An effect splits <em>what</em> a function needs from <em>how</em> that need is met: the caller supplies the handler. The next chapter constrains the other end: not what a function needs, but what it <em>promises</em>. With <Ch to="/contracts"> design by contract </Ch> you state a function's assumptions and guarantees as checks the compiler enforces at its boundary.</P>
     </article>

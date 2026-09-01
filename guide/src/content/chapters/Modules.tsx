@@ -1,5 +1,5 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (xtask-codegen-guide).
-import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
+import { C, Cadenza, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
 import { Ch } from "../../components/ChapterLink.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
@@ -57,7 +57,7 @@ export default function Modules() {
 
   (export main))`}
       />
-      <P><C>Inc.f 4</C> is 5, then <C>Scale.g 5</C> is <C>50</C>. Swap the order to <C>(Inc.f (Scale.g 4))</C> and you'd get 41 instead, so the qualified names make the pipeline unambiguous either way.</P>
+      <P><C>Inc.f 4</C> is 5, then <C>Scale.g 5</C> is <C>50</C>. Swap the order to <Cadenza ast="Y2R6YXN0AAEGGgoDSW5jCgFmCgVTY2FsZQoBZwABBAsAAAABAAIBAwABAgAAAAMABAEDBAUGAAUBAgcIAQIDCQo=" kind="expr">(Inc.f (Scale.g 4))</Cadenza> and you'd get 41 instead, so the qualified names make the pipeline unambiguous either way.</P>
       <H2>Modules nest</H2>
       <P>A module can hold another module, so one file can carry a whole tree of scopes, much like a module tree in Rust. You reach through the layers with the same dotted access, one name per level. Here a <C>Geometry</C> module contains a <C>Square</C> module with an <C>area</C>:</P>
       <Runnable

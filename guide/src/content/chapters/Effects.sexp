@@ -7,14 +7,14 @@
   (lede "An effect lets a function ask for something like a random choice or the current setting or a way to bail out while leaving how that request is answered to whoever runs it.")
   (p "Most languages bake the answer into the function itself, so one that needs a random number calls the global generator and one that needs to give up throws an exception. Cadenza splits those two apart, because a function performs an operation by naming what it needs while a " (c "handle") " around it decides what performing that operation means, and the performing code never knows or cares who is listening. We'll build up from a handler sitting right next to the performance toward the case that matters, where a function performs an operation that some other function further out decides how to answer.")
   (h2 "Declaring and performing an operation")
-  (p "An " (c "effect") " declares a named operation and its type. Here " (c "Ask") " has one operation, " (c "ask") ", that produces an " (c "Int64") ". The body performs it with " (c "(Ask.ask)") ", and the enclosing " (c "handle") " answers every performance by " (c "resume") "-ing with a value:")
+  (p "An " (c "effect") " declares a named operation and its type. Here " (c "Ask") " has one operation, " (c "ask") ", that produces an " (c "Int64") ". The body performs it with " (cdz (Ask.ask)) ", and the enclosing " (c "handle") " answers every performance by " (c "resume") "-ing with a value:")
   (runnable
     (source (effect Ask (op ask (-> Unit Int64)))
 (def (main)
   (handle Ask unit
     ((ask () s (resume 42 s)))
     (Ask.ask)))))
-  (p "The body is just " (c "(Ask.ask)") ". There's no " (c "42") " in it; the value came entirely from the handler. Read the arm as: when " (c "ask") " is performed, " (c "resume") " the performing code with " (c "42") ". (The " (c "s") " is the handler's state; we'll get to it, for now it's along for the ride.)")
+  (p "The body is just " (cdz (Ask.ask)) ". There's no " (c "42") " in it; the value came entirely from the handler. Read the arm as: when " (c "ask") " is performed, " (c "resume") " the performing code with " (c "42") ". (The " (c "s") " is the handler's state; we'll get to it, for now it's along for the ride.)")
   (why (tenet "A function says what it needs, not how it's met") "Splitting " (em "performing") " from " (em "handling") " is the same move as returning an " (c "Option") " instead of crashing: it puts a decision into the open where it can be seen and changed. Code that performs " (c "Ask.ask") " works against any handler: one that returns a constant, one that reads a config, one that records every call for a test. The alternative, reaching out to a global or throwing an exception the caller can't see in the type, welds the answer to the question. An effect keeps them separable.")
   (h2 "The handler intercepts every performance")
   (p "A handler isn't a one-time value; it answers " (em "each") " time the operation is performed. Here the body performs " (c "Ask.ask") " twice, and each one resumes with " (c "20") ":")
@@ -69,7 +69,7 @@
     ((flip (u) s (+ 1 (resume 10 s))))
     (Amb.flip)))))
   (p "The arm resumes the performer with " (c "10") ", and here the body " (em "is") " that performance, so it reduces to " (c "10") "; then the arm's own " (c "+ 1") " wraps that result, and the answer is " (c "11") ". The " (c "resume") " plugs a value into the hole where " (c "Amb.flip") " was, and the arm gets to act on what comes back.")
-  (p "That hole can have work around it too. If the body is " (c "(+ 100 (Amb.flip))") ", the resumption re-runs " (em "the whole rest of the body") " with " (c "10") " in the hole, giving " (c "110") ", and only then does the arm's " (c "+ 1") " apply:")
+  (p "That hole can have work around it too. If the body is " (cdz (+ 100 (Amb.flip))) ", the resumption re-runs " (em "the whole rest of the body") " with " (c "10") " in the hole, giving " (c "110") ", and only then does the arm's " (c "+ 1") " apply:")
   (runnable
     (source (effect Amb (op flip (-> Unit Int64)))
 (def (main)
@@ -142,7 +142,7 @@
   (h2 "Your turn")
   (exercise
     (id "effects:1")
-    (prompt "Make the handler resume " (c "ask") " with " (c "41") ", so " (c "(+ (Ask.ask) 1)") " gives " (c "42") ".")
+    (prompt "Make the handler resume " (c "ask") " with " (c "41") ", so " (cdz (+ (Ask.ask) 1)) " gives " (c "42") ".")
     (starter (effect Ask (op ask (-> Unit Int64)))
 (def (main)
   (handle Ask unit
@@ -184,5 +184,5 @@
     ((next (u) s (resume s (+ s 1))))
     (+ (Counter.next) (+ (Counter.next) (Counter.next))))))
     (expected "3")
-    (hint (c "resume") " takes two things: the value handed back (here " (c "s") ", the current count) and the state the " (em "next") " performance will see. Advance it by one with " (c "(+ s 1)") ". (Leave it as plain " (c "s") " and every call sees " (c "0") ", summing to " (c "0") ".)"))
+    (hint (c "resume") " takes two things: the value handed back (here " (c "s") ", the current count) and the state the " (em "next") " performance will see. Advance it by one with " (cdz (+ s 1)) ". (Leave it as plain " (c "s") " and every call sees " (c "0") ", summing to " (c "0") ".)"))
   (p "An effect splits " (em "what") " a function needs from " (em "how") " that need is met: the caller supplies the handler. The next chapter constrains the other end: not what a function needs, but what it " (em "promises") ". With " (link (slug "contracts") " design by contract ") " you state a function's assumptions and guarantees as checks the compiler enforces at its boundary."))
