@@ -2490,6 +2490,7 @@ pass	a leading-element list rest binding param is refutable (does not match empt
 pass	a leading-element list rest pattern in a def parameter is refutable and rejected
 pass	a leading-element list rest pattern in a let binder is refutable and rejected
 pass	a leading-rest arm matches an exactly-minimum list with an empty rest
+pass	a scalar-literal pattern over a List scrutinee is a coded CDZ0203 — the literal type cannot match the list
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift of a float by a float count rejects on the value operand
