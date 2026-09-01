@@ -64,7 +64,7 @@ export default function AdHocPolymorphism() {
       <Runnable
         source={`(def (main) (if (< (+ 1.5 1.5) 4.0) (+ 1 2) 99))`}
       />
-      <P>The <Cadenza>(+ 1.5 1.5)</Cadenza> is float addition and the <Cadenza>(+ 1 2)</Cadenza> integer addition, the same symbol picking the right implementation per type and folding to <C>3</C>. You didn't pass a dictionary because the prelude already provides the instances; it's the record-of-operations idea with the record built in.</P>
+      <P>The <Cadenza ast="Y2R6YXN0AAECCgErBgD//////////wEPBAAAAAEAAQEDAAECAw==" kind="expr">(+ 1.5 1.5)</Cadenza> is float addition and the <Cadenza ast="Y2R6YXN0AAEDCgErAAEBAAECBAAAAAEAAgEDAAECAw==" kind="expr">(+ 1 2)</Cadenza> integer addition, the same symbol picking the right implementation per type and folding to <C>3</C>. You didn't pass a dictionary because the prelude already provides the instances; it's the record-of-operations idea with the record built in.</P>
       <H2>And the implicit face: generic specialization</H2>
       <P>One more form needs no dictionary at all: a generic function the compiler <em>monomorphizes</em>. Write <C>len</C> with no type annotations and it works for any list; the compiler emits a distinct specialized copy per concrete type it's actually called at:</P>
       <Runnable
@@ -94,11 +94,11 @@ export default function AdHocPolymorphism() {
       />
       <Exercise
         id="ad-hoc-polymorphism:2"
-        prompt={<>The same <C>+</C> means integer or float addition depending on its operands. Fill the float so the comparison <C>(&lt; (+ 2.0 ?) 5.0)</C> is <em>true</em>, which selects the <Cadenza>(+ 10 20)</Cadenza> integer branch and gives <C>30</C>.</>}
+        prompt={<>The same <C>+</C> means integer or float addition depending on its operands. Fill the float so the comparison <C>(&lt; (+ 2.0 ?) 5.0)</C> is <em>true</em>, which selects the <Cadenza ast="Y2R6YXN0AAEDCgErAAEKAAEUBAAAAAEAAgEDAAECAw==" kind="expr">(+ 10 20)</Cadenza> integer branch and gives <C>30</C>.</>}
         starter={`(def (main) (if (< (+ 2.0 ?) 5.0) (+ 10 20) 0))`}
         solution={`(def (main) (if (< (+ 2.0 1.0) 5.0) (+ 10 20) 0))`}
         expected="30"
-        hint={<>You need <C>(+ 2.0 ?)</C> to stay under <C>5.0</C>, so any float below <C>3.0</C> works, and <C>1.0</C> gives <C>3.0 &lt; 5.0</C>, true. The addition on <C>2.0</C> is float addition, while <Cadenza>(+ 10 20)</Cadenza> is integer addition: one operator, its per-type instances.</>}
+        hint={<>You need <C>(+ 2.0 ?)</C> to stay under <C>5.0</C>, so any float below <C>3.0</C> works, and <C>1.0</C> gives <C>3.0 &lt; 5.0</C>, true. The addition on <C>2.0</C> is float addition, while <Cadenza ast="Y2R6YXN0AAEDCgErAAEKAAEUBAAAAAEAAgEDAAECAw==" kind="expr">(+ 10 20)</Cadenza> is integer addition: one operator, its per-type instances.</>}
       />
     </article>
   );

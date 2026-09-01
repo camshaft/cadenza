@@ -30,13 +30,13 @@ export default function PatternMatching() {
       />
       <P><C>#\e</C> takes its arm, so the answer is <C>true</C>. Change it to a consonant like <C>#\z</C> and the wildcard arm answers <C>false</C>. As with numbers and strings, the <C>_</C> arm is required, since <C>Char</C> has far too many values for the compiler to see them all listed.</P>
       <H2>Sum types</H2>
-      <P>A sum type is a set of tagged variants. You declare it with <C>type</C>, build a value with one of its constructors, and take it apart by matching each variant. Here <C>Opt</C> is either <C>Some</C> carrying an <C>Int64</C>, or <C>None</C>. The <Cadenza>(Some x)</Cadenza> arm <em>binds</em> the payload to <C>x</C>:</P>
+      <P>A sum type is a set of tagged variants. You declare it with <C>type</C>, build a value with one of its constructors, and take it apart by matching each variant. Here <C>Opt</C> is either <C>Some</C> carrying an <C>Int64</C>, or <C>None</C>. The <Cadenza ast="Y2R6YXN0AAECCgRTb21lCgF4AwAAAAEBAgABAg==" kind="expr">(Some x)</Cadenza> arm <em>binds</em> the payload to <C>x</C>:</P>
       <Runnable
         source={`(type Opt (Some Int64) (None unit))
 
 (def (main) (match (Some 7) ((Some x) x) ((None _) 0)))`}
       />
-      <P>Swap <Cadenza>(Some 7)</Cadenza> for <Cadenza>(None unit)</Cadenza> and Run to take the other arm, which returns <C>0</C>.</P>
+      <P>Swap <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAEHAwAAAAEBAgABAg==" kind="expr">(Some 7)</Cadenza> for <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> and Run to take the other arm, which returns <C>0</C>.</P>
       <H2>The compiler checks you covered every case</H2>
       <P>Exhaustiveness is what this buys you. Drop the <C>None</C> arm and the compiler <em>refuses</em> to compile, because it can see, from the type, that a case is unhandled:</P>
       <Note>This one is <strong>meant to be refused</strong>. Run it and read the status bar: <C>non-exhaustive match</C>, the missing variant named for you, before the program ever runs.</Note>
@@ -54,7 +54,7 @@ export default function PatternMatching() {
 
 (def (main) (sign -8))`}
       />
-      <P><Cadenza>{"(guard x (< x 0))"}</Cadenza> binds the value to <C>x</C> and fires only when <Cadenza>{"(< x 0)"}</Cadenza>, so <C>-8</C> returns <C>-1</C>; <C>0</C> takes the literal arm, and everything else the wildcard. A guard is the bridge between "match on shape" and "decide on value", without turning the whole arm back into an arbitrary predicate.</P>
+      <P><Cadenza ast="Y2R6YXN0AAEECgVndWFyZAoBeAoBPAAABwAAAAEAAgABAAMBAwIDBAEDAAEFBg==" kind="expr">{"(guard x (< x 0))"}</Cadenza> binds the value to <C>x</C> and fires only when <Cadenza ast="Y2R6YXN0AAEDCgE8CgF4AAAEAAAAAQACAQMAAQID" kind="expr">{"(< x 0)"}</Cadenza>, so <C>-8</C> returns <C>-1</C>; <C>0</C> takes the literal arm, and everything else the wildcard. A guard is the bridge between "match on shape" and "decide on value", without turning the whole arm back into an arbitrary predicate.</P>
       <H2>More than two variants</H2>
       <P>Sums aren't limited to <C>Some</C>/<C>None</C>. A traffic light is a three-variant sum, and a <C>match</C> over it must cover all three (or the compiler complains):</P>
       <Runnable
@@ -66,33 +66,33 @@ export default function PatternMatching() {
       />
       <Note>This is the typed cousin of the symbol dispatch from the Symbols chapter. A symbol tag is checked with <C>=</C> and any typo compiles; a sum's variants are checked by the compiler, so a forgotten or misspelled case is caught. Reach for a sum when the set of cases is fixed and worth enforcing.</Note>
       <H2>Matching a map by key</H2>
-      <P>A <C>match</C> can also look <em>inside a collection</em>. A map pattern, <Cadenza>#map((= key binder) (.. rest))</Cadenza>, fires when the map contains that key, binding the associated value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map, returning <Cadenza>(Some v)</Cadenza> when the key is present and <Cadenza>(None unit)</Cadenza> when it's absent, because a missing key is an absence, not a magic number:</P>
+      <P>A <C>match</C> can also look <em>inside a collection</em>. A map pattern, <Cadenza ast="Y2R6YXN0AAEGFxkKA2tleQoGYmluZGVyCgIuLgoEcmVzdAkAAAABAAIAAwEDAQIDAAQABQECBQYBAwAEBwg=" kind="expr">#map((= key binder) (.. rest))</Cadenza>, fires when the map contains that key, binding the associated value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map, returning <Cadenza ast="Y2R6YXN0AAECCgRTb21lCgF2AwAAAAEBAgABAg==" kind="expr">(Some v)</Cadenza> when the key is present and <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> when it's absent, because a missing key is an absence, not a magic number:</P>
       <Runnable
         source={`(def (setting m) (match m (#map((= "width" v) (.. rest)) (Some v)) (_ (None unit))))
 
 (def (main) (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}
       />
-      <P>The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns <Cadenza>(Some 80)</Cadenza>. Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns <Cadenza>(None unit)</Cadenza>. The <strong>Maps &amp; sets</strong> chapter later builds out maps as values.</P>
+      <P>The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns <Cadenza ast="Y2R6YXN0AAECCgRTb21lAAFQAwAAAAEBAgABAg==" kind="expr">(Some 80)</Cadenza>. Drop that key from the map and the pattern no longer matches, so it falls through to the wildcard and returns <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza>. The <strong>Maps &amp; sets</strong> chapter later builds out maps as values.</P>
       <H2>Matching a tuple's shape</H2>
-      <P>A tuple pattern takes a value apart by <em>position</em>, and a trailing rest marker <C>(.. rest)</C> gathers the elements you didn't name into a smaller tuple, the positional twin of a list's <C>.. rest</C>. Here <Cadenza>#tuple(a b (.. rest))</Cadenza> binds <C>a</C> and <C>b</C> to the first two elements and <C>rest</C> to a tuple of whatever trails, so reading <C>rest</C> back with <C>.0</C> recovers the third element:</P>
+      <P>A tuple pattern takes a value apart by <em>position</em>, and a trailing rest marker <C>(.. rest)</C> gathers the elements you didn't name into a smaller tuple, the positional twin of a list's <C>.. rest</C>. Here <Cadenza ast="Y2R6YXN0AAEFFQoBYQoBYgoCLi4KBHJlc3QHAAAAAQACAAMABAECAwQBBAABAgUG" kind="expr">#tuple(a b (.. rest))</Cadenza> binds <C>a</C> and <C>b</C> to the first two elements and <C>rest</C> to a tuple of whatever trails, so reading <C>rest</C> back with <C>.0</C> recovers the third element:</P>
       <Runnable
         source={`(match #tuple(3 4 5) (#tuple(a b (.. rest)) (+ (+ a b) (. rest 0))) (_ 0))`}
       />
-      <P>So <C>a</C> is <C>3</C>, <C>b</C> is <C>4</C>, and <C>rest</C> is the one-element tuple <Cadenza>#tuple(5)</Cadenza>, whose <C>.0</C> is <C>5</C>, giving <C>3 + 4 + 5 = 12</C>. Two things to hold onto: <C>rest</C> is the trailing <em>sub-tuple</em>, not a flattened list, so a <Cadenza>#tuple(1 2 3 4)</Cadenza> matched by <Cadenza>#tuple(x (.. rest))</Cadenza> leaves <C>rest</C> as <Cadenza>#tuple(2 3 4)</Cadenza>, indexed <C>.0</C>/<C>.1</C>/<C>.2</C>; and the arity is fixed, so <Cadenza>#tuple(a b (.. rest))</Cadenza> needs at least two elements, and a shorter tuple simply doesn't match that arm.</P>
+      <P>So <C>a</C> is <C>3</C>, <C>b</C> is <C>4</C>, and <C>rest</C> is the one-element tuple <Cadenza ast="Y2R6YXN0AAECFQABBQMAAAABAQIAAQI=" kind="expr">#tuple(5)</Cadenza>, whose <C>.0</C> is <C>5</C>, giving <C>3 + 4 + 5 = 12</C>. Two things to hold onto: <C>rest</C> is the trailing <em>sub-tuple</em>, not a flattened list, so a <Cadenza ast="Y2R6YXN0AAEFFQABAQABAgABAwABBAYAAAABAAIAAwAEAQUAAQIDBAU=" kind="expr">#tuple(1 2 3 4)</Cadenza> matched by <Cadenza ast="Y2R6YXN0AAEEFQoBeAoCLi4KBHJlc3QGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">#tuple(x (.. rest))</Cadenza> leaves <C>rest</C> as <Cadenza ast="Y2R6YXN0AAEEFQABAgABAwABBAUAAAABAAIAAwEEAAECAwQ=" kind="expr">#tuple(2 3 4)</Cadenza>, indexed <C>.0</C>/<C>.1</C>/<C>.2</C>; and the arity is fixed, so <Cadenza ast="Y2R6YXN0AAEFFQoBYQoBYgoCLi4KBHJlc3QHAAAAAQACAAMABAECAwQBBAABAgUG" kind="expr">#tuple(a b (.. rest))</Cadenza> needs at least two elements, and a shorter tuple simply doesn't match that arm.</P>
       <Note>The example above binds a rest over a tuple <em>constructed in place</em>, which is what this pattern supports. A rest binder over a fully opaque runtime tuple is <em>not supported</em> on the backends, so the compiler declines it with a clear message rather than compute a wrong answer, the same honest refusal you've seen elsewhere.</Note>
       <H2>Matching a record's fields</H2>
-      <P>Records take a rest the same way, by <em>name</em> instead of position. A record pattern names the fields you care about and a trailing <C>(.. rest)</C> gathers the rest into a <em>residual record</em>, the record analogue of the tuple rest above. Here <Cadenza>#record((= a x) (.. rest))</Cadenza> binds <C>x</C> to field <C>a</C> and <C>rest</C> to a record of the remaining fields, whose own fields you read back by name:</P>
+      <P>Records take a rest the same way, by <em>name</em> instead of position. A record pattern names the fields you care about and a trailing <C>(.. rest)</C> gathers the rest into a <em>residual record</em>, the record analogue of the tuple rest above. Here <Cadenza ast="Y2R6YXN0AAEGFhkKAWEKAXgKAi4uCgRyZXN0CQAAAAEAAgADAQMBAgMABAAFAQIFBgEDAAQHCA==" kind="expr">#record((= a x) (.. rest))</Cadenza> binds <C>x</C> to field <C>a</C> and <C>rest</C> to a record of the remaining fields, whose own fields you read back by name:</P>
       <Runnable
         source={`(match #record((= a 1) (= b 2) (= c 3)) (#record((= a x) (.. rest)) (+ (+ x rest.b) rest.c)) (_ 0))`}
       />
-      <P>So <C>x</C> is <C>1</C>, and <C>rest</C> is the residual record <Cadenza>#record((= b 2) (= c 3))</Cadenza>, so <C>rest.b</C> is <C>2</C> and <C>rest.c</C> is <C>3</C>, giving <C>1 + 2 + 3 = 6</C>. The key difference from the tuple case: <C>rest</C> here is a <em>record</em>, so you reach into it by field name (<C>rest.b</C>, <C>rest.c</C>), not by position.</P>
+      <P>So <C>x</C> is <C>1</C>, and <C>rest</C> is the residual record <Cadenza ast="Y2R6YXN0AAEGFhkKAWIAAQIKAWMAAQMKAAAAAQACAAMBAwECAwABAAQABQEDBQYHAQMABAgJ" kind="expr">#record((= b 2) (= c 3))</Cadenza>, so <C>rest.b</C> is <C>2</C> and <C>rest.c</C> is <C>3</C>, giving <C>1 + 2 + 3 = 6</C>. The key difference from the tuple case: <C>rest</C> here is a <em>record</em>, so you reach into it by field name (<C>rest.b</C>, <C>rest.c</C>), not by position.</P>
       <Note>As with the tuple rest, this supports a record <em>constructed in place</em>. A rest binder over a fully opaque runtime record is <em>not supported</em> on the backends, so the compiler declines it with a clear message rather than a wrong answer.</Note>
       <H2>Matching a set's members</H2>
-      <P>A set has no fields or positions, so a set pattern asks a different question: <em>containment</em>. <Cadenza>#set(1 (.. rest))</Cadenza> names the members that must be <em>present</em> and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing <C>(.. rest)</C> then binds <C>rest</C> to the <em>residual set</em>, the scrutinee's members minus the ones you named. Here the set contains <C>1</C>, so the arm fires and <C>rest</C> is what's left:</P>
+      <P>A set has no fields or positions, so a set pattern asks a different question: <em>containment</em>. <Cadenza ast="Y2R6YXN0AAEEGAABAQoCLi4KBHJlc3QGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">#set(1 (.. rest))</Cadenza> names the members that must be <em>present</em> and matches any set that contains them, a subset test rather than an equality, exactly like a map pattern matching on the keys it names. The trailing <C>(.. rest)</C> then binds <C>rest</C> to the <em>residual set</em>, the scrutinee's members minus the ones you named. Here the set contains <C>1</C>, so the arm fires and <C>rest</C> is what's left:</P>
       <Runnable
         source={`(match #set(1 2 3) (#set(1 (.. rest)) (Some rest)) (_ (None unit)))`}
       />
-      <P>The scrutinee <Cadenza>#set(1 2 3)</Cadenza> contains the named <C>1</C>, so the arm matches and <C>rest</C> binds the residual <Cadenza>#set(2 3)</Cadenza>, making the whole expression <Cadenza>(Some #set(2 3))</Cadenza>, the leftover set, returned as an <C>Option</C> since a set that lacks the named member takes the <C>None</C> arm instead. Three things follow from its being a containment test: it matches a <em>superset</em> too (<Cadenza>#set(1)</Cadenza> matches <Cadenza>#set(1 2 3)</Cadenza>), naming a member the set <em>lacks</em> refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same <C>(.. rest)</C> residual, asking "is this present?" instead of "what's at this field?".</P>
+      <P>The scrutinee <Cadenza ast="Y2R6YXN0AAEEGAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#set(1 2 3)</Cadenza> contains the named <C>1</C>, so the arm matches and <C>rest</C> binds the residual <Cadenza ast="Y2R6YXN0AAEDGAABAgABAwQAAAABAAIBAwABAgM=" kind="expr">#set(2 3)</Cadenza>, making the whole expression <Cadenza ast="Y2R6YXN0AAEECgRTb21lGAABAgABAwYAAAABAAIAAwEDAQIDAQIABAU=" kind="expr">(Some #set(2 3))</Cadenza>, the leftover set, returned as an <C>Option</C> since a set that lacks the named member takes the <C>None</C> arm instead. Three things follow from its being a containment test: it matches a <em>superset</em> too (<Cadenza ast="Y2R6YXN0AAECGAABAQMAAAABAQIAAQI=" kind="expr">#set(1)</Cadenza> matches <Cadenza ast="Y2R6YXN0AAEEGAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#set(1 2 3)</Cadenza>), naming a member the set <em>lacks</em> refutes the arm (it falls to the wildcard), and order and duplicates in the pattern are immaterial because a set is unordered. It's the membership-axis twin of the map and record rest: same <C>(.. rest)</C> residual, asking "is this present?" instead of "what's at this field?".</P>
       <H2>Your turn</H2>
       <Exercise
         id="pattern-matching:1"
@@ -108,7 +108,7 @@ export default function PatternMatching() {
       />
       <Exercise
         id="pattern-matching:2"
-        prompt={<>Write the <em>guard condition</em> so <C>grade</C> returns <C>1</C> for a passing score of <C>60</C> or more, and <C>0</C> otherwise. With <Cadenza>(grade 75)</Cadenza> the answer is <C>1</C>.</>}
+        prompt={<>Write the <em>guard condition</em> so <C>grade</C> returns <C>1</C> for a passing score of <C>60</C> or more, and <C>0</C> otherwise. With <Cadenza ast="Y2R6YXN0AAECCgVncmFkZQABSwMAAAABAQIAAQI=" kind="expr">(grade 75)</Cadenza> the answer is <C>1</C>.</>}
         starter={`(def (grade s) (match s ((guard x ?) 1) (_ 0)))
 
 (def (main) (grade 75))`}
@@ -116,7 +116,7 @@ export default function PatternMatching() {
 
 (def (main) (grade 75))`}
         expected="1"
-        hint={<>The guard binds the score to <C>x</C>; the condition for passing is "60 or more", namely <Cadenza>{"(>= x 60)"}</Cadenza>. <C>75</C> clears it, so the first arm fires.</>}
+        hint={<>The guard binds the score to <C>x</C>; the condition for passing is "60 or more", namely <Cadenza ast="Y2R6YXN0AAEDCgI+PQoBeAABPAQAAAABAAIBAwABAgM=" kind="expr">{"(>= x 60)"}</Cadenza>. <C>75</C> clears it, so the first arm fires.</>}
       />
     </article>
   );

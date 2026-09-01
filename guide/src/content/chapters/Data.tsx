@@ -27,7 +27,7 @@ export default function Data() {
       />
       <Why tenet="Everything is a record">Records aren't just one data type among many, since they're the mechanism the whole language is built from. A module is a record of its exports; a built-in like <C>List</C> is a record of its operations; a sum type is a record of its constructors. Because the special things are ordinary values reached the ordinary way, the compiler needs just <em>one</em> lookup rule instead of dozens of special cases, and a name you define simply shadows a built-in of the same name, with no magic.</Why>
       <H2>Compared by value</H2>
-      <P>Two tuples or two records are equal when their contents are, which is structural equality, not identity. A tuple matches position by position, so <Cadenza>#tuple(1 2)</Cadenza> equals another <Cadenza>#tuple(1 2)</Cadenza>:</P>
+      <P>Two tuples or two records are equal when their contents are, which is structural equality, not identity. A tuple matches position by position, so <Cadenza ast="Y2R6YXN0AAEDFQABAQABAgQAAAABAAIBAwABAgM=" kind="expr">#tuple(1 2)</Cadenza> equals another <Cadenza ast="Y2R6YXN0AAEDFQABAQABAgQAAAABAAIBAwABAgM=" kind="expr">#tuple(1 2)</Cadenza>:</P>
       <Runnable
         source={`(= #tuple(1 2) #tuple(1 2))`}
       />

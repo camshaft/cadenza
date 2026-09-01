@@ -67,7 +67,7 @@ export default function ConstParameters() {
 
 (def (main) (fold-n #record((= op (fn (x) (+ x 5)))) 3 0))`}
         expected="15"
-        hint={<>Three steps from <C>0</C>, each adding the same amount <C>a</C>, gives <C>3 × a</C>. For <C>15</C> that's <C>a = 5</C>, so <C>op</C> is <Cadenza>(fn (x) (+ x 5))</Cadenza>. The dictionary is const, so this operation is inlined into the specialized <C>fold-n</C>.</>}
+        hint={<>Three steps from <C>0</C>, each adding the same amount <C>a</C>, gives <C>3 × a</C>. For <C>15</C> that's <C>a = 5</C>, so <C>op</C> is <Cadenza ast="Y2R6YXN0AAEECgJmbgoBeAoBKwABBQgAAAABAQEBAAIAAQADAQMDBAUBAwACBgc=" kind="expr">(fn (x) (+ x 5))</Cadenza>. The dictionary is const, so this operation is inlined into the specialized <C>fold-n</C>.</>}
       />
     </article>
   );

@@ -34,7 +34,7 @@ export default function IrrefutablePatterns() {
 
 (def (main) (add-pair #tuple(3 4)))`}
       />
-      <P>A single-constructor type is irrefutable in the same way, since there's no other shape it could be, so a pattern like <Cadenza>(C c)</Cadenza> on a one-constructor type unwraps its payload directly in the parameter, with no <C>match</C>. Here <C>Celsius</C> wraps an <C>Int64</C>, and <C>to-f</C> names the wrapped value <C>c</C> right in its parameter list:</P>
+      <P>A single-constructor type is irrefutable in the same way, since there's no other shape it could be, so a pattern like <Cadenza ast="Y2R6YXN0AAECCgFDCgFjAwAAAAEBAgABAg==" kind="expr">(C c)</Cadenza> on a one-constructor type unwraps its payload directly in the parameter, with no <C>match</C>. Here <C>Celsius</C> wraps an <C>Int64</C>, and <C>to-f</C> names the wrapped value <C>c</C> right in its parameter list:</P>
       <Runnable
         source={`(type Celsius (C Int64))
 
@@ -42,7 +42,7 @@ export default function IrrefutablePatterns() {
 
 (def (main) (to-f (C 100)))`}
       />
-      <P><Cadenza>(to-f (C 100))</Cadenza> is <C>212</C>, unwrapping the <C>100</C> and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.</P>
+      <P><Cadenza ast="Y2R6YXN0AAEDCgR0by1mCgFDAAFkBQAAAAEAAgECAQIBAgADBA==" kind="expr">(to-f (C 100))</Cadenza> is <C>212</C>, unwrapping the <C>100</C> and converting it. One constructor means one shape, so the compiler knows the pattern can't miss.</P>
       <P>Records destructure in a parameter too. <C>mag</C> takes one point record and names its <C>x</C> and <C>y</C> fields directly in the parameter list, so the body reads <C>a</C> and <C>b</C> with no accessor. The squared magnitude of <C>(3, 4)</C> is <C>3² + 4² = 25</C>:</P>
       <Runnable
         source={`(def (mag #record((= x a) (= y b))) (+ (* a a) (* b b)))
@@ -65,15 +65,15 @@ export default function IrrefutablePatterns() {
       <H2>Your turn</H2>
       <Exercise
         id="irrefutable-patterns:1"
-        prompt={<>Destructure the tuple right in the <C>let</C> binder, then finish the body so it sums the two parts. With <Cadenza>#tuple(10 20)</Cadenza> the answer is <C>30</C>.</>}
+        prompt={<>Destructure the tuple right in the <C>let</C> binder, then finish the body so it sums the two parts. With <Cadenza ast="Y2R6YXN0AAEDFQABCgABFAQAAAABAAIBAwABAgM=" kind="expr">#tuple(10 20)</Cadenza> the answer is <C>30</C>.</>}
         starter={`(def (main) (let ((#tuple(a b) #tuple(10 20))) ?))`}
         solution={`(def (main) (let ((#tuple(a b) #tuple(10 20))) (+ a b)))`}
         expected="30"
-        hint={<>Both names come from the tuple pattern, so the body is <Cadenza>(+ a b)</Cadenza>.</>}
+        hint={<>Both names come from the tuple pattern, so the body is <Cadenza ast="Y2R6YXN0AAEDCgErCgFhCgFiBAAAAAEAAgEDAAECAw==" kind="expr">(+ a b)</Cadenza>.</>}
       />
       <Exercise
         id="irrefutable-patterns:2"
-        prompt={<><C>fst</C> destructures its tuple argument in the parameter list. Finish the body so it returns the <em>first</em> part. With <Cadenza>(fst #tuple(7 9))</Cadenza> the answer is <C>7</C>.</>}
+        prompt={<><C>fst</C> destructures its tuple argument in the parameter list. Finish the body so it returns the <em>first</em> part. With <Cadenza ast="Y2R6YXN0AAEECgNmc3QVAAEHAAEJBgAAAAEAAgADAQMBAgMBAgAEBQ==" kind="expr">(fst #tuple(7 9))</Cadenza> the answer is <C>7</C>.</>}
         starter={`(def (fst #tuple(a b)) ?)
 
 (def (main) (fst #tuple(7 9)))`}

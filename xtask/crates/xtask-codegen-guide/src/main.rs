@@ -9,7 +9,8 @@
 //! `.tsx` to this render, and example blocks emit extraction-compatible + DOM-correct TSX (fidelity =
 //! `check:codegen` DOM vs pre-flip hand-written),
 //! including multi-file `(files (file …) …)` runnables. Usage: `[--check] <chapter.sexp>`.
-use cadenza_ast::ast::{Arenas, Struct, StructId};
+use cadenza_ast::ast::{Arenas, Builder, Struct, StructId};
+use cadenza_ast::codec;
 use cadenza_syntax_core::spans::SpanTable;
 
 // Guide shred (operator: shred in Rust from the binary AST). `wrap` = the wrapModule port; `shred` = the
@@ -826,6 +827,71 @@ fn render_inlines(a: &Arenas, ins: &[StructId]) -> String {
     ins.iter().map(|&i| render_inline(a, i)).collect()
 }
 
+/// Standard base64 (RFC 4648, no line breaks) — the compact way to carry the codec-encoded binary AST in a
+/// `<Cadenza ast="…">` attribute. No dep: encode is a dozen lines; the component decodes with `atob`.
+fn base64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = *chunk.get(1).unwrap_or(&0) as usize;
+        let b2 = *chunk.get(2).unwrap_or(&0) as usize;
+        out.push(T[b0 >> 2] as char);
+        out.push(T[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+        out.push(if chunk.len() > 1 {
+            T[((b1 & 0x0f) << 2) | (b2 >> 6)] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[b2 & 0x3f] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Deep-copy the subtree rooted at `id` (in `src`) into `b`, returning the copied root. Used to lift a
+/// `(cdz <forms>)` payload OUT of the chapter arena into its own single-root arena so `codec::encode`
+/// serializes JUST the fragment (encode operates on a whole arena from its root).
+fn copy_subtree(src: &Arenas, id: StructId, b: &mut Builder) -> StructId {
+    match src.get(id) {
+        Struct::Atom(leaf_id) => {
+            let leaf = src.leaf(*leaf_id).clone();
+            let nl = b.leaf(leaf);
+            b.atom(nl)
+        }
+        Struct::List(ids) => {
+            let kids: Vec<StructId> = ids.iter().map(|&c| copy_subtree(src, c, b)).collect();
+            b.list(kids)
+        }
+    }
+}
+
+/// Back a `(cdz …)` span with its canonical binary AST (operator directive: actual ASTs, not strings that
+/// re-parse). The payload is the tag's single child — a legacy `(cdz "<sexpr-string>")` (parse the string,
+/// a one-time BUILD parse) or an embedded `(cdz <form>)` (already in the arena — lift it out, NO parse).
+/// Returns (base64 of codec::encode(fragment), canonical s-expr text). None if the payload isn't a single
+/// parseable fragment (the caller falls back to the plain text span).
+fn cdz_payload_ast(a: &Arenas, cdz_form: StructId) -> Option<(String, String)> {
+    let kids = children(a, cdz_form);
+    if kids.len() != 1 {
+        return None; // multi-child or empty — leave as a plain text span
+    }
+    let child = kids[0];
+    // Build the single-root fragment arena: parse a string child, or lift an embedded form subtree.
+    let frag: Arenas = if let Some(s) = a.as_str(child) {
+        cadenza_syntax_sexpr::read(s).ok()?
+    } else {
+        let mut b = Builder::new();
+        let root = copy_subtree(a, child, &mut b);
+        b.finish(root)
+    };
+    let canonical = cadenza_syntax_sexpr::print_pretty(&frag);
+    Some((base64_encode(&codec::encode(&frag)), canonical))
+}
+
 fn render_inline(a: &Arenas, i: StructId) -> String {
     if matches!(a.get(i), Struct::Atom(_))
         && let Some(t) = a.as_str(i)
@@ -836,14 +902,26 @@ fn render_inline(a: &Arenas, i: StructId) -> String {
         Some("em") => format!("<em>{}</em>", render_inlines(a, children(a, i))),
         Some("strong") => format!("<strong>{}</strong>", render_inlines(a, children(a, i))),
         Some("c") => format!("<C>{}</C>", escape_text(attr_str(a, i).unwrap_or(""))),
-        // (cdz "<sexpr>") — a SURFACE-AWARE inline Cadenza span (vs (c …) which stays literal). The body
-        // is authored s-expr; <Cadenza> shows it verbatim in the s-expr surface and re-renders it in the
-        // conventional (ml) surface at runtime (the codegen only has the s-expr printer). Re-exported from
-        // Prose.tsx, so it rides the existing prose import line (prose.insert("Cadenza") in scan_inline).
-        Some("cdz") => format!(
-            "<Cadenza>{}</Cadenza>",
-            escape_text(attr_str(a, i).unwrap_or(""))
-        ),
+        // (cdz …) — a SURFACE-AWARE inline Cadenza span (vs (c …) which stays literal), backed by the
+        // canonical BINARY-AST (operator directive: actual ASTs, not strings that re-parse). Emit the AST
+        // (base64) + the canonical s-expr text (children): <Cadenza> renders the ml surface FROM the AST
+        // (renderBinary — no text re-parse) and shows the children verbatim for the s-expr surface. kind=expr
+        // (type/pattern idiomatic render is a v-syntax-render-ty follow-up). Re-exported from Prose.tsx, so
+        // it rides the existing prose import line (prose.insert("Cadenza") in scan_inline).
+        Some("cdz") => match cdz_payload_ast(a, i) {
+            Some((b64, canon)) => {
+                format!(
+                    "<Cadenza ast=\"{b64}\" kind=\"expr\">{}</Cadenza>",
+                    escape_text(&canon)
+                )
+            }
+            // Fallback: a payload that isn't a single parseable fragment — keep the plain text span so a
+            // malformed span degrades (the component render_syntax's the children) rather than vanishing.
+            None => format!(
+                "<Cadenza>{}</Cadenza>",
+                escape_text(attr_str(a, i).unwrap_or(""))
+            ),
+        },
         Some("br") => "<br />".to_string(),
         Some("link") => {
             let slug = children(a, i)

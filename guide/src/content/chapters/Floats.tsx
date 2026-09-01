@@ -21,7 +21,7 @@ export default function Floats() {
       <Runnable
         source={`(/ 7.0 2.0)`}
       />
-      <P>Notice <Cadenza>(/ 7.0 2.0)</Cadenza> is <C>3.5</C>, which is real division because the operands are floats. Give <C>/</C> two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.</P>
+      <P>Notice <Cadenza ast="Y2R6YXN0AAEDCgEvBgAAAAAAAAAAAAEHBgAAAAAAAAAAAAECBAAAAAEAAgEDAAECAw==" kind="expr">(/ 7.0 2.0)</Cadenza> is <C>3.5</C>, which is real division because the operands are floats. Give <C>/</C> two whole numbers and the very same operator does the integer division you saw earlier. Same symbol; the values in your hands choose the meaning.</P>
       <H2>Floating-point is approximate, and honest about it</H2>
       <P>IEEE-754 floats can't represent every decimal exactly, and Cadenza doesn't pretend otherwise. The classic example: add a tenth and two tenths, and the result isn't quite three tenths.</P>
       <Runnable

@@ -41,7 +41,7 @@ export default function Numbers() {
         source={`(/ -17 5)`}
       />
       <H2>Handling an overflow instead of halting</H2>
-      <P>A bare <C>*</C> that overflows <em>declines</em>, so the whole program stops. Sometimes you'd rather <em>handle</em> the possibility: the checked operations do the same arithmetic but hand back an <C>Option</C>, namely <Cadenza>(Some v)</Cadenza> when it fits and <Cadenza>(None unit)</Cadenza> when it would overflow, so you decide what happens. Here <C>Int64.checked-mul</C> of two small numbers succeeds:</P>
+      <P>A bare <C>*</C> that overflows <em>declines</em>, so the whole program stops. Sometimes you'd rather <em>handle</em> the possibility: the checked operations do the same arithmetic but hand back an <C>Option</C>, namely <Cadenza ast="Y2R6YXN0AAECCgRTb21lCgF2AwAAAAEBAgABAg==" kind="expr">(Some v)</Cadenza> when it fits and <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> when it would overflow, so you decide what happens. Here <C>Int64.checked-mul</C> of two small numbers succeeds:</P>
       <Runnable
         source={`(match (Int64.checked-mul 6 7) ((Some v) v) ((None _) -1))`}
       />
@@ -73,7 +73,7 @@ export default function Numbers() {
         starter={`(? 23 4)`}
         solution={`(% 23 4)`}
         expected="3"
-        hint={<>The remainder operator is <C>%</C>. Since <C>23 = 4 × 5 + 3</C>, <Cadenza>(% 23 4)</Cadenza> is <C>3</C>.</>}
+        hint={<>The remainder operator is <C>%</C>. Since <C>23 = 4 × 5 + 3</C>, <Cadenza ast="Y2R6YXN0AAEDCgElAAEXAAEEBAAAAAEAAgEDAAECAw==" kind="expr">(% 23 4)</Cadenza> is <C>3</C>.</>}
       />
     </article>
   );

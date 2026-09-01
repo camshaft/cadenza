@@ -129,6 +129,15 @@ export function renderValue(bytes: Uint8Array): Promise<string> {
   return client().renderValue(bytes);
 }
 
+/// Render a canonical binary-AST (bytes) to a surface, per fragment KIND (`expr`/`type`/`pattern`).
+/// Decodes the AST + prints via the canonical per-surface printer — the render-from-binary path (cdz-wasm
+/// `render_binary`), so a stored AST toggles surfaces with NO text re-parse. Used by inline `<Cadenza>`
+/// (the `(cdz …)` tag's embedded AST). `kind` defaults to `expr` (the only fully-idiomatic kind today;
+/// type/pattern render faithfully but not yet in idiomatic type/pattern position — v-syntax-render-ty).
+export function renderBinary(bytes: Uint8Array, to: Surface, kind: string = "expr"): Promise<string> {
+  return client().renderBinary(bytes, to, kind);
+}
+
 /// Emit the program as Rust source (sync, or gas-metered async) — for the playground's output views.
 export function emitRust(text: string, from: Surface, isAsync: boolean): Promise<string> {
   return client().emitRust(text, from, isAsync);

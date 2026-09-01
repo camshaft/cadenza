@@ -14,20 +14,20 @@ export default function Lists() {
         source={`(List.len #list(1 2 3))`}
       />
       <H2>Building lists</H2>
-      <P><C>List.push</C> adds an element to the end; <C>List.concat</C> joins two lists. Each returns a whole new list, so Run this and you'll see the result, <Cadenza>#list(1 2 3)</Cadenza>, not just a count:</P>
+      <P><C>List.push</C> adds an element to the end; <C>List.concat</C> joins two lists. Each returns a whole new list, so Run this and you'll see the result, <Cadenza ast="Y2R6YXN0AAEEFAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(1 2 3)</Cadenza>, not just a count:</P>
       <Runnable
         source={`(List.push #list(1 2) 3)`}
       />
-      <P><C>List.prepend</C> is the mirror of <C>push</C>: it adds an element to the <em>front</em> rather than the end. It takes the list first and the new element second, the same receiver-first order as <C>push</C>, so prepending <C>1</C> to <Cadenza>#list(2 3)</Cadenza> gives <Cadenza>#list(1 2 3)</Cadenza>, the new element leading:</P>
+      <P><C>List.prepend</C> is the mirror of <C>push</C>: it adds an element to the <em>front</em> rather than the end. It takes the list first and the new element second, the same receiver-first order as <C>push</C>, so prepending <C>1</C> to <Cadenza ast="Y2R6YXN0AAEDFAABAgABAwQAAAABAAIBAwABAgM=" kind="expr">#list(2 3)</Cadenza> gives <Cadenza ast="Y2R6YXN0AAEEFAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(1 2 3)</Cadenza>, the new element leading:</P>
       <Runnable
         source={`(List.prepend #list(2 3) 1)`}
       />
-      <P><C>List.concat</C> joins two lists into a new one, so Run this and you see the whole joined list, <Cadenza>#list(1 2 3 4 5)</Cadenza>, the two inputs laid end to end:</P>
+      <P><C>List.concat</C> joins two lists into a new one, so Run this and you see the whole joined list, <Cadenza ast="Y2R6YXN0AAEGFAABAQABAgABAwABBAABBQcAAAABAAIAAwAEAAUBBgABAgMEBQY=" kind="expr">#list(1 2 3 4 5)</Cadenza>, the two inputs laid end to end:</P>
       <Runnable
         source={`(List.concat #list(1 2) #list(3 4 5))`}
       />
       <H2>Reaching in safely</H2>
-      <P><C>List.at</C> gets the element at an index. But what if the index is out of range? Rather than crash, <C>List.at</C> returns an <C>Option</C>, either <Cadenza>(Some x)</Cadenza> when the element exists or <Cadenza>(None unit)</Cadenza> when it doesn't, which you take apart with <C>match</C>. Here index 1 exists, so you get its value, <C>20</C>:</P>
+      <P><C>List.at</C> gets the element at an index. But what if the index is out of range? Rather than crash, <C>List.at</C> returns an <C>Option</C>, either <Cadenza ast="Y2R6YXN0AAECCgRTb21lCgF4AwAAAAEBAgABAg==" kind="expr">(Some x)</Cadenza> when the element exists or <Cadenza ast="Y2R6YXN0AAECCgROb25lCgR1bml0AwAAAAEBAgABAg==" kind="expr">(None unit)</Cadenza> when it doesn't, which you take apart with <C>match</C>. Here index 1 exists, so you get its value, <C>20</C>:</P>
       <Runnable
         source={`(def (main) (match (List.at #list(10 20 30) 1) ((Some x) x) ((None _) -1)))`}
       />
@@ -41,7 +41,7 @@ export default function Lists() {
   (match (List.at original 1) ((Some x) x) ((None _) 0)))`}
       />
       <P>The answer is <C>20</C>, not <C>99</C>: <C>original</C> never changed. The <C>99</C> lives only in <C>bumped</C>. Swap <C>original</C> for <C>bumped</C> in the <C>List.at</C> line and Run again to see <C>99</C>. Two lists, sharing most of their structure internally, each with its own value.</P>
-      <P>Return the updated list itself and you can see the change in place, one slot different, <Cadenza>#list(10 99 30)</Cadenza>, and the input <Cadenza>#list(10 20 30)</Cadenza> still intact wherever else it's held:</P>
+      <P>Return the updated list itself and you can see the change in place, one slot different, <Cadenza ast="Y2R6YXN0AAEEFAABCgABYwABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 99 30)</Cadenza>, and the input <Cadenza ast="Y2R6YXN0AAEEFAABCgABFAABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 20 30)</Cadenza> still intact wherever else it's held:</P>
       <Runnable
         source={`(List.update #list(10 20 30) 1 99)`}
       />
@@ -54,15 +54,15 @@ export default function Lists() {
 (def (main) (count #list(10 20 30 40)))`}
       />
       <P>Four elements in, so <C>4</C> out, and you never wrote the element type: <C>count</C> works on a list of anything, because <C>List.len</C> doesn't care what the elements are.</P>
-      <P>To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two cases: the empty list <Cadenza>#list()</Cadenza>, and a non-empty one <Cadenza>#list(x .. rest)</Cadenza>, which binds the first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C> and you fold over the whole list. Here <C>sum</C> adds the elements:</P>
+      <P>To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two cases: the empty list <Cadenza ast="Y2R6YXN0AAEBFAIAAAEBAAE=" kind="expr">#list()</Cadenza>, and a non-empty one <Cadenza ast="Y2R6YXN0AAEEFAoBeAoCLi4KBHJlc3QGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">#list(x (.. rest))</Cadenza>, which binds the first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C> and you fold over the whole list. Here <C>sum</C> adds the elements:</P>
       <Runnable
         source={`(def (sum xs) (match xs (#list() 0) (#list(x (.. rest)) (+ x (sum rest)))))
 
 (def (main) (sum #list(10 20 30)))`}
       />
-      <P>The empty case is the base case, <C>0</C>, the sum of nothing, and each step peels off one element and sums the rest, so <Cadenza>#list(10 20 30)</Cadenza> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>. You didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over a list of <C>Int64</C>.</P>
+      <P>The empty case is the base case, <C>0</C>, the sum of nothing, and each step peels off one element and sums the rest, so <Cadenza ast="Y2R6YXN0AAEEFAABCgABFAABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 20 30)</Cadenza> is <C>10 + (20 + (30 + 0))</C> = <C>60</C>. You didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over a list of <C>Int64</C>.</P>
       <P>The <C>rest</C> after <C>..</C> is special: it binds the <em>whole tail</em> as one sublist, so it must be a plain name (or <C>_</C>), not another pattern. You can destructure the leading elements as deeply as you like, but you can't nest a pattern in the rest slot itself. This tries to, and the compiler stops you:</P>
-      <Note>This one is <strong>meant to be rejected</strong>: <Cadenza>#list(b .. r)</Cadenza> in the rest position asks to match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it, then match it.</Note>
+      <Note>This one is <strong>meant to be rejected</strong>: <Cadenza ast="Y2R6YXN0AAEEFAoBYgoCLi4KAXIGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">#list(b (.. r))</Cadenza> in the rest position asks to match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it, then match it.</Note>
       <Runnable
         source={`(match #list(1 2 3) (#list(a (.. #list(b (.. r)))) a) (_ 0))`}
         expect="error"
@@ -74,12 +74,12 @@ export default function Lists() {
   (#list(a (.. rest)) (match rest (#list(b (.. r)) b) (#list() 0)))
   (#list() 0))`}
       />
-      <P>A leading element can still be any pattern, so <Cadenza>#list(#tuple(x y) .. rest)</Cadenza> is fine, only the rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.</P>
+      <P>A leading element can still be any pattern, so <Cadenza ast="Y2R6YXN0AAEGFBUKAXgKAXkKAi4uCgRyZXN0CQAAAAEAAgADAQMBAgMABAAFAQIFBgEDAAQHCA==" kind="expr">#list(#tuple(x y) (.. rest))</Cadenza> is fine, only the rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.</P>
       <P>A list holds every element at once. Sometimes you want the elements without ever building the whole sequence, even an endless one. That's an <em>iterator</em>, next.</P>
       <H2>Your turn</H2>
       <Exercise
         id="lists:1"
-        prompt={<>Use <C>List.update</C> to change index <C>0</C> of <Cadenza>#list(5 6 7)</Cadenza> to <C>50</C>, then read that slot back with <C>List.at</C>. The answer is <C>50</C>.</>}
+        prompt={<>Use <C>List.update</C> to change index <C>0</C> of <Cadenza ast="Y2R6YXN0AAEEFAABBQABBgABBwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(5 6 7)</Cadenza> to <C>50</C>, then read that slot back with <C>List.at</C>. The answer is <C>50</C>.</>}
         starter={`(match (List.at (List.update #list(5 6 7) 0 ?) 0) ((Some x) x) ((None _) 0))`}
         solution={`(match (List.at (List.update #list(5 6 7) 0 50) 0) ((Some x) x) ((None _) 0))`}
         expected="50"
@@ -87,7 +87,7 @@ export default function Lists() {
       />
       <Exercise
         id="lists:2"
-        prompt={<>Add the single element <C>99</C> to the end of <Cadenza>#list(10 20 30)</Cadenza>, then ask its length, so a three-element list grows to <C>4</C>. Which operation appends <em>one element</em>, <C>push</C> or <C>concat</C>? Fill in the blank.</>}
+        prompt={<>Add the single element <C>99</C> to the end of <Cadenza ast="Y2R6YXN0AAEEFAABCgABFAABHgUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(10 20 30)</Cadenza>, then ask its length, so a three-element list grows to <C>4</C>. Which operation appends <em>one element</em>, <C>push</C> or <C>concat</C>? Fill in the blank.</>}
         starter={`(List.len (List.? #list(10 20 30) 99))`}
         solution={`(List.len (List.push #list(10 20 30) 99))`}
         expected="4"
@@ -107,7 +107,7 @@ export default function Lists() {
       />
       <Exercise
         id="lists:4"
-        prompt={<>Add <C>0</C> to the <em>front</em> of <Cadenza>#list(1 2 3)</Cadenza>, then read index <C>0</C> back with <C>List.at</C> for the answer <C>0</C>. Which operation adds to the front, <C>push</C> or <C>prepend</C>? Fill in the blank.</>}
+        prompt={<>Add <C>0</C> to the <em>front</em> of <Cadenza ast="Y2R6YXN0AAEEFAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(1 2 3)</Cadenza>, then read index <C>0</C> back with <C>List.at</C> for the answer <C>0</C>. Which operation adds to the front, <C>push</C> or <C>prepend</C>? Fill in the blank.</>}
         starter={`(match (List.at (List.? #list(1 2 3) 0) 0) ((Some x) x) ((None _) -1))`}
         solution={`(match (List.at (List.prepend #list(1 2 3) 0) 0) ((Some x) x) ((None _) -1))`}
         expected="0"

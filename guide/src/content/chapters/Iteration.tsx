@@ -19,8 +19,8 @@ export default function Iteration() {
 
 (def (sum-to n acc) (if (= n 0) acc (sum-to (- n 1) (+ acc n))))`}
       />
-      <P>Read it as a loop turned inside out: <C>acc</C> is the running total, <C>n</C> counts down, the <Cadenza>(= n 0)</Cadenza> check is the exit condition, and each call adds <C>n</C> to <C>acc</C> and continues. When <C>n</C> reaches <C>0</C> the base case hands back the total, <C>15</C>. Nothing mutates; each call just receives the next pair of values.</P>
-      <P>The same shape works over a list. Match the list by its structure, either the empty list <Cadenza>#list()</Cadenza> or a non-empty <Cadenza>#list(x .. rest)</Cadenza> that binds the first element to <C>x</C> and the remainder to <C>rest</C>, and thread the accumulator through:</P>
+      <P>Read it as a loop turned inside out: <C>acc</C> is the running total, <C>n</C> counts down, the <Cadenza ast="Y2R6YXN0AAEDCgE9CgFuAAAEAAAAAQACAQMAAQID" kind="expr">(= n 0)</Cadenza> check is the exit condition, and each call adds <C>n</C> to <C>acc</C> and continues. When <C>n</C> reaches <C>0</C> the base case hands back the total, <C>15</C>. Nothing mutates; each call just receives the next pair of values.</P>
+      <P>The same shape works over a list. Match the list by its structure, either the empty list <Cadenza ast="Y2R6YXN0AAEBFAIAAAEBAAE=" kind="expr">#list()</Cadenza> or a non-empty <Cadenza ast="Y2R6YXN0AAEEFAoBeAoCLi4KBHJlc3QGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">#list(x (.. rest))</Cadenza> that binds the first element to <C>x</C> and the remainder to <C>rest</C>, and thread the accumulator through:</P>
       <Runnable
         source={`(def (main) (sum-list #list(10 20 30) 0))
 
@@ -32,7 +32,7 @@ export default function Iteration() {
 
 (def (rev xs acc) (match xs (#list() acc) (#list(x (.. rest)) (rev rest (List.prepend acc x)))))`}
       />
-      <P>Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in front of it, then <C>3</C> in front of that, so <Cadenza>#list(1 2 3)</Cadenza> comes back as <Cadenza>#list(3 2 1)</Cadenza>. <Ch to="/lists"> <C>List.prepend</C></Ch> adds an element to the front, which is what flips the order; appending each element to the end with <C>List.push</C> would instead copy the list unchanged. A quick <C>@test</C> pins it, reading the three positions of the result back and checking they spell <C>3</C>, <C>2</C>, <C>1</C> (as the single number <C>321</C>):</P>
+      <P>Prepending is what does the reversing: element <C>1</C> is placed first, then <C>2</C> goes in front of it, then <C>3</C> in front of that, so <Cadenza ast="Y2R6YXN0AAEEFAABAQABAgABAwUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(1 2 3)</Cadenza> comes back as <Cadenza ast="Y2R6YXN0AAEEFAABAwABAgABAQUAAAABAAIAAwEEAAECAwQ=" kind="expr">#list(3 2 1)</Cadenza>. <Ch to="/lists"> <C>List.prepend</C></Ch> adds an element to the front, which is what flips the order; appending each element to the end with <C>List.push</C> would instead copy the list unchanged. A quick <C>@test</C> pins it, reading the three positions of the result back and checking they spell <C>3</C>, <C>2</C>, <C>1</C> (as the single number <C>321</C>):</P>
       <Runnable
         source={`(def (rev xs acc) (match xs (#list() acc) (#list(x (.. rest)) (rev rest (List.prepend acc x)))))
 
@@ -50,7 +50,7 @@ export default function Iteration() {
         "rev of (1 2 3) should read back as 3,2,1"))))`}
         mode="test"
       />
-      <Note>Notice the recursive call is the <em>last</em> thing each step does: it sits in <em>tail position</em>. A recursion in tail position compiles to a loop. It reuses one stack frame rather than stacking a new one per element, so an accumulator over a long list runs in constant stack space. Threading the accumulator is what puts the call in tail position; a version that adds <em>after</em> the recursive call (<Cadenza>(+ x (sum rest))</Cadenza>) does not, and you meet exactly that shape in the next chapter.</Note>
+      <Note>Notice the recursive call is the <em>last</em> thing each step does: it sits in <em>tail position</em>. A recursion in tail position compiles to a loop. It reuses one stack frame rather than stacking a new one per element, so an accumulator over a long list runs in constant stack space. Threading the accumulator is what puts the call in tail position; a version that adds <em>after</em> the recursive call (<Cadenza ast="Y2R6YXN0AAEECgErCgF4CgNzdW0KBHJlc3QGAAAAAQACAAMBAgIDAQMAAQQF" kind="expr">(+ x (sum rest))</Cadenza>) does not, and you meet exactly that shape in the next chapter.</Note>
       <Why tenet="Repetition is a value, not a statement">A loop mutates state for effect; a recursive function <em>returns</em> the result of repeating. Making iteration an expression means every repetition has a value and a type, there is no mutable loop counter to get wrong, and the same tool, a function, does the job with no special loop syntax to learn. Uniformity over special cases, applied to the oldest control structure there is.</Why>
       <P>You will rarely write the accumulator by hand for long. The <em>fold</em> family packages exactly this pattern (a base value and a step that combines the running result with each element), so you state the step and let the traversal disappear. The next chapter, <Ch to="/lists">Lists</Ch>, puts recursion to work over sequences, and <Ch to="/iterators">Iterators</Ch> adds a lazy, on-demand layer on top: the fold vocabulary (<C>map</C>, <C>filter</C>, <C>fold</C>) built from the very mechanism you just saw.</P>
     </article>
