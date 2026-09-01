@@ -1480,6 +1480,37 @@ pub fn expected_value(payload: &str) -> String {
             }
         }
         rest.to_string()
+    } else if bytes.first() == Some(&b'#') {
+        // A `#`-prefixed native compound value (`#record(...)`, `#list(...)`, `#set(...)`,
+        // `#map(...)` — the canonical `#ctor` compound-value form). The tag precedes a balanced
+        // paren body, so a plain first-whitespace split would miscut `#record((= a 1) …)` at the
+        // first inner space. Scan past the tag to its `(` and balance-match the body; a paren-less
+        // `#scalar` (e.g. `#unit`) with no `(` before the type has no body and splits like a bare token.
+        let paren = rest.find('(');
+        let ws = rest.find(char::is_whitespace);
+        match (paren, ws) {
+            // A `(` opening the compound body before any top-level whitespace → balanced-match it,
+            // returning the whole `#tag(…)` span (indexing from 0 keeps the `#tag` prefix).
+            (Some(p), maybe_ws) if maybe_ws.is_none_or(|w| p < w) => {
+                let mut depth = 0i32;
+                for (i, &b) in bytes.iter().enumerate().skip(p) {
+                    match b {
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return rest[..=i].to_string();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                rest.to_string()
+            }
+            // No body before the type: a bare `#scalar` token, split at the type-separating space.
+            (_, Some(w)) => rest[..w].to_string(),
+            (_, None) => rest.trim_end_matches(')').to_string(),
+        }
     } else {
         match rest.find(char::is_whitespace) {
             Some(idx) => rest[..idx].to_string(),
@@ -1765,6 +1796,24 @@ mod tests {
             "\"parse error\""
         );
         assert_eq!(expected_value("bare"), "bare");
+    }
+
+    #[test]
+    fn expected_value_extracts_hashtag_compound_values() {
+        // `#`-prefixed native compound values must NOT miscut at the first inner space (the
+        // corpus-rust-05-1321 nested-record bug: `#record((= …) …)` was truncated to `#record((=`).
+        assert_eq!(
+            expected_value(
+                "(: #record((= first (Ok 7)) (= second (Err b\"no\"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes))))"
+            ),
+            "#record((= first (Ok 7)) (= second (Err b\"no\")))"
+        );
+        assert_eq!(
+            expected_value("(: #list(1 2 3) (List Int64))"),
+            "#list(1 2 3)"
+        );
+        // A paren-less `#scalar` splits at the type-separating space like any bare token.
+        assert_eq!(expected_value("(: #unit Unit)"), "#unit");
     }
 
     #[test]
