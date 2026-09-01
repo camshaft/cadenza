@@ -765,13 +765,25 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             // so the LAST write per key wins — the ONE canonical map value all consumers inherit. A RUNTIME
             // key (`const_compound_eq` = `None`, not comparable at compile time) is kept: the runtime CHAMP
             // `map-insert` chain the backend builds dedups it order-canonically.
+            // (The poison-check loop above already reduced every key/value `core_of` once, so each key is
+            // memoized — a single-use let-bound NAME key `(= a 1)` with `a = 5` reads as its inlined
+            // `ConstInt 5` here, not an unresolved `Ref`.)
             let deduped: std::rc::Rc<[(StructId, StructId)]> = {
                 let mut kept: Vec<(StructId, StructId)> = Vec::with_capacity(entries.len());
                 for i in 0..entries.len() {
                     let (k, v) = entries[i];
                     let mut overwritten = false;
                     for j in (i + 1)..entries.len() {
-                        if const_compound_eq(db, k, entries[j].0) == Some(true) {
+                        let kj = entries[j].0;
+                        // BOTH directions: `const_compound_eq` can read ASYMMETRICALLY across a name/literal
+                        // pair — a let-bound name as the FIRST arg may still resolve to a `Ref` (→ `None`)
+                        // while the SAME name as the SECOND arg (its `core_of` since memoized) resolves to the
+                        // inlined constant (→ `Some(true)`) — breaker's mk9(name-first)-vs-mk13(lit-first)
+                        // asymmetry. Treat EITHER-direction `Some(true)` as equal so the dedup is robust to
+                        // that read order regardless of `core_of` memoization timing.
+                        if const_compound_eq(db, k, kj) == Some(true)
+                            || const_compound_eq(db, kj, k) == Some(true)
+                        {
                             overwritten = true;
                             break;
                         }
