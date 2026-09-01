@@ -26255,8 +26255,8 @@
       (def
         (main (: mode Int64))
         (do
-          (def inner (Map.insert Map.empty 10 100))
-          (def outer (Map.insert Map.empty 1 inner))
+          (def inner #map((= 10 100)))
+          (def outer #map((= 1 inner)))
           (def inner2 (Map.insert inner 20 200))
           (def r (Map.swap outer 1 inner2))
           (def
@@ -26504,7 +26504,7 @@
       (def
         (main (: n Int64))
         (do
-          (def keep (Map.insert Map.empty 3 (String.concat "ke" "ep")))
+          (def keep #map((= 3 (String.concat "ke" "ep"))))
           (def m (churn keep 0 n))
           (+
             (* 100 (Map.len m))
