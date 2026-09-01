@@ -983,6 +983,16 @@ pub mod exports {
                     let result0 = T::vec_prepend(arg0 as u32, arg1 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_map_merge_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::map_merge(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1567,6 +1577,15 @@ pub mod exports {
                     ///    superseded front-spine (~17 cells/prepend). Reclaims the old header + root shell while the shared
                     ///    children carry forward; sound on the immortal empty-vec base.
                     fn vec_prepend(v: u32, elem: u32) -> u32;
+                    /// 97 — elem then v's elements (consumes both)
+                    ///  map-merge(a, b) -> a∪b
+                    ///    Merge two persistent CHAMP maps, LAST-WRITER-WINS: `b`'s entries OVERWRITE `a`'s on a key conflict
+                    ///    (`b` is the "last writer"). CONSUMES both. The runtime primitive behind `Map.union` and the map arm
+                    ///    of value-position spread `#map((= k v) (.. m))` — the caller passes the later/rightmost operand as
+                    ///    `b` so the rightmost occurrence of a key wins (matching list/set/record spread's L-to-R semantics).
+                    ///    Iterates `b` and re-inserts into `a` (canonical CHAMP insert overwrites → `b` wins); the empty map
+                    ///    is the identity on both sides. APPENDED last (frozen-contract rule). See `op_map_merge`.
+                    fn map_merge(a: u32, b: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1927,7 +1946,11 @@ pub mod exports {
                         "cadenza:runtime/heap#vec-prepend")] unsafe extern "C" fn
                         export_vec_prepend(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_vec_prepend_cabi::<$ty > (arg0,
-                        arg1) } } };
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#map-merge")] unsafe extern "C" fn
+                        export_map_merge(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_map_merge_cabi::<$ty > (arg0, arg1)
+                        } } };
                     };
                 }
                 #[doc(hidden)]
@@ -2131,15 +2154,13 @@ macro_rules! __export_runtime_impl {
 #[doc(inline)]
 pub(crate) use __export_runtime_impl as export;
 #[cfg(target_arch = "wasm32")]
-#[unsafe(
-    link_section = "component-type:wit-bindgen:0.41.0:cadenza:runtime:runtime:encoded world"
-)]
+#[unsafe(link_section = "component-type:wit-bindgen:0.41.0:cadenza:runtime:runtime:encoded world")]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2553] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfb\x12\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2567] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\x89\x13\x01A\x02\x01\
 A\x04\x01B\x03\x01p}\x01@\x01\x04utf8\0\0\0\x04\0\x03nfc\x01\x01\x03\0\x15cadenz\
-a:nfc/normalize\x05\0\x01B\x9b\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
+a:nfc/normalize\x05\0\x01B\x9c\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
 \x01\x06handley\0x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bo\
 ol\x01\x02\x01@\x01\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\
 \x04\0\x09box-float\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01\
@@ -2191,10 +2212,10 @@ lize\x01%\x01@\x02\x05bytesy\x04descy\0y\x04\0\x0cvalue-decode\x014\x01@\x01\x05
 bytesy\0y\x04\0\x0bhash-blake3\x015\x01@\x02\x06handley\x05discsy\0y\x04\0\x09as\
 t-print\x016\x04\0\x0aast-encode\x016\x01@\x02\x0cbytes-handley\x05discsy\0y\x04\
 \0\x0aast-decode\x017\x04\0\x0dmark-immortal\x01\x0b\x04\0\x12mark-immortal-deep\
-\x01\x0b\x04\0\x0bvec-prepend\x01\x1c\x04\0\x14cadenza:runtime/heap\x05\x01\x04\0\
-\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09produce\
-rs\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.\
-41.0";
+\x01\x0b\x04\0\x0bvec-prepend\x01\x1c\x04\0\x09map-merge\x01\x1e\x04\0\x14cadenz\
+a:runtime/heap\x05\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07r\
+untime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227\
+.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
