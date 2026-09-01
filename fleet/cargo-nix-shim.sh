@@ -45,6 +45,21 @@ run_real() {
 # Emergency bypass — kill-switch execs real cargo unchanged.
 [ -n "${CDZ_NO_CARGO_SHIM:-}" ] && run_real "$@"
 
+# CWD-SCOPE (OPERATOR DIRECTIVE 2026-09-01): this shim sits on the machine-wide agent PATH, so it MUST be a
+# pure pass-through OUTSIDE the cadenza repo — otherwise its routing / sccache injection / deprecation
+# warnings interfere with other agents & projects sharing this host (operator: "stop intercepting cargo
+# invocation outside of the cadenza directory"). Walk up from $PWD; only if an ancestor is a cadenza checkout
+# (a dir carrying BOTH flake.nix AND spec/semantics/ — true for the main repo and every git worktree) do we
+# fall through to the routing below. Anywhere else → exec the REAL cargo immediately, before sccache/routing/
+# warnings run. Cheap (a few stats up the tree); no dependency on shell/window env being set.
+_cdz_root=""
+_cdz_d="$PWD"
+while [ -n "$_cdz_d" ] && [ "$_cdz_d" != "/" ]; do
+  if [ -f "$_cdz_d/flake.nix" ] && [ -d "$_cdz_d/spec/semantics" ]; then _cdz_root="$_cdz_d"; break; fi
+  _cdz_d="$(dirname -- "$_cdz_d")"
+done
+[ -n "$_cdz_root" ] || run_real "$@"
+
 # SHARED COMPILE CACHE — no-restart propagation of #5878 (operator seq-267). window.sh sets RUSTC_WRAPPER at
 # window LAUNCH only, so the ~32 ALREADY-RUNNING agents don't have it. This shim runs on EVERY cargo call, so
 # injecting it HERE means a running agent's next cargo build picks up sccache with NO window restart (once
