@@ -1424,11 +1424,26 @@ pub fn cdz_render_at(
         } else {
             format!("({path}).clone() as f64")
         };
+        // The WHOLE-value branch is WIDTH-SPECIFIC. `{:.0}` prints the float's EXACT integer value, which for
+        // an `f64` IS the canonical `Decimal::from_f64` whole form (`{f:.0}`) — keep it. But for an `f32`,
+        // `{:.0}` prints the exact 39-digit expansion of the f32 bits (`f32::MAX` → …859811704…), whereas the
+        // canonical `Decimal::from_f32` has NO whole branch — it ALWAYS formats the shortest scientific
+        // (`{f:e}`) and expands it, i.e. the SHORTEST-f32 decimal (`f32::MAX` → 34028235e31). Rust's positional
+        // `{}` on an f32 IS that shortest decimal (never exponent form), so `{}.0` reproduces the canonical
+        // expansion; `{:.0}.0` diverges only at large exponents (breaker's f32-MAX cross-backend finding). A
+        // small whole f32 (`42.0`) prints "42" under both, so this only corrects the large-exponent tail. This
+        // is a tactical fix to the current type-note render; the value-doc parser-elim path (Inc 1c) supersedes
+        // it wholesale by building `Leaf::Float(Decimal::from_f32(f))` and rendering via the canonical printer.
+        let whole = if ty == "Float32" {
+            "format!(\"{}.0\", __f)"
+        } else {
+            "format!(\"{:.0}.0\", __f)"
+        };
         return format!(
             "{{ let __f = {bind}; \
              if __f == 0.0 && __f.is_sign_negative() {{ \"-0.0\".to_string() }} \
              else if __f.is_nan() {{ \"nan\".to_string() }} \
-             else if __f.fract() == 0.0 && __f.is_finite() {{ format!(\"{{:.0}}.0\", __f) }} \
+             else if __f.fract() == 0.0 && __f.is_finite() {{ {whole} }} \
              else {{ format!(\"{{}}\", __f) }} }}"
         );
     }
