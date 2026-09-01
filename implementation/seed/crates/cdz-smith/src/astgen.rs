@@ -200,6 +200,41 @@ fn gen_effect_recursive_body<C: Choice>(c: &mut C) -> (String, String) {
     (defs, body)
 }
 
+/// Build a CROSS-MODULE program — a top-level inline `(module M …)` that exports a function, and a `main`
+/// that calls it, so a value crosses the module import/export boundary (in as an argument, out as the
+/// result). Grades cross-module VALUE-correctness (operator seq-22) — a value computed inside a module and
+/// marshaled across the link — which the coercing grammar never reached (module-fuzz is crash-only, and a
+/// single-module `main` never crosses a link). Must be TOP-LEVEL (an inline `(module …)` is a
+/// whole-program shape). Returns `(defs, main_body)`. Deterministic Int64; small `0..=9` args so nothing
+/// overflows. Three shapes: scalar→scalar, two-arg arithmetic (crosses the link twice), and a COMPOUND
+/// result (a heap list crosses the boundary, consumed by `List.len`).
+fn gen_module_body<C: Choice>(c: &mut C) -> (String, String) {
+    let form = c.variant(3);
+    let a = c.int_bounded(0, 9);
+    let b = c.int_bounded(0, 9);
+    match form {
+        // scalar in → scalar out: `M.f x = (op x k)`; `main = (M.f a)`.
+        0 => {
+            let op = ["+", "-", "*"][c.variant(3)];
+            let k = c.int_bounded(0, 9);
+            (
+                format!("(module M (def (f (: x Int64)) ({op} x {k})) (export f))"),
+                format!("(M.f {a})"),
+            )
+        }
+        // two args → arithmetic, crossing the link TWICE with swapped args.
+        1 => (
+            "(module M (def (g (: x Int64) (: y Int64)) (* x y)) (export g))".to_string(),
+            format!("(+ (M.g {a} {b}) (M.g {b} {a}))"),
+        ),
+        // a COMPOUND result — a heap list crosses the module boundary, consumed to a count by `List.len`.
+        _ => (
+            "(module M (def (mk (: x Int64)) (list x x x)) (export mk))".to_string(),
+            format!("(List.len (M.mk {a}))"),
+        ),
+    }
+}
+
 fn build_program<C: Choice>(c: &mut C) -> Program {
     let mut source = String::from("(do ");
     // Two TOP-LEVEL special shapes, chosen by a SINGLE `variant(6)` (one choice consumed, so the fall-through
@@ -208,8 +243,8 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
     // in-body, and the oracle captures a LOCAL fn def's env EAGERLY (excluding itself/later siblings) so a
     // local recursive/mutual call is unbound → SKIP. Gated on NON-ZERO values so an EXHAUSTED cursor
     // (variant → 0) falls through to the base-case path (a bare-literal main), preserving that invariant.
-    match c.variant(7) {
-        // ~1/7: a USER-DEFINED SUM program — tagged variants + newtype erasure + variant patterns (#5456).
+    match c.variant(8) {
+        // ~1/8: a USER-DEFINED SUM program — tagged variants + newtype erasure + variant patterns (#5456).
         3 => {
             let (type_decl, body) = gen_usersum(c);
             write!(source, "{type_decl} (def (main) {body}) (export main))").ok();
@@ -226,6 +261,15 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
         // inside itself, discharged by `main`'s enclosing `handle` (the dynamic-extent self-hosting shape).
         6 => {
             let (defs, body) = gen_effect_recursive_body(c);
+            write!(source, "{defs} (def (main) {body}) (export main))").ok();
+            return Program { source };
+        }
+        // ~1/8: a CROSS-MODULE program — a top-level inline `(module M …)` exports a function, and `main`
+        // calls it across the module import/export boundary (a value crosses the boundary in + out). Grades
+        // cross-module VALUE-correctness (operator seq-22), which the value-diff never reached (module-fuzz
+        // is crash-only). Must be top-level (an inline module is a whole-program shape, like a `(type …)`).
+        7 => {
+            let (defs, body) = gen_module_body(c);
             write!(source, "{defs} (def (main) {body}) (export main))").ok();
             return Program { source };
         }
@@ -2759,6 +2803,47 @@ mod tests {
         assert!(
             saw_fold,
             "should reach the folding resume value (resume (+ s p) …)"
+        );
+    }
+
+    /// `build_program` REACHES the CROSS-MODULE shape — a top-level inline `(module M …)` exporting a
+    /// function that `main` calls across the boundary — and every such program COMPILES. The module MUST
+    /// be top-level (before main), pinning it a whole-program shape. Asserts all three forms (scalar,
+    /// two-arg, compound-result) are reached.
+    #[test]
+    fn build_program_reaches_cross_module_shape_and_compiles() {
+        let (mut saw, mut saw_f, mut saw_g, mut saw_mk) = (false, false, false, false);
+        for seed in 0u64..1024 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1013);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = build_program(&mut ByteCursorChoice::new(&bytes)).source;
+            if !src.contains("(module M ") {
+                continue; // not the cross-module shape this seed
+            }
+            saw = true;
+            assert!(
+                src.find("(module M ").unwrap() < src.find("(def (main)").unwrap(),
+                "the `(module …)` must be a TOP-LEVEL decl (before main): {src}"
+            );
+            saw_f |= src.contains("(M.f ");
+            saw_g |= src.contains("(M.g ");
+            saw_mk |= src.contains("(M.mk ");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "cross-module program must COMPILE: {src}"
+            );
+        }
+        assert!(saw, "should reach the cross-module shape");
+        assert!(saw_f, "should reach the scalar module form (M.f)");
+        assert!(saw_g, "should reach the two-arg module form (M.g)");
+        assert!(
+            saw_mk,
+            "should reach the compound-result module form (M.mk)"
         );
     }
 
