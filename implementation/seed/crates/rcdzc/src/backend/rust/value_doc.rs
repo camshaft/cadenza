@@ -15,11 +15,12 @@
 //!   `(: true Bool)`            → Bool leaf, type Name "Bool"
 //!
 //! WIP (built incrementally, per concierge): covers Int / Bool / Float / String / Symbol / Bytes / Char /
-//! Tuple / Record / List / Set / Map (non-float key/element) and the single-payload / nullary SUM (Option /
-//! Result / a bare-head user sum). Qty, a float-keyed Set/Map (the `__CdzF` unwrap), plus the harder sum
-//! shapes (qualified-head, multi-field/flattened, recursive) are follow-up increments (each a
-//! `doc_value_node` + `doc_type_node` arm). An uncovered shape DECLINES (never a miscompile) — the driver
-//! keeps `cdz_render_at` for it until covered, so partial coverage is safe.
+//! Tuple / Record / List / Set / Map (incl. a DIRECT-float key/element via the `__CdzF` `.get()` unwrap) and
+//! the single-payload / nullary SUM (Option / Result / a bare-head user sum). Qty, a COMPOUND-float
+//! (tuple-with-float) key/element, plus the harder sum shapes (qualified-head, multi-field/flattened,
+//! recursive) are follow-up increments (each a `doc_value_node` + `doc_type_node` arm). An uncovered shape
+//! DECLINES (never a miscompile) — the driver keeps `cdz_render_at` for it until covered, so partial coverage
+//! is safe.
 
 use crate::db::Db;
 use crate::diag::Reject;
@@ -211,23 +212,29 @@ fn doc_value_node(
         // CANONICAL order. The Rust rep is a `BTreeSet<T>`, whose iteration IS sorted-by-`Ord` = the canonical
         // key-value order the wasm `value_codec` emits (both sort by the element's canonical scalar) — so a
         // plain consuming `for __e in __r` yields the elements already in the right order (no re-sort). Fresh
-        // head/kids/iter binders per level (nested set shadowing). A FLOAT element uses the `__CdzF{N}` ord-key
-        // wrapper (its value reached via `.get()`) — a follow-up increment; decline (safe: `cdz_render_at`
-        // still renders it). `ty_is_ord` is FALSE exactly for a float-containing element, so it gates cleanly.
+        // head/kids/iter binders per level (nested set shadowing). A DIRECT FLOAT element is stored as the
+        // `__CdzF{N}` ord-key wrapper (bare `f{N}` is not `Ord`), so its float is read via `.get()` (Copy
+        // `self`) before the Float value-node walks it; a non-float Ord element is the bare value. A
+        // COMPOUND-containing-float element (a tuple-with-float, wrapped PER-POSITION) is a follow-up — decline
+        // (it is neither a direct float nor `ty_is_ord`).
         Ty::Set(elem) => {
             let elem = (**elem).clone();
-            if !crate::backend::rust::types::ty_is_ord(db, &elem) {
-                return Err(Reject::decline(
-                    "value-doc: float-containing Set element not yet covered (needs __CdzF unwrap)",
-                ));
-            }
             let head = fresh(ctr);
             let kids = fresh(ctr);
             let iter = fresh(ctr);
+            let elem_val = if matches!(elem, Ty::Float(_)) {
+                format!("{iter}.get()")
+            } else if crate::backend::rust::types::ty_is_ord(db, &elem) {
+                iter.clone()
+            } else {
+                return Err(Reject::decline(
+                    "value-doc: compound-float Set element not yet covered (needs per-position __CdzF unwrap)",
+                ));
+            };
             out.push_str(&format!("    let {head} = __b.name(\"set\");\n"));
             out.push_str(&format!("    let mut {kids} = vec![{head}];\n"));
             let mut body = String::new();
-            let enode = doc_value_node(db, &elem, &iter, &mut body, ctr)?;
+            let enode = doc_value_node(db, &elem, &elem_val, &mut body, ctr)?;
             out.push_str(&format!(
                 "    for {iter} in ({val_expr}) {{\n{body}        {kids}.push({enode});\n    }}\n"
             ));
@@ -238,25 +245,30 @@ fn doc_value_node(
         // A MAP → `(map (= k1 v1) (= k2 v2) …)` (ctor word `map`): a `Name "map"` head then, per entry in
         // CANONICAL KEY order, a `List[FieldPair, <key-node>, <value-node>]` (the `=` marker is `Leaf::FieldPair`,
         // as records use). The Rust rep is a `BTreeMap<K, V>`, whose consuming `for (__k, __v) in __r` yields
-        // entries sorted by `K`'s `Ord` = the canonical key order. Fresh binders per level. A FLOAT KEY uses the
-        // `__CdzF{N}` wrapper — decline for now (a value that is a float is fine; only the KEY position wraps).
+        // entries sorted by `K`'s `Ord` = the canonical key order. Fresh binders per level. A DIRECT FLOAT KEY
+        // is the `__CdzF{N}` wrapper, unwrapped via `.get()` (only the KEY position wraps — a float VALUE stays
+        // a bare `f{N}`, so `{kv}.1` walks unchanged). A COMPOUND-float key is a follow-up — decline.
         Ty::Map(k, val_ty) => {
             let kty = (**k).clone();
             let vty = (**val_ty).clone();
-            if !crate::backend::rust::types::ty_is_ord(db, &kty) {
-                return Err(Reject::decline(
-                    "value-doc: float-containing Map key not yet covered (needs __CdzF unwrap)",
-                ));
-            }
             let head = fresh(ctr);
             let kids = fresh(ctr);
             let kv = fresh(ctr);
             let fp = fresh(ctr);
             let entry = fresh(ctr);
+            let key_val = if matches!(kty, Ty::Float(_)) {
+                format!("{kv}.0.get()")
+            } else if crate::backend::rust::types::ty_is_ord(db, &kty) {
+                format!("{kv}.0")
+            } else {
+                return Err(Reject::decline(
+                    "value-doc: compound-float Map key not yet covered (needs per-position __CdzF unwrap)",
+                ));
+            };
             out.push_str(&format!("    let {head} = __b.name(\"map\");\n"));
             out.push_str(&format!("    let mut {kids} = vec![{head}];\n"));
             let mut body = String::new();
-            let knode = doc_value_node(db, &kty, &format!("{kv}.0"), &mut body, ctr)?;
+            let knode = doc_value_node(db, &kty, &key_val, &mut body, ctr)?;
             let vnode = doc_value_node(db, &vty, &format!("{kv}.1"), &mut body, ctr)?;
             out.push_str(&format!(
                 "    for {kv} in ({val_expr}) {{\n{body}        let {fp} = __b.atom_leaf(cadenza_ast::ast::Leaf::FieldPair);\n        let {entry} = __b.list(vec![{fp}, {knode}, {vnode}]);\n        {kids}.push({entry});\n    }}\n"
