@@ -3093,6 +3093,34 @@ pub(crate) fn hoist_resumptive_once(
             }
         }
     }
+    // Site 7 (adv-69 a4-init through-block): a NESTED handle whose SEED (init) is a pure-`let`-wrapped
+    // branch-performing conditional that performs an OUTER (this-ctx) op — `(handle-internal (let ((k true))
+    // (if k (A.ga) 9)) arms body)`. The seed is evaluated in THIS handler's extent (eval passes it to
+    // `reduce_handle` alongside the body), so the block boundary drops the outer perform's advance (a4-init:
+    // 33 not 34) and the fold declines (CDZ0900). FLOAT the pure `let` wrapper OUTSIDE the whole handle —
+    // `(let ((k true)) (handle-internal (if k (A.ga) 9) arms body))` — leaving the conditional as a DIRECT
+    // seed the outer fold threads (the direct-seed control folds → 34). FRESHEN the wrapper binders first so
+    // floating past the handle's arms/body cannot capture a free name there; the wrapper is pure (peel gate),
+    // so the commuting conversion preserves evaluation order + effect count. Keyed on the OUTER ctx via
+    // `block_wrapped_branch_performs`, so an INNER-op-only seed never fires (no over-float of the inner
+    // handler's own shapes).
+    if db.ast.head_name(node) == Some(HANDLE_INTERNAL)
+        && let Some(hi) = db.ast.as_form(node, HANDLE_INTERNAL).map(<[_]>::to_vec)
+        && hi.len() == 3
+        && block_wrapped_branch_performs(db, hi[0], ctx)
+    {
+        let seed_fresh = freshen_local_binders(db, hi[0]);
+        if let Some((wrapper_pairs, inner_cond)) = peel_pure_let_wrapper(db, seed_fresh)
+            && !wrapper_pairs.is_empty()
+            && conditional_branch_performs(db, inner_cond, ctx)
+        {
+            let hi_head = db.push_name(HANDLE_INTERNAL);
+            let new_handle = db.push_list(vec![hi_head, inner_cond, hi[1], hi[2]]);
+            let bindings = db.push_list(wrapper_pairs);
+            let let_head = db.push_name("let");
+            return Some(db.push_list(vec![let_head, bindings, new_handle]));
+        }
+    }
     // A NESTED `handle-internal`'s ARM LIST is opaque to THIS outer hoist WHEN no arm reaches an operation
     // the OUTER handler discharges — those arms are the INNER handler's concern, folded under ITS ctx by the
     // inside-out `reduce_handle(inner)`. Recursing into such an arm treated its shape `((. B op) (p) s (match

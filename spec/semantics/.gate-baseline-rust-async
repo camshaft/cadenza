@@ -8765,7 +8765,6 @@ todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines clea
 todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
 todo	a RECURSIVE runtime tuple escaping as a resource is reclaimed to zero after the host drop
 todo	a String argument handle passed to a peer stays live for a later local read (borrow not move)
-todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a compound built from two distinct peers escapes the entrypoint as a resource
 todo	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
@@ -8947,3 +8946,4 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a block-wrapped OUTER-effect perform in a nested handle's INIT folds to 34 (adv-69 a4-init sub-face)
