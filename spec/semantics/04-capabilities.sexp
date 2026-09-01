@@ -364,7 +364,7 @@
           (do
             (def n (ask.size))
             (def xs (build 1 n #list()))
-            (def m (Map.insert Map.empty n (sum-l xs 0)))
+            (def m #map((= n (sum-l xs 0))))
             (match (Map.lookup m n) ((Some v) (+ (* v 10) n)) ((None _u) -1)))))
       (export main)))
   (host-responses (respond ask.size (: 3 Int64)))
