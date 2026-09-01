@@ -29,10 +29,11 @@ re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user su
 fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
 #7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
 effect breaks were all SHARED). ✅ #7346 CLOSED the UInt64-literal cluster (ascribe `(: v <IntTy>)` for
-unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **4** (was 12; #7355 Map dup-key,
+unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **3** (was 12; #7355 Map dup-key,
 #7357 empty-collection, #7376 erased-sum tuple-payload destructure = 07 Box-Pair/gn3, #7380 erased-sum WRAP-side +
 generic-nominal type-args = 09 rg1, #7393 UInt64-from-context = 06 `(& x <hugelit>)`, #7398 inlined-do-local-fn
-dedup = 02, #7418 erased-newtype Call-return peel = 14b newtype-from-PERFORM. corrected+precondition gate; all
+dedup = 02, #7418 erased-newtype Call-return peel = 14b newtype-from-PERFORM, #7450 consumer-side newtype-unwrap
+operand peel = 09 borrowed-heap-newtype-param. corrected+precondition gate; all
 surface/recompilability TYPE breaks — none wrong-DATA), by family:
   • ✅ EMPTY-COLLECTION ascription-drop (CDZ0203) — CLOSED #7357 (dae2c1b1c2): an empty `#list()`/`#set()`/`#map()`
     re-emitted bare drops its element/key/value type → hop2 undetermined-escape reject. Fix = `ascribe_if_empty`
@@ -48,9 +49,18 @@ surface/recompilability TYPE breaks — none wrong-DATA), by family:
     `Box <free>` vs the produced `Box Int64`) — now renders `(Box Int64)` (mirrors `Ty::Sum`). Closed 09 rg1
     recursive-generic. ⏭️ ONE remaining erased-sum sub-shape: the DEPTH-3 rb3 erased-and-boxed nested-sum (05) — the
     one-level tuple-destructure + wrap don't COMPOSE through a depth-3 chain yet (needs the destructure/wrap to
-    recurse). Plus 09 borrowed-heap-sum-param (likely a reclaim/heap family, not this re-materialization). 🎯 POLICY
+    recurse). 🎯 POLICY
     (achieved for the closed shapes): FULLY RE-MATERIALIZE — nominal identity survives; validate gate + value-A/B
     (breaker verifies rg1).
+  • ✅ FOLDED newtype-UNWRAP operand (CDZ0203) — CLOSED #7450 (ca61a7a201): the "09 borrowed-heap-sum-param" break was
+    NOT a reclaim/heap family (earlier guess) — it's the newtype-unwrap type-drop. `(type W (Mk BigInt))`,
+    `(match w ((Mk x) ((. Int64 of) x)))`: the single-variant match FOLDS, so `BigInt.of`'s operand becomes a bare
+    read of param `w` typed at the INNER (BigInt) but DECLARED as nominal W → bare `w` recompiles as W → `Int64.of`
+    gets W → CDZ0203. Fix = `emit_binder_newtype_inner_peel` re-inserts `(match w ((Mk x) x))` at the CONSUMER
+    (`Core::BigIntToI64` operand) — the PARAM/consumer twin of #7418 (Call-return) + #7376/#7380 (SumPayload); all 3
+    now share `emit_newtype_unwrap_peel`. 🪤 the peel MUST be consumer-driven — a first attempt at the `Core::Param`
+    READ arm regressed 06 (WrapT-over-tuple double-match: a binder in a variant-MATCH-scrutinee position needs the
+    NOMINAL). Value-A/B verified; guard fires only on the folded shape (no passing-program rewrite).
     Repros: /tmp/gn3.sexp, /tmp/rg1.sexp; writeup .claude/fleet/queue/adv-emitter-incoherent-rematerialization-of-erased-generic-sums.md.
     NOTE: #7355 verify surfaced a PRE-EXISTING constructor-side dup-key bug (const-map CONSTRUCTOR holds both
     folded-equal entries on the DIRECT leg) — routed to v-compiler-primitives (const-map build), NOT my lane.
@@ -70,8 +80,9 @@ surface/recompilability TYPE breaks — none wrong-DATA), by family:
   • ✅ UInt64-FROM-CONTEXT (CDZ0301, 06) — CLOSED #7393 (e4adcc37d4): `(& x <hugelit>)`'s literal solved to signed
     Int64 while its value > i64::MAX → self-contradictory `(: hugelit Int64)`. Fix (simpler than Arith-threading):
     when eff_ty is SIGNED but the value overflows signed range at that width, ascribe the UNSIGNED type at that
-    width (the only fixed type holding it) → `(: hugelit UInt64)`. Also (still open, LOW): newtype-unwrap type-drop
-    `(match u ((Mk n) n))`→bare `u` + Int8 narrow-signed type-drop (tuple Int8→Int64) — the "emit drops the precise
+    width (the only fixed type holding it) → `(: hugelit UInt64)`. Also (newtype-unwrap type-drop `(match u ((Mk n) n))`→bare
+    `u` CLOSED #7450 via the consumer-side operand peel — see the FOLDED newtype-UNWRAP family above); STILL OPEN, LOW:
+    Int8 narrow-signed type-drop (tuple Int8→Int64) — the "emit drops the precise
     type" family (may overlap the generic-sum ascription work). NO Rational break in the true set (Rational is SHARED/OK). 🪤 value_ab HARNESS CAVEAT: it passes FIXED args regardless of `main` arity, so a
 MULTI-arg main gets a malformed invocation → FALSE-POSITIVE mismatch (bit me: gcd "3041 vs 3040" was fake; gcd
 MATCHES with correct 2 args). Confirm any value_ab mismatch with arity-correct args before believing it.
