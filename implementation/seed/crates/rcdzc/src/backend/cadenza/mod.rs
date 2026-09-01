@@ -214,6 +214,20 @@ struct BinderEnv {
     spec_merge: std::collections::HashMap<usize, usize>,
 }
 
+/// True iff `ty` is a fully-solved NON-DEFAULT-width numeric: a non-`Float64` float (`Float32`) or a
+/// non-`Int64` int (`UInt*` / `Int8/16/32`). Such a type, when its sub-expression leaves keep the DEFAULT
+/// width (a `Deferred` float / an `Int64` literal), must be re-ASCRIBED on emit — else the bare leaves
+/// re-ground to the default width on recompile, losing the narrow (`Float32` binary32 rounding, a `UInt8`
+/// overflow trap). Used by the def-tail wrap (`emit_def`) and the nested-node wrap (`Core::If` emit).
+fn is_nondefault_numeric(ty: &Ty) -> bool {
+    ty.is_fully_solved()
+        && match ty {
+            Ty::Float(ft) => ft.ground_width() != 64,
+            Ty::Int(it) => !(it.ground_signed() && it.ground_width() == 64),
+            _ => false,
+        }
+}
+
 /// The deterministic synthesized surface name for the `i`th kept `let` binding encountered in an emit
 /// walk. Positional (not derived from the binder's `StructId`, which differs between the two arenas of a
 /// round-trip), so compile-then-recompile mints the SAME name for the structurally-same binding. The
@@ -734,13 +748,7 @@ fn emit_def(
         // attempt), and its f32-EXACT literal case passes un-ascribed anyway. Redundant-but-safe when the body
         // is already the narrow type (recompile folds the ascription). Fully-solved result only.
         Some(rt)
-            if rt.is_fully_solved()
-                && match &rt {
-                    Ty::Float(ft) => ft.ground_width() != 64,
-                    Ty::Int(it) => !(it.ground_signed() && it.ground_width() == 64),
-                    _ => false,
-                }
-                && matches!(core_of(db, body), Core::Arith { .. } | Core::If { .. }) =>
+            if is_nondefault_numeric(&rt) && matches!(core_of(db, body), Core::Arith { .. }) =>
         {
             let body_node = emit_expr(db, b, body, None, &mut env, emitted)?;
             let colon = b.name(":");
@@ -1530,7 +1538,22 @@ fn emit_expr_viewed(
             let c = emit_expr(db, b, cond, None, env, emitted)?;
             let t = emit_expr(db, b, then_, ctx.clone(), env, emitted)?;
             let e = emit_expr(db, b, else_, ctx, env, emitted)?;
-            Ok(b.list(vec![head, c, t, e]))
+            let if_node = b.list(vec![head, c, t, e]);
+            // Ascribe a NON-DEFAULT-width numeric if (`Float32` / narrow int) so its arm leaves' DEFAULT-width
+            // literals (a `Deferred` float, an `Int64`) don't re-ground to the default on recompile — the
+            // non-default-width-drop #7551 fixes at the def TAIL, here for a NESTED if (a compare/arith operand,
+            // a tuple element): `(< (: (if c 0.3 9.9) Float32) …)` else loses the operand's Float32 → an f64
+            // compare (06-numeric Float32 ordering). Only a GENUINE `Core::If` reaches this arm (a scalar match
+            // is `Core::Match`), so there is no match-lowered-invalid-wasm hazard; a redundant ascription on an
+            // already-narrow if folds on recompile (byte-idempotent — a def-tail if is single-ascribed here,
+            // #7551's gate no longer covers `Core::If`).
+            if is_nondefault_numeric(&eff_ty) {
+                let colon = b.name(":");
+                let ty_node = b.name(eff_ty.render_name(&db.name_ctx()).as_str());
+                Ok(b.list(vec![colon, if_node, ty_node]))
+            } else {
+                Ok(if_node)
+            }
         }
         // A kept multi-use binding sequence `(let ((<n0> <v0>) …) <body>)`. Each binding is `(init, init)`
         // — keyed only by its initializer occurrence — so a fresh surface name is minted deterministically
