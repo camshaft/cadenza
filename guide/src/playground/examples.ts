@@ -1239,6 +1239,17 @@ export const EXAMPLES: Example[] = [
   (export main))`,
     expected: "(: ((. Qty of) 5000.0 ((. Unit base) #\"meter\")) (Qty Float64 ((. Unit base) #\"meter\")))",
   },
+  {
+    id: "unit-arithmetic",
+    name: "Adding mixed units",
+    theme: "numbers",
+    surface: "sexpr",
+    source: `(do
+  (def (main) (Qty.value (+ (Qty.of 1.0 (Unit.of #"km")) (Qty.of 500.0 (Unit.of #"m")))))
+
+  (export main))`,
+    expected: "1500.0",
+  },
   // </generated:examples>
 ];
 
