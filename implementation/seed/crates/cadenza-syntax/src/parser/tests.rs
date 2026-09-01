@@ -1403,27 +1403,12 @@ fn an_unterminated_literal_names_its_specific_cause() {
     );
 }
 
-#[test]
-fn missing_comma_in_list_recovers() {
-    // `[1 2 3]` — every element is recovered, with one missing-`,` error per gap. The literal
-    // desugars to the native `#list(1 2 3)` ctor (head `Leaf::Ctor(List)`, recognized by kind
-    // identity), so confirm the ctor kind + count the element children (all but the head).
-    let p = read_ml("[1 2 3]");
-    assert!(!p.ok());
-    let a = &p.arenas;
-    assert_eq!(
-        a.compound_ctor_leaf(a.root),
-        Some(crate::ast::CompoundCtor::List)
-    );
-    let crate::ast::Struct::List(items) = a.get(a.root) else {
-        panic!("list literal is a List node")
-    };
-    assert_eq!(
-        items.len() - 1,
-        3,
-        "all three elements recovered: {items:?}"
-    );
-}
+// `missing_comma_in_list_recovers` (`[1 2 3]` — every element is recovered despite the missing `,`, into
+// the native `#list(1 2 3)` ctor) MIGRATED to the spec/syntax corpus (parser-corpus): ml/503-list-missing-
+// comma pins the DECLINE (error.txt `expected \`,\``) AND — via the new `recovered.sexp` recovery-golden
+// (harness extension: render_sexpr of the RECOVERED arena on a decline) — the recovered partial tree
+// `#list(1 2 3)`, i.e. all three elements survive as a well-formed List. This is the first consumer of the
+// recovered.sexp capability the corpus grew for error-recovery-quality tests.
 
 #[test]
 fn missing_closer_is_reported_and_recovered() {
