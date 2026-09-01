@@ -3745,6 +3745,87 @@
             fi
           '';
 
+        # ── COARSE per-FILE GATE check (v-nix gateCheckNix, 2026-09-01) — the storm-free nix replacement for the
+        # in-process `gateCheck` (`cargo xtask gate --check`), reusing the coarse machinery but as a
+        # FAIL-ON-REGRESSION check (drops --emit-verdict; cdz-run --grade --baseline exits NON-ZERO on a case
+        # graded WORSE than its committed baseline, exactly like the per-case mkCorpusExec gate). ~35 file drvs
+        # (cheap, no per-case-CA storm) + the nix grader that captures warnings via --compile-diag/--diagnostics
+        # (fixes the in-process gate's warning-capture blind spot). Coverage-equivalent to gateCheck: same
+        # case-set (corpusFileNames/shred), same cdz-run --grade + canonical_output_value (single-sourced #7329),
+        # + corpusVanishedCheck (already in localGate) for the global vanished half. INTENDED localGate swap:
+        # gateCheck → corpusGateCoarse (+ keep corpus-rust gate + corpusVanishedCheck).
+        mkCorpusGateFileCoarse = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            expected = corpusCaseCount file;
+          in
+          pkgs.runCommand "corpus-gate-coarse-${name}"
+            {
+              nativeBuildInputs = [ cdzCompile cdzRun ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            n=0
+            for case in ${shred}/${name}/*/; do
+              [ -d "$case" ] || continue
+              case="''${case%/}"
+              work="$TMPDIR/work"; rm -rf "$work"; mkdir -p "$work"
+              # compile (mirrors mkCorpusBuild)
+              inputs=("ast:main=$case/program.ast")
+              entry=()
+              for m in "$case"/module-*.ast; do
+                if [ -e "$m" ]; then
+                  mn=$(basename "$m" .ast); mn=''${mn#module-}
+                  inputs+=("ast:$mn=$m")
+                  entry=(--entry main)
+                fi
+              done
+              cfg=()
+              if [ -e "$case/wit-world.ast" ]; then cfg+=("wit-world:w=$case/wit-world.ast"); fi
+              if [ -e "$case/component-name" ]; then cfg+=(--component-name "$(cat "$case/component-name")"); fi
+              if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$work/emit.wasm" --emit-diagnostics "$work/diagnostics" 2>"$work/compile.err"; then
+                status=0
+              else
+                status=$?
+              fi
+              for p in "$case"/peer-*.ast; do
+                [ -e "$p" ] || continue
+                pn=$(basename "$p" .ast)
+                cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
+                  -o "$work/$pn.wasm" 2>>"$work/compile.err" || true
+              done
+              # GRADE against the committed baseline — NO --emit-verdict, so cdz-run EXITS NON-ZERO on a
+              # regression (pass→worse), which `set -e` turns into a derivation failure (the gate fails). Same
+              # grade call as the per-case mkCorpusExec gate.
+              args=(--grade "$case/test-run.ast" --compile-status "$status" --compile-diag "$work/compile.err"
+                    --baseline ${./spec/semantics/.gate-baseline})
+              if [ -e "$work/diagnostics" ]; then args+=(--diagnostics "$work/diagnostics"); fi
+              if [ -e "$work/emit.wasm" ]; then args=("$work/emit.wasm" "''${args[@]}"); fi
+              if [ -e "$case/component-name" ]; then args+=(--component-name "$(cat "$case/component-name")"); fi
+              for pw in "$work"/peer-*.wasm; do
+                [ -e "$pw" ] || continue
+                pn=$(basename "$pw" .wasm)
+                args+=(--peer "$(cat "$case/$pn.iface")=$pw")
+              done
+              args+=(--runtime ${runtimeDebug})
+              cdz-run "''${args[@]}"   # exit != 0 ⇒ regression ⇒ set -e fails the file-gate derivation
+              n=$((n + 1))
+            done
+            if [ "$n" -ne ${toString expected} ]; then
+              echo "corpus-gate-coarse ${name}: graded $n cases, expected ${toString expected}" >&2; exit 1
+            fi
+            echo "ok: corpus-gate-coarse ${name} — ${toString expected} cases graded vs baseline, no regression" > "$out"
+          '';
+        # `.#checks.corpus-gate-coarse` — the whole-corpus coarse gate (every file's coarse gate must pass).
+        corpusGateCoarse = pkgs.runCommand "corpus-gate-coarse" { } ''
+          ${pkgs.lib.concatMapStringsSep "\n"
+              (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
+                ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} > /dev/null'')
+              corpusFileNames}
+          echo "ok: corpus-gate-coarse — ${toString (builtins.length corpusFileNames)} files graded vs baseline via the coarse per-file gate" > "$out"
+        '';
+
         # `.#packages.corpus-verdicts-coarse` — the whole-corpus COARSE harvest (~35 file derivations), the
         # storm-free replacement for corpusVerdictsAll that apps.save-baseline will consume once v-corpus-harness
         # signs off the parity acceptance test. Kept SEPARATE from corpusVerdictsAll for now so the existing gate
@@ -6345,6 +6426,11 @@
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
             corpus-nativize = corpusNativizeCheck;
+            # `.#checks.<sys>.corpus-gate-coarse` — the gateCheckNix prototype: the storm-free coarse per-file
+            # nix gate (fail-on-regression vs .gate-baseline), intended to REPLACE the in-process gateCheck in
+            # localGate once verified whole-corpus-green on current main (+ it fixes the warning-capture blind
+            # spot via the nix grader). NOT in the localGate fail-set yet — spike/verification.
+            corpus-gate-coarse = corpusGateCoarse;
             # `nix build .#checks.<sys>.capability-error` — no corpus case pins CDZ0900 as an (error …);
             # also folded into the localGate fail-set (teeth under self-merge). Scan by v-corpus-harness #6924.
             capability-error = capabilityErrorCheck;
