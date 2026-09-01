@@ -4856,17 +4856,15 @@ impl Db {
     /// real sum, the ctor is one of its variants) — the shape is already accepted by `malformed_exports`
     /// (`is_ctor_export_shape`), but the linker's `as_ctor_export` records it WITHOUT checking the type/ctor
     /// exist, so `(export (. T Nonesuch))` / `(export (. undeclared A))` was silently accepted.
-    pub fn ctor_export_elements(&self) -> Vec<(StructId, StructId, StructId)> {
+    pub fn ctor_export_elements(&self) -> Vec<CtorExportElem> {
         let mut out = Vec::new();
         for item in top_items(&self.ast) {
             let Some(tail) = self.ast.as_form(item, "export") else {
                 continue;
             };
             for &s in tail {
-                if is_ctor_export_shape(&self.ast, s)
-                    && let Some(dot) = self.ast.as_form(s, ".")
-                {
-                    out.push((s, dot[0], dot[1]));
+                if let Some(elem) = parse_ctor_export(&self.ast, s) {
+                    out.push(elem);
                 }
             }
         }
@@ -4874,17 +4872,78 @@ impl Db {
     }
 }
 
-/// Whether `s` is a well-formed CONSTRUCTOR-EXPORT element — the opaque-types export surface `(. T A)`
-/// (the handle + the named constructor `A`) or `(. T *)` (the handle + ALL constructors, the wildcard).
-/// A `(. type ctor)` list whose BOTH segments are names (the ctor may be the reserved `*`). Mirrors
-/// `link::as_ctor_export`'s shape recognition, shared so `db::malformed_exports` treats a valid
-/// ctor-export as well-formed (not the misleading "an export names a definition") while the linker reads
-/// its visibility. A `(. T)` / `(. T A B)` / a non-name segment is NOT this shape (a genuinely malformed
-/// export element).
-fn is_ctor_export_shape(ast: &Arenas, s: StructId) -> bool {
-    ast.as_form(s, ".").is_some_and(|tail| {
-        tail.len() == 2 && ast.as_name(tail[0]).is_some() && ast.as_name(tail[1]).is_some()
+/// A parsed CONSTRUCTOR-EXPORT element — the type-handle name, the constructor key (`*` for the wildcard),
+/// and the nodes a diagnostic/fix anchors to. Recognized in TWO surface forms (mirrors
+/// `link::as_ctor_export`): the member-access LIST `(. T A)` / `(. T *)`, and the dotted WILDCARD ATOM
+/// `T.*` (the reader keeps `*` — a reserved, non-identifier final member segment — UNsplit, so `T.*` reads
+/// as one atom rather than desugaring to a `(. T *)` list the way a named ctor `T.A` does). For the list
+/// the type/ctor are distinct nodes (`ty_anchor`/`ctor_anchor` point at each); for the atom there is only
+/// the one atom node, so a type-name fix must RECONSTRUCT the whole atom (`is_atom` flags this).
+pub struct CtorExportElem {
+    /// The export element node — where a diagnostic anchors.
+    pub elem: StructId,
+    /// The type-handle name (`T` / `Colr`).
+    pub ty_name: String,
+    /// The constructor key — a variant name, or the reserved `*` for "all constructors".
+    pub ctor_key: String,
+    /// The node a type-name rename fix targets (list: the `T` node; atom: the whole atom).
+    pub ty_anchor: StructId,
+    /// The node a constructor-name rename fix targets (list: the `A` node; atom: the whole atom — unused,
+    /// since an atom ctor-export is always the `*` wildcard, which skips the per-ctor check).
+    pub ctor_anchor: StructId,
+    /// True for the dotted-atom form `T.*`: a type-name fix replaces the WHOLE atom, so its replacement
+    /// text must carry the `.*` tail (`Colr.*` -> `Color.*`), not the bare type name.
+    pub is_atom: bool,
+}
+
+/// Parse `s` as a CONSTRUCTOR-EXPORT element, or `None` if it is not one (a bare name, an integer
+/// projection, a malformed shape). See [`CtorExportElem`] for the two recognized surface forms.
+fn parse_ctor_export(ast: &Arenas, s: StructId) -> Option<CtorExportElem> {
+    // FORM 1 — the member-access LIST `(. T A)` / `(. T *)` (the explicit form, and what a named dotted
+    // ctor `T.A` desugars to). BOTH segments must be names (the ctor may be the reserved `*`).
+    if let Some(tail) = ast.as_form(s, ".") {
+        if tail.len() != 2 {
+            return None;
+        }
+        let ty = ast.as_name(tail[0])?;
+        let key = ast.as_name(tail[1])?;
+        return Some(CtorExportElem {
+            elem: s,
+            ty_name: ty.to_string(),
+            ctor_key: key.to_string(),
+            ty_anchor: tail[0],
+            ctor_anchor: tail[1],
+            is_atom: false,
+        });
+    }
+    // FORM 2 — the dotted WILDCARD ATOM `T.*` (mirrors `link::as_ctor_export` FORM 2). Without this the
+    // COMPILE-side validation never saw the wildcard atom: `db::exports`' scan pushed the literal `"T.*"`
+    // as a bare export name that resolves to no definition, so `(export T.*)` fell through to the generic
+    // "names no definition" (CDZ0101) instead of the ctor-export validator's sum-type / did-you-mean
+    // diagnostics — while `link` already resolved the same atom via its own FORM 2. Split on the LAST `.`
+    // so a namespaced type reads correctly.
+    let name = ast.as_name(s)?;
+    let (ty, key) = name.rsplit_once('.')?;
+    if ty.is_empty() || key.is_empty() {
+        return None;
+    }
+    Some(CtorExportElem {
+        elem: s,
+        ty_name: ty.to_string(),
+        ctor_key: key.to_string(),
+        ty_anchor: s,
+        ctor_anchor: s,
+        is_atom: true,
     })
+}
+
+/// Whether `s` is a well-formed CONSTRUCTOR-EXPORT element (the list `(. T A)` / `(. T *)` or the wildcard
+/// atom `T.*`). Shared so `db::malformed_exports` treats a valid ctor-export as well-formed (not the
+/// misleading "an export names a definition"), the `db::exports` scan routes it to the ctor-export
+/// validator rather than the bare-export path, and the linker reads its visibility — all off one
+/// recognizer ([`parse_ctor_export`]).
+fn is_ctor_export_shape(ast: &Arenas, s: StructId) -> bool {
+    parse_ctor_export(ast, s).is_some()
 }
 
 /// Build the parent index AND the child-position index in one pass: for each structure occurrence,
@@ -5955,6 +6014,13 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
             // per element). Reading only `tail.first()` — the prior behavior — SILENTLY dropped every name
             // past the first, so a valid `(export main helper)` published only `main`.
             for &s in tail.iter() {
+                // A CONSTRUCTOR-EXPORT element — the list `(. T A)` / `(. T *)` (`as_name` is `None`, so
+                // it was already skipped) OR the wildcard ATOM `T.*` (`as_name` is `Some("T.*")`, so it
+                // WOULD be pushed as a bare export naming no definition → a misleading CDZ0101). Route both
+                // to `ctor_export_elements`' semantic validation, not the bare-export path.
+                if is_ctor_export_shape(ast, s) {
+                    continue;
+                }
                 if let Some(name) = ast.as_name(s) {
                     exports.push(Export {
                         name: name.to_string(),
