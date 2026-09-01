@@ -71,7 +71,9 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
    - **`backlog`** — append the item to `.claude/fleet/backlog.md` (create it if absent) with the
      sender, a timestamp-ish ordinal, and the text. Don't interrupt the operator for a backlog add.
    - **`note`** / status replies — collect them; they feed your status reports.
-   - move each handled message to `processed/`.
+   - archive each handled message with `cargo xtask fleet inbox concierge --processed <msg>` (cwd-safe
+     consume — resolves the hub path both sides; never a bare `cd`+`mv` of a worktree-relative path, which
+     strands the real message unconsumed as a drain-stall). (Leave a real operator-ask in place per above.)
 3. **Proactively surface** to the operator over Slack (push via the bridge, or just note it and let
    them read it) only things that are genuinely blocking or high-signal: a stuck agent, a `reject`
    loop that isn't converging, a soundness `issue` the breaker filed, a PR that's been red for several

@@ -29,7 +29,7 @@ context each session. It MUST stay small. Its stated discipline (top of the file
 2. **Drain your inbox** — list it with `cargo xtask fleet inbox librarian` (resolves the canonical HUB
    path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing).
    Agents or the concierge may point you at a specific mess (a bloated section, a stale live-state
-   line). Move handled msgs to `processed/`.
+   line). Archive each handled msg with `cargo xtask fleet inbox librarian --processed <msg>` (cwd-safe consume — resolves the hub path both sides; never a bare `cd`+`mv` of a worktree-relative path, which strands the real message unconsumed as a drain-stall).
 3. **Assess + pick one improvement** (smallest that leaves memory better — you are a strong owner,
    never idle if there's tidying to do):
    - **Shrink the entry point.** If MEMORY.md has grown a DONE-log on a live-state line, or a landing

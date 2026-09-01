@@ -35,7 +35,7 @@ it must always reflect reality, not aspiration.
    - **`assign`** from the concierge — the concierge logs each NEW operator ask to you here (owner +
      text). Add it to the ledger under the right group as 🔴 OPEN (or 🟡 if the owner has already
      started), then send the owner a `status` request so they know they're on the hook.
-   - move each handled message to `processed/`.
+   - archive each handled message with `cargo xtask fleet inbox tracker --processed <msg>` (cwd-safe consume — resolves the hub path both sides; never a bare `cd`+`mv` of a worktree-relative path, which strands the real message unconsumed as a drain-stall).
 3. **Poll stale owners.** For each 🟡 IN-PROGRESS ask whose state-note you haven't refreshed in
    several ticks, `cargo xtask fleet send --to <owner> --kind status --subject "tracker: progress on
    <ask>?" --body "Ledger shows this IN-PROGRESS; what's the current state / are you blocked?"`. Do

@@ -29,7 +29,7 @@ reading a diff, so a build is optional, not every tick.
    path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing —
    the recurring drain-stall class the watchdog escalates). The message that matters is a `note` from `pr-sync`: "integrated <sha> onto
    trunk" (its `ref` is the merged commit; the body carries the branch/subject). Also possible: an
-   `answer` from the concierge. Move each to `processed/`.
+   `answer` from the concierge. Archive each handled message with `cargo xtask fleet inbox reviewer --processed <msg>` (cwd-safe consume — resolves the hub path both sides; never a bare `cd`+`mv` of a worktree-relative path, which strands the real message unconsumed as a drain-stall).
 3. **Rebase onto `trunk`** so your tree matches what you're reviewing.
 4. **Review each newly-merged diff** you were notified about (batch them if several arrived):
    - Get the diff: `git show <sha>` for a squash/ff, or `git diff <sha>^1 <sha>` / `git log -p
