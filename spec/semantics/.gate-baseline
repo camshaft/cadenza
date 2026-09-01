@@ -8629,11 +8629,11 @@ pass	sn3 the empty #set() literal composes with insert
 pass	sn3 the snapshot crosses to a DEF helper — the crossed state tuple is consumed by a function parameter, not a body match
 pass	sos1 a SET-OF-STRINGS state with ARM-BUILT rope keys — the concat-built key dedups structurally against the FLAT seed literal, parity routes which inserts are no-ops
 pass	sp1 SCALAR param + 2-field record result lifts (minimal face, no spill)
-pass	sp1 a FLIPPED tuple-payload spine (rec-ref at Elem 0) leaks the full spine (position-matrix cell)
+pass	sp1 a FLIPPED tuple-payload spine (rec-ref at Elem 0) RECLAIMS the full spine (position-matrix cell)
 pass	sp2 SCALAR param + 20-field record result lifts (spill-sized, same fix)
-pass	sp2 a RECORD-payload spine leaks the full spine (position-matrix cell)
+pass	sp2 a RECORD-payload spine RECLAIMS the full spine (position-matrix cell)
 pass	sp3 SCALAR param + record result with an Option field (Some side)
-pass	sp3 a THREE-tuple payload spine (rec-ref at Elem 2) leaks the full spine (position-matrix cell)
+pass	sp3 a THREE-tuple payload spine (rec-ref at Elem 2) RECLAIMS the full spine (position-matrix cell)
 pass	sp3n SCALAR param + record result with an Option field (None side, branch-selected)
 pass	sp4 SCALAR param + bare option result
 pass	sp5 SCALAR param + list result
@@ -8665,11 +8665,11 @@ pass	srf1 fifty runtime-keyed persistent Set.removes against an immortal 40-elem
 pass	srf2 intersection and difference off the immortal 40-set with a runtime probe: exact results, immortal untouched
 pass	srw1 a GROWING STRING state with a computed slice window per dispatch — each grow appends two chars, the arm answers the byte-len of an interior window built from the drawn offset
 pass	ss1 a STRING handler state grows per dispatch — each arm returns the pre-growth length, growth is op-arg-branchy
-pass	ss1 a TAIL self-loop walk over a tuple-payload sum spine still leaks the full spine (the #4597 fix's boundary)
+pass	ss1 a TAIL self-loop walk over a tuple-payload sum spine RECLAIMS the full spine (INC1 pt3 crossed the #4597 fix's boundary)
 pass	ss2 a STRING state GROWS by a parity-picked suffix per dispatch — byte-len pins the concatenation history
 pass	ss2 string state grows across a DO sequence — discarded draws still advance the rope
-pass	ss2 the NON-tail walk over the same tuple-payload spine leaks identically (the tail/non-tail readings agree at this boundary)
-pass	ss3 fifty framed tail walks over fresh tuple-payload spines leak LINEARLY (per-frame full-spine; flips with the tuple-payload increment)
+pass	ss2 the NON-tail walk over the same tuple-payload spine RECLAIMS identically (the tail/non-tail readings agree at this boundary)
+pass	ss3 fifty framed tail walks over fresh tuple-payload spines RECLAIM per-frame (was per-frame full-spine leak; flipped by the tuple-payload increment)
 pass	ss3 nested SAME-effect handlers with independent STRING states — inner self-doubles, outer appends
 pass	ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0
 pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned
