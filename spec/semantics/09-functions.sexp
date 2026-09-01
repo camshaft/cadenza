@@ -13410,3 +13410,62 @@
            split between two rests, so at most one is allowed. Rejected with the coded placement error.")
   (input (do (def (two (.. xs) (.. ys)) 0) (def (main) (two 1 2)) (export main)))
   (error CDZ0201 (message "AT MOST ONE rest parameter")))
+
+; --- Call-site SPLAT: `(.. t)` spreads a tuple's elements into a call's argument list -----------
+; DESIGN-variable-arity-functions.md addendum A.2: at a CALL, a `(.. t)` argument whose operand is a
+; compile-time-known TUPLE spreads that tuple's elements into the argument list positionally —
+; `f(.. (a, b, c))` ≡ `f(a, b, c)`. The tuple's arity is static (so the argument positions are fixed),
+; but its element VALUES may be runtime. It composes with inline arguments and with a rest parameter on
+; the callee. (The dual of the rest PARAMETER: the callee gathers, the caller spreads.)
+(case
+  "a tuple splat spreads its elements into a call's arguments"
+  (doc
+    "`(add3 (.. (tuple 1 2 3)))` spreads the 3-tuple into `add3`'s three parameters — `a=1, b=2, c=3`
+           — giving 6. Pins the basic call-site splat: a tuple argument prefixed `..` supplies several
+           positional arguments at once.")
+  (input
+    (do
+      (def (add3 (: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c)))
+      (def (main) (add3 (.. #tuple(1 2 3))))
+      (export main)))
+  (output (: 6 Int64)))
+
+(case
+  "a tuple splat composes with inline arguments"
+  (doc
+    "`(add3 1 (.. (tuple 2 3)))` supplies the first argument inline and spreads the remaining two from a
+           tuple — `a=1, b=2, c=3` → 6. Pins that inline arguments and a splat interleave positionally.")
+  (input
+    (do
+      (def (add3 (: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c)))
+      (def (main) (add3 1 (.. #tuple(2 3))))
+      (export main)))
+  (output (: 6 Int64)))
+
+(case
+  "a tuple splat's element values may be runtime"
+  (doc
+    "The tuple's ARITY is static (fixing the argument positions) but its VALUES need not be constant:
+           `(add2 (.. (tuple n 10)))` for a boundary parameter `n` spreads `n` and `10` into `add2`,
+           giving `n + 10` (5 → 15). Pins that a splat spreads positions statically while carrying runtime
+           element values through.")
+  (input
+    (do
+      (def (add2 (: a Int64) (: b Int64)) (+ a b))
+      (def (main (: n Int64)) (add2 (.. #tuple(n 10))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case
+  "a tuple splat feeds a rest parameter — the caller spreads, the callee gathers"
+  (doc
+    "The two halves compose: `(count (.. (tuple 1 2 3)))` spreads the tuple into three arguments, which
+           `count`'s list-rest parameter then gathers back into `xs : List Int64` — length 3. Pins that
+           call-site splat and a rest parameter are duals that combine.")
+  (input
+    (do
+      (def (count (.. (: xs (List Int64)))) (List.len xs))
+      (def (main) (count (.. #tuple(1 2 3))))
+      (export main)))
+  (output (: 3 Int64)))
