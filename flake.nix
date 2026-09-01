@@ -3466,6 +3466,32 @@
         # under `spec/platform`, never here). Enumerated at EVAL time from the SOURCE dir (`readDir`, no IFD).
         corpusFileNames = builtins.filter (pkgs.lib.hasSuffix ".sexp")
           (builtins.attrNames (builtins.readDir ./spec/semantics));
+        # ── corpus emit.wasm WARM TARGET (v-wasm-oracle, for v-nix's cache-warm.yml) ────────────────────────
+        # Realize every per-case `emit.wasm` across the whole corpus so a CI cache-warm run pushes the full
+        # per-case emit set to cachix. mkCorpusBuild is `__contentAddressed`, so this dedups with the corpus
+        # gate/harvest and, once warm, makes the wasm-oracle emit-extraction harness (oracleWasmCaseDirs, which
+        # reuses these exact mkCorpusBuild outputs) near-free — unblocking the uncapped full-corpus Core↔wasm
+        # differential. `cat`-ing each build's marker into `$out` adds the store dependency (string context) so
+        # building this attr forces the whole per-case emit graph WITHOUT a buildInput.
+        corpusEmitWasmWarm = pkgs.runCommand "corpus-emit-wasm-warm"
+          {
+            builds = pkgs.lib.concatLists (map
+              (f:
+                let
+                  stem = pkgs.lib.removeSuffix ".sexp" f;
+                  file = ./spec/semantics + "/${f}";
+                  shred = mkCorpusShred { name = stem; inherit file; };
+                  n = corpusCaseCount file;
+                in
+                builtins.genList
+                  (i: mkCorpusBuild { name = stem; inherit shred; idx = pkgs.lib.fixedWidthNumber 4 i; })
+                  n)
+              corpusFileNames);
+          } ''
+          : > "$out"
+          for b in $builds; do echo "$b" >> "$out"; done
+          echo "corpus-emit-wasm-warm: realized $(wc -l < "$out") per-case corpus emit.wasm builds" >&2
+        '';
         # `corpus-<file>` per-file aggregates, mapped over every corpus file — each shreds its file once and
         # runs a per-case build→exec chain. The `corpus` TOP-LEVEL aggregate forces them all (so `nix flake
         # check` covers the whole corpus through the per-case caching graph, and CI can build/cache one file
@@ -5658,6 +5684,10 @@
         # talos + its 9 lake deps unpacked (raw material for oracle-lean's offline .lake/packages) — buildable
         # standalone so v-wasm-oracle can inspect the layout while wiring the lakefile require + manifest.
         packages.talos-lake-packages = talosLakePackages;
+        # Realize every per-case corpus emit.wasm so a CI cache-warm run pushes them to cachix (v-wasm-oracle;
+        # v-nix wires `.#packages.<sys>.corpus-emit-wasm-warm` into cache-warm.yml). Warms the wasm-oracle
+        # emit-extraction harness's mkCorpusBuild reuse → the uncapped full-corpus Core↔wasm differential.
+        packages.corpus-emit-wasm-warm = corpusEmitWasmWarm;
         # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
         packages.guide-shred = guideShred;
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
