@@ -20,11 +20,78 @@ pub fn render_value_doc(bytes: &[u8]) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("render_binary of a rust value doc failed: {e:?}"))
 }
 
+/// Interpret a rust driver's captured stdout as the graded value string. If it carries the value-doc MARKER
+/// (`CDZDOC:<hex>` — emitted by the flag-gated value-doc path, `cdz_rust_render::value_doc_render_scalar`),
+/// hex-decode the bytes and render via the ONE canonical printer ([`render_value_doc`]). Otherwise pass the
+/// stdout through UNCHANGED (the default string-render path). Marker-detection is flag-INDEPENDENT and safe:
+/// a string render never starts with `CDZDOC:`, so a non-marker stdout returns as-is (byte-identical to
+/// before) — both gates can route their captured value through this unconditionally.
+pub fn interpret_run_stdout(raw: &str) -> Result<String> {
+    let raw = raw.trim_end();
+    match raw.strip_prefix("CDZDOC:") {
+        Some(hex) => render_value_doc(&hex_decode(hex)?),
+        None => Ok(raw.to_string()),
+    }
+}
+
+/// Decode a lowercase-hex byte string (the `CDZDOC:` payload) to bytes. Errors on an odd length or a
+/// non-hex digit (a corrupt marker → a graded `BadArtifact`, never a silent mis-render).
+fn hex_decode(hex: &str) -> Result<Vec<u8>> {
+    let hex = hex.trim();
+    if !hex.len().is_multiple_of(2) {
+        anyhow::bail!("value-doc marker hex has odd length {}", hex.len());
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("value-doc marker hex byte at {i}: {e}"))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use cadenza_ast::ast::{Builder, IntValue, Leaf, Radix};
     use cadenza_ast::codec;
+
+    // The full CONSUMER round-trip through the MARKER protocol: build the `(: 42 Int64)` doc, hex-encode it
+    // with the `CDZDOC:` prefix EXACTLY as the emitted driver will, and assert `interpret_run_stdout` decodes
+    // + renders it to the canonical surface. Proves the marker + hex + render_binary read path end-to-end.
+    #[test]
+    fn interpret_run_stdout_decodes_the_marker() {
+        let mut b = Builder::new();
+        let colon = b.name(":");
+        let val = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_i64(42),
+            radix: Radix::Dec,
+        });
+        let ty = b.name("Int64");
+        let root = b.list(vec![colon, val, ty]);
+        let bytes = codec::encode(&b.finish(root));
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            interpret_run_stdout(&format!("CDZDOC:{hex}")).unwrap(),
+            "(: 42 Int64)"
+        );
+        // A trailing newline (the driver's `println!`) is tolerated.
+        assert_eq!(
+            interpret_run_stdout(&format!("CDZDOC:{hex}\n")).unwrap(),
+            "(: 42 Int64)"
+        );
+    }
+
+    // A NON-marker stdout (the default string-render path) passes through byte-identical — the flag-off case.
+    #[test]
+    fn interpret_run_stdout_passthrough_non_marker() {
+        assert_eq!(interpret_run_stdout("5").unwrap(), "5");
+        assert_eq!(
+            interpret_run_stdout("(tuple 1 2)\n").unwrap(),
+            "(tuple 1 2)"
+        );
+        assert_eq!(interpret_run_stdout("(: 5 Int64)").unwrap(), "(: 5 Int64)");
+    }
 
     // Pins the ENTIRE consumer recipe end-to-end: construct the value doc EXACTLY as the emit will
     // (cadenza_ast::Builder → codec::encode), then render it. The node tree matches `cdz convert -t debug`
