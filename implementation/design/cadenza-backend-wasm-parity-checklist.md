@@ -29,10 +29,11 @@ re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user su
 fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
 #7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
 effect breaks were all SHARED). ✅ #7346 CLOSED the UInt64-literal cluster (ascribe `(: v <IntTy>)` for
-unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **5** (was 12; #7355 Map dup-key,
+unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks: **4** (was 12; #7355 Map dup-key,
 #7357 empty-collection, #7376 erased-sum tuple-payload destructure = 07 Box-Pair/gn3, #7380 erased-sum WRAP-side +
 generic-nominal type-args = 09 rg1, #7393 UInt64-from-context = 06 `(& x <hugelit>)`, #7398 inlined-do-local-fn
-dedup = 02. corrected+precondition gate; all surface/recompilability TYPE breaks — none wrong-DATA), by family:
+dedup = 02, #7418 erased-newtype Call-return peel = 14b newtype-from-PERFORM. corrected+precondition gate; all
+surface/recompilability TYPE breaks — none wrong-DATA), by family:
   • ✅ EMPTY-COLLECTION ascription-drop (CDZ0203) — CLOSED #7357 (dae2c1b1c2): an empty `#list()`/`#set()`/`#map()`
     re-emitted bare drops its element/key/value type → hop2 undetermined-escape reject. Fix = `ascribe_if_empty`
     wraps `(: <lit> <solved-ty>)` (mirrors the `(None)`-carries-its-type precedent). breaker-minimized (3/5).
@@ -61,7 +62,11 @@ dedup = 02. corrected+precondition gate; all surface/recompilability TYPE breaks
   • ✅ do-local recursive-fn double-inlining (CDZ0201, 02) — CLOSED #7398 (377e54bc76): inlining a fn with a
     do-local `(def f …)` at 2 sites lifted the same def to the module root twice → CDZ0201 duplicate-name. Fix =
     dedup module-root defs BY NAME (unique-name module; copies byte-identical; fires only on already-broken
-    duplicate-name programs, no passing-program regression). · newtype-from-PERFORM @invariant (CDZ0201 ×1, 14b, open).
+    duplicate-name programs, no passing-program regression). · ✅ newtype-from-PERFORM @invariant (CDZ0201, 14b) —
+    CLOSED #7418 (eb6ed09ec1): an erased-newtype Call return (@invariant `__invariant_construct_Percent`→Percent)
+    whose `unwrap` FOLDED so the node type is the inner (Int64) reached `(+ …)` un-peeled → arith-on-nominal. Fix =
+    peel the Call `(match <call> ((Ctor n) n))` when the callee-return nominal's inner == the node's eff_ty (unwrap
+    dual of #7380's wrap-side). The mutual-recursion 14b/14c CDZ0101 (routed to v-core-opt/v-effects) remain.
   • ✅ UInt64-FROM-CONTEXT (CDZ0301, 06) — CLOSED #7393 (e4adcc37d4): `(& x <hugelit>)`'s literal solved to signed
     Int64 while its value > i64::MAX → self-contradictory `(: hugelit Int64)`. Fix (simpler than Arith-threading):
     when eff_ty is SIGNED but the value overflows signed range at that width, ascribe the UNSIGNED type at that
