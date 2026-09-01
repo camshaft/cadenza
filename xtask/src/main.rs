@@ -3003,6 +3003,24 @@ fn run_program_rust(
             cmd.arg("--extern")
                 .arg(format!("num_bigint={}", rlib.display()));
         }
+        // The NFC codegen (`Core::NfcNormalize`) emits `unicode_normalization::UnicodeNormalization::nfc(…)`,
+        // so `unicode_normalization` must be a NAMABLE extern too — its rlib is hash-named in `<dir>/deps`
+        // (`libunicode_normalization-<hash>.rlib`, a cadenza-ast transitive dep). Glob + `--extern` it (harmless
+        // when unreferenced). Mirrors cdz-rust-run's provisioning (#5707); WITHOUT it an NFC case E0433s
+        // "cannot find crate unicode_normalization" — this is why the nix `gate-check-rust` (which runs THIS
+        // in-process rust path) failed a mutual-recursion-SCC NFC case while `corpus-rust-exec` (cdz-rust-run,
+        // already provisions it) did not. (Corrects the earlier over-broad "unicode E0433 = 0 on nix" claim:
+        // it was 0 on corpus-rust-exec, NOT on the in-process/gate-check-rust path — this closes that gap.)
+        if let Ok(entries) = std::fs::read_dir(dir.join("deps"))
+            && let Some(rlib) = entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.starts_with("libunicode_normalization-") && n.ends_with(".rlib")
+                })
+            })
+        {
+            cmd.arg("--extern")
+                .arg(format!("unicode_normalization={}", rlib.display()));
+        }
     }
     let compiled = cmd.output();
     let compiled = match compiled {
