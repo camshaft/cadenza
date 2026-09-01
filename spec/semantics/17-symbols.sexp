@@ -569,7 +569,7 @@
       (def
         (main (: n Int64))
         (let
-          ((m (Map.insert Map.empty #tuple((Symbol.of "k") n) 42)))
+          ((m #map((= #tuple((Symbol.of "k") n) 42))))
           (match (Map.lookup m #tuple((Symbol.of "k") 5)) ((Some v) v) ((None u) -1))))
       (export main)))
   (call main (: 5 Int64))
@@ -590,7 +590,7 @@
       (def
         (main (: k Int64))
         (do
-          (def m (Map.insert (Map.insert Map.empty 1 #"a") 2 #"bb"))
+          (def m #map((= 1 #"a") (= 2 #"bb")))
           (match (Map.lookup m k) ((Some sy) (String.byte-len (Symbol.to-string sy))) ((None _u) 0))))
       (export main)))
   (call main (: 1 Int64))
