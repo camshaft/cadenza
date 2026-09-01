@@ -7546,10 +7546,7 @@
         (do
           (def
             m
-            (Map.insert
-              (Map.insert Map.empty 1 (fn ((: v Int64)) (* v 2)))
-              2
-              (fn ((: v Int64)) (+ v 100))))
+            #map((= 1 (fn ((: v Int64)) (* v 2))) (= 2 (fn ((: v Int64)) (+ v 100)))))
           (def (app (: k Int64)) (match (Map.lookup m k) ((Some f) (f y)) ((None _u) -1)))
           (+ (* 1000 (app 1)) (app 2))))
       (export main)))
@@ -7595,7 +7592,7 @@
       (def
         (main (: seed Int64))
         (do
-          (def m (Map.insert (Map.insert Map.empty 1 (String.concat "on" "e")) 2 "two"))
+          (def m #map((= 1 (String.concat "on" "e")) (= 2 "two")))
           (def s #set(seed 20 30))
           (fn
             ((: k Int64))
