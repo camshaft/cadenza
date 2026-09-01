@@ -23,6 +23,7 @@ inductive Ty where
   | bool | unit | string | char
   | fn (dom cod : Ty)                   -- curried function
   | tuple (elts : List Ty)
+  | never                               -- the empty sum; unifies with ANY type (ts:76-84, the bottom rule)
   | var (id : Nat)                      -- a unification (type) variable
   deriving BEq, Inhabited
 
@@ -43,6 +44,85 @@ inductive RcdzcVerdict where
   | reject (code : Code)
   | decline
   deriving BEq, Inhabited
+
+/-! ### The unification engine (the Algorithm-W workhorse, design §3 / PROPOSAL §3)
+
+Pure, total-by-fuel-free-acyclicity type unification: a `Subst` maps unification variables to types, and
+`unify` solves an equality constraint by extending it (or reports the CDZ code of the clash). This is the
+CORE the A/App/If/Let/Fn rules all build on. It is deliberately landed and `#guard`-tested in ISOLATION
+(no inference wires it yet), so it carries ZERO false-verdict risk while the rules that consume it land. -/
+
+/-- Occurs check: does the unification variable `i` appear anywhere in `t`? A `var i` unified with a type
+CONTAINING `i` is the infinite-type case — an unsatisfiable constraint (`CDZ0203`). -/
+partial def occurs (i : Nat) : Ty → Bool
+  | .var j => i == j
+  | .fn d c => occurs i d || occurs i c
+  | .tuple es => es.any (occurs i)
+  | _ => false
+
+/-- A unification substitution: variable id → resolved type, innermost (head) binding wins. -/
+abbrev Subst := List (Nat × Ty)
+
+/-- Resolve a type under a substitution, chasing variable chains to a fixpoint. Terminates because `unify`
+occurs-checks before every binding, so `Subst` stays acyclic. -/
+partial def applySubst (s : Subst) : Ty → Ty
+  | .var i => match s.find? (fun p => p.1 == i) with
+              | some (_, t) => applySubst s t
+              | none => .var i
+  | .fn d c => .fn (applySubst s d) (applySubst s c)
+  | .tuple es => .tuple (es.map (applySubst s))
+  | t => t
+
+/-- Unify two types under `s` → the extended substitution, or the CDZ code of the clash. `never` (the empty
+sum) unifies with ANYTHING (`ts:82`, the bottom rule — this is why `(if c 1 (trap …))` is well-typed at
+`Int`); a var binds (occurs-checked); structural forms (`fn`/`tuple`) recurse; a head mismatch, width/sign
+clash, or arity mismatch is a `CDZ0203` TypeMismatch (`ts:38`). -/
+partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
+  match applySubst s a, applySubst s b with
+  | .never, _ => .ok s
+  | _, .never => .ok s
+  | .var i, .var j => if i == j then .ok s else .ok ((i, .var j) :: s)
+  | .var i, t => if occurs i t then .error "CDZ0203" else .ok ((i, t) :: s)
+  | t, .var i => if occurs i t then .error "CDZ0203" else .ok ((i, t) :: s)
+  | .int w1 g1, .int w2 g2 => if w1 == w2 && g1 == g2 then .ok s else .error "CDZ0203"
+  | .bool, .bool => .ok s
+  | .unit, .unit => .ok s
+  | .string, .string => .ok s
+  | .char, .char => .ok s
+  | .fn d1 c1, .fn d2 c2 => do let s ← unify d1 d2 s; unify c1 c2 s
+  | .tuple e1, .tuple e2 =>
+      if e1.length == e2.length then
+        (e1.zip e2).foldlM (fun s (p : Ty × Ty) => unify p.1 p.2 s) s
+      else .error "CDZ0203"
+  | _, _ => .error "CDZ0203"
+
+/-- Test helper: did unification fail with exactly `code`? (`Except` has no `BEq`, so match explicitly.) -/
+def unifyIsErr (r : Except Code Subst) (code : Code) : Bool :=
+  match r with | .error c => c == code | .ok _ => false
+
+/-! ### Unification witnesses (compiled = checked). -/
+-- like heads unify; a width/sign or head clash is CDZ0203
+#guard (unify (.int 64 true) (.int 64 true) []).toOption.isSome
+#guard unifyIsErr (unify (.int 64 true) (.int 32 true) []) "CDZ0203"
+#guard unifyIsErr (unify .bool (.int 64 true) []) "CDZ0203"
+-- a var binds, then resolves to its type under the returned subst
+#guard (match unify (.var 0) .bool [] with | .ok s => applySubst s (.var 0) == .bool | _ => false)
+-- occurs check: `var 0` in `(fn (var 0) bool)` → infinite type → CDZ0203
+#guard unifyIsErr (unify (.var 0) (.fn (.var 0) .bool) []) "CDZ0203"
+-- structural fn: domains + codomains unify pointwise
+#guard (unify (.fn (.int 64 true) .bool) (.fn (.int 64 true) .bool) []).toOption.isSome
+#guard unifyIsErr (unify (.fn (.int 64 true) .bool) (.fn .bool .bool) []) "CDZ0203"
+-- structural tuple + arity
+#guard (unify (.tuple [.int 64 true, .bool]) (.tuple [.int 64 true, .bool]) []).toOption.isSome
+#guard unifyIsErr (unify (.tuple [.int 64 true]) (.tuple [.int 64 true, .bool]) []) "CDZ0203"
+-- `never` is bottom: unifies with any type, either side
+#guard (unify .never (.int 64 true) []).toOption.isSome
+#guard (unify (.tuple [.int 64 true]) .never []).toOption.isSome
+-- transitivity through the subst: bind `var 0 := Int`, then it unifies with Int but clashes with Bool
+#guard (match unify (.var 0) (.int 64 true) [] with
+        | .ok s => (unify (.var 0) (.int 64 true) s).toOption.isSome
+                   && unifyIsErr (unify (.var 0) .bool s) "CDZ0203"
+        | _ => false)
 
 /-- The type of a SCALAR LITERAL node (the base case of inference — no unification): an int literal is `Int`
 (default width; per-width/signedness refinement is a later slice, checked only at T4), a bool `Bool`, a
