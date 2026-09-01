@@ -38,6 +38,7 @@ pub mod sidecar;
 pub mod spans;
 pub mod symbols_wire;
 pub mod target;
+mod ty_map_wire;
 pub mod type_at_wire;
 pub mod type_info_wire;
 pub mod uses_wire;
