@@ -9625,7 +9625,6 @@ todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a Symbol entry parameter compares to an interned constant
-todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a conditional abort hoisted alongside a second abortive sibling declines cleanly
 todo	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
