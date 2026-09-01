@@ -33545,7 +33545,7 @@
 ; amplification is LINEAR (50 frames → 550). Calibration for the next §5 increment: ss1/ss3 flip
 ; (11→~0, 550→~0) when the tuple-payload back-edge reclaim lands; ss2 keys the non-tail sibling.
 (case
-  "ss1 a TAIL self-loop walk over a tuple-payload sum spine still leaks the full spine (the #4597 fix's boundary)"
+  "ss1 a TAIL self-loop walk over a tuple-payload sum spine RECLAIMS the full spine (INC1 pt3 crossed the #4597 fix's boundary)"
   (input
     (do
       (type IntList (Cons (Tuple Int64 IntList)) Nil)
@@ -33559,10 +33559,10 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
-  "ss2 the NON-tail walk over the same tuple-payload spine leaks identically (the tail/non-tail readings agree at this boundary)"
+  "ss2 the NON-tail walk over the same tuple-payload spine RECLAIMS identically (the tail/non-tail readings agree at this boundary)"
   (input
     (do
       (type IntList (Cons (Tuple Int64 IntList)) Nil)
@@ -33576,10 +33576,10 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
-  "ss3 fifty framed tail walks over fresh tuple-payload spines leak LINEARLY (per-frame full-spine; flips with the tuple-payload increment)"
+  "ss3 fifty framed tail walks over fresh tuple-payload spines RECLAIM per-frame (was per-frame full-spine leak; flipped by the tuple-payload increment)"
   (input
     (do
       (type IntList (Cons (Tuple Int64 IntList)) Nil)
@@ -33594,7 +33594,7 @@
       (export main)))
   (call main (: 50 Int64))
   (output (: 750 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime map match's rest binder reads the map minus the named key"
@@ -33738,7 +33738,7 @@
 ; today (11) — position-independent — so the fix's landing measures its coverage across payload
 ; positions: flipped Elem(0), a RECORD payload, and a 3-tuple Elem(2). All flip with ss1.
 (case
-  "sp1 a FLIPPED tuple-payload spine (rec-ref at Elem 0) leaks the full spine (position-matrix cell)"
+  "sp1 a FLIPPED tuple-payload spine (rec-ref at Elem 0) RECLAIMS the full spine (position-matrix cell)"
   (input
     (do
       (type IL (Cons (Tuple IL Int64)) Nil)
@@ -33750,10 +33750,10 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
-  "sp2 a RECORD-payload spine leaks the full spine (position-matrix cell)"
+  "sp2 a RECORD-payload spine RECLAIMS the full spine (position-matrix cell)"
   (input
     (do
       (type IL (Cons (Record (: h Int64) (: t IL))) Nil)
@@ -33767,10 +33767,10 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
-  "sp3 a THREE-tuple payload spine (rec-ref at Elem 2) leaks the full spine (position-matrix cell)"
+  "sp3 a THREE-tuple payload spine (rec-ref at Elem 2) RECLAIMS the full spine (position-matrix cell)"
   (input
     (do
       (type IL (Cons (Tuple Int64 Int64 IL)) Nil)
@@ -33784,7 +33784,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 165 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "spc1 a CONSTANT-origin sum spine (branch-selected literal) builds mortal and its walk leaks the full spine (joins the sp position matrix)"
