@@ -494,11 +494,14 @@ fn gen_list_producing_op_body<C: Choice>(c: &mut C, out: &mut String) {
 }
 
 /// A COLLECTION-OP body over small const collections, consumed to a scalar/Bool (value-comparable):
-/// `Set.union`/`Set.remove`/`Map.remove` fed to `.len` (→ Int64), or `Set.contains` (→ Bool). Half the
-/// remove/contains cases target a PRESENT element, half an ABSENT one, so both outcomes are exercised.
-/// Elements/keys are `0..=9`; the result is a deterministic count/bool the wasm-vs-rust diff grades.
+/// `Set.union`/`Set.intersection`/`Set.difference`/`Set.remove`/`Map.remove` fed to `.len` (→ Int64), or
+/// `Set.contains` (→ Bool). Half the remove/contains cases target a PRESENT element, half an ABSENT one,
+/// so both outcomes are exercised. The binary set-algebra ops share ONE element (`b`) between the two
+/// operand sets so union/intersection/difference each yield a DISTINCT deterministic cardinality (the
+/// value the wasm-vs-rust diff grades — intersection={b}=1, difference={a}=1, union=3). Elements/keys are
+/// `0..=9`.
 fn gen_collection_op_body<C: Choice>(c: &mut C, out: &mut String) {
-    let form = c.variant(4);
+    let form = c.variant(6);
     let present = c.variant(2) == 0;
     let (a, b, d) = (
         c.int_bounded(0, 4),
@@ -523,9 +526,22 @@ fn gen_collection_op_body<C: Choice>(c: &mut C, out: &mut String) {
         // Set membership → Bool.
         2 => write!(out, "(Set.contains (Set.of (list {a} {b} {d})) {target})").ok(),
         // Map.remove cardinality (present key shrinks by one; absent leaves it unchanged).
-        _ => write!(
+        3 => write!(
             out,
             "(Map.len (Map.remove (Map.insert (Map.insert Map.empty {a} {b}) {b} {d}) {target}))"
+        )
+        .ok(),
+        // Set.intersection cardinality — only the shared element `b` survives (sibling of union on the
+        // DISTINCT intersect set-algebra lowering the union form never reaches).
+        4 => write!(
+            out,
+            "(Set.len (Set.intersection (Set.of (list {a} {b})) (Set.of (list {b} {d}))))"
+        )
+        .ok(),
+        // Set.difference cardinality — left-only elements survive (here `a`), the shared `b` is removed.
+        _ => write!(
+            out,
+            "(Set.len (Set.difference (Set.of (list {a} {b})) (Set.of (list {b} {d}))))"
         )
         .ok(),
     };
@@ -2656,13 +2672,20 @@ mod tests {
         assert!(saw_absent, "should reach an absent-key lookup (None arm)");
     }
 
-    /// `gen_collection_op_body` REACHES all four op forms (Set.union, Set.remove, Set.contains,
-    /// Map.remove) and every body COMPILES — filling the set-merge / element-removal / membership gap
-    /// the coercing grammar's Set.len/insert + Map.len/lookup coverage never reached.
+    /// `gen_collection_op_body` REACHES all six op forms (Set.union, Set.remove, Set.contains,
+    /// Map.remove, Set.intersection, Set.difference) and every body COMPILES — filling the set-merge /
+    /// element-removal / membership / set-algebra gap the coercing grammar's Set.len/insert +
+    /// Map.len/lookup coverage never reached.
     #[test]
     fn gen_collection_op_body_reaches_all_forms_and_compiles() {
-        let (mut saw_union, mut saw_sremove, mut saw_contains, mut saw_mremove) =
-            (false, false, false, false);
+        let (
+            mut saw_union,
+            mut saw_sremove,
+            mut saw_contains,
+            mut saw_mremove,
+            mut saw_intersection,
+            mut saw_difference,
+        ) = (false, false, false, false, false, false);
         for seed in 0u64..512 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1163);
             let mut bytes = Vec::new();
@@ -2677,6 +2700,8 @@ mod tests {
             saw_sremove |= body.contains("Set.remove");
             saw_contains |= body.contains("Set.contains");
             saw_mremove |= body.contains("Map.remove");
+            saw_intersection |= body.contains("Set.intersection");
+            saw_difference |= body.contains("Set.difference");
             let src = format!("(do (def (main) {body}) (export main))");
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
@@ -2687,6 +2712,8 @@ mod tests {
         assert!(saw_sremove, "should reach Set.remove");
         assert!(saw_contains, "should reach Set.contains");
         assert!(saw_mremove, "should reach Map.remove");
+        assert!(saw_intersection, "should reach Set.intersection");
+        assert!(saw_difference, "should reach Set.difference");
     }
 
     /// `gen_list_producing_op_body` REACHES all forms (List.push, Set.to-list, Map.to-list) and every
