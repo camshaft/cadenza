@@ -488,11 +488,17 @@ pub(super) fn ground_open_vars(ty: &Ty) -> Ty {
         // the grounded type is fully concrete. `decl` (the identity) is unchanged.
         Ty::Sum { decl, args } => Ty::Sum {
             decl: *decl,
-            args: args.iter().map(ground_open_vars).collect::<std::rc::Rc<[Ty]>>(),
+            args: args
+                .iter()
+                .map(ground_open_vars)
+                .collect::<std::rc::Rc<[Ty]>>(),
         },
         Ty::Nominal { decl, args, inner } => Ty::Nominal {
             decl: *decl,
-            args: args.iter().map(ground_open_vars).collect::<std::rc::Rc<[Ty]>>(),
+            args: args
+                .iter()
+                .map(ground_open_vars)
+                .collect::<std::rc::Rc<[Ty]>>(),
             inner: std::rc::Rc::new(ground_open_vars(inner)),
         },
         // A record's field types can likewise nest a free var (a `(Ok x)` field of a discarded record).
