@@ -1076,6 +1076,44 @@
     (message "no three-way comparison")
     (message "`<`, `<=`, `>`, `>=`")))
 
+; The COMPOUND twin of the pure-float `compare` above: a tuple/record/list/sum whose leaves are NOT all
+; orderable — here a FLOAT leaf (IEEE partial order only, §319; a Set/Map leaf is the same, no blessed
+; order) — has no total order, so the three-way `compare` over it is a PERMANENT carve-out coded CDZ0203
+; (the SAME no-total-order family as the pure-float compare above and the compound `<` decline at ~1015),
+; NOT a not-yet. Contrast the all-orderable-leaf compound compare just below (Int-leaf tuple), which
+; COMPUTES: the ONLY difference is the leaf type (Float64 here vs Int64 there). The diagnostic must NOT
+; dead-end at "no total order" — it names the offending leaf kinds AND the actionable route (compare the
+; orderable components individually). The three `(message …)` facets are AND-required so a wording degrade
+; that drops the leaf-kinds or the route flips this case. Fully mirrors the former rcdzc rust test
+; compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route (now deleted, corpus-
+; covered) — coded CDZ0203 by #7210 (the three-way twin of #7143's compound-`<` ordering reconcile),
+; replacing the former codeless decline (which now stays only for the cross-type/under-resolved fallback).
+(case
+  "a runtime compound compare with a float leaf is a coded CDZ0203 — the three-way twin of the compound `<` decline"
+  (doc
+    "`(Ordering.of #tuple(a 1) #tuple(b 1))` over runtime Float64-leaf tuples asks for a THREE-WAY
+           total-order comparison, but a float leaf makes the whole compound un-orderable (a float offers only
+           the IEEE partial order, §319; a Set/Map leaf carries no blessed order), so it has no `compare` — a
+           PERMANENT carve-out rejected CDZ0203 (reject-don't-miscompile), NOT a codeless not-yet. The exact
+           compound counterpart of the pure-float compare above and the three-way twin of the compound `<`
+           ordering decline (~1015). The actionable route is to compare the orderable components individually
+           (the Int leaf alone: `(Ordering.of 1 2)` computes — witnessed by the all-orderable case below).")
+  (input
+    (do
+      (def
+        (main (: a Float64) (: b Float64))
+        (match
+          (Ordering.of #tuple(a 1) #tuple(b 1))
+          ((Ordering.Less _) 1)
+          ((Ordering.Equal _) 2)
+          ((Ordering.Greater _) 3)))
+      (export main)))
+  (error CDZ0203
+    (message "float, set, or map leaf")
+    (message "has no total order")
+    (message "no three-way `compare`")
+    (message "compare its orderable components individually")))
+
 ; A runtime COMPOUND `compare` is orderable (all-orderable leaves) but the descriptor-guided `value-cmp`
 ; three-way heap walk is not wired yet — a genuine NOT-YET (distinct from the float permanent carve-out). The
 ; boolean compound `<` already COMPUTES via `Core::ValueCmp`; the three-way `compare` over the same value now
