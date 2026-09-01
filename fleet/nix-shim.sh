@@ -59,7 +59,16 @@ run_real() {
 [ -n "${CDZ_NO_NIX_SHIM:-}" ] && run_real "$@"        # kill-switch
 [ -n "${CDZ_LEASED_NIX:-}" ] && run_real "$@"         # sanctioned leased build → silent pass-through
 
-_top="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+# CWD-SCOPE GUARD (operator 2026-09-01): ~/.local/bin/nix shadows `nix` for EVERY process of THIS user, so on
+# a shared box it would otherwise warn/route a `nix build` in OTHER repos that have nothing to do with Cadenza
+# — interfering with agents NOT working on Cadenza (operator directive: stop intercepting outside the cadenza
+# directory). Every warn/route here is Cadenza-specific (the heavy-attr TSV, the leased gate-local), so
+# outside a Cadenza checkout there is nothing legitimate for this shim to do. Unless the CWD is inside a
+# Cadenza checkout, exec the REAL nix immediately, unchanged. Marker-based (symlink-safe — git resolves the
+# real toplevel), NOT a hardcoded path: a Cadenza checkout/worktree uniquely has BOTH spec/semantics and
+# fleet/loops. FAIL-OPEN: not a git repo, or the marker absent → real nix, no interception.
+_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$_top" ] || [ ! -d "$_top/spec/semantics" ] || [ ! -d "$_top/fleet/loops" ]; then run_real "$@"; fi
 _hints="$_top/fleet/nix-heavy-attrs.tsv"
 
 # (a) --option substitute false → WARN (any nix cmd; forces a wasteful from-source rebuild).

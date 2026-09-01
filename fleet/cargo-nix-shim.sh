@@ -45,6 +45,27 @@ run_real() {
 # Emergency bypass — kill-switch execs real cargo unchanged.
 [ -n "${CDZ_NO_CARGO_SHIM:-}" ] && run_real "$@"
 
+_sub="${1:-}"
+
+# CONTROL-PLANE EXEMPT: `cargo xtask fleet …` is the fleet orchestration hot loop — NEVER warn/touch it
+# (routing every heartbeat/inbox/sync through nix would add per-command eval overhead to the control loop;
+# its xtask bin is tiny, not the target-dir bloat). Run the real cargo immediately, silently. Kept FIRST —
+# above the CWD guard + sccache below — so the control loop pays neither a git call nor env-export work.
+if [ "$_sub" = "xtask" ] && [ "${2:-}" = "fleet" ]; then run_real "$@"; fi
+
+# CWD-SCOPE GUARD (operator 2026-09-01): ~/.local/bin/cargo shadows `cargo` for EVERY process of THIS user,
+# so on a shared box it would otherwise intercept `cargo` in OTHER repos that have nothing to do with Cadenza
+# — injecting sccache, printing all-nix deprecation warnings, and (worst) resolving the OTHER repo's git
+# toplevel and trying to route `cargo build` → `nix run <that-repo>#build`. That interferes with agents NOT
+# working on Cadenza (operator directive: "stop intercepting cargo invocation outside of the cadenza
+# directory"). So unless the CWD is inside a Cadenza checkout, exec the REAL cargo immediately, unchanged.
+# Detection is MARKER-based (symlink-safe — git resolves the real toplevel), NOT a hardcoded path: a Cadenza
+# checkout/worktree uniquely has BOTH spec/semantics and fleet/loops. FAIL-OPEN: not a git repo, or the
+# marker is absent → real cargo, no interception. `_top` (the Cadenza toplevel = the flake dir) is reused as
+# `_flake` by the nix routes below, so this also removes their redundant per-call git rev-parse.
+_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$_top" ] || [ ! -d "$_top/spec/semantics" ] || [ ! -d "$_top/fleet/loops" ]; then run_real "$@"; fi
+
 # SHARED COMPILE CACHE — no-restart propagation of #5878 (operator seq-267). window.sh sets RUSTC_WRAPPER at
 # window LAUNCH only, so the ~32 ALREADY-RUNNING agents don't have it. This shim runs on EVERY cargo call, so
 # injecting it HERE means a running agent's next cargo build picks up sccache with NO window restart (once
@@ -52,19 +73,12 @@ run_real() {
 # it — the nix routes below are hermetic (RUSTC_WRAPPER doesn't enter the nix sandbox). NOTE: this does NOT
 # make cranelift cross-worktree-HIT — build-script generated-source path keying structurally defeats that
 # (that's warm-target seq-195's job); this delivers the registry-dep + same-worktree PARTIAL win. Respect an
-# explicit override; skip if sccache isn't installed.
+# explicit override; skip if sccache isn't installed. Reached ONLY for a Cadenza-dir cargo (past the guard).
 if [ -z "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
   export RUSTC_WRAPPER=sccache
   export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache-fleet}"
   export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-20G}"
 fi
-
-_sub="${1:-}"
-
-# CONTROL-PLANE EXEMPT: `cargo xtask fleet …` is the fleet orchestration hot loop — NEVER warn/touch it
-# (routing every heartbeat/inbox/sync through nix would add per-command eval overhead to the control loop;
-# its xtask bin is tiny, not the target-dir bloat). Run the real cargo immediately, silently.
-if [ "$_sub" = "xtask" ] && [ "${2:-}" = "fleet" ]; then run_real "$@"; fi
 
 # ROUTE `cargo xtask build` → `nix run <flake>#build` (v-nix apps.build #5603) — the #1 rebuild-the-world
 # hotspot: front-end (cdz/cdz-run/cdz-compile) + component-store materialized from the SHARED /nix/store,
@@ -72,7 +86,7 @@ if [ "$_sub" = "xtask" ] && [ "${2:-}" = "fleet" ]; then run_real "$@"; fi
 # deps). Only the bare `cargo xtask build` (no extra args that could change semantics); anything with a
 # trailing arg → soft-warn + real cargo (conservative).
 if [ "$_sub" = "xtask" ] && [ "${2:-}" = "build" ] && [ -z "${3:-}" ]; then
-  _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  _flake="$_top"  # Cadenza toplevel, resolved once by the CWD-scope guard above
   echo "cargo-shim: routing 'cargo xtask build' → cargo xtask fleet with-lease nix run $_flake#build (all-nix + LEASED: a full store rebuild is a heavy nix build, so it takes a check-lease slot — bounds the concurrent cold-build herd, e.g. the 43-agent input-addressed .#runtime rebuild that oversubscribes the big-nix-lock on a hash-bump flag-day; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
   # with-lease acquires a VERTICAL check-lease (bounded-wait, fail-open) then runs the build → ≤cap concurrent
   # store rebuilds, the rest bounded-wait+trickle. It sets CDZ_LEASED_NIX=1 so the inner `nix run` passes the
@@ -89,7 +103,7 @@ fi
 # dead-end `cargo xtask test` once `Cmd::Test` is gone). Mirrors the `cargo xtask build` route above; landed
 # BEFORE the arm-removal so there is no dead-end window (this pre-empts the vanished subcommand).
 if [ "$_sub" = "xtask" ] && [ "${2:-}" = "test" ]; then
-  _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  _flake="$_top"  # Cadenza toplevel, resolved once by the CWD-scope guard above
   echo "cargo-shim: routing 'cargo xtask test' → nix run $_flake#fast-gate (all-nix: cached touched-crate test+clippy+fmt — the guardrail's redirect target; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
   exec nix run "$_flake#fast-gate"
 fi
@@ -112,7 +126,7 @@ if [ "$_sub" = "build" ]; then
     esac
   done
   if [ "$_has_p" = 0 ]; then
-    _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+    _flake="$_top"  # Cadenza toplevel, resolved once by the CWD-scope guard above
     echo "cargo-shim: routing 'cargo build' → cargo xtask fleet with-lease nix run $_flake#build (all-nix + LEASED: the store rebuild takes a check-lease slot to bound the concurrent cold-build herd; a specific crate — cargo build -p CRATE — still runs cargo; bypass CDZ_NO_CARGO_SHIM=1)." >&2
     exec cargo xtask fleet with-lease nix run "$_flake#build"
   fi
@@ -149,7 +163,7 @@ if [ "$_sub" = "test" ]; then
     esac
   done
   if [ "$_ncrate" = 1 ] && [ -n "$_crate" ] && [ "$_positional" = 0 ]; then
-    _flake="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+    _flake="$_top"  # Cadenza toplevel, resolved once by the CWD-scope guard above
     echo "cargo-shim: routing 'cargo test -p $_crate' → nix run $_flake#test -- $_crate (all-nix: cached deps, top-crate recompile; bypass with CDZ_NO_CARGO_SHIM=1)." >&2
     exec nix run "$_flake#test" -- "$_crate"
   fi
@@ -160,7 +174,7 @@ fi
 # deprecation warning + the nix equivalent (from the v-nix-owned hint map), or LOG A GAP if unmapped, then
 # STILL RUN real cargo (non-blocking — the per-call warning is the rollout; a later flip makes it hard-fail).
 if [ -n "$_key" ]; then
-  _top="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  # `_top` (the Cadenza toplevel) is already resolved by the CWD-scope guard above — no recompute needed.
   _hint=""
   if [ -f "$_top/fleet/cargo-nix-hints.tsv" ]; then
     _hint="$(grep -v '^#' "$_top/fleet/cargo-nix-hints.tsv" 2>/dev/null \
