@@ -2837,6 +2837,70 @@ fn emit_match_sum(
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
     use crate::core::{PathStep, SumCont};
+    // LEAF ROOT whose body reads the scrutinee's ELEMENTS by position. The optimizer collapsed the match to
+    // one irrefutable arm but kept the `MatchSum` wrapper (`lower.rs` §evaluate-once: the scrutinee is a
+    // non-reusable Call / recursive result); the body reads `Core::SumPayload{scrutinee, [Elem(i)]}` — a BARE
+    // `[Elem(i)]` (traced: 18×[Elem(0)]+7×[Elem(1)], NO `Payload` step → NOT a variant read, so no `folded`
+    // needed). Reconstruct the ONE arm destructuring the scrutinee at each `[Elem(i)]`, so the body's reads
+    // resolve to pattern binders off the ONCE-evaluated scrutinee (no re-emit → no double-eval / exponential
+    // re-eval the wrapper exists to prevent). Two irrefutable scrutinee shapes:
+    //   · `Ty::Tuple`  → `(match s (#tuple(_b0 _b1 …) <body>))`, bind slot i at `[Elem(i)]`.
+    //   · a SINGLE-variant `Ty::Sum`/`Ty::Nominal` (erased newtype; its payload is read by `[Elem(i)]`, the
+    //     `Payload` step elided) → `(match s ((Ctor _b0 _b1 …) <body>))`, bind slot i at `[Elem(i)]`.
+    // (A MULTI-variant sum or a Record falls through — a bare `[Elem]` over a multi-variant sum isn't
+    // destructurable without a variant, and Records key by field not position.) The traced reads are all
+    // length-1, so one-level binding is EXACT; a deeper read would fall through to re-emit — the corpus-cadenza
+    // A/B gate would flag any such value regression.
+    if let SumCont::Leaf(body) = root {
+        let sty = crate::infer::type_of(db, scrutinee);
+        // The number of positional slots to bind, and the surface CTOR HEAD (`Some` = a single-variant sum
+        // ctor `(Ctor …)`; `None` = a native `#tuple(…)`). `None` for a non-destructurable shape (multi-variant
+        // sum / record / scalar) → fall through to the normal dispatch/decline.
+        let plan: Option<(usize, Option<StructId>)> = match &sty {
+            Ty::Tuple(ts) if !ts.is_empty() => Some((ts.len(), None)),
+            Ty::Sum { decl, .. } | Ty::Nominal { decl, .. }
+                if db
+                    .type_decl_by_occ(*decl)
+                    .is_some_and(|t| t.variants.len() == 1) =>
+            {
+                let decl = *decl;
+                let arity = db
+                    .type_decl_by_occ(decl)
+                    .and_then(|t| t.variants.first())
+                    .map(|v| v.payloads.len())
+                    .unwrap_or(0);
+                match (arity, crate::lower::variant_head_ast(db, b, decl, 0)) {
+                    (0, _) | (_, None) => None,
+                    (n, Some(head)) => Some((n, Some(head))),
+                }
+            }
+            _ => None,
+        };
+        if let Some((n_slots, ctor_head)) = plan {
+            let match_head = b.name("match");
+            let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
+            let mut binders = Vec::with_capacity(n_slots);
+            for i in 0..n_slots {
+                let nm = synth_payload_name(env.next_payload);
+                env.next_payload += 1;
+                env.payloads
+                    .insert((scrutinee, vec![PathStep::Elem(i)]), nm.clone());
+                binders.push(b.name(nm));
+            }
+            // `(Ctor b0 b1 …)` for a single-variant sum, else the native `#tuple(b0 b1 …)`.
+            let pat = match ctor_head {
+                Some(head) => {
+                    let mut children = vec![head];
+                    children.extend(binders);
+                    b.list(children)
+                }
+                None => b.compound(crate::ast::CompoundCtor::Tuple, &binders),
+            };
+            let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
+            let arm = b.list(vec![pat, body_node]);
+            return Ok(b.list(vec![match_head, scrut_node, arm]));
+        }
+    }
     let arms = match root {
         SumCont::Switch { path, arms } if path.is_empty() => arms,
         // A COMPOUND scrutinee dispatching on a SLOT (not its own discriminant): the root `Switch` sits at a
