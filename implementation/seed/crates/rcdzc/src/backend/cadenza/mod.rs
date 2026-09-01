@@ -2765,7 +2765,10 @@ fn build_arm_pat(
     // Switch tests a discriminant; the two path sets are disjoint. Emitting the literal directly (vs a
     // `(= b lit)` guard) keeps the round-trip IDEMPOTENT: `#tuple(a 7)` re-lowers straight back to a
     // `LitTest` (a guard would re-lower to a `Guarded`, which this tree-walk declines → a hop1≠hop2 split).
-    lit_choices: &std::collections::HashMap<Vec<crate::core::PathStep>, Option<StructId>>,
+    lit_choices: &std::collections::HashMap<
+        Vec<crate::core::PathStep>,
+        Option<(StructId, crate::core::Probe)>,
+    >,
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
@@ -2784,7 +2787,10 @@ fn build_arm_pat(
         path: &[PathStep],
         read_path: &[PathStep],
         choices: &std::collections::HashMap<Vec<PathStep>, Option<u32>>,
-        lit_choices: &std::collections::HashMap<Vec<PathStep>, Option<StructId>>,
+        lit_choices: &std::collections::HashMap<
+            Vec<PathStep>,
+            Option<(StructId, crate::core::Probe)>,
+        >,
         env: &mut BinderEnv,
         emitted: &std::collections::HashSet<StructId>,
     ) -> Result<StructId, Reject> {
@@ -2849,7 +2855,7 @@ fn build_arm_pat(
     // itself (`7` in `#tuple(a 7)`); no binder, the value is fixed. A `None` entry (a freed `els` slot)
     // does NOT return here — it falls through to the leaf-bind below (a fresh binder). Checked before
     // `choices`: a LitTest path is a scalar leaf, never a discriminant switch, so the two never collide.
-    if let Some(Some(lit)) = lit_choices.get(path) {
+    if let Some(Some((lit, _probe))) = lit_choices.get(path) {
         return Ok(*lit);
     }
     if let Some(choice) = choices.get(path) {
@@ -3015,7 +3021,10 @@ fn emit_switch_tree(
     root_ty: &Ty,
     cont: &crate::core::SumCont,
     choices: std::collections::HashMap<Vec<crate::core::PathStep>, Option<u32>>,
-    lit_choices: std::collections::HashMap<Vec<crate::core::PathStep>, Option<StructId>>,
+    lit_choices: std::collections::HashMap<
+        Vec<crate::core::PathStep>,
+        Option<(StructId, crate::core::Probe)>,
+    >,
     expected: &Option<Ty>,
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
@@ -3098,9 +3107,35 @@ fn emit_switch_tree(
                     ));
                 }
             };
-            // then_: fix the slot to the literal (`Some(lit)` → emitted in the pattern).
+            // PRUNE a REDUNDANT re-test of an already-decided slot. The optimizer's decision tree can re-test a
+            // slot ALREADY fixed to a literal on this path (e.g. `Elem(0)==true` nested under `Elem(0)==true`'s
+            // `then_`); one of the inner branches is then LOGICALLY DEAD (the slot can't hold two literals).
+            // Emitting BOTH makes the dead `els` over-write the fixed slot to a freed `_`, producing a spurious
+            // catch-all arm that SHADOWS a later specific arm — the 05 tuple-of-two-bools wrong-dispatch
+            // miscompile (`(false,true)` hit a `(_ _) 4` arm before its `(_ true) 3` arm). So if the slot is
+            // already fixed, emit ONLY the reachable branch: `then_` when the fixed PROBE equals this probe
+            // (always-true), else `els` (always-false — a contradictory re-test). Compares `Probe` VALUES (the
+            // stored probe), NOT atom `StructId`s (atom occurrences are not deduped, only their leaves are).
+            if let Some(Some((_, fixed_probe))) = lit_choices.get(&path[..]) {
+                let reachable = if fixed_probe == probe { then_ } else { els };
+                return emit_switch_tree(
+                    db,
+                    b,
+                    root_scrut,
+                    root_ty,
+                    reachable,
+                    choices,
+                    lit_choices,
+                    expected,
+                    env,
+                    emitted,
+                    children,
+                );
+            }
+            // then_: fix the slot to the literal (`Some((lit, probe))` → emitted in the pattern; the probe is
+            // kept for the redundant-re-test pruning above).
             let mut lc_then = lit_choices.clone();
-            lc_then.insert(path.to_vec(), Some(lit));
+            lc_then.insert(path.to_vec(), Some((lit, probe.clone())));
             emit_switch_tree(
                 db,
                 b,
