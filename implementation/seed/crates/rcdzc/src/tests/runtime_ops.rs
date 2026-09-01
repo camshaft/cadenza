@@ -693,6 +693,55 @@ fn a_deep_list_push_chain_marks_dup_sites_in_bounded_time_not_exponential() {
 }
 
 #[test]
+fn a_chained_multi_use_list_concat_emits_linear_wasm_not_exponential() {
+    // REGRESSION (emit-SIZE, operator seq-203): a let-bound value used 2+ times in a chained
+    // nesting must be MATERIALIZED ONCE into a slot and shared, not copy-propagated (inlined) at
+    // each use. `is_runtime_computation` (lower.rs) omitted `Core::ListConcat`, so a let-bound
+    // `List.concat` failed `should_keep_binding`'s runtime-computation gate (call_lower.rs) and was
+    // inlined at both uses; in the chained shape `x1=(concat x0 x0)`, `x2=(concat x1 x1)`, … each
+    // level inlines its predecessor TWICE → the emitted wasm (and compile time) COMPOUNDED to 2^N
+    // for an O(N)-size source (N=14 emitted ~132 KB, N≥20 timed out). Fixed by adding
+    // `Core::ListConcat` to `is_runtime_computation` (main 49e4c17bf1, #7416) so the binding is
+    // kept + slot-shared by the existing kept-binding let-slot emit — LINEAR.
+    //
+    // The NOISE-FREE signal is `wasm.len()`: emitted byte count is a pure deterministic function of
+    // the program (no wall-clock flake at all — stronger than the sibling perf ratios above). Guard:
+    // compile an O(N)-size `List.concat` chain at N and 2N and assert the emitted bytes grow at most
+    // ~linearly (a 2× source ⇒ ~2× bytes; the regression was 2^N). N=7/14 sit in the window where a
+    // reintroduced exponential is still observable as a CLEAN size blow-up (N=14 pre-fix ≈ 132 KB,
+    // measured — no hang) rather than a timeout, so the assertion fails loudly instead of wedging.
+    fn concat_chain(n: usize) -> String {
+        // `x0 = (list p)`; `x_i = (concat x_{i-1} x_{i-1})` — each binding used TWICE; body reads x_n.
+        let mut lets = String::from("(x0 (list p)) ");
+        for i in 1..=n {
+            let prev = i - 1;
+            lets.push_str(&format!("(x{i} ((. List concat) x{prev} x{prev})) "));
+        }
+        format!(
+            "(module m (def (f (: p Int64)) (let ({lets}) ((. List len) x{n}))) \
+                 (def (main) (f 1)) (export main))"
+        )
+    }
+    fn wasm_len(src: &str) -> usize {
+        crate::host::run_with_compiler_stack(|| {
+            compile_component(&crate::codec::encode(&parse(src)))
+                .expect("chain compiles")
+                .len()
+        })
+    }
+    let n7 = wasm_len(&concat_chain(7));
+    let n14 = wasm_len(&concat_chain(14));
+    let ratio = n14 as f64 / (n7.max(1)) as f64;
+    assert!(
+        n7 > 0 && ratio < 4.0 && n14 < 20_000,
+        "a chained multi-use `List.concat` must emit LINEAR wasm (kept + slot-shared), not 2^N \
+             (was inlined at each use because `is_runtime_computation` omitted `Core::ListConcat` — \
+             seq-203, fixed #7416): depth 7→14 emitted {n7}→{n14} bytes ({ratio:.1}× — linear is ~2×, \
+             the exponential regression was ~90× / ~132 KB at N=14)"
+    );
+}
+
+#[test]
 fn a_wide_literal_match_builds_its_decision_tree_in_bounded_time() {
     // REGRESSION (perf): `lower::build_tree`'s lit-test arm compiles a wide literal match
     // (`(match t ((tuple 0 a) …) ((tuple 1 a) …) … (_ -1))`) as an N-DEEP chain of `LitTest` nodes.
