@@ -28,3 +28,7 @@ root = "OracleCheck"
 [[lean_exe]]
 name = "oracle-wasm-diff"
 root = "OracleWasmDiffTest"
+
+[[require]]
+name = "Interpreter"
+path = ".lake/packages/talos"

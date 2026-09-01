@@ -5001,6 +5001,45 @@
           '';
         };
 
+        # ── talos wasm-interpreter + its lake deps, fetched for OFFLINE lake resolution ─────────────────
+        # (v-wasm-oracle talos wasm-oracle pin; co-design [[lean-432-toolchain-and-talos-mathlib-codesign]]).
+        # WIP FIRST-CUT (2026-09-01, co-iterated with v-wasm-oracle on this branch): provides the hermetic dep
+        # SOURCES so oracle-lean's `require talos` + Driver adapter (v-wasm-oracle's zone, added here) can build
+        # OFFLINE. talos's interpreter/lake-manifest.json (lakeVersion 1.2.0) pins these 9 deps + talos@b8d8b66.
+        # The adapter imports ONLY the Mathlib-FREE execution modules (Interpreter.Wasm.SmallStep + Decoder.Wat),
+        # so lake RESOLVES all deps (source present) but BUILDS only the Std-only execution subgraph — NO Mathlib
+        # olean build. Sources prefetched via `nix store prefetch-file` of the github archive tarballs → FILE
+        # hashes → `fetchurl` + unpack (NOT fetchFromGitHub, which NAR-hashes the tree = a different hash).
+        # NOTE: the exact `.lake/packages` staging + lake-manifest.json shape + the lakefile `require` gets
+        # nailed empirically with v-wasm-oracle on this branch — `talosLakePackages` is the raw material for it.
+        talosDepSrcs = {
+          talos = { owner = "cajal-technologies"; repo = "talos"; rev = "b8d8b66602731caa38430cc39ae96e9078f56d03"; hash = "sha256-/dLm92wC/1tuVON9rxSOzkbwM90W0gvRWm6a6xgOItU="; };
+          mathlib = { owner = "leanprover-community"; repo = "mathlib4"; rev = "905b95818eb3"; hash = "sha256-23Q+VjRcafMZ9Cxaa+t/4Rdcig21oYl6+IKQHsU98uU="; };
+          batteries = { owner = "leanprover-community"; repo = "batteries"; rev = "023ce7d62a05"; hash = "sha256-pQZv6i/RoxHDyV1TDwcDAUbeOhk+hqcnGuCmytUkEpQ="; };
+          aesop = { owner = "leanprover-community"; repo = "aesop"; rev = "a7dbf0c63b69"; hash = "sha256-uMAPl9rEbEsd1k8Hu4DAlj6mH/XdmyOUFEgad8BcWQg="; };
+          Qq = { owner = "leanprover-community"; repo = "quote4"; rev = "38d591e778f1"; hash = "sha256-f1xF00eZ5hW/ZEXDt+8UohxmSEPxR2BGja/Eh37RR3I="; };
+          proofwidgets = { owner = "leanprover-community"; repo = "ProofWidgets4"; rev = "6e311e2a844d"; hash = "sha256-3/tGUgA/Mfjjk+DyiHUm7EtsyCRLlgr6jcvBkYsCDGg="; };
+          plausible = { owner = "leanprover-community"; repo = "plausible"; rev = "e12c1910fe85"; hash = "sha256-KCXW89f8nSYVFxCuZD4IqrsCJRvZTEdv1SF/kbWRSbM="; };
+          importGraph = { owner = "leanprover-community"; repo = "import-graph"; rev = "7e9612bf0b9e"; hash = "sha256-xe6TiAv2jZrocoDHc5BGC4rz7jD3SM0Q0JjUEh7Xkww="; };
+          LeanSearchClient = { owner = "leanprover-community"; repo = "LeanSearchClient"; rev = "c5d5b8fe6e51"; hash = "sha256-GobbiaaVhJzgZZAoTmuJxfI1Pjly5guJuftBJ+DP/zE="; };
+          Cli = { owner = "leanprover"; repo = "lean4-cli"; rev = "88679d088c97"; hash = "sha256-4qHZ18NBvG1vlnSUDebBKC67L7ZopnfIQFxcADnT2yY="; };
+        };
+        # Unpack each dep tarball into `$out/<name>/` (the repo root — the shape lake's `.lake/packages/<name>`
+        # expects). v-wasm-oracle's lakefile `require` + a generated lake-manifest.json (added here) wire lake to
+        # resolve against these offline.
+        talosLakePackages = pkgs.runCommand "talos-lake-packages" { } (
+          pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList
+            (name: d:
+              let src = pkgs.fetchurl {
+                    url = "https://github.com/${d.owner}/${d.repo}/archive/${d.rev}.tar.gz";
+                    inherit (d) hash;
+                  };
+              in ''
+                mkdir -p "$out/${name}"
+                tar -xzf ${src} -C "$out/${name}" --strip-components=1
+              '')
+            talosDepSrcs));
+
         # ── oracle-lean (L0.1): the Lean reference interpreter as an independent differential oracle ─
         #
         # A pure Lean 4 model of Cadenza semantics over the frozen binary AST, cross-checked against
@@ -5019,6 +5058,9 @@
           fileset = pkgs.lib.fileset.unions [
             ./implementation/oracle-lean/lakefile.toml
             ./implementation/oracle-lean/lean-toolchain
+            # the offline lake-manifest (v-wasm-oracle talos pin): pins Interpreter + its 9 deps as path
+            # entries so lake resolves against the pre-staged .lake/packages (below) with no network.
+            ./implementation/oracle-lean/lake-manifest.json
             ./implementation/oracle-lean/Oracle.lean
             ./implementation/oracle-lean/Main.lean
             ./implementation/oracle-lean/OracleTest.lean
@@ -5031,12 +5073,36 @@
           pname = "cdz-oracle-lean";
           version = "0.0.0";
           src = oracleLeanSrc;
-          nativeBuildInputs = [ pkgs.lean4 ];
+          # lean4_432 (the pinned 4.32.2 toolchain) — the talos wasm-oracle needs Lean 4.32.2. Flipped from
+          # pkgs.lean4 (4.30.0) as part of the talos co-land: this MUST land atomically with the oracle-lean
+          # lean-toolchain bump to v4.32.2 (v-wasm-oracle's zone, added on this branch) — flipping alone while
+          # the committed lean-toolchain still says v4.30.0 mismatches. WIP on this co-iteration branch.
+          # lean4_432 is the PREBUILT elan release → its leanc links the produced exes against the FHS
+          # interpreter /lib/ld-linux-aarch64.so.1, which is ABSENT in the pure nix sandbox → "required file
+          # not found" at runtime (dev-shell masks it since the host has /lib/ld-linux). v-nix's fix, applied
+          # here as part of the talos co-land: autoPatchelfHook rewrites the exes' interpreter → the nix ld +
+          # rpath; buildInputs supply the runtime libs (libleanshared via lean4_432, + libcc/gmp/zlib);
+          # appendRunpaths add lean's shared-lib dirs so the patched exes resolve libleanshared.
+          nativeBuildInputs = [ lean4_432 pkgs.autoPatchelfHook ];
+          buildInputs = [ lean4_432 pkgs.gmp pkgs.zlib (pkgs.lib.getLib pkgs.stdenv.cc.cc) ];
+          appendRunpaths = [ "${lean4_432}/lib" "${lean4_432}/lib/lean" ];
           buildPhase = ''
             runHook preBuild
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             # fileset.toSource copies are read-only; lake writes .lake/ into the tree.
             chmod -R u+w .
+            # Stage talos + its 9 lake deps into .lake/packages WRITABLE for OFFLINE lake resolution
+            # (v-wasm-oracle validated: lake writes .lake/ metadata into every manifest dep incl. unbuilt
+            # mathlib, so read-only store symlinks EACCES; git-type manifest entries trigger re-clone → the
+            # committed lake-manifest.json uses path-type; talos's package is at interpreter/ (name
+            # "Interpreter") so stage THAT as .lake/packages/talos). Mathlib-free: lake builds only the
+            # imported exec closure (SmallStep+Decoder.Wat, Std-only) → mathlib fetched but 0 oleans built.
+            mkdir -p .lake/packages
+            cp -r ${talosLakePackages}/talos/interpreter .lake/packages/talos
+            for d in mathlib batteries aesop Qq proofwidgets plausible importGraph LeanSearchClient Cli; do
+              cp -r ${talosLakePackages}/$d .lake/packages/$d
+            done
+            chmod -R u+w .lake/packages
             lake build cdz-oracle oracle-selftest oracle-ast-roundtrip oracle-check
             runHook postBuild
           '';
@@ -5330,6 +5396,9 @@
         # The prebuilt rust-exec rlib dir (cdz-rt/cdz-num/cadenza-ast + their deps/) — exposed so the rust
         # corpus-exec rlib set is inspectable (e.g. confirm unicode_normalization is present for the NFC cases).
         packages.rust-rlibs = rustRlibs;
+        # talos + its 9 lake deps unpacked (raw material for oracle-lean's offline .lake/packages) — buildable
+        # standalone so v-wasm-oracle can inspect the layout while wiring the lakefile require + manifest.
+        packages.talos-lake-packages = talosLakePackages;
         # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
         packages.guide-shred = guideShred;
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed

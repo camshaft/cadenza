@@ -1,6 +1,86 @@
-{"version": "1.2.0",
+{
+ "version": "1.2.0",
  "packagesDir": ".lake/packages",
- "packages": [],
- "name": "oracle",
- "lakeDir": ".lake",
- "fixedToolchain": false}
+ "packages": [
+  {
+   "type": "path",
+   "name": "Interpreter",
+   "dir": ".lake/packages/talos",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "configFile": "lakefile.toml"
+  },
+  {
+   "type": "path",
+   "name": "mathlib",
+   "dir": ".lake/packages/mathlib",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.lean"
+  },
+  {
+   "type": "path",
+   "name": "batteries",
+   "dir": ".lake/packages/batteries",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.toml"
+  },
+  {
+   "type": "path",
+   "name": "aesop",
+   "dir": ".lake/packages/aesop",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.toml"
+  },
+  {
+   "type": "path",
+   "name": "Qq",
+   "dir": ".lake/packages/Qq",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.toml"
+  },
+  {
+   "type": "path",
+   "name": "proofwidgets",
+   "dir": ".lake/packages/proofwidgets",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.lean"
+  },
+  {
+   "type": "path",
+   "name": "plausible",
+   "dir": ".lake/packages/plausible",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.toml"
+  },
+  {
+   "type": "path",
+   "name": "importGraph",
+   "dir": ".lake/packages/importGraph",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.toml"
+  },
+  {
+   "type": "path",
+   "name": "LeanSearchClient",
+   "dir": ".lake/packages/LeanSearchClient",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.toml"
+  },
+  {
+   "type": "path",
+   "name": "Cli",
+   "dir": ".lake/packages/Cli",
+   "manifestFile": "lake-manifest.json",
+   "inherited": true,
+   "configFile": "lakefile.toml"
+  }
+ ]
+}
