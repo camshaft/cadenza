@@ -1548,8 +1548,48 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
         // IS reclaimable (the BST del-min/insert 29/13/3 leak class); only a genuine CAPTURING closure's
         // closure-arg params stay excluded. (Prior `!top_is_lifted` over-excluded the combinators = the leak.)
         let nontail_spine_param = is_nontail_spine_param(db, top_body, scrutinee, &root);
+        let selfloop_scrut = selfloop_scrut_shell_reclaim_ok(db, top_body, scrutinee, &root);
         if owned_compound_boxed || nontail_spine_param {
             collect_consuming_payload_sites_cont(db, &root, scrutinee, dup_sites);
+        } else if selfloop_scrut {
+            // SELF-LOOP-TAIL path (INC1 pt3, v-mem dup-side of v-core-opt's emit `op_drop`): a self-tail-loop
+            // scrutinee whose per-iteration shell the emit deep-`op_drop`s (gated on the SAME
+            // `selfloop_scrut_shell_reclaim_ok`, so dup ⟺ drop key on ONE scrutinee, never the inner nested
+            // match). `is_nontail_spine_param` EXCLUDES this case by construction (the self-tail-loop scrutinee
+            // IS consumed in the tail call → its `!sum_cont_payload_consumed_in_tail_call` gate fails), hence
+            // its own arm. The `op_drop` is DEEP (cascades t→p→{children}); the empirical guarded-all harden
+            // DISPROVED the emit's "child dup'd by construction" assumption — the general emit MOVES a
+            // `Proj(SumPayload(t))` tail-carried child (inorder's `r`, len's `t`) into the loop-param slot
+            // WITHOUT a dup — so each consuming child-proj rooting at the scrutinee MUST be dup'd (Proj-nested
+            // tail carry + count>0 non-tail sibling consume like inorder's `l`). `collect_consuming_payload_
+            // sites_cont` follows the full `Proj|SumPayload|SumExpect` chain through the nested inner match, so
+            // both `l` and `r` are marked.
+            //
+            // EXCLUDE the §5 emit-OWNED carries — the two the emit already dups AND whose slot G7 skips the
+            // `op_drop` for, so re-dupping them here is a double-dup → a per-node LEAK (measured: the Nat
+            // `(Succ m)` fold + the recursive-sum spine regressed from 0 to depth-1 live):
+            //   • a BARE `SumPayload` whose path ends at `Payload` = `is_sumpayload_consume` (the whole-payload
+            //     tail carry `m` carried into its own slot), and
+            //   • a `RestFrom` list-rest slice = `is_restfrom_consume` (`emit_loop_iteration` vec-drops it).
+            // KEEP everything else (Proj-nested, `Elem`, sibling consumes) — the emit MOVES those with NO dup,
+            // so our deep drop double-frees them unless we dup. EXCLUSION is the UAF-DANGEROUS direction (an
+            // under-dup → double-free), so it is deliberately MINIMAL (only the two confirmed emit+G7-owned
+            // path steps); the guarded-all harden is the gate that any over-exclusion re-trips.
+            let mut sites = HashSet::new();
+            collect_consuming_payload_sites_cont(db, &root, scrutinee, &mut sites);
+            for s in sites {
+                let emit_owned_carry = match core_of(db, s) {
+                    Core::SumPayload { path, .. } => matches!(
+                        path.last(),
+                        Some(crate::core::PathStep::Payload)
+                            | Some(crate::core::PathStep::RestFrom(_))
+                    ),
+                    _ => false,
+                };
+                if !emit_owned_carry {
+                    dup_sites.insert(s);
+                }
+            }
         }
     }
     for child in core_child_ids(db, id) {
@@ -3530,6 +3570,103 @@ pub(super) fn is_nontail_spine_param(
             total == 0 && count_matchsum_over_binder(db, top_body, binder) <= 1
         })
         && !sum_cont_payload_consumed_in_tail_call(db, root, scrutinee)
+}
+
+/// INC1 pt3 SELF-LOOP-TAIL shell reclaim gate (v-core-opt emit lead + v-mem G1-G7 soundness). Whether a
+/// tail-`MatchSum` over `scrutinee` (continuation `root`) in a SELF-TAIL-LOOP body `top_body` may reclaim the
+/// scrutinee's compound node shell per iteration via a deep `op_drop` on its saved loop-param slot (the
+/// `selfloop_scrut_slot` emit path in `emit_loop_iteration`). This is the SELF-LOOP-TAIL case that
+/// [`is_nontail_spine_param`] EXCLUDES by construction (its `count_param_consumes == 0` +
+/// `!sum_cont_payload_consumed_in_tail_call` gates both fail here: the self-loop-tail scrutinee IS consumed in
+/// the tail-call — a child carried into the loop-param — and by non-tail sibling sub-calls, so count > 0). The
+/// composed conditions (G1 tail-loop-param + G3 next-loop-param-is-child-proj are checked at the emit site
+/// where the slots/args live; G2/G4/G5/G6 here):
+///   G2 — COMPOUND-BOXED heap match scrutinee (a real node array = the shell to free); an all-scalar-payload
+///        or enum-disc sum has no heap shell.
+///   G6a — OWNED-BY-FLOW (the DOUBLE-FREE-critical caller-drop complementarity): reuse
+///        [`body_is_self_recursive`] — a self-recursive fold is internally direct-called and a tail self-call
+///        carries NO caller-drop (the exact INC1-1 frame `def_inc1_reclaims_param` uses), so the callee owns
+///        its tree shell despite `heap_operand_ownership`'s conservative Borrowed default. If a caller DID drop
+///        the tree (borrowed it), this `op_drop` would double-free — `body_is_self_recursive` is the
+///        conservative first-cut; v-mem's guarded-all harden loop traps any residual caller-drop overlap
+///        (op_drop + caller-drop both fire → assert_node_live). (A non-self-recursive owned-param stays a LEAK,
+///        never a UAF — the paramountcy order.)
+///   G4 — `!sum_cont_arm_returns_scrutinee`: no arm returns the scrutinee node WHOLE (else the shell is live
+///        in the result → freeing it is a UAF). The 05:9972 fence.
+///   G5 — `!sum_cont_arm_interior_view_on_scrutinee`: no arm aliases a shell child OUT via a fallible
+///        interior-view op (Map.lookup/List.at/String.at/…) whose result outlives the match → the deep drop
+///        would free a still-read view (the 2026-07-19 sread UAF fence).
+///   G6b — dup ⟺ cascade lockstep: SOUND BY CONSTRUCTION here — while the scrutinee shell is RETAINED until
+///        our end-of-iteration `op_drop`, the general emit CANNOT move a child out (a projected child of a
+///        still-live parent is dup'd for its consuming use, never moved), so every child the deep-drop cascade
+///        decrements survives via its pre-existing escape dup. The emit path adds ONLY the `op_drop` and does
+///        NOT alter child-dup emission, preserving the retained-parent invariant. (guarded-all is the
+///        empirical check that no child was actually moved.)
+/// SOUND-CONSERVATIVE: under-admit = LEAK (safe); the double-free direction is blocked by G6a's
+/// self-recursion + G4/G5, and empirically gated by v-mem's guarded-all harden loop.
+pub(super) fn selfloop_scrut_shell_reclaim_ok(
+    db: &mut Db,
+    top_body: StructId,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let scrut_ty = type_of(db, scrutinee);
+    // G2: a compound-boxed heap node (has a shell array to free); NOT an all-scalar / enum-disc sum.
+    let compound_boxed = is_heap_type(&scrut_ty)
+        && !ty_is_enum_disc(db, &scrut_ty)
+        && !sum_has_only_scalar_payloads(db, &scrut_ty);
+    compound_boxed
+        // The scrutinee must be a PARAM/LocalRef (the loop-param whose slot the emit saves+drops); a computed
+        // temporary is the stashed `sum_shell_reclaim_ok`/`scrut_shell_reclaim` path, not this one.
+        && matches!(core_of(db, scrutinee), Core::Param { .. } | Core::LocalRef { .. })
+        // G6a: owned-by-flow (caller-drop complementarity) — conservative first-cut, hardened vs guarded-all.
+        && body_is_self_recursive(db, top_body)
+        // G4: the scrutinee node is never returned WHOLE (shell not live in a result).
+        && !sum_cont_arm_returns_scrutinee(db, root, scrutinee)
+        // G5: no arm aliases a shell child out via an interior-view op (sread UAF fence).
+        && !sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
+}
+
+/// INC1 pt3 G3 helper: whether `id` (a loop back-edge rebind arg) is a CHILD-PROJECTION chain that roots at
+/// the loop-param in slot `slot` — i.e. following `SumPayload{scrutinee}` / `Proj{operand}` steps (through
+/// `LocalRef` binders that name a let-bound projection) reaches the `Param`/`LocalRef` whose slot is `slot`.
+/// This distinguishes a carried CHILD (inorder's `r = Proj(p,2)`, `p = SumPayload(t)`, `t` = loop-param — a
+/// 2-level nested chain) from the node carried WHOLE (a bare re-pass of the param → NOT a projection → the
+/// shell would still be live → must NOT reclaim). `depth` bounds the walk (a self-referential `Param` binder
+/// resolves to itself, so the `Param` arm never recurses; the guard is a backstop). Sound-conservative: any
+/// shape that is not a provable self-projection returns `false` (skip the reclaim → leak, never a UAF).
+/// (In `reclaim.rs` not `select.rs` to keep select.rs under the 512 KiB file-size mandate; called from
+/// `emit_loop_iteration` via `use reclaim::*`.)
+pub(super) fn carried_roots_at_loop_param(
+    db: &mut Db,
+    id: StructId,
+    slot: u32,
+    slots: &HashMap<StructId, u32>,
+    depth: u32,
+) -> bool {
+    if depth > 16 {
+        return false;
+    }
+    match core_of(db, id) {
+        // A bare param IS the root: reclaim only if it is the loop-param slot. (Does NOT recurse — a Param
+        // binder's core is itself, so this terminates the walk.)
+        Core::Param { binder } => slots.get(&binder) == Some(&slot),
+        // A `LocalRef` either directly names the loop-param slot, or binds a let-bound projection — follow its
+        // binder's core (a `Proj`/`SumPayload` for a projection binder, or a `Param` for a param ref).
+        Core::LocalRef { binder } => {
+            slots.get(&binder) == Some(&slot)
+                || carried_roots_at_loop_param(db, binder, slot, slots, depth + 1)
+        }
+        // Projection steps: descend to the projected-from node (the parent of this child).
+        Core::SumPayload { scrutinee, .. } => {
+            carried_roots_at_loop_param(db, scrutinee, slot, slots, depth + 1)
+        }
+        Core::Proj { operand, .. } => {
+            carried_roots_at_loop_param(db, operand, slot, slots, depth + 1)
+        }
+        // Anything else (a fresh ctor, an arith, a call result) is NOT a projection of the loop-param.
+        _ => false,
+    }
 }
 
 /// Collect the PARAM BINDERS whose owned-shell the tail-`MatchSum` emit reclaims via the param slot for a
