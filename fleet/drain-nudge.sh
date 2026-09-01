@@ -50,7 +50,12 @@ done
 # nonzero here (a tmux hiccup, or a stale binary lacking the subcommand) is not worth alarming — the next
 # fire retries, and worktrees pick up the subcommand as they rebuild post-#7327. Capture the output so the
 # .last-run stamp below records the result (the crontab's >/dev/null only silences the cron's OWN stdout).
-_out="$("$best" fleet drain-nudge --session "$SESSION" 2>&1)"
+# --drain-nudge-grace 300 (5min, vs the 900s default): this autonomous cron fires every 3min, so a SHORTER
+# re-nudge window lets it clear a re-stalling agent fast without hand-nudging (v-metaprogramming, a high-mail
+# agent getting frequent breaker issues, re-stalls between drains when the send-wake is missed mid-tick;
+# concierge 2026-09-01). Still bounded (a genuinely-wedged agent isn't keystroke-spammed faster than ~5min,
+# and the SAME-message stuck path + the watchdog's restart-escalation are unchanged). Overridable via env.
+_out="$("$best" fleet drain-nudge --session "$SESSION" --drain-nudge-grace "${CDZ_DRAIN_NUDGE_GRACE:-300}" 2>&1)"
 _rc=$?
 
 # SILENT-CRON OBSERVABILITY (matches prune-*.sh / baseline-drift-monitor.sh; concierge convention 2026-08-29):
