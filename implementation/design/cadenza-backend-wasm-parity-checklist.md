@@ -24,6 +24,11 @@ cadenza-backend gap — do NOT chase). Scan scripts: `/tmp/parity_scan.sh` (decl
   Qty-return `(-> Unit (Qty Int64 ((. Unit base) #"meter")))` — `emit_type_surface` can't copy the `#"meter"`
   bytes-unit; extend the type-surface copier or use `type_ast`); (b) multi-effect / handled / peer-bound
   (`effect_bindings`) shapes. Re-scan to measure the program-wide HostCall-decline drop.
+  ⚠️ FINDING (2026-09-01): the Qty-return-op sub-case (a) is COUPLED to the Qty-value gap — making
+  `emit_type_surface` copy the bytes-unit leaf DOES emit the decl+perform, but the perform's `(Qty.value
+  <hostcall>)` context then fails to recompile (CDZ0900 "quantity value from construction site") = a
+  round-trip BREAK, WORSE than the clean decline. Tried + REVERTED. So a Qty-return effect must wait for the
+  Qty-value category; do NOT enable its decl via a leaf-copy alone.
 - [ ] **fn-typed `(-> ..)` parameters — ~170** (higher-order). An INTERNAL fn param works (lam2);
   a specific higher-order shape declines while wasm compiles it. Investigate the declining shape
   (likely exported/boundary or a specific fn-type position).
