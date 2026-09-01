@@ -66,37 +66,14 @@ fn a_user_variant_named_like_a_prelude_module_constructs_through_const_fold() {
     }
 }
 
-#[test]
-fn a_partial_subtraction_in_value_position_suggests_neg_over_the_generic_unapplied_hint() {
-    // `(- e)` is a partially-applied binary subtraction (`(-> T T)`), NOT negation (the operator removed
-    // unary-`-`-means-negate; negation is `Num.neg`/`<T>.neg`). A user who wrote `-e` expecting to negate
-    // gets the "unapplied function" clash; when the value is specifically an arity-1 `(- e)`, the
-    // diagnostic points at the real negation operators instead of the generic "apply it to 1 more
-    // argument". Node-aware (`suggest_neg_hint`), wired at the value-position mismatch sites.
-    // ANNOTATION site:
-    let d = first_error("(module m (def (main (: x Int64)) (: (- x) Int64)) (export main))");
-    assert_eq!(d.code.as_deref(), Some("CDZ0203"));
-    assert!(
-        d.message.contains("not negation") && d.message.contains("Num.neg"),
-        "a (- e) in value position suggests Num.neg: {}",
-        d.message
-    );
-    // OPERATOR-OPERAND site — `(+ (- x) 1)`:
-    let d2 = first_error("(module m (def (main (: x Int64)) (+ (- x) 1)) (export main))");
-    assert!(
-        d2.message.contains("Num.neg"),
-        "a (- e) operand suggests Num.neg: {}",
-        d2.message
-    );
-    // CONTRAST: a genuine partial `(+ 1)` keeps the GENERIC "apply it to N more arguments" hint (NOT
-    // suggest-neg) — the hint is specific to the arity-1-Sub negation slip, not any unapplied function.
-    let d3 = first_error("(module m (def (main) (: (+ 1) Int64)) (export main))");
-    assert!(
-        d3.message.contains("hasn't been fully applied") && !d3.message.contains("Num.neg"),
-        "a (+ 1) partial keeps the generic hint, no spurious suggest-neg: {}",
-        d3.message
-    );
-}
+// MIGRATED to corpus (06-numeric-model.sexp, the deprecated-prefix-`(- e)` section ~7286): all three
+// facets are corpus-asserted — the ANNOTATION site (`(: (- x) Int64)` → CDZ0203, enriched to AND-require
+// both "not negation" and "Num.neg"), the OPERATOR-OPERAND site (new case: `(+ (- x) 1)` → CDZ0203 "not
+// negation"/"Num.neg" at the operand-mismatch site), and the CONTRAST (`(+ 1)` keeps the generic "fully
+// applied" message, enriched with a PROGRAM-scoped `(no-diagnostic "Num.neg")` so the suggest-neg tail
+// cannot leak into a generic under-application). Node-aware suggest-neg hint (v-inference #7205). Rust test
+// a_partial_subtraction_in_value_position_suggests_neg_over_the_generic_unapplied_hint deleted —
+// language-independent + corpus-covered.
 
 fn all_errors(src: &str) -> Vec<crate::abi::Diagnostic> {
     let ast = parse(src);
