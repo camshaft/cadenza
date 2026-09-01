@@ -981,6 +981,17 @@ pub enum ResultLower {
     /// the record RESULT's write-by-name field reorder). `result_vts = [i32]`; no memory. (v-rust-backend
     /// WIT-semantics ruling: an enum case-order mismatch is a should-work name-keyed remap, SHAPE 64.)
     EnumRemap { perm: Vec<u32> },
+    /// A single-scalar-field RECORD result that flattens to ONE core value (`record{v: s64}` → `[s64]`,
+    /// returned DIRECTLY, not by pointer — MAX_FLAT_RESULTS=1). The def returns the record HANDLE; the wrapper
+    /// reads that one field off the handle (`arr-get(handle, field_cell)` → unbox `read`, narrowing a ≤32-bit
+    /// value) and returns the scalar as the flattened result. `result_vts = [the scalar valtype]`. No memory
+    /// (the flat scalar is returned in a register). The flat-1-value-record sibling of `SpillRecord` (which
+    /// covers a >1-value record via a retptr).
+    FlatScalarField {
+        field_cell: u32,
+        read: &'static str,
+        wrap_i64: bool,
+    },
 }
 
 /// A recursive plan for writing ONE value-heap value's canonical-ABI form into linear memory — the reducer
@@ -1572,6 +1583,25 @@ fn core_module_impl(
                 inner.push(op::LOCAL_SET);
                 uleb128(d as u64, &mut inner); // d = guest disc (consumes the def result)
                 emit_enum_disc_remap(perm, d, &mut inner); // → [wit disc]
+            }
+            // A flat single-scalar-field record result: the def left the record HANDLE on the stack; read its
+            // one field (`arr-get(handle, field_cell)` → unbox `read`, narrowing a ≤32-bit value) and return
+            // that scalar as the flattened result — [handle] → [scalar]. No memory (returned in a register).
+            if let ResultLower::FlatScalarField {
+                field_cell,
+                read,
+                wrap_i64,
+            } = &wrap.result
+            {
+                inner.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(*field_cell as i64, &mut inner); // [handle, field_cell]
+                inner.push(op::CALL);
+                uleb128(imp("arr-get"), &mut inner); // [field-box] (borrows handle)
+                inner.push(op::CALL);
+                uleb128(imp(read), &mut inner); // [scalar]
+                if *wrap_i64 {
+                    inner.push(op::I32_WRAP_I64); // narrow the i64 heap cell to its ≤32-bit result slot
+                }
             }
             inner.push(op::END);
             let n_locals = next_local - p;
