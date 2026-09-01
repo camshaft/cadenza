@@ -326,7 +326,7 @@ pub(super) fn const_eval_inner(
         // folds its answer (v-effects cm02/cms3/cms4). NOT a reducer reimplementation — it reuses the one
         // `reduce_handle`; `None` (an open/irreducible handle) declines cleanly. Budget-threaded.
         Resolved::Handle { init, arms, body } => {
-            let reduced = crate::effects::reduce_handle(db, init, &arms, body)?;
+            let reduced = crate::effects::reduce_handle(db, init, &arms, body, false)?;
             const_eval(db, reduced, env, budget)
         }
         // (A NULLARY variant used as a bare value — `Option.None`, a payload-less user variant — is folded

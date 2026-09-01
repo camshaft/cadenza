@@ -486,6 +486,18 @@ pub(crate) struct HandlerCtx {
     /// drawn >=2 (a single dispatch folds the same shape strict via distribute, no heap slot — as7). Empty at
     /// `new` (no body there); `reduce_handle` populates it from the body and re-evaluates `collapse_enabled`.
     multi_dispatch_ops: std::cell::RefCell<std::collections::HashSet<(u32, u32)>>,
+    /// EFFECT NON-LOCAL EXIT (v-effects, CASE 1). Set TRUE by `reduce_handle` ONLY when it has DECIDED to
+    /// lower this handle's unliftable abort(s) as `Core::HandleAbort` (a non-local RETURN from the function)
+    /// rather than decline — i.e. exactly when (a) the handle is the WHOLE enclosing-function body (so
+    /// handle-result == function-result, from the lowering caller) AND (b) the ONLY unsoundness is a SAME-FN
+    /// abort the tail-resumptive fold cannot lift (a cross-fn abort still declines). When TRUE, `thread`'s
+    /// abortive-arm handler emits `Core::HandleAbort` at the abort position instead of the whole-handle
+    /// COLLAPSE. Left FALSE for the cases that already FOLD (an unconditional collapse / a hoisted conditional
+    /// abort) so their existing lowering (with its seed-wrap / drain / foreign-advance handling) is UNTOUCHED —
+    /// this flag flips ONLY the formerly-declining same-fn subset. Further GATED at the handler with
+    /// `!in_recursive_specialize` (an abort inside a specialized recursive callee stays declined — a bare
+    /// return there cannot abandon the caller's continuation; the deferred tagged-return "later vertical").
+    abort_as_handleabort: std::cell::Cell<bool>,
 }
 
 /// Decide `collapse_enabled` (the tpwJ per-handler ALL-OR-NOTHING mesh) over the op→arm map: enable the
@@ -578,6 +590,7 @@ impl HandlerCtx {
             in_recursive_specialize: std::cell::Cell::new(false),
             multi_dispatch_ops: std::cell::RefCell::new(std::collections::HashSet::default()),
             collapse_enabled: std::cell::Cell::new(collapse_enabled),
+            abort_as_handleabort: std::cell::Cell::new(false),
         }
     }
 
@@ -6742,7 +6755,7 @@ fn rewrite_resume_to_refolded_context(
         // AND the plain (non-pair, list/handle-node) parent identically to the raw reparent, so it is strictly
         // safer; a parentless `handle_body` is a no-op (leaves `filled` as-is), matching the prior guard.
         reparent_under_handle_site(db, filled, handle_body);
-        return reduce_handle(db, next_state, arms, filled);
+        return reduce_handle(db, next_state, arms, filled, false);
     }
     match db.ast.get(node).clone() {
         Struct::List(children) => {

@@ -810,7 +810,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // declines (a case the tail path cannot serve), fall back to the original body's type — harmless,
         // since lowering will decline it anyway.
         Resolved::Handle { init, arms, body } => {
-            match crate::effects::reduce_handle(db, init, &arms, body) {
+            match crate::effects::reduce_handle(db, init, &arms, body, false) {
                 Some(rewritten) => type_of(db, rewritten),
                 None => type_of(db, body),
             }

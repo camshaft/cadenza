@@ -2953,7 +2953,13 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             // `reduce_handle` declines because a folded term fails the type checker, and read only on `None`
             // below — so a nested fold's fault never leaks into this handle's decline.
             db.fold_type_fault = None;
-            match crate::effects::reduce_handle(db, init, &arms, body) {
+            // CASE-1 EFFECT NON-LOCAL EXIT: this handle node IS a whole def body iff it is registered as some
+            // def's body occurrence — then handle-result == function-result, so an abortive perform the fold
+            // cannot lift is soundly lowered to a `Core::HandleAbort` (a non-local return from the function)
+            // rather than declined. A mid-function / sub-expression handle (not a def body) passes `false` and
+            // declines the unliftable abort as before (the deferred mid-function CASE-2 mechanism).
+            let whole_fn_body = db.def_index_by_body(id).is_some();
+            match crate::effects::reduce_handle(db, init, &arms, body, whole_fn_body) {
                 Some(rewritten) => {
                     // The rewritten body is a synthesized subtree with root parent `None` (`push_list`).
                     // Graft it UNDER the original `handle` node so a FREE variable inside it — e.g. an
@@ -2998,7 +3004,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                         if let Some(inlined) =
                             crate::effects::inline_escaped_one_shot_perform_call(db, body, &arms)
                             && let Some(rw2) =
-                                crate::effects::reduce_handle(db, init, &arms, inlined)
+                                crate::effects::reduce_handle(db, init, &arms, inlined, false)
                         {
                             db.reparent(rw2, Some(id), db.child_ix_of(id) as u32);
                             crate::effects::mark_handler_region(db, rw2);

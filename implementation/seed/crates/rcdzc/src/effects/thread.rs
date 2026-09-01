@@ -686,6 +686,30 @@ pub(crate) fn thread_bounded(
                     wrapped
                 };
                 let copied = copy_pure(db, aborted);
+                // CASE-1 EFFECT NON-LOCAL EXIT (v-effects). When this handle is the WHOLE function body
+                // (`whole_fn_body`) AND we are NOT threading a specialized recursive callee
+                // (`!in_recursive_specialize` — an abort there lands in the callee's frame, where a bare
+                // wasm return cannot abandon the CALLER's pending continuation; that case stays declined as
+                // the deferred tagged-return vertical), lower the abort to a `Core::HandleAbort` embedded AT
+                // THIS position instead of the whole-handle COLLAPSE. The collapse (`abort_value` → the bare
+                // value as the ENTIRE handle result) is sound only for an UNCONDITIONAL abort; for a
+                // CONDITIONAL abort the tail fold cannot lift (e.g. under an effectful sibling), it would
+                // wrongly drop the other path. `HandleAbort` instead KEEPS the surrounding structure and does
+                // a non-local RETURN at runtime — sound because the handle IS the whole def body, so the
+                // returned value is exactly the function result. `handle_id` is unused by the CASE-1 emit
+                // (`emit(value); Return`); it is filled with `copied` as a valid placeholder occurrence.
+                if ctx.abort_as_handleabort.get() && !ctx.in_recursive_specialize.get() {
+                    let ha_ty = crate::infer::type_of(db, copied);
+                    let ha = crate::lower::synth_core(
+                        db,
+                        crate::core::Core::HandleAbort {
+                            value: copied,
+                            handle_id: copied,
+                        },
+                        ha_ty,
+                    );
+                    return Some((ha, cur));
+                }
                 ctx.abort_value.set(Some(copied));
                 return Some((copied, cur));
             }
@@ -1763,7 +1787,7 @@ pub(crate) fn thread_bounded(
                 let outer_states = out[..states.len()].to_vec();
                 Some((rbody, outer_states))
             } else {
-                let reduced = reduce_handle(db, inner_init, &inner_arms, inner_body)?;
+                let reduced = reduce_handle(db, inner_init, &inner_arms, inner_body, false)?;
                 // Thread the reduced result (which may still perform an outer effect) under the outer ctx.
                 thread_bounded(db, reduced, states, ctx, inline_depth)
             }

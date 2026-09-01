@@ -16,6 +16,11 @@ pub fn reduce_handle(
     init: StructId,
     arms: &[HandleArm],
     body: StructId,
+    // CASE-1 EFFECT NON-LOCAL EXIT: TRUE when this handle is the WHOLE enclosing-function body (so
+    // handle-result == function-result), known only by the lowering caller that has the handle node. When
+    // TRUE, an abortive perform the tail-resumptive fold cannot lift is lowered to `Core::HandleAbort` (a
+    // non-local return) rather than declined. FALSE (the safe default) for every internal/recursive caller.
+    whole_fn_body: bool,
 ) -> Option<StructId> {
     // RE-ENTRY GUARD, held for the whole fold. `type_of` of a `handle` calls `reduce_handle` (E1c-2), and
     // `resume_result_type_ok`/`type_of(init)` below type nodes that can reach an enclosing handle — so
@@ -345,8 +350,23 @@ pub fn reduce_handle(
     // `thread_branch_local_abort`). An abort at any OTHER conditional position the hoist above could not
     // lift to a branch tail (e.g. under an EFFECTFUL sibling operand, or a short-circuit connective) still
     // fires on one path with no realizable shape — decline cleanly rather than miscompile.
-    if !ctx.abortive.is_empty() && body_has_unsound_abortive_perform(db, body, &ctx, true, false) {
-        return None;
+    if !ctx.abortive.is_empty()
+        && body_has_unsound_abortive_perform(db, body, &ctx, true, false, false)
+    {
+        // CASE-1 EFFECT NON-LOCAL EXIT: when this handle is the WHOLE function body, a SAME-FN unsound abort
+        // (a direct perform the tail fold cannot lift) is now soundly lowered to `Core::HandleAbort` (a
+        // non-local RETURN) during threading — so do NOT decline it. A CROSS-FN unsound abort (inside a
+        // specialized recursive callee) STILL declines: a bare return there cannot abandon the CALLER's
+        // pending continuation (the deferred tagged-return vertical). So decline iff the handle is not the
+        // whole function body OR the unsoundness includes a cross-fn abort.
+        let cross_fn = body_has_unsound_abortive_perform(db, body, &ctx, true, false, true);
+        if !whole_fn_body || cross_fn {
+            return None;
+        }
+        // else: RELAX — this handle is the whole function body and its only unsoundness is a same-fn abort
+        // the fold cannot lift. Flip on HandleAbort mode so `thread`'s abortive handler emits a
+        // `Core::HandleAbort` (non-local return) at the abort position instead of the collapse/decline.
+        ctx.abort_as_handleabort.set(true);
     }
     // GUARD-CONDITION PERFORM. A perform inside a match-arm GUARD condition — `(match k ((guard p (E.op)) b)
     // …)` — is a position the distribution/fold walks do NOT descend (they route the scrutinee + arm bodies,
@@ -1098,7 +1118,7 @@ pub(crate) fn reduce_inner_handles(db: &mut Db, node: StructId) -> StructId {
     // A `handle` node: reduce IT (its body's own nested handles are reduced by that call recursing here),
     // and use the result. If it declines, fall through to a structural copy so the node is unchanged.
     if let Resolved::Handle { init, arms, body } = resolved_of(db, node)
-        && let Some(reduced) = reduce_handle(db, init, &arms, body)
+        && let Some(reduced) = reduce_handle(db, init, &arms, body, false)
     {
         return reduced;
     }
@@ -1885,8 +1905,8 @@ pub(crate) fn distribute_handler_over_conditional(
             // Reduce each branch as its own handle body (init/arm occurrences are only READ + copied on
             // substitution, so sharing them across the branch reductions is safe). Either branch declining
             // makes the whole distribution decline — no partial rewrite.
-            let then_r = reduce_handle(db, init, arms, then_)?;
-            let else_r = reduce_handle(db, init, arms, else_)?;
+            let then_r = reduce_handle(db, init, arms, then_, false)?;
+            let else_r = reduce_handle(db, init, arms, else_, false)?;
             let if_head = db.push_name("if");
             Some(db.push_list(vec![if_head, cond, then_r, else_r]))
         }
@@ -1912,7 +1932,7 @@ pub(crate) fn distribute_handler_over_conditional(
             let match_head = db.push_name("match");
             let mut children = vec![match_head, scrutinee];
             for &(pat, arm_body) in match_arms.iter() {
-                let reduced = reduce_handle(db, init, arms, arm_body)?;
+                let reduced = reduce_handle(db, init, arms, arm_body, false)?;
                 children.push(db.push_list(vec![pat, reduced]));
             }
             Some(db.push_list(children))
@@ -3072,9 +3092,13 @@ pub(crate) fn body_has_unsound_abortive_perform(
     ctx: &HandlerCtx,
     tail: bool,
     under_cond: bool,
+    // When TRUE, the SAME-FN direct-abort case is NOT flagged (it is now soundly lowered to Core::HandleAbort
+    // under a whole-def-body handle); ONLY a CROSS-FN unsound abort is reported. FALSE = the full check.
+    cross_fn_only: bool,
 ) -> bool {
     // An abort reached under a conditional at a non-tail (non-capturable) position is the unsound shape.
-    if under_cond
+    if !cross_fn_only
+        && under_cond
         && !tail
         && let Resolved::Apply { head, .. } = resolved_of(db, node)
         && let Some(id) = is_perform(db, head, ctx)
@@ -3108,9 +3132,9 @@ pub(crate) fn body_has_unsound_abortive_perform(
     // the hoist could not lift) keeps the condition non-capturable → flagged. So the condition inherits the
     // `if`'s own `tail`. Each BRANCH is a conditional position (`under_cond=true`, `tail` carried).
     if let Resolved::If { cond, then_, else_ } = resolved_of(db, node) {
-        return body_has_unsound_abortive_perform(db, cond, ctx, tail, under_cond)
-            || body_has_unsound_abortive_perform(db, then_, ctx, tail, true)
-            || body_has_unsound_abortive_perform(db, else_, ctx, tail, true);
+        return body_has_unsound_abortive_perform(db, cond, ctx, tail, under_cond, cross_fn_only)
+            || body_has_unsound_abortive_perform(db, then_, ctx, tail, true, cross_fn_only)
+            || body_has_unsound_abortive_perform(db, else_, ctx, tail, true, cross_fn_only);
     }
     // A `(let ((n init)…) body)`: the let's VALUE is the BODY's value, so the body inherits THIS position's
     // tail-ness + `under_cond`. Each INIT is a strict operand. KEY (post-hoist, mirroring the generic-op
@@ -3144,13 +3168,27 @@ pub(crate) fn body_has_unsound_abortive_perform(
                         return true;
                     }
                     let init_tail = tail && preceding_pure;
-                    if body_has_unsound_abortive_perform(db, kv[1], ctx, init_tail, under_cond) {
+                    if body_has_unsound_abortive_perform(
+                        db,
+                        kv[1],
+                        ctx,
+                        init_tail,
+                        under_cond,
+                        cross_fn_only,
+                    ) {
                         return true;
                     }
                 }
             }
         }
-        return body_has_unsound_abortive_perform(db, body_occ, ctx, tail, under_cond);
+        return body_has_unsound_abortive_perform(
+            db,
+            body_occ,
+            ctx,
+            tail,
+            under_cond,
+            cross_fn_only,
+        );
     }
     // Generic descent over a strict application `(op a0 … ak)`. KEY (post-hoist): an abort nested under a
     // PURE strict op INSIDE a tail branch is CAPTURABLE — `thread_branch_local_abort` takes the branch's
@@ -3177,7 +3215,7 @@ pub(crate) fn body_has_unsound_abortive_perform(
                 let c = children[i];
                 if i == 0 {
                     // The head: descend as a strict, non-capturable operand (a head rarely performs).
-                    return body_has_unsound_abortive_perform(db, c, ctx, false, under_cond);
+                    return body_has_unsound_abortive_perform(db, c, ctx, false, under_cond, cross_fn_only);
                 }
                 let sc_right = is_short_circuit && i >= 2;
                 // Capturable-tail: on a tail path, not a short-circuit right operand, siblings all pure.
@@ -3190,7 +3228,7 @@ pub(crate) fn body_has_unsound_abortive_perform(
                 let capturable = tail && !sc_right && !cross_fn_abort && siblings_pure(db, i);
                 let child_tail = capturable;
                 let child_cond = under_cond || sc_right;
-                body_has_unsound_abortive_perform(db, c, ctx, child_tail, child_cond)
+                body_has_unsound_abortive_perform(db, c, ctx, child_tail, child_cond, cross_fn_only)
             })
         }
         Struct::Atom(_) => false,
