@@ -448,7 +448,8 @@
           ((get (u) s (resume s s)) (put (v) _s (resume unit v)))
           (do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get)) x))))
       (export main)))
-  (call main (: 3 Int64)) (output (: 73 Int64)))
+  (call main (: 3 Int64))
+  (output (: 73 Int64)))
 
 (case
   "a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)"
@@ -472,7 +473,8 @@
             ((gb (u) t (resume t t)))
             (do (let ((k true)) (if k (A.pa 7) unit)) (+ (* 10 (A.ga)) x)))))
       (export main)))
-  (call main (: 3 Int64)) (output (: 73 Int64)))
+  (call main (: 3 Int64))
+  (output (: 73 Int64)))
 
 (case
   "a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)"
@@ -3118,7 +3120,8 @@
       (def (od (: n Int64)) (+ 1 (ev (- n 1))))
       (def (main) (handle Bail 0 ((bail (n) s n)) (ev 4)))
       (export main)))
-  (call main) (output (: 99 Int64)))
+  (call main)
+  (output (: 99 Int64)))
 
 (case
   "a mutual group performing in an IF base-case branch and recursing in the other threads and runs"
@@ -6388,7 +6391,8 @@
           ((ask (n) s (resume (* n 2) s)))
           (match (List.at #list((fn (x) (Ask.ask x))) 0) ((Some f) (f 3)) ((None) 0))))
       (export main)))
-  (call main) (output (: 6 Int64)))
+  (call main)
+  (output (: 6 Int64)))
 
 ; TWO NESTED handlers, each arm a do-def-local x, the body reading the enclosing FN-LOCAL x through a
 ; right-nested (+ x (+ (A.geta) (B.getb))) — each binding MUST keep its own scope (no compounding
@@ -6493,8 +6497,10 @@
           ((next (u) s (resume s (+ s x))))
           (do (def a (Src.next)) (def b (Src.next)) (+ a b))))
       (export main)))
-  (call   main (: 5 UInt8)) (output (: 25 Int64))
-  (call   main (: 0 UInt8)) (output (: 20 Int64)))
+  (call main (: 5 UInt8))
+  (output (: 25 Int64))
+  (call main (: 0 UInt8))
+  (output (: 20 Int64)))
 
 (case
   "a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)"
@@ -6523,8 +6529,10 @@
               (if (>= (. st 0) (. st 1)) -999 (resume (. st 0) #tuple((+ (. st 0) 1) (. st 1))))))
           (+ (Sim.step) (+ (Sim.step) (Sim.step)))))
       (export main)))
-  (call   main (: 3 Int64)) (output (: 3 Int64))
-  (call   main (: 0 Int64)) (output (: -999 Int64)))
+  (call main (: 3 Int64))
+  (output (: 3 Int64))
+  (call main (: 0 Int64))
+  (output (: -999 Int64)))
 
 (case
   "handler op-param and state binders stay hygienic when colliding with perform-site names"
@@ -6600,7 +6608,8 @@
         (if (= i 0) bad (do (def scaled (Env.scale i)) (check-all (- i 1) (+ bad scaled)))))
       (def (main (: k Int64)) (handle Env k ((scale (v) s (resume (* v s) s))) (check-all 10 0)))
       (export main)))
-  (call   main (: 2 Int64)) (output (: 110 Int64)))
+  (call main (: 2 Int64))
+  (output (: 110 Int64)))
 
 (case
   "Qty arithmetic on the handler state binder via an arm-local def threads and runs"
@@ -7769,11 +7778,7 @@
       (effect St (op dip (-> Int64 Int64)))
       (def
         (main (: n Int64))
-        (handle
-          St
-          -100
-          ((dip (v) s (resume (+ v s) (- s 10))))
-          (+ (St.dip (- 0 n)) (St.dip 3))))
+        (handle St -100 ((dip (v) s (resume (+ v s) (- s 10)))) (+ (St.dip (- 0 n)) (St.dip 3))))
       (export main)))
   (call main (: 5 Int64))
   (output (: -212 Int64)))
@@ -12999,7 +13004,8 @@
       (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (> n 5) (walk (- n 1)) 0) (Ctr.tick))))
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
-  (call main) (output (: 0 Int64)))
+  (call main)
+  (output (: 0 Int64)))
 
 (case
   "a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted"
@@ -13015,7 +13021,8 @@
         (if (= n 0) 0 (+ (match (if (> n 5) (walk (- n 1)) 0) (_ 0)) (Ctr.tick))))
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
-  (call main) (output (: 0 Int64)))
+  (call main)
+  (output (: 0 Int64)))
 
 (case
   "a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted"
@@ -13031,7 +13038,8 @@
         (if (= n 0) 0 (+ (if (and (> n 5) (< (walk (- n 1)) 100)) 1 0) (Ctr.tick))))
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
-  (call main) (output (: 0 Int64)))
+  (call main)
+  (output (: 0 Int64)))
 
 ; ── effect safe-rejects: escaping / captured-continuation / partial-application (migrated from rcdzc
 ;    tests/mod.rs, delanguaging handoff from v-rcdzc-test-shrink 2026-08-30). A performing closure or a
@@ -13095,3 +13103,40 @@
 
       (export main)))
   (error CDZ0201))
+
+(case
+  "hst1 a TUPLE handler state rebuilt per tail-resume threads exactly (the state-accumulator face)"
+  (doc
+    "Breaker scaling-leak fence (2026-08-31, v-memory-safety-commissioned pin): a handle whose
+     tuple state is REBUILT on every resume (`(resume (* v 2) #tuple((+ cnt 1) (+ sum v)))`)
+     threads the state exactly — result = sum of 2k for k=n..1 = n(n+1): 30 at n=5, 0 at n=0,
+     10100 at n=100 (rust-agreed at filing). The KNOWN LEAK this pin tracks: one SUPERSEDED state
+     tuple per perform survives (live 5@n=5, 100@n=100 — the iteration-SCALING class; triage =
+     drop-old-on-rebind in the discharge's state self-loop, v-memory-safety reclaim lane after
+     05:18721, with the v-effects desugar dependency). #5766 tolerate-fewer auto-passes the
+     collapse; the value pins hold either way.")
+  (input
+    (do
+      (effect St (op bump (-> Int64 Int64)))
+      (def (loop (: k Int64) (: acc Int64)) (if (> k 0) (loop (- k 1) (+ acc (St.bump k))) acc))
+      (def
+        (main (: n Int64))
+        (handle
+          St
+          #tuple(0 0)
+          ((bump
+              (v)
+              s
+              (match
+                s
+                (#tuple(cnt sum) (resume (* v 2) #tuple((+ cnt 1) (+ sum v))))
+                (_ (resume 0 s)))))
+          (loop n 0)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 30 Int64))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (call main (: 100 Int64))
+  (output (: 10100 Int64))
+  (live-objects known-leak))
