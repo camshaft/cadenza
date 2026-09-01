@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(28) {
+    match c.variant(29) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -450,9 +450,51 @@ fn gen_main_body<C: Choice>(
         // `Option` result to Int64 — the fundamental keyed map READ (→ `Option V`) + the Some/None
         // consumption, absent from the coercing grammar (which only did Map.len). Value-comparable.
         27 => gen_map_lookup_body(c, out),
+        // A COLLECTION-OP body: Set.union / Set.remove / Map.remove (consumed by `.len` → Int64) or
+        // Set.contains (→ Bool) — set-merge / element-removal / membership lowering the grammar never
+        // reached (it only did Set.len/insert + Map.len/lookup). Value-comparable.
+        28 => gen_collection_op_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
+}
+
+/// A COLLECTION-OP body over small const collections, consumed to a scalar/Bool (value-comparable):
+/// `Set.union`/`Set.remove`/`Map.remove` fed to `.len` (→ Int64), or `Set.contains` (→ Bool). Half the
+/// remove/contains cases target a PRESENT element, half an ABSENT one, so both outcomes are exercised.
+/// Elements/keys are `0..=9`; the result is a deterministic count/bool the wasm-vs-rust diff grades.
+fn gen_collection_op_body<C: Choice>(c: &mut C, out: &mut String) {
+    let form = c.variant(4);
+    let present = c.variant(2) == 0;
+    let (a, b, d) = (
+        c.int_bounded(0, 4),
+        c.int_bounded(5, 9),
+        c.int_bounded(0, 4),
+    );
+    // A present target is an element of the base set/map; an absent one is `99`.
+    let target = if present { a } else { 99 };
+    match form {
+        // Set.union cardinality (dedups the shared element).
+        0 => write!(
+            out,
+            "(Set.len (Set.union (Set.of (list {a} {b})) (Set.of (list {b} {d}))))"
+        )
+        .ok(),
+        // Set.remove cardinality (present target shrinks by one; absent leaves it unchanged).
+        1 => write!(
+            out,
+            "(Set.len (Set.remove (Set.of (list {a} {b} {d})) {target}))"
+        )
+        .ok(),
+        // Set membership → Bool.
+        2 => write!(out, "(Set.contains (Set.of (list {a} {b} {d})) {target})").ok(),
+        // Map.remove cardinality (present key shrinks by one; absent leaves it unchanged).
+        _ => write!(
+            out,
+            "(Map.len (Map.remove (Map.insert (Map.insert Map.empty {a} {b}) {b} {d}) {target}))"
+        )
+        .ok(),
+    };
 }
 
 /// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
@@ -2578,6 +2620,39 @@ mod tests {
         }
         assert!(saw_present, "should reach a present-key lookup (Some arm)");
         assert!(saw_absent, "should reach an absent-key lookup (None arm)");
+    }
+
+    /// `gen_collection_op_body` REACHES all four op forms (Set.union, Set.remove, Set.contains,
+    /// Map.remove) and every body COMPILES — filling the set-merge / element-removal / membership gap
+    /// the coercing grammar's Set.len/insert + Map.len/lookup coverage never reached.
+    #[test]
+    fn gen_collection_op_body_reaches_all_forms_and_compiles() {
+        let (mut saw_union, mut saw_sremove, mut saw_contains, mut saw_mremove) =
+            (false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1163);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_collection_op_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_union |= body.contains("Set.union");
+            saw_sremove |= body.contains("Set.remove");
+            saw_contains |= body.contains("Set.contains");
+            saw_mremove |= body.contains("Map.remove");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "collection-op body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_union, "should reach Set.union");
+        assert!(saw_sremove, "should reach Set.remove");
+        assert!(saw_contains, "should reach Set.contains");
+        assert!(saw_mremove, "should reach Map.remove");
     }
 
     /// `gen_partial_application_body` REACHES all three currying forms (2-ary `let`-partial, 3-ary chained,
