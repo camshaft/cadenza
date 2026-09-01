@@ -742,6 +742,80 @@ fn a_chained_multi_use_list_concat_emits_linear_wasm_not_exponential() {
 }
 
 #[test]
+fn a_chained_multi_use_boxed_collection_producer_emits_linear_wasm_not_exponential() {
+    // REGRESSION (emit-SIZE, seq-203 family-widening): the sibling `List.concat` gate above guards the
+    // BINARY-same-operand exponential shape (`(concat x x)`). This gate guards the UNARY collection
+    // PRODUCER class — `List.push`/`List.prepend`/`List.update` (and the Map/Set producers) — which share
+    // the SAME keep path: a let-bound producer used 2+ times must be KEPT (materialized once, slot-shared),
+    // not copy-propagated at each use. `is_runtime_computation` (lower.rs) originally listed only ListNew
+    // (+ ListConcat via #7416); the collection-producer family was added in the batch-1 widening. Each of
+    // these ops is an Owned fresh producer (`heap_operand_ownership`) with CONSUMING operands
+    // (`mark_binder_dups`), so keeping + dup-per-use is refcount-sound.
+    //
+    // The 2-use-per-level step is `x_i = (List.push x_{i-1} (List.len x_{i-1}))`: `x_{i-1}` is CONSUMED as
+    // the list operand AND BORROWED for the length — two uses, so an un-kept `x_{i-1}` inlines its
+    // producer at BOTH sites and the chain compounds to 2^N (exactly the concat blow-up, one op deeper).
+    // Same noise-free `wasm.len()` signal (pure deterministic function of the program). Assert linear:
+    // ratio < 4.0 (linear ≈ 2×) AND absolute ceiling < 20 KB.
+    fn push_lenchain(n: usize) -> String {
+        // `x0 = (list p)`; `x_i = (List.push x_{i-1} (List.len x_{i-1}))` — `x_{i-1}` used TWICE per level.
+        let mut lets = String::from("(x0 (list p)) ");
+        for i in 1..=n {
+            let prev = i - 1;
+            lets.push_str(&format!(
+                "(x{i} ((. List push) x{prev} ((. List len) x{prev}))) "
+            ));
+        }
+        format!(
+            "(module m (def (f (: p Int64)) (let ({lets}) ((. List len) x{n}))) \
+                 (def (main) (f 1)) (export main))"
+        )
+    }
+    fn wasm_len(src: &str) -> usize {
+        crate::host::run_with_compiler_stack(|| {
+            compile_component(&crate::codec::encode(&parse(src)))
+                .expect("chain compiles")
+                .len()
+        })
+    }
+    let n7 = wasm_len(&push_lenchain(7));
+    let n14 = wasm_len(&push_lenchain(14));
+    let ratio = n14 as f64 / (n7.max(1)) as f64;
+    assert!(
+        n7 > 0 && ratio < 4.0 && n14 < 20_000,
+        "a chained multi-use collection producer (`List.push x (List.len x)`) must emit LINEAR wasm \
+             (kept + slot-shared), not 2^N (was inlined at each use before the boxed-collection producers \
+             entered `is_runtime_computation` — seq-203 family-widening): depth 7→14 emitted {n7}→{n14} \
+             bytes ({ratio:.1}× — linear is ~2×, the un-kept-producer regression compounds exponentially)"
+    );
+
+    // `Set.union` (`Core::SetAlgebra`) is the BINARY-same-operand SET producer — the true Set exponential
+    // witness (v-compiler-perf). Its chain `x_i = (Set.union x_{i-1} x_{i-1})` doubles the use per level
+    // exactly like `List.concat`; added to `is_runtime_computation` with the batch so it is kept + shared.
+    fn union_chain(n: usize) -> String {
+        // `x0 = (Set.of (list p))`; `x_i = (Set.union x_{i-1} x_{i-1})` — `x_{i-1}` used TWICE per level.
+        let mut lets = String::from("(x0 ((. Set of) (list p))) ");
+        for i in 1..=n {
+            let prev = i - 1;
+            lets.push_str(&format!("(x{i} ((. Set union) x{prev} x{prev})) "));
+        }
+        format!(
+            "(module m (def (f (: p Int64)) (let ({lets}) ((. Set len) x{n}))) \
+                 (def (main) (f 1)) (export main))"
+        )
+    }
+    let s7 = wasm_len(&union_chain(7));
+    let s14 = wasm_len(&union_chain(14));
+    let sratio = s14 as f64 / (s7.max(1)) as f64;
+    assert!(
+        s7 > 0 && sratio < 4.0 && s14 < 20_000,
+        "a chained multi-use `Set.union` must emit LINEAR wasm (kept + slot-shared), not 2^N (the \
+             confirmed Set exponential witness, kept via the `Core::SetAlgebra` widening): depth 7→14 \
+             emitted {s7}→{s14} bytes ({sratio:.1}× — linear is ~2×)"
+    );
+}
+
+#[test]
 fn a_wide_literal_match_builds_its_decision_tree_in_bounded_time() {
     // REGRESSION (perf): `lower::build_tree`'s lit-test arm compiles a wide literal match
     // (`(match t ((tuple 0 a) …) ((tuple 1 a) …) … (_ -1))`) as an N-DEEP chain of `LitTest` nodes.
