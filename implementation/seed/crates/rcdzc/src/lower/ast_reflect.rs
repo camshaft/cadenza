@@ -705,12 +705,27 @@ pub(crate) fn expand_macros(db: &mut Db) {
                 }
                 // Seed the spliced subtree's scope so its names resolve at the call site.
                 db.extend_scope_skip_into_subtree(id);
+                // FOUNDATION PATCH (mrf1 Layer 1): a macro-spliced `(def (f p…) …)` is a FRESH
+                // post-load body absent from the load-time `def_by_body` index — its recursive
+                // self-call would miss `callee_def_index` and decline CDZ0900. Register the spliced
+                // do-local callables now (mirrors the β-reduce inliner at eval.rs:1289 and specialize
+                // at call_lower.rs:2169).
+                db.register_reduced_callables(id);
                 changed = true;
             }
         }
         if !changed {
             break;
         }
+        // Rebuild the PARENT index over the now-spliced arena. `reconstruct_macro` builds its
+        // reconstructed nodes on `db.ast` DIRECTLY (bypassing `push_list`/`push_atom`), so the appended
+        // spliced nodes had NO `parent` entry — `parent_of` returned `None` for them, which silently
+        // broke `resolve::is_param_occurrence` (it walks up from the occurrence): a macro-spliced
+        // recursive `(def (f p…) …)`'s signature param binder mis-resolved as an unbound `Poison`
+        // instead of a `Resolved::Param`, so `type_of`=`Any` and `solve_recursive_params` never fired →
+        // the def's scheme stayed undetermined and its recursive call declined. Rebuild before the next
+        // round re-resolves (and before infer/lower run) so every occurrence in the splice has a parent.
+        db.rebuild_parent_index();
         // Invalidate the memoized RESOLUTION and TYPE of the (now-spliced) arena. `resolved_of` cached the
         // pre-splice `Apply`; clearing `db.types` drops any type memoized on the reduced/copied body.
         db.resolved = crate::arena::Column::new();

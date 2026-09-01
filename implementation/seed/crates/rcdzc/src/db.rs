@@ -3533,6 +3533,16 @@ impl Db {
         }
     }
 
+    /// Recompute the ENTIRE `parent`/`child_ix` index from the current arena structure. Called by
+    /// `expand_macros` after a macro splice: `reconstruct_macro` builds nodes on `self.ast` directly
+    /// (bypassing `push_list`/`push_atom`), so spliced nodes get no `parent` entry and `parent_of`
+    /// returns `None` — which breaks `resolve::is_param_occurrence` (see the call site + the mrf1 note).
+    pub(crate) fn rebuild_parent_index(&mut self) {
+        let (parent, child_ix) = parent_index(&self.ast);
+        self.parent = parent;
+        self.child_ix = child_ix;
+    }
+
     /// Give a SYNTHESIZED subtree scope-skip entries so a name resolved inside it hops O(1) to the nearest
     /// real binding candidate instead of walking every enclosing synth form. `push_list` deliberately
     /// leaves synth nodes UNCOVERED (the exhaustive parent walk is cheap for a SHALLOW β-reduced copy — its
