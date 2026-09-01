@@ -6129,7 +6129,18 @@ fn orderable_leaf_or_compound(
             seen.pop();
             ok
         }
-        // Anything else (a bare var, a function, Any, a nominal we can't resolve) — not orderable.
+        // A NOMINAL newtype / a QTY are TRANSPARENT wrappers over their inner type — a newtype (or
+        // quantity) over an orderable payload IS orderable (it is the same value, wrapped for identity /
+        // units). Peel to the inner and pass `float_ok` THROUGH (unlike a COMPOUND arm, which resets it to
+        // false): a bare-root newtype-over-float enumerates by canonical bytes exactly like a bare float.
+        // (#7234 regression fix: the to-list orderability check reached a `Nominal { inner: Int64 }`
+        // element — `(type Nat (Mk Int64))` set element — and wrongly declined CDZ0203; it must honor the
+        // newtype's orderable payload, the SAME peel `set_shape_descriptor`/the rust backend's
+        // `strip_nominal(_and_qty)` already do. A nominal/qty over an un-orderable inner — a Set/Map leaf,
+        // a float-leaf compound — still declines via the inner's own arm.)
+        Ty::Nominal { inner, .. } => orderable_leaf_or_compound(db, inner, float_ok, seen),
+        Ty::Qty { inner, .. } => orderable_leaf_or_compound(db, inner, float_ok, seen),
+        // Anything else (a bare var, a function, Any, an unresolved nominal) — not orderable.
         _ => false,
     }
 }

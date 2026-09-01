@@ -2250,6 +2250,32 @@
   ; n=5->6 confirms non-fold). Coverage preserved as a clean-0 reclaim assertion. (v-memory-safety)
   (live-objects 0))
 
+; A single-field NEWTYPE `(type N (Mk Int64))` is a TRANSPARENT wrapper over its orderable Int64 payload, so
+; a set of `N` elements HAS a total order (by the payload) and `Set.to-list` enumerates it — the orderability
+; check must PEEL the nominal to its inner leaf. REGRESSION guard: #7234 moved the to-list orderability check
+; to the shared front-end (CDZ0203 for a genuinely un-orderable element/key) but initially stopped honoring a
+; newtype's orderable payload — it treated `Nominal { inner: Int64 }` as un-orderable and WRONGLY declined
+; CDZ0203 (v-effects isolated it with this non-@invariant twin; concierge re-routed). Restored by peeling
+; nominal/qty in `orderable_leaf_or_compound`. A newtype over an UN-orderable inner (a Set/Map, a float-leaf
+; compound) still declines via the inner's own arm.
+(case
+  "Set.to-list over a newtype (Int64-payload) element enumerates via the newtype's orderable payload"
+  (input
+    (do
+      (type N (Mk Int64))
+      (def
+        (main (: v Int64))
+        (match
+          (List.at (Set.to-list (Set.insert #set((N.Mk v)) (N.Mk 3))) 0)
+          ((Some (N.Mk x)) x)
+          ((None _u) -1)))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
 (case
   "Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-breaker"
   (doc
