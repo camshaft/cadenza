@@ -2134,6 +2134,16 @@ pub struct Db {
     /// convention (id-sum/countdown), unchanged. Populated by `specialize_recursive`.
     pub(crate) multivalue_specs: std::collections::HashSet<String>,
 
+    /// The synthesized specialization NAMES that use the TAGGED-ABORT (non-local-exit) calling convention:
+    /// `f#ctx` returns `(tag, value)` where tag=1 means the recursion ABORTED (an abortive perform fired in a
+    /// NON-TAIL position, so the pending caller frames must be abandoned) and tag=0 is a normal result. Every
+    /// caller — the recursive self-call (via the tagged threader's own tag-check-short-circuit) AND the
+    /// top-level handle reduction (which reads `(. r 1)` for the handle value) — treats the spec's return as
+    /// this 2-tuple. A spec NOT in this set uses single-return / multi-value. Populated by
+    /// `specialize_recursive` when the abortive+non-tail+self-recursive shape is folded via `thread_returning_tagged`
+    /// (else that shape stays declined at the 4499 non-local-exit guard). (v-effects non-local-exit CC.)
+    pub(crate) tagged_abort_specs: std::collections::HashSet<String>,
+
     /// Per synthesized specialization NAME, the CAPTURED enclosing-fn param names that its handler arms
     /// reference free (e.g. a handler arm `converse(q,s) => resume(tool,0)` where `tool` is the enclosing
     /// `run-with`'s param — NOT the arm's own params/state, NOT the recursive def's params). Such a name is
@@ -3225,6 +3235,7 @@ impl Db {
             local_lift_captures: crate::fxhash::FxHashMap::default(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
             multivalue_specs: std::collections::HashSet::new(),
+            tagged_abort_specs: std::collections::HashSet::new(),
             effect_spec_captures: std::collections::HashMap::new(),
             force_multivalue: std::collections::HashSet::new(),
             handler_region_nodes: std::collections::HashSet::new(),

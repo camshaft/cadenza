@@ -12824,13 +12824,18 @@
   (output (: 99 Int64)))
 
 (case
-  "a non-tail recursive abort declines rather than miscompiles"
+  "a non-tail recursive abort abandons the pending frames and folds to the abort value (99)"
   (doc
     "`walk` recurses at a NON-TAIL position — `(+ 1 (walk (- n 1)))` — and bails at the base. An abort
-           ABANDONS the pending `+ 1` frames (result should be the arm value 99), but a specialized ordinary
-           return would flow 99 back up each `+ 1` → 102, a miscompile. specialize_recursive declines when an
-           abortive handler meets a callee with a non-tail self-call (the non-local-exit convention is later);
-           the TAIL case folds to 99.")
+           ABANDONS the pending `+ 1` frames (result is the arm value 99, NOT 99 flowed back up each `+ 1` →
+           102, which an ordinary return would give). The non-local-exit TAGGED-RETURN calling convention
+           folds it: the specialized `walk#eff` returns a tagged tuple `#tuple(tag value)` (tag 1 = abort, 0
+           = normal), the base abort yields `#tuple(1 99)`, and each non-tail self-call SHORT-CIRCUITS its
+           pending frame on the abort tag — `(let ((r (walk#eff …))) (if (= (. r 0) 1) r #tuple(0 (+ 1 (. r
+           1)))))` — so the abort tuple propagates up unchanged (99) instead of feeding the `+ 1`. The handle
+           collapses to `(. r 1)`. Only the SELF-recursive, single-slot, tail-abort, state-oblivious-arm
+           shape folds; a MUTUAL / accumulator-rewritten / pending-in-handle-body / state-reading-arm abort
+           still declines cleanly (the neighbors below).")
   (input
     (do
       (effect Bail (op bail (-> Int64 Int64)))

@@ -4496,7 +4496,28 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // through each caller's `+ 1` → 99+1+1+1 = 102, a MISCOMPILE. This needs the non-local-exit calling
     // convention (a stack of `+ 1` frames the abort unwinds — a later vertical). A TAIL self-call is fine:
     // the abort is the tail value, propagating up with no pending frame. Decline the non-tail abortive case.
-    if !ctx.abortive.is_empty() && !recursive_self_calls_all_tail(db, orig_body, callee_def) {
+    // TAGGED-ABORT (non-local-exit CC, v-effects). When the ONLY obstacle to specializing this abortive
+    // context is a NON-TAIL SELF-recursive call — walk `(+ 1 (walk (- n 1)))` with a base abort — the
+    // tagged-return convention (specialize `walk#eff` to return `#tuple(tag value)`; every non-tail self-call
+    // short-circuits its pending frame on the abort tag) folds it soundly to the abort value (99, not 102).
+    // ELIGIBLE only for the shape `thread_returning_tagged` models in v1: a SINGLE-slot, SELF-recursive (not
+    // mutual) callee whose abort is at a TAIL position (an off-tail / accum-rewritten abort stays declined by
+    // the 4511 guard below). When eligible, DON'T decline here — route to `thread_returning_tagged` at the
+    // threading fork. Otherwise the safe-floor decline stands (no miscompile ever ships).
+    let tagged_abort = !ctx.abortive.is_empty()
+        && !recursive_self_calls_all_tail(db, orig_body, callee_def)
+        && ctx.slots.len() == 1
+        && !callee_calls_other_recursive_def(db, orig_body, callee_def)
+        && !abortive_perform_off_tail(db, orig_body, ctx, true)
+        // A CALLER-OBSERVED out-state (`force_multivalue`, the sr5 family) already folds via the MULTI-VALUE
+        // path (decided at ~4650, AFTER this point). Exclude it here so tagged mode — computed earlier —
+        // does NOT preempt the multi-value tuple threading that case relies on. (Same `orig_body`/`ctx.key`
+        // the multivalue decision reads.)
+        && !db.force_multivalue.contains(&(orig_body, ctx.key.clone()));
+    if !ctx.abortive.is_empty()
+        && !recursive_self_calls_all_tail(db, orig_body, callee_def)
+        && !tagged_abort
+    {
         return None;
     }
     // ABORTIVE PERFORM AT A NON-TAIL POSITION IN THE (possibly ACCUM-REWRITTEN) CALLEE BODY. The self-call
@@ -4900,6 +4921,11 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         if multivalue {
             db.multivalue_specs.insert(spec_name.clone());
         }
+        // TAGGED-ABORT CC: register BEFORE threading so the handle-body call rewrite (thread.rs recursive-call
+        // arm) knows THIS spec returns a `#tuple(tag value)` and collapses its call to `(. r 1)`.
+        if tagged_abort {
+            db.tagged_abort_specs.insert(spec_name.clone());
+        }
         // Register the captured enclosing-fn param names so the self-call rewrite arm (and the initial call from
         // the handle body) passes them through as extra args, in the same order the sig lays them out.
         if !capture_names.is_empty() {
@@ -4940,7 +4966,13 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         ctx.in_recursive_specialize.set(true);
         // MULTI-VALUE mode: the body's every tail leaf yields `("tuple" value out-states…)`, and each self-call
         // is let-bound (out-state projected + threaded). SINGLE-return mode: the ordinary `thread` (unchanged).
-        let spec_body = if multivalue {
+        let spec_body = if tagged_abort {
+            // TAGGED-ABORT MODE (non-local-exit CC): thread the body so every tail yields `#tuple(tag value)`
+            // and each non-tail self-call short-circuits its pending frame on the abort tag. Declines (→ the
+            // 4499 safe floor already bypassed above cannot re-fire; a None here propagates as the whole
+            // fold's decline) for any sub-shape v1 does not model.
+            thread_returning_tagged(db, orig_body, state_refs, ctx, callee_def)?
+        } else if multivalue {
             // SAVE/RESTORE the multi-value scratch (`temp_ctr` + `pending`) around threading THIS body. In the
             // GROUP fold, threading one member's body recurses (via the recursive-call arm → `specialize_recursive`)
             // into a PARTNER member's OWN multi-value thread, which resets `temp_ctr`/`pending` — corrupting this
@@ -5013,6 +5045,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
             // filled-but-unreferenced) def is harmless — the fold declined this shape, so nothing names it.
             db.effect_specializations.remove(&memo_key);
             db.multivalue_specs.remove(&spec_name);
+            db.tagged_abort_specs.remove(&spec_name);
             db.effect_spec_captures.remove(&spec_name);
             // FULL FOLD: if the escaping occurrence is a typed main-local `let` capture we have NOT already
             // threaded, add it and re-run — next pass binds it to a fresh spec param, so it no longer escapes.
