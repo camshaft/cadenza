@@ -435,7 +435,19 @@ pub fn build_driver_source(
                         &qualified_heads,
                     )
                 };
-                let render = if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") {
+                // FLAG-GATED value-doc path (`CDZ_VALUE_DOC`): a plain scalar result crosses as a
+                // self-describing `(: value type)` codec doc (marker `CDZDOC:<hex>`) rendered by the canonical
+                // `render_binary` (op-seq-283 convergence — the SAME printer cdz-run uses), replacing the
+                // bespoke `cdz_render_expr` string. Default OFF → the branch below runs (byte-identical).
+                // Scalar-only for now (Int64); a factory/consumer keeps its special render. The read side
+                // (`value_doc::interpret_run_stdout`) detects the marker regardless of the flag.
+                let render = if !is_factory
+                    && !is_consumer
+                    && std::env::var("CDZ_VALUE_DOC").is_ok()
+                    && cdz_rust_render::is_value_doc_scalar(ty)
+                {
+                    cdz_rust_render::value_doc_render_scalar("__r", ty)
+                } else if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") {
                     // A host-closure String/Bytes RESULT crosses the wasm boundary as `list<u8>` → the corpus
                     // records the bare byte-int list `(104 105)`/`()`, NOT `"hi"`/`b"…"`. Render `__r` (a
                     // `String`/`Vec<u8>`) as the byte list (also avoids the E0277 `Vec<u8>: Display`). Mirrors xtask.
