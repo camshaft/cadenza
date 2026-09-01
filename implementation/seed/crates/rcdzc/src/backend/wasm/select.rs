@@ -116,6 +116,18 @@ pub struct Emit {
     /// Computed ONCE at function entry over all heap binders (params + `let`-binders); empty for a body
     /// with no shared-then-consumed heap binding (the common case), so the fast path is untouched.
     dup_sites: HashSet<StructId>,
+    /// 05:18721 SURPLUS keep-alive sites: the SUBSET of `dup_sites` occurrences (`Core::LocalRef`/`Core::Param`)
+    /// whose retain `dup` is PROVABLY REDUNDANT and may be skipped — the narrowed replacement for the too-broad
+    /// `body_is_boundary_owned`-alone trial gate that caused 159 corpus UAFs. An occurrence of binder `b` is
+    /// surplus iff: the body is BOUNDARY-OWNED (caller owns the scrutinee, no arm-end drop in the borrowing
+    /// callee) AND `b` is a MatchList SCRUTINEE that is rest-mint-CONSUMED (`matchlist_scrutinee_consumed` — an
+    /// arm rest-mints `(.. r)` over `b`, whose `vec-drop` consume has its OWN separate balancer, the emit.rs
+    /// RestFrom preservation dup) AND `b` has NO consume OTHER than that RestFrom (`count_param_consumes` with
+    /// `count_restfrom=false` == 0). The third conjunct is decisive: it keeps the dup LOAD-BEARING (unskipped)
+    /// whenever `b` is also push/insert/escape/self-call-consumed and balanced ONLY by this dup — the 159 UAF
+    /// class. Populated in `select_function_of`; read ONLY by `emit_binder_ref`. Empty unless boundary-owned +
+    /// a rest-mint match with a borrow-only scrutinee.
+    surplus_skippable_dups: HashSet<StructId>,
     /// hcz CAPTURE-ESCAPE retain sites (`collect_captured_escape_dup_sites`): the `Core::Captured` OCCURRENCE
     /// ids of a COMPOUND (heap) closure capture that ESCAPES the closure body via its sole read — a `dup` is
     /// emitted after the env-cell `arr-get` so the returned value owns an INDEPENDENT ref and the monolithic
@@ -202,6 +214,17 @@ pub struct Emit {
     /// `select_function_of` (it has params/self_def/body); empty otherwise. Reuses the EXISTING
     /// `count_param_consumes` + `looped_owned_param_drops` machinery (no re-derived predicate).
     nontail_match_reclaim_binders: HashSet<StructId>,
+    /// 05:18721 PART 1 (RestFrom preservation-dup skip-gate, read by the `emit.rs` `Core::SumPayload`
+    /// `RestFrom` arm): whether the function body being emitted is BOUNDARY-OWNED (an export-entry or a
+    /// lifted lambda) — i.e. the scrutinee is borrowed and the CALLER emits the single shell-drop_after (the
+    /// caller-drop). Set by `select_function_of` (which computes `is_boundary_owned`) before the emit. In such
+    /// a body a per-arm RestFrom `(.. r)` preservation dup is never balanced → leak, so it is a candidate for
+    /// the skip-gate (together with the rest-borrow-only + no-sibling-after-vec-drop conjuncts).
+    pub body_is_boundary_owned: bool,
+    /// The function-body ROOT of the emit in progress — set by `select_function_of`. Lets the emit run a
+    /// body-scoped escape query (`reclaim::restfrom_result_escapes`) for the RestFrom skip-gate's
+    /// rest-borrow-only conjunct. `None` outside a `select_function_of` emit.
+    pub fn_body: Option<StructId>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -820,7 +843,7 @@ fn sum_spine_reclaim_in_body(
                 let mut cseen = HashSet::new();
                 let mut total = 0usize;
                 for &a in args.iter() {
-                    count_param_consumes(db, a, binder, &mut cseen, &mut total);
+                    count_param_consumes(db, a, binder, &mut cseen, &mut total, true);
                 }
                 if total == 0 {
                     return true;
@@ -1174,6 +1197,10 @@ pub fn select_function_of(
     // never a lifted lambda). Internal callee-owned recursive defs (sum-nat) are neither → reclaimed.
     let is_boundary_owned =
         layout.exports.iter().any(|e| e.body == body) || db.lifted.iter().any(|l| l.body == body);
+    // 05:18721 PART 1: expose the boundary-owned flag + body root to the emit so the RestFrom preservation-dup
+    // skip-gate (emit.rs `Core::SumPayload` RestFrom arm) can read them (v-wasm-opt owns that gate).
+    code.body_is_boundary_owned = is_boundary_owned;
+    code.fn_body = Some(body);
     let nontail_reclaim: HashSet<StructId> = if is_boundary_owned {
         HashSet::new()
     } else {
@@ -1201,7 +1228,7 @@ pub fn select_function_of(
             // original ref) makes this > 0 → excluded (the param-reused-after control).
             let mut seen = HashSet::new();
             let mut total = 0usize;
-            count_param_consumes(db, body, *binder, &mut seen, &mut total);
+            count_param_consumes(db, body, *binder, &mut seen, &mut total, true);
             if total == 0 {
                 set.insert(*binder);
             }
@@ -1233,6 +1260,18 @@ pub fn select_function_of(
         // DEDICATED set (not `dup_sites`) — the emit's `Core::Captured` arm gates on it. Empty for a body with
         // no escaping single-read compound capture (every non-closure body, and borrow-only captures).
         collect_captured_escape_dup_sites(db, body, &mut code.captured_escape_dup_sites);
+        // 05:18721: mark the SURPLUS-skippable dup occurrences (the narrowed replacement for the too-broad
+        // `body_is_boundary_owned`-alone emit gate). ONLY in a boundary-owned body, and ONLY the dup_sites
+        // occurrences of a rest-mint-consumed MatchList scrutinee with NO other consume — see the helper +
+        // `Emit::surplus_skippable_dups`. Empty otherwise (fast path untouched).
+        if is_boundary_owned {
+            collect_surplus_skippable_dups(
+                db,
+                body,
+                &code.dup_sites,
+                &mut code.surplus_skippable_dups,
+            );
+        }
     }
     // (2) rope/slice-view: partition the SumExpect-extracted single-view Somes (String.at/Bytes.slice) into
     // the VIEW set (scalar-read-dead single consumer → we dup+shell-drop+view-drop, net -1) and the SHELL set
@@ -2990,7 +3029,7 @@ fn emit_tail(
                 return Ok(());
             }
             emit_call_args(
-                db, callee, &args, slots, base, high, scratch_ty, layout, out,
+                db, callee, &args, slots, base, high, scratch_ty, layout, out, None,
             )?;
             // OPTION C: a CROSS-EDGE callee in TAIL position — it's an imported peer func, and there is no
             // `return_call` to an import (`ReturnCall` targets a local func index only). Emit the extern call
@@ -3780,6 +3819,7 @@ fn count_param_consumes(
     p: StructId,
     seen: &mut HashSet<StructId>,
     count: &mut usize,
+    count_restfrom: bool,
 ) {
     if !seen.insert(id) {
         return;
@@ -3881,7 +3921,7 @@ fn count_param_consumes(
         Core::SumPayload {
             scrutinee,
             ref path,
-        } if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))) => {
+        } if count_restfrom && matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))) => {
             if is_ref_to(db, scrutinee, p) {
                 *count += 1;
             }
@@ -3889,7 +3929,84 @@ fn count_param_consumes(
         _ => {}
     }
     for c in core_child_ids(db, id) {
-        count_param_consumes(db, c, p, seen, count);
+        count_param_consumes(db, c, p, seen, count, count_restfrom);
+    }
+}
+
+/// Populate `out` with the SURPLUS-skippable `dup_sites` occurrences (see [`Emit::surplus_skippable_dups`]):
+/// the retain dups that are PROVABLY redundant in a boundary-owned body and may be skipped, the NARROW
+/// replacement for the too-broad `body_is_boundary_owned`-alone gate (which stripped load-bearing retains =
+/// 159 corpus UAFs). A `dup_sites` occurrence of binder `b` is surplus iff BOTH: (1) `b` is a MatchList
+/// SCRUTINEE with a `(.. r)` REST-PATTERN arm (`ListArmCond::LenGe`/`Any`) — the RestFrom family, present
+/// whether the rest binder is USED or DEAD; AND (2) `b` has NO consume OTHER than a RestFrom
+/// (`count_param_consumes` with `count_restfrom=false` == 0). Rationale: in a BOUNDARY-OWNED body the caller
+/// holds a live reference to `b` for the whole body, so a pure-BORROW read needs no retain; the keep-alive
+/// `dup` exists ONLY to balance a later CONSUME, and for a rest-pattern match `b`'s only consume (if any) is
+/// the `(.. r)` RestFrom, whose `vec-drop` already has its OWN balancer (the emit's RestFrom preservation dup)
+/// — so the retain is redundant. Covers BOTH the DEAD rest (05:18721 `f` — 0 consumes) and a sole used
+/// RestFrom. Conjunct 1 EXCLUDES non-list-rest borrows (a shared inner map, an RRB list as a map value, a
+/// Bytes rope read twice — their keep-alive is load-bearing for value-heap sharing `count_param_consumes` does
+/// not model); conjunct 2 EXCLUDES a rest scrutinee ALSO consumed by push/insert/escape/self-call (retain is
+/// the SOLE balancer) — together the UAF classes the broad gate hit. Caller gates on `is_boundary_owned`.
+/// `dup_sites` occurrences are `LocalRef`/`Param` nodes, so an occurrence's binder is read via `core_of`.
+fn collect_surplus_skippable_dups(
+    db: &mut Db,
+    body: StructId,
+    dup_sites: &HashSet<StructId>,
+    out: &mut HashSet<StructId>,
+) {
+    use crate::core::ListArmCond;
+    // (1) Binders that are a MatchList scrutinee with a `(.. r)` REST-PATTERN arm (LenGe/Any) — the RestFrom
+    // family, present whether the rest binder is USED or DEAD. This EXCLUDES non-list-rest borrows (a shared
+    // inner map, an RRB list as a map value, a Bytes rope read twice) whose keep-alive is load-bearing for
+    // value-heap sharing `count_param_consumes` does not model.
+    fn gather_rest_scrutinees(
+        db: &mut Db,
+        id: StructId,
+        out: &mut HashSet<StructId>,
+        seen: &mut HashSet<StructId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        if let Core::MatchList { scrutinee, arms } = core_of(db, id)
+            && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, scrutinee)
+            && arms
+                .iter()
+                .any(|a| matches!(a.cond, ListArmCond::LenGe(_) | ListArmCond::Any))
+        {
+            out.insert(binder);
+        }
+        for c in core_child_ids(db, id) {
+            gather_rest_scrutinees(db, c, out, seen);
+        }
+    }
+    let mut rest_scrutinees: HashSet<StructId> = HashSet::new();
+    let mut seen = HashSet::new();
+    gather_rest_scrutinees(db, body, &mut rest_scrutinees, &mut seen);
+    if rest_scrutinees.is_empty() {
+        return;
+    }
+    // (2) Keep only those with NO consume OTHER than a RestFrom (count_restfrom = false == 0) — excludes a rest
+    // scrutinee ALSO consumed by push/insert/escape/self-call (its retain is the SOLE balancer for that consume).
+    let mut surplus_binders: HashSet<StructId> = HashSet::new();
+    for &b in rest_scrutinees.iter() {
+        let mut cseen = HashSet::new();
+        let mut nonrest = 0usize;
+        count_param_consumes(db, body, b, &mut cseen, &mut nonrest, false);
+        if nonrest == 0 {
+            surplus_binders.insert(b);
+        }
+    }
+    if surplus_binders.is_empty() {
+        return;
+    }
+    for &id in dup_sites.iter() {
+        if let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, id)
+            && surplus_binders.contains(&binder)
+        {
+            out.insert(id);
+        }
     }
 }
 
@@ -3974,7 +4091,7 @@ fn emit_loop_iteration(
                         let mut seen = HashSet::new();
                         let mut total = 0usize;
                         for &a in args.iter() {
-                            count_param_consumes(db, a, binder, &mut seen, &mut total);
+                            count_param_consumes(db, a, binder, &mut seen, &mut total, true);
                         }
                         // `count_param_consumes` counts RestFrom / consume-ops / escapes but NOT a `Payload`
                         // extraction, so `total` here is the count of OTHER consuming uses of v. `== 0` ⟹ v is
@@ -4074,7 +4191,7 @@ fn emit_loop_iteration(
             let mut seen = HashSet::new();
             let mut total = 0usize;
             for &a in args.iter() {
-                count_param_consumes(db, a, binder, &mut seen, &mut total);
+                count_param_consumes(db, a, binder, &mut seen, &mut total, true);
             }
             // FLAGSHIP-UAF fence (breaker K1 / #4139 loop-specific over-optimization; v-rb-diagnosed SITE A),
             // NARROWED (v-mem #5090-over-retain report): `count_param_consumes` counts consumes of the loop-
@@ -5537,7 +5654,16 @@ fn push_discriminant(
 fn emit_binder_ref(id: StructId, slot: u32, out: &mut Emit) {
     // Site A: skip the preservation retain for a loop param reassigned-without-drop this iteration (its
     // borrow reads the live slot; the final vec-drop consumes the sole ref). Else default retain.
-    if out.dup_sites.contains(&id) && !out.loop_reassign_no_dup.contains(&slot) {
+    // 05:18721 GATE (narrowed): skip the per-occurrence retain dup ONLY when it is PROVABLY SURPLUS — the
+    // occurrence is in `surplus_skippable_dups` (a boundary-owned rest-mint-consumed MatchList scrutinee with
+    // no other consume, whose RestFrom vec-drop already has its own balancer, the emit.rs:3098 preservation
+    // dup). This REPLACES the earlier `!body_is_boundary_owned`-ALONE trial gate, which stripped LOAD-BEARING
+    // retains in every boundary-owned body → 159 corpus UAFs; the set-membership skips exactly the redundant
+    // dups and keeps the load-bearing ones (see `Emit::surplus_skippable_dups`).
+    if out.dup_sites.contains(&id)
+        && !out.loop_reassign_no_dup.contains(&slot)
+        && !out.surplus_skippable_dups.contains(&id)
+    {
         out.push(Lir::LocalGet(slot));
         out.push(Lir::CallImport(OP_DUP)); // rc++ — pops this copy, returns nothing
     }
@@ -8585,6 +8711,73 @@ fn callee_param_int_tys(db: &mut Db, callee: usize) -> Vec<Option<IntTy>> {
 /// A non-integer parameter, or an argument past the known parameters, emits normally. Shared by the
 /// tail (`return_call`) and non-tail (`call`) emit paths.
 #[allow(clippy::too_many_arguments)]
+/// Whether the caller must `drop` the OWNED-TEMPORARY arg `arg` (the callee's param at `param_index`) AFTER a
+/// NON-TAIL call to `callee`. CALLER-owns-args holds ONLY for a BOUNDARY-OWNED callee (export-entry or lifted)
+/// whose params are drop_after'd at the call boundary. Gate — all conjuncts conservative toward NOT dropping
+/// (wrong ⇒ leak, never double-free):
+///   1. boundary-owned callee;  2. heap param;  3. Owned arg;  4. callee BORROWS the param (`!param_escapes`);
+///   5. NON-LOOPED callee (`mutual_loop_group` empty) — a LOOPED callee handles its own params (a fold
+///      CONSUMES them; an invariant borrow is epilogue-dropped; a varying borrow → at-worst leak), so a
+///      caller-drop there double-frees (the 5000-sum/brd1 consuming-fold class). The consuming folds are
+///      exactly the looped ones, so `!looped` subsumes the spine-consume exclusion.
+fn call_arg_caller_drops(
+    db: &mut Db,
+    callee: usize,
+    arg: StructId,
+    param_index: usize,
+    layout: &Layout,
+) -> bool {
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return false;
+    };
+    if !(layout.exports.iter().any(|e| e.body == body) || db.lifted.iter().any(|l| l.body == body))
+    {
+        return false; // (1)
+    }
+    if !mutual_loop_group(db, callee).is_empty() {
+        return false; // (5) looped callee handles its own params
+    }
+    let params = match layout.export_plan(callee) {
+        Some(e) => e.params.clone(),
+        None => crate::layout::def_params(db, callee),
+    };
+    let Some((param_binder, param_ty)) = params.get(param_index).cloned() else {
+        return false;
+    };
+    if !is_heap_type(&param_ty) {
+        return false; // (2)
+    }
+    if !matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned)) {
+        return false; // (3)
+    }
+    if param_escapes_body(db, body, param_binder) {
+        return false; // (4)
+    }
+    true
+}
+
+/// Whether `body` contains a `Core::Call` whose arg triggers a caller-drop ([`call_arg_caller_drops`]) — the
+/// import-side companion of the `Core::Call` emit, so `collect_module_used_ops` imports `drop` iff the emit
+/// actually emits a caller-drop (precise import/emit agreement, like `def_drops_owned_param`). Cycle-guarded.
+pub fn body_has_caller_drop(db: &mut Db, body: StructId, layout: &Layout) -> bool {
+    fn walk(db: &mut Db, id: StructId, layout: &Layout, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::Call { callee, args } = core_of(db, id) {
+            for (i, &a) in args.iter().enumerate() {
+                if call_arg_caller_drops(db, callee, a, i, layout) {
+                    return true;
+                }
+            }
+        }
+        crate::backend::wasm::select::reclaim::core_child_ids(db, id)
+            .into_iter()
+            .any(|c| walk(db, c, layout, seen))
+    }
+    walk(db, body, layout, &mut HashSet::new())
+}
+
 fn emit_call_args(
     db: &mut Db,
     callee: usize,
@@ -8595,7 +8788,16 @@ fn emit_call_args(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
+    caller_drop_slots: Option<&mut Vec<u32>>,
 ) -> Result<(), Reject> {
+    let drops: Vec<bool> = if caller_drop_slots.is_some() {
+        (0..args.len())
+            .map(|i| call_arg_caller_drops(db, callee, args[i], i, layout))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut recorded: Vec<u32> = Vec::new();
     let param_its = callee_param_int_tys(db, callee);
     // Each arg after the first starts its scratch ABOVE the running high-water (`arg_base = *high`): the
     // args are all simultaneously live on the operand stack before the `call`, so a later arg reusing an
@@ -8613,7 +8815,17 @@ fn emit_call_args(
             // handle. `emit` does the right thing for both — the fix is at that single choke point.
             None => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
         }
+        if drops.get(i).copied().unwrap_or(false) {
+            let slot = *high;
+            *high += 1;
+            scratch_ty.insert(slot, ValType::I32);
+            out.push(Lir::LocalTee(slot));
+            recorded.push(slot);
+        }
         arg_base = *high;
+    }
+    if let Some(sink) = caller_drop_slots {
+        *sink = recorded;
     }
     Ok(())
 }
