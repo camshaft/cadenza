@@ -2317,6 +2317,27 @@ if [ "${{FLEET_SKIP_BASELINE_VANISHED_CHECK:-}}" != "1" ]; then
     fi
   fi
 fi
+
+# (7) COMMENT-EMOJI WARN (fail-open; v-gha-green/concierge 2026-09-01 — recurring checks/emoji-lint CI red).
+# The operator's standing NO-emoji-in-source-comments ban (`cargo xtask lint-emoji`) is a CI-only check + an
+# ADVISORY nix check (NOT in localGate), so agents keep landing WARNING/STOPGAP-style comment markers written as
+# emoji that red CI POST-hoc (whack-a-mole: #7531, #7557 fixed by v-gha-green on consecutive days). WARN at COMMIT time on emoji chars in
+# NEWLY-ADDED `.rs` lines so the adder removes them BEFORE they land + red CI. HEURISTIC (matches the common
+# emoji/pictograph/dingbat ranges on the diff's +lines, NOT the lint's exact comment-scoping) → WARN-ONLY,
+# never blocks (a functional emoji in a string/char literal is allowed by the lint; this can't tell, so it
+# only nudges). The AUTHORITATIVE check is `cargo xtask lint-emoji`. Silence: FLEET_SKIP_EMOJI_WARN=1.
+if [ "${{FLEET_SKIP_EMOJI_WARN:-}}" != "1" ]; then
+  _emoji="$(git diff --cached -U0 --diff-filter=ACM -- '*.rs' 2>/dev/null \
+    | grep -P '^\+.*[\x{{1F000}}-\x{{1FAFF}}\x{{2600}}-\x{{27BF}}\x{{2B00}}-\x{{2BFF}}\x{{FE0F}}]' 2>/dev/null | head -5)"
+  if [ -n "$_emoji" ]; then
+    echo "⚠ fleet pre-commit: newly-added .rs line(s) contain EMOJI — the operator BANS emoji in source comments" >&2
+    echo "  and checks/emoji-lint reds CI on it (recurred #7531, #7557). If these are in COMMENTS, remove them now" >&2
+    echo "  (a plain-ASCII marker like WARNING/STOPGAP works); verify with \`cargo xtask lint-emoji\`. (A functional" >&2
+    echo "  emoji in a string/char LITERAL is allowed by the lint — this heuristic warns regardless; ignore if a" >&2
+    echo "  literal. Silence: FLEET_SKIP_EMOJI_WARN=1.)" >&2
+    printf '%s\n' "$_emoji" | sed 's/^/    /' >&2
+  fi
+fi
 exit 0
 "##
     )
@@ -20565,6 +20586,12 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(b.contains("timeout 60"));
         assert!(b.contains("--quiet"));
         assert!(b.contains(r#"[ "$_vrc" = 3 ]"#)); // BLOCK iff the CLI reports exit 3 (vanished detected)
+        // Section (7): WARN (fail-open) on EMOJI in newly-added .rs lines, nudging pre-commit before the
+        // CI checks/emoji-lint reds post-hoc — a heuristic grep on the diff's +lines, warn-only, with the
+        // FLEET_SKIP_EMOJI_WARN escape + a pointer to the authoritative `cargo xtask lint-emoji`.
+        assert!(b.contains("FLEET_SKIP_EMOJI_WARN"));
+        assert!(b.contains("cargo xtask lint-emoji")); // authoritative-check pointer
+        assert!(b.contains(r"1F000")); // matches the emoji/pictograph unicode range on +lines
         // Fail-open: the script's LAST statement is `exit 0` (the warn sections never block a commit; only the
         // trunk-guard (1) and the baseline vanished-check (6) block, each on its own explicit `exit 1`).
         assert!(
