@@ -586,6 +586,9 @@ todo	ml/542-stray-arg-no-cascade
 todo	ml/543-error-inside-brackets-bounded
 todo	ml/544-nested-error-outer-survives
 todo	ml/546-call-missing-comma-recovers
+todo	ml/551-leading-as-newline-no-absorb
+todo	ml/552-malformed-leading-def-forall-missing-binder
+todo	ml/553-malformed-leading-def-forall-missing-dot
 todo	sexp/17-unterminated-list
 todo	sexp/18-trailing-input
 todo	sexp/19-unterminated-string

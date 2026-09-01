@@ -753,13 +753,12 @@ fn a_deep_glued_unit_chain_is_diagnosed_not_an_unbounded_arena() {
 // `def forall a. id(x: a) = x`→`(def (id (: a Type) (: x a)) x)`, ml/140-def-leading-forall-multi. The three-
 // spelling pure-sugar equivalence (leading == param-annotation == hand-written) is pinned by ml/139 ≡ ml/135 ≡
 // ml/137 sharing a byte-identical tree.sexp. This test keeps ONLY the malformed-recovery guards below.
-#[test]
-fn a_malformed_leading_def_forall_recovers_without_panic() {
-    // A malformed leading forall recovers (never panics): missing binder, missing `.`.
-    assert!(!read_ml("def forall . f() = 1").ok());
-    assert!(!read_ml("def forall a f() = 1").ok());
-}
-
+// `a_malformed_leading_def_forall_recovers_without_panic` (a malformed leading `forall` — missing binder,
+// missing `.` — recovers, never panics) MIGRATED to the spec/syntax corpus (parser-corpus inc-8): two
+// decline cases with error.txt + recovered.sexp — ml/552-malformed-leading-def-forall-missing-binder
+// (`def forall . f() = 1`, "needs at least one type-variable name", recovers to `(def (f) 1)`) and
+// ml/553-malformed-leading-def-forall-missing-dot (`def forall a f() = 1`, "after the `forall` binders",
+// recovers to `(def (<error> (: a Type) (: f Type)) 1)`) — the decline + recovered arena is the no-panic proof.
 // `unit_application_is_a_general_postfix_on_any_expression` (unit application is a general POSTFIX, not
 // literal-only: any expr followed same-line by a bare name is a `(Qty.of expr (Unit.of #name))` quantity;
 // the unit binds TIGHTER than infix) + `unit_suffix_does_not_cross_a_newline_on_a_variable` MIGRATED to the
@@ -882,21 +881,12 @@ fn a_malformed_leading_def_forall_recovers_without_panic() {
 // ((. Unit in) (Unit.of #meter) 5.0) x)`=ml/467-as-conversion-same-line-then-next-stmt. This test keeps ONLY
 // the `x`⏎`as meter` RECOVERY guard below (a leading `as` on a new line must not reach back across the newline
 // — an error-recovery/negative assertion, out of the parse-tree/fmt corpus scope).
-#[test]
-fn a_leading_as_on_a_new_line_does_not_absorb_the_previous_statement() {
-    use crate::sexpr;
-    // `x <newline> as meter`: `x` is a complete statement; the leading `as` on the next line does not
-    // continue it. (`read_ml` tolerates the stray `as`-with-no-left-operand error and still yields a
-    // tree; the stray `as`/`meter` land as their own error-recovered forms — the point is `x` is NOT
-    // folded into a `(Unit.in … x)` conversion.)
-    let parsed = read_ml("x\nas meter");
-    let printed = sexpr::print(&parsed.arenas);
-    assert!(
-        !printed.contains("Unit in"),
-        "a leading `as` on a new line must not absorb the previous statement into a conversion: {printed}"
-    );
-}
-
+// `a_leading_as_on_a_new_line_does_not_absorb_the_previous_statement` (`x <newline> as meter`: `x` is a
+// complete statement; the leading `as` on the next line does NOT fold `x` into a `(Unit.in … x)`
+// conversion — read_ml tolerates the stray `as` and recovers) MIGRATED to the spec/syntax corpus (parser-
+// corpus inc-8): ml/551-leading-as-newline-no-absorb, decline (error.txt "keyword used outside its form")
+// + recovered.sexp `(do x ((. Qty of) as ((. Unit of) #"meter")))` — `x` stays its OWN do-member (NOT a
+// `(Unit.in …)`), the stray `as meter` is a separate error-recovered form; the golden IS the no-absorb proof.
 // `as_conversion_target_may_be_a_compound_unit` (the `as` conversion target extends across a GLUED `/`/`*`/`^`
 // chain into a COMPOUND unit, like `<num> GiB/s`; a SPACED `/ 2` stays a division of the conversion — the glue
 // rule) MIGRATED to the spec/syntax corpus (inc-6 batch-78): single `x as meter`=ml/220-as-conversion-basic,
