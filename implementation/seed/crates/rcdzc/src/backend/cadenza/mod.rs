@@ -562,13 +562,12 @@ fn emit_effect_decl(
 /// variant is `(<Variant>)`. `decl` is an owned clone (so `typeval_of`'s `&mut db` does not alias a
 /// `db.type_decls` borrow).
 fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> Option<StructId> {
-    // Emit any CLOSED sum, including the ZERO-variant (empty / uninhabited) sum as a bare `(type V)`. A
-    // GENERIC sum (`decl.params` non-empty) is handled: its head is `(<Name> p0 p1…)` and a bare
-    // type-parameter payload re-emits its name. An OPEN sum (row tail) still declines (its `.. r` surface
-    // is a later slice).
-    if decl.open_tail.is_some() {
-        return None;
-    }
+    // Emit any sum, including the ZERO-variant (empty / uninhabited) sum as a bare `(type V)`. A GENERIC sum
+    // (`decl.params` non-empty) is handled: its head is `(<Name> p0 p1…)` and a bare type-parameter payload
+    // re-emits its name. An OPEN sum (`decl.open_tail = Some(rowvar)`) re-emits its `.. <rowvar>` row tail
+    // after the variants (see the append below): the open tail is a TYPE-level row variable, not a value-level
+    // thing, so an open sum's VALUES/MATCHES round-trip identically to a closed sum's once its `(type …)` is
+    // in scope (the value-emit guard at the `Ty::Sum` arm gates only on `emitted.contains(decl)`).
     let type_head = b.name("type");
     // The type NAME position: bare `Name` for a monomorphic sum, or `(Name p0 p1…)` for a generic one (the
     // params are the sum's type parameters in first-appearance order, `(type (Box a) …)`).
@@ -597,6 +596,13 @@ fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> O
             vchildren.push(ty_node);
         }
         children.push(b.list(vchildren));
+    }
+    // An OPEN sum re-emits its row tail as the flat `.. <rowvar>` (two trailing atoms) after the variants —
+    // matching the corpus source `(type Ev (A Int64) (B Int64) .. r)`. The parser's `rest_marker` recognizes
+    // this flat form (db.rs, `open_tail` detection), so it round-trips to the same `open_tail: Some(rowvar)`.
+    if let Some(rowvar) = &decl.open_tail {
+        children.push(b.name(".."));
+        children.push(b.name(rowvar.as_str()));
     }
     Some(b.list(children))
 }
