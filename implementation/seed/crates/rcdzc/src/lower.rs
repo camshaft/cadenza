@@ -1678,7 +1678,23 @@ pub(crate) fn type_ast(
         // A nominal's type surface is its declared NAME atom (`(: (Mk 42) UserId)`) — its identity is
         // the name, not its underlying shape (like a monomorphic sum). The value itself renders as the
         // underlying value form (built by the value walker, which sees through the tag).
-        Ty::Nominal { decl, .. } => Some(b.name(ncx.name_of(*decl)?)),
+        // A NOMINAL's type surface: the bare NAME for a monomorphic newtype, or the STRUCTURED application
+        // `(Box Int64)` for a GENERIC instantiation — same as `Ty::Sum`. Dropping the args rendered a generic
+        // `Box Int64` as bare `Box` = `Box <free>` on re-read, so a `(: xs (List Box))` param annotation
+        // mismatched the `Box Int64` a `(Box.Wrap n)` produces (CDZ0203, breaker rg1).
+        Ty::Nominal { decl, args, .. } => {
+            let name = ncx.name_of(*decl)?.to_string();
+            if args.is_empty() {
+                Some(b.name(name))
+            } else {
+                let head = b.name(name);
+                let mut children = vec![head];
+                for a in args.iter() {
+                    children.push(type_ast(b, a, ncx)?);
+                }
+                Some(b.list(children))
+            }
+        }
         // The TYPE OF TYPES — the type surface of a type-VALUE (`(: Int64 Type)`). A type is a first-class
         // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
         // Values), so a bare type-value crosses the boundary; its TYPE node is the atom `Type` (the value
