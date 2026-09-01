@@ -4782,7 +4782,10 @@
           pname = "cdz-wasm-pkg";
           version = "0.0.0";
           src = guideCompilerWasmSrc;
-          nativeBuildInputs = [ rustToolchain wasmBindgenCli pkgs.binaryen ];
+          # binaryen117 (NOT pkgs.binaryen 131) — pinned so wasm-opt lowers memory.copy/fill + overlong
+          # call_indirect away (else the browser compiler-wasm OOBs at runtime, guide-examples 252-OOB). Scoped
+          # to cdzWasmPkg only; see the binaryen117 def. (v-guide-infra root-cause, verified 0-OOB.)
+          nativeBuildInputs = [ rustToolchain wasmBindgenCli binaryen117 ];
           buildPhase = ''
             runHook preBuild
             ${mkCargoVendorEnv { vendor = cdzWasmVendor; }}
@@ -5242,6 +5245,29 @@
           };
           nativeBuildInputs = [ pkgs.autoPatchelfHook pkgs.zstd ];
           buildInputs = [ (pkgs.lib.getLib pkgs.stdenv.cc.cc) pkgs.zlib pkgs.gmp ];
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp -a . "$out/"
+            runHook postInstall
+          '';
+        };
+
+        # binaryen 117 (v-guide-infra root-cause 2026-09-01) — PINNED for cdzWasmPkg's wasm-opt ONLY. WHY:
+        # pkgs.binaryen 131 PRESERVES rustc/LLVM-22's memory.copy/fill + overlong call_indirect, which OOB the
+        # browser compiler-wasm at RUNTIME (guide-examples 252-OOB, grew via #7445/#7479); binaryen version_117
+        # (exactly what wasm-pack bundles, v-guide-infra's verified 0-OOB build) lowers those away. Prebuilt
+        # release + autoPatchelf (like lean4_432); SCOPED — only cdzWasmPkg's nativeBuildInputs use it, so the
+        # wasm-opt-gap sweep + all other binaryen consumers stay on pkgs.binaryen 131.
+        binaryen117 = pkgs.stdenv.mkDerivation {
+          pname = "binaryen";
+          version = "117";
+          src = pkgs.fetchurl {
+            url = "https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-aarch64-linux.tar.gz";
+            hash = "sha256-rVYCBEJgFagV+qRWk8g7731YZ304o5QiwnKjC6S22io=";
+          };
+          nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+          buildInputs = [ (pkgs.lib.getLib pkgs.stdenv.cc.cc) ];
           installPhase = ''
             runHook preInstall
             mkdir -p "$out"
