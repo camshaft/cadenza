@@ -924,11 +924,12 @@ fn cmd_differential(args: &[String]) -> ExitCode {
     match driver::differential_sweep(&cfg, &store, &cdz, count) {
         Ok(stats) => {
             eprintln!(
-                "[cdz-smith] differential done: {} agreed, {} mismatched ({} new buckets, {} dup hits), {} unavailable",
+                "[cdz-smith] differential done: {} agreed, {} mismatched ({} new buckets, {} dup hits), {} crashed, {} unavailable",
                 stats.agreed,
                 stats.mismatched,
                 stats.new_buckets,
                 stats.duplicate_hits,
+                stats.crashed,
                 stats.unavailable
             );
             // Every program unavailable = the oracle never actually compared anything (misconfigured).
@@ -1319,6 +1320,17 @@ fn cmd_verify_differential(args: &[String]) -> ExitCode {
                         );
                     }
                     Diff::Unavailable(e) => println!("wasm-vs-rust: UNAVAILABLE — {e}"),
+                    Diff::CompileCrash(c) => {
+                        disagreed = true;
+                        println!(
+                            "wasm-vs-rust: COMPILE-CRASH — the in-process compile PANICKED{}: {}",
+                            c.site
+                                .as_deref()
+                                .map(|s| format!(" at {s}"))
+                                .unwrap_or_default(),
+                            c.message
+                        );
+                    }
                 }
             }
             Err(e) => println!("rust: <unavailable> {e}"),
@@ -1376,6 +1388,7 @@ fn describe_side(s: &cdz_smith::differential::Side) -> String {
         Side::Declined(d) => format!("declined {d}"),
         Side::ArtifactError(e) => format!("artifact-error {e}"),
         Side::Unavailable(e) => format!("unavailable {e}"),
+        Side::CompilePanic(c) => format!("compile-panic {}", c.message),
     }
 }
 
