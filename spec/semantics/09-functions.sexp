@@ -13389,3 +13389,24 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64)))
+
+; --- Rest-parameter placement: a rest must be LAST, and at most one -----------------------------
+; DESIGN-variable-arity-functions.md §2.2: a rest parameter absorbs the trailing arguments, so it must
+; be the LAST parameter (a fixed parameter after it could never receive an argument), and a parameter
+; list may hold at most one. These are compile-time placement errors with an actionable message.
+(case
+  "a rest parameter that is not last is rejected"
+  (doc
+    "`(def (bad (.. xs) y) …)` places a fixed parameter `y` AFTER the rest — but the rest already
+           absorbed every trailing argument, so `y` could never be bound. Rejected with a message naming
+           the fix (move the rest to the end), rather than the confusing downstream arity error.")
+  (input (do (def (bad (.. xs) (: y Int64)) y) (def (main) (bad 1 2 3)) (export main)))
+  (error CDZ0201 (message "must be the LAST parameter")))
+
+(case
+  "at most one rest parameter is allowed"
+  (doc
+    "`(def (bad (.. xs) (.. ys)) …)` declares two rest parameters — but a single trailing run cannot be
+           split between two rests, so at most one is allowed. Rejected with the coded placement error.")
+  (input (do (def (two (.. xs) (.. ys)) 0) (def (main) (two 1 2)) (export main)))
+  (error CDZ0201 (message "AT MOST ONE rest parameter")))
