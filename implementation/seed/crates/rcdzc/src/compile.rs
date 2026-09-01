@@ -3129,6 +3129,57 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for params in &param_lists {
         crate::infer::param_list_linearity_faults(db, params, &mut faults);
     }
+    // REST-PARAMETER PLACEMENT (varargs, `DESIGN-variable-arity-functions.md` §2.2): a rest parameter
+    // `(.. binder)` MUST be the LAST parameter, and a parameter list may hold AT MOST ONE. A rest that is
+    // not last (`(def (f (.. xs) y) …)`) — or a second rest (`(def (f (.. xs) (.. ys)) …)`) — otherwise
+    // reached lowering and surfaced only as a confusing over-application arity error; report the real
+    // cause here with the fix. Covers BOTH `def` parameters (`db.defs`) and `fn` lambda parameters (the
+    // arena scan, same shape the malformed-parameter check above uses). Additive — fires only on a
+    // genuinely mis-placed rest, never on a well-formed varargs function (one trailing rest).
+    let all_param_lists: Vec<Vec<StructId>> = param_lists
+        .iter()
+        .cloned()
+        .chain(
+            (0..db.ast.structure.len() as u32)
+                .map(StructId)
+                .filter(|&id| db.ast.as_form(id, "fn").is_some_and(|t| t.len() >= 2))
+                .filter_map(|id| db.ast.as_form(id, "fn").and_then(|t| t.first().copied()))
+                .filter_map(|params_occ| match db.ast.get(params_occ) {
+                    crate::ast::Struct::List(ps) => Some(ps.clone()),
+                    _ => None,
+                }),
+        )
+        .collect();
+    for params in &all_param_lists {
+        let rests: Vec<StructId> = params
+            .iter()
+            .copied()
+            .filter(|&p| crate::eval::is_rest_param(db, p))
+            .collect();
+        if let Some(&last) = params.last() {
+            for &r in &rests {
+                if r != last {
+                    faults.push(
+                        Reject::coded(
+                            Code::Malformed,
+                            "a rest parameter `(.. …)` must be the LAST parameter — move it to the end",
+                        )
+                        .at(r),
+                    );
+                }
+            }
+        }
+        // A second (or later) rest parameter — at most one is allowed.
+        for &r in rests.iter().skip(1) {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "a parameter list may have AT MOST ONE rest parameter `(.. …)`",
+                )
+                .at(r),
+            );
+        }
+    }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
     // A def is an ENTRYPOINT if it is exported — the only context where a body is lowered STANDALONE as
