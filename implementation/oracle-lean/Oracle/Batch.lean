@@ -22,6 +22,7 @@ import Oracle.Ast
 import Oracle.Eval
 import Oracle.Check
 import Oracle.Symbolic
+import Oracle.Type
 
 namespace Oracle
 open Oracle.Ast
@@ -68,11 +69,35 @@ def judgeEquivNode (m : Module) (nodeId : Nat) : Verdict :=
     | .cannotProve r => .skip s!"equiv: {r}"
   | _, _ => .skip "equiv: missing program operand"
 
-/-- Judge one trial NODE within the batch module → a `Verdict`. An `(equiv …)` node routes to the
-symbolic-equivalence judge; an `(trial …)` node to the value/trap differential. A malformed trial is a
-`skip` (never crashes the batch): a garbled trial is a coverage-gap, not a differential mismatch. -/
+/-- Decode a carried rcdzc `cdz check` verdict node (`(accept)` | `(reject "<CODE>")` | `(decline)`) into a
+`RcdzcVerdict` (design §1.3). `none` = malformed (→ the typecheck item skips). -/
+def decodeRcdzcVerdict (m : Module) (nodeId : Nat) : Option RcdzcVerdict :=
+  match Check.headStr? m nodeId with
+  | some "accept" => some .accept
+  | some "decline" => some .decline
+  | some "reject" => (((kidsOf m nodeId)[0]?).bind (fun c => Check.leafText? m c)).map RcdzcVerdict.reject
+  | _ => none
+
+/-- Judge a `(typecheck <program> <rcdzc-verdict>)` item — the TYPING dimension
+(DESIGN-lean-type-system-oracle). Runs `Oracle.infer` on the program subtree and maps its `TypeVerdict`
+against rcdzc's carried accept/reject/decline via `judgeTypecheck` (§1.2). T0.1: `infer` is all-declining
+→ every typecheck item is `skip` (the additive baseline starts all-skip). Reuses the existing
+holds/mismatch/skip protocol, so the batch may freely MIX trial/equiv/typecheck items. -/
+def judgeTypecheckNode (m : Module) (nodeId : Nat) : Verdict :=
+  match (kidsOf m nodeId)[0]?, (kidsOf m nodeId)[1]? with
+  | some pId, some rvId =>
+    match decodeRcdzcVerdict m rvId with
+    | some rv => judgeTypecheck (infer { m with root := pId }) rv
+    | none => .skip "typecheck: malformed rcdzc verdict"
+  | _, _ => .skip "typecheck: missing program/verdict operand"
+
+/-- Judge one trial NODE within the batch module → a `Verdict`. A `(typecheck …)` node routes to the TYPING
+judge; an `(equiv …)` node to the symbolic-equivalence judge; a `(trial …)` node to the value/trap
+differential. A malformed trial is a `skip` (never crashes the batch): a garbled trial is a coverage-gap,
+not a differential mismatch. -/
 def judgeTrialNode (m : Module) (trialId : Nat) : Verdict :=
-  if Check.headStr? m trialId == some "equiv" then judgeEquivNode m trialId
+  if Check.headStr? m trialId == some "typecheck" then judgeTypecheckNode m trialId
+  else if Check.headStr? m trialId == some "equiv" then judgeEquivNode m trialId
   else match parseTrialAt m trialId with
   | .error e => .skip s!"batch: {e}"
   | .ok (prog, t) => Check.checkTrial prog m t
@@ -197,6 +222,16 @@ private def _equivProg (na nb : UInt8) : Module :=
 #guard (match judgeTrialNode (_equivProg 42 42) 21 with | .holds => true | _ => false)
 -- two programs with different constant bodies are not proven → `skip` (never a false `holds`).
 #guard (match judgeEquivNode (_equivProg 42 43) 21 with | .skip _ => true | _ => false)
+
+-- TYPING: `decodeRcdzcVerdict` extracts a coded reject `(reject "CDZ0203")`.
+#guard (decodeRcdzcVerdict
+    { leaves := #[Leaf.name "reject".toUTF8, Leaf.str "CDZ0203".toUTF8],
+      nodes := #[.atom 0, .atom 1, .list #[0, 1]], root := 2 } 2 == some (.reject "CDZ0203"))
+-- a `(typecheck <program> (accept))` item → `skip` (T0.1 `infer` all-declining), routed via judgeTrialNode.
+#guard (match judgeTrialNode
+    { leaves := #[Leaf.name "typecheck".toUTF8, Leaf.name "accept".toUTF8, Leaf.name "do".toUTF8],
+      nodes := #[.atom 2, .atom 0, .atom 1, .list #[2], .list #[1, 0, 3]], root := 4 } 4 with
+  | .skip _ => true | _ => false)
 
 -- END-TO-END: a `(batch (equiv PA PB))` request through the full `judgeBatchBytes` stdin→stdout path that
 -- `cdz-oracle` runs (encode → decode → judge → encode the `(verdicts …)` response). Wraps `_equivProg`'s
