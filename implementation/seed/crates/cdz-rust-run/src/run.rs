@@ -248,10 +248,15 @@ pub fn compile_and_run(
         }
     };
     if run.status.success() {
-        Outcome::Value(
-            String::from_utf8_lossy(&run.stdout).trim().to_string(),
-            observed_host_calls(&run.stderr),
-        )
+        // Route the captured stdout through the value-doc marker interpreter: a `CDZDOC:<hex>` marker (the
+        // flag-gated value-doc path) decodes to the canonical surface via `render_binary`; any other output
+        // (the default string render) passes through byte-identical (a string render never starts with the
+        // marker). A corrupt marker → `BadArtifact` (never a silent mis-render).
+        let raw = String::from_utf8_lossy(&run.stdout).trim().to_string();
+        match crate::value_doc::interpret_run_stdout(&raw) {
+            Ok(value) => Outcome::Value(value, observed_host_calls(&run.stderr)),
+            Err(e) => Outcome::BadArtifact(format!("value-doc marker decode failed: {e}")),
+        }
     } else {
         Outcome::Trap(rust_panic_message(&run.stderr))
     }
