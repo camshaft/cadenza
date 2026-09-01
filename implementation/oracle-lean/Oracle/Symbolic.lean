@@ -73,6 +73,26 @@ decreasing_by
     simp_all
     omega
 
+/-- Convert a fully-CONCRETE element expression to a `Value`, including compound `.ctor "list"` (order +
+duplicates preserved — faithful to `Value.list`), `.tuple`, and `.record`. Used ONLY by `Set.len`/`Map.len`
+canonicalization to count DISTINCT compound elements (via eval's `canonSet`/`canonMap`); kept SEPARATE from
+the capstone-critical `symToValue?` (which the `denote (normalize e) = denote e` proofs case on and must
+stay minimal — const/tuple/record only). A non-list `.ctor` (set/map as an element) or any symbolic subterm
+→ `none` (the caller degrades to `cannotProve`, a sound skip). -/
+def symElemToValue? : SymExpr → Option Value
+  | .const v => some v
+  | .tuple es => (es.attach.mapM (fun x => symElemToValue? x.val)).map Value.tuple
+  | .record fs => (fs.attach.mapM (fun x => (symElemToValue? x.val.2).map (fun v => (x.val.1, v)))).map Value.record
+  | .ctor name args =>
+      if name == "list".toUTF8 then (args.attach.mapM (fun x => symElemToValue? x.val)).map Value.list
+      else none
+  | _ => none
+termination_by e => sizeOf e
+decreasing_by
+  · simp_wf; have h := Array.sizeOf_lt_of_mem x.property; omega
+  · simp_wf; rcases x with ⟨⟨k, e⟩, hmem⟩; have h := Array.sizeOf_lt_of_mem hmem; simp_all; omega
+  · simp_wf; have h := Array.sizeOf_lt_of_mem x.property; omega
+
 /-- Constant-fold an operator applied to fully-CONSTANT operands, iff the fold is SOUND independent of
 integer width (the symbolic evaluator does not yet track width). So this folds ONLY operators that can
 never overflow / trap: COMPARISONS over integer constants (`< > <= >=`, total on `Int`), value EQUALITY
@@ -1224,11 +1244,15 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
              (match symEval m senv fuel ty sId with
               | .sym (.ctor t elems) =>
                 if t == "set".toUTF8 then
-                  (if elems.all (fun e => match e with | .const _ => true | _ => false) then
-                     (match canonSet (elems.filterMap (fun e => match e with | .const v => some v | _ => none)) with
-                      | some s => .sym (.const (.int (Int.ofNat s.size)))
-                      | none => .cannotProve "symeval: Set.len on unorderable elements")
-                   else .cannotProve "symeval: Set.len needs all-concrete elements")
+                  -- reify EVERY concrete element to a Value (incl COMPOUND list/tuple/record via
+                  -- `symElemToValue?`) then run eval's own `canonSet` (sort + structural dedup via `cmpValue`,
+                  -- which orders compounds lexicographically) → the canonical distinct-count. A symbolic /
+                  -- unorderable / non-list-ctor element → cannotProve (eval would decline the literal too).
+                  (match elems.mapM symElemToValue? with
+                   | some vs => (match canonSet vs with
+                                 | some s => .sym (.const (.int (Int.ofNat s.size)))
+                                 | none => .cannotProve "symeval: Set.len on unorderable elements")
+                   | none => .cannotProve "symeval: Set.len needs all-concrete elements")
                 else .cannotProve "symeval: Set.len on a non-set value"
               | .cannotProve r => .cannotProve r
               | _ => .cannotProve "symeval: Set.len on a non-set value")
@@ -1241,8 +1265,13 @@ partial def symEval (m : Module) (senv : SymEnv) (fuel : Nat) (ty : IntTy) (i : 
              (match symEval m senv fuel ty mId with
               | .sym (.ctor t elems) =>
                 if t == "map".toUTF8 then
+                  -- reify each `.tuple #[k, v]` entry to concrete (key, value) Values (COMPOUND keys/values
+                  -- via `symElemToValue?`), then eval's `canonMap` (last-insert-wins per key + sort) → the
+                  -- canonical unique-KEY count. A symbolic / unorderable / malformed entry → cannotProve.
                   (match elems.mapM (fun e => match e with
-                                              | .tuple #[.const k, .const v] => some (k, v)
+                                              | .tuple #[ke, ve] => (match symElemToValue? ke, symElemToValue? ve with
+                                                                     | some k, some v => some (k, v)
+                                                                     | _, _ => none)
                                               | _ => none) with
                    | some kvs => (match canonMap kvs with
                                   | some cm => .sym (.const (.int (Int.ofNat cm.size)))
@@ -2165,6 +2194,19 @@ private def _setLenExpr : Module :=
     root := 10 }
 #guard symEval _setLenExpr [] symDefaultFuel defaultIntTy 10
        == SymOutcome.sym (.const (.int 3))
+
+-- SET.LEN over COMPOUND elements: `((. Set len) (set (list 1 2) (list 29 22)))` → 2 (two distinct lists;
+-- `symElemToValue?` reifies each list ctor → `Value.list`, `canonSet` counts distinct). v-cdz-smith #3.
+private def _setLenCompoundExpr : Module :=
+  { leaves := #[Leaf.name ".".toUTF8, Leaf.name "Set".toUTF8, Leaf.name "len".toUTF8,
+                Leaf.name "set".toUTF8, Leaf.name "list".toUTF8, Leaf.intLit false .dec (ByteArray.mk #[1]),
+                Leaf.intLit false .dec (ByteArray.mk #[2]), Leaf.intLit false .dec (ByteArray.mk #[29]),
+                Leaf.intLit false .dec (ByteArray.mk #[22])],
+    nodes := #[.atom 0, .atom 1, .atom 2, .list #[0, 1, 2], .atom 4, .atom 5, .atom 6, .list #[4, 5, 6],
+               .atom 4, .atom 7, .atom 8, .list #[8, 9, 10], .atom 3, .list #[12, 7, 11], .list #[3, 13]],
+    root := 14 }
+#guard symEval _setLenCompoundExpr [] symDefaultFuel defaultIntTy 14
+       == SymOutcome.sym (.const (.int 2))
 
 -- MAP.LEN member-op coverage with DUP-KEY DEDUP: `((. Map len) (map (1 10) (1 20) (2 30)))` → 2 (key 1
 -- deduped, last-wins via canonMap).
