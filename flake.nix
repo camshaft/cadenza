@@ -5107,7 +5107,7 @@
               cp -r ${talosLakePackages}/$d .lake/packages/$d
             done
             chmod -R u+w .lake/packages
-            lake build cdz-oracle oracle-selftest oracle-ast-roundtrip oracle-check
+            lake build cdz-oracle oracle-selftest oracle-ast-roundtrip oracle-check oracle-wasm-diff
             runHook postBuild
           '';
           installPhase = ''
@@ -5117,6 +5117,7 @@
             install -m755 .lake/build/bin/oracle-selftest "$out/bin/oracle-selftest"
             install -m755 .lake/build/bin/oracle-ast-roundtrip "$out/bin/oracle-ast-roundtrip"
             install -m755 .lake/build/bin/oracle-check "$out/bin/oracle-check"
+            install -m755 .lake/build/bin/oracle-wasm-diff "$out/bin/oracle-wasm-diff"
             runHook postInstall
           '';
         };
