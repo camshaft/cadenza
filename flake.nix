@@ -5293,6 +5293,9 @@
         packages.cdz-wasm-pkg = cdzWasmPkg;
         # The isolated Lean 4.32.2 toolchain (v-wasm-oracle talos pin) — buildable standalone for validation.
         packages.lean4-432 = lean4_432;
+        # The prebuilt rust-exec rlib dir (cdz-rt/cdz-num/cadenza-ast + their deps/) — exposed so the rust
+        # corpus-exec rlib set is inspectable (e.g. confirm unicode_normalization is present for the NFC cases).
+        packages.rust-rlibs = rustRlibs;
         # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
         packages.guide-shred = guideShred;
         # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
