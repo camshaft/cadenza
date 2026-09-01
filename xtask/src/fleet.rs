@@ -1080,6 +1080,30 @@ pub enum FleetCmd {
         #[arg(long)]
         reap_dead_letters: bool,
     },
+    /// Autonomous DRAIN-NUDGE scan (the frequent "mail-present heartbeat"): nudge any IDLE agent that has
+    /// unconsumed ACTIONABLE hub mail to drain it — and NOTHING else. A strict SUBSET of `watchdog
+    /// --nudge-drain-stalls`: same confirmed-drain-stall detection (idle pane + actionable mail + 2-capture
+    /// confirming recapture + queue-draining exoneration + the shared per-agent rate-limit) and the same
+    /// keystroke nudge, but NO re-arm, NO restart, NO escalation (those stay in the full, concierge-driven
+    /// `watchdog`). Because it takes no heavy/irreversible action it is SAFE to run FREQUENTLY as an
+    /// autonomous fleet-up cron, DECOUPLED from the concierge — so an idle agent with queued mail self-drains
+    /// within minutes instead of waiting out its `/loop` interval or the concierge's watchdog tick (the fix
+    /// for the wake-miss stall: `fleet send`'s nudge is skipped when the recipient is mid-tick, and nothing
+    /// re-nudged it on idle). Targets the tmux SERVER via `--session` (no `$TMUX` needed — the primitives are
+    /// server-direct), so it runs from a host cron. Shares the watchdog's drain-nudge rate-limit marker, so
+    /// running both never double-nudges. EXCLUDES pr-sync (its drain-stall shape needs the watchdog's
+    /// trunk/gate/lease exonerations; nudging it here would false-fire).
+    DrainNudge {
+        /// Report what WOULD be nudged, sending no keys (safe anytime).
+        #[arg(long)]
+        dry_run: bool,
+        /// The tmux session the fleet windows live in (targeted server-direct, so it works with no `$TMUX`).
+        #[arg(long, default_value = "main")]
+        session: String,
+        /// Rate-limit (seconds): don't re-nudge an agent nudged within this window (SHARED with the watchdog).
+        #[arg(long, default_value_t = 900)]
+        drain_nudge_grace: u64,
+    },
     /// Wrapped PR tool — the SANCTIONED way to open a PR (operator P0 seq-198: a raw `gh pr create`
     /// leaked the ENTIRE env dump into its description). It SANITIZES the title/body against env-dump +
     /// secret material (REFUSING if found) and hands the body to `gh` as a FILE (never a shell/argv
@@ -1241,6 +1265,11 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
                 reap_dead_letters,
             },
         ),
+        FleetCmd::DrainNudge {
+            dry_run,
+            session,
+            drain_nudge_grace,
+        } => drain_nudge_scan(&fleet, &session, dry_run, drain_nudge_grace),
         FleetCmd::Ack {
             request,
             outcome,
@@ -4657,6 +4686,116 @@ struct WatchdogOpts {
     nudge_drain_stalls: bool,
     drain_nudge_grace: u64,
     reap_dead_letters: bool,
+}
+
+/// The autonomous DRAIN-NUDGE scan (the frequent "mail-present heartbeat"; see the `DrainNudge` CLI doc).
+/// A strict SUBSET of `watchdog --nudge-drain-stalls`: it detects a CONFIRMED drain-stall exactly as the
+/// watchdog does — reusing the SAME pure primitives (`is_probable_drain_stall` (which already exempts the
+/// interactive concierge/design roles), the 2-capture confirming recapture via `drain_stall_confirmed`,
+/// the `queue_is_draining` exoneration, and `decide_drain_nudge`'s per-agent rate-limit) — and sends the
+/// SAME `nudge_drain_stall` keystroke, but takes NO other action (no re-arm, no context/wedge restart, no
+/// drain-escalation restart, no note-escalation). That restraint is exactly what makes it safe to run on a
+/// FREQUENT autonomous cron decoupled from the concierge. Server-direct (explicit `session`), so it runs
+/// with no `$TMUX`. Shares the watchdog's `stamp_drain_nudge`/`last_drain_nudge` marker, so the two never
+/// double-nudge (the rate-limit suppresses the second). EXCLUDES pr-sync (whose drain-stall shape needs the
+/// watchdog's trunk/gate/lease exonerations — nudging it without them would false-fire).
+fn drain_nudge_scan(fleet: &Fleet, session: &str, dry_run: bool, drain_nudge_grace: u64) {
+    let reg = fleet.load();
+    let now = now_unix();
+    let live = tmux_windows(session);
+    let mut nudged = 0usize;
+    let mut suspected = 0usize;
+    for a in &reg.agents {
+        if a.status == "stopped" {
+            continue;
+        }
+        // pr-sync's detached-gate behaviour looks drain-stalled but isn't; its 6 trunk/gate/lease
+        // exonerations live in the full watchdog, so leave pr-sync to it (never nudge it from here).
+        if a.name == "pr-sync" {
+            continue;
+        }
+        if !live.iter().any(|w| w == &a.name) {
+            continue; // no live window to nudge
+        }
+        let actionable_depth = actionable_inbox_depth(&fleet.inbox(&a.name));
+        // Read the prior sweep's depth BEFORE recording this one (for the queue-draining exoneration),
+        // sharing the SAME persisted counter the watchdog uses so the two agree on "is it draining?".
+        let prev_depth = last_actionable_depth(fleet, &a.name);
+        record_actionable_depth(fleet, &a.name, actionable_depth);
+        // `is_probable_drain_stall` wants pane_idle to already fold in "has ever heartbeated" (an un-booted
+        // agent's idle pane is a cold start, not a stall).
+        let hb_ever = heartbeat_age_secs(fleet, &a.name, now).is_some();
+        let pane = capture_pane(session, &a.name);
+        let pane_working = pane.as_deref().is_some_and(pane_shows_working);
+        let ctx_pct = pane.as_deref().and_then(parse_context_pct);
+        let pane_idle = hb_ever && !pane_working;
+        if !is_probable_drain_stall(&a.role, actionable_depth, pane_idle) {
+            continue;
+        }
+        suspected += 1;
+        // Confirming recapture: one snapshot can catch a busy agent in the sub-second gap between tool-turns
+        // — only the already-suspected agent pays this short delay, never every idle pane.
+        std::thread::sleep(std::time::Duration::from_secs(
+            DRAIN_STALL_CONFIRM_DELAY_SECS,
+        ));
+        if !drain_stall_confirmed(true, window_is_working(session, &a.name)) {
+            continue; // work in flight on the recheck → mid-tick, not stalled
+        }
+        if queue_is_draining(prev_depth, actionable_depth) {
+            continue; // depth dropped since last sweep → the loop is consuming its own mail
+        }
+        // Rate-limited nudge decision — IDENTICAL to the watchdog's, but WITHOUT the restart escalation
+        // (`decide_drain_escalation`) that the watchdog applies to a repeatedly-stuck nudge. Here a stuck
+        // nudge just re-nudges (bounded by the grace); a drifted session that needs a restart is left for
+        // the full concierge-driven watchdog.
+        let flagged_id = oldest_actionable_inbox_message(fleet, &a.name);
+        let last = last_drain_nudge(fleet, &a.name, now);
+        let action = decide_drain_nudge(
+            true,
+            true, // is_drain_stall — confirmed above
+            ctx_pct,
+            CTX_SATURATION_THRESHOLD,
+            flagged_id.as_deref(),
+            last.as_ref().map(|(id, age, _)| (id.as_str(), *age)),
+            drain_nudge_grace,
+            DRAIN_NUDGE_STUCK_GRACE,
+        );
+        if !matches!(action, DrainNudge::Fresh | DrainNudge::Stuck) {
+            continue; // rate-limited / saturated (a saturated pane needs a restart, not a nudge)
+        }
+        let prev_stuck = last.as_ref().map(|(_, _, c)| *c).unwrap_or(0);
+        let stuck_count = if action == DrainNudge::Stuck {
+            prev_stuck.saturating_add(1)
+        } else {
+            1
+        };
+        if dry_run {
+            println!(
+                "  DRY-RUN would drain-nudge '{}' ({} actionable msg(s) unconsumed)",
+                a.name, actionable_depth
+            );
+            continue;
+        }
+        if nudge_drain_stall(session, &a.name) {
+            stamp_drain_nudge(
+                fleet,
+                &a.name,
+                flagged_id.as_deref().unwrap_or(""),
+                stuck_count,
+            );
+            nudged += 1;
+            println!(
+                "  + drain-nudged '{}' (idle with {} actionable msg(s))",
+                a.name, actionable_depth
+            );
+        } else {
+            eprintln!("  ! failed to send drain-nudge keys to '{}'", a.name);
+        }
+    }
+    // Quiet on the cron hot path: summarize only when something happened (or a dry-run found candidates).
+    if nudged > 0 || (dry_run && suspected > 0) {
+        eprintln!("drain-nudge: {nudged} nudged, {suspected} suspected [session {session}]");
+    }
 }
 
 /// Self-heal a stalled fleet: re-arm any active agent whose `/loop` heartbeat has gone stale. See the
