@@ -14,13 +14,13 @@ thread_local! {
 }
 
 /// The type a list/set element CONTRIBUTES to the collection's element type: an ordinary element's own
-/// type, or — for a CONSTRUCTION-SPREAD child `(.. s)` — `s`'s ELEMENT type (peel one `List<>`). Mirrors
-/// the `type_of` `Resolved::List` peel, so the homogeneity + range fault-walk sees the spread's elements,
-/// not the `List<T>` wrapper (which would falsely clash with the inline elements' `T`).
+/// type, or — for a CONSTRUCTION-SPREAD child `(.. s)` — `s`'s ELEMENT type (peel one `List<>`/`Set<>`).
+/// Mirrors the `type_of` list/set spread peel, so the homogeneity + range fault-walk sees the spread's
+/// elements, not the `List<T>`/`Set<T>` wrapper (which would falsely clash with the inline elements' `T`).
 fn list_elem_contrib_ty(db: &mut Db, e: StructId) -> Ty {
     if let Some(op) = db.ast.spread_operand(e) {
         match type_of(db, op) {
-            Ty::List(inner) => *inner,
+            Ty::List(inner) | Ty::Set(inner) => *inner,
             other => other,
         }
     } else {
@@ -643,32 +643,19 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // A set shares the list's element homogeneity + range-check + element-descent (both are homogeneous
         // element sequences), so the fault-walk is identical; only the message says "list" (cosmetic).
         Resolved::List { elems } | Resolved::Set { elems } => {
-            // CONSTRUCTION SPREAD is a LIST-only feature so far (DESIGN-collection-spread-construction.md is
-            // sequenced list-first). Only for a list do the spread-aware paths (peel a `(.. s)` child to its
-            // element type, anchor/descend at the operand) apply; a SET keeps the ORIGINAL behavior — a set
-            // spread still declines CDZ0201 at lowering (its `(.. )` node poisons), so the fault-walk must
-            // NOT peel (a set operand is `Set<T>`, which would clash spuriously with the element type `T`).
-            let is_list = matches!(type_of(db, id), Ty::List(_));
-            let contrib_ty = |db: &mut Db, e: StructId| {
-                if is_list {
-                    list_elem_contrib_ty(db, e)
-                } else {
-                    type_of(db, e)
-                }
-            };
+            // CONSTRUCTION SPREAD `(.. s)` applies to BOTH lists and sets (map/record are entry-based, handled
+            // in their own arms): a spread child contributes its peeled element type (`list_elem_contrib_ty`
+            // peels `List<>`/`Set<>`) and its faults are collected on the OPERAND, not the `(.. )` wrapper
+            // (whose `..` head is the pattern-only CDZ0201; the wrapper is desugared away at lowering).
             let mut subst = Subst::new();
             if let Some(&first) = elems.first() {
-                let first_ty = contrib_ty(db, first);
+                let first_ty = list_elem_contrib_ty(db, first);
                 let mut homogeneity_fault = false;
                 for &e in elems.iter().skip(1) {
-                    let et = contrib_ty(db, e);
-                    // Anchor a homogeneity fault at the offending element — for a (list) spread `(.. s)`, at
-                    // the operand `s` (the value whose element type clashes), not the `(.. )` wrapper.
-                    let anchor = if is_list {
-                        db.ast.spread_operand(e).unwrap_or(e)
-                    } else {
-                        e
-                    };
+                    let et = list_elem_contrib_ty(db, e);
+                    // Anchor a homogeneity fault at the offending element — for a spread `(.. s)`, at the
+                    // operand `s` (the value whose element type clashes), not the `(.. )` wrapper.
+                    let anchor = db.ast.spread_operand(e).unwrap_or(e);
                     if crate::unify::unify(&mut subst, &first_ty, &et, &db.name_ctx()).is_err() {
                         homogeneity_fault = true;
                         let code = list_homogeneity_code(&first_ty, &et);
@@ -720,17 +707,16 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // not meaningful and the homogeneity reject stands).
                 if !homogeneity_fault {
                     // The JOIN of all element types — takes the FIXED width/sign from whichever sibling
-                    // supplies it, position-independently (see the `Apply(ListNew)` arm's comment). A (list)
-                    // spread child contributes its peeled element type (`contrib_ty`).
-                    let settled = elems
-                        .iter()
-                        .skip(1)
-                        .fold(first_ty.clone(), |acc, &e| acc.join(&contrib_ty(db, e)));
+                    // supplies it, position-independently (see the `Apply(ListNew)` arm's comment). A spread
+                    // child contributes its peeled element type (`list_elem_contrib_ty`).
+                    let settled = elems.iter().skip(1).fold(first_ty.clone(), |acc, &e| {
+                        acc.join(&list_elem_contrib_ty(db, e))
+                    });
                     // The literal-width range check applies to a literal ELEMENT against the settled element
-                    // type; a (list) SPREAD operand is a whole `List<T>` (not a literal), so skip it — its
-                    // own elements' widths are validated where the spread list is itself constructed.
+                    // type; a SPREAD operand is a whole `List<T>`/`Set<T>` (not a literal), so skip it — its
+                    // own elements' widths are validated where the spread collection is itself constructed.
                     for &e in elems.iter() {
-                        if is_list && db.ast.spread_operand(e).is_some() {
+                        if db.ast.spread_operand(e).is_some() {
                             continue;
                         }
                         if let Some(reject) = width_fault_against_ty(db, e, &settled) {
@@ -751,14 +737,13 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 push_unhashable_key_fault(db, id, &k, out);
             }
             for &e in elems.iter() {
-                // A LIST CONSTRUCTION-SPREAD child `(.. s)` — collect the OPERAND's faults, NOT the `(.. )`
-                // wrapper (whose `..` head resolves to the pattern-only CDZ0201; the wrapper is desugared
-                // away at lowering, so surfacing that reject would falsely reject a valid spread). The
-                // value twin of the list REST pattern (DESIGN-collection-spread-construction.md §4a). For a
-                // SET (spread not yet lowered), collect the `(.. )` node so its CDZ0201 declines cleanly.
+                // A LIST/SET CONSTRUCTION-SPREAD child `(.. s)` — collect the OPERAND's faults, NOT the
+                // `(.. )` wrapper (whose `..` head resolves to the pattern-only CDZ0201; the wrapper is
+                // desugared away at lowering, so surfacing that reject would falsely reject a valid spread).
+                // The value twin of the collection REST pattern (DESIGN-collection-spread-construction.md §4a).
                 match db.ast.spread_operand(e) {
-                    Some(op) if is_list => collect(db, op, out),
-                    _ => collect(db, e, out),
+                    Some(op) => collect(db, op, out),
+                    None => collect(db, e, out),
                 }
             }
         }

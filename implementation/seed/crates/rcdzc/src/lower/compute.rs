@@ -732,6 +732,13 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // STATICALLY enumerated here, so a runtime element VALUE is fine (the backend `set-insert`s + dedups
         // it); constant elements dedup at compile via `build_const_set`.
         Resolved::Set { elems } => {
+            // A CONSTRUCTION SPREAD `#set(x (.. s) y)` splices set `s`'s elements in — desugar to a
+            // `Set.union` fold of the inline runs (as synthetic `#set(…)`) and the spread operands (per
+            // DESIGN-collection-spread-construction.md §6; union dedups, which IS set semantics). A
+            // non-spread set stays the plain `build_const_set`.
+            if elems.iter().any(|&e| db.ast.spread_operand(e).is_some()) {
+                return lower_set_spread(db, id, &elems);
+            }
             for &e in elems.iter() {
                 if let Core::Poison(r) = core_of(db, e) {
                     return Core::Poison(r);
@@ -3213,6 +3220,57 @@ fn lower_list_spread(db: &mut Db, id: StructId, elems: &[StructId]) -> Core {
     // Graft the fold under the original list node so reused occurrences' scope-walk stays intact, then
     // lower it. (A bare single-operand `root` that IS an original occurrence needs no reparent — its
     // parent already reaches the scope; reparenting only matters for a synthesized `root`.)
+    if root != id && db.parent_of(root).is_none() {
+        db.reparent(root, Some(id), db.child_ix_of(id) as u32);
+    }
+    core_of(db, root)
+}
+
+/// Lower a spread-bearing SET construction `#set(x (.. s) y …)` — the set analogue of
+/// [`lower_list_spread`] (DESIGN-collection-spread-construction.md §6). Segment into inline runs (as
+/// synthetic `#set(…)`) and spread operands, fold with `Set.union` — which DEDUPS, exactly set semantics
+/// (a spread element already present is absorbed). Union is commutative + associative, so segment order is
+/// immaterial to the resulting set. Reuses the existing `Set.union` lowering, no new IR; the reparenting
+/// graft is identical to the list case (reused occurrences keep their upward scope-walk through `id`).
+fn lower_set_spread(db: &mut Db, id: StructId, elems: &[StructId]) -> Core {
+    enum Seg {
+        Inline(Vec<StructId>),
+        Spread(StructId),
+    }
+    let mut segs: Vec<Seg> = Vec::new();
+    for &e in elems {
+        if let Some(operand) = db.ast.spread_operand(e) {
+            segs.push(Seg::Spread(operand));
+        } else if let Some(Seg::Inline(run)) = segs.last_mut() {
+            run.push(e);
+        } else {
+            segs.push(Seg::Inline(vec![e]));
+        }
+    }
+    let seg_occs: Vec<StructId> = segs
+        .into_iter()
+        .map(|seg| match seg {
+            Seg::Inline(run) => db.push_compound(crate::ast::CompoundCtor::Set, run),
+            Seg::Spread(operand) => operand,
+        })
+        .collect();
+    let root = match seg_occs.split_first() {
+        None => db.push_compound(crate::ast::CompoundCtor::Set, vec![]),
+        Some((&first, rest)) => {
+            let mut acc = first;
+            for &next in rest {
+                // `Set.union` is the member `union` of the `Set` module — reached via member access
+                // `(. Set union)` (a synthesized flat name would be unbound), the `(. Set of)` spelling
+                // `set_of_runtime` uses.
+                let dot = db.push_name(".");
+                let set_mod = db.push_name("Set");
+                let union_key = db.push_name("union");
+                let head = db.push_list(vec![dot, set_mod, union_key]);
+                acc = db.push_list(vec![head, acc, next]);
+            }
+            acc
+        }
+    };
     if root != id && db.parent_of(root).is_none() {
         db.reparent(root, Some(id), db.child_ix_of(id) as u32);
     }

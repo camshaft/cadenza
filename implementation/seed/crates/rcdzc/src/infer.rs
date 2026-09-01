@@ -607,7 +607,17 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Set { elems } => {
             let mut elem_ty = Ty::Any;
             for &e in elems.iter() {
-                elem_ty = elem_ty.join(&type_of(db, e));
+                // A construction-spread `(.. s)` child contributes `s`'s ELEMENT type (peel `Set<>`/`List<>`),
+                // the set twin of the list arm's peel.
+                let et = if let Some(op) = db.ast.spread_operand(e) {
+                    match type_of(db, op) {
+                        Ty::Set(inner) | Ty::List(inner) => *inner,
+                        other => other,
+                    }
+                } else {
+                    type_of(db, e)
+                };
+                elem_ty = elem_ty.join(&et);
             }
             Ty::Set(Box::new(elem_ty))
         }
@@ -3723,7 +3733,15 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
         Resolved::Set { elems } => {
             let mut elem_ty = Ty::Any;
             for &e in elems.iter() {
-                let et = reflected_ty(db, e);
+                // A construction-spread `(.. s)` child reflects `s`'s ELEMENT type (peel `Set<>`/`List<>`).
+                let et = if let Some(op) = db.ast.spread_operand(e) {
+                    match reflected_ty(db, op) {
+                        Ty::Set(inner) | Ty::List(inner) => *inner,
+                        other => other,
+                    }
+                } else {
+                    reflected_ty(db, e)
+                };
                 elem_ty = elem_ty.join(&et);
             }
             Ty::Set(Box::new(elem_ty))
