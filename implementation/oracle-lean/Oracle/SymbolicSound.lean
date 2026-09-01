@@ -2758,4 +2758,19 @@ theorem denote_normalize_sound (ρ : Nat → Value) (w : IntTy) (e : SymExpr) :
   | case9 _ _ _ => intro _ v h; simp [denote] at h
   | case10 _ _ _ => intro _ v h; simp [denote] at h
 
+/-- DIFFERENTIAL SOUNDNESS — the payoff of the capstone for the T2 symbolic-equivalence oracle. The
+oracle returns "proven-equivalent" for two programs `e1`, `e2` exactly when their normal forms are
+structurally equal (`normalize e1 = normalize e2`). This theorem discharges that verdict's soundness: on
+well-typed programs producing values, equal normal forms ⇒ the SAME value. So a "proven" verdict is NEVER
+false. (Both `denote_normalize_sound` applications land on the common normal form; `Outcome.value.inj`
+closes.) -/
+theorem normalize_eq_denote_eq (ρ : Nat → Value) (w : IntTy) (e1 e2 : SymExpr) (v1 v2 : Value)
+    (hwd1 : WellDenoted ρ w e1) (hwd2 : WellDenoted ρ w e2)
+    (heq : normalize e1 = normalize e2)
+    (h1 : denote ρ w e1 = .value v1) (h2 : denote ρ w e2 = .value v2) : v1 = v2 := by
+  have hn1 := denote_normalize_sound ρ w e1 hwd1 v1 h1
+  have hn2 := denote_normalize_sound ρ w e2 hwd2 v2 h2
+  rw [heq, hn2] at hn1
+  exact (Outcome.value.inj hn1).symm
+
 end Oracle
