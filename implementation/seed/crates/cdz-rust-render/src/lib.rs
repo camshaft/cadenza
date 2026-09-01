@@ -144,6 +144,26 @@ pub fn rust_call_arg(val: &str) -> String {
             "cdz_num::Rational::new(cdz_num::Big::from_i64({n}), cdz_num::Big::from_i64({d}))"
         );
     }
+    // A NATIVE M2 compound literal `#tuple(…)` / `#list(…)` / `#record(…)` (the M3-nativized corpus arg
+    // form: the `#head` is FUSED to its paren group with no separating space, unlike the legacy
+    // `(tuple …)` / `(list …)` / `(record …)` form). Normalize `#head(inner)` → `(head inner)` and reuse the
+    // arms below — the inner text is byte-identical, so a NESTED native element (`#tuple(100 #tuple(10 3))`)
+    // is handled by the same recursive `rust_call_arg`. Without this the `#`-led form fell through to the
+    // pass-through-verbatim arm and leaked `#tuple(…)` into the driver's Rust source → `error: expected one
+    // of ! or [, found tuple` (rustc reading `#` as an attribute start) — an M3-native-compound arg no-build
+    // (v-gha-green nightly rust-gate-full, all 24 shards; the compound twin of the FIXED `#"sym"` Symbol-arg
+    // marshal above). Restricted to the heads the arms below rebuild (`tuple`/`list`/`record`); a `#set(…)` /
+    // `#map(…)` arg has no rust-backend construction form and falls through to verbatim (declines, as before).
+    if let Some(after_hash) = v.strip_prefix('#')
+        && let Some(lp) = after_hash.find('(')
+        && after_hash.ends_with(')')
+    {
+        let head = &after_hash[..lp];
+        if matches!(head, "tuple" | "list" | "record") {
+            let inner = &after_hash[lp + 1..after_hash.len() - 1];
+            return rust_call_arg(&format!("({head} {inner})"));
+        }
+    }
     // A compound is a parenthesized head form; a bare token is a scalar literal → verbatim.
     let inner = match v.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
         Some(inner) => inner.trim(),
@@ -1558,6 +1578,25 @@ mod tests {
         );
         assert_eq!(split_top_level("Int64"), vec!["Int64"]);
         assert!(split_top_level("").is_empty());
+    }
+
+    #[test]
+    fn rust_call_arg_marshals_native_m2_compound_forms() {
+        // M3-nativized compound ARGS (`#head(…)`, head fused to its parens) marshal to the SAME Rust as the
+        // legacy `(head …)` form — the fix for the nightly rust-gate-full leak (`#tuple(…)` reaching rustc as
+        // an attribute-start → "expected one of ! or [, found tuple"). Byte-identical inner ⇒ same output.
+        assert_eq!(rust_call_arg("#tuple(10 3)"), "(10, 3)");
+        assert_eq!(rust_call_arg("(tuple 10 3)"), "(10, 3)"); // legacy form unchanged
+        assert_eq!(rust_call_arg("#list(4 8)"), "vec![4, 8]");
+        // Named-field record → sorted-by-name positional tuple (matches the backend's field order).
+        assert_eq!(rust_call_arg("#record((= x 10) (= y 3))"), "(10, 3)");
+        // Positional record value form.
+        assert_eq!(rust_call_arg("#record(3 4)"), "(3, 4)");
+        // A NESTED native element recurses through the same path.
+        assert_eq!(rust_call_arg("#tuple(100 #tuple(10 3))"), "(100, (10, 3))");
+        assert_eq!(rust_call_arg("#list(4 #tuple(1 2))"), "vec![4, (1, 2)]");
+        // A `#"sym"` Symbol arg is still the symbol marshal (not caught by the compound branch — no `(`).
+        assert_eq!(rust_call_arg("#\"read\""), "\"read\".to_string()");
     }
 
     #[test]
