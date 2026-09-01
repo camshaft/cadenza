@@ -849,6 +849,74 @@ pub(super) fn lower_value_decode(db: &mut Db, id: StructId, b: StructId) -> Core
     }
 }
 
+/// Lower `Type.try-as x` (`DESIGN-variable-arity-functions.md` §5) — the compile-time "view x at the
+/// EXPECTED type": `∀a b. a → (Option b)`, `b` inferred from usage. FOLDS to `Some x` iff x's inferred
+/// type STRUCTURALLY equals the target `b` (strict `Ty` equality — the same bar as `Type.eq`, no subtype
+/// widening), else `None`. `b` is peeled from THIS node's solved `(Option b)` result type; a still-free
+/// `b` declines asking for an annotation (the `Value.decode` pattern). Because `b` is fixed by inference
+/// and x's type is static, the outcome is decided at compile time — no runtime type test. In the `None`
+/// case x is DISCARDED, so a NON-trap-free x is sequenced before the `None` (Core::Seq + strict_force_eval)
+/// to preserve its evaluation, mirroring `Tuple.size`/`List.len`.
+pub(super) fn lower_type_try_as(db: &mut Db, id: StructId, x: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, x) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Type.try-as result is not the built-in Option sum",
+        ));
+    };
+    // Peel the target `b` from the node's solved `(Option b)` result type.
+    let node_ty = crate::infer::type_of(db, id);
+    let crate::ty::Ty::Sum { args: sargs, .. } = &node_ty else {
+        return Core::Poison(Reject::decline(
+            "Type.try-as target type is unsolved — annotate it, e.g. (: (Type.try-as x) (Option T))",
+        ));
+    };
+    let Some(target_ty) = sargs.first().cloned() else {
+        return Core::Poison(Reject::decline(
+            "Type.try-as target type (Option's element) is unresolved",
+        ));
+    };
+    if target_ty.has_free_var() {
+        return Core::Poison(Reject::decline(
+            "Type.try-as target type is unsolved — annotate it, e.g. (: (Type.try-as x) (Option T)) \
+             or a typed let-binder",
+        ));
+    }
+    // Strict structural match: x's inferred type vs the target `b`. Compared by GROUNDED TYPE NAME
+    // (`render_name` grounds a deferred-width literal to its default — a bare `5` is `Int64` — and renders
+    // compounds structurally), so `(Type.try-as 5 : Option Int64)` is `Some` (a literal IS an Int64) while
+    // staying strict: no subtype widening (Int8 ≠ Int64, a newtype ≠ its inner). This is the value-side
+    // analogue of `Type.eq`'s strict type equality, robust to deferred literal widths.
+    let actual_ty = crate::infer::type_of(db, x);
+    let ctx = db.name_ctx();
+    if actual_ty.render_name(&ctx) == target_ty.render_name(&ctx) {
+        trace!(target: "rcdzc::fold", node = id.0, "Type.try-as folds to Some (type matches target)");
+        Core::SumNew {
+            disc: disc_some,
+            payloads: vec![x].into(),
+        }
+    } else {
+        trace!(target: "rcdzc::fold", node = id.0, "Type.try-as folds to None (type does not match target)");
+        let none = Core::SumNew {
+            disc: disc_none,
+            payloads: Vec::new().into(),
+        };
+        if is_trap_free(db, x) {
+            none
+        } else {
+            // x is discarded by the None outcome; keep its evaluation (trap-preservation, as Tuple.size).
+            let tail = synth_core(db, none, node_ty.clone());
+            db.strict_force_eval.insert(x);
+            Core::Seq {
+                stmts: std::rc::Rc::from([x]),
+                tail,
+            }
+        }
+    }
+}
+
 pub(super) fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, string) {
         return Core::Poison(r);

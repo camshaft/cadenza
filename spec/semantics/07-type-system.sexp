@@ -3070,6 +3070,61 @@
   (input (do (type W (Wrap (Option Int64 Bool))) (def (main) 0) (export main)))
   (error CDZ0203))
 
+; --- Type.try-as — the compile-time "view a value at the EXPECTED type" reflection op ---------
+; DESIGN-variable-arity-functions.md §5: `Type.try-as : ∀a b. a → (Option b)` yields `Some x` iff x's
+; type STRUCTURALLY matches the target `b`, else `None`. The target `b` is INFERRED from usage (the
+; enclosing `(: … (Option T))` annotation grounds it, mirroring `Value.decode`); a value's type is
+; grounded before the match (a bare literal `5` is `Int64`), so the check is exact but not tripped by a
+; deferred literal width. Strict — no subtype widening. Folds at compile time (no runtime type tag), so
+; the match on its result selects a branch statically. It underpins tuple-rest varargs type-branching.
+(case
+  "Type.try-as at a value's own type yields Some carrying the value"
+  (doc
+    "`(Type.try-as 5)` viewed at the expected `(Option Int64)` matches — `5` IS an `Int64` — so it is
+           `(Some 5)`, and the match reads the value back as `5`. The deferred literal width grounds to its
+           default `Int64` before the type check, so the own-type view succeeds.")
+  (input (match (: (Type.try-as 5) (Option Int64)) ((Some n) n) ((None u) -1)))
+  (output (: 5 Int64)))
+
+(case
+  "Type.try-as at a DIFFERENT type yields None"
+  (doc
+    "`(Type.try-as 5)` viewed at `(Option String)` does NOT match — an `Int64` is not a `String` — so it
+           is `None` and the miss branch is taken. Pins the strict negative: no coercion of a number to a
+           string, the view simply fails.")
+  (input (match (: (Type.try-as 5) (Option String)) ((Some s) 1) ((None u) 0)))
+  (output (: 0 Int64)))
+
+(case
+  "Type.try-as branches on which type a value has, folded at compile time"
+  (doc
+    "The type-branching idiom: try `7` at `Int64` first — it matches, so `(Some 7)` is taken and the
+           `String` fallback is never reached, yielding `7 + 100 = 107`. Each arm ascribes the target it
+           tests; the whole ladder folds at compile time because both the value's type and each target are
+           static. This is the mechanism tuple-rest varargs use to branch on what types were passed.")
+  (input
+    (match (: (Type.try-as 7) (Option Int64))
+      ((Some n) (+ n 100))
+      ((None u)
+        (match (: (Type.try-as 7) (Option String)) ((Some s) 0) ((None u) -1)))))
+  (output (: 107 Int64)))
+
+(case
+  "Type.try-as views a RUNTIME value at its declared type"
+  (doc
+    "`(Type.try-as n)` for a boundary parameter `n : Int64` viewed at `(Option Int64)` matches on the
+           declared type — the target is decided statically from the annotation, so it is `(Some n)` for
+           every `n`, read back unchanged (7 → 7, -3 → -3). Pins that the view works on a runtime value, not
+           only a literal (the type is what is checked, statically; the value flows through).")
+  (input
+    (do
+      (def (main (: n Int64)) (match (: (Type.try-as n) (Option Int64)) ((Some m) m) ((None u) -1)))
+      (export main)))
+  (call main (: 7 Int64))
+  (output (: 7 Int64))
+  (call main (: -3 Int64))
+  (output (: -3 Int64)))
+
 ; ---- Same-name MONOMORPHIC constructor in a VALUE position: the ctor wins, in a helper AND multi-variant.
 ; The cases above are the TYPE-position complement (an applied same-name generic denotes the TYPE). These pin
 ; the VALUE-position rule for a MONOMORPHIC same-name sum: `(N a)` builds the VARIANT, not the type — direct

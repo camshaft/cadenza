@@ -774,8 +774,13 @@ pub(crate) fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // annotation's type into the result. Keyed on the PRIM, not a name — generic-compiler-clean; no other
     // op needs this (an arg-grounded result is already concrete). An UNANNOTATED decode stays `(Option ?a)`
     // and declines at lower (the honest needs-annotation contract).
-    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::ValueDecode)
-        && matches!(&applied, Ty::Sum { args, .. } if args.first().is_some_and(has_free_var))
+    // `Type.try-as : ∀a b. a → (Option b)` grounds `b` from the enclosing annotation identically —
+    // its target is fixed by the CALL-SITE EXPECTED TYPE (`DESIGN-variable-arity-functions.md` §5), not
+    // by the argument, so it shares Value.decode's parent-climb (both leave `(Option <free>)` per-node).
+    if matches!(
+        crate::eval::meta_apply_of(db, head),
+        Some(crate::resolved::Prim::ValueDecode | crate::resolved::Prim::TryAsType)
+    ) && matches!(&applied, Ty::Sum { args, .. } if args.first().is_some_and(has_free_var))
         && let Some(expected) = annotation_context_ty(db, head)
     {
         let mut gsubst = Subst::new();
