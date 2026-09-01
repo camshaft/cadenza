@@ -3251,6 +3251,18 @@ c")))
   (input (unquote x))
   (error CDZ0003))
 
+(case
+  "unquote-splicing outside quasiquote is a syntax error"
+  (doc
+    "The `,@` companion of the bare-`,` case above: metaprogramming.md #Quasiquote Constructs AST With
+           Selective Evaluation says BOTH unquote and unquote-SPLICING outside a quasiquote context MUST be a
+           syntax error. `(unquote-splicing x)` with no enclosing `` ` `` has no template to splice into, so
+           the compiler rejects it at PARSE time (CDZ0003, the syntax-band unquote-outside-quasiquote code) —
+           the same band as `,`, not a name/type error — rather than running the program. Pins the splicing
+           half of the MUST that the bare-unquote case leaves untested (a distinct parse path).")
+  (input (unquote-splicing x))
+  (error CDZ0003))
+
 ; An `unquote` nested inside a PLAIN `quote` is still outside any quasiquote context — a `(quote …)`
 ; body is inert data, not a selective-evaluation template. metaprogramming.md #Quote Produces An AST
 ; Value: "(quote <expr>) MUST evaluate to an AST value representing the structure of <expr>, WITHOUT
