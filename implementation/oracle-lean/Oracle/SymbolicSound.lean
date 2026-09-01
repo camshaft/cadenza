@@ -2614,4 +2614,65 @@ theorem denote_normalize_ite_collapse_step (ρ : Nat → Value) (w : IntTy) (c t
   · exact iht v ht
   · rw [hagree]; exact ihe v he
 
+/-- Structural: normalize COLLAPSES an equal-branch ite (`if c then t else e → normalize t`) when `c` is not
+a bool literal and the guard `symExprEqB t' e' && !mayTrap c' && symFloatFree t'` fires. `symExprEqB t' e' =
+true` (from the guard) gives `t' = e'` (`symExprEqB_sound`), which excludes the materialize arms (they need
+DISTINCT `true`/`false` branches) so the `_,_` collapse arm is taken. -/
+theorem normalize_ite_collapse (c t e : SymExpr)
+    (h1 : normalize c ≠ .const (.bool true)) (h2 : normalize c ≠ .const (.bool false))
+    (hg : (symExprEqB (normalize t) (normalize e) && !mayTrap (normalize c) && symFloatFree (normalize t)) = true) :
+    normalize (.ite c t e) = normalize t := by
+  have hte : normalize t = normalize e := by
+    apply symExprEqB_sound; simp only [Bool.and_eq_true] at hg; exact hg.1.1
+  simp only [normalize]
+  split <;> simp_all [Bool.and_eq_true]
+
+/-- Structural: normalize REBUILDS a plain ite (`.ite (normalize c) (normalize t) (normalize e)`) when `c` is
+not a bool literal, the branches are not the materialize shapes, and the collapse guard does NOT fire. -/
+theorem normalize_ite_plain (c t e : SymExpr)
+    (h1 : normalize c ≠ .const (.bool true)) (h2 : normalize c ≠ .const (.bool false))
+    (hm1 : ¬(normalize t = .const (.bool true) ∧ normalize e = .const (.bool false)))
+    (hm2 : ¬(normalize t = .const (.bool false) ∧ normalize e = .const (.bool true)))
+    (hg : (symExprEqB (normalize t) (normalize e) && !mayTrap (normalize c) && symFloatFree (normalize t)) = false) :
+    normalize (.ite c t e) = .ite (normalize c) (normalize t) (normalize e) := by
+  simp only [normalize]
+  split <;> simp_all [Bool.and_eq_true]
+
+/-- CAPSTONE `.ite` case — the CONSOLIDATED dispatch (the `.ite` case of the top-level `denote.induct`
+assembly). Dispatches `normalize`'s ite structure via `isConstBool` deciders onto the 6 proven `_step`
+lemmas: cond-fold (true/false), materialize (true/false), equal-branch collapse (`hcollapse` via
+`normalize_ite_collapse`, `hagree` via `symExprEqB_sound`), and the plain rebuild. -/
+theorem denote_normalize_ite (ρ : Nat → Value) (w : IntTy) (c t e : SymExpr) (v : Value)
+    (ihc : ∀ u, denote ρ w c = .value u → denote ρ w (normalize c) = .value u)
+    (iht : ∀ u, denote ρ w t = .value u → denote ρ w (normalize t) = .value u)
+    (ihe : ∀ u, denote ρ w e = .value u → denote ρ w (normalize e) = .value u)
+    (h : denote ρ w (.ite c t e) = .value v) :
+    denote ρ w (normalize (.ite c t e)) = .value v := by
+  by_cases hct : isConstBool (normalize c) true = true
+  · exact denote_normalize_ite_condTrue_step ρ w c t e ihc iht (isConstBool_eq _ _ hct) v h
+  · by_cases hcf : isConstBool (normalize c) false = true
+    · exact denote_normalize_ite_condFalse_step ρ w c t e ihc ihe (isConstBool_eq _ _ hcf) v h
+    · have h1 : normalize c ≠ .const (.bool true) := by
+        intro he; rw [he] at hct; simp [isConstBool] at hct
+      have h2 : normalize c ≠ .const (.bool false) := by
+        intro he; rw [he] at hcf; simp [isConstBool] at hcf
+      by_cases hm1 : isConstBool (normalize t) true = true ∧ isConstBool (normalize e) false = true
+      · exact denote_normalize_ite_materializeTrue_step ρ w c t e ihc iht ihe
+          (isConstBool_eq _ _ hm1.1) (isConstBool_eq _ _ hm1.2) v h
+      · by_cases hm2 : isConstBool (normalize t) false = true ∧ isConstBool (normalize e) true = true
+        · exact denote_normalize_ite_materializeFalse_step ρ w c t e ihc iht ihe h1 h2
+            (isConstBool_eq _ _ hm2.1) (isConstBool_eq _ _ hm2.2) v h
+        · -- not materialize: convert the isConstBool decisions to the Prop-shaped materialize negations
+          have hnm1 : ¬(normalize t = .const (.bool true) ∧ normalize e = .const (.bool false)) := by
+            rintro ⟨ht, he⟩; exact hm1 ⟨by rw [ht]; rfl, by rw [he]; rfl⟩
+          have hnm2 : ¬(normalize t = .const (.bool false) ∧ normalize e = .const (.bool true)) := by
+            rintro ⟨ht, he⟩; exact hm2 ⟨by rw [ht]; rfl, by rw [he]; rfl⟩
+          by_cases hg : (symExprEqB (normalize t) (normalize e) && !mayTrap (normalize c) && symFloatFree (normalize t)) = true
+          · have hcollapse := normalize_ite_collapse c t e h1 h2 hg
+            have hagree : denote ρ w (normalize t) = denote ρ w (normalize e) := by
+              rw [symExprEqB_sound (normalize t) (normalize e) (by simp only [Bool.and_eq_true] at hg; exact hg.1.1)]
+            exact denote_normalize_ite_collapse_step ρ w c t e iht ihe hcollapse hagree v h
+          · have hplain := normalize_ite_plain c t e h1 h2 hnm1 hnm2 (by simpa using hg)
+            exact denote_normalize_ite_plain_step ρ w c t e ihc iht ihe hplain v h
+
 end Oracle
