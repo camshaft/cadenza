@@ -28,7 +28,14 @@ re-grounds to Int64 → CDZ0201 for unsigned/over-i64) · nested/generic user su
 `(match u ((Mk n) n))` folding to bare `u` → returns `(: 7 UserId)` not `7` (a VALUE MISCOMPILE in the nominal
 fold) · Map-runtime-keys · empty-list ascription `(: #list() (List Int64))`. ✅ RE-VALIDATED #7278 (Leaf-root) +
 #7303 (Seq) with the corrected+precondition gate: BOTH HOLD (Leaf-root emissions recompile + value-match; the
-effect breaks were all SHARED). (Reported to breaker + concierge.) NEXT: fix the UInt64-literal cluster.
+effect breaks were all SHARED). ✅ #7346 CLOSED the UInt64-literal cluster (ascribe `(: v <IntTy>)` for
+unsigned/over-i64 via `int_module_ast`; 06-numeric true breaks 10→1). REMAINING true breaks (~9-12, all
+surface/recompilability TYPE breaks — none wrong-DATA): nested-sum ctor-pattern at depth≥3 / under a single-ctor
+box (CDZ0203 wrong-matched-type, breaker-refined) · newtype-unwrap type-drop (`(match u ((Mk n) n))`→bare `u`) ·
+Int8 narrow-signed type-drop (tuple Int8→Int64) · `(& x <hugelit>)` imprecise-Int64-own-type edge · empty-list
+ascription · fn-typed shapes. 🪤 value_ab HARNESS CAVEAT: it passes FIXED args regardless of `main` arity, so a
+MULTI-arg main gets a malformed invocation → FALSE-POSITIVE mismatch (bit me: gcd "3041 vs 3040" was fake; gcd
+MATCHES with correct 2 args). Confirm any value_ab mismatch with arity-correct args before believing it.
 
 ## Tally (2026-09-01 baseline scan): **968 GAP-cases** vs 1919 SHARED.
 ## Re-measured (2026-09-01, post #7268/#7257/#7259/#7278): **340 GAP** / 1543 SHARED (1883 total declines,
