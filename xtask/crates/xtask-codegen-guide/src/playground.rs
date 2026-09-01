@@ -85,8 +85,13 @@ fn canonical_source(a: &Arenas, example: StructId) -> Option<String> {
 
 /// The expected-result of an `(expected <value>)` form, rendered as text — a flat value form like
 /// `(: #tuple(1 2) (Tuple Int64 Int64))` or a bare atom (`5`, `true`). Stored as an SEXPR value, NOT a code
-/// string (operator seq-279 "no code in strings"); rendered via `print_from` (byte-stable round-trip, so the
-/// emitted examples.ts `expected: "…"` string is unchanged from the hand-authored one). `None` when absent.
+/// string (operator seq-279 "no code in strings"). Rendered via `print_pretty_from` at a LARGE width — the
+/// FMT/value SURFACE (`structural=false`): single-line (the width dwarfs any flat value, so no line breaks)
+/// with dotted-member SUGAR (`Qty.of` / `Unit.base`, not the structural `(. Qty of)`). This is the SAME
+/// surface `cdz convert --to sexpr` and the runtime value-render emit (v-syntax-render-ty), so a pinned
+/// `(expected …)` matches the value the example actually produces at runtime. (The compact `print_from`
+/// renders the STRUCTURAL `(. obj key)`, which diverged from the sugared runtime value — the Qty pin bug.)
+/// `None` when absent.
 fn expected_value(a: &Arenas, example: StructId) -> Option<String> {
     let holder = super::named_node(a, example, "expected")?;
     let kids = super::children(a, holder);
@@ -95,10 +100,16 @@ fn expected_value(a: &Arenas, example: StructId) -> Option<String> {
     }
     let parts: Vec<String> = kids
         .iter()
-        .map(|&k| cadenza_syntax_sexpr::print_from(a, k))
+        .map(|&k| cadenza_syntax_sexpr::print_pretty_from(a, k, SINGLE_LINE_WIDTH))
         .collect();
     Some(parts.join(" "))
 }
+
+/// A pretty-print target width large enough that any flat value form lays out on ONE line (no breaks),
+/// while staying below the Doc engine's hard-break sentinel (`0xffff`) so a genuine hardbreak still fires
+/// and the running flat-width total can't overflow. Used to render an `(expected …)` value single-line on
+/// the FMT surface (dotted-member sugar) for the `expected: "…"` field.
+const SINGLE_LINE_WIDTH: usize = 0xfffe;
 
 /// Read + validate ONE `(example …)` form. Returns an error string (not a panic) on a malformed/invalid
 /// example so the codegen can fail loudly with a pointed message.
