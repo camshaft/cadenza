@@ -35295,3 +35295,81 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 299 Int64)))
+
+; TUPLE construction spread — the value twin of the tuple REST pattern (operator: spread supports all
+; collections). A tuple is heterogeneous + STATIC-ARITY, so `#tuple(1 (.. t) 3)` FLATTENS t's elements in
+; by position (no runtime op — the tuple analogue of the record static-field splice): with t=(k,20) it is
+; (1, k, 20, 3), so (. u 0)+(. u 1)+(. u 2)+(. u 3) = 1+k+20+3. k=10 -> 34. Works on wasm and rust; a
+; RUNTIME spread operand is materialized once (its per-slot projections share one evaluation).
+(case
+  "a tuple construction spread flattens a runtime tuple's elements by position"
+  (input
+    (do
+      (def (main (: k Int64))
+        (do
+          (def t #tuple(k 20))
+          (def u #tuple(1 (.. t) 3))
+          (+ (+ (. u 0) (. u 1)) (+ (. u 2) (. u 3)))))
+      (export main)))
+  (call main (: 10 Int64))
+  (output (: 34 Int64)))
+
+; A SPREAD-ONLY tuple `#tuple((.. t))` is t itself (a copy); a fully-CONSTANT tuple spread folds at
+; compile. Spread-only over runtime t=(k,20): (. u 0)+(. u 1) = k+20; k=5 -> 25.
+(case
+  "a tuple construction spread of a single tuple with no inline elements is that tuple"
+  (input
+    (do
+      (def (main (: k Int64))
+        (do
+          (def t #tuple(k 20))
+          (def u #tuple((.. t)))
+          (+ (. u 0) (. u 1))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 25 Int64)))
+
+; TWO spreads (one runtime, one constant) concatenate positionally — `#tuple((.. a) (.. b))` with
+; a=(1,k), b=(3,4) is (1,k,3,4); sum = 1+k+3+4. k=2 -> 10.
+(case
+  "a tuple construction spread with two spreads concatenates their elements in order"
+  (input
+    (do
+      (def (main (: k Int64))
+        (do
+          (def a #tuple(1 k))
+          (def b #tuple(3 4))
+          (def u #tuple((.. a) (.. b)))
+          (+ (+ (. u 0) (. u 1)) (+ (. u 2) (. u 3)))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 10 Int64)))
+
+; A spread-built tuple used WHOLE (passed to a function that projects it) — the flattened arity flows
+; through the boundary. sum3 over #tuple(1 (.. t)) with t=(k,20) = 1+k+20; k=5 -> 26.
+(case
+  "a tuple construction spread builds a tuple passed whole to a function"
+  (input
+    (do
+      (def (sum3 (: p (Tuple Int64 Int64 Int64))) (+ (+ (. p 0) (. p 1)) (. p 2)))
+      (def (main (: k Int64))
+        (do
+          (def t #tuple(k 20))
+          (sum3 #tuple(1 (.. t)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 26 Int64)))
+
+; A FULLY-CONSTANT tuple spread folds at compile — `#tuple(1 (.. #tuple(2 3)) 4)` is the constant tuple
+; (1,2,3,4); (. u 1)+(. u 2) = 2+3 = 5.
+(case
+  "a fully-constant tuple construction spread folds to one tuple"
+  (input
+    (do
+      (def (main)
+        (do
+          (def u #tuple(1 (.. #tuple(2 3)) 4))
+          (+ (. u 1) (. u 2))))
+      (export main)))
+  (call main)
+  (output (: 5 Int64)))

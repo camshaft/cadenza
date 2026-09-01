@@ -576,7 +576,20 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // regression). `freshen_arg` keeps rigid (param) vars fixed during a scheme solve (so the tie
             // survives) and is byte-identical to `freshen_free` OUTSIDE a scheme solve (so the two-`None`
             // disjoint-freshen still fires, since those `Option ?` vars are not scheme params).
-            let elem_tys: Vec<Ty> = elems.iter().map(|&e| type_of(db, e)).collect();
+            // A CONSTRUCTION-SPREAD child `(.. t)` FLATTENS `t`'s tuple element types into this tuple's
+            // element sequence (a tuple is heterogeneous + static-arity, so the spread contributes SEVERAL
+            // positional types, not one joined element type — the tuple analogue of the list/set peel).
+            let mut elem_tys: Vec<Ty> = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                if let Some(op) = db.ast.spread_operand(e) {
+                    match type_of(db, op) {
+                        Ty::Tuple(inner) => elem_tys.extend(inner.iter().cloned()),
+                        other => elem_tys.push(other),
+                    }
+                } else {
+                    elem_tys.push(type_of(db, e));
+                }
+            }
             let mut fresh = crate::unify::Fresh::new();
             Ty::Tuple(
                 elem_tys
@@ -3711,11 +3724,24 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
             // against an expected type via the synthesized `(: arg paramtype)` check (the native
             // `#tuple((None) (None))` direct-arg bug — the classic `(tuple …)` name-alias took the
             // freshened `Apply(TupleNew)` path; this symbol-headed native form did not).
+            // A construction-spread `(.. t)` child FLATTENS `t`'s reflected tuple element types (the
+            // reflection twin of the `type_of` tuple flatten).
+            let mut elem_tys: Vec<Ty> = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                if let Some(op) = db.ast.spread_operand(e) {
+                    match reflected_ty(db, op) {
+                        Ty::Tuple(inner) => elem_tys.extend(inner.iter().cloned()),
+                        other => elem_tys.push(other),
+                    }
+                } else {
+                    elem_tys.push(reflected_ty(db, e));
+                }
+            }
             let mut fresh = crate::unify::Fresh::new();
             Ty::Tuple(
-                elems
+                elem_tys
                     .iter()
-                    .map(|&e| crate::unify::freshen_free(&reflected_ty(db, e), &mut fresh))
+                    .map(|t| crate::unify::freshen_free(t, &mut fresh))
                     .collect(),
             )
         }

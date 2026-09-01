@@ -710,6 +710,12 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
         // reads a visible element of it; a tuple that survives (constructed from runtime operands, or a
         // constant tuple that escapes) is a `Core::Tuple` the backend builds on the heap.
         Resolved::Tuple { elems } => {
+            // A CONSTRUCTION SPREAD `#tuple(a (.. t) b)` splices tuple `t`'s elements inline. A tuple is
+            // static-arity, so `(.. t)` FLATTENS to `t`'s elements by projection (`Core::Proj` per slot,
+            // its arity from `t`'s type) — NO runtime op, per DESIGN §6. A non-spread tuple stays plain.
+            if elems.iter().any(|&e| db.ast.spread_operand(e).is_some()) {
+                return lower_tuple_spread(db, id, &elems);
+            }
             if let Some(r) = reduction_bound_element(db, &elems) {
                 return Core::Poison(r);
             }
@@ -3355,4 +3361,64 @@ fn lower_set_spread(db: &mut Db, id: StructId, elems: &[StructId]) -> Core {
         db.reparent(root, Some(id), db.child_ix_of(id) as u32);
     }
     core_of(db, root)
+}
+
+/// Lower a spread-bearing TUPLE construction `#tuple(a (.. t) b …)` (DESIGN §6). A tuple is heterogeneous
+/// and STATIC-ARITY, so a spread FLATTENS `t`'s elements in by position — `(.. t)` over `t : (Tuple T0 T1)`
+/// contributes `(. t 0) (. t 1)` (a `Core::Proj` per slot, arity from `t`'s type) — NO runtime op, unlike
+/// list/set (which fold with a runtime concat/union). A RUNTIME spread operand is MATERIALIZED ONCE (a
+/// self-keyed `Core::Let`, the [`materialize_row_op_operand`] pattern): every `Core::Proj` then reads a
+/// shared `LocalRef`, so the operand's computation (and any effect) emits exactly once — never once per
+/// projected slot. A CONSTANT tuple operand needs no binding (each `Core::Proj` folds to its element).
+fn lower_tuple_spread(db: &mut Db, id: StructId, elems: &[StructId]) -> Core {
+    let mut out: Vec<StructId> = Vec::with_capacity(elems.len());
+    let mut runtime_operands: Vec<StructId> = Vec::new();
+    for &e in elems {
+        if let Some(op) = db.ast.spread_operand(e) {
+            if let Core::Poison(r) = core_of(db, op) {
+                return Core::Poison(r);
+            }
+            let tys = match crate::infer::type_of(db, op) {
+                crate::ty::Ty::Tuple(tys) => tys,
+                _ => {
+                    return Core::Poison(Reject::unsupported(
+                        "a tuple construction spread operand is not a tuple",
+                    ));
+                }
+            };
+            // A constant tuple operand's projections FOLD to its elements (no shared operand); a runtime one
+            // is materialized once so its N projections share a single evaluation.
+            if !matches!(core_of(db, op), Core::Tuple { .. }) {
+                runtime_operands.push(op);
+            }
+            for (i, ty) in tys.iter().enumerate() {
+                out.push(synth_core(
+                    db,
+                    Core::Proj {
+                        operand: op,
+                        index: i,
+                    },
+                    ty.clone(),
+                ));
+            }
+        } else {
+            if let Core::Poison(r) = core_of(db, e) {
+                return Core::Poison(r);
+            }
+            out.push(e);
+        }
+    }
+    let tuple_core = Core::Tuple { elems: out.into() };
+    if runtime_operands.is_empty() {
+        return tuple_core;
+    }
+    for &op in &runtime_operands {
+        db.kept_bindings.insert(op);
+    }
+    let result_ty = crate::infer::type_of(db, id);
+    let body = synth_core(db, tuple_core, result_ty);
+    Core::Let {
+        bindings: runtime_operands.iter().map(|&op| (op, op)).collect(),
+        body,
+    }
 }
