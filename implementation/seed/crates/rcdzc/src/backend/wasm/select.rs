@@ -1376,6 +1376,7 @@ pub fn select_function_of(
         depth: 0,
         scrut_shell_reclaim: None,
         selfloop_scrut_slot: None,
+        list_scrut_divergent: false,
     });
     // Initialize `which` to this function's OWN discriminant BEFORE the loop opens — it selects which
     // member body runs on the FIRST iteration (this function's own). A member cross-call updates `which`
@@ -3037,6 +3038,20 @@ struct TailLoop<'a> {
     /// children all dup-backed). `None` on every ordinary loop. Fixes the inorder self-tail-traversal spine
     /// leak (the ~165 self-loop-tail lever). SOUNDNESS (double-free) rests on the G6 dup-lockstep gate.
     selfloop_scrut_slot: Option<u32>,
+    /// INC2 slice-1 (divergent-consume loop-join, v-mem's W/C/D predicate): the `selfloop_scrut_slot` above
+    /// names a MatchLIST scrutinee that is DIVERGENT — reused-WHOLE in one tail arm (the W arm, forcing the
+    /// RestFrom preservation-`dup` to fire because the scrutinee is NOT sole-consumed) AND advanced-to-TAIL
+    /// (`(.. r)`) in another (the C arm). In the C arm the RestFrom emits `dup(scrut); vec-drop`, so the
+    /// `vec-drop` nets the DUP (rc2→1) but leaves the ORIGINAL alloc-rc1 shell orphaned when the loop-param
+    /// slot is reassigned to the tail → a per-iteration leak (v-runtime P6 rc-trace: Sum shells #8/10/12/14).
+    /// When `true`, `emit_loop_iteration`'s `selfloop_scrut_scratch` does NOT short-circuit on
+    /// `is_restfrom_consume` for this slot (the usual skip assumes the `vec-drop` fully consumed the shell —
+    /// TRUE only for a SOLE-consume non-divergent RestFrom where the dup was skip-gated; FALSE here, the dup
+    /// fired), so it saves + `op_drop`s the orphaned shell. GATED (F3-conservative): set ONLY when the
+    /// scrutinee is provably divergent (`count_param_consumes > 1`) — else the dup was skipped and the
+    /// `vec-drop` already freed the original, so dropping again would DOUBLE-FREE. `false` on every MatchSum
+    /// path (the existing pt3 behavior is unchanged).
+    list_scrut_divergent: bool,
 }
 
 impl TailLoop<'_> {
@@ -3611,19 +3626,35 @@ fn emit_tail(
                 Ty::Int(rit) => Some(rit),
                 _ => None,
             };
+            // INC2 slice-1 (divergent-consume loop-join, C-arm shell reclaim): when this tail MatchList's
+            // scrutinee is a loop-param that is DIVERGENT (reused-whole in one arm + advanced-to-tail in
+            // another → the RestFrom preservation-dup fires, orphaning the old shell rc1 per iteration),
+            // thread its slot as `selfloop_scrut_slot` + set `list_scrut_divergent` so `emit_loop_iteration`
+            // reclaims the orphan (bypassing its `is_restfrom_consume` skip, which only holds for a
+            // sole-consume RestFrom). Gated + fenced by `list_selfloop_scrut_divergent_reclaim_ok`.
+            let list_selfloop_scrut = if let Some(t) = tl
+                && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, scrutinee)
+                && let Some(&slot) = slots.get(&binder)
+                && t.param_slots.contains(&slot)
+                && let Some(fb) = out.fn_body
+                && list_selfloop_scrut_divergent_reclaim_ok(db, fb, id, scrutinee, binder, &arms)
+            {
+                Some(slot)
+            } else {
+                None
+            };
+            let arm_tp = if let Some(slot) = list_selfloop_scrut {
+                TailPos::Tail(tl.map(|t| TailLoop {
+                    selfloop_scrut_slot: Some(slot),
+                    list_scrut_divergent: true,
+                    ..t
+                }))
+            } else {
+                TailPos::Tail(tl)
+            };
             emit_list_arms_tailable(
-                db,
-                &arms,
-                len_slot,
-                block_ty,
-                result_it,
-                &arm_slots,
-                arm_base,
-                high,
-                scratch_ty,
-                layout,
-                out,
-                TailPos::Tail(tl),
+                db, &arms, len_slot, block_ty, result_it, &arm_slots, arm_base, high, scratch_ty,
+                layout, out, arm_tp,
             )?;
             // Reclaim the owned-temporary list shell after the arms (value-returning tail; the arms left
             // the result on the stack) — the list twin of the `MatchSum` owned-shell drop above.
@@ -4321,10 +4352,19 @@ fn emit_loop_iteration(
         // class). `is_sumpayload_consume` = the §5 sum-spine reclaim (dup rest + drop old shell) already frees
         // it; `drop_old_borrowed` = the borrowed-accumulator drop; `is_restfrom_consume` = the RestFrom
         // vec-drop consumes it; `is_identity` = a whole re-pass (no consumption, and aliases the live slot).
+        //
+        // INC2 slice-1 EXCEPTION (`list_scrut_divergent`): the `is_restfrom_consume` skip assumes the RestFrom
+        // `vec-drop` fully consumed the shell — TRUE only for a SOLE-consume RestFrom whose preservation-`dup`
+        // was skip-gated. For a DIVERGENT MatchList scrutinee (also reused-WHOLE elsewhere), the dup FIRED, so
+        // the `vec-drop` nets the dup (rc2→1) and the ORIGINAL rc1 shell is orphaned — it MUST be reclaimed
+        // here (v-runtime P6: Sum shells #8/10/12/14). So do NOT short-circuit on `is_restfrom_consume` when
+        // `list_scrut_divergent` (the `list_selfloop_scrut_divergent_reclaim_ok` gate proved the dup fired via
+        // `count_param_consumes > 1`; the save+`op_drop` below is rc-aware, so it frees the orphan without
+        // touching the fresh tail-slice or shared interior). The other three skips still apply.
         if is_identity[i]
             || is_sumpayload_consume[i]
             || drop_old_borrowed[i]
-            || is_restfrom_consume[i]
+            || (is_restfrom_consume[i] && !tl.list_scrut_divergent)
         {
             return None;
         }
@@ -6713,6 +6753,69 @@ fn list_shell_reclaim_slot(
         Ok(HandleOwnership::Owned)
     )
     .then_some(slot)
+}
+
+/// INC2 slice-1 (v-mem W/C/D predicate — the C-arm shell-reclaim obligation for a DIVERGENT MatchLIST
+/// self-loop-tail scrutinee). `list_shell_reclaim_slot` deliberately SKIPS a tail-loop (its owned-temporary
+/// post-arms drop never reaches a `br`/`return_call` arm); that skip is correct for the SHELL-temporary path
+/// but LEAKS the loop-param scrutinee's per-iteration old shell in the DIVERGENT case: the scrutinee is
+/// reused-WHOLE in one tail arm (the W arm) AND advanced-to-TAIL `(.. r)` in another (the C arm). Because the
+/// scrutinee is NOT sole-consumed (the whole-reuse is a second consume), v-wasm-opt's RestFrom
+/// preservation-`dup` skip-gate does NOT skip — so the C arm emits `dup(scrut); vec-drop`, the `vec-drop`
+/// nets the dup (rc2→1) but the ORIGINAL alloc-rc1 shell is orphaned when the loop-param slot is reassigned
+/// to the tail → a per-iteration leak (v-runtime P6 rc-trace: Sum shells #8/10/12/14, one/step). This gates
+/// threading the scrutinee's slot as `selfloop_scrut_slot` + `list_scrut_divergent` so `emit_loop_iteration`
+/// saves + `op_drop`s the orphan (bypassing its `is_restfrom_consume` skip, which only holds for a
+/// sole-consume RestFrom whose dup WAS skip-gated).
+///
+/// SOUND (F3-conservative, v-mem's asymmetric bar): under-admit = LEAK (safe); over-admit = UAF (forbidden).
+///  • DIVERGENCE = `count_param_consumes(count_restfrom=true) > 1` — MORE than the single RestFrom consume ⟹
+///    a whole-reuse also consumes it ⟹ the dup FIRED ⟹ the orphan rc1 is real. `count == 1` (sole RestFrom)
+///    ⟹ the dup was SKIP-GATED ⟹ the `vec-drop` already freed the original ⟹ reclaiming would DOUBLE-FREE →
+///    return false. This is the load-bearing gate.
+///  • G6a OWNED-BY-FLOW: `body_is_self_recursive` (a tail self-call carries no caller-drop — the same INC1-1
+///    frame pt3 uses); a non-self-recursive owned-param stays a LEAK, never a UAF.
+///  • F1/G5 ESCAPE: no arm reads a shell CHILD out as a live handle (`arm_borrows_heap_subvalue`) — the same
+///    fence `list_shell_reclaim_slot` uses; a whole-reuse carry of the scrutinee itself is NOT a shell-child
+///    borrow (it re-passes the shell, kept live in the W arm; only the C arm reclaims the orphan).
+///  • RE-MATCH: no inner match re-reads the scrutinee (`list_arms_rematch_scrutinee`).
+fn list_selfloop_scrut_divergent_reclaim_ok(
+    db: &mut Db,
+    top_body: StructId,
+    match_id: StructId,
+    scrutinee: StructId,
+    binder: StructId,
+    arms: &[crate::core::ListArm],
+) -> bool {
+    if !matches!(type_of(db, scrutinee), Ty::List(_)) {
+        return false;
+    }
+    if !body_is_self_recursive(db, top_body) {
+        return false;
+    }
+    // DIVERGENCE (the dup FIRED): the scrutinee has a NON-RestFrom consume — the whole-reuse carry `(h a …)`
+    // (a `Core::Call` arg ref, counted below) — so it is NOT sole-RestFrom-consumed, and v-wasm-opt's
+    // preservation-dup skip-gate did NOT skip the RestFrom `dup`. `count_restfrom=false` counts consuming
+    // uses EXCLUDING the RestFrom itself (which lives in the tail-binder's OWN value node, not the walked body
+    // tree), so `count >= 1` ⟺ a whole-reuse consume exists ⟺ the dup fired ⟺ the orphan rc1 is real. `count
+    // == 0` (sole RestFrom, dup skip-gated) ⟹ the vec-drop already freed the original ⟹ reclaiming would
+    // DOUBLE-FREE → return false. This is the load-bearing F3-conservative gate.
+    let mut count = 0usize;
+    count_param_consumes(db, match_id, binder, &mut HashSet::new(), &mut count, false);
+    if count == 0 {
+        return false;
+    }
+    // F1/G5 shell-child-escape + RE-MATCH fences (shared with `list_shell_reclaim_slot`).
+    if arms.iter().any(|a| {
+        arm_borrows_heap_subvalue(db, a.body)
+            || a.guard.is_some_and(|g| arm_borrows_heap_subvalue(db, g))
+    }) {
+        return false;
+    }
+    if list_arms_rematch_scrutinee(db, scrutinee, arms) {
+        return false;
+    }
+    true
 }
 
 /// Whether some arm reads a heap sub-value OUT of a compound AS A LIVE HANDLE that could OUTLIVE the
