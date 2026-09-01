@@ -1283,14 +1283,15 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // | Core::MapInsert { .. }
             // | Core::MapRemove { .. }
             // | Core::MapMerge { .. }
-            | Core::SetOf { .. }
-            // `Set.union`/`intersect`/`diff` (`Core::SetAlgebra`) is the TRUE Set exp witness (v-compiler-perf
-            // confirmed a `Set.union` chain still 2^N on main — `SetOf` alone is a constructor, not the
-            // binary-same-operand reproducer). A binary op that CONSUMES/dups both set operands + returns a
-            // fresh owned set (v-wasm-opt verified both axes: heap_operand_ownership Owned select.rs:7473,
-            // mark_binder_dups seq[(lhs,F),(rhs,F)] CONSUMING reclaim.rs:3269) — the exact `ListConcat` shape
-            // for sets. Kept under the >= 2-use rule so a `Set.union x x` chain is LINEAR.
-            | Core::SetAlgebra { .. }
+            // 🛑 STOPGAP (P0 UAF, extended to SETS): `SetOf`/`SetAlgebra` are TEMPORARILY REMOVED alongside
+            // the map producers above. Set is ALSO CHAMP-backed, so a multi-use generation-shared set hits
+            // the SAME materialize-once over-free of a path-copy-shared interior node (v-core-opt clean-main
+            // disambiguation: "SET dedup accumulator" live-objects 0v7 + "subset algebraic-formulations-agree"
+            // 0v1 regressed in the same guarded-all set as the map case). Same trade + same re-widen plan as
+            // the maps: restore once the generation-shared-CHAMP reclaim fix lands (v-memory-safety +
+            // v-core-opt). Cost: a `Set.union x x` chain reverts to 2^N emit (accepted, safety > perf).
+            // | Core::SetOf { .. }
+            // | Core::SetAlgebra { .. }
             // `Core::SumNew` (the sum-payload heap constructor) is the DIRECT ANALOG of `ListNew` (above),
             // and was the deferred-for-ubiquity op the family-widen note named. A `Node x x` binary variant
             // whose payload `x` is used twice, consumed at runtime (a recursive fold so it can't const-fold),
