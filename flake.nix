@@ -3473,23 +3473,27 @@
         # reuses these exact mkCorpusBuild outputs) near-free — unblocking the uncapped full-corpus Core↔wasm
         # differential. `cat`-ing each build's marker into `$out` adds the store dependency (string context) so
         # building this attr forces the whole per-case emit graph WITHOUT a buildInput.
-        corpusEmitWasmWarm = pkgs.runCommand "corpus-emit-wasm-warm"
-          {
-            builds = pkgs.lib.concatLists (map
-              (f:
-                let
-                  stem = pkgs.lib.removeSuffix ".sexp" f;
-                  file = ./spec/semantics + "/${f}";
-                  shred = mkCorpusShred { name = stem; inherit file; };
-                  n = corpusCaseCount file;
-                in
-                builtins.genList
-                  (i: mkCorpusBuild { name = stem; inherit shred; idx = pkgs.lib.fixedWidthNumber 4 i; })
-                  n)
-              corpusFileNames);
-          } ''
-          : > "$out"
-          for b in $builds; do echo "$b" >> "$out"; done
+        # The per-case emit.wasm build store paths for the WHOLE corpus (~thousands of cases). This is
+        # deliberately materialized as a `writeText` MANIFEST (a single store path) rather than an env attr:
+        # passing the list through the process environment stringifies it into one huge `builds=…` env var,
+        # which overflows the execve arg+env limit at full-corpus scale (`Argument list too long`, E2BIG —
+        # the aggregator failed exactly this way on the first full run). The manifest's string context still
+        # references every build, so realizing this derivation realizes (and thus cache-warms) them all.
+        corpusEmitWasmBuilds = pkgs.lib.concatLists (map
+          (f:
+            let
+              stem = pkgs.lib.removeSuffix ".sexp" f;
+              file = ./spec/semantics + "/${f}";
+              shred = mkCorpusShred { name = stem; inherit file; };
+              n = corpusCaseCount file;
+            in
+            builtins.genList
+              (i: mkCorpusBuild { name = stem; inherit shred; idx = pkgs.lib.fixedWidthNumber 4 i; })
+              n)
+          corpusFileNames);
+        corpusEmitWasmWarm = pkgs.runCommand "corpus-emit-wasm-warm" { } ''
+          cp ${pkgs.writeText "corpus-emit-wasm-builds"
+            (pkgs.lib.concatStringsSep "\n" corpusEmitWasmBuilds)} "$out"
           echo "corpus-emit-wasm-warm: realized $(wc -l < "$out") per-case corpus emit.wasm builds" >&2
         '';
         # `corpus-<file>` per-file aggregates, mapped over every corpus file — each shreds its file once and
