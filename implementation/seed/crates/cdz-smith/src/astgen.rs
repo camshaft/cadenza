@@ -209,7 +209,10 @@ fn gen_effect_recursive_body<C: Choice>(c: &mut C) -> (String, String) {
 /// overflows. Three shapes: scalar→scalar, two-arg arithmetic (crosses the link twice), and a COMPOUND
 /// result (a heap list crosses the boundary, consumed by `List.len`).
 fn gen_module_body<C: Choice>(c: &mut C) -> (String, String) {
-    let form = c.variant(3);
+    // Each form exports a fn whose RESULT TYPE crosses the module import/export boundary as a distinct WIT
+    // marshal (scalar / tuple / Option / record / sized-int / Bool / heap list), and `main` consumes it to
+    // a deterministic value the wasm-vs-rust diff grades. Operator seq-22: stress import/export.
+    let form = c.variant(7);
     let a = c.int_bounded(0, 9);
     let b = c.int_bounded(0, 9);
     match form {
@@ -228,9 +231,30 @@ fn gen_module_body<C: Choice>(c: &mut C) -> (String, String) {
             format!("(+ (M.g {a} {b}) (M.g {b} {a}))"),
         ),
         // a COMPOUND result — a heap list crosses the module boundary, consumed to a count by `List.len`.
-        _ => (
+        2 => (
             "(module M (def (mk (: x Int64)) (list x x x)) (export mk))".to_string(),
             format!("(List.len (M.mk {a}))"),
+        ),
+        // a TUPLE crosses the boundary → projected back to a scalar.
+        3 => (
+            "(module M (def (tup (: x Int64)) (tuple x (+ x 1))) (export tup))".to_string(),
+            format!("(. (M.tup {a}) 0)"),
+        ),
+        // an OPTION (sum) crosses the boundary → matched back to a scalar.
+        4 => (
+            "(module M (def (opt (: x Int64)) (Some x)) (export opt))".to_string(),
+            format!("(match (M.opt {a}) ((Some v) v) (None 0))"),
+        ),
+        // a RECORD crosses the boundary → projected back to a scalar.
+        5 => (
+            "(module M (def (rec (: x Int64)) (record (= a x) (= b (+ x 1)))) (export rec))"
+                .to_string(),
+            format!("(. (M.rec {a}) a)"),
+        ),
+        // a BOOL crosses the boundary (the result type is Bool, not Int64).
+        _ => (
+            "(module M (def (lt (: x Int64)) (< x 5)) (export lt))".to_string(),
+            format!("(M.lt {a})"),
         ),
     }
 }
@@ -2812,8 +2836,13 @@ mod tests {
     /// two-arg, compound-result) are reached.
     #[test]
     fn build_program_reaches_cross_module_shape_and_compiles() {
-        let (mut saw, mut saw_f, mut saw_g, mut saw_mk) = (false, false, false, false);
-        for seed in 0u64..1024 {
+        // Each cross-module form crosses the boundary as a distinct type; every one must compile.
+        let markers = [
+            "(M.f ", "(M.g ", "(M.mk ", "(M.tup ", "(M.opt ", "(M.rec ", "(M.lt ",
+        ];
+        let mut seen = [false; 7];
+        let mut saw = false;
+        for seed in 0u64..2048 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1013);
             let mut bytes = Vec::new();
             for _ in 0..24 {
@@ -2830,21 +2859,18 @@ mod tests {
                 src.find("(module M ").unwrap() < src.find("(def (main)").unwrap(),
                 "the `(module …)` must be a TOP-LEVEL decl (before main): {src}"
             );
-            saw_f |= src.contains("(M.f ");
-            saw_g |= src.contains("(M.g ");
-            saw_mk |= src.contains("(M.mk ");
+            for (i, m) in markers.iter().enumerate() {
+                seen[i] |= src.contains(m);
+            }
             assert!(
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
                 "cross-module program must COMPILE: {src}"
             );
         }
         assert!(saw, "should reach the cross-module shape");
-        assert!(saw_f, "should reach the scalar module form (M.f)");
-        assert!(saw_g, "should reach the two-arg module form (M.g)");
-        assert!(
-            saw_mk,
-            "should reach the compound-result module form (M.mk)"
-        );
+        for (i, m) in markers.iter().enumerate() {
+            assert!(seen[i], "should reach the cross-module form {m}");
+        }
     }
 
     /// `gen_bignum_body` REACHES both BigInt (`N`) and Rational (`R`) forms and every body COMPILES (S132:
