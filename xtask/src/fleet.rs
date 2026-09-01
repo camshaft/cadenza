@@ -6882,6 +6882,17 @@ pub struct CheckLease {
     timed_out: bool,
 }
 
+impl CheckLease {
+    /// The lease file this guard owns (`None` if fail-open / timed-out). Exposed so a DETACHED build can be
+    /// handed the path to release the lease itself via a trap (the concierge's caveat: a detached gate-local
+    /// build that outlives its launching xtask must still release its lease — see `run_gate_local`). The
+    /// RAII `Drop` below stays the release path for the normal (in-process) case; both target the same file
+    /// idempotently, so double-release is harmless.
+    fn lease_path(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+}
+
 impl Drop for CheckLease {
     fn drop(&mut self) {
         if let Some(f) = &self.file {
@@ -10799,44 +10810,70 @@ fn run_gate_local(fleet: &Fleet, arch: &str) -> CiVerdict {
     }
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
+    // DETACHED build (v-fleet-tooling 2026-09-01, operator-GO'd wake-path/bg-task hardening): a long
+    // gate-local (~6min) was getting KILLED mid-build when the launching agent's SESSION churned/compacted/
+    // restarted (v-effects #7333 + breaker-103), because the `nix build` was a CHILD in the agent pane's
+    // process tree with a PIPED stderr — so it died on (1) SIGHUP (a watchdog kill-window closes the pane's
+    // controlling tty) or (2) SIGPIPE (the launching xtask dying closes the stderr pipe). A killed build is
+    // WASTED → the manual `--admin` land-exceptions the concierge was authorizing. Fix: run the build under
+    // `setsid` (a NEW session → no controlling tty → no SIGHUP) with output to a LOG FILE (no parent pipe →
+    // no SIGPIPE). The build now SURVIVES session churn → completes + CACHES in the store, so the restarted/
+    // compacted agent's re-run of gate-local hits the nix cache → fast verdict, no manual --admin.
+    //
+    // LEASE RELEASE (concierge caveat): the RAII `_lease` releases on this fn's normal return (unchanged),
+    // BUT if the agent is SIGKILLed mid-build the RAII never runs → the lease would leak. So the detached
+    // wrapper ALSO releases the lease via a `trap … EXIT` when the BUILD exits (completion or a trappable
+    // kill) — the PRIMARY release for the detached case, not relying on the dead-PID reaper. Both target the
+    // same lease file idempotently. (The lease is named with THIS xtask's pid, so the dead-PID reaper is a
+    // bounded backstop for the narrow window where xtask dies before the build finishes.)
+    //
+    // Positional-argv wrapper (NO string interpolation of paths/args → no quoting hazards): `$1`=lease,
+    // `$2`=log, `$3..`=nix + its args. No `exec` (a trap does not survive exec), so `sh` runs nix as a child,
+    // waits, and its EXIT trap releases the lease; `setsid -w` waits for `sh` and returns nix's exit code.
+    // Live in-pane streaming is traded for the log file (a detached build cannot also pipe to the dying pane);
+    // the log path is printed so an agent can `tail -f` it for progress.
+    let log = std::env::temp_dir().join(format!("cdz-gate-local-{}.log", std::process::id()));
+    let lease_path = _lease.lease_path().map(Path::to_path_buf);
     eprintln!(
-        "gate-local: running `{nix_bin} build {target}` (local required-set gate; aarch64; --max-jobs {NIX_GATE_MAX_JOBS})…"
+        "gate-local: running `{nix_bin} build {target}` DETACHED (survives session churn; --max-jobs {NIX_GATE_MAX_JOBS}); live log: {}",
+        log.display()
     );
-    // stdout INHERITS (the --print-out-paths result); stderr is PIPED so we can TEE it live (the build log
-    // still streams) AND capture it to NAME the failing sub-check on RED (nix's summary alone doesn't).
-    let spawned = Command::new(&nix_bin)
-        .args(nix_gate_argv(&target))
+    let script = r#"lease="$1"; log="$2"; shift 2; trap 'test -n "$lease" && rm -f "$lease"' EXIT; "$@" >"$log" 2>&1"#;
+    let mut cmd = Command::new("setsid");
+    cmd.arg("-w")
+        .arg("sh")
+        .arg("-c")
+        .arg(script)
+        .arg("sh") // $0
+        .arg(
+            lease_path
+                .as_deref()
+                .map(Path::as_os_str)
+                .unwrap_or_default(),
+        ) // $1 (empty → trap no-ops)
+        .arg(&log) // $2
+        .arg(&nix_bin); // $3
+    cmd.args(nix_gate_argv(&target)) // $4..
         // Mark as a SANCTIONED leased build so the nix-shim exempts it — this IS gate-local building
         // `.#checks.<arch>.local-gate` (a heavy attr), so without the marker the shim would warn on the
         // authoritative gate's own inner build (the recursion/false-warn trap).
         .env("CDZ_LEASED_NIX", "1")
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-    let mut child = match spawned {
-        Ok(c) => c,
+        // The detached build's own stdout/stderr go to the LOG; setsid's own stdio is irrelevant.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let (spawned_ok, build_ok) = match cmd.status() {
+        Ok(s) => (true, s.success()),
         Err(e) => {
             eprintln!(
-                "gate-local: could not invoke `nix` ({e}) — NO-CHECKS (can't verify locally)."
+                "gate-local: could not invoke `setsid`/`nix` ({e}) — NO-CHECKS (can't verify locally)."
             );
-            return local_gate_verdict(/*spawned_ok=*/ false, /*build_ok=*/ false);
+            (false, false)
         }
     };
-    // Drain stderr to EOF, teeing each line live + accumulating for the failing-check parse. (stdout is
-    // inherited → no pipe to drain → no deadlock; only stderr is piped here.)
-    let mut captured = String::new();
-    if let Some(err) = child.stderr.take() {
-        use std::io::{BufRead, BufReader};
-        for line in BufReader::new(err).lines().map_while(Result::ok) {
-            eprintln!("{line}");
-            captured.push_str(&line);
-            captured.push('\n');
-        }
-    }
-    let (spawned_ok, build_ok) = match child.wait() {
-        Ok(s) => (true, s.success()),
-        Err(_) => (false, false),
-    };
+    // Read the build log (written by the detached build) to NAME the failing sub-check on RED (nix's summary
+    // alone doesn't) — the same information the old piped-stderr `captured` held.
+    let captured = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log); // clean up our scratch (leaks only if the agent was killed mid-build → prune-tmp reaps)
     let verdict = local_gate_verdict(spawned_ok, build_ok);
     if matches!(verdict, CiVerdict::Red) {
         let failing = parse_failing_subchecks(&captured);
