@@ -1,0 +1,6 @@
+(def
+  (v3q
+    (: x (Qty Rational ((. Unit base) #"meter")))
+    (: y (Qty Rational ((. Unit base) #"meter")))
+    (: z (Qty Rational ((. Unit base) #"meter"))))
+  ((. Vec3q V3q) x y z))

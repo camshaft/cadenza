@@ -6423,25 +6423,11 @@ mod tests {
     // always breaks its arms one-per-line, forcing the paren layout regardless of width (format.cdz pins it,
     // byte-identical to the deleted width-200 assert at the corpus width).
 
-    #[test]
-    fn def_and_fn_param_lists_wrap_one_per_line_when_they_overflow() {
-        // Operator seq-92/93: a `def`/`fn` param list that does NOT fit goes one-param-per-line — open
-        // `(` on the header, each param indented one level, close `)` on its own dedented line. A param
-        // list that FITS stays inline.
-        assert_eq!(
-            assert_roundtrip(
-                "def v3q(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#meter)), z: Qty(Rational, Unit.base(#meter))) = Vec3q.V3q(x, y, z)",
-                100,
-            ),
-            "def v3q(\n  x: Qty(Rational, Unit.base(#meter)),\n  y: Qty(Rational, Unit.base(#meter)),\n  z: Qty(Rational, Unit.base(#meter))\n) = Vec3q.V3q(x, y, z)"
-        );
-        // Fits on one line → stays inline (no force-break).
-        assert_eq!(
-            assert_roundtrip("def f(x: Int64, y: Int64) = x + y", 80),
-            "def f(x: Int64, y: Int64) = x + y"
-        );
-    }
-
+    // `def_and_fn_param_lists_wrap_one_per_line_when_they_overflow` (a `def`/`fn` param list that doesn't fit
+    // goes one-param-per-line — `(` on the header, params indented, `)` dedented; a list that fits stays
+    // inline) MIGRATED to the spec/syntax corpus via the width-golden ext: ml/563-def-param-list-wraps-when-
+    // wide (the wide `def v3q(x: Qty…, y: …, z: …) = …` + `width` 100 → format.cdz one-param-per-line). The
+    // fits-inline contrast is any default-width def case (short param lists stay on one line, no force-break).
     // `multi_line_match_arm_body_breaks_to_its_own_indented_line` (operator follow-on to seq-86/87/89: a
     // MULTI-LINE match-arm body goes on a new line indented one level under `=>`; a SINGLE-LINE body stays
     // inline) MIGRATED to the spec/syntax corpus (inc-6 batch-36): ml/251-multi-line-match-arm-body
@@ -6462,18 +6448,10 @@ mod tests {
     // All three are width-INVARIANT (let-in/if always break; comments force the arm layout) — blessed at the
     // corpus width byte-identical to the deleted width-80/100 asserts.
 
-    #[test]
-    fn def_record_body_hugs_the_eq() {
-        // A literal body (record) hugs the `=` too: `{` stays on the line, fields indent one level.
-        let out = assert_roundtrip("def point() = { x = 1, y = 2, z = 3 }", 20);
-        assert_eq!(out, "def point() = {\n  x = 1,\n  y = 2,\n  z = 3\n}");
-        // and inline when it fits
-        assert_eq!(
-            assert_roundtrip("def point() = { x = 1 }", 80),
-            "def point() = { x = 1 }"
-        );
-    }
-
+    // `def_record_body_hugs_the_eq` (a record literal def body hugs the `=`: `{` stays on the line, fields
+    // indent one level when it overflows; inline when it fits) MIGRATED to the spec/syntax corpus via the
+    // width-golden ext: ml/564-def-record-body-hugs-eq (`def point() = { x = 1, y = 2, z = 3 }` + `width` 20
+    // → format.cdz hugs `= {` and breaks the fields). Fits-inline is a default-width record-def case.
     // The trailing-lambda "hug" layout MIGRATED to the spec/syntax corpus (inc-6 batch-30):
     //   * `last_arg_lambda_hugs` (a trailing lambda stays on the call line, breaking only its own body —
     //     head args inline) → ml/212-last-arg-lambda-hugs
@@ -6483,24 +6461,14 @@ mod tests {
     //   * `last_arg_hug_fits_inline` (when the whole call fits, hugging is invisible) →
     //     ml/213-last-arg-hug-fits-inline `map(items, fn(x) => x + 1)` (fmt-idempotent, stays one line).
 
-    #[test]
-    fn infix_chain_breaks_at_one_indent() {
-        // A same-precedence chain flattens: operators break at ONE consistent 2-space indent, each
-        // leading its continuation line; tighter sub-terms (`*`) stay intact.
-        let out = assert_roundtrip("aaaa * bbbb + cccc * dddd", 15);
-        assert_eq!(out, "aaaa * bbbb\n  + cccc * dddd");
-    }
-
-    #[test]
-    fn plain_call_all_or_nothing_when_wide() {
-        // A call with no block-like last arg breaks all args one per line when it overflows.
-        let out = assert_roundtrip("some-function(alpha, beta, gamma, delta)", 20);
-        assert_eq!(
-            out,
-            "some-function(\n  alpha,\n  beta,\n  gamma,\n  delta\n)"
-        );
-    }
-
+    // `infix_chain_breaks_at_one_indent` (a same-precedence chain flattens: operators break at ONE 2-space
+    // indent, each leading its continuation; tighter `*` sub-terms stay intact) MIGRATED to the spec/syntax
+    // corpus via the width-golden ext: ml/565-infix-chain-breaks-one-indent (`aaaa * bbbb + cccc * dddd` +
+    // `width` 15 → format.cdz `aaaa * bbbb`⏎`  + cccc * dddd`).
+    // `plain_call_all_or_nothing_when_wide` (a call with no block-like last arg breaks ALL args one-per-line
+    // when it overflows) MIGRATED to the spec/syntax corpus via the width-golden ext: ml/566-plain-call-all-
+    // or-nothing-wide (`some-function(alpha, beta, gamma, delta)` + `width` 20 → format.cdz all args one per
+    // line).
     // `literals_render_and_round_trip` (the compound-value literal surfaces) MIGRATED to the spec/syntax
     // corpus (inc-6 batch-33): ml/229-record-value `{ x = 1, y = 2 }`→`#record((= x 1) (= y 2))`,
     // ml/230-tuple-pair-value `(1, 2)`→`#tuple(1 2)`, ml/231-tuple-triple-value `(1, 2, 3)`→`#tuple(1 2 3)`,

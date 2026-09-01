@@ -1,0 +1,1 @@
+(some-function alpha beta gamma delta)
