@@ -1807,6 +1807,7 @@ pass	a compound map key containing a rope is found by its flat-twin key
 pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a compound map key whose string element is a rope is found by its flat-twin key
+pass	a compound-capturing residual closure built once and CALLED TWICE keeps the capture live across both calls
 pass	a compound-element float renders the same full expansion as the scalar path
 pass	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
 pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
@@ -3504,11 +3505,13 @@ pass	a parenthesized-head generic type de-dups a repeated head parameter to arit
 pass	a partial application as an operator operand names the forgotten call with a polished function-value lead
 pass	a partial application captures a let-bound variable in the residual closure
 pass	a partial application captures a runtime parameter in the residual closure
+pass	a partial application capturing a fresh-literal List in the residual closure runs and reclaims (live-objects 0)
 pass	a partial application of a named def keeps its annotated param type across the recursive-HOF beta copy
 pass	a partial application of a performing closure that escapes its handler is rejected
 pass	a partial application persists its capture across two applications
 pass	a partial application still needing two arguments pluralizes the count
 pass	a partial application where a scalar is expected names the forgotten call
+pass	a partial application whose residual reads the compound capture in TWO escaping positions reclaims cleanly (per-occurrence dup)
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
 pass	a partial constructor in a runtime tuple element completes via an eta-closure lift
