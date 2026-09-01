@@ -76,6 +76,20 @@ Partial application MUST be natural: applying a curried function to fewer argume
 
 Applying a function to its argument MUST evaluate the function body in an environment that extends the function's captured environment with its parameter bound to the argument.
 
+### A Function's Last Parameter May Gather Its Trailing Arguments
+
+A function's last parameter MAY be a **rest parameter**, written `(.. binder)`, which gathers all trailing arguments of a call into a single value bound to `binder`, so that one function definition applies to a variable number of arguments.
+
+A rest parameter MUST be the last parameter of a function, and a parameter list MUST contain at most one; a rest parameter in any other position, or a second rest parameter, MUST be a compile-time rejection.
+
+A rest parameter annotated with a list type — `(.. (: xs (List T)))` — MUST gather its trailing arguments into a homogeneous `List T`: every trailing argument MUST have the element type `T`, and the function keeps one runtime body over that list. A call supplying no trailing argument MUST bind the empty list. Any leading fixed parameters MUST bind positionally, the rest parameter gathering exactly the surplus arguments.
+
+A rest parameter with no list annotation — a bare `(.. xs)`, or one annotated `(: xs Tuple)` — MUST gather its trailing arguments into a heterogeneous tuple, preserving each argument's own type. Because such a tuple's arity and element types are statically known at each call, a call to such a function MUST be monomorphized per call site, so that the function body MAY observe the gathered tuple's arity (via `Tuple.size`, folded at compile time), project an element positionally, and test an element's type at the expected type — each folding at compile time, so the body may branch on the types actually passed without emitting a runtime type tag.
+
+### A Call May Spread A Tuple Into Its Arguments
+
+A call MAY **spread** a compile-time-known tuple — a tuple literal or a bound reference — into its arguments, written `(.. t)` in argument position, which supplies that tuple's elements as consecutive positional arguments — the caller-side dual of the rest parameter, so that the caller spreads a value into arguments exactly as the callee gathers arguments into a value. A spread MAY compose with ordinary inline arguments, and the spread tuple's element values MAY be computed at runtime; only its arity MUST be statically known, so that the call's argument count is fixed at compile time. A spread supplied to a function whose corresponding parameter is a rest parameter MUST behave as if the spread elements had been written as individual trailing arguments.
+
 ## Control Flow
 
 ### Conditionals Evaluate One Branch
