@@ -3272,9 +3272,9 @@
            ONE host response and BOTH closures capture the same `v` — the host call fires exactly ONCE
            (the recorded host-calls list is the assertion), then `(f 3) + 100·(g 3)` = (7+3) + 100·21 =
            2110. A per-closure re-fire would consume a second (unsupplied) response and trap. This is the
-           in-exported-def face that HOLDS; the helper-def twin double-fires today (adv-62, filed —
-           v-effects owns) — when that fix lands, this pin is its over-rotation guard: in-body sharing
-           must KEEP firing once.")
+           in-exported-def face; the helper-def twin (adv-62) once double-fired but that fix has LANDED —
+           both faces now share ONE firing. This pin is the over-rotation guard: in-body sharing must KEEP
+           firing exactly once.")
   (input
     (do
       (effect io (op get (-> Unit Int64)))
