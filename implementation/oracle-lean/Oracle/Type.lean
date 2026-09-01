@@ -202,7 +202,9 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
 * T1.7 — **positional projection** (`ts:146`): `(. base i)` with an int index `i` yields the `i`-th
   element type of `base`'s tuple; out-of-arity or a non-tuple base is `IllTyped CDZ0203`. A name index
   (record field / member) is `Unsupported`.
-Any other construct → `Unsupported` until its rule lands (ascription/App/Let/Fn/Match). -/
+* T1.8 — **let** (`ts:40-44`, monomorphic): `(let ((x e)…) body)` binds each `x:τ` sequentially (later
+  sees earlier) then infers `body`; complete for the fn-free fragment (generalization lands with Fn).
+Any other construct → `Unsupported` until its rule lands (ascription/App/Fn/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
@@ -314,6 +316,34 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                      "type oracle: record-field / member projection not yet modeled"))
               | none => .error (.unsupported "type oracle: malformed projection")
             | _, _ => .error (.unsupported "type oracle: malformed projection")
+          else if h == "let".toUTF8 then
+            -- T1.8 — LET (`ts:40-44`), MONOMORPHIC: `(let ((x e)…) body)` infers each binding value and
+            -- extends the env with `x:τ` SEQUENTIALLY (a later binding sees the earlier), then infers the
+            -- body under the extended env. Monomorphic (no ∀-generalization) — COMPLETE for the current
+            -- fn-free fragment (a let-bound value has no polymorphic reuse without lambdas); generalization
+            -- lands with the Fn rule. An `IllTyped`/`Unsupported` binding value propagates.
+            match children[1]?, children[2]? with
+            | some bindingsId, some bodyId =>
+              (match m.nodes[bindingsId]? with
+               | some (Ast.Node.list pairs) =>
+                 (match pairs.foldlM (m := Except InferFail) (fun (acc : List (ByteArray × Ty) × InferState) pid =>
+                     match m.nodes[pid]? with
+                     | some (Ast.Node.list pc) =>
+                       (match pc[0]?, pc[1]? with
+                        | some nId, some vId =>
+                          (match Eval.nameOf? m nId with
+                           | some nm =>
+                             (match inferE m acc.1 acc.2 vId with
+                              | .ok (τ, st') => .ok (((nm, τ) :: acc.1), st')
+                              | .error e => .error e)
+                           | none => .error (.unsupported "type oracle: let binding missing name"))
+                        | _, _ => .error (.unsupported "type oracle: malformed let binding"))
+                     | _ => .error (.unsupported "type oracle: let binding not a (name value) pair"))
+                     (env, st) with
+                  | .ok (env', st') => inferE m env' st' bodyId
+                  | .error e => .error e)
+               | _ => .error (.unsupported "type oracle: let bindings not a list"))
+            | _, _ => .error (.unsupported "type oracle: malformed let")
           else .error (.unsupported
             "type oracle: construct not yet modeled (T1 — ascription/App/Let/Fn/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
@@ -525,6 +555,28 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[7], .atom 1, .list #[9, 8, 6],
                            .atom 8, .atom 2, .list #[11, 12], .atom 0, .list #[14, 10, 13]],
                 root := 15 } == .illTyped "CDZ0203")
+-- T1.8 (let): `(let ((x 5)) x)` — x bound to Int, body resolves it → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "let".toUTF8,
+                            .name "x".toUTF8, .intLit false .dec (ByteArray.mk #[5]), .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .list #[0, 1],       -- (x 5)
+                           .list #[2],                            -- ((x 5))
+                           .atom 4,                               -- body x
+                           .atom 3, .list #[5, 3, 4],             -- (let ((x 5)) x)
+                           .atom 2, .list #[7], .atom 1, .list #[9, 8, 6],  -- (def (main) …)
+                           .atom 6, .atom 2, .list #[11, 12], .atom 0, .list #[14, 10, 13]],
+                root := 15 } == .wellTyped (.int 64 true))
+-- T1.8 (let): `(let ((b #t)) (if b 1 2))` — a let-bound Bool used as an if condition → WellTyped Int.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "let".toUTF8,
+                            .name "b".toUTF8, .boolLit true, .name "if".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .intLit false .dec (ByteArray.mk #[2]),
+                            .name "export".toUTF8],
+                nodes := #[.atom 4, .atom 5, .list #[0, 1],       -- (b #t)
+                           .list #[2],                            -- ((b #t))
+                           .atom 6, .atom 4, .atom 7, .atom 8, .list #[4, 5, 6, 7],  -- (if b 1 2)
+                           .atom 3, .list #[9, 3, 8],             -- (let ((b #t)) (if b 1 2))
+                           .atom 2, .list #[11], .atom 1, .list #[13, 12, 10],       -- (def (main) …)
+                           .atom 9, .atom 2, .list #[15, 16], .atom 0, .list #[18, 14, 17]],
+                root := 19 } == .wellTyped (.int 64 true))
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
