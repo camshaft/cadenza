@@ -754,27 +754,13 @@ fn top_level_semicolon_separates_and_ambiguous_juxtaposition_is_rejected() {
 // ml/434-semicolon-in-arg-needs-parens `f((a; b))`→`(f (do a b))`, ml/435-if-branch-no-swallow-trailing-seq
 // `def f() = if c then a else b; more`→`(def (f) (do (if c a b) more))` (NOT `(if c a (do b more))`).
 
-#[test]
-fn spans_are_total_and_distinct_for_occurrences() {
-    // `x + x`: two x occurrences share one leaf but have distinct ids and distinct spans.
-    let p = read_ml("x + x");
-    assert!(p.ok());
-    let a = &p.arenas;
-    // span table has one entry per structure node
-    assert_eq!(p.spans.len(), a.structure.len());
-    let plus = a.as_form(a.root, "+").unwrap();
-    let (l, r) = (plus[0], plus[1]);
-    assert_ne!(l, r);
-    let ls = p.spans.get(l).unwrap();
-    let rs = p.spans.get(r).unwrap();
-    assert_ne!(
-        ls, rs,
-        "the two `x` occurrences map to different source spans"
-    );
-    // both are the text "x"
-    assert_eq!(&"x + x"[ls.start..ls.end], "x");
-    assert_eq!(&"x + x"[rs.start..rs.end], "x");
-}
+// `spans_are_total_and_distinct_for_occurrences` (`x + x`: the span table has one entry per structure
+// node, and the two `x` occurrences — sharing one interned leaf — have DISTINCT source spans) MIGRATED to
+// the spec/syntax corpus (parser-corpus inc-8) via the new `spans.txt` span-golden (harness extension:
+// per-node `START:END<TAB>slice`): ml/545-spans-total-and-distinct pins `0:1 x` / `4:5 x` (distinct
+// offsets, both slice "x") + the total per-node span list. (The one-leaf-interning invariant — `f(f, f)`
+// interns "f" once — is an INTERNAL arena data-structure property with no observable Cadenza-level
+// behavior, so `one_leaf_for_repeated_name` below stays a Rust #[test] per AGENTS.md.)
 
 #[test]
 fn one_leaf_for_repeated_name() {
@@ -796,48 +782,12 @@ fn one_leaf_for_repeated_name() {
 // is-arithmetic `59 GiB / 2`→`(/ (Qty.of 59 (Unit.of GiB)) 2)` (spaced → arithmetic), ml/484-quantity-glued-
 // slash-before-number-is-arithmetic `59 GiB/2` (a unit `/`'s RHS must be a NAME, so `/2` divides).
 
-#[test]
-fn compound_unit_node_spans_cover_the_whole_unit_expression() {
-    // A compound-unit op node (`a/b`, `a*b`) and an exponent node (`m^2`) must span from the LEFT/BASE
-    // operand's start — not from the operator — so a diagnostic anchored on the unit expression covers
-    // the whole thing (PR#731: the spans previously started at `/`/`*`/`^`, truncating to `/b` / `^2`).
-    // The unit expr is the SECOND operand of the `(Qty.of num <unit>)` node; slice source by its span.
-    let src = "def main() = 59 GiB/s";
-    let p = read_ml(src);
-    assert!(p.ok(), "parse: {:?}", p.errors);
-    let a = &p.arenas;
-    // Reach the `(/ (Unit.of GiB) (Unit.of s))` composite: def body = `((. Qty of) 59 <unit>)`, an
-    // application list whose LAST element is the unit expression.
-    let def = a.as_form(a.root, "def").unwrap();
-    let crate::ast::Struct::List(items) = a.get(def[1]) else {
-        panic!("Qty.of body is a list")
-    };
-    let unit = *items.last().unwrap();
-    let us = p.spans.get(unit).unwrap();
-    // The composite `/` node must span "GiB/s" WHOLE — from `G` through `s` — not just "/s".
-    assert_eq!(
-        &src[us.start..us.end],
-        "GiB/s",
-        "the compound-unit `/` node spans the whole unit expr, not just from the operator"
-    );
-
-    // And an exponent node `m^2` spans "m^2" whole, not "^2".
-    let src2 = "def main() = 9 m^2";
-    let p2 = read_ml(src2);
-    assert!(p2.ok(), "parse: {:?}", p2.errors);
-    let a2 = &p2.arenas;
-    let def2 = a2.as_form(a2.root, "def").unwrap();
-    let crate::ast::Struct::List(items2) = a2.get(def2[1]) else {
-        panic!("list")
-    };
-    let unit2 = *items2.last().unwrap();
-    let us2 = p2.spans.get(unit2).unwrap();
-    assert_eq!(
-        &src2[us2.start..us2.end],
-        "m^2",
-        "the unit-exponent `^` node spans the whole base^exp, not just from the `^`"
-    );
-}
+// `compound_unit_node_spans_cover_the_whole_unit_expression` (a compound-unit `/`/`*` node and an
+// exponent `^` node span from the LEFT/BASE operand's start, not from the operator — so a diagnostic
+// anchored on the unit expr covers the whole thing, not just `/b`/`^2`) MIGRATED to the spec/syntax
+// corpus (parser-corpus inc-8) via the `spans.txt` span-golden: ml/85-quantity-compound-rate-per `59
+// GiB/s` pins the composite `/` node at `3:8 GiB/s` (WHOLE unit expr), and ml/482-quantity-single-unit-
+// exponent `10 m^2` pins the `^` node at `3:6 m^2` — each spans the whole base..exp, not from the glyph.
 
 #[test]
 fn a_deep_glued_unit_chain_is_diagnosed_not_an_unbounded_arena() {
