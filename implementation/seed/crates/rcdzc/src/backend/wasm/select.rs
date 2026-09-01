@@ -3706,9 +3706,24 @@ fn emit_tail(
             // BISECT: compound disjunct temporarily OFF — scalar path only (nontail_param_payload_ok). Peano
             // is fixed via this path (its `+1` arm builds no compound). Isolates whether the compound
             // reconstructing-arm path (nontail_param_compound_extra_ok) is the guarded-all culprit.
+            // SINGLE-SOURCE (v-core-opt extract-share): the payload-kind decision is the ONE predicate
+            // `nontail_param_reclaim_kind` (occurrence-level), shared with the dup-pass + def_inc1_reclaims_param
+            // so caller-drop XOR reclaim can never drift. Scalar path only while the compound arm is bisected
+            // OFF — behavior-identical to the prior inline `nontail_param_payload_ok`.
             let param_reclaim = stashed_slot.is_none()
                 && scrut_binder.is_some_and(|b| out.nontail_match_reclaim_binders.contains(&b))
-                && nontail_param_payload_ok(db, scrutinee, &scrut_ty, never_diverges, &root);
+                && matches!(
+                    nontail_param_reclaim_kind(
+                        db,
+                        out.fn_body
+                            .expect("fn_body set in select_function_of before emit"),
+                        scrutinee,
+                        &scrut_ty,
+                        never_diverges,
+                        &root,
+                    ),
+                    Some(ReclaimKind::Scalar)
+                );
             let _ = &out.nontail_compound_reclaim_binders; // keep field live during bisect
             // OWNED-SINGLE-VIEW (String.at / Bytes.slice) local reclaim: its Some shell leaks because the
             // scrutinee is not globally `Owned` (`matchsum_view_shell_reclaim_ok`). UNLIKE the general
@@ -4074,10 +4089,10 @@ fn collect_surplus_skippable_dups(
             && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if binder == b)
         {
             match path.first() {
-                Some(crate::core::PathStep::Elem(_)) => {
-                    if is_heap_type(&crate::infer::type_of(db, id)) {
-                        *heap_leading = true;
-                    }
+                Some(crate::core::PathStep::Elem(_))
+                    if is_heap_type(&crate::infer::type_of(db, id)) =>
+                {
+                    *heap_leading = true;
                 }
                 Some(crate::core::PathStep::RestFrom(_)) => *rest_read = true,
                 _ => {}
@@ -5117,6 +5132,53 @@ fn sum_cont_extraction_consume_allowlisted(
     let mut builder_children = HashSet::new();
     collect_allowlisted_builder_children_cont(db, root, &mut seen, &mut builder_children);
     consuming.iter().all(|s| builder_children.contains(s))
+}
+
+/// INC1 payload-kind classification for the owned-recursive-sum-PARAM shell reclaim. `Scalar` = the matched
+/// payload copies out (`nontail_param_payload_ok`); `Compound` = a RECONSTRUCTING arm (`(Node …)`/`#tuple(…)`)
+/// admitted by the spine-param select + the interior-view fence — the BST del-min/insert leak class.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ReclaimKind {
+    Scalar,
+    /// INC1 increment-2 (compound-disjunct re-enable) — not yet produced (the Compound arm is bisected OFF).
+    #[allow(dead_code)]
+    Compound,
+}
+
+/// INC1 SINGLE-SOURCE payload-kind predicate (v-core-opt extract-share): the ONE decision of whether a
+/// `MatchSum` over an owned recursive-sum PARAM scrutinee reclaims its shell here, and by which path. Every
+/// site calls THIS — the emit `param_reclaim`, the dup-pass (`collect_nontail_compound_reclaim_binders`), and
+/// `def_inc1_reclaims_param`'s caller-drop YIELD — so caller-drop XOR reclaim can never drift out of lockstep.
+/// OCCURRENCE-LEVEL (a specific `(scrutinee, root)`), NOT binder-keyed: a binder with two `MatchSum` occurrences
+/// of DIFFERING payload-ok resolves each independently (v-core-opt's per-occurrence hazard — a binder-keyed
+/// classified set would flip such a binder all-or-nothing, turning a leak into a double-free or vice-versa).
+/// `never_diverges` is passed FALSE by the yield site (assuming non-diverging over-yields → a leak, never a
+/// double-free). The COMPOUND arm is BISECTED OFF (increment-2): this is behavior-IDENTICAL to the prior
+/// scalar-only `nontail_param_payload_ok` gate. `top_body` is consumed only by the (disabled) compound
+/// `is_nontail_spine_param` select.
+pub(super) fn nontail_param_reclaim_kind(
+    db: &mut Db,
+    top_body: StructId,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> Option<ReclaimKind> {
+    if nontail_param_payload_ok(db, scrutinee, scrut_ty, never_diverges, root) {
+        return Some(ReclaimKind::Scalar);
+    }
+    // COMPOUND arm — INC1 increment-2 (compound-disjunct re-enable, v-core-opt extract-share): uncomment to
+    // reclaim reconstructing folds (BST del-min/insert, recon.sexp) — `is_nontail_spine_param` (spine select,
+    // needs top_body) + `nontail_param_compound_extra_ok` (interior-view alias-out fence). BISECTED OFF so the
+    // predicate stays scalar-only = behavior-neutral. When enabling, wire the dup-pass Compound→child-dups +
+    // the reused-vs-replaced drop, and gate recon 6→0 / BST del-min 27→0 + guarded-all + opt-sweep.
+    // if reclaim::is_nontail_spine_param(db, top_body, scrutinee, root)
+    //     && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)
+    // {
+    //     return Some(ReclaimKind::Compound);
+    // }
+    let _ = top_body;
+    None
 }
 
 /// NON-TAIL SPINE param-path payload gate (v-mem-safety predicate 1, consume-only): the tail-MatchSum
