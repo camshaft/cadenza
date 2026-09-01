@@ -4647,6 +4647,11 @@
               # this reds the gate on a future flip instead of in-browser. Runs in its OWN process (one program),
               # so it is independent of check:examples' accumulation. Pure node, no new inputs.
               npm run check:wasm-queries
+              # (v-guide-infra) inline (cdz …) render guard: every AST-backed <Cadenza ast=…> span must
+              # render in both surfaces from its embedded binary-AST (render_binary, #7245). check:examples/
+              # guide-shred only gate runnable/exercise SOURCES, so a mis-rendering INLINE prose span was
+              # ungated — this closes that gap. Pure node, reuses the staged pkg.
+              npm run check:cdz-render
               npm run check:examples
               npm run check:calculator
               npm run check:worker-stack

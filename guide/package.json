@@ -15,6 +15,7 @@
     "wasm": "cd ../implementation/seed/crates/cdz-wasm && wasm-pack build --target web --release && node ../../../../guide/scripts/stage-wasm.mjs",
     "check:examples": "node --expose-gc scripts/check-examples.mjs",
     "check:wasm-queries": "node scripts/check-wasm-queries.mjs",
+    "check:cdz-render": "node scripts/check-cdz-render.mjs",
     "check:diagnostics": "node scripts/check-diagnostics.mjs",
     "check:worker-stack": "node scripts/check-worker-stack.mjs",
     "check:tuple-collection": "node scripts/check-tuple-collection.mjs",
