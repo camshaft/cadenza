@@ -22,8 +22,9 @@ non-scalar 16 · deep-match const destructure 15 · under-determined sum 12 · Q
 (binary-matching — coordinate owner) · ConstFloatNan 30 · ConstBytes 16 · Seq 15 · ConstFloatInf 8 · TrapDivZero 7
 · TrapOverflow 5 · Poison 3. ✅ #7298 CLOSED ConstBytes + ConstFloatNan(F64) + ConstFloatInf(F64) = ~54; ✅ #7303
 CLOSED Seq = 15. Left in this bucket (re-measured post-#7303): BinIntRead 96 / BinRestRead 6 / BinSizedRead 2 =
-binary-matching 104 (coordinate owner) · TrapDivZero 7 / TrapOverflow 5 / Poison 3 = 15 (verify true-parity — a
-trap may BE the expected outcome). (ConstFloatNan non-Float64 residual now CLOSED by #7309 — all widths.)
+binary-matching 104 (coordinate owner) · ✅ TrapDivZero 7 CLOSED #7313 (kind-preserving) · ⏭️ TrapOverflow 5
+(symmetric, width-specific values, follow-up) · Poison 3 (verify — may be dead-path DCE). (ConstFloatNan
+non-Float64 residual CLOSED by #7309 — all widths.)
 
 ## Parity-gap categories (ranked by case count) — the checklist
 
@@ -98,8 +99,16 @@ trap may BE the expected outcome). (ConstFloatNan non-Float64 residual now CLOSE
 
 ## VERIFY (counted as GAP but likely true-parity / mis-counted) — confirm before chasing
 - [ ] **under-determined sum type — 13.** Likely SHARED (wasm needs concrete types too); confirm direct also declines.
-- [ ] **`Poison` 28 / `TrapDivZero` 7 / `TrapOverflow` 5 / other Trap — ~40.** A TRAP may BE the case's expected
-  outcome → true-parity, not a gap. Verify against each case's expected outcome; reclassify as SHARED if so.
+- [x] **`TrapDivZero` 7.** NOT true-parity — a real GAP, now CLOSED #7313 (c438bc88a0). These are const `(/ x 0)`/
+  `(% x 0)` demoted in a conditionally-reached branch (`demote_conditional_trap`); wasm compiles + traps "integer
+  divide by zero", cadenza previously declined. Re-emit the kind-preserving source form `(: (/ 1 0) <IntTy>)` — it
+  re-demotes to Core::TrapDivZero of the SAME kind + width (operator's 2026-08-27 kind-preservation ruling). A
+  generic `(trap "")` traps the WRONG kind ("unreachable") → since a decline is SKIPPED but a mismatched trap FAILS
+  the gate, that would be worse than declining. Validated: trap-kind A/B on runtime-vs-const survivors matches;
+  targeted hop2 = 0 breaks. BigInt-typed div-zero declines (later). ⏭️ **`TrapOverflow` 5** — the SYMMETRIC gap
+  (const `(* MAX MAX)` / `(/ MIN -1)` → "integer overflow"); same recipe but width-specific overflow VALUES (fiddly
+  per width) — a follow-up. **`Poison` 3** — still verify (a Poison node may be a dead/unreached rejection wasm DCEs
+  while the cadenza walk declines; confirm direct-wasm behavior before treating as a gap).
 
 ## Already landed toward parity (compound-slot family + declines-coded, pre-full-parity-ruling)
 variant-at-slot #7074 · literal-at-slot + empty-sum #7153 · newtype-peel (map-key) #7181 · guarded-slot
