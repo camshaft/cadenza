@@ -528,6 +528,26 @@ pub fn read_platform(text: &str) -> Result<Vec<PlatformRecord>, String> {
     Ok(records)
 }
 
+/// Render a coded diagnostic expectation (`error`/`warning`) to the flat manifest: the severity
+/// `kind` token, the `code`, then each pinned `message` as ` (message "…")` and each absence pin as
+/// ` (not "…")` — the exact surface xtask's `split_message_clause` parses. Shared by the `Expect::Error`
+/// and `Expect::Warning` arms, which differ only in the `kind` token.
+fn push_diag(out: &mut String, kind: &str, code: &str, message: &[String], not_message: &[String]) {
+    out.push_str(kind);
+    out.push(' ');
+    out.push_str(code);
+    for m in message {
+        out.push_str(" (message \"");
+        out.push_str(m);
+        out.push_str("\")");
+    }
+    for n in not_message {
+        out.push_str(" (not \"");
+        out.push_str(n);
+        out.push_str("\")");
+    }
+}
+
 /// Render `records` to the flat record stream (see the module docs for the format).
 pub fn render(records: &[Record]) -> String {
     let mut out = String::new();
@@ -609,36 +629,14 @@ pub fn render(records: &[Record]) -> String {
                 // exact surface xtask's split_message_clause parses (operator seq353). Absent → byte-
                 // identical to the historical `error CODE` line (back-compat).
                 Expect::Error(code, message, not_message) => {
-                    out.push_str("error ");
-                    out.push_str(code);
-                    for m in message {
-                        out.push_str(" (message \"");
-                        out.push_str(m);
-                        out.push_str("\")");
-                    }
-                    for n in not_message {
-                        out.push_str(" (not \"");
-                        out.push_str(n);
-                        out.push_str("\")");
-                    }
+                    push_diag(&mut out, "error", code, message, not_message);
                 }
                 // `warning CODE`, plus ` (message "phrase")` — mirrors `error` (the non-denying severity
                 // companion). The diagnostic-quality facets ride the sexp `test-run.ast` grade path, not this
                 // flat direct-gate manifest (which grades only code + message today). A `(not "phrase")`
                 // absence pin (seq-29) is rendered too but graded only on the sexp path (xtask ignores it).
                 Expect::Warning(code, message, not_message) => {
-                    out.push_str("warning ");
-                    out.push_str(code);
-                    for m in message {
-                        out.push_str(" (message \"");
-                        out.push_str(m);
-                        out.push_str("\")");
-                    }
-                    for n in not_message {
-                        out.push_str(" (not \"");
-                        out.push_str(n);
-                        out.push_str("\")");
-                    }
+                    push_diag(&mut out, "warning", code, message, not_message);
                 }
                 Expect::Trap(reason) => {
                     out.push_str("trap ");
