@@ -3847,6 +3847,29 @@ enum NominalDisp {
 /// parameter) and a pass-through when it already holds the nominal; control flow (`If`/`Let`/`Match*`)
 /// passes the nominal through from its branches/body (`PassThrough` — the children construct at the leaves);
 /// any other core (`Call`, compound builders, …) is ambiguous (`Decline`).
+/// The TYPE of the slot a `Core::SumPayload { scrutinee, path }` reads — `type_of(scrutinee)` descended by
+/// `path`. `None` when a step doesn't apply to the current type (a shape this walk doesn't model) — the
+/// caller then keeps the conservative default. Used by [`nominal_disposition`] to tell a slot that STORES the
+/// nominal (pass-through) from a slot storing the INNER type that a `(Ctor …)` here wraps (construction).
+fn sum_payload_slot_ty(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+) -> Option<Ty> {
+    use crate::core::PathStep;
+    let mut ty = crate::infer::type_of(db, scrutinee);
+    for step in path {
+        ty = match (step, &ty) {
+            (PathStep::Elem(i), Ty::Tuple(ts)) => ts.get(*i).cloned()?,
+            (PathStep::Elem(_), Ty::List(e)) | (PathStep::Elem(_), Ty::Set(e)) => (**e).clone(),
+            (PathStep::Payload, Ty::Nominal { inner, .. }) => (**inner).clone(),
+            (PathStep::RestFrom(_), Ty::List(_)) => ty.clone(),
+            _ => return None,
+        };
+    }
+    Some(ty)
+}
+
 fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp {
     match core_of(db, id) {
         // Intrinsically inner-valued producers → the constructor is erased HERE. A scalar constant/operator
@@ -3886,7 +3909,26 @@ fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp
         // nominal, no re-wrap). NOT the ambiguous `Call` case — a `SumPayload`'s value is fixed by the slot
         // type, not inferred from a return. (compiler-ml: the run-src interpreter reads Ty/Subst/… nominal
         // fields out of its node/state records — every one of these was the `_ => Decline` newtype gap.)
-        Core::SumPayload { .. } => NominalDisp::PassThrough,
+        Core::SumPayload {
+            scrutinee,
+            ref path,
+        } => {
+            // PASS-THROUGH only if the slot the read yields is ITSELF the nominal — a stored Box the read
+            // hands back directly (compiler-ml reading a `Ty`/`Subst` nominal field). If the slot holds the
+            // INNER type (a `List Int64` element read that a `(Ctor …)` HERE wraps — rg1 `(Box.Wrap h)`), this
+            // node (typed the nominal) is a CONSTRUCTION, so wrap it — else the `(Wrap …)` is dropped and the
+            // producer emits `List Int64` where the consumer expects `List Box` (CDZ0203). If the slot type is
+            // undeterminable, keep the conservative PASS-THROUGH (prior behavior; do not regress).
+            match sum_payload_slot_ty(db, scrutinee, path) {
+                Some(Ty::Nominal { decl: sd, .. }) | Some(Ty::Sum { decl: sd, .. })
+                    if sd == decl =>
+                {
+                    NominalDisp::PassThrough
+                }
+                Some(_) => NominalDisp::Construct,
+                None => NominalDisp::PassThrough,
+            }
+        }
         // Control flow / binding carry the nominal through from their sub-expressions.
         Core::If { .. }
         | Core::Let { .. }
