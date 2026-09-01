@@ -18,6 +18,7 @@ use crate::db::Db;
 use crate::lower::core_of;
 use crate::ty::Ty;
 use std::collections::HashMap;
+use tracing::trace;
 
 /// Whether a solved type is a HEAP VALUE — one held as an owned runtime handle that the Perceus
 /// contract reclaims (a tuple, record, sum, or list). A scalar (integer/bool/unit) owns no heap cell,
@@ -445,9 +446,14 @@ pub(crate) fn b2_bind_plan_scrutinee_only(db: &mut Db, body: StructId) -> Vec<B2
         // SINGLE-site PURE destructure needs NO bind: re-inlining a pure scrutinee is value-neutral and, at O1,
         // leak-clean (the bind is what leaks). Both branches require `b2_is_dispatched_on` (a scrutinee share),
         // which `count ≥ 2` already implies; the effectful branch adds it explicitly.
-        let genuinely_rematerialized = count_distinct_dispatch_sites(db, body, e.shared_id) >= 2
-            || (b2_is_dispatched_on(db, body, e.shared_id)
-                && crate::lower::subtree_reaches_host_call(db, e.shared_id));
+        let sites = count_distinct_dispatch_sites(db, body, e.shared_id);
+        let dispatched = b2_is_dispatched_on(db, body, e.shared_id);
+        let effectful = crate::lower::subtree_reaches_host_call(db, e.shared_id);
+        let genuinely_rematerialized = sites >= 2 || (dispatched && effectful);
+        // DIAGNOSTIC (rcdzc::b2): per base-plan entry, the scrutinee-only (a)/(b) verdict — shows whether a
+        // base-plan candidate is KEPT for the cadenza-O1 path. Note: this only fires for entries the BASE
+        // b2_bind_plan already ADMITTED; a candidate dropped by a base gate (b2 REJECT above) never reaches here.
+        trace!(target: "rcdzc::b2", node = ?e.shared_id, sites, dispatched, effectful, kept = genuinely_rematerialized, "b2 scrutinee-only verdict (a: sites>=2 | b: dispatched&effectful)");
         if genuinely_rematerialized {
             kept.push(e);
         }
@@ -468,6 +474,7 @@ type ShareEligibility = fn(&mut Db, StructId, StructId, u32) -> Option<Ty>;
 fn b2_heap_eligible(db: &mut Db, body: StructId, id: StructId, count: u32) -> Option<Ty> {
     // (2) HEAP-SHARE: shared (count≥2), not a LocalRef, a heap handle (not Unit) — see is_shared_heap_node.
     if !is_shared_heap_node(db, id, count) {
+        trace!(target: "rcdzc::b2", node = ?id, count, "b2_heap_eligible REJECT: gate-2 not-shared-heap (count<2 / LocalRef / non-heap)");
         return None;
     }
     let ty = crate::infer::type_of(db, id);
@@ -476,6 +483,7 @@ fn b2_heap_eligible(db: &mut Db, body: StructId, id: StructId, count: u32) -> Op
     // install dump showed on 2 Record.with shares) yields an indeterminate slot valtype → emit fails
     // 'let-binding reference has no local slot'. Require a determinate machine representation.
     if !ty.is_fully_solved() {
+        trace!(target: "rcdzc::b2", node = ?id, count, ?ty, "b2_heap_eligible REJECT: gate-2b P1 type-not-fully-solved");
         return None;
     }
     // (2c) P3-NARROW (v-rb rust-grounded): a dispatched-on share is excluded ONLY when a read of it is a
@@ -489,8 +497,10 @@ fn b2_heap_eligible(db: &mut Db, body: StructId, id: StructId, count: u32) -> Op
     // sum-variant shape P3 was added for. cmb1's 127 shares are all Tuple state-tuple reads → all
     // admitted (v-rb measured bind-once of them = both-backend 1 PASS, correct 828567056280870).
     if b2_is_dispatched_on(db, body, id) && !b2_dispatch_rust_slot_safe(db, body, id) {
+        trace!(target: "rcdzc::b2", node = ?id, count, ?ty, "b2_heap_eligible REJECT: gate-2c P3 dispatched-on but not rust-slot-safe (sum-variant read)");
         return None;
     }
+    trace!(target: "rcdzc::b2", node = ?id, count, ?ty, "b2_heap_eligible ADMIT (gate-2/2b/2c passed)");
     Some(ty)
 }
 
@@ -522,6 +532,12 @@ fn shared_node_bind_plan(
     for id in order {
         // (2) PER-KIND ELIGIBILITY (gate 2 + kind whitelist); yields the node's type for the slot when admitted.
         let count = counts.get(&id).copied().unwrap_or(0);
+        // DIAGNOSTIC (rcdzc::b2): trace every SHARED (count≥2) candidate + which gate admits/rejects it — the
+        // reusable B2-tuning tool (run with `RUST_LOG=rcdzc::b2=trace`). Zero-cost when the target is disabled;
+        // pure analysis, no behavior change. Added to diagnose the adv-62 effectful-scrutinee base-plan drop.
+        if count >= 2 {
+            trace!(target: "rcdzc::b2", node = ?id, count, core = ?core_of(db, id), "b2 SHARED candidate (entering gates)");
+        }
         let Some(ty) = eligible(db, body, id, count) else {
             continue;
         };
@@ -533,6 +549,7 @@ fn shared_node_bind_plan(
             .iter()
             .any(|&b| !matches!(core_of(db, b), Core::Param { .. }))
         {
+            trace!(target: "rcdzc::b2", node = ?id, count, "b2 REJECT: gate-3a free binder is not a Param (template share)");
             continue;
         }
         // (3b) even a Param is stable-to-hoist only when it is NOT reached through a recursion/loop
@@ -541,16 +558,19 @@ fn shared_node_bind_plan(
         // binders) is loop-invariant regardless. Conservative: over-excluding a genuinely-invariant share in
         // a recursive body only forfeits the opt (leaves it re-descended) — never a miscompile.
         if body_is_recursive && !free.is_empty() {
+            trace!(target: "rcdzc::b2", node = ?id, count, "b2 REJECT: gate-3b recursive body + non-empty free binders (per-iteration-distinct)");
             continue;
         }
         // The shared node is ONE StructId (the compact DAG shares it); its K PARENTS all read it, so the
         // "members" to repoint is that single id (count≥2 above already established the K-way sharing).
         let members = b2_member_occurrences(db, body, id);
         if members.is_empty() {
+            trace!(target: "rcdzc::b2", node = ?id, count, "b2 REJECT: no member occurrences (not reachable)");
             continue; // not reachable from body (defensive)
         }
         // scope_node = the deepest node whose subtree contains the shared id (its nearest enclosing scope).
         let Some(scope_node) = b2_members_lca(db, body, &members) else {
+            trace!(target: "rcdzc::b2", node = ?id, count, members = members.len(), "b2 REJECT: no members-LCA");
             continue;
         };
         // (4) BIND-SAFE: trap-free OR the scope_node UNCONDITIONALLY REACHES the shared node. A trapping
@@ -565,9 +585,11 @@ fn shared_node_bind_plan(
             let mut frontier = std::collections::HashSet::new();
             collect_dominating_frontier(db, scope_node, &mut frontier);
             if !frontier.contains(&id) {
+                trace!(target: "rcdzc::b2", node = ?id, count, scope = ?scope_node, scope_core = ?core_of(db, scope_node), frontier_len = frontier.len(), "b2 REJECT: gate-4 not-trap-free AND not in scope_node's dominating frontier (a trapping/EFFECTFUL init only conditionally reached)");
                 continue;
             }
         }
+        trace!(target: "rcdzc::b2", node = ?id, count, scope = ?scope_node, "b2 ADMIT to base plan (all gates passed)");
         plan.push(B2BindPlanEntry {
             scope_node,
             shared_id: id,
