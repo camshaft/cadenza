@@ -178,6 +178,28 @@ fn gen_usersum<C: Choice>(c: &mut C) -> (String, String) {
     }
 }
 
+/// Build a RECURSIVE-PERFORM effect program — the "dynamic-extent, statically-resolved" self-hosting
+/// shape: a TOP-LEVEL recursive `loop` def PERFORMS the effect op deep inside itself, and `main`'s
+/// `handle` (wrapping the `(loop k)` call) discharges every perform across the recursion. This value-grades
+/// effect semantics folded over N performs (deeper than the fixed twice-performed lexical
+/// [`gen_effect_body`]) AND reaches the cross-function perform the value-diff never covered. Both defs are
+/// TOP-LEVEL because a perform in a LOCALLY-nested def has no enclosing handler (CDZ0401) and a local def
+/// SKIPs in the oracle — so this must be a whole-program shape, not a main-body expression. Returns
+/// `(defs, main_body)`. Terminating (`n` decrements to the `(<= n 0)` base); all magnitudes stay small so
+/// the state folded across the ≤6 performs never overflows; deterministic Int64 result.
+fn gen_effect_recursive_body<C: Choice>(c: &mut C) -> (String, String) {
+    let s0 = c.int_bounded(0, 9);
+    let k = c.int_bounded(2, 6); // loop count — bounded so the fold stays small + terminates
+    // resume-value / new-state over the in-scope Int64 params `s` (handler state) and `p` (perform arg = n).
+    let rv = ["s", "(+ s p)", "p"][c.variant(3)];
+    let ns = ["(+ s p)", "(+ s 1)", "(+ s p)"][c.variant(3)];
+    let defs = "(effect E (op o (-> Int64 Int64))) \
+                (def (loop (: n Int64)) (if (<= n 0) 0 (+ (E.o n) (loop (- n 1)))))"
+        .to_string();
+    let body = format!("(handle E {s0} ((o (p) s (resume {rv} {ns}))) (loop {k}))");
+    (defs, body)
+}
+
 fn build_program<C: Choice>(c: &mut C) -> Program {
     let mut source = String::from("(do ");
     // Two TOP-LEVEL special shapes, chosen by a SINGLE `variant(6)` (one choice consumed, so the fall-through
@@ -186,17 +208,24 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
     // in-body, and the oracle captures a LOCAL fn def's env EAGERLY (excluding itself/later siblings) so a
     // local recursive/mutual call is unbound → SKIP. Gated on NON-ZERO values so an EXHAUSTED cursor
     // (variant → 0) falls through to the base-case path (a bare-literal main), preserving that invariant.
-    match c.variant(6) {
-        // ~1/6: a USER-DEFINED SUM program — tagged variants + newtype erasure + variant patterns (#5456).
+    match c.variant(7) {
+        // ~1/7: a USER-DEFINED SUM program — tagged variants + newtype erasure + variant patterns (#5456).
         3 => {
             let (type_decl, body) = gen_usersum(c);
             write!(source, "{type_decl} (def (main) {body}) (export main))").ok();
             return Program { source };
         }
-        // ~1/6: a MUTUALLY-RECURSIVE program — two top-level defs that call each other + a param-less `main`
+        // ~1/7: a MUTUALLY-RECURSIVE program — two top-level defs that call each other + a param-less `main`
         // calling one (a mutual call graph no single self-recursive helper reaches).
         5 => {
             let (defs, body) = gen_mutual_recursion_body(c);
+            write!(source, "{defs} (def (main) {body}) (export main))").ok();
+            return Program { source };
+        }
+        // ~1/7: a RECURSIVE-PERFORM effect program — a top-level recursive `loop` performs the op deep
+        // inside itself, discharged by `main`'s enclosing `handle` (the dynamic-extent self-hosting shape).
+        6 => {
+            let (defs, body) = gen_effect_recursive_body(c);
             write!(source, "{defs} (def (main) {body}) (export main))").ok();
             return Program { source };
         }
@@ -2637,6 +2666,51 @@ mod tests {
             "should reach a single-variant newtype (type Pt)"
         );
         assert!(saw_nullary, "should reach a nullary-ctor enum (type Color)");
+    }
+
+    /// `build_program` REACHES the RECURSIVE-PERFORM effect shape — a top-level recursive `loop` that
+    /// PERFORMS the op deep inside itself, discharged by `main`'s enclosing `handle` — and every such
+    /// program COMPILES. The perform is cross-function (inside `loop`, not lexically in the handle body):
+    /// both `(effect …)` and `(def (loop …))` must be TOP-LEVEL (a locally-nested perform has no home =
+    /// CDZ0401, and a local def SKIPs in the oracle) — this pins the shape top-level. Also asserts the
+    /// resume-value spread reaches both `s` (identity) and `(+ s p)` (fold).
+    #[test]
+    fn build_program_reaches_recursive_perform_effect_and_compiles() {
+        let (mut saw, mut saw_ident, mut saw_fold) = (false, false, false);
+        for seed in 0u64..1024 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(929);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = build_program(&mut ByteCursorChoice::new(&bytes)).source;
+            if !src.contains("(def (loop ") {
+                continue; // not the recursive-perform shape this seed
+            }
+            saw = true;
+            // The effect decl + loop def must be TOP-LEVEL (before main), else the perform has no home.
+            assert!(
+                src.find("(effect E").unwrap() < src.find("(def (main)").unwrap(),
+                "the `(effect …)` + `loop` must be TOP-LEVEL (before main): {src}"
+            );
+            saw_ident |= src.contains("(resume s ");
+            saw_fold |= src.contains("(resume (+ s p)");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "recursive-perform effect program must COMPILE: {src}"
+            );
+        }
+        assert!(saw, "should reach the recursive-perform effect shape");
+        assert!(
+            saw_ident,
+            "should reach the identity resume value (resume s …)"
+        );
+        assert!(
+            saw_fold,
+            "should reach the folding resume value (resume (+ s p) …)"
+        );
     }
 
     /// `gen_bignum_body` REACHES both BigInt (`N`) and Rational (`R`) forms and every body COMPILES (S132:
