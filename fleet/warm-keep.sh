@@ -27,6 +27,15 @@
 # materializes). Running the tracked source directly would resolve WORKTREES against the wrong dir.
 set -uo pipefail
 
+# SILENT-CRON OBSERVABILITY (v-fleet-tooling 2026-09-01; matches drain-nudge #7339 / prune-*.sh / baseline-
+# drift-monitor). warm-keep is SILENT on a routine pass (it only speaks on a skip/nonzero), so an all-quiet
+# run is indistinguishable from a DEAD cron — nothing proved the hourly cron actually fired. OVERWRITE a
+# `.last-run` next to this script on EVERY run via an EXIT trap (fires on ANY exit path — the flock-skip
+# early-exit, the no-worktree skip, or a normal finish); its MTIME is the fired-proof. Set BEFORE the flock
+# guard so even a skipped pass stamps. Best-effort; never affects behavior or the exit code.
+_cdz_lastrun="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/warm-keep.last-run"
+trap 'printf "%s\n" "$(date -Is 2>/dev/null || echo now)" > "$_cdz_lastrun" 2>/dev/null || true' EXIT
+
 # SINGLETON GUARD: warm-keep is idempotent + best-effort + can run 15-40min (much longer under a COLD /
 # input-addressed-churning corpus, where it may not finish within the hour at all). So the hourly cron (or a
 # concurrent manual run) can fire a SECOND invocation while the first is still building → duplicate warm-keeps
