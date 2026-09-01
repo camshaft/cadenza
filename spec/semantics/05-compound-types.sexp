@@ -9980,7 +9980,15 @@
            Build from `(5 n 8 1 n 9)`: n=3 → in-order 1·3·5·8·9 (13589); n=5 and n=9 each collide with
            an existing key at a DIFFERENT tree slot and both dedup to 1·5·8·9 (1589) — two distinct
            collision paths converging on one output, so an accidental pass on one face still fails
-           the other.")
+           the other. MEMORY (why `known-leak`, not merely an unclosed reclaim gap): the EQUAL-key
+           arm returns `t` — the matched scrutinee — UNCHANGED, so reclaiming the matched `Node`
+           shell would free a value that is RETURNED (a use-after-free of `t` at the caller). The
+           compiler correctly FENCE-EXCLUDES that arm from shell reclaim (return-escape: an arm
+           returning the scrutinee whole is un-reclaimable without a UAF — the sound floor for that
+           arm, not a gap to close). `inorder`'s tail-fold leaks the spine node per step; THAT is the
+           separable, closable part — the self-tail-loop reclaim (Perceus INC1 pt3, dup-of-moved-
+           children before the shell drop) frees it. This pin shrinks toward the return-escape
+           residual when pt3 lands.")
   (input
     (do
       (type BST (Empty) (Node (Tuple BST Int64 BST)))
@@ -10099,7 +10107,15 @@
            in-order after = 3,5,8,9 (103589); mode 2 — the ROOT is the min (no left subtree; the
            extraction fires immediately and the whole right subtree becomes the tree — 200057);
            mode 3 — a single node (min 4, EMPTY remainder, in-order 0 → 400000). Encoding:
-           min·100000 + in-order digits of the remainder.")
+           min·100000 + in-order digits of the remainder. MEMORY (why `known-leak`, not merely an
+           unclosed reclaim gap): del-min's extraction arm `((Empty _u) #tuple(k r))` returns `r` —
+           the matched node's RIGHT-subtree payload — in the result, so dropping the matched `Node`
+           shell would free a still-returned value (a use-after-free). The compiler correctly
+           FENCE-EXCLUDES those shells from reclaim (payload/return-escape: a payload that escapes in
+           the result is un-reclaimable without a UAF — the sound floor for the del-min shells, not a
+           gap). The separable, closable part is `inorder`'s tail-fold spine leak, which the
+           self-tail-loop reclaim (Perceus INC1 pt3, dup-of-moved-children before the shell drop)
+           frees; when pt3 lands this count shrinks toward the del-min payload-escape residual.")
   (input
     (do
       (type BST (Empty) (Node (Tuple BST Int64 BST)))
