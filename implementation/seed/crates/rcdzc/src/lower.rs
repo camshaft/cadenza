@@ -1276,7 +1276,7 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // map value-position spread fold (a chained `(merge (merge a b) c)` — 2^N without the keep).
             | Core::MapNew { .. }
             | Core::MapMerge { .. }
-            // 🛑 STOPGAP (P0, SURGICAL — v-runtime scope): the PATH-COPY generation-share producers
+            // STOPGAP (P0, SURGICAL — v-runtime scope): the PATH-COPY generation-share producers
             // `MapInsert`/`MapRemove`/`SetAlgebra` are TEMPORARILY REMOVED. Each PATH-COPIES off an input
             // map/set, SHARING its interior CHAMP nodes; materializing a multi-use GENERATION-SHARED handle
             // once into a `Core::Let` slot then over-drops / over-retains that shared interior — witnessed
