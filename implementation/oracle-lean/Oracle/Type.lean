@@ -25,6 +25,10 @@ inductive Ty where
   | tuple (elts : List Ty)
   | never                               -- the empty sum; unifies with ANY type (ts:76-84, the bottom rule)
   | var (id : Nat)                      -- a unification (type) variable
+  | numVar (id : Nat)                   -- a NUMERIC unification variable (an unannotated int literal): unifies
+                                        -- with any `int` width (OQ-G width-polymorphism) but NOT with a
+                                        -- non-numeric type — so `(< #t 1)` still clashes, while `(: 5 Int32)` /
+                                        -- `(+ (x:Int32) 1)` resolve the literal to the annotated/param width.
   deriving BEq, Inhabited
 
 /-- A CDZ diagnostic code (e.g. `"CDZ0203"`), carried on a coded reject. -/
@@ -56,6 +60,7 @@ CORE the A/App/If/Let/Fn rules all build on. It is deliberately landed and `#gua
 CONTAINING `i` is the infinite-type case — an unsatisfiable constraint (`CDZ0203`). -/
 partial def occurs (i : Nat) : Ty → Bool
   | .var j => i == j
+  | .numVar j => i == j
   | .fn d c => occurs i d || occurs i c
   | .tuple es => es.any (occurs i)
   | _ => false
@@ -65,8 +70,19 @@ POLYMORPHIC function type — a monomorphic oracle without `let`-generalization 
 a polymorphic let-bound fn used at two types, so a var-containing head declines (`Unsupported`) instead. -/
 partial def hasVar : Ty → Bool
   | .var _ => true
+  | .numVar _ => true
   | .fn d c => hasVar d || hasVar c
   | .tuple es => es.any hasVar
+  | _ => false
+
+/-- Does a type contain a GENERAL (non-numeric) unification var? The App rule declines a head with one of
+these (true `let`-polymorphism, e.g. `(fn (x) x) : α→α`). A `numVar`-only head (e.g. `numVar→Int` from
+`(fn (x) (+ x 1))`) is NOT truly polymorphic — a `numVar` only unifies with numeric types and defaults to
+`Int` — so applying it is sound (an arg clash still surfaces as `CDZ0203`). -/
+partial def hasGenVar : Ty → Bool
+  | .var _ => true
+  | .fn d c => hasGenVar d || hasGenVar c
+  | .tuple es => es.any hasGenVar
   | _ => false
 
 /-- A unification substitution: variable id → resolved type, innermost (head) binding wins. -/
@@ -78,6 +94,9 @@ partial def applySubst (s : Subst) : Ty → Ty
   | .var i => match s.find? (fun p => p.1 == i) with
               | some (_, t) => applySubst s t
               | none => .var i
+  | .numVar i => match s.find? (fun p => p.1 == i) with
+                 | some (_, t) => applySubst s t
+                 | none => .numVar i
   | .fn d c => .fn (applySubst s d) (applySubst s c)
   | .tuple es => .tuple (es.map (applySubst s))
   | t => t
@@ -93,6 +112,11 @@ partial def unify (a b : Ty) (s : Subst) : Except Code Subst :=
   | .var i, .var j => if i == j then .ok s else .ok ((i, .var j) :: s)
   | .var i, t => if occurs i t then .error "CDZ0203" else .ok ((i, t) :: s)
   | t, .var i => if occurs i t then .error "CDZ0203" else .ok ((i, t) :: s)
+  -- a NUMERIC var (an int literal, OQ-G): unifies with another numVar or with a concrete int (resolving to
+  -- that width); NOT with a non-numeric type (falls to the `_,_` clash — so `(< #t 1)` is still CDZ0203).
+  | .numVar i, .numVar j => if i == j then .ok s else .ok ((i, .numVar j) :: s)
+  | .numVar i, .int w g => .ok ((i, .int w g) :: s)
+  | .int w g, .numVar i => .ok ((i, .int w g) :: s)
   | .int w1 g1, .int w2 g2 => if w1 == w2 && g1 == g2 then .ok s else .error "CDZ0203"
   | .bool, .bool => .ok s
   | .unit, .unit => .ok s
@@ -170,11 +194,62 @@ def topLevelValueEnv (m : Ast.Module) : List (ByteArray × Ty) :=
       | none => none)
   | _ => []
 
+/-- WHOLE-PROGRAM soundness gate (design §5): `infer` may only emit a POSITIVE verdict for a program it
+FULLY models. Since `infer` types only `main`'s body, it must DECLINE (`Unsupported`) any program whose
+OTHER top-level structure it does not vet — else it over-claims `WellTyped` on a program whose other
+defs/exports/declarations are ill-typed (the false-reject class the T0.2 corpus run surfaced: unbound
+names in a non-main def, user generics, `(type …)` declarations, unbound exports). Conservative: the root
+`(do …)` must contain ONLY {a SCALAR value def `(def x <lit>)`, the `main` def, an `(export nm)` naming a
+DEFINED name, a `(pragma …)`}. A fn-def, a non-scalar value def, a `(type …)`/`(effect …)`/import, or an
+export of an unbound name ⇒ not fully modeled ⇒ decline. (Typing fn-defs / non-scalar value defs is a
+later increment; declining them here is SOUND — a `skip`, never a false reject.) -/
+def programModeled? (m : Ast.Module) : Bool :=
+  match m.nodes[m.root]? with
+  | some (.list stmtsRaw) =>
+    let stmts := stmtsRaw.extract 1 stmtsRaw.size    -- drop the `do` head atom; children[1:] are the statements
+    let definedNames : List ByteArray :=
+      stmts.toList.filterMap (fun sid => (Eval.asDef? m sid).bind (Eval.defName? m))
+    stmts.all (fun sid =>
+      match Eval.asDef? m sid with
+      | some dc =>
+        match dc[1]? with
+        | some tid =>
+          match Eval.nameOf? m tid with
+          | some _ => (topLevelValueDefTy? m dc).isSome            -- bare-name target ⇒ scalar value def
+          | none => (Eval.defName? m dc) == some "main".toUTF8     -- list target ⇒ only `main` (fn-defs decline)
+        | none => false
+      | none =>
+        match m.nodes[sid]? with
+        | some node =>
+          (match m.headName? node with
+           | some h =>
+             if h == "export".toUTF8 then
+               (match node with
+                | .list cs => (match (cs[1]?).bind (Eval.nameOf? m) with
+                               | some nm => definedNames.any (· == nm)
+                               | none => false)
+                | _ => false)
+             else h == "pragma".toUTF8
+           | none => false)
+        | none => false)
+  | _ => false
+
 /-- Parse a TYPE-annotation node to a `Ty` over the modeled scalar subset: `Int64`/`(Int N)`/`UInt8`/… →
 `.int N signed` (a `.bits` width; `BigInt`/`(Int W)` unknown-width → `none`, not modeled), `Bool`/`Unit`/
 `String`/`Char` → their scalar `Ty`. `none` for any un-modeled annotation (records/sums/fn/generics) — the
 ascription rule declines (`Unsupported`) on `none`, never guesses. Reused by Fn param annotations later. -/
 def parseTy? (m : Ast.Module) (nodeId : Nat) : Option Ty :=
+  -- reject a MALFORMED width-indexed constructor `(Int w1 w2)` / `(UInt)` — `Int`/`UInt` take exactly ONE
+  -- width arg (the list must be `(Int <w>)`, size 2). `Eval.parseIntTy?` is lenient (ignores extras), so
+  -- guard the arity here → `none` (Unsupported) rather than silently taking the first width (rcdzc rejects
+  -- a wrong-arity width constructor CDZ0203; declining is the sound response).
+  match m.nodes[nodeId]? with
+  | some (.list cs) =>
+    (match m.headName? (.list cs) with
+     | some h => if (h == "Int".toUTF8 || h == "UInt".toUTF8) && cs.size != 2 then none else parseTyCore m nodeId
+     | none => parseTyCore m nodeId)
+  | _ => parseTyCore m nodeId
+where parseTyCore (m : Ast.Module) (nodeId : Nat) : Option Ty :=
   match Eval.parseIntTy? m nodeId with
   | some it => (match it.width with | .bits n => some (.int n it.signed) | _ => none)
   | none =>
@@ -249,6 +324,8 @@ Any other construct → `Unsupported` until its rule lands (Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
   match scalarLitTy? m nodeId with
+  | some (.int _ _) =>                                    -- OQ-G: an int LITERAL occurrence is width-polymorphic
+    .ok (.numVar st.next, { st with next := st.next + 1 })  -- → a fresh numeric var, resolved by use/ascription
   | some τ => .ok (τ, st)
   | none =>
     match Eval.nameOf? m nodeId with
@@ -262,7 +339,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
       | some (.list children) =>
         match m.headName? (.list children) with
         | some h =>
-          if h == "if".toUTF8 then
+          if h == "if".toUTF8 && children.size == 4 then      -- exactly (if c t e); wrong arity → App→Unsupported
             match children[1]?, children[2]?, children[3]? with
             | some cId, some tId, some eId => do
                 let (τc, st) ← inferE m env st cId
@@ -272,7 +349,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                 let st ← unifyInfer τt τe st              -- both branches unify; never absorbs (ts:82-84)
                 .ok (applySubst st.subst τt, st)
             | _, _, _ => .error (.unsupported "type oracle: malformed if")
-          else if (String.fromUTF8? h).elim false (fun s => Eval.cmpOps.contains s || s == "=") then
+          else if children.size == 3 && (String.fromUTF8? h).elim false (fun s => Eval.cmpOps.contains s || s == "=") then
             -- T1.3 — COMPARISON / EQUALITY (`< > <= >=` and `=`): `(OP a b)` unifies the two operand types
             -- (a shape mismatch is a genuine type error — ts:186-188) and yields `Bool`. An operand clash is
             -- `IllTyped CDZ0203`. SOUND for the current fragment: only scalars flow to a comparison (the
@@ -283,9 +360,12 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                 let (τa, st) ← inferE m env st aId
                 let (τb, st) ← inferE m env st bId
                 let st ← unifyInfer τa τb st
-                .ok (.bool, st)
+                -- a FUNCTION is not comparable/equatable (ts) — `(= f g)` / `(< f g)` is a type error.
+                match applySubst st.subst τa with
+                | .fn _ _ => .error (.illTyped "CDZ0203")
+                | _ => .ok (.bool, st)
             | _, _ => .error (.unsupported "type oracle: malformed comparison")
-          else if (String.fromUTF8? h).elim false (fun s => Eval.arithOps.contains s) then
+          else if children.size == 3 && (String.fromUTF8? h).elim false (fun s => Eval.arithOps.contains s) then
             -- T1.4 — ARITHMETIC (`+ - * / %`): `(OP a b)` unifies the two operands, then requires the result
             -- to be NUMERIC — `Int` → result that int type; a same-typed NON-numeric operand (`Bool`/`String`/
             -- `Char`/`Unit`) is `IllTyped CDZ0301` NumericMismatch (§4). A mixed operand clash was already
@@ -300,11 +380,13 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                 let st ← unifyInfer τa τb st
                 match applySubst st.subst τa with
                 | .int w sg => .ok (.int w sg, st)
+                | .numVar _ => .ok (.int 64 true, st)     -- unconstrained int literal(s) → numeric, default Int
                 | .never => .ok (.never, st)
                 | .bool | .string | .char | .unit => .error (.illTyped "CDZ0301")
                 | _ => .error (.unsupported "type oracle: arithmetic on an unresolved/unmodeled operand type")
             | _, _ => .error (.unsupported "type oracle: malformed arithmetic (unary or partial)")
-          else if (String.fromUTF8? h).elim false (fun s => s == "and" || s == "or" || s == "not") then
+          else if (h == "not".toUTF8 && children.size == 2)
+               || ((h == "and".toUTF8 || h == "or".toUTF8) && children.size == 3) then
             -- T1.5 — BOOLEAN connectives (`and`/`or` binary, `not` unary): every operand unifies with
             -- `Bool`, result `Bool`. A non-`Bool` operand is `IllTyped CDZ0203`.
             if h == "not".toUTF8 then
@@ -482,7 +564,7 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
             match env.find? (fun e => e.1 == h) with
             | some (_, τf0) =>
               let τf := applySubst st.subst τf0
-              if hasVar τf then
+              if hasGenVar τf then
                 .error (.unsupported "type oracle: polymorphic application not modeled (needs let-generalization)")
               else
                 (match (children.extract 1 children.size).foldlM (m := Except InferFail)
@@ -502,12 +584,20 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
       | _ => .error (.unsupported "type oracle: node not modeled")
 
+/-- Default any still-unresolved numeric var (an int literal never constrained to a concrete width) to the
+model-default `Int64` — the numeric-model default for an unannotated literal at an escape (OQ-G). -/
+partial def defaultNumVars : Ty → Ty
+  | .numVar _ => .int 64 true
+  | .fn d c => .fn (defaultNumVars d) (defaultNumVars c)
+  | .tuple es => .tuple (es.map defaultNumVars)
+  | t => t
+
 /-- Infer the type of a body node under a value environment `env`: run `inferE` and map its result onto
-the verdict algebra. A resolved type (with the final substitution applied) is `WellTyped`; a modeled
-fault is `IllTyped`; a coverage gap is `Unsupported`. -/
+the verdict algebra. A resolved type (with the final substitution applied, unresolved numeric literals
+defaulted to `Int64`) is `WellTyped`; a modeled fault is `IllTyped`; a coverage gap is `Unsupported`. -/
 def inferBody (m : Ast.Module) (env : List (ByteArray × Ty)) (nodeId : Nat) : TypeVerdict :=
   match inferE m env {} nodeId with
-  | .ok (τ, st) => .wellTyped (applySubst st.subst τ)
+  | .ok (τ, st) => .wellTyped (defaultNumVars (applySubst st.subst τ))
   | .error (.illTyped c) => .illTyped c
   | .error (.unsupported r) => .unsupported r
 
@@ -517,11 +607,26 @@ top-level value binding (T1.1b, the V rule) is `WellTyped`. A parameterized main
 any other non-literal body declines (`Unsupported` — a sound coverage gap). HM unification over
 app/if/let/fn/match lands in the following T1 slices. -/
 def infer (m : Ast.Module) : TypeVerdict :=
-  match Eval.namedParamsBody? m "main".toUTF8 with
+  -- WHOLE-PROGRAM soundness gate (design §5): decline unless every top-level statement is fully modeled,
+  -- so a positive verdict is never over-claimed on a program with unvetted other defs/exports/decls.
+  if !programModeled? m then
+    .unsupported "type oracle: program has unmodeled top-level structure (fn-def / non-scalar def / type-or-effect decl / unbound export) — declined for soundness"
+  else match Eval.namedParamsBody? m "main".toUTF8 with
   | none => .unsupported "type oracle: program has no (def (main) …) export"
   | some (specs, bodyId) =>
     if specs.size != 0 then .unsupported "type oracle: parameterized main not yet modeled (T1)"
     else inferBody m (topLevelValueEnv m) bodyId
+
+/-- Is `code` a rejection the TYPE oracle actually judges (a type-system error, §4), vs a rejection from a
+DIFFERENT compile phase the oracle does not model? A `WellTyped` verdict against a NON-type reject is NOT a
+false-reject — the program genuinely IS well-typed; rcdzc rejected it for well-formedness (`CDZ0201`
+duplicate-export / multi-body / out-of-range-literal), const-eval overflow/div-by-zero (`CDZ0304`), range
+(`CDZ0302`), or a pragma (`CDZ0601`), none of which is the type judgment. So those degrade to `skip`
+(a coverage gap for a phase outside the oracle's remit), keeping false-reject detection focused on genuine
+TYPE over-strictness. -/
+def isTypeRejectCode (code : Code) : Bool :=
+  code == "CDZ0101" || code == "CDZ0102" || code == "CDZ0202" || code == "CDZ0203" || code == "CDZ0301"
+  || code == "CDZ0210" || code == "CDZ0211" || code == "CDZ0212" || code == "CDZ0213" || code == "CDZ0214"
 
 /-- The differential classification (design §1.2): map the oracle's verdict against rcdzc's carried
 accept/reject/decline onto `holds`/`mismatch`/`skip`. A `mismatch` names the direction so cdz-smith triages
@@ -533,7 +638,10 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
   | .unsupported r, _ => .skip s!"typecheck: {r}"
   | .wellTyped _, .accept => .holds
   | .wellTyped _, .reject code =>
-    .mismatch s!"false-reject: oracle infers well-typed, rcdzc rejected {code}"
+    if isTypeRejectCode code then
+      .mismatch s!"false-reject: oracle infers well-typed, rcdzc rejected {code}"
+    else
+      .skip s!"typecheck: rcdzc rejected {code} — a non-type-judgment phase (well-formedness/overflow/range/pragma) outside the type oracle's remit"
   | .wellTyped _, .decline =>
     .mismatch s!"capability-gap: oracle infers well-typed, rcdzc declined (should-work-not-yet-built)"
   | .illTyped code, .accept =>
@@ -543,9 +651,9 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
 
 /-! ### Verdict-classification witnesses (compiled = checked; the §1.2 table). -/
 
--- an empty / main-less module → the oracle declines → skip (sound coverage gap)
-#guard judgeTypecheck (infer { leaves := #[], nodes := #[], root := 0 }) .accept
-       == .skip "typecheck: type oracle: program has no (def (main) …) export"
+-- an empty / main-less module → the whole-program gate declines → skip (sound coverage gap)
+#guard (match judgeTypecheck (infer { leaves := #[], nodes := #[], root := 0 }) .accept with
+        | .skip _ => true | _ => false)
 -- T1.1a: a nullary `main` whose body is an int literal is WellTyped Int (base case + main-body extraction).
 #guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
                             .intLit false .dec (ByteArray.mk #[42]), .name "export".toUTF8],
@@ -764,13 +872,14 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
                            .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
                 root := 12 } == .illTyped "CDZ0203")
--- T1.10 (ascription): `(: 5 Int64)` — int↔int width ascription is DEFERRED (OQ-G) → Unsupported, NOT a reject.
-#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
-                                  .intLit false .dec (ByteArray.mk #[5]), .name "Int64".toUTF8, .name "export".toUTF8],
-                      nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
-                                 .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
-                                 .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
-                      root := 12 } with | .unsupported _ => true | _ => false)
+-- T1.10 (ascription) + OQ-G: `(: 5 Int64)` — the literal (a numVar) resolves to the annotated width →
+-- WellTyped Int64 (no longer deferred, now that int literals are width-polymorphic).
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name ":".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[5]), .name "Int64".toUTF8, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .wellTyped (.int 64 true))
 -- T1.11 (Fn): `(fn (x) (+ x 1))` — the arithmetic body constrains the fresh param var to Int → Int→Int.
 #guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "fn".toUTF8,
                             .name "x".toUTF8, .name "+".toUTF8, .intLit false .dec (ByteArray.mk #[1]),
@@ -832,11 +941,40 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                                  .atom 2, .list #[13], .atom 1, .list #[15, 14, 12],
                                  .atom 8, .atom 2, .list #[17, 18], .atom 0, .list #[20, 16, 19]],
                       root := 21 } with | .unsupported _ => true | _ => false)
+-- SOUNDNESS GATE: a program with an extra fn-def `(def (f x) x)` is NOT fully modeled → Unsupported
+-- (declined, NOT a false WellTyped — the whole-program gate prevents over-claiming on unvetted defs).
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "f".toUTF8, .name "x".toUTF8,
+                                  .name "main".toUTF8, .intLit false .dec (ByteArray.mk #[42]), .name "export".toUTF8],
+                      nodes := #[.atom 2, .atom 3, .list #[0, 1], .atom 1, .atom 3, .list #[3, 2, 4],  -- (def (f x) x)
+                                 .atom 4, .list #[6], .atom 1, .atom 5, .list #[8, 7, 9],              -- (def (main) 42)
+                                 .atom 6, .atom 4, .list #[11, 12], .atom 0, .list #[14, 5, 10, 13]],
+                      root := 15 } with | .unsupported _ => true | _ => false)
+-- SOUNDNESS GATE: an export of an UNBOUND name `(export bad)` → Unsupported (the program isn't fully
+-- modeled — rcdzc rejects it CDZ0101, but the oracle soundly declines rather than guessing).
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8,
+                                  .intLit false .dec (ByteArray.mk #[42]), .name "export".toUTF8, .name "bad".toUTF8],
+                      nodes := #[.atom 2, .list #[0], .atom 1, .atom 3, .list #[2, 1, 3],  -- (def (main) 42)
+                                 .atom 4, .atom 5, .list #[5, 6], .atom 0, .list #[8, 4, 7]],  -- (export bad)
+                      root := 9 } with | .unsupported _ => true | _ => false)
+-- ARITY: `(if #t 1 2 3)` (too many operands) → not the exact `(if c t e)` shape → Unsupported (matches
+-- rcdzc's CDZ0201 reject at the accept/reject boundary once the gate declines it, never a false WellTyped).
+#guard (match infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "if".toUTF8,
+                                  .boolLit true, .intLit false .dec (ByteArray.mk #[1]),
+                                  .intLit false .dec (ByteArray.mk #[2]), .intLit false .dec (ByteArray.mk #[3]),
+                                  .name "export".toUTF8],
+                      nodes := #[.atom 3, .atom 4, .atom 5, .atom 6, .atom 7, .list #[0, 1, 2, 3, 4],  -- (if #t 1 2 3)
+                                 .atom 2, .list #[6], .atom 1, .list #[8, 7, 5],
+                                 .atom 8, .atom 2, .list #[11, 12], .atom 0, .list #[14, 9, 13]],
+                      root := 14 } with | .unsupported _ => true | _ => false)
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
 #guard judgeTypecheck (.illTyped "CDZ0203") (.reject "CDZ0201") == .holds
 #guard judgeTypecheck (.illTyped "CDZ0203") .decline == .holds
+-- a WellTyped vs a NON-type reject (overflow/malformed/pragma) is NOT a false-reject → skip (the program
+-- IS well-typed; rcdzc rejected it in a phase outside the type oracle's remit).
+#guard (match judgeTypecheck (.wellTyped (.int 64 true)) (.reject "CDZ0304") with | .skip _ => true | _ => false)
+#guard (match judgeTypecheck (.wellTyped .unit) (.reject "CDZ0201") with | .skip _ => true | _ => false)
 -- FALSE-REJECT — the highest-value finding: oracle accepts, rcdzc coded-rejected
 #guard judgeTypecheck (.wellTyped .unit) (.reject "CDZ0203")
        == .mismatch "false-reject: oracle infers well-typed, rcdzc rejected CDZ0203"
