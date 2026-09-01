@@ -259,7 +259,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
     // A CONSTRUCTION-SPREAD record `#record((= f v) (.. r) …)` resolves to a Poison (the `(.. )` entry is
     // rejected at resolve), so its type comes from the memoized `(Record.merge …)` desugar — the row union
     // of the inline fields and the spread operands' rows. Delegating reuses `Record.merge`'s row typing.
-    if let Some(desugar) = crate::lower::record_spread_desugar(db, id) {
+    if let Some(desugar) = crate::lower::entry_spread_desugar(db, id) {
         return type_of(db, desugar);
     }
     match resolved_of(db, id) {

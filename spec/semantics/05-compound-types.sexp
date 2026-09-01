@@ -35310,31 +35310,58 @@
   (call main (: 1 Int64))
   (output (: 3 Int64)))
 
-; TODO fence (idealistic; DESIGN §6): a MAP construction spread `#map((= k v) (.. m))` should merge m's
-; entries last-writer-wins. Currently DECLINES — unlike list/set/record, a map has DYNAMIC keys, so it
-; needs a RUNTIME map-merge/union op (map-union heap op + prelude binding + Core variant) that does NOT
-; exist yet (the Map module has insert/lookup/remove/size/to-list/empty, no union). Routed to the map /
-; runtime owner. Auto-flips when a runtime map-merge op lands. `#map((= 1 10) (.. d))` with d={1:99, 2:20}
-; last-writer-wins: d comes after, so key 1 -> 99; Map.size = 2, lookup 1 = 99: 100*2 + 99 = 299.
+; MAP construction spread — the value twin of the map REST pattern (DESIGN §6; operator: spread supports
+; ALL collections). A map has DYNAMIC keys, so unlike list/set/record it cannot be expanded statically —
+; it folds LEFT-to-RIGHT via the runtime `Map.merge` op (last-writer-wins: the right operand wins an
+; overlapping key). `#map((= 1 10) (.. d))` with d={1:99, 2:20}: d comes after, so key 1 -> 99 (d wins),
+; key 2 -> 20; Map.len = 2, lookup 1 = 99: 100*2 + 99 = 299. Works on wasm and rust (v-runtime's op-98
+; CHAMP merge + Core::MapMerge; the guest desugar mirrors the record/list/set folds).
 (case
-  "a map construction spread merges a runtime map's entries last-writer-wins (should-work)"
-  (doc
-    "Idealistic TODO fence (operator: spread supports ALL collections). A map spread needs a RUNTIME
-     map-merge/union op — the Map module has no union (only insert/lookup/remove/size/to-list/empty), and
-     map keys are dynamic so the spread cannot be expanded statically the way a record's static field set
-     is. Routed to the map/runtime owner (a `map-union` heap op + `Map.union` binding + Core variant +
-     backend arms). Auto-flips when that op lands.")
+  "a map construction spread merges a runtime map's entries last-writer-wins"
   (input
     (do
       (def (main (: seed Int64))
         (do
           (def d (Map.insert (Map.insert Map.empty 1 99) 2 20))
           (def m #map((= 1 10) (.. d)))
-          (+ (* 100 (Map.size m))
+          (+ (* 100 (Map.len m))
              (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
       (export main)))
   (call main (: 0 Int64))
   (output (: 299 Int64)))
+
+; A map spread where the INLINE entry comes AFTER the spread wins that key (left-to-right last-writer):
+; `#map((.. d) (= 1 7))` with d={1:99} -> key 1 = 7 (the inline, later). len 1, lookup 1 = 7: 100+7 = 107.
+(case
+  "a map construction spread with a later inline entry overrides a spread key"
+  (input
+    (do
+      (def (main)
+        (do
+          (def d (Map.insert Map.empty 1 99))
+          (def m #map((.. d) (= 1 7)))
+          (+ (* 100 (Map.len m))
+             (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main)
+  (output (: 107 Int64)))
+
+; ALL-SPREAD map merge `#map((.. a) (.. b))` — the union of two runtime maps, last-writer-wins on a shared
+; key (b wins). a={1:1, 2:2}, b={2:20, 3:30} -> {1:1, 2:20, 3:30}; len 3, lookup 2 = 20: 100*3 + 20 = 320.
+(case
+  "a map construction spread with only spreads merges the operands last-writer-wins"
+  (input
+    (do
+      (def (main)
+        (do
+          (def a (Map.insert (Map.insert Map.empty 1 1) 2 2))
+          (def b (Map.insert (Map.insert Map.empty 2 20) 3 30))
+          (def m #map((.. a) (.. b)))
+          (+ (* 100 (Map.len m))
+             (match (Map.lookup m 2) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main)
+  (output (: 320 Int64)))
 
 ; TUPLE construction spread — the value twin of the tuple REST pattern (operator: spread supports all
 ; collections). A tuple is heterogeneous + STATIC-ARITY, so `#tuple(1 (.. t) 3)` FLATTENS t's elements in

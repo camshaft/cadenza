@@ -34,7 +34,7 @@ pub(crate) fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // `(Record.merge …)` desugar instead: this surfaces the operands' own faults AND `Record.merge`'s
     // field-overlap CDZ0211 (a last-writer-wins overlap is a tracked follow-up), never the misleading
     // pattern-only reject on the `(.. )` wrapper.
-    if let Some(desugar) = crate::lower::record_spread_desugar(db, id) {
+    if let Some(desugar) = crate::lower::entry_spread_desugar(db, id) {
         collect(db, desugar, out);
         return;
     }

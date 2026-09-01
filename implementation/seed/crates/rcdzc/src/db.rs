@@ -1564,15 +1564,16 @@ pub struct Db {
     /// same node, so `(Int 64)` denotes ONE module however many times it is written or demanded.
     pub(crate) build_cache: crate::fxhash::FxHashMap<BuildKey, StructId>,
 
-    /// Memo of the CONSTRUCTION-SPREAD desugar for a spread-bearing `#record((= f v) (.. r) …)` node — the
-    /// synthesized `(Record.merge …)` fold that `lower`/`type_of`/`collect` all delegate to. Synthesized
-    /// ONCE per record node (it reuses + reparents the original entry/operand occurrences; re-synthesizing
-    /// would repoint their parents repeatedly), so every demand returns the SAME fold node. Keyed by the
-    /// record node id; `Some(fold)` iff that node is a record with a spread child.
-    pub(crate) record_spread_desugar: crate::fxhash::FxHashMap<StructId, StructId>,
+    /// Memo of the CONSTRUCTION-SPREAD desugar for a spread-bearing ENTRY-based compound — a record
+    /// `#record((= f v) (.. r) …)` (folds via `Record.merge`) or a map `#map((= k v) (.. m) …)` (folds via
+    /// `Map.merge`) — the synthesized `(. <M> merge)` fold that `lower`/`type_of`/`collect` all delegate to.
+    /// Synthesized ONCE per node (it reuses + reparents the original entry/operand occurrences;
+    /// re-synthesizing would repoint their parents repeatedly), so every demand returns the SAME fold node.
+    /// Keyed by the node id; `Some(fold)` iff that node is a record/map with a spread child.
+    pub(crate) entry_spread_desugar: crate::fxhash::FxHashMap<StructId, StructId>,
 
     /// The synthesized `((. Record merge) …)` fold nodes a RECORD CONSTRUCTION SPREAD desugars to (see
-    /// [`record_spread_desugar`]). A construction spread is last-writer-wins on an OVERLAPPING field
+    /// [`entry_spread_desugar`]). A construction spread is last-writer-wins on an OVERLAPPING field
     /// (DESIGN-collection-spread-construction.md §6), UNLIKE the explicit `Record.merge` op whose field sets
     /// MUST be disjoint (type-system.md). The `Core`/type layers already take last-writer, so the
     /// disjointness CDZ0211 fault (`collect_node`'s `RecordMerge` arm) is SKIPPED for a merge in this set —
@@ -3161,7 +3162,7 @@ impl Db {
             reached_clipped: false,
             synth_name_origin: crate::fxhash::FxHashMap::default(),
             build_cache: crate::fxhash::FxHashMap::default(),
-            record_spread_desugar: crate::fxhash::FxHashMap::default(),
+            entry_spread_desugar: crate::fxhash::FxHashMap::default(),
             record_spread_merge_nodes: crate::fxhash::FxHashSet::default(),
             recursive: crate::fxhash::FxHashMap::default(),
             reaches_host_call: crate::fxhash::FxHashMap::default(),

@@ -36,12 +36,13 @@ fn fold_record_substeps(
 }
 
 pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
-    // A CONSTRUCTION-SPREAD record `#record((= f v) (.. r) …)` resolves to a Poison (`read_record_fields`
-    // rejects the `(.. )` entry — its `..` is the pattern-only sigil), so intercept BEFORE the resolved-form
-    // dispatch and lower the memoized `(Record.merge …)` desugar instead. List/set carry the `(.. )` node in
-    // their `elems` and handle it in-arm; records collapse to a field map at resolve, so the raw AST is read
-    // by `record_spread_desugar`. (Cheap: `compound_form_of` returns `None` at once for a non-record head.)
-    if let Some(desugar) = crate::lower::record_spread_desugar(db, id) {
+    // A CONSTRUCTION-SPREAD record `#record((= f v) (.. r) …)` OR map `#map((= k v) (.. m) …)` resolves to a
+    // Poison (the entry reader rejects the `(.. )` entry — its `..` is the pattern-only sigil), so intercept
+    // BEFORE the resolved-form dispatch and lower the memoized `(. <M> merge)` desugar instead. List/set/tuple
+    // carry the `(.. )` node in their `elems` and handle it in-arm; the entry-based compounds collapse to an
+    // entry map at resolve, so the raw AST is read by `entry_spread_desugar`. (Cheap: `compound_form_of`
+    // returns `None` at once for a non-record/non-map head.)
+    if let Some(desugar) = crate::lower::entry_spread_desugar(db, id) {
         return core_of(db, desugar);
     }
     // A `(do S… tail)` block whose NON-FINAL statements reach a HOST CALL lowers to a `Core::Seq` — the
@@ -3246,29 +3247,40 @@ fn lower_list_spread(db: &mut Db, id: StructId, elems: &[StructId]) -> Core {
     core_of(db, root)
 }
 
-/// The CONSTRUCTION-SPREAD desugar for a `#record((= f v) (.. r) …)` node: `Some(fold)` where `fold` is a
-/// synthesized `((. Record merge) …)` left-to-right fold of the maximal inline FIELD-ENTRY runs (as
-/// synthetic `#record(entry…)` nodes) and the spread operands (each a record whose STATIC field set
-/// `Record.merge` projects). `None` if `id` is not a `#record` node or has no spread child. The result is
-/// MEMOIZED (`db.record_spread_desugar`) and grafted under `id` ONCE — `lower`/`type_of`/`collect` all
-/// delegate to this one node, so its type (a record row), its faults (incl. the CDZ0211 overlap check
-/// `Record.merge` enforces — a last-writer-wins overlap is a documented follow-up, tracked in the corpus),
-/// and its lowering are computed by the existing `Record.merge` machinery. Records-only: a MAP spread needs
-/// a runtime map-merge op (dynamic keys — no such op yet; routed as a gap). The record analogue of
-/// [`lower_list_spread`]/[`lower_set_spread`], but records collapse to a field map at resolve (so the raw
-/// AST is read here) — hence the delegated node rather than an in-arm rewrite.
-pub(crate) fn record_spread_desugar(db: &mut Db, id: StructId) -> Option<StructId> {
-    if let Some(&cached) = db.record_spread_desugar.get(&id) {
+/// The CONSTRUCTION-SPREAD desugar for an ENTRY-based compound — a `#record((= f v) (.. r) …)` (folds via
+/// `Record.merge`) or a `#map((= k v) (.. m) …)` (folds via `Map.merge`): `Some(fold)` where `fold` is a
+/// synthesized `((. <M> merge) …)` LEFT-to-RIGHT fold of the maximal inline `(= …)`-entry runs (as synthetic
+/// `#record(…)`/`#map(…)` nodes) and the spread operands. `None` if `id` is not a record/map node or has no
+/// spread child. MEMOIZED (`db.entry_spread_desugar`) and grafted under `id` ONCE — `lower`/`type_of`/
+/// `collect` all delegate to this one node, so its type, faults, and lowering come from the existing
+/// `merge` machinery. RECORD overlap is last-writer-wins via the CDZ0211-skip tag (`Record.merge` is
+/// disjoint-only); MAP overlap is natively last-writer-wins (`Map.merge` right-wins) so no tag. The
+/// entry-based analogue of [`lower_list_spread`]/[`lower_set_spread`]/[`lower_tuple_spread`], but records +
+/// maps collapse their entries at resolve (so the raw AST is read here) — hence the delegated node rather
+/// than an in-arm rewrite.
+pub(crate) fn entry_spread_desugar(db: &mut Db, id: StructId) -> Option<StructId> {
+    if let Some(&cached) = db.entry_spread_desugar.get(&id) {
         return Some(cached);
     }
-    let tail: Vec<StructId> = db
+    // The two ENTRY-BASED compounds — a record `#record((= f v) …)` and a map `#map((= k v) …)` — both
+    // collapse their `(= …)` entries at resolve and REJECT a `(.. )` entry there, so their spread is a
+    // memoized `(. <M> merge)` fold read off the raw AST. They differ ONLY in the ctor + module name (both
+    // use the `merge` member): `Record.merge` is DISJOINT-only (so a spread's overlap needs the CDZ0211-skip
+    // tag, DESIGN §6 last-writer-wins), whereas `Map.merge` is NATIVELY last-writer-wins (no tag needed).
+    let (tail, ctor, module, is_record) = if let Some(t) = db
         .ast
-        .compound_form_of(id, crate::ast::CompoundCtor::Record)?
-        .to_vec();
+        .compound_form_of(id, crate::ast::CompoundCtor::Record)
+    {
+        (t.to_vec(), crate::ast::CompoundCtor::Record, "Record", true)
+    } else if let Some(t) = db.ast.compound_form_of(id, crate::ast::CompoundCtor::Map) {
+        (t.to_vec(), crate::ast::CompoundCtor::Map, "Map", false)
+    } else {
+        return None;
+    };
     if !tail.iter().any(|&c| db.ast.spread_operand(c).is_some()) {
         return None;
     }
-    // Segment: consecutive inline FIELD entries (`(= f v)`) coalesce into one run; each `(.. r)` is a spread.
+    // Segment: consecutive inline `(= …)` entries coalesce into one run; each `(.. r)` is a spread.
     enum Seg {
         Inline(Vec<StructId>),
         Spread(StructId),
@@ -3286,27 +3298,30 @@ pub(crate) fn record_spread_desugar(db: &mut Db, id: StructId) -> Option<StructI
     let seg_occs: Vec<StructId> = segs
         .into_iter()
         .map(|seg| match seg {
-            Seg::Inline(run) => db.push_compound(crate::ast::CompoundCtor::Record, run),
+            Seg::Inline(run) => db.push_compound(ctor, run),
             Seg::Spread(operand) => operand,
         })
         .collect();
     let root = match seg_occs.split_first() {
-        None => db.push_compound(crate::ast::CompoundCtor::Record, vec![]),
+        None => db.push_compound(ctor, vec![]),
         Some((&first, rest)) => {
             let mut acc = first;
             for &next in rest {
-                // `Record.merge` is the member `merge` of the `Record` module — reached via member access
-                // `(. Record merge)` (a synthesized flat name would be unbound). Binary + associative over
-                // disjoint field sets; folds left-to-right like the list/set concat/union.
+                // The `merge` member of the `Record`/`Map` module — reached via member access
+                // `(. <module> merge)` (a synthesized flat name would be unbound). Binary + associative;
+                // folds LEFT-to-RIGHT so the rightmost operand wins an overlap (last-writer-wins), exactly
+                // the spread semantics — like the list/set concat/union folds.
                 let dot = db.push_name(".");
-                let rec_mod = db.push_name("Record");
+                let module_name = db.push_name(module);
                 let merge_key = db.push_name("merge");
-                let head = db.push_list(vec![dot, rec_mod, merge_key]);
+                let head = db.push_list(vec![dot, module_name, merge_key]);
                 acc = db.push_list(vec![head, acc, next]);
-                // TAG this merge as spread-synthesized: a construction spread is last-writer-wins on an
-                // overlapping field (DESIGN §6), so the disjointness CDZ0211 the explicit `Record.merge`
-                // enforces is skipped for it (the `Core`/type layers already take the last writer).
-                db.record_spread_merge_nodes.insert(acc);
+                // A RECORD spread is last-writer-wins on an overlapping field (DESIGN §6), so TAG this merge
+                // to skip the disjointness CDZ0211 the explicit `Record.merge` enforces (the `Core`/type
+                // layers already take the last writer). A MAP merge is natively last-writer-wins — no tag.
+                if is_record {
+                    db.record_spread_merge_nodes.insert(acc);
+                }
             }
             acc
         }
@@ -3314,7 +3329,7 @@ pub(crate) fn record_spread_desugar(db: &mut Db, id: StructId) -> Option<StructI
     if root != id && db.parent_of(root).is_none() {
         db.reparent(root, Some(id), db.child_ix_of(id) as u32);
     }
-    db.record_spread_desugar.insert(id, root);
+    db.entry_spread_desugar.insert(id, root);
     Some(root)
 }
 

@@ -51,7 +51,7 @@ pub(super) use match_desugar::*;
 pub(crate) use match_desugar::{sroa_let_wrap, sroa_tuple_scrutinee_candidate};
 
 mod compute;
-pub(crate) use compute::record_spread_desugar;
+pub(crate) use compute::entry_spread_desugar;
 // The core lowering dispatcher lives in `compute`; `core_of` calls it by bare name.
 use compute::compute;
 
