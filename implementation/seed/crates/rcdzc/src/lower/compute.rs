@@ -2209,20 +2209,20 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::ListPrepend) if args.len() == 2 => {
                     lower_list_prepend(db, id, args[0], args[1])
                 }
-                // `ast-splice-lift` — the quasiquote-splice lift `(List a) → (List Ast)`: wrap each element
-                // in the `Ast` leaf its constant kind denotes (Int64→`Ast.Int`, Float64→`Ast.Float`,
-                // Bool→`Ast.Bool`, String→`Ast.Str`). FOLD a constant list literal into a `Core::ListNew`
-                // of leaf `Core::SumNew` nodes (discs read by name). A runtime list operand (no visible
-                // `ListNew`) declines — the runtime map is a later increment. A non-scalar element (a
-                // nested list, a char, a NaN float) declines (a wrong lift would corrupt the value).
+                // `ast-splice-lift` — the quasiquote-splice lift `(List a) → (List Ast)`: lift each element
+                // to its `Ast` node (Int64→`Ast.Int`, Float64→`Ast.Float`, Bool→`Ast.Bool`, String→`Ast.Str`,
+                // a nested list value→`Ast.ListCtor` RECURSIVELY, an already-`Ast` element by identity). FOLD
+                // a constant list literal into a `Core::ListNew` of those nodes (discs read by name). A runtime
+                // list operand (no visible `ListNew`) declines — the runtime map is a later increment. An
+                // element with no reflection (a char, a NaN/Inf float) declines (a wrong lift would corrupt).
                 Some(Prim::AstSpliceLift) if args.len() == 1 => match core_of(db, args[0]) {
                     Core::Poison(r) => Core::Poison(r),
                     Core::ListNew { elems } => match lower_ast_splice_lift(db, id, &elems) {
                         Some(core) => core,
                         None => Core::Poison(Reject::unsupported(
                             "an active `,@` splice needs a compile-time-constant list of scalar \
-                                 (Int64/Float64/Bool/String) or Ast elements (the runtime splice map \
-                                 is not supported)",
+                                 (Int64/Float64/Bool/String), list, or Ast elements (the runtime splice \
+                                 map is not supported)",
                         )),
                     },
                     _ => Core::Poison(Reject::unsupported(

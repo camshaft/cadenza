@@ -1852,9 +1852,10 @@ fn active_unquote_splicing_flattens_a_list() {
         .is_none(),
         "an active splice of a constant list of Ast values splices the fragments by identity"
     );
-    // A NESTED-list element has no scalar value leaf this increment, so the splice DECLINES (a Todo, the
-    // runtime splice map is unbuilt) rather than mis-lifting — reject-don't-miscompile. It is not a
-    // CDZ0201 non-list error (the operand IS a list); it simply cannot fold yet.
+    // A NESTED-list element now lifts RECURSIVELY to its dedicated `Ast.ListCtor` (each inner element
+    // lifted the same way), so the splice FOLDS reject-free — the recursive companion of
+    // quote-of-collections. It is not a CDZ0201 non-list error (the operand IS a list), and no longer a
+    // decline; the corpus pins the folded value (`Ast.ListCtor` children).
     assert_eq!(
         reject_code(
             "(module m (def (main) \
@@ -1863,7 +1864,7 @@ fn active_unquote_splicing_flattens_a_list() {
         )
         .as_deref(),
         None,
-        "splicing a list of nested lists declines (Ast unbuilt), it is not a CDZ0201 non-list error"
+        "splicing a list of nested lists folds (each list element lifts to Ast.ListCtor), not a CDZ0201"
     );
     // The operand of `,@` MUST be a list: `provably_not_list` types (an Int64 literal or a let-bound
     // Int64) have no elements to splice → CDZ0201, matching the pre-desugar reject. The message is the

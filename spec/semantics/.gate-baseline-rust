@@ -8925,7 +8925,7 @@ todo	two compound arguments each cross as their own handle in one peer call
 todo	two effects bound to the same interface share one peer instance (both ops run)
 todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
 todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
-todo	unquote-splicing a list of nested lists lifts each list element into an Ast.ListCtor
+pass	unquote-splicing a list of nested lists lifts each list element into an Ast.ListCtor
 todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
