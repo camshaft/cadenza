@@ -1260,18 +1260,21 @@ pub fn select_function_of(
         // DEDICATED set (not `dup_sites`) — the emit's `Core::Captured` arm gates on it. Empty for a body with
         // no escaping single-read compound capture (every non-closure body, and borrow-only captures).
         collect_captured_escape_dup_sites(db, body, &mut code.captured_escape_dup_sites);
-        // 05:18721: mark the SURPLUS-skippable dup occurrences (the narrowed replacement for the too-broad
-        // `body_is_boundary_owned`-alone emit gate). ONLY in a boundary-owned body, and ONLY the dup_sites
-        // occurrences of a rest-mint-consumed MatchList scrutinee with NO other consume — see the helper +
-        // `Emit::surplus_skippable_dups`. Empty otherwise (fast path untouched).
-        if is_boundary_owned {
-            collect_surplus_skippable_dups(
-                db,
-                body,
-                &code.dup_sites,
-                &mut code.surplus_skippable_dups,
-            );
-        }
+        // 05:18721 SURPLUS GATE — DISABLED (regression fix, bisect #7255): the surplus analysis is UNSOUND
+        // for a recursive rest-pattern list-equality (`match xs { [x, .. xr] => … a-eq(x, y) … lst-eq(xr, yr) }`,
+        // e.g. choreography `a-list-eq`/`a-eq`, NOT in the `--guarded-all` corpus). There the head `x` is a
+        // `vec-get` BORROW aliasing the scrutinee's storage and is used (in `a-eq(x, y)`) AFTER the RestFrom
+        // `vec-drop` consumes the scrutinee; so the scrutinee keep-alive is LOAD-BEARING for that borrowed
+        // co-element — but conjunct 2 (`count_param_consumes(b, count_restfrom=false) == 0`) misses it because
+        // the element read is a BORROW, not a consume. Skipping the keep-alive frees the scrutinee under the
+        // still-live element borrow → the later read hits a freed cell → a wrong sum-disc → a `wasm unreachable`
+        // trap (`cdz test choreography` gen-is-deterministic; bisect isolated it to THIS gate: gate-ON traps,
+        // gate-OFF passes). Leaving `surplus_skippable_dups` EMPTY restores the pre-gate emit_binder_ref
+        // (identical to the caller-drop-ALONE state v-memory-safety proved corpus-clean at `--guarded-all`
+        // 0-UAF); 05:18721 reverts to its known-leak baseline (its pin was never flipped → no corpus
+        // regression). RE-ENABLE only with a sound narrowing that ALSO excludes a scrutinee whose borrowed
+        // `vec-get` co-element outlives the RestFrom rest-mint — co-design with v-memory-safety (surplus
+        // soundness) + verify on the choreography suite, not just the corpus.
     }
     // (2) rope/slice-view: partition the SumExpect-extracted single-view Somes (String.at/Bytes.slice) into
     // the VIEW set (scalar-read-dead single consumer → we dup+shell-drop+view-drop, net -1) and the SHELL set
@@ -3949,6 +3952,11 @@ fn count_param_consumes(
 /// not model); conjunct 2 EXCLUDES a rest scrutinee ALSO consumed by push/insert/escape/self-call (retain is
 /// the SOLE balancer) — together the UAF classes the broad gate hit. Caller gates on `is_boundary_owned`.
 /// `dup_sites` occurrences are `LocalRef`/`Param` nodes, so an occurrence's binder is read via `core_of`.
+// DISABLED pending a sound narrowing (see the call site in `select_function_of`, bisect #7255): the
+// surplus analysis miscompiles a recursive rest-pattern list-equality (a borrowed `vec-get` co-element
+// outliving the RestFrom rest-mint). Kept in-tree (not deleted) so the sound re-enable is a one-line
+// call restore + the borrowed-co-element exclusion, co-designed with v-memory-safety.
+#[allow(dead_code)]
 fn collect_surplus_skippable_dups(
     db: &mut Db,
     body: StructId,
