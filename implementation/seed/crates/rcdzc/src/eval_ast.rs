@@ -353,7 +353,7 @@ fn binder_of_param(ast: &Arenas, slot: StructId) -> StructId {
 /// An empty `Ast.List` (a compound with no operator — malformed AST) reconstructs to `(trap "malformed
 /// AST")`: eval of a malformed AST is a runtime halt (`metaprogramming.md` §Eval Is Optional: "eval on
 /// malformed AST traps"), not a value.
-fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+pub(crate) fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     // `(Ast.Int payload)` -> the payload AS SOURCE. `Ast.Int` arises two ways, both reconstructing to the
     // payload node itself: (a) a reified INTEGER LITERAL `(Ast.Int 42)` — payload is the literal `42`, whose
     // source is `42`; (b) an ACTIVE-UNQUOTE lift `(Ast.Int <e>)` where `reify_active` wrapped the unquote's
