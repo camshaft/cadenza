@@ -182,11 +182,18 @@ fn grade_case(cdz: &Path, case: &Path) -> (Verdict, String) {
 
     // Canonical format: `cdz fmt --stdout <input>` (surface inferred from the extension) vs
     // format.<ext>-or-input.
-    let fmt = match Command::new(cdz)
-        .args(["fmt", "--stdout"])
-        .arg(&input)
-        .output()
-    {
+    // A `width` file (a single integer) pins a WIDTH-SPECIFIC layout golden — mirror the in-process
+    // harness by passing `--width N` so the shelled `cdz fmt` breaks at the same width the golden was
+    // blessed at. Absent → cdz's default width (100 = DEFAULT_WIDTH), same as the in-process default.
+    let mut fmt_cmd = Command::new(cdz);
+    fmt_cmd.args(["fmt", "--stdout"]);
+    if let Ok(w) = std::fs::read_to_string(case.join("width")) {
+        let w = w.trim();
+        if !w.is_empty() {
+            fmt_cmd.args(["--width", w]);
+        }
+    }
+    let fmt = match fmt_cmd.arg(&input).output() {
         Ok(o) => o,
         Err(e) => return (Verdict::Fail, format!("running cdz fmt: {e}")),
     };

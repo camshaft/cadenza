@@ -65,15 +65,39 @@ fn spans_golden(parsed: &crate::parser::Parsed, src: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// `fmt(input)` for `surface` — read then re-print in the SAME surface, with the trailing-newline
-/// convention `run_fmt` uses (append one `\n` if the printer emitted none). This is the exact
-/// canonical-format oracle `cdz fmt` compares against (cli.rs `run_fmt`).
-fn fmt_bytes(input: &[u8], surface: Format) -> Result<Vec<u8>, convert::ConvertError> {
-    let mut b = convert::convert_with(input, surface, surface, Options::default())?;
+/// `fmt(input)` for `surface` at target `width` — read then re-print in the SAME surface, with the
+/// trailing-newline convention `run_fmt` uses (append one `\n` if the printer emitted none). This is the
+/// exact canonical-format oracle `cdz fmt [--width N]` compares against (cli.rs `run_fmt`). Most cases use
+/// the DEFAULT width (100); a case that pins a WIDTH-SPECIFIC layout carries a `width` file the grader
+/// mirrors via `cdz fmt --width N`.
+fn fmt_bytes(
+    input: &[u8],
+    surface: Format,
+    width: usize,
+) -> Result<Vec<u8>, convert::ConvertError> {
+    let mut b = convert::convert_with(
+        input,
+        surface,
+        surface,
+        Options {
+            width,
+            ..Options::default()
+        },
+    )?;
     if b.last() != Some(&b'\n') {
         b.push(b'\n');
     }
     Ok(b)
+}
+
+/// The target width for a case: the optional `width` file (a single integer, for width-specific layout
+/// goldens) else the DEFAULT width. The `width` file is the harness-extension that lets the corpus pin a
+/// break-at-a-narrow-width fmt layout the default width would not trigger.
+fn case_width(case: &Path) -> usize {
+    std::fs::read_to_string(case.join("width"))
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(Options::default().width)
 }
 
 /// The single `input.*` file in a case directory (there is exactly one), with its inferred surface.
@@ -273,7 +297,7 @@ fn syntax_corpus_goldens_are_self_consistent() {
 
         // format.<ext> (or input-is-canonical). The format golden is in the input's own surface.
         let format_path = case.join(format!("format.{ext}"));
-        let formatted = match fmt_bytes(&input, surface) {
+        let formatted = match fmt_bytes(&input, surface, case_width(case)) {
             Ok(b) => b,
             Err(e) => {
                 failures.push(format!("{label}: fmt failed ({e})"));
