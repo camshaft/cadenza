@@ -6631,6 +6631,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
                 "type-ast-generic"
             }
         }
+        Prim::TryAsType => "type-try-as",
         Prim::SetCtor => "Set",
         Prim::SetOf => "set-of",
         Prim::MapToList => "map-to-list",

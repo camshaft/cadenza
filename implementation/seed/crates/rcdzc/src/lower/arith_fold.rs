@@ -4217,6 +4217,8 @@ pub(super) fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::TypeEq
         // `Type.ast`/`Type.ast-generic` fold to an `Ast` VALUE (type→AST reflection), never an integer op.
         | Prim::TypeAst { .. }
+        // `Type.try-as` folds to an `(Option b)` VALUE (Some/None), never an integer op.
+        | Prim::TryAsType
         // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
         | Prim::Trap
         // `print`/`read` are the AST-value text printer/reader (`Ast → String` / `String → Ast`), folded

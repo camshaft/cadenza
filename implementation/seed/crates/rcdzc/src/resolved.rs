@@ -859,6 +859,14 @@ pub enum Prim {
     TypeAst {
         instantiated: bool,
     },
+    /// `Type.try-as x` — the compile-time "view this value at the EXPECTED type" op: `∀a b. a → (Option
+    /// b)`, where the target `b` is INFERRED from usage (the expected `(Option b)` context; ascribe to
+    /// force it). Folds at lower time: `Some x` iff `x`'s inferred type STRUCTURALLY equals `b` (the same
+    /// strict equality as `Type.eq` — no subtype widening), else `None`. Because `b` is fixed by inference
+    /// and `x`'s type is static, this ALWAYS folds to a definite `Some`/`None` — no runtime type tag, no
+    /// runtime branch. A target `b` left a free type variable (not inferrable) is a compile-time decline
+    /// asking for an annotation. On the `Type` module (`DESIGN-variable-arity-functions.md` §5).
+    TryAsType,
     /// A SET TYPE CONSTRUCTOR — the `(meta apply)` of the `Set` prelude module. `(Set Int64)` in type
     /// position builds `Ty::Set(elem)` (ONE parameter, like `List`). The set analogue of `ListCtor`.
     SetCtor,
@@ -1044,6 +1052,7 @@ impl Prim {
             "type-ast-generic" => Some(Prim::TypeAst {
                 instantiated: false,
             }),
+            "type-try-as" => Some(Prim::TryAsType),
             "Set" => Some(Prim::SetCtor),
             "set-of" => Some(Prim::SetOf),
             "set-to-list" => Some(Prim::SetToList),

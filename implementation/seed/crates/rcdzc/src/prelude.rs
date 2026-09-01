@@ -1971,7 +1971,39 @@ fn type_module(ast: &mut Arenas) -> StructId {
         let eqh = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eqh, ast_generic_field, ast_generic_op])
     };
-    push_list(ast, vec![head, of, eq, ast_gen, ast_generic])
+    // `try-as` (`(meta apply) = TryAsType`) — the compile-time "view this value at the EXPECTED type":
+    // `∀a b. a → (Option b)`, `b` inferred from usage (ascribe to force). Folds to `Some x` iff `x`'s type
+    // structurally equals `b` (strict, like `Type.eq`), else `None`. Unlike `of`/`eq`/`ast` (fixed result
+    // types, typed by the `infer::apply_type` special arms), `try-as` carries a REAL `(meta t)` scheme so
+    // the free `b` flows from the surrounding `(Option b)` context via ordinary HM — hence `list_op_record`
+    // (scheme + intrinsic) not the scheme-less `ctor_record`. `DESIGN-variable-arity-functions.md` §5.
+    let try_as_field = push_atom(ast, Leaf::Name("try-as".into()));
+    let try_as_scheme = type_try_as_type_lambda(ast);
+    let try_as_op = list_op_record(ast, "type-try-as", try_as_scheme);
+    let try_as = {
+        let eqh = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eqh, try_as_field, try_as_op])
+    };
+    push_list(ast, vec![head, of, eq, ast_gen, ast_generic, try_as])
+}
+
+/// The type-lambda `(fn (a b) (-> a (Option b)))` for `Type.try-as` — `∀a b. a → (Option b)`: the value
+/// (any type `a`) and the fallible view at the target type `b`. `a` and `b` are INDEPENDENT — `a` unifies
+/// with the argument's type, `b` with the expected `(Option b)` context — so the fold compares the two.
+/// `(Option b)` reduces via the built-in `Option` sum ctor, exactly as `Map.lookup`'s `(Option v)` does.
+fn type_try_as_type_lambda(ast: &mut Arenas) -> StructId {
+    let option_b = {
+        let option = push_atom(ast, Leaf::Name("Option".into()));
+        let b = push_atom(ast, Leaf::Name("b".into()));
+        push_list(ast, vec![option, b])
+    };
+    let a = push_atom(ast, Leaf::Name("a".into()));
+    let body = arrow_type(ast, a, option_b); // (-> a (Option b))
+    let pa = push_atom(ast, Leaf::Name("a".into()));
+    let pb = push_atom(ast, Leaf::Name("b".into()));
+    let params = push_list(ast, vec![pa, pb]);
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    push_list(ast, vec![fn_head, params, body]) // (fn (a b) (-> a (Option b)))
 }
 
 /// The type `(fn () (-> Char Int64))` for `Char.to-int` — the total scalar-value read. A ZERO-PARAM `fn`

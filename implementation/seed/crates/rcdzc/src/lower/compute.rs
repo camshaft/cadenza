@@ -2163,6 +2163,13 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, instantiated, "apply: Type.ast type→AST reflection");
                     lower_type_ast(db, args[0], instantiated)
                 }
+                // `Type.try-as x` — compile-time "view x at the EXPECTED type". FOLDS to `Some x` iff x's
+                // inferred type STRUCTURALLY equals the target `b` (strict, like `Type.eq`), else `None`.
+                // The target `b` is read off THIS node's solved `(Option b)` result type (inferred from
+                // usage / an ascription); a still-free `b` declines asking for an annotation. Because b is
+                // fixed by inference and x's type is static, this is decided at compile time — no runtime
+                // type tag. (`DESIGN-variable-arity-functions.md` §5.)
+                Some(Prim::TryAsType) if args.len() == 1 => lower_type_try_as(db, id, args[0]),
                 // `Unit.in target q` — EXPLICIT conversion. Convert q's erased magnitude from its unit to
                 // the TARGET by `value * (q.scale / target.scale)` in the inner type T (a no-op when the
                 // units are already equal). Folds the constant case; a runtime operand declines.
