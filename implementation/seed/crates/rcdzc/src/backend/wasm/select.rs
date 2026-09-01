@@ -1288,21 +1288,18 @@ pub fn select_function_of(
         // DEDICATED set (not `dup_sites`) — the emit's `Core::Captured` arm gates on it. Empty for a body with
         // no escaping single-read compound capture (every non-closure body, and borrow-only captures).
         collect_captured_escape_dup_sites(db, body, &mut code.captured_escape_dup_sites);
-        // 05:18721 SURPLUS GATE — DISABLED (regression fix, bisect #7255): the surplus analysis is UNSOUND
-        // for a recursive rest-pattern list-equality (`match xs { [x, .. xr] => … a-eq(x, y) … lst-eq(xr, yr) }`,
-        // e.g. choreography `a-list-eq`/`a-eq`, NOT in the `--guarded-all` corpus). There the head `x` is a
-        // `vec-get` BORROW aliasing the scrutinee's storage and is used (in `a-eq(x, y)`) AFTER the RestFrom
-        // `vec-drop` consumes the scrutinee; so the scrutinee keep-alive is LOAD-BEARING for that borrowed
-        // co-element — but conjunct 2 (`count_param_consumes(b, count_restfrom=false) == 0`) misses it because
-        // the element read is a BORROW, not a consume. Skipping the keep-alive frees the scrutinee under the
-        // still-live element borrow → the later read hits a freed cell → a wrong sum-disc → a `wasm unreachable`
-        // trap (`cdz test choreography` gen-is-deterministic; bisect isolated it to THIS gate: gate-ON traps,
-        // gate-OFF passes). Leaving `surplus_skippable_dups` EMPTY restores the pre-gate emit_binder_ref
-        // (identical to the caller-drop-ALONE state v-memory-safety proved corpus-clean at `--guarded-all`
-        // 0-UAF); 05:18721 reverts to its known-leak baseline (its pin was never flipped → no corpus
-        // regression). RE-ENABLE only with a sound narrowing that ALSO excludes a scrutinee whose borrowed
-        // `vec-get` co-element outlives the RestFrom rest-mint — co-design with v-memory-safety (surplus
-        // soundness) + verify on the choreography suite, not just the corpus.
+        // 05:18721 SURPLUS GATE — RE-ENABLED with the sound conjunct-3 (bisect #7255/#7321): mark the
+        // SURPLUS-skippable dup occurrences ONLY in a boundary-owned body, and ONLY a rest-mint-consumed
+        // MatchList scrutinee with (2) no other consume AND (3) no heap-leading-element-read-alongside-a-
+        // rest-read (the emit-ordering dangle the too-broad prior gate hit — see conjunct 3 in the helper).
+        if is_boundary_owned {
+            collect_surplus_skippable_dups(
+                db,
+                body,
+                &code.dup_sites,
+                &mut code.surplus_skippable_dups,
+            );
+        }
     }
     // (2) rope/slice-view: partition the SumExpect-extracted single-view Somes (String.at/Bytes.slice) into
     // the VIEW set (scalar-read-dead single consumer → we dup+shell-drop+view-drop, net -1) and the SHELL set
@@ -3998,11 +3995,6 @@ fn count_param_consumes(
 /// not model); conjunct 2 EXCLUDES a rest scrutinee ALSO consumed by push/insert/escape/self-call (retain is
 /// the SOLE balancer) — together the UAF classes the broad gate hit. Caller gates on `is_boundary_owned`.
 /// `dup_sites` occurrences are `LocalRef`/`Param` nodes, so an occurrence's binder is read via `core_of`.
-// DISABLED pending a sound narrowing (see the call site in `select_function_of`, bisect #7255): the
-// surplus analysis miscompiles a recursive rest-pattern list-equality (a borrowed `vec-get` co-element
-// outliving the RestFrom rest-mint). Kept in-tree (not deleted) so the sound re-enable is a one-line
-// call restore + the borrowed-co-element exclusion, co-designed with v-memory-safety.
-#[allow(dead_code)]
 fn collect_surplus_skippable_dups(
     db: &mut Db,
     body: StructId,
@@ -4051,6 +4043,61 @@ fn collect_surplus_skippable_dups(
         if nonrest == 0 {
             surplus_binders.insert(b);
         }
+    }
+    if surplus_binders.is_empty() {
+        return;
+    }
+    // (3) EMIT-ORDERING SOUNDNESS (bisect #7255 / #7321; co-designed + measured with v-memory-safety):
+    // a heap LEADING-element borrow only dangles if the scrutinee is FREED mid-body — which happens IFF
+    // the REST is minted. A `RestFrom` read lowers to `vec-split`, and vec-split DROPS the leading (left)
+    // elements 0..k-1, freeing their cells; a heap leading-element read (a BORROW aliasing element k's
+    // cell) then dangles. A DEAD rest (no `RestFrom` read → no vec-split → measured: no `vec-drop` import,
+    // e.g. 05:18721's `r`) never frees the scrutinee, so a heap leading-element cannot dangle. So EXCLUDE a
+    // rest-scrutinee `b` from surplus if the body reads BOTH (a) a HEAP-typed leading element (a
+    // `SumPayload` rooted at `b`, first path step `Elem(_)`) AND (b) the rest (a `SumPayload` rooted at `b`,
+    // first path step `RestFrom`). SOUND-CONSERVATIVE: it also excludes a heap-leading read that happens
+    // BEFORE the split (forgoes the opt, never a UAF). Keeps 05:18721 surplus (heap-leading YES, rest-read
+    // NO — `r` dead → the leak-fix is preserved); excludes the choreography `a-list-eq` shape (`x` heap +
+    // `xr` rest → the co-element dangle #7255 hit). v-mem --guarded-all-verified; v-wasm-opt choreography-verified.
+    fn scan_scrutinee_reads(
+        db: &mut Db,
+        id: StructId,
+        b: StructId,
+        heap_leading: &mut bool,
+        rest_read: &mut bool,
+        seen: &mut HashSet<StructId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        if let Core::SumPayload { scrutinee, path } = core_of(db, id)
+            && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if binder == b)
+        {
+            match path.first() {
+                Some(crate::core::PathStep::Elem(_)) => {
+                    if is_heap_type(&crate::infer::type_of(db, id)) {
+                        *heap_leading = true;
+                    }
+                }
+                Some(crate::core::PathStep::RestFrom(_)) => *rest_read = true,
+                _ => {}
+            }
+        }
+        for c in core_child_ids(db, id) {
+            scan_scrutinee_reads(db, c, b, heap_leading, rest_read, seen);
+        }
+    }
+    let mut exclude: HashSet<StructId> = HashSet::new();
+    for &b in surplus_binders.iter() {
+        let (mut heap_leading, mut rest_read) = (false, false);
+        let mut s = HashSet::new();
+        scan_scrutinee_reads(db, body, b, &mut heap_leading, &mut rest_read, &mut s);
+        if heap_leading && rest_read {
+            exclude.insert(b);
+        }
+    }
+    for b in exclude {
+        surplus_binders.remove(&b);
     }
     if surplus_binders.is_empty() {
         return;
