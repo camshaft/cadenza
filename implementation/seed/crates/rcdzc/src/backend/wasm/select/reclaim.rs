@@ -3642,10 +3642,13 @@ pub(super) fn def_inc1_reclaims_param(db: &mut Db, body: StructId, param_binder:
             && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if binder == pb)
         {
             let scrut_ty = type_of(db, scrutinee);
-            // SCALAR path only (must MATCH the emit's current param_reclaim — the compound disjunct is
-            // bisected OFF; re-enable BOTH together). `top_body` unused while compound is off.
-            let _ = top_body;
-            if super::nontail_param_payload_ok(db, scrutinee, &scrut_ty, false, &root) {
+            // SINGLE-SOURCE (v-core-opt extract-share): the SAME occurrence-level predicate the emit's
+            // param_reclaim uses — so the caller-drop YIELD reclaims iff the callee's emit reclaims (exactly
+            // complementary). Scalar-only while the compound arm is bisected OFF (behavior-identical to the
+            // prior `nontail_param_payload_ok`). never_diverges FALSE (over-yield → leak, never double-free).
+            if super::nontail_param_reclaim_kind(db, top_body, scrutinee, &scrut_ty, false, &root)
+                .is_some()
+            {
                 return true;
             }
         }
