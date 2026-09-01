@@ -3034,8 +3034,11 @@ fn emit_match_sum(
         // The number of positional slots to bind, and the surface CTOR HEAD (`Some` = a single-variant sum
         // ctor `(Ctor …)`; `None` = a native `#tuple(…)`). `None` for a non-destructurable shape (multi-variant
         // sum / record / scalar) → fall through to the normal dispatch/decline.
-        let plan: Option<(usize, Option<StructId>)> = match &sty {
-            Ty::Tuple(ts) if !ts.is_empty() => Some((ts.len(), None)),
+        // `(n_slots, ctor_head, wrap_tuple)`: how many positional binders the body reads at `[Elem(i)]`, the
+        // surface CTOR head (`Some` = single-variant sum `(Ctor …)`; `None` = native `#tuple(…)`), and whether
+        // to WRAP the binders in a `#tuple(…)` inside the ctor. `None` plan → fall through to dispatch/decline.
+        let plan: Option<(usize, Option<StructId>, bool)> = match &sty {
+            Ty::Tuple(ts) if !ts.is_empty() => Some((ts.len(), None, false)),
             Ty::Sum { decl, .. } | Ty::Nominal { decl, .. }
                 if db
                     .type_decl_by_occ(*decl)
@@ -3047,14 +3050,25 @@ fn emit_match_sum(
                     .and_then(|t| t.variants.first())
                     .map(|v| v.payloads.len())
                     .unwrap_or(0);
-                match (arity, crate::lower::variant_head_ast(db, b, decl, 0)) {
-                    (0, _) | (_, None) => None,
-                    (n, Some(head)) => Some((n, Some(head))),
+                match crate::lower::variant_head_ast(db, b, decl, 0) {
+                    None => None,
+                    // A SINGLE-payload ctor whose sole payload is a TUPLE is an erased newtype OVER a tuple: the
+                    // erased value IS that tuple, so the body reads its FIELDS at `[Elem(i)]` (not the whole
+                    // payload). Destructure it — bind the tuple's arity and emit `(Ctor #tuple(b0 … bn))` — so a
+                    // field read `[Elem(i)]` resolves to `bi` (breaker cd1/cd2: a `(Mk #tuple(ys m))` arm whose
+                    // body reads `ys`/`m` — binding only the whole payload dropped the field projection → CDZ0203).
+                    Some(head) if arity == 1 => match sum_payload_expected(db, decl, 0, &sty) {
+                        Some(Ty::Tuple(ts)) if !ts.is_empty() => Some((ts.len(), Some(head), true)),
+                        _ => Some((1, Some(head), false)),
+                    },
+                    // A MULTI-payload ctor: the erased value is a tuple of the payloads; `[Elem(i)]` = payload i.
+                    Some(head) if arity > 1 => Some((arity, Some(head), false)),
+                    Some(_) => None, // nullary — nothing to destructure
                 }
             }
             _ => None,
         };
-        if let Some((n_slots, ctor_head)) = plan {
+        if let Some((n_slots, ctor_head, wrap_tuple)) = plan {
             let match_head = b.name("match");
             let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
             let mut binders = Vec::with_capacity(n_slots);
@@ -3065,14 +3079,19 @@ fn emit_match_sum(
                     .insert((scrutinee, vec![PathStep::Elem(i)]), nm.clone());
                 binders.push(b.name(nm));
             }
-            // `(Ctor b0 b1 …)` for a single-variant sum, else the native `#tuple(b0 b1 …)`.
-            let pat = match ctor_head {
-                Some(head) => {
+            // `(Ctor #tuple(b…))` for an erased newtype OVER a tuple; `(Ctor b…)` for a plain single/multi-payload
+            // ctor; native `#tuple(b…)` for a bare tuple scrutinee.
+            let pat = match (ctor_head, wrap_tuple) {
+                (Some(head), true) => {
+                    let tup = b.compound(crate::ast::CompoundCtor::Tuple, &binders);
+                    b.list(vec![head, tup])
+                }
+                (Some(head), false) => {
                     let mut children = vec![head];
                     children.extend(binders);
                     b.list(children)
                 }
-                None => b.compound(crate::ast::CompoundCtor::Tuple, &binders),
+                (None, _) => b.compound(crate::ast::CompoundCtor::Tuple, &binders),
             };
             let body_node = emit_expr(db, b, *body, expected.clone(), env, emitted)?;
             let arm = b.list(vec![pat, body_node]);
