@@ -962,6 +962,18 @@ fn emit_expr_viewed(
                 Ty::Int(it) => *it,
                 _ => unreachable!("guarded Ty::Int"),
             };
+            // If the type says SIGNED but the value OVERFLOWS the signed range at this width (`to_i64` None at
+            // width 64), the inference was IMPRECISE — the only fixed type that holds an over-signed-range value
+            // is the UNSIGNED one at that width (a value beyond `u64` would have grounded to `BigInt`, not
+            // `Int64`; a wider signed type would have grounded `eff_ty` wider). So ascribe UNSIGNED: a
+            // `(& x <hugelit>)` operand whose own type solved to the default signed `Int64` but whose value is
+            // `> i64::MAX` re-emits `(: <hugelit> UInt64)`, matching the `UInt64` the `&`/context requires
+            // (fixes CDZ0301 "argument is Int64, but UInt64 expected" — breaker's UInt64-from-context).
+            let it = if it.ground_signed() && v.to_i64().is_none() {
+                crate::ty::IntTy::fixed(false, it.ground_width())
+            } else {
+                it
+            };
             let colon = b.name(":");
             let n = b.atom_leaf(Leaf::Int {
                 value: v,
