@@ -1096,13 +1096,20 @@ pub enum Core {
     //# A trap MUST halt the program at a defined point rather than continue with an unspecified value.
     Trap,
     /// EFFECT NON-LOCAL EXIT (v-effects). An ABORTIVE handler arm (no resume) whose perform is at a
-    /// NON-TAIL position makes its `value` the WHOLE handle's result while ABANDONING every pending frame
-    /// between the perform and the handle — inexpressible as a plain return (that flows the value up through
-    /// the pending frames). Emitted by the fold; lowered as a non-local branch to the reduced handle's OUTER
-    /// labeled block carrying `value` (already the handle-result type — the E4 abortive type-consistency
-    /// check guarantees it). Like `Trap`, the stack is POLYMORPHIC after the branch (validates in any result
-    /// position). `handle_id` = the reduced handle's original handle-node occurrence (the emit keys its
-    /// handle->abort-block-depth stack on it so a nested handle's abort resolves to the right block).
+    /// NON-TAIL position makes its `value` the WHOLE handle's result while ABANDONING the pending continuation
+    /// between the perform and the handle — inexpressible as a plain tail value (that flows up through the
+    /// pending frames). CONTRACT (CASE 1): the fold emits `HandleAbort` ONLY when the reduced handle is the
+    /// WHOLE enclosing-function body, so handle-result == function-result. The wasm backend then lowers it as
+    /// `emit(value); <wasm return>` — a bare `return` pops the abort `value` as the function result, which IS
+    /// the handle result, correctly abandoning the loop/continuation regardless of the block nesting the abort
+    /// sits in (a wasm `return` unwinds every enclosing block). `value` is already the handle-result type (the
+    /// E4 abortive type-consistency check guarantees it); like `Trap`, the stack is POLYMORPHIC after the
+    /// return (validates in any result position). A MID-function handle (post-handle code in the same function,
+    /// e.g. `(+ 1 (handle …))`) or a NON-TAIL cross-recursive-frame abort is NOT emitted this way — the fold
+    /// DECLINES it (see the abortive non-tail-recursion guard in `effects/mod.rs`) until a later vertical
+    /// builds the general mechanism (a labeled abort-block + `br`, or a tagged-return convention for the
+    /// cross-frame case). `handle_id` = the reduced handle's original handle-node occurrence, kept for that
+    /// future general/nested case (to key an abort-block stack); UNUSED by the CASE-1 return emit.
     HandleAbort {
         value: StructId,
         handle_id: StructId,

@@ -3170,12 +3170,13 @@ pub(super) fn emit(
             out.push(Lir::Unreachable);
             Ok(())
         }
-        // EFFECT NON-LOCAL EXIT — BASELINE PLACEHOLDER (v-wasm-opt fills the real emit: wrap the reduced
-        // handle body in an outer labeled Block(result=handle-ty) and emit `Lir::Br(abort_depth)` carrying
-        // `value`). The fold does not yet PRODUCE `HandleAbort`, so this arm is unreachable in the baseline;
-        // decline gracefully rather than `unreachable!()` so an unexpected route declines instead of panicking.
+        // EFFECT NON-LOCAL EXIT — BASELINE PLACEHOLDER (v-wasm-opt fills the CASE-1 emit: `emit(value)` then a
+        // bare wasm `return`, since the fold only produces `HandleAbort` when the reduced handle is the whole
+        // function body so the function result IS the handle result — see the `Core::HandleAbort` doc). The
+        // fold does not yet PRODUCE `HandleAbort`, so this arm is unreachable in the baseline; decline
+        // gracefully rather than `unreachable!()` so an unexpected route declines instead of panicking.
         Core::HandleAbort { .. } => Err(Reject::decline(
-            "HandleAbort emit (outer-block + non-local br) is not yet wired in the wasm backend",
+            "HandleAbort emit (emit value + wasm return) is not yet wired in the wasm backend",
         )),
         // A KIND-PRESERVING divide-by-zero trap (demoted from a const `(/ 1 0)` in a conditional branch —
         // `lower::demote_conditional_trap`). Emit a guaranteed-trapping division so the runtime surfaces its
