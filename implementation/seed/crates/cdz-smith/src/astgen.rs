@@ -369,7 +369,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(30) {
+    match c.variant(31) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -458,6 +458,11 @@ fn gen_main_body<C: Choice>(
         // count) or List.at (→ element) — collection ops that BUILD a list, which the grammar never
         // reached (it only read existing lists via at/concat/len). Value-comparable.
         29 => gen_list_producing_op_body(c, out),
+        // An EFFECT body: a stateful handler threads an Int64 state and RESUMES with a computed value; the
+        // body performs the op twice. Deterministic Int64 result → the wasm-vs-rust diff grades effect
+        // SEMANTICS (perform / handle / resume / state-fold), a family the value-diff never reached (effects
+        // were crash-checked only, via the text generator). Value-comparable.
+        30 => gen_effect_body(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -563,6 +568,34 @@ fn gen_collection_op_body<C: Choice>(c: &mut C, out: &mut String) {
         )
         .ok(),
     };
+}
+
+/// An EFFECT body: `(do (effect E (op o (-> Int64 Int64))) (handle E <s0> ((o (p) s (resume <rv> <ns>)))
+/// (+ (E.o <a>) (E.o <b>))))` — a stateful, single-op handler that RESUMES with a computed value and
+/// threads an Int64 state; the handled body PERFORMS the op twice. This grades effect SEMANTICS (perform /
+/// handle / tail-resume / state-fold) for VALUE correctness (wasm-vs-rust) — a family the coercing grammar
+/// never emitted (effects were crash-checked only, via the text generator). Self-contained fixed names
+/// (E/o/p/s); the resume-value / new-state expressions read the in-scope Int64 params `s`/`p` or a small
+/// literal, and every combination stays Int64→Int64 so it type-checks. All literals are `0..=9`, so the
+/// state threaded across the two performs (each op resumes exactly once → the fold is bounded and always
+/// terminates) cannot overflow. The result is a deterministic Int64 the wasm-vs-rust diff grades.
+fn gen_effect_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Draw the FORM choices BEFORE the operand literals — else a short entropy seed exhausts the cursor on
+    // the int_bounded draws and `variant` always defaults to 0 (never reaching the bare param resume-value
+    // forms). Same trap as gen_list_producing_op_body.
+    // resume-value and new-state expressions over the in-scope Int64 params `s` (state) and `p` (perform
+    // arg). Each is Int64→Int64, so any pairing type-checks; small ops keep the twice-threaded state small.
+    let rv = ["(+ s p)", "(+ p 1)", "s", "p"][c.variant(4)];
+    let ns = ["(+ s p)", "(+ s 1)", "s", "p"][c.variant(4)];
+    let s0 = c.int_bounded(0, 9);
+    let a = c.int_bounded(0, 9);
+    let b = c.int_bounded(0, 9);
+    write!(
+        out,
+        "(do (effect E (op o (-> Int64 Int64))) \
+         (handle E {s0} ((o (p) s (resume {rv} {ns}))) (+ (E.o {a}) (E.o {b}))))"
+    )
+    .ok();
 }
 
 /// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
@@ -2735,6 +2768,46 @@ mod tests {
         assert!(saw_intersection, "should reach Set.intersection");
         assert!(saw_difference, "should reach Set.difference");
         assert!(saw_merge, "should reach Map.merge");
+    }
+
+    /// `gen_effect_body` emits a well-formed value-comparable EFFECT program (effect decl + stateful
+    /// handler + tail-resume + twice-performed op) and every body COMPILES — the effect-SEMANTICS
+    /// value-coverage the coercing grammar never reached (effects were crash-checked only). Also asserts
+    /// the resume-value form spread reaches both the state-folding `(+ s p)` and a bare param/literal.
+    #[test]
+    fn gen_effect_body_is_well_formed_and_compiles() {
+        let (mut saw_handle, mut saw_resume, mut saw_statefold, mut saw_bare) =
+            (false, false, false, false);
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1481);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_effect_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_handle |= body.contains("(handle E");
+            saw_resume |= body.contains("(resume ");
+            saw_statefold |= body.contains("(resume (+ s p)");
+            saw_bare |= body.contains("(resume s ") || body.contains("(resume p ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "effect body must COMPILE: {src}"
+            );
+        }
+        assert!(saw_handle, "effect body should emit a (handle E …)");
+        assert!(saw_resume, "effect body should emit a (resume …)");
+        assert!(
+            saw_statefold,
+            "effect body should reach the state-folding resume value (+ s p)"
+        );
+        assert!(
+            saw_bare,
+            "effect body should reach a bare param resume value"
+        );
     }
 
     /// `gen_list_producing_op_body` REACHES all forms (List.push, List.prepend, Set.to-list, Map.to-list)
