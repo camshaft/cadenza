@@ -3710,21 +3710,28 @@ fn emit_tail(
             // `nontail_param_reclaim_kind` (occurrence-level), shared with the dup-pass + def_inc1_reclaims_param
             // so caller-drop XOR reclaim can never drift. Scalar path only while the compound arm is bisected
             // OFF — behavior-identical to the prior inline `nontail_param_payload_ok`.
+            // SINGLE-SOURCE (v-core-opt extract-share): ONE predicate call decides the kind; the emit then
+            // gates on the matching binder-set the dup-pass populated in LOCKSTEP — Scalar on the raw selection
+            // `nontail_match_reclaim_binders` (:1226), Compound on `nontail_compound_reclaim_binders`
+            // (`collect_nontail_compound_reclaim_binders` → same `is_nontail_spine_param`, so its consumed shell
+            // children were dup'd → the op_drop cascade nets). INC1 increment-2: Compound now LIVE.
             let param_reclaim = stashed_slot.is_none()
-                && scrut_binder.is_some_and(|b| out.nontail_match_reclaim_binders.contains(&b))
-                && matches!(
-                    nontail_param_reclaim_kind(
-                        db,
-                        out.fn_body
-                            .expect("fn_body set in select_function_of before emit"),
-                        scrutinee,
-                        &scrut_ty,
-                        never_diverges,
-                        &root,
-                    ),
-                    Some(ReclaimKind::Scalar)
-                );
-            let _ = &out.nontail_compound_reclaim_binders; // keep field live during bisect
+                && match nontail_param_reclaim_kind(
+                    db,
+                    out.fn_body
+                        .expect("fn_body set in select_function_of before emit"),
+                    scrutinee,
+                    &scrut_ty,
+                    never_diverges,
+                    &root,
+                ) {
+                    Some(ReclaimKind::Scalar) => {
+                        scrut_binder.is_some_and(|b| out.nontail_match_reclaim_binders.contains(&b))
+                    }
+                    Some(ReclaimKind::Compound) => scrut_binder
+                        .is_some_and(|b| out.nontail_compound_reclaim_binders.contains(&b)),
+                    None => false,
+                };
             // OWNED-SINGLE-VIEW (String.at / Bytes.slice) local reclaim: its Some shell leaks because the
             // scrutinee is not globally `Owned` (`matchsum_view_shell_reclaim_ok`). UNLIKE the general
             // owned/param reclaim it fires EVEN WHEN `arms_tail_call` — a tail-recursive String.at scan
@@ -5167,17 +5174,20 @@ pub(super) fn nontail_param_reclaim_kind(
     if nontail_param_payload_ok(db, scrutinee, scrut_ty, never_diverges, root) {
         return Some(ReclaimKind::Scalar);
     }
-    // COMPOUND arm — INC1 increment-2 (compound-disjunct re-enable, v-core-opt extract-share): uncomment to
-    // reclaim reconstructing folds (BST del-min/insert, recon.sexp) — `is_nontail_spine_param` (spine select,
-    // needs top_body) + `nontail_param_compound_extra_ok` (interior-view alias-out fence). BISECTED OFF so the
-    // predicate stays scalar-only = behavior-neutral. When enabling, wire the dup-pass Compound→child-dups +
-    // the reused-vs-replaced drop, and gate recon 6→0 / BST del-min 27→0 + guarded-all + opt-sweep.
-    // if reclaim::is_nontail_spine_param(db, top_body, scrutinee, root)
-    //     && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)
-    // {
-    //     return Some(ReclaimKind::Compound);
-    // }
-    let _ = top_body;
+    // COMPOUND arm — INC1 increment-2 (compound-disjunct re-enable, v-core-opt extract-share): reclaim a
+    // RECONSTRUCTING self-recursive fold (BST del-min/insert, recon.sexp — arms rebuild `(Node …)`/`#tuple(…)`)
+    // via `is_nontail_spine_param` (the spine select — owned compound-boxed param matched once, consumed only
+    // by the match, needs top_body for count_param_consumes) + `nontail_param_compound_extra_ok` (the
+    // interior-view alias-out fence — no arm aliases a shell child out via Map.lookup/List.at/…). The emit's
+    // op_drop of the param slot CASCADES (frees the old shell + REPLACED children); the dup-pass
+    // (`collect_shell_reclaim_child_dups` → `collect_consuming_payload_sites_cont`, keyed on the SAME
+    // `is_nontail_spine_param`) dups the CONSUMED/REUSED children FIRST (del-min's reused k,r survive the drop),
+    // so dup ⟺ drop nets correctly (v-runtime reused-vs-replaced rule).
+    if reclaim::is_nontail_spine_param(db, top_body, scrutinee, root)
+        && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)
+    {
+        return Some(ReclaimKind::Compound);
+    }
     None
 }
 
@@ -5225,6 +5235,9 @@ fn nontail_param_compound_extra_ok(
         && !cont_rematches_scrutinee(db, scrutinee, root)
         && !sum_cont_payload_in_result(db, root, scrutinee)
         && !sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
+        // 05:9972: exclude a persistent-structure fold whose dedup arm returns the SCRUTINEE unchanged (`… t`)
+        // — the shell-drop would free a returned node (the 13589→589 UAF). Leak beats UAF.
+        && !sum_cont_arm_returns_scrutinee(db, root, scrutinee)
 }
 
 /// INC1 POSITIVE owned-result exclusion: whether ANY arm applies an INTERIOR-VIEW / fallible-extraction op
@@ -5321,6 +5334,57 @@ fn payload_in_result_position(db: &mut Db, id: StructId, scrut: StructId) -> boo
         Core::Break { value } => payload_in_result_position(db, value, scrut),
         // A call/constructor/arith as the result CONSUMES the payload inside its args — not a bare result
         // escape (constructor-as-result is separately blocked by sum_cont_arm_constructs_compound).
+        _ => false,
+    }
+}
+
+/// INC1 compound-fence exclusion (05:9972): whether ANY arm's RESULT/tail is the SCRUTINEE ITSELF returned
+/// UNCHANGED — a persistent-structure BST-insert dedup arm `(if (> v k) … t)` returns the matched node `t`
+/// as-is. The compound shell-drop would then free a RETURNED value (the 13589→589 read-after-free trap).
+/// DISTINCT from `sum_cont_payload_in_result` (a payload PROJECTION of scrut in result) — here the WHOLE
+/// scrutinee handle escapes. Follows the same result-position tails (If/Let/Seq/Block/Break); a bare
+/// `Core::Param`/`LocalRef` of the scrutinee binder (or the scrutinee node itself) in result → true.
+fn sum_cont_arm_returns_scrutinee(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => result_is_scrutinee(db, *body, scrut),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            result_is_scrutinee(db, *body, scrut) || sum_cont_arm_returns_scrutinee(db, els, scrut)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_arm_returns_scrutinee(db, then_, scrut)
+                || sum_cont_arm_returns_scrutinee(db, els, scrut)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_arm_returns_scrutinee(db, &a.cont, scrut)),
+    }
+}
+
+fn result_is_scrutinee(db: &mut Db, id: StructId, scrut: StructId) -> bool {
+    if id == scrut {
+        return true;
+    }
+    let scrut_binder = match core_of(db, scrut) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    if let Some(sb) = scrut_binder
+        && matches!(core_of(db, id), Core::Param { binder } | Core::LocalRef { binder } if binder == sb)
+    {
+        return true;
+    }
+    match core_of(db, id) {
+        Core::If { then_, else_, .. } => {
+            result_is_scrutinee(db, then_, scrut) || result_is_scrutinee(db, else_, scrut)
+        }
+        Core::Let { body, .. } => result_is_scrutinee(db, body, scrut),
+        Core::Seq { tail, .. } => result_is_scrutinee(db, tail, scrut),
+        Core::Block { body, .. } => result_is_scrutinee(db, body, scrut),
+        Core::Break { value } => result_is_scrutinee(db, value, scrut),
         _ => false,
     }
 }
