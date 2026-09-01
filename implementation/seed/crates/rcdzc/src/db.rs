@@ -3477,6 +3477,26 @@ impl Db {
             }
             cur = self.parent_of(id);
         }
+        // β-COPY PROVENANCE — cross-module nominal-identity SOUNDNESS (type-system.md §160/162). A
+        // synthesized / β-copied node is self-contained (its parent chain reaches no file-bearing node),
+        // so the walk above yields `None` and a caller falls to the FLAT `type_decl_by_name`
+        // (first-declared-wins). For a linked package that FORGES a type across the module boundary: a
+        // β-copy of an importer's `(: t Thm)` annotation resolved `Thm` flat to the FIRST-declared `Thm`
+        // (the kernel's `hol.Thm`) instead of the importer's own — so a kernel value passed for the
+        // importer's re-declared same-name `Thm` (a DISTINCT nominal per §162's anti-forgery clause). A
+        // β-copy records its SOURCE user occurrence (`source_of_synth` / `synth_name_origin`), which DOES
+        // live in a file; resolve the copy's file as its source's file so a copied node resolves names
+        // against its ORIGIN file's scope — the file-scoped identity the un-copied node would have used.
+        // (A copy with no user provenance — e.g. a prelude-synth node — has no source and stays `None`,
+        // unchanged.)
+        let src = self.source_of_synth(at)?;
+        let mut cur = Some(src);
+        while let Some(id) = cur {
+            if let Some(file) = fs.file_of(id) {
+                return Some(file);
+            }
+            cur = self.parent_of(id);
+        }
         None
     }
 
