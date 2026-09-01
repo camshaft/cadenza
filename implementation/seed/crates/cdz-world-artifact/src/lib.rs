@@ -78,38 +78,48 @@ impl Worlds {
         // is a type namespace, not a capability — it contributes no importable op, and the shared world tree
         // carries only interfaces with members (matching the in-source `(world …)` form v-syntax lowers). So
         // skip it.
-        for (_, item) in &world.imports {
-            if let WorldItem::Interface { id, .. } = item {
-                if self.resolve.interfaces[*id].functions.is_empty() {
-                    continue;
-                }
-                interfaces.push(build_interface(
-                    &mut b,
-                    &self.resolve,
-                    *id,
-                    WitDir::Import,
-                    world_name,
-                )?);
-            }
-        }
-        for (_, item) in &world.exports {
-            if let WorldItem::Interface { id, .. } = item {
-                if self.resolve.interfaces[*id].functions.is_empty() {
-                    continue;
-                }
-                interfaces.push(build_interface(
-                    &mut b,
-                    &self.resolve,
-                    *id,
-                    WitDir::Export,
-                    world_name,
-                )?);
-            }
-        }
+        push_interfaces(
+            &mut b,
+            &self.resolve,
+            world.imports.values(),
+            WitDir::Import,
+            world_name,
+            &mut interfaces,
+        )?;
+        push_interfaces(
+            &mut b,
+            &self.resolve,
+            world.exports.values(),
+            WitDir::Export,
+            world_name,
+            &mut interfaces,
+        )?;
         let root = b.world_schema_tree(world_name, &interfaces);
         let arenas = b.finish(root);
         Ok(codec::encode(&arenas))
     }
+}
+
+/// Push each interface-WITH-members from `items` as a `dir` interface node into `out`, skipping the
+/// type-only interfaces (no functions — a `use`d type namespace, not a capability). Shared by the world's
+/// import and export passes, which differ only in the item set and the [`WitDir`].
+fn push_interfaces<'a>(
+    b: &mut Builder,
+    resolve: &Resolve,
+    items: impl IntoIterator<Item = &'a WorldItem>,
+    dir: WitDir,
+    world_name: &str,
+    out: &mut Vec<StructId>,
+) -> Result<(), String> {
+    for item in items {
+        if let WorldItem::Interface { id, .. } = item {
+            if resolve.interfaces[*id].functions.is_empty() {
+                continue;
+            }
+            out.push(build_interface(b, resolve, *id, dir, world_name)?);
+        }
+    }
+    Ok(())
 }
 
 /// Build one interface node `(<dir> Name (member MName FuncSig)…)`, its members sorted by name (rcdzc
