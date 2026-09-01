@@ -197,6 +197,8 @@ def unifyInfer (a b : Ty) (st : InferState) : Except InferFail InferState :=
   `CDZ0203`. A Float operand (not a modeled scalar) → `Unsupported` (never a false `Int`-reject).
 * T1.5 — **boolean connectives** (`and`/`or` binary, `not` unary): every operand unifies with `Bool`,
   result `Bool`; a non-`Bool` operand is `IllTyped CDZ0203`.
+* T1.6 — **tuple construction** (`ts:130-146`): `(tuple e…)` infers each element → `.tuple [τ…]` (arity
+  is part of the type); an `IllTyped`/`Unsupported` element propagates.
 Any other construct → `Unsupported` until its rule lands (ascription/App/Let/Fn/Match). -/
 partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferState) (nodeId : Nat) :
     Except InferFail (Ty × InferState) :=
@@ -275,6 +277,15 @@ partial def inferE (m : Ast.Module) (env : List (ByteArray × Ty)) (st : InferSt
                   let st ← unifyInfer τb .bool st
                   .ok (.bool, st)
               | _, _ => .error (.unsupported "type oracle: malformed and/or")
+          else if h == "tuple".toUTF8 then do
+            -- T1.6 — TUPLE construction (`ts:130-146`): `(tuple e…)` infers each element and yields
+            -- `.tuple [τ…]` (arity is part of the type). A tuple is well-typed iff EVERY element is — an
+            -- element that is `IllTyped`/`Unsupported` propagates (short-circuits the fold).
+            let elemIds := children.extract 1 children.size
+            let (τs, st) ← elemIds.foldlM (fun (acc : List Ty × InferState) eid => do
+                let (τ, st') ← inferE m env acc.2 eid
+                pure (acc.1 ++ [τ], st')) ([], st)
+            .ok (.tuple τs, st)
           else .error (.unsupported
             "type oracle: construct not yet modeled (T1 — ascription/App/Let/Fn/Match rules land next)")
         | none => .error (.unsupported "type oracle: non-name-headed construct not yet modeled")
@@ -452,6 +463,22 @@ def judgeTypecheck (tv : TypeVerdict) (rv : RcdzcVerdict) : Verdict :=
                            .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
                            .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
                 root := 12 } == .illTyped "CDZ0203")
+-- T1.6 (tuple): `(tuple 1 #t)` → WellTyped (tuple [Int, Bool]) — arity + element types.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "tuple".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .boolLit true, .name "export".toUTF8],
+                nodes := #[.atom 3, .atom 4, .atom 5, .list #[0, 1, 2],
+                           .atom 2, .list #[4], .atom 1, .list #[6, 5, 3],
+                           .atom 6, .atom 2, .list #[8, 9], .atom 0, .list #[11, 7, 10]],
+                root := 12 } == .wellTyped (.tuple [.int 64 true, .bool]))
+-- T1.6 (tuple): `(tuple 1 (if #t 2 #f))` — the ill-typed element (branch clash) PROPAGATES → IllTyped CDZ0203.
+#guard (infer { leaves := #[.name "do".toUTF8, .name "def".toUTF8, .name "main".toUTF8, .name "tuple".toUTF8,
+                            .intLit false .dec (ByteArray.mk #[1]), .name "if".toUTF8, .boolLit true,
+                            .intLit false .dec (ByteArray.mk #[2]), .boolLit false, .name "export".toUTF8],
+                nodes := #[.atom 5, .atom 6, .atom 7, .atom 8, .list #[0, 1, 2, 3],  -- (if #t 2 #f)
+                           .atom 3, .atom 4, .list #[5, 6, 4],                       -- (tuple 1 (if …))
+                           .atom 2, .list #[8], .atom 1, .list #[10, 9, 7],          -- (def (main) …)
+                           .atom 9, .atom 2, .list #[12, 13], .atom 0, .list #[15, 11, 14]],
+                root := 16 } == .illTyped "CDZ0203")
 -- accept ∧ well-typed → agree
 #guard judgeTypecheck (.wellTyped .bool) .accept == .holds
 -- both reject (any code) → agree (T1); decline ∧ ill-typed → agree
